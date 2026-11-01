@@ -173,6 +173,10 @@ enum class RenderGraphFailureReason : foundation::uint8
     RandomExhausted,  ///< The invocation's random stream ran out of dimensions.
     InvalidArgument,  ///< A scene function received an out-of-range or degenerate input.
     LightSample,      ///< No light could be selected or sampled.
+    StorageCapacity,  ///< A graph storage buffer has fewer entries than the pixels using it.
+    StoredRecord,     ///< Per-pixel data an earlier pass did not write for this pixel or frame.
+    SceneData,        ///< An invalid triangle, surface or material from a scene lookup.
+    InvalidWeight,    ///< A non-finite or negative sampling weight, probability or PDF.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;

@@ -45,6 +45,12 @@ enum class ViewportPresentation : foundation::uint8
     /// Neither path exists on this platform; the viewport only explains why.
     Unavailable,
 };
+/// Fit a status overlay's text to a viewport maxWidth logical pixels wide: each line wraps at spaces, and only a
+/// single word wider than the panel is shortened in its middle, so a path keeps its file name and line.
+/// @param text Overlay text; its own line breaks are kept.
+/// @param maxWidth Viewport width in logical pixels; a non-positive width returns text unchanged.
+/// @return The text with the added line breaks and shortened words.
+[[nodiscard]] QString FitOverlayText(const QString& text, qreal maxWidth);
 // One embedded presentation surface for both World bindings and cooked scenes.
 // Frames come from a ViewportFrameSource; device admission and navigation stay with the RenderPreview.
 class PreviewViewport final : public QWidget

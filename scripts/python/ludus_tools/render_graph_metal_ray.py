@@ -22,7 +22,7 @@ void InvokeNativeRayStage(StructuredBuffer<NativeRayFunctionTableToken> function
 void LudusNativeRayGeneration(inout NativeRayStagePacket packet)
 {
     packet.Radiance = DispatchGraphRay(packet.Scene, packet.Launch, packet.Queries);
-    if (Dimensions.z == 0) packet.Queries.HasFailed = true;
+    if (Dimensions.z == 0) FailSceneQuery(packet.Queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
 }
 '''
     for name, dispatch in (('LudusNativeClosestHit', hit_dispatch), ('LudusNativeMiss', miss_dispatch)):
@@ -37,7 +37,7 @@ void {name}(inout NativeRayStagePacket packet)
     {dispatch}
     packet.Queries = queries;
     packet.Payload = payload;
-    if (Dimensions.z == 0) packet.Queries.HasFailed = true;
+    if (Dimensions.z == 0) FailSceneQuery(packet.Queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
 }}
 '''
     for name, arguments, assignments, index in (

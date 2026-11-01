@@ -1,4 +1,5 @@
 #include "internal/preview_shading.h"
+#include "internal/preview_viewport.h"
 #include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
 
@@ -12,6 +13,7 @@
 #include <QSet>
 #include <QSize>
 #include <QString>
+#include <QStringList>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -339,4 +341,27 @@ TEST_CASE("Viewport size presets letterbox the frame and choose the drawable", "
     CHECK(ComputeViewportDrawableSize(fixed, QSize(), 1) == QSize(1920, 1080));
     CHECK(ComputeViewportDrawableSize(fill, QSize(0, 0), 2) == QSize(0, 0));
     CHECK(ComputeViewportDrawableSize(fill, QSize(), 2) == QSize(0, 0));
+}
+
+TEST_CASE("Viewport status overlays wrap sentences and shorten only words wider than the panel",
+          "[editor][viewport][render-graph-failures]")
+{
+    // A failed-pixel explanation must stay readable in full, however narrow the viewport.
+    const QString sentence = QStringLiteral(
+        "2,660,962 pixels of ray pass 0 failed (the failure colour). A shader set queries.HasFailed without a reason.");
+    constexpr qreal NARROW_WIDTH = 320;
+    const QString wrapped = FitOverlayText(sentence, NARROW_WIDTH);
+    CHECK(wrapped.contains(QLatin1Char('\n')) == true);
+    CHECK(wrapped.contains(QStringLiteral("\u2026")) == false);
+    CHECK(wrapped.split(QLatin1Char('\n')).join(QLatin1Char(' ')) == sentence);
+    // A path is one word: it keeps both ends, so the file name and line stay visible.
+    const QString path = QStringLiteral("/Users/someone/Documents/Projects/Sample/graphs/Main/main_shaders/"
+                                        "shader_Shader_raytracingpipeline_closestHit.slang:113");
+    const QString shortened = FitOverlayText(path, NARROW_WIDTH);
+    CHECK(shortened.contains(QStringLiteral("\u2026")) == true);
+    CHECK(shortened.endsWith(QStringLiteral(":113")) == true);
+    CHECK(shortened.contains(QLatin1Char('\n')) == false);
+    // Explicit line breaks survive, and a width the overlay cannot use keeps the text.
+    CHECK(FitOverlayText(QStringLiteral("one\ntwo"), NARROW_WIDTH) == QStringLiteral("one\ntwo"));
+    CHECK(FitOverlayText(sentence, 0) == sentence);
 }

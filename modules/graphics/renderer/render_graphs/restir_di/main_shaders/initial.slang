@@ -21,7 +21,7 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
             float conditionalPdfArea;
             if (TrySampleEmitterTriangle(scene, emitterIndex, queries, triangle, conditionalPdfArea) == false)
             {
-                queries.HasFailed = true;
+                FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
                 break;
             }
             float u = SampleSceneRandom(queries);
@@ -31,7 +31,7 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
             float proposalPdfArea = selectionPmf * conditionalPdfArea;
             if (isfinite(proposalPdfArea) == false || proposalPdfArea <= 0)
             {
-                queries.HasFailed = true;
+                FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
                 break;
             }
             float weight = EvaluateSampleTarget(scene, hit, triangle.TriangleIndex, barycentric) / proposalPdfArea;

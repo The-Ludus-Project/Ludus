@@ -47,11 +47,13 @@ struct RenderGraphJobResult final
     QString Code;
     QString Message;
     QJsonObject Location;
+    /// A failure's diagnostics, or a successful build's warnings (build.diagnostics), which do not reject it.
     QJsonArray Diagnostics;
     /// Number of Error List rows. Structured graph batches replace the legacy summary;
-    /// shader diagnostics retain their build summary. Success has one informational row.
+    /// shader diagnostics retain their build summary. Success has one informational row, then its warnings.
     [[nodiscard]] foundation::int32 GetDiagnosticCount() const;
-    /// Copied row record, or empty for an out-of-range row. Never mutates the result.
+    /// Copied row record, or empty for an out-of-range row or a success's informational row 0. Never mutates the
+    /// result.
     [[nodiscard]] QJsonObject GetDiagnostic(foundation::int32 row) const;
 };
 

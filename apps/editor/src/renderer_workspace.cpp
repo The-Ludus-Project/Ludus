@@ -3698,7 +3698,8 @@ void RendererWorkspace::updateSourceDiagnostics(bool isNewResult)
     mSourceDiagnosticsEpoch = mEpoch;
     mSourceDiagnosticsFile = file;
     QList<CodeDiagnostic> diagnostics;
-    const int32 count = mHasResult == true && mLastResult.IsSuccessful == false ? GetDiagnosticCount() : 0;
+    // A successful build's warnings mark their lines too.
+    const int32 count = mHasResult == true ? GetDiagnosticCount() : 0;
     // Without a structured batch, row 0 summarizes the compiler rows that follow it.
     const int32 first =
         mLastResult.Diagnostics.isEmpty() == false && count == mLastResult.Diagnostics.size() + 1 ? 1 : 0;

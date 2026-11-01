@@ -7,7 +7,7 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
     if (HasMatchingIdentity(current, scene, payload.Launch) == false ||
         HasMatchingTemporalReceiver(current, result) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_STORED_RECORD);
         return;
     }
     float3 surfaceEmission = EvaluateEmission(scene, hit, result.ViewDirectionWorld);

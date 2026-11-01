@@ -56,7 +56,7 @@ void ShadeDirectLighting(SceneContext scene, SurfaceHit hit, inout RayQueryConte
     MaterialSample material = EvaluateMaterial(scene, hit);
     if (material.IsValid == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return;
     }
     // Draw in the template's order: light selection, three light-shape and three BSDF coordinates.

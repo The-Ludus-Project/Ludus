@@ -19,14 +19,19 @@ int32 RenderGraphJobResult::GetDiagnosticCount() const
 {
     const bool hasBatch = Diagnostics.isEmpty() == false && Code.isEmpty() == false &&
                           Diagnostics.first().toObject().value(QStringLiteral("code")).toString() == Code;
-    return IsSuccessful == true ? 1 : static_cast<int32>(Diagnostics.size()) + (hasBatch == true ? 0 : 1);
+    return IsSuccessful == true || hasBatch == false ? static_cast<int32>(Diagnostics.size()) + 1
+                                                     : static_cast<int32>(Diagnostics.size());
 }
 
 QJsonObject RenderGraphJobResult::GetDiagnostic(int32 row) const
 {
-    if (row < 0 || row >= GetDiagnosticCount() || IsSuccessful == true)
+    if (row < 0 || row >= GetDiagnosticCount())
     {
         return {};
+    }
+    if (IsSuccessful == true)
+    {
+        return row == 0 ? QJsonObject{} : Diagnostics.at(row - 1).toObject();
     }
     const bool hasBatch = Diagnostics.isEmpty() == false && Code.isEmpty() == false &&
                           Diagnostics.first().toObject().value(QStringLiteral("code")).toString() == Code;
@@ -216,6 +221,9 @@ RenderGraphJob::ParseOutput(const RenderGraphJobRequest& request, const QByteArr
     }
     result.Payload = object;
     result.IsSuccessful = exitCode == 0;
+    // Warnings of a successful build, such as RenderGraphBuildReasonlessFailure, follow its summary row.
+    result.Diagnostics =
+        object.value(QStringLiteral("build")).toObject().value(QStringLiteral("diagnostics")).toArray();
     if (result.IsSuccessful == false)
     {
         result.Code = QStringLiteral("RenderGraphRejected");

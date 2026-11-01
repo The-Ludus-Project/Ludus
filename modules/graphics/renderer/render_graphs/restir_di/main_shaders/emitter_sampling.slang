@@ -121,7 +121,7 @@ bool TrySelectEmitter(SceneContext scene,
         const float weight = ComputeSceneEmitterWeight(scene, i, receiver);
         if (isfinite(weight) == false || weight < 0.0f)
         {
-            queries.HasFailed = true;
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
             return false;
         }
         if (weight == 0.0f)
@@ -131,7 +131,7 @@ bool TrySelectEmitter(SceneContext scene,
         outTotalEmitterWeight += weight;
         if (isfinite(outTotalEmitterWeight) == false)
         {
-            queries.HasFailed = true;
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
             return false;
         }
         const float randomValue = SampleSceneRandom(queries);
@@ -205,7 +205,7 @@ bool TrySampleEmitterTriangle(SceneContext scene,
     const float totalAreaWorld = emitter.z;
     if (isfinite(totalAreaWorld) == false || totalAreaWorld <= 0.0f)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
         return false;
     }
     const float targetAreaWorld = SampleSceneRandom(queries) * totalAreaWorld;
@@ -215,7 +215,7 @@ bool TrySampleEmitterTriangle(SceneContext scene,
         const TriangleData triangle = GetEmitterTriangle(scene, emitterIndex, i);
         if (triangle.IsValid == false)
         {
-            queries.HasFailed = true;
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
             outTriangle = (TriangleData)0;
             return false;
         }

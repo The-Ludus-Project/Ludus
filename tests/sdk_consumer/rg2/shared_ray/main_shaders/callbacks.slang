@@ -18,10 +18,10 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
     SurfaceHit secondary;
     uint status = TraceClosest(scene, queries, hit.IncomingRay, secondary);
     if (status != SCENE_QUERY_SURFACE || secondary.TriangleIndex != hit.TriangleIndex)
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     LightSample light = (LightSample)0;
     light.HasSample = true;
     light.DirectionWorld = -hit.IncomingRay.DirectionWorld;
     if (TestVisibility(scene, queries, hit, light) == SCENE_QUERY_FAILURE)
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
 }

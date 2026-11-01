@@ -71,7 +71,7 @@ float3 ReadVertexChord(SceneContext scene, RayLaunch launch, inout RayQueryConte
             SCENE_QUERY_SURFACE ||
         receiver.EmitterIndex < GetEmitterCount(scene))
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
         return float3(0);
     }
     SelectedLight selected = SelectLight(scene, launch, POINT_DIMENSION_FIRST);
@@ -81,7 +81,7 @@ float3 ReadVertexChord(SceneContext scene, RayLaunch launch, inout RayQueryConte
     LightSample light = SampleIncidentLight(scene, selected, receiver, shapeSample);
     if (light.HasSample == false || light.TriangleIndex == SCENE_INVALID_INDEX)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
         return float3(0);
     }
     uint vertex = chordCase / LINE_DIRECTION_COUNT;
@@ -91,7 +91,7 @@ float3 ReadVertexChord(SceneContext scene, RayLaunch launch, inout RayQueryConte
     EmitterChord chord;
     if (TryMakeEmitterChord(triangle, barycentric, GetLineAlongWorld(triangle, direction), chord) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
         return float3(0);
     }
     bool isQueryable = IsEmitterChordQueryable(chord);
@@ -141,7 +141,7 @@ float3 ReadPointLineDensities(SceneContext scene, RayLaunch launch, inout RayQue
     LightSample light = SampleIncidentLight(scene, selected, receiver, shapeSample);
     if (light.HasSample == false || light.TriangleIndex == SCENE_INVALID_INDEX)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
         return float3(0);
     }
     float areaDensity = EvaluateLightPdfSolidAngle(scene,
@@ -155,7 +155,7 @@ float3 ReadPointLineDensities(SceneContext scene, RayLaunch launch, inout RayQue
                                             queries);
     if (areaDensity <= 0)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
         return float3(0);
     }
     return EncodeError(abs(lineDensity / areaDensity - 1));

@@ -206,7 +206,6 @@ QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& re
             .Backends = {},
             .Count = 1,
         });
-        return entries;
     }
     const foundation::int32 diagnosticCount = result.GetDiagnosticCount();
     // Row zero is the job's own summary unless the tool reported the whole batch itself.
@@ -216,7 +215,8 @@ QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& re
     const bool isSummaryFolded =
         hasSummaryRow == true && diagnosticCount > 1 && result.Code == QStringLiteral("RenderGraphBuildShader");
     QString foldedLog;
-    for (foundation::int32 row = 0; row < diagnosticCount; ++row)
+    // A success's row 0 is the informational row above; its warnings follow.
+    for (foundation::int32 row = result.IsSuccessful == true ? 1 : 0; row < diagnosticCount; ++row)
     {
         const QJsonObject diagnostic = result.GetDiagnostic(row);
         const QJsonObject location = diagnostic.value(QStringLiteral("location")).toObject();

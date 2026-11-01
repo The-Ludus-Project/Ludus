@@ -29,5 +29,9 @@
 #define LUDUS_SCENE_FAILURE_RANDOM_EXHAUSTED 8  // The invocation's random stream ran out of dimensions.
 #define LUDUS_SCENE_FAILURE_INVALID_ARGUMENT 9  // A scene function received an out-of-range or degenerate input.
 #define LUDUS_SCENE_FAILURE_LIGHT_SAMPLE 10     // No light could be selected or sampled.
+#define LUDUS_SCENE_FAILURE_STORAGE_CAPACITY 11 // A graph storage buffer has fewer entries than the pixels using it.
+#define LUDUS_SCENE_FAILURE_STORED_RECORD 12    // Per-pixel data an earlier pass did not write for this pixel or frame.
+#define LUDUS_SCENE_FAILURE_SCENE_DATA 13       // An invalid triangle, surface or material from a scene lookup.
+#define LUDUS_SCENE_FAILURE_INVALID_WEIGHT 14   // A non-finite or negative sampling weight, probability or PDF.
 #define LUDUS_SCENE_FAILURE_AUTHORED_FIRST 32
 #define LUDUS_SCENE_FAILURE_REASON_COUNT 64

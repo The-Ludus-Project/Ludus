@@ -681,6 +681,47 @@ def map_shader_diagnostics(output, program, target, closure, sources=None):
     return diagnostics
 
 
+REASONLESS_FAILURE = re.compile(r'\bHasFailed\s*=(?!=)\s*true\b')
+SHADER_COMMENT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
+REASONLESS_FAILURE_MESSAGE = (
+    'sets queries.HasFailed without a reason, so a failed pixel can only be reported as unspecified. '
+    'Call FailSceneQuery(queries, reason) with a LUDUS_SCENE_FAILURE_* code, or an authored code from '
+    'LUDUS_SCENE_FAILURE_AUTHORED_FIRST, to name the failing check.')
+
+
+def reasonless_failure_diagnostics(programs, closures, snapshot):
+    """Warn at each authored `HasFailed = true`, located in its captured source.
+
+    Such a write latches the failure colour without a reason (scene_shader.slang,
+    FailSceneQuery), so the viewport can say only that the reason is unspecified.
+    The scan is lexical over comment-free captured sources: macros or aliases that
+    hide the write are not found. Each line is reported once, for the first program
+    (by id) whose closure reaches it. Bounded to MAX_SHADER_DIAGNOSTICS records.
+    """
+    owners = {}
+    for pid in sorted(programs):
+        for relative in closures.get(pid, ()):
+            if relative in snapshot.files:
+                owners.setdefault(relative, pid)
+    diagnostics = []
+    for relative in sorted(owners):
+        try:
+            text = snapshot.files[relative].decode('utf-8')
+        except UnicodeDecodeError:
+            continue
+        code = SHADER_COMMENT.sub(lambda match: re.sub(r'[^\n]', ' ', match[0]), text)
+        for match in REASONLESS_FAILURE.finditer(code):
+            if len(diagnostics) == MAX_SHADER_DIAGNOSTICS:
+                return diagnostics
+            line_start = code.rfind('\n', 0, match.start()) + 1
+            diagnostics.append({
+                'severity': 'warning', 'code': 'RenderGraphBuildReasonlessFailure',
+                'message': REASONLESS_FAILURE_MESSAGE, 'program': owners[relative],
+                'location': {'source': relative, 'line': code.count('\n', 0, match.start()) + 1,
+                             'column': match.start() - line_start + 1, 'length': match.end() - match.start()}})
+    return diagnostics
+
+
 def checked_cache(path, expected):
     """A cache hit compares full identity and hashes every retained artifact."""
     try:
@@ -1216,6 +1257,10 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             checkpoint(cancel)
             report = {'package': str(generation), 'generation': generation_key, 'cache_hits': hits, 'cache_misses': misses,
                       'elapsed_seconds': time.monotonic() - started, 'counts': counts}
+            # Warnings that do not reject the build; recomputed from sources, so cache hits report them too.
+            warnings = reasonless_failure_diagnostics(programs, closures, snapshot)
+            if warnings:
+                report['diagnostics'] = warnings
             atomic(output / 'build-report.json', encoded(report))
             # The activation pointer is the sole last write. Failure to write
             # diagnostics cannot publish a partially successful build.

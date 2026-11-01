@@ -18,7 +18,7 @@ float3 SampleDirectLighting(SceneContext scene,
     float normalLengthSquared = dot(material.ShadingNormalWorld, material.ShadingNormalWorld);
     if (material.IsValid == false || normalLengthSquared <= 0)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return float3(0);
     }
     SelectedLight selected = SelectLight(scene, launch, SHADE_RANDOM_DIMENSION_FIRST);
@@ -48,7 +48,7 @@ float3 ShadeRecordedHit(SceneContext scene, RayLaunch launch, inout RayQueryCont
     HitRecord record;
     if (HasHitRecordCapacity(launch) == false || TryLoadHitRecord(scene, launch, record) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, HasHitRecordCapacity(launch) == false ? LUDUS_SCENE_FAILURE_STORAGE_CAPACITY : LUDUS_SCENE_FAILURE_STORED_RECORD);
         return float3(0);
     }
     // The primary pass traced this exact ray: same launch, camera and stored jitter.
@@ -58,7 +58,7 @@ float3 ShadeRecordedHit(SceneContext scene, RayLaunch launch, inout RayQueryCont
     SurfaceHit hit = GetSurfaceHit(scene, record.TriangleIndex, record.Barycentric);
     if (hit.IsValid == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return float3(0);
     }
     // GetSurfaceHit issues no ray; restore what TraceClosest reported, as LoadVisibilitySurface does.
@@ -70,7 +70,7 @@ float3 ShadeRecordedHit(SceneContext scene, RayLaunch launch, inout RayQueryCont
     radiance += SampleDirectLighting(scene, launch, hit, viewDirectionWorld, queries);
     if (all(isfinite(radiance)) == false || any(radiance < 0) == true)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
         return float3(0);
     }
     return radiance;

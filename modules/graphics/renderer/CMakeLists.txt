@@ -217,7 +217,10 @@ if(TARGET ludus_rhi_render_tests)
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME restir_selection
         SOURCE "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/tests/restir_selection.slang" COMPUTE ComputeMain
         INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
-                 "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/restir_di/main_shaders")
+                 "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/restir_di/main_shaders"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/include/ludus/graphics/renderer"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di/main_shaders/initial_emitter_sampling.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/include/ludus/graphics/renderer/scene_shader_layout.h")
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_gpu_preview renderer_gpu_preview_visibility_full renderer_gpu_preview_hit_cached renderer_gpu_preview_group32 renderer_gpu_preview_group64 renderer_gpu_preview_group128 renderer_gpu_preview_group8x8)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_gpu_preview_image)
     # Manual timing tool for reference captures on a cooked scene; not a CTest case.

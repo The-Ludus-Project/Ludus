@@ -56,6 +56,26 @@ class BuildTests(unittest.TestCase):
         with self.assertRaisesRegex(ToolingError, 'shader include depth exceeds 16: level0.slang ->'):
             build.Snapshot(self.manifest.parent).shader_closure('level0.slang')
 
+    def test_reasonless_failure_writes_are_located_warnings_on_every_build(self):
+        clean = self.run_build()
+        self.assertNotIn('diagnostics', clean)
+        source = self.manifest.parent / 'main_shaders/color.slang'
+        original = source.read_text()
+        # One reasonless write, plus a comparison, a commented write and a reasoned failure that stay quiet.
+        edited = (original + '\n// queries.HasFailed = true;\n/* queries.HasFailed = true; */\n'
+                  'void Check(inout RayQueryContext queries)\n{\n    if (queries.HasFailed == true) return;\n'
+                  '    queries.HasFailed = true;\n    FailSceneQuery(queries, 4);\n}\n')
+        source.write_text(edited)
+        written = edited.splitlines().index('    queries.HasFailed = true;') + 1
+        for report in (self.run_build(), self.run_build()):  # A cache miss, then a cache hit.
+            self.assertEqual([{'severity': 'warning', 'code': 'RenderGraphBuildReasonlessFailure',
+                               'message': build.REASONLESS_FAILURE_MESSAGE, 'program': 'Color',
+                               'location': {'source': 'main_shaders/color.slang', 'line': written,
+                                            'column': 13, 'length': len('HasFailed = true')}}],
+                             report['diagnostics'])
+        self.assertEqual(report['diagnostics'],
+                         json.loads((self.output / 'build-report.json').read_text())['diagnostics'])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
