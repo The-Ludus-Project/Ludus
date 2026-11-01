@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "id": "SteinbergYanPltLibrary",
-  "default": "SteinbergYanPlt",
+  "id": "SteinbergPltLibrary",
+  "default": "SteinbergPlt",
   "configurations": [
     {
-      "id": "SteinbergYanPlt",
+      "id": "SteinbergPlt",
       "inputs": [
         {
           "id": "scene",

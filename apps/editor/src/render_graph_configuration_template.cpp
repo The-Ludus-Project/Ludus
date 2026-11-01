@@ -609,7 +609,7 @@ RenderGraphDocumentStatus PrepareTemplateContents(RenderGraphSnapshot& inoutSnap
         templateIdentity == QStringLiteral("ris-projected-solid-angle") ||
         templateIdentity == QStringLiteral("polygonal-light-sampling") ||
         templateIdentity == QStringLiteral("slice-sampling-luminaire") ||
-        templateIdentity == QStringLiteral("steinberg-yan-plt"))
+        templateIdentity == QStringLiteral("steinberg-plt"))
     {
         return PrepareComputeRayTracingConfiguration(inoutSnapshot,
                                                      rootGraph,

@@ -2433,8 +2433,8 @@ See the canonical
 
 ### Render partially coherent diffraction
 
-The **Steinberg & Yan — partially coherent diffraction** template
-(`steinberg-yan-plt`) renders surface diffraction of natural light with the
+The **Steinberg — partially coherent diffraction** template
+(`steinberg-plt`) renders surface diffraction of natural light with the
 framework of Shlomi Steinberg and Ling-Qi Yan,
 [*A Generic Framework for Physical Light Transport*, ACM TOG 40(4), article 139, SIGGRAPH 2021](https://doi.org/10.1145/3450626.3459791).
 In that framework light carries two-point spatial coherence, and a light source's
@@ -2445,13 +2445,13 @@ sinusoidal gratings shaded with the paper's Eq. (42), and every other surface is
 shaded classically. Create it from **New Render Graph → Template**, or with the CLI:
 
 ```bash
-ludus render-graph new graphs/Plt --template steinberg-yan-plt --output offscreen \
+ludus render-graph new graphs/Plt --template steinberg-plt --output offscreen \
   --renderer-static --profiles metal wgsl
 ```
 
 Use `spirv wgsl` for Vulkan. The package requires a native Metal or Vulkan ray
 profile; a `wgsl`-only package is rejected with a `Capability` diagnostic.
-**Apply Configuration Template...** and Quick Add also offer the `SteinbergYanPlt`
+**Apply Configuration Template...** and Quick Add also offer the `SteinbergPlt`
 configuration. It has `scene`, `view` and `color` inputs, a required `color` output
 and optional `geometric` and `coherence` outputs.
 
@@ -2542,8 +2542,8 @@ The sources in `main_shaders/` cite the paper's equations at each step.
 
 Each invocation makes at most one surface query and one visibility query, so the
 technique declares `surface_queries: 1` and `visibility_queries: 1`. New shader
-programs have `SteinbergYan`-prefixed IDs and sources under
-`steinberg_yan_plt/main_shaders/`. The settings join the manifest's Graph settings,
+programs have `SteinbergPlt`-prefixed IDs and sources under
+`steinberg_plt/main_shaders/`. The settings join the manifest's Graph settings,
 and existing values are kept.
 
 Departures from the paper, also listed in the sources:
@@ -2568,7 +2568,7 @@ slowly at low resolution. A larger radius gives larger, less colorful features.
 The traced estimate for extended sources draws one wavelength per sample, so its
 diffraction colors converge more slowly than a delta light's.
 
-Evidence, from `ludus_render_graph_ray_tests` (`[steinberg-yan]`) on Metal, in the
+Evidence, from `ludus_render_graph_ray_tests` (`[steinberg-plt]`) on Metal, in the
 Cornell room with its back wall replaced by a white-metal grating at the default
 740 nm period and 80 nm amplitude:
 
@@ -2590,7 +2590,7 @@ Cornell room with its back wall replaced by a white-metal grating at the default
 Vulkan has not been run for this template.
 
 See the canonical
-[package](../../modules/graphics/renderer/render_graphs/steinberg_yan_plt/main.lurender.json).
+[package](../../modules/graphics/renderer/render_graphs/steinberg_plt/main.lurender.json).
 
 ### Sample lights along lines
 

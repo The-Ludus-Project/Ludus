@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "id": "SteinbergYanPlt",
+  "id": "SteinbergPlt",
   "default": "Default",
   "configurations": [
     {
@@ -60,7 +60,7 @@
           "id": "transport",
           "kind": "Subgraph",
           "asset": "library.lurender.json",
-          "configuration": "SteinbergYanPlt"
+          "configuration": "SteinbergPlt"
         },
         {
           "id": "accumulate",

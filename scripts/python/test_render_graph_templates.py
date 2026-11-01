@@ -518,8 +518,8 @@ class VeachGuibasMisTemplateTests(unittest.TestCase):
         self.assertEqual(arguments.template, 'veach-guibas-mis')
 
 
-class SteinbergYanPltTemplateTests(unittest.TestCase):
-    """Steinberg and Yan's partially coherent diffraction beside geometric optics and the coherence radius."""
+class SteinbergPltTemplateTests(unittest.TestCase):
+    """Steinberg et al.'s partially coherent diffraction beside geometric optics and the coherence radius."""
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -527,7 +527,7 @@ class SteinbergYanPltTemplateTests(unittest.TestCase):
 
     def create(self, profiles=('metal', 'wgsl'), name='Plt'):
         return graph.new_workspace(Path(self.directory.name) / name, output='offscreen', renderer_static=True,
-                                   profiles=profiles, template='steinberg-yan-plt')
+                                   profiles=profiles, template='steinberg-plt')
 
     def test_three_passes_share_the_hit_buffer_and_the_coherence_image_is_not_tone_mapped(self):
         root = self.create()
@@ -573,7 +573,7 @@ class SteinbergYanPltTemplateTests(unittest.TestCase):
         self.assertGreater(settings['PLT_POINT_SOURCE_RADIUS_MILLIMETERS']['minimum'], 0)
         for source in ('shade.slang', 'grating.slang', 'natural_light.slang'):
             text = shaders.joinpath(source).read_text()
-            for name in ('Steinberg', 'Yan', '10.1145/3450626.3459791'):
+            for name in ('Shlomi Steinberg', 'Ling-Qi Yan', '10.1145/3450626.3459791'):
                 self.assertIn(name, text)
         self.assertIn('Wyman', shaders.joinpath('spectrum.slang').read_text())
         header = shaders.joinpath('hit_record.slang').read_text()
@@ -597,15 +597,15 @@ class SteinbergYanPltTemplateTests(unittest.TestCase):
         installed = Path(self.directory.name) / 'sdk/lib/cmake/Ludus/render_graph'
         module = installed / 'ludus_tools/render_graph_templates.py'
         module.parent.mkdir(parents=True)
-        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/steinberg_yan_plt'
-        shutil.copytree(source, installed / 'templates/steinberg_yan_plt')
+        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/steinberg_plt'
+        shutil.copytree(source, installed / 'templates/steinberg_plt')
         with patch.object(render_graph_templates, '__file__', str(module)):
-            files = render_graph_templates.template_files('steinberg-yan-plt', ('spirv',), graph)
+            files = render_graph_templates.template_files('steinberg-plt', ('spirv',), graph)
         build.validate_manifest(json.loads(files['main.lushader.json']))
         self.assertIn('EvaluateBesselJ', files['main_shaders/grating.slang'])
-        arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Plt', '--template', 'steinberg-yan-plt',
+        arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Plt', '--template', 'steinberg-plt',
                                                '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])
-        self.assertEqual(arguments.template, 'steinberg-yan-plt')
+        self.assertEqual(arguments.template, 'steinberg-plt')
 
 
 class LineSamplingTemplateTests(unittest.TestCase):

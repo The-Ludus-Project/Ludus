@@ -1737,8 +1737,8 @@ TEST_CASE("Veach and Guibas MIS configuration imports its shade passes and setti
     RequireValidation(workspace);
 }
 
-TEST_CASE("Steinberg and Yan template is created from the editor picker with wave, geometric and coherence outputs",
-          "[editor][render-graph][steinberg-yan-template]")
+TEST_CASE("Steinberg PLT template is created from the editor picker with wave, geometric and coherence outputs",
+          "[editor][render-graph][steinberg-plt-template]")
 {
     QTemporaryDir project;
     REQUIRE(project.isValid() == true);
@@ -1746,7 +1746,7 @@ TEST_CASE("Steinberg and Yan template is created from the editor picker with wav
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
     workspace.show();
-    CreateGraphFromPicker(workspace, QStringLiteral("steinberg-yan-plt"));
+    CreateGraphFromPicker(workspace, QStringLiteral("steinberg-plt"));
     RenderGraphDocument& document = workspace.GetDocument();
     const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
     for (const char* program : {"ShadeWave", "ShadeGeometricOptics", "MeasureCoherence"})
@@ -1766,8 +1766,8 @@ TEST_CASE("Steinberg and Yan template is created from the editor picker with wav
     RequireValidation(workspace);
 }
 
-TEST_CASE("Steinberg and Yan configuration imports its passes, shader closure and settings on the root canvas",
-          "[editor][render-graph][steinberg-yan-configuration]")
+TEST_CASE("Steinberg PLT configuration imports its passes, shader closure and settings on the root canvas",
+          "[editor][render-graph][steinberg-plt-configuration]")
 {
     QTemporaryDir project;
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
@@ -1775,23 +1775,23 @@ TEST_CASE("Steinberg and Yan configuration imports its passes, shader closure an
     workspace.SetLivePreview(false);
     REQUIRE(workspace.CustomizeBuiltIn() == true);
     RenderGraphDocument& document = workspace.GetDocument();
-    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Plt"), QStringLiteral("steinberg-yan-plt")) == true);
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Plt"), QStringLiteral("steinberg-plt")) == true);
     const QByteArray library = document.GetDraft(QStringLiteral("Plt.lurender.json"));
-    for (const char* program : {"SteinbergYanPrimary",
-                                "SteinbergYanShadeWave",
-                                "SteinbergYanShadeGeometricOptics",
-                                "SteinbergYanMeasureCoherence"})
+    for (const char* program : {"SteinbergPltPrimary",
+                                "SteinbergPltShadeWave",
+                                "SteinbergPltShadeGeometricOptics",
+                                "SteinbergPltMeasureCoherence"})
     {
         INFO(program);
         CHECK(library.contains(program) == true);
     }
     // shade.slang's include closure arrives with it.
-    for (const QString& source : {QStringLiteral("steinberg_yan_plt/main_shaders/primary.slang"),
-                                  QStringLiteral("steinberg_yan_plt/main_shaders/shade.slang"),
-                                  QStringLiteral("steinberg_yan_plt/main_shaders/hit_record.slang"),
-                                  QStringLiteral("steinberg_yan_plt/main_shaders/grating.slang"),
-                                  QStringLiteral("steinberg_yan_plt/main_shaders/spectrum.slang"),
-                                  QStringLiteral("steinberg_yan_plt/main_shaders/natural_light.slang")})
+    for (const QString& source : {QStringLiteral("steinberg_plt/main_shaders/primary.slang"),
+                                  QStringLiteral("steinberg_plt/main_shaders/shade.slang"),
+                                  QStringLiteral("steinberg_plt/main_shaders/hit_record.slang"),
+                                  QStringLiteral("steinberg_plt/main_shaders/grating.slang"),
+                                  QStringLiteral("steinberg_plt/main_shaders/spectrum.slang"),
+                                  QStringLiteral("steinberg_plt/main_shaders/natural_light.slang")})
     {
         INFO(source.toStdString());
         CHECK(document.GetDraft(source).isEmpty() == false);

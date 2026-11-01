@@ -3525,7 +3525,7 @@ TEST_CASE("The Veach and Guibas MIS output has less error than either sampling s
 
 namespace
 {
-// steinberg-yan-plt template tests. Thanks to Shlomi Steinberg and Ling-Qi Yan, "A Generic Framework for Physical
+// steinberg-plt template tests. Thanks to Shlomi Steinberg and Ling-Qi Yan, "A Generic Framework for Physical
 // Light Transport", ACM Transactions on Graphics 40(4), article 139, SIGGRAPH 2021,
 // https://doi.org/10.1145/3450626.3459791 : the template renders section 8.1's diffraction of natural light
 // (Definition 5.1) by a surface. These tests check that a small source's light is dispersed into a spectrum that
@@ -3534,12 +3534,12 @@ namespace
 // (section 5.1).
 
 /// Shade passes of the template in output order: wave optics (the color output), geometric optics, coherence.
-constexpr usize STEINBERG_YAN_OUTPUT_COUNT = 3;
+constexpr usize STEINBERG_PLT_OUTPUT_COUNT = 3;
 /// Index of the first shade pass; pass 0 records the primary hits.
-constexpr usize STEINBERG_YAN_FIRST_SHADE_PASS = 1;
-constexpr usize STEINBERG_YAN_WAVE = 0;
-constexpr usize STEINBERG_YAN_GEOMETRIC = 1;
-constexpr usize STEINBERG_YAN_COHERENCE = 2;
+constexpr usize STEINBERG_PLT_FIRST_SHADE_PASS = 1;
+constexpr usize STEINBERG_PLT_WAVE = 0;
+constexpr usize STEINBERG_PLT_GEOMETRIC = 1;
+constexpr usize STEINBERG_PLT_COHERENCE = 2;
 constexpr usize GRATING_ROOM_MATERIAL_COUNT = CORNELL_MATERIAL_COUNT + 1;
 /// White metal, whose Fresnel reflectance is one at every angle, at the smallest admitted roughness.
 constexpr uint32 GRATING_ROOM_GRATING = CORNELL_MATERIAL_COUNT;
@@ -3615,19 +3615,19 @@ struct GratingRoom final
 };
 
 /// Render frameCount frames of the template and read each output's running mean after the last one.
-void RenderSteinbergYanOutputs(PreparedGraph& inoutTemplate,
+void RenderSteinbergPltOutputs(PreparedGraph& inoutTemplate,
                                const GraphGpuFixture& fixture,
                                usize frameCount,
-                               StaticArray<Array<uint8>, STEINBERG_YAN_OUTPUT_COUNT>& outPixels)
+                               StaticArray<Array<uint8>, STEINBERG_PLT_OUTPUT_COUNT>& outPixels)
 {
-    REQUIRE(inoutTemplate.Plan.Passes.GetSize() == STEINBERG_YAN_FIRST_SHADE_PASS + STEINBERG_YAN_OUTPUT_COUNT);
+    REQUIRE(inoutTemplate.Plan.Passes.GetSize() == STEINBERG_PLT_FIRST_SHADE_PASS + STEINBERG_PLT_OUTPUT_COUNT);
     for (usize frame = 0; frame < frameCount; ++frame)
     {
         RenderFrame(inoutTemplate.Graph, fixture);
     }
-    for (usize output = 0; output < STEINBERG_YAN_OUTPUT_COUNT; ++output)
+    for (usize output = 0; output < STEINBERG_PLT_OUTPUT_COUNT; ++output)
     {
-        const uint32 resource = inoutTemplate.Plan.Passes[STEINBERG_YAN_FIRST_SHADE_PASS + output].Color;
+        const uint32 resource = inoutTemplate.Plan.Passes[STEINBERG_PLT_FIRST_SHADE_PASS + output].Color;
         REQUIRE(resource < inoutTemplate.Plan.Resources.GetSize());
         REQUIRE(inoutTemplate.Plan.Resources[resource].IsExported == 1);
         ReadExport(inoutTemplate.Graph, fixture, resource, inoutTemplate.Extent, outPixels[output]);
@@ -3690,34 +3690,33 @@ GratingSpectrum MeasureGratingSpectrum(const Array<uint8>& pixels)
 }
 } // namespace
 
-TEST_CASE("The Steinberg and Yan template disperses a small natural source into a spectrum that geometric optics "
+TEST_CASE("The Steinberg PLT template disperses a small natural source into a spectrum that geometric optics "
           "does not show",
-          "[render-graph][gpu][steinberg-yan][template]")
+          "[render-graph][gpu][steinberg-plt][template]")
 {
     GraphGpuFixture fixture;
     GratingRoom room(0);
     room.AddPointLight(GRATING_ROOM_SMALL_SOURCE_INTENSITY);
-    PreparedGraph graph(
-        fixture,
-        {LUDUS_RG3_STEINBERG_YAN_PLT_SMALL_SOURCE_DIRECTORY, "rg2_steinberg_yan_plt_small_source.lurgrt"},
-        room.Room,
-        1);
+    PreparedGraph graph(fixture,
+                        {LUDUS_RG3_STEINBERG_PLT_SMALL_SOURCE_DIRECTORY, "rg2_steinberg_plt_small_source.lurgrt"},
+                        room.Room,
+                        1);
     REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == true);
     for (usize pass = 0; pass < graph.Plan.Passes.GetSize(); ++pass)
     {
         INFO("pass " << pass);
         CHECK(graph.Plan.Passes[pass].Program == format::Technique::RayTracing);
-        CHECK((graph.Plan.Passes[pass].AccumulationSamples > 0) == (pass >= STEINBERG_YAN_FIRST_SHADE_PASS));
+        CHECK((graph.Plan.Passes[pass].AccumulationSamples > 0) == (pass >= STEINBERG_PLT_FIRST_SHADE_PASS));
         // The coherence radius is written linearly; the two radiance images are tone mapped.
         const bool isToneMapped =
-            pass >= STEINBERG_YAN_FIRST_SHADE_PASS && pass < STEINBERG_YAN_FIRST_SHADE_PASS + STEINBERG_YAN_COHERENCE;
+            pass >= STEINBERG_PLT_FIRST_SHADE_PASS && pass < STEINBERG_PLT_FIRST_SHADE_PASS + STEINBERG_PLT_COHERENCE;
         CHECK((graph.Plan.Passes[pass].ToneMappingExposure == 1) == isToneMapped);
     }
     constexpr usize FRAME_COUNT = 256;
-    StaticArray<Array<uint8>, STEINBERG_YAN_OUTPUT_COUNT> pixels;
-    RenderSteinbergYanOutputs(graph, fixture, FRAME_COUNT, pixels);
-    const GratingSpectrum wave = MeasureGratingSpectrum(pixels[STEINBERG_YAN_WAVE]);
-    const GratingSpectrum geometric = MeasureGratingSpectrum(pixels[STEINBERG_YAN_GEOMETRIC]);
+    StaticArray<Array<uint8>, STEINBERG_PLT_OUTPUT_COUNT> pixels;
+    RenderSteinbergPltOutputs(graph, fixture, FRAME_COUNT, pixels);
+    const GratingSpectrum wave = MeasureGratingSpectrum(pixels[STEINBERG_PLT_WAVE]);
+    const GratingSpectrum geometric = MeasureGratingSpectrum(pixels[STEINBERG_PLT_GEOMETRIC]);
     INFO("wave: saturation " << wave.MaximumSaturation << ", brightest " << static_cast<uint32>(wave.BrightestChannel)
                              << ", bluest row " << wave.BluestRow << ", reddest row " << wave.ReddestRow
                              << "; geometric: saturation " << geometric.MaximumSaturation << ", brightest "
@@ -3735,8 +3734,8 @@ TEST_CASE("The Steinberg and Yan template disperses a small natural source into 
     CHECK(geometric.MaximumSaturation < NEUTRAL_SATURATION);
 }
 
-TEST_CASE("A larger and so less coherent natural source blurs the Steinberg and Yan template's spectrum",
-          "[render-graph][gpu][steinberg-yan][template]")
+TEST_CASE("A larger and so less coherent natural source blurs the Steinberg PLT template's spectrum",
+          "[render-graph][gpu][steinberg-plt][template]")
 {
     // The paper's Fig. 8: interference colors are most visible under the most coherent light, from the smallest
     // source. The two variants differ only in PLT_POINT_SOURCE_RADIUS_MILLIMETERS, 20 and 200 mm. The larger source's
@@ -3744,8 +3743,8 @@ TEST_CASE("A larger and so less coherent natural source blurs the Steinberg and 
     GraphGpuFixture fixture;
     StaticArray<GratingSpectrum, 2> spectra{};
     const StaticArray<PackageLocation, 2> locations{{
-        {LUDUS_RG3_STEINBERG_YAN_PLT_SMALL_SOURCE_DIRECTORY, "rg2_steinberg_yan_plt_small_source.lurgrt"},
-        {LUDUS_RG3_STEINBERG_YAN_PLT_LARGE_SOURCE_DIRECTORY, "rg2_steinberg_yan_plt_large_source.lurgrt"},
+        {LUDUS_RG3_STEINBERG_PLT_SMALL_SOURCE_DIRECTORY, "rg2_steinberg_plt_small_source.lurgrt"},
+        {LUDUS_RG3_STEINBERG_PLT_LARGE_SOURCE_DIRECTORY, "rg2_steinberg_plt_large_source.lurgrt"},
     }};
     const StaticArray<float32, 2> radii{{GRATING_ROOM_SMALL_SOURCE_MILLIMETERS, GRATING_ROOM_LARGE_SOURCE_MILLIMETERS}};
     for (usize source = 0; source < spectra.GetSize(); ++source)
@@ -3754,9 +3753,9 @@ TEST_CASE("A larger and so less coherent natural source blurs the Steinberg and 
         room.AddPointLight(GRATING_ROOM_SMALL_SOURCE_INTENSITY * radii[source] / GRATING_ROOM_SMALL_SOURCE_MILLIMETERS);
         PreparedGraph graph(fixture, locations[source], room.Room, 1);
         constexpr usize FRAME_COUNT = 256;
-        StaticArray<Array<uint8>, STEINBERG_YAN_OUTPUT_COUNT> pixels;
-        RenderSteinbergYanOutputs(graph, fixture, FRAME_COUNT, pixels);
-        spectra[source] = MeasureGratingSpectrum(pixels[STEINBERG_YAN_WAVE]);
+        StaticArray<Array<uint8>, STEINBERG_PLT_OUTPUT_COUNT> pixels;
+        RenderSteinbergPltOutputs(graph, fixture, FRAME_COUNT, pixels);
+        spectra[source] = MeasureGratingSpectrum(pixels[STEINBERG_PLT_WAVE]);
     }
     INFO("20 mm: mean saturation " << spectra[0].MeanSaturation << ", brightest "
                                    << static_cast<uint32>(spectra[0].BrightestChannel) << "; 200 mm: mean saturation "
@@ -3769,8 +3768,8 @@ TEST_CASE("A larger and so less coherent natural source blurs the Steinberg and 
     CHECK(spectra[1].MeanSaturation < spectra[0].MeanSaturation - SATURATION_LOSS);
 }
 
-TEST_CASE("A flat grating looks the same in the Steinberg and Yan template's wave and geometric optics",
-          "[render-graph][gpu][steinberg-yan][template]")
+TEST_CASE("A flat grating looks the same in the Steinberg PLT template's wave and geometric optics",
+          "[render-graph][gpu][steinberg-plt][template]")
 {
     // With zero amplitude only the mirror order exists (J_0(0) = 1) and every facet is the mean surface, so both
     // passes reflect the same direction at the same wavelengths: only rounding of that direction differs. The flat
@@ -3789,17 +3788,17 @@ TEST_CASE("A flat grating looks the same in the Steinberg and Yan template's wav
         room.AddPointLight(GRATING_ROOM_SMALL_SOURCE_INTENSITY);
     }
     PreparedGraph graph(fixture,
-                        {LUDUS_RG3_STEINBERG_YAN_PLT_FLAT_DIRECTORY, "rg2_steinberg_yan_plt_flat.lurgrt"},
+                        {LUDUS_RG3_STEINBERG_PLT_FLAT_DIRECTORY, "rg2_steinberg_plt_flat.lurgrt"},
                         room.Room,
                         1);
     constexpr usize FRAME_COUNT = 128;
-    StaticArray<Array<uint8>, STEINBERG_YAN_OUTPUT_COUNT> pixels;
-    RenderSteinbergYanOutputs(graph, fixture, FRAME_COUNT, pixels);
-    const math::Vector3 wave = ComputeMeanRadiance(pixels[STEINBERG_YAN_WAVE]);
-    const math::Vector3 geometric = ComputeMeanRadiance(pixels[STEINBERG_YAN_GEOMETRIC]);
+    StaticArray<Array<uint8>, STEINBERG_PLT_OUTPUT_COUNT> pixels;
+    RenderSteinbergPltOutputs(graph, fixture, FRAME_COUNT, pixels);
+    const math::Vector3 wave = ComputeMeanRadiance(pixels[STEINBERG_PLT_WAVE]);
+    const math::Vector3 geometric = ComputeMeanRadiance(pixels[STEINBERG_PLT_GEOMETRIC]);
     constexpr uint8 CHANNEL_TOLERANCE = 2;
     const usize differingPixels =
-        CountDifferingPixels(pixels[STEINBERG_YAN_WAVE], pixels[STEINBERG_YAN_GEOMETRIC], CHANNEL_TOLERANCE);
+        CountDifferingPixels(pixels[STEINBERG_PLT_WAVE], pixels[STEINBERG_PLT_GEOMETRIC], CHANNEL_TOLERANCE);
     INFO("wave mean=" << wave.X << ',' << wave.Y << ',' << wave.Z << ", geometric mean=" << geometric.X << ','
                       << geometric.Y << ',' << geometric.Z << ", differing pixels=" << differingPixels);
     constexpr usize DIFFERING_PIXEL_DIVISOR = 1000;
@@ -3811,9 +3810,9 @@ TEST_CASE("A flat grating looks the same in the Steinberg and Yan template's wav
         constexpr usize MIRRORED_LIGHT_COLUMN = WIDTH / 2;
         constexpr usize MIRRORED_LIGHT_ROW = 19;
         const usize address = GetPixel(MIRRORED_LIGHT_COLUMN, MIRRORED_LIGHT_ROW);
-        const uint8 red = pixels[STEINBERG_YAN_WAVE][address];
-        const uint8 green = pixels[STEINBERG_YAN_WAVE][address + 1];
-        const uint8 blue = pixels[STEINBERG_YAN_WAVE][address + 2];
+        const uint8 red = pixels[STEINBERG_PLT_WAVE][address];
+        const uint8 green = pixels[STEINBERG_PLT_WAVE][address + 1];
+        const uint8 blue = pixels[STEINBERG_PLT_WAVE][address + 2];
         INFO("mirrored light " << static_cast<uint32>(red) << ',' << static_cast<uint32>(green) << ','
                                << static_cast<uint32>(blue));
         constexpr uint8 LIT_CHANNEL = 128;
@@ -3824,8 +3823,8 @@ TEST_CASE("A flat grating looks the same in the Steinberg and Yan template's wav
     }
 }
 
-TEST_CASE("The Steinberg and Yan template's coherence output reproduces the coherence radius of sunlight",
-          "[render-graph][gpu][steinberg-yan][template]")
+TEST_CASE("The Steinberg PLT template's coherence output reproduces the coherence radius of sunlight",
+          "[render-graph][gpu][steinberg-plt][template]")
 {
     // Section 5.1: a natural source of angular radius q0 gives light whose degree of coherence first vanishes at
     // r_c = 4.4934 / (k sin q0). The template's directional light is the sun (q0 = 0.004653 rad); the paper finds
@@ -3834,12 +3833,12 @@ TEST_CASE("The Steinberg and Yan template's coherence output reproduces the cohe
     GratingRoom room(0);
     room.AddFrontDirectionalLight();
     PreparedGraph graph(fixture,
-                        {LUDUS_RG3_STEINBERG_YAN_PLT_TEMPLATE_DIRECTORY, "rg2_steinberg_yan_plt_template.lurgrt"},
+                        {LUDUS_RG3_STEINBERG_PLT_TEMPLATE_DIRECTORY, "rg2_steinberg_plt_template.lurgrt"},
                         room.Room,
                         1);
     constexpr usize FRAME_COUNT = 4;
-    StaticArray<Array<uint8>, STEINBERG_YAN_OUTPUT_COUNT> pixels;
-    RenderSteinbergYanOutputs(graph, fixture, FRAME_COUNT, pixels);
+    StaticArray<Array<uint8>, STEINBERG_PLT_OUTPUT_COUNT> pixels;
+    RenderSteinbergPltOutputs(graph, fixture, FRAME_COUNT, pixels);
     constexpr float64 COHERENCE_ZERO = 4.49340945790906;
     constexpr float64 SUN_ANGULAR_RADIUS = .004653;
     constexpr float64 WAVELENGTH_METERS = 550e-9;
@@ -3854,7 +3853,7 @@ TEST_CASE("The Steinberg and Yan template's coherence output reproduces the cohe
     const usize wall = GetPixel(WIDTH / 2, HEIGHT / 2);
     constexpr usize FLOOR_ROW = 55;
     const usize floor = GetPixel(WIDTH / 2, FLOOR_ROW);
-    const Array<uint8>& coherence = pixels[STEINBERG_YAN_COHERENCE];
+    const Array<uint8>& coherence = pixels[STEINBERG_PLT_COHERENCE];
     INFO("coherence radius " << radiusMicrometers << " um, expected byte " << expected << ", wall "
                              << static_cast<uint32>(coherence[wall]) << ", floor "
                              << static_cast<uint32>(coherence[floor]));
