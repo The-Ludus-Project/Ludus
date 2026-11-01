@@ -691,7 +691,7 @@ REASONLESS_FAILURE_MESSAGE = (
     'LUDUS_SCENE_FAILURE_AUTHORED_FIRST, to name the failing check.')
 
 
-def reasonless_failure_diagnostics(programs, closures, snapshot):
+def reasonless_failure_diagnostics(closures, snapshot):
     """Warn at each authored `HasFailed = true`, located in its captured source.
 
     Such a write latches the failure colour without a reason (scene_shader.slang,
@@ -699,12 +699,15 @@ def reasonless_failure_diagnostics(programs, closures, snapshot):
     Engine helpers staged into the snapshot (`_ludus_ray/...`, `_ludus_visibility.slang`)
     are not authored and are skipped; FailSceneQuery itself sets the flag.
     The scan is lexical over comment-free captured sources: macros or aliases that
-    hide the write are not found. Each line is reported once, for the first program
-    (by id) whose closure reaches it. Bounded to MAX_SHADER_DIAGNOSTICS records.
+    hide the write are not found. closures maps every captured program, authored ray
+    callbacks included, to its sources; linked ray kernels replace the callbacks in the
+    build's program set, so the scan reads closures rather than that set. Each line is
+    reported once, for the first program (by id) whose closure reaches it. Bounded to
+    MAX_SHADER_DIAGNOSTICS records; past that, the last record counts the lines it omits.
     """
     owners = {}
-    for pid in sorted(programs):
-        for relative in closures.get(pid, ()):
+    for pid in sorted(closures):
+        for relative in closures[pid]:
             if relative in snapshot.files and not relative.split('/', 1)[0].startswith(STAGED_HELPER_PREFIX):
                 owners.setdefault(relative, pid)
     diagnostics = []
@@ -715,14 +718,18 @@ def reasonless_failure_diagnostics(programs, closures, snapshot):
             continue
         code = SHADER_COMMENT.sub(lambda match: re.sub(r'[^\n]', ' ', match[0]), text)
         for match in REASONLESS_FAILURE.finditer(code):
-            if len(diagnostics) == MAX_SHADER_DIAGNOSTICS:
-                return diagnostics
             line_start = code.rfind('\n', 0, match.start()) + 1
             diagnostics.append({
                 'severity': 'warning', 'code': 'RenderGraphBuildReasonlessFailure',
                 'message': REASONLESS_FAILURE_MESSAGE, 'program': owners[relative],
                 'location': {'source': relative, 'line': code.count('\n', 0, match.start()) + 1,
                              'column': match.start() - line_start + 1, 'length': match.end() - match.start()}})
+    if len(diagnostics) > MAX_SHADER_DIAGNOSTICS:
+        omitted = len(diagnostics) - (MAX_SHADER_DIAGNOSTICS - 1)
+        diagnostics = diagnostics[:MAX_SHADER_DIAGNOSTICS - 1] + [{
+            'severity': 'warning', 'code': 'RenderGraphBuildReasonlessFailure',
+            'message': f'{omitted} more lines set queries.HasFailed without a reason; fix the lines above and '
+                       'build again to list them.'}]
     return diagnostics
 
 
@@ -1262,7 +1269,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             report = {'package': str(generation), 'generation': generation_key, 'cache_hits': hits, 'cache_misses': misses,
                       'elapsed_seconds': time.monotonic() - started, 'counts': counts}
             # Warnings that do not reject the build; recomputed from sources, so cache hits report them too.
-            warnings = reasonless_failure_diagnostics(programs, closures, snapshot)
+            warnings = reasonless_failure_diagnostics(closures, snapshot)
             if warnings:
                 report['diagnostics'] = warnings
             atomic(output / 'build-report.json', encoded(report))
