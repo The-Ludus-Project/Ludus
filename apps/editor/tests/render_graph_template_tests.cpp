@@ -1814,6 +1814,83 @@ TEST_CASE("Steinberg PLT configuration imports its passes, shader closure and se
     RequireValidation(workspace);
 }
 
+TEST_CASE("Steinberg physical-optics template is created from the editor picker with wave, radiometric and "
+          "coherence outputs",
+          "[editor][render-graph][steinberg-physical-optics-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    workspace.show();
+    CreateGraphFromPicker(workspace, QStringLiteral("steinberg-physical-optics"));
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    for (const char* program : {"ShadeWave", "ShadeRadiometric", "MeasureCoherence"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    // The wave-optics image is exported first, so the viewport shows it by default. The coherence length is a
+    // linear measurement: it accumulates but is not tone mapped.
+    CHECK(root.indexOf("\"output\"") < root.indexOf("\"radiometricOutput\""));
+    CHECK(root.count("\"Accumulate\"") == 3);
+    CHECK(root.count("\"ToneMap\"") == 2);
+    CHECK(root.count("\"Export\"") == 3);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/wave_optics.slang")).contains("ScatterBeam") == true);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("PO_RADIATOR_AREA_SQUARE_MILLIMETERS") == true);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("Steinberg physical-optics configuration imports its passes, shader closure and settings on the root canvas",
+          "[editor][render-graph][steinberg-physical-optics-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Optics"),
+                                                 QStringLiteral("steinberg-physical-optics")) == true);
+    const QByteArray library = document.GetDraft(QStringLiteral("Optics.lurender.json"));
+    for (const char* program : {"SteinbergPhysicalOpticsPrimary",
+                                "SteinbergPhysicalOpticsShadeWave",
+                                "SteinbergPhysicalOpticsShadeRadiometric",
+                                "SteinbergPhysicalOpticsMeasureCoherence"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    // shade.slang's include closure arrives with it.
+    for (const QString& source : {QStringLiteral("steinberg_physical_optics/main_shaders/primary.slang"),
+                                  QStringLiteral("steinberg_physical_optics/main_shaders/shade.slang"),
+                                  QStringLiteral("steinberg_physical_optics/main_shaders/hit_record.slang"),
+                                  QStringLiteral("steinberg_physical_optics/main_shaders/wave_optics.slang"),
+                                  QStringLiteral("steinberg_physical_optics/main_shaders/spectrum.slang")})
+    {
+        INFO(source.toStdString());
+        CHECK(document.GetDraft(source).isEmpty() == false);
+    }
+    const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
+    for (const char* setting : {"PO_RADIATOR_AREA_SQUARE_MILLIMETERS",
+                                "PO_BEAM_SOLID_ANGLE_MICROSTERADIANS",
+                                "PO_SUN_COHERENCE_MICROMETERS",
+                                "PO_GRATING_PERIOD_NANOMETERS",
+                                "PO_CAMERA_POLARIZER",
+                                "PO_PATH_VERTICES",
+                                "PO_COHERENCE_DISPLAY_MICROMETERS"})
+    {
+        INFO(setting);
+        CHECK(manifest.contains(setting) == true);
+    }
+    ReplaceRasterSubgraph(document, QStringLiteral("Optics"));
+    REQUIRE(workspace.Save() == true);
+    RequireValidation(workspace);
+}
+
 TEST_CASE("Line-sampling template is created from the editor picker with Properties hidden",
           "[editor][render-graph][line-sampling-template]")
 {
