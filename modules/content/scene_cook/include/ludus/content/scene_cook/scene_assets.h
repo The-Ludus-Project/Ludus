@@ -129,6 +129,14 @@ struct AssetOptions final
     /// True selects CookMaterials; false explicitly selects the frozen Cook profile.
     /// Other source formats and an explicit CookOrNull override are unaffected.
     bool ShouldPreserveReferenceMaterials = true;
+    /// Optional latitude/longitude lighting image relative to the scene source directory.
+    /// Empty preserves source lighting. An existing authored environment rejects this
+    /// addition; analytic lights and emission are retained. The image must resolve
+    /// inside the source root, including symlinks, and participates in source digests.
+    /// The caller keeps this borrowed view alive for the duration of the call.
+    /// Linear HDR energy is retained with a bounded texture and radiance multiplier;
+    /// +Y is north, longitude zero is +X, increasing longitude turns toward +Z.
+    std::string_view EnvironmentFile;
 };
 
 /// @brief Result of PrepareImport: a complete candidate that is not yet published.

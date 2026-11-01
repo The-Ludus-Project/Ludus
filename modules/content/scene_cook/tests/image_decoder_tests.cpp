@@ -122,6 +122,43 @@ TEST_CASE("Radiance RGBE keeps linear energy within RGBE precision", "[scene_coo
           ImageResult::Invalid);
 }
 
+TEST_CASE("Companion lighting images use the caller's retained byte budget", "[scene_cook][images][environment]")
+{
+    const std::string bytes = ReadFileText(GetFixture("images/ramp.hdr"));
+    constexpr usize SOURCE_PIXELS = FIXTURE_WIDTH * FIXTURE_HEIGHT;
+    constexpr usize SOURCE_BYTES = SOURCE_PIXELS * LIGHTING_IMAGE_CHANNEL_COUNT * sizeof(float32);
+    constexpr usize REDUCED_BYTES = SOURCE_BYTES / 4;
+    DecodedLightingImage full;
+    DecodedLightingImage reduced;
+    std::string_view message;
+    REQUIRE(DecodeLightingImage("ramp.hdr", {AsBytes(bytes).data(), bytes.size()}, full, message, true, SOURCE_BYTES) ==
+            ImageResult::Ok);
+    REQUIRE(
+        DecodeLightingImage("ramp.hdr", {AsBytes(bytes).data(), bytes.size()}, reduced, message, true, REDUCED_BYTES) ==
+        ImageResult::Ok);
+    CHECK(full.Width == FIXTURE_WIDTH);
+    CHECK(full.Height == FIXTURE_HEIGHT);
+    CHECK(reduced.Width == FIXTURE_WIDTH / 2);
+    CHECK(reduced.Height == FIXTURE_HEIGHT / 2);
+    for (usize channel = 0; channel < LIGHTING_IMAGE_CHANNEL_COUNT; ++channel)
+    {
+        ludus::foundation::float64 fullSum = 0;
+        ludus::foundation::float64 reducedSum = 0;
+        for (usize sample = channel; sample < full.Rgb.GetSize(); sample += LIGHTING_IMAGE_CHANNEL_COUNT)
+        {
+            fullSum += static_cast<ludus::foundation::float64>(full.Rgb[sample]);
+        }
+        for (usize sample = channel; sample < reduced.Rgb.GetSize(); sample += LIGHTING_IMAGE_CHANNEL_COUNT)
+        {
+            reducedSum += static_cast<ludus::foundation::float64>(reduced.Rgb[sample]);
+        }
+        CHECK(std::abs(fullSum - reducedSum * 4) < 1e-5);
+    }
+    CHECK(DecodeLightingImage("ramp.hdr", {AsBytes(bytes).data(), bytes.size()}, reduced, message, true, 0) ==
+          ImageResult::Invalid);
+    CHECK(reduced.Width == FIXTURE_WIDTH / 2);
+}
+
 TEST_CASE("JPEG baseline and progressive match an independent decoder", "[scene_cook][images]")
 {
     // Reference pixels decoded by Pillow; IDCT rounding may differ by a few levels.

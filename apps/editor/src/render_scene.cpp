@@ -1366,7 +1366,6 @@ bool RenderScene::Merge(const RenderScene& authored,
     {
         return false;
     }
-    candidate.AuthoredLights = authored.AuthoredLights;
     candidate.RenderableBinding = authored.RenderableBinding;
     candidate.TransformBinding = authored.TransformBinding;
     if (authored.Cameras.isEmpty() == false)
@@ -1466,6 +1465,27 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
             surface.EmissionMapMean = textureMeans[surface.EmissionTexture];
         }
         candidate.Surfaces.append(surface);
+    }
+    for (const resources::SceneLight& source : scene.Lights)
+    {
+        if (source.IsEnabled == false)
+        {
+            continue;
+        }
+        if (candidate.AuthoredLights.Count == rr::MAX_DIRECT_LIGHTS)
+        {
+            return Fail(error, QStringLiteral("Cooked light table exceeds viewport capacity."));
+        }
+        rr::DirectLight& light = candidate.AuthoredLights.Lights[candidate.AuthoredLights.Count++];
+        light.SourceId = source.SourceId;
+        light.Kind = static_cast<rr::LightKind>(source.Kind);
+        light.Intensity = math::Max(source.IntensityRgb.X, math::Max(source.IntensityRgb.Y, source.IntensityRgb.Z));
+        light.Color = light.Intensity > 0 ? source.IntensityRgb / light.Intensity : math::Vector3{};
+        light.Position = source.PositionWorld;
+        light.Direction = source.DirectionWorld;
+        light.Range = source.Range;
+        light.InnerCos = source.InnerCos;
+        light.OuterCos = source.OuterCos;
     }
     const auto objects = level.value(QStringLiteral("objects")).toArray();
     if (objects.size() != static_cast<qsizetype>(scene.Objects.GetSize()))

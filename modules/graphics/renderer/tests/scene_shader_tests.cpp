@@ -5,6 +5,7 @@
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
+#include <ludus/graphics/renderer/environment.hpp>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -311,6 +312,29 @@ TEST_CASE("HDR environments are copied and mesh power resolves using placed area
     CHECK(renderer::ResolveMeshEmissionPower({1, 1, 1}, 1, 0, false, emission) ==
           rhi::RasterStatus::InvalidDescription);
     CHECK(math::Abs(emission.X - .5F) < 1e-6F);
+}
+
+TEST_CASE("Factored HDR peaks use the environment bound in shared reference scene preparation",
+          "[scene-shader][environment]")
+{
+    SceneFixture fixture;
+    math::Vector3 pixel{7872, 1, 2};
+    fixture.Scene.Inputs.Environment = {16, 16, 16};
+    fixture.Scene.Inputs.EnvironmentWidth = 1;
+    fixture.Scene.Inputs.EnvironmentHeight = 1;
+    fixture.Scene.Inputs.EnvironmentPixels = {&pixel, 1};
+    core::UniquePtr<internal::ReferenceJob> job;
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(job->EnvironmentOrNull != nullptr);
+    CHECK(job->EnvironmentOrNull->Pixels[0].X == 125952);
+    CHECK(job->EnvironmentOrNull->Pixels[0].Y == 16);
+    CHECK(job->EnvironmentOrNull->Pixels[0].Z == 32);
+    job.Reset();
+    pixel.X = renderer::MAX_ENVIRONMENT_RADIANCE;
+    CHECK(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+          rhi::RasterStatus::InvalidDescription);
+    CHECK(job.Get() == nullptr);
 }
 
 TEST_CASE("Scene bundle selection retains geometry and omits unrequested resources", "[scene-shader][bundle]")

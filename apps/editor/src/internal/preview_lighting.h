@@ -186,27 +186,7 @@ BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs, 
     const float32 radius = math::Max(scene.Radius, .1F);
     result.Clusters.Bounds = {scene.Center - math::Vector3{radius, radius, radius},
                               scene.Center + math::Vector3{radius, radius, radius}};
-    for (const resources::SceneLight& source : scene.Definition->Lights)
-    {
-        if (source.IsEnabled == false)
-        {
-            continue;
-        }
-        if (result.Lights.Count == format::MAX_LIGHTS)
-        {
-            return rhi::RasterStatus::CapacityExceeded;
-        }
-        rr::DirectLight& light = result.Lights.Lights[result.Lights.Count++];
-        light.SourceId = source.SourceId;
-        light.Kind = static_cast<rr::LightKind>(source.Kind);
-        light.Intensity = math::Max(source.IntensityRgb.X, math::Max(source.IntensityRgb.Y, source.IntensityRgb.Z));
-        light.Color = light.Intensity > 0 ? source.IntensityRgb / light.Intensity : math::Vector3{};
-        light.Position = source.PositionWorld;
-        light.Direction = source.DirectionWorld;
-        light.Range = source.Range;
-        light.InnerCos = source.InnerCos;
-        light.OuterCos = source.OuterCos;
-    }
+    result.Lights = scene.AuthoredLights;
     for (usize objectIndex = 0; objectIndex < scene.Definition->Objects.GetSize(); ++objectIndex)
     {
         const PreviewObject& object = scene.Objects[static_cast<int32>(objectIndex)];

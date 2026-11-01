@@ -290,7 +290,8 @@ rhi::RasterStatus EnvironmentMap::Initialize(rhi::DeviceHandle device,
     {
         const math::Vector4 pixel = description.PixelsOrNull[i];
         if (math::IsFinite(pixel.X) == false || math::IsFinite(pixel.Y) == false || math::IsFinite(pixel.Z) == false ||
-            pixel.X < 0 || pixel.Y < 0 || pixel.Z < 0 || pixel.X > 1e12F || pixel.Y > 1e12F || pixel.Z > 1e12F)
+            pixel.X < 0 || pixel.Y < 0 || pixel.Z < 0 || pixel.X > MAX_ENVIRONMENT_RADIANCE ||
+            pixel.Y > MAX_ENVIRONMENT_RADIANCE || pixel.Z > MAX_ENVIRONMENT_RADIANCE)
         {
             return Status::InvalidDescription;
         }

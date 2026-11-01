@@ -3945,6 +3945,7 @@ struct RoutedCook final
     BestEffortOptions importOptions;
     importOptions.IsDryRun = isDryRun;
     importOptions.JobsOrNull = options.JobsOrNull;
+    importOptions.EnvironmentFile = options.EnvironmentFile;
     BestEffortResult imported;
     CookError cookError;
     if (ImportSceneBestEffort(entryPath.GetView(), importOptions, imported, cookError, options.CancelOrNull) == false)
@@ -3975,6 +3976,10 @@ struct RoutedCook final
         tree.SetMember(inputs, imported.Inputs[i].GetView(), tree.AddString(digest.View()));
     }
     tree.SetMember(root, "inputs", inputs);
+    if (options.EnvironmentFile.empty() == false)
+    {
+        tree.SetMember(root, "environment_file", tree.AddString(options.EnvironmentFile));
+    }
     HexDigest bundleDigest;
     ComputeHexDigest(GetSpan(imported.Bundle), bundleDigest);
     tree.SetMember(root, "bundle_sha256", tree.AddString(bundleDigest.View()));
@@ -4009,6 +4014,12 @@ struct RoutedCook final
                                     Failure& inoutFailure) noexcept
 {
     const std::string_view entry = options.SourceEntry;
+    if (options.EnvironmentFile.empty() == false &&
+        (options.CookOrNull != nullptr || entry.empty() == true || entry == REFERENCE_ENTRY))
+    {
+        return inoutFailure.Fail(AssetErrorCode::UnsupportedScene,
+                                 "Explicit environments require a best-effort scene entry");
+    }
     if (options.CookOrNull != nullptr || entry.empty() == true || entry == REFERENCE_ENTRY)
     {
         CookError cookError;
@@ -4039,8 +4050,8 @@ struct RoutedCook final
     return CookBestEffortSource(source, entry, isDryRun, options, outCook, inoutFailure);
 }
 
-/// SHA-256 of the canonical `inputs` object of a cooked manifest: the token a
-/// PreviewImport response carries as `source_digest` and a confirmed import checks.
+/// Approval token: hash canonical inputs, followed by the canonical selected
+/// environment string when present. Source-only imports retain their legacy token.
 [[nodiscard]] bool
 ComputeSourceDigest(const JsonTree& manifest, JsonIndex root, HexDigest& outHex, Failure& inoutFailure) noexcept
 {
@@ -4053,6 +4064,21 @@ ComputeSourceDigest(const JsonTree& manifest, JsonIndex root, HexDigest& outHex,
     if (WriteCanonical(manifest, inputs, bytes, inoutFailure) == false)
     {
         return false;
+    }
+    const JsonIndex environment = manifest.GetMember(root, "environment_file");
+    if (environment != NO_JSON_NODE)
+    {
+        Array<uint8> environmentBytes;
+        if (WriteCanonical(manifest, environment, environmentBytes, inoutFailure) == false)
+        {
+            return false;
+        }
+        ByteWriter writer(bytes);
+        writer.AppendBytes(GetSpan(environmentBytes));
+        if (writer.IsOk() == false)
+        {
+            return inoutFailure.FailOutOfMemory();
+        }
     }
     ComputeHexDigest(GetSpan(bytes), outHex);
     return true;

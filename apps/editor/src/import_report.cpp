@@ -47,10 +47,25 @@ constexpr foundation::int64 UNRECORDED_SCENE_FORMAT_VERSION = format::VERSION_4;
                           FormatCount(source, QStringLiteral("vertices")),
                           FormatCount(source, QStringLiteral("materials")),
                           FormatCount(source, QStringLiteral("textures"))));
-    lines.append(QStringLiteral("Lights: %1 area (emissive), %2 infinite (environment fallback), %3 skipped")
+    lines.append(QStringLiteral("Source lights: %1 area (emissive), %2 environment, %3 punctual/other")
                      .arg(FormatCount(lights, QStringLiteral("area")),
                           FormatCount(lights, QStringLiteral("infinite")),
                           QString::number(otherLights)));
+    const QJsonObject environment = report.value(QStringLiteral("environment")).toObject();
+    const QString environmentFile = environment.value(QStringLiteral("file")).toString();
+    if (environment.isEmpty() == true)
+    {
+        lines.append(QStringLiteral("Environment: none"));
+    }
+    else if (environmentFile.isEmpty() == true)
+    {
+        lines.append(QStringLiteral("Environment: authored constant radiance"));
+    }
+    else
+    {
+        lines.append(QStringLiteral("Environment: %1 (%2)")
+                         .arg(environmentFile, environment.value(QStringLiteral("fallback")).toString()));
+    }
     const foundation::int64 vertices = cooked.value(QStringLiteral("vertices")).toInteger();
     const foundation::int64 bytes = cooked.value(QStringLiteral("bundle_bytes")).toInteger();
     // Runtime limits of the cooked LUSCN version, shown beside the cooked counts.

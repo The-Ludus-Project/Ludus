@@ -1675,7 +1675,9 @@ void WriteReport(const SceneIr& scene,
     {
         json.BeginObject();
         json.WriteKey("fallback");
-        json.WriteString("Rec709 photometric proxy; PBRT spectral/equal-area conversion");
+        json.WriteString(scene.Environment.IsEquirectangular == true
+                             ? "Explicit latitude/longitude environment; linear HDR radiance retained"
+                             : "Rec709 photometric proxy; PBRT spectral/equal-area conversion");
         json.WriteKey("radiance");
         json.BeginArray();
         for (const float64 channel : scene.Environment.Radiance)
@@ -2021,6 +2023,10 @@ void ResetResult(BestEffortResult& outResult) noexcept
     SceneIr& scene = inoutScene;
     DiagnosticLog& log = inoutLog;
     CookPlan plan;
+    if (status == Status::Ok && options.EnvironmentFile.empty() == false)
+    {
+        status = ApplyCompanionEnvironment(options.EnvironmentFile, root.GetView(), scene, log);
+    }
     if (status == Status::Ok)
     {
         status = GenerateMissingTangents(scene, log, cancelOrNull);

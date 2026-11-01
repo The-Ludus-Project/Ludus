@@ -25,6 +25,12 @@ struct LightingCookDescription final
     usize EnvironmentByteBudget = scene_format::MAX_BUNDLE_BYTES;
     bool ShouldDecodeEnvironment = true;
 };
+// Validate an explicit source-root-relative latitude/longitude environment selection.
+// An authored environment or escaping/missing path rejects without changing the scene.
+[[nodiscard]] Status ApplyCompanionEnvironment(std::string_view file,
+                                               std::string_view root,
+                                               SceneIr& inoutScene,
+                                               DiagnosticLog& inoutLog) noexcept;
 // Preserve authored energy in the frozen Rec709 photometric profile. Scene data
 // and images remain caller-owned; failures preserve outLighting.
 [[nodiscard]] Status CookAuthoredLighting(const SceneIr& scene,

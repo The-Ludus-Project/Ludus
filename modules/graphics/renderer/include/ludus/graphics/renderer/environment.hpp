@@ -12,6 +12,9 @@ namespace internal
 struct EnvironmentData;
 struct Access;
 } // namespace internal
+/// Maximum reconstructed linear HDR environment radiance per RGB channel.
+/// Separate from bounded material emission and constant-environment multipliers.
+inline constexpr ludus::foundation::float32 MAX_ENVIRONMENT_RADIANCE = 1e12F;
 /// Borrowed linear HDR latitude/longitude image; Initialize copies all pixels.
 /// +Y is north, longitude zero is +X, increasing longitude turns toward +Z.
 struct EnvironmentDescription final

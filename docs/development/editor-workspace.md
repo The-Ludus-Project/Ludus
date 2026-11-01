@@ -1108,6 +1108,12 @@ The World hierarchy scrolls when the available dock height cannot fit its entity
 list and commands. **Import report**, beside the World path, opens the full stored
 report in the scrollable inspector; opening it does not reduce viewport height.
 The import confirmation preview remains visible before an import is accepted.
+**Choose environment…** selects a latitude/longitude lighting image inside the
+scene's source folder and reruns that preview. **Use source lighting** clears the
+selection. The accepted cooked World retains the selected lighting. For Intel
+Sponza, select its bundled `textures/kloppenheim_05_4k.hdr`; its glTF's punctual
+lights have zero intensity. See [companion lighting environments](best-effort-scene-import.md#selecting-a-companion-lighting-environment)
+for orientation, provenance, reimport and raster visibility limits.
 
 Before a scene is created or imported, the viewport shows a navigable coordinate
 grid using the editor camera, without starting a GPU session or adding World

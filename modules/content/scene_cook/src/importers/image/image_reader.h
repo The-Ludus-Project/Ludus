@@ -7,6 +7,7 @@
 // (HDR sources are clamped and sRGB-encoded). EXIF orientation and embedded ICC
 // profiles are ignored. Lighting output keeps linear float RGB.
 
+#include <ludus/content/scene_format/limits.h>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -50,6 +51,8 @@ struct DecodedImage final
 /// Lighting texels retain linear HDR values; no display encoding or tone mapping.
 struct DecodedLightingImage final
 {
+    /// Multiply RGB samples by this value to reconstruct factored HDR radiance.
+    float32 RadianceScale = 1;
     uint32 Width = 0;
     uint32 Height = 0;
     /// Width * Height * LIGHTING_IMAGE_CHANNEL_COUNT samples, top row first.
@@ -75,10 +78,18 @@ enum class ImageResult : uint8
                                       std::string_view& outMessage) noexcept;
 /// PFM lighting preserves finite nonnegative float RGB and file scale, north row first.
 /// Radiance and OpenEXR lighting keep linear float RGB and are box-halved until they fit
-/// MAX_ENVIRONMENT_DIMENSION and the bundle byte budget. PNG/TGA/JPEG lighting is
+/// MAX_ENVIRONMENT_DIMENSION and byteBudget retained RGB bytes. The default
+/// preserves the legacy reference-profile budget. Budgets smaller than one RGB
+/// texel reject without replacing outImage. When shouldFactorRadiance
+/// is true, high peaks use RadianceScale and bounded texels instead of clipping;
+/// their product preserves linear radiance within binary32 precision. Both factors
+/// must fit the existing scene profile. False retains the frozen rejection policy.
+/// PNG/TGA/JPEG lighting is
 /// decoded from sRGB. Failure preserves outImage.
 [[nodiscard]] ImageResult DecodeLightingImage(std::string_view fileName,
                                               foundation::BorrowedView<const uint8> data,
                                               DecodedLightingImage& outImage,
-                                              std::string_view& outMessage) noexcept;
+                                              std::string_view& outMessage,
+                                              bool shouldFactorRadiance = false,
+                                              usize byteBudget = scene_format::MAX_BUNDLE_BYTES) noexcept;
 } // namespace ludus::content::scene_cook::importers
