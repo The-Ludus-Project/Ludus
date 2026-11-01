@@ -73,7 +73,7 @@ uint LoadVisibilitySurfaceWithoutCapture(SceneContext scene,
     if (inoutQueries.HasFailed == true || any(launch.ExtentPixel == 0) ||
         any(launch.PositionPixel >= launch.ExtentPixel))
     {
-        inoutQueries.HasFailed = true;
+        FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
         return SCENE_QUERY_FAILURE;
     }
     uint4 bytes = uint4(round(saturate(GraphVisibility.Load(int3(launch.PositionPixel, 0))) * VISIBILITY_BYTE_SCALE));
@@ -84,7 +84,7 @@ uint LoadVisibilitySurfaceWithoutCapture(SceneContext scene,
     float depth = GraphVisibilityDepth.Load(int3(launch.PositionPixel, 0));
     if (triangleIndex == SCENE_INVALID_INDEX || isfinite(depth) == false || depth < 0 || depth > 1)
     {
-        inoutQueries.HasFailed = true;
+        FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_STORED_RECORD);
         return SCENE_QUERY_FAILURE;
     }
     float2 positionUv = (float2(launch.PositionPixel) + 0.5) / float2(launch.ExtentPixel);
@@ -92,7 +92,7 @@ uint LoadVisibilitySurfaceWithoutCapture(SceneContext scene,
         mul(launch.CameraClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, depth, 1));
     if (any(isfinite(positionHomogeneousWorld) == false) || positionHomogeneousWorld.w == 0)
     {
-        inoutQueries.HasFailed = true;
+        FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_STORED_RECORD);
         return SCENE_QUERY_FAILURE;
     }
     float3 positionWorld = positionHomogeneousWorld.xyz / positionHomogeneousWorld.w;
@@ -109,7 +109,7 @@ uint LoadVisibilitySurfaceWithoutCapture(SceneContext scene,
         any(barycentric < -VISIBILITY_BARYCENTRIC_TOLERANCE) ||
         barycentric.x + barycentric.y > 1 + VISIBILITY_BARYCENTRIC_TOLERANCE)
     {
-        inoutQueries.HasFailed = true;
+        FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_STORED_RECORD);
         return SCENE_QUERY_FAILURE;
     }
     barycentric = max(barycentric, 0);
@@ -120,7 +120,7 @@ uint LoadVisibilitySurfaceWithoutCapture(SceneContext scene,
     outHit.IsFrontFace = dot(outHit.GeometricNormalWorld, -launch.CameraRay.DirectionWorld) > 0;
     if (outHit.IsValid == false || isfinite(outHit.DistanceWorld) == false || outHit.DistanceWorld < 0)
     {
-        inoutQueries.HasFailed = true;
+        FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_STORED_RECORD);
         return SCENE_QUERY_FAILURE;
     }
     return SCENE_QUERY_SURFACE;

@@ -39,14 +39,14 @@ bool TrySelectInitialEmitterAlias(SceneContext scene,
         const float weight = ComputeSceneEmitterWeight(scene, emitter, receiver);
         if (isfinite(weight) == false || weight < 0)
         {
-            queries.HasFailed = true;
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
             return false;
         }
         weights[emitter] = weight;
         totalWeight += weight;
         if (isfinite(totalWeight) == false)
         {
-            queries.HasFailed = true;
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
             return false;
         }
     }
@@ -150,7 +150,7 @@ bool TrySelectInitialEmitters(SceneContext scene,
         const float weight = ComputeSceneEmitterWeight(scene, emitter, receiver);
         if (isfinite(weight) == false || weight < 0)
         {
-            queries.HasFailed = true;
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
             return false;
         }
         if (weight == 0)
@@ -160,7 +160,7 @@ bool TrySelectInitialEmitters(SceneContext scene,
         totalWeight += weight;
         if (isfinite(totalWeight) == false)
         {
-            queries.HasFailed = true;
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
             return false;
         }
         const float replacementProbability = weight / totalWeight;

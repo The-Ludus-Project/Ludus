@@ -10,7 +10,7 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext i
     MaterialSample material = EvaluateMaterial(scene, hit);
     if (material.IsValid == false)
     {
-        inoutQueries.HasFailed = true;
+        FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return float3(0);
     }
     // An editable, base-color-tinted ideal reflection; no roughness/metallic BRDF is evaluated.

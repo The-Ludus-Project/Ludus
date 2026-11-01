@@ -224,7 +224,7 @@ bool FindLineProposal(SceneContext scene,
                             GetLineAlongWorld(triangle, direction),
                             outProposal.Chord) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
         return false;
     }
     if (IsEmitterChordQueryable(outProposal.Chord) == false)
@@ -368,7 +368,7 @@ bool EvaluateLineProposal(SceneContext scene,
     SurfaceHit endpoint = GetSurfaceHit(scene, proposal.Chord.Segment.TriangleIndex, barycentric);
     if (endpoint.IsValid == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return false;
     }
     float3 offsetWorld = endpoint.PositionWorld - receiver.PositionWorld;
@@ -440,7 +440,7 @@ float FindLineDensity(SceneContext scene,
     EmitterChord chord;
     if (TryMakeEmitterChord(triangle, barycentric, GetLineAlongWorld(triangle, direction), chord) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
         return 0;
     }
     if (IsEmitterChordQueryable(chord) == false)

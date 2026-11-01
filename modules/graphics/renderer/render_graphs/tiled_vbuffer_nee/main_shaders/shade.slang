@@ -66,7 +66,7 @@ bool TrySampleEmitterTriangle(SceneContext scene,
         const TriangleData triangle = GetEmitterTriangle(scene, emitterIndex, i);
         if (triangle.IsValid == false)
         {
-            queries.HasFailed = true;
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
             return false;
         }
         if (triangle.AreaWorld <= 0.0f)
@@ -112,7 +112,7 @@ float3 SampleLightDirectLighting(SceneContext scene,
     const SurfaceHit endpoint = GetSurfaceHit(scene, triangle.TriangleIndex, barycentric);
     if (endpoint.IsValid == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return float3(0);
     }
     const float3 offsetWorld = endpoint.PositionWorld - receiver.PositionWorld;
@@ -266,7 +266,7 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext i
         SampleBsdfDirectLighting(scene, hit, material, shadingNormalWorld, viewDirectionWorld, tileIndex, inoutQueries);
     if (all(isfinite(radiance)) == false || any(radiance < 0.0f) == true)
     {
-        inoutQueries.HasFailed = true;
+        FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
         return float3(0);
     }
     // Complementary MIS estimates are summed, not averaged.

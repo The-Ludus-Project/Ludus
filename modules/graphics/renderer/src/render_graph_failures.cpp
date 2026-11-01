@@ -27,6 +27,10 @@ static_assert(ToCode(RenderGraphFailureReason::Traversal) == LUDUS_SCENE_FAILURE
 static_assert(ToCode(RenderGraphFailureReason::RandomExhausted) == LUDUS_SCENE_FAILURE_RANDOM_EXHAUSTED);
 static_assert(ToCode(RenderGraphFailureReason::InvalidArgument) == LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
 static_assert(ToCode(RenderGraphFailureReason::LightSample) == LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
+static_assert(ToCode(RenderGraphFailureReason::StorageCapacity) == LUDUS_SCENE_FAILURE_STORAGE_CAPACITY);
+static_assert(ToCode(RenderGraphFailureReason::StoredRecord) == LUDUS_SCENE_FAILURE_STORED_RECORD);
+static_assert(ToCode(RenderGraphFailureReason::SceneData) == LUDUS_SCENE_FAILURE_SCENE_DATA);
+static_assert(ToCode(RenderGraphFailureReason::InvalidWeight) == LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
 static_assert(RENDER_GRAPH_FAILURE_AUTHORED_FIRST == LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
 static_assert(MAX_RENDER_GRAPH_FAILURE_REASONS == LUDUS_SCENE_FAILURE_REASON_COUNT);
 static_assert(LUDUS_GRAPH_FAILURE_BYTES == MAX_RENDER_GRAPH_FAILURE_REASONS * sizeof(uint32));
@@ -45,7 +49,8 @@ const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
     switch (static_cast<RenderGraphFailureReason>(reason))
     {
         case RenderGraphFailureReason::Unspecified:
-            return "A shader set queries.HasFailed without a reason. Call FailSceneQuery with a reason to name the "
+            return "A shader set queries.HasFailed without a reason. Building the graph lists each such line as a "
+                   "RenderGraphBuildReasonlessFailure warning; call FailSceneQuery there with a reason to name the "
                    "failing check.";
         case RenderGraphFailureReason::InvalidRadiance:
             return "A sample returned non-finite or negative radiance, such as a division by a zero probability.";
@@ -71,6 +76,18 @@ const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
             return "A scene function received an out-of-range or degenerate input, such as an empty sampling range.";
         case RenderGraphFailureReason::LightSample:
             return "No light could be selected or sampled for a shadow ray.";
+        case RenderGraphFailureReason::StorageCapacity:
+            return "A graph storage buffer, such as hit records or reservoirs, has fewer entries than the pixels that "
+                   "use it. Size it from the render size.";
+        case RenderGraphFailureReason::StoredRecord:
+            return "A pass read per-pixel data (a hit record, reservoir or visibility-buffer texel) that an earlier "
+                   "pass did not write for this pixel, frame or scene. Check that its producer runs first.";
+        case RenderGraphFailureReason::SceneData:
+            return "A scene lookup returned an invalid triangle, surface or material, such as a degenerate triangle "
+                   "or a zero shading normal.";
+        case RenderGraphFailureReason::InvalidWeight:
+            return "A sampling weight, probability or PDF was non-finite or negative, or zero where it must be "
+                   "positive.";
     }
     return "An unrecognized failure reason; the renderer may be older than the graph.";
 }

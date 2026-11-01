@@ -156,7 +156,7 @@ bool ProposeLineU(SceneContext scene,
                             triangle.Position1World - triangle.Position0World,
                             outProposal.Chord) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
         return false;
     }
     if (IsEmitterChordQueryable(outProposal.Chord) == false)
@@ -248,7 +248,7 @@ float3 EstimateLineProposal(SceneContext scene,
                                         GetChordBarycentric(proposal.Chord, proposal.DrawnParameter));
     if (endpoint.IsValid == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return float3(0);
     }
     float3 offsetWorld = endpoint.PositionWorld - receiver.PositionWorld;

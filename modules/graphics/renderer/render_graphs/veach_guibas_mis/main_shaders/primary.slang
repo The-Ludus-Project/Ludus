@@ -6,7 +6,7 @@ float3 TracePrimaryHit(SceneContext scene, RayLaunch launch, inout RayQueryConte
 {
     if (HasHitRecordCapacity(launch) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_STORAGE_CAPACITY);
         return float3(0);
     }
     HitRecord record = (HitRecord)0;

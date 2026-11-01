@@ -135,7 +135,8 @@ void RenderGraphDiagnostics::SetResult(const RenderGraphJobResult& result)
 {
     Reset();
     mResult = result;
-    if (result.IsSuccessful == false && result.IsCancelled == false)
+    // A successful build's warnings are navigable problems too; its informational row 0 has no severity.
+    if (result.IsCancelled == false)
     {
         const int32 count = result.GetDiagnosticCount();
         const int32 first = result.Diagnostics.isEmpty() == false && count == result.Diagnostics.size() + 1 ? 1 : 0;

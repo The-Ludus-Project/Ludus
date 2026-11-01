@@ -255,8 +255,11 @@ void PaintStatistics(QPainter& inoutPainter,
         text);
     inoutPainter.restore();
 }
-/// Shorten each line of an overlay to fit maxWidth (the viewport minus margins), keeping both
-/// ends so a long path still shows its file name and line. A non-positive maxWidth keeps text.
+} // namespace
+
+/// Fit each line of an overlay to maxWidth (the viewport minus margins): wrap a sentence at spaces, so
+/// an explanation stays whole, and shorten only a single word wider than the panel, keeping both ends
+/// so a long path still shows its file name and line. A non-positive maxWidth keeps text.
 QString FitOverlayText(const QString& text, qreal maxWidth)
 {
     const qreal available = maxWidth - 2 * (STATISTICS_MARGIN + STATISTICS_PADDING);
@@ -265,13 +268,28 @@ QString FitOverlayText(const QString& text, qreal maxWidth)
         return text;
     }
     const QFontMetricsF metrics(GetStatisticsFont());
-    QStringList lines = text.split(QLatin1Char('\n'));
-    for (QString& line : lines)
+    QStringList fitted;
+    for (const QString& line : text.split(QLatin1Char('\n')))
     {
-        line = metrics.elidedText(line, Qt::ElideMiddle, available);
+        QString current;
+        for (const QString& word : line.split(QLatin1Char(' ')))
+        {
+            const QString candidate = current.isEmpty() == true ? word : current + QLatin1Char(' ') + word;
+            if (current.isEmpty() == false && metrics.horizontalAdvance(candidate) > available)
+            {
+                fitted.append(current);
+                current = metrics.elidedText(word, Qt::ElideMiddle, available);
+                continue;
+            }
+            current = metrics.elidedText(candidate, Qt::ElideMiddle, available);
+        }
+        fitted.append(current);
     }
-    return lines.join(QLatin1Char('\n'));
+    return fitted.join(QLatin1Char('\n'));
 }
+
+namespace
+{
 /// Top-left of the live shader status panel: below the statistics panel when it is shown.
 QPointF GetShaderStatusOrigin(const QString& statisticsText)
 {

@@ -3604,12 +3604,23 @@ sentence.
 | Traversal | The traversal could not finish, such as a full BVH stack. |
 | Random stream exhausted, invalid argument, light sample | A scene function rejected its input or ran out of random dimensions. |
 | Invalid radiance | A sample returned non-finite or negative radiance. |
+| Storage capacity | A graph storage buffer, such as hit records or reservoirs, has fewer entries than the pixels that use it. |
+| Stored record | A pass read a hit record, reservoir or visibility-buffer texel that an earlier pass did not write for this pixel, frame or scene. |
+| Scene data | A scene lookup returned an invalid triangle, surface or material. |
+| Invalid weight | A sampling weight, probability or PDF was non-finite or negative, or zero where it must be positive. |
 | Unspecified | A shader set `queries.HasFailed` directly. |
 
 Name your own checks with `FailSceneQuery(queries, reason)` instead of setting
 `HasFailed`. Use a scene interface reason from `scene_shader_layout.h`
 (`LUDUS_SCENE_FAILURE_*`), or your own from `LUDUS_SCENE_FAILURE_AUTHORED_FIRST`
-(32) to 63. The first reason of an invocation is kept.
+(32) to 63. The first reason of an invocation is kept. The built-in templates
+name every check this way.
+
+A build warns at each authored `HasFailed = true` with a
+`RenderGraphBuildReasonlessFailure` row in the Error List, located at its line,
+and marks the line in the Source view. The build still succeeds. Replace each
+one with `FailSceneQuery` so its pixels name their check. The check is lexical,
+so a write hidden behind a macro or a differently named context is not found.
 
 ```slang
 if (lightCount * 2 > queries.MaximumVisibilityQueries)

@@ -40,7 +40,7 @@ float3 TracePixel(SceneContext scene, RayLaunch launch, inout RayQueryContext qu
 {
     if (scene.Version != SCENE_INTERFACE_VERSION)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INTERFACE_VERSION);
         return float3(0);
     }
     // Pixel centers keep this minimal template deterministic, without accumulation or random draws.
@@ -70,7 +70,7 @@ float3 TracePixel(SceneContext scene, RayLaunch launch, inout RayQueryContext qu
     MaterialSample material = EvaluateMaterial(scene, hit);
     if (hit.IsValid == false || material.IsValid == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return float3(0);
     }
     // Minimal unlit shading, showing authored materials without inventing scene lights.
