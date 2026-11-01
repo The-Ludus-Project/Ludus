@@ -2431,6 +2431,167 @@ Evidence:
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/slice_sampling_luminaire/main.lurender.json).
 
+### Render partially coherent diffraction
+
+The **Steinberg — partially coherent diffraction** template
+(`steinberg-plt`) renders surface diffraction of natural light with the
+framework of Shlomi Steinberg and Ling-Qi Yan,
+[*A Generic Framework for Physical Light Transport*, ACM TOG 40(4), article 139, SIGGRAPH 2021](https://doi.org/10.1145/3450626.3459791).
+In that framework light carries two-point spatial coherence, and a light source's
+size sets how coherent its light is. A diffracting surface's colors depend on that
+coherence: a small source gives a sharp spectrum and a large one blurs it. The
+template follows the paper's own renderings (§8.1, §8.4). Smooth metals become
+sinusoidal gratings shaded with the paper's Eq. (42), and every other surface is
+shaded classically. Create it from **New Render Graph → Template**, or with the CLI:
+
+```bash
+ludus render-graph new graphs/Plt --template steinberg-plt --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. The package requires a native Metal or Vulkan ray
+profile; a `wgsl`-only package is rejected with a `Capability` diagnostic.
+**Apply Configuration Template...** and Quick Add also offer the `SteinbergPlt`
+configuration. It has `scene`, `view` and `color` inputs, a required `color` output
+and optional `geometric` and `coherence` outputs.
+
+A primary-hits pass records each pixel's surface in a 32-byte hit record, as in the
+[MIS template](#compare-light-and-bsdf-sampling-with-mis). Three passes then shade it
+with the same random numbers:
+
+| Pipeline node | Function in `main_shaders/shade.slang` | Image | Output |
+| --- | --- | --- | --- |
+| `shadeWave` | `ShadeWave` | Gratings in wave optics: Eq. (42), spectrally | `color` → `output` (Accumulate, ToneMap) |
+| `shadeGeometric` | `ShadeGeometricOptics` | The same gratings in the geometric-optics limit (Appendix B) | `geometric` → `geometricOutput` (Accumulate, ToneMap) |
+| `measureCoherence` | `MeasureCoherence` | Spatial coherence radius of the incident light (Definition 5.1) | `coherence` → `coherenceOutput` (Accumulate only) |
+
+The viewport shows the wave-optics image first. Compare it with `geometricOutput`
+to see what diffraction adds, as the paper's Fig. 8 compares its "wave" and
+"geometric" copper bars.
+
+#### Make a grating and a natural light source
+
+- **Gratings.** A surface is a grating when its material is a metal: the conductor
+  model, or metallic-roughness with `Metallic` of at least 0.5. Its roughness must
+  also be at most `PLT_GRATING_ROUGHNESS_MAXIMUM`; Ludus's smallest roughness,
+  0.045, qualifies. Its height is `a sin(2πx / period)` across the grooves. The
+  grooves follow the mesh tangent, or world +X projected onto the surface when the
+  mesh has no tangents, or world +Z where +X is normal to the surface.
+- **Natural sources.** Directional, point and spot lights are the paper's spherical
+  natural sources (§5). A point or spot light has radius
+  `PLT_POINT_SOURCE_RADIUS_MILLIMETERS`; a directional light has angular radius
+  `PLT_DIRECTIONAL_SOURCE_ANGULAR_RADIUS`, the sun's by default. Mesh emitters and
+  the environment light a grating with their actual shape.
+- **Brightness.** A small source's peak radiance is very large: a 1 mm source has
+  about a million times the radiance of a 1 m one of the same intensity. Its
+  spectrum therefore outshines the diffusely lit walls, as a sun glint does. Lower
+  the light's intensity, or the ToneMap exposure, to see the spectrum's colors.
+
+| Graph setting | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `PLT_GRATING_PERIOD_NANOMETERS` | `740` | `400`–`8000` | Grating period, comparable to a DVD's 0.74 µm track pitch |
+| `PLT_GRATING_AMPLITUDE_NANOMETERS` | `80` | `0`–`500` | Height amplitude `a`; `0` is a flat mirror |
+| `PLT_GRATING_ROUGHNESS_MAXIMUM` | `0.05` | `0`–`1` | Roughest metal shaded as a grating |
+| `PLT_POINT_SOURCE_RADIUS_MILLIMETERS` | `5` | `0.01`–`1000` | Natural source radius of point and spot lights; the largest of the paper's Fig. 8 sources is 1 cm across |
+| `PLT_DIRECTIONAL_SOURCE_ANGULAR_RADIUS` | `0.004653` | `0.00001`–`0.5` | Angular radius of directional lights, in radians (the sun) |
+| `PLT_COHERENCE_WAVELENGTH_NANOMETERS` | `550` | `380`–`780` | Wavelength of the coherence output |
+| `PLT_COHERENCE_DISPLAY_MICROMETERS` | `100` | `0.1`–`1000000` | Coherence radius that the coherence output shows as white |
+
+World units are metres. Change the settings in Properties or with the canvas's
+**Edit Graph Settings...** action, as for the
+[ReSTIR DI template](#use-the-built-in-restir-di-template).
+
+#### What the passes compute
+
+The sources in `main_shaders/` cite the paper's equations at each step.
+
+- **Coherence of natural light** (`natural_light.slang`). Definition 5.1 makes the
+  degree of coherence of a sphere of radius ρ seen from distance `r` vanish first
+  at `r_c = 4.4934 r / (k ρ)`. The coherence output writes this radius at each
+  surface for the selected light, divided by `PLT_COHERENCE_DISPLAY_MICROMETERS`
+  and averaged over light selection. It is zero where that light is occluded, and
+  zero for the environment, which counts as incoherent. A mesh emitter's sphere is
+  the bounding sphere of its triangles. For sunlight at 0.5 µm this gives the
+  paper's 77 µm (§5.1).
+- **Diffraction by the grating** (`grating.slang`). Eq. (42) convolves the
+  surface's frequency response `T²` (Eq. (43)) with the Fourier transform of the
+  incident light's coherence. For a sinusoid, `T²` has one peak per diffraction
+  order `m`, where the grating equation `w_i,par + w_o,par = m (λ / period) g` holds.
+  Its weight is `J_m(A_m)²`, with `A_m = k a (cos θ_i + cos θ_o)`; the Jacobi–Anger
+  expansion gives these peaks. By the van Cittert–Zernike theorem, the coherence's
+  transform is the source's angular brightness. For the uniformly radiating sphere
+  it is `sqrt(1 − (q / q₀)²)` across its disk of angular radius `q₀`. So each order
+  shows an image of the source at the wavelength that the grating equation sends
+  toward the viewer. These closed forms are derived from the paper's equations; the
+  paper does not print them.
+- **Spectral camera** (`spectrum.slang`). Wavelengths are uniform over 380–780 nm.
+  The camera's three channels are the CIE 1931 colour-matching functions
+  (Wyman, Sloan and Shirley's fit) converted to linear sRGB, with their negative
+  lobes removed. Renderer accumulation rejects negative samples, so spectral colors
+  outside the sRGB gamut are drawn inside it. Scene RGB values become piecewise-constant spectra
+  that this camera reads back exactly; white becomes a flat spectrum.
+- **Estimators** (`shade.slang`). For a directional, point or spot light, every
+  order is integrated over the band of wavelengths in which it sees the source's
+  disk, with four stratified wavelengths per band. For a 1 mm source that band is
+  about a nanometre wide; drawing wavelengths across the whole range would rarely
+  find it. Mesh emitters and the environment are reached by one ray along an order
+  sampled near its expected efficiency. The geometric pass replaces the orders with
+  mirror facets of the same sinusoid: slopes `s = (2πa / period) sin θ`, θ uniform.
+  For a delta light it integrates over the slopes whose reflection can reach the
+  source; for extended sources it traces one sampled facet.
+
+Each invocation makes at most one surface query and one visibility query, so the
+technique declares `surface_queries: 1` and `visibility_queries: 1`. New shader
+programs have `SteinbergPlt`-prefixed IDs and sources under
+`steinberg_plt/main_shaders/`. The settings join the manifest's Graph settings,
+and existing values are kept.
+
+Departures from the paper, also listed in the sources:
+
+- Polarization is ignored. Eq. (42) applies the Church polarization factors; the
+  template is scalar and multiplies each order by the material's unpolarized Fresnel
+  reflectance. Orders are not renormalized, so, as in Kirchhoff scattering, their
+  efficiencies sum to one only approximately.
+- Only light that reaches a grating directly from a source is diffracted. The paper
+  traces from the light sources with a bidirectional path tracer, so its light also
+  diffracts after other bounces (§8.4); this template gathers from the camera.
+  Participating media (§8.3) are not supported.
+- Delta lights remain points for shadow rays and for classical surfaces; only the
+  grating sees their natural-source disk.
+- The geometric-optics comparison ignores shadowing and masking between facets, as
+  Kirchhoff scattering does.
+
+A small source's features can be smaller than a pixel. At the default 5 mm and
+about a metre away, the mirror glint of a point light is a few milliradians
+across, and pixel jitter hits it in only a few samples: such glints converge
+slowly at low resolution. A larger radius gives larger, less colorful features.
+The traced estimate for extended sources draws one wavelength per sample, so its
+diffraction colors converge more slowly than a delta light's.
+
+Evidence, from `ludus_render_graph_ray_tests` (`[steinberg-plt]`) on Metal, in the
+Cornell room with its back wall replaced by a white-metal grating at the default
+740 nm period and 80 nm amplitude:
+
+- **Dispersion.** Under a 20 mm point source, the first diffraction order is a
+  spectrum down the back wall, violet above red, with a mean saturation of 0.89
+  over its bright pixels after 256 samples. Geometric optics shows a white streak
+  there instead, at most 0.04 saturated.
+- **Coherence.** A 200 mm source, whose light is coherent over a radius ten times
+  smaller, blurs the same spectrum to a mean saturation of 0.61, as the paper's
+  Fig. 8 shows for its largest source.
+- **Short-wavelength consistency.** With zero amplitude, the wave and geometric
+  images are byte-identical under both the ceiling area light and the point
+  source. The mirrored white ceiling light reads (246, 246, 246), so the spectral
+  camera and the uplift preserve white.
+- **Sunlight.** Under a directional light with the sun's angular radius, the
+  coherence output reads 84.5 µm at 550 nm on the back wall: the paper's 77 µm
+  scaled from 500 nm. A floor parallel to the light reads zero.
+
+Vulkan has not been run for this template.
+
+See the canonical
+[package](../../modules/graphics/renderer/render_graphs/steinberg_plt/main.lurender.json).
+
 ### Sample lights along lines
 
 The **Line sampling — visible chords of area lights** template (`line-sampling`)

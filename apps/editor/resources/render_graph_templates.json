@@ -125,6 +125,15 @@
       "description": "Steinberg's slice sampling for direct light from a near-field directional luminaire: an analytic LED panel of nine tiles with position-dependent Gaussian beams lights the scene. Three shading passes each draw one panel sample with a shadow ray: slice sampling, which turns the panel's emission sampler into a direct-light proposal by solving its seed equation on every tile, in a defensive mixture with uniform panel area (the image shown first); slice sampling alone; and uniform panel-area sampling. The first pass also records the primary hits for the others. Every pass uses the compute BVH, so it needs Metal or Vulkan compute but no hardware ray tracing."
     },
     {
+      "kind": "graph",
+      "identity": "steinberg-plt",
+      "label": "Steinberg — partially coherent diffraction",
+      "category": "ray-traced",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["steinberg", "physical light transport", "wave optics", "diffraction", "grating", "coherence", "natural light", "spectral", "iridescence"],
+      "description": "Physical light transport from Steinberg and Yan (2021): smooth metals become sinusoidal gratings lit by natural light sources whose finite size sets the light's spatial coherence. After a primary-hits pass, one shading pass renders the gratings' diffraction spectrally (the image shown first), one renders the same gratings in geometric optics, and one shows the coherence radius of the incident light. Other surfaces are shaded classically. Requires native ray tracing."
+    },
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
@@ -223,6 +232,16 @@
       "requirements": ["compute-ray-tracing"],
       "keywords": ["slice sampling", "steinberg", "directional luminaire", "led panel", "near field", "auxiliary map", "inverse branches", "defensive mixture", "light field", "direct lighting"],
       "description": "Three compute-BVH shading passes that share one automatically sized hit buffer and light the scene with an analytic directional LED panel: defensive slice sampling, slice sampling alone and uniform panel-area sampling, each with one shadow ray. Connect scene, view and color; outputs color plus optional sliceSampling and uniformArea images. Needs Metal or Vulkan compute."
+    },
+    {
+      "kind": "snippet",
+      "identity": "steinberg-plt",
+      "label": "Steinberg — partially coherent diffraction",
+      "category": "lighting",
+      "defaultConfiguration": "SteinbergPlt",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["steinberg", "physical light transport", "wave optics", "diffraction", "grating", "coherence", "natural light", "spectral", "iridescence"],
+      "description": "A primary-hits scene compute pass and three shading passes that share one automatically sized hit buffer: spectral diffraction by smooth-metal gratings under natural light (Steinberg and Yan), the same gratings in geometric optics, and the incident light's coherence radius. Connect scene, view and color; outputs color plus optional geometric and coherence images. Requires native ray tracing."
     },
     {
       "kind": "snippet",

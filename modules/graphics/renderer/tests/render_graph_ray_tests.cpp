@@ -3525,6 +3525,346 @@ TEST_CASE("The Veach and Guibas MIS output has less error than either sampling s
 
 namespace
 {
+// steinberg-plt template tests. Thanks to Shlomi Steinberg and Ling-Qi Yan, "A Generic Framework for Physical
+// Light Transport", ACM Transactions on Graphics 40(4), article 139, SIGGRAPH 2021,
+// https://doi.org/10.1145/3450626.3459791 : the template renders section 8.1's diffraction of natural light
+// (Definition 5.1) by a surface. These tests check that a small source's light is dispersed into a spectrum that
+// geometric optics does not show, that a larger and so less coherent source blurs it (as in the paper's Fig. 8),
+// that a flat surface looks the same in wave and geometric optics, and the coherence radius of sunlight
+// (section 5.1).
+
+/// Shade passes of the template in output order: wave optics (the color output), geometric optics, coherence.
+constexpr usize STEINBERG_PLT_OUTPUT_COUNT = 3;
+/// Index of the first shade pass; pass 0 records the primary hits.
+constexpr usize STEINBERG_PLT_FIRST_SHADE_PASS = 1;
+constexpr usize STEINBERG_PLT_WAVE = 0;
+constexpr usize STEINBERG_PLT_GEOMETRIC = 1;
+constexpr usize STEINBERG_PLT_COHERENCE = 2;
+constexpr usize GRATING_ROOM_MATERIAL_COUNT = CORNELL_MATERIAL_COUNT + 1;
+/// White metal, whose Fresnel reflectance is one at every angle, at the smallest admitted roughness.
+constexpr uint32 GRATING_ROOM_GRATING = CORNELL_MATERIAL_COUNT;
+constexpr float32 GRATING_ROOM_ROUGHNESS = .045F;
+/// The back wall's quad in CORNELL_CORNERS_WORLD. It faces the camera at z = -1.
+constexpr usize GRATING_ROOM_BACK_WALL_QUAD = 2;
+/// PLT_POINT_SOURCE_RADIUS_MILLIMETERS of the template's small_source (also flat) and large_source variants. At 96 x 64
+/// pixels the default 5 mm source's mirror image covers about one percent of a pixel, which few jittered samples hit.
+constexpr float32 GRATING_ROOM_SMALL_SOURCE_MILLIMETERS = 20;
+constexpr float32 GRATING_ROOM_LARGE_SOURCE_MILLIMETERS = 200;
+/// Point intensity for the 20 mm source, in candela. An order sees a source over a wavelength band proportional to
+/// its radius, at a peak radiance proportional to intensity over radius squared, so a pixel's spectrum scales as
+/// intensity over radius: the large source's intensity is scaled by the radius ratio to keep it equally bright.
+constexpr float32 GRATING_ROOM_SMALL_SOURCE_INTENSITY = 2;
+/// Columns around x = 0 on the back wall, where the point light's spectrum lies: the light and the camera are
+/// both at x = 0.
+constexpr usize GRATING_ROOM_CENTER_FIRST_COLUMN = WIDTH / 2 - 2;
+constexpr usize GRATING_ROOM_CENTER_LAST_COLUMN = WIDTH / 2 + 1;
+/// Back-wall rows of the first order's spectrum, below the mirror highlight (row 20) and above the second order.
+/// With the default 740 nm period, violet reaches the camera from y = 0.2 (row 29) and red from y = -0.55 (row 41).
+constexpr usize GRATING_ROOM_SPECTRUM_FIRST_ROW = 24;
+constexpr usize GRATING_ROOM_SPECTRUM_LAST_ROW = 43;
+/// Smallest color byte of a pixel included in saturation measurements.
+constexpr uint8 GRATING_ROOM_BRIGHT_CHANNEL = 64;
+
+/// The Cornell room with its back wall replaced by the grating and at most one analytic light. The mesh has no
+/// tangents, so the grooves follow world +X and the grating vector is +Y: the spectrum spreads down the back wall.
+struct GratingRoom final
+{
+    CornellBox Room;
+    StaticArray<uint32, GRATING_ROOM_MATERIAL_COUNT> Bindings{
+        {CORNELL_WHITE, CORNELL_RED, CORNELL_GREEN, CORNELL_LIGHT, GRATING_ROOM_GRATING}};
+    StaticArray<renderer::SceneShaderMaterial, GRATING_ROOM_MATERIAL_COUNT> Materials{};
+    StaticArray<renderer::DirectLight, 1> Lights{};
+
+    /// @param ceilingEmission Emission of the ceiling light; zero removes it from the light set.
+    explicit GratingRoom(float32 ceilingEmission)
+    {
+        for (usize material = 0; material < CORNELL_MATERIAL_COUNT; ++material)
+        {
+            Materials[material] = Room.Materials[material];
+        }
+        Materials[CORNELL_LIGHT].Emission = {ceilingEmission, ceilingEmission, ceilingEmission};
+        Materials[GRATING_ROOM_GRATING].BaseColor = {1, 1, 1};
+        Materials[GRATING_ROOM_GRATING].Metallic = 1;
+        Materials[GRATING_ROOM_GRATING].Roughness = GRATING_ROOM_ROUGHNESS;
+        Room.Slots[GRATING_ROOM_BACK_WALL_QUAD * 2] = GRATING_ROOM_GRATING;
+        Room.Slots[GRATING_ROOM_BACK_WALL_QUAD * 2 + 1] = GRATING_ROOM_GRATING;
+        Room.Meshes[0].MaterialBindings = {Bindings.GetData(), Bindings.GetSize()};
+        Room.Inputs.Materials = {Materials.GetData(), Materials.GetSize()};
+        Lights[0].SourceId = 1;
+    }
+    GratingRoom(const GratingRoom&) = delete;
+    GratingRoom& operator=(const GratingRoom&) = delete;
+
+    /// A point light below the ceiling's centre, above the back wall's spectrum.
+    void AddPointLight(float32 intensity)
+    {
+        Lights[0].Kind = renderer::LightKind::Point;
+        Lights[0].Position = {0, .9F, 0};
+        Lights[0].Intensity = intensity;
+        Room.Inputs.Lights = {Lights.GetData(), Lights.GetSize()};
+    }
+
+    /// A directional light shining into the room through its open front, onto the back wall.
+    void AddFrontDirectionalLight()
+    {
+        Lights[0].Kind = renderer::LightKind::Directional;
+        Lights[0].Direction = {0, 0, -1};
+        Lights[0].Intensity = 1;
+        Room.Inputs.Lights = {Lights.GetData(), Lights.GetSize()};
+    }
+};
+
+/// Render frameCount frames of the template and read each output's running mean after the last one.
+void RenderSteinbergPltOutputs(PreparedGraph& inoutTemplate,
+                               const GraphGpuFixture& fixture,
+                               usize frameCount,
+                               StaticArray<Array<uint8>, STEINBERG_PLT_OUTPUT_COUNT>& outPixels)
+{
+    REQUIRE(inoutTemplate.Plan.Passes.GetSize() == STEINBERG_PLT_FIRST_SHADE_PASS + STEINBERG_PLT_OUTPUT_COUNT);
+    for (usize frame = 0; frame < frameCount; ++frame)
+    {
+        RenderFrame(inoutTemplate.Graph, fixture);
+    }
+    for (usize output = 0; output < STEINBERG_PLT_OUTPUT_COUNT; ++output)
+    {
+        const uint32 resource = inoutTemplate.Plan.Passes[STEINBERG_PLT_FIRST_SHADE_PASS + output].Color;
+        REQUIRE(resource < inoutTemplate.Plan.Resources.GetSize());
+        REQUIRE(inoutTemplate.Plan.Resources[resource].IsExported == 1);
+        ReadExport(inoutTemplate.Graph, fixture, resource, inoutTemplate.Extent, outPixels[output]);
+        // Invalid hit records, exhausted budgets, failed queries and negative samples would show magenta.
+        REQUIRE(CountFailurePixels(outPixels[output]) == 0);
+    }
+}
+
+/// Colors of the grating's first-order spectrum: its most saturated bright pixel and the rows where blue and red
+/// dominate most.
+struct GratingSpectrum final
+{
+    float32 MaximumSaturation = 0;
+    float32 MeanSaturation = 0;
+    uint8 BrightestChannel = 0;
+    usize BluestRow = 0;
+    usize ReddestRow = 0;
+};
+
+GratingSpectrum MeasureGratingSpectrum(const Array<uint8>& pixels)
+{
+    GratingSpectrum result;
+    float32 bluest = 0;
+    float32 reddest = 0;
+    float32 saturationSum = 0;
+    usize brightPixels = 0;
+    for (usize row = GRATING_ROOM_SPECTRUM_FIRST_ROW; row <= GRATING_ROOM_SPECTRUM_LAST_ROW; ++row)
+    {
+        for (usize column = GRATING_ROOM_CENTER_FIRST_COLUMN; column <= GRATING_ROOM_CENTER_LAST_COLUMN; ++column)
+        {
+            const usize address = GetPixel(column, row);
+            const float32 red = pixels[address];
+            const float32 green = pixels[address + 1];
+            const float32 blue = pixels[address + 2];
+            const uint8 brightest = math::Max(pixels[address], math::Max(pixels[address + 1], pixels[address + 2]));
+            result.BrightestChannel = math::Max(result.BrightestChannel, brightest);
+            if (brightest < GRATING_ROOM_BRIGHT_CHANNEL)
+            {
+                continue;
+            }
+            const float32 maximum = brightest;
+            const float32 minimum = math::Min(red, math::Min(green, blue));
+            result.MaximumSaturation = math::Max(result.MaximumSaturation, (maximum - minimum) / maximum);
+            saturationSum += (maximum - minimum) / maximum;
+            brightPixels += 1;
+            if ((blue - red) / maximum > bluest)
+            {
+                bluest = (blue - red) / maximum;
+                result.BluestRow = row;
+            }
+            if ((red - blue) / maximum > reddest)
+            {
+                reddest = (red - blue) / maximum;
+                result.ReddestRow = row;
+            }
+        }
+    }
+    result.MeanSaturation = brightPixels > 0 ? saturationSum / static_cast<float32>(brightPixels) : 0;
+    return result;
+}
+} // namespace
+
+TEST_CASE("The Steinberg PLT template disperses a small natural source into a spectrum that geometric optics "
+          "does not show",
+          "[render-graph][gpu][steinberg-plt][template]")
+{
+    GraphGpuFixture fixture;
+    GratingRoom room(0);
+    room.AddPointLight(GRATING_ROOM_SMALL_SOURCE_INTENSITY);
+    PreparedGraph graph(fixture,
+                        {LUDUS_RG3_STEINBERG_PLT_SMALL_SOURCE_DIRECTORY, "rg2_steinberg_plt_small_source.lurgrt"},
+                        room.Room,
+                        1);
+    REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == true);
+    for (usize pass = 0; pass < graph.Plan.Passes.GetSize(); ++pass)
+    {
+        INFO("pass " << pass);
+        CHECK(graph.Plan.Passes[pass].Program == format::Technique::RayTracing);
+        CHECK((graph.Plan.Passes[pass].AccumulationSamples > 0) == (pass >= STEINBERG_PLT_FIRST_SHADE_PASS));
+        // The coherence radius is written linearly; the two radiance images are tone mapped.
+        const bool isToneMapped =
+            pass >= STEINBERG_PLT_FIRST_SHADE_PASS && pass < STEINBERG_PLT_FIRST_SHADE_PASS + STEINBERG_PLT_COHERENCE;
+        CHECK((graph.Plan.Passes[pass].ToneMappingExposure == 1) == isToneMapped);
+    }
+    constexpr usize FRAME_COUNT = 256;
+    StaticArray<Array<uint8>, STEINBERG_PLT_OUTPUT_COUNT> pixels;
+    RenderSteinbergPltOutputs(graph, fixture, FRAME_COUNT, pixels);
+    const GratingSpectrum wave = MeasureGratingSpectrum(pixels[STEINBERG_PLT_WAVE]);
+    const GratingSpectrum geometric = MeasureGratingSpectrum(pixels[STEINBERG_PLT_GEOMETRIC]);
+    INFO("wave: saturation " << wave.MaximumSaturation << ", brightest " << static_cast<uint32>(wave.BrightestChannel)
+                             << ", bluest row " << wave.BluestRow << ", reddest row " << wave.ReddestRow
+                             << "; geometric: saturation " << geometric.MaximumSaturation << ", brightest "
+                             << static_cast<uint32>(geometric.BrightestChannel));
+    // Both images reflect the source on the back wall's centre column: geometric optics as a streak of tilted facets.
+    constexpr uint8 LIT_CHANNEL = 128;
+    REQUIRE(wave.BrightestChannel >= LIT_CHANNEL);
+    REQUIRE(geometric.BrightestChannel >= LIT_CHANNEL);
+    // The first diffraction order is a spectrum: violet at the top, where the grating equation needs the shortest
+    // wavelength, and red below. Geometric optics reflects every wavelength alike, so its streak stays white.
+    constexpr float32 SPECTRAL_SATURATION = .6F;
+    constexpr float32 NEUTRAL_SATURATION = .2F;
+    CHECK(wave.MaximumSaturation > SPECTRAL_SATURATION);
+    CHECK(wave.BluestRow < wave.ReddestRow);
+    CHECK(geometric.MaximumSaturation < NEUTRAL_SATURATION);
+}
+
+TEST_CASE("A larger and so less coherent natural source blurs the Steinberg PLT template's spectrum",
+          "[render-graph][gpu][steinberg-plt][template]")
+{
+    // The paper's Fig. 8: interference colors are most visible under the most coherent light, from the smallest
+    // source. The two variants differ only in PLT_POINT_SOURCE_RADIUS_MILLIMETERS, 20 and 200 mm. The larger source's
+    // light is spatially coherent over a 10 times smaller radius, so each pixel mixes many more wavelengths.
+    GraphGpuFixture fixture;
+    StaticArray<GratingSpectrum, 2> spectra{};
+    const StaticArray<PackageLocation, 2> locations{{
+        {LUDUS_RG3_STEINBERG_PLT_SMALL_SOURCE_DIRECTORY, "rg2_steinberg_plt_small_source.lurgrt"},
+        {LUDUS_RG3_STEINBERG_PLT_LARGE_SOURCE_DIRECTORY, "rg2_steinberg_plt_large_source.lurgrt"},
+    }};
+    const StaticArray<float32, 2> radii{{GRATING_ROOM_SMALL_SOURCE_MILLIMETERS, GRATING_ROOM_LARGE_SOURCE_MILLIMETERS}};
+    for (usize source = 0; source < spectra.GetSize(); ++source)
+    {
+        GratingRoom room(0);
+        room.AddPointLight(GRATING_ROOM_SMALL_SOURCE_INTENSITY * radii[source] / GRATING_ROOM_SMALL_SOURCE_MILLIMETERS);
+        PreparedGraph graph(fixture, locations[source], room.Room, 1);
+        constexpr usize FRAME_COUNT = 256;
+        StaticArray<Array<uint8>, STEINBERG_PLT_OUTPUT_COUNT> pixels;
+        RenderSteinbergPltOutputs(graph, fixture, FRAME_COUNT, pixels);
+        spectra[source] = MeasureGratingSpectrum(pixels[STEINBERG_PLT_WAVE]);
+    }
+    INFO("20 mm: mean saturation " << spectra[0].MeanSaturation << ", brightest "
+                                   << static_cast<uint32>(spectra[0].BrightestChannel) << "; 200 mm: mean saturation "
+                                   << spectra[1].MeanSaturation << ", brightest "
+                                   << static_cast<uint32>(spectra[1].BrightestChannel));
+    constexpr uint8 LIT_CHANNEL = 128;
+    REQUIRE(spectra[0].BrightestChannel >= LIT_CHANNEL);
+    REQUIRE(spectra[1].BrightestChannel >= LIT_CHANNEL);
+    constexpr float32 SATURATION_LOSS = .15F;
+    CHECK(spectra[1].MeanSaturation < spectra[0].MeanSaturation - SATURATION_LOSS);
+}
+
+TEST_CASE("A flat grating looks the same in the Steinberg PLT template's wave and geometric optics",
+          "[render-graph][gpu][steinberg-plt][template]")
+{
+    // With zero amplitude only the mirror order exists (J_0(0) = 1) and every facet is the mean surface, so both
+    // passes reflect the same direction at the same wavelengths: only rounding of that direction differs. The flat
+    // variant also uses the 20 mm source.
+    GraphGpuFixture fixture;
+    constexpr float32 CEILING_EMISSION = 12;
+    bool hasAreaLight = false;
+    GratingRoom room(CEILING_EMISSION);
+    SECTION("ceiling area light")
+    {
+        hasAreaLight = true;
+    }
+    SECTION("natural point source")
+    {
+        room.Materials[CORNELL_LIGHT].Emission = {0, 0, 0};
+        room.AddPointLight(GRATING_ROOM_SMALL_SOURCE_INTENSITY);
+    }
+    PreparedGraph graph(fixture,
+                        {LUDUS_RG3_STEINBERG_PLT_FLAT_DIRECTORY, "rg2_steinberg_plt_flat.lurgrt"},
+                        room.Room,
+                        1);
+    constexpr usize FRAME_COUNT = 128;
+    StaticArray<Array<uint8>, STEINBERG_PLT_OUTPUT_COUNT> pixels;
+    RenderSteinbergPltOutputs(graph, fixture, FRAME_COUNT, pixels);
+    const math::Vector3 wave = ComputeMeanRadiance(pixels[STEINBERG_PLT_WAVE]);
+    const math::Vector3 geometric = ComputeMeanRadiance(pixels[STEINBERG_PLT_GEOMETRIC]);
+    constexpr uint8 CHANNEL_TOLERANCE = 2;
+    const usize differingPixels =
+        CountDifferingPixels(pixels[STEINBERG_PLT_WAVE], pixels[STEINBERG_PLT_GEOMETRIC], CHANNEL_TOLERANCE);
+    INFO("wave mean=" << wave.X << ',' << wave.Y << ',' << wave.Z << ", geometric mean=" << geometric.X << ','
+                      << geometric.Y << ',' << geometric.Z << ", differing pixels=" << differingPixels);
+    constexpr usize DIFFERING_PIXEL_DIVISOR = 1000;
+    CHECK(differingPixels <= static_cast<usize>(WIDTH) * HEIGHT / DIFFERING_PIXEL_DIVISOR);
+    if (hasAreaLight == true)
+    {
+        // The back wall mirrors the white ceiling light at rows 18 to 20. Wavelengths are drawn for the mirror, but
+        // the uplift turns white into a flat spectrum that the sensor reads back as white.
+        constexpr usize MIRRORED_LIGHT_COLUMN = WIDTH / 2;
+        constexpr usize MIRRORED_LIGHT_ROW = 19;
+        const usize address = GetPixel(MIRRORED_LIGHT_COLUMN, MIRRORED_LIGHT_ROW);
+        const uint8 red = pixels[STEINBERG_PLT_WAVE][address];
+        const uint8 green = pixels[STEINBERG_PLT_WAVE][address + 1];
+        const uint8 blue = pixels[STEINBERG_PLT_WAVE][address + 2];
+        INFO("mirrored light " << static_cast<uint32>(red) << ',' << static_cast<uint32>(green) << ','
+                               << static_cast<uint32>(blue));
+        constexpr uint8 LIT_CHANNEL = 128;
+        constexpr uint8 NEUTRAL_TOLERANCE = 3;
+        CHECK(green >= LIT_CHANNEL);
+        CHECK(math::Max(red, green) - math::Min(red, green) <= NEUTRAL_TOLERANCE);
+        CHECK(math::Max(blue, green) - math::Min(blue, green) <= NEUTRAL_TOLERANCE);
+    }
+}
+
+TEST_CASE("The Steinberg PLT template's coherence output reproduces the coherence radius of sunlight",
+          "[render-graph][gpu][steinberg-plt][template]")
+{
+    // Section 5.1: a natural source of angular radius q0 gives light whose degree of coherence first vanishes at
+    // r_c = 4.4934 / (k sin q0). The template's directional light is the sun (q0 = 0.004653 rad); the paper finds
+    // about 77 um at 500 nm, and the coherence output shows r_c at 550 nm per 100 um.
+    GraphGpuFixture fixture;
+    GratingRoom room(0);
+    room.AddFrontDirectionalLight();
+    PreparedGraph graph(fixture,
+                        {LUDUS_RG3_STEINBERG_PLT_TEMPLATE_DIRECTORY, "rg2_steinberg_plt_template.lurgrt"},
+                        room.Room,
+                        1);
+    constexpr usize FRAME_COUNT = 4;
+    StaticArray<Array<uint8>, STEINBERG_PLT_OUTPUT_COUNT> pixels;
+    RenderSteinbergPltOutputs(graph, fixture, FRAME_COUNT, pixels);
+    constexpr float64 COHERENCE_ZERO = 4.49340945790906;
+    constexpr float64 SUN_ANGULAR_RADIUS = .004653;
+    constexpr float64 WAVELENGTH_METERS = 550e-9;
+    constexpr float64 DISPLAY_MICROMETERS = 100;
+    constexpr float64 MICROMETERS_PER_METER = 1e6;
+    constexpr float64 MAXIMUM_CHANNEL = 255;
+    const float64 wavenumber = math::kTau / WAVELENGTH_METERS;
+    const float64 radiusMicrometers =
+        COHERENCE_ZERO / (wavenumber * math::Sin(SUN_ANGULAR_RADIUS)) * MICROMETERS_PER_METER;
+    const float64 expected = radiusMicrometers / DISPLAY_MICROMETERS * MAXIMUM_CHANNEL;
+    // The back wall faces the light; the floor is parallel to it and receives none.
+    const usize wall = GetPixel(WIDTH / 2, HEIGHT / 2);
+    constexpr usize FLOOR_ROW = 55;
+    const usize floor = GetPixel(WIDTH / 2, FLOOR_ROW);
+    const Array<uint8>& coherence = pixels[STEINBERG_PLT_COHERENCE];
+    INFO("coherence radius " << radiusMicrometers << " um, expected byte " << expected << ", wall "
+                             << static_cast<uint32>(coherence[wall]) << ", floor "
+                             << static_cast<uint32>(coherence[floor]));
+    constexpr float64 BYTE_TOLERANCE = 1;
+    CHECK(math::Abs(static_cast<float64>(coherence[wall]) - expected) <= BYTE_TOLERANCE);
+    CHECK(coherence[wall + 1] == coherence[wall]);
+    CHECK(coherence[floor] == 0);
+}
+
+namespace
+{
 // ris-projected-solid-angle template tests. Thanks to Ishaan Shah, Aakash KT and P. J. Narayanan, "Combining Resampled
 // Importance and Projected Solid Angle Samplings for Many Area Light Rendering", SIGGRAPH Asia 2023 Technical
 // Communications, https://doi.org/10.1145/3610543.3626165 : the template resamples emissive triangles by their
