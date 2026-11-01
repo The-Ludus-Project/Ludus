@@ -349,6 +349,15 @@ void EndRayPathCapture(float3 radiance)
 #if defined(LUDUS_NATIVE_METAL_RAY_PIPELINE)
 #    include "native_metal_ray.slang"
 #elif !defined(LUDUS_SOFTWARE_RAY_TRAVERSAL)
+// Visibility consumes only committed status; candidate attributes remain necessary
+// for exactly the same masked-coverage test used by closest-hit traversal. Out of line, as TraceNative below.
+[noinline] bool
+TraceNativeVisibility(float3 originWorld, float3 directionWorld, float nearDistanceWorld, float farDistanceWorld) {
+    RayQuery<RAY_FLAG_NONE> query;
+    TraceNativeQuery(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true, query);
+    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+}
+
 void TraceNativeQuery(float3 originWorld,
                       float3 directionWorld,
                       float nearDistanceWorld,
@@ -400,12 +409,17 @@ void TraceNativeQuery(float3 originWorld,
         inoutQuery.CommitNonOpaqueTriangleHit();
     }
 }
-Hit TraceNative(float3 originWorld,
-                float3 directionWorld,
-                float nearDistanceWorld,
-                float farDistanceWorld,
-                bool isVisibility = false)
-{
+
+// Every native query of a kernel runs in TraceNative or TraceNativeVisibility, which stay out of line: the Metal
+// translation emits each as a noinline function (isolate_metal_ray_queries in cmake/shaders/compile_graph_stage.py).
+// Inlined into a large merged kernel, Metal ray queries corrupted live state in pixels that varied between identical
+// runs. The steinberg-physical-optics template's camera paths, with several surface and visibility queries per
+// invocation, returned infinite radiance and failure flags without a reason; the same queries out of line are clean.
+[noinline] Hit TraceNative(float3 originWorld,
+                           float3 directionWorld,
+                           float nearDistanceWorld,
+                           float farDistanceWorld,
+                           bool isVisibility = false) {
     Hit hit;
     hit.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
     hit.DistanceWorld = farDistanceWorld;
@@ -425,14 +439,6 @@ Hit TraceNative(float3 originWorld,
         hit.Barycentric = query.CommittedTriangleBarycentrics();
     }
     return hit;
-}
-// Visibility consumes only committed status; candidate attributes remain necessary
-// for exactly the same masked-coverage test used by closest-hit traversal.
-bool TraceNativeVisibility(float3 originWorld, float3 directionWorld, float nearDistanceWorld, float farDistanceWorld)
-{
-    RayQuery<RAY_FLAG_NONE> query;
-    TraceNativeQuery(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true, query);
-    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 }
 
 #endif

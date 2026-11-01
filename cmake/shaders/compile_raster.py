@@ -774,8 +774,8 @@ def compile_raster(args, lock):
             emitted = output / f'{args.name}.{stage}.metal'
             command = [args.spirv_cross, str(artifact), '--msl', '--msl-version', '20400', '--msl-decoration-binding', '--output', str(emitted)]
             commands.append(command); run(command)
-            code = relative_line_directives(emitted.read_text(), roots)
-            from compile_graph_stage import verify_native_ray_metal
+            from compile_graph_stage import isolate_metal_ray_queries, verify_native_ray_metal
+            code = isolate_metal_ray_queries(relative_line_directives(emitted.read_text(), roots))
             interface = interfaces[(target, stage)]
             emitted_name = verify_native_ray_metal(code, interface)
             emitted.write_text(code)

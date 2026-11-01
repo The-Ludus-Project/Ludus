@@ -3959,13 +3959,13 @@ TEST_CASE("A perfectly diffuse room looks the same in the Steinberg physical-opt
         {LUDUS_RG3_STEINBERG_PHYSICAL_OPTICS_TEMPLATE_DIRECTORY, "rg2_steinberg_physical_optics_template.lurgrt"},
         room,
         1);
-    // Every pass traverses the compute BVH: the paths issue several surface and visibility queries per invocation.
-    REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == false);
+    // Every pass issues native ray queries, several surface and visibility queries per invocation in the shade passes.
+    REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == true);
     for (usize pass = 0; pass < graph.Plan.Passes.GetSize(); ++pass)
     {
         INFO("pass " << pass);
         CHECK(graph.Plan.Passes[pass].Program == format::Technique::RayTracing);
-        CHECK(graph.Plan.Passes[pass].Traversal == format::RayTraversal::ComputeBvh);
+        CHECK(graph.Plan.Passes[pass].Traversal == format::RayTraversal::NativeQuery);
         CHECK((graph.Plan.Passes[pass].AccumulationSamples > 0) == (pass >= PHYSICAL_OPTICS_FIRST_SHADE_PASS));
         // The coherence length is written linearly; the two radiance images are tone mapped.
         const bool isToneMapped = pass >= PHYSICAL_OPTICS_FIRST_SHADE_PASS &&
@@ -8240,4 +8240,86 @@ TEST_CASE("Slice sampling the template's luminaire has far less error than unifo
     constexpr float64 ERROR_REDUCTION = 4;
     CHECK(defensive * ERROR_REDUCTION < area);
     CHECK(slice * ERROR_REDUCTION < area);
+}
+
+namespace
+{
+/// The native-multi-query fixture: one scene compute pass tracing camera paths of up to three surfaces, each with a
+/// closest query, a light sample and a visibility query.
+constexpr PackageLocation NATIVE_MULTI_QUERY{LUDUS_RG3_NATIVE_MULTI_QUERY_DIRECTORY, "rg2_native_multi_query.lurgrt"};
+constexpr usize NATIVE_MULTI_QUERY_FRAMES = 8;
+
+/// Render the fixture's frames in a fresh graph and read its last sample per pixel.
+void RenderNativeMultiQuery(const GraphGpuFixture& fixture,
+                            const CornellBox& room,
+                            Array<math::Vector4>& outRecords,
+                            renderer::RenderGraphRayFailures& outFailures)
+{
+    PreparedGraph graph(fixture, NATIVE_MULTI_QUERY, room, 1);
+    REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == true);
+    for (usize frame = 0; frame < NATIVE_MULTI_QUERY_FRAMES; ++frame)
+    {
+        RenderFrame(graph.Graph, fixture);
+    }
+    outFailures = ReadRayFailures(graph.Graph, 0);
+    ReadAccumulation(graph.Graph, fixture, 0, outRecords);
+}
+} // namespace
+
+TEST_CASE("Native ray queries keep their results with several surface and visibility queries per invocation",
+          "[render-graph][gpu][native-ray-queries]")
+{
+    // Inlined into a large merged Metal kernel, native ray queries corrupted live state on an Apple M5: the
+    // steinberg-physical-optics template's camera paths returned infinite radiance and failures without a reason, in
+    // pixels that differed between identical runs. The Metal translation now keeps every query in the renderer's
+    // out-of-line TraceNative, and rejects a kernel that would inline one.
+    GraphGpuFixture fixture;
+    CornellBox room;
+    {
+        const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(NATIVE_MULTI_QUERY);
+        const renderer::RenderGraphPrograms programs =
+            package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+        const std::string_view metal = programs.RayCompute.Artifact.Msl;
+        // Metal profiles only; a Vulkan package carries SPIR-V.
+        if (metal.empty() == false)
+        {
+            constexpr std::string_view QUERY = "raytracing::intersection_query<";
+            constexpr std::string_view NOINLINE = "__attribute__((noinline))";
+            const usize kernel = metal.find("kernel void ");
+            const usize query = metal.find(QUERY);
+            REQUIRE(kernel != std::string_view::npos);
+            REQUIRE(query < kernel);
+            CHECK(metal.find(QUERY, kernel) == std::string_view::npos);
+            // The function that declares the query is the one that follows the last attribute line before it.
+            const usize attribute = metal.rfind("__attribute__((", query);
+            REQUIRE(attribute != std::string_view::npos);
+            CHECK(metal.substr(attribute, NOINLINE.size()) == NOINLINE);
+        }
+    }
+    Array<math::Vector4> first;
+    renderer::RenderGraphRayFailures firstFailures;
+    RenderNativeMultiQuery(fixture, room, first, firstFailures);
+    CHECK(firstFailures.TotalPixels == 0);
+    // An identical graph traces the same rays, so every pixel's sample repeats bit for bit.
+    Array<math::Vector4> second;
+    renderer::RenderGraphRayFailures secondFailures;
+    RenderNativeMultiQuery(fixture, room, second, secondFailures);
+    CHECK(secondFailures.TotalPixels == 0);
+    REQUIRE(first.GetSize() == second.GetSize());
+    usize differingPixels = 0;
+    usize litPixels = 0;
+    for (usize pixel = 0; pixel < usize{WIDTH} * HEIGHT; ++pixel)
+    {
+        const usize address = pixel * renderer::RENDER_GRAPH_ACCUMULATION_WORDS;
+        const math::Vector4& sample = first[address];
+        const math::Vector4& repeated = second[address];
+        const bool isSame = sample.X == repeated.X && sample.Y == repeated.Y && sample.Z == repeated.Z &&
+                            first[address + 1].W == second[address + 1].W;
+        differingPixels += isSame == true ? 0 : 1;
+        litPixels += sample.X + sample.Y + sample.Z > 0 ? 1 : 0;
+    }
+    INFO("differing pixels " << differingPixels << ", lit pixels " << litPixels);
+    CHECK(differingPixels == 0);
+    // The room's walls, lit by its ceiling light directly and through bounces, fill most of the view.
+    CHECK(litPixels * 2 > usize{WIDTH} * HEIGHT);
 }
