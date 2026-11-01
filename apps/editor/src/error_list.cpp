@@ -182,6 +182,28 @@ QList<ErrorListEntry> MakeRenderPreviewErrorEntries(const QString& problem, cons
     }};
 }
 
+QList<ErrorListEntry> MakeRenderPreviewWarningEntries(const QString& warning, const QString& file)
+{
+    if (warning.isEmpty() == true)
+    {
+        return {};
+    }
+    return {
+    {
+        .Severity = ErrorListSeverity::Warning,
+        .Producer = ErrorListProducer::RenderPreview,
+        .Code = QStringLiteral("RenderGraphPreviewWarning"),
+        .Description = warning,
+        .File = file,
+        .Location = {},
+        .Origin = QStringLiteral("Renderer preview"),
+        .SourceIndex = 0,
+        .Details = {},
+        .Backends = {},
+        .Count = 1,
+    }};
+}
+
 QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& result)
 {
     // SourceIndex stays the RendererWorkspace diagnostic row (the first one a merged row stands

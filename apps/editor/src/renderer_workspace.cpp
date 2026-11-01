@@ -43,6 +43,7 @@
 #    include "editor_renderer_static.h"
 #    include "internal/ray_path_inspection.h"
 #    include "internal/render_graph_capture_profile.h"
+#    include "internal/render_graph_luminaire_coverage.h"
 #    include "internal/render_graph_preview.h"
 #    include "internal/texture_viewer.h"
 #    include "renderer_composite.h"
@@ -2221,6 +2222,53 @@ void RendererWorkspace::prepareDefaultPreview()
         mIsDefaultPreview = false;
         setProblem(mBuildProblem, mPreviewOrNull->GetDisplayStatus());
     }
+#endif
+}
+void RendererWorkspace::refreshRenderWarning(const RenderScene& scene)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    // Cheap per-tick identity: the draft revision covers the root's default configuration and every placement source.
+    const QByteArray identity = scene.Identity + '\n' + mDocument.GetPackageRoot().toUtf8() + '\n' +
+                                mDocument.GetRootGraph().toUtf8() + '\n' + mConfiguration->currentText().toUtf8() +
+                                '\n' + QByteArray::number(mDocument.GetRevision()) + '\n' +
+                                (mIsDefaultPreview == true ? '1' : '0');
+    if (identity == mRenderWarningIdentity)
+    {
+        return;
+    }
+    mRenderWarningIdentity = identity;
+    const QString configuration = mConfiguration->currentText() == DEFAULT_CONFIGURATION
+                                      ? QJsonDocument::fromJson(mDocument.GetDraft(mDocument.GetRootGraph()))
+                                            .object()
+                                            .value(QStringLiteral("default"))
+                                            .toString()
+                                      : mConfiguration->currentText();
+    QString warning;
+    RenderGraphLuminairePanel panel;
+    // The engine default renderer fallback does not run the project route.
+    if (scene.Identity.isEmpty() == false && mIsDefaultPreview == false &&
+        FindRenderGraphLuminairePanel(mDocument, configuration, panel) == true)
+    {
+        RenderGraphLuminaireWorld world;
+        world.HasBounds = scene.TryGetBounds({}, world.BoundsWorld);
+        for (const PreviewObject& object : scene.Objects)
+        {
+            if (object.Surface >= 0 && object.Surface < scene.Surfaces.size())
+            {
+                const foundation::math::Vector3 emission = scene.Surfaces[object.Surface].Emission;
+                world.EmissiveObjectCount += emission.X > 0 || emission.Y > 0 || emission.Z > 0 ? 1 : 0;
+            }
+        }
+        world.LightCount = static_cast<foundation::int32>(scene.AuthoredLights.Count);
+        warning = DescribeRenderGraphLuminaireCoverage(panel, world);
+    }
+    if (warning != mRenderWarning)
+    {
+        mRenderWarning = warning;
+        Q_EMIT RenderProblemChanged();
+    }
+#else
+    static_cast<void>(scene);
 #endif
 }
 void RendererWorkspace::setProblem(QString& inoutProblem, const QString& text)
@@ -5273,6 +5321,10 @@ void RendererWorkspace::ServicePreview()
                 mPreviewWorldToClip = view.WorldToClip;
             }
         }
+    }
+    if (mPreviewSourceOrNull != nullptr)
+    {
+        refreshRenderWarning(mPreviewSourceOrNull->Scene());
     }
     constexpr foundation::float64 NANOSECONDS_PER_MILLISECOND = 1'000'000.0;
     preview.Tick(static_cast<foundation::float64>(preparationTimer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND);

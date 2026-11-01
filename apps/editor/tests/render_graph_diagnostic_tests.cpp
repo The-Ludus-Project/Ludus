@@ -47,6 +47,29 @@ TEST_CASE("preview diagnostics replace independently and reveal a changed activa
     CHECK(list.GetCount(ErrorListSeverity::Message) == 1);
 }
 
+TEST_CASE("a preview advisory is one warning row beside the preview's errors", "[editor][render-graph][diagnostics]")
+{
+    ErrorList list;
+    const QString file = QStringLiteral("graphs/Main/main.lurender.json");
+    const QString warning = QStringLiteral("The slice-sampling luminaire panel cannot light this World.");
+    const QList<ErrorListEntry> advisory = MakeRenderPreviewWarningEntries(warning, file);
+    REQUIRE(advisory.size() == 1);
+    CHECK(advisory.first().Severity == ErrorListSeverity::Warning);
+    CHECK(advisory.first().Producer == ErrorListProducer::RenderPreview);
+    CHECK(advisory.first().Code == QStringLiteral("RenderGraphPreviewWarning"));
+    CHECK(advisory.first().Description == warning);
+    CHECK(MakeRenderPreviewWarningEntries({}, file).isEmpty() == true);
+    list.ReplaceEntries(ErrorListProducer::RenderPreview,
+                        MakeRenderPreviewErrorEntries(QStringLiteral("Activation failed."), file) + advisory);
+    CHECK(list.GetCount(ErrorListSeverity::Error) == 1);
+    CHECK(list.GetCount(ErrorListSeverity::Warning) == 1);
+    // Clearing the advisory keeps the preview's error.
+    list.ReplaceEntries(ErrorListProducer::RenderPreview,
+                        MakeRenderPreviewErrorEntries(QStringLiteral("Activation failed."), file));
+    CHECK(list.GetCount(ErrorListSeverity::Warning) == 0);
+    CHECK(list.GetCount(ErrorListSeverity::Error) == 1);
+}
+
 TEST_CASE("structured validation batches produce one actionable Error List row per issue",
           "[editor][render-graph][diagnostics]")
 {

@@ -2309,6 +2309,16 @@ draft's section 6.2:
   `LUMINAIRE_HALF_EXTENT_WORLD` and the tangent, bitangent and emitting normal.
   The default is a 0.7 × 0.7 panel facing down at `y = 0.97`, just below the
   ceiling light of a 2 × 2 × 2 room. Edit these constants for another scene.
+- **Placement check.** While the template is on the viewport's output route, the
+  editor compares the panel with the World it renders. It warns when no World
+  geometry lies in front of the panel, when the panel's center lies outside the
+  World's bounds, or when the panel's side is under 5% of the bounds diagonal. The
+  default panel in a 20 m corridor is about 3%, so it lights only a small patch.
+  The warning appears in the viewport status and as a **Renderer preview** row in
+  the Error List. It names the placement, the World's size, how many emissive
+  objects and lights the template ignores, and the constants to edit. If the
+  constants are not plain literals, the editor cannot read them. It then warns only
+  when the World has emitters or lights of its own.
 
 | Graph setting | Default | Range | Meaning |
 | --- | --- | --- | --- |
