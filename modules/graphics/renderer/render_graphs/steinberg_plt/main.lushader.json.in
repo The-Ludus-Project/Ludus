@@ -1,0 +1,250 @@
+{
+  "version": 1,
+  "id": "RendererStaticBuild",
+  "profiles": @LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@,
+  "schemas": [
+    {
+      "id": "RendererStatic",
+      "role": "Vertex",
+      "fields": [
+        {
+          "id": "PositionMesh",
+          "type": "Float3",
+          "semantic": "POSITION",
+          "location": 0
+        },
+        {
+          "id": "MeshToClipRow0",
+          "type": "Float4",
+          "semantic": "TEXCOORD0",
+          "location": 1
+        },
+        {
+          "id": "MeshToClipRow1",
+          "type": "Float4",
+          "semantic": "TEXCOORD1",
+          "location": 2
+        },
+        {
+          "id": "MeshToClipRow2",
+          "type": "Float4",
+          "semantic": "TEXCOORD2",
+          "location": 3
+        },
+        {
+          "id": "MeshToClipRow3",
+          "type": "Float4",
+          "semantic": "TEXCOORD3",
+          "location": 4
+        },
+        {
+          "id": "Color",
+          "type": "Float4",
+          "semantic": "COLOR0",
+          "location": 5
+        }
+      ]
+    },
+    {
+      "id": "RasterVarying",
+      "role": "Varying",
+      "fields": [
+        {
+          "id": "PositionClip",
+          "type": "Float4",
+          "semantic": "SV_Position",
+          "location": 0
+        },
+        {
+          "id": "Color",
+          "type": "Float4",
+          "semantic": "COLOR0",
+          "location": 0
+        }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "id": "Geometry",
+      "stage": "vertex",
+      "source": "main_shaders/geometry.slang",
+      "function": "TransformGeometry",
+      "input": "RendererStatic",
+      "output": "RasterVarying",
+      "bindings": []
+    },
+    {
+      "id": "Color",
+      "stage": "fragment",
+      "source": "main_shaders/color.slang",
+      "function": "ShadeColor",
+      "input": "RasterVarying",
+      "output": "Color",
+      "bindings": []
+    },
+    {
+      "id": "Depth",
+      "stage": "fragment",
+      "source": "main_shaders/depth.slang",
+      "function": "WriteDepth",
+      "input": "RasterVarying",
+      "output": "Depth",
+      "bindings": []
+    },
+    {
+      "id": "Primary",
+      "stage": "compute",
+      "source": "main_shaders/primary.slang",
+      "function": "TracePrimaryHit",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ShadeWave",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "ShadeWave",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ShadeGeometricOptics",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "ShadeGeometricOptics",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "MeasureCoherence",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "MeasureCoherence",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    }
+  ],
+  "techniques": [
+    {
+      "id": "DefaultStaticOpaque.ColorAndDepth",
+      "configuration": "ColorAndDepth",
+      "vertex": "Geometry",
+      "fragment": "Color",
+      "recipes": [
+        {
+          "id": "Default",
+          "color": "RGBA8Unorm",
+          "depth": "Depth32Float",
+          "samples": 1,
+          "topology": "TriangleList",
+          "cull": "None",
+          "front": "CounterClockwise",
+          "depth_compare": "Less",
+          "depth_write": true,
+          "blend": "Opaque"
+        }
+      ]
+    },
+    {
+      "id": "DefaultStaticOpaque.DepthOnly",
+      "configuration": "DepthOnly",
+      "vertex": "Geometry",
+      "fragment": "Depth",
+      "recipes": [
+        {
+          "id": "Default",
+          "color": "None",
+          "depth": "Depth32Float",
+          "samples": 1,
+          "topology": "TriangleList",
+          "cull": "None",
+          "front": "CounterClockwise",
+          "depth_compare": "Less",
+          "depth_write": true,
+          "blend": "Opaque"
+        }
+      ]
+    },
+    {
+      "id": "RendererTriangles.RayTracing",
+      "configuration": "RayTracing",
+      "recipes": [
+        {
+          "id": "Triangles"
+        }
+      ],
+      "scene_interface": {
+        "version": 1,
+        "surface_queries": 1,
+        "visibility_queries": 1
+      }
+    }
+  ],
+  "budgets": {
+    "configurations": 8,
+    "programs": 16
+  },
+  "settings": [
+    {
+      "id": "PLT_GRATING_PERIOD_NANOMETERS",
+      "label": "Grating period (nm)",
+      "type": "Float32",
+      "value": 740,
+      "minimum": 400,
+      "maximum": 8000
+    },
+    {
+      "id": "PLT_GRATING_AMPLITUDE_NANOMETERS",
+      "label": "Grating height amplitude (nm)",
+      "type": "Float32",
+      "value": 80,
+      "minimum": 0,
+      "maximum": 500
+    },
+    {
+      "id": "PLT_GRATING_ROUGHNESS_MAXIMUM",
+      "label": "Roughest metal shaded as a grating",
+      "type": "Float32",
+      "value": 0.05,
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "id": "PLT_POINT_SOURCE_RADIUS_MILLIMETERS",
+      "label": "Point and spot natural source radius (mm)",
+      "type": "Float32",
+      "value": 5,
+      "minimum": 0.01,
+      "maximum": 1000
+    },
+    {
+      "id": "PLT_DIRECTIONAL_SOURCE_ANGULAR_RADIUS",
+      "label": "Directional natural source angular radius (rad)",
+      "type": "Float32",
+      "value": 0.004653,
+      "minimum": 1e-05,
+      "maximum": 0.5
+    },
+    {
+      "id": "PLT_COHERENCE_WAVELENGTH_NANOMETERS",
+      "label": "Coherence output wavelength (nm)",
+      "type": "Float32",
+      "value": 550,
+      "minimum": 380,
+      "maximum": 780
+    },
+    {
+      "id": "PLT_COHERENCE_DISPLAY_MICROMETERS",
+      "label": "Coherence radius shown as white (um)",
+      "type": "Float32",
+      "value": 100,
+      "minimum": 0.1,
+      "maximum": 1000000
+    }
+  ]
+}

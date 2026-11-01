@@ -619,7 +619,8 @@ def build_parser() -> argparse.ArgumentParser:
                                                    "visibility-secondary-rays", "tiled-vbuffer-nee", "compute-ray-tracing",
                                                    "simple-compute-ray-tracing", "veach-guibas-mis", "line-sampling",
                                                    "ris-projected-solid-angle", "salesin-jarosz-lines",
-                                                   "polygonal-light-sampling", "slice-sampling-luminaire"),
+                                                   "polygonal-light-sampling", "slice-sampling-luminaire",
+                                                   "steinberg-plt"),
                            default="raster",
                            help="built-in editable render graph template")
     new_graph.add_argument("--output", choices=("presentation", "offscreen", "depth"), default="presentation")

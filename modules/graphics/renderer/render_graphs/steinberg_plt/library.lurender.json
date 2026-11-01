@@ -1,0 +1,381 @@
+{
+  "version": 2,
+  "id": "SteinbergPltLibrary",
+  "default": "SteinbergPlt",
+  "configurations": [
+    {
+      "id": "SteinbergPlt",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "color",
+          "type": "ColorTexture",
+          "source": "shadeWave.color",
+          "required": true
+        },
+        {
+          "id": "geometric",
+          "type": "ColorTexture",
+          "source": "shadeGeometric.color",
+          "required": false
+        },
+        {
+          "id": "coherence",
+          "type": "ColorTexture",
+          "source": "measureCoherence.color",
+          "required": false
+        }
+      ],
+      "nodes": [
+        {
+          "id": "hits",
+          "kind": "Buffer",
+          "bytes_per_pixel": 32,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "primary",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "target": "hits",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "Primary"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget"
+          }
+        },
+        {
+          "id": "shadeWave",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "target": "hits",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "ShadeWave"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget"
+          }
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "geometric",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "shadeGeometric",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "target": "hits",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "ShadeGeometricOptics"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget"
+          }
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "coherence",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "measureCoherence",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "target": "hits",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "MeasureCoherence"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget"
+          }
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": "Texture"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "primary.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "primary.view"
+        },
+        {
+          "from": "input.color",
+          "to": "primary.color"
+        },
+        {
+          "from": "hits.buffer",
+          "to": "primary.hits"
+        },
+        {
+          "from": "input.scene",
+          "to": "shadeWave.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shadeWave.view"
+        },
+        {
+          "from": "primary.color",
+          "to": "shadeWave.color"
+        },
+        {
+          "from": "primary.hits",
+          "to": "shadeWave.hits"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "hits.size"
+        },
+        {
+          "from": "input.color",
+          "to": "renderSize.texture"
+        },
+        {
+          "from": "input.scene",
+          "to": "shadeGeometric.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shadeGeometric.view"
+        },
+        {
+          "from": "geometric.texture",
+          "to": "shadeGeometric.color"
+        },
+        {
+          "from": "shadeWave.hits",
+          "to": "shadeGeometric.hits"
+        },
+        {
+          "from": "input.scene",
+          "to": "measureCoherence.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "measureCoherence.view"
+        },
+        {
+          "from": "coherence.texture",
+          "to": "measureCoherence.color"
+        },
+        {
+          "from": "shadeGeometric.hits",
+          "to": "measureCoherence.hits"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "geometric.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "coherence.size"
+        }
+      ]
+    }
+  ]
+}
