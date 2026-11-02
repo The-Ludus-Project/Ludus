@@ -164,6 +164,54 @@
       "warmup": 0,
       "repetitions": 3,
       "timeout_seconds": 600
+    },
+    {
+      "id": "editor-texture-display",
+      "owner": "apps/editor",
+      "description": "Production editor texture display conversion at 320x180 and 1280x720, RGBA8/HDR/depth, with every pixel checked outside each measurement.",
+      "target": "ludus_editor_texture_benchmark",
+      "executable": "apps/editor/ludus_editor_texture_benchmark",
+      "arguments": [],
+      "cmake_options": {"LUDUS_BUILD_EDITOR": "ON"},
+      "environment": {},
+      "requires": ["editor"],
+      "trace": false,
+      "parser": {"kind": "tagged-rows", "tables": [{"tag": "EDTEXTURE", "columns": ["encoding", "width", "height", "sample", "cpu_ns"], "key": ["encoding", "width", "height"], "metrics": ["cpu_ns"], "where": {}, "rows": 120}], "observe": []},
+      "warmup": 1,
+      "repetitions": 5,
+      "timeout_seconds": 120
+    },
+    {
+      "id": "editor-viewport-navigation",
+      "owner": "apps/editor",
+      "description": "Native editor raster viewport: analytic-light and emissive-mesh sample Worlds, warmed camera navigation, active GUI CPU work, GPU duration, interaction-to-present latency, no output readback, and idle retention. CPU Perfetto capture is retained.",
+      "target": "ludus_editor_tests",
+      "executable": "apps/editor/ludus_editor_tests",
+      "arguments": ["[.editor-viewport-benchmark]"],
+      "cmake_options": {"LUDUS_BUILD_EDITOR": "ON", "LUDUS_EDITOR_RENDER_PREVIEW": "ON"},
+      "environment": {},
+      "requires": ["editor", "shader-tools", "presentation", "gpu"],
+      "trace": true,
+      "parser": {"kind": "tagged-rows", "tables": [{"tag": "EDVIEW", "columns": ["workload", "sample", "cpu_ns", "gpu_ns", "latency_ns"], "key": ["workload"], "metrics": ["cpu_ns", "gpu_ns", "latency_ns"], "where": {}, "rows": 60}], "observe": ["R7ADAPTER"]},
+      "warmup": 1,
+      "repetitions": 3,
+      "timeout_seconds": 300
+    },
+    {
+      "id": "renderer-view-preparation",
+      "owner": "modules/graphics/renderer",
+      "description": "Renderer camera-view CPU preparation for 128/512/1024 already ordered heterogeneous objects, using the deterministic RHI backend and checking visibility and batching.",
+      "target": "ludus_renderer_tests",
+      "executable": "modules/graphics/renderer/ludus_renderer_tests",
+      "arguments": ["[.editor-view-benchmark]"],
+      "cmake_options": {},
+      "environment": {},
+      "requires": [],
+      "trace": false,
+      "parser": {"kind": "tagged-rows", "tables": [{"tag": "EDPREPARE", "columns": ["objects", "sample", "cpu_ns"], "key": ["objects"], "metrics": ["cpu_ns"], "where": {}, "rows": 60}], "observe": []},
+      "warmup": 1,
+      "repetitions": 5,
+      "timeout_seconds": 120
     }
   ]
 }

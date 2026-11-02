@@ -289,7 +289,7 @@ and per-texel roughness. The IR already holds, and the cook reports dropping:
 | `dielectric`, `thindielectric` | F0 0.04, transmission dropped |
 | `mix` | the first material |
 | other materials | grey default, `MATERIAL_DEFAULTED` |
-| area lights | RGB/Y photometric emissive material, source sidedness and optional power; unequal resolved radiances stay separate |
+| area lights | emissive material in pbrt-v4 photometric units (RGB keeps its magnitude), source sidedness and optional power; unequal resolved radiances stay separate |
 | point, spot, distant lights | transformed world position/direction, RGB candela or lux, optional power/illuminance and spot cone |
 | infinite light | authored constant or HDR environment, converted from PBRT equal-area mapping to engine equirectangular mapping |
 | unsupported light types | skipped and counted |
@@ -319,15 +319,21 @@ meshes whose per-triangle bake charts are derived rather than stored
 and alpha-masked materials within the import profile. Older v1 to v4 bundles remain
 readable; v1/v2 keep their historical two-sided emission.
 
-PBRT's spectral photometry is approximated by fixed Rec.709 RGB luminance:
-source color is divided by `0.2126 R + 0.7152 G + 0.0722 B`, then multiplied by
-`scale`. Requested area-light power resolves per placed shape after scaling as
-`RGB/Y × scale × lumens / (π × world area × side count)`. Point power divides by
-`4π`; distant illuminance is lux. The engine uses squared spot falloff, so power
+Light units follow pbrt-v4, whose `SpectrumToPhotometric` normalizes a light's
+spectrum to one nit but measures only the illuminant behind an RGB value. An RGB
+`L` or `I` therefore keeps its magnitude: `rgb L [30 30 30]` emits 30 nits, times
+`scale`. Blackbody and other spectra, and the default white, are normalized with
+fixed Rec.709 luminance `0.2126 R + 0.7152 G + 0.0722 B` to one nit, then multiplied
+by `scale`. Requested area-light power resolves per placed shape after scaling as
+`C × scale × lumens / (π × world area × side count)`, where `C` is the RGB value or
+the normalized spectrum, so the recorded power is the light's emitted luminous
+power. Point power divides by `4π`; distant illuminance is lux. Imports made before
+this rule divided RGB lights by their own luminance; reimport into a fresh World to
+correct their brightness. The engine uses squared spot falloff, so power
 normalization integrates that lobe rather than PBRT's smoothstep lobe. Outer
 half angle is PBRT `coneangle`; inner is `coneangle - conedeltaangle`.
 
-Constant environments normalize RGB/Y, with optional illuminance divided by π.
+Constant environments follow the same rule, with optional illuminance divided by π.
 HDR PFM preserves linear energy; PNG/TGA environments decode sRGB. The source
 light transform rotates the environment into world space. Optional HDR
 illuminance uses bounded angular quadrature over the source light-space +Z

@@ -14,7 +14,7 @@ import init_terminal
 
 
 SUPPORTED_PRESETS = tuple(f"{family}-clang-{flavor}" for family in ("linux", "macos")
-                          for flavor in ("debug", "development", "asan-ubsan"))
+                          for flavor in ("debug", "development", "profile", "asan-ubsan"))
 QT_PACKAGES = ("qt6-base-dev", "qt6-wayland")
 QT_PREVIEW_PACKAGES = ("qt6-declarative-dev",)
 

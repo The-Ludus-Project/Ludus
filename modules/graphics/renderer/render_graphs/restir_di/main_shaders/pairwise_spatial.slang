@@ -43,12 +43,15 @@ float3 ShadeStochasticReservoir(SceneContext scene, RayLaunch launch, inout RayQ
         return float3(0);
     }
     float canonicalConfidence = float(current.CandidateCount);
-    float confidenceScale = neighborCount > 0 ? min(float(RESTIR_PAIRWISE_SAMPLES) / float(neighborCount), 1) : 0;
+    float confidenceScale = 0;
+    if (TryComputePairwiseConfidenceScale(RESTIR_PAIRWISE_SAMPLES, neighborCount, confidenceScale) == false)
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
     float confidenceSum = float(cell.z - current.CandidateCount) * confidenceScale;
     float canonicalMis = 1;
     if (confidenceSum > 0)
     {
-        canonicalMis = canonicalConfidence / (confidenceSum + canonicalConfidence);
+        if (TryComputePairwiseCanonicalBase(confidenceSum, canonicalConfidence, canonicalMis) == false)
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
         [loop] for (uint draw = 0; draw < RESTIR_PAIRWISE_CANONICAL_SAMPLES; ++draw)
         {
             uint slot = SamplePairwiseIndex(launch, draw, neighborCount, queries);
@@ -58,12 +61,20 @@ float3 ShadeStochasticReservoir(SceneContext scene, RayLaunch launch, inout RayQ
                 continue;
             SurfaceHit receiver = GetPairwiseReceiver(scene, neighbor);
             float target = EvaluateSampleTarget(scene, receiver, current.TriangleIndex, current.Barycentric);
-            canonicalMis += float(neighborCount) / float(RESTIR_PAIRWISE_CANONICAL_SAMPLES) *
-                            EvaluatePairwiseCanonicalBeta(float(neighbor.CandidateCount) * confidenceScale,
-                                                          confidenceSum,
-                                                          canonicalConfidence,
-                                                          target,
-                                                          canonicalTarget);
+            float term = 0;
+            float correctedTerm = 0;
+            if (TryComputePairwiseCanonicalTerm(float(neighbor.CandidateCount) * confidenceScale,
+                                                confidenceSum,
+                                                canonicalConfidence,
+                                                target,
+                                                canonicalTarget,
+                                                term) == false ||
+                TryComputeStochasticMisWeight(term,
+                                              1 / float(neighborCount),
+                                              RESTIR_PAIRWISE_CANONICAL_SAMPLES,
+                                              correctedTerm) == false)
+                FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
+            canonicalMis += correctedTerm;
         }
     }
     float weightSum = 0;
@@ -93,12 +104,19 @@ float3 ShadeStochasticReservoir(SceneContext scene, RayLaunch launch, inout RayQ
                 continue;
             float sourceTarget = asfloat(LoadPairwiseCell(launch, pixel).y);
             float destinationTarget = EvaluateSampleTarget(scene, hit, neighbor.TriangleIndex, neighbor.Barycentric);
-            float mis = EvaluatePairwiseNeighborMis(float(neighbor.CandidateCount) * confidenceScale,
-                                                    confidenceSum,
-                                                    canonicalConfidence,
-                                                    sourceTarget,
-                                                    destinationTarget);
-            float weight = mis * destinationTarget * neighbor.Weight / (float(RESTIR_PAIRWISE_SAMPLES) * probability);
+            float mis = 0;
+            float correctedMis = 0;
+            float weight = 0;
+            if (TryComputePairwiseNeighborMis(float(neighbor.CandidateCount) * confidenceScale,
+                                              confidenceSum,
+                                              canonicalConfidence,
+                                              sourceTarget,
+                                              destinationTarget,
+                                              mis) == false ||
+                TryComputeStochasticMisWeight(mis, probability, RESTIR_PAIRWISE_SAMPLES, correctedMis) == false ||
+                TryComputePairwiseResamplingWeight(correctedMis, destinationTarget, neighbor.Weight, 1, weight) ==
+                    false)
+                FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
             StreamReservoir(neighbor.TriangleIndex,
                             neighbor.Barycentric,
                             weight,
@@ -112,7 +130,11 @@ float3 ShadeStochasticReservoir(SceneContext scene, RayLaunch launch, inout RayQ
     // Equation 7: UCW = sum(w) / target(Y), with NO additional M division.
     result.CandidateCount = current.CandidateCount;
     if (result.TriangleIndex != SCENE_INVALID_INDEX)
-        result.Weight = weightSum / EvaluateSampleTarget(scene, hit, result.TriangleIndex, result.Barycentric);
+    {
+        float target = EvaluateSampleTarget(scene, hit, result.TriangleIndex, result.Barycentric);
+        if (TryComputePairwiseContributionWeight(weightSum, target, result.Weight) == false)
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
+    }
     if (isfinite(result.Weight) == false || result.Weight < 0)
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
     radiance += ShadeReservoir(scene, hit, result, queries);

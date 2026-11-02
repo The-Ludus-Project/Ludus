@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import runpy
 from pathlib import Path
 import subprocess
 import tempfile
@@ -176,7 +177,7 @@ class Manifest(unittest.TestCase):
             "option": scenario_entry(cmake_options={"CMAKE_BUILD_TYPE": "Debug"}),
             "repetitions": scenario_entry(repetitions=0),
             "parser": scenario_entry(parser={"kind": "unknown"}),
-            "trace": scenario_entry(trace=True),
+            "trace": scenario_entry(trace=False, parser={"kind": "perfetto-scopes"}),
             "csv": scenario_entry(parser={"kind": "csv", "header": "a,b", "key": ["a"], "metrics": ["c"], "ignore": []}),
             "regex": scenario_entry(parser={"kind": "regex", "pattern": "(?P<label>.*)"}),
             "environment": scenario_entry(environment={"PATH": "/tmp"}),
@@ -254,7 +255,7 @@ class Workflow(unittest.TestCase):
         self.assertIn('arguments+=(--capability "$GPU_CLASS" --device "$DEVICE")', hosted)
         self.assertEqual(hosted.count('gpu_class: ""'), 1, "the Ubuntu lane declares no GPU")
         scenarios = runtime_profile.load_manifest(ROOT / runtime_profile.MANIFEST_PATH)
-        macos = runtime_profile.resolve_capabilities({"shader-tools"}, ["presentation", "gpu-apple-paravirtual"],
+        macos = runtime_profile.resolve_capabilities({"shader-tools"}, ["presentation", "editor", "gpu-apple-paravirtual"],
                                                     "GitHub-hosted macos-15 arm64 runner, Apple paravirtual Metal GPU")
         self.assertTrue(all(reason is None for _, reason in runtime_profile.select_scenarios(scenarios, [], macos)))
 
@@ -317,15 +318,26 @@ class Capabilities(unittest.TestCase):
 
     def test_gpu_scenarios_are_skipped_without_a_gpu_class(self):
         scenarios = runtime_profile.load_manifest(ROOT / runtime_profile.MANIFEST_PATH)
-        hosted = runtime_profile.select_scenarios(scenarios, [], {"shader-tools", "presentation"})
+        hosted = runtime_profile.select_scenarios(scenarios, [], {"shader-tools", "presentation", "editor"})
         device = runtime_profile.select_scenarios(scenarios, [], runtime_profile.resolve_capabilities(
-            {"shader-tools"}, ["gpu-apple-m5", "presentation"], "Apple M5"))
+            {"shader-tools"}, ["gpu-apple-m5", "presentation", "editor"], "Apple M5"))
         gpu = {scenario.id for scenario in scenarios if runtime_profile.GPU_CAPABILITY in scenario.requires}
         self.assertEqual({scenario.id for scenario, reason in hosted if reason is not None}, gpu)
         self.assertTrue(all(reason is None for _, reason in device))
 
 
 class Parsers(unittest.TestCase):
+    def test_p95_uses_nearest_rank_in_the_runner_and_native_benchmarks(self):
+        values = list(range(30))
+        functions = [runtime_profile.percentile]
+        functions += [runpy.run_path(str(ROOT / "scripts" / name), run_name=name.replace("-", "_"))["percentile"]
+                      for name in ("benchmark-rhi", "benchmark-renderer")]
+        for function in functions:
+            with self.subTest(function=function.__module__):
+                self.assertEqual(function(values, 0.95), 28)
+                self.assertEqual(function(values, 0.5), 14)
+                self.assertEqual(function([7], 0.95), 7)
+
     def test_key_value_uses_identity_paths(self):
         metrics = runtime_profile.parse_key_value(THREADING_OUTPUT, ["iterations", "workers"], ["median_ns"])
         self.assertEqual(metrics, {
@@ -368,7 +380,7 @@ class Parsers(unittest.TestCase):
              "where": {"state": "3"}, "rows": 4},
         ])
         self.assertEqual(metrics["R5/layers=1/merge=0/execute_cpu_median_ns"], 3000.0)
-        self.assertEqual(metrics["R5/layers=1/merge=0/execute_cpu_p95_ns"], 3000.0)
+        self.assertEqual(metrics["R5/layers=1/merge=0/execute_cpu_p95_ns"], 4000.0)
         self.assertEqual(metrics["R5/layers=1/merge=1/samples"], 2.0)
         self.assertEqual(metrics["R7/layers=1/merge=0/gpu_duration_median_ns"], 1200.0)
         self.assertEqual(metrics["R7/layers=1/merge=1/samples"], 1.0, "pending/unavailable samples are not durations")
@@ -512,6 +524,19 @@ class Execution(unittest.TestCase):
         result = runtime_profile.run_scenario(self.scenario(), self.build, self.output, runner=FakeRunner([""]))
         self.assertIn("was not built", result["reason"])
 
+    def test_tagged_samples_keep_a_valid_trace_without_unstable_scope_sets(self):
+        scenario = self.scenario(trace=True, parser=rhi_parser())
+        runner = FakeRunner([RHI_OUTPUT], trace=trace_document())
+        result = runtime_profile.run_scenario(scenario, self.build, self.output, runner=runner)
+        self.assertEqual(result["status"], "passed", result.get("reason"))
+        self.assertEqual(result["trace"], "traces/sample.json")
+        self.assertFalse(any(name.startswith("scope=") for name in result["metrics"]))
+        for trace in (None, {"traceEvents": []}):
+            with self.subTest(trace=trace):
+                result = runtime_profile.run_scenario(scenario, self.build, self.output,
+                                                     runner=FakeRunner([RHI_OUTPUT], trace=trace))
+                self.assertEqual(result["status"], "failed")
+
     def test_environment_is_declared_and_controlled_variables_do_not_leak(self):
         scenario = self.scenario(environment={"LUDUS_RHI_BENCHMARK": "1"})
         runner = FakeRunner(["workers=1 median_ns=10\n"])
@@ -594,6 +619,15 @@ class Comparison(unittest.TestCase):
         self.assertTrue(deltas["a_ns"]["notable"])
         self.assertFalse(deltas["b_ns"]["notable"], "overlapping repetition ranges are noise")
         self.assertFalse(deltas["c_ns"]["notable"], "below the relative notice threshold")
+
+    def test_legacy_percentiles_are_not_compared_to_corrected_percentiles(self):
+        metrics = {"scope=Tick/p95_ns": [100], "EDVIEW/cpu_p95_ns": [100], "EDVIEW/cpu_median_ns": [100]}
+        baseline = self.report(metrics)
+        current = self.report(metrics)
+        current["percentile_method"] = runtime_profile.PERCENTILE_METHOD
+        self.assertEqual(set(runtime_profile.compare(current, baseline)["sample"]), {"EDVIEW/cpu_median_ns"})
+        baseline["percentile_method"] = runtime_profile.PERCENTILE_METHOD
+        self.assertEqual(set(runtime_profile.compare(current, baseline)["sample"]), set(metrics))
 
     def test_trace_metrics_need_a_change_above_clock_resolution(self):
         baseline = self.report({"scope=Tick/median_ns": [208, 209, 209], "scope=Frame/median_ns": [1000, 1000, 1000]})

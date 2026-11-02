@@ -1640,11 +1640,11 @@ stream, rather than copying the book's container implementation.
 
 ### Use stochastic pairwise MIS for large spatial kernels
 
-A newly created **ReSTIR DI** package also provides the **StochasticPairwise**
+Newly created **ReSTIR DI** and **ReSTIR GI** packages provide the **StochasticPairwise**
 configuration in its root graph and reusable library. Select this configuration
 on the ReSTIR Subgraph (the configuration field is available on the canvas),
 then **Build Graph** and select the built graph for the viewport. From the CLI,
-create the same editable package with `--template restir-di` and build with
+create the editable package with `--template restir-di` or `--template restir-gi` and build with
 `--configuration StochasticPairwise`. Existing copied packages keep their authored
 sources; create a fresh package to obtain this configuration.
 
@@ -1675,7 +1675,9 @@ independently of the configuration's indices in a containing ray sequence.
    without an additional candidate-count division. Final shading traces visibility.
 
 **Graph Settings** exposes `RESTIR_PAIRWISE_SAMPLES` (default 3) and
-`RESTIR_PAIRWISE_CANONICAL_SAMPLES` (default 1), each from 1 to 16. These settings
+`RESTIR_PAIRWISE_CANONICAL_SAMPLES` (default 1), each from 1 to 8. The shared setting IDs and ranges are identical in both packages;
+together the draws fit GI's 16-query visibility budget. The scalar API itself
+does not impose this graph-preset draw limit. These settings
 control expensive shifted target evaluations, independently of the tile's up to
 63 neighbors. Selection mixes the cached importance CDF with 5% uniform sampling;
 this preserves selection support even when tiny positive CDF increments round to
@@ -1708,6 +1710,68 @@ sparse cells, canonical exclusion and repeated selections (`[pairwise-reuse]` in
 undersized storage, resize and scene replacement (`[restir]` in
 `ludus_render_graph_ray_tests`). These tests establish the implemented DI scope;
 they do not qualify the paper's full path-space implementation.
+
+The GI configuration uses four ordered passes: fresh initial sampling into a
+64-byte reservoir, cell construction, stochastic spatial reuse, and the existing
+GI shading pass. Its spatial buffer uses 80 bytes per pixel: a 64-byte result
+followed by the immutable 16-byte cell record. A valid receiver retains confidence
+one even when its initial ray misses; dropping those null proposals would change
+the canonical correction. It honors GI's source distribution, target, path-bounce
+and spatial-enable settings. Temporal settings and the legacy neighbor-count/M
+settings do not control this fresh pairwise configuration.
+
+GI evaluates solid-angle reconnection Jacobians. Both neighbor MIS and canonical
+correction use `sourceTarget / abs(forwardJacobian)`; resampling multiplies by the
+forward Jacobian. A canonical correction also checks whether the neighbor's
+hemisphere and visible first-hit distribution could have proposed that sample.
+Each shifted neighbor tests destination visibility before entering the reservoir.
+These support checks apply regardless of the legacy `IS_RESTIR_GI_UNBIASED`
+setting. `[restir-gi]` compares raw linear accumulation against the independent
+GI estimator without reuse; it does not use denoising to establish convergence.
+The maximum-draw regression also exercises cosine sampling, the scattered target,
+maximum path depth and triangle-edge reconstruction with no latched failures.
+
+#### Use the method in custom shaders
+
+The installed SDK exposes the scalar operations independently of any graph:
+
+```slang
+#include "stochastic_pairwise_mis.slang"
+
+float proxy = 0;
+float mis = 0;
+float corrected = 0;
+if (TryComputePairwiseShiftedTarget(sourceTarget, forwardJacobian, proxy) == true &&
+    TryComputePairwiseNeighborMis(confidence, confidenceSum, canonicalConfidence,
+        proxy, destinationTarget, mis) == true &&
+    TryComputeStochasticMisWeight(mis, selectionPmf, drawCount, corrected) == true)
+{
+    // Stream this occurrence using TryComputePairwiseResamplingWeight.
+}
+```
+
+Compile standalone shaders with the installed `ludus_compile_shader` helper,
+which supplies the installed shader include directory. C++ callers include
+`<ludus/foundation/math/stochastic_pairwise_mis.hpp>` and link
+`Ludus::FoundationMath`. See the [Math API contracts](../modules/foundation/math.md#stochastic-pairwise-mis)
+for status and output-preservation behavior. The Shader API panel and completion
+also expose these functions in scene compute programs.
+
+Scene compute programs receive both the scalar API and Renderer-owned
+`stochastic_reuse.slang` automatically. A custom `IPairwiseCellReader` supplies
+immutable inclusive CDF prefixes through `ReadPrefix(absolutePixel)`; it can read
+the caller's own bound buffer without adopting the supplied DI/GI record layout.
+`GetReuseCellExtent`, `GetReuseCellPixel` and `GetReuseCanonicalSlot` describe the
+clipped tile. `ComputeReuseCellMass` recovers prefix differences, and
+`SampleReuseCellNeighbor` returns a noncanonical slot plus its mixture PMF.
+Supply the sum of recovered noncanonical masses, reserve three disjoint random
+dimensions per call and use a separate reservoir coin. `GetGraphPassIndex()` is
+the package program index and can change when programs are added or renamed;
+use caller-owned stable scope constants for streams that must survive graph edits. Cells need at least two
+pixels; single-pixel cells keep only their canonical estimator. The reader's
+storage must stay alive and immutable throughout reuse. Custom kernels using
+Renderer's scene types can explicitly include `stochastic_reuse.slang` after
+those types are declared. Neither helper allocates resources or binds buffers.
 
 ### Run the production ReSTIR DI configuration
 
@@ -4287,8 +4351,10 @@ program limit is too small, the picker offers **Increase and apply**, showing th
 current and required counts. Approval raises `budgets.programs` to the required
 count together with the template; **Cancel** preserves the draft. Undo/Redo restores
 both changes, and **Save** publishes them together. Programs times target profiles
-beyond the supported 128 target artifacts cannot be approved; that error names the
-counts to reduce. Other capacity failures still report the required repair.
+beyond the supported 1024 target artifacts cannot be approved; that error names the
+counts and the canvas actions **Remove Unused Shaders** and **Delete Subgraph and Library**,
+or suggests reducing target profiles in the shader manifest. Other capacity failures
+still report the required repair.
 Secondary rays require a native profile. Existing ordinary ray configurations can
 share the package: their callbacks, payload source and query limits are retained.
 The shared `ScenePayload` needs a `float3 Radiance` field; comments, whitespace and
@@ -5408,6 +5474,19 @@ second horizon clip feeds the specular edge sum. Each corner costs one edge term
 and no ellipse/sector state for importance sampling is built. The independent CPU
 check fans each record into clip-safe pieces of at most six corners and retains that
 sampling preparation; both integrals are additive over the fan.
+Raster edge integration uses a degree-nine polynomial for
+`acos(x) / sqrt(1 - x*x)` on `[0,1]`, with the finite limit one at the endpoint.
+Its coefficients are generated from ten Chebyshev interpolation nodes in
+FoundationMath's shader owner. Obtuse edges use `pi - angle` and the measured
+cross-product length, preserving the antipodal behavior without subtracting
+nearly equal squared lengths. This removes an `atan2` and, for acute edges, a
+square root and division per edge. The GPU regression checks signed edge terms
+against the independent exact CPU angle within 2e-6 radians across the full angle
+range, both windings, grazing endpoints and coordinate scales from 1e-30 to 1e30.
+This is a raster numerical approximation; reference transport and the CPU oracle
+retain exact trigonometric integration. In the measured 1600 x 1080 Staircase2
+saved view, 224 of 1,728,000 output pixels changed by at most one 8-bit step.
+
 Polygons entirely below the receiver horizon contribute zero; crossing polygons
 are clipped before the LTC transform. This preserves emitter geometry and the
 lighting integral without sampling lights.
@@ -5839,7 +5918,7 @@ The closed version-1 `.lushader.json` source has these fields:
 | `schemas` | At most 16 named `Uniform`, `Vertex` or `Varying` schemas; at most 16 fields each |
 | `programs` | Named stage/function/source records; input/output schemas and explicit uniform bindings |
 | `techniques` | Explicit `DefaultStaticOpaque.ColorAndDepth`/`.DepthOnly` and/or `DefaultStaticMasked.ColorAndDepth`/`.DepthOnly` mappings and legal pipeline recipes |
-| `budgets` | Author bounds for configurations, programs, emitted artifacts and pipeline recipes |
+| `budgets` | Author bounds for configurations and registered programs; legacy artifact/pipeline budgets are ignored |
 | `settings` (optional) | Up to 128 typed shader constants exposed in Properties and the canvas Graph Settings dialog |
 
 Each setting declares `id`, `label`, `type`, and `value`. Types are `UInt32`,
@@ -5903,7 +5982,7 @@ when that authored budget admits them; editor shader creation grows it as needed
 The configuration budget is at most 8. Target artifacts (registered programs
 multiplied by target profiles) and target pipelines (raster recipes multiplied by
 target profiles) follow from the manifest itself, so they have no authored budget:
-only the supported ceilings of 128 target artifacts and 64 target pipelines bound
+only the supported ceilings of 1024 target artifacts and 64 target pipelines bound
 them, and the error names the counts to reduce. Source and package byte/file limits
 also apply. Manifests written by older tools may still carry `budgets.artifacts` and
 `budgets.pipelines`; the builder accepts and ignores them, and the editor removes them
@@ -5925,13 +6004,21 @@ and rejects recursive shader calls or duplicate callbacks. Unguarded include cyc
 report the complete cycle, separately from the include-depth limit. Conditional
 includes are conservatively tracked; a conditional pragma is not treated as a guard.
 The compiler reads staged captured sources only, and its dependency file is
-checked against that closure. The combined build snapshot is bounded to 128
+checked against that closure. The combined build snapshot is bounded to 512
 files/4 MiB, including graph metadata, authored shaders and SDK helpers; each
 file is at most 128 KiB, with include depth 16. The native shader worker retains
 its separate 64-file request limit, including the generated wrapper. Each stage
 receives only its captured closure from the larger package snapshot. Source or
 compiler limit failures preserve the prior package. Generated artifacts are at most 2 MiB each
-and a generation is at most 64 MiB/1024 files. Use `--root` for a containing
+and a generation is at most 64 MiB/8192 files, with a separately bounded 2 MiB integrity
+index. These package-wide ceilings accommodate the shipped template catalog, which
+currently declares 144 programs and 235 files (about 1.2 MB before SDK helpers),
+without requiring deletion of built-in libraries. A catalog regression counts every
+template plus SDK helpers against the source bounds, and all four profiles against
+the artifact ceiling. This capacity check does not promise that every template can
+execute on every profile or that every library combination shares a compatible ABI.
+Authored files and SDK helpers use the same admission check before capture, so a helper
+cannot silently overfill the snapshot. Use `--root` for a containing
 package when the sibling root/manifest lives in a subdirectory; program source
 paths are relative to that package root, not the manifest directory.
 

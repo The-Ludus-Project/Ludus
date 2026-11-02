@@ -375,7 +375,7 @@ class NativePrerequisiteTests(unittest.TestCase):
         self.assertRegex(action, r"editor:\n    description: [^\n]+\n    default: 'true'")
         workflow = (self.ROOT / ".github/workflows/performance.yml").read_text()
         profile_setup = workflow.split("      - name: Prepare macOS tools and the Profile preset\n", 1)[1]
-        self.assertIn("editor: 'false'", profile_setup.split("      - name:", 1)[0])
+        self.assertIn("editor: 'true'", profile_setup.split("      - name:", 1)[0])
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for name, body in (("brew", 'printf "%s\\n" "$@"'), ("git", "exit 0"),

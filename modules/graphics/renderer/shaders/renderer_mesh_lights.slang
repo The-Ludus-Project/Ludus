@@ -50,7 +50,7 @@ void AddMeshLightEdgeVertex(inout MeshLightEdgeSum inoutSum, float3 positionTang
     float3 directionTangent = NormalizeProjectedDirection(positionTangent);
     if (inoutSum.Count > 0)
     {
-        inoutSum.Integral += ComputeProjectedSolidAngleEdge(inoutSum.PreviousTangent, directionTangent);
+        inoutSum.Integral += ComputeRasterProjectedSolidAngleEdge(inoutSum.PreviousTangent, directionTangent);
     }
     else
     {
@@ -66,7 +66,7 @@ float CloseMeshLightEdgeSum(MeshLightEdgeSum sum)
     {
         return 0;
     }
-    float integral = sum.Integral + ComputeProjectedSolidAngleEdge(sum.PreviousTangent, sum.FirstTangent);
+    float integral = sum.Integral + ComputeRasterProjectedSolidAngleEdge(sum.PreviousTangent, sum.FirstTangent);
     return min(abs(integral) * 0.5, PI);
 }
 // Emit the clipped part of the edge start -> end into a sum: its horizon crossing, then end when not below.

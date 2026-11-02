@@ -15,6 +15,28 @@ from ludus_tools.errors import ToolingError
 
 
 class RestirTemplateTests(unittest.TestCase):
+    def test_shipped_catalog_fits_aggregate_source_and_target_artifact_policy(self):
+        from ludus_tools import render_graph_templates as templates
+        # Count disjoint copies conservatively: real imports reuse schemas, manifests,
+        # callbacks and techniques. Guard new built-ins against the package ceilings.
+        files = []
+        programs = 0
+        for identity in templates.TEMPLATES:
+            contents = templates.template_files(identity, ('metal', 'spirv'), graph)
+            programs += len(json.loads(contents['main.lushader.json'])['programs'])
+            files.extend(text.encode() for text in contents.values())
+        self.assertLessEqual(programs * len(build.TARGETS), build.LIMITS['artifacts'])
+        # Capture every shipped helper too, rather than keeping a guessed helper allowance.
+        from test_render_graph_ray import HELPER_ROOTS, ROOT
+        helpers = {}
+        for owner in HELPER_ROOTS:
+            for path in (ROOT / owner).iterdir():
+                if path.is_file() and path.suffix in ('.h', '.slang', '.json'):
+                    helpers.setdefault(path.name, path.read_bytes())
+        files.extend(helpers.values())
+        self.assertLessEqual(len(files), build.MAX_FILES)
+        self.assertLessEqual(sum(map(len, files)), build.MAX_BYTES)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -137,11 +159,37 @@ class StochasticPairwiseTemplateTests(unittest.TestCase):
                 self.assertEqual(values['RESTIR_PAIRWISE_SAMPLES']['value'], 3)
                 self.assertEqual(values['RESTIR_PAIRWISE_CANONICAL_SAMPLES']['value'], 1)
                 for identity in ('RESTIR_PAIRWISE_SAMPLES', 'RESTIR_PAIRWISE_CANONICAL_SAMPLES'):
-                    for invalid in (0, 17):
+                    for invalid in (0, 9):
                         changed = copy.deepcopy(manifest)
                         next(s for s in changed['settings'] if s['id'] == identity)['value'] = invalid
                         with self.assertRaises(ToolingError):
                             build.validate_manifest(changed)
+
+    def test_gi_configuration_reuses_core_with_its_own_record_and_query_contracts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = graph.new_workspace(Path(temporary) / 'gi', output='offscreen', renderer_static=True,
+                                       profiles=('metal',), template='restir-gi')
+            plan = graph.compile_graph(root, configuration='StochasticPairwise')
+            passes = [p for p in plan['passes'] if p['kind'] == 'RayTracing']
+            self.assertEqual([p['id'].rsplit('/', 1)[-1] for p in passes], ['initial', 'cells', 'spatial', 'shade'])
+            buffers = [r for r in plan['resources'].values() if r['type'] == 'Buffer']
+            self.assertEqual(sorted(r['bytes_per_pixel'] for r in buffers), [64, 80])
+            manifest = json.loads(root.with_name('main.lushader.json').read_text())
+            values = {s['id']: s for s in manifest['settings']}
+            self.assertEqual(values['RESTIR_PAIRWISE_SAMPLES']['value'], 3)
+            self.assertEqual(values['RESTIR_PAIRWISE_CANONICAL_SAMPLES']['value'], 1)
+            maximum = values['RESTIR_PAIRWISE_SAMPLES']['maximum'] + values['RESTIR_PAIRWISE_CANONICAL_SAMPLES']['maximum']
+            interface = next(t['scene_interface'] for t in manifest['techniques'] if 'scene_interface' in t)
+            self.assertLessEqual(maximum, interface['visibility_queries'])
+            build.validate_manifest(manifest)
+            plans = [graph.compile_graph(root, configuration=identity)
+                     for identity in ('Default', 'Production', 'StochasticPairwise')]
+            variants = sorted({ray.program_tuple(operation['pipeline']) for current in plans
+                               for operation in current['passes'] if operation['kind'] == 'RayTracing'})
+            # GetGraphPassIndex also scopes the existing GI random streams. New program IDs
+            # must sort after all shipped IDs so adding the configuration does not reseed them.
+            self.assertEqual(variants[:5], [('Initial',), ('ProductionShade',), ('Shade',),
+                                           ('Spatial',), ('Temporal',)])
 
 
 class RestirProductionTemplateTests(unittest.TestCase):
@@ -156,8 +204,7 @@ class RestirProductionTemplateTests(unittest.TestCase):
                 build.validate_manifest(manifest)
                 asset = json.loads(root.read_text())
                 self.assertEqual([record["id"] for record in asset["configurations"]],
-                                 ["Default", "Production", "StochasticPairwise"] if kind == "di" else
-                                 ["Default", "Production"])
+                                 ["Default", "Production", "StochasticPairwise"])
                 plans = [graph.compile_graph(root, configuration=identity) for identity in ("Default", "Production")]
                 operations = [operation for operation in plans[1]["passes"] if operation["kind"] == "RayTracing"]
                 self.assertEqual(len(operations), 2 if kind == "di" else 1)
@@ -204,7 +251,11 @@ class RestirProductionTemplateTests(unittest.TestCase):
             production = library["configurations"][1]
             base_node = next(node for node in production["nodes"] if node["id"] == "shade")
             previous = "shade"
-            for index in range(ray.MAX_RAY_PROGRAMS - 4):
+            variants = {ray.program_tuple(operation['pipeline'])
+                        for configuration in asset['configurations']
+                        for operation in graph.compile_graph(root, configuration=configuration['id'])['passes']
+                        if operation['kind'] == 'RayTracing'}
+            for index in range(ray.MAX_RAY_PROGRAMS + 1 - len(variants)):
                 identity = "Extra" + str(index)
                 node = copy.deepcopy(base_node)
                 node["id"] = identity
@@ -917,7 +968,9 @@ class RestirGiTemplateTests(unittest.TestCase):
         self.assertEqual([(program['id'], program['function']) for program in compute],
                          [('Initial', 'GenerateInitialSample'), ('Temporal', 'ResampleTemporal'),
                           ('Spatial', 'ResampleSpatial'), ('Shade', 'ShadeRestirGi'),
-                          ('ProductionShade', 'ShadeProductionGi')])
+                          ('ProductionShade', 'ShadeProductionGi'),
+                          ('UnbiasedPairwiseInitial', 'InitializePairwiseGi'), ('UnbiasedPairwiseCells', 'BuildPairwiseGiCells'),
+                          ('UnbiasedPairwiseSpatial', 'ResamplePairwiseGi')])
 
     def test_settings_use_the_paper_defaults_and_shaders_cite_it(self):
         import re

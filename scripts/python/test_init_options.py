@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import engine
 import init_denoiser
+import init_editor
 import init_options
 import init_ui
 
@@ -21,6 +22,14 @@ import init_ui
 class OptionsTests(unittest.TestCase):
     def args(self, *options):
         return init_ui.apply_defaults(engine.make_parser().parse_args(["init", "--cli", *options]))
+
+    def test_profile_editor_setup_is_supported_for_runtime_measurements(self):
+        for system, family in (("Linux", "linux"), ("Darwin", "macos")):
+            with self.subTest(system=system), patch.object(init_editor, "supported_host", return_value=True), \
+                    patch.object(init_editor.platform, "system", return_value=system), \
+                    patch.object(init_editor.platform, "mac_ver", return_value=("26.0", (), "")):
+                arguments = self.args("--with-editor", "--preset", f"{family}-clang-profile")
+                init_editor.validate_editor_options(arguments, engine)
 
     def test_personas_and_explicit_target_choices(self):
         for persona, tests, samples in (("contributor", False, True), ("application", False, False),

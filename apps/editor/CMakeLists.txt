@@ -120,7 +120,8 @@ separate_arguments(shader_build_limits)
 list(GET shader_build_limits 0 shader_artifact_limit)
 list(GET shader_build_limits 1 shader_pipeline_limit)
 set_property(SOURCE src/render_graph_shader_creation.cpp src/render_graph_configuration_template.cpp
-    src/render_graph_techniques.cpp tests/render_graph_template_tests.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    src/render_graph_techniques.cpp tests/render_graph_template_tests.cpp tests/render_graph_pipeline_tests.cpp
+    APPEND PROPERTY COMPILE_DEFINITIONS
     "LUDUS_EDITOR_MAX_SHADER_ARTIFACTS=${shader_artifact_limit}" "LUDUS_EDITOR_MAX_SHADER_PIPELINES=${shader_pipeline_limit}")
 
 # Native snapshot transport uses the backend owner's encoded admission policy.
@@ -344,8 +345,12 @@ function(ludus_editor_add_shader_api target)
         PREFIX "/shader-api" BASE "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders"
         FILES "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/ray_shader.slang"
               "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/scene_shader.slang"
+              "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/stochastic_reuse.slang"
               "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/scene_payload.slang"
               "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/visibility_buffer.slang")
+    qt_add_resources(${target} ludus_resampling_shader_api
+        PREFIX "/shader-api" BASE "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
+        FILES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/stochastic_pairwise_mis.slang")
 endfunction()
 
 # Lucide icon files (ISC, see icons/LICENSE) parsed by src/editor_icons.cpp.
@@ -803,6 +808,13 @@ endif()
 # Offscreen Qt tests verify logic and widget wiring without a GPU/compositor.
 # They do NOT prove native Wayland interaction or that a game rendered a frame.
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
+    add_executable(ludus_editor_texture_benchmark EXCLUDE_FROM_ALL
+        tests/texture_display_benchmark.cpp src/texture_inspection.cpp)
+    target_include_directories(ludus_editor_texture_benchmark PRIVATE src)
+    target_compile_definitions(ludus_editor_texture_benchmark PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    target_link_libraries(ludus_editor_texture_benchmark PRIVATE Qt6::Gui
+        Ludus::FoundationMath Ludus::FoundationProfiling)
+    ludus_apply_project_defaults(ludus_editor_texture_benchmark)
     if(TARGET Qt6::Quick)
         add_executable(ludus_viewport_overlay_benchmark EXCLUDE_FROM_ALL
             tests/viewport_object_overlay_benchmark.cpp src/viewport_object_overlay_geometry.cpp)
@@ -1182,7 +1194,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_sources(ludus_editor_tests PRIVATE tests/preview_shader_reload_tests.cpp)
         target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp
             tests/reference_comparison_tests.cpp)
-        target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp
+        target_sources(ludus_editor_tests PRIVATE tests/viewport_performance_tests.cpp tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp
             tests/raster_mesh_light_benchmark_tests.cpp tests/render_graph_capture_profile_tests.cpp
             tests/render_graph_library_capture_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE

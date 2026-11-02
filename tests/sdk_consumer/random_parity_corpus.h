@@ -5,6 +5,8 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
+#include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/stochastic_pairwise_mis.hpp>
 #include <ludus/foundation/math/weighted_reservoir.hpp>
 
 #include "random_parity_layout.h"
@@ -412,6 +414,113 @@ private:
 /// cases, padded to whole workgroups.
 /// @return False when allocation fails or the CPU reference disagrees with a
 ///         pinned key derivation; the corpus is then unusable.
+// Installed CPU API drives the same standalone include corpus on native and WebGPU backends.
+inline uint32 GetPairwiseBits(float32 value) noexcept
+{
+    uint32 bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+inline void AddPairwiseCase(ParityCorpus& inoutCorpus,
+                            uint32 kind,
+                            float32 first,
+                            float32 second,
+                            float32 third,
+                            math::RandomBlock operand) noexcept
+{
+    float32 a = -1;
+    float32 b = -1;
+    float32 c = -1;
+    uint32 flags = 0;
+    float32 x = 0;
+    float32 y = 0;
+    float32 w = 0;
+    std::memcpy(&x, &operand.Values[0], sizeof(x));
+    std::memcpy(&y, &operand.Values[1], sizeof(y));
+    std::memcpy(&w, &operand.Values[3], sizeof(w));
+    if (kind == LUDUS_RANDOM_PARITY_CASE_PAIRWISE_MIS)
+    {
+        if (math::TryComputePairwiseNeighborMis(first, second, third, x, y, a) == math::MathStatus::Success)
+            flags |= LUDUS_PAIRWISE_PARITY_FIRST_SUCCESS;
+        if (math::TryComputePairwiseCanonicalTerm(first, second, third, x, y, b) == math::MathStatus::Success)
+            flags |= LUDUS_PAIRWISE_PARITY_SECOND_SUCCESS;
+        if (math::TryComputePairwiseCanonicalBase(second, third, c) == math::MathStatus::Success)
+            flags |= LUDUS_PAIRWISE_PARITY_THIRD_SUCCESS;
+    }
+    else if (kind == LUDUS_RANDOM_PARITY_CASE_PAIRWISE_WEIGHT)
+    {
+        if (math::TryComputeStochasticMisWeight(first, second, operand.Values[2], a) == math::MathStatus::Success)
+            flags |= LUDUS_PAIRWISE_PARITY_FIRST_SUCCESS;
+        if (math::TryComputePairwiseResamplingWeight(first, x, y, third, b) == math::MathStatus::Success)
+            flags |= LUDUS_PAIRWISE_PARITY_SECOND_SUCCESS;
+        if (math::TryComputePairwiseContributionWeight(x, w, c) == math::MathStatus::Success)
+            flags |= LUDUS_PAIRWISE_PARITY_THIRD_SUCCESS;
+    }
+    else
+    {
+        if (math::TryComputePairwiseShiftedTarget(x, y, a) == math::MathStatus::Success)
+            flags |= LUDUS_PAIRWISE_PARITY_FIRST_SUCCESS;
+        if (math::TryComputePairwiseConfidenceScale(GetPairwiseBits(second), GetPairwiseBits(third), b) ==
+            math::MathStatus::Success)
+            flags |= LUDUS_PAIRWISE_PARITY_SECOND_SUCCESS;
+    }
+    inoutCorpus.Add(
+    {
+        .Kind = kind,
+        .Key = math::RandomKey{uint64{GetPairwiseBits(first)} | (uint64{GetPairwiseBits(second)} << 32)},
+        .Bound = GetPairwiseBits(third),
+        .Operand = operand,
+        .Expected = {{GetPairwiseBits(a),
+                      GetPairwiseBits(b),
+                      kind == LUDUS_RANDOM_PARITY_CASE_PAIRWISE_SHIFT ? math::STOCHASTIC_PAIRWISE_MIS_VERSION
+                                                                      : GetPairwiseBits(c),
+                      flags}},
+    });
+}
+inline void AddPairwiseCases(ParityCorpus& inoutCorpus) noexcept
+{
+    constexpr usize VALUE_COUNT = 6;
+    const StaticArray<float32, VALUE_COUNT> targets{{0, .001F, 1, 8, 0x1p100F, -1}};
+    for (const float32 first : targets)
+    {
+        for (const float32 second : targets)
+        {
+            AddPairwiseCase(inoutCorpus,
+                            LUDUS_RANDOM_PARITY_CASE_PAIRWISE_MIS,
+                            3,
+                            8,
+                            2,
+                            {{GetPairwiseBits(first), GetPairwiseBits(second), 0, 0}});
+            AddPairwiseCase(inoutCorpus,
+                            LUDUS_RANDOM_PARITY_CASE_PAIRWISE_WEIGHT,
+                            first,
+                            .25F,
+                            2,
+                            {{GetPairwiseBits(second), GetPairwiseBits(3), 3, GetPairwiseBits(4)}});
+        }
+    }
+    AddPairwiseCase(inoutCorpus, LUDUS_RANDOM_PARITY_CASE_PAIRWISE_MIS, 9, 8, 2, {{0, 0, 0, 0}});
+    float32 notANumber = 0;
+    constexpr uint32 NAN_BITS = 0x7fc00000;
+    std::memcpy(&notANumber, &NAN_BITS, sizeof(notANumber));
+    AddPairwiseCase(inoutCorpus, LUDUS_RANDOM_PARITY_CASE_PAIRWISE_MIS, notANumber, 8, 2, {{0, 0, 0, 0}});
+    for (const float32 jacobian : targets)
+    {
+        float32 draws = 0;
+        float32 count = 0;
+        constexpr uint32 DRAW_COUNT = 3;
+        constexpr uint32 NEIGHBOR_COUNT = 63;
+        std::memcpy(&draws, &DRAW_COUNT, sizeof(draws));
+        std::memcpy(&count, &NEIGHBOR_COUNT, sizeof(count));
+        AddPairwiseCase(inoutCorpus,
+                        LUDUS_RANDOM_PARITY_CASE_PAIRWISE_SHIFT,
+                        0,
+                        draws,
+                        count,
+                        {{GetPairwiseBits(4), GetPairwiseBits(jacobian), 0, 0}});
+    }
+}
+
 [[nodiscard]] inline bool TryBuildCorpus(ParityCorpus& outCorpus) noexcept
 {
     // Random123 tests/kat_vectors, revision 9545ff6413f258be2f04c1d319d99aaef7521150, the same
@@ -605,6 +714,7 @@ private:
     {
         return false;
     }
+    AddPairwiseCases(outCorpus);
     outCorpus.PadToGroup();
     return outCorpus.HasFailedAllocation() == false;
 }
@@ -648,6 +758,21 @@ struct ParityComparison final
     {
         for (usize lane = 0; lane < LANES_PER_RESULT; ++lane)
         {
+            const uint32 kind = cases[index].Header.Values[0];
+            const bool isPairwiseFloat = kind >= LUDUS_RANDOM_PARITY_CASE_PAIRWISE_MIS &&
+                                         kind <= LUDUS_RANDOM_PARITY_CASE_PAIRWISE_SHIFT &&
+                                         lane < (kind == LUDUS_RANDOM_PARITY_CASE_PAIRWISE_SHIFT ? 2 : 3);
+            if (isPairwiseFloat == true)
+            {
+                float32 value = 0;
+                float32 reference = 0;
+                std::memcpy(&value, &actual[index].Values[lane], sizeof(value));
+                std::memcpy(&reference, &expected[index].Values[lane], sizeof(reference));
+                constexpr float32 RELATIVE_TOLERANCE = 1e-5F;
+                if (math::IsFinite(value) == true &&
+                    math::Abs(value - reference) <= RELATIVE_TOLERANCE * math::Max(1.0F, math::Abs(reference)))
+                    continue;
+            }
             if (actual[index].Values[lane] == expected[index].Values[lane])
             {
                 continue;

@@ -316,7 +316,7 @@
       "type": "UInt32",
       "value": 3,
       "minimum": 1,
-      "maximum": 16
+      "maximum": 8
     },
     {
       "id": "RESTIR_PAIRWISE_CANONICAL_SAMPLES",
@@ -324,7 +324,7 @@
       "type": "UInt32",
       "value": 1,
       "minimum": 1,
-      "maximum": 16
+      "maximum": 8
     }
   ]
 }

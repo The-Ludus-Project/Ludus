@@ -13,6 +13,7 @@
 #include <ludus/foundation/math/status.hpp>
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/raster.h>
@@ -3727,6 +3728,7 @@ Status Renderer::PrepareView(Snapshot handle,
                              PreparedView& output,
                              ViewReport& report) noexcept
 {
+    LUDUS_PROFILE_SCOPE(RendererPrepareView);
     if (mState.Get() == nullptr || mState->Setup != Status::Ready)
     {
         return Status::NotReady;
@@ -4014,17 +4016,21 @@ Status Renderer::PrepareView(Snapshot handle,
     // GPU Pro 3, V.4, sections 4.4-4.8. Thanks for the explicit pass-context distinction;
     // Ludus uses copied concrete packets rather than the chapter's general object/XML pipeline.
     // See docs/architecture/renderer-systems-gems-review.md for consulted source details.
-    bool homogeneous = true;
+    bool isOrdered = true;
     for (usize i = 1; i < opaqueCount; ++i)
     {
-        homogeneous &= candidates[i].MeshSlot == candidates[0].MeshSlot &&
-                       candidates[i].MaterialSlot == candidates[0].MaterialSlot &&
-                       candidates[i].UniformSlot == candidates[0].UniformSlot;
+        if (MeshLess{}(candidates[i], candidates[i - 1]) == true)
+        {
+            isOrdered = false;
+            break;
+        }
     }
-    // Already compatible objects need no reordering or pairwise overlap search;
-    // preserving their source order also preserves equal-depth ownership.
-    if (description.Reference == false && homogeneous == false)
+    // A globally ordered sequence stays unchanged by every stable subrange sort,
+    // including heterogeneous batches. Avoid the quadratic overlap search in that
+    // case; retain it for unordered packets to preserve equal-depth ownership.
+    if (description.Reference == false && isOrdered == false)
     {
+        LUDUS_PROFILE_SCOPE(RendererSortOpaquePackets);
         for (usize first = 0; first < opaqueCount;)
         {
             usize last = first + 1;

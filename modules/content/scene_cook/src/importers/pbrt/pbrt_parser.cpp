@@ -2,6 +2,7 @@
 
 #include "../../native_files.h"
 #include "../byte_source.h"
+#include "../front_end_support.h"
 #include "../transform_utilities.h"
 #include "pbrt_tokenizer.h"
 #include "ply_reader.h"
@@ -276,6 +277,11 @@ private:
     findString(Directive& inoutDirective, std::string_view name, std::string_view& outValue) noexcept;
     [[nodiscard]] bool findBoolean(Directive& inoutDirective, std::string_view name, bool& outValue) noexcept;
     [[nodiscard]] bool findColour(Directive& inoutDirective, std::string_view name, float64 (&outColour)[3]) noexcept;
+    /// Luminance a light keeps through pbrt-v4's photometric normalization: that of parameter `name`'s `colour` when
+    /// it is RGB, otherwise one (spectra, blackbody and the default illuminant are normalized to one nit).
+    [[nodiscard]] float64 findRetainedLuminance(Directive& inoutDirective,
+                                                std::string_view name,
+                                                const float64 (&colour)[IR_RGB_CHANNEL_COUNT]) noexcept;
 
     [[nodiscard]] bool applyTransformDirective(Directive& inoutDirective) noexcept;
 
@@ -704,6 +710,26 @@ bool SceneReader::findColour(Directive& inoutDirective, std::string_view name, f
     outColour[0] = outColour[1] = outColour[2] = 1.0;
     warn(codes::SPECTRUM_APPROXIMATED, inoutDirective.Line, "unknown spectrum replaced with white");
     return true;
+}
+
+// Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, pbrt-v4 SpectrumToPhotometric
+// (src/pbrt/util/spectrum.cpp) and the light Create functions (src/pbrt/lights.cpp): lights
+// divide `scale` by the photometric value of their spectrum, but an RGBIlluminantSpectrum
+// contributes only its illuminant, so RGB radiance or intensity keeps its magnitude.
+// https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/util/spectrum.cpp
+float64 SceneReader::findRetainedLuminance(Directive& inoutDirective,
+                                           std::string_view name,
+                                           const float64 (&colour)[IR_RGB_CHANNEL_COUNT]) noexcept
+{
+    const Parameter* parameterOrNull = findParameter(inoutDirective, name);
+    if (parameterOrNull == nullptr)
+    {
+        return 1.0;
+    }
+    const std::string_view type = parameterOrNull->Type.GetView();
+    return (type == "rgb" || type == "color") && parameterOrNull->Value.Numbers.GetSize() >= IR_RGB_CHANNEL_COUNT
+               ? ComputeRec709Luminance(colour)
+               : 1.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1565,7 +1591,8 @@ Status SceneReader::applyAreaLight(Directive& inoutDirective) noexcept
     (void)findColour(inoutDirective, "L", radiance);
     float64 scale = 1.0;
     (void)findFloat(inoutDirective, "scale", scale);
-    mState.EmissionScale = scale;
+    // The planner divides by the radiance's luminance; restore an RGB source's own (findRetainedLuminance).
+    mState.EmissionScale = scale * findRetainedLuminance(inoutDirective, "L", radiance);
     mState.AreaLight = mScene.Lights.Area - 1;
     mState.IsEmissionTwoSided = false;
     (void)findBoolean(inoutDirective, "twosided", mState.IsEmissionTwoSided);
@@ -1633,6 +1660,11 @@ Status SceneReader::addLight(Directive& inoutDirective) noexcept
         {
             environment.Radiance[k] = radiance[k] * scale;
         }
+        if (environment.File.IsEmpty() == true)
+        {
+            // The constant conversion divides by the radiance's luminance; restore an RGB source's own.
+            environment.Scale = scale * findRetainedLuminance(inoutDirective, "L", radiance);
+        }
         warn(codes::ENVIRONMENT_FALLBACK,
              inoutDirective.Line,
              "infinite source uses the frozen Rec709 photometric/environment-map conversion");
@@ -1671,7 +1703,8 @@ Status SceneReader::addLight(Directive& inoutDirective) noexcept
     float64 scale = 1.0;
     (void)findFloat(inoutDirective, "scale", scale);
     light.Strength = {strength[0] * scale, strength[1] * scale, strength[2] * scale};
-    light.Scale = scale;
+    light.Scale =
+        scale * findRetainedLuminance(inoutDirective, light.Kind == IrLightKind::Directional ? "L" : "I", strength);
     math::Vector3d from{};
     math::Vector3d to{0.0, 0.0, 1.0};
     const auto readPoint = [this, &inoutDirective](std::string_view name, math::Vector3d& outPoint) noexcept {

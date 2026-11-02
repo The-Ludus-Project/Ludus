@@ -66,7 +66,7 @@ target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADE
     include/ludus/graphics/renderer/viewport_frame.hpp
     include/ludus/graphics/renderer/viewport.hpp)
 target_link_libraries(ludus_graphics_renderer PUBLIC Ludus::FoundationGeometry Ludus::FoundationBase Ludus::FoundationMath Ludus::FoundationThreading Ludus::GraphicsRhi Ludus::RenderGraphFormat Ludus::SceneFormat
-    PRIVATE Ludus::FoundationContainers Ludus::FoundationHash Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources)
+    PRIVATE Ludus::FoundationContainers Ludus::FoundationHash Ludus::FoundationProfiling Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources)
 target_compile_options(ludus_graphics_renderer PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
 ludus_apply_project_defaults(ludus_graphics_renderer)
 if(EMSCRIPTEN)
@@ -79,7 +79,7 @@ install(TARGETS ludus_graphics_renderer EXPORT LudusTargets ARCHIVE DESTINATION 
 # Source is cooked by the existing installed shader helper; no runtime compiler dependency.
 install(FILES include/ludus/graphics/renderer/detail/deferred_binding_slots.inc
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ludus/graphics/renderer/detail")
-install(FILES "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/content/scene_format/material.h" "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_light_transformer_decoder.slang "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_layout.h" shaders/renderer_point_neighbors.slang "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/shaders/point_search.slang" "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/include/ludus/foundation/geometry/detail/point_search_layout.h" shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/geometry_sampling_layout.h shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_grid.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/display_tone_mapping.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/metropolis_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/material_scattering.slang shaders/coated_diffuse.slang shaders/coated_diffuse_layout.h shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/content/scene_format/material.h" "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_light_transformer_decoder.slang "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_layout.h" shaders/renderer_point_neighbors.slang "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/shaders/point_search.slang" "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/include/ludus/foundation/geometry/detail/point_search_layout.h" shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/stochastic_reuse.slang shaders/geometry_sampling_layout.h shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_grid.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/display_tone_mapping.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/metropolis_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/material_scattering.slang shaders/coated_diffuse.slang shaders/coated_diffuse_layout.h shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 # Engine-owned default render graph: the RendererStatic static opaque profile the editor
 # shows when a project has no graph of its own, and the read-only starting point a project
 # copies when it customizes the renderer. Profiles follow the host device family, as the
@@ -267,10 +267,12 @@ if(TARGET ludus_rhi_render_tests)
                 "${CMAKE_CURRENT_SOURCE_DIR}/include/ludus/graphics/renderer/scene_shader_layout.h")
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME pairwise_reuse
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/pairwise_reuse.slang" COMPUTE ComputeMain
-        INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
+        INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/shaders" "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
                  "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di/main_shaders"
                  "${CMAKE_CURRENT_SOURCE_DIR}/include/ludus/graphics/renderer"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di/main_shaders/pairwise_weights.slang"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/stochastic_reuse.slang"
+                "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/stochastic_pairwise_mis.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di/main_shaders/pairwise_weights.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di/main_shaders/pairwise_distribution.slang")
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_gpu_preview renderer_gpu_preview_visibility_full renderer_gpu_preview_hit_cached renderer_gpu_preview_group32 renderer_gpu_preview_group64 renderer_gpu_preview_group128 renderer_gpu_preview_group8x8)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_gpu_preview_image)
@@ -829,7 +831,8 @@ if(TARGET ludus_renderer_render_tests)
     math(EXPR restir_gi_setting_last "${restir_gi_setting_count} - 1")
     foreach(restir_gi_variant IN ITEMS "no_reuse;IS_RESTIR_GI_TEMPORAL_ENABLED;false;IS_RESTIR_GI_SPATIAL_ENABLED;false"
             "biased;IS_RESTIR_GI_UNBIASED;false"
-            "production_max_bounces;RESTIR_GI_PATH_BOUNCES;2;RESTIR_GI_SOURCE_DISTRIBUTION;1;IS_RESTIR_GI_TARGET_SCATTERED;true")
+            "production_max_bounces;RESTIR_GI_PATH_BOUNCES;2;RESTIR_GI_SOURCE_DISTRIBUTION;1;IS_RESTIR_GI_TARGET_SCATTERED;true"
+            "pairwise_max_draws;RESTIR_GI_PATH_BOUNCES;2;RESTIR_GI_SOURCE_DISTRIBUTION;1;IS_RESTIR_GI_TARGET_SCATTERED;true;RESTIR_PAIRWISE_SAMPLES;8;RESTIR_PAIRWISE_CANONICAL_SAMPLES;8")
         list(POP_FRONT restir_gi_variant restir_gi_name)
         set(restir_gi_variant_manifest "${restir_gi_manifest}")
         while(restir_gi_variant)
@@ -855,6 +858,8 @@ if(TARGET ludus_renderer_render_tests)
         set(restir_gi_configuration Default)
         if(restir_gi_name STREQUAL "production_max_bounces")
             set(restir_gi_configuration Production)
+        elseif(restir_gi_name STREQUAL "pairwise_max_draws")
+            set(restir_gi_configuration StochasticPairwise)
         endif()
         ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_restir_gi_${restir_gi_name}"
             MANIFEST "${restir_gi_staged}/main.lushader.json" CONFIGURATION "${restir_gi_configuration}" RUNTIME_PACKAGE)
@@ -1284,6 +1289,11 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_RESTIR_${production_definition}_PRODUCTION_DIRECTORY=\"${production_directory}\"")
     endforeach()
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_restir_gi_pairwise
+        MANIFEST "${restir_gi_template_staged}/main.lushader.json" CONFIGURATION StochasticPairwise RUNTIME_PACKAGE)
+    cmake_path(GET rg2_restir_gi_pairwise_RUNTIME_PACKAGE PARENT_PATH pairwise_gi_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_RESTIR_GI_PAIRWISE_DIRECTORY="${pairwise_gi_directory}")
     set(storage_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/storage_ray")
     set(storage_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/storage_ray")
     ludus_stage_render_graph_inputs("${scene_ray_source}" "${storage_ray_staged}" main.lurender.json)
