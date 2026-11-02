@@ -120,7 +120,8 @@ separate_arguments(shader_build_limits)
 list(GET shader_build_limits 0 shader_artifact_limit)
 list(GET shader_build_limits 1 shader_pipeline_limit)
 set_property(SOURCE src/render_graph_shader_creation.cpp src/render_graph_configuration_template.cpp
-    src/render_graph_techniques.cpp tests/render_graph_template_tests.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    src/render_graph_techniques.cpp tests/render_graph_template_tests.cpp tests/render_graph_pipeline_tests.cpp
+    APPEND PROPERTY COMPILE_DEFINITIONS
     "LUDUS_EDITOR_MAX_SHADER_ARTIFACTS=${shader_artifact_limit}" "LUDUS_EDITOR_MAX_SHADER_PIPELINES=${shader_pipeline_limit}")
 
 # Native snapshot transport uses the backend owner's encoded admission policy.

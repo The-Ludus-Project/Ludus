@@ -4349,8 +4349,10 @@ program limit is too small, the picker offers **Increase and apply**, showing th
 current and required counts. Approval raises `budgets.programs` to the required
 count together with the template; **Cancel** preserves the draft. Undo/Redo restores
 both changes, and **Save** publishes them together. Programs times target profiles
-beyond the supported 128 target artifacts cannot be approved; that error names the
-counts to reduce. Other capacity failures still report the required repair.
+beyond the supported 1024 target artifacts cannot be approved; that error names the
+counts and the canvas actions **Remove Unused Shaders** and **Delete Subgraph and Library**,
+or suggests reducing target profiles in the shader manifest. Other capacity failures
+still report the required repair.
 Secondary rays require a native profile. Existing ordinary ray configurations can
 share the package: their callbacks, payload source and query limits are retained.
 The shared `ScenePayload` needs a `float3 Radiance` field; comments, whitespace and
@@ -5914,7 +5916,7 @@ The closed version-1 `.lushader.json` source has these fields:
 | `schemas` | At most 16 named `Uniform`, `Vertex` or `Varying` schemas; at most 16 fields each |
 | `programs` | Named stage/function/source records; input/output schemas and explicit uniform bindings |
 | `techniques` | Explicit `DefaultStaticOpaque.ColorAndDepth`/`.DepthOnly` and/or `DefaultStaticMasked.ColorAndDepth`/`.DepthOnly` mappings and legal pipeline recipes |
-| `budgets` | Author bounds for configurations, programs, emitted artifacts and pipeline recipes |
+| `budgets` | Author bounds for configurations and registered programs; legacy artifact/pipeline budgets are ignored |
 | `settings` (optional) | Up to 128 typed shader constants exposed in Properties and the canvas Graph Settings dialog |
 
 Each setting declares `id`, `label`, `type`, and `value`. Types are `UInt32`,
@@ -5978,7 +5980,7 @@ when that authored budget admits them; editor shader creation grows it as needed
 The configuration budget is at most 8. Target artifacts (registered programs
 multiplied by target profiles) and target pipelines (raster recipes multiplied by
 target profiles) follow from the manifest itself, so they have no authored budget:
-only the supported ceilings of 128 target artifacts and 64 target pipelines bound
+only the supported ceilings of 1024 target artifacts and 64 target pipelines bound
 them, and the error names the counts to reduce. Source and package byte/file limits
 also apply. Manifests written by older tools may still carry `budgets.artifacts` and
 `budgets.pipelines`; the builder accepts and ignores them, and the editor removes them
@@ -6000,13 +6002,21 @@ and rejects recursive shader calls or duplicate callbacks. Unguarded include cyc
 report the complete cycle, separately from the include-depth limit. Conditional
 includes are conservatively tracked; a conditional pragma is not treated as a guard.
 The compiler reads staged captured sources only, and its dependency file is
-checked against that closure. The combined build snapshot is bounded to 128
+checked against that closure. The combined build snapshot is bounded to 512
 files/4 MiB, including graph metadata, authored shaders and SDK helpers; each
 file is at most 128 KiB, with include depth 16. The native shader worker retains
 its separate 64-file request limit, including the generated wrapper. Each stage
 receives only its captured closure from the larger package snapshot. Source or
 compiler limit failures preserve the prior package. Generated artifacts are at most 2 MiB each
-and a generation is at most 64 MiB/1024 files. Use `--root` for a containing
+and a generation is at most 64 MiB/8192 files, with a separately bounded 2 MiB integrity
+index. These package-wide ceilings accommodate the shipped template catalog, which
+currently declares 144 programs and 235 files (about 1.2 MB before SDK helpers),
+without requiring deletion of built-in libraries. A catalog regression counts every
+template plus SDK helpers against the source bounds, and all four profiles against
+the artifact ceiling. This capacity check does not promise that every template can
+execute on every profile or that every library combination shares a compatible ABI.
+Authored files and SDK helpers use the same admission check before capture, so a helper
+cannot silently overfill the snapshot. Use `--root` for a containing
 package when the sibling root/manifest lives in a subdirectory; program source
 paths are relative to that package root, not the manifest directory.
 

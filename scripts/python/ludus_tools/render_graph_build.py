@@ -42,7 +42,9 @@ NATIVE_WORKER_HELPER = 'native_worker.py'
 HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', 'compile_metal_ray.py', 'shader_toolchain.json', 'spirv_cross_toolchain.json')
 # Program counts are governed by the authored budget, not a second fixed ceiling.
 # Artifact, source-byte and package bounds independently constrain admitted work.
-LIMITS = {'configurations': 8, 'programs': None, 'artifacts': 128, 'pipelines': 64}
+# The shipped catalog already declares 144 programs (576 artifacts at four profiles).
+# Keep room for several libraries without asking authors to delete built-in content.
+LIMITS = {'configurations': 8, 'programs': None, 'artifacts': 1024, 'pipelines': 64}
 # The author chooses these counts. Artifacts (programs x profiles) and pipelines
 # (raster recipes x profiles) follow from the manifest, so they have no authored
 # budget that could drift from it; only the engine ceilings above bound them.
@@ -52,9 +54,10 @@ MAX_FILE = 128 * 1024
 MAX_BYTES = 4 * 1024 * 1024
 # A package combines independent stage closures, graph metadata and SDK helpers.
 # Keep its aggregate bound separate from the native compiler's per-request bound.
-MAX_FILES = 128
+MAX_FILES = 512
 MAX_SHADER_INCLUDE_DEPTH = 16
-MAX_PACKAGE_FILES = 1024
+MAX_PACKAGE_FILES = 8192
+MAX_PACKAGE_INDEX_BYTES = 2 * 1024 * 1024
 MAX_PACKAGE_BYTES = 64 * 1024 * 1024
 SOURCE_LIMIT_REPAIR = ('Remove shader programs and sources that the package no longer uses (in the editor, '
                        'right-click the Subgraph node of a template you no longer need and choose Delete Subgraph '
@@ -148,15 +151,26 @@ class Snapshot:
 
     def load(self, relative):
         if relative not in self.files:
-            require(len(self.files) < MAX_FILES, 'Capacity', relative,
-                    f'source file limit exceeded: the build already reads {len(self.files)} manifest and shader '
-                    f'files, the most one build snapshot holds ({MAX_FILES}). {SOURCE_LIMIT_REPAIR}')
-            self.files[relative] = read(self.path(relative))
-            self.total += len(self.files[relative])
-            require(self.total <= MAX_BYTES, 'Capacity', relative,
-                    f'source byte limit exceeded: the build reads {self.total} bytes of manifest and shader sources, '
-                    f'more than one build snapshot holds ({MAX_BYTES}). {SOURCE_LIMIT_REPAIR}')
+            self.capture(relative, read(self.path(relative)))
         return self.files[relative]
+
+    def capture(self, relative, data, *, external=None):
+        """Admit an authored source or SDK helper before mutating the bounded snapshot."""
+        require(relative not in self.files, 'Source', relative, 'source already captured')
+        require(len(data) <= MAX_FILE, 'Capacity', relative,
+                f'source has {len(data)} bytes, more than the per-file limit ({MAX_FILE}). '
+                'Split the source into smaller files connected by literal quoted includes and build again.')
+        require(len(self.files) < MAX_FILES, 'Capacity', relative,
+                f'source file limit exceeded: the build already reads {len(self.files)} manifest and shader '
+                f'files, the most one build snapshot holds ({MAX_FILES}). {SOURCE_LIMIT_REPAIR}')
+        total = self.total + len(data)
+        require(total <= MAX_BYTES, 'Capacity', relative,
+                f'source byte limit exceeded: the build reads {total} bytes of manifest and shader sources, '
+                f'more than one build snapshot holds ({MAX_BYTES}). {SOURCE_LIMIT_REPAIR}')
+        self.files[relative] = data
+        self.total = total
+        if external is not None:
+            self.external[relative] = external
 
     def shader_closure(self, relative, active=(), visited=None):
         if visited is None:
@@ -917,9 +931,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
     helper = Path(helper).resolve()
     visibility_helper = helper / 'visibility_buffer.slang'
     if visibility_helper.is_file():
-        snapshot.files['_ludus_visibility.slang'] = read(visibility_helper)
-        snapshot.external['_ludus_visibility.slang'] = visibility_helper
-        snapshot.total += len(snapshot.files['_ludus_visibility.slang'])
+        snapshot.capture('_ludus_visibility.slang', read(visibility_helper), external=visibility_helper)
     # Registered programs include authoring drafts. Only explicit techniques select
     # executable stages; unused callbacks must never be compiled as entry points.
     closures = {pid: snapshot.shader_closure(p['source']) for pid, p in programs.items()}
@@ -1287,7 +1299,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
 def verify_package(path):
     """Verify a cooked generation's entire bounded file inventory, without tools."""
     path = Path(path).resolve()
-    inventory = document(read(path / 'integrity.json'), 'package integrity')
+    inventory = document(read(path / 'integrity.json', MAX_PACKAGE_INDEX_BYTES), 'package integrity')
     require(type(inventory) is dict and len(inventory) <= MAX_PACKAGE_FILES, 'Package', str(path), 'bounded inventory required')
     actual, total, visited = set(), 0, 0
     for artifact in path.rglob('*'):
@@ -1297,7 +1309,7 @@ def verify_package(path):
         if artifact.is_file():
             actual.add(artifact.relative_to(path).as_posix())
             total += artifact.stat().st_size
-            require(len(actual) <= MAX_PACKAGE_FILES + 1 and total <= MAX_PACKAGE_BYTES + MAX_FILE,
+            require(len(actual) <= MAX_PACKAGE_FILES + 1 and total <= MAX_PACKAGE_BYTES + MAX_PACKAGE_INDEX_BYTES,
                     'Capacity', str(path), 'package inventory/byte budget exceeded')
     require(actual == set(inventory) | {'integrity.json'}, 'Package', str(path), 'package inventory mismatch')
     for relative, hash_value in inventory.items():
