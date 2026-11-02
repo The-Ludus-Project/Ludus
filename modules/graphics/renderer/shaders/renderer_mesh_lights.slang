@@ -14,6 +14,11 @@
 // horizon clip feeding the specular edge sum. This is the receiver clip, transform and
 // transformed clip of the CPU check, so a record may carry any corner count up to
 // MAX_MESH_LIGHT_POLYGON_CORNERS at the cost of one edge term per corner.
+//
+// A record far from the receiver relative to its bounding sphere is instead integrated as a
+// point at the sphere's centre (TryEvaluateRasterMeshLightFar in raster_mesh_lights.h, which
+// credits Cohen and Wallace's differential-area form factor). In view of Bistro most evaluated
+// records are such distant lamps; the point changed under 1% of pixels by one 8-bit step.
 static const uint MESH_LIGHT_TRIANGLE_CORNER_COUNT = 3;
 static const float MESH_LIGHT_DIELECTRIC_F0 = 0.04;
 static const float MESH_LIGHT_FRAME_AXIS_THRESHOLD = 0.9;
@@ -131,12 +136,14 @@ struct MeshLightReceiver
     float3 DiffuseAlbedo;
     float3 SpecularAlbedo;
     LinearlyTransformedCosine Distribution;
+    // GGX alpha, the squared roughness, which bounds the light size the far-field specular term accepts.
+    float SpecularAlpha;
     bool HasSpecular;
 };
 // Whether the record whose header starts at word first can light the receiver: enough corners, the receiver off
 // its plane and in front of a one-sided emitter, and, with a positive cull threshold, a Lambert bound at or above it.
-// The plane is no farther than the polygon, so the polygon's solid angle is at most area / facing^2; the first
-// corner's w holds that area.
+// The polygon's solid angle is at most area / d^2 for its nearest distance d, which is at least both the distance to
+// its plane and the distance to its bounding sphere; the first corner's w holds that area.
 bool CanMeshLightRecordReach(uint first, float3 positionWorld, float cullThreshold)
 {
     float4 plane = meshLightWords[first];
@@ -147,10 +154,55 @@ bool CanMeshLightRecordReach(uint first, float3 positionWorld, float cullThresho
     float planeTolerance =
         LUDUS_MESH_LIGHT_PLANE_EPSILON_METERS +
         LUDUS_MESH_LIGHT_PLANE_RELATIVE_EPSILON * max(magnitudeWorld.x, max(magnitudeWorld.y, magnitudeWorld.z));
-    return min(uint(emission.w), MAX_MESH_LIGHT_POLYGON_CORNERS) >= MESH_LIGHT_TRIANGLE_CORNER_COUNT &&
-           abs(facing) > planeTolerance && (plane.w != 0 || facing >= 0) &&
-           (cullThreshold <= 0 ||
-            max(emission.r, max(emission.g, emission.b)) * origin.w >= cullThreshold * PI * facing * facing);
+    if (min(uint(emission.w), MAX_MESH_LIGHT_POLYGON_CORNERS) < MESH_LIGHT_TRIANGLE_CORNER_COUNT ||
+        abs(facing) <= planeTolerance || (plane.w == 0 && facing < 0))
+    {
+        return false;
+    }
+    if (cullThreshold <= 0)
+    {
+        return true;
+    }
+    float4 bound = meshLightWords[first + MESH_LIGHT_POLYGON_BOUND_WORD];
+    float nearest = max(abs(facing), length(positionWorld - bound.xyz) - bound.w);
+    return max(emission.r, max(emission.g, emission.b)) * origin.w >= cullThreshold * PI * nearest * nearest;
+}
+// The far-field evaluation of the record whose header starts at word first, which CanMeshLightRecordReach accepted:
+// the point form factor at its bounding sphere's centre, with the specular LTC density in that direction. False when
+// the record is too near, or too large for the receiver's specular lobe; EvaluateMeshLightRecord then integrates it.
+bool TryEvaluateMeshLightFar(in MeshLightReceiver receiver, uint first, out float3 outContribution)
+{
+    outContribution = float3(0);
+    float4 bound = meshLightWords[first + MESH_LIGHT_POLYGON_BOUND_WORD];
+    float3 toLightWorld = bound.xyz - receiver.PositionWorld;
+    float distance = length(toLightWorld);
+    if (distance <= LUDUS_MESH_LIGHT_FAR_DISTANCE_RATIO * bound.w ||
+        (receiver.HasSpecular == true &&
+         bound.w >= LUDUS_MESH_LIGHT_FAR_SPECULAR_ANGLE_PER_ALPHA * receiver.SpecularAlpha * distance))
+    {
+        return false;
+    }
+    float4 plane = meshLightWords[first];
+    float4 emission = meshLightWords[first + 1];
+    float area = meshLightWords[first + MESH_LIGHT_POLYGON_HEADER_WORDS].w;
+    float3 directionWorld = toLightWorld / distance;
+    float emitterCosine = -dot(plane.xyz, directionWorld);
+    float solidAngle = area * (plane.w != 0 ? abs(emitterCosine) : max(emitterCosine, 0)) / (distance * distance);
+    float3 directionTangent = float3(dot(directionWorld, receiver.TangentWorld),
+                                     dot(directionWorld, receiver.BitangentWorld),
+                                     dot(directionWorld, receiver.NormalWorld));
+    if (directionTangent.z <= 0)
+    {
+        return true;
+    }
+    float3 contribution = receiver.DiffuseAlbedo * (directionTangent.z * solidAngle / PI);
+    if (receiver.HasSpecular == true)
+    {
+        contribution += receiver.SpecularAlbedo *
+                        (EvaluateLinearlyTransformedCosine(receiver.Distribution, directionTangent) * solidAngle);
+    }
+    outContribution = emission.rgb * contribution;
+    return true;
 }
 // Integrate the record whose header starts at word first; CanMeshLightRecordReach must hold.
 float3 EvaluateMeshLightRecord(in MeshLightReceiver receiver, uint first)
@@ -210,6 +262,7 @@ MeshLightReceiver MakeMeshLightReceiver(in SurfaceSample surface, float3 positio
     SpecularLtc specular = LookupSpecularLtc(surface.Roughness, viewTangent, f0);
     receiver.HasSpecular = TryMakeLinearlyTransformedCosine(specular.InverseTransform, receiver.Distribution);
     receiver.SpecularAlbedo = ComputeSpecularLtcAlbedo(specular, f0);
+    receiver.SpecularAlpha = surface.Roughness * surface.Roughness;
     return receiver;
 }
 // Entry `entry` of a culling grid list (deferred_layout.h): the header word of one listed record.
@@ -219,10 +272,11 @@ uint GetMeshLightGridEntry(uint entryWord, uint entry)
     uint lane = entry % MESH_LIGHT_GRID_ENTRIES_PER_WORD;
     return uint(lane == 0 ? packed.x : (lane == 1 ? packed.y : (lane == 2 ? packed.z : packed.w)));
 }
-// Sum every record's integral. With a culling grid (gridWord nonzero), a sample inside it reads only its cell's
-// list, which omits records whose bounded Lambert term stays below the grid's cull radiance there
-// (raster_mesh_light_grid.cpp), and skips listed records whose bound at the sample is below it too. Samples
-// outside the grid evaluate every record.
+// Sum every record's integral. With a culling grid (gridWord nonzero), a sample reads only its cell's list, which
+// omits records whose bounded Lambert term stays below the grid's cull radiance there (raster_mesh_light_grid.cpp),
+// and skips listed records whose bound at the sample is below it too. Every shaded surface lies inside the grid, so a
+// position reconstructed outside it reads the nearest boundary cell. Evaluating every record there instead made a
+// few floor pixels walk the whole record list and stall the pass.
 float3 EvaluateRasterMeshLights(in SurfaceSample surface, in float3 positionWorld, uint polygonCount, uint gridWord)
 {
     float nv = max(dot(surface.NormalWorld, surface.ViewDirectionWorld), 0);
@@ -238,21 +292,21 @@ float3 EvaluateRasterMeshLights(in SurfaceSample surface, in float3 positionWorl
     {
         float4 origin = meshLightWords[gridWord];
         float4 cells = meshLightWords[gridWord + 1];
-        float3 cell = floor((positionWorld - origin.xyz) / origin.w);
-        if (all(cell >= 0) && all(cell < cells.xyz))
+        // The float clamp handles finite positions; the integer one bounds a nonfinite position's conversion, which
+        // fast math leaves unspecified.
+        uint3 lastCell = uint3(cells.xyz) - 1;
+        uint3 cell =
+            min(uint3(clamp(floor((positionWorld - origin.xyz) / origin.w), float3(0), cells.xyz - 1)), lastCell);
+        uint index = cell.x + uint(cells.x) * (cell.y + uint(cells.y) * cell.z);
+        float4 pair = meshLightWords[gridWord + MESH_LIGHT_GRID_HEADER_WORDS + index / MESH_LIGHT_GRID_CELLS_PER_WORD];
+        bool isSecond = index % MESH_LIGHT_GRID_CELLS_PER_WORD != 0;
+        firstEntry = uint(isSecond ? pair.z : pair.x);
+        entryCount = uint(isSecond ? pair.w : pair.y);
+        entryWord = uint(cells.w);
+        cullThreshold = meshLightWords[gridWord + MESH_LIGHT_GRID_CULL_WORD].x;
+        if (entryCount == 0)
         {
-            uint index = uint(cell.x) + uint(cells.x) * (uint(cell.y) + uint(cells.y) * uint(cell.z));
-            float4 pair =
-                meshLightWords[gridWord + MESH_LIGHT_GRID_HEADER_WORDS + index / MESH_LIGHT_GRID_CELLS_PER_WORD];
-            bool isSecond = index % MESH_LIGHT_GRID_CELLS_PER_WORD != 0;
-            firstEntry = uint(isSecond ? pair.z : pair.x);
-            entryCount = uint(isSecond ? pair.w : pair.y);
-            entryWord = uint(cells.w);
-            cullThreshold = meshLightWords[gridWord + MESH_LIGHT_GRID_CULL_WORD].x;
-            if (entryCount == 0)
-            {
-                return float3(0);
-            }
+            return float3(0);
         }
     }
     // The receiver terms cost a table lookup and a matrix inverse; most samples reach no listed record.
@@ -281,7 +335,15 @@ float3 EvaluateRasterMeshLights(in SurfaceSample surface, in float3 positionWorl
             receiver = MakeMeshLightReceiver(surface, positionWorld, nv);
             hasReceiver = true;
         }
-        result += EvaluateMeshLightRecord(receiver, record);
+        float3 farContribution;
+        if (TryEvaluateMeshLightFar(receiver, record, farContribution) == true)
+        {
+            result += farContribution;
+        }
+        else
+        {
+            result += EvaluateMeshLightRecord(receiver, record);
+        }
     }
     return max(result, float3(0));
 }

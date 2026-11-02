@@ -5,6 +5,8 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/deferred_layout.h>
 
+#include <limits>
+
 #include <catch2/catch_test_macros.hpp>
 
 namespace
@@ -37,7 +39,7 @@ struct Sequence final
         return math::Vector3{x, y, z} * SCENE_METERS;
     }
 };
-// One triangle record (deferred_layout.h): normal and sidedness, emission and corner count, corners.
+// One triangle record (deferred_layout.h): normal and sidedness, emission and corner count, bounding sphere, corners.
 void AddTriangle(Array<math::Vector4>& inoutWords,
                  math::Vector3 centerWorld,
                  float32 size,
@@ -46,6 +48,9 @@ void AddTriangle(Array<math::Vector4>& inoutWords,
 {
     REQUIRE(inoutWords.TryAdd({0, 0, 1, isTwoSided == true ? 1.0F : 0.0F}) == true);
     REQUIRE(inoutWords.TryAdd({emission.X, emission.Y, emission.Z, static_cast<float32>(CORNER_COUNT)}) == true);
+    // The corners' centroid lies size / 3 below centerWorld; the apex, 4 * size / 3 above it, is the farthest corner.
+    const math::Vector3 centroidWorld = centerWorld - math::Vector3{0, size / 3, 0};
+    REQUIRE(inoutWords.TryAdd({centroidWorld.X, centroidWorld.Y, centroidWorld.Z, 4 * size / 3}) == true);
     // The first corner's w holds the area: base 2 * size, height 2 * size.
     REQUIRE(inoutWords.TryAdd({centerWorld.X - size, centerWorld.Y - size, centerWorld.Z, 2 * size * size}) == true);
     REQUIRE(inoutWords.TryAdd({centerWorld.X + size, centerWorld.Y - size, centerWorld.Z, 0}) == true);
@@ -109,8 +114,39 @@ TEST_CASE("mesh-light grid cells omit only records below the cull radiance", "[m
     }
     // The dim bulbs reach only their own neighbourhood, so a cell lists far fewer than every record.
     CHECK(listedTotal < usize{RECEIVER_COUNT} * EMITTER_COUNT / 4);
-    Array<uint32> outside;
-    CHECK(internal::GetRasterMeshLightCell(view, gridWord, {-5, 0, 0}, outside) == false);
+}
+
+TEST_CASE("mesh-light grid positions outside the bounds read the nearest boundary cell", "[mesh-area][mesh-light-grid]")
+{
+    // A reconstructed floor position just below the receiver bounds must not fall back to every record. Each emitter
+    // reaches about 5 m, so opposite corners of the 10 m grid list only their own.
+    Array<math::Vector4> words;
+    AddTriangle(words, {1, 1, 1}, .01F, {100, 100, 100}, true);
+    AddTriangle(words, {9, 9, 9}, .01F, {100, 100, 100}, true);
+    const uint32 secondRecordWord = static_cast<uint32>(words.GetSize() / 2);
+    uint32 gridWord = 0;
+    REQUIRE(internal::AppendRasterMeshLightGrid(words, 2, {{0, 0, 0}, {10, 10, 10}}, gridWord) ==
+            rhi::RasterStatus::Ready);
+    const BorrowedView<const math::Vector4> view{words.GetData(), words.GetSize()};
+    Array<uint32> boundary;
+    REQUIRE(internal::GetRasterMeshLightCell(view, gridWord, {1, 1, .05F}, boundary) == true);
+    REQUIRE(boundary.GetSize() == 1);
+    CHECK(boundary[0] == 0);
+    for (const math::Vector3 positionWorld : StaticArray<math::Vector3, 3>{{{1, 1, -.05F}, {1, 1, -5}, {-3, 1, 1}}})
+    {
+        Array<uint32> outside;
+        REQUIRE(internal::GetRasterMeshLightCell(view, gridWord, positionWorld, outside) == true);
+        REQUIRE(outside.GetSize() == 1);
+        CHECK(outside[0] == 0);
+    }
+    Array<uint32> beyond;
+    REQUIRE(internal::GetRasterMeshLightCell(view, gridWord, {12, 9, 9}, beyond) == true);
+    REQUIRE(beyond.GetSize() == 1);
+    CHECK(beyond[0] == secondRecordWord);
+    Array<uint32> nonfinite;
+    CHECK(
+        internal::GetRasterMeshLightCell(view, gridWord, {std::numeric_limits<float32>::infinity(), 1, 1}, nonfinite) ==
+        false);
 }
 
 TEST_CASE("mesh-light grid lists skip cells behind one-sided emitters", "[mesh-area][mesh-light-grid]")
