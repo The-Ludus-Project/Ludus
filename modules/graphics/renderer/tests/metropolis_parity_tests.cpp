@@ -19,7 +19,8 @@ namespace internal = ludus::graphics::renderer::internal;
 namespace rhi = ludus::graphics::rhi;
 using AdvanceChainFunction = decltype(&internal::AdvanceMetropolisChain);
 using rhi::RasterStatus;
-constexpr uint64 TIMEOUT_NANOSECONDS = 30 * time::NANOSECONDS_PER_SECOND;
+// A cold Mesa software pipeline can take longer than hardware shader preparation.
+constexpr uint64 TIMEOUT_NANOSECONDS = 120 * time::NANOSECONDS_PER_SECOND;
 constexpr usize READBACK_CHUNK_BYTES = 64 * 1024;
 constexpr usize GROUP_COUNT = LUDUS_MH_PARITY_INVOCATIONS / LUDUS_MH_PARITY_GROUP_SIZE;
 constexpr usize RESULT_BYTES = LUDUS_MH_PARITY_INVOCATIONS * LUDUS_MH_PARITY_RESULT_WORDS * sizeof(math::Vector4);
