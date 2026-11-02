@@ -143,6 +143,15 @@
       "description": "Practical physical-optics rendering from Steinberg, Sen and Yan (2022): camera paths of up to three scattering events carry beams with Stokes vectors and anisotropic Gaussian spatial coherence, scattered by the wave BSDF. Rough surfaces are Gaussian surfaces, dielectrics have a diffuse base and smooth metals are gratings. After a primary-hits pass, one pass renders wave optics (the image shown first), one the same paths radiometrically, and one the coherence length of the incident light. An optional camera polarizer shows polarization. Requires native ray tracing."
     },
     {
+      "kind": "graph",
+      "identity": "restir-gi",
+      "label": "ReSTIR GI — path resampling for indirect lighting",
+      "category": "ray-traced",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["restir", "restir gi", "ouyang", "global illumination", "indirect lighting", "path resampling", "reservoir", "spatiotemporal reuse", "path tracing"],
+      "description": "ReSTIR GI from Ouyang, Liu, Kettunen, Pharr and Pantaleoni (2021): every pixel traces one indirect sample point and path traces the light it scatters back, then reservoirs reuse those samples across frames and nearby pixels, with the reconnection Jacobian and visibility rays that keep the reuse unbiased. Four passes (initial samples, temporal reuse, spatial reuse, shading) share three automatically sized buffers; the shading pass adds direct lighting with light and BSDF sampling. Temporal reuse has no motion reprojection. Requires native ray tracing."
+    },
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
@@ -261,6 +270,16 @@
       "requirements": ["native-ray-tracing"],
       "keywords": ["steinberg", "physical light transport", "physical optics", "wave optics", "wave bsdf", "coherence", "polarization", "stokes", "mueller", "diffraction", "grating", "spectral", "path tracing"],
       "description": "A primary-hits scene compute pass and three shading passes that share one automatically sized hit buffer: physical-optics path tracing with coherence and polarization (Steinberg, Sen and Yan), the same paths radiometrically, and the incident light's coherence length. Connect scene, view and color; outputs color plus optional radiometric and coherence images. Requires native ray tracing."
+    },
+    {
+      "kind": "snippet",
+      "identity": "restir-gi",
+      "label": "ReSTIR GI — path resampling for indirect lighting",
+      "category": "lighting",
+      "defaultConfiguration": "RestirGi",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["restir", "restir gi", "ouyang", "global illumination", "indirect lighting", "path resampling", "reservoir", "spatiotemporal reuse", "path tracing"],
+      "description": "Initial-sample, temporal-reuse, spatial-reuse and shading passes sharing three automatically sized buffers: indirect lighting resampled across frames and nearby pixels (Ouyang et al.) plus direct lighting with light and BSDF sampling. Connect scene, view and color; requires native ray tracing."
     },
     {
       "kind": "snippet",
