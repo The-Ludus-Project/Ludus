@@ -37,7 +37,7 @@ class RestirTemplateTests(unittest.TestCase):
             self.assertEqual(resource['bytes_per_pixel'], 64)
         manifest = json.loads(root.with_name('main.lushader.json').read_text())
         build.validate_manifest(manifest)
-        self.assertEqual(len(manifest['settings']), 8)
+        self.assertEqual(len(manifest['settings']), 10)
         declarations = settings.shader_source(manifest['settings'])
         self.assertIn('static const uint RESTIR_INITIAL_CANDIDATE_COUNT = 8u;', declarations)
         self.assertIn('static const bool IS_RESTIR_TEMPORAL_ENABLED = true;', declarations)
@@ -110,6 +110,40 @@ class RestirTemplateTests(unittest.TestCase):
             build.validate_manifest(manifest)
 
 
+class StochasticPairwiseTemplateTests(unittest.TestCase):
+    def test_configuration_preserves_ordered_cdf_tail_and_shader_closure(self):
+        from ludus_tools import render_graph_templates
+        for profile in ('metal', 'spirv'):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as temporary:
+                root = graph.new_workspace(Path(temporary) / 'reuse', output='offscreen', renderer_static=True,
+                                           profiles=(profile,), template='restir-di')
+                asset = json.loads(root.read_text())
+                configuration = next(c for c in asset['configurations'] if c['id'] == 'StochasticPairwise')
+                size = next(n for n in configuration['nodes'] if n['id'] == 'renderSize')
+                size['extent'] = [13, 9]  # Partial edge tiles must have bounded buffer extents.
+                root.write_bytes(graph.canonical_asset(asset))
+                plan = graph.compile_graph(root, configuration='StochasticPairwise')
+                passes = [p for p in plan['passes'] if p['kind'] == 'RayTracing']
+                self.assertEqual([p['id'].rsplit('/', 1)[-1] for p in passes], ['initial', 'cells', 'shade'])
+                self.assertEqual([p['pipeline']['kind'] for p in passes],
+                                 ['ComputePipeline', 'ComputePipeline', 'ComputePipeline'])
+                buffers = [r for r in plan['resources'].values() if r['type'] == 'Buffer']
+                self.assertEqual(sorted(r['extent'][0] for r in buffers), [13 * 9 * 64, 13 * 9 * 80])
+                files = render_graph_templates.template_files('restir-di', (profile,), graph)
+                for source in ('pairwise_weights', 'pairwise_distribution', 'pairwise_cells', 'pairwise_spatial', 'pairwise_initial', 'pairwise_common', 'initial_reservoir'):
+                    self.assertIn('main_shaders/' + source + '.slang', files)
+                manifest = json.loads(files['main.lushader.json'])
+                values = {s['id']: s for s in manifest['settings']}
+                self.assertEqual(values['RESTIR_PAIRWISE_SAMPLES']['value'], 3)
+                self.assertEqual(values['RESTIR_PAIRWISE_CANONICAL_SAMPLES']['value'], 1)
+                for identity in ('RESTIR_PAIRWISE_SAMPLES', 'RESTIR_PAIRWISE_CANONICAL_SAMPLES'):
+                    for invalid in (0, 17):
+                        changed = copy.deepcopy(manifest)
+                        next(s for s in changed['settings'] if s['id'] == identity)['value'] = invalid
+                        with self.assertRaises(ToolingError):
+                            build.validate_manifest(changed)
+
+
 class RestirProductionTemplateTests(unittest.TestCase):
     def test_production_configurations_build_closed_plans_and_package_their_shader_closure(self):
         import re
@@ -121,7 +155,9 @@ class RestirProductionTemplateTests(unittest.TestCase):
                 manifest = json.loads(root.with_name("main.lushader.json").read_text())
                 build.validate_manifest(manifest)
                 asset = json.loads(root.read_text())
-                self.assertEqual([record["id"] for record in asset["configurations"]], ["Default", "Production"])
+                self.assertEqual([record["id"] for record in asset["configurations"]],
+                                 ["Default", "Production", "StochasticPairwise"] if kind == "di" else
+                                 ["Default", "Production"])
                 plans = [graph.compile_graph(root, configuration=identity) for identity in ("Default", "Production")]
                 operations = [operation for operation in plans[1]["passes"] if operation["kind"] == "RayTracing"]
                 self.assertEqual(len(operations), 2 if kind == "di" else 1)
