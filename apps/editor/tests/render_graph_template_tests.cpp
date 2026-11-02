@@ -3630,7 +3630,7 @@ TEST_CASE("Light Transformer snippet applies from Quick Add on the canvas with P
     CHECK(offeredConfiguration == QStringLiteral("LightTransformer"));
     const QByteArray afterManifest = document.GetDraft(COMPUTE_MANIFEST);
     CHECK(afterManifest.contains("LightTransformerDecodeIrradiance") == true);
-    CHECK(afterManifest.contains("light_transformer") == true);
+    CHECK(afterManifest.contains("\"light_transformer\": true") == true);
     CHECK(document.GetDraft(QStringLiteral("light_transformer/model.json")).isEmpty() == false);
     CHECK(document.GetDraft(QStringLiteral("light_transformer/main_shaders/query.slang")).isEmpty() == false);
     workspace.Undo();
