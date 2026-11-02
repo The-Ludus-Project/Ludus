@@ -67,7 +67,7 @@ RenderGraphShaderAssistance::RenderGraphShaderAssistance(RenderGraphDocument& in
     mStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     mStatus->setFixedHeight(mStatus->fontMetrics().height());
     mStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    layout->addWidget(mStatus);
+    // The host places the status line (GetStatusLabel), under the editor, so the header stays one row.
     connect(&mAssistance, &CodeAssistance::StatusChanged, this, &RenderGraphShaderAssistance::setStatus);
     connect(&mAssistance, &CodeAssistance::ContextRequested, this, &RenderGraphShaderAssistance::prepare);
     connect(&mAssistance, &CodeAssistance::ContextCancelled, this, [this]() {
