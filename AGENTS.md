@@ -667,6 +667,11 @@ headers. Separate the groups with a blank line.
 
 ## Build, test, and validate
 
+- Keep `unittest.main()` after every test class in Python test modules, so direct
+  invocation and discovery include the same tests. Preserve this when appending tests.
+- Required SDK acceptance checks raise explicit errors rather than relying on Python
+  `assert`, which `python -O` disables. Test rejection under optimization when adding guards.
+
 ### Game project setup checks
 
 When creating, loading, updating, or repairing a game project, check its CMake

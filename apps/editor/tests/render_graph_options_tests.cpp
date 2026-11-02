@@ -151,6 +151,10 @@ TEST_CASE("pipeline details expose clickable parts and per-use choices with Prop
         hasParts = tabsOrNull != nullptr && stateOrNull != nullptr && optionsOrNull != nullptr;
         if (hasParts == true)
         {
+            // The parts are plain text buttons in one row, not tall tiles with file icons.
+            CHECK(stateOrNull->icon().isNull() == true);
+            CHECK(stateOrNull->height() < stateOrNull->fontMetrics().height() * 4);
+            CHECK(stateOrNull->y() == optionsOrNull->y());
             QToolButton* shaderOrNull =
                 dialogOrNull->findChild<QToolButton*>(QStringLiteral("renderGraphShaderPart_vertex"));
             if (shaderOrNull != nullptr)

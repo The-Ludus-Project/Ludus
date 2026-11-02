@@ -1,5 +1,6 @@
 #include "internal/reference_capture_window.h"
 
+#include "internal/captured_image_view.h"
 #include "internal/reference_comparison.h"
 #include "internal/render_preview.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -36,10 +37,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
-#include <QPixmap>
 #include <QProgressBar>
 #include <QPushButton>
-#include <QResizeEvent>
 #include <QSaveFile>
 #include <QShowEvent>
 #include <QSignalBlocker>
@@ -59,7 +58,6 @@ namespace renderer = graphics::renderer;
 constexpr int32 CPU_ORACLE_INDEX = static_cast<int32>(renderer::ReferenceTraversal::CpuOracle);
 constexpr int32 NATIVE_QUERIES_INDEX = static_cast<int32>(renderer::ReferenceTraversal::NativeQueries);
 constexpr int32 GPU_COMPUTE_INDEX = static_cast<int32>(renderer::ReferenceTraversal::GpuCompute);
-constexpr int32 MINIMUM_IMAGE_EXTENT = 160;
 constexpr float64 MILLISECONDS_PER_SECOND = 1000;
 
 QString DescribeTraversal(renderer::ReferenceTraversal traversal)
@@ -75,41 +73,10 @@ QString DescribeTraversal(renderer::ReferenceTraversal traversal)
     }
 }
 
-void ConfigureImageLabel(QLabel& inoutLabel, const QString& objectName, const QString& accessibleName)
-{
-    inoutLabel.setObjectName(objectName);
-    inoutLabel.setAlignment(Qt::AlignCenter);
-    inoutLabel.setMinimumSize(MINIMUM_IMAGE_EXTENT, MINIMUM_IMAGE_EXTENT);
-    inoutLabel.setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-    inoutLabel.setAccessibleName(accessibleName);
-}
-
-void ShowScaled(QLabel& inoutLabel, const QImage& image)
-{
-    if (image.isNull() == true)
-    {
-        inoutLabel.clear();
-        return;
-    }
-    inoutLabel.setPixmap(
-        QPixmap::fromImage(image).scaled(inoutLabel.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-}
-
 bool WriteAtomically(const QString& path, const QByteArray& bytes, QString& outError)
 {
     QSaveFile file(path);
     if (file.open(QIODevice::WriteOnly) == false || file.write(bytes) != bytes.size() || file.commit() == false)
-    {
-        outError = QStringLiteral("Could not write %1: %2").arg(path, file.errorString());
-        return false;
-    }
-    return true;
-}
-
-bool WriteImageAtomically(const QString& path, const QImage& image, QString& outError)
-{
-    QSaveFile file(path);
-    if (file.open(QIODevice::WriteOnly) == false || image.save(&file, "PNG") == false || file.commit() == false)
     {
         outError = QStringLiteral("Could not write %1: %2").arg(path, file.errorString());
         return false;
@@ -126,9 +93,10 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
       mStopButton(new QPushButton(QStringLiteral("Stop"), this)),
       mSaveButton(new QPushButton(QStringLiteral("Save…"), this)), mProgress(new QProgressBar(this)),
       mStatus(new QLabel(this)), mComparisonText(new QLabel(this)), mImages(new QTabWidget(this)),
-      mImageLabel(new QLabel(this)), mRasterLabel(new QLabel(this)), mDifferenceLabel(new QLabel(this)),
-      mSource(new QComboBox(this)), mGraph(new QLabel(this)), mGraphProblem(new QLabel(this)),
-      mGraphTarget(new QComboBox(this))
+      mImageView(new CapturedImageView(QStringLiteral("reference"), this)),
+      mRasterView(new CapturedImageView(QStringLiteral("raster"), this)),
+      mDifferenceView(new CapturedImageView(QStringLiteral("difference"), this)), mSource(new QComboBox(this)),
+      mGraph(new QLabel(this)), mGraphProblem(new QLabel(this)), mGraphTarget(new QComboBox(this))
 {
     setObjectName(QStringLiteral("referenceCaptureWindow"));
     setWindowTitle(QStringLiteral("Reference capture"));
@@ -218,17 +186,18 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mComparisonText->setObjectName(QStringLiteral("referenceComparison"));
     mComparisonText->setWordWrap(true);
     mComparisonText->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    ConfigureImageLabel(*mImageLabel, QStringLiteral("referenceImage"), QStringLiteral("Reference image"));
-    ConfigureImageLabel(*mRasterLabel, QStringLiteral("referenceRasterImage"), QStringLiteral("Raster image"));
-    ConfigureImageLabel(*mDifferenceLabel,
-                        QStringLiteral("referenceDifferenceImage"),
-                        QStringLiteral("Raster minus reference difference image"));
-    mDifferenceLabel->setToolTip(QStringLiteral("Red: the raster image is brighter than the reference. Blue: it is "
-                                                "darker. Black: they agree. Grey: no reference sample yet."));
+    mImageView->setObjectName(QStringLiteral("referenceImage"));
+    mImageView->setAccessibleName(QStringLiteral("Reference image"));
+    mRasterView->setObjectName(QStringLiteral("referenceRasterImage"));
+    mRasterView->setAccessibleName(QStringLiteral("Raster image"));
+    mDifferenceView->setObjectName(QStringLiteral("referenceDifferenceImage"));
+    mDifferenceView->setAccessibleName(QStringLiteral("Raster minus reference difference image"));
+    mDifferenceView->setToolTip(QStringLiteral("Red: the raster image is brighter than the reference. Blue: it is "
+                                               "darker. Black: they agree. Grey: no reference sample yet."));
     mImages->setObjectName(QStringLiteral("referenceImages"));
-    mImages->addTab(mImageLabel, QStringLiteral("Reference"));
-    mImages->addTab(mRasterLabel, QStringLiteral("Raster"));
-    mImages->addTab(mDifferenceLabel, QStringLiteral("Difference"));
+    mImages->addTab(mImageView, QStringLiteral("Reference"));
+    mImages->addTab(mRasterView, QStringLiteral("Raster"));
+    mImages->addTab(mDifferenceView, QStringLiteral("Difference"));
 
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->addLayout(form);
@@ -243,7 +212,13 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     connect(mCaptureButton, &QPushButton::clicked, this, [this]() { static_cast<void>(StartCapture()); });
     connect(mStopButton, &QPushButton::clicked, this, &ReferenceCaptureWindow::StopCapture);
     connect(mSaveButton, &QPushButton::clicked, this, &ReferenceCaptureWindow::saveWithDialog);
-    connect(mImages, &QTabWidget::currentChanged, this, [this]() { showScaledImages(); });
+    for (CapturedImageView* view : {mImageView, mRasterView, mDifferenceView})
+    {
+        connect(view, &CapturedImageView::SaveReported, this, [this](const QString& message) {
+            mMessage = message;
+            updateStatus();
+        });
+    }
     connect(mSource, &QComboBox::currentIndexChanged, this, [this]() {
         requestCaptureProfile();
         updateControls();
@@ -846,7 +821,7 @@ bool ReferenceCaptureWindow::StartCapture()
     mDifferenceImage = {};
     mHasComparison = false;
     mComparisonError.clear();
-    showScaledImages();
+    showImages();
     updateTraversalAvailability();
     QString error;
     if (mPreview.isNull() == true || mPreview->HasDevice() == false)
@@ -1015,11 +990,11 @@ bool ReferenceCaptureWindow::saveComparison(const QString& hdrPath, QString& out
         {QStringLiteral("raster"), raster},
         {QStringLiteral("metrics"), MakeReferenceComparisonJson(mComparison)},
     };
-    return WriteImageAtomically(GetComparisonPath(hdrPath, QStringLiteral("raster.png")), mRasterImage, outError) ==
+    return WritePngAtomically(GetComparisonPath(hdrPath, QStringLiteral("raster.png")), mRasterImage, outError) ==
                true &&
-           WriteImageAtomically(GetComparisonPath(hdrPath, QStringLiteral("difference.png")),
-                                mDifferenceImage,
-                                outError) == true &&
+           WritePngAtomically(GetComparisonPath(hdrPath, QStringLiteral("difference.png")),
+                              mDifferenceImage,
+                              outError) == true &&
            WriteAtomically(GetComparisonPath(hdrPath, QStringLiteral("comparison.json")),
                            QJsonDocument(report).toJson(),
                            outError) == true;
@@ -1071,7 +1046,7 @@ void ReferenceCaptureWindow::service()
     {
         refreshImage();
         updateComparison();
-        showScaledImages();
+        showImages();
         mRefreshTimer.restart();
         updateControls();
         updateStatus();
@@ -1170,17 +1145,11 @@ void ReferenceCaptureWindow::updateComparison()
 #endif
 }
 
-void ReferenceCaptureWindow::showScaledImages()
+void ReferenceCaptureWindow::showImages()
 {
-    ShowScaled(*mImageLabel, mImage);
-    ShowScaled(*mRasterLabel, mRasterImage);
-    ShowScaled(*mDifferenceLabel, mDifferenceImage);
-}
-
-void ReferenceCaptureWindow::resizeEvent(QResizeEvent* event)
-{
-    QWidget::resizeEvent(event);
-    showScaledImages();
+    mImageView->SetImage(mImage);
+    mRasterView->SetImage(mRasterImage);
+    mDifferenceView->SetImage(mDifferenceImage);
 }
 
 void ReferenceCaptureWindow::updateControls()

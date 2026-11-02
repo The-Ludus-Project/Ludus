@@ -19,6 +19,11 @@
 
 #include <ludus/graphics/renderer/world_grid.hpp>
 
+namespace ludus::graphics::rhi
+{
+class ComputeWorkload;
+}
+
 namespace ludus::graphics::renderer
 {
 struct RenderGraphSceneDescription;
@@ -855,7 +860,8 @@ private:
                                    foundation::BorrowedView<const rhi::TextureHandle> targets,
                                    foundation::uint32 tile,
                                    rhi::OrderedGraph& outGraph,
-                                   const VisibilityRasterPass* visibilityOrNull) noexcept;
+                                   const VisibilityRasterPass* visibilityOrNull,
+                                   const rhi::ComputeWorkload* prefixOrNull = nullptr) noexcept;
     struct State;
     ludus::foundation::core::UniquePtr<State> mState;
 };

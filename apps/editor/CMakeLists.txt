@@ -379,7 +379,7 @@ function(ludus_editor_add_default_render_graph target)
               ${restir_template_shaders})
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee)
+            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics wave_tracing restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee)
         string(REPLACE "_" "-" template_identity "${template_directory}")
         set(visibility_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/${template_directory}")
         file(GLOB visibility_template_shaders CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")
@@ -627,6 +627,13 @@ if(NOT EMSCRIPTEN AND (LUDUS_EDITOR_RENDER_PREVIEW OR LUDUS_BUILD_TESTS))
     target_link_libraries(ludus_editor_texture_display PUBLIC Qt6::Widgets
         Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationProfiling)
 endif()
+if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
+    # Light Transformer encoder asset checks for the preview and their unit test.
+    ludus_editor_add_objects(ludus_editor_light_transformer_setup
+        src/internal/light_transformer_preview_setup.h src/light_transformer_preview_setup.cpp)
+    target_link_libraries(ludus_editor_light_transformer_setup PUBLIC Qt6::Core Ludus::GraphicsRenderer
+        Ludus::FoundationMath)
+endif()
 if(APPLE)
     ludus_editor_add_objects(ludus_editor_accessibility src/qt_accessibility_macos.mm)
     target_link_libraries(ludus_editor_accessibility PUBLIC Qt6::Widgets Ludus::FoundationBase "-framework AppKit")
@@ -653,6 +660,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/reference_comparison.h
     src/reference_capture_window.cpp
     src/internal/reference_capture_window.h
+    src/captured_image_view.cpp
+    src/internal/captured_image_view.h
     src/internal/preview_shader_set.h
     src/preview_shader_set.cpp
     src/internal/preview_shading.h
@@ -772,7 +781,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     target_link_libraries(ludus_editor_application PUBLIC ludus_editor_texture_display Ludus::GraphicsRhi Qt6::Quick)
     ludus_compile_renderer_shaders(TARGET ludus_editor_application SHADERS
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
-        renderer_overlay renderer_grid)
+        renderer_overlay renderer_grid renderer_light_transformer_encoder)
     ludus_compile_renderer_shaders(TARGET ludus_editor_application SHADERS
         renderer_lit_shadow renderer_clustered renderer_clustered_shadow
         renderer_clustered_authored renderer_clustered_authored_shadow
@@ -833,6 +842,9 @@ set(editor_application_objects
     ludus_editor_project_explorer ludus_editor_document_well)
 if(TARGET ludus_editor_texture_display AND LUDUS_EDITOR_RENDER_PREVIEW)
     list(APPEND editor_application_objects ludus_editor_texture_display)
+endif()
+if(TARGET ludus_editor_light_transformer_setup)
+    list(APPEND editor_application_objects ludus_editor_light_transformer_setup)
 endif()
 set(editor_application_resources
     ludus_editor_application_resources ludus_editor_render_graph_resources ludus_editor_shader_api_resources
@@ -1002,6 +1014,17 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_test(NAME ludus_project_explorer_tests COMMAND ludus_project_explorer_tests)
     set_tests_properties(ludus_project_explorer_tests PROPERTIES LABELS "unit;editor" TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
+        add_executable(ludus_light_transformer_preview_setup_tests tests/light_transformer_preview_setup_tests.cpp)
+        target_include_directories(ludus_light_transformer_preview_setup_tests PRIVATE src)
+        target_compile_definitions(ludus_light_transformer_preview_setup_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+        target_link_libraries(ludus_light_transformer_preview_setup_tests PRIVATE ludus_editor_light_transformer_setup
+            Qt6::Core Ludus::GraphicsRenderer Catch2::Catch2WithMain)
+        ludus_apply_project_defaults(ludus_light_transformer_preview_setup_tests)
+        ludus_enable_test_exceptions(ludus_light_transformer_preview_setup_tests)
+        add_test(NAME ludus_light_transformer_preview_setup_tests COMMAND ludus_light_transformer_preview_setup_tests)
+        set_tests_properties(ludus_light_transformer_preview_setup_tests PROPERTIES LABELS "unit;editor;light-transformer" TIMEOUT 60)
+    endif()
     add_executable(ludus_editor_tests
         tests/profiling_tests.cpp
         tests/viewport_trace_tests.cpp
@@ -1025,6 +1048,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/path_text_tests.cpp
         tests/state_view_tests.cpp
         tests/activity_chip_tests.cpp
+        tests/captured_image_view_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
         tests/world_demo_workspace_tests.cpp

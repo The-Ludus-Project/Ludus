@@ -1730,6 +1730,11 @@ sample counts. Convert the HDR file with
 [`scripts/reference-hdr`](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
 The PNG uses the viewport's display transform: exposure one, Khronos PBR Neutral, then sRGB.
 
+Right-click any image in the window for **Copy image** or **Save image as…**.
+Both use the displayed image at full capture resolution, not the scaled preview,
+including a capture that is still filling in. **Save image as…** writes a PNG
+only; use **Save…** for the linear capture.
+
 The capture builds its own renderer on the viewport's GPU device. It loads the
 same meshes, textures and Lit materials as the viewport, but no shadow atlas. The
 scene's authored analytic lights and its environment (map or constant) are

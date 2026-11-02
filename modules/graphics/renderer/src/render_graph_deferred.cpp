@@ -1,4 +1,5 @@
 #include "internal/render_graph_deferred.h"
+#include "internal/camera_inverse.h"
 #include "internal/ltc_table_data.h"
 
 #include <ludus/content/render_graph_format/plan.h>
@@ -50,11 +51,13 @@ float32 TransformPointComponent(float32 rowX,
                                 static_cast<float64>(rowZ) * static_cast<float64>(pointWorld.Z) +
                                 static_cast<float64>(rowTranslation));
 }
+} // namespace
+
 // Inverts the view about the camera rather than the world origin. A camera hundreds of metres from the origin with a
 // centimetre near plane makes WorldToClip itself ill-conditioned (Bistro's reciprocal condition is about 6e-8), so
 // the checked inverse rejects it, although the eye-relative projection WorldToClip * T(eye) is well-conditioned
 // (about 2e-3 there). Translating its inverse back gives the same clip-to-world matrix the resolve reads.
-[[nodiscard]] bool TryMakeClipToWorld(const ViewDescription& camera, math::Matrix4& outClipToWorld) noexcept
+[[nodiscard]] bool TryMakeCameraClipToWorld(const ViewDescription& camera, math::Matrix4& outClipToWorld) noexcept
 {
     const math::Vector3 eyeWorld = camera.CameraPosition;
     if (math::IsFinite(eyeWorld) == false)
@@ -91,9 +94,16 @@ float32 TransformPointComponent(float32 rowX,
     {
         return false;
     }
-    outClipToWorld = MakeTranslation(eyeWorld) * clipToEyeRelative;
+    const math::Matrix4 clipToWorld = MakeTranslation(eyeWorld) * clipToEyeRelative;
+    if (math::IsFinite(clipToWorld) == false)
+    {
+        return false;
+    }
+    outClipToWorld = clipToWorld;
     return true;
 }
+namespace
+{
 static_assert(sizeof(ViewParameters) == VIEW_BYTES);
 bool IsAccepted(Status status) noexcept
 {
@@ -376,7 +386,7 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
         return Status::InvalidState;
     }
     math::Matrix4 clipToWorld;
-    if (TryMakeClipToWorld(camera, clipToWorld) == false)
+    if (TryMakeCameraClipToWorld(camera, clipToWorld) == false)
     {
         return Status::InvalidDescription;
     }

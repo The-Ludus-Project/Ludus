@@ -2104,6 +2104,7 @@ bool PreviewViewport::tryPickOrientationWidget(QPointF globalPosition)
 }
 bool PreviewViewport::tryActivateProblemChip(QPointF globalPosition)
 {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (mState->GraphViewOrNull == nullptr || mState->GraphViewOrNull->HasProblemChip() == false ||
         mState->FrameLayoutOrNull == nullptr || mState->ProjectWorkspace == nullptr ||
         mState->ShaderStatusText.isEmpty() == true)
@@ -2120,6 +2121,10 @@ bool PreviewViewport::tryActivateProblemChip(QPointF globalPosition)
     }
     mState->ProjectWorkspace->RequestErrorList();
     return true;
+#else
+    static_cast<void>(globalPosition);
+    return false;
+#endif
 }
 QRectF PreviewViewport::getInteractionFrame() const
 {

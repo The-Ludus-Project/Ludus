@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import struct
 
 from compile_raster import (glsl_interface, glsl_varyings, raster_interface,
                             share_glsl_fetch_samplers, uniform_shape, wgsl_contract)
@@ -135,7 +136,7 @@ def isolate_metal_ray_queries(code):
     index = 0
     while index < len(lines):
         header = lines[index]
-        if header != METAL_FORCE_INLINE and not header.startswith('kernel '):
+        if header not in (METAL_FORCE_INLINE, METAL_NOINLINE) and not header.startswith('kernel '):
             if METAL_RAY_QUERY in header:
                 raise RuntimeError('Native ray query outside a translated function body')
             index += 1
@@ -146,7 +147,7 @@ def isolate_metal_ray_queries(code):
         if closing is None:
             raise RuntimeError('Translated Metal function body is not delimited')
         if any(METAL_RAY_QUERY in line for line in lines[opening + 1:closing]):
-            if header != METAL_FORCE_INLINE:
+            if header not in (METAL_FORCE_INLINE, METAL_NOINLINE):
                 raise RuntimeError('Native ray query inlined into the Metal kernel; keep TraceNative out of line')
             lines[index] = METAL_NOINLINE
             isolated += 1
@@ -154,6 +155,39 @@ def isolate_metal_ray_queries(code):
     if METAL_RAY_QUERY in code and isolated == 0:
         raise RuntimeError('Native ray Metal artifact has no out-of-line ray query function')
     return '\n'.join(lines)
+
+
+def restore_spirv_metal_noinline(code, module):
+    """Preserve SPIR-V DontInline through SPIRV-Cross's always_inline helper spelling.
+
+    Large optical kernels retain FFT arrays, BVH stacks and surface-path state. Letting Metal
+    inline their explicitly isolated routines can corrupt live state on Apple GPUs, just as
+    inline native queries do above. Read the function control from the emitted module rather
+    than guessing from function names; unrelated helpers keep their original annotation.
+    """
+    if len(module) % 4 != 0 or len(module) < 20:
+        raise RuntimeError('Malformed SPIR-V function controls')
+    words = struct.unpack('<' + 'I' * (len(module) // 4), module)
+    names, isolated = {}, set()
+    offset = 5
+    while offset < len(words):
+        count, opcode = words[offset] >> 16, words[offset] & 65535
+        if count == 0 or offset + count > len(words):
+            raise RuntimeError('Malformed SPIR-V function controls')
+        if opcode == 5 and count >= 3:  # OpName
+            names[words[offset + 1]] = struct.pack('<' + 'I' * (count - 2), *words[offset + 2:offset + count]).split(b'\0')[0].decode()
+        if opcode == 54 and count == 5 and words[offset + 3] & 2:  # OpFunction / DontInline
+            isolated.add(words[offset + 2])
+        offset += count
+    for identity in isolated:
+        name = names.get(identity, '')
+        if not re.fullmatch(r'[A-Za-z_]\w*', name):
+            raise RuntimeError('SPIR-V DontInline function has no portable name')
+        pattern = re.compile(re.escape(METAL_FORCE_INLINE) + r'\n([^\n]*\b' + re.escape(name) + r'\s*\()')
+        code, count = pattern.subn(METAL_NOINLINE + r'\n\1', code)
+        if count != 1:
+            raise RuntimeError(f'SPIR-V DontInline function {name} is missing or ambiguous in Metal')
+    return code
 
 
 def verify_native_ray_metal(code, interface):
@@ -234,6 +268,7 @@ def compile_graph_stage(args, lock):
     elif metal and translated_compute:
         run([args.spirv_cross, str(intermediate), '--msl', '--msl-version', '20400', '--msl-decoration-binding', '--output', str(artifact)])
         code = relative_line_directives(artifact.read_text(), [Path(args.source).parent])
+        code = restore_spirv_metal_noinline(code, intermediate.read_bytes())
         if native_rays:
             code = isolate_metal_ray_queries(code)
         emitted = verify_ray_compute_metal(code, interface, native_rays)
