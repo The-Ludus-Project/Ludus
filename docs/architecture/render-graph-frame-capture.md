@@ -13,7 +13,9 @@ submission, is implemented as of October 30, 2026; see
 [Phase 4b implementation notes](#phase-4b-implementation-notes). The editor's
 automatic use of the capture profile, split out of phase 4b as phase 4c, is
 implemented as of October 30, 2026; see
-[Phase 4c implementation notes](#phase-4c-implementation-notes).
+[Phase 4c implementation notes](#phase-4c-implementation-notes). Phase 5, capturing
+a library output the viewport does not draw, is implemented as of November 1, 2026;
+see [Phase 5: library captures](#phase-5-library-captures).
 
 A render graph is the project's rendering scheme. Today it runs in only two ways:
 as the World viewport's interactive renderer, or for one frame as the raster side
@@ -582,6 +584,82 @@ submission: one `RenderGraph::Render`, one command buffer.
   place of the runtime package" completes a capture from a cooked profile fixture.
 - Further editor cases cover the request state machine and the refusal of a
   missing profile or a runtime package named as one.
+
+## Phase 5: library captures
+
+The goal "capture any cooked project graph, not only the one the viewport draws"
+was left at the viewport's own selection by phases 2 to 4. In practice the graphs
+worth capturing offline are slow reference estimators, such as the
+`salesin-jarosz-lines` template, applied as library configurations beside the
+interactive graph. Making one of them the viewport's output to capture it is
+impractical: it runs at a few frames per second.
+
+**The source.** The window's **Graph** list offers **Viewport output** and every
+ColorTexture output of every library configuration in the package's saved graphs
+(`ListCaptureTargets`). A library output is a `RenderGraphCaptureTarget`: library
+graph, configuration and output.
+
+**The package.** `render-graph capture-library <generation> <output> <destination>
+--library L --library-configuration C --library-output O`
+(`ludus_tools.render_graph_library_capture`) rebuilds the published generation's
+saved sources, like `capture-profile`, so the capture renders exactly what that
+generation was built from. It copies them into its own build tree and adds a
+generated root, `capture.lurender.json`, with a copy of the build manifest:
+
+- Scene, Camera and a RenderSize colour Target feed the library's Scene, View and
+  ColorTexture inputs, as in the built-in template roots. Other input types are
+  rejected with a repair.
+- The chosen output goes through Accumulate (at `MAX_ACCUMULATION_SAMPLES`) and
+  ToneMap to the `output` Export. An output whose producer is already an Accumulate,
+  ToneMap or Denoise goes straight to it.
+- Every other required output feeds its own Export, so the graph validates.
+
+It cooks the runtime package to `destination` and, when the build declares a larger
+capture budget, the capture profile beside it. The viewport's generation, build
+tree and runtime package are never written.
+
+**The editor.** `RenderGraphLibraryCapture` holds one request (generation and
+target): Building, Ready or Failed, like `RenderGraphCaptureProfile`.
+`RendererWorkspace` answers with the `capture-library` job and keeps packages in
+`out/render-graph/<graph>/library-captures/`, named by generation and target and
+reused per generation. A finished build removes other generations' packages. The
+window requests the package while it is shown with that output selected, waits for
+it before capturing, and loads it with its own capture profile. The root's other
+Exports, for required outputs, can come first in execution order, so the window
+names the captured Export (`LIBRARY_CAPTURE_EXPORT`, `LibraryCapture/output`) and
+resolves its resource through the package's names sidecar
+(`ViewportGraphCapture::FindExportResource`).
+
+**Limits.**
+- Only libraries the root graph imports are saved with a generation. Another
+  library fails with a request to insert it on the root canvas and build again.
+- The first build of a generation compiles every program of the package in its own
+  build tree, since it does not share the viewport build's cache.
+- **Force raster** and the raster fallback do not apply to a library capture.
+
+**Evidence.**
+- Python `test_render_graph_library_capture.py`: generated roots compile for each
+  `salesin-jarosz-lines` output, accumulated outputs skip Accumulate, unknown
+  names and unsupported inputs explain the choices, and, with the shader tools, a
+  package is cooked from a generation that later edits and the build tree do not
+  change.
+- Editor `render_graph_library_capture_tests.cpp`: target listing and the request
+  state machine. "The Reference window offers each saved library output, and a
+  library capture needs a built generation" covers the Graph list and the
+  unbuilt-generation repair.
+- Editor GPU test "A library capture names its captured Export rather than the
+  package's first exported colour": a configure-time fixture writes the
+  `salesin-jarosz-lines` capture root with `write_capture_sources`, and the capture
+  resolves `LibraryCapture/output`, which differs from the required colour's Export,
+  and completes.
+
+**Resource names fix.** The cooker's names sidecar left out every Buffer resource,
+while the runtime plan keeps per-pixel Buffers such as a template's hit record. The
+editor then rejected the sidecar for listing a different number of resources, so
+every graph with a per-pixel Buffer showed numeric resource names and no Export
+could be found by name. `lowered_resources` now gives `lower_plan` and
+`encode_resource_names` one list; only structured buffers, which have no record,
+are left out.
 
 ## Open questions
 

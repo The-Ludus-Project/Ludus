@@ -233,6 +233,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         src/internal/viewport_raster_capture.h src/viewport_raster_capture.cpp
         src/internal/viewport_graph_capture.h src/viewport_graph_capture.cpp
         src/internal/render_graph_capture_profile.h src/render_graph_capture_profile.cpp
+        src/internal/render_graph_library_capture.h src/render_graph_library_capture.cpp
         src/internal/graph_display_frames.h src/graph_display_frames.cpp
         src/internal/world_graph_view.h src/world_graph_view.cpp
         src/internal/render_graph_worker.h src/render_graph_worker.cpp)
@@ -377,7 +378,7 @@ function(ludus_editor_add_default_render_graph target)
               ${restir_template_shaders})
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics)
+            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics restir_gi)
         string(REPLACE "_" "-" template_identity "${template_directory}")
         set(visibility_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/${template_directory}")
         file(GLOB visibility_template_shaders CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")
@@ -1177,7 +1178,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp
             tests/reference_comparison_tests.cpp)
         target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp
-            tests/raster_mesh_light_benchmark_tests.cpp tests/render_graph_capture_profile_tests.cpp)
+            tests/raster_mesh_light_benchmark_tests.cpp tests/render_graph_capture_profile_tests.cpp
+            tests/render_graph_library_capture_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RENDER_GRAPH_FIXTURE=\"${editor_renderer_static_RUNTIME_PACKAGE}\"")
         set(editor_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/raytracing")
@@ -1251,6 +1253,24 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             MANIFEST "${progressive_staged}/main.lushader.json" CAPTURE_PROFILE_PACKAGE)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_PROGRESSIVE_CAPTURE_PROFILE_FIXTURE=\"${editor_progressive_ray_capture_CAPTURE_PROFILE_PACKAGE}\"")
+        # The point-and-line template captured through a library capture root, as `render-graph capture-library`
+        # writes it. Its captured lineSampling Export is not the package's first exported colour.
+        set(library_capture_source "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/salesin_jarosz_lines")
+        set(library_capture_staged "${CMAKE_CURRENT_BINARY_DIR}/library-capture-inputs")
+        ludus_stage_render_graph_fixture("${library_capture_source}" "${library_capture_staged}")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_library_capture.py")
+        execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+            "import sys; sys.path.insert(0, sys.argv[1]); from ludus_tools import render_graph_library_capture as capture; capture.write_capture_sources(sys.argv[2], 'main.lushader.json', 'library.lurender.json', 'PointLineMis', 'lineSampling')"
+            "${PROJECT_SOURCE_DIR}/scripts/python" "${library_capture_staged}"
+            RESULT_VARIABLE library_capture_status ERROR_VARIABLE library_capture_error)
+        if(NOT library_capture_status EQUAL 0)
+            message(FATAL_ERROR "Cannot write the library capture fixture root: ${library_capture_error}")
+        endif()
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_library_capture
+            MANIFEST "${library_capture_staged}/capture.lushader.json" RUNTIME_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            "LUDUS_EDITOR_LIBRARY_CAPTURE_FIXTURE=\"${editor_library_capture_RUNTIME_PACKAGE}\"")
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE)
         target_sources(ludus_editor_tests PRIVATE tests/offscreen_viewport_tests.cpp tests/vulkan_viewport_tests.cpp)

@@ -3,6 +3,7 @@
 #include <ludus/foundation/time/time.hpp>
 
 #include <ludus/content/render_graph_format/plan.h>
+#include <ludus/foundation/containers/fixed_array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/runtime/resources/scene.h>
 
@@ -461,6 +462,49 @@ struct RenderGraphPreview::State final
     QElapsedTimer ProducerTimer;
     uint64 RenderedGeneration = 0;
     uint64 RenderedRevision = 0;
+    /// Camera the submitted frame was prepared with; HasRenderedView is false when its revision was not retained.
+    renderer::ViewDescription RenderedView{};
+    bool HasRenderedView = false;
+    /// Views of accepted Update revisions, oldest first. A revision becomes drawable only after its
+    /// Update, so a submission finds the camera of the scene it draws among these.
+    struct SubmittedView final
+    {
+        uint64 Revision = 0;
+        renderer::ViewDescription View{};
+    };
+    /// Covers the camera revisions a pending preparation can trail during navigation.
+    static constexpr usize MAX_SUBMITTED_VIEWS = 16;
+    FixedArray<SubmittedView, MAX_SUBMITTED_VIEWS> SubmittedViews;
+    void RecordSubmittedView(uint64 revision, const renderer::ViewDescription& view) noexcept
+    {
+        if (SubmittedViews.IsEmpty() == false && SubmittedViews.GetLast().Revision == revision)
+        {
+            SubmittedViews.GetLast().View = view;
+            return;
+        }
+        if (SubmittedViews.IsFull() == true)
+        {
+            SubmittedViews.RemoveAt(0);
+        }
+        static_cast<void>(SubmittedViews.TryAdd({revision, view}));
+    }
+    /// Find the view of a drawable revision; older revisions can no longer become drawable and are dropped.
+    [[nodiscard]] bool FindSubmittedView(uint64 revision, renderer::ViewDescription& outView) noexcept
+    {
+        for (usize index = 0; index < SubmittedViews.GetSize(); ++index)
+        {
+            if (SubmittedViews[index].Revision == revision)
+            {
+                outView = SubmittedViews[index].View;
+                for (usize dropped = 0; dropped < index; ++dropped)
+                {
+                    SubmittedViews.RemoveAt(0);
+                }
+                return true;
+            }
+        }
+        return false;
+    }
     /// Texture inspection owns a GPU snapshot; band readback can overlap later frames.
     RenderTargetReader Inspector;
     QString InspectedName;
@@ -1188,6 +1232,8 @@ void RenderGraphPreview::publishFrame(bool isGpuFrame)
     state.Trace.Publish();
     mPresentedGeneration = state.RenderedGeneration;
     mPresentedRevision = state.RenderedRevision;
+    mPresentedView = state.RenderedView;
+    mHasPresentedView = state.HasRenderedView;
     mPresentedSession = state.Session;
     setStatus(mPresentedRevision == state.MaterialStatusRevision ? state.MaterialStatus : QString{});
     state.IsInspectionRequested = state.IsInspectionEnabled == true && state.InspectedName.isEmpty() == false;
@@ -1295,6 +1341,7 @@ void RenderGraphPreview::advance()
         state.HasPendingPreparation = state.HasPendingPreparation == true || updated == rhi::RasterStatus::Pending;
         if (IsAccepted(updated) == true)
         {
+            state.RecordSubmittedView(state.Extraction.Revision, state.Extraction.View);
             state.MaterialStatusRevision = state.Extraction.Revision;
             state.MaterialStatus =
                 graphReport.SceneDiagnostics.ErrorBindings == 0
@@ -1373,6 +1420,11 @@ void RenderGraphPreview::advance()
     }
     Q_EMIT SubmissionRecorded();
     state.RenderedGeneration = report.ActiveGeneration;
+    // Progressive samples of one drawable scene keep its view even after newer revisions evict it.
+    if (state.HasRenderedView == false || state.RenderedRevision != drawable)
+    {
+        state.HasRenderedView = state.FindSubmittedView(drawable, state.RenderedView);
+    }
     state.RenderedRevision = drawable;
     state.Trace.SetStage("Await producer completion (observed)");
     state.IsAwaitingProducer = true;

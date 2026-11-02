@@ -95,12 +95,22 @@ def resolve_generation(path):
     return path
 
 
+def lowered_resources(plan):
+    """Return the plan resources that become runtime resource records, in record order.
+
+    Structured buffers (with a stride) are bound separately and get no record; textures and
+    per-pixel Buffers do. lower_plan and encode_resource_names share this list, so the names
+    sidecar always lists exactly the runtime records.
+    """
+    return sorted(name for name, value in plan['resources'].items() if 'stride' not in value)
+
+
 def lower_plan(package, configuration):
     roles = program_roles(package)
     plans = [p for p in package['plans'] if p['configuration'] == configuration]
     build.require(len(plans) == 1, 'Configuration', configuration, 'one declared root configuration required')
     plan = plans[0]
-    resources = sorted(name for name, value in plan['resources'].items() if 'stride' not in value)
+    resources = lowered_resources(plan)
     rasters = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing')]
     operations = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing', 'Upscale')]
     cameras = sorted({p['view'] for p in rasters})
@@ -881,7 +891,7 @@ def encode_resource_names(contents, *, runtime_identity=""):
     the names to exactly one package; runtime activation never reads this file.
     """
     plan = contents['plan']
-    names = sorted(name for name, resource in plan['resources'].items() if resource['type'] != 'Buffer')
+    names = lowered_resources(plan)
     entries = [{'name': name, 'type': plan['resources'][name]['type'], 'format': plan['resources'][name]['format'],
                 'extent': list(plan['resources'][name]['extent'])} for name in names]
     # Expanded operation IDs let a canvas node (Raster, Subgraph, Export, Present) find what it wrote or read.

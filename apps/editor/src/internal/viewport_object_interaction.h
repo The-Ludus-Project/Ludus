@@ -60,6 +60,12 @@ public:
     }
     /// Empty follows the viewport; otherwise match the presented graph image letterboxing.
     void SetImageSize(QSize size);
+    /// Project picking, the wire cage and handles through the camera of the shown image instead of
+    /// the live navigation camera, so they stay on its pixels while a newer camera still renders.
+    /// Only clip x/y and the [0, w] depth range are read, so a conventional-depth view is accepted.
+    void SetPresentedView(const foundation::math::Matrix4& worldToClip);
+    /// Follow the live navigation camera again, for images rendered synchronously with it.
+    void ClearPresentedView();
     [[nodiscard]] bool Press(QPointF positionPixel, const QRectF& framePixel);
     [[nodiscard]] bool Move(QPointF positionPixel, bool shouldSnap);
     [[nodiscard]] bool Release();
@@ -94,6 +100,7 @@ private:
     QJsonObject mCandidate;
     foundation::math::Affine3 mParentToWorld;
     foundation::math::Matrix4 mWorldToClip;
+    foundation::math::Matrix4 mPresentedWorldToClip;
     QRectF mFramePixel;
     QSize mImageSize;
     QPointF mPressPixel;
@@ -109,5 +116,6 @@ private:
     foundation::int32 mDragAxis = -1;
     bool mCanEdit = false;
     bool mIsActive = true;
+    bool mHasPresentedView = false;
 };
 } // namespace ludus::editor

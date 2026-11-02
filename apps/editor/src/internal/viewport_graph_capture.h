@@ -98,6 +98,16 @@ public:
     /// @return False with outError when the package cannot be read or decoded; outIdentity is unchanged then.
     [[nodiscard]] static bool
     ReadGenerationIdentity(const ViewportRasterSource& source, QByteArray& outIdentity, QString& outError);
+    /// Resolve the logical resource that one Export root of a cooked runtime package exports, through the names
+    /// sidecar the cooker writes beside it (GetTargetNamesPath), so a capture can name an Export that is not the
+    /// package's first exported colour.
+    /// @param exportId Expanded Export node ID, such as LIBRARY_CAPTURE_EXPORT.
+    /// @return False with outError when the package or its names cannot be read, or it has no such Export;
+    /// outResource is unchanged then.
+    [[nodiscard]] static bool FindExportResource(const QString& packagePath,
+                                                 const QString& exportId,
+                                                 foundation::uint32& outResource,
+                                                 QString& outError);
     /// True when the loaded capture decodes a capture profile rather than the runtime package.
     [[nodiscard]] LUDUS_INLINE bool IsCaptureProfile() const noexcept
     {

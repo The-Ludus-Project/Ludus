@@ -1632,6 +1632,146 @@ and [Appendix A.2, “Reservoir Sampling”](https://pbr-book.org/4ed/Sampling_A
 it adapts their sampling ideas to bounded GPU-local tables and one shared emitter
 stream, rather than copying the book's container implementation.
 
+### Use the built-in ReSTIR GI template
+
+The **ReSTIR GI — path resampling for indirect lighting** template (`restir-gi`)
+implements Yaobin Ouyang, Shiqiu Liu, Markus Kettunen, Matt Pharr and Jacopo
+Pantaleoni, [*ReSTIR GI: Path Resampling for Real-Time Path Tracing*, Computer
+Graphics Forum 40(8), High-Performance Graphics 2021, pp. 17–29](https://doi.org/10.1111/cgf.14378).
+Every pixel traces one indirect sample point per frame and path traces the light
+that point scatters back. Reservoirs then share good sample points across frames and
+nearby pixels. Create it from **New Render Graph → Template**, or with the CLI:
+
+```bash
+ludus render-graph new graphs/Indirect --template restir-gi --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. Every pass issues native ray queries, so the template
+requires native ray tracing; a `wgsl`-only package is rejected with a `Capability`
+diagnostic. **Apply Configuration Template...** and Quick Add also offer the
+`RestirGi` configuration, with `scene`, `view` and `color` inputs and a required
+`color` output. Imported programs have `RestirGi`-prefixed IDs and sources under
+`restir_gi/main_shaders/`. Import raises the shared ray technique's budgets to four
+surface and sixteen visibility queries per invocation. The root graph accumulates
+and tone maps the shaded color; remove its **Accumulate** node to see each frame's
+real-time estimate instead.
+
+Four scene compute passes map onto the paper's workflow (its Figure 4). Each pass
+traces its pixel's camera ray to the same visible point. Three **Buffer** nodes,
+sized from the color target through a texture-derived **RenderSize**, hold the
+paper's three image-sized buffers:
+
+| Pipeline node | Function | Buffers (`GraphBuffer0`, `GraphBuffer1`) | Work |
+| --- | --- | --- | --- |
+| `initial` | `GenerateInitialSample` in `initial.slang` | `samples` | Algorithm 2: sample a direction, trace the sample point, estimate its outgoing radiance |
+| `temporal` | `ResampleTemporal` in `temporal.slang` | `samples`, `temporalReservoirs` | Algorithm 3: merge the initial sample into the pixel's temporal reservoir |
+| `spatial` | `ResampleSpatial` in `spatial.slang` | `temporalReservoirs`, `spatialReservoirs` | Algorithm 4: merge similar neighbours' temporal reservoirs into the pixel's spatial reservoir |
+| `shade` | `ShadeRestirGi` in `shade.slang` | `spatialReservoirs` | Emission, direct lighting and the RIS estimate of indirect lighting |
+
+`samples` stores 32 bytes per pixel (the sample point's triangle and barycentrics,
+its radiance, the source PDF and the frame). Each reservoir stores 64 bytes per
+pixel: the sample, `W`, `M`, the visible point's triangle and barycentrics, the
+scene generation and the extent. At 1920 × 1080 the three buffers take 332 MB.
+Positions and normals are rebuilt from the stored triangles with `GetSurfaceHit`,
+so neither buffer quantizes them. Every pass reads only records that earlier passes
+finished, and writes only its own pixel's record, so no pass races another and no
+reservoir is double-buffered. A pass that fails stores its failure reason in its
+record; later passes report that reason instead of hiding it.
+
+The sample point's radiance `L_o` is reflected light only: next-event estimation at
+the sample point, plus `RESTIR_GI_PATH_BOUNCES` further BSDF-sampled vertices, each
+with next-event estimation combined by the power heuristic (section 4.1, Figure 5).
+Emission at the sample point and sample rays that reach the environment are left
+out, because the shade pass estimates direct lighting at the visible point with
+light and BSDF sampling, as the [MIS template](#compare-light-and-bsdf-sampling-with-mis)
+does. Resampling follows the paper:
+
+- **Target function.** The luminance of `L_o` (Equation 10), or of
+  `L_o · f · cos` (Equation 9) with the scattered-target setting. The target is zero
+  where the sample point lies below the visible point's hemisphere.
+- **Reconnection Jacobian.** A sample reused at another visible point is weighted by
+  `|J| = (|cos φ_r| / |cos φ_q|) · (‖x_q − x_s‖² / ‖x_r − x_s‖²)` (Equation 11).
+- **Spatial reuse.** Neighbours are chosen uniformly in a disk of 10% of the image's
+  larger dimension, halved after each neighbour that provides no sample, down to
+  3 pixels. They must pass the similarity test: normals within 25° and depths within
+  5%. Spatial reservoirs with fewer than half their sample limit use the sparse
+  neighbour count (section 5).
+- **Unbiased reuse.** A neighbour's sample is merged only if it is visible from this
+  visible point (Algorithm 4, lines 12–13). The count `Z` then keeps only the `M`
+  of candidates whose own visible points could have proposed the selected sample:
+  above their hemisphere and visible (lines 16–19). The biased variant traces none
+  of these rays and normalizes by every merged `M`.
+
+| Setting | Default | Range |
+| --- | --- | --- |
+| Initial sample directions (0 uniform hemisphere, 1 cosine-weighted) | 0 | 0–1 |
+| Target includes BSDF and cosine (Equation 9) | Disabled | Enabled/disabled |
+| Path bounces after the sample point | 1 | 0–2 |
+| Temporal reuse | Enabled | Enabled/disabled |
+| Temporal reservoir sample limit (M) | 30 | 1–1000 |
+| Spatial reuse | Enabled | Enabled/disabled |
+| Spatial reservoir sample limit (M) | 500 | 1–10000 |
+| Spatial neighbours | 3 | 0–7 |
+| Spatial neighbours below half the sample limit | 7 | 0–7 |
+| Unbiased reuse (visibility rays) | Enabled | Enabled/disabled |
+
+The defaults are the paper's: uniform hemisphere sampling and Equation 10, which
+section 6 found more stable, and `M` limits of 30 and 500. One path bounce gives
+two-bounce global illumination. The settings are compile-time constants like the
+[ReSTIR DI settings](#use-the-built-in-restir-di-template), so a change rebuilds the
+shaders and starts with empty reservoirs.
+
+Departures from the paper, also listed in `reservoir.slang`:
+
+- Algorithm 4 writes `p̂′ = p̂ / |J|`, while section 4.2 divides the source PDF by
+  `|J|`. The template multiplies the resampling weight by `|J|`, which is what
+  dividing the PDF means, and which makes reuse agree with the estimator without
+  reuse (below).
+- There are no motion vectors. Temporal history is the same pixel's reservoir. It is
+  kept when its visible point passes the similarity test, and shifted to this frame's
+  visible point with the Jacobian, a visibility ray and the count `Z`. With a still
+  camera the visible points are identical and none of these change the weight.
+- The paper uses 9 neighbours while a spatial reservoir is sparse. The template
+  allows 7: with two visibility rays per neighbour and two for the previous spatial
+  reservoir, that fills the interface's limit of 16 visibility queries.
+- Spatial reuse also merges the pixel's own temporal reservoir, so fresh samples
+  reach the spatial reservoir when no neighbour is similar. Spatial reservoirs never
+  reuse other spatial reservoirs (the paper's Figure 10): that would read records
+  that the same pass writes.
+- Sample points are assumed Lambertian when reused elsewhere, as in the paper's
+  implementation (section 5). Directions are sampled around the interpolated vertex
+  normal; normal maps change the BSDF evaluation only.
+- The scene is static within a scene generation. A World edit starts a new
+  generation, which empties every reservoir, so the periodic sample validation of
+  section 4.3 is not implemented. Multi-bounce paths run in every pixel rather than
+  in a quarter of the tiles.
+
+Evidence, on an Apple M5 GPU with Metal, in a diffuse Cornell box at 96 × 64 lit only
+by its ceiling light (`[restir-gi]` in `ludus_render_graph_ray_tests`):
+
+- **Unbiased.** After 256 frames, the image mean with temporal and spatial reuse
+  (0.285, 0.286, 0.241) agrees within 0.3% with the template's own estimator without
+  reuse (0.285, 0.287, 0.241), which keeps each pixel's initial sample with weight
+  `1 / p_q`. The Veach and Guibas template's direct lighting alone reads 0.204, so
+  indirect lighting adds about 40% that both estimators share.
+- **Less error.** After 32 frames of resampling, one frame with reuse has 2.5 times
+  less mean squared error than one frame without it (0.0064 against 0.0161), against
+  an independently seeded 2048-frame image. Both frames carry the same direct
+  lighting noise, so the indirect gain alone is larger.
+- **Biased reuse** renders failure-free; in the closed box, where every wall sees
+  most others, its mean stays within 0.1% of the unbiased one.
+
+Vulkan has not been run for this template. See the canonical
+[package](../../modules/graphics/renderer/render_graphs/restir_gi/main.lurender.json).
+
+Thanks also to Benedikt Bitterli, Chris Wyman, Matt Pharr, Peter Shirley, Aaron
+Lefohn and Wojciech Jarosz for the reservoir algorithms the paper builds on, to
+Eric Veach and Leonidas J. Guibas for the power heuristic, and to Tom Duff, James
+Burgess, Per Christensen, Christophe Hery, Andrew Kensler, Max Liani and Ryusuke
+Villemin, [*Building an Orthonormal Basis, Revisited*, JCGT 6(1), 2017](https://jcgt.org/published/0006/01/01/),
+for the tangent frame of the hemisphere samples.
+
 <a id="use-the-compute-ray-tracing-template"></a>
 
 ### Use the simple triangle-loop template

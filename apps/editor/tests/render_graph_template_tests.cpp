@@ -8,6 +8,10 @@
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_quick_add.h"
 #include "internal/renderer_workspace.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/reference_capture_window.h"
+#    include "internal/render_graph_library_capture.h"
+#endif
 
 #include <ludus/foundation/base/types.h>
 
@@ -1891,6 +1895,84 @@ TEST_CASE("Steinberg physical-optics configuration imports its passes, shader cl
     RequireValidation(workspace);
 }
 
+TEST_CASE("ReSTIR GI template is created from the editor picker with its four passes and three buffers",
+          "[editor][render-graph][restir-gi-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    workspace.show();
+    CreateGraphFromPicker(workspace, QStringLiteral("restir-gi"));
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    for (const char* identity :
+         {"samples", "temporalReservoirs", "spatialReservoirs", "Initial", "Temporal", "Spatial", "Shade"})
+    {
+        INFO(identity);
+        CHECK(library.contains(identity) == true);
+    }
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    CHECK(root.count("\"Accumulate\"") == 1);
+    CHECK(root.count("\"ToneMap\"") == 1);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/reservoir.slang")).contains("ComputeReconnectionJacobian") ==
+          true);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("RESTIR_GI_SPATIAL_MAX_M") == true);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("ReSTIR GI configuration imports its passes, shader closure and settings on the root canvas",
+          "[editor][render-graph][restir-gi-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Indirect"), QStringLiteral("restir-gi")) == true);
+    const QByteArray library = document.GetDraft(QStringLiteral("Indirect.lurender.json"));
+    for (const char* program : {"RestirGiInitial", "RestirGiTemporal", "RestirGiSpatial", "RestirGiShade"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    // Each kernel's include closure arrives with it.
+    for (const QString& source : {QStringLiteral("restir_gi/main_shaders/initial.slang"),
+                                  QStringLiteral("restir_gi/main_shaders/temporal.slang"),
+                                  QStringLiteral("restir_gi/main_shaders/spatial.slang"),
+                                  QStringLiteral("restir_gi/main_shaders/shade.slang"),
+                                  QStringLiteral("restir_gi/main_shaders/reservoir.slang"),
+                                  QStringLiteral("restir_gi/main_shaders/transport.slang")})
+    {
+        INFO(source.toStdString());
+        CHECK(document.GetDraft(source).isEmpty() == false);
+    }
+    const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
+    for (const char* setting : {"RESTIR_GI_SOURCE_DISTRIBUTION",
+                                "IS_RESTIR_GI_TARGET_SCATTERED",
+                                "RESTIR_GI_PATH_BOUNCES",
+                                "IS_RESTIR_GI_TEMPORAL_ENABLED",
+                                "RESTIR_GI_TEMPORAL_MAX_M",
+                                "IS_RESTIR_GI_SPATIAL_ENABLED",
+                                "RESTIR_GI_SPATIAL_MAX_M",
+                                "RESTIR_GI_SPATIAL_NEIGHBORS",
+                                "RESTIR_GI_SPATIAL_SPARSE_NEIGHBORS",
+                                "IS_RESTIR_GI_UNBIASED"})
+    {
+        INFO(setting);
+        CHECK(manifest.contains(setting) == true);
+    }
+    // The shared ray technique's budgets rise to the template's: the sample path and the spatial reuse's rays.
+    const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 4);
+    CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 16);
+    ReplaceRasterSubgraph(document, QStringLiteral("Indirect"));
+    REQUIRE(workspace.Save() == true);
+    RequireValidation(workspace);
+}
+
 TEST_CASE("Line-sampling template is created from the editor picker with Properties hidden",
           "[editor][render-graph][line-sampling-template]")
 {
@@ -2703,6 +2785,49 @@ qsizetype PadSavedPackage(const QString& project, qsizetype fileCount)
     return savedFiles;
 }
 } // namespace
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+TEST_CASE("The Reference window offers each saved library output, and a library capture needs a built generation",
+          "[editor][render-graph][point-line-configuration][render-graph-capture]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("PointLineMis"), GetPointLineTemplate()) == true);
+    const RenderGraphCaptureTarget lines{QStringLiteral("PointLineMis.lurender.json"),
+                                         QStringLiteral("PointLineMis"),
+                                         QStringLiteral("lineSampling")};
+    // Library captures rebuild a generation's saved sources, so an unsaved library is not offered yet.
+    CHECK(workspace.GetCaptureTargets().contains(lines) == false);
+    REQUIRE(workspace.Save() == true);
+    const QVector<RenderGraphCaptureTarget> targets = workspace.GetCaptureTargets();
+    const qsizetype index = targets.indexOf(lines);
+    REQUIRE(index >= 0);
+    for (const char* output : {"color", "pointSampling"})
+    {
+        INFO(output);
+        CHECK(targets.contains(
+                  RenderGraphCaptureTarget{lines.Library, lines.Configuration, QString::fromLatin1(output)}) == true);
+    }
+
+    ReferenceCaptureWindow window(nullptr);
+    window.SetProjectGraph(&workspace);
+    QComboBox* graphs = window.findChild<QComboBox*>(QStringLiteral("referenceGraphTarget"));
+    REQUIRE(graphs != nullptr);
+    REQUIRE(graphs->count() == targets.size() + 1);
+    CHECK(graphs->itemText(CAPTURE_GRAPH_VIEWPORT_INDEX) == QStringLiteral("Viewport output"));
+    CHECK(graphs->itemText(static_cast<int>(index) + CAPTURE_GRAPH_VIEWPORT_INDEX + 1) == lines.GetLabel());
+
+    // Without a built generation there are no saved sources to rebuild; the failure says how to make one.
+    RenderGraphLibraryCapture* capture = workspace.GetLibraryCaptureOrNull();
+    REQUIRE(capture != nullptr);
+    capture->Request(QByteArray("unbuilt generation"), lines);
+    CHECK(capture->GetState() == LibraryCaptureState::Failed);
+    CHECK(capture->GetError().contains(QStringLiteral("Choose Build & Preview in the Render Graph document")) == true);
+}
+#endif
 
 TEST_CASE("A template applies to a package with more sources than the editor's former 64-file limit",
           "[editor][render-graph][point-line-configuration]")

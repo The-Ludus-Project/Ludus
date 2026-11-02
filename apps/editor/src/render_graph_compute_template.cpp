@@ -420,6 +420,11 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
         selected.ProgramPrefix = QStringLiteral("SteinbergPhysicalOptics");
         selected.Name = QStringLiteral("Steinberg practical physical optics");
     }
+    else if (templateIdentity == QStringLiteral("restir-gi"))
+    {
+        selected.ProgramPrefix = QStringLiteral("RestirGi");
+        selected.Name = QStringLiteral("ReSTIR GI");
+    }
     else
     {
         outError = QStringLiteral("Choose a built-in scene compute template.");

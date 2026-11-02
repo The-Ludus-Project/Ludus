@@ -8402,3 +8402,223 @@ TEST_CASE("Native ray queries keep their results with several surface and visibi
     // The room's walls, lit by its ceiling light directly and through bounces, fill most of the view.
     CHECK(litPixels * 2 > usize{WIDTH} * HEIGHT);
 }
+
+// restir-gi template tests. Thanks to Yaobin Ouyang, Shiqiu Liu, Markus Kettunen, Matt Pharr and Jacopo Pantaleoni,
+// "ReSTIR GI: Path Resampling for Real-Time Path Tracing", Computer Graphics Forum 40(8), 2021,
+// https://doi.org/10.1111/cgf.14378 . The diffuse Cornell box is lit by its ceiling light alone, so a large part of
+// what the walls show arrives through bounces.
+namespace
+{
+constexpr PackageLocation RESTIR_GI_TEMPLATE{LUDUS_RG3_RESTIR_GI_TEMPLATE_DIRECTORY, "rg2_restir_gi_template.lurgrt"};
+constexpr PackageLocation RESTIR_GI_NO_REUSE{LUDUS_RG3_RESTIR_GI_NO_REUSE_DIRECTORY, "rg2_restir_gi_no_reuse.lurgrt"};
+constexpr PackageLocation RESTIR_GI_BIASED{LUDUS_RG3_RESTIR_GI_BIASED_DIRECTORY, "rg2_restir_gi_biased.lurgrt"};
+// Initial samples, temporal reuse, spatial reuse and shading; only the last pass is presented.
+constexpr usize RESTIR_GI_PASS_COUNT = 4;
+constexpr uint32 RESTIR_GI_SHADE_PASS = 3;
+
+/// Render frameCount more frames, require every pass to be failure-free and read the shade pass's accumulated sum of
+/// linear radiance, one value per pixel, which must hold accumulatedCount frames.
+void RenderRestirGiSums(PreparedGraph& inoutGraph,
+                        const GraphGpuFixture& fixture,
+                        usize frameCount,
+                        usize accumulatedCount,
+                        Array<math::Vector3>& outSums)
+{
+    REQUIRE(inoutGraph.Plan.Passes.GetSize() == RESTIR_GI_PASS_COUNT);
+    for (usize frame = 0; frame < frameCount; ++frame)
+    {
+        RenderFrame(inoutGraph.Graph, fixture);
+    }
+    // Every pass reports its own failures; a later pass would otherwise hide an earlier one's.
+    for (uint32 pass = 0; pass < RESTIR_GI_PASS_COUNT; ++pass)
+    {
+        const renderer::RenderGraphRayFailures failures = ReadRayFailures(inoutGraph.Graph, pass);
+        INFO("pass " << pass << " failed pixels " << failures.TotalPixels << ", main reason " << failures.MainReason);
+        REQUIRE(failures.TotalPixels == 0);
+    }
+    Array<math::Vector4> records;
+    ReadAccumulation(inoutGraph.Graph, fixture, RESTIR_GI_SHADE_PASS, records);
+    REQUIRE(outSums.TryResize(usize{WIDTH} * HEIGHT) == true);
+    for (usize pixel = 0; pixel < outSums.GetSize(); ++pixel)
+    {
+        const math::Vector4& sum = records[pixel * renderer::RENDER_GRAPH_ACCUMULATION_WORDS];
+        uint32 count = 0;
+        std::memcpy(&count, &sum.W, sizeof(count));
+        REQUIRE(count == accumulatedCount);
+        outSums[pixel] = math::Vector3{sum.X, sum.Y, sum.Z};
+    }
+}
+
+/// Render frameCount frames and read the shade pass's running mean of linear radiance, one value per pixel.
+void RenderRestirGiMean(PreparedGraph& inoutGraph,
+                        const GraphGpuFixture& fixture,
+                        usize frameCount,
+                        Array<math::Vector3>& outMean)
+{
+    RenderRestirGiSums(inoutGraph, fixture, frameCount, frameCount, outMean);
+    for (math::Vector3& pixel : outMean)
+    {
+        pixel = pixel / static_cast<float32>(frameCount);
+    }
+}
+
+/// Render frameCount frames and read the last frame's radiance alone: the difference of the last two running sums.
+void RenderRestirGiLastFrame(PreparedGraph& inoutGraph,
+                             const GraphGpuFixture& fixture,
+                             usize frameCount,
+                             Array<math::Vector3>& outFrame)
+{
+    REQUIRE(frameCount > 1);
+    Array<math::Vector3> previous;
+    RenderRestirGiSums(inoutGraph, fixture, frameCount - 1, frameCount - 1, previous);
+    RenderRestirGiSums(inoutGraph, fixture, 1, frameCount, outFrame);
+    for (usize pixel = 0; pixel < outFrame.GetSize(); ++pixel)
+    {
+        outFrame[pixel] = outFrame[pixel] - previous[pixel];
+    }
+}
+
+math::Vector3 ComputeImageMean(const Array<math::Vector3>& pixels)
+{
+    math::Vector3 sum{};
+    for (const math::Vector3& pixel : pixels)
+    {
+        sum = sum + pixel;
+    }
+    return sum / static_cast<float32>(pixels.GetSize());
+}
+
+/// Mean squared error of linear radiance against a converged image, over pixels and RGB channels.
+float64 ComputeLinearMeanSquaredError(const Array<math::Vector3>& pixels, const Array<math::Vector3>& converged)
+{
+    REQUIRE(pixels.GetSize() == converged.GetSize());
+    float64 sum = 0;
+    for (usize pixel = 0; pixel < pixels.GetSize(); ++pixel)
+    {
+        const math::Vector3 difference = pixels[pixel] - converged[pixel];
+        const float64 x = static_cast<float64>(difference.X);
+        const float64 y = static_cast<float64>(difference.Y);
+        const float64 z = static_cast<float64>(difference.Z);
+        sum += x * x + y * y + z * z;
+    }
+    constexpr float64 CHANNEL_COUNT = 3;
+    return sum / (static_cast<float64>(pixels.GetSize()) * CHANNEL_COUNT);
+}
+} // namespace
+
+TEST_CASE("The ReSTIR GI template's unbiased reuse converges to its estimator without reuse",
+          "[render-graph][gpu][restir-gi][template]")
+{
+    // Without temporal and spatial reuse every pixel keeps its own initial sample, whose weight is the inverse source
+    // PDF: plain Monte Carlo with the same direct lighting and sample-point paths. Unbiased reuse (the reconnection
+    // Jacobian, visibility rays and the count Z) must estimate the same image; a missing Jacobian brightens corners
+    // and darkens open walls (the paper's Figure 7), and a wrong Z scales whole regions.
+    GraphGpuFixture fixture;
+    CornellBox room;
+    constexpr usize FRAME_COUNT = 256;
+    // One graph at a time: each holds its own scene copy and buffers within the device's resource budget.
+    Array<math::Vector3> reused;
+    {
+        PreparedGraph restir(fixture, RESTIR_GI_TEMPLATE, room, 1);
+        REQUIRE(restir.Programs.HasPersistentRayBuffers == true);
+        REQUIRE(renderer::RequiresHardwareRayTracing(restir.Plan) == true);
+        for (usize pass = 0; pass < restir.Plan.Passes.GetSize(); ++pass)
+        {
+            INFO("pass " << pass);
+            CHECK(restir.Plan.Passes[pass].Program == format::Technique::RayTracing);
+            CHECK(restir.Plan.Passes[pass].Traversal == format::RayTraversal::NativeQuery);
+            CHECK((restir.Plan.Passes[pass].AccumulationSamples > 0) == (pass == RESTIR_GI_SHADE_PASS));
+        }
+        RenderRestirGiMean(restir, fixture, FRAME_COUNT, reused);
+    }
+    Array<math::Vector3> independent;
+    {
+        PreparedGraph plain(fixture, RESTIR_GI_NO_REUSE, room, 1);
+        RenderRestirGiMean(plain, fixture, FRAME_COUNT, independent);
+    }
+    const math::Vector3 mean = ComputeImageMean(reused);
+    const math::Vector3 expected = ComputeImageMean(independent);
+    INFO("reuse mean=" << mean.X << ',' << mean.Y << ',' << mean.Z << ", no-reuse mean=" << expected.X << ','
+                       << expected.Y << ',' << expected.Z);
+    constexpr float32 LIT_MEAN = .05F;
+    REQUIRE(expected.Y > LIT_MEAN);
+    // Reused samples are correlated across frames and pixels, so 256 frames hold fewer independent samples than
+    // 256 plain ones; the image means still agree within 3%.
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .03F;
+    CheckMeansAgree(mean, expected, RELATIVE_MEAN_TOLERANCE);
+    // Agreement must not come from indirect lighting that is missing in both: the Veach and Guibas template estimates
+    // the same direct lighting alone, which leaves the room clearly darker.
+    PreparedGraph direct(fixture,
+                         {LUDUS_RG3_VEACH_GUIBAS_MIS_TEMPLATE_DIRECTORY, "rg2_veach_guibas_mis_template.lurgrt"},
+                         room,
+                         1);
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> directPixels;
+    RenderVeachGuibasOutputs(direct, fixture, FRAME_COUNT, directPixels);
+    const math::Vector3 directMean = ComputeMeanRadiance(directPixels[VEACH_GUIBAS_MIS]);
+    INFO("direct-only mean=" << directMean.X << ',' << directMean.Y << ',' << directMean.Z);
+    constexpr float32 MINIMUM_INDIRECT_GAIN = 1.15F;
+    CHECK(mean.Y > MINIMUM_INDIRECT_GAIN * directMean.Y);
+}
+
+TEST_CASE("A ReSTIR GI frame has less error than a frame of its estimator without reuse",
+          "[render-graph][gpu][restir-gi][template]")
+{
+    // The paper's central result (section 6, Figure 13): at one sample per pixel, a frame whose reservoirs have
+    // resampled earlier frames and nearby pixels has much less error than one path-traced frame. Each image is a single
+    // frame, the difference of the last two accumulated sums. The reference is an independent converged image: another
+    // instance whose scene revision reseeds sampling.
+    GraphGpuFixture fixture;
+    CornellBox room;
+    constexpr usize REFERENCE_FRAME_COUNT = 2048;
+    // The paper shows frames after 32 frames of temporal resampling.
+    constexpr usize FRAME_COUNT = 32;
+    // One graph at a time: each holds its own scene copy and buffers within the device's resource budget.
+    Array<math::Vector3> converged;
+    {
+        PreparedGraph reference(fixture, RESTIR_GI_NO_REUSE, room, 2);
+        RenderRestirGiMean(reference, fixture, REFERENCE_FRAME_COUNT, converged);
+    }
+    Array<math::Vector3> reused;
+    {
+        PreparedGraph restir(fixture, RESTIR_GI_TEMPLATE, room, 1);
+        RenderRestirGiLastFrame(restir, fixture, FRAME_COUNT, reused);
+    }
+    Array<math::Vector3> independent;
+    {
+        PreparedGraph plain(fixture, RESTIR_GI_NO_REUSE, room, 1);
+        RenderRestirGiLastFrame(plain, fixture, FRAME_COUNT, independent);
+    }
+    const float64 reuseError = ComputeLinearMeanSquaredError(reused, converged);
+    const float64 plainError = ComputeLinearMeanSquaredError(independent, converged);
+    INFO("reuse MSE=" << reuseError << ", no-reuse MSE=" << plainError);
+    // Both frames share the direct lighting estimate, which reuse does not change, so the whole-image gain
+    // understates the indirect one.
+    constexpr float64 REQUIRED_ERROR_RATIO = .5;
+    CHECK(reuseError < REQUIRED_ERROR_RATIO * plainError);
+}
+
+TEST_CASE("The ReSTIR GI template's biased reuse renders without visibility rays",
+          "[render-graph][gpu][restir-gi][template]")
+{
+    // Section 4.3: the biased variant normalizes by every merged M and traces no visibility ray for reused samples.
+    // In the closed box every wall sees every other one, so its bias stays small.
+    GraphGpuFixture fixture;
+    CornellBox room;
+    constexpr usize FRAME_COUNT = 256;
+    Array<math::Vector3> reused;
+    {
+        PreparedGraph biased(fixture, RESTIR_GI_BIASED, room, 1);
+        RenderRestirGiMean(biased, fixture, FRAME_COUNT, reused);
+    }
+    Array<math::Vector3> independent;
+    {
+        PreparedGraph plain(fixture, RESTIR_GI_NO_REUSE, room, 1);
+        RenderRestirGiMean(plain, fixture, FRAME_COUNT, independent);
+    }
+    const math::Vector3 mean = ComputeImageMean(reused);
+    const math::Vector3 expected = ComputeImageMean(independent);
+    INFO("biased mean=" << mean.X << ',' << mean.Y << ',' << mean.Z << ", no-reuse mean=" << expected.X << ','
+                        << expected.Y << ',' << expected.Z);
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .1F;
+    CheckMeansAgree(mean, expected, RELATIVE_MEAN_TOLERANCE);
+}
