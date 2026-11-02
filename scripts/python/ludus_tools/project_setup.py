@@ -186,9 +186,10 @@ def _validate_web_sdk(root: Path, sdk: Path, native_identity) -> Path:
 
 
 def _identity_stamp(identity) -> str:
-    """What a project's recorded setup depends on in an SDK: its path and its ABI identity.
+    """What a project's recorded setup depends on in an SDK, besides where it is: its ABI identity.
 
-    The recorded setup covers presets and cache variables, which name the SDK by path and by the target,
+    The SDK's path is not hashed here; ``_inputs`` keeps it as the key of the stamps mapping, so moving the SDK
+    still changes the signature. The recorded setup covers presets and cache variables, which name the SDK by path and by the target,
     compiler and deployment baseline in its manifest. The SDK's library contents are not part of it: a
     refreshed engine install (./init.sh rebuilds this editor's engine whenever the checkout moved) keeps its
     path and identity, and its library stamp is tracked per build folder (``resolve.write_stamp``), which
