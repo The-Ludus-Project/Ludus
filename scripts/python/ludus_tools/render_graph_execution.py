@@ -326,10 +326,12 @@ PACKAGE_MAGIC = 0x4752554C
 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554C
 # Frame capture profile generation ("LURC"); same layout, admitted only by RenderGraphPackage::DecodeCaptureProfile.
 CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
+# Version 32 admits the Light Transformer scene resource and preserves the version 31 opaque G-buffer stage.
+# Version 31: clustered deferred packages add DeferredOpaqueGBufferFragment, the G-buffer without its coverage discard.
 # Version 30: the clustered deferred resolve reads a bounding-sphere header word in each mesh-light record.
 # Version 29 appends each pass's ToneMappingCurve and admits ToneMap on clustered deferred raster output.
 # Version 28: ray kernels dispatch the ray uniform's tile region (a 240-byte uniform), so captures may tile.
-PACKAGE_VERSION = 31
+PACKAGE_VERSION = 32
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.

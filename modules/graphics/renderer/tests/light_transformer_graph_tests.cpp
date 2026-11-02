@@ -219,6 +219,13 @@ TEST_CASE("Light Transformer template encodes the World, decodes GPU queries and
     REQUIRE(runtime.Decode({packageBytes.GetData(), packageBytes.GetSize()}) ==
             renderer::RenderGraphPackageStatus::Ready);
     REQUIRE(runtime.HasLightTransformer() == true);
+    // Version 31 owns the opaque G-buffer stage and must reject the later trained-model scene-resource bit.
+    Array<uint8> earlierPackageBytes = ReadFile(LUDUS_LIGHT_TRANSFORMER_PACKAGE_FILE);
+    constexpr usize VERSION_OFFSET = sizeof(uint32);
+    earlierPackageBytes[VERSION_OFFSET] = static_cast<uint8>(format::OPAQUE_GBUFFER_PACKAGE_VERSION);
+    CHECK(runtime.Decode({earlierPackageBytes.GetData(), earlierPackageBytes.GetSize()}) ==
+          renderer::RenderGraphPackageStatus::Malformed);
+    CHECK(runtime.HasLightTransformer() == true);
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
     rhi::DeviceDescription description;

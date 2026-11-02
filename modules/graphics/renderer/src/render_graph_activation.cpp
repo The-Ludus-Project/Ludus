@@ -184,6 +184,8 @@ struct RenderGraphPackage::State final
     bool HasDenoising = false;
     /// Version 29 and later carry each pass's display curve and admit raster ToneMap.
     bool HasToneMappingCurve = false;
+    /// Version 31 and later clustered deferred packages carry the opaque G-buffer fragment with every deferred target.
+    bool HasOpaqueGBuffer = false;
     /// The version 25 scene resource word names the LTC table: AppendLtcTableBindings adds its slot.
     bool HasLtcTable = false;
     /// The scene resource word names the failure summary: AppendSceneResourceBindings adds its slot last.
@@ -243,6 +245,10 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         }
         const bool isDeferredRole = role >= format::DEFERRED_STAGE_ROLE_FIRST;
         if (isDeferredRole == true && CanHaveClusteredDeferred == false)
+        {
+            return RenderGraphPackageStatus::UnsupportedVersion;
+        }
+        if (role == format::DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE && HasOpaqueGBuffer == false)
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
         }
@@ -467,7 +473,9 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         const bool hasClusteredTarget = Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE][target].IsPresent;
         for (usize role = format::DEFERRED_STAGE_ROLE_FIRST; role < format::STAGE_ROLE_COUNT; ++role)
         {
-            if (Stages[role][target].IsPresent != (hasDeferred == true && hasClusteredTarget == true))
+            const bool isRequired = hasDeferred == true && hasClusteredTarget == true &&
+                                    (role != format::DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE || HasOpaqueGBuffer == true);
+            if (Stages[role][target].IsPresent != isRequired)
             {
                 return RenderGraphPackageStatus::Malformed;
             }
@@ -834,7 +842,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::LIGHT_TRANSFORMER_PACKAGE_VERSION &&
+        (version != format::LIGHT_TRANSFORMER_PACKAGE_VERSION && version != format::OPAQUE_GBUFFER_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION &&
          version != format::RASTER_TONE_MAPPING_PACKAGE_VERSION && version != format::TILED_RAY_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION &&
@@ -871,6 +879,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasMetalFxSpatialUpscale = version >= format::METALFX_SPATIAL_PACKAGE_VERSION;
     candidate->HasDenoising = version >= format::DENOISING_PACKAGE_VERSION;
     candidate->HasToneMappingCurve = version >= format::RASTER_TONE_MAPPING_PACKAGE_VERSION;
+    candidate->HasOpaqueGBuffer = version >= format::OPAQUE_GBUFFER_PACKAGE_VERSION;
     candidate->HasExplicitRayWorkgroup = version >= format::RAY_WORKGROUP_PACKAGE_VERSION;
     candidate->HasExplicitRayTraversal = version >= format::SOFTWARE_RAY_PACKAGE_VERSION;
     candidate->HasCustomRayTraversal = version >= format::CUSTOM_RAY_PACKAGE_VERSION;
@@ -1206,11 +1215,12 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
          &result.LightingFragment,
          &result.LightingShadow},
     };
-    const StaticArray<rhi::RasterShaderDescription*, format::DEFERRED_STAGE_ROLE_COUNT> deferredMembers{
-        {&result.DeferredGBufferFragment,
-         &result.DeferredLightingVertex,
-         &result.DeferredLightingFragment,
-         &result.DeferredDepthCopyFragment}};
+    const StaticArray<rhi::RasterShaderDescription*, format::STAGE_ROLE_COUNT - format::DEFERRED_STAGE_ROLE_FIRST>
+        deferredMembers{{&result.DeferredGBufferFragment,
+                         &result.DeferredLightingVertex,
+                         &result.DeferredLightingFragment,
+                         &result.DeferredDepthCopyFragment,
+                         &result.DeferredOpaqueGBufferFragment}};
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description =

@@ -149,6 +149,13 @@ usize GetBindingBytes(const RenderGraphPlan& plan, usize binding) noexcept
     }
     return bytes;
 }
+/// Whether a stage carries an artifact for any shader target.
+bool HasShaderArtifact(const rhi::RasterShaderDescription& description) noexcept
+{
+    const rhi::ShaderDescription& artifact = description.Artifact;
+    return artifact.Wgsl.empty() == false || artifact.Msl.empty() == false || artifact.Spirv.empty() == false ||
+           artifact.GlslEs.empty() == false;
+}
 bool IsReadByStage(format::Visibility stages, rhi::ShaderStage stage) noexcept
 {
     return stages == format::Visibility::Both ||
@@ -2020,12 +2027,15 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
          &programs.DeferredDepthCopyFragment}};
     for (const rhi::RasterShaderDescription* stage : deferredStages)
     {
-        const bool hasArtifact = stage->Artifact.Wgsl.empty() == false || stage->Artifact.Msl.empty() == false ||
-                                 stage->Artifact.Spirv.empty() == false || stage->Artifact.GlslEs.empty() == false;
-        if (hasArtifact != programs.HasClusteredDeferred)
+        if (HasShaderArtifact(*stage) != programs.HasClusteredDeferred)
         {
             return Status::InvalidDescription;
         }
+    }
+    // The opaque G-buffer fragment is optional: packages before format::OPAQUE_GBUFFER_PACKAGE_VERSION omit it.
+    if (HasShaderArtifact(programs.DeferredOpaqueGBufferFragment) == true && programs.HasClusteredDeferred == false)
+    {
+        return Status::InvalidDescription;
     }
     for (usize index = 0; index < plan.Passes.GetSize(); ++index)
     {
@@ -2731,7 +2741,10 @@ Status RenderGraph::Poll() noexcept
                 &state.Programs.ForwardShadow,
                 state.ForwardProgram,
                 state.Programs.HasClusteredForward == true ? &state.Programs.ForwardDepth : nullptr,
-                state.Programs.HasClusteredDeferred == true ? &state.Programs.DeferredGBufferFragment : nullptr);
+                state.Programs.HasClusteredDeferred == true ? &state.Programs.DeferredGBufferFragment : nullptr,
+                HasShaderArtifact(state.Programs.DeferredOpaqueGBufferFragment) == true
+                    ? &state.Programs.DeferredOpaqueGBufferFragment
+                    : nullptr);
             if (IsAccepted(status) == false)
             {
                 return status;
