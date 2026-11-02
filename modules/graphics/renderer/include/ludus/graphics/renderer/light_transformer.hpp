@@ -54,7 +54,8 @@ ReadLightTransformerDecoderWeights(foundation::BorrowedView<const foundation::ui
 /// @param outWorkload Empty owner, acquired only on Ready/Pending; failure preserves it.
 /// @return Ready/Pending, InvalidDescription, CapacityExceeded, OutOfMemory or backend preparation failure.
 /// Output is raw network RGB; Softplus is nonnegative for finite evaluation. Nonfinite
-/// inference values remain visible, without clamping or a fallback. Do not apply albedo again.
+/// inference values remain visible, without clamping or a fallback. Reconstruct the
+/// trained target quantity separately: diffuse irradiance uses albedo/PI plus direct emission.
 /// No inference-quality, interactive-performance or reference-integrator guarantee is implied.
 [[nodiscard]] rhi::RasterStatus
 PrepareLightTransformerDecoder(foundation::BorrowedView<const foundation::float32> weights,

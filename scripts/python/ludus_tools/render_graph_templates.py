@@ -29,6 +29,7 @@ TEMPLATES = {
     'guided-restir-fg-plus': ('guided_restir_fg_plus', 'Guided ReSTIR FG+', 'compute-ray-tracing'),
     'conditional-restir': ('conditional_restir', 'Conditional ReSTIR', 'native-ray-tracing'),
     'one-more-vertex-nee': ('one_more_vertex_nee', 'One-more-vertex NEE', 'compute-ray-tracing'),
+    'light-transformer': ('light_transformer', 'Light Transformer irradiance', 'compute-ray-tracing'),
     'restir-gi': ('restir_gi', 'ReSTIR GI', 'native-ray-tracing'),
 }
 # What each requirement needs, as the capability repair names it.
@@ -52,6 +53,11 @@ def template_files(identity, profiles, graph):
     snapshot = build.Snapshot(source)
     text = snapshot.load('main.lushader.json.in').decode('utf-8')
     text = text.replace('@LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@', json.dumps(list(profiles)))
+    if identity == 'light-transformer':
+        snapshot.load('light_transformer/model.json')
+        document = json.loads(text)
+        document['profiles'] = [profile for profile in profiles if profile in ('metal', 'spirv')]
+        text = json.dumps(document, indent=2) + '\n'
     manifest = json.loads(text)
     build.validate_manifest(manifest)
     pending = ['main.lurender.json']

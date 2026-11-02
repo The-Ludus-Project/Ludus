@@ -8,6 +8,8 @@ Upstream code, weights and example data are not redistributed by this tool.
 
 import argparse
 import hashlib
+import json
+import math
 import pickle
 import re
 import struct
@@ -19,11 +21,11 @@ RELEASE_SHA256 = 'd957187949f44c36415116436fe613e1061d940706b84565ef5b5e65fc56af
 HASH_CHUNK_BYTES = 1024 * 1024
 
 
-def read_layout(path):
+def read_layout(path, prefix='LIGHT_TRANSFORMER'):
     """Read scalar representation constants from the shared host/shader owner."""
     return {name: int(value, 0) if '.' not in value else float(value)
             for name, value in re.findall(
-                r'^#define LUDUS_LIGHT_TRANSFORMER_(\w+)\s+(0x[0-9a-fA-F]+|[0-9.]+)\s*$',
+                rf'^#define LUDUS_{prefix}_(\w+)\s+(0x[0-9a-fA-F]+|[0-9.]+)\s*$',
                 Path(path).read_text(), re.MULTILINE)}
 
 
@@ -142,6 +144,11 @@ def write_decoder(path, values, layout):
     header = [layout['FILE_MAGIC'], layout['FILE_VERSION'], len(values)]
     header.extend([0] * (layout['FILE_HEADER_WORDS'] - len(header)))
     data = struct.pack('<' + 'I' * len(header), *header) + values.tobytes()
+    write_asset(path, data)
+
+
+def write_asset(path, data):
+    """Atomically publish one validated parameter asset."""
     destination = Path(path)
     temporary = None
     try:
@@ -154,22 +161,71 @@ def write_decoder(path, values, layout):
             temporary.unlink(missing_ok=True)
 
 
+def is_representable_training_scale(value):
+    """Require finite positive binary32 scale and reciprocal for GPU normalization."""
+    if value is None or not math.isfinite(value) or value <= 0:
+        return False
+    try:
+        scale = struct.unpack('<f', struct.pack('<f', value))[0]
+        inverse = struct.unpack('<f', struct.pack('<f', 1 / scale))[0]
+    except (OverflowError, ZeroDivisionError):
+        return False
+    return math.isfinite(scale) and scale > 0 and math.isfinite(inverse) and inverse > 0
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Adapt trained Light Transformer decoder weights to portable Ludus compute.')
+    parser = argparse.ArgumentParser(description='Adapt trained Light Transformer encoder/decoder weights to portable Ludus compute.')
     parser.add_argument('checkpoint', type=Path)
-    parser.add_argument('--decoder-output', type=Path, required=True)
+    parser.add_argument('--decoder-output', type=Path)
+    parser.add_argument('--encoder-output', type=Path)
+    parser.add_argument('--model-directory', type=Path, help='export encoder.llte, decoder.lltd and model.json for the render graph template')
+    parser.add_argument('--world-units-per-model-unit', type=float, help='fixed training dataset scale, required with --model-directory')
+    # Either or both adapters may be requested; validation precedes publication.
     candidates = (Path(__file__).resolve().parents[3] /
                   'modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_layout.h',
                   Path(__file__).resolve().parents[2] / 'shaders/light_transformer_layout.h')
     parser.add_argument('--layout', type=Path, default=next((path for path in candidates if path.is_file()), candidates[0]))
     arguments = parser.parse_args(argv)
+    if arguments.model_directory is not None:
+        if arguments.decoder_output is not None or arguments.encoder_output is not None:
+            parser.error('--model-directory owns both outputs; omit individual output paths')
+        if is_representable_training_scale(arguments.world_units_per_model_unit) is False:
+            parser.error('--model-directory requires a positive binary32 scale and reciprocal matching the training dataset')
+        arguments.encoder_output = arguments.model_directory / 'encoder.llte'
+        arguments.decoder_output = arguments.model_directory / 'decoder.lltd'
+    if arguments.decoder_output is None and arguments.encoder_output is None:
+        parser.error('select --model-directory, --encoder-output and/or --decoder-output')
     try:
         import torch
         import numpy
         layout = read_layout(arguments.layout)
         state, digest = load_checkpoint(arguments.checkpoint, torch, numpy)
-        values = pack_decoder(state, layout, numpy)
-        write_decoder(arguments.decoder_output, values, layout)
+        values = pack_decoder(state, layout, numpy) if arguments.decoder_output else None
+        if arguments.encoder_output:
+            from .light_transformer_encoder import pack_encoder
+            encoder = pack_encoder(state, numpy)
+        if arguments.model_directory:
+            arguments.model_directory.mkdir(parents=True, exist_ok=True)
+        if arguments.decoder_output:
+            write_decoder(arguments.decoder_output, values, layout)
+        if arguments.encoder_output:
+            write_asset(arguments.encoder_output, encoder)
+        if arguments.model_directory:
+            from .light_transformer_encoder import ENCODER_LAYOUT
+            def asset_digest(path):
+                hasher = hashlib.sha256()
+                with path.open('rb') as stream:
+                    for chunk in iter(lambda: stream.read(HASH_CHUNK_BYTES), b''):
+                        hasher.update(chunk)
+                return hasher.hexdigest()
+            configuration = {'version': 1,
+                             'encoder_sha256': asset_digest(arguments.encoder_output),
+                             'decoder_sha256': asset_digest(arguments.decoder_output), 'world_units_per_model_unit': arguments.world_units_per_model_unit,
+                             'scene_points': ENCODER_LAYOUT['MAX_POINTS'], 'seed': 1,
+                             'maximum_sampling_attempts': ENCODER_LAYOUT['MAX_POINTS'] * ENCODER_LAYOUT['DEFAULT_ATTEMPTS_PER_POINT'],
+                             'maximum_buffer_bytes': 512 * 1024 * 1024,
+                             'maximum_surface_preparation_bytes': 512 * 1024 * 1024,
+                             'checkpoint_sha256': digest}
+            write_asset(arguments.model_directory / 'model.json', (json.dumps(configuration, indent=2) + '\n').encode())
     except ImportError as error:
         parser.exit(1, f'Light Transformer export failed: {error}. Install PyTorch 2.6+ and NumPy 2+ in the offline-tool environment.\n')
     except pickle.UnpicklingError as error:
@@ -178,5 +234,8 @@ def main(argv=None):
         parser.exit(1, f'Light Transformer export failed: {error}. Check the input path and create a writable output parent directory.\n')
     except (ValueError, RuntimeError, TypeError) as error:
         parser.exit(1, f'Light Transformer export failed: {error}. Export a complete, finite state_dict for the released 128-dimensional decoder.\n')
-    print(f'Wrote {len(values)} finite decoder parameters to {arguments.decoder_output}; source SHA-256 {digest}.')
+    if arguments.decoder_output:
+        print(f'Wrote {len(values)} finite decoder parameters to {arguments.decoder_output}; source SHA-256 {digest}.')
+    if arguments.encoder_output:
+        print(f'Wrote portable encoder parameters to {arguments.encoder_output}; source SHA-256 {digest}.')
     return 0

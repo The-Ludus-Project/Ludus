@@ -140,3 +140,44 @@ TEST_CASE("Standard normal quantile inverts the normal CDF across both tails", "
         CHECK(IsNaN(ComputeStandardNormalQuantile(static_cast<float32>(outside))) == true);
     }
 }
+
+TEST_CASE("Error function preserves symmetry, bounds and IEEE endpoint values", "[math][scalar]")
+{
+    using ludus::foundation::float32;
+    using ludus::foundation::float64;
+    using ludus::foundation::int32;
+    REQUIRE(ComputeErrorFunction(float32{0}) == 0);
+    REQUIRE(std::signbit(ComputeErrorFunction(float32{-0.0})) == true);
+    REQUIRE(Abs(ComputeErrorFunction(float64{1}) - 0.84270079294971486934) < 1e-15);
+    float64 previous = 0;
+    for (int32 i = 1; i <= 1000; ++i)
+    {
+        const float64 x = static_cast<float64>(i) / 100;
+        const float64 value = ComputeErrorFunction(x);
+        REQUIRE(value >= previous);
+        REQUIRE(value <= 1);
+        REQUIRE(ComputeErrorFunction(-x) == -value);
+        previous = value;
+    }
+    REQUIRE(ComputeErrorFunction(std::numeric_limits<float64>::infinity()) == 1);
+    REQUIRE(ComputeErrorFunction(-std::numeric_limits<float64>::infinity()) == -1);
+    REQUIRE(std::isnan(ComputeErrorFunction(std::numeric_limits<float64>::quiet_NaN())) == true);
+}
+
+TEST_CASE("Binary32 conversion rejects range overflow before narrowing and preserves outputs", "[math][scalar]")
+{
+    using ludus::foundation::float32;
+    using ludus::foundation::float64;
+    float32 value = 1;
+    CHECK(TryConvertToFloat32(std::numeric_limits<float64>::max(), value) == false);
+    CHECK(value == 1);
+    CHECK(TryConvertToFloat32(std::numeric_limits<float64>::infinity(), value) == false);
+    CHECK(TryConvertToFloat32(std::numeric_limits<float64>::quiet_NaN(), value) == false);
+    const float64 maximum = static_cast<float64>(std::numeric_limits<float32>::max());
+    CHECK(TryConvertToFloat32(maximum, value) == true);
+    CHECK(value == std::numeric_limits<float32>::max());
+    CHECK(TryConvertToFloat32(-maximum, value) == true);
+    CHECK(value == -std::numeric_limits<float32>::max());
+    CHECK(TryConvertToFloat32(float64{-0.0}, value) == true);
+    CHECK(std::signbit(value) == true);
+}
