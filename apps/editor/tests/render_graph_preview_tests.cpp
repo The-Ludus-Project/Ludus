@@ -1816,6 +1816,8 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
     CHECK(statusOrNull->text() == QStringLiteral("Shader build failed, using default renderer. Show in Error List"));
     CHECK(statusOrNull->toolTip().contains(QStringLiteral("timed out")) == true);
     CHECK(graphViewOrNull->HasProblemChip() == true);
+    // A real click reaches the view only while it is not transparent to the mouse.
+    CHECK(graphViewOrNull->testAttribute(Qt::WA_TransparentForMouseEvents) == false);
     QSignalSpy errorListRequested(&workspace, &RendererWorkspace::ErrorListRequested);
     if (graphViewOrNull->isVisible() == true && statusOrNull->isVisible() == true)
     {

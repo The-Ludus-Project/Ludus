@@ -243,6 +243,9 @@ void WorldGraphView::refreshStatus()
         }
         text += QStringLiteral("Engine default renderer fallback.");
     }
+    // The view lets pointer input through to the viewport that navigates; only while the chip is shown does it take
+    // presses, and a press outside the chip is ignored so it still reaches the viewport.
+    setAttribute(Qt::WA_TransparentForMouseEvents, mHasProblemChip == false);
     mStatus->setText(text);
     mStatus->setToolTip(fullText);
     mStatus->setVisible(text.isEmpty() == false);
