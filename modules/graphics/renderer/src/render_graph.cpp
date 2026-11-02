@@ -536,7 +536,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         }
         if (pass.Program == format::Technique::RayTracing)
         {
-            if (hasEndedRaySequence == true || pass.RayProgram >= format::MAX_RAY_PASSES)
+            if (hasEndedRaySequence == true || pass.RayProgram >= format::MAX_RAY_PROGRAMS)
             {
                 return Status::Unsupported;
             }

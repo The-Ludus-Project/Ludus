@@ -53,6 +53,15 @@ single read-only buffer-0 contract. No Metal types leak into public headers.
 
 The existing smoke/probe private WGSL interop remains a test boundary. External
 applications use the public rendering API and exported `ludus_compile_shader`.
+
+For native compute kernels using the scene's software traversal and runtime buffer
+lengths, `ludus_compile_shader(... COMPUTE Entry SOFTWARE_RAY_QUERIES)` uses the
+same SPIR-V-to-Metal translation and structured-buffer validation as scene render
+graphs. It requires the pinned SPIRV-Cross on Metal and the pinned SPIR-V validator
+on Vulkan. It declares no TLAS/ray-query capability and emits no browser artifact.
+The option excludes `NATIVE_RAY_QUERIES`, raster stages and Emscripten. This is a
+build-time profile; devices still negotiate ordinary compute before execution.
+
 Neither compiler tools nor probe headers are installed as engine dependencies.
 
 ## Raster color writes

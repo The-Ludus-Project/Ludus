@@ -1,6 +1,7 @@
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/scene_shader_layout.h>
 
+#include "../shaders/metropolis_layout.h"
 #include "../shaders/renderer_gpu_preview_layout.h"
 
 // Failure reasons a graph ray kernel counts (renderer_gpu_preview.slang, CountGraphFailure). The shader codes in
@@ -31,6 +32,8 @@ static_assert(ToCode(RenderGraphFailureReason::StorageCapacity) == LUDUS_SCENE_F
 static_assert(ToCode(RenderGraphFailureReason::StoredRecord) == LUDUS_SCENE_FAILURE_STORED_RECORD);
 static_assert(ToCode(RenderGraphFailureReason::SceneData) == LUDUS_SCENE_FAILURE_SCENE_DATA);
 static_assert(ToCode(RenderGraphFailureReason::InvalidWeight) == LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
+static_assert(ToCode(RenderGraphFailureReason::BsdfOnlyLights) == LUDUS_SCENE_FAILURE_BSDF_ONLY_LIGHTS);
+static_assert(ToCode(RenderGraphFailureReason::PrimaryMaterial) == LUDUS_SCENE_FAILURE_PRIMARY_MATERIAL);
 static_assert(RENDER_GRAPH_FAILURE_AUTHORED_FIRST == LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
 static_assert(MAX_RENDER_GRAPH_FAILURE_REASONS == LUDUS_SCENE_FAILURE_REASON_COUNT);
 static_assert(LUDUS_GRAPH_FAILURE_BYTES == MAX_RENDER_GRAPH_FAILURE_REASONS * sizeof(uint32));
@@ -48,6 +51,12 @@ const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
     }
     switch (static_cast<RenderGraphFailureReason>(reason))
     {
+        case RenderGraphFailureReason::BsdfOnlyLights:
+            return "This BSDF-only path template cannot sample analytic lights. Select a light-sampling graph, or "
+                   "replace the analytic lights with authored emissive meshes or an environment.";
+        case RenderGraphFailureReason::PrimaryMaterial:
+            return "This primary-sample template does not support coated-diffuse internal random walks. Select a "
+                   "renderer supporting coatings, or explicitly author a diffuse or conductor material.";
         case RenderGraphFailureReason::Unspecified:
             return "A shader set queries.HasFailed without a reason. Building the graph lists each such line as a "
                    "RenderGraphBuildReasonlessFailure warning; call FailSceneQuery there with a reason to name the "

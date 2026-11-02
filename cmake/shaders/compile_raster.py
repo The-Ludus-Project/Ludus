@@ -725,6 +725,10 @@ def compile_raster(args, lock):
     stages = [('compute', args.compute)] if getattr(args, 'compute', None) else [('vertex', args.vertex), ('fragment', args.fragment)]
     compute = stages[0][0] == 'compute'
     native_rays = getattr(args, 'native_ray_queries', False)
+    software_rays = getattr(args, 'graph_software_rays', False)
+    if software_rays and (not compute or native_rays):
+        raise RuntimeError('Software ray queries require native compute and exclude native ray queries')
+    translated_compute = native_rays or software_rays
     if native_rays and not compute:
         raise RuntimeError('Native ray queries require compute stages')
     native_arrays = getattr(args, 'native_binding_arrays', False)
@@ -739,15 +743,15 @@ def compile_raster(args, lock):
     if not args.metal:
         if not args.validator or hashlib.sha256(Path(args.validator).read_bytes()).hexdigest() != lock['spirv_tools']['val_sha256']:
             raise RuntimeError('Raster SPIR-V validator differs from SDK pin')
-    if native_rays and args.metal and not args.spirv_cross:
-        raise RuntimeError('Metal native ray queries require the pinned SPIRV-Cross tool')
-    if args.spirv_cross and (not compute or native_rays):
+    if translated_compute and args.metal and not args.spirv_cross:
+        raise RuntimeError('Metal translated ray compute requires the pinned SPIRV-Cross tool')
+    if args.spirv_cross and (not compute or translated_compute):
         pin = json.loads(Path(args.spirv_cross_lock).read_text())['spirv_cross']
         tool = Path(args.spirv_cross).resolve()
         build = json.loads(Path(str(tool) + '.build.json').read_text())
         if any(build.get(key) != pin[key] for key in ('tag', 'commit', 'source_sha256')) or build.get('binary_sha256') != hashlib.sha256(tool.read_bytes()).hexdigest():
             raise RuntimeError('Raster SPIRV-Cross identity differs from verified pin')
-    target = 'metal' if args.metal and not native_arrays and not native_rays else 'spirv'
+    target = 'metal' if args.metal and not native_arrays and not translated_compute else 'spirv'
     for stage, name in stages:
         artifact = output / f'{args.name}.{stage}.{"metal" if target == "metal" else "spv"}'
         reflection, depfile = output / f'{stage}.reflection.json', output / f'{stage}.d'
@@ -762,22 +766,22 @@ def compile_raster(args, lock):
             commands.append(command)
             run(command)
         dependencies.append(depfile.read_text().split(':', 1)[1].strip())
-        interfaces[(target, stage)] = raster_interface(json.loads(reflection.read_text()), stage, target == 'metal', native_arrays, runtime_arrays, structured_records=native_rays)
-        if native_rays:
+        interfaces[(target, stage)] = raster_interface(json.loads(reflection.read_text()), stage, target == 'metal', native_arrays, runtime_arrays, structured_records=translated_compute)
+        if translated_compute:
             verify_storage_record_strides(artifact.read_bytes(), interfaces[(target, stage)])
         if native_arrays:
             spirv_array_indexing(artifact.read_bytes(), interfaces[(target, stage)])
             for binding in interfaces[(target, stage)]['entries']:
                 if binding.get('kind') in ('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'Sampler') and binding.get('indexing', 'Constant') != 'Constant':
                     raise RuntimeError('Buffer and sampler descriptor arrays require constant selection')
-        if args.metal and native_rays:
+        if args.metal and translated_compute:
             emitted = output / f'{args.name}.{stage}.metal'
             command = [args.spirv_cross, str(artifact), '--msl', '--msl-version', '20400', '--msl-decoration-binding', '--output', str(emitted)]
             commands.append(command); run(command)
-            from compile_graph_stage import isolate_metal_ray_queries, verify_native_ray_metal
+            from compile_graph_stage import isolate_metal_ray_queries, verify_ray_compute_metal
             code = isolate_metal_ray_queries(relative_line_directives(emitted.read_text(), roots))
             interface = interfaces[(target, stage)]
-            emitted_name = verify_native_ray_metal(code, interface)
+            emitted_name = verify_ray_compute_metal(code, interface, native_rays)
             emitted.write_text(code)
             artifacts[('metal', stage)] = (code, emitted_name)
             interfaces[('metal', stage)] = interface
@@ -825,7 +829,7 @@ def compile_raster(args, lock):
                 interface['blocks'], interface['textures'] = names, textures
                 interfaces[('glsl', stage)] = interface
                 artifacts[('glsl', stage)] = (essl.read_text(), 'main')
-    if not args.metal and not native_arrays and not native_rays:
+    if not args.metal and not native_arrays and not translated_compute:
         for stage, source_entry in stages:
             artifact = output / f'{args.name}.{stage}.wgsl'
             reflection, depfile = output / f'{stage}.wgsl.reflection.json', output / f'{stage}.wgsl.d'

@@ -1,4 +1,4 @@
-#include "reservoir.slang"
+#include "shading.slang"
 
 // Pass 4 of 4 (scene compute): the final shading of section 4.2 from the pixel's spatial reservoir (`spatial`,
 // GraphBuffer0). The visible point returns its emission, direct lighting with light and BSDF sampling combined by the
@@ -37,25 +37,7 @@ float3 ShadeRestirGi(SceneContext scene, RayLaunch launch, inout RayQueryContext
     radiance += EstimateDirectLighting(scene, launch, shadingPoint, SHADE_DIRECT_DIMENSION_FIRST, queries);
     if (reservoir.Sample.TriangleIndex != SCENE_INVALID_INDEX && reservoir.Weight > 0)
     {
-        SurfaceHit samplePoint = GetSurfaceHit(scene, reservoir.Sample.TriangleIndex, reservoir.Sample.Barycentric);
-        float3 offsetWorld = samplePoint.PositionWorld - hit.PositionWorld;
-        float distanceSquared = dot(offsetWorld, offsetWorld);
-        if (samplePoint.IsValid == false || distanceSquared <= 0)
-        {
-            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
-            return float3(0);
-        }
-        float3 directionWorld = offsetWorld * rsqrt(distanceSquared);
-        float cosSurface = dot(shadingPoint.ShadingNormalWorld, directionWorld);
-        float3 bsdfValue;
-        float bsdfDensity;
-        EvaluateStandardBsdf(shadingPoint.Material,
-                             shadingPoint.ViewDirectionWorld,
-                             directionWorld,
-                             bsdfValue,
-                             bsdfDensity);
-        if (cosSurface > 0)
-            radiance += bsdfValue * reservoir.Sample.RadianceOut * (cosSurface * reservoir.Weight);
+        radiance += EvaluateGiIndirectContribution(scene, shadingPoint, reservoir.Sample, queries) * reservoir.Weight;
     }
     if (all(isfinite(radiance)) == false || any(radiance < 0) == true)
     {

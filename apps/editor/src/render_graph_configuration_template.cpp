@@ -687,7 +687,8 @@ RenderGraphDocumentStatus PrepareTemplateContents(RenderGraphSnapshot& inoutSnap
         templateIdentity == QStringLiteral("slice-sampling-luminaire") ||
         templateIdentity == QStringLiteral("steinberg-plt") ||
         templateIdentity == QStringLiteral("steinberg-physical-optics") ||
-        templateIdentity == QStringLiteral("restir-gi") || templateIdentity == QStringLiteral("conditional-restir"))
+        templateIdentity == QStringLiteral("restir-gi") || templateIdentity == QStringLiteral("rao-blackwell-mh") ||
+        templateIdentity == QStringLiteral("conditional-restir"))
     {
         return PrepareComputeRayTracingConfiguration(inoutSnapshot,
                                                      rootGraph,

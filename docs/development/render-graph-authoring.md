@@ -1049,8 +1049,10 @@ The target-derived launch mode uses each target's resolved extent, including
 [shared and view-relative render sizes](#share-render-sizes). Runtime launch coverage
 follows the instantiated color extent; adaptive resolution remains separate work.
 
-The profile admits up to four consecutive ray invocations per configuration and the existing graph
-mesh/item limits. Multiple invocations or persistent buffers require the scene callback interface. It rejects native ray payloads, recursive tracing, additional hit groups,
+The profile admits up to four consecutive ray invocations per configuration, up to
+eight distinct callback sets across a package's configurations, and the existing graph
+mesh/item limits. Callback selection and invocation count are separate limits; switching
+configurations does not spend another invocation in the active plan. Multiple invocations or persistent buffers require the scene callback interface. It rejects native ray payloads, recursive tracing, additional hit groups,
 any-hit/intersection/callable stages, resources beyond the two persistent buffer slots and optional visibility/depth pair, masked/transparent or
 deformed geometry, reverse-Z and infinite-far cameras. Color is the only produced
 aspect; no ray depth output is inferred. Ray preparation has renderer-owned
@@ -1434,7 +1436,7 @@ and preserves the draft. Program, source and setting conflicts name the conflict
 input; a program capacity error gives the required count and `budgets.programs` limit.
 Undo restores the previous budgets along with the graph and shader edits.
 Settings are shared by this package's ReSTIR
-configurations. A manifest holds up to 64 settings, enough for every built-in
+configurations. A manifest holds up to 128 settings, enough for every built-in
 template together. If a template's settings would exceed that limit and removing
 authored settings that no `.slang` source names would make room, the picker lists
 those settings and offers **Remove and apply** or **Cancel**. Approval removes only
@@ -1632,6 +1634,75 @@ and [Appendix A.2, “Reservoir Sampling”](https://pbr-book.org/4ed/Sampling_A
 it adapts their sampling ideas to bounded GPU-local tables and one shared emitter
 stream, rather than copying the book's container implementation.
 
+### Run the production ReSTIR DI configuration
+
+A newly created `restir-di` package also contains **Production**, in both
+`main.lurender.json` and `library.lurender.json`. Select **Production** in the root
+configuration picker, or instantiate the library's **Production** configuration
+with the same `scene`, `view` and `color` inputs. **Default** still instantiates
+`RestirDi`. The configuration-template snippet imports that original configuration;
+create a complete package to get both variants. Existing project-owned shader copies
+are preserved; the initial-sampling updater above does not install this configuration.
+
+Thanks to Chris Wyman and Alexey Panteleev, [*Rearchitecting Spatiotemporal
+Resampling for Production*, High-Performance Graphics 2021](https://doi.org/10.2312/hpg.20211281).
+This configuration adapts their sections 5.2, 6.2, 6.4 and 7:
+
+| Pass | Work |
+| --- | --- |
+| `presample` | Generate 128 light-point pools of 1024 records once per frame, independently of receivers. An 8 × 8 pixel tile shares one randomly chosen pool; each pixel draws its initial candidates uniformly from that pool. |
+| `shade` | Trace one primary ray, perform initial RIS, reuse this pixel's and neighbours' previous-frame reservoirs, shade the three candidate groups, and select one reservoir for next frame. |
+
+The light proposal is uniform over emitters and then their triangles, with uniform
+area sampling on the selected triangle. Each pool record retains its inverse area
+PDF. This deliberately replaces the paper's power proposal; it preserves support
+and avoids receiver-dependent emitter scans in the pixel loop. Initial candidates
+still use the **Initial candidates** setting. Pool size and tile width are named
+shader constants, matching the paper's example values. Pool records occupy a fixed
+2 MiB buffer, refreshed every frame, including when the image has fewer pixels than
+the number of records.
+
+History occupies 128 bytes per pixel: two banks of 64-byte records. Frame parity
+selects the read and write banks, so all spatial reads see the completed previous
+frame. Only the owning pixel writes its current-bank record. Scene generation,
+extent, layout and the immediately preceding sample index must match. Zeroed,
+failed, skipped-frame and resized histories are rejected. Temporal reuse additionally
+requires the original exact receiver/view match; there is no motion reprojection.
+Spatial reuse retains the original material, normal and world-distance tests, using
+random axial neighbours. This is a smaller spatial footprint than the paper's
+implementation and can converge more slowly after motion.
+
+| Production-only setting | Default | Range |
+| --- | --- | --- |
+| Previous-frame spatial taps | 1 | 0–4 |
+| Approximate visibility reuse distance (world units) | 0 | 0–1000 |
+
+Decoupled shading evaluates the fresh, temporal and spatial candidate groups even
+when the final reservoir coin discards them. Contributions are weighted by the
+resampling probabilities: with `Z = sum(M)`, the conditional estimate simplifies
+to `sum(f_i × V_i × W_i × M_i) / sum(M_i)`. If multiple spatial taps are requested,
+they first form one spatial reservoir, so only its selected sample needs a shadow
+ray. Only the fresh candidate's visibility affects resampling weights; temporal
+and spatial visibility affect shading alone, avoiding repeated visibility rejection
+inside the stored weights (section 7.2).
+
+A valid exact temporal match reuses cached visibility. Spatial visibility is
+retested unless the selected source receiver falls within the visibility-distance
+threshold. At zero, only an identical world-space receiver can reuse it. Positive
+thresholds apply section 7.3's biased quality/cost tradeoff and can leak light or
+lose contact shadows; the cached result never changes resampling weights. World
+edits invalidate all history, so visibility is never reused across scene generations.
+The kernel needs at most two shadow queries plus its primary ray, independently of
+the spatial tap count. The pool pass traces none.
+
+This is the paper's **biased DI variant**, including fresh-candidate visibility
+reuse. It is not an unbiased reference profile. The scope remains registered mesh
+emitters and direct lighting; analytic/environment lights, indirect transport,
+motion reprojection and denoising are not added. No paper speedup is claimed for
+Ludus. At 1920 × 1080 history alone is 265,420,800 bytes, just below the 256 MiB
+per-buffer limit. Larger images must reduce RenderSize scale; an oversized request
+preserves the last drawable view.
+
 ### Use the built-in ReSTIR GI template
 
 The **ReSTIR GI — path resampling for indirect lighting** template (`restir-gi`)
@@ -1652,12 +1723,12 @@ requires native ray tracing; a `wgsl`-only package is rejected with a `Capabilit
 diagnostic. **Apply Configuration Template...** and Quick Add also offer the
 `RestirGi` configuration, with `scene`, `view` and `color` inputs and a required
 `color` output. Imported programs have `RestirGi`-prefixed IDs and sources under
-`restir_gi/main_shaders/`. Import raises the shared ray technique's budgets to four
+`restir_gi/main_shaders/`. Import raises the shared ray technique's budgets to five
 surface and sixteen visibility queries per invocation. The root graph accumulates
 and tone maps the shaded color; remove its **Accumulate** node to see each frame's
 real-time estimate instead.
 
-Four scene compute passes map onto the paper's workflow (its Figure 4). Each pass
+The **Default** configuration's four scene compute passes map onto the paper's workflow (its Figure 4). Each pass
 traces its pixel's camera ray to the same visible point. Three **Buffer** nodes,
 sized from the color target through a texture-derived **RenderSize**, hold the
 paper's three image-sized buffers:
@@ -1746,6 +1817,49 @@ Departures from the paper, also listed in `reservoir.slang`:
   generation, which empties every reservoir, so the periodic sample validation of
   section 4.3 is not implemented. Multi-bounce paths run in every pixel rather than
   in a quarter of the tiles.
+
+The root and library also offer **Production**, adapting Wyman and Panteleev's
+[2021 production ReSTIR paper](https://doi.org/10.2312/hpg.20211281), sections 6.2
+and 7.1, to this GI estimator. **Default** and the imported `RestirGi` snippet
+retain the four-pass implementation above. A complete new package includes both
+configurations; existing project-owned copies are not replaced.
+
+Production runs one scene compute pass: it traces the visible point, generates the
+fresh path sample locally, merges this pixel's previous reservoir and one
+previous-frame disk neighbour, shades their contributions, and writes one new
+reservoir. The initial source distribution and path estimator are shared with the
+Default configuration; fresh samples remain local rather than passing through an
+intermediate buffer or depending on another pass's sample counter. No current-frame
+neighbour result is read and no second camera ray is needed. One 128-byte-per-pixel
+history buffer holds two 64-byte banks, selected by frame parity. Reads require
+the immediately preceding sample index and matching scene generation, extent and
+layout. Every invocation writes its own record in the other bank. Each borrowed
+history's `M` is bounded by the temporal limit; the result uses the spatial limit.
+The separate spatial-neighbour-count settings apply to Default; Production uses
+one tap, as recommended by section 6.4 of the production paper. Temporal/spatial
+enable switches, source distribution, target, bounce count and sample limits apply
+to both. Path sampling, reservoir coins, neighbour selection and direct lighting
+use disjoint addressed random dimensions within the fused pass.
+
+GI retains its reconnection Jacobian and support tests. In unbiased mode it computes
+a separate visibility-dependent `Z_i` for **each shaded candidate**, including
+zero-weight source reservoirs where their receivers could generate that candidate.
+The candidate contribution is `f_i × w_i / (Z_i × target_i)`, where
+`w_i = target_i × |J_i| × W_i × M_i`. This is the conditional expectation of the
+same reservoir-selection estimator; the selected candidate's `Z_i` also finalizes
+the reservoir forwarded to the next frame. Replacing every `Z_i` by `sum(M)` would
+incorrectly transfer the biased DI shortcut. The existing **Unbiased reuse** setting
+still controls the explicit biased GI alternative.
+
+Global light pools do not replace GI's receiver-dependent path samples. Approximate
+DI visibility reuse is not applied to GI's reconnection or normalization queries;
+those queries preserve the existing unbiased-mode contract. The shade kernel fits
+within five surface/sixteen visibility query budgets: at the maximum two path
+bounces it traces the primary ray, the sample-point ray, two continuations and the
+visible point's direct-light BSDF ray. The maximum-bounce cosine-source/scattered-
+target profile is also covered by a GPU regression. Direct lighting,
+scene-generation invalidation and the Lambertian sample-point approximation are
+unchanged. No GI speedup or production-paper DI equivalence is claimed.
 
 Evidence, on an Apple M5 GPU with Metal, in a diffuse Cornell box at 96 × 64 lit only
 by its ceiling light (`[restir-gi]` in `ludus_render_graph_ray_tests`):
@@ -3317,6 +3431,148 @@ alpha-tested triangles. Vulkan has not been run for this template.
 
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/salesin_jarosz_lines/main.lurender.json).
+
+## Use the Rao-Blackwellized MH template
+
+Choose **Rao-Blackwellized MH and Jump Restore light transport** in the new-graph picker or the
+canvas **Apply Configuration Template** menu. The CLI equivalent is:
+
+```bash
+ludus render-graph new graphs/Metropolis --template rao-blackwell-mh --output offscreen \
+  --renderer-static --profiles metal
+```
+
+Use `spirv` for Vulkan. The `RaoBlackwellMh` library accepts `scene`, `view` and
+`color`. Its main `color` output is the paper's practical RB estimator; optional
+`standard` and `wasteRecycling` outputs expose the corresponding MH baselines.
+The optional `jumpRestore` output adds Jump Restore RB beside these three MH
+outputs in the default configuration. New-graph and CLI packages also include a
+**JumpRestore** root configuration; select it on the canvas configuration control
+to compare JR RB, standard and waste recycling through its `color`,
+`standard` and `wasteRecycling` library outputs. Every route uses Accumulate and
+ToneMap. The default admits four ray passes; the JR comparison admits three, within
+the engine's four-pass limit. Both configurations share four callback sets: MH
+advance, JR advance, standard resolve and waste-recycling resolve. Canvas import applies the four-pass
+configuration to the chosen library. Its root
+RenderSize defaults to half the drawable width and height to bound chain/film
+memory; edit that node to change resolution. Buffer and device budgets still apply. It uses
+compute BVH traversal, without hardware ray tracing. Shader sources and Graph
+settings are editable project files; canvas and Properties use the existing
+transactional template importer, undo and Save.
+
+This is a bounded **per-pixel primary-sample-space MH** implementation, not the
+paper's multiplexed bidirectional MLT implementation. One independent chain per
+pixel mutates two camera-jitter dimensions and three BSDF dimensions per scattering
+vertex. A state-independent mixture chooses a uniform large step or a symmetric
+uniform small step wrapped around the unit cube. Symmetry gives acceptance
+`min(1, p(proposed) / p(current))`. Defaults are a 0.3 large-step probability,
+0.05 small-step radius, 128 discarded burn-in proposals and three scattering events.
+Depth is editable from one to three; initialization plus the first proposal use at
+most eight surface queries. Every subsequent invocation evaluates one proposal,
+keeping unfinished chains and RB state holding weights across frames.
+
+The path integrand is jittered-camera RGB radiance with a finite scattering depth,
+BSDF continuation sampling, emissive triangles and the environment. It includes
+legacy metallic/roughness, typed diffuse and isotropic conductor reflection,
+retained material maps and masked geometry through the existing scene interface.
+It has no next-event estimation, roulette, denoising or cross-pixel film splats.
+Analytic lights cannot be reached by this sampler and produce an explicit failure
+with a repair: choose a light-sampling graph, or author mesh emission/environment.
+Coated diffuse also fails explicitly because its stochastic internal walk needs
+additional primary dimensions; choose a renderer supporting coatings or explicitly
+change the material. These failures never silently remove authored lighting or
+select another renderer. Tiny emitters can mix slowly; this baseline does not
+promise a variance improvement for every scene.
+
+The target is `p(u) = MH_TARGET_FLOOR + luminance(L(u))`, using Rec. 709 luminance.
+The finite positive floor gives black paths support. Accumulation estimates the
+unit-cube integral using `sum(w * L/p) / sum(w/p)`, so it needs no separate bootstrap
+brightness estimate. Standard MH adds the current state with `w = 1` each iteration.
+Waste recycling adds current and proposed states with `w = 1-alpha` and `w = alpha`.
+The RB branch uses Holl, Singh and Seidel's section 5.4 / Algorithm 5.2 recurrence:
+`P *= 1-alpha; holding += P`, starting both at one. It includes the accepting
+proposal, adds the previous state's holding weight only at acceptance and then
+resets the tour. An unfinished tour remains pending at a capture stop; it is not
+flushed with an invented weight. No extra proposals are evaluated for RB.
+
+Jump Restore follows section 6 / Algorithms 6.1–6.2 with a uniform global
+kernel and unit-rate small-step MH local dynamics. Its killing rate is
+`k(u) = JR_RESTORATION_SCALE / p(u)`; the positive scale defaults to 1 and is
+editable from 0.0001 to 10000. It absorbs the unknown target normalization as in
+Appendix C. Unlike the MH mixture probability, the event choice depends on the
+current target. A restoration occurs with probability `k/(1+k)`, draws a new
+uniform primary state and accepts it without an MH test. Otherwise a wrapped small
+step uses ordinary MH acceptance. One event is processed per invocation, with at
+most one new path evaluation after initialization. Independent addressed tickets
+select the event and holding time, an equivalent simulation of the two competing
+exponential clocks. Scopes 3/4 separate JR initialization/events from MH scopes 1/2;
+the acceptance, event-choice and holding-time dimensions are independent of the
+primary cube.
+
+Standard JR weights the pre-event state by `dt ~ Exp(1+k)`. On a local event,
+waste recycling splits that time between current/proposed states using `1-alpha`
+and `alpha`; on a restoration it assigns the time only to the pre-event state.
+The RB branch accumulates the same rejection-product holding weight as MH on
+local proposals. At an accepted local move **or a restoration**, it adds
+`holding/(1+k)` for the pre-event state and resets the pending weight. A restoration
+does not add a fictitious local rejection or drop the last state. This uses the
+conditional mean of the competing-clock minimum; it is not an IID equal-weight
+average. The restore branch in Algorithm 6.2 line 34 prints the local-clock time;
+we use the actual minimum clock time as specified by Algorithm 6.1 and section 6.2.
+All six estimator variants use the existing ratio `sum(w L/p)/sum(w/p)`. The optional
+completed-tour normalization estimator from Appendix C is not used. Burn-in
+counts events rather than elapsed clock time, and captures stop at their event
+budget, retaining unfinished RB weights for continuation. These finite ratios and
+the practical RB truncation retain their documented bias; equal event budgets do
+not imply equal elapsed process time or equal GPU cost.
+
+**Bias and interpretation:** a finite self-normalized ratio is biased even for
+standard MH. The paper's practical RB truncation introduces additional bias; the
+authors describe it as an inexact method. Finite depth truncates the transport
+integral as well. Do not call these captures unbiased reference images. Keep the
+independent CPU/GPU reference tracer as a correctness comparison. MALA, H²MC and multiplexed bidirectional transport are not implemented here.
+
+Each process has two render-size Buffers holding 208 bytes per pixel: a 112-byte chain record with
+primary samples, cached contribution/target, unfinished tour and validity metadata,
+and 96 bytes for three compensated RGB numerator/scalar denominator accumulators.
+The MH and Jump Restore chains are independent. The default uses four Buffers
+(416 bytes per pixel) and four passes; the JR comparison uses two Buffers and three
+passes. Within each process the owner pass updates all three estimators. The standard
+and waste-recycling passes only resolve their own films, reusing the same resolver
+callbacks for MH and JR. Preserve the buffer version edges from owner to consumers;
+a missing owner invocation fails stored-record validation. Ordered buffer versions establish visibility without atomics. Keep the
+three routes in each process's Accumulate limits equal when rendering them together. Generation,
+extent, seed, layout version and the next expected invocation index validate
+history. Invocation zero resets history after camera/scene replacement, including
+cases where the graph's persistent buffer survives. Resize stages replacement
+storage through the existing graph publication boundary. A failed proposal does
+not publish its record or weighted sums.
+
+`ResolveGraphRadiance` tells the renderer that a callback returns an already
+resolved persistent estimate. Accumulate uses its sample limit to count completed
+**MH iterations / Jump Restore events**, including burn-in and pending state weights, and publishes the latest
+ratio. It never averages ratios from successive iterations. The existing raw HDR
+capture sum/count encoding is preserved: the stored numerator is the resolved
+image times the completed invocation count, not the estimator's weight sum. Divide
+by that count to recover the image. Effective sample counts are lower and correlated;
+these iteration counts must not be interpreted as IID samples. Captures that stop
+within burn-in are black. Display exposure and tone mapping apply after resolution.
+
+The CPU chain and BSDF path oracle are independently executable in the renderer;
+FoundationMath owns the checked MH recurrence and compensated weighted accumulator
+and their shader counterparts. `ludus_metropolis_tests` checks domains, failures,
+burn-in, reflection/emission and multi-seed analytic integrals. The native compute
+`[metropolis]` parity test runs the template's actual chain/path shaders over a
+matched emissive scenes with diffuse, conductor and legacy metallic/roughness surfaces
+for both processes,
+comparing emission/direct/indirect path AOVs and
+raw linear RGB for all estimators with
+an absolute 0.001 tolerance after 512 iterations and 32 burn-in steps. These checks
+are evidence for this profile, not qualification of every backend or material.
+
+Thanks to Sascha Holl, Gurprit Singh and Hans-Peter Seidel,
+[Rao-Blackwellized Markov chain Monte Carlo Light Transport](https://arxiv.org/abs/2605.09117),
+SIGGRAPH 2026, section 5.4, Algorithm 5.2 and supplemental bias discussion.
 
 ## Author scene-aware ray shaders
 
@@ -5257,7 +5513,7 @@ The closed version-1 `.lushader.json` source has these fields:
 | `programs` | Named stage/function/source records; input/output schemas and explicit uniform bindings |
 | `techniques` | Explicit `DefaultStaticOpaque.ColorAndDepth`/`.DepthOnly` and/or `DefaultStaticMasked.ColorAndDepth`/`.DepthOnly` mappings and legal pipeline recipes |
 | `budgets` | Author bounds for configurations, programs, emitted artifacts and pipeline recipes |
-| `settings` (optional) | Up to 64 typed shader constants exposed in Properties and the canvas Graph Settings dialog |
+| `settings` (optional) | Up to 128 typed shader constants exposed in Properties and the canvas Graph Settings dialog |
 
 Each setting declares `id`, `label`, `type`, and `value`. Types are `UInt32`,
 `Float32`, or `Bool`; numeric settings also require `minimum` and `maximum` with

@@ -45,8 +45,10 @@ float32 TransformPointComponent(float32 rowX,
                                 float32 rowTranslation,
                                 math::Vector3 pointWorld) noexcept
 {
-    return static_cast<float32>(static_cast<float64>(rowX) * pointWorld.X + static_cast<float64>(rowY) * pointWorld.Y +
-                                static_cast<float64>(rowZ) * pointWorld.Z + static_cast<float64>(rowTranslation));
+    return static_cast<float32>(static_cast<float64>(rowX) * static_cast<float64>(pointWorld.X) +
+                                static_cast<float64>(rowY) * static_cast<float64>(pointWorld.Y) +
+                                static_cast<float64>(rowZ) * static_cast<float64>(pointWorld.Z) +
+                                static_cast<float64>(rowTranslation));
 }
 // Inverts the view about the camera rather than the world origin. A camera hundreds of metres from the origin with a
 // centimetre near plane makes WorldToClip itself ill-conditioned (Bistro's reciprocal condition is about 6e-8), so
