@@ -94,7 +94,12 @@ def validation_tier(event_name: str, event: dict, *, is_batch: bool = False) -> 
     """Use cheap checks for develop PRs and fully validate batches and every other PR."""
     if is_batch:
         return FULL_TIER
-    if event_name in {"schedule", "workflow_dispatch"}:
+    if event_name == "workflow_dispatch":
+        inputs = event.get("inputs") if isinstance(event, dict) else None
+        if isinstance(inputs, dict) and inputs.get("validation_tier") == FULL_TIER:
+            return FULL_TIER
+        return NIGHTLY_TIER
+    if event_name == "schedule":
         return NIGHTLY_TIER
     if event_name != "pull_request":
         return FULL_TIER

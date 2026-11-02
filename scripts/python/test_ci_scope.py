@@ -75,6 +75,18 @@ class ValidationTierTests(unittest.TestCase):
             self.assertEqual(ci_scope.validation_tier(event_name, {}), ci_scope.NIGHTLY_TIER)
             self.assertEqual(ci_scope.validation_tier(event_name, {}, is_batch=True), ci_scope.FULL_TIER)
 
+    def test_manual_full_qualification_matches_the_batch_without_weakening_other_events(self):
+        event = {"inputs": {"validation_tier": "full"}}
+        self.assertEqual(ci_scope.validation_tier("workflow_dispatch", event), ci_scope.FULL_TIER)
+        self.assertEqual(ci_scope.validation_tier("workflow_dispatch", event, is_batch=True), ci_scope.FULL_TIER)
+        self.assertEqual(ci_scope.validation_tier("schedule", event), ci_scope.NIGHTLY_TIER)
+        event["pull_request"] = {"base": {"ref": "develop"}}
+        self.assertEqual(ci_scope.validation_tier("pull_request", event), ci_scope.INTEGRATION_TIER)
+        for inputs in (None, [], "full", {"validation_tier": "integration"}, {"validation_tier": True}):
+            with self.subTest(inputs=inputs):
+                self.assertEqual(ci_scope.validation_tier("workflow_dispatch", {"inputs": inputs}),
+                                 ci_scope.NIGHTLY_TIER)
+
     def test_malformed_pull_request_metadata_runs_the_full_tier(self):
         for event in ({}, {"pull_request": None}, {"pull_request": {"base": None}},
                       {"pull_request": {"base": {"ref": None}}}):
@@ -167,6 +179,7 @@ class GitComparisonTests(unittest.TestCase):
             ("pull_request", self.pull_request(head), "", "false", ci_scope.INTEGRATION_TIER),
             ("pull_request", self.pull_request(head, base_ref="main"), "", "false", ci_scope.FULL_TIER),
             ("workflow_dispatch", {}, "", "true", ci_scope.NIGHTLY_TIER),
+            ("workflow_dispatch", {"inputs": {"validation_tier": "full"}}, "", "true", ci_scope.FULL_TIER),
             ("workflow_dispatch", {}, head, "true", ci_scope.FULL_TIER),
             ("schedule", {}, head, "true", ci_scope.FULL_TIER),
         )

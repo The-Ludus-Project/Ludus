@@ -1,4 +1,5 @@
 #pragma once
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 // Public-only fixture: one shared quad, an offscreen emitter and a perpendicular
@@ -11,13 +12,22 @@ namespace rhi = graphics::rhi;
 inline rhi::RasterStatus BuildL6Snapshot(rr::Renderer& renderer,
                                          rr::MaterialProgram program,
                                          rr::Snapshot& snapshot,
-                                         float32 worldZOffset = 0) noexcept
+                                         float32 worldZOffset = 0,
+                                         bool shouldIncludeDegenerateTriangles = false) noexcept
 {
     using S = rhi::RasterStatus;
     const math::Vector3 positions[]{{-2, -2, 0}, {2, -2, 0}, {2, 2, 0}, {-2, 2, 0}};
     const math::Vector3 normals[]{{0, 0, -1}, {0, 0, -1}, {0, 0, -1}, {0, 0, -1}};
-    const uint32 indices[]{0, 2, 1, 0, 3, 2};
-    rr::MeshDescription meshDescription{positions, 4, indices, 6};
+    constexpr usize QUAD_VERTEX_COUNT = 4;
+    constexpr usize QUAD_INDEX_COUNT = 6;
+    constexpr usize DEGENERATE_INDEX_COUNT = 3;
+    constexpr usize TOTAL_INDEX_COUNT = QUAD_INDEX_COUNT + DEGENERATE_INDEX_COUNT;
+    const StaticArray<uint32, TOTAL_INDEX_COUNT> indices{{0, 2, 1, 0, 3, 2, 0, 0, 1}};
+    rr::MeshDescription meshDescription{positions,
+                                        QUAD_VERTEX_COUNT,
+                                        indices.GetData(),
+                                        shouldIncludeDegenerateTriangles == true ? TOTAL_INDEX_COUNT
+                                                                                 : QUAD_INDEX_COUNT};
     meshDescription.Normals = normals;
     rr::Mesh mesh;
     auto status = renderer.CreateMesh(meshDescription, mesh);

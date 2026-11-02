@@ -78,8 +78,24 @@ class AccumulationTests(unittest.TestCase):
         sink = next(edge for edge in self.configuration['edges'] if edge['from'] == 'average.color')
         sink['from'] = 'again.color'
         self.configuration['edges'].append({'from': 'average.color', 'to': 'again.color'})
-        with self.assertRaisesRegex(ToolingError, 'requires a ray color output'):
+        with self.assertRaises(ToolingError) as caught:
             self.compile()
+        self.assertEqual('RenderGraphCapability', caught.exception.code)
+        self.assertIn('already accumulated by Main/average', caught.exception.message)
+        issue = caught.exception.diagnostics[0]
+        self.assertEqual({'node': 'again', 'port': 'color', 'direction': 'input'},
+                         {key: issue['location'][key] for key in ('node', 'port', 'direction')})
+        self.assertEqual('Main/average', issue['actual'])
+        self.assertIn('Clear Enabled on this Accumulate', issue['repair'])
+
+    def test_disabled_second_accumulate_keeps_first_mean(self):
+        self.add_accumulation()
+        self.configuration['nodes'].append({'id': 'again', 'kind': 'Accumulate', 'samples': 2, 'enabled': False})
+        sink = next(edge for edge in self.configuration['edges'] if edge['from'] == 'average.color')
+        sink['from'] = 'again.color'
+        self.configuration['edges'].append({'from': 'average.color', 'to': 'again.color'})
+        plan = self.compile()
+        self.assertEqual(['Main/average'], [operation['id'] for operation in plan['passes'] if operation['kind'] == 'Accumulate'])
 
     def test_per_pass_accumulation_is_independent_of_reservoir_storage(self):
         # ReSTIR's reservoir reuse is deliberately separate from the optional RGB mean.

@@ -1437,7 +1437,9 @@ input; a program capacity error gives the required count and `budgets.programs` 
 Undo restores the previous budgets along with the graph and shader edits.
 Settings are shared by this package's ReSTIR
 configurations. A manifest holds up to 128 settings, enough for every built-in
-template together. If a template's settings would exceed that limit and removing
+template together. Float32 settings admit signed finite values within +/-1,000,000;
+UInt32 settings remain nonnegative. Spatial positions and directions can therefore
+be edited directly in Graph settings. If a template's settings would exceed that limit and removing
 authored settings that no `.slang` source names would make room, the picker lists
 those settings and offers **Remove and apply** or **Cancel**. Approval removes only
 the listed settings in the same undoable edit as the template; a template's own
@@ -4232,9 +4234,10 @@ Imported emissive material slots remain actual geometry and do not become point-
 need no mesh. Raster area quadrature records are not accepted as exact sources:
 provide their emitting geometry instead, avoiding duplicate illumination.
 
-The current graph limits still apply, including 32 meshes and 128 draw items.
-The initial material/slot table is bounded by MAX_ITEMS; scene CPU/GPU setup
-shares the existing 256 MiB budgets. Unsupported masked/transmissive/deformed
+The current graph limits still apply, including 256 meshes and 1024 draw items.
+The material/slot table is bounded by MAX_ITEMS. Scene CPU/GPU setup also follows
+the independent [scene byte budgets](../architecture/renderer-systems.md#l51-budgeted-scene-capacity).
+Ray profiles use authored alpha masks; unsupported transmissive/deformed
 geometry rejects or uses the graph's explicit diagnostic coverage policy; it
 does not acquire transparent transport by connecting Scene. Material evaluation
 uses the supplied fixed mip and UV0; derivative mip selection is not inferred.
@@ -4966,7 +4969,11 @@ exposure and display conversion. The offline plan retains the Accumulate operati
 and its resource version; the GPU backend fuses it into its producing ray dispatch.
 It does not average quantized RGBA8 pixels or allocate an extra display pass.
 It accepts ray output, including the final ray output of a subgraph or a persistent
-sequence. Raster inputs and already accumulated images are rejected. The input
+sequence. Raster inputs and already accumulated images are rejected; a second
+running mean would overweight early frames. When a subgraph output already passes
+through its own Accumulate, the diagnostic names that node: clear **Enabled** on
+the outer Accumulate, or remove the inner one so its ray output reaches the outer
+node. The input
 version belongs to this operation: route its other consumers through its output.
 For simultaneous raw and averaged images, author separate ray targets.
 
@@ -6310,8 +6317,8 @@ allocation as well. Resize, foreign image import and history need another
 qualified profile/generation; they reject here instead of silently changing
 allocation identity. Reset before destroying the device.
 
-The profile is bounded to 16 passes, 32 logical resources, 8 cameras, 128 draw
-items and 32 meshes. It qualifies RGBA8/Depth32, single-sample static geometry,
+The profile is bounded to 16 passes, 32 logical resources, 8 cameras, 1024 draw
+items and 256 meshes. It qualifies RGBA8/Depth32, single-sample static geometry,
 TriangleList, no culling, counter-clockwise front and conventional
 Less/depth-write, for the opaque and explicitly authored masked families. A depth
 export does not establish pre-Z equivalence for later shading with another
@@ -8649,6 +8656,171 @@ no universal frame-time bound is claimed. The test reports service/pipeline timi
 separately from source compilation and refuses a skipped GPU case. Linux, browser
 and physical-device qualification remain distinct from any local macOS result.
 
+## Trace scene optical connections
+
+The **Wave tracing — scene optical transport** template (`wave-tracing`) uses the
+selected World's camera, geometry, lights, emissive meshes, textures and supported
+reflection materials. It samples truncated surface paths, with coherent scalar
+Gaussian-mode connections to finite lights. Its CPU oracle and GPU implementation
+estimate the same declared integral; transport, shading and accumulation execute
+on the GPU when GPU compute is selected.
+
+The design adopts scene interaction regions and coherent field sums from Shlomi
+Steinberg and Matt Pharr,
+[Wave Tracing: Generalizing The Path Integral To Wave Optics](https://doi.org/10.1111/cgf.70322),
+Computer Graphics Forum 45(2), e70322 (2026), Sections 3.1 and 4.2. Thank you to the
+authors, and to Umut Emre, Aryan Kanak and Shlomi Steinberg,
+[High-Performance Elliptical Cone Tracing](https://doi.org/10.1111/cgf.70230),
+Computer Graphics Forum 44(7), e70230 (2025), for the cone/triangle geometric
+formulation. These implementations are original; no noncommercial reference
+implementation code is incorporated.
+
+```sh
+ludus render-graph new graphs/Waves --template wave-tracing \
+  --renderer-static --output offscreen --profiles metal
+```
+
+Choose `spirv` for Vulkan. The Renderer canvas template picker and **Add
+configuration** menu create the same editable package; Graph settings are
+available on the canvas and in Properties. Hardware ray tracing is not required.
+The template uses the renderer's packed scene BVH, including geometry that a
+beam's centre ray misses. It does not require a manually positioned screen or a
+replacement light source.
+
+- **Optical** renders surface emission and next-event lighting through the optical
+  connection operator. `WT_WAVELENGTH_NANOMETERS` defaults to 550 nm. The scalar
+  transmission multiplies the authored RGB light; this is not spectral colour
+  integration or wavelength-dependent material scattering.
+- **Geometric** traces matching surface paths and light proposals with ordinary
+  binary visibility. Both paths use next-event estimation alone for light
+  endpoints. Secondary emitter/environment hits are omitted to avoid inconsistent
+  MIS weights when optical and geometric visibility differ.
+- **Transmission** shows the first receiver's sampled light-connection power,
+  relative to the unobstructed Gaussian mode, without tone mapping. It is zero
+  without a contributing light sample. Diffraction can redistribute power above
+  one locally. Linear capture data retains that range; RGBA8 presentation clips
+  values above one.
+
+`WT_PATH_VERTICES` defaults to three surface scattering vertices, with a maximum
+of eight. Every vertex uses the current material's reflection model, including
+normal maps, diffuse, rough conductor and coated diffuse inputs. Infinite lights
+and the environment use ordinary geometric visibility. Finite point, spot and
+mesh-light connections use the optical operator. A scene lit only by an infinite
+environment therefore does not gain free-space diffraction from this profile.
+
+### Declared scalar connection integral
+
+For a finite light-to-surface connection of length `L`, wavelength `lambda` and
+wavenumber `k = 2*pi/lambda`, the source mode is a circular Gaussian waist with
+`Sigma = L/k`. Its free-space field, with the common axial phase omitted, is
+
+```text
+psi(x,y,z) = Sigma/(Sigma + i*z/k)
+             * exp(-(x*x + y*y)/(2*(Sigma + i*z/k))).
+```
+
+The connection measures the field on the mean axis at `z=L`, divided by the
+unobstructed analytic field. Its power is the squared magnitude of this ratio.
+Distinct light/path samples add powers; open parts of one connection add complex
+fields before squaring, preserving cross-opening interference.
+
+A finite cylindrical envelope (a supported elliptical-cone special case)
+encloses the mode over the connection. BVH traversal finds the nearest axial
+intersection, then gathers every intersecting triangle in a frustum of depth
+twice the envelope's major radius. Distances have working-precision axial padding
+so a second gather cannot lose the triangle that established the nearest hit.
+Each region projects its triangle union along propagation onto its midpoint
+plane. Coverage is evaluated directly in transverse coordinates, avoiding
+reconstruction of tiny samples in large world coordinates; fixed-mip texture and vertex alpha determine coverage. Successive masks
+multiply the complex field, with propagation between them.
+
+The propagation lattice has 16 by 16 complex samples over a half-width of
+`3*sqrt(2*Sigma)`, with four coverage samples per cell. Separable FFTs apply the
+paraxial angular-spectrum transfer function
+`exp(-i*pi*lambda*dz*(fx*fx + fy*fy))`. The finite periodic window and spatial
+sampling are part of the declared approximation. More camera samples do not
+refine this lattice. Very fine apertures and near-grazing geometry need independent
+spatial convergence studies before making quantitative optical claims.
+
+Ballistic escape starts at the larger of two wavelengths and eight binary32
+epsilons times the connection's world-coordinate scale. It grows by four up to
+65536 wavelengths (or the initial rounding guard, if larger), checking the
+centre-ray segment while seeking a clear, finite-thickness beam probe. The probe
+thickness is the initial rounding guard, avoiding numerically degenerate
+zero-thickness intersections. Both offset endpoints are retained explicitly. Escape is applied at the source,
+receiver and after interactions to
+avoid repeated self-intersections. At the escape cap this scalar profile retains
+a ballistic connection through the remaining interval; it does not simulate
+near-wall guided modes. The optical kernel requires positive finite distances,
+unit directions and `lambda/L <= 1/32`. Invalid inputs and exhaustion of the
+256-triangle region or 64-region connection limit reject the contribution
+with an actionable diagnostic, preserving the last accepted image.
+
+This is a scene-capable **scalar paraxial connection profile**, with classical RGB
+surface scattering between connections. It is not the paper's full polarimetric
+bidirectional cone path tracer: Fraunhofer/UTD edge operators, interference-aware
+material-direction rejection sampling, coherent reflection/transmission between
+surface events and spectral material transport are not implemented here.
+
+### CPU oracle and validation
+
+Set `ReferenceCaptureDescription::OpticalWavelengthWorld` to a positive wavelength
+in metres to select the same connection profile in reference captures. Zero
+preserves the geometric reference profile. Select `CpuOracle` or `GpuCompute` and
+`UniformArea` light sampling; incompatible native-query or resampled requests
+reject explicitly. Changing wavelength resets progressive accumulation. Raw
+`LUHDR01` exports retain the wavelength at byte 92 and optical flag 256.
+
+The existing scene benchmark accepts an optional final wavelength in nanometres:
+
+```sh
+ludus_reference_benchmark COOKED_SCENE 64 32 16 3 cpu 1 550
+ludus_reference_benchmark COOKED_SCENE 64 32 16 3 gpu 1 550
+```
+
+`LUDUS_REFERENCE_BENCHMARK_OUTPUT` saves raw linear RGB for matched comparisons.
+The benchmark retains authored analytic lights and HDR environments. It does not
+add lights when the authored scene is dark.
+
+Primitive regressions cover off-axis geometry, clipped extrema and degenerate
+rays; BVH queries are compared with brute force. CPU/GPU tests compare region
+membership, complex fields and raw reference AOVs. Analytic fixtures test an
+unobstructed beam, an opaque screen, the quarter-power half-plane boundary,
+cross-opening interference and propagation through two separated regions. A
+cooked production-graph regression checks authored lighting and diffraction in
+geometric shadow. The Metal compiler boundary preserves emitted SPIR-V
+`DontInline` controls for the optical solver, traversal and FFT routines. Keeping
+these routines isolated prevents live-state corruption in a merged ray kernel;
+the translated helper gate and cooked staircase capture cover this path. The
+former manually authored Gaussian-aperture graph remains
+a test fixture, with its separate analytic Fresnel and double-slit checks.
+
+The macOS Metal validation uses the existing cooked scenes with their authored
+camera, geometry, reflection materials, alpha/normal/emission maps and lights.
+Raw linear RGB comparisons at 550 nm and three surface vertices give:
+
+| Scene | Triangles | Capture | RGB RMSE | Maximum component difference |
+| --- | ---: | --- | ---: | ---: |
+| staircase2 | 28,815 | 64 × 32, 16 spp | 0.000552 | 0.0324 |
+| Bistro | 2,838,960 | 32 × 16, 8 spp | 0.0000256 | 0.000788 |
+| Sponza | 3,747,018 | 32 × 16, 8 spp | 0.000000000813 | 0.0000000152 |
+
+The scene checks admit RMSE below 0.001 and relative mean radiance difference
+below 0.1%; these are numerical comparisons of matched inputs, without denoising
+or temporal reuse. Rare float32 surface-path branch differences prevent a uniform
+per-pixel bound as tight as the analytic field fixtures. Sponza's authored mean
+radiance is about 0.000000882, so that capture mainly establishes geometry and
+material compatibility, not a strong illuminated diffraction test. The small
+analytic and authored-point-light fixtures establish nonzero diffraction and
+cross-opening interference. The graph scene adapter also retains zero-area primitive diagnostics and shares
+camera-relative inversion with the deferred renderer, so a distant conventional
+camera is admitted without changing its authored view. Local Metal evidence does
+not qualify physical Vulkan, browser or editor interaction paths.
+
+`wave_tracing.hpp` also exposes allocation-free Gaussian moment propagation
+(Eqs. 20–21) and a float64 Fresnel aperture oracle. These retain independent
+numerical checks; an aperture-only result does not establish scene capability.
+
 ## Use the forward-lit template
 
 Choose **New Render Graph → Template → Forward lit**, or create an editable package:
@@ -8722,9 +8894,9 @@ checking mesh reuse. The template is owned by
 ## Prepare point features and neighborhoods
 
 The engine provides native SDK preparation APIs for point-based/neural rendering.
-A Light Transformer query decoder is available below; its trained scene encoder
-and an executable Light Transformer JSON template are not available yet. The existing authored
-scene-compute limits described above remain in force. General preprocessing uses
+The portable Light Transformer encoder, query decoder and executable template are
+available below. The existing authored scene-compute limits described above
+remain in force; encoder dispatches use a prepared compute prefix. General preprocessing uses
 [prepared RHI workloads](fullscreen-rendering.md#prepared-buffer-only-workloads-and-caches)
 and shares their device, dependency and completion ledger.
 
@@ -8812,22 +8984,20 @@ use original anchor index order, making the adapter's tie convention explicit.
 Preparation validates storage/dispatch limits before allocating query scratch,
 consumes source borrows synchronously and preserves an empty workload on failure.
 Run its ordered graph through the RHI. `LIGHT_TRANSFORMER_RESULT_BUFFER` contains
-query-major float4 predictions (network RGB, reserved W zero); do not apply albedo
-again. No GPU readback is required to consume that buffer through subsequent GPU
-work. This SDK helper currently uploads CPU-provided latents and query records;
-it does not yet connect visible-surface query generation to an authored graph.
+query-major float4 predictions (raw network RGB, reserved W zero). For the
+diffuse irradiance model, reconstruct outgoing radiance as
+`emission + albedo * prediction / PI`. No GPU readback is required to consume that buffer through subsequent GPU
+work. This standalone helper uploads CPU-provided latents and query records. The
+encoder and template below keep scene latents on the GPU.
 
 The regression fixture uses an independent PyTorch calculation, synthetic
 parameters and stable distance sorting, with absolute tolerance `1e-5` plus
 relative tolerance `1e-4` on raw RGB. A local checkpoint qualification uses the
 same fixture generator's `--checkpoint` option and supplies its output through
 `LUDUS_LIGHT_TRANSFORMER_TEST_FIXTURE`. No released weights or upstream scene data
-are stored in those fixtures. Decoder agreement on supplied latents does not
-establish trained **encoder** agreement, full-scene GI quality or interactive
-performance. The encoder still needs portable sparse convolutions, serialized
-attention and hierarchical pooling/unpooling before a usable paper template can
-be published. No CUDA, vendor-specific tensor API, training runtime or upstream
-weights are bundled.
+are stored in those fixtures. Decoder agreement on supplied latents does not establish full-scene GI quality
+or interactive performance. No CUDA, vendor-specific tensor API, training runtime
+or upstream weights are bundled.
 
 `RenderGraph::GetPersistentBuffer` borrows a stable graph-owned Buffer allocation
 and capacity for prepared compute producers/consumers. Use it as a workload
@@ -8843,6 +9013,97 @@ and never authorizes writes into a pending cache candidate's active generation.
 The point-feature motivation follows Bing Xu, Mukund Varma T, Cheng Wang,
 Tzu-Mao Li, Lifan Wu, Bartlomiej Wronski, Ravi Ramamoorthi and Marco Salvi,
 *A Generalizable Light Transport 3D Embedding for Global Illumination*, SIGGRAPH
-2026, section 3.2 ([paper](https://arxiv.org/abs/2510.18189)). The engine implements
-input/storage/search foundations and the trained query decoder; the full learned
-encoder and paper template remain unavailable.
+2026, section 3.2 ([paper](https://arxiv.org/abs/2510.18189)). The implementation follows the released inference architecture; the numerical
+and scene limitations below are explicit parts of this adapter.
+
+
+### Encode a trained scene and use the Light Transformer template
+
+Create an editable native template with the CLI or choose **Light Transformer**
+from the editor graph canvas template menu:
+
+```sh
+ludus render-graph new /path/to/graph --template light-transformer \
+  --output offscreen --profiles metal spirv
+python scripts/export-light-transformer /path/to/checkpoint.ckpt \
+  --model-directory /path/to/graph/light_transformer \
+  --world-units-per-model-unit <fixed-training-scale>
+```
+
+Use the same fixed scale as the checkpoint's training dataset, in World units per
+model unit. Paper appendix A.3 translates each scene by its minimum and divides
+by a **dataset-wide constant**. Ludus never fits each scene independently to a
+unit cube. The consulted release does not provide an authoritative numerical
+value for that constant; the template leaves it unset rather than inventing one.
+A scene extending beyond that fixed extent fails with a repair diagnostic.
+
+Export validates both networks before writing. It writes versioned little-endian
+`encoder.llte` and `decoder.lltd`, then `model.json` with asset SHA-256 identities,
+scale, seed, surface point count, GPU buffer budget, independent CPU surface
+preparation budget and sampling attempt limit. Keep all three files together.
+The editor verifies those identities before staging a candidate; a partial export
+cannot silently pair different models. These external assets are not authored
+shader sources and are not bundled with Ludus or downloaded at preview time.
+The editable template includes only a setup placeholder. Preserve the model
+subdirectory when moving the graph package. An installed SDK consumer supplies
+`LightTransformerModelDescription` to `RenderGraph::Initialize` or activation
+`Stage` when `RenderGraphPackage::HasLightTransformer()` is true.
+
+`<ludus/graphics/renderer/light_transformer_encoder.hpp>` exposes the standalone
+encoder. Cook the `renderer_light_transformer_encoder` recipe and call
+`PrepareLightTransformerEncoder` with finite model-space position, normal, albedo
+and emission records. The CPU prepares farthest-point samples, exact neighbors,
+sparse voxel pairs, serialization orders and pooling maps. Both scene MLPs,
+neighbor encoders, sparse convolutions, all 22 Point Transformer V3 blocks,
+hierarchical pooling/unpooling and final feature gathering execute on the GPU.
+Every kernel shares one prepared program; only descriptors and dispatch records
+vary. Weight chunks stay below Vulkan's minimum storage-buffer range guarantee.
+The algorithm uses binary32 compute, four storage bindings and bounded shared
+memory, with no subgroup-width or floating-point atomic requirement.
+
+`LightTransformerEncoding::Workload` buffer 3 contains a packet prefix with its
+World-to-model transform, point-search tree, positions and 128-channel GPU latents.
+`PacketBytes` excludes scratch. Optional decoder parameters make that packet
+self-contained for the template. Run the encoder before its consumers.
+`PrepareLightTransformerEncodedQueries` prepares cooperative batched decoding
+against that packet; `PrepareLightTransformerPacketQueries` accepts a packet
+borrowed from a completed graph frame. Neither helper reads latents back.
+
+The template samples the selected World's material-aware surfaces deterministically
+(20,000 points by default, twice reduced by FPS to 5,000 anchors), encodes them
+on its first accepted frame and after scene changes, and reuses the packet for
+camera-only updates. The encoder and visible-surface decoder share one ordered
+GPU graph and resource dependency ledger. The decoder traces the authored World,
+queries its visible surfaces and reconstructs diffuse outgoing radiance with
+mesh emission. Pending or failed candidates preserve the last drawable image.
+The template's declared 8 MiB embedding buffer admits its maximum packet; smaller
+authored capacities fail with the required byte count and a concrete repair.
+
+This first template admits typed diffuse materials with zero metallic response,
+complete material assignments, mesh emission, and no analytic lights or environment
+illumination. Unsupported inputs fail explicitly. It evaluates per-pixel queries
+at one eighth the viewport width and height by default; edit the graph's render
+size for other quality/cost tradeoffs. Serial surface decoding prioritizes the
+existing graph callback ABI and portability. Interactive performance and trained
+full-scene image quality have not been qualified.
+
+The numerical policy is deterministic fixed Morton/Hilbert and transposed orders,
+no inference dropout, stable original-index distance ties and binary32 attention.
+The upstream implementation shuffles orders and uses half-precision FlashAttention.
+Duplicate sparse voxels sum all indexed point contributions; upstream sparse
+runtime duplicate-index behavior is not a bitwise contract of this adapter.
+The released FPS near-origin exclusion is retained. These choices may change
+predictions relative to an upstream CUDA execution.
+
+The default CPU PyTorch oracle fixture has procedurally generated weights and
+exercises all encoder stages without shipping trained assets. A local released
+checkpoint comparison on Metal passed all 128 latent channels at 32 anchors with
+absolute tolerance `5e-4` plus relative tolerance `5e-4`; it compares an independent
+CPU inference calculation using the declared ordering/precision policy, not the
+vendor sparse/FlashAttention runtime. A larger 4,100-input/1,025-anchor trained
+comparison also passed every channel with the same tolerance, including a partial
+1,024-point attention patch. Hilbert codes were separately checked
+against the authors' serialization. End-to-end regressions compare template
+surface output against cooperative packet decoding and retain the old scene after
+failed replacements. Metal execution and SPIR-V compilation are distinct evidence;
+Vulkan device execution must be qualified on the corresponding native batch runner.

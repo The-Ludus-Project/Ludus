@@ -1033,8 +1033,17 @@ class _Compiler:
             elif kind == "Accumulate":
                 source = inputs['color']
                 producer = next((operation for operation in self.passes if operation['id'] == source.producer), None)
+                # A second mean would reweight earlier frames, so name the first one and how to keep one.
+                _require(producer is None or producer['kind'] != 'Accumulate', 'Capability', where,
+                         f"Accumulate color is already accumulated by {producer and producer['id']}; "
+                         'a second running mean would overweight early frames.',
+                         port='color', direction='input', actual=producer and producer['id'],
+                         repair=f"Clear Enabled on this Accumulate, or remove {producer and producer['id']} so a "
+                                'ray color output reaches this node.')
                 _require(producer is not None and producer['kind'] == 'RayTracing', 'Capability', where,
-                         'Accumulate requires a ray color output. Connect a RayTracingPipeline or scene compute color output; raster and already accumulated images are unsupported.')
+                         'Accumulate requires a ray color output. Connect a RayTracingPipeline or scene compute color output; raster and already accumulated images are unsupported.',
+                         port='color', direction='input', actual=producer and producer['kind'],
+                         repair='Connect the color output of a RayTracingPipeline or scene compute pass.')
                 _require('accumulation' not in producer, 'MultipleWriters', where,
                          'A ray output can feed only one Accumulate node. Chain consumers after its color output.')
                 value = self.write(source, {'color_load': 'Load', 'color_store': 'Store'}, 'color', where, source.cameras)
@@ -1373,7 +1382,7 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
     template selects raster (the default), forward-lit, restir-di, visibility-buffer,
     visibility-secondary-rays, tiled-vbuffer-nee, compute-ray-tracing, simple-compute-ray-tracing,
     veach-guibas-mis, line-sampling, ris-projected-solid-angle, salesin-jarosz-lines,
-    polygonal-light-sampling, slice-sampling-luminaire, steinberg-plt, steinberg-physical-optics, restir-gi,
+    polygonal-light-sampling, slice-sampling-luminaire, steinberg-plt, steinberg-physical-optics, wave-tracing, restir-gi,
     rao-blackwell-mh, conditional-restir or one-more-vertex-nee. Offscreen
     Renderer raster creation copies the engine default package, including its shaders and shared
     view-relative RenderSize controls. Other Renderer templates also use offscreen output.

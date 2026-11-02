@@ -1,4 +1,6 @@
+#include "internal/camera_inverse.h"
 #include "internal/reference_data.h"
+#include <ludus/graphics/renderer/renderer.hpp>
 
 #include <ludus/foundation/containers/stable_sort.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -791,10 +793,19 @@ rhi::RasterStatus PrepareReferenceCamera(ReferenceJob& job) noexcept
 {
     const auto& d = job.Description;
     if (math::IsFinite(d.WorldToClip) == false || math::IsFinite(d.CameraPosition) == false ||
-        math::TryInverse(d.WorldToClip, job.ClipToWorld) != math::MathStatus::Success ||
         (d.InfiniteFar && (d.ReverseZ == false || d.OrthographicCamera)))
     {
         return rhi::RasterStatus::InvalidDescription;
+    }
+    if (math::TryInverse(d.WorldToClip, job.ClipToWorld) != math::MathStatus::Success)
+    {
+        ViewDescription camera;
+        camera.CameraPosition = d.CameraPosition;
+        camera.WorldToClip = d.WorldToClip;
+        if (TryMakeCameraClipToWorld(camera, job.ClipToWorld) == false)
+        {
+            return rhi::RasterStatus::InvalidDescription;
+        }
     }
     if (d.OrthographicCamera == false)
     {
