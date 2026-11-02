@@ -33,7 +33,6 @@
 #include <QPoint>
 #include <QPointF>
 #include <QPushButton>
-#include <QScreen>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -701,34 +700,16 @@ TEST_CASE("Continuous camera input does not postpone viewport frames",
     CAPTURE(idleFrames, inputFrames, inputCount, viewport.GetStatisticsText().toStdString());
     CHECK(inputCount > 20);
     CHECK(inputFrames > 2);
-#if defined(Q_OS_MACOS)
-    // Sanitizers qualify scheduling and input progress, not the host's uninstrumented refresh rate.
+    CHECK(idleFrames > 2);
+    // Thanks to The Qt Company, "QScreen Class", refreshRate property, and
+    // "QTimer Class", accuracy and timer resolution:
+    // https://doc.qt.io/qt-6/qscreen.html#refreshRate-prop
+    // https://doc.qt.io/qt-6/qtimer.html#accuracy-and-timer-resolution
+    // The display rate is approximate and timers can run late under host load.
+    // Compare this run's matched windows to detect input-induced postponement;
+    // absolute display throughput is a separate performance measurement.
     constexpr float64 MINIMUM_IDLE_FRACTION = 0.75;
-    const uint64 minimumInputFrames = static_cast<uint64>(static_cast<float64>(idleFrames) * MINIMUM_IDLE_FRACTION);
-    CHECK(inputFrames >= minimumInputFrames);
-#    if defined(__has_feature)
-#        if __has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)
-    const bool isInstrumented = true;
-#        else
-    const bool isInstrumented = false;
-#        endif
-#    else
-    const bool isInstrumented = false;
-#    endif
-    if (isInstrumented == false)
-    {
-        QScreen* screenOrNull = viewport.screen();
-        REQUIRE(screenOrNull != nullptr);
-        constexpr float64 MINIMUM_REFRESH_FRACTION = 0.75;
-        constexpr float64 MILLISECONDS_PER_SECOND = 1000;
-        const float64 refreshRate = screenOrNull->refreshRate();
-        const uint64 minimumFrames =
-            static_cast<uint64>(refreshRate * SAMPLE_MILLISECONDS / MILLISECONDS_PER_SECOND * MINIMUM_REFRESH_FRACTION);
-        CAPTURE(refreshRate, minimumFrames);
-        CHECK(idleFrames >= minimumFrames);
-        CHECK(inputFrames >= minimumFrames);
-    }
-#endif
+    CHECK(static_cast<float64>(inputFrames) >= static_cast<float64>(idleFrames) * MINIMUM_IDLE_FRACTION);
     preview.Stop();
 }
 

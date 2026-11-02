@@ -301,6 +301,16 @@ of the promotion gate. This ordering reduces demand; a platform-wide shortage
 can still require retrying a job whose annotations confirm runner acquisition
 failed before execution.
 
+Native viewport scheduling acceptance compares continuous-input presentation
+against an idle window in the same process, retaining a minimum 75% cadence and
+explicit frame/input progress checks. A separate regression verifies that repeated
+start requests preserve the active service timer's identity and deadline. The
+screen's reported refresh rate is approximate, and shared-runner load can delay
+timers; it is not an absolute throughput oracle. See Qt's
+[screen refresh contract](https://doc.qt.io/qt-6/qscreen.html#refreshRate-prop) and
+[timer accuracy contract](https://doc.qt.io/qt-6/qtimer.html#accuracy-and-timer-resolution).
+These checks establish scheduling progress, not a display-performance claim.
+
 ### Threading platform lanes
 
 `.github/workflows/threading-platforms.yml` runs the Windows threading build and the
