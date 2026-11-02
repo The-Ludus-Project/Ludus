@@ -192,6 +192,7 @@ function(ludus_compile_shader)
         DEPFILE "${output}/shader.d"
         VERBATIM
     )
+    target_compile_features(${SH_TARGET} PRIVATE cxx_std_23)
     target_sources(${SH_TARGET} PRIVATE "${output}/${SH_NAME}.h")
     target_include_directories(${SH_TARGET} PRIVATE "${output}")
 endfunction()

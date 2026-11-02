@@ -36,9 +36,9 @@ public:
     void SetStatisticsVisible(bool isVisible);
     /// Text currently painted over the graph; empty when the overlay is disabled.
     [[nodiscard]] QString GetStatisticsText() const;
-    /// Last complete graph frame, retained during rebuilding and errors.
+    /// Last CPU fallback frame, retained during rebuilding and errors; direct GPU presentation has no QImage.
     [[nodiscard]] const QImage& GetImage() const noexcept;
-    /// Number of complete images received by this display.
+    /// Number of CPU fallback images received; PreviewViewport tracks directly presented GPU frames.
     [[nodiscard]] foundation::uint64 GetPresentedFrames() const noexcept;
 
 Q_SIGNALS:

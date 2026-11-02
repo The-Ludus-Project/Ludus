@@ -47,7 +47,8 @@ void StoreFgWord(bool isSecond, uint address, uint4 value)
     else
         GraphBuffer0[address] = value;
 }
-[noinline] FgPhoton LoadFgPhoton(bool isSecond, uint address) {
+[noinline] FgPhoton LoadFgPhoton(bool isSecond, uint address)
+{
     uint4 a = LoadFgWord(isSecond, address);
     uint4 b = LoadFgWord(isSecond, address + 1);
     uint4 c = LoadFgWord(isSecond, address + 2);
@@ -66,7 +67,8 @@ void StoreFgWord(bool isSecond, uint address, uint4 value)
     photon.Light = d.w;
     photon.Cell = GetFgDirectionCell(photon.DirectionUv);
     return photon;
-}[noinline] void StoreFgPhoton(bool isSecond, uint address, FgPhoton photon)
+}
+[noinline] void StoreFgPhoton(bool isSecond, uint address, FgPhoton photon)
 {
     StoreFgWord(isSecond, address, uint4(photon.Triangle, asuint(photon.Barycentric), photon.Flags));
     StoreFgWord(isSecond, address + 1, uint4(asuint(photon.Flux), photon.NextGrid));
@@ -88,7 +90,8 @@ FgPathReservoir MakeFgPath(SceneContext scene, RayLaunch launch)
     result.RandomKey = uint4(launch.Seed, launch.SampleIndex, GetFgPixel(launch));
     return result;
 }
-[noinline] FgPathReservoir LoadFgPath(bool isSecond, uint pixel) {
+[noinline] FgPathReservoir LoadFgPath(bool isSecond, uint pixel)
+{
     uint address = pixel * FG_PATH_WORDS;
     FgPathReservoir result = (FgPathReservoir)0;
     result.Photon = LoadFgPhoton(isSecond, address);
@@ -109,7 +112,8 @@ FgPathReservoir MakeFgPath(SceneContext scene, RayLaunch launch)
     result.Throughput = asfloat(d.xyz);
     result.Flags = d.w;
     return result;
-}[noinline] void StoreFgPath(bool isSecond, uint pixel, FgPathReservoir reservoir)
+}
+[noinline] void StoreFgPath(bool isSecond, uint pixel, FgPathReservoir reservoir)
 {
     uint address = pixel * FG_PATH_WORDS;
     StoreFgPhoton(isSecond, address, reservoir.Photon);

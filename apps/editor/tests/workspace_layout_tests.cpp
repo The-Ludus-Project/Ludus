@@ -797,7 +797,8 @@ TEST_CASE("A project's paired Source selection and divider restore together", "[
         QApplication::processEvents();
         sourceState = rendererOrNull->GetSourceViewState();
         documents = window.GetDocumentWell().SaveState();
-        REQUIRE(window.close() == true);
+        static_cast<void>(window.close());
+        REQUIRE(QTest::qWaitFor([&window]() { return window.isVisible() == false; }) == true);
     }
     MainWindow reopened(&controller, nullptr, settings);
     reopened.show();
@@ -845,6 +846,8 @@ TEST_CASE("World session restoration retains the normal splitter while companion
     CHECK(world.Session().value(QStringLiteral("splitter")) == first.value(QStringLiteral("splitter")));
     world.SetChromeVisible(true);
     CHECK(world.IsChromeVisible() == true);
+    INFO(QJsonDocument(first).toJson().toStdString());
+    INFO(QJsonDocument(world.Session()).toJson().toStdString());
     CHECK(world.Session().value(QStringLiteral("boundCamera")) == first.value(QStringLiteral("boundCamera")));
     CHECK(world.Session().value(QStringLiteral("sceneCamera")) == first.value(QStringLiteral("sceneCamera")));
 }

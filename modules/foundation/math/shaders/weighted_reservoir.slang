@@ -11,7 +11,7 @@
 // Metal compiles with fast math and GPUs may flush subnormals, so weights and
 // tickets are classified on their bits, never through isfinite or NaN compares.
 static const uint WEIGHTED_RESERVOIR_SELECTION_VERSION = 1;
-// Bits of WeightedReservoirMinimumWeight, 2^-102: smaller weights count as zero,
+// Bits of WEIGHTED_RESERVOIR_MINIMUM_WEIGHT, 2^-102: smaller weights count as zero,
 // so ticket * sum never loses precision near an accepted weight.
 static const uint WEIGHTED_RESERVOIR_MINIMUM_WEIGHT_BITS = 0x0c800000;
 // IEEE binary32 fields, as named in the CPU implementation.

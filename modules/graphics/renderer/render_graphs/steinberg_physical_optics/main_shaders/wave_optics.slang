@@ -148,9 +148,18 @@ Complex DivideComplex(Complex numerator, Complex denominator)
 Complex ComputeComplexSquareRoot(Complex value)
 {
     float magnitude = sqrt(ComputeSquaredMagnitude(value));
-    float real = sqrt(max((magnitude + value.Real) * 0.5, 0.0));
-    float imaginary = sqrt(max((magnitude - value.Real) * 0.5, 0.0));
-    return MakeComplex(real, value.Imaginary < 0 ? -imaginary : imaginary);
+    if (magnitude == 0)
+        return MakeComplex(0, 0);
+    // Recover the smaller component from 2 * real * imaginary = value.Imaginary;
+    // subtracting nearly equal magnitude and real values destroys its curvature in float32.
+    if (value.Real >= 0)
+    {
+        float real = sqrt((magnitude + value.Real) * 0.5);
+        return MakeComplex(real, value.Imaginary / (2 * real));
+    }
+    float imaginary = sqrt((magnitude - value.Real) * 0.5);
+    imaginary = value.Imaginary < 0 ? -imaginary : imaginary;
+    return MakeComplex(value.Imaginary / (2 * imaginary), imaginary);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -419,7 +428,8 @@ float2 RotateIntoCoherenceBasis(SurfaceCoherence coherence, float2 surface)
                                                     float3 shape,
                                                     SurfaceFrame frame,
                                                     float wavenumberPerWorld,
-                                                    float longitudinalCoherenceWorld) {
+                                                    float longitudinalCoherenceWorld)
+{
     SurfaceCoherence result;
     float2 projected =
         float2(dot(frame.TangentWorld, beam.PropagationWorld), dot(frame.BitangentWorld, beam.PropagationWorld));
@@ -703,7 +713,8 @@ float3 GetHessianSampleWeights(uint sampleIndex)
                                                 ScatteringFrames frames,
                                                 Complex eta,
                                                 out float4 outDeformationX,
-                                                out float4 outDeformationY) {
+                                                out float4 outDeformationY)
+{
     float3 firstAxisWorld = frames.OutgoingParallelWorld * OPTICS_HESSIAN_STEP;
     float3 secondAxisWorld = frames.PerpendicularWorld * OPTICS_HESSIAN_STEP;
     float2 center = float2(0);
@@ -739,7 +750,8 @@ struct Interaction
 /// Scatter a beam that arrives along -incidentWorld towards outgoingWorld: Eq. (16) (or Eq. (21), (32)) for the
 /// Stokes vector, Eq. (20) for the shapes. The returned beam's Stokes vector is the scattered radiance per unit
 /// incident radiance and solid angle times the incident Stokes vector, in the s/p frame (x = p) of the scattering.
-[noinline] Beam ScatterBeam(Beam incident, float3 outgoingWorld, Interaction interaction) {
+[noinline] Beam ScatterBeam(Beam incident, float3 outgoingWorld, Interaction interaction)
+{
     float3 incidentWorld = -incident.PropagationWorld;
     ScatteringFrames frames = MakeScatteringFrames(incident, outgoingWorld);
     float rotation = ComputeFrameRotation(incident, frames);

@@ -39,6 +39,8 @@ using namespace foundation;
 namespace rhi = graphics::rhi;
 namespace rr = graphics::renderer;
 constexpr int32 NAVIGATION_STATE_VERSION = 2;
+/// Smallest orbit radius divisor, in World units, used by compatibility navigation fields.
+constexpr float32 MINIMUM_ORBIT_RADIUS_WORLD = 0.000001F;
 /// Minimum interval between statistics overlay refreshes, so the text stays readable.
 constexpr int64 STATISTICS_REFRESH_MILLISECONDS = 250;
 /// Nanoseconds per millisecond, for GPU timestamp durations.
@@ -943,7 +945,8 @@ void RenderPreview::serviceGpuTiming(bool shouldArm) noexcept
             mStatistics.GpuMilliseconds.Add(timing.DurationNanoseconds / NANOSECONDS_PER_MILLISECOND);
             mStatistics.GpuState = ViewportGpuTimeState::Available;
         }
-        const uint64 duration = isValid == true ? static_cast<uint64>(timing.DurationNanoseconds + 0.5) : 0;
+        const uint64 duration =
+            isValid == true ? static_cast<uint64>(math::Floor(timing.DurationNanoseconds + 0.5)) : 0;
         mHasTimingAssociation = false;
         Q_EMIT GpuProfileSample(mTimingFrameId, mTimingDeviceSession, mTimingSubmissionTicks, duration, isValid);
     }
@@ -1021,7 +1024,7 @@ void RenderPreview::navigationChanged()
                     static_cast<float32>(pivotWorld.Z)};
     Yaw_ = mCameraController.GetYawDegrees();
     Pitch_ = mCameraController.GetPitchDegrees();
-    Zoom_ = mCameraController.GetDistance() / math::Max(OrbitRadius_, 0.000001F);
+    Zoom_ = mCameraController.GetDistance() / math::Max(OrbitRadius_, MINIMUM_ORBIT_RADIUS_WORLD);
     RestoredOrbit_ = true;
     ViewDirty_ = true;
     // Thanks to The Qt Company, "QTimer Class", start() documentation:
@@ -1317,36 +1320,40 @@ void RenderPreview::SetFocusDistance(float32 distance)
 }
 QJsonObject RenderPreview::Navigation() const
 {
-    return {{QStringLiteral("yaw"), Yaw_},
-            {QStringLiteral("pitch"), Pitch_},
-            {QStringLiteral("zoom"), Zoom_},
-            {QStringLiteral("camera"), CameraId_},
-            {QStringLiteral("reference"), Reference_},
-            {QStringLiteral("shading"), GetPreviewShadingKey(mShading)},
-            {QStringLiteral("statistics"), mIsStatisticsVisible},
-            {QStringLiteral("forceRaster"), mShouldForceRaster},
-            {QStringLiteral("antialiasing"), GetViewportAntialiasingKey(mAntialiasing)},
-            {QStringLiteral("x"), OrbitCenter_.X},
-            {QStringLiteral("y"), OrbitCenter_.Y},
-            {QStringLiteral("z"), OrbitCenter_.Z},
-            {QStringLiteral("radius"), OrbitRadius_},
-            {QStringLiteral("navigationVersion"), NAVIGATION_STATE_VERSION},
-            {QStringLiteral("lookSensitivity"), mLookSensitivity},
-            {QStringLiteral("viewportSize"), GetViewportSizeKey(mViewportSizeIndex)},
-            {QStringLiteral("distance"), mCameraController.GetDistance()},
-            {QStringLiteral("eyeX"), mCameraController.GetSample().Pose.Position.X},
-            {QStringLiteral("eyeY"), mCameraController.GetSample().Pose.Position.Y},
-            {QStringLiteral("eyeZ"), mCameraController.GetSample().Pose.Position.Z},
-            {QStringLiteral("rotationX"), mCameraController.GetSample().Pose.Orientation.X},
-            {QStringLiteral("rotationY"), mCameraController.GetSample().Pose.Orientation.Y},
-            {QStringLiteral("rotationZ"), mCameraController.GetSample().Pose.Orientation.Z},
-            {QStringLiteral("rotationW"), mCameraController.GetSample().Pose.Orientation.W},
-            {QStringLiteral("projection"), static_cast<int32>(mCameraController.GetSample().Lens.Projection)},
-            {QStringLiteral("fov"), mCameraController.GetSample().Lens.VerticalFov},
-            {QStringLiteral("span"), mCameraController.GetSample().Lens.VerticalSpan},
-            {QStringLiteral("minimumWidth"), mCameraController.GetSample().Lens.MinimumVisibleWidth},
-            {QStringLiteral("near"), mCameraController.GetSample().Lens.NearPlane},
-            {QStringLiteral("far"), mCameraController.GetSample().Lens.FarPlane}};
+    // Derive compatibility fields from the authoritative pose even before the first navigation edit.
+    // Cached orbit defaults need not exactly equal the controller's trigonometric reconstruction.
+    const math::Vector3d pivotWorld = mCameraController.GetPivotWorld();
+    return {
+        {QStringLiteral("yaw"), mCameraController.GetYawDegrees()},
+        {QStringLiteral("pitch"), mCameraController.GetPitchDegrees()},
+        {QStringLiteral("zoom"), mCameraController.GetDistance() / math::Max(OrbitRadius_, MINIMUM_ORBIT_RADIUS_WORLD)},
+        {QStringLiteral("camera"), CameraId_},
+        {QStringLiteral("reference"), Reference_},
+        {QStringLiteral("shading"), GetPreviewShadingKey(mShading)},
+        {QStringLiteral("statistics"), mIsStatisticsVisible},
+        {QStringLiteral("forceRaster"), mShouldForceRaster},
+        {QStringLiteral("antialiasing"), GetViewportAntialiasingKey(mAntialiasing)},
+        {QStringLiteral("x"), static_cast<float32>(pivotWorld.X)},
+        {QStringLiteral("y"), static_cast<float32>(pivotWorld.Y)},
+        {QStringLiteral("z"), static_cast<float32>(pivotWorld.Z)},
+        {QStringLiteral("radius"), OrbitRadius_},
+        {QStringLiteral("navigationVersion"), NAVIGATION_STATE_VERSION},
+        {QStringLiteral("lookSensitivity"), mLookSensitivity},
+        {QStringLiteral("viewportSize"), GetViewportSizeKey(mViewportSizeIndex)},
+        {QStringLiteral("distance"), mCameraController.GetDistance()},
+        {QStringLiteral("eyeX"), mCameraController.GetSample().Pose.Position.X},
+        {QStringLiteral("eyeY"), mCameraController.GetSample().Pose.Position.Y},
+        {QStringLiteral("eyeZ"), mCameraController.GetSample().Pose.Position.Z},
+        {QStringLiteral("rotationX"), mCameraController.GetSample().Pose.Orientation.X},
+        {QStringLiteral("rotationY"), mCameraController.GetSample().Pose.Orientation.Y},
+        {QStringLiteral("rotationZ"), mCameraController.GetSample().Pose.Orientation.Z},
+        {QStringLiteral("rotationW"), mCameraController.GetSample().Pose.Orientation.W},
+        {QStringLiteral("projection"), static_cast<int32>(mCameraController.GetSample().Lens.Projection)},
+        {QStringLiteral("fov"), mCameraController.GetSample().Lens.VerticalFov},
+        {QStringLiteral("span"), mCameraController.GetSample().Lens.VerticalSpan},
+        {QStringLiteral("minimumWidth"), mCameraController.GetSample().Lens.MinimumVisibleWidth},
+        {QStringLiteral("near"), mCameraController.GetSample().Lens.NearPlane},
+        {QStringLiteral("far"), mCameraController.GetSample().Lens.FarPlane}};
 }
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — width then height matches ViewDescription.
 PreviewViewOptions RenderPreview::makeViewOptions(uint32 width, uint32 height) const noexcept

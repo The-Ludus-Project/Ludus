@@ -100,10 +100,10 @@ public:
     [[nodiscard]] rhi::RasterStatus Render(rhi::SurfaceHandle surface, rhi::SubmissionToken& completion) noexcept;
     /// Acquire the latest completed image. Null frame required. Ready publishes
     /// both outputs; rejection preserves them. Acquired images are never overwritten.
-    [[nodiscard]] rhi::RasterStatus Acquire(ViewportFrame& frame, ViewportImage& image) noexcept;
+    [[nodiscard]] rhi::RasterStatus Acquire(ViewportFrame& inoutFrame, ViewportImage& outImage) noexcept;
     /// Return a lease after all foreign GPU consumers and RHI interop leases finish.
     /// Ready clears identity; stale/foreign rejection preserves it.
-    [[nodiscard]] rhi::RasterStatus Release(ViewportFrame& frame) noexcept;
+    [[nodiscard]] rhi::RasterStatus Release(ViewportFrame& inoutFrame) noexcept;
     /// Invalidate all identities and detach resources; accepted RHI work retires
     /// independently. External consumers must hold RHI interop backing leases.
     /// No open frame; Renderer/device must still be alive. No waiting/readback.

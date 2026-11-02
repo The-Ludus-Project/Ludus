@@ -401,7 +401,8 @@ float ComputeReconnectionJacobian(float3 sourceReceiverWorld, float3 destination
 // Share the scattered target's BSDF evaluation without changing the original
 // unscattered target arithmetic in the Default and Production configurations.
 [noinline] float
-EvaluateScatteredGiTarget(TargetContext target, GiSample sample, float3 offsetWorld, float distanceSquared) {
+EvaluateScatteredGiTarget(TargetContext target, GiSample sample, float3 offsetWorld, float distanceSquared)
+{
     float3 directionWorld = offsetWorld * rsqrt(distanceSquared);
     float cosSurface = dot(target.Shading.ShadingNormalWorld, directionWorld);
     float3 bsdfValue;

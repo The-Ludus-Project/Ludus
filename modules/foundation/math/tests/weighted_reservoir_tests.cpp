@@ -159,7 +159,7 @@ TEST_CASE("Weighted reservoir zero totals are an explicit empty result", "[math]
 
     // Zero, negative zero and weights below the minimum, subnormals included,
     // are counted but never selected.
-    REQUIRE(std::bit_cast<uint32>(WeightedReservoirMinimumWeight) == 0x0c800000u);
+    REQUIRE(std::bit_cast<uint32>(WEIGHTED_RESERVOIR_MINIMUM_WEIGHT) == 0x0c800000u);
     const float32 zeroWeights[] = {0.0f,
                                    -0.0f,
                                    std::numeric_limits<float32>::denorm_min(),
@@ -187,7 +187,7 @@ TEST_CASE("Weighted reservoir zero totals are an explicit empty result", "[math]
 TEST_CASE("Weighted reservoir selects a single positive candidate for every ticket", "[math][reservoir]")
 {
     // The minimum weight, mantissas near one and two, and the largest float.
-    const float32 weights[] = {WeightedReservoirMinimumWeight,
+    const float32 weights[] = {WEIGHTED_RESERVOIR_MINIMUM_WEIGHT,
                                MakeFloat(0x0c800001u),
                                MakeFloat(0x0cffffffu),
                                1.0f,
@@ -338,8 +338,13 @@ TEST_CASE("Weighted reservoir contribution weight validates the target", "[math]
 
     // A subnormal quotient is flushed to zero, as GPU arithmetic may do.
     WeightedReservoir tiny;
-    REQUIRE(TryAddReservoirCandidate({ .Weight = WeightedReservoirMinimumWeight, .Ticket = 0.0f }, tiny, isSelected) ==
-            MathStatus::Success);
+    REQUIRE(TryAddReservoirCandidate(
+                {
+                    .Weight = WEIGHTED_RESERVOIR_MINIMUM_WEIGHT,
+                    .Ticket = 0.0f,
+                },
+                tiny,
+                isSelected) == MathStatus::Success);
     REQUIRE(TryComputeReservoirContributionWeight(tiny, 0x1p30f, contribution) == MathStatus::Success);
     REQUIRE(std::bit_cast<uint32>(contribution) == 0u);
 }
@@ -399,7 +404,7 @@ TEST_CASE("Weighted reservoir replays addressed tickets in a fixed order", "[mat
 {
     RandomKey key;
     REQUIRE(TryMakeRandomKey(42, 7, key) == MathStatus::Success);
-    REQUIRE(WeightedReservoirSelectionVersion == 1u);
+    REQUIRE(WEIGHTED_RESERVOIR_SELECTION_VERSION == 1u);
     const float32 weights[] = {0.5f, 0.0f, 2.0f, 1.25f, 0.75f, 3.0f, 0.0f, 1.0f};
     WeightedReservoir first;
     WeightedReservoir second;

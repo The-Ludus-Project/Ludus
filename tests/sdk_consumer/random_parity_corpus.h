@@ -243,14 +243,14 @@ private:
 {
     using math::ReservoirCandidate;
     uint32 minimumWeightBits = 0;
-    std::memcpy(&minimumWeightBits, &math::WeightedReservoirMinimumWeight, sizeof(minimumWeightBits));
+    std::memcpy(&minimumWeightBits, &math::WEIGHTED_RESERVOIR_MINIMUM_WEIGHT, sizeof(minimumWeightBits));
     outCorpus.Add(
     {
         .Kind = LUDUS_RANDOM_PARITY_CASE_RESERVOIR_CONSTANTS,
         .Key = {},
         .Bound = 0,
         .Operand = {},
-        .Expected = {{math::WeightedReservoirSelectionVersion, minimumWeightBits, 0, 0}},
+        .Expected = {{math::WEIGHTED_RESERVOIR_SELECTION_VERSION, minimumWeightBits, 0, 0}},
     });
 
     // Weights 1:2:0:3 with midpoint tickets (k + 1/2) / 6: six is a multiple of

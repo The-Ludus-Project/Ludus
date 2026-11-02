@@ -38,7 +38,8 @@ void StoreFgCaustic(RayLaunch launch, FgCausticReservoir reservoir)
     GraphBuffer1[address + FG_PHOTON_WORDS + 1] = reservoir.Identity;
 }
 [noinline] float3
-EvaluateFgCaustic(SceneContext scene, RayLaunch launch, FgPhoton photon, inout RayQueryContext queries) {
+EvaluateFgCaustic(SceneContext scene, RayLaunch launch, FgPhoton photon, inout RayQueryContext queries)
+{
     if (photon.Triangle == FG_INVALID || (photon.Flags & FG_CAUSTIC_FLAG) == 0)
         return float3(0);
     SurfaceHit hit = GetSurfaceHit(scene, photon.Triangle, photon.Barycentric);
@@ -54,7 +55,8 @@ EvaluateFgCaustic(SceneContext scene, RayLaunch launch, FgPhoton photon, inout R
     // Visibility was tested by the photon pass. Geometry, camera and material changes
     // reset the generation; a static temporal sample retains that visibility result.
     return EvaluateFgBsdf(point, photon.IncomingWorld) * photon.Flux * jacobian;
-} bool HasFgCausticCapacity(RayLaunch launch)
+}
+bool HasFgCausticCapacity(RayLaunch launch)
 {
     uint count;
     uint stride;

@@ -145,7 +145,8 @@ struct PolygonalLight
                                          float3 geometricNormalWorld,
                                          float3 emission,
                                          bool isEmissionTwoSided,
-                                         out PolygonalLight outLight) {
+                                         out PolygonalLight outLight)
+{
     outLight.Position0World = position0World;
     outLight.Position1World = position1World;
     outLight.Position2World = position2World;
@@ -251,7 +252,8 @@ bool TryIntersectTrianglePlane(float3 originWorld,
                                         PolygonalLight light,
                                         uint technique,
                                         float2 randomSample,
-                                        out PolygonalLightSample outSample) {
+                                        out PolygonalLightSample outSample)
+{
     outSample = (PolygonalLightSample)0;
     float3 directionTangent = float3(0);
     bool isSampled = false;
@@ -294,11 +296,8 @@ bool TryIntersectTrianglePlane(float3 originWorld,
 /// visibility is section 4.3's v in [0, 1]. Both MIS estimators' weights sum to one over the two techniques wherever a
 /// density is positive, and a technique with zero density gets zero weight. A single-technique estimator weighs its
 /// own technique's samples one wherever it can sample them.
-float3 ComputePolygonalLightWeight(uint estimator,
-                                   uint technique,
-                                   PolygonalLight light,
-                                   float2 densities,
-                                   float visibility)
+float3
+ComputePolygonalLightWeight(uint estimator, uint technique, PolygonalLight light, float2 densities, float visibility)
 {
     float techniqueDensity = technique == PROJECTED_SOLID_ANGLE_TECHNIQUE ? densities.x : densities.y;
     if ((techniqueDensity > 0) == false || UsesPolygonalLightTechnique(estimator, technique) == false)

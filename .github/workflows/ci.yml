@@ -62,9 +62,14 @@ jobs:
   # Thanks to GitHub Actions runner-images, macOS 14 deprecation announcement #13518:
   # https://github.com/actions/runner-images/issues/13518
   # Keep arm64 native coverage on macOS 15; SDKs still declare a 14.0 deployment floor.
+  # Hosted ARM capacity can expire queued jobs before a runner acquires them.
+  # Admit one long native ARM lane at a time: sanitizers, SDK/native acceptance,
+  # then the nightly analyzer. A preceding failure must not suppress evidence.
+  # Thanks to GitHub, "Evaluate expressions in workflows and actions", status checks:
+  # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions
   macos-compile:
-    needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    needs: [changes, macos-sanitizers]
+    if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' }}
     name: macOS native backends and diagnostics
     runs-on: macos-15
     env:
@@ -452,8 +457,8 @@ jobs:
           key: ${{ steps.setup.outputs.compiler-cache-key }}
 
   macos-analysis:
-    needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier == 'nightly'
+    needs: [changes, macos-compile]
+    if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier == 'nightly' }}
     name: macOS analyzer baseline
     runs-on: macos-15
     env:

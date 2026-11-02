@@ -78,7 +78,7 @@ install(TARGETS ludus_graphics_renderer EXPORT LudusTargets ARCHIVE DESTINATION 
 # Source is cooked by the existing installed shader helper; no runtime compiler dependency.
 install(FILES include/ludus/graphics/renderer/detail/deferred_binding_slots.inc
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ludus/graphics/renderer/detail")
-install(FILES "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/content/scene_format/material.h" "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_light_transformer_decoder.slang "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_layout.h" shaders/renderer_point_neighbors.slang "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/shaders/point_search.slang" "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/include/ludus/foundation/geometry/detail/point_search_layout.h" shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/stochastic_reuse.slang shaders/geometry_sampling_layout.h shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_grid.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/display_tone_mapping.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/metropolis_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/material_scattering.slang shaders/coated_diffuse.slang shaders/coated_diffuse_layout.h shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/content/scene_format/material.h" "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_light_transformer_decoder.slang "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_layout.h" shaders/renderer_point_neighbors.slang "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/shaders/point_search.slang" "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/include/ludus/foundation/geometry/detail/point_search_layout.h" shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/stochastic_reuse.slang shaders/geometry_sampling_layout.h shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_grid.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/display_tone_mapping.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_software.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/metropolis_layout.h shaders/photon_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/material_scattering.slang shaders/coated_diffuse.slang shaders/coated_diffuse_layout.h shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 # Engine-owned default render graph: the RendererStatic static opaque profile the editor
 # shows when a project has no graph of its own, and the read-only starting point a project
 # copies when it customizes the renderer. Profiles follow the host device family, as the
@@ -150,6 +150,20 @@ if(LUDUS_BUILD_THREADING_BENCHMARK AND NOT EMSCRIPTEN)
     ludus_apply_project_defaults(ludus_static_lighting_benchmark)
 endif()
 if(TARGET ludus_rhi_render_tests)
+    # Software-adapter shader preparation belongs to correctness qualification.
+    # Sanitizer allocation interception also affects the driver's compiler;
+    # give that cold work room without changing warm-frame or numerical checks.
+    set(renderer_test_cold_gpu_timeout_seconds 120)
+    set(renderer_test_case_timeout_seconds 300)
+    set(renderer_test_raster_timeout_seconds 60)
+    if(LUDUS_ENABLE_ASAN OR LUDUS_ENABLE_UBSAN)
+        set(renderer_test_cold_gpu_timeout_seconds 300)
+        set(renderer_test_case_timeout_seconds 600)
+        set(renderer_test_raster_timeout_seconds 180)
+    endif()
+    set_source_files_properties(tests/reference_compute_tests.cpp tests/metropolis_parity_tests.cpp
+        tests/render_graph_ray_tests.cpp PROPERTIES COMPILE_DEFINITIONS
+        "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_cold_gpu_timeout_seconds}")
     add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_oracle.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
@@ -295,10 +309,57 @@ if(TARGET ludus_rhi_render_tests)
     ludus_cook_texture(TARGET ludus_renderer_render_tests NAME l4_bake SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/l4-bake.texture.json")
     ludus_cook_texture(TARGET ludus_renderer_render_tests NAME l3_color
         SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/l3-color.texture.json")
-    add_test(NAME ludus_renderer_pixels COMMAND ludus_renderer_render_tests)
-    set_tests_properties(ludus_renderer_pixels PROPERTIES LABELS "renderer;gpu" TIMEOUT 60)
+    # Keep transport/math parity in named cases: the polygon kernel alone needed 169 s
+    # to compile and execute on the CI software Vulkan adapter. A shared 60 s deadline
+    # hid which kernel stalled and could never qualify the complete pixel suite.
+    add_test(NAME ludus_renderer_pixels COMMAND ludus_renderer_render_tests
+        "~[reference-compute]~[polygon-sampling]~[metropolis]~[steinberg-physical-optics]" --durations yes)
+    # Catch2's installed discovery helpers also ship with the Conan package, whose
+    # generated Catch2_DIR points at CMakeDeps instead of that installation.
+    set(catch_discovery_hints "${Catch2_DIR}")
+    foreach(directory IN LISTS Catch2_INCLUDE_DIRS)
+        list(APPEND catch_discovery_hints "${directory}/../lib/cmake/Catch2")
+    endforeach()
+    find_file(catch_discovery_module Catch.cmake HINTS ${catch_discovery_hints} NO_DEFAULT_PATH NO_CACHE)
+    ludus_require_file("${catch_discovery_module}" "GPU correctness test discovery"
+        "Restore the pinned Catch2 package with ./init.sh --cli, then rerun CMake.")
+    include("${catch_discovery_module}")
+    # Raw-AOV parity alone performs three separately compiled captures (83 s on idle lavapipe).
+    # Thanks to Catch2's authors, "CMake integration", automatic test registration:
+    # https://github.com/catchorg/Catch2/blob/v3.4.0/docs/cmake-integration.md
+    # Discover each reference case so a growing suite never shares one frame-test deadline.
+    catch_discover_tests(ludus_renderer_render_tests TEST_SPEC "[reference-compute]"
+        TEST_PREFIX "ludus_renderer_reference: " TEST_LIST LUDUS_RENDERER_REFERENCE_CASES
+        EXTRA_ARGS --durations yes PROPERTIES TIMEOUT ${renderer_test_case_timeout_seconds} SKIP_RETURN_CODE 4 DISCOVERY_MODE PRE_TEST)
+    set(renderer_reference_labels "renderer;gpu")
     if(APPLE)
-        set_property(TEST ludus_renderer_pixels APPEND PROPERTY LABELS macos)
+        list(APPEND renderer_reference_labels macos)
+    endif()
+    # Catch2 3.4 flattens list-valued PROPERTIES. Apply labels after runtime discovery
+    # instead, retaining every label and the scalar timeout/skip properties.
+    set(renderer_reference_labels_file "${CMAKE_CURRENT_BINARY_DIR}/renderer_reference_labels.cmake")
+    file(WRITE "${renderer_reference_labels_file}"
+        "if(LUDUS_RENDERER_REFERENCE_CASES)\n"
+        "    set_tests_properties(\${LUDUS_RENDERER_REFERENCE_CASES} PROPERTIES LABELS \"${renderer_reference_labels}\")\n"
+        "endif()\n")
+    set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES "${renderer_reference_labels_file}")
+    add_test(NAME ludus_renderer_polygon_sampling_parity COMMAND ludus_renderer_render_tests
+        "[polygon-sampling]" --durations yes)
+    add_test(NAME ludus_renderer_metropolis_parity COMMAND ludus_renderer_render_tests
+        "[metropolis]" --durations yes)
+    add_test(NAME ludus_renderer_physical_optics_parity COMMAND ludus_renderer_render_tests
+        "[steinberg-physical-optics]" --durations yes)
+    set_tests_properties(ludus_renderer_pixels
+        PROPERTIES LABELS "renderer;gpu" TIMEOUT ${renderer_test_raster_timeout_seconds})
+    set_tests_properties(ludus_renderer_physical_optics_parity
+        PROPERTIES LABELS "renderer;gpu" TIMEOUT 60)
+    set_tests_properties(ludus_renderer_polygon_sampling_parity
+        PROPERTIES LABELS "renderer;gpu" TIMEOUT 300)
+    set_tests_properties(ludus_renderer_metropolis_parity
+        PROPERTIES LABELS "renderer;gpu" TIMEOUT ${renderer_test_case_timeout_seconds})
+    if(APPLE)
+        set_property(TEST ludus_renderer_pixels ludus_renderer_polygon_sampling_parity
+            ludus_renderer_metropolis_parity ludus_renderer_physical_optics_parity APPEND PROPERTY LABELS macos)
     endif()
 endif()
 
@@ -1287,33 +1348,26 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_storage_ray_RUNTIME_PACKAGE PARENT_PATH storage_ray_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_STORAGE_RAY_DIRECTORY="${storage_ray_package_directory}")
-    add_test(NAME ludus_render_graph_ray_pixels
-        COMMAND ludus_render_graph_ray_tests
-            "~[ris-projected-solid-angle]~[polygonal-light-sampling]~[slice-sampling-luminaire]~[one-more-vertex-nee]")
-    set_tests_properties(ludus_render_graph_ray_pixels PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60)
-    # The ris-projected-solid-angle template's convergence and error checks render about 3100 frames and
-    # need no native ray tracing, so they also run on software Vulkan adapters; they get their own timeout.
-    add_test(NAME ludus_render_graph_ris_projected_solid_angle_pixels
-        COMMAND ludus_render_graph_ray_tests "[ris-projected-solid-angle]")
-    set_tests_properties(ludus_render_graph_ris_projected_solid_angle_pixels PROPERTIES
-        LABELS "renderer;gpu;ray" TIMEOUT 600)
-    # The polygonal-light-sampling template's comparisons render about 2100 compute-BVH frames (20 s on Apple M5)
-    # and need no native ray tracing, so they also run on software Vulkan adapters.
-    add_test(NAME ludus_render_graph_polygonal_light_sampling_pixels
-        COMMAND ludus_render_graph_ray_tests "[polygonal-light-sampling]")
-    set_tests_properties(ludus_render_graph_polygonal_light_sampling_pixels PROPERTIES
-        LABELS "renderer;gpu;ray" TIMEOUT 600)
-    # The slice-sampling-luminaire template's checks render about 1300 compute-BVH frames and need no native ray
-    # tracing, so they also run on software Vulkan adapters.
-    add_test(NAME ludus_render_graph_slice_sampling_luminaire_pixels
-        COMMAND ludus_render_graph_ray_tests "[slice-sampling-luminaire]")
-    set_tests_properties(ludus_render_graph_slice_sampling_luminaire_pixels PROPERTIES
-        LABELS "renderer;gpu;ray" TIMEOUT 600)
-    # Six material/seed combinations and four components render about 3072 compute-BVH frames.
-    add_test(NAME ludus_render_graph_one_more_vertex_pixels
-        COMMAND ludus_render_graph_ray_tests "[one-more-vertex-nee]")
-    set_tests_properties(ludus_render_graph_one_more_vertex_pixels PROPERTIES
-        LABELS "renderer;gpu;ray" TIMEOUT 600)
+    # Capture/lifecycle cases also prepare private ray graphs. Discover them separately:
+    # a cold capture cannot share one short deadline with every preceding lifecycle case.
+    catch_discover_tests(ludus_render_graph_ray_tests TEST_SPEC "~[template]"
+        TEST_PREFIX "ludus_render_graph_ray: " TEST_LIST LUDUS_RENDER_GRAPH_RAY_CASES
+        EXTRA_ARGS --durations yes PROPERTIES TIMEOUT ${renderer_test_case_timeout_seconds} SKIP_RETURN_CODE 4 DISCOVERY_MODE PRE_TEST)
+    # Template acceptance renders thousands of compute-BVH frames, including on
+    # software adapters. Discover each case with its own existing 600 s deadline;
+    # newly added templates receive the same isolation without editing a tag exclusion list.
+    catch_discover_tests(ludus_render_graph_ray_tests TEST_SPEC "[template]"
+        TEST_PREFIX "ludus_render_graph_template: " TEST_LIST LUDUS_RENDER_GRAPH_TEMPLATE_CASES
+        EXTRA_ARGS --durations yes PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 4 DISCOVERY_MODE PRE_TEST)
+    set(render_graph_template_labels_file "${CMAKE_CURRENT_BINARY_DIR}/render_graph_template_labels.cmake")
+    file(WRITE "${render_graph_template_labels_file}"
+        "if(LUDUS_RENDER_GRAPH_RAY_CASES)\n"
+        "    set_tests_properties(\${LUDUS_RENDER_GRAPH_RAY_CASES} PROPERTIES LABELS \"renderer;gpu;ray\")\n"
+        "endif()\n"
+        "if(LUDUS_RENDER_GRAPH_TEMPLATE_CASES)\n"
+        "    set_tests_properties(\${LUDUS_RENDER_GRAPH_TEMPLATE_CASES} PROPERTIES LABELS \"renderer;gpu;ray\")\n"
+        "endif()\n")
+    set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES "${render_graph_template_labels_file}")
     add_executable(ludus_graph_workgroup_tests tests/graph_workgroup_tests.cpp)
     target_link_libraries(ludus_graph_workgroup_tests PRIVATE Ludus::GraphicsRenderer
         Ludus::FoundationTime Catch2::Catch2WithMain)

@@ -35,6 +35,39 @@ def comparable_tokens(source):
 
 @unittest.skipUnless(CLANG_FORMAT, f"requires pinned {engine.pinned_llvm_tool(ROOT, 'clang-format')}")
 class FormattingTests(unittest.TestCase):
+    def test_slang_noinline_preserves_function_boundaries_and_tokens(self):
+        source = '''[noinline] float First(float value) { return value; }
+// The next function must remain at file scope.
+[noinline] float Second(float value) { return First(value); }
+float Third(float value) { return Second(value); }
+// [noinline] in comments is opaque.
+const char* text = "[noinline] L00000";
+'''
+        filename = ROOT / "modules/graphics/renderer/shaders/renderer_output.slang"
+        result = format_source(source, filename, CLANG_FORMAT)
+        self.assertEqual(comparable_tokens(result), comparable_tokens(source))
+        self.assertIn("[noinline] float First(float value)\n{", result)
+        self.assertIn("\n// The next function", result)
+        self.assertIn("\n[noinline] float Second(float value)\n{", result)
+        self.assertIn("\nfloat Third(float value)\n{", result)
+        self.assertEqual(format_source(result, filename, CLANG_FORMAT), result)
+
+    def test_slang_noinline_keeps_wrapped_parameter_alignment(self):
+        source = '''[noinline] float EvaluateSurfaceContribution(float firstSurfaceContribution,
+float secondSurfaceContribution,
+float thirdSurfaceContribution)
+{
+    return firstSurfaceContribution + secondSurfaceContribution + thirdSurfaceContribution;
+}
+'''
+        filename = ROOT / "modules/graphics/renderer/shaders/renderer_output.slang"
+        result = format_source(source, filename, CLANG_FORMAT)
+        lines = result.splitlines()
+        self.assertEqual(lines[1].index("float"), lines[0].index("(") + 1)
+        self.assertEqual(lines[2].index("float"), lines[0].index("(") + 1)
+        self.assertEqual(comparable_tokens(result), comparable_tokens(source))
+        self.assertEqual(format_source(result, filename, CLANG_FORMAT), result)
+
     def formatted(self, source):
         result = format_source(source, ROOT / "apps/smoke/main.cpp", CLANG_FORMAT)
         # Formatting may change whitespace and add trailing commas, never other tokens.
