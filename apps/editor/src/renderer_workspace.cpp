@@ -74,11 +74,13 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMap>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -1266,6 +1268,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             &RenderGraphCaptureProfile::BuildRequested,
             this,
             &RendererWorkspace::startCaptureProfileBuild);
+    mLibraryCaptureOrNull = new RenderGraphLibraryCapture(this);
+    connect(mLibraryCaptureOrNull,
+            &RenderGraphLibraryCapture::BuildRequested,
+            this,
+            &RendererWorkspace::startLibraryCaptureBuild);
     connect(mPreviewOrNull, &RenderGraphPreview::RayPathCaptureChanged, &mPreviewPump, &ViewportFramePump::Wake);
     connect(&mPreviewPump, &ViewportFramePump::WorkRequested, this, &RendererWorkspace::ServicePreview);
     connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, &mPreviewPump, &ViewportFramePump::Wake);
@@ -2648,6 +2655,131 @@ void RendererWorkspace::finishCaptureProfileBuild(const RenderGraphJobResult& re
 #endif
 }
 
+QVector<RenderGraphCaptureTarget> RendererWorkspace::GetCaptureTargets() const
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mDocument.IsLoaded() == false)
+    {
+        return {};
+    }
+    // Library captures rebuild a generation's saved sources, so list the saved graphs, not drafts.
+    RenderGraphSourceBytes graphs;
+    for (const QString& file : mDocument.GetFiles(RenderGraphSource::Saved))
+    {
+        graphs.insert(file, mDocument.GetSaved(file));
+    }
+    return ListCaptureTargets(graphs, mDocument.GetRootGraph());
+#else
+    return {};
+#endif
+}
+
+void RendererWorkspace::startLibraryCaptureBuild(const QByteArray& generationIdentity,
+                                                 const RenderGraphCaptureTarget& target)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const QString hexIdentity = QString::fromLatin1(generationIdentity.toHex());
+    const QString build = buildDirectory();
+    const QString generation =
+        build.isEmpty() == true ? QString{} : QDir(build).filePath(QStringLiteral("generations/") + hexIdentity);
+    // A library capture is compiled from the drawing generation's own saved sources, never newer edits.
+    if (generationIdentity.isEmpty() == true || generation.isEmpty() == true || QFileInfo(generation).isDir() == false)
+    {
+        mLibraryCaptureOrNull->RejectBuild(generationIdentity,
+                                           target,
+                                           QStringLiteral("The viewport's graph has no build in this project, as for "
+                                                          "the prebuilt engine default. Choose Build & Preview in the "
+                                                          "Render Graph document, then capture again."));
+        return;
+    }
+    // A library capture is deterministic per generation and target, so one compiled before is reused.
+    const QString captures = QDir::cleanPath(QDir(build).filePath(QStringLiteral("../library-captures")));
+    QString name = QStringLiteral("%1-%2-%3-%4").arg(hexIdentity, target.Library, target.Configuration, target.Output);
+    name.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_.-]")), QStringLiteral("_"));
+    const QString destination = QDir(captures).filePath(name + QStringLiteral(".lurgrt"));
+    const QString profile = QDir(captures).filePath(name + QStringLiteral(".lurgcp"));
+    if (QFileInfo(destination).isFile() == true)
+    {
+        mLibraryCaptureOrNull->AcceptBuild(generationIdentity,
+                                           target,
+                                           destination,
+                                           QFileInfo(profile).isFile() == true ? profile : QString{});
+        return;
+    }
+    if (IsJobActive() == true)
+    {
+        mLibraryCaptureOrNull->RejectBuild(generationIdentity,
+                                           target,
+                                           QStringLiteral("Another render-graph job is running; capture again once it "
+                                                          "finishes to build %1.")
+                                               .arg(target.GetLabel()));
+        return;
+    }
+    if (QDir().mkpath(captures) == false)
+    {
+        mLibraryCaptureOrNull->RejectBuild(
+            generationIdentity,
+            target,
+            QStringLiteral("The library capture folder %1 cannot be created.").arg(QDir::toNativeSeparators(captures)));
+        return;
+    }
+    QStringList arguments{generation,
+                          QDir::cleanPath(QDir(build).filePath(QStringLiteral("../library-capture"))),
+                          destination,
+                          QStringLiteral("--library"),
+                          target.Library,
+                          QStringLiteral("--library-configuration"),
+                          target.Configuration,
+                          QStringLiteral("--library-output"),
+                          target.Output};
+    appendBuildToolArguments(arguments);
+    appendWorkerSocketArgument(arguments);
+    mLibraryCaptureIdentity = generationIdentity;
+    mLibraryCaptureTarget = target;
+    mLibraryCapturePackage = destination;
+    if (startJob(QStringLiteral("capture-library"), arguments, false) == false)
+    {
+        mLibraryCaptureOrNull->RejectBuild(generationIdentity, target, mStatus->text());
+    }
+#else
+    static_cast<void>(generationIdentity);
+    static_cast<void>(target);
+#endif
+}
+
+void RendererWorkspace::finishLibraryCaptureBuild(const RenderGraphJobResult& result)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (result.IsSuccessful == false)
+    {
+        mLibraryCaptureOrNull->RejectBuild(mLibraryCaptureIdentity,
+                                           mLibraryCaptureTarget,
+                                           result.IsCancelled == true
+                                               ? QStringLiteral("The library capture build was cancelled.")
+                                               : QStringLiteral("%1: %2").arg(result.Code, result.Message));
+        return;
+    }
+    // Library captures of earlier generations are never captured again; keep only this generation's.
+    const QFileInfo package(mLibraryCapturePackage);
+    const QString generation = QString::fromLatin1(mLibraryCaptureIdentity.toHex());
+    for (const QFileInfo& entry : package.dir().entryInfoList(QDir::Files))
+    {
+        if (entry.fileName().startsWith(generation) == false)
+        {
+            QFile::remove(entry.filePath());
+        }
+    }
+    QString profile;
+    if (result.Payload.value(QStringLiteral("capture_profile")).isNull() == false)
+    {
+        profile = package.dir().filePath(package.completeBaseName() + QStringLiteral(".lurgcp"));
+    }
+    mLibraryCaptureOrNull->AcceptBuild(mLibraryCaptureIdentity, mLibraryCaptureTarget, mLibraryCapturePackage, profile);
+#else
+    static_cast<void>(result);
+#endif
+}
+
 bool RendererWorkspace::CookRuntime()
 {
     const QString build = buildDirectory();
@@ -2747,6 +2879,13 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
                                                QStringLiteral("The project or graph changed while the capture "
                                                               "profile compiled; capture again."));
         }
+        if (result.Request.Action == QStringLiteral("capture-library") && mLibraryCaptureOrNull != nullptr)
+        {
+            mLibraryCaptureOrNull->RejectBuild(mLibraryCaptureIdentity,
+                                               mLibraryCaptureTarget,
+                                               QStringLiteral("The project or graph changed while the library "
+                                                              "capture compiled; capture again."));
+        }
 #endif
         Q_EMIT JobFinished();
         return;
@@ -2803,6 +2942,10 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     if (result.Request.Action == QStringLiteral("capture-profile") && mCaptureProfileOrNull != nullptr)
     {
         finishCaptureProfileBuild(result);
+    }
+    if (result.Request.Action == QStringLiteral("capture-library") && mLibraryCaptureOrNull != nullptr)
+    {
+        finishLibraryCaptureBuild(result);
     }
     if (result.Request.Action == QStringLiteral("ray-path-capture") && mRayPathsOrNull != nullptr)
     {

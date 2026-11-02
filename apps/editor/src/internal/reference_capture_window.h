@@ -6,6 +6,7 @@
 #include "internal/reference_comparison.h"
 #include "internal/viewport_reference_capture.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/render_graph_library_capture.h"
 #    include "internal/viewport_graph_capture.h"
 #    include "internal/viewport_raster_capture.h"
 #endif
@@ -28,6 +29,7 @@ class QTabWidget;
 namespace ludus::editor
 {
 class RenderGraphCaptureProfile;
+class RenderGraphLibraryCapture;
 class RenderGraphPreview;
 class RenderPreview;
 class RendererWorkspace;
@@ -41,6 +43,8 @@ inline constexpr foundation::int32 REFERENCE_DISPLAY_REFRESH_MILLISECONDS = 250;
 inline constexpr foundation::int32 CAPTURE_SOURCE_REFERENCE_INDEX = 0;
 /// Source index of the viewport's render graph in the window's Source choice.
 inline constexpr foundation::int32 CAPTURE_SOURCE_GRAPH_INDEX = 1;
+/// Graph index of the viewport's own graph and output in the window's Graph choice; library outputs follow.
+inline constexpr foundation::int32 CAPTURE_GRAPH_VIEWPORT_INDEX = 0;
 
 /// Non-modal window that captures one viewport's current camera, either as an RT1 reference image or as the
 /// viewport's render graph run to a target sample count. A reference can be compared with the viewport's
@@ -116,7 +120,9 @@ public:
         return mDifferenceImage;
     }
     [[nodiscard]] QString GetStatusText() const;
-    /// The graph, configuration and output that the Render graph source and the comparison would use now.
+    /// The graph, configuration and output that the Render graph source and the comparison would use now:
+    /// the viewport's, or a library output chosen in the Graph list, which renders from a library capture
+    /// package built from the viewport's generation (RendererWorkspace::GetLibraryCaptureOrNull).
     [[nodiscard]] QString GetGraphText() const;
     /// Why the Render graph source cannot capture that output, known before Capture from the active generation;
     /// empty when it can or before the generation is active. Capture is disabled for that source meanwhile.
@@ -144,6 +150,8 @@ private:
     void updateTraversalAvailability();
     void updateComparisonAvailability();
     void updateGraphDescription();
+    /// List the workspace's library outputs in the Graph choice, keeping the selected one when it remains.
+    void refreshGraphTargets();
     void releaseCaptures() noexcept;
     void saveWithDialog();
     void showScaledImages();
@@ -166,6 +174,11 @@ private:
     QPointer<RendererWorkspace> mProjectWorkspace;
     QPointer<RenderGraphPreview> mProjectGraph;
     QPointer<RenderGraphCaptureProfile> mCaptureProfile;
+    QPointer<RenderGraphLibraryCapture> mLibraryCapture;
+    /// Library outputs offered after the viewport's own in the Graph choice, in item order.
+    QVector<RenderGraphCaptureTarget> mCaptureTargets;
+    /// The library output selected in the Graph choice; false for the viewport's graph and output.
+    [[nodiscard]] bool getLibraryTarget(RenderGraphCaptureTarget& outTarget) const;
     /// Path, size and modification time of the runtime package whose generation identity was last read, so
     /// frequent preview changes decode an unchanged package only once.
     QString mCaptureProfileSourceKey;
@@ -214,5 +227,6 @@ private:
     QComboBox* const mSource;
     QLabel* const mGraph;
     QLabel* const mGraphProblem;
+    QComboBox* const mGraphTarget;
 };
 } // namespace ludus::editor
