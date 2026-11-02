@@ -39,6 +39,7 @@
 #include <QStandardItemModel>
 #include <QString>
 #include <QTemporaryDir>
+#include <QtEndian>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -57,6 +58,9 @@ constexpr uint32 TEST_DEPTH = 3;
 constexpr int64 CAPTURE_TIMEOUT_MILLISECONDS = 120000;
 constexpr uint64 TEST_SERVICE_BUDGET_NANOSECONDS = 50'000'000;
 constexpr usize LUHDR_HEADER_BYTES = 256;
+/// Byte offset of the LUHDR01 flags word, and its centre-ray bit (scripts/reference-hdr).
+constexpr usize LUHDR_FLAGS_OFFSET = 44;
+constexpr uint32 LUHDR_CENTER_RAYS_FLAG = 2;
 constexpr usize LUHDR_PIXEL_BYTES = 16;
 
 /// One headless device per test; RHI is a process-wide session.
@@ -338,6 +342,45 @@ TEST_CASE("CPU oracle reference capture of the viewport scene completes and save
     CHECK(capture.EncodeHdr(hdr, error) == false);
 }
 
+TEST_CASE("A reference capture traces pixel centres when asked and records it in the LUHDR flags",
+          "[editor][reference-capture][gpu]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    QTemporaryDir root;
+    REQUIRE(root.isValid() == true);
+    RenderScene scene;
+    tests::MakeLitScene(root.path(), scene);
+    const QSize extent = ComputeReferenceExtent(QSize(640, 480), TEST_LONG_SIDE);
+    renderer::ViewDescription view;
+    DescribeTestView(scene, extent, view);
+    ViewportReferenceSettings settings;
+    settings.LongSide = TEST_LONG_SIDE;
+    settings.Samples = TEST_SAMPLES;
+    settings.MaxDepth = TEST_DEPTH;
+    settings.Traversal = renderer::ReferenceTraversal::CpuOracle;
+    for (const bool shouldCenterRays : {false, true})
+    {
+        INFO("Centre rays: " << shouldCenterRays);
+        settings.ShouldCenterRays = shouldCenterRays;
+        ViewportReferenceCapture capture;
+        QString error;
+        REQUIRE(capture.Start(device.Device, device.Surface, scene, view, extent, settings, error) == true);
+        CHECK(capture.AreRaysCentered() == shouldCenterRays);
+        const ViewportReferencePhase phase = RunToEnd(capture);
+        INFO(capture.GetError().toStdString());
+        REQUIRE(phase == ViewportReferencePhase::Complete);
+        QByteArray hdr;
+        REQUIRE(capture.EncodeHdr(hdr, error) == true);
+        REQUIRE(static_cast<usize>(hdr.size()) >= LUHDR_HEADER_BYTES);
+        const uint32 flags = qFromLittleEndian<uint32>(hdr.constData() + LUHDR_FLAGS_OFFSET);
+        CHECK(((flags & LUHDR_CENTER_RAYS_FLAG) != 0) == shouldCenterRays);
+    }
+}
+
 TEST_CASE("GPU compute reference capture completes with more emissive patches than raster lights",
           "[editor][reference-capture][gpu]")
 {
@@ -515,9 +558,14 @@ TEST_CASE("Reference capture window offers the render graph source only with a p
     QSpinBox* depth = window.findChild<QSpinBox*>(QStringLiteral("referenceMaxDepth"));
     REQUIRE(depth != nullptr);
     CHECK(depth->isEnabled() == true);
-    // Depth and traversal describe RT1; the render graph source runs the graph as authored.
+    QCheckBox* centerRays = window.findChild<QCheckBox*>(QStringLiteral("referenceCenterRays"));
+    REQUIRE(centerRays != nullptr);
+    CHECK(centerRays->isEnabled() == true);
+    CHECK(centerRays->isChecked() == false);
+    // Depth, traversal and centre rays describe RT1; the render graph source runs the graph as authored.
     source->setCurrentIndex(CAPTURE_SOURCE_GRAPH_INDEX);
     CHECK(depth->isEnabled() == false);
+    CHECK(centerRays->isEnabled() == false);
     CHECK(window.findChild<QComboBox*>(QStringLiteral("referenceTraversal"))->isEnabled() == false);
     CHECK(window.findChild<QCheckBox*>(QStringLiteral("referenceCompare"))->isEnabled() == false);
 }

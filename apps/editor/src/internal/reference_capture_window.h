@@ -213,6 +213,7 @@ private:
     QSpinBox* const mSamples;
     QSpinBox* const mMaxDepth;
     QComboBox* const mTraversal;
+    QCheckBox* const mCenterRays;
     QCheckBox* const mCompare;
     QPushButton* const mCaptureButton;
     QPushButton* const mStopButton;

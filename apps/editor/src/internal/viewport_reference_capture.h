@@ -72,6 +72,10 @@ struct ViewportReferenceSettings final
     graphics::renderer::ReferenceTraversal Traversal = graphics::renderer::ReferenceTraversal::CpuOracle;
     /// Addressed Philox seed; equal inputs and seed reproduce the image.
     foundation::uint64 Seed = 1;
+    /// Trace every camera ray through its pixel's centre instead of a jittered point in the pixel, as a render
+    /// graph's camera rays do. The image then estimates centre rays rather than pixel footprints, so edges alias
+    /// as the graph's do and a comparison measures shading alone. Recorded in the LUHDR01 flags.
+    bool ShouldCenterRays = false;
 };
 
 /// Progress of one ViewportReferenceCapture.
@@ -155,6 +159,12 @@ public:
     [[nodiscard]] LUDUS_INLINE foundation::usize GetLightCount() const noexcept
     {
         return mLightCount;
+    }
+    /// True when the last successfully started capture traces pixel centres
+    /// (ViewportReferenceSettings::ShouldCenterRays); false before any capture starts.
+    [[nodiscard]] LUDUS_INLINE bool AreRaysCentered() const noexcept
+    {
+        return mDescription.CenterRays;
     }
     /// Copy progress and profile evidence; false before tracing has begun.
     [[nodiscard]] bool GetInfo(graphics::renderer::ReferenceCaptureInfo& outInfo) const noexcept;

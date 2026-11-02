@@ -1650,7 +1650,7 @@ rays (2), orthographic (4), reverse-Z (8), infinite far (16), partial (32),
 GPU compute (64) and `ResampledProjectedSolidAngle` light sampling (128); neither
 traversal bit marks native queries. The sampler field is 1 for `UniformArea` and 2
 with flag 128; `scripts/reference-hdr` rejects any other pairing and records
-`light_sampling` in its manifest.
+`light_sampling` in its manifest, with `center_rays` for flag 2.
 Each top-left ordered pixel contains three FP32 mean RGB channels and a uint32
 committed count. The light count/digest identify the retained scene; applications
 must save original light/asset inputs for independent scene reconstruction.

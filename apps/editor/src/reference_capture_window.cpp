@@ -121,6 +121,7 @@ bool WriteImageAtomically(const QString& path, const QImage& image, QString& out
 ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* parentOrNull)
     : QWidget(parentOrNull, Qt::Window), mPreview(preview), mLongSide(new QSpinBox(this)), mSamples(new QSpinBox(this)),
       mMaxDepth(new QSpinBox(this)), mTraversal(new QComboBox(this)),
+      mCenterRays(new QCheckBox(QStringLiteral("Trace pixel centres"), this)),
       mCompare(new QCheckBox(QStringLiteral("Compare with the viewport's render graph output"), this)),
       mCaptureButton(new QPushButton(QStringLiteral("Capture viewport"), this)),
       mStopButton(new QPushButton(QStringLiteral("Stop"), this)),
@@ -159,6 +160,11 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
                                           "same path tracer, BVH included, in compute shaders on any GPU with "
                                           "compute support. Native ray queries use the GPU's ray tracing "
                                           "hardware. Neither GPU option falls back to the CPU."));
+    mCenterRays->setObjectName(QStringLiteral("referenceCenterRays"));
+    mCenterRays->setChecked(ViewportReferenceSettings{}.ShouldCenterRays);
+    mCenterRays->setToolTip(QStringLiteral("Trace each camera ray through its pixel's centre, as a render graph does, "
+                                           "instead of a random point in the pixel. Edges then alias as the graph's "
+                                           "do, so a comparison measures shading rather than antialiasing."));
     mCompare->setObjectName(QStringLiteral("referenceCompare"));
     mCompare->setChecked(true);
     mSource->setObjectName(QStringLiteral("referenceSource"));
@@ -193,6 +199,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     form->addRow(QStringLiteral("Samples"), mSamples);
     form->addRow(QStringLiteral("Max depth"), mMaxDepth);
     form->addRow(QStringLiteral("Traversal"), mTraversal);
+    form->addRow(mCenterRays);
     form->addRow(mCompare);
 
     mCaptureButton->setObjectName(QStringLiteral("referenceCapture"));
@@ -871,6 +878,7 @@ bool ReferenceCaptureWindow::StartCapture()
     settings.Samples = static_cast<uint32>(mSamples->value());
     settings.MaxDepth = static_cast<uint32>(mMaxDepth->value());
     settings.Traversal = static_cast<renderer::ReferenceTraversal>(mTraversal->currentIndex());
+    settings.ShouldCenterRays = mCenterRays->isChecked();
     const QSize requestedExtent = ComputeReferenceExtent(mPreview->GetDrawableSize(), settings.LongSide);
     QSize extent = requestedExtent;
     mIsComparing = mIsComparisonAvailable == true && mCompare->isChecked() == true;
@@ -916,12 +924,13 @@ bool ReferenceCaptureWindow::StartCapture()
         updateStatus();
         return false;
     }
-    mMessage = QStringLiteral("%1 × %2, %3 requested samples/pixel, depth %4, %5.")
+    mMessage = QStringLiteral("%1 × %2, %3 requested samples/pixel, depth %4, %5%6.")
                    .arg(extent.width())
                    .arg(extent.height())
                    .arg(settings.Samples)
                    .arg(settings.MaxDepth)
-                   .arg(DescribeTraversal(settings.Traversal));
+                   .arg(DescribeTraversal(settings.Traversal))
+                   .arg(settings.ShouldCenterRays == true ? QStringLiteral(", pixel centres") : QString{});
     mProgress->setRange(0, mSamples->value());
     mProgress->setValue(0);
     mCaptureTimer.start();
@@ -1009,6 +1018,7 @@ bool ReferenceCaptureWindow::saveComparison(const QString& hdrPath, QString& out
         reference.insert(QStringLiteral("error"), mCapture.GetError());
         reference.insert(QStringLiteral("traversal"), DescribeTraversal(info.Traversal));
         reference.insert(QStringLiteral("seed"), QString::number(info.Seed));
+        reference.insert(QStringLiteral("centerRays"), mCapture.AreRaysCentered());
     }
     const QJsonObject report{
         {QStringLiteral("reference"), reference},
@@ -1208,9 +1218,11 @@ void ReferenceCaptureWindow::updateControls()
     {
         setting->setEnabled(isRunning == false);
     }
-    // Depth, traversal and comparison describe the RT1 reference; a graph capture runs the graph as authored.
+    // Depth, traversal, centre rays and comparison describe the RT1 reference; a graph capture runs the graph as
+    // authored.
     mMaxDepth->setEnabled(isRunning == false && isReference == true);
     mTraversal->setEnabled(isRunning == false && isReference == true);
+    mCenterRays->setEnabled(isRunning == false && isReference == true);
     mCompare->setEnabled(isRunning == false && isReference == true && mIsComparisonAvailable == true);
 }
 
