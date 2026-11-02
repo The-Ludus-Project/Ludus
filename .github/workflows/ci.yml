@@ -23,6 +23,13 @@ on:
         description: Run only the CPU/Mesa Vulkan MH and Jump Restore parity and capture checks.
         type: boolean
         default: false
+      validation_tier:
+        description: Match promotion qualification or include advisory nightly analysis.
+        type: choice
+        default: nightly
+        options:
+          - full
+          - nightly
 
 permissions:
   contents: read
