@@ -1206,7 +1206,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                             record['capture_warmup_samples'] = [
                                 max(render_graph_settings.capture_warmup_samples(authored_programs_by_identity[identity],
                                     value.get('settings', []), snapshot.files)
-                                    for identity in (variant[:1] if ray.is_compute_variant(variant) else variant))
+                                    for identity in ray.callback_programs(variant))
                                 for variant in profile['variants']]
                             record['visibility_buffer'] = profile['visibility_buffer']
                             if ray_path_capture:

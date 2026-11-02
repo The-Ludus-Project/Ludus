@@ -1,5 +1,6 @@
 """Capture warm-up metadata follows authored settings and exact legacy template bytes."""
 import json
+import shutil
 import tempfile
 from unittest.mock import patch
 from pathlib import Path
@@ -77,6 +78,31 @@ class CaptureWarmupTests(unittest.TestCase):
                 self.assertTrue(recipes)
                 for recipe in recipes:
                     self.assertEqual(recipe['capture_warmup_samples'], [7] * len(recipe['ray_programs']))
+
+    def test_traversal_tags_are_excluded_from_non_compute_program_lookup(self):
+        from test_render_graph_ray import compile_without_tools, stage_helper
+        from ludus_tools import render_graph_ray as ray
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/traversal_parity', source)
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', '["metal"]'))
+            helper = stage_helper(root / 'helper')
+            tool = root / 'tool'
+            tool.write_text('test tool identity')
+            tool.with_name('tool.build.json').write_text('{}')
+            with patch.object(build, 'compile_program', compile_without_tools):
+                result = build.build_package(manifest, root / 'build', helper=helper,
+                                             compiler=tool, spirv_cross=tool)
+            package = json.loads((Path(result['package']) / 'package.json').read_text())
+            recipes = [item for item in package['recipes'] if 'capture_warmup_samples' in item]
+            variants = [variant for recipe in recipes for variant in recipe['ray_programs']]
+            self.assertTrue(any(variant[-1] == ray.COMPUTE_BVH_TAG for variant in variants))
+            self.assertTrue(any(variant[-1] == ray.TRIANGLE_LOOP_TAG for variant in variants))
+            for recipe in recipes:
+                self.assertEqual(recipe['capture_warmup_samples'], [0] * len(recipe['ray_programs']))
 
 
 if __name__ == '__main__':
