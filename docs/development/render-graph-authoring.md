@@ -1638,11 +1638,11 @@ stream, rather than copying the book's container implementation.
 
 ### Use stochastic pairwise MIS for large spatial kernels
 
-A newly created **ReSTIR DI** package also provides the **StochasticPairwise**
+Newly created **ReSTIR DI** and **ReSTIR GI** packages provide the **StochasticPairwise**
 configuration in its root graph and reusable library. Select this configuration
 on the ReSTIR Subgraph (the configuration field is available on the canvas),
 then **Build Graph** and select the built graph for the viewport. From the CLI,
-create the same editable package with `--template restir-di` and build with
+create the editable package with `--template restir-di` or `--template restir-gi` and build with
 `--configuration StochasticPairwise`. Existing copied packages keep their authored
 sources; create a fresh package to obtain this configuration.
 
@@ -1673,7 +1673,9 @@ independently of the configuration's indices in a containing ray sequence.
    without an additional candidate-count division. Final shading traces visibility.
 
 **Graph Settings** exposes `RESTIR_PAIRWISE_SAMPLES` (default 3) and
-`RESTIR_PAIRWISE_CANONICAL_SAMPLES` (default 1), each from 1 to 16. These settings
+`RESTIR_PAIRWISE_CANONICAL_SAMPLES` (default 1), each from 1 to 8. The shared setting IDs and ranges are identical in both packages;
+together the draws fit GI's 16-query visibility budget. The scalar API itself
+does not impose this graph-preset draw limit. These settings
 control expensive shifted target evaluations, independently of the tile's up to
 63 neighbors. Selection mixes the cached importance CDF with 5% uniform sampling;
 this preserves selection support even when tiny positive CDF increments round to
@@ -1706,6 +1708,68 @@ sparse cells, canonical exclusion and repeated selections (`[pairwise-reuse]` in
 undersized storage, resize and scene replacement (`[restir]` in
 `ludus_render_graph_ray_tests`). These tests establish the implemented DI scope;
 they do not qualify the paper's full path-space implementation.
+
+The GI configuration uses four ordered passes: fresh initial sampling into a
+64-byte reservoir, cell construction, stochastic spatial reuse, and the existing
+GI shading pass. Its spatial buffer uses 80 bytes per pixel: a 64-byte result
+followed by the immutable 16-byte cell record. A valid receiver retains confidence
+one even when its initial ray misses; dropping those null proposals would change
+the canonical correction. It honors GI's source distribution, target, path-bounce
+and spatial-enable settings. Temporal settings and the legacy neighbor-count/M
+settings do not control this fresh pairwise configuration.
+
+GI evaluates solid-angle reconnection Jacobians. Both neighbor MIS and canonical
+correction use `sourceTarget / abs(forwardJacobian)`; resampling multiplies by the
+forward Jacobian. A canonical correction also checks whether the neighbor's
+hemisphere and visible first-hit distribution could have proposed that sample.
+Each shifted neighbor tests destination visibility before entering the reservoir.
+These support checks apply regardless of the legacy `IS_RESTIR_GI_UNBIASED`
+setting. `[restir-gi]` compares raw linear accumulation against the independent
+GI estimator without reuse; it does not use denoising to establish convergence.
+The maximum-draw regression also exercises cosine sampling, the scattered target,
+maximum path depth and triangle-edge reconstruction with no latched failures.
+
+#### Use the method in custom shaders
+
+The installed SDK exposes the scalar operations independently of any graph:
+
+```slang
+#include "stochastic_pairwise_mis.slang"
+
+float proxy = 0;
+float mis = 0;
+float corrected = 0;
+if (TryComputePairwiseShiftedTarget(sourceTarget, forwardJacobian, proxy) == true &&
+    TryComputePairwiseNeighborMis(confidence, confidenceSum, canonicalConfidence,
+        proxy, destinationTarget, mis) == true &&
+    TryComputeStochasticMisWeight(mis, selectionPmf, drawCount, corrected) == true)
+{
+    // Stream this occurrence using TryComputePairwiseResamplingWeight.
+}
+```
+
+Compile standalone shaders with the installed `ludus_compile_shader` helper,
+which supplies the installed shader include directory. C++ callers include
+`<ludus/foundation/math/stochastic_pairwise_mis.hpp>` and link
+`Ludus::FoundationMath`. See the [Math API contracts](../modules/foundation/math.md#stochastic-pairwise-mis)
+for status and output-preservation behavior. The Shader API panel and completion
+also expose these functions in scene compute programs.
+
+Scene compute programs receive both the scalar API and Renderer-owned
+`stochastic_reuse.slang` automatically. A custom `IPairwiseCellReader` supplies
+immutable inclusive CDF prefixes through `ReadPrefix(absolutePixel)`; it can read
+the caller's own bound buffer without adopting the supplied DI/GI record layout.
+`GetReuseCellExtent`, `GetReuseCellPixel` and `GetReuseCanonicalSlot` describe the
+clipped tile. `ComputeReuseCellMass` recovers prefix differences, and
+`SampleReuseCellNeighbor` returns a noncanonical slot plus its mixture PMF.
+Supply the sum of recovered noncanonical masses, reserve three disjoint random
+dimensions per call and use a separate reservoir coin. `GetGraphPassIndex()` is
+the package program index and can change when programs are added or renamed;
+use caller-owned stable scope constants for streams that must survive graph edits. Cells need at least two
+pixels; single-pixel cells keep only their canonical estimator. The reader's
+storage must stay alive and immutable throughout reuse. Custom kernels using
+Renderer's scene types can explicitly include `stochastic_reuse.slang` after
+those types are declared. Neither helper allocates resources or binds buffers.
 
 ### Run the production ReSTIR DI configuration
 

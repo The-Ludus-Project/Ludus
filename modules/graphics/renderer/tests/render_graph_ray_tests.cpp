@@ -8457,6 +8457,7 @@ TEST_CASE("Native ray queries keep their results with several surface and visibi
 // what the walls show arrives through bounces.
 namespace
 {
+constexpr PackageLocation RESTIR_GI_PAIRWISE{LUDUS_RG3_RESTIR_GI_PAIRWISE_DIRECTORY, "rg2_restir_gi_pairwise.lurgrt"};
 constexpr PackageLocation RESTIR_GI_TEMPLATE{LUDUS_RG3_RESTIR_GI_TEMPLATE_DIRECTORY, "rg2_restir_gi_template.lurgrt"};
 constexpr PackageLocation RESTIR_GI_NO_REUSE{LUDUS_RG3_RESTIR_GI_NO_REUSE_DIRECTORY, "rg2_restir_gi_no_reuse.lurgrt"};
 constexpr PackageLocation RESTIR_GI_PRODUCTION{LUDUS_RG3_RESTIR_GI_PRODUCTION_DIRECTORY,
@@ -8563,15 +8564,21 @@ TEST_CASE("The ReSTIR GI template's unbiased reuse converges to its estimator wi
     // PDF: plain Monte Carlo with the same direct lighting and sample-point paths. Unbiased reuse (the reconnection
     // Jacobian, visibility rays and the count Z) must estimate the same image; a missing Jacobian brightens corners
     // and darkens open walls (the paper's Figure 7), and a wrong Z scales whole regions.
-    const bool isProduction = GENERATE(false, true);
-    INFO("production configuration " << isProduction);
+    const uint32 variant = GENERATE(0U, 1U, 2U);
+    const bool isProduction = variant == 1;
+    INFO("GI configuration " << variant);
     GraphGpuFixture fixture;
     CornellBox room;
     constexpr usize FRAME_COUNT = 256;
     // One graph at a time: each holds its own scene copy and buffers within the device's resource budget.
     Array<math::Vector3> reused;
     {
-        PreparedGraph restir(fixture, isProduction == true ? RESTIR_GI_PRODUCTION : RESTIR_GI_TEMPLATE, room, 1);
+        PreparedGraph restir(fixture,
+                             variant == 2           ? RESTIR_GI_PAIRWISE
+                             : isProduction == true ? RESTIR_GI_PRODUCTION
+                                                    : RESTIR_GI_TEMPLATE,
+                             room,
+                             1);
         REQUIRE(restir.Programs.HasPersistentRayBuffers == true);
         REQUIRE(renderer::RequiresHardwareRayTracing(restir.Plan) == true);
         for (usize pass = 0; pass < restir.Plan.Passes.GetSize(); ++pass)
@@ -9065,4 +9072,23 @@ TEST_CASE("Guided FG preserves radiance when one point source is split into many
     REQUIRE(expected.Y > MINIMUM_RADIANCE);
     constexpr float32 RELATIVE_TOLERANCE = .15F;
     CheckMeansAgree(measured, expected, RELATIVE_TOLERANCE);
+}
+
+TEST_CASE("Stochastic pairwise GI admits maximum draws, scattered targets and path depth",
+          "[render-graph][gpu][restir-gi][pairwise-reuse]")
+{
+    GraphGpuFixture fixture;
+    CornellBox room;
+    const PackageLocation maximum{LUDUS_RG3_RESTIR_GI_PAIRWISE_MAX_DRAWS_DIRECTORY,
+                                  "rg2_restir_gi_pairwise_max_draws.lurgrt"};
+    PreparedGraph restir(fixture, maximum, room, 1);
+    constexpr usize PASS_COUNT = 4;
+    REQUIRE(restir.Plan.Passes.GetSize() == PASS_COUNT);
+    // Eight inverse-support and eight forward-support tests share the spatial
+    // pass's 16 visibility queries; path transport runs in the initial pass.
+    constexpr usize FRAME_COUNT = 32;
+    Array<math::Vector3> mean;
+    RenderRestirGiMean(restir, fixture, FRAME_COUNT, mean);
+    constexpr float32 MINIMUM_ROOM_RADIANCE = .05F;
+    CHECK(ComputeImageMean(mean).Y > MINIMUM_ROOM_RADIANCE);
 }

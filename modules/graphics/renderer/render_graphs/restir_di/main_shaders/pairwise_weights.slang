@@ -1,41 +1,34 @@
 #pragma once
 
-// Thanks to Trevor Hedstrom, Markus Kettunen, Daqi Lin, Chris Wyman and Tzu-Mao Li,
-// "Stochastic Pairwise MIS for Unbiased Large-Kernel Reuse in Real-Time",
-// Computer Graphics Forum 45(2), 2026, sections 4.1-4.3, equations 16, 18 and 19:
-// https://doi.org/10.1111/cgf.70391
-// Independently implemented for direct-light samples in common emitter-area measure
-// (identity shifts, unit Jacobian). Confidence inputs include the N/M scaling.
+// Compatibility names for project-owned DI shaders. The engine-owned CPU/shader
+// implementation and contracts live in FoundationMath's stochastic_pairwise_mis.
 float EvaluatePairwiseNeighborMis(float neighborConfidence,
                                   float confidenceSum,
                                   float canonicalConfidence,
                                   float sourceTarget,
                                   float destinationTarget)
 {
-    float targetScale = max(sourceTarget, destinationTarget);
-    if (neighborConfidence <= 0 || confidenceSum <= 0 || targetScale <= 0)
-        return 0;
-    float source = sourceTarget / targetScale;
-    float destination = destinationTarget / targetScale;
-    float denominator = confidenceSum * source + canonicalConfidence * destination;
-    return denominator > 0
-               ? (confidenceSum / (confidenceSum + canonicalConfidence)) * (neighborConfidence * source / denominator)
-               : 0;
+    float weight = 0;
+    TryComputePairwiseNeighborMis(neighborConfidence,
+                                  confidenceSum,
+                                  canonicalConfidence,
+                                  sourceTarget,
+                                  destinationTarget,
+                                  weight);
+    return weight;
 }
-
 float EvaluatePairwiseCanonicalBeta(float neighborConfidence,
                                     float confidenceSum,
                                     float canonicalConfidence,
                                     float neighborTarget,
                                     float canonicalTarget)
 {
-    float targetScale = max(neighborTarget, canonicalTarget);
-    if (neighborConfidence <= 0 || targetScale <= 0)
-        return 0;
-    float neighbor = neighborTarget / targetScale;
-    float canonical = canonicalTarget / targetScale;
-    float denominator = confidenceSum * neighbor + canonicalConfidence * canonical;
-    return denominator > 0 ? (neighborConfidence / (confidenceSum + canonicalConfidence)) *
-                                 (canonicalConfidence * canonical / denominator)
-                           : 0;
+    float weight = 0;
+    TryComputePairwiseCanonicalTerm(neighborConfidence,
+                                    confidenceSum,
+                                    canonicalConfidence,
+                                    neighborTarget,
+                                    canonicalTarget,
+                                    weight);
+    return weight;
 }

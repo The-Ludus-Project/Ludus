@@ -32,6 +32,7 @@ target_sources(
         src/projected_solid_angle.cpp
         src/linearly_transformed_cosine.cpp
         src/weighted_reservoir.cpp
+        src/stochastic_pairwise_mis.cpp
         src/metropolis.cpp
         src/shading_normal.cpp
     PUBLIC
@@ -62,6 +63,7 @@ target_sources(
             include/ludus/foundation/math/projected_solid_angle.hpp
             include/ludus/foundation/math/linearly_transformed_cosine.hpp
             include/ludus/foundation/math/weighted_reservoir.hpp
+            include/ludus/foundation/math/stochastic_pairwise_mis.hpp
             include/ludus/foundation/math/metropolis.hpp
             include/ludus/foundation/math/shading_normal.hpp
 )
@@ -170,4 +172,12 @@ if(LUDUS_BUILD_TESTS)
     endif()
 endif()
 
-install(FILES shaders/math.slang shaders/projected_solid_angle.slang shaders/linearly_transformed_cosine.slang shaders/weighted_reservoir.slang shaders/metropolis.slang shaders/shading_normal.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES shaders/stochastic_pairwise_mis.slang shaders/math.slang shaders/projected_solid_angle.slang shaders/linearly_transformed_cosine.slang shaders/weighted_reservoir.slang shaders/metropolis.slang shaders/shading_normal.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+
+if(LUDUS_BUILD_TESTS)
+    add_executable(ludus_stochastic_pairwise_mis_tests tests/stochastic_pairwise_mis_tests.cpp)
+    target_link_libraries(ludus_stochastic_pairwise_mis_tests PRIVATE Ludus::FoundationMath Ludus::FoundationContainers Catch2::Catch2WithMain)
+    ludus_apply_project_defaults(ludus_stochastic_pairwise_mis_tests)
+    ludus_enable_test_exceptions(ludus_stochastic_pairwise_mis_tests)
+    add_test(NAME ludus_stochastic_pairwise_mis COMMAND ludus_stochastic_pairwise_mis_tests)
+endif()

@@ -892,3 +892,38 @@ its conditional mean. Rates are computed without adding large targets or forming
 an overflowing killing rate. These primitives do not make arbitrary MCMC chains stationary or
 their self-normalized estimates unbiased; the caller must establish proposal
 symmetry, positive support and correct numerator/denominator measures.
+
+## Stochastic pairwise MIS
+
+FoundationMath owns the scalar CPU/shader primitives documented in
+[the Math guide](../modules/foundation/math.md#stochastic-pairwise-mis).
+Thanks to Trevor Hedstrom, Markus Kettunen, Daqi Lin, Chris Wyman and Tzu-Mao Li,
+[*Stochastic Pairwise MIS for Unbiased Large-Kernel Reuse in Real-Time*,
+Computer Graphics Forum 45(2), 2026](https://doi.org/10.1111/cgf.70391), equations
+10–19 and section 4.3. This is an independent implementation of their defensive
+pairwise arithmetic and with-replacement correction.
+
+At a destination sample, evaluate every source proxy in the **destination
+measure**: `sourceTarget / abs(forwardJacobian)`, with zero proxy for a failed
+shift or impossible inverse proposal. The source UCW remains in its original
+measure. Multiply the resampling weight by the forward Jacobian separately.
+Using the raw source target in MIS while only multiplying the resampling weight
+by the Jacobian is incorrect for non-unit shifts.
+
+Scale all neighbor confidences and their sum by the same defensive factor.
+Accumulate the canonical base plus independently sampled canonical correction
+terms. Correct every drawn term by its own actual `drawCount * selectionPmf`;
+repeated selections retain multiplicity. A proposal must retain positive support
+where its MIS-weighted contribution can be nonzero. Reserve separate addressed
+random dimensions for initial samples, canonical draws, neighbor draws and the
+reservoir selection coins. Final UCW is `weightSum / selectedTarget`; applying
+the ordinary RIS `M` division again changes the estimator.
+
+The library cannot establish unbiasedness alone: the consumer owns valid input
+UCWs, consistent targets, shift Jacobians, forward/inverse support and visibility.
+Renderer owns the storage-independent clipped screen-tile CDF sampler and the
+DI/GI adapters; their workflow and limitations belong to
+[the render-graph guide](../development/render-graph-authoring.md#use-stochastic-pairwise-mis-for-large-spatial-kernels).
+Independent finite-domain enumeration and CPU/GPU/installed-SDK parity cover the
+scalar operations, zero support, non-unit Jacobians and invalid inputs. They do
+not establish the full path-space algorithm or a device performance gain.

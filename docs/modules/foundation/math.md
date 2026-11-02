@@ -627,3 +627,31 @@ output. It follows PBRT 4e §6.1, with a minimum normal step near zero for GPU F
 callers must supply conservative reconstruction error, not a scene-sized epsilon.
 The [RT1 profile](../../architecture/renderer-systems.md#l6-implemented-scope-rt0-and-rt1)
 records its actual reconstruction allowance and thin-geometry limitations.
+
+## Stochastic pairwise MIS
+
+`stochastic_pairwise_mis.hpp` and the installed `stochastic_pairwise_mis.slang`
+provide version 1 of the same checked FP32 scalar operations. C++ calls return
+`MathStatus`; shader calls return `bool` and take an initialized `inout` result.
+Failure preserves that result. No operation allocates or owns samples, resources,
+visibility queries or random dimensions.
+
+| Operation | Purpose |
+| --- | --- |
+| `TryComputePairwiseConfidenceScale` | Scale every neighbor confidence by `min(drawCount / neighborCount, 1)` |
+| `TryComputePairwiseCanonicalBase` | Defensive canonical base weight |
+| `TryComputePairwiseNeighborMis` | One deterministic neighbor MIS weight |
+| `TryComputePairwiseCanonicalTerm` | One canonical correction term at the canonical sample |
+| `TryComputeStochasticMisWeight` | Correct each with-replacement occurrence by `1 / (drawCount * selectionPmf)` |
+| `TryComputePairwiseShiftedTarget` | Transform a source target to destination measure by dividing by the forward absolute Jacobian |
+| `TryComputePairwiseResamplingWeight` | Form `MIS * destinationTarget * sourceUCW * forwardJacobian` |
+| `TryComputePairwiseContributionWeight` | Finalize `weightSum / selectedTarget`, without another sample-count division |
+
+Finite, nonnegative inputs are required; canonical confidence is positive, and
+neighbor confidence cannot exceed their sum. Zero Jacobian denotes a failed
+partial shift. Invalid domains, nonfinite inputs and overflowing intermediates
+fail explicitly. Division and subnormal flushing need numerical CPU/GPU tolerance.
+The complete measure, support and sampling contract is in
+[the randomness architecture](../../architecture/randomness.md#stochastic-pairwise-mis).
+The [render-graph guide](../../development/render-graph-authoring.md#use-stochastic-pairwise-mis-for-large-spatial-kernels)
+covers the supplied adapters and reusable cell sampler.

@@ -2,6 +2,7 @@
 #include "pairwise_weights.slang"
 #include "raster_bindings.slang"
 #include "scene_shader_layout.h"
+#include "stochastic_pairwise_mis.slang"
 
 LUDUS_SHADER_BINDING(0) RWStructuredBuffer<uint4> Results;
 LUDUS_SHADER_BINDING(1) RWStructuredBuffer<uint4> GraphBuffer0;
@@ -36,6 +37,7 @@ float SampleReuseRandom(RayLaunch launch, uint dimension)
     return SampleRandomFloat01(launch.Seed, address);
 }
 #include "pairwise_distribution.slang"
+#include "stochastic_reuse.slang"
 
 float GetTarget(uint source, uint sample)
 {

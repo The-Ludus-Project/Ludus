@@ -1,6 +1,7 @@
 #include "math.slang"
 #include "random_parity_layout.h"
 #include "raster_bindings.slang"
+#include "stochastic_pairwise_mis.slang"
 #include "weighted_reservoir.slang"
 
 // Test-only kernel for the native renderer test (gpu_random_tests.cpp) and the
@@ -81,6 +82,57 @@ uint4 EvaluateCase(uint index, uint4 header, uint4 operand)
     uint value;
     switch (header.x)
     {
+        case LUDUS_RANDOM_PARITY_CASE_PAIRWISE_MIS: {
+            float neighbor = -1;
+            float canonical = -1;
+            float base = -1;
+            uint flags = 0;
+            if (TryComputePairwiseNeighborMis(asfloat(header.y),
+                                              asfloat(header.z),
+                                              asfloat(header.w),
+                                              asfloat(operand.x),
+                                              asfloat(operand.y),
+                                              neighbor) == true)
+                flags |= LUDUS_PAIRWISE_PARITY_FIRST_SUCCESS;
+            if (TryComputePairwiseCanonicalTerm(asfloat(header.y),
+                                                asfloat(header.z),
+                                                asfloat(header.w),
+                                                asfloat(operand.x),
+                                                asfloat(operand.y),
+                                                canonical) == true)
+                flags |= LUDUS_PAIRWISE_PARITY_SECOND_SUCCESS;
+            if (TryComputePairwiseCanonicalBase(asfloat(header.z), asfloat(header.w), base) == true)
+                flags |= LUDUS_PAIRWISE_PARITY_THIRD_SUCCESS;
+            return uint4(asuint(neighbor), asuint(canonical), asuint(base), flags);
+        }
+        case LUDUS_RANDOM_PARITY_CASE_PAIRWISE_WEIGHT: {
+            float corrected = -1;
+            float weight = -1;
+            float contribution = -1;
+            uint flags = 0;
+            if (TryComputeStochasticMisWeight(asfloat(header.y), asfloat(header.z), operand.z, corrected) == true)
+                flags |= LUDUS_PAIRWISE_PARITY_FIRST_SUCCESS;
+            if (TryComputePairwiseResamplingWeight(asfloat(header.y),
+                                                   asfloat(operand.x),
+                                                   asfloat(operand.y),
+                                                   asfloat(header.w),
+                                                   weight) == true)
+                flags |= LUDUS_PAIRWISE_PARITY_SECOND_SUCCESS;
+            if (TryComputePairwiseContributionWeight(asfloat(operand.x), asfloat(operand.w), contribution) == true)
+                flags |= LUDUS_PAIRWISE_PARITY_THIRD_SUCCESS;
+            return uint4(asuint(corrected), asuint(weight), asuint(contribution), flags);
+        }
+        case LUDUS_RANDOM_PARITY_CASE_PAIRWISE_SHIFT: {
+            float target = -1;
+            float scale = -1;
+            uint flags = 0;
+            if (TryComputePairwiseShiftedTarget(asfloat(operand.x), asfloat(operand.y), target) == true)
+                flags |= LUDUS_PAIRWISE_PARITY_FIRST_SUCCESS;
+            if (TryComputePairwiseConfidenceScale(header.z, header.w, scale) == true)
+                flags |= LUDUS_PAIRWISE_PARITY_SECOND_SUCCESS;
+            return uint4(asuint(target), asuint(scale), STOCHASTIC_PAIRWISE_MIS_VERSION, flags);
+        }
+
         case LUDUS_RANDOM_PARITY_CASE_PHILOX:
             return Philox4x32(operand, key);
         case LUDUS_RANDOM_PARITY_CASE_SAMPLE: {

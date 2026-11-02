@@ -92,6 +92,18 @@ TEST_CASE("Scene callback references include query functions and the current pay
     CHECK(miss.contains(QStringLiteral("Ray ray,")) == true);
 }
 
+TEST_CASE("Scene shader API exposes shared resampling functions and cell-reader contracts", "[editor][shader-api]")
+{
+    const QString reference =
+        DescribeShaderInterface(ReadFixture(QStringLiteral("scene_ray")), QStringLiteral("main_shaders/closest.slang"));
+    CHECK(reference.contains(QStringLiteral("TryComputePairwiseShiftedTarget")) == true);
+    CHECK(reference.contains(QStringLiteral("TryComputePairwiseNeighborMis")) == true);
+    CHECK(reference.contains(QStringLiteral("TryComputeStochasticMisWeight")) == true);
+    CHECK(reference.contains(QStringLiteral("TryComputePairwiseContributionWeight")) == true);
+    CHECK(reference.contains(QStringLiteral("interface IPairwiseCellReader")) == true);
+    CHECK(reference.contains(QStringLiteral("SampleReuseCellNeighbor<T")) == true);
+}
+
 TEST_CASE("Scene callback references display the pipeline payload without a project helper", "[editor][shader-api]")
 {
     QJsonObject manifest = QJsonDocument::fromJson(ReadFixture(QStringLiteral("scene_ray"))).object();
