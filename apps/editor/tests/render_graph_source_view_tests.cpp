@@ -215,7 +215,9 @@ TEST_CASE("The Source view header is compact and the code editor gets most of th
     CHECK(createSubgraph->isVisible() == false);
     QWidget* recovery = workspace.findChild<QWidget*>(QStringLiteral("renderGraphRecovery"));
     REQUIRE(recovery != nullptr);
-    CHECK(recovery->findChild<QLabel*>(QStringLiteral("renderGraphRecoveryStatus"))->isVisible() == false);
+    QLabel* recoveryStatus = recovery->findChild<QLabel*>(QStringLiteral("renderGraphRecoveryStatus"));
+    REQUIRE(recoveryStatus != nullptr);
+    CHECK(recoveryStatus->isVisible() == false);
     CodeEditor* sourceOrNull = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
     REQUIRE(sourceOrNull != nullptr);
     // The editor is most of the document: at least half of the workspace's height, and many lines tall.
@@ -235,4 +237,5 @@ TEST_CASE("The Source view header is compact and the code editor gets most of th
     REQUIRE(views != nullptr);
     views->setCurrentIndex(0);
     CHECK(editInterface->isVisible() == true);
+    CHECK(createSubgraph->isVisible() == true);
 }
