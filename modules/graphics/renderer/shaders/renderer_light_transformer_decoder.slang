@@ -134,7 +134,7 @@ void ComputeQueryStatistics(uint lane)
         bool hasPacket = true;
 #if defined(LUDUS_LIGHT_TRANSFORMER_PACKED_ENCODER)
         uint4 metadata = Packed[0];
-        uint expectedAnchorWord = LUDUS_LIGHT_ENCODER_PACKET_HEADER_WORDS + metadata.y * 2;
+        uint expectedAnchorWord = LUDUS_LIGHT_ENCODER_PACKET_HEADER_WORDS + metadata.y * LUDUS_POINT_SEARCH_NODE_WORDS;
         hasPacket = metadata.x == LUDUS_LIGHT_ENCODER_PACKET_MAGIC && metadata.y >= NEIGHBORS &&
                     metadata.y <= LUDUS_LIGHT_ENCODER_MAX_POINTS / LUDUS_LIGHT_ENCODER_ANCHOR_DIVISOR &&
                     metadata.z < metadata.y && metadata.w == expectedAnchorWord &&
