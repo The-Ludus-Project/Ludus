@@ -7,6 +7,7 @@
 #include "internal/renderer_workspace.h"
 #include "internal/theme_colour.h"
 
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/types.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -53,9 +54,18 @@ using namespace ludus::foundation;
 namespace
 {
 constexpr int32 JOB_TIMEOUT_MILLISECONDS = 60000;
-const QString ROOT_GRAPH = QStringLiteral("main.lurender.json");
-const QString LIBRARY = QStringLiteral("rasterize.lurender.json");
-const QString DEFAULT_CONFIGURATION = QStringLiteral("Default");
+[[nodiscard]] LUDUS_INLINE QString GetRootGraph()
+{
+    return QStringLiteral("main.lurender.json");
+}
+[[nodiscard]] LUDUS_INLINE QString GetLibrary()
+{
+    return QStringLiteral("rasterize.lurender.json");
+}
+[[nodiscard]] LUDUS_INLINE QString GetDefaultConfiguration()
+{
+    return QStringLiteral("Default");
+}
 
 QByteArray ReadFile(const QString& path)
 {
@@ -77,8 +87,8 @@ QString MakePackage(const QTemporaryDir& project)
 {
     const QDir source(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/tests/sdk_consumer/rg2/offscreen"));
     const QString package = QDir(project.path()).filePath(QStringLiteral("graphs"));
-    for (const QString& file : {ROOT_GRAPH,
-                                LIBRARY,
+    for (const QString& file : {GetRootGraph(),
+                                GetLibrary(),
                                 QStringLiteral("main_shaders/color.slang"),
                                 QStringLiteral("main_shaders/depth.slang"),
                                 QStringLiteral("main_shaders/geometry.slang")})
@@ -119,7 +129,7 @@ QJsonObject GetConfiguration(const RenderGraphDocument& document, const QString&
 QJsonObject FindNode(const RenderGraphDocument& document, const QString& identity)
 {
     for (const QJsonValueConstRef value :
-         GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("nodes")).toArray())
+         GetConfiguration(document, GetRootGraph(), GetDefaultConfiguration()).value(QStringLiteral("nodes")).toArray())
     {
         if (value.toObject().value(QStringLiteral("id")).toString() == identity)
         {
@@ -132,7 +142,7 @@ QJsonObject FindNode(const RenderGraphDocument& document, const QString& identit
 /// Authored layout position of a node, or false when it has none.
 bool GetLayout(const RenderGraphDocument& document, const QString& node, QPoint& outPosition)
 {
-    const QJsonArray positions = GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION)
+    const QJsonArray positions = GetConfiguration(document, GetRootGraph(), GetDefaultConfiguration())
                                      .value(QStringLiteral("layout"))
                                      .toObject()
                                      .value(QStringLiteral("positions"))
@@ -152,7 +162,7 @@ bool GetLayout(const RenderGraphDocument& document, const QString& node, QPoint&
 bool HasEdge(const RenderGraphDocument& document, const QString& from, const QString& to)
 {
     const QJsonArray edges =
-        GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("edges")).toArray();
+        GetConfiguration(document, GetRootGraph(), GetDefaultConfiguration()).value(QStringLiteral("edges")).toArray();
     for (const QJsonValueConstRef edge : edges)
     {
         if (edge.toObject().value(QStringLiteral("from")).toString() == from &&
@@ -176,7 +186,7 @@ TEST_CASE("shared size policies edit through Properties and canvas with undo", "
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.SetLivePreview(false);
     QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
     QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
@@ -200,7 +210,7 @@ TEST_CASE("shared size policies edit through Properties and canvas with undo", "
         identity = QStringLiteral("color");
         shouldUseCanvas = true;
     }
-    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, identity) == true);
+    REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), identity) == true);
     INFO(identity.toUtf8().constData());
     INFO(shouldUseCanvas);
     const bool isSizeNode = identity == QStringLiteral("rendersize");
@@ -215,7 +225,7 @@ TEST_CASE("shared size policies edit through Properties and canvas with undo", "
         REQUIRE(height != nullptr);
         height->setValue(65);
         Q_EMIT height->editingFinished();
-        const QJsonArray nodes = GetConfiguration(workspace.GetDocument(), ROOT_GRAPH, DEFAULT_CONFIGURATION)
+        const QJsonArray nodes = GetConfiguration(workspace.GetDocument(), GetRootGraph(), GetDefaultConfiguration())
                                      .value(QStringLiteral("nodes"))
                                      .toArray();
         for (const QJsonValueConstRef node : nodes)
@@ -233,7 +243,7 @@ TEST_CASE("shared size policies edit through Properties and canvas with undo", "
             mode->setCurrentText(QStringLiteral("Half view"));
             Q_EMIT mode->activated(mode->currentIndex());
             CHECK(workspace.GetDocument().GetRevision() == beforeScale + 1);
-            CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("View") == true);
+            CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("View") == true);
             CHECK(workspace.GetCanvas().GetPortPosition(port, false).isNull() == true);
             QComboBox* customMode = inoutFields.findChild<QComboBox*>(QStringLiteral("renderGraphExtentMode"));
             REQUIRE(customMode != nullptr);
@@ -255,7 +265,7 @@ TEST_CASE("shared size policies edit through Properties and canvas with undo", "
         Q_EMIT mode->activated(1);
         CHECK(workspace.GetDocument().GetRevision() == revision + 1);
         CHECK(workspace.GetCanvas().GetPortPosition(port, false).isNull() == false);
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains(source.toUtf8()) == true);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains(source.toUtf8()) == true);
         if (identity == QStringLiteral("rendersize"))
         {
             REQUIRE(workspace.GetCanvas().RequestLink(QStringLiteral("color.texture"), port) == true);
@@ -310,8 +320,8 @@ TEST_CASE("shared size policies edit through Properties and canvas with undo", "
         QApplication::sendEvent(canvas.viewport(), &context);
     }
     RenderGraphDocument reopened;
-    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
-    CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+    REQUIRE(reopened.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(GetRootGraph()) == workspace.GetDocument().GetDraft(GetRootGraph()));
 }
 
 TEST_CASE("RG3b canvas shows a configuration by domain with typed ports", "[editor][render-graph][canvas]")
@@ -319,9 +329,9 @@ TEST_CASE("RG3b canvas shows a configuration by domain with typed ports", "[edit
     QTemporaryDir project;
     const QString package = MakePackage(project);
     RenderGraphDocument document;
-    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
     RenderGraphCanvas canvas(document);
-    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.ShowConfiguration(GetRootGraph(), GetDefaultConfiguration());
     CHECK(canvas.GetNodeCount() == 6);
     CHECK(canvas.GetEdgeCount() == 6);
     CHECK(canvas.GetNodeDomain(QStringLiteral("scene")) == RenderGraphDomain::SceneView);
@@ -340,7 +350,7 @@ TEST_CASE("RG3b canvas shows a configuration by domain with typed ports", "[edit
     CHECK(document.IsDirty() == false);
 
     // The library configuration shows its interface as input and output pseudo-nodes.
-    canvas.ShowConfiguration(LIBRARY, QStringLiteral("ColorAndDepth"));
+    canvas.ShowConfiguration(GetLibrary(), QStringLiteral("ColorAndDepth"));
     CHECK(canvas.GetNodeCount() == 1);
     CHECK(canvas.HasNode(QStringLiteral("input")) == true);
     CHECK(canvas.GetNodeDomain(QStringLiteral("input")) == RenderGraphDomain::Interface);
@@ -353,9 +363,9 @@ TEST_CASE("Graph canvas colours come from the tokens and share the selection amb
     QTemporaryDir project;
     const QString package = MakePackage(project);
     RenderGraphDocument document;
-    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
     RenderGraphCanvas canvas(document);
-    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.ShowConfiguration(GetRootGraph(), GetDefaultConfiguration());
     const QColor amber = GetCanvasColour(design::ThemeColour::SelectionAmber);
     CHECK(canvas.backgroundBrush().color() == GetCanvasColour(design::ThemeColour::SurfaceViewport));
     CHECK(amber == GetViewportArgb(design::ThemeColour::SelectionAmber));
@@ -386,10 +396,10 @@ TEST_CASE("Graph framing controls preserve authored state and frame only node bo
 {
     QTemporaryDir project;
     RenderGraphDocument document;
-    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.Load(MakePackage(project), GetRootGraph()) == RenderGraphDocumentStatus::Ok);
     RenderGraphCanvas canvas(document);
     canvas.resize(900, 600);
-    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.ShowConfiguration(GetRootGraph(), GetDefaultConfiguration());
     canvas.show();
     QCoreApplication::processEvents();
     QAction* fitGraph = canvas.findChild<QAction*>(QStringLiteral("renderGraphFitGraph"));
@@ -410,7 +420,7 @@ TEST_CASE("Graph framing controls preserve authored state and frame only node bo
     CHECK(canvas.transform() == beforeEmptyFit);
     canvas.SelectNodes({QStringLiteral("raster"), QStringLiteral("color")});
     const QStringList selected = canvas.GetSelectedNodes();
-    const QByteArray draft = document.GetDraft(ROOT_GRAPH);
+    const QByteArray draft = document.GetDraft(GetRootGraph());
     const QPointF position = canvas.GetNodePosition(QStringLiteral("raster"));
     CHECK(fitSelection->isEnabled() == true);
     // Transient scene annotations must not change either framing operation.
@@ -449,7 +459,7 @@ TEST_CASE("Graph framing controls preserve authored state and frame only node bo
     CHECK(canvas.mapToScene(canvas.viewport()->rect()).boundingRect().contains(allBounds) == true);
     CHECK(canvas.GetSelectedNodes() == selected);
     CHECK(canvas.GetNodePosition(QStringLiteral("raster")) == position);
-    CHECK(document.GetDraft(ROOT_GRAPH) == draft);
+    CHECK(document.GetDraft(GetRootGraph()) == draft);
     CHECK(document.GetRevision() == 0);
     CHECK(document.CanUndo() == false);
     canvas.ShowConfiguration({}, {});
@@ -465,7 +475,7 @@ TEST_CASE("Graph framing shortcuts stay scoped to the canvas", "[editor][render-
 {
     QTemporaryDir project;
     RenderGraphDocument document;
-    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.Load(MakePackage(project), GetRootGraph()) == RenderGraphDocumentStatus::Ok);
     QWidget window;
     QVBoxLayout* layout = new QVBoxLayout(&window);
     QLineEdit* text = new QLineEdit(&window);
@@ -473,7 +483,7 @@ TEST_CASE("Graph framing shortcuts stay scoped to the canvas", "[editor][render-
     layout->addWidget(text);
     layout->addWidget(canvas);
     window.resize(900, 650);
-    canvas->ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas->ShowConfiguration(GetRootGraph(), GetDefaultConfiguration());
     window.show();
     window.activateWindow();
     QCoreApplication::processEvents();
@@ -500,17 +510,17 @@ TEST_CASE("Graph pinch zoom keeps its focal point and never edits the draft", "[
 {
     QTemporaryDir project;
     RenderGraphDocument document;
-    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.Load(MakePackage(project), GetRootGraph()) == RenderGraphDocumentStatus::Ok);
     RenderGraphCanvas canvas(document);
     canvas.resize(900, 600);
-    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.ShowConfiguration(GetRootGraph(), GetDefaultConfiguration());
     canvas.show();
     QCoreApplication::processEvents();
     canvas.resetTransform();
     canvas.centerOn(600, 150);
     canvas.SelectNode(QStringLiteral("raster"));
     const QStringList selected = canvas.GetSelectedNodes();
-    const QByteArray original = document.GetDraft(ROOT_GRAPH);
+    const QByteArray original = document.GetDraft(GetRootGraph());
     const QPointF position(170, 220);
     const QPointF before = canvas.viewportTransform().inverted().map(position);
     const QPointF global = canvas.viewport()->mapToGlobal(position.toPoint());
@@ -530,7 +540,7 @@ TEST_CASE("Graph pinch zoom keeps its focal point and never edits the draft", "[
     QNativeGestureEvent end(Qt::EndNativeGesture, device, 2, position, position, global, 0, {});
     QCoreApplication::sendEvent(canvas.viewport(), &end);
     CHECK(canvas.GetSelectedNodes() == selected);
-    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    CHECK(document.GetDraft(GetRootGraph()) == original);
     CHECK(document.GetRevision() == 0);
     CHECK(document.CanUndo() == false);
 }
@@ -560,17 +570,17 @@ TEST_CASE("Graph two-finger touchpad scroll pans without zooming or editing", "[
 {
     QTemporaryDir project;
     RenderGraphDocument document;
-    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.Load(MakePackage(project), GetRootGraph()) == RenderGraphDocumentStatus::Ok);
     RenderGraphCanvas canvas(document);
     canvas.resize(300, 200);
-    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.ShowConfiguration(GetRootGraph(), GetDefaultConfiguration());
     canvas.show();
     QCoreApplication::processEvents();
     canvas.resetTransform();
     canvas.centerOn(canvas.sceneRect().center());
     canvas.SelectNode(QStringLiteral("raster"));
     const QStringList selected = canvas.GetSelectedNodes();
-    const QByteArray original = document.GetDraft(ROOT_GRAPH);
+    const QByteArray original = document.GetDraft(GetRootGraph());
     const QPointF position(120, 90);
     const QPointF before = canvas.viewportTransform().inverted().map(position);
     QWheelEvent begin(position, position, {}, {}, Qt::NoButton, Qt::NoModifier, Qt::ScrollBegin, false);
@@ -604,7 +614,7 @@ TEST_CASE("Graph two-finger touchpad scroll pans without zooming or editing", "[
     QCoreApplication::sendEvent(canvas.viewport(), &end);
     CHECK(canvas.transform().m11() == 1);
     CHECK(canvas.GetSelectedNodes() == selected);
-    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    CHECK(document.GetDraft(GetRootGraph()) == original);
     CHECK(document.GetRevision() == 0);
     CHECK(document.CanUndo() == false);
 }
@@ -613,10 +623,10 @@ TEST_CASE("Graph two-finger double-tap frames the whole graph", "[editor][render
 {
     QTemporaryDir project;
     RenderGraphDocument document;
-    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.Load(MakePackage(project), GetRootGraph()) == RenderGraphDocumentStatus::Ok);
     RenderGraphCanvas canvas(document);
     canvas.resize(900, 600);
-    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.ShowConfiguration(GetRootGraph(), GetDefaultConfiguration());
     canvas.show();
     QCoreApplication::processEvents();
     canvas.resetTransform();
@@ -674,14 +684,15 @@ TEST_CASE("RG3b canvas drag gestures are one undo step each", "[editor][render-g
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     RenderGraphCanvas& canvas = workspace.GetCanvas();
-    REQUIRE(canvas.GetFile() == ROOT_GRAPH);
-    REQUIRE(canvas.GetConfiguration() == DEFAULT_CONFIGURATION);
+    REQUIRE(canvas.GetFile() == GetRootGraph());
+    REQUIRE(canvas.GetConfiguration() == GetDefaultConfiguration());
     RenderGraphDocument& document = workspace.GetDocument();
     const QPointF scene = canvas.GetNodePosition(QStringLiteral("scene"));
     const QPointF camera = canvas.GetNodePosition(QStringLiteral("camera"));
     const uint64 start = document.GetRevision();
+    CAPTURE(scene.x(), scene.y(), camera.x(), camera.y());
 
     // Many intermediate positions in one gesture produce exactly one committed edit.
     QSignalSpy moves(&canvas, &RenderGraphCanvas::MoveRequested);
@@ -723,11 +734,15 @@ TEST_CASE("RG3b canvas drag gestures are one undo step each", "[editor][render-g
 
     // A gesture that returns to its origin commits nothing.
     const uint64 beforeNoop = document.GetRevision();
+    const QPointF outputOriginScene = canvas.GetNodePosition(QStringLiteral("output"));
     canvas.BeginDrag({QStringLiteral("output")});
     canvas.UpdateDrag(QPointF(30, 30));
     canvas.UpdateDrag(QPointF(0, 0));
     canvas.EndDrag();
+    const QPointF outputAfterGestureScene = canvas.GetNodePosition(QStringLiteral("output"));
+    CAPTURE(outputOriginScene.x(), outputOriginScene.y(), outputAfterGestureScene.x(), outputAfterGestureScene.y());
     CHECK(document.GetRevision() == beforeNoop);
+    CHECK(outputAfterGestureScene == outputOriginScene);
 }
 
 TEST_CASE("RG3b canvas mouse drag and keyboard removal use document operations", "[editor][render-graph][canvas]")
@@ -737,7 +752,7 @@ TEST_CASE("RG3b canvas mouse drag and keyboard removal use document operations",
     RendererWorkspace workspace({});
     workspace.resize(1400, 800);
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.show();
     REQUIRE(QTest::qWaitForWindowExposed(&workspace) == true);
     RenderGraphCanvas& canvas = workspace.GetCanvas();
@@ -748,7 +763,7 @@ TEST_CASE("RG3b canvas mouse drag and keyboard removal use document operations",
     const QPoint press = ToViewport(canvas, origin + QPointF(20, 10));
     const uint64 start = document.GetRevision();
     QTest::mousePress(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, press);
-    CHECK(workspace.GetSelection() == ROOT_GRAPH + QStringLiteral("#Default/output"));
+    CHECK(workspace.GetSelection() == GetRootGraph() + QStringLiteral("#Default/output"));
     for (int32 step = 1; step <= 5; ++step)
     {
         QTest::mouseMove(canvas.viewport(), press + QPoint(6 * step, 4 * step));
@@ -774,7 +789,7 @@ TEST_CASE("RG3b canvas rejects illegal links with the validator's reasons", "[ed
     const QString package = MakePackage(project);
     RendererWorkspace workspace({FindPython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project.path(), 3);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     RenderGraphCanvas& canvas = workspace.GetCanvas();
     RenderGraphDocument& document = workspace.GetDocument();
     QSignalSpy rejected(&canvas, &RenderGraphCanvas::LinkRejected);
@@ -795,12 +810,12 @@ TEST_CASE("RG3b canvas rejects illegal links with the validator's reasons", "[ed
     expectRejected(QStringLiteral("scene.scene"), QStringLiteral("camera.view"), QStringLiteral("Port"));
 
     // Free inputs: type mismatch, then a cycle through the camera that feeds the raster view.
-    REQUIRE(document.Disconnect(ROOT_GRAPH,
-                                DEFAULT_CONFIGURATION,
+    REQUIRE(document.Disconnect(GetRootGraph(),
+                                GetDefaultConfiguration(),
                                 QStringLiteral("raster.color"),
                                 QStringLiteral("output.texture")) == RenderGraphDocumentStatus::Ok);
-    REQUIRE(document.Disconnect(ROOT_GRAPH,
-                                DEFAULT_CONFIGURATION,
+    REQUIRE(document.Disconnect(GetRootGraph(),
+                                GetDefaultConfiguration(),
                                 QStringLiteral("color.texture"),
                                 QStringLiteral("camera.target")) == RenderGraphDocumentStatus::Ok);
     canvas.Rebuild();
@@ -822,8 +837,8 @@ TEST_CASE("RG3b canvas rejects illegal links with the validator's reasons", "[ed
     {
         SKIP("python3 is required to run the shared render-graph backend");
     }
-    REQUIRE(document.Connect(ROOT_GRAPH,
-                             DEFAULT_CONFIGURATION,
+    REQUIRE(document.Connect(GetRootGraph(),
+                             GetDefaultConfiguration(),
                              QStringLiteral("depth.texture"),
                              QStringLiteral("output.texture")) == RenderGraphDocumentStatus::Ok);
     QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
@@ -840,7 +855,7 @@ TEST_CASE("RG3b double-clicking a Subgraph navigates to its source", "[editor][r
     RendererWorkspace workspace({});
     workspace.resize(1400, 800);
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.show();
     REQUIRE(QTest::qWaitForWindowExposed(&workspace) == true);
     RenderGraphCanvas& canvas = workspace.GetCanvas();
@@ -851,12 +866,12 @@ TEST_CASE("RG3b double-clicking a Subgraph navigates to its source", "[editor][r
     canvas.centerOn(raster);
     QTest::mouseDClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, ToViewport(canvas, raster + QPointF(30, 8)));
     REQUIRE(activated.count() == 1);
-    CHECK(activated.at(0).at(0).toString() == LIBRARY);
-    CHECK(canvas.GetFile() == LIBRARY);
+    CHECK(activated.at(0).at(0).toString() == GetLibrary());
+    CHECK(canvas.GetFile() == GetLibrary());
     CHECK(canvas.GetConfiguration() == QStringLiteral("ColorAndDepth"));
     CHECK(canvas.HasNode(QStringLiteral("draw")) == true);
-    CHECK(workspace.GetSelection() == LIBRARY + QStringLiteral("#ColorAndDepth"));
-    CHECK(workspace.GetSourceFile() == LIBRARY);
+    CHECK(workspace.GetSelection() == GetLibrary() + QStringLiteral("#ColorAndDepth"));
+    CHECK(workspace.GetSourceFile() == GetLibrary());
     // Navigation is not an edit.
     CHECK(workspace.GetDocument().GetRevision() == 0);
 }
@@ -867,9 +882,9 @@ TEST_CASE("Canvas supports native Select All toggle additive and Escape selectio
     QTemporaryDir project;
     const QString package = MakePackage(project);
     RenderGraphDocument document;
-    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
     RenderGraphCanvas canvas(document);
-    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.ShowConfiguration(GetRootGraph(), GetDefaultConfiguration());
     canvas.resize(1100, 700);
     canvas.show();
     canvas.activateWindow();
@@ -897,7 +912,7 @@ TEST_CASE("pipeline inspector commits typed ports directly to the undoable draft
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
     REQUIRE(kinds != nullptr);
     CHECK(kinds->findText(QStringLiteral("Raster")) < 0);
@@ -931,7 +946,7 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.SetLivePreview(false);
     QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
     REQUIRE(kinds != nullptr);
@@ -954,10 +969,10 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
         constexpr int32 TRIANGLE_ATTRIBUTE_BYTES = 8;
         attributes->setValue(TRIANGLE_ATTRIBUTE_BYTES);
         CHECK(workspace.GetDocument().GetRevision() == stateRevision + 1);
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("attribute_bytes") == true);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("attribute_bytes") == true);
         automatic->click();
         CHECK(workspace.GetDocument().GetRevision() == stateRevision + 2);
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("attribute_bytes") == false);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("attribute_bytes") == false);
         CHECK(advanced->isChecked() == false);
         QComboBox* launchMode = editor->findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode"));
         REQUIRE(launchMode != nullptr);
@@ -965,10 +980,10 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
         const uint64 sizeRevision = workspace.GetDocument().GetRevision();
         launchMode->setCurrentIndex(1);
         CHECK(workspace.GetDocument().GetRevision() == sizeRevision + 1);
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("ColorTarget") == false);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("ColorTarget") == false);
         launchMode->setCurrentIndex(0);
         CHECK(workspace.GetDocument().GetRevision() == sizeRevision + 2);
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("ColorTarget") == true);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("ColorTarget") == true);
         QPushButton* addShader = editor->findChild<QPushButton*>(QStringLiteral("renderGraphAdd_shaders"));
         REQUIRE(addShader != nullptr);
         QTableWidget* shaders = editor->findChild<QTableWidget*>(QStringLiteral("shaders"));
@@ -1138,7 +1153,7 @@ TEST_CASE("scene ray query budgets share Properties and canvas history with Prop
     QTemporaryDir project;
     const QDir source(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/tests/sdk_consumer/rg2/scene_ray"));
     const QString package = QDir(project.path()).filePath(QStringLiteral("graphs"));
-    for (const QString& file : {ROOT_GRAPH,
+    for (const QString& file : {GetRootGraph(),
                                 QStringLiteral("main_shaders/geometry.slang"),
                                 QStringLiteral("main_shaders/color.slang"),
                                 QStringLiteral("main_shaders/depth.slang"),
@@ -1164,16 +1179,16 @@ TEST_CASE("scene ray query budgets share Properties and canvas history with Prop
     WriteFile(QDir(package).filePath(manifestFile), EncodeCanonicalJson(manifest));
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("trace")) == true);
+    REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("trace")) == true);
     QWidget propertiesHost;
     static_cast<void>(workspace.TakeInspectorPanel(&propertiesHost));
     workspace.resize(1200, 800);
     workspace.show();
     QCoreApplication::processEvents();
     const QByteArray originalManifest = workspace.GetDocument().GetDraft(manifestFile);
-    const QByteArray originalGraph = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    const QByteArray originalGraph = workspace.GetDocument().GetDraft(GetRootGraph());
     const uint64 revision = workspace.GetDocument().GetRevision();
     bool hasExercised = false;
     const auto exercise = [&](QWidget& inoutControls) {
@@ -1197,7 +1212,7 @@ TEST_CASE("scene ray query budgets share Properties and canvas history with Prop
         REQUIRE(workspace.GetDocument().GetSceneQueryBudgets(edited) == true);
         CHECK(edited.SurfaceQueries == 2);
         CHECK(edited.VisibilityQueries == 0);
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == originalGraph);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()) == originalGraph);
         CHECK(workspace.GetDocument().GetSaved(manifestFile) == originalManifest);
         const QByteArray editedManifest = workspace.GetDocument().GetDraft(manifestFile);
         workspace.Undo();
@@ -1209,7 +1224,7 @@ TEST_CASE("scene ray query budgets share Properties and canvas history with Prop
         REQUIRE(workspace.Save() == true);
         CHECK(ReadFile(QDir(package).filePath(manifestFile)) == editedManifest);
         RenderGraphDocument reloaded;
-        REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+        REQUIRE(reloaded.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
         REQUIRE(reloaded.GetSceneQueryBudgets(edited) == true);
         CHECK(edited.SurfaceQueries == 2);
         CHECK(edited.VisibilityQueries == 0);
@@ -1252,7 +1267,7 @@ TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidde
     QTemporaryDir project;
     const QDir source(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/tests/sdk_consumer/rg2/raytracing"));
     const QString package = QDir(project.path()).filePath(QStringLiteral("graphs"));
-    for (const QString& file : {ROOT_GRAPH,
+    for (const QString& file : {GetRootGraph(),
                                 QStringLiteral("main_shaders/geometry.slang"),
                                 QStringLiteral("main_shaders/color.slang"),
                                 QStringLiteral("main_shaders/depth.slang"),
@@ -1277,10 +1292,10 @@ TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidde
     RendererWorkspace workspace({});
     workspace.resize(1400, 800);
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.show();
     REQUIRE(QTest::qWaitForWindowExposed(&workspace) == true);
-    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("trace")) == true);
+    REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("trace")) == true);
     QWidget inspectorHost;
     static_cast<void>(workspace.TakeInspectorPanel(&inspectorHost));
     inspectorHost.hide();
@@ -1331,7 +1346,7 @@ TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidde
         CHECK(canvas.GetPortPosition(QStringLiteral("scene.materials"), true).isNull() == false);
         canvas.SetSceneBundleExpanded(QStringLiteral("trace"), false);
         CHECK(canvas.GetPortPosition(QStringLiteral("trace.scene_geometry"), false).isNull() == false);
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("trace.scene_lights") == true);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("trace.scene_lights") == true);
     }
     CHECK(workspace.GetDocument().GetRevision() == revision + 1);
     CHECK(QJsonDocument::fromJson(workspace.GetDocument().GetDraft(manifestFile))
@@ -1362,14 +1377,14 @@ TEST_CASE("diagnostic navigation rings the exact port without Properties or draf
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 7);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"))->hide();
     RenderGraphCanvas& canvas = workspace.GetCanvas();
     RenderGraphDocument& document = workspace.GetDocument();
     const uint64 revision = document.GetRevision();
-    const QByteArray bytes = document.GetDraft(ROOT_GRAPH);
-    const QJsonObject location{{QStringLiteral("source"), ROOT_GRAPH},
-                               {QStringLiteral("configuration"), DEFAULT_CONFIGURATION},
+    const QByteArray bytes = document.GetDraft(GetRootGraph());
+    const QJsonObject location{{QStringLiteral("source"), GetRootGraph()},
+                               {QStringLiteral("configuration"), GetDefaultConfiguration()},
                                {QStringLiteral("node"), QStringLiteral("raster")},
                                {QStringLiteral("port"), QStringLiteral("depth")},
                                {QStringLiteral("direction"), QStringLiteral("input")}};
@@ -1410,12 +1425,12 @@ TEST_CASE("diagnostic navigation rings the exact port without Properties or draf
     CHECK(canvas.accessibleDescription().contains(QStringLiteral("earlier source version")) == true);
     CHECK(workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"))->isHidden() == true);
     CHECK(document.GetRevision() == revision);
-    CHECK(document.GetDraft(ROOT_GRAPH) == bytes);
+    CHECK(document.GetDraft(GetRootGraph()) == bytes);
     canvas.Rebuild();
     CHECK(canvas.GetDiagnosticLocation().isEmpty() == true);
     CHECK(canvas.accessibleDescription().isEmpty() == true);
     CHECK(canvas.ShowDiagnostic(QJsonObject{{QStringLiteral("node"), QStringLiteral("deleted")}}, {}) == false);
-    canvas.ShowConfiguration(LIBRARY, QStringLiteral("ColorAndDepth"));
+    canvas.ShowConfiguration(GetLibrary(), QStringLiteral("ColorAndDepth"));
     REQUIRE(canvas.ShowDiagnostic(QJsonObject{{QStringLiteral("port"), QStringLiteral("color")},
                                               {QStringLiteral("direction"), QStringLiteral("output")}},
                                   QStringLiteral("Choose a matching output source.")) == true);
@@ -1430,10 +1445,10 @@ TEST_CASE("field diagnostics open the shared canvas editor at the highlighted co
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 7);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"))->hide();
     QString field = QStringLiteral("depth_load");
-    QString file = LIBRARY;
+    QString file = GetLibrary();
     QString configuration = QStringLiteral("ColorAndDepth");
     QString node = QStringLiteral("draw");
     SECTION("legacy attachment load") {}
@@ -1453,8 +1468,8 @@ TEST_CASE("field diagnostics open the shared canvas editor at the highlighted co
         REQUIRE(kinds != nullptr);
         kinds->setCurrentText(QStringLiteral("RayTracingPipeline"));
         workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"))->click();
-        file = ROOT_GRAPH;
-        configuration = DEFAULT_CONFIGURATION;
+        file = GetRootGraph();
+        configuration = GetDefaultConfiguration();
     }
     const uint64 revision = workspace.GetDocument().GetRevision();
     RenderGraphJobResult result;
@@ -1494,7 +1509,7 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.SetLivePreview(false);
     QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
     QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
@@ -1502,7 +1517,7 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
     REQUIRE(add != nullptr);
     kinds->setCurrentText(QStringLiteral("Buffer"));
     add->click();
-    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("buffer")) == true);
+    REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("buffer")) == true);
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("buffer.buffer"), true).isNull() == false);
     const auto exercise = [&workspace](QWidget& inoutFields) {
         QSpinBox* capacity = inoutFields.findChild<QSpinBox*>(QStringLiteral("renderGraphField_bytes"));
@@ -1511,11 +1526,11 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
         capacity->setValue(98304);
         Q_EMIT capacity->editingFinished();
         CHECK(workspace.GetDocument().GetRevision() == revision + 1);
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("98304") == true);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("98304") == true);
         workspace.Undo();
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("98304") == false);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("98304") == false);
         workspace.Redo();
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("98304") == true);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("98304") == true);
         REQUIRE(workspace.Save() == true);
     };
     QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
@@ -1552,8 +1567,8 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
         QApplication::sendEvent(canvas.viewport(), &context);
     }
     RenderGraphDocument reopened;
-    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
-    CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+    REQUIRE(reopened.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(GetRootGraph()) == workspace.GetDocument().GetDraft(GetRootGraph()));
 }
 
 TEST_CASE("structured buffer fields edit on canvas with Properties hidden and undo", "[editor][render-graph][storage]")
@@ -1562,14 +1577,14 @@ TEST_CASE("structured buffer fields edit on canvas with Properties hidden and un
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.SetLivePreview(false);
     QComboBox* kindsOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
     REQUIRE(kindsOrNull != nullptr);
     kindsOrNull->setCurrentText(QStringLiteral("StructuredBuffer"));
     workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"))->click();
     const QString identity = QStringLiteral("structuredbuffer");
-    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, identity) == true);
+    REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), identity) == true);
     RenderGraphNodePorts ports;
     REQUIRE(GetRenderGraphNodePorts(workspace.GetDocument(),
                                     QJsonObject{{QStringLiteral("kind"), QStringLiteral("StructuredBuffer")}},
@@ -1609,9 +1624,9 @@ TEST_CASE("structured buffer fields edit on canvas with Properties hidden and un
     const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(identity) + QPointF(20, 10));
     QContextMenuEvent event(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
     QApplication::sendEvent(canvas.viewport(), &event);
-    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("1024") == true);
+    CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("1024") == true);
     workspace.Undo();
-    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("ColorTarget") == true);
+    CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("ColorTarget") == true);
     workspace.Redo();
     REQUIRE(workspace.Save() == true);
 }
@@ -1623,7 +1638,7 @@ TEST_CASE("accumulation limits edit through canvas and Properties with undo and 
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.SetLivePreview(false);
     QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
     QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
@@ -1631,7 +1646,7 @@ TEST_CASE("accumulation limits edit through canvas and Properties with undo and 
     REQUIRE(add != nullptr);
     kinds->setCurrentText(QStringLiteral("Accumulate"));
     add->click();
-    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("accumulate")) == true);
+    REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("accumulate")) == true);
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("accumulate.color"), true).isNull() == false);
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("accumulate.color"), false).isNull() == false);
     const auto exercise = [&workspace](QWidget& inoutFields) {
@@ -1641,11 +1656,11 @@ TEST_CASE("accumulation limits edit through canvas and Properties with undo and 
         sampleLimit->setValue(4095);
         Q_EMIT sampleLimit->editingFinished();
         CHECK(workspace.GetDocument().GetRevision() == revision + 1);
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("4095") == true);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("4095") == true);
         workspace.Undo();
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("4095") == false);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("4095") == false);
         workspace.Redo();
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("4095") == true);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("4095") == true);
         REQUIRE(workspace.Save() == true);
     };
     QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
@@ -1683,8 +1698,8 @@ TEST_CASE("accumulation limits edit through canvas and Properties with undo and 
         QApplication::sendEvent(canvas.viewport(), &context);
     }
     RenderGraphDocument reopened;
-    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
-    CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+    REQUIRE(reopened.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(GetRootGraph()) == workspace.GetDocument().GetDraft(GetRootGraph()));
 }
 
 TEST_CASE("disabling a node keeps its settings and wires through canvas and Properties",
@@ -1694,7 +1709,7 @@ TEST_CASE("disabling a node keeps its settings and wires through canvas and Prop
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.SetLivePreview(false);
     QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
     QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
@@ -1702,10 +1717,10 @@ TEST_CASE("disabling a node keeps its settings and wires through canvas and Prop
     REQUIRE(add != nullptr);
     kinds->setCurrentText(QStringLiteral("ToneMap"));
     add->click();
-    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("tonemap")) == true);
+    REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("tonemap")) == true);
     const auto findNode = [&workspace]() {
         QJsonObject graph;
-        REQUIRE(workspace.GetDocument().GetGraph(ROOT_GRAPH, graph) == true);
+        REQUIRE(workspace.GetDocument().GetGraph(GetRootGraph(), graph) == true);
         const QJsonArray nodes = graph.value(QStringLiteral("configurations"))
                                      .toArray()
                                      .at(0)
@@ -1763,8 +1778,8 @@ TEST_CASE("disabling a node keeps its settings and wires through canvas and Prop
     CHECK(IsRenderGraphNodeEnabled(findNode()) == true);
     REQUIRE(workspace.Save() == true);
     RenderGraphDocument reopened;
-    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
-    CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+    REQUIRE(reopened.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(GetRootGraph()) == workspace.GetDocument().GetDraft(GetRootGraph()));
 }
 
 TEST_CASE("disabling an Export node keeps its type and wire", "[editor][render-graph][disable-node]")
@@ -1773,11 +1788,11 @@ TEST_CASE("disabling an Export node keeps its type and wire", "[editor][render-g
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.SetLivePreview(false);
-    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("output")) == true);
+    REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("output")) == true);
     const QJsonObject original = FindNode(workspace.GetDocument(), QStringLiteral("output"));
-    const QJsonArray edges = GetConfiguration(workspace.GetDocument(), ROOT_GRAPH, DEFAULT_CONFIGURATION)
+    const QJsonArray edges = GetConfiguration(workspace.GetDocument(), GetRootGraph(), GetDefaultConfiguration())
                                  .value(QStringLiteral("edges"))
                                  .toArray();
     QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
@@ -1791,7 +1806,7 @@ TEST_CASE("disabling an Export node keeps its type and wire", "[editor][render-g
     CHECK(IsRenderGraphNodeEnabled(disabled) == false);
     CHECK(disabled.take(QStringLiteral("enabled")) == QJsonValue(false));
     CHECK(disabled == original);
-    CHECK(GetConfiguration(workspace.GetDocument(), ROOT_GRAPH, DEFAULT_CONFIGURATION)
+    CHECK(GetConfiguration(workspace.GetDocument(), GetRootGraph(), GetDefaultConfiguration())
               .value(QStringLiteral("edges"))
               .toArray() == edges);
     workspace.Undo();
@@ -1805,7 +1820,7 @@ TEST_CASE("tone mapping exposure edits through canvas and Properties with undo a
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.SetLivePreview(false);
     QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
     QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
@@ -1813,7 +1828,7 @@ TEST_CASE("tone mapping exposure edits through canvas and Properties with undo a
     REQUIRE(add != nullptr);
     kinds->setCurrentText(QStringLiteral("ToneMap"));
     add->click();
-    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("tonemap")) == true);
+    REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("tonemap")) == true);
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("tonemap.color"), true).isNull() == false);
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("tonemap.color"), false).isNull() == false);
     const auto exercise = [&workspace](QWidget& inoutFields) {
@@ -1823,11 +1838,11 @@ TEST_CASE("tone mapping exposure edits through canvas and Properties with undo a
         exposure->setValue(2.25);
         Q_EMIT exposure->editingFinished();
         CHECK(workspace.GetDocument().GetRevision() == revision + 1);
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("2.25") == true);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("2.25") == true);
         workspace.Undo();
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("2.25") == false);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("2.25") == false);
         workspace.Redo();
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("2.25") == true);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("2.25") == true);
         REQUIRE(workspace.Save() == true);
     };
     QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
@@ -1864,8 +1879,8 @@ TEST_CASE("tone mapping exposure edits through canvas and Properties with undo a
         QApplication::sendEvent(canvas.viewport(), &context);
     }
     RenderGraphDocument reopened;
-    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
-    CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+    REQUIRE(reopened.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(GetRootGraph()) == workspace.GetDocument().GetDraft(GetRootGraph()));
 }
 
 TEST_CASE("OIDN processing quality edits through canvas and Properties with undo and save",
@@ -1875,7 +1890,7 @@ TEST_CASE("OIDN processing quality edits through canvas and Properties with undo
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.SetLivePreview(false);
     QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
     QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
@@ -1883,7 +1898,7 @@ TEST_CASE("OIDN processing quality edits through canvas and Properties with undo
     REQUIRE(add != nullptr);
     kinds->setCurrentText(QStringLiteral("Denoise"));
     add->click();
-    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("denoise")) == true);
+    REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("denoise")) == true);
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("denoise.color"), true).isNull() == false);
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("denoise.color"), false).isNull() == false);
     const auto exercise = [&workspace](QWidget& inoutFields) {
@@ -1894,11 +1909,11 @@ TEST_CASE("OIDN processing quality edits through canvas and Properties with undo
         qualityOrNull->setCurrentText(QStringLiteral("High"));
         Q_EMIT qualityOrNull->activated(qualityOrNull->currentIndex());
         CHECK(workspace.GetDocument().GetRevision() == revision + 1);
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("High") == true);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("High") == true);
         workspace.Undo();
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("High") == false);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("High") == false);
         workspace.Redo();
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("High") == true);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("High") == true);
         REQUIRE(workspace.Save() == true);
     };
     QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
@@ -1935,8 +1950,8 @@ TEST_CASE("OIDN processing quality edits through canvas and Properties with undo
         QApplication::sendEvent(canvas.viewport(), &context);
     }
     RenderGraphDocument reopened;
-    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
-    CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+    REQUIRE(reopened.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(GetRootGraph()) == workspace.GetDocument().GetDraft(GetRootGraph()));
 }
 
 TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden",
@@ -1946,16 +1961,16 @@ TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.SetLivePreview(false);
     QComboBox* kindsOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
     REQUIRE(kindsOrNull != nullptr);
     kindsOrNull->setCurrentText(QStringLiteral("ComputePipeline"));
     workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"))->click();
     const QString identity = QStringLiteral("computepipeline");
-    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, identity) == true);
+    REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), identity) == true);
     const auto getNode = [&workspace, &identity]() {
-        const QJsonObject graph = QJsonDocument::fromJson(workspace.GetDocument().GetDraft(ROOT_GRAPH)).object();
+        const QJsonObject graph = QJsonDocument::fromJson(workspace.GetDocument().GetDraft(GetRootGraph())).object();
         for (const QJsonValueConstRef configuration : graph.value(QStringLiteral("configurations")).toArray())
         {
             for (const QJsonValueConstRef node : configuration.toObject().value(QStringLiteral("nodes")).toArray())
@@ -1971,7 +1986,7 @@ TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden
     // New generic compute nodes keep the generic defaults.
     CHECK(getNode().value(QStringLiteral("state")).toObject() ==
           QJsonObject{{QStringLiteral("group_size"), QJsonArray{1, 1, 1}}});
-    const QByteArray generic = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    const QByteArray generic = workspace.GetDocument().GetDraft(GetRootGraph());
     workspace.resize(1200, 800);
     workspace.show();
     QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
@@ -2016,13 +2031,13 @@ TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden
         CHECK(modeOrNull->currentText() == QStringLiteral("Match color target"));
         modeOrNull->setCurrentIndex(1);
         CHECK(workspace.GetDocument().GetRevision() == revision + 2);
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("ColorTarget") == false);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("ColorTarget") == false);
         QGroupBox* advancedOrNull = dialogOrNull->findChild<QGroupBox*>(QStringLiteral("renderGraphComputeAdvanced"));
         REQUIRE(advancedOrNull != nullptr);
         CHECK(advancedOrNull->isChecked() == false);
         advancedOrNull->setChecked(true);
         CHECK(workspace.GetDocument().GetRevision() == revision + 3);
-        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("group_size") == true);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("group_size") == true);
         dialogOrNull->accept();
     });
     const QJsonObject edited = getNode();
@@ -2033,13 +2048,13 @@ TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden
     workspace.Undo();
     workspace.Undo();
     workspace.Undo();
-    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == generic);
+    CHECK(workspace.GetDocument().GetDraft(GetRootGraph()) == generic);
     workspace.Redo();
     workspace.Redo();
     workspace.Redo();
     CHECK(getNode() == edited);
     REQUIRE(workspace.Save() == true);
     RenderGraphDocument reopened;
-    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
-    CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+    REQUIRE(reopened.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(GetRootGraph()) == workspace.GetDocument().GetDraft(GetRootGraph()));
 }

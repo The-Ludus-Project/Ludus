@@ -277,7 +277,9 @@ void ResolveRenderGraphOverlaps(const QVector<QRectF>& fixedCards, float64 gap, 
             {
                 break;
             }
-            card.moveTop(clearTop);
+            // Authored positions use whole scene units; preserve the original border offset.
+            const float64 offsetScene = math::Ceil(clearTop - card.top());
+            card.translate(0, offsetScene);
         }
         placed.append(card);
     }

@@ -15,6 +15,7 @@
 #include "internal/render_graph_upscale_node.h"
 #include "internal/theme_colour.h"
 
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -104,8 +105,14 @@ constexpr float64 NODE_ROW_GAP = 30;
 // Clicking an output offers Quick Add for a node one ordinary column gap to its right.
 constexpr float64 QUICK_ADD_PORT_GAP = COLUMN_SPACING - NODE_WIDTH;
 /// Reserved display key for configuration outputs; not a valid authored identifier.
-const QString OUTPUTS_NODE = QStringLiteral("#outputs");
-const QString INPUT_NODE = QStringLiteral("input");
+[[nodiscard]] LUDUS_INLINE QString GetOutputsNode()
+{
+    return QStringLiteral("#outputs");
+}
+[[nodiscard]] LUDUS_INLINE QString GetInputNode()
+{
+    return QStringLiteral("input");
+}
 
 QColor GetNodeBackground()
 {
@@ -389,7 +396,7 @@ RenderGraphLinkCheck CheckLinkInRecord(const RenderGraphDocument& document,
     }
     // Resolve the producing output: configuration inputs appear as `input.port` sources.
     QString sourceType;
-    if (source == INPUT_NODE)
+    if (source == GetInputNode())
     {
         sourceType = FindType(ReadRenderGraphInterfacePorts(record.value(QStringLiteral("inputs")).toArray()),
                               GetEndpointPort(from));
@@ -412,7 +419,7 @@ RenderGraphLinkCheck CheckLinkInRecord(const RenderGraphDocument& document,
     {
         return {QStringLiteral("Port"), QStringLiteral("unknown output %1").arg(from)};
     }
-    if (sink == OUTPUTS_NODE)
+    if (sink == GetOutputsNode())
     {
         const QJsonArray outputs = record.value(QStringLiteral("outputs")).toArray();
         const QString sinkType = FindType(ReadRenderGraphInterfacePorts(outputs), GetEndpointPort(to));
@@ -575,7 +582,7 @@ RenderGraphLinkCheck CheckRenderGraphLinkToNewNode(const RenderGraphDocument& do
         return readCheck;
     }
     const QString identity = node.value(QStringLiteral("id")).toString();
-    if (identity.isEmpty() == true || identity == INPUT_NODE || FindNode(record, identity).isEmpty() == false)
+    if (identity.isEmpty() == true || identity == GetInputNode() || FindNode(record, identity).isEmpty() == false)
     {
         return {QStringLiteral("Port"), QStringLiteral("%1 is not a new node identity").arg(identity)};
     }
@@ -1030,7 +1037,7 @@ void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
             title.setVisible(hasReadableCards);
             SetScaledLabel(title,
                            hasDetails == true ? view->Title
-                                              : (view->Id == OUTPUTS_NODE ? QStringLiteral("outputs") : view->Id),
+                                              : (view->Id == GetOutputsNode() ? QStringLiteral("outputs") : view->Id),
                            viewScale,
                            CanvasLabelRole::Title,
                            NODE_WIDTH - 2 * NODE_PADDING);
@@ -1300,7 +1307,7 @@ void RenderGraphCanvas::Rebuild()
         ReadRenderGraphInterfacePorts(record.value(QStringLiteral("inputs")).toArray());
     if (inputs.isEmpty() == false)
     {
-        NodeView* view = addNode(INPUT_NODE,
+        NodeView* view = addNode(GetInputNode(),
                                  QStringLiteral("input (configuration)"),
                                  RenderGraphDomain::Interface,
                                  {{}, inputs},
@@ -1312,7 +1319,7 @@ void RenderGraphCanvas::Rebuild()
     const QJsonArray outputs = record.value(QStringLiteral("outputs")).toArray();
     if (outputs.isEmpty() == false)
     {
-        NodeView* view = addNode(OUTPUTS_NODE,
+        NodeView* view = addNode(GetOutputsNode(),
                                  QStringLiteral("outputs (configuration)"),
                                  RenderGraphDomain::Interface,
                                  {ReadRenderGraphInterfacePorts(outputs), {}},
@@ -1326,7 +1333,7 @@ void RenderGraphCanvas::Rebuild()
             {
                 links.append(
                     {source,
-                     OUTPUTS_NODE + QLatin1Char('.') + output.toObject().value(QStringLiteral("id")).toString(),
+                     GetOutputsNode() + QLatin1Char('.') + output.toObject().value(QStringLiteral("id")).toString(),
                      true});
             }
         }
@@ -1364,16 +1371,15 @@ void RenderGraphCanvas::Rebuild()
         {
             cards.append(view->Frame->sceneBoundingRect());
         }
-        const QVector<QRectF> placed = cards;
         ResolveRenderGraphOverlaps(fixedCards, NODE_ROW_GAP, cards);
         for (qsizetype index = 0; index < movable.size(); ++index)
         {
-            // Bounding rectangles reach past a card's origin, so move by the shift rather than to the corner.
-            const QPointF shift = cards.at(index).topLeft() - placed.at(index).topLeft();
-            if (shift.isNull() == false)
-            {
-                movable.at(index)->Frame->setPos(movable.at(index)->Frame->pos() + shift);
-            }
+            NodeView* view = movable.at(index);
+            // Thanks to The Qt Company, "QGraphicsRectItem Class", Detailed Description:
+            // https://doc.qt.io/qt-6.8/qgraphicsrectitem.html#details
+            // Bounds include the pen; apply the resolved offset rather than using bounds as the item's origin.
+            const QPointF offsetScene = cards.at(index).topLeft() - view->Frame->sceneBoundingRect().topLeft();
+            view->Frame->setPos(view->Frame->pos() + offsetScene);
         }
     }
     for (const QJsonValueConstRef value : edges)
@@ -1447,7 +1453,7 @@ void RenderGraphCanvas::refreshFeedback()
     const QHash<QString, RenderGraphActivityFeedback> activity =
         InspectRenderGraphActivity(mDocument, mFile, mConfiguration);
     const auto findSource = [&record](const QString& endpoint) {
-        if (endpoint.startsWith(OUTPUTS_NODE + QLatin1Char('.')) == true)
+        if (endpoint.startsWith(GetOutputsNode() + QLatin1Char('.')) == true)
         {
             for (const QJsonValueConstRef value : record.value(QStringLiteral("outputs")).toArray())
             {
@@ -1900,7 +1906,7 @@ bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QStrin
     QString owner = location.value(QStringLiteral("node")).toString();
     if (owner.isEmpty() == true && port.isEmpty() == false)
     {
-        owner = isOutput == true ? OUTPUTS_NODE : INPUT_NODE;
+        owner = isOutput == true ? GetOutputsNode() : GetInputNode();
     }
     NodeView* viewOrNull = mNodes.value(owner, nullptr);
     if (viewOrNull == nullptr)
@@ -1919,7 +1925,7 @@ bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QStrin
     mDiagnosticMarkerOrNull->setFlag(QGraphicsItem::ItemIgnoresParentOpacity);
     mDiagnosticMarkerOrNull->setToolTip(description.toHtmlEscaped());
     // Exposed outputs are consumers on the left side of the configuration output box.
-    const bool isOutputConnector = owner == OUTPUTS_NODE ? false : isOutput;
+    const bool isOutputConnector = owner == GetOutputsNode() ? false : isOutput;
     const QGraphicsEllipseItem* connectorOrNull =
         (isOutputConnector == true ? viewOrNull->OutputItems : viewOrNull->InputItems).value(port, nullptr);
     if (connectorOrNull != nullptr)
@@ -2307,7 +2313,7 @@ bool RenderGraphCanvas::RequestLink(const QString& from, const QString& to, bool
 
 bool RenderGraphCanvas::ActivateNode(const QString& node)
 {
-    if (node == INPUT_NODE || node == OUTPUTS_NODE)
+    if (node == GetInputNode() || node == GetOutputsNode())
     {
         Q_EMIT InterfaceEditRequested();
         return true;
