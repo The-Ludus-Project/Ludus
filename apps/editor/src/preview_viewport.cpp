@@ -126,11 +126,11 @@ public:
         mItems.append(item);
         invalidate();
     }
-    int count() const override
+    [[nodiscard]] int count() const override
     {
         return static_cast<int>(mItems.size());
     }
-    QLayoutItem* itemAt(int index) const override
+    [[nodiscard]] QLayoutItem* itemAt(int index) const override
     {
         return index >= 0 && index < mItems.size() ? mItems.at(index) : nullptr;
     }
@@ -144,11 +144,11 @@ public:
         invalidate();
         return item;
     }
-    Qt::Orientations expandingDirections() const override
+    [[nodiscard]] Qt::Orientations expandingDirections() const override
     {
         return Qt::Horizontal | Qt::Vertical;
     }
-    QSize sizeHint() const override
+    [[nodiscard]] QSize sizeHint() const override
     {
         QSize hint;
         for (const QLayoutItem* item : mItems)
@@ -160,7 +160,7 @@ public:
         }
         return hint;
     }
-    QSize minimumSize() const override
+    [[nodiscard]] QSize minimumSize() const override
     {
         QSize minimum;
         for (const QLayoutItem* item : mItems)

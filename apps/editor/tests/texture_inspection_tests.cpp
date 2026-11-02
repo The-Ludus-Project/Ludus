@@ -96,6 +96,105 @@ TEST_CASE("Texture viewer decodes binary16 and binary32 exactly", "[editor][text
                       static_cast<uint8>(bits >> (BYTE_BITS * 3))) == awkward);
 }
 
+TEST_CASE("Texture viewer half conversion matches the arithmetic oracle for every encoding", "[editor][texture-viewer]")
+{
+    constexpr uint32 HALF_CODE_COUNT = 65536;
+    constexpr uint32 SIGN_SHIFT = 15;
+    constexpr uint32 EXPONENT_SHIFT = 10;
+    constexpr uint32 EXPONENT_MASK = 31;
+    constexpr uint32 MANTISSA_MASK = 1023;
+    constexpr int32 EXPONENT_BIAS = 15;
+    constexpr int32 MANTISSA_BITS = 10;
+    constexpr int32 SUBNORMAL_EXPONENT = -14;
+    for (uint32 code = 0; code < HALF_CODE_COUNT; ++code)
+    {
+        const float32 sign = (code >> SIGN_SHIFT) == 0 ? 1.0F : -1.0F;
+        const uint32 exponent = (code >> EXPONENT_SHIFT) & EXPONENT_MASK;
+        const uint32 mantissa = code & MANTISSA_MASK;
+        const float32 actual = DecodeHalf(static_cast<uint16>(code));
+        if (exponent == EXPONENT_MASK)
+        {
+            if (mantissa == 0)
+            {
+                REQUIRE(actual == sign * std::numeric_limits<float32>::infinity());
+            }
+            else
+            {
+                REQUIRE(std::isnan(actual) == true);
+            }
+            continue;
+        }
+        const float32 expected =
+            exponent == 0 ? sign * std::ldexp(static_cast<float32>(mantissa), SUBNORMAL_EXPONENT - MANTISSA_BITS)
+                          : sign * std::ldexp(1.0F + std::ldexp(static_cast<float32>(mantissa), -MANTISSA_BITS),
+                                              static_cast<int32>(exponent) - EXPONENT_BIAS);
+        INFO(code);
+        REQUIRE(std::bit_cast<uint32>(actual) == std::bit_cast<uint32>(expected));
+    }
+}
+
+TEST_CASE("Texture viewer identity UNORM conversion retains every color code and forces opaque alpha",
+          "[editor][texture-viewer]")
+{
+    constexpr uint32 CODE_COUNT = 256;
+    constexpr uint32 ROW_COUNT = 3;
+    constexpr uint32 CHANNEL_COUNT = 4;
+    constexpr uint8 MAX_CODE = 255;
+    InspectedTexture texture;
+    texture.Width = CODE_COUNT;
+    texture.Height = ROW_COUNT;
+    for (uint32 row = 0; row < ROW_COUNT; ++row)
+    {
+        for (uint32 code = 0; code < CODE_COUNT; ++code)
+        {
+            texture.Bytes.append(static_cast<char>(code));
+            texture.Bytes.append(static_cast<char>(MAX_CODE - code));
+            texture.Bytes.append(static_cast<char>(row));
+            texture.Bytes.append(static_cast<char>(code));
+        }
+    }
+    for (const TextureRangeMode mode : {TextureRangeMode::Manual, TextureRangeMode::Automatic})
+    {
+        TextureDisplaySettings settings;
+        settings.Range = mode;
+        TextureValueRange range;
+        const QImage image = MakeDisplayImage(texture, settings, range);
+        REQUIRE(image.isNull() == false);
+        CHECK(range.Minimum == 0);
+        CHECK(range.Maximum == 1);
+        CHECK(range.HasValues == true);
+        for (uint32 row = 0; row < ROW_COUNT; ++row)
+        {
+            const uint8* bytes = image.constScanLine(static_cast<int32>(row));
+            for (uint32 code = 0; code < CODE_COUNT; ++code)
+            {
+                const usize offset = static_cast<usize>(code) * CHANNEL_COUNT;
+                REQUIRE(bytes[offset] == code);
+                REQUIRE(bytes[offset + 1] == MAX_CODE - code);
+                REQUIRE(bytes[offset + 2] == row);
+                REQUIRE(bytes[offset + CHANNEL_COUNT - 1] == MAX_CODE);
+            }
+        }
+    }
+}
+
+TEST_CASE("Texture viewer rejects overflowed byte extents and unknown encodings", "[editor][texture-viewer]")
+{
+    constexpr uint32 LARGE_EXTENT = uint32{1} << (sizeof(uint32) * BYTE_BITS - 1);
+    InspectedTexture texture;
+    texture.Width = LARGE_EXTENT;
+    texture.Height = LARGE_EXTENT;
+    CHECK(texture.IsValid() == false);
+    TextureValueRange range{2, 2, true};
+    CHECK(MakeDisplayImage(texture, {}, range).isNull() == true);
+    CHECK(range.Minimum == 2);
+    CHECK(range.Maximum == 2);
+    texture.Width = 1;
+    texture.Height = 1;
+    texture.Encoding = static_cast<TexelEncoding>(std::numeric_limits<uint8>::max());
+    CHECK(texture.IsValid() == false);
+}
+
 TEST_CASE("Texture viewer reads texels and describes them in their format", "[editor][texture-viewer]")
 {
     const InspectedTexture color = MakeRgba8(2, 1, {255, 128, 0, 255, 10, 20, 30, 40});

@@ -205,9 +205,16 @@ class RequiredGateTests(unittest.TestCase):
         # source/tooling job to succeed before promotion.
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         dependencies = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    needs: (.*)$", workflow, re.MULTILINE))
+        # Capacity admission serializes long ARM jobs without depending on formatting
+        # or inheriting the previous lane's success requirement.
+        serial = {"macos-compile": "[changes, macos-sanitizers]",
+                  "macos-analysis": "[changes, macos-compile]"}
         for name in ci_scope.NATIVE_JOBS:
             with self.subTest(job=name):
-                self.assertEqual(dependencies.get(name), "changes")
+                self.assertEqual(dependencies.get(name), serial.get(name, "changes"))
+        conditions = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    if: (.*)$", workflow, re.MULTILINE))
+        for name in serial:
+            self.assertTrue(conditions[name].startswith("${{ !cancelled() && "), name)
         results = self.results(tier=ci_scope.FULL_TIER)
         results["formatting"]["result"] = "failure"
         self.assertIn("formatting: expected success, received failure.", ci_scope.gate_failures(results))
@@ -297,6 +304,27 @@ class RequiredGateTests(unittest.TestCase):
         batch = root.joinpath("batch-ci.yml").read_text()
         self.assertIn("cron: '13,43 * * * *'", batch)
         self.assertIn("  cancel-in-progress: false", batch)
+
+    def test_batch_admits_arm_workflows_without_hiding_failed_evidence(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/batch-ci.yml").read_text()
+        dependencies = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    needs: (.*)$",
+                                       workflow, re.MULTILINE))
+        conditions = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    if: (.*)$",
+                                     workflow, re.MULTILINE))
+        # These are all reusable workflows with ARM jobs. Follow the dependency
+        # chain once to ensure none can queue behind an active ARM predecessor.
+        self.assertEqual(dependencies["native"], "snapshot")
+        for previous, current in (("native", "threading"), ("threading", "sdk"), ("sdk", "wiki")):
+            with self.subTest(workflow=current):
+                self.assertEqual(dependencies[current], f"[snapshot, {previous}]")
+                self.assertEqual(conditions[current],
+                                 "${{ !cancelled() && needs.snapshot.outputs.should_run == 'true' }}")
+        # Other platforms retain parallel qualification, and promotion still
+        # requires every result, including a failed earlier ARM workflow.
+        for name in ("browser", "windows", "recovery"):
+            self.assertEqual(dependencies[name], "snapshot")
+        self.assertEqual(dependencies["promote"],
+                         "[snapshot, native, sdk, wiki, browser, threading, windows, recovery]")
 
     def test_integration_prs_run_only_the_source_and_tooling_native_job(self):
         event = {"pull_request": {"base": {"ref": "develop"}, "labels": [{"name": "ci:full"}]}}

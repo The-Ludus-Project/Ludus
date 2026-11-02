@@ -1356,6 +1356,8 @@ TEST_CASE("Template program budgets cannot approve past the supported artifact c
     QString error;
     CHECK(EnsureTemplateProgramBudget(manifest, requiredPrograms, QStringLiteral("Large"), error, &budget) == false);
     CHECK(error.contains(QStringLiteral("supported limit of %1 target artifacts").arg(MAX_SHADER_ARTIFACTS)) == true);
+    CHECK(error.contains(QStringLiteral("Remove Unused Shaders")) == true);
+    CHECK(error.contains(QStringLiteral("Delete Subgraph and Library")) == true);
     CHECK(budget.RequiredPrograms == 0);
     CHECK(manifest == before);
 }
@@ -2002,15 +2004,31 @@ TEST_CASE("ReSTIR GI template is created from the editor picker with its four pa
         INFO(identity);
         CHECK(library.contains(identity) == true);
     }
-    // Production is a second root configuration with its own film/display nodes.
-    const QJsonArray configurations = QJsonDocument::fromJson(document.GetDraft(ROOT_GRAPH))
-                                          .object()
-                                          .value(QStringLiteral("configurations"))
-                                          .toArray();
-    REQUIRE(configurations.isEmpty() == false);
-    const QByteArray root = QJsonDocument(configurations.first().toObject()).toJson();
-    CHECK(root.count("\"Accumulate\"") == 1);
-    CHECK(root.count("\"ToneMap\"") == 1);
+    // Production has its own film/display nodes; count the declared default configuration only.
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    const QJsonObject graph = QJsonDocument::fromJson(root).object();
+    const QString defaultConfiguration = graph.value(QStringLiteral("default")).toString();
+    bool hasDefaultConfiguration = false;
+    for (const QJsonValue value : graph.value(QStringLiteral("configurations")).toArray())
+    {
+        const QJsonObject configuration = value.toObject();
+        if (configuration.value(QStringLiteral("id")).toString() != defaultConfiguration)
+        {
+            continue;
+        }
+        hasDefaultConfiguration = true;
+        usize accumulationCount = 0;
+        usize toneMappingCount = 0;
+        for (const QJsonValue node : configuration.value(QStringLiteral("nodes")).toArray())
+        {
+            const QString kind = node.toObject().value(QStringLiteral("kind")).toString();
+            accumulationCount += kind == QStringLiteral("Accumulate") ? 1 : 0;
+            toneMappingCount += kind == QStringLiteral("ToneMap") ? 1 : 0;
+        }
+        CHECK(accumulationCount == 1);
+        CHECK(toneMappingCount == 1);
+    }
+    REQUIRE(hasDefaultConfiguration == true);
     CHECK(document.GetDraft(QStringLiteral("main_shaders/reservoir.slang")).contains("ComputeReconnectionJacobian") ==
           true);
     CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("RESTIR_GI_SPATIAL_MAX_M") == true);
@@ -2091,6 +2109,8 @@ TEST_CASE("Conditional ReSTIR template is created from the editor picker with it
     CHECK(root.count("\"ToneMap\"") == 1);
     CHECK(document.GetDraft(QStringLiteral("main_shaders/weights.slang")).contains("ComputeConditionalMass") == true);
     CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("CRIS_HISTORY_LIMIT") == true);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("CRIS_SUFFIX_BOUNCES") == true);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/tail.slang")).contains("GenerateScatteringSuffix") == true);
     RequireValidation(workspace);
 }
 
@@ -2120,7 +2140,8 @@ TEST_CASE("Conditional ReSTIR configuration imports its passes, shader closure a
                                   QStringLiteral("conditional_restir/main_shaders/spatial.slang"),
                                   QStringLiteral("conditional_restir/main_shaders/shade.slang"),
                                   QStringLiteral("conditional_restir/main_shaders/reservoir.slang"),
-                                  QStringLiteral("conditional_restir/main_shaders/weights.slang")})
+                                  QStringLiteral("conditional_restir/main_shaders/weights.slang"),
+                                  QStringLiteral("conditional_restir/main_shaders/tail.slang")})
     {
         INFO(source.toStdString());
         CHECK(document.GetDraft(source).isEmpty() == false);
@@ -2128,6 +2149,7 @@ TEST_CASE("Conditional ReSTIR configuration imports its passes, shader closure a
     const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
     for (const char* setting : {"CRIS_INITIAL_CANDIDATES",
                                 "CRIS_PREFIX_BOUNCES",
+                                "CRIS_SUFFIX_BOUNCES",
                                 "IS_CRIS_TEMPORAL_ENABLED",
                                 "IS_CRIS_SPATIAL_ENABLED",
                                 "CRIS_HISTORY_LIMIT",
@@ -2138,7 +2160,7 @@ TEST_CASE("Conditional ReSTIR configuration imports its passes, shader closure a
     }
     // The shared ray technique's budgets rise to the template's: the sample path and the spatial reuse's rays.
     const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
-    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 2);
+    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 8);
     CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 2);
     ReplaceRasterSubgraph(document, QStringLiteral("Indirect"));
     REQUIRE(workspace.Save() == true);
@@ -3017,6 +3039,60 @@ TEST_CASE("A template applies to a package with more sources than the editor's f
     INFO(workspace.GetStatusText().toStdString());
     REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("PointLineMis"), GetPointLineTemplate()) == true);
     CheckPointLineImport(workspace.GetDocument(), QStringLiteral("PointLineMis.lurender.json"));
+}
+
+TEST_CASE("One-more-vertex imports beyond the former artifact and source ceilings in one undo step",
+          "[editor][render-graph][template-budget]")
+{
+    constexpr qsizetype EXISTING_FILES = 132;
+    constexpr qsizetype EXISTING_PROGRAMS = 60;
+    QTemporaryDir project;
+    static_cast<void>(PadSavedPackage(project.path(), EXISTING_FILES));
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 2);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(COMPUTE_MANIFEST)).object();
+    QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+    while (programs.size() < EXISTING_PROGRAMS)
+    {
+        QJsonObject program = programs.at(0).toObject();
+        program.insert(QStringLiteral("id"), QStringLiteral("LibraryProgram%1").arg(programs.size()));
+        programs.append(program);
+    }
+    manifest.insert(QStringLiteral("programs"), programs);
+    QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
+    budgets.insert(QStringLiteral("programs"), EXISTING_PROGRAMS);
+    manifest.insert(QStringLiteral("budgets"), budgets);
+    REQUIRE(document.SetText(COMPUTE_MANIFEST, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    const QByteArray beforeManifest = document.GetDraft(COMPUTE_MANIFEST);
+    const QStringList beforeFiles = document.GetFiles();
+    const QString configuration = QStringLiteral("OneMoreVertexNee");
+    const QString identity = QStringLiteral("one-more-vertex-nee");
+    RenderGraphTemplateBudgetIncrease budget;
+    QString error;
+    CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH, configuration, identity, error, {}, &budget) ==
+          RenderGraphDocumentStatus::Capacity);
+    REQUIRE(budget.RequiredPrograms > EXISTING_PROGRAMS);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+    CHECK(document.GetFiles() == beforeFiles);
+    budget.ApprovedPrograms = budget.RequiredPrograms;
+    INFO(error.toStdString());
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH, configuration, identity, error, {}, &budget) ==
+            RenderGraphDocumentStatus::Ok);
+    const QByteArray afterManifest = document.GetDraft(COMPUTE_MANIFEST);
+    const QStringList afterFiles = document.GetFiles();
+    CHECK(afterFiles.size() > EXISTING_FILES);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+    CHECK(document.GetFiles() == beforeFiles);
+    REQUIRE(document.Redo() == true);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == afterManifest);
+    REQUIRE(workspace.Save() == true);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(document.GetPackageRoot(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(COMPUTE_MANIFEST) == afterManifest);
+    CHECK(reopened.GetFiles() == afterFiles);
 }
 
 TEST_CASE("A template that does not fit the package names the counts and its repair works",

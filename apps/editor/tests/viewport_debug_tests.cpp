@@ -181,6 +181,9 @@ TEST_CASE("Viewport statistics average a fixed window and format the overlay", "
     RollingAverage average;
     CHECK(average.GetCount() == 0);
     CHECK(average.GetAverage() == 0);
+    CHECK(average.GetPercentile95() == 0);
+    CHECK(average.GetMaximum() == 0);
+    CHECK(average.GetLatest() == 0);
     for (usize i = 0; i < VIEWPORT_STATISTICS_AVERAGE_FRAMES; ++i)
     {
         average.Add(STEADY_MILLISECONDS);
@@ -189,12 +192,29 @@ TEST_CASE("Viewport statistics average a fixed window and format the overlay", "
     CHECK(average.GetAverage() == Catch::Approx(STEADY_MILLISECONDS));
     // One more sample evicts the oldest; the window never grows past N.
     average.Add(OUTLIER_MILLISECONDS);
+    CHECK(average.GetLatest() == OUTLIER_MILLISECONDS);
+    CHECK(average.GetPercentile95() == STEADY_MILLISECONDS);
+    CHECK(average.GetMaximum() == OUTLIER_MILLISECONDS);
+    average.Add(OUTLIER_MILLISECONDS);
+    CHECK(average.GetPercentile95() == OUTLIER_MILLISECONDS);
     CHECK(average.GetCount() == VIEWPORT_STATISTICS_AVERAGE_FRAMES);
     CHECK(average.GetAverage() ==
-          Catch::Approx(STEADY_MILLISECONDS + (OUTLIER_MILLISECONDS - STEADY_MILLISECONDS) /
+          Catch::Approx(STEADY_MILLISECONDS + 2 * (OUTLIER_MILLISECONDS - STEADY_MILLISECONDS) /
                                                   static_cast<float64>(VIEWPORT_STATISTICS_AVERAGE_FRAMES)));
     average.Reset();
     CHECK(average.GetCount() == 0);
+    CHECK(average.GetPercentile95() == 0);
+    CHECK(average.GetMaximum() == 0);
+    average.Add(OUTLIER_MILLISECONDS);
+    for (usize index = 0; index < VIEWPORT_STATISTICS_AVERAGE_FRAMES; ++index)
+    {
+        average.Add(STEADY_MILLISECONDS);
+    }
+    average.Add(-1);
+    average.Add(std::numeric_limits<float64>::quiet_NaN());
+    average.Add(std::numeric_limits<float64>::infinity());
+    CHECK(average.GetPercentile95() == STEADY_MILLISECONDS);
+    CHECK(average.GetMaximum() == STEADY_MILLISECONDS);
 
     ViewportStatistics statistics;
     statistics.Width = 1280;
@@ -205,7 +225,9 @@ TEST_CASE("Viewport statistics average a fixed window and format the overlay", "
     statistics.CpuMilliseconds.Add(2.5);
     statistics.GpuState = ViewportGpuTimeState::Available;
     statistics.GpuMilliseconds.Add(0.25);
-    CHECK(FormatViewportStatistics(statistics) == QStringLiteral("GPU: 0.25 ms\nCPU: 2.00 ms\n1280×720 · draws 42"));
+    CHECK(FormatViewportStatistics(statistics) ==
+          QStringLiteral(
+              "GPU: 0.25 ms (p95 0.25, max 0.25 ms)\nCPU: 2.00 ms (p95 2.50, max 2.50 ms)\n1280×720 · draws 42"));
 }
 
 TEST_CASE("Viewport statistics show GPU n/a when timestamps are unavailable", "[editor][viewport][statistics]")
@@ -218,7 +240,8 @@ TEST_CASE("Viewport statistics show GPU n/a when timestamps are unavailable", "[
     statistics.Width = 64;
     statistics.Height = 32;
     statistics.Draws = 1;
-    CHECK(FormatViewportStatistics(statistics) == QStringLiteral("GPU: n/a\nCPU: 4.00 ms\n64×32 · draws 1"));
+    CHECK(FormatViewportStatistics(statistics) ==
+          QStringLiteral("GPU: n/a\nCPU: 4.00 ms (p95 4.00, max 4.00 ms)\n64×32 · draws 1"));
 }
 
 TEST_CASE("Graph statistics measure delivered updates and separate active CPU from elapsed readback",
@@ -243,7 +266,8 @@ TEST_CASE("Graph statistics measure delivered updates and separate active CPU fr
     device.GpuMilliseconds.Add(0.25);
     device.GpuState = ViewportGpuTimeState::Available;
     CHECK(FormatGraphViewportStatistics(statistics, device, 50'000'000) ==
-          QStringLiteral("FPS (updates): 20.0\nCPU: 3.00 ms\nGPU: 0.25 ms\nOutput readback: 25.00 ms\nInspection CPU: "
+          QStringLiteral("FPS (updates): 20.0\nCPU: 3.00 ms (p95 4.00, max 4.00 ms)\nGPU: 0.25 ms (p95 0.25, max 0.25 "
+                         "ms)\nOutput readback: 25.00 ms\nInspection CPU: "
                          "…\nInspection readback: …\nConversion worker: …\nConversion elapsed: …"));
     // GPU output delivery must not replace the separately measured diagnostic readback with zero.
     statistics.AddInspection(6, 40);

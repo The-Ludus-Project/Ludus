@@ -30,7 +30,9 @@ struct IdleAttachment final
     uint64 Release = 0;
 };
 // AreDescriptionsEqual names every field; extend it whenever TextureDescription changes.
-static_assert(sizeof(rhi::TextureDescription) == 32, "compare every TextureDescription field in the pool");
+constexpr usize EXPECTED_TEXTURE_DESCRIPTION_BYTES = 32;
+static_assert(sizeof(rhi::TextureDescription) == EXPECTED_TEXTURE_DESCRIPTION_BYTES,
+              "compare every TextureDescription field in the pool");
 /// Every field of the RHI description: equal descriptions allocate interchangeable textures.
 bool AreDescriptionsEqual(const rhi::TextureDescription& left, const rhi::TextureDescription& right) noexcept
 {

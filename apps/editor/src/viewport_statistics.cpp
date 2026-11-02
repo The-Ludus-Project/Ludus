@@ -1,5 +1,6 @@
 #include "internal/viewport_statistics.h"
 
+#include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
 
@@ -11,10 +12,23 @@ using namespace foundation;
 /// Decimal places shown for millisecond values.
 constexpr int32 MILLISECOND_DECIMALS = 2;
 constexpr int32 FPS_DECIMALS = 1;
+constexpr usize PERCENTILE_NUMERATOR = 95;
+constexpr usize PERCENTILE_DENOMINATOR = 100;
 QString FormatMilliseconds(const RollingAverage& average)
 {
     return average.GetCount() == 0 ? QStringLiteral("…")
                                    : QStringLiteral("%1 ms").arg(average.GetAverage(), 0, 'f', MILLISECOND_DECIMALS);
+}
+QString FormatTimingSummary(const RollingAverage& average)
+{
+    if (average.GetCount() == 0)
+    {
+        return FormatMilliseconds(average);
+    }
+    return QStringLiteral("%1 (p95 %2, max %3 ms)")
+        .arg(FormatMilliseconds(average))
+        .arg(average.GetPercentile95(), 0, 'f', MILLISECOND_DECIMALS)
+        .arg(average.GetMaximum(), 0, 'f', MILLISECOND_DECIMALS);
 }
 } // namespace
 void RollingAverage::Add(float64 value) noexcept
@@ -49,6 +63,32 @@ float64 RollingAverage::GetAverage() const noexcept
         sum += mSamples[(mNext + VIEWPORT_STATISTICS_AVERAGE_FRAMES - 1 - i) % VIEWPORT_STATISTICS_AVERAGE_FRAMES];
     }
     return sum / static_cast<float64>(mCount);
+}
+float64 RollingAverage::GetPercentile95() const noexcept
+{
+    if (mCount == 0)
+    {
+        return 0;
+    }
+    StaticArray<float64, VIEWPORT_STATISTICS_AVERAGE_FRAMES> ordered = mSamples;
+    Sort(ordered.GetData(), mCount, [](float64 left, float64 right) noexcept { return left < right; });
+    const usize rank = (mCount * PERCENTILE_NUMERATOR + PERCENTILE_DENOMINATOR - 1) / PERCENTILE_DENOMINATOR;
+    return ordered[rank - 1];
+}
+float64 RollingAverage::GetMaximum() const noexcept
+{
+    float64 maximum = 0;
+    for (usize index = 0; index < mCount; ++index)
+    {
+        maximum = math::Max(maximum, mSamples[index]);
+    }
+    return maximum;
+}
+float64 RollingAverage::GetLatest() const noexcept
+{
+    return mCount == 0
+               ? 0
+               : mSamples[(mNext + VIEWPORT_STATISTICS_AVERAGE_FRAMES - 1) % VIEWPORT_STATISTICS_AVERAGE_FRAMES];
 }
 void GraphViewportStatistics::Reset() noexcept
 {
@@ -144,10 +184,10 @@ QString FormatGraphViewportStatistics(const GraphViewportStatistics& statistics,
 {
     const QString gpu = deviceStatistics.GpuState == ViewportGpuTimeState::Unavailable
                             ? QStringLiteral("n/a")
-                            : FormatMilliseconds(deviceStatistics.GpuMilliseconds);
+                            : FormatTimingSummary(deviceStatistics.GpuMilliseconds);
     const QString frameText = QStringLiteral("FPS (updates): %1\nCPU: %2\nGPU: %3\nOutput readback: %4")
                                   .arg(statistics.GetFramesPerSecond(nowNanoseconds), 0, 'f', FPS_DECIMALS)
-                                  .arg(FormatMilliseconds(statistics.GetCpuMilliseconds()),
+                                  .arg(FormatTimingSummary(statistics.GetCpuMilliseconds()),
                                        gpu,
                                        FormatMilliseconds(statistics.GetReadbackMilliseconds()));
     if (statistics.IsInspectionEnabled() == false)
@@ -166,9 +206,9 @@ QString FormatViewportStatistics(const ViewportStatistics& statistics)
 {
     const QString gpu = statistics.GpuState == ViewportGpuTimeState::Unavailable
                             ? QStringLiteral("n/a")
-                            : FormatMilliseconds(statistics.GpuMilliseconds);
+                            : FormatTimingSummary(statistics.GpuMilliseconds);
     return QStringLiteral("GPU: %1\nCPU: %2\n%3×%4 · draws %5")
-        .arg(gpu, FormatMilliseconds(statistics.CpuMilliseconds))
+        .arg(gpu, FormatTimingSummary(statistics.CpuMilliseconds))
         .arg(statistics.Width)
         .arg(statistics.Height)
         .arg(statistics.Draws);

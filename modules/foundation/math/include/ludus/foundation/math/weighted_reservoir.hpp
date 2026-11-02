@@ -24,14 +24,14 @@ using core::uint32;
 ///
 /// Changing the selection rule, weight/ticket classification, subnormal flush or contribution-weight formula
 /// requires a new version. FoundationMath's shaders/weighted_reservoir.slang mirrors it.
-inline constexpr uint32 WeightedReservoirSelectionVersion = 1;
+inline constexpr uint32 WEIGHTED_RESERVOIR_SELECTION_VERSION = 1;
 
 /// @brief Smallest weight the reservoir accepts as positive, 2^-102 = 2^24 times FP32's smallest normal value.
 ///
 /// Smaller nonnegative weights, subnormals included, count as zero. Above it, Ticket * sum stays normal wherever it
 /// can approach the weight, so FP32 rounding and GPU subnormal flushing cannot change a selection, and the first
 /// positive candidate is always selected. The bias is at most this value per candidate.
-inline constexpr float32 WeightedReservoirMinimumWeight = 0x1p-102f;
+inline constexpr float32 WEIGHTED_RESERVOIR_MINIMUM_WEIGHT = 0x1p-102f;
 
 /// @brief One streamed candidate: its resampling weight and its own uniform ticket.
 ///
@@ -40,7 +40,7 @@ struct ReservoirCandidate
 {
     /// @brief Resampling weight, for RIS target / source density; finite and nonnegative.
     ///
-    /// Weights below WeightedReservoirMinimumWeight count as zero.
+    /// Weights below WEIGHTED_RESERVOIR_MINIMUM_WEIGHT count as zero.
     float32 Weight = 0.0f;
     /// @brief Uniform ticket in [0,1), normally SampleFloat01 at a dimension reserved for this candidate alone.
     float32 Ticket = 0.0f;
@@ -70,7 +70,7 @@ public:
     {
         return mSelectedIndex;
     }
-    /// @brief True once any candidate with a weight of at least WeightedReservoirMinimumWeight has been streamed.
+    /// @brief True once any candidate with a weight of at least WEIGHTED_RESERVOIR_MINIMUM_WEIGHT has been streamed.
     ///
     /// An empty reservoir after the whole stream (zero total weight) is a valid outcome that contributes zero, not
     /// an invalid sample.
@@ -90,11 +90,11 @@ private:
 
 /// @brief Streams the next candidate: adds its weight to the sum and selects it when Ticket * sum < Weight.
 ///
-/// A zero-weight candidate is counted but never selected; weights below WeightedReservoirMinimumWeight count as zero.
-/// The first candidate with a positive weight is always selected, so the reservoir is empty exactly while the sum is
-/// zero. A subnormal ticket counts as zero, because GPU arithmetic may flush it. Weight and ticket are classified from
-/// their bit patterns, so -0 is a zero weight and a valid zero ticket.
-/// Acceptance is quantized by the ticket's resolution (2^-24 for SampleFloat01), a declared approximation.
+/// A zero-weight candidate is counted but never selected; weights below WEIGHTED_RESERVOIR_MINIMUM_WEIGHT count as
+/// zero. The first candidate with a positive weight is always selected, so the reservoir is empty exactly while the sum
+/// is zero. A subnormal ticket counts as zero, because GPU arithmetic may flush it. Weight and ticket are classified
+/// from their bit patterns, so -0 is a zero weight and a valid zero ticket. Acceptance is quantized by the ticket's
+/// resolution (2^-24 for SampleFloat01), a declared approximation.
 /// @param candidate Weight and ticket of the candidate at stream position GetCandidateCount().
 /// @param inoutReservoir Reservoir updated on success and left unchanged on failure.
 /// @param outIsSelected Written on success: true when this candidate replaced the selection.

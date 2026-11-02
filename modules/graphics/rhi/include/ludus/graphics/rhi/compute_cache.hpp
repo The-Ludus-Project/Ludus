@@ -33,8 +33,8 @@ class ComputeCache;
 struct ComputeCacheTicket final
 {
 private:
-    const ComputeCache* OwnerOrNull = nullptr;
-    foundation::uint64 Generation = 0;
+    const ComputeCache* mOwnerOrNull = nullptr;
+    foundation::uint64 mGeneration = 0;
     friend class ComputeCache;
 };
 /// Owner-thread, two-generation cache for view-independent GPU preprocessing.

@@ -31,19 +31,19 @@
         {
           "id": "samples",
           "kind": "Buffer",
-          "bytes_per_pixel": 64,
+          "bytes_per_pixel": 96,
           "extent": "RenderSize"
         },
         {
           "id": "temporalReservoirs",
           "kind": "Buffer",
-          "bytes_per_pixel": 64,
+          "bytes_per_pixel": 96,
           "extent": "RenderSize"
         },
         {
           "id": "spatialReservoirs",
           "kind": "Buffer",
-          "bytes_per_pixel": 64,
+          "bytes_per_pixel": 96,
           "extent": "RenderSize"
         },
         {

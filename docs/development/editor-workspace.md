@@ -379,7 +379,7 @@ executable. Related stale IDE CMake-path overrides are removed; unrelated
 settings are preserved. Real CMake configure/build/test preset discovery must
 succeed, followed by a fresh configure, full build and native CTest. No-tests
 is an error. Web profiles configure and build; browser runtime acceptance is
-separate. The setup signature detects changed SDK contents and moved tools.
+separate. The setup signature detects a moved or retargeted SDK (its path and ABI identity), changed presets and moved tools. It does not hash SDK library contents, so a refreshed engine install from `./init.sh` keeps existing projects' setup valid; each build folder's own SDK stamp reconfigures it on the next build.
 
 The **Build and install the engine used by this editor** option explicitly
 initializes and builds the trusted tooling checkout, then installs the desktop
@@ -623,8 +623,14 @@ viewport between recordings; an active recording retains its original source
 while submitted timing results are collected.
 
 CPU records instrumented scopes in the editor process, including viewport and
-render-graph ticks; it is not a statistical sampler or a viewport-only CPU
-filter. GPU requires an admitted scene viewport with timing support. Both
+render-graph ticks. Renderer scopes separate `RenderGraphUpdate`,
+`RenderGraphBuildScene`, `RenderGraphPrepareCameras`, `RendererPrepareView`,
+`RendererSortOpaquePackets`, `RenderGraphPoll` and `RenderGraphRender`. A camera
+change should use camera preparation rather than rebuild scene content; inspect
+these scopes when navigation stalls. Texture inspection and readback conversion
+appear as `EditorTextureValueRange` and `EditorTextureDisplayConversion`.
+CPU recording is not a statistical sampler or a viewport-only CPU filter.
+GPU requires an admitted scene viewport with timing support. Both
 requires both sources and never silently falls back to CPU. The first delivery
 targets the local editor and its viewport; hosted-game recording and browser
 editor recording remain separate work. Release builds with profiling disabled
@@ -1520,11 +1526,17 @@ viewport's top-left corner:
 - **CPU**: time spent preparing and submitting the frame.
 - **Resolution** and **draw count**.
 
-Times are averaged over the last 30 frames (`VIEWPORT_STATISTICS_AVERAGE_FRAMES`)
-and refresh four times a second. GPU timestamps are read back with latency and
+CPU and GPU times show their mean, nearest-rank p95 and maximum over the last
+30 accepted samples (`VIEWPORT_STATISTICS_AVERAGE_FRAMES`). A low mean with a
+large maximum identifies intermittent stalls; these are separate CPU and GPU
+series, not synchronized frame pairs. The overlay refreshes four times a second.
+GPU timestamps are read back with latency and
 the editor never waits for them, so the GPU line shows `…` until the first
 sample arrives. It shows `GPU: n/a` when the device or browser provides no
 timestamp queries.
+
+For repeatable editor CPU/GPU workloads and nightly history, see
+[Runtime profiling](runtime-profiling.md#editor-workloads).
 
 On macOS and Linux the overlay is an item in the viewport's own Qt Quick scene,
 so it is drawn above the frame. A sibling widget would be hidden under the

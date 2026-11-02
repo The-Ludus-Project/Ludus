@@ -189,7 +189,7 @@ private:
     // presenter's window cannot be seen, samples one timestamp per frame and
     // reports the aggregate on Status. Simulation still advances one fixed tick
     // per frame; the samples are diagnostics, not simulation debt.
-    HostPacing Pacing_;
+    HostPacing mPacing;
     platform::PacingClock PacingClock_ = platform::GetSystemPacingClock();
     ludus::foundation::time::FrameClock FrameClock_{
         ludus::foundation::time::Duration{HOST_MAXIMUM_FRAME_DELTA_NANOSECONDS}};

@@ -1638,11 +1638,11 @@ stream, rather than copying the book's container implementation.
 
 ### Use stochastic pairwise MIS for large spatial kernels
 
-A newly created **ReSTIR DI** package also provides the **StochasticPairwise**
+Newly created **ReSTIR DI** and **ReSTIR GI** packages provide the **StochasticPairwise**
 configuration in its root graph and reusable library. Select this configuration
 on the ReSTIR Subgraph (the configuration field is available on the canvas),
 then **Build Graph** and select the built graph for the viewport. From the CLI,
-create the same editable package with `--template restir-di` and build with
+create the editable package with `--template restir-di` or `--template restir-gi` and build with
 `--configuration StochasticPairwise`. Existing copied packages keep their authored
 sources; create a fresh package to obtain this configuration.
 
@@ -1673,7 +1673,9 @@ independently of the configuration's indices in a containing ray sequence.
    without an additional candidate-count division. Final shading traces visibility.
 
 **Graph Settings** exposes `RESTIR_PAIRWISE_SAMPLES` (default 3) and
-`RESTIR_PAIRWISE_CANONICAL_SAMPLES` (default 1), each from 1 to 16. These settings
+`RESTIR_PAIRWISE_CANONICAL_SAMPLES` (default 1), each from 1 to 8. The shared setting IDs and ranges are identical in both packages;
+together the draws fit GI's 16-query visibility budget. The scalar API itself
+does not impose this graph-preset draw limit. These settings
 control expensive shifted target evaluations, independently of the tile's up to
 63 neighbors. Selection mixes the cached importance CDF with 5% uniform sampling;
 this preserves selection support even when tiny positive CDF increments round to
@@ -1706,6 +1708,68 @@ sparse cells, canonical exclusion and repeated selections (`[pairwise-reuse]` in
 undersized storage, resize and scene replacement (`[restir]` in
 `ludus_render_graph_ray_tests`). These tests establish the implemented DI scope;
 they do not qualify the paper's full path-space implementation.
+
+The GI configuration uses four ordered passes: fresh initial sampling into a
+64-byte reservoir, cell construction, stochastic spatial reuse, and the existing
+GI shading pass. Its spatial buffer uses 80 bytes per pixel: a 64-byte result
+followed by the immutable 16-byte cell record. A valid receiver retains confidence
+one even when its initial ray misses; dropping those null proposals would change
+the canonical correction. It honors GI's source distribution, target, path-bounce
+and spatial-enable settings. Temporal settings and the legacy neighbor-count/M
+settings do not control this fresh pairwise configuration.
+
+GI evaluates solid-angle reconnection Jacobians. Both neighbor MIS and canonical
+correction use `sourceTarget / abs(forwardJacobian)`; resampling multiplies by the
+forward Jacobian. A canonical correction also checks whether the neighbor's
+hemisphere and visible first-hit distribution could have proposed that sample.
+Each shifted neighbor tests destination visibility before entering the reservoir.
+These support checks apply regardless of the legacy `IS_RESTIR_GI_UNBIASED`
+setting. `[restir-gi]` compares raw linear accumulation against the independent
+GI estimator without reuse; it does not use denoising to establish convergence.
+The maximum-draw regression also exercises cosine sampling, the scattered target,
+maximum path depth and triangle-edge reconstruction with no latched failures.
+
+#### Use the method in custom shaders
+
+The installed SDK exposes the scalar operations independently of any graph:
+
+```slang
+#include "stochastic_pairwise_mis.slang"
+
+float proxy = 0;
+float mis = 0;
+float corrected = 0;
+if (TryComputePairwiseShiftedTarget(sourceTarget, forwardJacobian, proxy) == true &&
+    TryComputePairwiseNeighborMis(confidence, confidenceSum, canonicalConfidence,
+        proxy, destinationTarget, mis) == true &&
+    TryComputeStochasticMisWeight(mis, selectionPmf, drawCount, corrected) == true)
+{
+    // Stream this occurrence using TryComputePairwiseResamplingWeight.
+}
+```
+
+Compile standalone shaders with the installed `ludus_compile_shader` helper,
+which supplies the installed shader include directory. C++ callers include
+`<ludus/foundation/math/stochastic_pairwise_mis.hpp>` and link
+`Ludus::FoundationMath`. See the [Math API contracts](../modules/foundation/math.md#stochastic-pairwise-mis)
+for status and output-preservation behavior. The Shader API panel and completion
+also expose these functions in scene compute programs.
+
+Scene compute programs receive both the scalar API and Renderer-owned
+`stochastic_reuse.slang` automatically. A custom `IPairwiseCellReader` supplies
+immutable inclusive CDF prefixes through `ReadPrefix(absolutePixel)`; it can read
+the caller's own bound buffer without adopting the supplied DI/GI record layout.
+`GetReuseCellExtent`, `GetReuseCellPixel` and `GetReuseCanonicalSlot` describe the
+clipped tile. `ComputeReuseCellMass` recovers prefix differences, and
+`SampleReuseCellNeighbor` returns a noncanonical slot plus its mixture PMF.
+Supply the sum of recovered noncanonical masses, reserve three disjoint random
+dimensions per call and use a separate reservoir coin. `GetGraphPassIndex()` is
+the package program index and can change when programs are added or renamed;
+use caller-owned stable scope constants for streams that must survive graph edits. Cells need at least two
+pixels; single-pixel cells keep only their canonical estimator. The reader's
+storage must stay alive and immutable throughout reuse. Custom kernels using
+Renderer's scene types can explicitly include `stochastic_reuse.slang` after
+those types are declared. Neither helper allocates resources or binds buffers.
 
 ### Run the production ReSTIR DI configuration
 
@@ -2093,7 +2157,7 @@ for the tangent frame of the hemisphere samples.
 
 ### Use the conditional ReSTIR template
 
-Choose **Conditional ReSTIR — mesh light suffixes** in New Render Graph, canvas
+Choose **Conditional ReSTIR — suffix path tracing** in New Render Graph, canvas
 Quick Add, or Apply Configuration Template. The CLI and installed SDK expose the
 same editable package:
 
@@ -2105,72 +2169,121 @@ ludus render-graph new graphs/Conditional --template conditional-restir --output
 Use `spirv` for Vulkan. The `ConditionalRestir` configuration takes `scene`, `view`
 and `color`, and outputs `color`. Four scene compute passes generate fresh suffix
 proposals, merge temporal history, merge spatial neighbours, and shade. Each of
-the three render-sized buffers holds one 64-byte record per pixel; accumulation
-and tone mapping happen after shading. Native ray queries are required.
+the three render-sized buffers holds one 96-byte record per pixel; accumulation
+and tone mapping happen after shading. Native ray queries are required. At
+1920 × 1080 the three suffix buffers use about 597 MB, excluding scene and image storage.
 
-This is a bounded specialization of Markus Kettunen, Daqi Lin, Ravi Ramamoorthi,
-Thomas Bashford-Rogers and Chris Wyman's [*Conditional Resampled Importance
-Sampling and ReSTIR*, SIGGRAPH Asia 2023, sections 4–6, Equations 12–17 and
-22](https://doi.org/10.1145/3610548.3618245). Thanks to the authors for conditional
-unbiased contribution weights and independent final-gather prefixes. A suffix
-here is one emissive mesh endpoint; its domain is world-space surface area.
-The template estimates primary emission, direct mesh lighting and, optionally,
-one indirect scattering bounce. It evaluates both connection BSDFs for their
-actual directions, so suffix reuse does not assume Lambertian receivers.
+This implements variable-length Suffix ReSTIR PT using Markus Kettunen, Daqi Lin,
+Ravi Ramamoorthi, Thomas Bashford-Rogers and Chris Wyman's [*Conditional Resampled
+Importance Sampling and ReSTIR*, SIGGRAPH Asia 2023, sections 4–7, Equations 12–17
+and 22](https://doi.org/10.1145/3610548.3618245). Thanks to the authors for conditional
+unbiased contribution weights and independent final-gather prefixes. This version
+uses a common marked surface-area domain, rather than their prototype's
+view-conditioned BSDF proposal and hybrid shift. A suffix stores either an
+emissive mesh endpoint or a scattering point, its first outgoing direction, and
+a cached multi-bounce transport coefficient. The first suffix BSDF is deliberately
+excluded from that coefficient: both BSDFs on the gather connection must be
+evaluated for the new incoming direction. Glossy and coated receivers therefore
+do not reuse radiance evaluated for a different view.
 
-The initial pass draws a supporting camera prefix, ending at a BSDF-sampled
-secondary surface in indirect mode, independently of all suffix proposals.
-Uniform emitter and triangle choices followed by uniform triangle-area sampling
-give each light endpoint a known initial area density. The target is the
-supporting endpoint's unshadowed contribution luminance with a positive floor.
-For coated materials this target uses a base-lobe surrogate; final shading uses
-the layered BSDF and its separate addressed random context. Prefix transport keeps
-the coating walk's returned weight rather than reconstructing its path ratio.
-Even missed supporting prefixes retain that floor. Every prefix therefore has
-the same complete mesh-light area domain, and the identity suffix shift has
-Jacobian one. No visibility or hemisphere rejection removes proposal support.
+The declared integral is primary emission plus mesh-emitter reflection paths with
+one through `1 + CRIS_PREFIX_BOUNCES + CRIS_SUFFIX_BOUNCES` scattering vertices.
+This is a finite-depth path-tracing integral, not an infinite-series estimator.
+The default admits five scattering vertices. Set `CRIS_SUFFIX_BOUNCES` to zero
+for the former endpoint specialization; additionally set `CRIS_PREFIX_BOUNCES`
+to zero for direct mesh lighting alone. With a delayed prefix, primary direct
+lighting and secondary-prefix gathering own disjoint scattering orders.
 
-A source reservoir contributes `target_here × W_source × M_source` to conditional
-RIS. The output weight is `sum / (M_total × selected_target_here)`, finalized before
-capping confidence. Constant confidence shares partition unity in this common
-domain. This avoids reconstructing a conditional PDF from `W` and avoids a
-support-dependent MIS correction. Fresh canonical light proposals are still
-injected on every frame. The shade pass draws a new prefix from a different
-addressed random scope, traces visibility there, and multiplies the conditional
-area weight by the new prefix's `BSDF × cosine / PDF` throughput (Equation 22).
-Neither that throughput nor the gather prefix participates in suffix selection.
+The initial pass draws a supporting camera prefix, optionally ending at a
+BSDF-sampled secondary surface, independently of suffix generation. It then draws
+a suffix scattering count uniformly from zero through `CRIS_SUFFIX_BOUNCES`:
+
+- Zero selects an emissive endpoint using uniform emitter, triangle and area
+  proposals, with `CRIS_INITIAL_CANDIDATES` internal RIS candidates.
+- Positive counts select the first suffix point uniformly among all scene triangles
+  and in its area. A one-vertex scattering tail uses terminal next-event estimation
+  (NEE). Longer tails draw the first outgoing direction uniformly on the sphere,
+  trace later edges with the material's BSDF, and terminate with mesh-light NEE.
+  Each tail represents exactly its sampled length. Intermediate emitter hits do
+  not add emission, because the length's terminal NEE already owns that contribution.
+
+The cached coefficient contains the outgoing cosine, proposal reciprocals, later
+BSDF transport weights and terminal visibility. Coatings retain the walk's returned
+weight instead of reconstructing it from a new BSDF evaluation. Independent material
+random events are used at successive vertices and at both gather BSDFs. No tail
+is retraced in temporal reuse, spatial reuse or final gathering.
+
+The initial area weight is multiplied by the reciprocal length probability.
+Internal endpoint RIS produces **one** canonical mixture sample: its published
+confidence is one regardless of the sampled length. Giving shorter paths a larger
+confidence because they used more internal endpoint candidates would bias later
+confidence-weighted reuse.
+
+All prefixes share the complete marked suffix domain. The target combines a prefix-independent
+intrinsic coefficient luminance with unshadowed connection luminance:
+`intrinsic × (1 + connection / (intrinsic + connection))`, where `intrinsic` has
+a positive floor. Retargeting any fixed suffix between prefixes therefore changes
+its target by at most a factor of two, including missed supporting prefixes.
+This regularizes sample selection; final radiance and contribution weights are
+never clamped. Zero-radiance tails retain positive proposal support. Coatings use
+a base-lobe selection surrogate; final shading uses the layered BSDF. No source-side visibility or hemisphere
+rejection removes area support. The identity shift in this common domain has
+Jacobian one. A source reservoir contributes `target_here × W_source × M_source`;
+the final weight is `sum / (M_total × selected_target_here)`, finalized before
+confidence is capped. Constant confidence shares partition unity, so this proposal
+does not need the support-dependent canonical MIS correction required by the
+paper's BSDF-conditioned reconnection domains. Fresh canonical suffixes are still
+injected every frame. Tail occlusion and ordinary BSDF rejection are zero-valued
+marked outcomes, not discarded proposal domains.
+
+The shade pass draws a new integration prefix from a separate addressed random
+scope, tests the connection visibility, and multiplies the stored conditional area
+weight by the integration prefix's transport weight (Equation 22). Neither the
+integration prefix nor its throughput participates in suffix selection.
 
 Graph settings are available from the canvas's node Details as well as Properties:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `CRIS_PREFIX_BOUNCES` | 1 | 0 estimates direct lighting; 1 adds one indirect bounce. |
-| `CRIS_INITIAL_CANDIDATES` | 8 | Fresh mesh-light suffix proposals, 1–32. |
+| `CRIS_PREFIX_BOUNCES` | 1 | Delay the gather by one BSDF-sampled edge; zero gathers at the primary surface. |
+| `CRIS_SUFFIX_BOUNCES` | 3 | Maximum scattering vertices in a cached suffix, 0–7; zero stores emissive endpoints only. |
+| `CRIS_INITIAL_CANDIDATES` | 8 | Internal endpoint RIS candidates when the sampled suffix count is zero, 1–32. |
 | `IS_CRIS_TEMPORAL_ENABLED` | true | Merge the preceding frame's conditional reservoir. |
 | `IS_CRIS_SPATIAL_ENABLED` | true | Merge completed neighbours' temporal reservoirs. |
 | `CRIS_HISTORY_LIMIT` | 30 | Cap represented confidence after finalization, 1–1000. |
 | `CRIS_SPATIAL_NEIGHBORS` | 3 | Screen-space neighbour attempts, 0–7, within an eight-pixel radius. |
 
-History validates its layout, scene generation, extent and preceding frame.
-Spatial reads use the completed temporal buffer, with separate output storage.
-Failed records carry their original diagnostic to later passes; stale identities
-are not reused. The shade pass budgets two surface and two visibility queries.
+History validates its layout, both configured depths, scene generation, extent and
+preceding frame. Spatial reads use the completed temporal buffer with separate
+output storage. Failed records carry their original diagnostic to later passes.
+The initial pass budgets eight surface queries: camera, optional prefix edge and
+up to six cached-tail continuation queries. Shading needs at most two surface and
+two visibility queries. Arbitrary sampled lengths are supported within this native
+query bound; longer configured paths require a continuation-dispatch implementation.
 
-The template does not implement arbitrary-length Suffix ReSTIR PT, hybrid shifts,
-prefix resampling, motion reprojection or world-space nearest-neighbour gathers.
-Analytic lights and environment illumination are outside this mesh-light integral;
-the environment is displayed only when the primary camera ray misses. Use a
-renderer that supports those lights when they are needed. A positive target floor
-preserves support but can increase variance when supporting and gather prefixes
-see very different lighting. No speed or variance improvement is guaranteed.
+Hybrid shifts, prefix resampling, motion reprojection and world-space nearest-neighbour
+gathers are not implemented. Analytic lights and environment illumination remain
+outside this mesh-light integral; the environment is displayed only when the primary
+camera ray misses. External transmission and delta BSDFs are outside the scene material
+profile. Uniform area and sphere proposals preserve support but can have high variance,
+especially for narrow glossy lobes, nearby coplanar geometry and long paths. This
+implementation makes no performance or variance-improvement claim.
 
-The `[conditional-restir]` GPU regression compares raw linear RGB against the
-independent CPU path tracer at matched center rays and scattering depth, and
-against a variant with both reuse stages disabled. Its Cornell-box mean tolerance
-is 5% over 512 GPU frames and 128 CPU samples per pixel, without denoising.
-The direct-only setting has a separate depth-one CPU comparison. Template tests
-also cover installed SDK relocation, capability rejection, preserved destinations,
-editor creation, canvas configuration import, shader closure and settings.
+The `[conditional-restir]` GPU regressions compare raw linear RGB against the
+independent CPU path tracer using matched center rays and scattering counts of
+one, two, four, five and nine. The CPU uses emitter-power proposals and BSDF/light
+MIS; it shares neither reservoirs nor tail weights with the GPU. Both reuse-disabled
+and reused GPU configurations are exercised, with no denoising. Coated-material
+and scene-replacement cases are included. Validation uses Apple M5 Metal on
+macOS 26.6 with Clang 23.1.3. The CPU oracle uses 128 samples per pixel; GPU
+comparisons use 2,048 frames for the default/direct modes and 4,096 for depth and
+material cases. Per-channel image means must agree within 5%; subtracting the
+independent direct result isolates indirect energy with a 10% tolerance. An
+emission-only case agrees within 0.001% over two GPU frames. These statistical
+checks qualify this mesh-light profile on Metal; Vulkan execution and full batch
+qualification remain separate. Template tests cover installed SDK relocation,
+capability rejection, preserved destinations, editor creation, canvas configuration
+import, shader closure, settings and the maximum query-budget contract.
 
 <a id="use-the-compute-ray-tracing-template"></a>
 
@@ -4307,8 +4420,10 @@ program limit is too small, the picker offers **Increase and apply**, showing th
 current and required counts. Approval raises `budgets.programs` to the required
 count together with the template; **Cancel** preserves the draft. Undo/Redo restores
 both changes, and **Save** publishes them together. Programs times target profiles
-beyond the supported 128 target artifacts cannot be approved; that error names the
-counts to reduce. Other capacity failures still report the required repair.
+beyond the supported 1024 target artifacts cannot be approved; that error names the
+counts and the canvas actions **Remove Unused Shaders** and **Delete Subgraph and Library**,
+or suggests reducing target profiles in the shader manifest. Other capacity failures
+still report the required repair.
 Secondary rays require a native profile. Existing ordinary ray configurations can
 share the package: their callbacks, payload source and query limits are retained.
 The shared `ScenePayload` needs a `float3 Radiance` field; comments, whitespace and
@@ -5428,6 +5543,19 @@ second horizon clip feeds the specular edge sum. Each corner costs one edge term
 and no ellipse/sector state for importance sampling is built. The independent CPU
 check fans each record into clip-safe pieces of at most six corners and retains that
 sampling preparation; both integrals are additive over the fan.
+Raster edge integration uses a degree-nine polynomial for
+`acos(x) / sqrt(1 - x*x)` on `[0,1]`, with the finite limit one at the endpoint.
+Its coefficients are generated from ten Chebyshev interpolation nodes in
+FoundationMath's shader owner. Obtuse edges use `pi - angle` and the measured
+cross-product length, preserving the antipodal behavior without subtracting
+nearly equal squared lengths. This removes an `atan2` and, for acute edges, a
+square root and division per edge. The GPU regression checks signed edge terms
+against the independent exact CPU angle within 2e-6 radians across the full angle
+range, both windings, grazing endpoints and coordinate scales from 1e-30 to 1e30.
+This is a raster numerical approximation; reference transport and the CPU oracle
+retain exact trigonometric integration. In the measured 1600 x 1080 Staircase2
+saved view, 224 of 1,728,000 output pixels changed by at most one 8-bit step.
+
 Polygons entirely below the receiver horizon contribute zero; crossing polygons
 are clipped before the LTC transform. This preserves emitter geometry and the
 lighting integral without sampling lights.
@@ -5859,7 +5987,7 @@ The closed version-1 `.lushader.json` source has these fields:
 | `schemas` | At most 16 named `Uniform`, `Vertex` or `Varying` schemas; at most 16 fields each |
 | `programs` | Named stage/function/source records; input/output schemas and explicit uniform bindings |
 | `techniques` | Explicit `DefaultStaticOpaque.ColorAndDepth`/`.DepthOnly` and/or `DefaultStaticMasked.ColorAndDepth`/`.DepthOnly` mappings and legal pipeline recipes |
-| `budgets` | Author bounds for configurations, programs, emitted artifacts and pipeline recipes |
+| `budgets` | Author bounds for configurations and registered programs; legacy artifact/pipeline budgets are ignored |
 | `settings` (optional) | Up to 128 typed shader constants exposed in Properties and the canvas Graph Settings dialog |
 
 Each setting declares `id`, `label`, `type`, and `value`. Types are `UInt32`,
@@ -5923,7 +6051,7 @@ when that authored budget admits them; editor shader creation grows it as needed
 The configuration budget is at most 8. Target artifacts (registered programs
 multiplied by target profiles) and target pipelines (raster recipes multiplied by
 target profiles) follow from the manifest itself, so they have no authored budget:
-only the supported ceilings of 128 target artifacts and 64 target pipelines bound
+only the supported ceilings of 1024 target artifacts and 64 target pipelines bound
 them, and the error names the counts to reduce. Source and package byte/file limits
 also apply. Manifests written by older tools may still carry `budgets.artifacts` and
 `budgets.pipelines`; the builder accepts and ignores them, and the editor removes them
@@ -5945,13 +6073,21 @@ and rejects recursive shader calls or duplicate callbacks. Unguarded include cyc
 report the complete cycle, separately from the include-depth limit. Conditional
 includes are conservatively tracked; a conditional pragma is not treated as a guard.
 The compiler reads staged captured sources only, and its dependency file is
-checked against that closure. The combined build snapshot is bounded to 128
+checked against that closure. The combined build snapshot is bounded to 512
 files/4 MiB, including graph metadata, authored shaders and SDK helpers; each
 file is at most 128 KiB, with include depth 16. The native shader worker retains
 its separate 64-file request limit, including the generated wrapper. Each stage
 receives only its captured closure from the larger package snapshot. Source or
 compiler limit failures preserve the prior package. Generated artifacts are at most 2 MiB each
-and a generation is at most 64 MiB/1024 files. Use `--root` for a containing
+and a generation is at most 64 MiB/8192 files, with a separately bounded 2 MiB integrity
+index. These package-wide ceilings accommodate the shipped template catalog, which
+currently declares 144 programs and 235 files (about 1.2 MB before SDK helpers),
+without requiring deletion of built-in libraries. A catalog regression counts every
+template plus SDK helpers against the source bounds, and all four profiles against
+the artifact ceiling. This capacity check does not promise that every template can
+execute on every profile or that every library combination shares a compatible ABI.
+Authored files and SDK helpers use the same admission check before capture, so a helper
+cannot silently overfill the snapshot. Use `--root` for a containing
 package when the sibling root/manifest lives in a subdirectory; program source
 paths are relative to that package root, not the manifest directory.
 

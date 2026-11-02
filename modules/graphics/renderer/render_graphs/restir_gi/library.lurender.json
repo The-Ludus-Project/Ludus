@@ -507,6 +507,382 @@
           "to": "shade.color"
         }
       ]
+    },
+    {
+      "id": "StochasticPairwise",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "color",
+          "type": "ColorTexture",
+          "source": "shade.color",
+          "required": true
+        }
+      ],
+      "nodes": [
+        {
+          "id": "initialReservoirs",
+          "kind": "Buffer",
+          "bytes_per_pixel": 64,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "spatialReservoirs",
+          "kind": "Buffer",
+          "bytes_per_pixel": 80,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "initial",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "initialReservoirs",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "initialReservoirs",
+              "type": "Buffer",
+              "target": "initialReservoirs",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "UnbiasedPairwiseInitial"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget"
+          }
+        },
+        {
+          "id": "cells",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "initialReservoirs",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "spatialReservoirs",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "initialReservoirs",
+              "type": "Buffer",
+              "target": "initialReservoirs",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "spatialReservoirs",
+              "type": "Buffer",
+              "target": "spatialReservoirs",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "UnbiasedPairwiseCells"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget"
+          }
+        },
+        {
+          "id": "spatial",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "initialReservoirs",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "spatialReservoirs",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "initialReservoirs",
+              "type": "Buffer",
+              "target": "initialReservoirs",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "spatialReservoirs",
+              "type": "Buffer",
+              "target": "spatialReservoirs",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "UnbiasedPairwiseSpatial"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget"
+          }
+        },
+        {
+          "id": "shade",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "spatialReservoirs",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "spatialReservoirs",
+              "type": "Buffer",
+              "target": "spatialReservoirs",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "Shade"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget"
+          }
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": "Texture"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "initial.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "initial.view"
+        },
+        {
+          "from": "input.scene",
+          "to": "cells.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "cells.view"
+        },
+        {
+          "from": "input.scene",
+          "to": "spatial.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "spatial.view"
+        },
+        {
+          "from": "input.scene",
+          "to": "shade.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shade.view"
+        },
+        {
+          "from": "input.color",
+          "to": "initial.color"
+        },
+        {
+          "from": "initial.color",
+          "to": "cells.color"
+        },
+        {
+          "from": "cells.color",
+          "to": "spatial.color"
+        },
+        {
+          "from": "spatial.color",
+          "to": "shade.color"
+        },
+        {
+          "from": "initialReservoirs.buffer",
+          "to": "initial.initialReservoirs"
+        },
+        {
+          "from": "initial.initialReservoirs",
+          "to": "cells.initialReservoirs"
+        },
+        {
+          "from": "spatialReservoirs.buffer",
+          "to": "cells.spatialReservoirs"
+        },
+        {
+          "from": "cells.initialReservoirs",
+          "to": "spatial.initialReservoirs"
+        },
+        {
+          "from": "cells.spatialReservoirs",
+          "to": "spatial.spatialReservoirs"
+        },
+        {
+          "from": "spatial.spatialReservoirs",
+          "to": "shade.spatialReservoirs"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "initialReservoirs.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "spatialReservoirs.size"
+        },
+        {
+          "from": "input.color",
+          "to": "renderSize.texture"
+        }
+      ]
     }
   ]
 }

@@ -2234,7 +2234,7 @@ def run_analysis_commands(root: Path, commands: Sequence[Sequence[object]], *,
 
 def run_tidy_changed(root: Path, preset: str, base: str) -> None:
     """Changed-line naming, magic-number and implicit-bool analysis (changed_tidy.py)."""
-    from changed_tidy import changed_lines, line_filter, plan
+    from changed_tidy import changed_lines, plan, write_line_filter_response
 
     versions = load_tool_versions(root)
     clang_tidy = find_system_tool(root, "clang-tidy", versions)
@@ -2254,7 +2254,7 @@ def run_tidy_changed(root: Path, preset: str, base: str) -> None:
         print("Changed-line analysis: no changed source is compiled by this preset; source_policy.py still applies.")
         return
     directory = analysis_directory(root)
-    filter_text = line_filter(root, changed)
+    filter_path = write_line_filter_response(root, changed, directory / "line-filter.rsp")
     header_filter = f"^{re.escape(str(root.resolve()))}/({'|'.join(TIDY_ROOTS)})/.*"
     commands = []
     for index, (entry, policy) in enumerate(selected):
@@ -2262,7 +2262,7 @@ def run_tidy_changed(root: Path, preset: str, base: str) -> None:
         database.mkdir(parents=True)
         (database / "compile_commands.json").write_text(json.dumps([entry]) + "\n")
         commands.append([clang_tidy, "-p", database, "--quiet", f"--config-file={policy}",
-                         f"--line-filter={filter_text}", f"--header-filter={header_filter}", entry["file"]])
+                         f"@{filter_path}", f"--header-filter={header_filter}", entry["file"]])
     print(f"Changed-line analysis: {len(changed)} changed files, {len(commands)} translation units", flush=True)
     run_analysis_commands(root, commands, directory=directory)
 

@@ -686,8 +686,10 @@ Snapshots cache conservative unions for contiguous groups of sixteen opaque
 objects. Rejected groups skip individual tests; fully inside groups admit their
 members without further AABB tests. Intersecting groups and overlays retain
 individual conservative classification. Input order and painter semantics remain
-unchanged. Homogeneous mesh/material runs preserve source order and skip pairwise
-overlap searches; other runs retain conservative ordering constraints. Reference
+unchanged. Opaque sequences already ordered by material, uniform set and mesh
+preserve source order and skip pairwise overlap searches. This includes
+heterogeneous batches: every stable subrange sort would leave that sequence
+unchanged. Unordered sequences retain conservative overlap constraints. Reference
 views bypass visibility and packet optimization.
 `ViewReport::CulledGroups` and `BoundsTests` expose the work saved. This fixed
 hierarchy benefits spatially coherent source order; it is not a spatial index.
@@ -2129,18 +2131,23 @@ those end-to-end checks are complete.
 
 ## GPU-resident progressive preview
 
-`Renderer::EnableGpuPreview` explicitly enables an optional native-ray-query GPU path before mesh
+`Renderer::EnableGpuPreview` explicitly enables optional GPU preview before mesh
 and material creation. It requires negotiated compute, storage buffers and
-StorageVertex support. Cook `renderer_gpu_preview.slang` as compute and
-`renderer_gpu_preview_image.slang` as raster with the installed shader helper;
-pass their independently reflected descriptors. Native Metal cooking requires the
-pinned SPIRV-Cross translator. WebGPU and WebGL2 reject this path with
-`Unsupported`. The first acceptance covers native Metal; other backends require
-their own pixel qualification. There is no CPU transport/readback fallback and
-these native-query artifacts require native BLAS/TLAS traversal. Triangle graph
-kernels may explicitly select the software compute ABI described in
-[render-graph authoring](render-graph-authoring.md); that path creates no native
-structures and does not use opacity ranges. No automatic traversal fallback is selected.
+StorageVertex support. Choose the installed `renderer_gpu_preview` recipe for
+native ray queries, or `renderer_gpu_preview_software` for explicit triangle
+traversal in the compute shader. The software recipe performs linear work per ray.
+Use `renderer_gpu_preview_image` for presentation and pass the independently
+reflected descriptors. Native Metal cooking requires the pinned SPIRV-Cross
+translator. WebGPU and WebGL2 reject this path with `Unsupported`.
+
+Native-query artifacts additionally require native BLAS/TLAS traversal. Their
+first acceptance covers native Metal; other backends require their own pixel
+qualification. The installed reference-scene sample checks exported authored-emission
+pixels with the software recipe on Vulkan; dense-scene accuracy and performance
+require separate qualification. Triangle graph kernels may also explicitly select
+the software compute ABI described in [render-graph authoring](../development/render-graph-authoring.md);
+that path creates no native structures and does not use opacity ranges. No automatic
+traversal or CPU transport/readback fallback is selected.
 
 CPU setup freezes the existing snapshot, retained normals/UVs/materials and one
 retained RGBA8 texture mip, builds the static binned-SAH BVH, and packs GPU buffers.

@@ -144,6 +144,7 @@ StatusActivityBar::StatusActivityBar(QWidget* parentOrNull)
     connect(mProblems, &QToolButton::clicked, this, &StatusActivityBar::ProblemsRequested);
     connect(mWarnings, &QToolButton::clicked, this, &StatusActivityBar::ProblemsRequested);
     mTimer.setSingleShot(true);
+    mTimer.setTimerType(Qt::PreciseTimer);
     connect(&mTimer, &QTimer::timeout, this, &StatusActivityBar::applyPending);
     mPendingLabel.clear();
     mProblems->setText(FormatProblemCount(0, QStringLiteral("Problem"), QStringLiteral("Problems")));

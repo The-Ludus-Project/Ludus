@@ -150,6 +150,22 @@ def metal_uniform_size(path):
     return constant_buffer_uniform_size(path, "Metal", "buffer 0")
 
 
+def compact_metal_indentation(code):
+    """Remove generated indentation, preserving literals, comments, continuations and line numbers.
+
+    SPIRV-Cross deeply indents its inlined compute control flow. Those spaces can
+    exceed the artifact budget even when the actual program and constant payload
+    fit. This lexical pass changes no tokens or package admission limits.
+    """
+    protected_or_indent = re.compile(
+        r'R"([^ ()\\\t\r\n]{0,16})\(.*?\)\1"'
+        r'|"(?:\\.|[^"\\])*"'
+        r"|'(?:\\.|[^'\\])*'"
+        r'|/\*.*?\*/|//[^\n]*|(?<!\\\n)(?<!\\\r\n)^[ \t]+', re.MULTILINE | re.DOTALL)
+    return protected_or_indent.sub(
+        lambda match: '' if match.group(0)[0] in ' \t' else match.group(0), code)
+
+
 def relative_line_directives(code, roots):
     """Name the files in emitted ``#line`` directives relative to a captured root.
 

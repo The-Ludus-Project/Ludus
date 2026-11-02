@@ -1294,7 +1294,7 @@ uint64 GameWorld::GetReplayHash() const noexcept
         name(recipe.NextLevel);
     }
     // Scatter content and the accepted placements are simulation state; cosmetic tints are not.
-    mix(mLevel.HasScatter);
+    mix(mLevel.HasScatter == true ? uint64{1} : uint64{0});
     if (mLevel.HasScatter == true)
     {
         const RoomScatter& scatter = mLevel.Scatter;

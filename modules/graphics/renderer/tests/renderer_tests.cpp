@@ -6,12 +6,15 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <cmath>
+#include <cstdio>
+#include <initializer_list>
 #include <limits>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/overlays.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
@@ -318,6 +321,107 @@ TEST_CASE("Many objects instance within the portable limit and overlap sorting p
     CHECK(report.SourceIds[2] == 3);
     CHECK(report.Draws == 3);
 }
+namespace
+{
+constexpr uint32 ORDERED_VIEW_MAX_OBJECTS = 1024;
+constexpr uint32 ORDERED_VIEW_SMALL_OBJECTS = 128;
+constexpr uint32 ORDERED_VIEW_MEDIUM_OBJECTS = 512;
+constexpr usize ORDERED_TRIANGLE_VERTICES = 3;
+constexpr uint32 ORDERED_GRID_COLUMNS = 64;
+constexpr float32 ORDERED_GRID_SPACING = .025F;
+constexpr float32 ORDERED_MESH_SCALE = .01F;
+constexpr float32 ORDERED_GRID_ORIGIN = -.8F;
+constexpr uint32 ORDERED_VIEW_WARMUPS = 3;
+constexpr uint32 ORDERED_VIEW_SAMPLES = 20;
+
+void MakeOrderedSnapshot(Session& inoutSession, uint32 objectCount, rr::Snapshot& outSnapshot)
+{
+    StaticArray<math::Vector3, ORDERED_TRIANGLE_VERTICES> positionsMesh{
+        {{-.1F, -.1F, .5F}, {.1F, -.1F, .5F}, {0, .1F, .5F}}};
+    StaticArray<uint32, ORDERED_TRIANGLE_VERTICES> indices{{0, 1, 2}};
+    rr::Mesh second;
+    REQUIRE(inoutSession.Renderer.CreateMesh(
+                {positionsMesh.GetData(), positionsMesh.GetSize(), indices.GetData(), indices.GetSize()},
+                second) == rhi::RasterStatus::Ready);
+    Array<rr::SceneItem> items;
+    REQUIRE(items.TryResize(objectCount) == true);
+    for (usize index = 0; index < items.GetSize(); ++index)
+    {
+        rr::SceneItem& item = items[index];
+        item = inoutSession.Item(index + 1);
+        item.Geometry = index < items.GetSize() / 2 ? inoutSession.Mesh : second;
+        item.Transform.Columns[0].X = ORDERED_MESH_SCALE;
+        item.Transform.Columns[1].Y = ORDERED_MESH_SCALE;
+        item.Transform.Translation.X =
+            ORDERED_GRID_ORIGIN + static_cast<float32>(index % ORDERED_GRID_COLUMNS) * ORDERED_GRID_SPACING;
+        item.Transform.Translation.Y =
+            ORDERED_GRID_ORIGIN + static_cast<float32>(index / ORDERED_GRID_COLUMNS) * ORDERED_GRID_SPACING;
+    }
+    REQUIRE(inoutSession.Renderer.CreateSnapshot(items.GetData(), items.GetSize(), outSnapshot) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(inoutSession.Renderer.Release(second) == rhi::RasterStatus::Ready);
+}
+} // namespace
+
+TEST_CASE("Already ordered heterogeneous opaque views preserve source order and batching",
+          "[renderer][view-preparation]")
+{
+    rr::Limits limits;
+    limits.Objects = ORDERED_VIEW_MAX_OBJECTS;
+    rhi::StorageLimits storage;
+    storage.DrawsPerFrame = ORDERED_VIEW_MAX_OBJECTS;
+    Session session(true, limits, storage);
+    rr::Snapshot snapshot;
+    MakeOrderedSnapshot(session, ORDERED_VIEW_MAX_OBJECTS, snapshot);
+    rr::PreparedView view;
+    rr::ViewReport report;
+    REQUIRE(session.Renderer.PrepareView(snapshot, {}, view, report) == rhi::RasterStatus::Ready);
+    CHECK(report.Visible == ORDERED_VIEW_MAX_OBJECTS);
+    CHECK(report.Draws == 2);
+    for (usize index = 0; index < report.Reported; ++index)
+    {
+        CHECK(report.SourceIds[index] == index + 1);
+    }
+}
+
+// Benchmark-only output uses the ADR 0003 harness exemption. The production
+// PrepareView is unchanged by the deterministic backend; GPU work is not measured.
+TEST_CASE("Editor renderer reports ordered view preparation scaling", "[.editor-view-benchmark]")
+{
+    rr::Limits limits;
+    limits.Objects = ORDERED_VIEW_MAX_OBJECTS;
+    rhi::StorageLimits storage;
+    storage.DrawsPerFrame = ORDERED_VIEW_MAX_OBJECTS;
+    Session session(true, limits, storage);
+    for (const uint32 count : {ORDERED_VIEW_SMALL_OBJECTS, ORDERED_VIEW_MEDIUM_OBJECTS, ORDERED_VIEW_MAX_OBJECTS})
+    {
+        rr::Snapshot snapshot;
+        MakeOrderedSnapshot(session, count, snapshot);
+        for (uint32 sample = 0; sample < ORDERED_VIEW_WARMUPS + ORDERED_VIEW_SAMPLES; ++sample)
+        {
+            rr::PreparedView view;
+            rr::ViewReport report;
+            const uint64 started = ludus::foundation::time::Now().Nanoseconds;
+            const rhi::RasterStatus prepared = session.Renderer.PrepareView(snapshot, {}, view, report);
+            const uint64 nanoseconds = ludus::foundation::time::Now().Nanoseconds - started;
+            REQUIRE(prepared == rhi::RasterStatus::Ready);
+            REQUIRE(report.Visible == count);
+            REQUIRE(report.Draws == 2);
+            REQUIRE(session.Renderer.Release(view) == rhi::RasterStatus::Ready);
+            REQUIRE(rhi::PollLifetime(session.Device) == rhi::RasterStatus::Ready);
+            if (sample >= ORDERED_VIEW_WARMUPS)
+            {
+                std::printf("EDPREPARE,%u,%u,%llu\n",
+                            count,
+                            sample - ORDERED_VIEW_WARMUPS,
+                            static_cast<unsigned long long>(nanoseconds));
+            }
+        }
+        REQUIRE(session.Renderer.Release(snapshot) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::PollLifetime(session.Device) == rhi::RasterStatus::Ready);
+    }
+}
+
 TEST_CASE("Pending geometry is not published as a snapshot and foreign meshes reject", "[renderer]")
 {
     Session session;

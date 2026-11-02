@@ -234,6 +234,40 @@ TEST_CASE("Portable logical destruction waits for CPU leases and true GPU comple
     CHECK(reference::Destroys[7] == 1);
 }
 
+TEST_CASE("One RHI status query retires a completed detached dependency chain", "[rhi][raster][lifetime]")
+{
+    constexpr usize RETIRED_BUFFER_COUNT = 3;
+    Session session;
+    Scene scene(session.Device);
+    SamplerHandle survivor;
+    REQUIRE(CreateSampler(session.Device, {}, survivor) == RasterStatus::Ready);
+    const RasterDraw draw = scene.Draw();
+    REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
+    REQUIRE(DrawIndexed(session.Device, draw) == RasterStatus::Ready);
+    REQUIRE(EndFrame(session.Device) == DeviceStatus::Ready);
+    REQUIRE(Destroy(session.Device, scene.Pipeline) == RasterStatus::Ready);
+    REQUIRE(Destroy(session.Device, scene.Set) == RasterStatus::Ready);
+    REQUIRE(Destroy(session.Device, scene.Uniform) == RasterStatus::Ready);
+    REQUIRE(Destroy(session.Device, scene.Vertices) == RasterStatus::Ready);
+    REQUIRE(Destroy(session.Device, scene.Indices) == RasterStatus::Ready);
+    REQUIRE(Destroy(session.Device, scene.Vertex) == RasterStatus::Ready);
+    REQUIRE(Destroy(session.Device, scene.Fragment) == RasterStatus::Ready);
+    REQUIRE(Destroy(session.Device, scene.Layout) == RasterStatus::Ready);
+    for (const usize destroyed : reference::Destroys)
+    {
+        CHECK(destroyed == 0);
+    }
+    reference::Completed = reference::Submitted;
+    REQUIRE(GetStatus(session.Device, survivor) == RasterStatus::Ready);
+    // Check immediately: a later creation/status call must not be needed to
+    // finish cascading pipeline -> binding/layout/shader -> buffer releases.
+    CHECK(reference::Destroys[static_cast<usize>(internal::RasterKind::Buffer)] == RETIRED_BUFFER_COUNT);
+    CHECK(reference::Destroys[static_cast<usize>(internal::RasterKind::Shader)] == 2);
+    CHECK(reference::Destroys[static_cast<usize>(internal::RasterKind::Layout)] == 1);
+    CHECK(reference::Destroys[static_cast<usize>(internal::RasterKind::Set)] == 1);
+    CHECK(reference::Destroys[static_cast<usize>(internal::RasterKind::Pipeline)] == 1);
+}
+
 TEST_CASE("Portable identities exhaust without wrapping or becoming live again", "[rhi][raster]")
 {
     internal::RasterSequence<uint32> requests{~uint32{0} - 1};

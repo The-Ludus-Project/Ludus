@@ -95,7 +95,8 @@ bool TryApproximateEmissiveTriangleTarget(ReceiverLightingFrame frame,
 [noinline] bool TryEvaluateEmissiveTriangleTarget(SceneContext scene,
                                                   ReceiverLightingFrame frame,
                                                   uint triangleIndex,
-                                                  out EmissiveTriangleTarget outTarget) {
+                                                  out EmissiveTriangleTarget outTarget)
+{
     outTarget = (EmissiveTriangleTarget)0;
     outTarget.Polygons.Diffuse = MakeEmptyProjectedSolidAnglePolygon(false);
     outTarget.Polygons.Specular.TransformedPolygon = MakeEmptyProjectedSolidAnglePolygon(false);
@@ -143,7 +144,8 @@ TargetTotalEstimate MakeTargetTotalEstimate()
 /// returns, without preparing polygons under RIS_TARGET_FORM_FACTOR. Returns false as
 /// TryEvaluateEmissiveTriangleTarget does.
 [noinline] bool
-TryEvaluateResamplingTarget(SceneContext scene, ReceiverLightingFrame frame, uint triangleIndex, out float outTarget) {
+TryEvaluateResamplingTarget(SceneContext scene, ReceiverLightingFrame frame, uint triangleIndex, out float outTarget)
+{
     outTarget = 0;
     if (RIS_TARGET == RIS_TARGET_EXACT)
     {

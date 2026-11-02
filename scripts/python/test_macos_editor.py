@@ -118,6 +118,7 @@ class SetupTests(unittest.TestCase):
                     with self.assertRaises(engine.EngineError):
                         init_editor.validate_editor_options(self.args(preset), engine)
         self.assertIn("macos-clang-development", editor_launch.SUPPORTED_PRESETS)
+        self.assertIn("macos-clang-profile", editor_launch.SUPPORTED_PRESETS)
 
     def test_older_macos_rejects_rendered_editor_before_shader_bootstrap(self):
         with patch.object(platform, "system", return_value="Darwin"), \

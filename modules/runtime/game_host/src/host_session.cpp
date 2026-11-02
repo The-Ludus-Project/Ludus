@@ -1309,7 +1309,7 @@ usize HostSession::CaptureCheckpoint(ludus::foundation::uint8* buffer, usize cap
 
 void HostSession::resetFrameTiming() noexcept
 {
-    Pacing_.Reset();
+    mPacing.Reset();
     FrameClock_.Reset();
 }
 
@@ -1342,15 +1342,15 @@ RunResult HostSession::RunLoop(uint64 maxFrames, FramePresenter* presenter) noex
     }
     Presenter_ = presenter;
     RunResult result = RunResult::Ok;
-    Pacing_.Reset();
-    Timing_.SetPacingInterval(Pacing_.GetInterval());
+    mPacing.Reset();
+    Timing_.SetPacingInterval(mPacing.GetInterval());
     FrameClock_.Reset();
     for (;;)
     {
         // Pace before the frame reads its one timestamp; absolute targets keep
         // the rate when frame work varies (high-resolution-time.md, "Native
         // frame pacing"). No busy spin and no pause/reload catch-up.
-        const platform::PaceResult pace = Pacing_.Pace(PacingClock_);
+        const platform::PaceResult pace = mPacing.Pace(PacingClock_);
         Timing_.Record(FrameClock_.Sample(ludus::foundation::time::Now()), pace);
         if ((presenter != nullptr && presenter->Poll() == false) || PumpControl() == false)
         {
@@ -1361,8 +1361,8 @@ RunResult HostSession::RunLoop(uint64 maxFrames, FramePresenter* presenter) noex
             // A minimized or occluded window lowers the frame rate from the next
             // frame on, and the change drops the schedule. Ticks still follow
             // frames: the editor's Pause remains the only pause.
-            Pacing_.SetVisible(presenter->IsWindowVisible());
-            Timing_.SetPacingInterval(Pacing_.GetInterval());
+            mPacing.SetVisible(presenter->IsWindowVisible());
+            Timing_.SetPacingInterval(mPacing.GetInterval());
         }
         StepFrame();
         if (StopLatched_)

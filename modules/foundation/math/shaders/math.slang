@@ -2,6 +2,16 @@
 
 // GPU counterparts of FoundationMath operations; Slang owns shader scalar spellings.
 static const float PI = 3.14159265358979323846;
+static const uint FLOAT_EXPONENT_BITS = 0x7f800000u;
+// Finite test on the representation, which fast-math compilation cannot assume away.
+bool IsFiniteBits(float value)
+{
+    return (asuint(value) & FLOAT_EXPONENT_BITS) != FLOAT_EXPONENT_BITS;
+}
+bool IsFiniteBits(float3 value)
+{
+    return IsFiniteBits(value.x) == true && IsFiniteBits(value.y) == true && IsFiniteBits(value.z) == true;
+}
 float3 NormalizeOrZero(float3 v)
 {
     float s = dot(v, v);

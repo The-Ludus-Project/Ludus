@@ -716,7 +716,7 @@ TEST_CASE("best-effort import cooks a decodable, deterministic bundle and report
         if (material.Emission.X > 0.0F)
         {
             ++emissiveSlots;
-            CHECK(material.Emission.X == 2.0F); // Frozen RGB/Y photometric proxy; scale is retained.
+            CHECK(material.Emission.X == 40.0F); // pbrt-v4 keeps RGB radiance: L x scale.
         }
     }
     CHECK(emissiveSlots == 1);
@@ -1245,6 +1245,66 @@ TEST_CASE("Cooked v3 lighting preserves photometric lights, HDR environment and 
     REQUIRE(ImportPbrtBestEffort((scratch.Path / "lighting.pbrt").string(), {}, repeat, error) == true);
     REQUIRE(result.Bundle.GetSize() == repeat.Bundle.GetSize());
     CHECK(std::memcmp(result.Bundle.GetData(), repeat.Bundle.GetData(), result.Bundle.GetSize()) == 0);
+}
+
+TEST_CASE("PBRT RGB lights keep their magnitude while spectra normalize to one nit, as pbrt-v4 does",
+          "[scene-cook][lighting]")
+{
+    namespace math = ludus::foundation::math;
+    ScratchDirectory scratch;
+    const std::string text =
+        "WorldBegin\n"
+        "LightSource \"point\" \"rgb I\" [ 2 4 6 ] \"float scale\" 2 \"point3 from\" [ 1 2 3 ]\n"
+        "LightSource \"infinite\" \"rgb L\" [ 0.1 0.2 0.3 ]\n"
+        "AttributeBegin\n"
+        "AreaLightSource \"diffuse\" \"rgb L\" [ 90.75 70.9 60.5 ]\n"
+        "Shape \"trianglemesh\" \"point3 P\" [ 0 0 0  2 0 0  0 1 0 ] \"integer indices\" [ 0 1 2 ]\n"
+        "AttributeEnd\n"
+        "AttributeBegin\n"
+        "AreaLightSource \"diffuse\" \"blackbody L\" [ 6500 ] \"float scale\" 2\n"
+        "Shape \"trianglemesh\" \"point3 P\" [ 0 0 4  2 0 4  0 1 4 ] \"integer indices\" [ 0 1 2 ]\n"
+        "AttributeEnd\n";
+    WriteFile(scratch.Path / "rgb-lights.pbrt", text);
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportPbrtBestEffort((scratch.Path / "rgb-lights.pbrt").string(), {}, result, error) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(DecodesAtRuntime(result, decoded) == true);
+    constexpr float64 TOLERANCE = 1e-4; // Relative float32 rounding of the luminance round trip.
+    const auto isNear = [](float32 actual, float64 expected) noexcept {
+        return math::Abs(static_cast<float64>(actual) - expected) <= TOLERANCE * math::Max(1.0, expected);
+    };
+    REQUIRE(decoded.Lights.GetSize() == 1);
+    CHECK(isNear(decoded.Lights[0].IntensityRgb.X, 4.0) == true);
+    CHECK(isNear(decoded.Lights[0].IntensityRgb.Y, 8.0) == true);
+    CHECK(isNear(decoded.Lights[0].IntensityRgb.Z, 12.0) == true);
+    CHECK(isNear(decoded.Environment.Rgb.X, .1) == true);
+    CHECK(isNear(decoded.Environment.Rgb.Y, .2) == true);
+    CHECK(isNear(decoded.Environment.Rgb.Z, .3) == true);
+    usize rgbEmitters = 0;
+    usize blackbodyEmitters = 0;
+    for (const ludus::resources::SceneMaterial& material : decoded.Materials)
+    {
+        const math::Vector3 emission = material.Emission;
+        if (emission.X > 10.0F)
+        {
+            ++rgbEmitters;
+            CHECK(isNear(emission.X, 90.75) == true);
+            CHECK(isNear(emission.Y, 70.9) == true);
+            CHECK(isNear(emission.Z, 60.5) == true);
+        }
+        else if (emission.X > 0.0F)
+        {
+            // A spectrum is normalized to one nit before `scale`.
+            ++blackbodyEmitters;
+            const float64 luminance = .2126 * static_cast<float64>(emission.X) +
+                                      .7152 * static_cast<float64>(emission.Y) +
+                                      .0722 * static_cast<float64>(emission.Z);
+            CHECK(math::Abs(luminance - 2.0) <= 1e-3);
+        }
+    }
+    CHECK(rgbEmitters == 1);
+    CHECK(blackbodyEmitters == 1);
 }
 
 TEST_CASE("Authored lighting rejects power and cone terms that cannot round-trip the frozen profile",

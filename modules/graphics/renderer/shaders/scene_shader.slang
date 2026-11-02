@@ -4,6 +4,7 @@
 #include "metropolis.slang"
 #include "metropolis_layout.h"
 #include "photon_layout.h"
+#include "stochastic_pairwise_mis.slang"
 // Public logical scene shader interface v1. Packed buffers and traversal remain Renderer-owned.
 // Thanks to Pharr, Jakob and Humphreys, PBRT 4e (2023), sections 12.1/12.6/13.4:
 // https://pbr-book.org/4ed/Light_Sources/Light_Interface
@@ -1137,3 +1138,5 @@ float4 SampleMaterialTexture(SceneContext scene, SurfaceHit hit, float2 texcoord
         return float4(-1);
     return Texture(hit.TriangleIndex, texcoordUv, mapIndex);
 }
+
+#include "stochastic_reuse.slang"

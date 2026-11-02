@@ -60,7 +60,7 @@ jobs:
           - lane: ubuntu
             runner: ubuntu-24.04
             preset: linux-clang-profile
-            capabilities: ""
+            capabilities: editor
             gpu_class: ""
             device: ""
           # Hosted macOS runners already present Metal frames in ci.yml.
@@ -72,7 +72,7 @@ jobs:
           - lane: macos
             runner: macos-15
             preset: macos-clang-profile
-            capabilities: presentation
+            capabilities: presentation editor
             gpu_class: gpu-apple-paravirtual
             device: "GitHub-hosted macos-15 arm64 runner, Apple paravirtual Metal GPU (virtual machine)"
     runs-on: ${{ matrix.runner }}
@@ -87,6 +87,7 @@ jobs:
         with:
           preset: ${{ matrix.preset }}
           cache-variant: profile
+          editor: 'true'
       - name: Prepare Linux shader tools
         if: matrix.lane == 'ubuntu'
         run: ./scripts/shader-probe bootstrap
@@ -95,7 +96,7 @@ jobs:
         uses: ./.github/actions/macos-setup
         with:
           preset: ${{ matrix.preset }}
-          editor: 'false'
+          editor: 'true'
       - name: Fetch the previous report as baseline
         id: baseline
         env:
@@ -210,8 +211,11 @@ jobs:
       - name: Prepare the Profile preset and pinned shader tools
         env:
           PRESET: ${{ matrix.preset }}
+          CAPABILITIES: ${{ matrix.capabilities }}
         run: |
-          ./init.sh --cli --preset "$PRESET" --preset-only --locked --with-tests --no-system-install
+          options=(--cli --preset "$PRESET" --preset-only --locked --with-tests --no-system-install)
+          if [[ " $CAPABILITIES " == *" editor "* ]]; then options+=(--with-editor); fi
+          ./init.sh "${options[@]}"
           git diff --exit-code -- conan.lock
           ./scripts/shader-probe bootstrap
       - name: Fetch the previous report as baseline
