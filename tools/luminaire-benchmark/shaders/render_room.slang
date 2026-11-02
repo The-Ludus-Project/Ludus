@@ -169,14 +169,18 @@ void RenderRoomPixel(uint2 pixel, bool isPureLight)
     Accumulation[index + 1] = float4(compensation, asfloat(nullCount));
 }
 
-[shader("compute")][numthreads(ROOM_GROUP_WIDTH, ROOM_GROUP_HEIGHT, 1)] void
-RenderRoomSlice(uint3 index : SV_DispatchThreadID) {
+// Keep the conventional kernel layout under the pinned C++ formatter, as in renderer_reference.slang.
+#define ROOM_COMPUTE_ENTRY [shader("compute")][numthreads(ROOM_GROUP_WIDTH, ROOM_GROUP_HEIGHT, 1)]
+
+ROOM_COMPUTE_ENTRY
+void RenderRoomSlice(uint3 index : SV_DispatchThreadID)
+{
     if (index.y < RowCount && index.x < ColumnCount)
         RenderRoomPixel(uint2(index.x + ColumnOffset, index.y + RowOffset), false);
 }
 
-    [shader("compute")][numthreads(ROOM_GROUP_WIDTH, ROOM_GROUP_HEIGHT, 1)] void RenderRoomPureLight(
-        uint3 index : SV_DispatchThreadID)
+ROOM_COMPUTE_ENTRY
+void RenderRoomPureLight(uint3 index : SV_DispatchThreadID)
 {
     if (index.y < RowCount && index.x < ColumnCount)
         RenderRoomPixel(uint2(index.x + ColumnOffset, index.y + RowOffset), true);
