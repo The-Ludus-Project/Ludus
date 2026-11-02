@@ -1,0 +1,24 @@
+{
+  "repository": "https://github.com/tizian/specular-manifold-sampling.git",
+  "revision": "1f0e40342a8760450d5aa6202ea096feaa70256a",
+  "directory": "results/Figure_17_Roughness",
+  "roughness": [
+    0.005,
+    0.02,
+    0.1
+  ],
+  "files": {
+    "render.py": "c5d831e70f621291f8c008907a03467ee1feff9238eb4ddceaf9560409d11cbd",
+    "plane_sms.xml": "ba4d5cc1503b19d6770a8c40c221b10651c49a1a4b1c35cd1530250553de9b3d",
+    "plane_pt.xml": "ee92729b028ef107f2e8e071f7aaa566565f928fec3e5027f8bba6614828eef4",
+    "textures/README.md": "c5035716f74cd6d127fecb8c2ee8e2041f08ec7b4b8aeb3998df9ed16aca305f",
+    "textures/normalmap_gaussian.exr": "f1e002586496f60c29f684fb50e2c0d13b66815aa5d6bcdb6c937dab526da2c0",
+    "textures/[2K]Tiles71/Tiles71_col.jpg": "265ff749e279c505a9e27c46782f5929d5cdab55bd7ecc55e2820a3b560b4187"
+  },
+  "representation_files": {
+    "src/libcore/spectrum.cpp": "e73d7a9321afe97f6f1d988fd3d473dd19efd549fd957a46387118a3118b9b04",
+    "include/mitsuba/core/spectrum.h": "188500bf7ee6b3e5e7e1ec1f42729a1041b5c5f87f4092131a431bc2aba284bd",
+    "resources/data/ior/Au.eta.spd": "d7d14a948e14a4479f1590b88e12736b792d8faa875479b32a186d3ffd7c9d0a",
+    "resources/data/ior/Au.k.spd": "e3f40e936b0c7aeb0aa6e31ec834397576707ae07a34cc5dce582fb0177b36d2"
+  }
+}
