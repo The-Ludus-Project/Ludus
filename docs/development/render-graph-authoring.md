@@ -4006,6 +4006,28 @@ raw linear RGB for all estimators with
 an absolute 0.001 tolerance after 512 iterations and 32 burn-in steps. These checks
 are evidence for this profile, not qualification of every backend or material.
 
+The [November 2, 2026 Vulkan check](https://github.com/The-Ludus-Project/Ludus/actions/runs/41469615159)
+on Ubuntu 24.04 / Mesa 25.2.8 llvmpipe (LLVM 20.1.2, Vulkan 1.4.318) did **not**
+meet that per-pixel tolerance. In the ordinary MH legacy metallic/roughness case,
+pixel 44 had red-channel errors of 0.00207 for waste recycling and 0.00121 for RB.
+The Jump Restore cases passed. The CPU suite and both cooked configurations'
+165 HDR-capture assertions passed; no Vulkan validation-layer errors were reported.
+This software-device result does not establish Vulkan reference parity or
+hardware-GPU qualification. The
+[focused validation mode](continuous-integration.md#run-focused-mcmc-vulkan-parity)
+preserves the exact source revision, adapter and shader artifacts for reproduction.
+
+The diagnostic kernel also records bit-exact primary-mutation probes and names
+the material/process on failure. Its completed mutation probes passed; primary
+mutation contraction has not been established as the cause of the image errors.
+CPU mutation arithmetic disables contraction.
+Source-level `precise` alone is not evidence that the pinned Slang 2026.1.2 emitted
+SPIR-V contraction controls; an inspected module contained no `NoContraction`
+decorations. Slang tracks the
+[per-variable qualifier limitation](https://github.com/shader-slang/slang/issues/12198).
+Precision control must be verified in emitted artifacts and both backend suites
+before claiming a correction. The transport tolerance remains unchanged.
+
 Thanks to Sascha Holl, Gurprit Singh and Hans-Peter Seidel,
 [Rao-Blackwellized Markov chain Monte Carlo Light Transport](https://arxiv.org/abs/2605.09117),
 SIGGRAPH 2026, section 5.4, Algorithm 5.2 and supplemental bias discussion.

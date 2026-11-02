@@ -557,10 +557,28 @@ class CancelledRunTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         gate = workflow.split("\n  linux:\n", 1)[1]
         header = gate.split("\n    steps:", 1)[0]
-        self.assertIn("    if: always()\n", header)
+        self.assertIn("    if: always() && (github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true)\n", header)
         self.assertIn("    permissions:\n      contents: read\n      actions: read", header)
         self.assertIn("          GITHUB_TOKEN: ${{ github.token }}\n        run: python3 scripts/python/ci_scope.py gate",
                       gate)
+
+    def test_focused_vulkan_mode_is_manual_and_cannot_replace_pull_request_or_batch_checks(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        changes = workflow.split("\n  changes:\n", 1)[1].split("\n  mcmc-vulkan-parity:\n", 1)[0]
+        self.assertIn("if: github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true", changes)
+        focused = workflow.split("\n  mcmc-vulkan-parity:\n", 1)[1].split("\n  macos-compile:\n", 1)[0]
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true", focused)
+        self.assertIn("ref: ${{ inputs.batch_sha || github.sha }}", focused)
+        self.assertIn("Acquire::Retries=3", focused)
+        self.assertIn('timeout --signal=TERM --kill-after=30s 5m sudo apt-get "${apt_options[@]}" update -qq', focused)
+        self.assertIn('timeout --signal=TERM --kill-after=30s 10m sudo apt-get "${apt_options[@]}" install', focused)
+        self.assertIn("VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation", focused)
+        self.assertIn("set -euo pipefail", focused)
+        self.assertIn("--target ludus_metropolis_tests ludus_renderer_render_tests ludus_metropolis_graph_tests", focused)
+        self.assertIn("assert 'skipped' not in text.lower()", focused)
+        self.assertIn("'VUID-' not in text", focused)
+        gate = workflow.split("\n  linux:\n", 1)[1].split("\n    steps:", 1)[0]
+        self.assertIn("&& 'Focused Vulkan dispatch (not integration)' || 'Ubuntu Clang'", gate)
 
     def test_only_pushes_cancel_required_pull_request_workflows(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"

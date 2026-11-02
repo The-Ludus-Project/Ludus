@@ -61,6 +61,10 @@ TEST_CASE("Symmetric MH acceptance and toroidal mutations preserve their domains
     const float32 nan = std::numeric_limits<float32>::quiet_NaN();
     CHECK(math::TryComputeSymmetricMetropolisAcceptance(nan, 2, acceptance) == math::MathStatus::NonFiniteInput);
     float32 sample = 0;
+    // A fused multiply-add gives a different result for this primary mutation.
+    REQUIRE(math::TryMutateMetropolisPrimary(0x1.4p-5F, 0x1.f9adbcp-4F, 0x1.99999ap-5F, false, sample) ==
+            math::MathStatus::Success);
+    CHECK(sample == 0x1.7124cp-10F);
     REQUIRE(math::TryMutateMetropolisPrimary(0, 0, 0.5F, false, sample) == math::MathStatus::Success);
     CHECK(sample == 0.5F);
     REQUIRE(math::TryMutateMetropolisPrimary(0.75F, 0.75F, 0.5F, false, sample) == math::MathStatus::Success);
