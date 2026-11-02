@@ -429,14 +429,15 @@ render-graph lifecycle/capture and template cases are registered individually
 through Catch2 discovery before CTest runs. Their names start with
 `ludus_renderer_reference:`, `ludus_render_graph_ray:` and `ludus_render_graph_template:`;
 renderer/GPU/ray labels and explicit unsupported-adapter skips remain available.
-Each reference-compute or graph lifecycle/capture case has a 300-second deadline;
-each template case has a
+Each reference-compute or graph lifecycle/capture case has a 300-second deadline
+(600 seconds with ASan/UBSan); each template case has a
 600-second deadline for its convergence captures. Polygon sampling, Metropolis
 and physical-optics parity also have separate named tests. Metropolis parity has
-a 300-second case deadline, allowing its material/estimator variants to share
-the cold shader setup. Its readiness helper yields between polls and allows
-120 seconds for cold shader/pipeline preparation and the first submission;
-buffer readiness and readback retain their 30-second bounds. Failed readiness
+a 300-second case deadline (600 seconds with ASan/UBSan), allowing its
+material/estimator variants to share the cold shader setup. Its readiness helper yields between polls and allows
+120 seconds for cold shader/pipeline preparation and the first submission
+(300 seconds with ASan/UBSan); buffer readiness and readback retain their
+30-second bounds. Failed readiness
 reports the operation, status, elapsed time and deadline, and retires the RHI
 even when a test assertion aborts the case. The numerical and
 image assertions are unchanged by this partition.
@@ -446,11 +447,20 @@ Independent deadlines keep growth in the number of reference captures from
 consuming the raster test's deadline. `--durations yes` identifies completed
 cases when a deadline fails. Render-graph capture tests allow 120 seconds for the
 first submitted ray sample after initialization or a scene/camera reset, including
-first-use software shader work and instrumentation; subsequent samples retain the 10-second completion
-bound. A private frame capture allows 180 seconds including graph preparation
-and readback. The interactive graph preview uses the same first-sample allowance
-while keeping its last presented frame.
-Performance qualification remains in its own lane.
+first-use software shader work. ASan/UBSan cases allow 300 seconds for that cold
+work, including driver allocation interception; subsequent samples retain the
+10-second completion bound. A private frame capture allows 180 seconds including
+graph preparation and readback. The interactive graph preview allows 120 seconds
+for the first sample while keeping its last presented frame.
+
+Raw-reference capture tests yield between advances and distinguish preparation
+and first committed samples from the remaining capture. Their cold window uses
+the same ordinary/instrumented allowance; after any samples commit, the complete
+remaining capture retains its 60-second window. Failures include sample coverage
+and elapsed time. Ordinary raster cases retain 60 seconds, with 180 seconds under
+ASan/UBSan. No sampling count, estimator, tolerance or unsupported-adapter rule
+changes with these scheduling allowances. Performance qualification remains in
+its own lane.
 
 The offscreen editor suite runs as four serial Catch2 shards and the canvas
 configuration suite as two. Declaration order gives each case exactly one shard;

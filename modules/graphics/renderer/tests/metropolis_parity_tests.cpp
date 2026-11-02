@@ -23,7 +23,8 @@ using AdvanceChainFunction = decltype(&internal::AdvanceMetropolisChain);
 using rhi::RasterStatus;
 constexpr uint64 TIMEOUT_NANOSECONDS = 30 * time::NANOSECONDS_PER_SECOND;
 /// Cold software compilation/execution is part of correctness qualification, not a warm-frame benchmark.
-constexpr uint64 COLD_KERNEL_TIMEOUT_NANOSECONDS = 120 * time::NANOSECONDS_PER_SECOND;
+constexpr uint64 COLD_KERNEL_TIMEOUT_NANOSECONDS =
+    LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND;
 /// Leave CPU time for the software adapter's compiler and submission workers.
 constexpr std::chrono::milliseconds COMPLETION_POLL_INTERVAL{1};
 constexpr usize READBACK_CHUNK_BYTES = usize{64} * 1024;
