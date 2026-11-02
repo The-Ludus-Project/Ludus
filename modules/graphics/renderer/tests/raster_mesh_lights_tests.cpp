@@ -610,7 +610,7 @@ TEST_CASE("far raster emitters integrate as a point within the documented error"
 {
     // A rough dielectric just beyond the distance ratio, and a glossy half-metal just beyond its specular gate:
     // roughness 0.5 accepts lights below 1/16 radian, so beyond 16 radii.
-    const FarError rough = MeasureFarError(0, 1, LUDUS_MESH_LIGHT_FAR_DISTANCE_RATIO + .5F);
+    const FarError rough = MeasureFarError(0, 1, LUDUS_MESH_LIGHT_FAR_DISTANCE_RATIO + 0.5);
     const FarError glossy = MeasureFarError(.5F, .5F, 16.5F);
     // Measured: about 0.1% of the peak at worst and 0.06% relative on average.
     constexpr float32 LARGEST_ERROR = .005F;
