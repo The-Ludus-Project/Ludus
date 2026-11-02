@@ -1080,7 +1080,11 @@ bool RenderScene::View(const PreviewViewOptions& options, rr::ViewDescription& o
         // The conventional flip is exact only for a finite projection, so bound the far plane by
         // the farthest corner of the World's geometry from this camera.
         math::Aabb3 boundsWorld;
-        if (TryGetBounds({}, boundsWorld) == false)
+        if (options.BoundsWorldOrNull != nullptr)
+        {
+            boundsWorld = *options.BoundsWorldOrNull;
+        }
+        else if (TryGetBounds({}, boundsWorld) == false)
         {
             return Fail(outError, QStringLiteral("The World has no finite geometry bounds for a finite projection."));
         }

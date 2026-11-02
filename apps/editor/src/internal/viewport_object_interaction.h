@@ -2,13 +2,16 @@
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/fixed_array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/transform.hpp>
 
 #include "viewport_object_overlay.h"
 
+#include <QByteArray>
 #include <QJsonObject>
 #include <QLineF>
 #include <QObject>
@@ -76,7 +79,9 @@ public:
     /// The same geometry feeds the native scene graph and the readback painter.
     void BuildOverlay(const QRectF& framePixel, ViewportObjectOverlay& outOverlay);
     /// Closest triangle under a point; empty means background. Handles perspective and orthographic views.
-    [[nodiscard]] QString Pick(QPointF positionPixel, const QRectF& framePixel) const;
+    /// Objects whose cached mesh bounds the ray misses, or reaches only beyond the nearest hit so far,
+    /// skip their triangles. The cache is rebuilt once after each scene identity change.
+    [[nodiscard]] QString Pick(QPointF positionPixel, const QRectF& framePixel);
 Q_SIGNALS:
     void Changed();
     void SelectionRequested(const QString& id);
@@ -94,6 +99,8 @@ private:
     [[nodiscard]] QRectF resolveFrame(const QRectF& framePixel) const;
     void buildHandles();
     [[nodiscard]] foundation::math::Affine3 makeTransform(const QJsonObject& placement) const;
+    /// Recompute mMeshBoundsMesh for a changed scene identity; false leaves it empty (no rejection).
+    [[nodiscard]] bool refreshMeshBounds();
     QPointer<RenderPreview> mPreviewOrNull;
     QString mSelected;
     QJsonObject mPlacement;
@@ -112,6 +119,9 @@ private:
         static_cast<foundation::usize>(AXIS_COUNT) * static_cast<foundation::usize>(RING_SEGMENTS);
     foundation::FixedArray<HandleLine, MAX_HANDLE_LINES> mHandles;
     ViewportObjectOverlay mPaintOverlay;
+    /// Padded mesh-space bounds, one per scene mesh, of the scene whose Identity is mMeshBoundsIdentity.
+    foundation::Array<foundation::math::Aabb3> mMeshBoundsMesh;
+    QByteArray mMeshBoundsIdentity;
     Tool mTool = Tool::Move;
     foundation::int32 mDragAxis = -1;
     bool mCanEdit = false;
