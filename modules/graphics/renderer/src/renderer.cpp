@@ -460,7 +460,7 @@ Status PrepareWorldGridBuffers(rhi::DeviceHandle device,
     }
     const usize vertexBytes =
         (isAnalytic == true ? WORLD_GRID_ANALYTIC_VERTEX_COUNT : WORLD_GRID_VERTEX_COUNT) * sizeof(Vertex);
-    constexpr StaticArray<uint32, WORLD_GRID_INDEX_COUNT> indices{0, 1, 2, 2, 3, 0};
+    constexpr StaticArray<uint32, WORLD_GRID_INDEX_COUNT> INDICES{0, 1, 2, 2, ANALYTIC_GRID_FOURTH_CORNER, 0};
     for (usize i = 0; i < count; ++i)
     {
         const WorldGridLine& line = inoutScratch.Lines[i];
@@ -489,8 +489,8 @@ Status PrepareWorldGridBuffers(rhi::DeviceHandle device,
     }
     bool isPending = status == Status::Pending;
     status = rhi::CreateBuffer(device,
-                               {rhi::BufferRole::Index32, sizeof(indices)},
-                               {reinterpret_cast<const uint8*>(indices.GetData()), sizeof(indices)},
+                               {rhi::BufferRole::Index32, sizeof(INDICES)},
+                               {reinterpret_cast<const uint8*>(INDICES.GetData()), sizeof(INDICES)},
                                candidate->Indices);
     if (Accepted(status) == false)
     {
@@ -648,9 +648,14 @@ struct Renderer::State final
         rhi::RasterShaderHandle ShadowFragment{};
         rhi::RasterShaderHandle DepthFragment{};
         rhi::RasterShaderHandle GBufferFragment{};
+        /// GBufferFragment without the alpha-coverage discard, for opaque materials; null in older packages.
+        rhi::RasterShaderHandle OpaqueGBufferFragment{};
+        /// Conventional and reverse-Z depth pipelines of each G-buffer fragment.
         static constexpr usize GBUFFER_PIPELINE_COUNT = 2;
         StaticArray<rhi::RasterPipelineHandle, GBUFFER_PIPELINE_COUNT> GBufferPipelines{};
+        StaticArray<rhi::RasterPipelineHandle, GBUFFER_PIPELINE_COUNT> OpaqueGBufferPipelines{};
         bool HasGBuffer = false;
+        bool HasOpaqueGBuffer = false;
         rhi::BindingLayoutHandle Layout{};
         rhi::TextureHandle White{};
         rhi::RasterPipelineHandle ShadowPipeline{};
@@ -661,7 +666,7 @@ struct Renderer::State final
         bool HasSurfaceMapProfile = false;
         bool HasAuthoredProfile = false;
         uint32 VariantCount = 6;
-        static constexpr usize REQUEST_CAPACITY = PROGRAM_VARIANT_COUNT + 2 + GBUFFER_PIPELINE_COUNT;
+        static constexpr usize REQUEST_CAPACITY = PROGRAM_VARIANT_COUNT + 2 + 2 * GBUFFER_PIPELINE_COUNT;
         StaticArray<rhi::PipelineRequest, REQUEST_CAPACITY> Requests{};
         bool HasDepthPrepass = false;
         rhi::RasterPipelineHandle Pipelines[6]{};
@@ -892,6 +897,7 @@ struct Renderer::State final
             static_cast<void>(rhi::Destroy(Device, p.ShadowFragment));
             static_cast<void>(rhi::Destroy(Device, p.DepthFragment));
             static_cast<void>(rhi::Destroy(Device, p.GBufferFragment));
+            static_cast<void>(rhi::Destroy(Device, p.OpaqueGBufferFragment));
             static_cast<void>(rhi::Destroy(Device, p.White));
             static_cast<void>(rhi::Destroy(Device, p.Layout));
             static_cast<void>(rhi::Destroy(Device, p.Fragment));
@@ -1929,63 +1935,81 @@ Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription&
                                  WORLD_GRID_VERTEX_COUNT,
                                  grid.Count});
     };
-    for (usize i = 0; i < view.DrawCount; ++i)
+    // The G-buffer draws opaque materials first, through the fragment without the coverage discard when the program
+    // has one, then alpha-masked materials. Thanks to Apple, "Optimize Metal Performance for Apple silicon Macs",
+    // WWDC20 session 10632, https://developer.apple.com/videos/play/wwdc2020/10632/: a fragment function containing a
+    // discard produces "feedback" fragments, and hidden-surface removal works best with opaque draws first, then
+    // feedback. A pipeline whose fragment merely contains the discard is affected, so opaque materials need their own.
+    const usize roundCount = isGBuffer == true ? 2 : 1;
+    for (usize round = 0; round < roundCount; ++round)
     {
-        const auto& packet = view.Packets[i];
-        if (((isDepthOnly == true || isGBuffer == true) && packet.Pass != Layer::Opaque) ||
-            (areOverlaysOnly == true && packet.Pass == Layer::Opaque))
+        for (usize i = 0; i < view.DrawCount; ++i)
         {
-            continue;
-        }
-        if (packet.Pass == Layer::Overlay && hasDrawnGrid == false)
-        {
-            status = drawGrid();
+            const State::Packet& packet = view.Packets[i];
+            if (((isDepthOnly == true || isGBuffer == true) && packet.Pass != Layer::Opaque) ||
+                (areOverlaysOnly == true && packet.Pass == Layer::Opaque))
+            {
+                continue;
+            }
+            const bool isOpaqueMaterial =
+                packet.MaterialSlot != NO_MATERIAL && s.Materials[packet.MaterialSlot].Alpha == MaterialAlpha::Opaque;
+            if (isGBuffer == true && (round == 0) != isOpaqueMaterial)
+            {
+                continue;
+            }
+            if (packet.Pass == Layer::Overlay && hasDrawnGrid == false)
+            {
+                status = drawGrid();
+                if (status != Status::Ready)
+                {
+                    return status;
+                }
+            }
+            const State::MeshRecord& mesh = s.MeshRecords[packet.MeshSlot];
+            const rhi::RasterVertexSlice slices[]{
+                {mesh.Vertices,
+                 0,
+                 mesh.VertexCount * (s.HasVisibilityInputs == true ? sizeof(VisibilityVertex) : sizeof(Vertex))},
+                {view.Instances, packet.First * sizeof(Instance), packet.Count * sizeof(Instance)}};
+            const rhi::RasterPipelineHandle opaque =
+                isHdr == true       ? (view.Depth == DepthConvention::ReverseZ ? s.HdrFlat[1] : s.HdrFlat[0])
+                : isSurface == true ? (view.Depth == DepthConvention::ReverseZ ? s.SurfaceReverse : s.Opaque)
+                                    : (view.Depth == DepthConvention::ReverseZ ? s.TargetReverse : s.TargetOpaque);
+            const rhi::RasterPipelineHandle overlay =
+                isHdr == true ? s.HdrFlat[2] : (isSurface == true ? s.Overlay : s.TargetOverlay);
+            rhi::RasterPipelineHandle pipeline = packet.Pass == Layer::Opaque ? opaque : overlay;
+            rhi::BindingSetHandle bindings =
+                packet.UniformSlot != NO_UNIFORM ? s.UniformSets.GetBindings(packet.UniformSlot) : s.Bindings;
+            if (packet.MaterialSlot != NO_MATERIAL)
+            {
+                const State::MaterialRecord& material = s.Materials[packet.MaterialSlot];
+                const State::ProgramRecord& program = s.Programs[material.ProgramSlot];
+                pipeline =
+                    program.Pipelines[(program.Lit == true ? (isHdr == true ? LDR_LIT_PROGRAM_VARIANT_COUNT : 0)
+                                                           : (isSurface == true ? 0 : LDR_LIT_PROGRAM_VARIANT_COUNT)) +
+                                      (packet.Pass == Layer::Overlay             ? 2
+                                       : view.Depth == DepthConvention::ReverseZ ? 1
+                                                                                 : 0)];
+                if (isDepthOnly == true)
+                {
+                    pipeline = program.DepthPipeline;
+                }
+                if (isGBuffer == true)
+                {
+                    const usize depthPipeline = view.Depth == DepthConvention::ReverseZ ? 1 : 0;
+                    pipeline = isOpaqueMaterial == true && program.HasOpaqueGBuffer == true
+                                   ? program.OpaqueGBufferPipelines[depthPipeline]
+                                   : program.GBufferPipelines[depthPipeline];
+                }
+                bindings = material.Bindings;
+            }
+            status = rhi::DrawIndexed(
+                s.Device,
+                {pipeline, bindings, slices, mesh.Indices, 0, mesh.IndexCount, mesh.VertexCount, packet.Count});
             if (status != Status::Ready)
             {
                 return status;
             }
-        }
-        const auto& mesh = s.MeshRecords[packet.MeshSlot];
-        const rhi::RasterVertexSlice slices[]{
-            {mesh.Vertices,
-             0,
-             mesh.VertexCount * (s.HasVisibilityInputs == true ? sizeof(VisibilityVertex) : sizeof(Vertex))},
-            {view.Instances, packet.First * sizeof(Instance), packet.Count * sizeof(Instance)}};
-        const rhi::RasterPipelineHandle opaque =
-            isHdr == true       ? (view.Depth == DepthConvention::ReverseZ ? s.HdrFlat[1] : s.HdrFlat[0])
-            : isSurface == true ? (view.Depth == DepthConvention::ReverseZ ? s.SurfaceReverse : s.Opaque)
-                                : (view.Depth == DepthConvention::ReverseZ ? s.TargetReverse : s.TargetOpaque);
-        const rhi::RasterPipelineHandle overlay =
-            isHdr == true ? s.HdrFlat[2] : (isSurface == true ? s.Overlay : s.TargetOverlay);
-        auto pipeline = packet.Pass == Layer::Opaque ? opaque : overlay;
-        rhi::BindingSetHandle bindings =
-            packet.UniformSlot != NO_UNIFORM ? s.UniformSets.GetBindings(packet.UniformSlot) : s.Bindings;
-        if (packet.MaterialSlot != NO_MATERIAL)
-        {
-            const auto& material = s.Materials[packet.MaterialSlot];
-            const auto& program = s.Programs[material.ProgramSlot];
-            pipeline =
-                program.Pipelines[(program.Lit == true ? (isHdr == true ? LDR_LIT_PROGRAM_VARIANT_COUNT : 0)
-                                                       : (isSurface == true ? 0 : LDR_LIT_PROGRAM_VARIANT_COUNT)) +
-                                  (packet.Pass == Layer::Overlay             ? 2
-                                   : view.Depth == DepthConvention::ReverseZ ? 1
-                                                                             : 0)];
-            if (isDepthOnly == true)
-            {
-                pipeline = program.DepthPipeline;
-            }
-            if (isGBuffer == true)
-            {
-                pipeline = program.GBufferPipelines[view.Depth == DepthConvention::ReverseZ ? 1 : 0];
-            }
-            bindings = material.Bindings;
-        }
-        status = rhi::DrawIndexed(
-            s.Device,
-            {pipeline, bindings, slices, mesh.Indices, 0, mesh.IndexCount, mesh.VertexCount, packet.Count});
-        if (status != Status::Ready)
-        {
-            return status;
         }
     }
     return isDepthOnly == true || isGBuffer == true || hasDrawnGrid == true ? Status::Ready : drawGrid();
@@ -2340,7 +2364,8 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
                                 const rhi::RasterShaderDescription* shadowOrNull,
                                 MaterialProgram& outProgram,
                                 const rhi::RasterShaderDescription* depthOrNull,
-                                const rhi::RasterShaderDescription* gBufferOrNull) noexcept
+                                const rhi::RasterShaderDescription* gBufferOrNull,
+                                const rhi::RasterShaderDescription* opaqueGBufferOrNull) noexcept
 {
     constexpr usize PLAIN_BINDING_COUNT = 3;
     constexpr usize CLUSTER_BINDING_COUNT = 8;
@@ -2377,6 +2402,11 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
             (hasAuthoredProfile == true ? CLUSTER_BINDING_COUNT + AUTHORED_BINDING_COUNT : CLUSTER_BINDING_COUNT);
     if (gBufferOrNull != nullptr && (isClustered == false || hasAuthoredProfile == false || depthOrNull == nullptr ||
                                      gBufferOrNull->Artifact.Stage != rhi::ShaderStage::Fragment))
+    {
+        return Status::InvalidDescription;
+    }
+    if (opaqueGBufferOrNull != nullptr &&
+        (gBufferOrNull == nullptr || opaqueGBufferOrNull->Artifact.Stage != rhi::ShaderStage::Fragment))
     {
         return Status::InvalidDescription;
     }
@@ -2582,6 +2612,7 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     p.Clustered = isClustered;
     p.HasDepthPrepass = depthOrNull != nullptr;
     p.HasGBuffer = gBufferOrNull != nullptr;
+    p.HasOpaqueGBuffer = opaqueGBufferOrNull != nullptr;
     p.HasSurfaceMapProfile = hasSurfaceMapProfile;
     p.HasAuthoredProfile = hasAuthoredProfile;
     p.Hdr = isLit == true && s.Hdr;
@@ -2606,6 +2637,10 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     if (Accepted(status) == true && gBufferOrNull != nullptr)
     {
         status = rhi::CreateRasterShader(s.Device, *gBufferOrNull, p.GBufferFragment);
+    }
+    if (Accepted(status) == true && opaqueGBufferOrNull != nullptr)
+    {
+        status = rhi::CreateRasterShader(s.Device, *opaqueGBufferOrNull, p.OpaqueGBufferFragment);
     }
     const uint8 white[]{255, 255, 255, 255};
     rhi::TextureDescription texture{1, 1, rhi::RasterFormat::Rgba8Unorm};
@@ -2703,9 +2738,17 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
         attributes[12] = {12, 0, LUDUS_AUTHORED_COLOR_OFFSET, rhi::RasterVertexFormat::Float4};
         attributes[13] = {13, 0, LUDUS_AUTHORED_UV1_OFFSET, rhi::RasterVertexFormat::Float2};
     }
-    const uint32 total =
-        p->VariantCount + (p->Lit == true ? 1U : 0U) + (p->HasDepthPrepass == true ? 1U : 0U) +
-        (p->HasGBuffer == true ? static_cast<uint32>(State::ProgramRecord::GBUFFER_PIPELINE_COUNT) : 0U);
+    constexpr uint32 GBUFFER_PIPELINE_COUNT = static_cast<uint32>(State::ProgramRecord::GBUFFER_PIPELINE_COUNT);
+    const uint32 total = p->VariantCount + (p->Lit == true ? 1U : 0U) + (p->HasDepthPrepass == true ? 1U : 0U) +
+                         (p->HasGBuffer == true ? GBUFFER_PIPELINE_COUNT : 0U) +
+                         (p->HasOpaqueGBuffer == true ? GBUFFER_PIPELINE_COUNT : 0U);
+    // G-buffer requests follow the depth prepass: the alpha-tested fragment's conventional and reverse-Z pipelines,
+    // then the opaque fragment's.
+    const uint32 firstGBufferPhase = p->VariantCount + 2;
+    const auto getGBufferPipeline = [p](uint32 gBufferIndex) noexcept -> rhi::RasterPipelineHandle& {
+        return gBufferIndex < GBUFFER_PIPELINE_COUNT ? p->GBufferPipelines[gBufferIndex]
+                                                     : p->OpaqueGBufferPipelines[gBufferIndex - GBUFFER_PIPELINE_COUNT];
+    };
     while (p->Phase <= total)
     {
         if (p->Phase != 0)
@@ -2725,7 +2768,7 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
                 p->Phase <= p->VariantCount       ? p->Pipelines[p->Phase - 1]
                 : p->Phase == p->VariantCount + 1 ? p->ShadowPipeline
                 : p->Phase == p->VariantCount + 2 ? p->DepthPipeline
-                                                  : p->GBufferPipelines[p->Phase - p->VariantCount - 3]);
+                                                  : getGBufferPipeline(p->Phase - 1 - firstGBufferPhase));
             if (acquired != Status::Ready)
             {
                 return p->Setup = acquired;
@@ -2774,23 +2817,27 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
             description.Blend = false;
             description.DepthCompare = rhi::RasterDepthCompare::Less;
         }
-        if (p->HasGBuffer == true && p->Phase >= p->VariantCount + 2)
+        if (p->HasGBuffer == true && p->Phase >= firstGBufferPhase)
         {
-            const Status ready = rhi::GetStatus(s.Device, p->GBufferFragment);
+            const uint32 gBufferIndex = p->Phase - firstGBufferPhase;
+            const rhi::RasterShaderHandle fragment =
+                gBufferIndex < GBUFFER_PIPELINE_COUNT ? p->GBufferFragment : p->OpaqueGBufferFragment;
+            const Status ready = rhi::GetStatus(s.Device, fragment);
             if (ready != Status::Ready)
             {
                 return ready;
             }
-            static constexpr StaticArray<rhi::RasterFormat, DEFERRED_TARGET_COUNT> formats{
+            static constexpr StaticArray<rhi::RasterFormat, DEFERRED_TARGET_COUNT> FORMATS{
                 {rhi::RasterFormat::Rgba16Float, rhi::RasterFormat::Rgba16Float, rhi::RasterFormat::Rgba16Float}};
-            description.Fragment = p->GBufferFragment;
+            description.Fragment = fragment;
             description.Target = rhi::RasterTarget::Rgba16Float;
-            description.ColorFormats = formats.AsSpan();
+            description.ColorFormats = FORMATS.AsSpan();
             description.Depth = true;
             description.DepthWrite = true;
             description.Blend = false;
-            description.DepthCompare = p->Phase == p->VariantCount + 2 ? rhi::RasterDepthCompare::LessEqual
-                                                                       : rhi::RasterDepthCompare::GreaterEqual;
+            description.DepthCompare = gBufferIndex % GBUFFER_PIPELINE_COUNT == 0
+                                           ? rhi::RasterDepthCompare::LessEqual
+                                           : rhi::RasterDepthCompare::GreaterEqual;
         }
         const auto requested = rhi::RequestPipeline(s.Device, description, p->Requests[p->Phase]);
         if (Accepted(requested) == false)

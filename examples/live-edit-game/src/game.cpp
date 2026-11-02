@@ -34,7 +34,7 @@ using ludus::foundation::usize;
 constexpr uint32 kCheckpointSchema = 1;
 constexpr uint32 kPropertySchema = ludus::sample::kBodySchemaVersion;
 using ludus::sample::kBodyFieldCount;
-constexpr uint32 kCapabilities = static_cast<uint32>(Capability::Reload) | static_cast<uint32>(Capability::Properties);
+constexpr uint32 CAPABILITIES = static_cast<uint32>(Capability::Reload) | static_cast<uint32>(Capability::Properties);
 
 constexpr uint64 kObjectId = 0xA001;
 constexpr uint64 kPropSpeed = 0xB001;
@@ -86,7 +86,7 @@ Status GameQuery(GameMetadata* out) noexcept
     }
     out->AbiMajor = kAbiMajor;
     out->AbiMinor = kAbiMinor;
-    out->Capabilities = kCapabilities;
+    out->Capabilities = CAPABILITIES;
     out->PropertySchemaVersion = kPropertySchema;
     out->CheckpointSchemaVersion = kCheckpointSchema;
     const usize len = std::strlen(kIdentity);

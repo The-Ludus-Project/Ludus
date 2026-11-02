@@ -1123,7 +1123,8 @@ bool TryApproximateEmitterTarget(ReferenceReceiverFrame frame,
 // Thanks to the Slang authors, core module noinline attribute reference:
 // https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
 // One copy of the two unrolled polygon preparations serves every site.
-[noinline] bool TryEvaluateEmitterTarget(ReferenceReceiverFrame frame, uint triangle, out EmitterTarget outTarget) {
+[noinline] bool TryEvaluateEmitterTarget(ReferenceReceiverFrame frame, uint triangle, out EmitterTarget outTarget)
+{
     outTarget.Light = MakeEmptyReferenceTriangleLight(frame);
     outTarget.Coefficients = float2(0);
     outTarget.Target = 0;
@@ -1162,7 +1163,8 @@ TargetTotal MakeTargetTotal()
 
 // TryEvaluateResamplingTarget: p-hat alone for the reservoir's and Z-hat's candidates, without preparing polygons under
 // sampler version 3.
-[noinline] bool TryEvaluateResamplingTarget(ReferenceReceiverFrame frame, uint triangle, out float outTarget) {
+[noinline] bool TryEvaluateResamplingTarget(ReferenceReceiverFrame frame, uint triangle, out float outTarget)
+{
     outTarget = 0;
     if (HasFormFactorTarget() == false)
     {
@@ -1308,7 +1310,8 @@ struct ResampledLightSample
                                                 EmitterTarget target,
                                                 uint technique,
                                                 float2 randomNumbers,
-                                                float surrogateProbability) {
+                                                float surrogateProbability)
+{
     ResampledLightSample result;
     result.DirectionWorld = 0;
     result.PositionWorld = 0;

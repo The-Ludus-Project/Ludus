@@ -84,7 +84,7 @@ TEST_CASE("Activity chip changes at most ten times a second", "[editor][activity
     }
     // The first change in a burst lands at once; the rest coalesce into one more after the interval.
     CHECK(bar.GetAppliedChangeCount() - before == 1);
-    QTest::qWait(ACTIVITY_UPDATE_INTERVAL_MILLISECONDS + SETTLE_MILLISECONDS);
+    REQUIRE(QTest::qWaitFor([&bar, before]() { return bar.GetAppliedChangeCount() - before == 2; }) == true);
     CHECK(bar.GetAppliedChangeCount() - before == 2);
     CHECK(bar.GetActivityText() == QStringLiteral("Building %1").arg(BURST_UPDATES - 1));
 }

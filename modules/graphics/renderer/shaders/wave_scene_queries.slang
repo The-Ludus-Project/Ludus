@@ -83,7 +83,8 @@ uint WalkWaveRegion(SceneContext scene,
 }
 /// Ready includes misses. Failure never publishes a partial region. Sorted IDs provide deterministic parity.
 [noinline] uint
-FindWaveInteractionRegion(SceneContext scene, EllipticalCone cone, inout WaveInteractionRegion inoutRegion) {
+FindWaveInteractionRegion(SceneContext scene, EllipticalCone cone, inout WaveInteractionRegion inoutRegion)
+{
     if (IsValidEllipticalCone(cone) == false)
         return WAVE_QUERY_INVALID;
     WaveInteractionRegion candidate = (WaveInteractionRegion)0;

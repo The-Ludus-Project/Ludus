@@ -267,8 +267,13 @@ float4 SampleBaseTexel(Varying input)
     if (material.Authored.x > .5)
         baseColor *= input.ColorVertex;
 #endif
+    // The opaque deferred G-buffer variant (DeferredOpaqueGBufferFragment) defines LUDUS_OPAQUE_COVERAGE: it draws only
+    // opaque materials, and a fragment function that merely contains a discard loses hidden-surface removal on
+    // tile-based GPUs (renderer.cpp, Renderer::drawView).
+#ifndef LUDUS_OPAQUE_COVERAGE
     if (material.Options.z == 1 && baseColor.a < material.Options.x)
         discard;
+#endif
     return baseColor;
 }
 #ifdef LUDUS_AUTHORED_INPUTS

@@ -406,3 +406,19 @@ TEST_CASE("bounded arrangement handles a maximum-size cycle and rejects excess c
     CHECK(ComputeRenderGraphLayout(nodes, edges, RenderGraphLayoutOperation::Arrange, positions) == false);
     CHECK(positions.size() == RenderGraphDocument::MAX_NODES);
 }
+
+TEST_CASE("display placement moves unplaced cards below placed and earlier cards", "[editor][render-graph][layout]")
+{
+    const QVector<QRectF> fixedCards{QRectF(0, 0, 100, 80)};
+    QVector<QRectF> movable{QRectF(10, 20, 100, 80), QRectF(0, 0, 100, 80), QRectF(400, 0, 100, 80)};
+    ResolveRenderGraphOverlaps(fixedCards, 20, movable);
+    CHECK(movable.at(0).top() == 100);
+    CHECK(movable.at(1).top() == 200);
+    // A card that already clears everything keeps its place, and nothing moves sideways.
+    CHECK(movable.at(2) == QRectF(400, 0, 100, 80));
+    CHECK(movable.at(0).left() == 10);
+    CHECK(movable.at(1).left() == 0);
+    QVector<QRectF> none;
+    ResolveRenderGraphOverlaps(fixedCards, 20, none);
+    CHECK(none.isEmpty() == true);
+}

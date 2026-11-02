@@ -36,10 +36,18 @@ public:
     void SetStatisticsVisible(bool isVisible);
     /// Text currently painted over the graph; empty when the overlay is disabled.
     [[nodiscard]] QString GetStatisticsText() const;
-    /// Last complete graph frame, retained during rebuilding and errors.
+    /// Last CPU fallback frame, retained during rebuilding and errors; direct GPU presentation has no QImage.
     [[nodiscard]] const QImage& GetImage() const noexcept;
-    /// Number of complete images received by this display.
+    /// Number of CPU fallback images received; PreviewViewport tracks directly presented GPU frames.
     [[nodiscard]] foundation::uint64 GetPresentedFrames() const noexcept;
+
+    /// True while the status text is the short build-failure chip; the full problem is in the Error List.
+    [[nodiscard]] bool HasProblemChip() const noexcept
+    {
+        return mHasProblemChip;
+    }
+    /// Words that end the chip's text and name where its full problem is listed.
+    [[nodiscard]] static QString GetProblemChipLink();
 
 Q_SIGNALS:
     /// Refreshed overlay text, also consumed by the shared-device presentation.
@@ -49,6 +57,7 @@ Q_SIGNALS:
 
 protected:
     void paintEvent(QPaintEvent*) override;
+    void mousePressEvent(QMouseEvent* event) override;
 
 private:
     ViewportObjectInteraction* mInteractionOrNull = nullptr;
@@ -56,6 +65,7 @@ private:
     void refreshFrame();
     void refreshStatus();
     void refreshStatistics();
+    bool mHasProblemChip = false;
     RendererWorkspace& mWorkspace;
     RenderGraphPreview& mPreview;
     QComboBox* mTargets;

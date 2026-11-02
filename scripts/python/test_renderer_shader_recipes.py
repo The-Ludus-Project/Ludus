@@ -32,12 +32,12 @@ class RendererShaderRecipesTests(unittest.TestCase):
                 ' if(NOT EXISTS "${path}")\n message(FATAL_ERROR "Missing ${path}")\n endif()\n'
                 "endfunction()\n"
                 "function(ludus_compile_shader)\n"
-                ' cmake_parse_arguments(SH "RASTER" "TARGET;NAME;SOURCE;VERTEX;FRAGMENT;COMPUTE" "INCLUDES;DEPENDS" ${ARGN})\n'
+                ' cmake_parse_arguments(SH "RASTER;NATIVE_RAY_QUERIES;SOFTWARE_RAY_QUERIES;FRAGMENT_STORAGE" "TARGET;NAME;SOURCE;VERTEX;FRAGMENT;COMPUTE" "INCLUDES;DEPENDS" ${ARGN})\n'
                 ' if(NOT EXISTS "${SH_SOURCE}")\n message(FATAL_ERROR "Missing source")\n endif()\n'
                 " foreach(path IN LISTS SH_INCLUDES)\n"
                 '  if(NOT IS_DIRECTORY "${path}")\n message(FATAL_ERROR "Missing include")\n endif()\n'
                 " endforeach()\n"
-                ' file(APPEND "${CMAKE_BINARY_DIR}/calls.txt" "${SH_NAME}|${SH_SOURCE}|${SH_VERTEX}|${SH_FRAGMENT}|${SH_COMPUTE}|${SH_DEPENDS}\\n")\n'
+                ' file(APPEND "${CMAKE_BINARY_DIR}/calls.txt" "${SH_NAME}|${SH_SOURCE}|${SH_VERTEX}|${SH_FRAGMENT}|${SH_COMPUTE}|${SH_DEPENDS}|${SH_NATIVE_RAY_QUERIES}|${SH_SOFTWARE_RAY_QUERIES}|${SH_FRAGMENT_STORAGE}\\n")\n'
                 "endfunction()\n"
                 f'include("{helper}")\n'
                 "ludus_compile_renderer_shaders(TARGET cooked SHADERS "
@@ -61,7 +61,7 @@ class RendererShaderRecipesTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(len(calls), len(recipes))
                 for call in calls:
-                    name, source, vertex, fragment, compute, dependency = call.split(
+                    name, source, vertex, fragment, compute, dependency, native_rays, software_rays, fragment_storage = call.split(
                         "|"
                     )
                     recipe = recipes[name]
@@ -70,6 +70,9 @@ class RendererShaderRecipesTests(unittest.TestCase):
                     self.assertEqual(fragment, recipe.get("fragment", ""))
                     self.assertEqual(compute, recipe.get("compute", ""))
                     self.assertEqual(Path(dependency).name, "recipes.json")
+                    self.assertEqual(native_rays, "TRUE" if recipe.get("native_ray_queries") else "FALSE")
+                    self.assertEqual(software_rays, "TRUE" if recipe.get("software_ray_queries") else "FALSE")
+                    self.assertEqual(fragment_storage, "TRUE" if recipe.get("fragment_storage") else "FALSE")
                     # Follow literal source includes so composed recipes retain their real stage owners.
                     pending = [SHADERS / recipe["source"]]
                     seen = set()

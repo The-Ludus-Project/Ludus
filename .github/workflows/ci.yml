@@ -18,6 +18,11 @@ on:
         required: true
         type: string
   workflow_dispatch:
+    inputs:
+      mcmc_vulkan_parity_only:
+        description: Run only the CPU/Mesa Vulkan MH and Jump Restore parity and capture checks.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -45,6 +50,7 @@ env:
 
 jobs:
   changes:
+    if: github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true
     name: Classify changes
     runs-on: ubuntu-24.04
     outputs:
@@ -59,12 +65,78 @@ jobs:
       - uses: ./.github/actions/change-scope
         id: scope
 
+  mcmc-vulkan-parity:
+    if: github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true
+    name: MH and Jump Restore Vulkan parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.batch_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/native-setup
+        with:
+          preset: linux-clang-development
+      - name: Prepare Vulkan and the pinned shader tools
+        run: |
+          apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3)
+          timeout --signal=TERM --kill-after=30s 5m sudo apt-get "${apt_options[@]}" update -qq
+          timeout --signal=TERM --kill-after=30s 10m sudo apt-get "${apt_options[@]}" install -y -qq libvulkan1 mesa-vulkan-drivers vulkan-tools vulkan-validationlayers
+          ./scripts/shader-probe bootstrap
+          ./scripts/bootstrap-spirv-cross
+      - name: Build CPU oracle, GPU parity and both template configurations
+        run: |
+          out/host-tools/venv/bin/cmake --preset linux-clang-development \
+            -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" \
+            -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val" \
+            -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross"
+          out/host-tools/venv/bin/cmake --build out/build/linux-clang-development \
+            --target ludus_metropolis_tests ludus_renderer_render_tests ludus_metropolis_graph_tests \
+            --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          mkdir -p out/mcmc-vulkan
+          shader_directory=out/build/linux-clang-development/modules/graphics/renderer/ludus-shaders/ludus_renderer_render_tests/metropolis_parity
+          cp "$shader_directory/metropolis_parity.compute.spv" "$shader_directory/manifest.json" out/mcmc-vulkan/
+      - name: Run with Mesa Vulkan and validation layers; reject skipped tests
+        env:
+          VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
+        run: |
+          set -euo pipefail
+          has_failed=0
+          mkdir -p out/mcmc-vulkan
+          git rev-parse HEAD | tee out/mcmc-vulkan/commit.txt
+          vulkaninfo --summary 2>&1 | tee out/mcmc-vulkan/adapter.log
+          out/build/linux-clang-development/modules/graphics/renderer/ludus_metropolis_tests 2>&1 | tee out/mcmc-vulkan/cpu.log || has_failed=1
+          out/build/linux-clang-development/modules/graphics/renderer/ludus_renderer_render_tests '[metropolis]' 2>&1 | tee out/mcmc-vulkan/parity.log || has_failed=1
+          out/build/linux-clang-development/modules/graphics/renderer/ludus_metropolis_graph_tests 2>&1 | tee out/mcmc-vulkan/captures.log || has_failed=1
+          python3 - <<'PY'
+          from pathlib import Path
+          for name in ('cpu', 'parity', 'captures'):
+              text = Path(f'out/mcmc-vulkan/{name}.log').read_text()
+              assert 'All tests passed' in text, text
+              assert 'skipped' not in text.lower(), text
+              assert 'validation error' not in text.lower() and 'VUID-' not in text, text
+          PY
+          exit "$has_failed"
+      - name: Preserve Vulkan parity evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcmc-vulkan-parity
+          path: out/mcmc-vulkan/
+          if-no-files-found: warn
+
   # Thanks to GitHub Actions runner-images, macOS 14 deprecation announcement #13518:
   # https://github.com/actions/runner-images/issues/13518
   # Keep arm64 native coverage on macOS 15; SDKs still declare a 14.0 deployment floor.
+  # Hosted ARM capacity can expire queued jobs before a runner acquires them.
+  # Admit one long native ARM lane at a time: sanitizers, SDK/native acceptance,
+  # then the nightly analyzer. A preceding failure must not suppress evidence.
+  # Thanks to GitHub, "Evaluate expressions in workflows and actions", status checks:
+  # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions
   macos-compile:
-    needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    needs: [changes, macos-sanitizers]
+    if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' }}
     name: macOS native backends and diagnostics
     runs-on: macos-15
     env:
@@ -452,8 +524,8 @@ jobs:
           key: ${{ steps.setup.outputs.compiler-cache-key }}
 
   macos-analysis:
-    needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier == 'nightly'
+    needs: [changes, macos-compile]
+    if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier == 'nightly' }}
     name: macOS analyzer baseline
     runs-on: macos-15
     env:
@@ -1400,9 +1472,9 @@ jobs:
     # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions
     # A cancelled pull-request run passes only when a newer, uncancelled run of
     # this workflow covers the same head commit; that run's gate owns the result.
-    name: Ubuntu Clang
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true && 'Focused Vulkan dispatch (not integration)' || 'Ubuntu Clang' }}
     needs: [changes, macos-compile, macos-sanitizers, macos-analysis, formatting, debug-runtime, development, sanitizers, filesystem-fuzz, threading-races, analysis, editor, assertion-policy, pch, build-budget, scripting-qualification]
-    if: always()
+    if: always() && (github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true)
     runs-on: ubuntu-24.04
     permissions:
       contents: read

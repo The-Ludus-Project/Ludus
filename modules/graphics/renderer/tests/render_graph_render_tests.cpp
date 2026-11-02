@@ -1499,11 +1499,10 @@ TEST_CASE("bilinear GPU sampling matches pixel centers and clamps source edges",
     }
 }
 
-TEST_CASE("spatial graph executes rendered scene color and responds to camera edits", "[render-graph][gpu][bilinear]")
+namespace
 {
-    const format::Technique technique = GENERATE(format::Technique::BilinearUpscale,
-                                                 format::Technique::MetalFxSpatialUpscale,
-                                                 format::Technique::MetalFxSpatialPerceptualUpscale);
+void CheckSpatialGraphCameraEdits(format::Technique technique)
+{
     GraphGpuFixture fixture;
     if (technique != format::Technique::BilinearUpscale)
     {
@@ -1566,7 +1565,25 @@ TEST_CASE("spatial graph executes rendered scene color and responds to camera ed
     CHECK(hasChanged == true);
 }
 
-TEST_CASE("MetalFX preserves constant RGB through its private output and surface copy", "[render-graph][gpu][metalfx]")
+} // namespace
+
+TEST_CASE("spatial graph executes rendered scene color and responds to camera edits", "[render-graph][gpu][bilinear]")
+{
+    CheckSpatialGraphCameraEdits(format::Technique::BilinearUpscale);
+}
+
+// The trusted Vulkan validation workflow requires [render-graph] cases to execute without skips.
+// Platform-specific MetalFX cases remain in the full GPU suite and macOS qualification.
+TEST_CASE("MetalFX graph executes rendered scene color and responds to camera edits",
+          "[render-graph-metalfx][gpu][metalfx]")
+{
+    const format::Technique technique =
+        GENERATE(format::Technique::MetalFxSpatialUpscale, format::Technique::MetalFxSpatialPerceptualUpscale);
+    CheckSpatialGraphCameraEdits(technique);
+}
+
+TEST_CASE("MetalFX preserves constant RGB through its private output and surface copy",
+          "[render-graph-metalfx][gpu][metalfx]")
 {
     const rhi::SpatialUpscaleColorProcessing mode =
         GENERATE(rhi::SpatialUpscaleColorProcessing::Linear, rhi::SpatialUpscaleColorProcessing::Perceptual);

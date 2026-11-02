@@ -146,7 +146,7 @@ struct ForwardSceneResources::State final
             static_cast<void>(rhi::Destroy(Device, entry.Handle));
         }
     }
-    void evictIdle() noexcept
+    void EvictIdle() noexcept
     {
         for (MeshEntry& entry : Meshes)
         {
@@ -167,7 +167,7 @@ struct ForwardSceneResources::State final
             }
         }
     }
-    Status acquireMesh(const MeshDescription& mesh, usize& outIndex) noexcept
+    Status AcquireMesh(const MeshDescription& mesh, usize& outIndex) noexcept
     {
         Array<uint8> key;
         if (MakeMeshKey(mesh, key) == false)
@@ -199,7 +199,7 @@ struct ForwardSceneResources::State final
         }
         if (key.GetSize() > CACHE_IDENTITY_BYTES - IdentityBytes)
         {
-            evictIdle();
+            EvictIdle();
         }
         if (key.GetSize() > CACHE_IDENTITY_BYTES - IdentityBytes)
         {
@@ -212,7 +212,7 @@ struct ForwardSceneResources::State final
         }
         if (hasFreeSlot == false)
         {
-            evictIdle();
+            EvictIdle();
         }
         for (usize i = 0; i < Meshes.GetSize(); ++i)
         {
@@ -234,7 +234,7 @@ struct ForwardSceneResources::State final
         }
         return Status::CapacityExceeded;
     }
-    Status acquireTexture(const rhi::TextureCpuContent& source, usize& outIndex) noexcept
+    Status AcquireTexture(const rhi::TextureCpuContent& source, usize& outIndex) noexcept
     {
         if (source.Bytes == nullptr && source.Size == 0 && source.Width == 0 && source.Height == 0)
         {
@@ -286,7 +286,7 @@ struct ForwardSceneResources::State final
         }
         if (size > CACHE_IDENTITY_BYTES - IdentityBytes)
         {
-            evictIdle();
+            EvictIdle();
         }
         if (size > CACHE_IDENTITY_BYTES - IdentityBytes)
         {
@@ -299,7 +299,7 @@ struct ForwardSceneResources::State final
         }
         if (hasFreeSlot == false)
         {
-            evictIdle();
+            EvictIdle();
         }
         for (usize i = 0; i < Textures.GetSize(); ++i)
         {
@@ -690,7 +690,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                 return Status::Unsupported;
             }
             usize meshIndex = NO_RESOURCE;
-            Status status = owner.acquireMesh(geometry, meshIndex);
+            Status status = owner.AcquireMesh(geometry, meshIndex);
             if (IsAccepted(status) == false)
             {
                 return status;
@@ -750,7 +750,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             for (usize texture = 0; texture < MATERIAL_TEXTURE_COUNT; ++texture)
             {
                 usize index = NO_RESOURCE;
-                status = owner.acquireTexture(sources[texture], index);
+                status = owner.AcquireTexture(sources[texture], index);
                 if (IsAccepted(status) == false)
                 {
                     return status;

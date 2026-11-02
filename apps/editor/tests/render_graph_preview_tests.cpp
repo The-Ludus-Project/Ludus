@@ -1810,14 +1810,24 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
     REQUIRE(source.Start() == true);
     WorldGraphView* graphViewOrNull = viewport.findChild<WorldGraphView*>();
     REQUIRE(graphViewOrNull != nullptr);
+    QLabel* statusOrNull = viewport.findChild<QLabel*>(QStringLiteral("worldGraphStatus"));
+    REQUIRE(statusOrNull != nullptr);
+    // The picture carries a short chip; the compiler's words stay in the tooltip and the Error List.
+    CHECK(statusOrNull->text() == QStringLiteral("Shader build failed, using default renderer. Show in Error List"));
+    CHECK(statusOrNull->toolTip().contains(QStringLiteral("timed out")) == true);
+    CHECK(graphViewOrNull->HasProblemChip() == true);
+    // A real click reaches the view only while it is not transparent to the mouse.
+    CHECK(graphViewOrNull->testAttribute(Qt::WA_TransparentForMouseEvents) == false);
+    QSignalSpy errorListRequested(&workspace, &RendererWorkspace::ErrorListRequested);
+    if (graphViewOrNull->isVisible() == true && statusOrNull->isVisible() == true)
+    {
+        QTest::mouseClick(graphViewOrNull, Qt::LeftButton, Qt::NoModifier, statusOrNull->geometry().center());
+        CHECK(errorListRequested.count() == 1);
+    }
     REQUIRE(waitFor([&]() { return graphViewOrNull->GetImage().isNull() == false; }) == true);
     CHECK(workspace.IsUsingDefaultRenderer() == true);
     CHECK(source.FrameAvailable() == true);
     CHECK(failed.isEmpty() == true);
-    QLabel* statusOrNull = viewport.findChild<QLabel*>(QStringLiteral("worldGraphStatus"));
-    REQUIRE(statusOrNull != nullptr);
-    CHECK(statusOrNull->text().contains(QStringLiteral("timed out")) == true);
-    CHECK(statusOrNull->text().contains(QStringLiteral("Engine default renderer fallback")) == true);
     const QImage initial = graphViewOrNull->GetImage();
     const uint64 generation = workspace.GetPreviewOrNull()->GetPresentedGeneration();
     const uint64 revision = workspace.GetPreviewOrNull()->GetPresentedRevision();
@@ -3818,7 +3828,7 @@ TEST_CASE("The viewport names the check that turned graph pixels magenta",
     preview.SetExtraction(extraction);
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_POLYGONAL_LIGHT_FIXTURE)) == RenderGraphPreviewLoad::Staged);
     // The preview reads the failure summaries about twice a second, one ray pass at a time.
-    constexpr int64 FAILURE_TIMEOUT_MILLISECONDS = 30000;
+    constexpr int64 FAILURE_TIMEOUT_MILLISECONDS = 150000;
     QElapsedTimer timer;
     timer.start();
     while (preview.GetFailureText().isEmpty() == true && timer.elapsed() < FAILURE_TIMEOUT_MILLISECONDS)

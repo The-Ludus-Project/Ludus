@@ -337,6 +337,8 @@ private:
     QString mLinkPortTooltip;
     QString mLinkEndpoint;
     QString mHoveredPort;
+    /// Card under the pointer, empty over none; focuses its wires like a selection.
+    QString mHoveredNode;
     bool mIsHoveredOutput = false;
     QSize mReferenceSize;
     QRubberBand* mSelectionBox;

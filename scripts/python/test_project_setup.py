@@ -148,6 +148,18 @@ class ProjectSetupTests(unittest.TestCase):
         self.repair()
         self.assertEqual(ignore.read_bytes(), before)
 
+    def test_a_refreshed_engine_install_does_not_make_the_recorded_setup_stale(self):
+        # ./init.sh rebuilds this editor's engine whenever the checkout moved; its install keeps its path and
+        # identity but its libraries and revision change. That must not report "inputs changed; run repair".
+        self.repair()
+        library = self.sdk / "lib" / "libludus_foundation_base.a"
+        library.write_bytes(b"\x00ar rebuilt from a newer checkout")
+        manifest_path = self.sdk / "share" / "Ludus" / "LudusSdkManifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["source_revision"] = "0123456789abcdef0123456789abcdef01234567"
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        setup.check_project(self.project, tooling_root=self.tools, runner=self.runner)
+
     def test_moved_sdk_tools_and_changed_cache_require_repair(self):
         self.repair()
         moved = self.root / "new-sdk"

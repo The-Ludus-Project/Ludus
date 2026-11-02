@@ -13,7 +13,7 @@ ludus_compile_renderer_shaders(TARGET reference_scene SHADERS
 ludus_compile_renderer_shaders(TARGET reference_scene SHADERS renderer_gpu_preview_image)
 ludus_compile_renderer_shaders(TARGET reference_scene SHADERS renderer_lit_shadow)
 ludus_compile_ray_queries(TARGET reference_scene NAME ray_query)
-ludus_compile_renderer_shaders(TARGET reference_scene SHADERS renderer_gpu_preview)
+ludus_compile_renderer_shaders(TARGET reference_scene SHADERS renderer_gpu_preview_software)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(reference_scene PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wformat=2 -Wundef

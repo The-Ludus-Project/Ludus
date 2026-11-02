@@ -125,7 +125,8 @@ float4 Texel(uint t, int x, int y, uint map)
 // artifact limit. SPIRV-Cross still marks the MSL function always_inline, and
 // Slang emits no inlining hint for Metal, WGSL or GLSL source; Vulkan drivers
 // make their own inlining decision when compiling the SPIR-V.
-[noinline] float4 Texture(uint t, float2 uv, uint map = 0) {
+[noinline] float4 Texture(uint t, float2 uv, uint map = 0)
+{
     if ((map == 2 ? asuint(Surface(t, 8).z) : asuint(Surface(t, map == 1 ? 6 : 4).w)) == 0)
         return float4(1);
     float4 transform = Surface(t, 3);
@@ -371,7 +372,8 @@ void EndRayPathCapture(float3 radiance)
 // Visibility consumes only committed status; candidate attributes remain necessary
 // for exactly the same masked-coverage test used by closest-hit traversal. Out of line, as TraceNative below.
 [noinline] bool
-TraceNativeVisibility(float3 originWorld, float3 directionWorld, float nearDistanceWorld, float farDistanceWorld) {
+TraceNativeVisibility(float3 originWorld, float3 directionWorld, float nearDistanceWorld, float farDistanceWorld)
+{
     RayQuery<RAY_FLAG_NONE> query;
     TraceNativeQuery(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true, query);
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
@@ -438,7 +440,8 @@ void TraceNativeQuery(float3 originWorld,
                            float3 directionWorld,
                            float nearDistanceWorld,
                            float farDistanceWorld,
-                           bool isVisibility = false) {
+                           bool isVisibility = false)
+{
     Hit hit;
     hit.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
     hit.DistanceWorld = farDistanceWorld;

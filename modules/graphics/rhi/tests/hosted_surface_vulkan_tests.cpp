@@ -78,7 +78,7 @@ public:
         {
             uint32 families = 0;
             vkGetPhysicalDeviceQueueFamilyProperties(devices[i], &families, nullptr);
-            if (families > MAX_QUEUE_FAMILIES || HasExtension(devices[i]) == false)
+            if (families > MAX_QUEUE_FAMILIES || hasExtension(devices[i]) == false)
             {
                 continue;
             }
@@ -191,7 +191,7 @@ public:
         REQUIRE(vkCreateBuffer(mDevice, &bufferInfo, nullptr, &copy.Buffer) == VK_SUCCESS);
         VkMemoryRequirements requirements{};
         vkGetBufferMemoryRequirements(mDevice, copy.Buffer, &requirements);
-        copy.Memory = AllocateHostVisible(requirements);
+        copy.Memory = allocateHostVisible(requirements);
         REQUIRE(vkBindBufferMemory(mDevice, copy.Buffer, copy.Memory, 0) == VK_SUCCESS);
 
         VkCommandBufferAllocateInfo allocate{};
@@ -287,7 +287,7 @@ public:
     }
 
 private:
-    [[nodiscard]] static bool HasExtension(VkPhysicalDevice physical)
+    [[nodiscard]] static bool hasExtension(VkPhysicalDevice physical)
     {
         constexpr uint32 MAX_EXTENSIONS = 512;
         uint32 count = 0;
@@ -311,7 +311,7 @@ private:
         return false;
     }
 
-    [[nodiscard]] VkDeviceMemory AllocateHostVisible(const VkMemoryRequirements& requirements) const
+    [[nodiscard]] VkDeviceMemory allocateHostVisible(const VkMemoryRequirements& requirements) const
     {
         VkPhysicalDeviceMemoryProperties properties{};
         vkGetPhysicalDeviceMemoryProperties(mPhysical, &properties);

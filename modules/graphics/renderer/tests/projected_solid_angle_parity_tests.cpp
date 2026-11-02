@@ -356,6 +356,7 @@ TEST_CASE("GPU projected solid angle sampling matches the C++ implementation", "
         const float32 projectedSolidAngle = words[1];
         REQUIRE(math::Abs(projectedSolidAngle - expected.ProjectedSolidAngle) <=
                 1.0e-6F + 1.0e-3F * expected.ProjectedSolidAngle);
+        INFO("raster integral " << words[10] << ", sampling integral " << expected.ProjectedSolidAngle);
         // The raster integral must agree with the independent CPU sampling preparation,
         // including reversed winding, horizon clips and thin/distant polygons.
         REQUIRE(math::Abs(words[10] - expected.ProjectedSolidAngle) <=
@@ -631,6 +632,7 @@ TEST_CASE("GPU linearly transformed cosine sampling matches the C++ implementati
         REQUIRE(words[1] == 1.0F);
         REQUIRE(words[3] == static_cast<float32>(expected.TransformedPolygon.VertexCount));
         const float32 integral = math::GetLinearlyTransformedCosinePolygonIntegral(expected);
+        INFO("raster LTC integral " << words[11] << ", sampling integral " << integral);
         REQUIRE(math::Abs(words[11] - integral) <= 1.0e-6F + 1.0e-3F * integral);
         REQUIRE(math::Abs(words[2] - integral) <= 1.0e-6F + 1.0e-3F * integral);
         if (integral < NEGLIGIBLE_INTEGRAL)

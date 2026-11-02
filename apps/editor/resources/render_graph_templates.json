@@ -202,7 +202,7 @@
     {
       "kind": "graph",
       "identity": "conditional-restir",
-      "label": "Conditional ReSTIR — mesh light suffixes",
+      "label": "Conditional ReSTIR — suffix path tracing",
       "category": "ray-traced",
       "requirements": [
         "native-ray-tracing"
@@ -216,7 +216,7 @@
         "indirect lighting",
         "reservoir"
       ],
-      "description": "Conditional RIS and ReSTIR (Kettunen et al., 2023), specialized to mesh-light endpoint suffixes: independent supporting and final-gather prefixes, temporal and spatial conditional area reservoirs, and fresh canonical proposals. Direct mesh lighting plus one indirect bounce; optional direct-only mode. Four passes and three automatically sized buffers. Native ray tracing required. Analytic lights and environment illumination are outside this estimator."
+      "description": "Conditional RIS and ReSTIR (Kettunen et al., 2023), with cached variable-length mesh-light path suffixes: independent supporting and final-gather prefixes, temporal and spatial conditional area reservoirs, and fresh canonical proposals. Configurable suffix scattering depth (0–7), up to nine scattering vertices with the delayed gather; endpoint mode remains available. Four passes and three automatically sized buffers. Native ray tracing required. Analytic lights and environment illumination are outside this estimator."
     },
     {
       "kind": "graph",
@@ -421,7 +421,7 @@
     {
       "kind": "snippet",
       "identity": "conditional-restir",
-      "label": "Conditional ReSTIR — mesh light suffixes",
+      "label": "Conditional ReSTIR — suffix path tracing",
       "category": "lighting",
       "defaultConfiguration": "ConditionalRestir",
       "requirements": [
@@ -436,7 +436,7 @@
         "indirect lighting",
         "reservoir"
       ],
-      "description": "Conditional RIS and ReSTIR (Kettunen et al., 2023), specialized to mesh-light endpoint suffixes: independent supporting and final-gather prefixes, temporal and spatial conditional area reservoirs, and fresh canonical proposals. Direct mesh lighting plus one indirect bounce; optional direct-only mode. Four passes and three automatically sized buffers. Native ray tracing required. Analytic lights and environment illumination are outside this estimator."
+      "description": "Conditional RIS and ReSTIR (Kettunen et al., 2023), with cached variable-length mesh-light path suffixes: independent supporting and final-gather prefixes, temporal and spatial conditional area reservoirs, and fresh canonical proposals. Configurable suffix scattering depth (0–7), up to nine scattering vertices with the delayed gather; endpoint mode remains available. Four passes and three automatically sized buffers. Native ray tracing required. Analytic lights and environment illumination are outside this estimator."
     },
     {
       "kind": "snippet",

@@ -63,10 +63,9 @@ void TransformWaveLine(inout WaveConnectionGrid inoutGrid, uint offset, uint str
             inoutGrid.Values[offset + index * stride] /= float(LUDUS_WAVE_CONNECTION_AXIS);
     }
 }
-[noinline] void PropagateWaveGrid(inout WaveConnectionGrid inoutGrid,
-                                  float distanceWorld,
-                                  float wavelengthWorld,
-                                  float halfWidthWorld) {
+[noinline] void
+PropagateWaveGrid(inout WaveConnectionGrid inoutGrid, float distanceWorld, float wavelengthWorld, float halfWidthWorld)
+{
     for (uint index = 0; index < LUDUS_WAVE_CONNECTION_AXIS; ++index)
         TransformWaveLine(inoutGrid, index * LUDUS_WAVE_CONNECTION_AXIS, 1, false);
     for (uint index = 0; index < LUDUS_WAVE_CONNECTION_AXIS; ++index)
@@ -89,7 +88,8 @@ void TransformWaveLine(inout WaveConnectionGrid inoutGrid, uint offset, uint str
         TransformWaveLine(inoutGrid, index * LUDUS_WAVE_CONNECTION_AXIS, 1, true);
     for (uint index = 0; index < LUDUS_WAVE_CONNECTION_AXIS; ++index)
         TransformWaveLine(inoutGrid, index, LUDUS_WAVE_CONNECTION_AXIS, true);
-} float2 EvaluateWaveGaussian(float radiusSquaredWorld, float distanceWorld, float sigmaWorldSquared, float wavenumber)
+}
+float2 EvaluateWaveGaussian(float radiusSquaredWorld, float distanceWorld, float sigmaWorldSquared, float wavenumber)
 {
     float correlation = distanceWorld / wavenumber;
     float denominator = sigmaWorldSquared * sigmaWorldSquared + correlation * correlation;
@@ -126,7 +126,8 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
     }
     return false;
 }
-[noinline] uint TraceWaveBallistic(SceneContext scene, EllipticalCone rayCone, out bool outIsBlocked) {
+[noinline] uint TraceWaveBallistic(SceneContext scene, EllipticalCone rayCone, out bool outIsBlocked)
+{
     outIsBlocked = false;
     rayCone.RadiusWorld = 0;
     rayCone.Slope = 0;
@@ -175,12 +176,13 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
         }
     }
     return WAVE_QUERY_READY;
-}[noinline] uint EscapeWaveOrigin(SceneContext scene,
-                                  EllipticalCone cone,
-                                  float wavelengthWorld,
-                                  out float outDistanceWorld,
-                                  out bool outIsBlocked,
-                                  out bool outIsEntirelyBallistic)
+}
+[noinline] uint EscapeWaveOrigin(SceneContext scene,
+                                 EllipticalCone cone,
+                                 float wavelengthWorld,
+                                 out float outDistanceWorld,
+                                 out bool outIsBlocked,
+                                 out bool outIsEntirelyBallistic)
 {
     float distanceWorld = cone.NearWorld;
     float previousWorld = distanceWorld;
@@ -230,7 +232,8 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
                                                  float3 directionWorld,
                                                  float distanceWorld,
                                                  float wavelengthWorld,
-                                                 inout float2 inoutField) {
+                                                 inout float2 inoutField)
+{
     if (IsFiniteBits(sourceWorld) == false || IsFiniteBits(receiverWorld) == false ||
         IsFiniteBits(directionWorld) == false || IsFiniteBits(distanceWorld) == false || distanceWorld <= 0 ||
         IsFiniteBits(wavelengthWorld) == false || wavelengthWorld < LUDUS_WAVE_CONNECTION_MIN_WAVELENGTH_WORLD ||

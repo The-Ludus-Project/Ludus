@@ -542,6 +542,32 @@ bool ErrorList::ActivateVisibleRow(foundation::int32 row)
     return true;
 }
 
+bool ErrorList::SelectFirstProblem()
+{
+    foundation::int32 firstRow = -1;
+    for (foundation::int32 row = 0; row < mTable->rowCount(); ++row)
+    {
+        const QTableWidgetItem* itemOrNull = mTable->item(row, SEVERITY_COLUMN);
+        if (itemOrNull == nullptr)
+        {
+            continue;
+        }
+        firstRow = firstRow < 0 ? row : firstRow;
+        if (mEntries.at(itemOrNull->data(ENTRY_ROLE).toInt()).Severity == ErrorListSeverity::Error)
+        {
+            mTable->selectRow(row);
+            mTable->scrollToItem(itemOrNull);
+            return true;
+        }
+    }
+    if (firstRow < 0)
+    {
+        return false;
+    }
+    mTable->selectRow(firstRow);
+    return true;
+}
+
 void ErrorList::render()
 {
     mErrors->setText(QStringLiteral("%1 Errors").arg(GetCount(ErrorListSeverity::Error)));

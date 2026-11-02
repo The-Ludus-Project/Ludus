@@ -126,11 +126,11 @@ public:
         mItems.append(item);
         invalidate();
     }
-    int count() const override
+    [[nodiscard]] int count() const override
     {
         return static_cast<int>(mItems.size());
     }
-    QLayoutItem* itemAt(int index) const override
+    [[nodiscard]] QLayoutItem* itemAt(int index) const override
     {
         return index >= 0 && index < mItems.size() ? mItems.at(index) : nullptr;
     }
@@ -144,11 +144,11 @@ public:
         invalidate();
         return item;
     }
-    Qt::Orientations expandingDirections() const override
+    [[nodiscard]] Qt::Orientations expandingDirections() const override
     {
         return Qt::Horizontal | Qt::Vertical;
     }
-    QSize sizeHint() const override
+    [[nodiscard]] QSize sizeHint() const override
     {
         QSize hint;
         for (const QLayoutItem* item : mItems)
@@ -160,7 +160,7 @@ public:
         }
         return hint;
     }
-    QSize minimumSize() const override
+    [[nodiscard]] QSize minimumSize() const override
     {
         QSize minimum;
         for (const QLayoutItem* item : mItems)
@@ -1953,7 +1953,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
             if (mFrameSource == &mState->ProjectGraph->GetDisplayFrames())
             {
                 mState->ShaderStatusText = text;
-                mState->HasShaderError = false;
+                mState->HasShaderError = mState->GraphViewOrNull->HasProblemChip();
                 mState->applyShaderStatus();
             }
         });
@@ -2100,6 +2100,25 @@ bool PreviewViewport::tryPickOrientationWidget(QPointF globalPosition)
         return false;
     }
     Preview_->SetAxisView(view);
+    return true;
+}
+bool PreviewViewport::tryActivateProblemChip(QPointF globalPosition)
+{
+    if (mState->GraphViewOrNull == nullptr || mState->GraphViewOrNull->HasProblemChip() == false ||
+        mState->FrameLayoutOrNull == nullptr || mState->ProjectWorkspace == nullptr ||
+        mState->ShaderStatusText.isEmpty() == true)
+    {
+        return false;
+    }
+    const QRect frame = mState->FrameLayoutOrNull->GetFrameRectangle();
+    const QPointF local = getInteractionPosition(globalPosition) - QPointF(frame.topLeft());
+    const QString fitted = FitOverlayText(mState->ShaderStatusText, static_cast<qreal>(frame.width()));
+    const QRectF chip(GetShaderStatusOrigin(mState->StatisticsText), MeasureStatistics(fitted));
+    if (chip.contains(local) == false)
+    {
+        return false;
+    }
+    mState->ProjectWorkspace->RequestErrorList();
     return true;
 }
 QRectF PreviewViewport::getInteractionFrame() const

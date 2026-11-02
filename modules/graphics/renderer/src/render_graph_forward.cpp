@@ -177,6 +177,7 @@ void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescripti
     switch (role)
     {
         case format::StageRole::DeferredGBufferFragment:
+        case format::StageRole::DeferredOpaqueGBufferFragment:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
             inoutDescription.Bindings = CLUSTERED_BINDINGS.AsSpan();
             inoutDescription.UniformMembers = CLUSTERED_MEMBERS.AsSpan();

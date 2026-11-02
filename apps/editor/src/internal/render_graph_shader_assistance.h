@@ -34,6 +34,13 @@ public:
                 const QString& file,
                 const RenderGraphBuildSettings& settings);
 
+    /// The one-line status of shader assistance. It is not part of this widget's own layout: the host places it
+    /// (under the editor) so the controls above the code stay on one row.
+    [[nodiscard]] QLabel* GetStatusLabel() noexcept
+    {
+        return mStatus;
+    }
+
 private:
     void setStatus(const QString& message);
     void prepare();

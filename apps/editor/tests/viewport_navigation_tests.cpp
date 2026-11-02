@@ -33,7 +33,6 @@
 #include <QPoint>
 #include <QPointF>
 #include <QPushButton>
-#include <QScreen>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -701,18 +700,16 @@ TEST_CASE("Continuous camera input does not postpone viewport frames",
     CAPTURE(idleFrames, inputFrames, inputCount, viewport.GetStatisticsText().toStdString());
     CHECK(inputCount > 20);
     CHECK(inputFrames > 2);
-#if defined(Q_OS_MACOS)
-    QScreen* screenOrNull = viewport.screen();
-    REQUIRE(screenOrNull != nullptr);
-    constexpr float64 MINIMUM_REFRESH_FRACTION = 0.75;
-    constexpr float64 MILLISECONDS_PER_SECOND = 1000;
-    const float64 refreshRate = screenOrNull->refreshRate();
-    const uint64 minimumFrames =
-        static_cast<uint64>(refreshRate * SAMPLE_MILLISECONDS / MILLISECONDS_PER_SECOND * MINIMUM_REFRESH_FRACTION);
-    CAPTURE(refreshRate, minimumFrames);
-    CHECK(idleFrames >= minimumFrames);
-    CHECK(inputFrames >= minimumFrames);
-#endif
+    CHECK(idleFrames > 2);
+    // Thanks to The Qt Company, "QScreen Class", refreshRate property, and
+    // "QTimer Class", accuracy and timer resolution:
+    // https://doc.qt.io/qt-6/qscreen.html#refreshRate-prop
+    // https://doc.qt.io/qt-6/qtimer.html#accuracy-and-timer-resolution
+    // The display rate is approximate and timers can run late under host load.
+    // Compare this run's matched windows to detect input-induced postponement;
+    // absolute display throughput is a separate performance measurement.
+    constexpr float64 MINIMUM_IDLE_FRACTION = 0.75;
+    CHECK(static_cast<float64>(inputFrames) >= static_cast<float64>(idleFrames) * MINIMUM_IDLE_FRACTION);
     preview.Stop();
 }
 
@@ -780,13 +777,13 @@ TEST_CASE("Empty orthographic views draw the facing Cartesian plane", "[editor][
     constexpr usize DIRECTION_COUNT = 3;
     const StaticArray<math::Vector3, DIRECTION_COUNT> eyes{{{0, 0, 5}, {5, 0, 0}, {0, 5, 0}}};
     const StaticArray<math::Vector3, DIRECTION_COUNT> axes{{{0, 1, 0}, {0, 1, 0}, {1, 0, 0}}};
-    constexpr StaticArray<float32, DIRECTION_COUNT> angles{0, math::kHalfPiF, -math::kHalfPiF};
+    constexpr StaticArray<float32, DIRECTION_COUNT> ANGLES{0, math::kHalfPiF, -math::kHalfPiF};
     for (usize direction = 0; direction < DIRECTION_COUNT; ++direction)
     {
         RenderPreview preview;
         QJsonObject navigation = preview.Navigation();
         math::Quaternion rotation;
-        REQUIRE(math::TryFromAxisAngle(axes[direction], angles[direction], rotation) == math::MathStatus::Success);
+        REQUIRE(math::TryFromAxisAngle(axes[direction], ANGLES[direction], rotation) == math::MathStatus::Success);
         navigation.insert(QStringLiteral("projection"),
                           static_cast<int32>(camera::CameraProjection::OrthographicFinite));
         navigation.insert(QStringLiteral("span"), 10);
@@ -857,8 +854,8 @@ TEST_CASE("Loaded editor cameras enable the world grid without adding scene obje
 TEST_CASE("Vertical look pitches about camera right after yaw without rolling", "[editor][navigation]")
 {
     constexpr usize YAW_COUNT = 4;
-    constexpr StaticArray<float32, YAW_COUNT> yawDegrees{0, 45, 90, -135};
-    for (const float32 yaw : yawDegrees)
+    constexpr StaticArray<float32, YAW_COUNT> YAW_DEGREES{0, 45, 90, -135};
+    for (const float32 yaw : YAW_DEGREES)
     {
         EditorCameraController controller;
         REQUIRE(controller.TrySetOrbit({}, {yaw, 20}, 3) == true);

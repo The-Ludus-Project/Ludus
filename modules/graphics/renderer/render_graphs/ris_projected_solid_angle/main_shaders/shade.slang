@@ -72,7 +72,8 @@ ResampledLightContext MakeResampledLightContext(SceneContext scene)
                                     bool hasLightFrame,
                                     inout RayQueryContext queries,
                                     out ShadingPoint outPoint,
-                                    out float3 outRadiance) {
+                                    out float3 outRadiance)
+{
     outPoint = (ShadingPoint)0;
     outRadiance = float3(0);
     HitRecord record;
@@ -166,7 +167,8 @@ bool TryEvaluateSurrogateProbability(SceneContext scene,
                                                 float2 randomSample,
                                                 float surrogateProbability,
                                                 bool isMisWeighted,
-                                                inout RayQueryContext queries) {
+                                                inout RayQueryContext queries)
+{
     float3 directionTangent = float3(0);
     bool isSampled = false;
     if (technique == DIFFUSE_LIGHT_TECHNIQUE)
@@ -280,7 +282,8 @@ float3 SampleResampledEmissiveLight(SceneContext scene,
                                       ShadingPoint shadingPoint,
                                       bool isMisWeighted,
                                       inout ResampledLightContext inoutContext,
-                                      inout RayQueryContext queries) {
+                                      inout RayQueryContext queries)
+{
     SelectedLight selected = SelectLight(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION);
     if (selected.HasSample == false)
         return float3(0);
@@ -344,7 +347,8 @@ bool TryEvaluateResampledLightDensity(SceneContext scene,
                                      ShadingPoint shadingPoint,
                                      bool isMisWeighted,
                                      inout ResampledLightContext inoutContext,
-                                     inout RayQueryContext queries) {
+                                     inout RayQueryContext queries)
+{
     float3 directionSample = float3(SampleSceneRandom(launch, SHADE_BSDF_DIMENSION_FIRST),
                                     SampleSceneRandom(launch, SHADE_BSDF_DIMENSION_FIRST + 1),
                                     SampleSceneRandom(launch, SHADE_BSDF_DIMENSION_FIRST + 2));

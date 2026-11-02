@@ -21,6 +21,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
+#include <thread>
+
 // CPU oracle / GPU-compute parity for the RT1 reference integral. Both paths read
 // the same addressed Philox dimensions, so matching samples follow matching paths;
 // differences come from float32 traversal/arithmetic on the device.
@@ -35,6 +38,9 @@ constexpr usize CPU_BUDGET = usize{64} * 1024 * 1024;
 constexpr usize GPU_BUDGET = usize{64} * 1024 * 1024;
 constexpr uint32 CPU_TILE_PIXELS = 256;
 constexpr uint64 TIMEOUT = 60 * time::NANOSECONDS_PER_SECOND;
+constexpr uint64 COLD_CAPTURE_TIMEOUT_NANOSECONDS =
+    LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND;
+constexpr std::chrono::milliseconds COMPLETION_POLL_INTERVAL{1};
 constexpr uint64 NANOSECONDS_PER_MILLISECOND = time::NANOSECONDS_PER_SECOND / 1000;
 
 struct Session final
@@ -288,10 +294,21 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
 S Run(rr::Renderer& inoutRenderer, rr::ReferenceCapture capture, rhi::SurfaceHandle surface)
 {
     S status = S::Pending;
-    const uint64 start = time::NowTicks();
-    while (status == S::Pending && time::NowTicks() - start < TIMEOUT)
+    uint64 windowStartedTicks = time::NowTicks();
+    uint64 timeoutNanoseconds = COLD_CAPTURE_TIMEOUT_NANOSECONDS;
+    bool hasCompletedColdWork = false;
+    rr::ReferenceCaptureInfo progress;
+    while (status == S::Pending && time::NowTicks() - windowStartedTicks < timeoutNanoseconds)
     {
+        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
         status = inoutRenderer.AdvanceReferenceCapture(capture, surface);
+        REQUIRE(inoutRenderer.GetReferenceCaptureInfo(capture, progress) == S::Ready);
+        if (hasCompletedColdWork == false && progress.CommittedSamples > 0)
+        {
+            hasCompletedColdWork = true;
+            windowStartedTicks = time::NowTicks();
+            timeoutNanoseconds = TIMEOUT;
+        }
     }
     return status;
 }
@@ -301,12 +318,19 @@ void Capture(Session& inoutSession,
              Array<rr::ReferencePixel>& outPixels,
              rr::ReferenceCaptureInfo& outInfo)
 {
+    const uint64 startedTicks = time::NowTicks();
     rr::ReferenceCapture capture;
     const S begun = inoutSession.Renderer.BeginReferenceCapture(inoutSession.Snapshot, description, capture);
     REQUIRE((begun == S::Ready || begun == S::Pending));
     const S completed = Run(inoutSession.Renderer, capture, surface);
     REQUIRE(inoutSession.Renderer.GetReferenceCaptureInfo(capture, outInfo) == S::Ready);
-    CAPTURE(static_cast<uint32>(outInfo.Traversal),
+    const uint64 elapsedNanoseconds = time::NowTicks() - startedTicks;
+    CAPTURE(outInfo.MinimumSamples,
+            outInfo.MaximumSamples,
+            outInfo.TargetSamples,
+            outInfo.CommittedSamples,
+            elapsedNanoseconds,
+            COLD_CAPTURE_TIMEOUT_NANOSECONDS,
             outInfo.FailurePixel,
             outInfo.FailureDepth,
             outInfo.FailureSample,
