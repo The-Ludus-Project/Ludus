@@ -1,10 +1,9 @@
-#include "storage.slang"
 #include "projection.slang"
+#include "storage.slang"
 
 // Slang's pinned SPIR-V 1.3 backend crashes on vector-element InterlockedExchange.
 // Compare/exchange implements the same atomic prepend without changing the target profile.
-[noinline] uint ExchangeFgHead(uint address, bool isCaustic, uint value)
-{
+[noinline] uint ExchangeFgHead(uint address, bool isCaustic, uint value) {
     uint expected = FG_INVALID;
     [loop] while (true)
     {
@@ -13,22 +12,28 @@
             InterlockedCompareExchange(GraphBuffer0[address].y, expected, value, observed);
         else
             InterlockedCompareExchange(GraphBuffer0[address].x, expected, value, observed);
-        if (observed == expected) return observed;
+        if (observed == expected)
+            return observed;
         expected = observed;
     }
-}
-float3 ResetPhotonMap(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
+} float3 ResetPhotonMap(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
-    if (HasCurrentFgPool(scene, launch, queries) == false) return float3(0);
+    if (HasCurrentFgPool(scene, launch, queries) == false)
+        return float3(0);
     GraphBuffer0[FG_HEAD_OFFSET + GetFgPixel(launch)] = uint4(FG_INVALID, FG_INVALID, 0, 0);
     return float3(0);
 }
 // Mesh photons are uniform in area and cosine-weighted in direction, including both
 // emission faces. Point/spot photons use a uniform sphere; the analytic light's range
 // window is applied segment-by-segment as in SampleIncidentLight at its first hit.
-[noinline] bool TryEmitFgPhoton(SceneContext scene, uint lightIndex, uint4 key, float2 directionUv,
-                      float fluxScale, inout RayQueryContext queries, out Ray outRay, out float3 outFlux)
-{
+[noinline] bool TryEmitFgPhoton(SceneContext scene,
+                                uint lightIndex,
+                                uint4 key,
+                                float2 directionUv,
+                                float fluxScale,
+                                inout RayQueryContext queries,
+                                out Ray outRay,
+                                out float3 outFlux) {
     outRay = (Ray)0;
     outFlux = float3(0);
     LightInfo light = GetLightInfo(scene, lightIndex);
@@ -44,9 +49,11 @@ float3 ResetPhotonMap(SceneContext scene, RayLaunch launch, inout RayQueryContex
         {
             triangle = GetEmitterTriangle(scene, light.EmitterIndex, i);
             target -= triangle.AreaWorld;
-            if (target <= 0) break;
+            if (target <= 0)
+                break;
         }
-        if (triangle.IsValid == false || area <= 0) return false;
+        if (triangle.IsValid == false || area <= 0)
+            return false;
         float root = sqrt(shape.y);
         SurfaceHit hit = GetSurfaceHit(scene, triangle.TriangleIndex, float2(root * (1 - shape.z), root * shape.z));
         MaterialSample material = EvaluateMaterial(scene, hit);
@@ -80,20 +87,23 @@ float3 ResetPhotonMap(SceneContext scene, RayLaunch launch, inout RayQueryContex
         outFlux = light.Intensity * (4 * PI * cone * fluxScale);
     }
     return any(outFlux > 0) == true;
-}
-float3 TracePhotons(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
+} float3 TracePhotons(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
-    if (HasCurrentFgPool(scene, launch, queries) == false) return float3(0);
+    if (HasCurrentFgPool(scene, launch, queries) == false)
+        return float3(0);
     uint path = GetFgPixel(launch);
-    if (path >= GraphBuffer0[2].y) return float3(0);
+    if (path >= GraphBuffer0[2].y)
+        return float3(0);
     uint lightCount = GraphBuffer0[2].x;
     uint begin = 0;
     uint end = lightCount;
     while (begin < end)
     {
         uint middle = begin + (end - begin) / 2;
-        if (GraphBuffer0[GetFgLightAddress(middle)].y <= path) begin = middle + 1;
-        else end = middle;
+        if (GraphBuffer0[GetFgLightAddress(middle)].y <= path)
+            begin = middle + 1;
+        else
+            end = middle;
     }
     uint light = begin;
     uint address = GetFgLightAddress(light);
@@ -106,14 +116,18 @@ float3 TracePhotons(SceneContext scene, RayLaunch launch, inout RayQueryContext 
     uint counts[FG_DIRECTION_CELLS];
     for (uint cell = 0; cell < FG_DIRECTION_CELLS; ++cell)
     {
-        counts[cell] = IS_FG_GUIDING_ENABLED == true ? ComputeFgDirectionCount(asfloat(GraphBuffer0[address + 1 + cell].x), lightPaths) : 0;
+        counts[cell] = IS_FG_GUIDING_ENABLED == true
+                           ? ComputeFgDirectionCount(asfloat(GraphBuffer0[address + 1 + cell].x), lightPaths)
+                           : 0;
         counts[cell] = min(counts[cell], lightPaths - assigned);
-        if (chosenCell == FG_INVALID && localPath < assigned + counts[cell]) chosenCell = cell;
+        if (chosenCell == FG_INVALID && localPath < assigned + counts[cell])
+            chosenCell = cell;
         assigned += counts[cell];
     }
     uint residual = lightPaths - assigned;
     if (chosenCell != FG_INVALID)
-        directionUv = (float2(chosenCell % FG_DIRECTION_SIDE, chosenCell / FG_DIRECTION_SIDE) + directionUv) / float(FG_DIRECTION_SIDE);
+        directionUv = (float2(chosenCell % FG_DIRECTION_SIDE, chosenCell / FG_DIRECTION_SIDE) + directionUv) /
+                      float(FG_DIRECTION_SIDE);
     uint cell = GetFgDirectionCell(directionUv);
     float fluxScale = ComputeFgFluxScale(counts[cell], residual);
     Ray ray;
@@ -133,7 +147,8 @@ float3 TracePhotons(SceneContext scene, RayLaunch launch, inout RayQueryContext 
             SurfaceHit hit;
             hasRay = TraceClosest(scene, queries, ray, hit) == SCENE_QUERY_SURFACE;
             FgPoint point;
-            if (hasRay == true) hasRay = TryMakeFgPoint(scene, hit, -ray.DirectionWorld, queries, point);
+            if (hasRay == true)
+                hasRay = TryMakeFgPoint(scene, hit, -ray.DirectionWorld, queries, point);
             if (hasRay == true)
             {
                 if (depth == 0 && source.Kind != SCENE_LIGHT_MESH)
@@ -156,11 +171,16 @@ float3 TracePhotons(SceneContext scene, RayLaunch launch, inout RayQueryContext 
                     photon.FluxScale = fluxScale;
                     photon.Light = light;
                     photon.Cell = cell;
-                    uint bucket = ComputeFgBucket(int3(floor(hit.PositionWorld / FG_GATHER_RADIUS_WORLD)), GetFgPixelCount(launch));
+                    uint bucket = ComputeFgBucket(int3(floor(hit.PositionWorld / FG_GATHER_RADIUS_WORLD)),
+                                                  GetFgPixelCount(launch));
                     photon.NextGrid = ExchangeFgHead(FG_HEAD_OFFSET + bucket, false, index);
                     uint pixel;
                     float jacobian;
-                    if (isCaustic == true && TryProjectFgPhoton(launch, hit.PositionWorld, point.Material.ShadingNormalWorld, pixel, jacobian) == true)
+                    if (isCaustic == true && TryProjectFgPhoton(launch,
+                                                                hit.PositionWorld,
+                                                                point.Material.ShadingNormalWorld,
+                                                                pixel,
+                                                                jacobian) == true)
                     {
                         LightSample camera = (LightSample)0;
                         camera.DirectionWorld = normalize(launch.CameraPositionWorld - hit.PositionWorld);
@@ -178,9 +198,15 @@ float3 TracePhotons(SceneContext scene, RayLaunch launch, inout RayQueryContext 
                 isCaustic = isDiffuse == false;
                 float3 directionWorld;
                 float3 weight;
-                hasRay = depth + 1 < FG_PHOTON_BOUNCES && TrySampleFgBsdf(point,
-                    SampleFgRandomTriple(key.xy, path, key.z, FG_SOURCE_FIRST_DIMENSION + FG_VERTEX_DIMENSIONS + 1 + depth * FG_VERTEX_DIMENSIONS),
-                    directionWorld, weight) == true;
+                hasRay = depth + 1 < FG_PHOTON_BOUNCES &&
+                         TrySampleFgBsdf(point,
+                                         SampleFgRandomTriple(key.xy,
+                                                              path,
+                                                              key.z,
+                                                              FG_SOURCE_FIRST_DIMENSION + FG_VERTEX_DIMENSIONS + 1 +
+                                                                  depth * FG_VERTEX_DIMENSIONS),
+                                         directionWorld,
+                                         weight) == true;
                 if (hasRay == true)
                 {
                     flux *= weight;

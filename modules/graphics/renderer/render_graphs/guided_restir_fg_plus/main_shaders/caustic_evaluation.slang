@@ -33,25 +33,28 @@ void StoreFgCaustic(RayLaunch launch, FgCausticReservoir reservoir)
 {
     uint address = GetFgCausticAddress(launch, false);
     StoreFgPhoton(true, address, reservoir.Photon);
-    GraphBuffer1[address + FG_PHOTON_WORDS] = uint4(asuint(reservoir.Weight), reservoir.Confidence, reservoir.SampleIndex, reservoir.Version);
+    GraphBuffer1[address + FG_PHOTON_WORDS] =
+        uint4(asuint(reservoir.Weight), reservoir.Confidence, reservoir.SampleIndex, reservoir.Version);
     GraphBuffer1[address + FG_PHOTON_WORDS + 1] = reservoir.Identity;
 }
-[noinline] float3 EvaluateFgCaustic(SceneContext scene, RayLaunch launch, FgPhoton photon, inout RayQueryContext queries)
-{
-    if (photon.Triangle == FG_INVALID || (photon.Flags & FG_CAUSTIC_FLAG) == 0) return float3(0);
+[noinline] float3
+EvaluateFgCaustic(SceneContext scene, RayLaunch launch, FgPhoton photon, inout RayQueryContext queries) {
+    if (photon.Triangle == FG_INVALID || (photon.Flags & FG_CAUSTIC_FLAG) == 0)
+        return float3(0);
     SurfaceHit hit = GetSurfaceHit(scene, photon.Triangle, photon.Barycentric);
     FgPoint point;
     float3 directionWorld = normalize(launch.CameraPositionWorld - hit.PositionWorld);
-    if (TryMakeFgPoint(scene, hit, directionWorld, queries, point) == false) return float3(0);
+    if (TryMakeFgPoint(scene, hit, directionWorld, queries, point) == false)
+        return float3(0);
     uint pixel;
     float jacobian;
     if (TryProjectFgPhoton(launch, hit.PositionWorld, point.Material.ShadingNormalWorld, pixel, jacobian) == false ||
-        pixel != GetFgPixel(launch)) return float3(0);
+        pixel != GetFgPixel(launch))
+        return float3(0);
     // Visibility was tested by the photon pass. Geometry, camera and material changes
     // reset the generation; a static temporal sample retains that visibility result.
     return EvaluateFgBsdf(point, photon.IncomingWorld) * photon.Flux * jacobian;
-}
-bool HasFgCausticCapacity(RayLaunch launch)
+} bool HasFgCausticCapacity(RayLaunch launch)
 {
     uint count;
     uint stride;

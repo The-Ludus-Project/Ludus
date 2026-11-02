@@ -40,8 +40,12 @@ float3 ResampleCaustics(SceneContext scene, RayLaunch launch, inout RayQueryCont
                 break;
             }
             weightSum += target;
-            if (target > 0 && SampleRandomFloat01(launch.Seed, MakeRandomAddress(uint2(GetFgPixel(launch), photonIndex + 1),
-                                            launch.SampleIndex, FG_RESAMPLE_FIRST_DIMENSION + 2)) * weightSum < target)
+            if (target > 0 && SampleRandomFloat01(launch.Seed,
+                                                  MakeRandomAddress(uint2(GetFgPixel(launch), photonIndex + 1),
+                                                                    launch.SampleIndex,
+                                                                    FG_RESAMPLE_FIRST_DIMENSION + 2)) *
+                                      weightSum <
+                                  target)
             {
                 result.Photon = photon;
                 selectedTarget = target;
@@ -69,7 +73,8 @@ float3 ResampleCaustics(SceneContext scene, RayLaunch launch, inout RayQueryCont
         }
         RecordFgGuiding(result.Photon, EvaluateFgCaustic(scene, launch, result.Photon, queries) * result.Weight);
     }
-    if (isfinite(result.Weight) == false || result.Weight < 0) FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
+    if (isfinite(result.Weight) == false || result.Weight < 0)
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
     if (queries.HasFailed == true)
     {
         result.Version = 0;

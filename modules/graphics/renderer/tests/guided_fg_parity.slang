@@ -18,12 +18,13 @@ LUDUS_SHADER_BINDING(0) RWStructuredBuffer<uint4> Results;
 static const uint CASE_COUNT = 512;
 static const uint CASE_WORDS = 3;
 static const uint GROUP_WIDTH = 64;
-[numthreads(GROUP_WIDTH, 1, 1)] void ComputeMain(uint3 dispatch : SV_DispatchThreadID)
-{
+[numthreads(GROUP_WIDTH, 1, 1)] void ComputeMain(uint3 dispatch : SV_DispatchThreadID) {
     uint index = dispatch.x;
-    if (index >= CASE_COUNT) return;
+    if (index >= CASE_COUNT)
+        return;
     float x = float(index % 19) * 0.1 - 0.91;
-    float jacobian = ComputeFgReconnectJacobian(float3(0, 0, 1), float3(1 + float(index % 5) * 0.1, 0, 2), float3(0, 0, 1));
+    float jacobian =
+        ComputeFgReconnectJacobian(float3(0, 0, 1), float3(1 + float(index % 5) * 0.1, 0, 2), float3(0, 0, 1));
     float weight = ComputeFgPairWeight(2, 3, 0.5 + float(index % 11) * 0.1, 1);
     Results[index * CASE_WORDS] = asuint(float4(ComputeFgFluxScale(index % 17 + 1, index % 7), jacobian, weight, 0));
     RayLaunch launch = (RayLaunch)0;
@@ -32,8 +33,12 @@ static const uint GROUP_WIDTH = 64;
     launch.IsOrthographic = index % 13 == 0;
     uint pixel;
     float projection;
-    bool hasProjection = TryProjectFgPhoton(launch, float3(index % 7 == 0 ? 8 : x, 0.1, 2), float3(0, 0, -1), pixel, projection);
-    Results[index * CASE_WORDS + 1] = uint4(pixel, asuint(projection), hasProjection == true ? 1 : 0,
-        ComputeFgDirectionCount(1 / float(FG_DIRECTION_CELLS), index % 2 == 0 ? 256 : 16));
+    bool hasProjection =
+        TryProjectFgPhoton(launch, float3(index % 7 == 0 ? 8 : x, 0.1, 2), float3(0, 0, -1), pixel, projection);
+    Results[index * CASE_WORDS + 1] =
+        uint4(pixel,
+              asuint(projection),
+              hasProjection == true ? 1 : 0,
+              ComputeFgDirectionCount(1 / float(FG_DIRECTION_CELLS), index % 2 == 0 ? 256 : 16));
     Results[index * CASE_WORDS + 2] = uint4(asuint(EvaluateFgPhotonDensity(float3(1 / PI), float3(2, 3, 4))), 0);
 }

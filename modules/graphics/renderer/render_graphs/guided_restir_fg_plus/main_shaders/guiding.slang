@@ -7,7 +7,8 @@ bool HasPreviousFgPool(SceneContext scene, RayLaunch launch)
 }
 float3 UpdateGuideDirections(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
-    if (HasFgPoolCapacity(scene, launch, queries) == false) return float3(0);
+    if (HasFgPoolCapacity(scene, launch, queries) == false)
+        return float3(0);
     bool hasHistory = HasPreviousFgPool(scene, launch);
     uint lightCount = GetLightCount(scene);
     for (uint light = GetFgPixel(launch); light < lightCount; light += GetFgPixelCount(launch))
@@ -15,12 +16,14 @@ float3 UpdateGuideDirections(SceneContext scene, RayLaunch launch, inout RayQuer
         uint address = GetFgLightAddress(light);
         uint total = 0;
         if (hasHistory == true)
-            for (uint cell = 0; cell < FG_DIRECTION_CELLS; ++cell) total += GraphBuffer0[address + 1 + cell].y;
+            for (uint cell = 0; cell < FG_DIRECTION_CELLS; ++cell)
+                total += GraphBuffer0[address + 1 + cell].y;
         for (uint cell = 0; cell < FG_DIRECTION_CELLS; ++cell)
         {
             uint4 entry = GraphBuffer0[address + 1 + cell];
             float probability = hasHistory == true ? asfloat(entry.x) : 1 / float(FG_DIRECTION_CELLS);
-            if (total > 0) probability = lerp(probability, float(entry.y) / float(total), FG_GUIDING_ALPHA);
+            if (total > 0)
+                probability = lerp(probability, float(entry.y) / float(total), FG_GUIDING_ALPHA);
             GraphBuffer0[address + 1 + cell] = uint4(asuint(probability), 0, 0, 0);
         }
         uint4 header = GraphBuffer0[address];
@@ -32,7 +35,8 @@ float3 UpdateGuideDirections(SceneContext scene, RayLaunch launch, inout RayQuer
 // update is parallel; the prefix is deliberately simple and bounded, not a performance claim.
 float3 UpdateGuideLights(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
-    if (HasFgPoolCapacity(scene, launch, queries) == false || GetFgPixel(launch) != 0) return float3(0);
+    if (HasFgPoolCapacity(scene, launch, queries) == false || GetFgPixel(launch) != 0)
+        return float3(0);
     uint lightCount = GetLightCount(scene);
     uint finiteCount = 0;
     uint totalContribution = 0;

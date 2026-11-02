@@ -2,9 +2,16 @@
 
 // Streaming RIS of the photons inside a density estimate, preserving one full photon
 // and its original emission random key, UV cell and flux scale (paper section 4.3).
-void GatherFgPhotons(SceneContext scene, RayLaunch launch, FgPoint receiver, FgPoint gather,
-                      bool isRadiance, float sourceWeight, inout RayQueryContext queries,
-                      inout FgPathReservoir inoutReservoir, inout float inoutWeightSum, inout uint inoutCoin)
+void GatherFgPhotons(SceneContext scene,
+                     RayLaunch launch,
+                     FgPoint receiver,
+                     FgPoint gather,
+                     bool isRadiance,
+                     float sourceWeight,
+                     inout RayQueryContext queries,
+                     inout FgPathReservoir inoutReservoir,
+                     inout float inoutWeightSum,
+                     inout uint inoutCoin)
 {
     int3 centerWorld = int3(floor(gather.Hit.PositionWorld / FG_GATHER_RADIUS_WORLD));
     static const int CELL_NEIGHBOR_MINIMUM = -1;
@@ -29,8 +36,10 @@ void GatherFgPhotons(SceneContext scene, RayLaunch launch, FgPoint receiver, FgP
                     SurfaceHit hit = GetSurfaceHit(scene, photon.Triangle, photon.Barycentric);
                     // Distinct queried cells may hash to the same bucket. Test the original
                     // cell before the radius test, so a collision never counts a photon twice.
-                    if (hit.IsValid == false || all(int3(floor(hit.PositionWorld / FG_GATHER_RADIUS_WORLD)) == cellWorld) == false ||
-                        (isRadiance == true && (photon.Flags & FG_CAUSTIC_FLAG) == 0)) continue;
+                    if (hit.IsValid == false ||
+                        all(int3(floor(hit.PositionWorld / FG_GATHER_RADIUS_WORLD)) == cellWorld) == false ||
+                        (isRadiance == true && (photon.Flags & FG_CAUSTIC_FLAG) == 0))
+                        continue;
                     FgPathReservoir candidate = inoutReservoir;
                     candidate.Photon = photon;
                     candidate.GatherTriangle = gather.Hit.TriangleIndex;
@@ -45,10 +54,14 @@ void GatherFgPhotons(SceneContext scene, RayLaunch launch, FgPoint receiver, FgP
                     }
                     inoutWeightSum += weight;
                     // Each photon has an independent scope; long lists cannot overflow the dimension field.
-                    float coin = SampleRandomFloat01(launch.Seed, MakeRandomAddress(uint2(GetFgPixel(launch), photonIndex + 1),
-                        launch.SampleIndex, FG_RESAMPLE_FIRST_DIMENSION + (isRadiance == true ? 1 : 0)));
+                    float coin = SampleRandomFloat01(
+                        launch.Seed,
+                        MakeRandomAddress(uint2(GetFgPixel(launch), photonIndex + 1),
+                                          launch.SampleIndex,
+                                          FG_RESAMPLE_FIRST_DIMENSION + (isRadiance == true ? 1 : 0)));
                     ++inoutCoin;
-                    if (weight > 0 && coin * inoutWeightSum < weight) inoutReservoir = candidate;
+                    if (weight > 0 && coin * inoutWeightSum < weight)
+                        inoutReservoir = candidate;
                 }
             }
 }
@@ -86,18 +99,34 @@ float3 GeneratePathSamples(SceneContext scene, RayLaunch launch, inout RayQueryC
         // photons, yielding two-diffuse-event transport without duplicating direct NEE.
         float3 directionWorld;
         float3 sourceWeight;
-        if (TrySampleFgBsdf(receiver, SampleFgRandomTriple(launch.Seed, GetFgPixel(launch), launch.SampleIndex,
-                                                         FG_GATHER_FIRST_DIMENSION), directionWorld, sourceWeight) == true)
+        if (TrySampleFgBsdf(
+                receiver,
+                SampleFgRandomTriple(launch.Seed, GetFgPixel(launch), launch.SampleIndex, FG_GATHER_FIRST_DIMENSION),
+                directionWorld,
+                sourceWeight) == true)
         {
             float3 value;
             float density;
             EvaluateStandardBsdf(receiver.Material, receiver.ViewDirectionWorld, directionWorld, value, density);
             SurfaceHit hit;
-            if (density > 0 && TraceClosest(scene, queries, SpawnSurfaceRay(receiver.Hit, directionWorld, FG_MAXIMUM_DISTANCE_WORLD), hit) == SCENE_QUERY_SURFACE)
+            if (density > 0 && TraceClosest(scene,
+                                            queries,
+                                            SpawnSurfaceRay(receiver.Hit, directionWorld, FG_MAXIMUM_DISTANCE_WORLD),
+                                            hit) == SCENE_QUERY_SURFACE)
             {
                 FgPoint gather;
-                if (TryMakeFgPoint(scene, hit, -directionWorld, queries, gather) == true && IsFgDiffuse(gather.Material) == true)
-                    GatherFgPhotons(scene, launch, receiver, gather, false, 1 / density, queries, result, weightSum, coin);
+                if (TryMakeFgPoint(scene, hit, -directionWorld, queries, gather) == true &&
+                    IsFgDiffuse(gather.Material) == true)
+                    GatherFgPhotons(scene,
+                                    launch,
+                                    receiver,
+                                    gather,
+                                    false,
+                                    1 / density,
+                                    queries,
+                                    result,
+                                    weightSum,
+                                    coin);
             }
         }
         // A caustic behind a glossy camera prefix cannot project directly to the lens.

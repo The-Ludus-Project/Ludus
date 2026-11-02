@@ -48,10 +48,22 @@ static const float FG_GUIDING_DISCRETIZATION = 255;
 static const uint FG_MAXIMUM_GUIDING_CONTRIBUTION = 255;
 static const float3 FG_LUMINANCE = float3(0.2126f, 0.7152f, 0.0722f);
 
-float ComputeFgLuminance(float3 value) { return dot(value, FG_LUMINANCE); }
-uint GetFgPixel(RayLaunch launch) { return launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x; }
-uint GetFgPixelCount(RayLaunch launch) { return launch.ExtentPixel.x * launch.ExtentPixel.y; }
-uint GetFgLightAddress(uint light) { return FG_HEADER_WORDS + light * FG_LIGHT_WORDS; }
+float ComputeFgLuminance(float3 value)
+{
+    return dot(value, FG_LUMINANCE);
+}
+uint GetFgPixel(RayLaunch launch)
+{
+    return launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
+}
+uint GetFgPixelCount(RayLaunch launch)
+{
+    return launch.ExtentPixel.x * launch.ExtentPixel.y;
+}
+uint GetFgLightAddress(uint light)
+{
+    return FG_HEADER_WORDS + light * FG_LIGHT_WORDS;
+}
 uint GetFgDirectionCell(float2 directionUv)
 {
     uint2 cell = min(uint2(directionUv * float(FG_DIRECTION_SIDE)), uint2(FG_DIRECTION_SIDE - 1));
@@ -77,7 +89,8 @@ float3 SampleFgRandomTriple(uint2 seed, uint path, uint frame, uint dimension)
 // The flux uses the *mixture* cell density (including those leftovers), avoiding double counting.
 uint ComputeFgDirectionCount(float probability, uint lightPaths)
 {
-    return lightPaths > 2 * FG_DIRECTION_CELLS ? uint(floor(1 + probability * float(lightPaths - FG_DIRECTION_CELLS))) : 0;
+    return lightPaths > 2 * FG_DIRECTION_CELLS ? uint(floor(1 + probability * float(lightPaths - FG_DIRECTION_CELLS)))
+                                               : 0;
 }
 float ComputeFgFluxScale(uint cellPaths, uint uniformPaths)
 {
@@ -87,7 +100,8 @@ float ComputeFgReconnectJacobian(float3 oldOffsetWorld, float3 newOffsetWorld, f
 {
     float oldSquared = dot(oldOffsetWorld, oldOffsetWorld);
     float newSquared = dot(newOffsetWorld, newOffsetWorld);
-    if (oldSquared <= 0 || newSquared <= 0) return 0;
+    if (oldSquared <= 0 || newSquared <= 0)
+        return 0;
     float oldCosine = abs(dot(normalWorld, oldOffsetWorld)) * rsqrt(oldSquared);
     float newCosine = abs(dot(normalWorld, newOffsetWorld)) * rsqrt(newSquared);
     return oldCosine > 0 ? newCosine * oldSquared / (oldCosine * newSquared) : 0;
@@ -100,7 +114,8 @@ float ComputeFgPairWeight(float confidence, float otherConfidence, float target,
 float ComputeFgPowerWeight(float first, float second)
 {
     float largest = max(first, second);
-    if (largest <= 0) return 0;
+    if (largest <= 0)
+        return 0;
     float a = first / largest;
     float b = second / largest;
     return a * a / (a * a + b * b);

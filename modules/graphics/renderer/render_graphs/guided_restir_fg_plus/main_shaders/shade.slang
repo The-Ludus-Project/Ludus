@@ -11,7 +11,8 @@ float3 ShadeGuidedFg(SceneContext scene, RayLaunch launch, inout RayQueryContext
         return float3(0);
     }
     FgPathReservoir reservoir = LoadFgPath(false, GetFgPixel(launch));
-    if (IsCurrentFgPath(reservoir, scene, launch, queries) == false) return float3(0);
+    if (IsCurrentFgPath(reservoir, scene, launch, queries) == false)
+        return float3(0);
     FgCausticReservoir caustic = LoadFgCaustic(launch, false);
     if (caustic.Version != FG_VERSION)
     {
@@ -22,7 +23,8 @@ float3 ShadeGuidedFg(SceneContext scene, RayLaunch launch, inout RayQueryContext
     uint4 key = uint4(launch.Seed, launch.SampleIndex, GetFgPixel(launch));
     FgPoint receiver = TraceFgCamera(scene, launch, key, queries, emission);
     float3 radiance = emission;
-    if (receiver.IsValid == true) radiance += EstimateFgDirect(scene, launch, receiver, queries);
+    if (receiver.IsValid == true)
+        radiance += EstimateFgDirect(scene, launch, receiver, queries);
     FgPoint reservoirReceiver = LoadFgReceiver(scene, reservoir, queries);
     radiance += EvaluateFgPath(scene, reservoir, reservoirReceiver, false, queries) * reservoir.Weight;
     radiance += EvaluateFgCaustic(scene, launch, caustic.Photon, queries) * caustic.Weight;

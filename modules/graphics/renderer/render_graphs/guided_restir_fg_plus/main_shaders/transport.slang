@@ -15,9 +15,11 @@ bool IsFgDiffuse(MaterialSample material)
     return (material.Model != LUDUS_MATERIAL_MODEL_CONDUCTOR && material.Metallic < 1) ||
            sqrt(ComputeMaterialAlpha(material.Model, material.Roughness, material.AlphaU)) >= FG_SPECULAR_ROUGHNESS;
 }
-[noinline] bool TryMakeFgPoint(SceneContext scene, SurfaceHit hit, float3 viewDirectionWorld,
-                    inout RayQueryContext queries, out FgPoint outPoint)
-{
+[noinline] bool TryMakeFgPoint(SceneContext scene,
+                               SurfaceHit hit,
+                               float3 viewDirectionWorld,
+                               inout RayQueryContext queries,
+                               out FgPoint outPoint) {
     outPoint = (FgPoint)0;
     outPoint.Hit = hit;
     outPoint.Material = EvaluateMaterial(scene, hit);
@@ -30,16 +32,14 @@ bool IsFgDiffuse(MaterialSample material)
     }
     outPoint.IsValid = true;
     return true;
-}
-[noinline] float3 EvaluateFgBsdf(FgPoint point, float3 incomingWorld)
+}[noinline] float3 EvaluateFgBsdf(FgPoint point, float3 incomingWorld)
 {
     float3 value;
     float density;
     EvaluateStandardBsdf(point.Material, point.ViewDirectionWorld, incomingWorld, value, density);
     return value;
 }
-[noinline] bool TrySampleFgBsdf(FgPoint point, float3 samples, out float3 outDirectionWorld, out float3 outWeight)
-{
+[noinline] bool TrySampleFgBsdf(FgPoint point, float3 samples, out float3 outDirectionWorld, out float3 outWeight) {
     outDirectionWorld = SampleStandardBsdf(point.Material, point.ViewDirectionWorld, samples);
     float3 value;
     float density;
@@ -47,8 +47,7 @@ bool IsFgDiffuse(MaterialSample material)
     float cosine = dot(point.Material.ShadingNormalWorld, outDirectionWorld);
     outWeight = density > 0 && cosine > 0 ? value * (cosine / density) : float3(0);
     return any(outWeight > 0) == true && all(isfinite(outWeight)) == true;
-}
-Ray MakeFgCameraRay(RayLaunch launch)
+} Ray MakeFgCameraRay(RayLaunch launch)
 {
     float2 positionUv = (float2(launch.PositionPixel) + 0.5) / float2(launch.ExtentPixel);
     float4 nearH = mul(launch.CameraClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 0, 1));
@@ -63,8 +62,11 @@ Ray MakeFgCameraRay(RayLaunch launch)
 }
 // Replay only the glossy camera prefix; diffuse reconnection happens in resample.slang.
 // Scene/camera edits reset the estimator, so previous-geometry photon replay is unnecessary here.
-FgPoint TraceFgCameraBody(SceneContext scene, RayLaunch launch, uint4 randomKey,
-                       inout RayQueryContext queries, out float3 outEmission)
+FgPoint TraceFgCameraBody(SceneContext scene,
+                          RayLaunch launch,
+                          uint4 randomKey,
+                          inout RayQueryContext queries,
+                          out float3 outEmission)
 {
     outEmission = float3(0);
     float3 throughput = float3(1);
@@ -79,23 +81,30 @@ FgPoint TraceFgCameraBody(SceneContext scene, RayLaunch launch, uint4 randomKey,
             outEmission += throughput * EvaluateEnvironment(scene, ray.DirectionWorld);
             return result;
         }
-        if (status != SCENE_QUERY_SURFACE) return result;
+        if (status != SCENE_QUERY_SURFACE)
+            return result;
         outEmission += throughput * EvaluateEmission(scene, hit, -ray.DirectionWorld);
         FgPoint point;
-        if (TryMakeFgPoint(scene, hit, -ray.DirectionWorld, queries, point) == false) return result;
+        if (TryMakeFgPoint(scene, hit, -ray.DirectionWorld, queries, point) == false)
+            return result;
         if (IsFgDiffuse(point.Material) == true)
         {
             point.Depth = depth;
             point.Throughput = throughput;
             return point;
         }
-        if (depth == FG_CAMERA_BOUNCES) return result;
+        if (depth == FG_CAMERA_BOUNCES)
+            return result;
         float3 directionWorld;
         float3 weight;
         if (TrySampleFgBsdf(point,
-                           SampleFgRandomTriple(randomKey.xy, randomKey.w, randomKey.z,
-                                                FG_CAMERA_FIRST_DIMENSION + depth * FG_VERTEX_DIMENSIONS),
-                           directionWorld, weight) == false) return result;
+                            SampleFgRandomTriple(randomKey.xy,
+                                                 randomKey.w,
+                                                 randomKey.z,
+                                                 FG_CAMERA_FIRST_DIMENSION + depth * FG_VERTEX_DIMENSIONS),
+                            directionWorld,
+                            weight) == false)
+            return result;
         throughput *= weight;
         ray = SpawnSurfaceRay(hit, directionWorld, FG_MAXIMUM_DISTANCE_WORLD);
     }
@@ -105,17 +114,21 @@ FgPoint TraceFgCameraBody(SceneContext scene, RayLaunch launch, uint4 randomKey,
 // tracer out of line by taking a value context and returning its update explicitly.
 // Slang authors, "noinline", core module reference:
 // https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
-[noinline] FgPoint TraceFgCameraOutOfLine(SceneContext scene, RayLaunch launch, uint4 randomKey,
-                                         RayQueryContext queriesIn, out RayQueryContext outQueries,
-                                         out float3 outEmission)
-{
+[noinline] FgPoint TraceFgCameraOutOfLine(SceneContext scene,
+                                          RayLaunch launch,
+                                          uint4 randomKey,
+                                          RayQueryContext queriesIn,
+                                          out RayQueryContext outQueries,
+                                          out float3 outEmission) {
     RayQueryContext queries = queriesIn;
     FgPoint point = TraceFgCameraBody(scene, launch, randomKey, queries, outEmission);
     outQueries = queries;
     return point;
-}
-FgPoint TraceFgCamera(SceneContext scene, RayLaunch launch, uint4 randomKey,
-                       inout RayQueryContext queries, out float3 outEmission)
+} FgPoint TraceFgCamera(SceneContext scene,
+                        RayLaunch launch,
+                        uint4 randomKey,
+                        inout RayQueryContext queries,
+                        out float3 outEmission)
 {
     RayQueryContext resultQueries;
     float3 emission;
@@ -125,8 +138,7 @@ FgPoint TraceFgCamera(SceneContext scene, RayLaunch launch, uint4 randomKey,
     return point;
 }
 
-[noinline] float3 EstimateFgDirect(SceneContext scene, RayLaunch launch, FgPoint point, inout RayQueryContext queries)
-{
+[noinline] float3 EstimateFgDirect(SceneContext scene, RayLaunch launch, FgPoint point, inout RayQueryContext queries) {
     float3 radiance = float3(0);
     uint count = GetLightCount(scene);
     if (count > 0)
@@ -135,7 +147,10 @@ FgPoint TraceFgCamera(SceneContext scene, RayLaunch launch, uint4 randomKey,
         selected.LightIndex = min(uint(SampleFgRandom(launch, FG_DIRECT_FIRST_DIMENSION) * float(count)), count - 1);
         selected.SelectionPmf = EvaluateLightSelectionPmf(scene, selected.LightIndex);
         selected.HasSample = true;
-        LightSample light = SampleIncidentLight(scene, selected, point.Hit,
+        LightSample light = SampleIncidentLight(
+            scene,
+            selected,
+            point.Hit,
             SampleFgRandomTriple(launch.Seed, GetFgPixel(launch), launch.SampleIndex, FG_DIRECT_FIRST_DIMENSION + 1));
         float3 value;
         float density;
@@ -152,12 +167,16 @@ FgPoint TraceFgCamera(SceneContext scene, RayLaunch launch, uint4 randomKey,
     float3 directionWorld;
     float3 bsdfWeight;
     if (TrySampleFgBsdf(point,
-                       SampleFgRandomTriple(launch.Seed, GetFgPixel(launch), launch.SampleIndex,
-                                            FG_DIRECT_FIRST_DIMENSION + FG_VERTEX_DIMENSIONS + 1),
-                       directionWorld, bsdfWeight) == true)
+                        SampleFgRandomTriple(launch.Seed,
+                                             GetFgPixel(launch),
+                                             launch.SampleIndex,
+                                             FG_DIRECT_FIRST_DIMENSION + FG_VERTEX_DIMENSIONS + 1),
+                        directionWorld,
+                        bsdfWeight) == true)
     {
         SurfaceHit hit;
-        uint status = TraceClosest(scene, queries, SpawnSurfaceRay(point.Hit, directionWorld, FG_MAXIMUM_DISTANCE_WORLD), hit);
+        uint status =
+            TraceClosest(scene, queries, SpawnSurfaceRay(point.Hit, directionWorld, FG_MAXIMUM_DISTANCE_WORLD), hit);
         float3 emission = float3(0);
         float lightDensity = 0;
         if (status == SCENE_QUERY_MISS)
