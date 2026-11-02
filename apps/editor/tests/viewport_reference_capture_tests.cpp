@@ -4,6 +4,7 @@
 #include "internal/world_document.h"
 
 #include "entropy_fixture.h"
+#include "internal/preview_lighting.h"
 #include "internal/viewport_reference_capture.h"
 #include "viewport_fixture.h"
 #include <ludus/content/scene_cook/scene_assets.h>
@@ -12,6 +13,7 @@
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 
@@ -22,6 +24,7 @@
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
+#include <ludus/graphics/renderer/static_lighting.hpp>
 
 #include <QByteArray>
 #include <QCheckBox>
@@ -95,6 +98,21 @@ bool HasNativeRays(rhi::DeviceHandle device)
     return rhi::GetRayCapabilities(device, capabilities) == rhi::RasterStatus::Ready && capabilities.MaxRays >= 2;
 }
 #endif
+
+/// Columns of the folded patch: each sample cube then emits from more planar patches (six faces plus one per
+/// column) than the raster light capacity holds across the fixture's cubes, as a curved pbrt bulb does.
+constexpr uint32 FOLDED_PATCH_CELLS = 24;
+/// Uniform emitted radiance of every surface in MakeManyFacetedEmitterScene.
+constexpr float32 FACETED_EMISSION = 2;
+
+void MakeManyFacetedEmitterScene(const QString& root, RenderScene& outScene)
+{
+    tests::MakeLitScene(root, outScene, { .ExtraPatchCells = FOLDED_PATCH_CELLS, .IsPatchFolded = true });
+    for (PreviewSurface& surface : outScene.Surfaces)
+    {
+        surface.Emission = {FACETED_EMISSION, FACETED_EMISSION, FACETED_EMISSION};
+    }
+}
 
 void DescribeTestView(const RenderScene& scene, const QSize& extent, renderer::ViewDescription& outView)
 {
@@ -205,6 +223,32 @@ TEST_CASE("Reference lights exclude the raster viewport's emissive area proxies"
     CHECK(lights[2].SourceId == 5);
 }
 
+TEST_CASE("Reference lighting inputs skip the raster area proxies of many-faceted emitters",
+          "[editor][reference-capture]")
+{
+    QTemporaryDir root;
+    REQUIRE(root.isValid() == true);
+    RenderScene scene;
+    MakeManyFacetedEmitterScene(root.path(), scene);
+    const QByteArray key = preview_lighting::MakeKey(scene);
+    // Raster shading needs one proxy light per planar patch and cannot hold them all.
+    preview_lighting::Inputs raster;
+    CHECK(preview_lighting::BuildInputs(scene, key, raster) == rhi::RasterStatus::CapacityExceeded);
+    // Reference transport samples the emissive triangles itself, so the proxy capacity does not apply.
+    preview_lighting::Inputs reference;
+    REQUIRE(preview_lighting::BuildInputs(scene, key, reference, preview_lighting::InputsTarget::Reference) ==
+            rhi::RasterStatus::Ready);
+    CHECK(reference.Lights.Count == static_cast<uint32>(tests::LAMP_COUNT));
+    CHECK(reference.AreaCount == 0);
+    CHECK(reference.ShadowCount == 0);
+    REQUIRE(reference.Surfaces.GetSize() == static_cast<usize>(scene.Objects.size()));
+    const math::Vector3 emission{FACETED_EMISSION, FACETED_EMISSION, FACETED_EMISSION};
+    for (const renderer::StaticLightingSurfaceDescription& surface : reference.Surfaces)
+    {
+        CHECK(surface.Emission == emission);
+    }
+}
+
 TEST_CASE("Reference capture rejects unlit scenes and out-of-range settings before using a device",
           "[editor][reference-capture]")
 {
@@ -292,6 +336,36 @@ TEST_CASE("CPU oracle reference capture of the viewport scene completes and save
     capture.Release();
     CHECK(capture.GetPhase() == ViewportReferencePhase::Idle);
     CHECK(capture.EncodeHdr(hdr, error) == false);
+}
+
+TEST_CASE("GPU compute reference capture completes with more emissive patches than raster lights",
+          "[editor][reference-capture][gpu]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    QTemporaryDir root;
+    REQUIRE(root.isValid() == true);
+    RenderScene scene;
+    MakeManyFacetedEmitterScene(root.path(), scene);
+    const QSize extent = ComputeReferenceExtent(QSize(640, 480), TEST_LONG_SIDE);
+    renderer::ViewDescription view;
+    DescribeTestView(scene, extent, view);
+    ViewportReferenceSettings settings;
+    settings.LongSide = TEST_LONG_SIDE;
+    settings.Samples = TEST_SAMPLES;
+    settings.MaxDepth = TEST_DEPTH;
+    settings.Traversal = renderer::ReferenceTraversal::GpuCompute;
+    ViewportReferenceCapture capture;
+    QString error;
+    REQUIRE(capture.Start(device.Device, device.Surface, scene, view, extent, settings, error) == true);
+    const ViewportReferencePhase phase = RunToEnd(capture);
+    INFO(capture.GetError().toStdString());
+    REQUIRE(phase == ViewportReferencePhase::Complete);
+    CHECK(capture.GetLightCount() == static_cast<usize>(tests::LAMP_COUNT));
+    CheckCompleteCapture(capture, extent);
 }
 
 TEST_CASE("Native query reference capture completes where the device supports ray queries",
@@ -455,12 +529,14 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
     {
         SKIP("Set LUDUS_REFERENCE_TEST_PROJECT to a project with assets/staircase2.world.json.");
     }
+    // LUDUS_REFERENCE_TEST_WORLD names another World under assets/, for example bathroom.
+    const QString worldName = qEnvironmentVariable("LUDUS_REFERENCE_TEST_WORLD", QStringLiteral("staircase2"));
     WorldDocument world;
     QString error;
     REQUIRE(world.LoadSchema(QByteArrayLiteral("{\"version\":1,\"id\":\"ludus.world.default.v1\",\"label\":\"World\","
                                                "\"components\":[],\"assets\":[]}"),
                              error) == true);
-    REQUIRE(world.Load(tests::ReadTestFile(QDir(root).filePath(QStringLiteral("assets/staircase2.world.json"))),
+    REQUIRE(world.Load(tests::ReadTestFile(QDir(root).filePath(QStringLiteral("assets/%1.world.json").arg(worldName))),
                        error) == true);
     const QJsonObject level = world.SceneLevel();
     const QByteArray levelBytes = QJsonDocument(level).toJson(QJsonDocument::Compact);
@@ -492,6 +568,28 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
     REQUIRE(
         preview.DescribeView(static_cast<uint32>(extent.width()), static_cast<uint32>(extent.height()), view, error) ==
         true);
+    // LUDUS_REFERENCE_TEST_AUTHORED_CAMERA=1 looks through the World's authored import camera instead.
+    if (qEnvironmentVariableIntValue("LUDUS_REFERENCE_TEST_AUTHORED_CAMERA") == 1)
+    {
+        constexpr float32 AUTHORED_NEAR_PLANE = .01F;
+        constexpr float32 AUTHORED_FAR_PLANE = 1000;
+        const ludus::resources::SceneDefinition& definition = *scene.Definition;
+        math::Matrix4 worldToView;
+        math::Matrix4 viewToClip;
+        REQUIRE(math::TryLookAt(definition.Eye, definition.Target, definition.Up, worldToView) ==
+                math::MathStatus::Success);
+        REQUIRE(
+            math::TryPerspectiveReverseZ(definition.VerticalFov,
+                                         static_cast<float32>(extent.width()) / static_cast<float32>(extent.height()),
+                                         AUTHORED_NEAR_PLANE,
+                                         AUTHORED_FAR_PLANE,
+                                         viewToClip) == math::MathStatus::Success);
+        view.WorldToClip = viewToClip * worldToView;
+        view.CameraPosition = definition.Eye;
+        view.Depth = renderer::DepthConvention::ReverseZ;
+        view.InfiniteFar = false;
+        view.OrthographicCamera = false;
+    }
     const int32 requestedSamples = qEnvironmentVariableIntValue("LUDUS_REFERENCE_TEST_SAMPLES");
     constexpr uint32 DEFAULT_SUPPLIED_SAMPLES = 64;
     constexpr int64 SUPPLIED_CAPTURE_TIMEOUT_MILLISECONDS = 600000;
@@ -531,6 +629,14 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
         CHECK(information.MinimumSamples == settings.Samples);
         CHECK(information.CommittedSamples ==
               static_cast<uint64>(extent.width()) * static_cast<uint64>(extent.height()) * settings.Samples);
+        // LUDUS_REFERENCE_TEST_OUTPUT names a directory that receives each capture as LUHDR and PNG.
+        const QString output = qEnvironmentVariable("LUDUS_REFERENCE_TEST_OUTPUT");
+        if (output.isEmpty() == false)
+        {
+            const QString path =
+                QDir(output).filePath(QStringLiteral("%1-%2.luhdr").arg(worldName).arg(static_cast<uint32>(traversal)));
+            CHECK(capture.Save(path, error) == true);
+        }
     }
     preview.Stop();
     rhi::Shutdown();

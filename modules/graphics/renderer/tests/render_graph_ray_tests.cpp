@@ -7437,6 +7437,10 @@ constexpr uint64 CAPTURE_TIMEOUT = 60 * time::NANOSECONDS_PER_SECOND;
 constexpr uint32 CAPTURE_TARGET_SAMPLES = 6;
 /// An authored Accumulate limit below CAPTURE_TARGET_SAMPLES, so reaching the target needs the override.
 constexpr uint32 REDUCED_AUTHORED_LIMIT = 2;
+/// More readbacks than any device configures at once; requesting stops at the first CapacityExceeded.
+constexpr usize MAX_HELD_READBACKS = 64;
+/// Services a capture spends waiting on held readback slots before they are released.
+constexpr uint32 BUSY_READBACK_SERVICES = 8;
 
 /// The polygonal-light template's clamped optimal MIS output: the first pass's colour.
 uint32 GetClampedMisOutput(const renderer::RenderGraphPlan& plan)
@@ -7642,6 +7646,81 @@ TEST_CASE("A stopped render graph capture keeps exact counts and leaves the live
     CHECK(after == before);
     CHECK(live.Graph.HasPendingSamples() == wasPending);
     CHECK(live.Graph.GetDrawableSceneRevision() == drawableRevision);
+}
+
+TEST_CASE("A render graph capture waits for readback slots that other work holds",
+          "[render-graph][gpu][render-graph-capture]")
+{
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    MakeRoomGlossyWithoutSky(room);
+    constexpr uint64 REVISION = 7;
+    PreparedGraph live(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, REVISION);
+    RenderFrame(live.Graph, fixture);
+    rhi::BufferHandle held;
+    REQUIRE(live.Graph.GetAccumulation(0, held) == rhi::RasterStatus::Ready);
+
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(live.Plan);
+    settings.TargetSamples = CAPTURE_TARGET_SAMPLES;
+    renderer::RenderGraphCapture capture;
+    const rhi::RasterStatus started =
+        capture.Start(fixture.Device, fixture.Surface, live.Plan, live.Programs, WIDTH, HEIGHT, settings);
+    REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+    const uint64 beginning = time::NowTicks();
+    while (capture.GetPhase() != renderer::RenderGraphCapturePhase::ReadingBack &&
+           time::NowTicks() - beginning < CAPTURE_TIMEOUT)
+    {
+        const renderer::RenderGraphCapturePhase phase = capture.Service();
+        REQUIRE(phase != renderer::RenderGraphCapturePhase::Failed);
+        if (phase == renderer::RenderGraphCapturePhase::AwaitingScene)
+        {
+            const rhi::RasterStatus submitted = capture.SubmitScene({room.Meshes.GetData(), room.Meshes.GetSize()},
+                                                                    {room.Items.GetData(), room.Items.GetSize()},
+                                                                    {room.Cameras.GetData(), room.Cameras.GetSize()},
+                                                                    REVISION,
+                                                                    &room.Inputs);
+            REQUIRE((submitted == rhi::RasterStatus::Ready || submitted == rhi::RasterStatus::Pending));
+        }
+    }
+    REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::ReadingBack);
+
+    // Hold every readback slot, as a reference capture tracing on the same device does.
+    Array<rhi::ReadbackTicket> tickets;
+    REQUIRE(tickets.TryEnsureCapacity(MAX_HELD_READBACKS) == true);
+    rhi::RasterStatus requested = rhi::RasterStatus::Ready;
+    while (tickets.GetSize() < MAX_HELD_READBACKS)
+    {
+        rhi::ReadbackTicket ticket;
+        requested = rhi::RequestBufferReadback(fixture.Device, held, 0, sizeof(math::Vector4), ticket);
+        if (requested == rhi::RasterStatus::CapacityExceeded)
+        {
+            break;
+        }
+        REQUIRE((requested == rhi::RasterStatus::Pending || requested == rhi::RasterStatus::Ready));
+        REQUIRE(tickets.TryAdd(ticket) == true);
+    }
+    REQUIRE(requested == rhi::RasterStatus::CapacityExceeded);
+    REQUIRE(tickets.IsEmpty() == false);
+    for (uint32 service = 0; service < BUSY_READBACK_SERVICES; ++service)
+    {
+        CHECK(capture.Service() == renderer::RenderGraphCapturePhase::ReadingBack);
+    }
+    for (rhi::ReadbackTicket& ticket : tickets)
+    {
+        const uint64 waited = time::NowTicks();
+        rhi::RasterStatus status = rhi::GetStatus(fixture.Device, ticket);
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - waited < TRAVERSAL_TIMEOUT)
+        {
+            status = rhi::GetStatus(fixture.Device, ticket);
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
+    }
+
+    INFO(static_cast<uint32>(capture.GetStatus()));
+    REQUIRE(FinishCapture(capture, room, REVISION) == renderer::RenderGraphCapturePhase::Complete);
+    CHECK(capture.GetInfo().MinimumSamples == CAPTURE_TARGET_SAMPLES);
 }
 
 TEST_CASE("A render graph capture fails with the latched pixel count beyond the template's emitter budget",

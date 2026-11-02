@@ -1665,8 +1665,10 @@ The capture builds its own renderer on the viewport's GPU device. It loads the
 same meshes, textures and Lit materials as the viewport, but no shadow atlas. The
 scene's authored analytic lights and its environment (map or constant) are
 supplied to the integrator. Emissive surfaces light the scene as true area
-emitters. The raster viewport's area-light proxies are not passed, which would
-count that light twice. Indirect light, soft shadows and inter-reflection
+emitters. The raster viewport's area-light proxies are not built or passed, which would
+count that light twice, so their 128-light limit does not apply: curved emitters such
+as the bathroom reference scene's bulbs, which exceed the raster proxy profile, do not
+stop a capture. Indirect light, soft shadows and inter-reflection
 therefore appear here, where a raster profile approximates or omits them; see
 [comparison](#compare-with-the-viewports-render-graph). Zero-area triangles are left out of the reference
 geometry. They have no area to hit or emit from.
@@ -1684,7 +1686,7 @@ its sums back after the first samples, every 16th sample and at the end, so the
 displayed image updates in those steps. The editor stays responsive while it runs. A capture needs a lit scene
 (an authored light or an emissive surface). Content outside the reference
 profile fails with an explanation and keeps any samples already taken. Examples
-are a shading normal facing away from its triangle, or a texture format the
+are a non-finite or zero-length vertex normal, or a texture format the
 profile does not retain. The integrator's declared limits apply: RGB only, no
 transmission or volumes, a fixed texture mip and a truncated depth. See the
 [reference workflow and frozen profile](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
@@ -1768,7 +1770,8 @@ choice the viewport shows. It uses a private producer on the same device, with
 the same frozen camera. When the output can be
 [captured](#capture-the-render-graph), the graph side runs to the same samples per
 pixel as the reference and is compared in linear space, and **Save…** also writes
-`<base>.graph.lurgcap`. Otherwise one raster frame is compared, waiting up to 64
+`<base>.graph.lurgcap`. The graph side shares the device's readback slots with
+the reference and waits while they are busy instead of failing. Otherwise one raster frame is compared, waiting up to 64
 frames for an accumulating graph, and the summary says why. The reference covers exactly the graph's output pixels.
 A graph that renders at a scaled resolution sets the extent, which can differ
 from **Long side**. The comparison measures the scheme the viewport actually

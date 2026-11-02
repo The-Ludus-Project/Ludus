@@ -74,10 +74,12 @@ enum class RenderGraphCapturePhase : foundation::uint8
     AwaitingScene,  ///< Ready for SubmitScene.
     PreparingScene, ///< The submitted scene is preparing.
     Rendering,      ///< Frames are accumulating toward the target.
-    ReadingBack,    ///< Copying the Accumulate mean and counts to the CPU, for progress or at the end.
-    Complete,       ///< Every frame of the target was submitted and read back without a latched failure.
-    Stopped,        ///< Stop ended the capture early; the committed samples were read back.
-    Failed,         ///< The capture failed; GetProblem and GetStatus say why. Read-back pixels stay readable.
+    /// Copying the Accumulate mean and counts to the CPU, for progress or at the end. Waits, without failing,
+    /// while other work on the device holds every readback slot.
+    ReadingBack,
+    Complete, ///< Every frame of the target was submitted and read back without a latched failure.
+    Stopped,  ///< Stop ended the capture early; the committed samples were read back.
+    Failed,   ///< The capture failed; GetProblem and GetStatus say why. Read-back pixels stay readable.
 };
 
 /// Why a capture rejected its source or failed.

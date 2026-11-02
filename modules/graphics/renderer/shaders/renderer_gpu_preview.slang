@@ -67,6 +67,20 @@ float3 PositionWorld(uint t, float2 uv)
     uint b = t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS;
     return SceneValue(b).xyz * (1 - uv.x - uv.y) + SceneValue(b + 1).xyz * uv.x + SceneValue(b + 2).xyz * uv.y;
 }
+// Unnormalized shading normal at barycentric uv.
+float3 ShadingNormalWorld(uint t, float2 uv)
+{
+    uint b = t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS;
+    return SceneValue(b + 3).xyz * (1 - uv.x - uv.y) + SceneValue(b + 4).xyz * uv.x + SceneValue(b + 5).xyz * uv.y;
+}
+// OrientReferenceGeometricNormal: pbrt-v4's FaceForward of the geometric normal into the hemisphere of the
+// interpolated shading normal (Pharr, Jakob and Humphreys, PBR 4th edition, section 6.5.3).
+float3 OrientedGeometricNormalWorld(uint t, float2 uv)
+{
+    float3 geometricNormalWorld =
+        SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + LUDUS_GPU_PREVIEW_GEOMETRIC_NORMAL_WORD).xyz;
+    return dot(ShadingNormalWorld(t, uv), geometricNormalWorld) < 0 ? -geometricNormalWorld : geometricNormalWorld;
+}
 float2 TexcoordUv(uint t, float2 uv)
 {
     uint b = t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS;
@@ -902,7 +916,7 @@ float3 Integrate(uint pixel, uint sample)
         uint t = hit.Triangle;
         HitMaterial material = LoadHitMaterial(t, hit.Barycentric);
         float3 positionWorld = PositionWorld(t, hit.Barycentric);
-        float3 geometricNormalWorld = SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 8).xyz;
+        float3 geometricNormalWorld = OrientedGeometricNormalWorld(t, hit.Barycentric);
         float3 viewDirectionWorld = -directionWorld;
         float3 emission =
             ReadHitSurface(material, LUDUS_GPU_PREVIEW_EMISSION_WORD).xyz * SampleHitTexture(material, 2).xyz;
@@ -915,12 +929,16 @@ float3 Integrate(uint pixel, uint sample)
                  ? 1
                  : PowerWeight(previousPdf,
                                AreaPdf(t, previousPositionWorld, positionWorld, HitEmitterSelection(t, lights))));
-        if (depth >= Dimensions.z || dot(geometricNormalWorld, viewDirectionWorld) <= 0)
+        // pbrt-v4's reflection models scatter on the viewer's side of the surface (reference_path.cpp cites the
+        // source); emission above stays one-sided.
+        bool isBackFace = dot(geometricNormalWorld, viewDirectionWorld) < 0;
+        float3 scatteringNormalWorld = isBackFace == true ? -geometricNormalWorld : geometricNormalWorld;
+        if (depth >= Dimensions.z || dot(scatteringNormalWorld, viewDirectionWorld) <= 0)
             break;
-        float3 normalWorld = NormalizeOrZero(
-            SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 3).xyz * (1 - hit.Barycentric.x - hit.Barycentric.y) +
-            SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 4).xyz * hit.Barycentric.x +
-            SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 5).xyz * hit.Barycentric.y);
+        // Corner normals on both sides of the face can cancel; pbrt-v4 then shades with the geometric normal.
+        float3 normalWorld = NormalizeOrZero(ShadingNormalWorld(t, hit.Barycentric));
+        if (all(normalWorld == float3(0)) == true)
+            normalWorld = geometricNormalWorld;
         float3 color =
             saturate(ReadHitSurface(material, LUDUS_GPU_PREVIEW_BASE_COLOR_WORD).xyz * SampleHitTexture(material).xyz);
         if (asuint(ReadHitSurface(material, LUDUS_GPU_PREVIEW_SURFACE_OPTIONS_WORD).z) != 0)
@@ -965,6 +983,8 @@ float3 Integrate(uint pixel, uint sample)
                                                 SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 6).xy) *
                                                    uvScale);
         }
+        if (isBackFace == true)
+            normalWorld = -normalWorld;
         uint dimension = LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION + depth * LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE;
         if (lights > 0)
         {
@@ -1043,7 +1063,7 @@ float3 Integrate(uint pixel, uint sample)
                                            lightPositionWorld,
                                            EmitterSelection(selectedEmitter, lights));
                 if ((asuint(Surface(emitter, 5).w) != 0 ||
-                     dot(SceneValue(emitter * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 8).xyz, -lightDirectionWorld) > 0) &&
+                     dot(OrientedGeometricNormalWorld(emitter, uv), -lightDirectionWorld) > 0) &&
                     range <= Options.x &&
                     (asuint(Surface(emitter, 5).z) == 0 || Texture(emitter, TexcoordUv(emitter, uv)).w *
                                                                    Surface(emitter, 2).w *
@@ -1075,7 +1095,7 @@ float3 Integrate(uint pixel, uint sample)
                                value,
                                bsdfPdf);
             if (pdf > 0 && HasPositiveComponent(lightColor) && dot(normalWorld, lightDirectionWorld) > 0 &&
-                dot(geometricNormalWorld, lightDirectionWorld) > 0)
+                dot(scatteringNormalWorld, lightDirectionWorld) > 0)
             {
                 float3 shadowOriginWorld = OffsetPositionWorld(positionWorld, t, lightDirectionWorld);
                 float3 shadowDirectionWorld = lightDirectionWorld;
@@ -1112,7 +1132,7 @@ float3 Integrate(uint pixel, uint sample)
                                  float3(Random01(pixel, sample, dimension + 3),
                                         Random01(pixel, sample, dimension + 4),
                                         Random01(pixel, sample, dimension + 5)));
-        if (dot(normalWorld, outgoingDirectionWorld) <= 0 || dot(geometricNormalWorld, outgoingDirectionWorld) <= 0)
+        if (dot(normalWorld, outgoingDirectionWorld) <= 0 || dot(scatteringNormalWorld, outgoingDirectionWorld) <= 0)
             break;
         float3 value;
         float pdf;

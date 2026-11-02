@@ -113,7 +113,7 @@ QString DescribeStatus(rhi::RasterStatus status)
             return QStringLiteral("the reference path or backend validation failed");
         case rhi::RasterStatus::Unsupported:
             return QStringLiteral("the scene uses content outside the reference profile (for example a "
-                                  "shading normal facing away from its triangle, an unretained texture "
+                                  "non-finite or zero-length vertex normal, an unretained texture "
                                   "format, or a masked material with native traversal)");
         case rhi::RasterStatus::CapacityExceeded:
             return QStringLiteral("the scene or image exceeds the reference memory budget");
