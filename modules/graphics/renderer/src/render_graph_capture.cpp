@@ -268,6 +268,12 @@ struct RenderGraphCapture::State final
         {
             const usize bytes = math::Min(SliceBytes, totalBytes - ReadOffset);
             const Status requested = rhi::RequestBufferReadback(Device, Accumulation, ReadOffset, bytes, Readback);
+            // SliceBytes fits the transfer budget, so this means every readback slot is busy, for example
+            // with a reference capture tracing on the same device; retry on a later service.
+            if (requested == Status::CapacityExceeded)
+            {
+                return;
+            }
             if (requested != Status::Pending && requested != Status::Ready)
             {
                 Fail(RenderGraphCaptureProblem::ReadbackFailure, requested);

@@ -37,6 +37,8 @@ inline constexpr foundation::float64 LAMP_SPACING = 1.5;
 inline constexpr foundation::float64 CASTER_SPACING = 3;
 /// Height of the lamp row above the World origin, in world units.
 inline constexpr foundation::float64 LAMP_HEIGHT = 3;
+/// Height of every other vertex column of a folded extra patch, in world units.
+inline constexpr foundation::float64 PATCH_RIDGE_HEIGHT = .1;
 /// Optional mesh flaws and workload for MakeLitScene.
 struct LitSceneOptions final
 {
@@ -44,6 +46,9 @@ struct LitSceneOptions final
     bool HasCollapsedTriangle = false;
     /// Append a cells x cells quad patch below the cube so the bake runs long enough to cancel.
     foundation::uint32 ExtraPatchCells = 0;
+    /// Fold the extra patch into ridges along x, so each column of cells lies in its own plane
+    /// (one raster area proxy per column when the cube emits).
+    bool IsPatchFolded = false;
     /// Add the authored lamps; without them the World stays on the unlit authored path.
     bool HasLamps = true;
     /// Caller-supplied UUID source; a deterministic source freezes light selection in parity tests.
@@ -94,7 +99,8 @@ inline void MakeLitScene(const QString& root, RenderScene& outScene, const LitSc
             {
                 const foundation::float64 u = static_cast<foundation::float64>(x) / cells;
                 const foundation::float64 v = static_cast<foundation::float64>(y) / cells;
-                positions.append(QJsonArray{u * 4 - 2, -1.5, v * 4 - 2});
+                const foundation::float64 ridge = options.IsPatchFolded == true && x % 2 == 1 ? PATCH_RIDGE_HEIGHT : 0;
+                positions.append(QJsonArray{u * 4 - 2, -1.5 + ridge, v * 4 - 2});
                 uvs.append(QJsonArray{u, v});
             }
         }

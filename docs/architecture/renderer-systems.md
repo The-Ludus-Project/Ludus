@@ -1315,9 +1315,25 @@ triangle edge tests. No mode performs implicit fallback. Ordinary raster use ret
 Create lit L4/L5 material versions and meshes, then an immutable snapshot. Color
 textures require `TextureDescription::RetainCpuContent` at upload; RGBA8 unorm/sRGB
 initialized mips are retained, attachments/HDR retention are rejected. Capture
-admission rejects unavailable mips, unlit surfaces, degenerate triangles and
-unsupported normals/content, instead of quietly replacing them. LOD selection,
+admission rejects unavailable mips, unlit surfaces, degenerate triangles,
+non-finite or zero-length corner normals and other unsupported content, instead of
+quietly replacing them. LOD selection,
 bakes, AO, shadow atlases and prefiltered IBL do not enter reference transport.
+
+Shading normals decide which side of a triangle reflects and emits, as in pbrt-v4
+(Pharr, Jakob and Humphreys, *Physically Based Rendering*, 4th edition, section 6.5.3,
+and `Triangle::InteractionFromIntersection`/`Triangle::Sample`): at every hit and
+every sampled emitter point the geometric normal is flipped into the hemisphere of
+the interpolated corner normal. Winding that opposes authored normals, and corner
+normals on both sides of a face (smoothed normals across a crease), are therefore
+admitted; where the interpolated normal cancels, the geometric normal shades.
+Reflection is two-sided, as pbrt-v4's diffuse, conductor and layered models are
+(sections 9.2 and 14.3): a path that reaches the back of the oriented face scatters
+there with both normals mirrored towards the viewer instead of ending. Emission stays
+one-sided unless authored two-sided. The CPU oracle, native-query transport,
+GPU-compute reference and GPU preview share both rules. Capture profile 7 records
+them; comparisons require matching profile versions, so profile 6 captures stay
+distinguishable.
 
 `BeginReferenceCapture` copies camera/light/integrator settings and retains the
 snapshot. `AdvanceReferenceCapture` advances one bounded stage/tile or polls a
@@ -2776,8 +2792,8 @@ magnitudes, reject relatively singular UV frames, orthogonalize tangent against 
 shading normal and preserve mirrored UV handedness. Degenerate frames preserve
 the original normal. This UV-derived basis is **not MikkTSpace**: tangent-baked
 assets need a matching conversion/profile before claiming exact source fidelity.
-Ray offsets and visibility remain geometric-normal operations, and below-geometric
-continuations are null events. Shading-normal energy correction is still absent;
+Ray offsets and visibility remain geometric-normal operations, and continuations
+below the viewer's side of the oriented geometric normal are null events. Shading-normal energy correction is still absent;
 this is the declared RGB reflection profile, not unrestricted physical fidelity.
 
 The forward profile extends the 1040-byte uniform to 1056 bytes and binds the map

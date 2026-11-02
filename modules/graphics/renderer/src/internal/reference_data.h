@@ -408,6 +408,41 @@ InterpolateReferenceUv(const ReferenceTriangle& triangle, float32 u, float32 v) 
 {
     return triangle.Uvs[0] * (1 - u - v) + triangle.Uvs[1] * u + triangle.Uvs[2] * v;
 }
+/// Unnormalized shading normal at barycentric (u, v) of `triangle`.
+[[nodiscard]] inline math::Vector3
+InterpolateReferenceShadingNormal(const ReferenceTriangle& triangle, float32 u, float32 v) noexcept
+{
+    return triangle.Normals[0] * (1 - u - v) + triangle.Normals[1] * u + triangle.Normals[2] * v;
+}
+// Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, "Physically Based Rendering: From Theory to
+// Implementation", 4th edition (2023), section 6.5.3 (Triangle Meshes, Intersection Coordinates) and pbrt-v4's
+// Triangle::InteractionFromIntersection and Triangle::Sample: an authored shading normal decides the side of the
+// geometric normal, so a triangle reflects and emits towards the interpolated shading normal whatever its winding.
+// https://pbr-book.org/4ed/Shapes/Triangle_Meshes
+/// The geometric normal of `triangle` flipped, as pbrt-v4's FaceForward does, into the hemisphere of the
+/// interpolated shading normal at barycentric (u, v). Corner normals on one side of the face give the same result
+/// over the whole triangle; corners on both sides orient each point separately.
+[[nodiscard]] inline math::Vector3
+OrientReferenceGeometricNormal(const ReferenceTriangle& triangle, float32 u, float32 v) noexcept
+{
+    return math::Dot(InterpolateReferenceShadingNormal(triangle, u, v), triangle.GeometricNormal) < 0
+               ? -triangle.GeometricNormal
+               : triangle.GeometricNormal;
+}
+/// Whether some point of `triangle` faces `pointWorld` under OrientReferenceGeometricNormal: the oriented side
+/// of every point lies between its corners' sides.
+[[nodiscard]] inline bool CanReferenceTriangleFace(const ReferenceTriangle& triangle, math::Vector3 pointWorld) noexcept
+{
+    const float32 side = math::Dot(triangle.GeometricNormal, pointWorld - triangle.Positions[0]);
+    for (const math::Vector3& normal : triangle.Normals)
+    {
+        if ((math::Dot(normal, triangle.GeometricNormal) < 0 ? -side : side) > 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 [[nodiscard]] inline math::Vector3 ReferenceNormalize(math::Vector3 v) noexcept
 {
     math::Vector3 result;

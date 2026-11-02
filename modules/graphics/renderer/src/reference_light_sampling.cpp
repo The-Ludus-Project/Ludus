@@ -86,9 +86,8 @@ bool TryLoadEmitter(const ReferenceJob& job,
     const ReferenceTriangle& triangle = job.Scene.Triangles[triangleIndex];
     const ReferenceSurfaceData& surface = *job.Scene.Instances[triangle.Instance].Surface;
     float32 emissionLuminance = ComputeReferenceLuminance(ClampBelow(surface.Emission, 0));
-    // A planar triangle faces the receiver from every point on it, as the emitter-hit test sees it at one point.
-    if (surface.IsEmissionTwoSided == false &&
-        math::Dot(triangle.GeometricNormal, frame.PositionWorld - triangle.Positions[0]) <= 0)
+    // Zero only when no point of the triangle emits towards the receiver; the emitter-hit test orients each point.
+    if (surface.IsEmissionTwoSided == false && CanReferenceTriangleFace(triangle, frame.PositionWorld) == false)
     {
         emissionLuminance = 0;
     }
@@ -382,7 +381,8 @@ ReferenceResampledLightSample SampleTechnique(const ReferenceJob& job,
     result.PointWorld = InterpolateReferencePosition(triangle, barycentric.X, barycentric.Y);
     result.DistanceWorld = distanceWorld;
     // Sidedness, range and opacity at the sampled point, as UniformArea applies them.
-    if ((instance.Surface->IsEmissionTwoSided == true || math::Dot(triangle.GeometricNormal, -directionWorld) > 0) &&
+    if ((instance.Surface->IsEmissionTwoSided == true ||
+         math::Dot(OrientReferenceGeometricNormal(triangle, barycentric.X, barycentric.Y), -directionWorld) > 0) &&
         distanceWorld <= job.Description.SecondaryDistance &&
         ReferenceOpacity(instance, uv, InterpolateReferenceColor(triangle, barycentric.X, barycentric.Y).W) == true)
     {
