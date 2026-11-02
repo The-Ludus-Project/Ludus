@@ -253,6 +253,7 @@ RasterCapabilities RasterLimits() noexcept
         .DrawsPerFrame = CurrentStorageLimits().DrawsPerFrame,
         .MaxVertexAttributes = MAX_VERTEX_ATTRIBUTES,
         .MaxTextureUploadBytes = MAX_BUFFER_BYTES,
+        .HasLineFill = true,
     };
 }
 BindingCapabilities BindingLimits() noexcept

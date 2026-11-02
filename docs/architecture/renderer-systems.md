@@ -3302,14 +3302,20 @@ camera movement and exposure do not change these view-independent irradiance cha
 `LitMaterialDescription::DebugView` (`MaterialDebugView`) replaces a lit
 material's shaded output with one inspection quantity per pixel: world-space
 normal as RGB (`n * 0.5 + 0.5`), linear depth, perceptual roughness, metallic,
-UV0 as red/green, or the number of lights whose shadowed contribution is nonzero
-as a viridis ramp saturating at `MATERIAL_DEBUG_LIGHT_COUNT_SATURATION`.
+UV0 as red/green, the number of lights whose shadowed contribution is nonzero
+as a viridis ramp saturating at `MATERIAL_DEBUG_LIGHT_COUNT_SATURATION`, or a
+wireframe colour (`MATERIAL_DEBUG_WIREFRAME_RED`/`GREEN`/`BLUE`) dimmed toward
+`MATERIAL_DEBUG_WIREFRAME_EDGE_ON_PERCENT` as the surface turns edge-on.
+Wireframe draws edges only when the program was prewarmed with
+`PrewarmLitProgram(..., rhi::RasterFillMode::Lines)`, which applies line fill to
+its colour and depth-prepass pipelines while its shadow pipeline keeps filling
+triangles; a solid program fills triangles in the wireframe colour.
 Only the debug recipes honour it: `renderer_lit_debug` and
 `renderer_clustered_authored_debug`, with matching shadow recipes. They compile
 the production sources with `LUDUS_DEBUG_VIEW`, keep the production binding and
 parameter layout, and read the mode from the reserved `Options.w`; the
 production recipes are unchanged and ignore it (it stays zero). Creation rejects
-values above `MaterialDebugView::LightCount`.
+values above `MaterialDebugView::Wireframe`.
 
 `ViewDescription::DebugDepthRange` supplies the linear-depth `{near, far}` in
 world units: radial distance from the camera for perspective views and distance

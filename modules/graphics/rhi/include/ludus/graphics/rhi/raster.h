@@ -613,6 +613,15 @@ enum class RasterDepthCompare : ludus::foundation::uint8
     /// Accept every depth value; DepthWrite still controls writes.
     Always,
 };
+/// How triangles are rasterized; indexed triangle lists remain the only primitive topology.
+enum class RasterFillMode : ludus::foundation::uint8
+{
+    /// Cover every pixel inside each triangle.
+    Solid,
+    /// Draw only each triangle's three edges as one-pixel lines, for wireframe diagnostics.
+    /// Requires RasterCapabilities::HasLineFill; line width and anti-aliasing are not configurable.
+    Lines,
+};
 /// Portable stencil comparison against the masked reference and stored value.
 enum class RasterStencilCompare : ludus::foundation::uint8
 {
@@ -715,6 +724,8 @@ struct RasterPipelineDescription final
     /// Enable writes to every color channel/attachment. False permits a void fragment
     /// stage and preserves color during draws; attachment load/store operations still apply.
     bool ShouldWriteColor = true;
+    /// Triangle rasterization. Lines returns Unsupported unless RasterCapabilities::HasLineFill.
+    RasterFillMode FillMode = RasterFillMode::Solid;
 };
 /// One vertex-stream slice, borrowed during DrawIndexed and retained through submission.
 struct RasterVertexSlice final

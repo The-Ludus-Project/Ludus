@@ -353,6 +353,134 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
     owner.CheckDebugMessages();
 }
 
+TEST_CASE("Portable line fill draws triangle edges and leaves interiors clear", "[rhi][gpu][portable-raster]")
+{
+    DeviceOwner owner;
+    rhi::RasterCapabilities capabilities;
+    REQUIRE(rhi::GetRasterCapabilities(owner.Device, capabilities) == rhi::RasterStatus::Ready);
+    if (capabilities.HasLineFill == false)
+    {
+        SKIP("Device did not enable line fill");
+    }
+    const rhi::RasterShaderDescription vertex = ludus::shaders::raster::Vertex();
+    const rhi::RasterShaderDescription fragment = ludus::shaders::raster::Fragment();
+    rhi::RasterShaderHandle vertexShader;
+    rhi::RasterShaderHandle fragmentShader;
+    rhi::BindingLayoutHandle layout;
+    REQUIRE(rhi::CreateRasterShader(owner.Device, vertex, vertexShader) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateRasterShader(owner.Device, fragment, fragmentShader) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBindingLayout(owner.Device, fragment.Bindings, layout) == rhi::RasterStatus::Ready);
+    const StaticArray<float32, CHANNELS> tint{1, 1, 1, 1};
+    rhi::BufferHandle uniform;
+    REQUIRE(rhi::CreateBuffer(owner.Device, {rhi::BufferRole::Uniform, sizeof(tint)}, GetBytes(tint), uniform) ==
+            rhi::RasterStatus::Ready);
+    constexpr usize TEXEL_BYTES = 4;
+    const StaticArray<uint8, TEXEL_BYTES> white{255, 255, 255, 255};
+    rhi::TextureHandle texture;
+    WaitForTexture(
+        owner.Device,
+        texture,
+        rhi::CreateTexture(owner.Device, {1, 1, rhi::RasterFormat::Rgba8Unorm}, {white.AsSpan(), 4}, texture));
+    rhi::TextureViewHandle view;
+    rhi::SamplerHandle sampler;
+    REQUIRE(rhi::CreateTextureView(owner.Device, texture, view) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateSampler(owner.Device, {}, sampler) == rhi::RasterStatus::Ready);
+    StaticArray<rhi::RasterBindingResource, BINDING_COUNT> bindings{};
+    bindings[0] = { .Binding = 0, .Buffer = uniform, .Size = sizeof(tint) };
+    bindings[1] = { .Binding = 1, .Texture = view };
+    bindings[2] = { .Binding = 2, .Sampler = sampler };
+    rhi::BindingSetHandle set;
+    REQUIRE(rhi::CreateBindingSet(owner.Device, layout, bindings.AsSpan(), set) == rhi::RasterStatus::Ready);
+    const StaticArray<rhi::RasterVertexStream, STREAM_COUNT> streams{{{20, false}, {8, true}}};
+    const StaticArray<rhi::RasterVertexAttribute, ATTRIBUTE_COUNT> attributes{
+        {{0, 0, 0, rhi::RasterVertexFormat::Float3},
+         {1, 0, 12, rhi::RasterVertexFormat::Float2},
+         {2, 1, 0, rhi::RasterVertexFormat::Float2}}};
+    rhi::RasterPipelineDescription description{vertexShader,
+                                               fragmentShader,
+                                               layout,
+                                               streams.AsSpan(),
+                                               attributes.AsSpan(),
+                                               true};
+    description.FillMode = rhi::RasterFillMode::Lines;
+    rhi::RasterPipelineHandle pipeline;
+    REQUIRE(rhi::CreateRasterPipeline(owner.Device, description, pipeline) == rhi::RasterStatus::Ready);
+    // A quad spanning the middle half of the target in each axis, split along its rising diagonal.
+    constexpr float32 HALF = .5F;
+    constexpr float32 DEPTH = .5F;
+    const StaticArray<float32, VERTEX_VALUES> points{-HALF, -HALF, DEPTH, 0, 1, -HALF, HALF,  DEPTH, 0, 0,
+                                                     HALF,  HALF,  DEPTH, 1, 0, HALF,  -HALF, DEPTH, 1, 1};
+    const StaticArray<float32, FLOAT2_VALUES> center{0, 0};
+    const StaticArray<uint16, INDEX_COUNT> indices16{0, 1, 2, 0, 2, 3};
+    rhi::BufferHandle vertices;
+    rhi::BufferHandle instance;
+    rhi::BufferHandle indices;
+    REQUIRE(rhi::CreateBuffer(owner.Device, {rhi::BufferRole::Vertex, sizeof(points)}, GetBytes(points), vertices) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBuffer(owner.Device, {rhi::BufferRole::Vertex, sizeof(center)}, GetBytes(center), instance) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(
+        rhi::CreateBuffer(owner.Device, {rhi::BufferRole::Index16, sizeof(indices16)}, GetBytes(indices16), indices) ==
+        rhi::RasterStatus::Ready);
+    REQUIRE(rhi::SetFrameTarget(owner.Device, owner.Surface, {WIDTH, HEIGHT, 0, 0, 0, 1}) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginFrame(owner.Device, owner.Surface) == rhi::DeviceStatus::Ready);
+    rhi::RasterPassDescription pass;
+    pass.ColorLoad = rhi::RasterLoad::Load;
+    REQUIRE(rhi::BeginRasterPass(owner.Device, pass) == rhi::RasterStatus::Ready);
+    const StaticArray<rhi::RasterVertexSlice, STREAM_COUNT> slices{
+        {{vertices, 0, sizeof(points)}, {instance, 0, sizeof(center)}}};
+    const rhi::RasterDraw draw{pipeline, set, slices.AsSpan(), indices, 0, INDEX_COUNT, 4, 1};
+    REQUIRE(rhi::DrawIndexed(owner.Device, draw) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::EndFrame(owner.Device) == rhi::DeviceStatus::Ready);
+    StaticArray<uint8, PIXEL_BYTES> pixels{};
+    REQUIRE(rhi::backend::ReadHeadlessPixels(pixels.AsSpan()) == true);
+    const auto isLit = [&pixels](uint32 x, uint32 y) { return pixels[(usize{y} * WIDTH + x) * CHANNELS] > 127; };
+    // Rasterization rules differ by a pixel between APIs, so each edge is searched within that tolerance.
+    constexpr uint32 TOLERANCE = 1;
+    const auto hasLitColumn = [&isLit](uint32 column, uint32 y) {
+        return isLit(column - TOLERANCE, y) == true || isLit(column, y) == true || isLit(column + TOLERANCE, y) == true;
+    };
+    const auto hasLitRow = [&isLit](uint32 x, uint32 row) {
+        return isLit(x, row - TOLERANCE) == true || isLit(x, row) == true || isLit(x, row + TOLERANCE) == true;
+    };
+    const uint32 left = WIDTH / 4;
+    const uint32 right = WIDTH - WIDTH / 4;
+    const uint32 top = HEIGHT / 4;
+    const uint32 bottom = HEIGHT - HEIGHT / 4;
+    CHECK(hasLitColumn(left, HEIGHT / 2) == true);
+    CHECK(hasLitColumn(right, HEIGHT / 2) == true);
+    CHECK(hasLitRow(WIDTH / 2 - WIDTH / 8, top) == true);
+    CHECK(hasLitRow(WIDTH / 2 - WIDTH / 8, bottom) == true);
+    // The shared diagonal passes through the centre; points well off it and the border stay clear.
+    CHECK(hasLitColumn(WIDTH / 2, HEIGHT / 2) == true);
+    CHECK(isLit(left + WIDTH / 16, bottom - HEIGHT / 16) == false);
+    CHECK(isLit(right - WIDTH / 16, top + HEIGHT / 16) == false);
+    usize litCount = 0;
+    for (uint32 y = 0; y < HEIGHT; ++y)
+    {
+        for (uint32 x = 0; x < WIDTH; ++x)
+        {
+            litCount += isLit(x, y) == true ? 1U : 0U;
+        }
+    }
+    // Five one-pixel edges cover far less than the filled quad's quarter of the target.
+    const usize filledCount = usize{WIDTH / 2} * (HEIGHT / 2);
+    CHECK(litCount > 0);
+    CHECK(litCount * 2 < filledCount);
+    REQUIRE(rhi::Destroy(owner.Device, pipeline) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(owner.Device, set) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(owner.Device, vertices) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(owner.Device, instance) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(owner.Device, indices) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(owner.Device, sampler) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(owner.Device, view) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(owner.Device, texture) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(owner.Device, uniform) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(owner.Device, vertexShader) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(owner.Device, fragmentShader) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(owner.Device, layout) == rhi::RasterStatus::Ready);
+    owner.CheckDebugMessages();
+}
 TEST_CASE("Portable attachment passes preserve MRT stencil and selected mip contents", "[rhi][gpu][portable-raster]")
 {
     const bool hasStencil = GENERATE(false, true);
