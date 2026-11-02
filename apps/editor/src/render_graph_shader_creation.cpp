@@ -27,8 +27,8 @@ ReportShaderFailure(RenderGraphDocumentStatus status, QString* outErrorOrNull, c
 
 bool IsIdentifier(const QString& text)
 {
-    static const QRegularExpression expression(QStringLiteral("\\A[A-Za-z][A-Za-z0-9_]{0,62}\\z"));
-    return expression.match(text).hasMatch();
+    static const QRegularExpression EXPRESSION(QStringLiteral("\\A[A-Za-z][A-Za-z0-9_]{0,62}\\z"));
+    return EXPRESSION.match(text).hasMatch();
 }
 
 QString FindSchema(const QJsonArray& schemas, const QString& role)
@@ -492,8 +492,9 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
             }
         }
         // Keep package-local includes valid when a referenced source is moved.
-        static const QRegularExpression includeExpression(QStringLiteral("(^[ \t]*#[ \t]*include[ \t]*\")([^\"]+)(\")"),
-                                                          QRegularExpression::MultilineOption);
+        static const QRegularExpression INCLUDE_EXPRESSION(
+            QStringLiteral("(^[ \t]*#[ \t]*include[ \t]*\")([^\"]+)(\")"),
+            QRegularExpression::MultilineOption);
         for (QMap<QString, QByteArray>::iterator file = inoutSnapshot.Files.begin(); file != inoutSnapshot.Files.end();
              ++file)
         {
@@ -504,7 +505,7 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
             const QString text = QString::fromUtf8(file.value());
             QString replaced;
             qsizetype offset = 0;
-            QRegularExpressionMatchIterator matches = includeExpression.globalMatch(text);
+            QRegularExpressionMatchIterator matches = INCLUDE_EXPRESSION.globalMatch(text);
             while (matches.hasNext() == true)
             {
                 const QRegularExpressionMatch match = matches.next();

@@ -431,26 +431,26 @@ TEST_CASE("property batches are conditional, atomic and replayable across reload
     oversized.SetUint("bits", OVERSIZED_FLOAT_BITS);
     SendCommand(sv[0], batch(OVERSIZED_REQUEST, {oversized}));
     expectStatus(AwaitStatus(sv[0], reader, OVERSIZED_REQUEST), OVERSIZED_REQUEST, "InvalidRequest");
-    auto reload = command("Reload", 11);
+    Message reload = command("Reload", 11);
     reload.SetString("module_path", LUDUS_FIXTURE_B_PATH);
     reload.SetHexId("generation", 2);
     SendCommand(sv[0], reload);
     expectStatus(AwaitStatus(sv[0], reader, 11), 11, "Ok");
-    auto staleSchema = batch(12, {speed});
+    Message staleSchema = batch(12, {speed});
     SendCommand(sv[0], staleSchema);
     expectStatus(AwaitStatus(sv[0], reader, 12), 12, "SchemaChanged");
-    auto oldGeneration = command("Pause", 13);
+    Message oldGeneration = command("Pause", 13);
     oldGeneration.SetHexId("expected_generation", 1);
     SendCommand(sv[0], oldGeneration);
     expectStatus(AwaitStatus(sv[0], reader, 13), 13, "SchemaChanged");
-    auto unknownField = command("Resume", 14);
+    Message unknownField = command("Resume", 14);
     unknownField.SetUint("surprise", 1);
     SendCommand(sv[0], unknownField);
     expectStatus(AwaitStatus(sv[0], reader, 14), 14, "InvalidRequest");
-    auto status = command("Status", 15);
+    Message status = command("Status", 15);
     status.SetHexId("reconcile", 5);
     SendCommand(sv[0], status);
-    auto events = AwaitStatus(sv[0], reader, 15);
+    Array<Message> events = AwaitStatus(sv[0], reader, 15);
     bool reconciled = false;
     for (const auto& event : events)
     {
