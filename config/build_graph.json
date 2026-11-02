@@ -1,0 +1,128 @@
+{
+  "$comment": [
+    "Sources that several build targets compile separately, checked by tools/check_build_graph.py",
+    "against a configured tree's compile_commands.json (docs/development/build-profiling.md,",
+    "Build graph check). Every other source must be compiled by one target and linked from there;",
+    "an OBJECT library keeps each consumer's link unchanged.",
+    "A variant compiles differently for each target (definitions, flags or a test double); its",
+    "reason says how. Baseline entries are existing identical duplication that has not been",
+    "migrated: the list may only shrink, and the check fails once a tree that contains every listed",
+    "target compiles each matched source only once. Patterns are fnmatch globs over",
+    "checkout-relative paths; generated sources are named <build>/<path in the build tree>."
+  ],
+  "rules": [
+    {
+      "kind": "variant",
+      "sources": [
+        "modules/foundation/filesystem/src/*",
+        "modules/foundation/threading/src/*",
+        "modules/content/src/files.cpp",
+        "modules/audio/content/src/loader.cpp"
+      ],
+      "reason": "Fault-injection and test backends compile the production sources with their *_FAULT_TESTING hooks or a test worker; the pack fuzzer compiles the pack codec with its own harness."
+    },
+    {
+      "kind": "variant",
+      "sources": ["modules/runtime/resources/src/mesh.cpp"],
+      "reason": "ludus_resources_tests compiles the mesh loader with LUDUS_RESOURCE_MESH_TEST_ALLOCATIONS to inject allocation failures."
+    },
+    {
+      "kind": "variant",
+      "sources": [
+        "modules/graphics/renderer/src/*",
+        "modules/graphics/rhi/src/*",
+        "modules/graphics/rhi/tests/reference_raster.cpp",
+        "modules/graphics/renderer/tests/*_oracle.cpp"
+      ],
+      "reason": "ludus_renderer_tests and ludus_rhi_lifecycle_tests compile the renderer and RHI against the deterministic reference backend instead of the platform device, and the renderer tests compile with -ffp-contract=off; the oracles are compiled with each test executable's floating-point flags."
+    },
+    {
+      "kind": "variant",
+      "sources": ["modules/platform/src/window_headless.cpp"],
+      "reason": "ludus_platform_headless_tests compiles the headless window backend independently of the platform library's selected backend."
+    },
+    {
+      "kind": "variant",
+      "sources": ["modules/runtime/game_host/tests/fixture_module.cpp"],
+      "reason": "Each game-host fixture module compiles the same source with its own module identity definitions."
+    },
+    {
+      "kind": "variant",
+      "sources": ["modules/foundation/math/tests/metropolis_tests.cpp"],
+      "reason": "The math test suite compiles the Metropolis tests with -ffp-contract=off; ludus_metropolis_tests keeps the default contraction and logging level."
+    },
+    {
+      "kind": "variant",
+      "sources": ["apps/editor/src/main_window.cpp"],
+      "reason": "The application compiles MainWindow with LUDUS_EDITOR_CRASH_CAPTURE on macOS; the tests compile it without crash capture."
+    },
+    {
+      "kind": "variant",
+      "sources": [
+        "apps/editor/src/renderer_workspace.cpp",
+        "apps/editor/src/renderer_workspace_resources.cpp",
+        "apps/editor/src/render_graph_defaults.cpp"
+      ],
+      "reason": "ludus_render_graph_configuration_tests compiles the Renderer workspace without the GPU preview and its default graph package; the editor objects compile them with the preview."
+    },
+    {
+      "kind": "variant",
+      "sources": ["apps/editor/src/content_jobs.cpp", "apps/editor/tests/content_browser_tests.cpp"],
+      "reason": "ludus_editor_browser_content_tests replays the content suite through the browser's cooperative scheduler (LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS)."
+    },
+    {
+      "kind": "variant",
+      "sources": [
+        "apps/editor/src/texture_inspection.cpp",
+        "apps/editor/src/viewport_frame_pump.cpp",
+        "apps/editor/tests/texture_inspection_tests.cpp",
+        "apps/editor/tests/viewport_frame_pump_tests.cpp"
+      ],
+      "reason": "ludus_texture_display_conversion_tests compiles texture inspection and the frame pump without the editor's preview and logging configuration, so the tests cover both builds; the opt-in (EXCLUDE_FROM_ALL) texture benchmark compiles texture inspection with its own minimal dependencies."
+    },
+    {
+      "kind": "variant",
+      "sources": [
+        "apps/editor/tests/render_graph_template_tests.cpp",
+        "apps/editor/tests/render_graph_canvas_feedback_tests.cpp"
+      ],
+      "reason": "These suites check LUDUS_EDITOR_NATIVE_PREVIEW, which ludus_editor_tests defines and ludus_render_graph_configuration_tests does not."
+    },
+    {
+      "kind": "baseline",
+      "sources": [
+        "apps/editor/tests/render_graph_canvas_tests.cpp",
+        "apps/editor/tests/render_graph_comment_tests.cpp",
+        "apps/editor/tests/render_graph_diagnostic_navigation_tests.cpp",
+        "apps/editor/tests/render_graph_diagnostic_tests.cpp",
+        "apps/editor/tests/render_graph_execution_plan_tests.cpp",
+        "apps/editor/tests/render_graph_history_tests.cpp",
+        "apps/editor/tests/render_graph_layout_tests.cpp",
+        "apps/editor/tests/render_graph_navigation_tests.cpp",
+        "apps/editor/tests/render_graph_rename_tests.cpp",
+        "apps/editor/tests/render_graph_reroute_tests.cpp",
+        "apps/editor/tests/render_graph_resource_inspection_tests.cpp"
+      ],
+      "targets": ["ludus_editor_tests", "ludus_render_graph_configuration_tests"],
+      "reason": "Both executables compile and run these render-graph suites; keep one copy once the suites' owner is settled."
+    },
+    {
+      "kind": "baseline",
+      "sources": ["apps/editor/src/viewport_object_overlay_geometry.cpp"],
+      "targets": ["ludus_editor_application", "ludus_viewport_overlay_benchmark"],
+      "reason": "The opt-in (EXCLUDE_FROM_ALL) overlay benchmark compiles the overlay geometry with the editor's objects."
+    },
+    {
+      "kind": "baseline",
+      "sources": ["apps/smoke/lifecycle.cpp", "apps/smoke/simulation.cpp"],
+      "targets": ["ludus_smoke", "ludus_smoke_lifecycle_tests", "ludus_smoke_simulation_tests"],
+      "reason": "The smoke app's lifecycle and simulation tests compile the app sources they test."
+    },
+    {
+      "kind": "baseline",
+      "sources": ["examples/audio-content/resource_adapter.cpp"],
+      "targets": ["ludus_audio_content_demo", "ludus_resources_audio_tests"],
+      "reason": "The audio resource tests compile the example's resource adapter."
+    }
+  ]
+}

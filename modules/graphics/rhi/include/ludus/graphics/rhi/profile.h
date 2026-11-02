@@ -59,8 +59,16 @@ inline constexpr ludus::foundation::usize RUNTIME_BINDING_LENGTH_BYTES =
 /// Default logical resource ceiling for an ordered plan, including ordered ray invocations.
 /// This is an admission limit; graph metadata remains lazily allocated under HostBytes.
 inline constexpr foundation::uint32 DEFAULT_GRAPH_RESOURCE_COUNT = 64;
+/// Default complete portable model dispatch schedule capacity; metadata is allocated lazily.
+inline constexpr foundation::uint32 DEFAULT_GRAPH_PASS_COUNT = 512;
+/// Default accepted packets in one plan, including a complete neural encoder.
+inline constexpr foundation::uint32 DEFAULT_GRAPH_PACKET_COUNT = 512;
+/// Default binding descriptors across overlapping scene/model generations.
+inline constexpr foundation::uint32 DEFAULT_BINDING_DESCRIPTOR_COUNT = 4096;
+/// Default semantic dependency capacity, including read/write edges of every model dispatch.
+inline constexpr foundation::uint32 DEFAULT_GRAPH_DEPENDENCY_COUNT = 2048;
 /// Default per-kind record admission for overlapping multi-pass resource generations.
-inline constexpr ludus::foundation::uint32 DEFAULT_RESOURCE_RECORD_COUNT = 128;
+inline constexpr ludus::foundation::uint32 DEFAULT_RESOURCE_RECORD_COUNT = 1024;
 
 /// Copied R6 storage maxima and explicit byte budgets. Configure before startup.
 /// Counts are limits, not reservations; creation may fail under byte/allocation pressure.
@@ -74,7 +82,7 @@ struct StorageLimits final
     ludus::foundation::uint32 ResourcesPerKind = DEFAULT_RESOURCE_RECORD_COUNT;
     /// Maximum allocated binding descriptors across live, pending and retained snapshots.
     /// Independent of set-record capacity; exhausted creation publishes no ownership.
-    ludus::foundation::uint32 BindingDescriptors = 512;
+    ludus::foundation::uint32 BindingDescriptors = DEFAULT_BINDING_DESCRIPTOR_COUNT;
     /// Requested maximum allocated descriptors per snapshot, backend-clamped at admission.
     /// Payload storage grows only during creation and consumes HostBytes; no draw allocation.
     ludus::foundation::uint32 DescriptorsPerSet = 256;
@@ -89,15 +97,15 @@ struct StorageLimits final
     /// Maximum independently retained command batches.
     ludus::foundation::uint32 Batches = 4;
     /// Maximum packets per batch or graph, including culled packets.
-    ludus::foundation::uint32 DrawsPerPlan = 256;
+    ludus::foundation::uint32 DrawsPerPlan = DEFAULT_GRAPH_PACKET_COUNT;
     /// Maximum independently owned graph plans.
     ludus::foundation::uint32 Graphs = 4;
     /// Maximum imported/transient logical resources per graph.
     ludus::foundation::uint32 ResourcesPerGraph = DEFAULT_GRAPH_RESOURCE_COUNT;
     /// Maximum authored passes and resource versions per graph.
-    ludus::foundation::uint32 PassesPerGraph = 32;
+    ludus::foundation::uint32 PassesPerGraph = DEFAULT_GRAPH_PASS_COUNT;
     /// Maximum semantic dependency entries per graph.
-    ludus::foundation::uint32 DependenciesPerGraph = 512;
+    ludus::foundation::uint32 DependenciesPerGraph = DEFAULT_GRAPH_DEPENDENCY_COUNT;
     /// Maximum retained transient texture-pool entries.
     ludus::foundation::uint32 TransientTextures = 8;
     /// Maximum cached format/load/store/depth render-pass combinations on Vulkan.
@@ -141,6 +149,9 @@ struct RasterCapabilities final
     /// Independent of transfer-ring slice size; bounded by backend staging/address limits.
     /// Creation separately consumes the configured ResourceBytes budget.
     ludus::foundation::usize MaxTextureUploadBytes = 0;
+    /// Raster pipelines accept RasterFillMode::Lines. Native Metal and Direct3D 12 always do, Vulkan when the
+    /// device enabled fillModeNonSolid; WebGPU and WebGL have no line fill mode.
+    bool HasLineFill = false;
 };
 /// Bounded single-queue buffer compute profile; zero fields mean unavailable.
 /// Storage textures, atomics between queues and indirect dispatch are deferred.

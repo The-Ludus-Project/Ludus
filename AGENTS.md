@@ -537,6 +537,12 @@ It applies to production code in `modules/`, `apps/`, and `examples/`.
   gets slow, run `./scripts/profile-build` and fix the offending include; raise a
   budget only with a measurement and a note in the PR. See
   `docs/development/build-profiling.md` and ADR 0005.
+- Compile each source in one target. Share sources between an application and
+  its tests through a library (an OBJECT library keeps each link unchanged),
+  never by listing them in several targets. `tools/check_build_graph.py` checks
+  a configured tree's compile database in CI; a source that must compile
+  differently per target is a variant whose reason goes in
+  `config/build_graph.json`. Its baseline of unmigrated duplicates may only shrink.
 - `./scripts/check --include-cleaner` gives an advisory include-hygiene report;
   it is not a gate.
 - **Editor precompiled headers are the one default-on exception.** The optional
@@ -660,6 +666,11 @@ headers. Separate the groups with a blank line.
 ---
 
 ## Build, test, and validate
+
+- Keep `unittest.main()` after every test class in Python test modules, so direct
+  invocation and discovery include the same tests. Preserve this when appending tests.
+- Required SDK acceptance checks raise explicit errors rather than relying on Python
+  `assert`, which `python -O` disables. Test rejection under optimization when adding guards.
 
 ### Game project setup checks
 

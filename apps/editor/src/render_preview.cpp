@@ -164,6 +164,33 @@ void RenderPreview::SetRayPathInspection(bool isInspecting)
     }
     Q_EMIT Changed();
 }
+void RenderPreview::ShowBuiltInView(PreviewShading shading)
+{
+    if (mIsBuiltInViewShown == false)
+    {
+        mShadingBeforeBuiltInView = mShading;
+        mIsBuiltInViewShown = true;
+        if (OwnsDevice_ == true && mIsProjectGraphEnabled == true)
+        {
+            ViewDirty_ = true;
+            mFramePump.Start();
+            mFramePump.Wake();
+        }
+        Q_EMIT Changed();
+    }
+    SetShading(shading);
+}
+void RenderPreview::HideBuiltInView()
+{
+    if (mIsBuiltInViewShown == false)
+    {
+        return;
+    }
+    // Cleared first, so the restoring shading change saves the restored mode.
+    mIsBuiltInViewShown = false;
+    SetShading(mShadingBeforeBuiltInView);
+    Q_EMIT Changed();
+}
 void RenderPreview::SetRayPathOverlay(const RayPathOverlay& overlay)
 {
     mRayPathOverlay = overlay;
@@ -1329,7 +1356,8 @@ QJsonObject RenderPreview::Navigation() const
         {QStringLiteral("zoom"), mCameraController.GetDistance() / math::Max(OrbitRadius_, MINIMUM_ORBIT_RADIUS_WORLD)},
         {QStringLiteral("camera"), CameraId_},
         {QStringLiteral("reference"), Reference_},
-        {QStringLiteral("shading"), GetPreviewShadingKey(mShading)},
+        {QStringLiteral("shading"),
+         GetPreviewShadingKey(mIsBuiltInViewShown == true ? mShadingBeforeBuiltInView : mShading)},
         {QStringLiteral("statistics"), mIsStatisticsVisible},
         {QStringLiteral("forceRaster"), mShouldForceRaster},
         {QStringLiteral("antialiasing"), GetViewportAntialiasingKey(mAntialiasing)},
@@ -1640,7 +1668,7 @@ void RenderPreview::SetProjectGraphProblem(const QString& problem)
 }
 void RenderPreview::NotifyProjectFrame()
 {
-    if (mIsProjectGraphEnabled == true && mIsInspectingRayPaths == false && OwnsDevice_ == true)
+    if (isDelegatingToProjectGraph() == true && OwnsDevice_ == true)
     {
         mHasFrame = true;
         ++Frames_;
@@ -1661,7 +1689,7 @@ void RenderPreview::Tick()
     {
         return;
     }
-    if (mIsProjectGraphEnabled == true && mIsInspectingRayPaths == false)
+    if (isDelegatingToProjectGraph() == true)
     {
         static_cast<void>(rhi::PollLifetime(Device_));
         return;

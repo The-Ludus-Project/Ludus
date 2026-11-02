@@ -93,6 +93,10 @@ static_assert(static_cast<uint32>(ReferenceFailure::InvalidSceneLayout) ==
               LUDUS_REFERENCE_FAILURE_INVALID_SCENE_LAYOUT);
 static_assert(static_cast<uint32>(ReferenceFailure::TraversalCapacityExceeded) ==
               LUDUS_REFERENCE_FAILURE_TRAVERSAL_CAPACITY_EXCEEDED);
+static_assert(static_cast<uint32>(ReferenceFailure::OpticalRegionCapacity) ==
+              LUDUS_REFERENCE_FAILURE_OPTICAL_REGION_CAPACITY);
+static_assert(static_cast<uint32>(ReferenceFailure::OpticalPropagationCapacity) ==
+              LUDUS_REFERENCE_FAILURE_OPTICAL_PROPAGATION_CAPACITY);
 bool Accepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;

@@ -2,6 +2,7 @@
 #include "internal/ltc_table_data.h"
 
 #include <ludus/content/render_graph_format/plan.h>
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/rhi/compute.h>
@@ -456,9 +457,29 @@ Status BuildGpuGraphSequence(rhi::DeviceHandle device,
                              BorrowedView<const GpuPreviewRecord*> jobs,
                              BorrowedView<const rhi::TextureHandle> targets,
                              rhi::OrderedGraph& outGraph,
-                             const VisibilityRasterPass* visibilityOrNull) noexcept
+                             const VisibilityRasterPass* visibilityOrNull,
+                             const rhi::ComputeWorkload* prefixOrNull) noexcept
 {
-    Status status = rhi::CreateOrderedGraph(device, outGraph);
+    GpuGraphResources resources;
+    Array<rhi::GraphVersion> versions;
+    if (prefixOrNull != nullptr && (prefixOrNull->GetBufferCount() > resources.Buffers.GetSize() ||
+                                    versions.TryResize(prefixOrNull->GetBufferCount()) == false))
+    {
+        return prefixOrNull->GetBufferCount() > resources.Buffers.GetSize() ? Status::CapacityExceeded
+                                                                            : Status::OutOfMemory;
+    }
+    Status status = prefixOrNull == nullptr
+                        ? rhi::CreateOrderedGraph(device, outGraph)
+                        : prefixOrNull->BuildGraph(outGraph, {versions.GetData(), versions.GetSize()}, false);
+    for (usize i = 0; status == Status::Ready && i < versions.GetSize(); ++i)
+    {
+        rhi::BufferHandle buffer;
+        status = prefixOrNull->GetBuffer(i, buffer);
+        if (status == Status::Ready)
+        {
+            resources.Buffers[resources.BufferCount++] = {buffer, versions[i], true};
+        }
+    }
     if (status != Status::Ready)
     {
         return status;
@@ -468,7 +489,6 @@ Status BuildGpuGraphSequence(rhi::DeviceHandle device,
     {
         status = AppendVisibilityProducer(device, *jobs[0], outGraph, *visibilityOrNull, visibility);
     }
-    GpuGraphResources resources;
     for (usize index = 0; status == Status::Ready && index < jobs.GetSize(); ++index)
     {
         status = AppendGpuGraph(device,

@@ -1461,8 +1461,11 @@ imported scene data retain their existing unlit preview adapter.
 The following records the built-in preview implementation and its platform qualification.
 Native World documents now delegate to the [project graph workflow](render-graph-authoring.md#start-customizing-the-renderer),
 which states its static input profile and asynchronous readback limits. They do not expose
-the separate engine shading and reload controls below. Browser preview and standalone
-renderer tests retain that built-in producer.
+the separate engine shading and reload controls below. Instead, the graph's output selector
+offers this producer's Albedo and debug views (Normal through Wireframe) after the graph's
+own outputs; see
+[the World viewport output selector](render-graph-authoring.md#world-viewport-output-selector).
+Browser preview and standalone renderer tests retain that built-in producer.
 
 Build the native Editor with
 [the rendered authoring option](#enable-the-rendered-authoring-surface).
@@ -1494,7 +1497,7 @@ Switching modes keeps the World, camera and layout; the shading choice
 is restored with the project's viewport preferences. Older preferences without a
 shading choice open in Solid mode. These visualization overrides do not change
 authored materials or add lights to the World. Solid lighting is a navigation
-aid, not the imported scene lighting. Wireframe is not yet available.
+aid, not the imported scene lighting.
 
 Debug views follow Lit in the selector. Each replaces shading with one quantity
 per pixel so you can inspect it directly:
@@ -1511,6 +1514,14 @@ per pixel so you can inspect it directly:
 - **Light count — lights reaching each pixel as a ramp**: counts lights
   whose shadowed contribution is nonzero: dark purple for none, then through
   teal and green to yellow (16 or more).
+- **Wireframe — triangle edges only**: every triangle's three edges as
+  one-pixel lines in light grey, dimmer where a surface turns edge-on to the
+  camera. Edges are depth-tested only against other edges, so hidden ones show
+  through as in other engines' wireframe views. The GPU draws them with line
+  rasterization (`rhi::RasterFillMode::Lines`), which Metal and Direct3D 12
+  always provide and Vulkan provides with the `fillModeNonSolid` feature.
+  WebGPU has none, so the browser editor's GPU viewport reports that Wireframe
+  is unavailable; its software viewport draws the same edges on the CPU.
 
 Scenes with authored lights use the same surface maps, clusters and shadows as
 Lit. Authored Worlds without lights get editor-derived vertex normals when the
@@ -1729,6 +1740,11 @@ A capture saved before it finishes is marked partial and keeps exact per-pixel
 sample counts. Convert the HDR file with
 [`scripts/reference-hdr`](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
 The PNG uses the viewport's display transform: exposure one, Khronos PBR Neutral, then sRGB.
+
+Right-click any image in the window for **Copy image** or **Save image as…**.
+Both use the displayed image at full capture resolution, not the scaled preview,
+including a capture that is still filling in. **Save image as…** writes a PNG
+only; use **Save…** for the linear capture.
 
 The capture builds its own renderer on the viewport's GPU device. It loads the
 same meshes, textures and Lit materials as the viewport, but no shadow atlas. The

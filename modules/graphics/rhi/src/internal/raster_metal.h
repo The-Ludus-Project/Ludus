@@ -257,6 +257,7 @@ RasterCapabilities RasterLimits() noexcept
         .MaxVertexAttributes = 16,
         .HdrColor = true,
         .MaxTextureUploadBytes = max,
+        .HasLineFill = true,
     };
 }
 // Thanks to Apple, "MTLComputeCommandEncoder" and Metal's tracked-resource
@@ -1083,6 +1084,9 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
                           atIndex:internal::RASTER_BINDINGS + i];
     }
     [gEncoder setCullMode:MTLCullModeNone];
+    // Encoder state outlives the draw, so every packet states its own fill mode.
+    [gEncoder setTriangleFillMode:pipeline.Info.FillMode == RasterFillMode::Lines ? MTLTriangleFillModeLines
+                                                                                  : MTLTriangleFillModeFill];
     internal::RasterArea area;
     const auto width = gRasterWidth == 0 ? gFrame.Width : gRasterWidth;
     const auto height = gRasterHeight == 0 ? gFrame.Height : gRasterHeight;

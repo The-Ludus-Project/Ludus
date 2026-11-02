@@ -1,5 +1,6 @@
 #pragma once
 
+#include "internal/preview_shading.h"
 #include "internal/render_preview.h"
 #include "internal/viewport_frame_source.h"
 #include "internal/viewport_object_interaction.h"
@@ -98,7 +99,9 @@ public:
     /// While this viewport's preview feeds the graph, it also presents the workspace's ray path
     /// inspection: picking a pixel takes the next left click on the graph output, and inspecting
     /// shows the preview's raster frames from the free camera with the frozen paths over them.
-    /// Leaving inspection presents the live graph again.
+    /// Leaving inspection presents the live graph again. Choosing a debug view in the graph's
+    /// output menu likewise presents the preview's raster frames in that shading until a graph
+    /// output is chosen again.
     void UseProjectGraph(RendererWorkspace& inoutWorkspace);
     /// Whether this viewport presents a ray path inspection (raster frames and frozen paths).
     [[nodiscard]] LUDUS_INLINE bool IsInspectingRayPaths() const noexcept
@@ -221,6 +224,17 @@ private:
     bool mIsShowingRayPathStatus = false;
     /// Follow the inspection stage: switch presentation and the picking cursor.
     void updateRayPathInspection();
+    /// The graph output menu selects a built-in debug view, drawn by the preview instead of the graph.
+    bool mIsShowingGraphDebugView = false;
+    /// Follow the graph output menu's debug view: preview shading and presentation.
+    void updateGraphDebugView();
+    /// Whether the preview's raster frames, not the graph's, are presented (inspection or a debug view).
+    [[nodiscard]] LUDUS_INLINE bool isShowingBuiltInView() const noexcept
+    {
+        return mIsInspectingRayPaths == true || mIsShowingGraphDebugView == true;
+    }
+    /// Present the preview's or the graph's frames after isShowingBuiltInView changed from wasShowing.
+    void applyBuiltInPresentation(bool wasShowing);
     /// Hand the inspection's current lines to the preview.
     void updateRayPathOverlay();
     /// Pick the clicked output pixel while the inspection waits for one.

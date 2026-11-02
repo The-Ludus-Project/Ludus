@@ -582,3 +582,27 @@ TEST_CASE("Emitter bounds enclose their triangles with a normal cone and emissio
             rhi::RasterStatus::Ready);
     CHECK(job->ShaderEmitterBounds.GetSize() == 0);
 }
+
+TEST_CASE("Graph ray scenes skip zero-area primitives before requiring a shading normal", "[scene-shader][degenerate]")
+{
+    SceneFixture fixture;
+    for (math::Vector3& positionMesh : fixture.Positions)
+    {
+        positionMesh = {};
+    }
+    StaticArray<math::Vector3, VERTICES> normalsMesh{};
+    fixture.Mesh.Geometry.Normals = normalsMesh.GetData();
+    renderer::SceneShaderDiagnostics diagnostics;
+    fixture.Scene.DiagnosticsOrNull = &diagnostics;
+    core::UniquePtr<internal::ReferenceJob> job;
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+            rhi::RasterStatus::Ready);
+    CHECK(diagnostics.SkippedTriangles == INDICES / 3);
+    CHECK(job->Scene.Triangles.IsEmpty() == true);
+    job.Reset();
+    fixture.Positions[1] = {1, 0, 0};
+    fixture.Positions[2] = {0, 1, 0};
+    CHECK(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+          rhi::RasterStatus::InvalidDescription);
+    CHECK(job.Get() == nullptr);
+}

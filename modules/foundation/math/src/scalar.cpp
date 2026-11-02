@@ -10,6 +10,24 @@
 
 namespace ludus::foundation::math
 {
+bool TryConvertToFloat32(float64 value, float32& outValue) noexcept
+{
+    constexpr float64 MAXIMUM = static_cast<float64>(std::numeric_limits<float32>::max());
+    if (std::isfinite(value) == false || value < -MAXIMUM || value > MAXIMUM)
+    {
+        return false;
+    }
+    outValue = static_cast<float32>(value);
+    return true;
+}
+float32 ComputeErrorFunction(float32 value) noexcept
+{
+    return std::erf(value);
+}
+float64 ComputeErrorFunction(float64 value) noexcept
+{
+    return std::erf(value);
+}
 float32 Sqrt(float32 value) noexcept
 {
     return std::sqrt(value);

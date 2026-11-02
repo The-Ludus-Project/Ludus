@@ -19,6 +19,11 @@
 
 #include <ludus/graphics/renderer/world_grid.hpp>
 
+namespace ludus::graphics::rhi
+{
+class ComputeWorkload;
+}
+
 namespace ludus::graphics::renderer
 {
 struct RenderGraphSceneDescription;
@@ -644,12 +649,16 @@ public:
     /// @param outProgram Receives an owned program on Ready/Pending; preserved on failure.
     /// @param depthOrNull Optional void depth fragment using the same retained vertex stage
     /// and binding layout. It is prewarmed for conventional-depth RGBA8 DrawDepthView calls.
+    /// @param fillMode Rasterization of the colour and depth pipelines; shadow pipelines always fill. Lines draws
+    /// triangle edges for MaterialDebugView::Wireframe and returns Unsupported unless
+    /// rhi::RasterCapabilities::HasLineFill.
     [[nodiscard]] rhi::RasterStatus
     PrewarmLitProgram(const rhi::RasterShaderDescription& vertex,
                       const rhi::RasterShaderDescription& fragment,
                       const rhi::RasterShaderDescription& shadowFragment,
                       MaterialProgram& outProgram,
-                      const rhi::RasterShaderDescription* depthOrNull = nullptr) noexcept;
+                      const rhi::RasterShaderDescription* depthOrNull = nullptr,
+                      rhi::RasterFillMode fillMode = rhi::RasterFillMode::Solid) noexcept;
     /// Copy an immutable lit material and normalized bounded light list, between frames.
     /// Report and null output are preserved on failure. Shadows must be rendered and Ready;
     /// bake/shadow views are retained even after their owners are released.
@@ -812,14 +821,14 @@ private:
     drawView(PreparedView handle, const rhi::RasterPassDescription& description, DrawMode mode) noexcept;
     [[nodiscard]] rhi::RasterStatus getDeferredMaterial(PreparedView handle,
                                                         internal::DeferredMaterialBindings& outBindings) noexcept;
-    [[nodiscard]] rhi::RasterStatus
-    prewarmProgram(const rhi::RasterShaderDescription& vertex,
-                   const rhi::RasterShaderDescription& fragment,
-                   const rhi::RasterShaderDescription* shadowOrNull,
-                   MaterialProgram& outProgram,
-                   const rhi::RasterShaderDescription* depthOrNull = nullptr,
-                   const rhi::RasterShaderDescription* gBufferOrNull = nullptr,
-                   const rhi::RasterShaderDescription* opaqueGBufferOrNull = nullptr) noexcept;
+    [[nodiscard]] rhi::RasterStatus prewarmProgram(const rhi::RasterShaderDescription& vertex,
+                                                   const rhi::RasterShaderDescription& fragment,
+                                                   const rhi::RasterShaderDescription* shadowOrNull,
+                                                   MaterialProgram& outProgram,
+                                                   const rhi::RasterShaderDescription* depthOrNull = nullptr,
+                                                   const rhi::RasterShaderDescription* gBufferOrNull = nullptr,
+                                                   const rhi::RasterShaderDescription* opaqueGBufferOrNull = nullptr,
+                                                   rhi::RasterFillMode fillMode = rhi::RasterFillMode::Solid) noexcept;
     [[nodiscard]] rhi::RasterStatus CreateMaterialData(MaterialProgram program,
                                                        const MaterialDescription& description,
                                                        const ludus::foundation::uint8* bytes,
@@ -855,7 +864,8 @@ private:
                                    foundation::BorrowedView<const rhi::TextureHandle> targets,
                                    foundation::uint32 tile,
                                    rhi::OrderedGraph& outGraph,
-                                   const VisibilityRasterPass* visibilityOrNull) noexcept;
+                                   const VisibilityRasterPass* visibilityOrNull,
+                                   const rhi::ComputeWorkload* prefixOrNull = nullptr) noexcept;
     struct State;
     ludus::foundation::core::UniquePtr<State> mState;
 };

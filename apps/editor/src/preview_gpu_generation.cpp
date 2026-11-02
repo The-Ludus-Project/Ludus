@@ -147,6 +147,16 @@ PreviewPreparationStatus PreviewGpuGeneration::Prepare(rhi::SurfaceHandle surfac
     if (prepareResources(surface, outError) == false)
     {
         mHasFailed = true;
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+        rhi::RasterCapabilities capabilities;
+        if (outError.isEmpty() == true && IsPreviewLineShading(Shading) == true &&
+            rhi::GetRasterCapabilities(Device, capabilities) == rhi::RasterStatus::Ready &&
+            capabilities.HasLineFill == false)
+        {
+            outError = QStringLiteral("Wireframe needs line rasterization, which this GPU backend does not provide. "
+                                      "Choose another view.");
+        }
+#endif
         if (outError.isEmpty() == true)
         {
             switch (mStage)
@@ -284,7 +294,9 @@ bool PreviewGpuGeneration::prepareMaterials() noexcept
                     Shaders.Get(PreviewShaderProgram::ClusteredAuthoredDebug, PreviewShaderStage::Vertex),
                     Shaders.Get(PreviewShaderProgram::ClusteredAuthoredDebug, PreviewShaderStage::Fragment),
                     Shaders.Get(PreviewShaderProgram::ClusteredAuthoredDebugShadow, PreviewShaderStage::Fragment),
-                    mProgram),
+                    mProgram,
+                    nullptr,
+                    getDebugFillMode()),
                 PreparationStage::Assets);
         }
         if (shouldUseAuthoredLighting() == true)
@@ -303,7 +315,9 @@ bool PreviewGpuGeneration::prepareMaterials() noexcept
                                    Shaders.Get(PreviewShaderProgram::LitDebug, PreviewShaderStage::Vertex),
                                    Shaders.Get(PreviewShaderProgram::LitDebug, PreviewShaderStage::Fragment),
                                    Shaders.Get(PreviewShaderProgram::LitDebugShadow, PreviewShaderStage::Fragment),
-                                   mProgram),
+                                   mProgram,
+                                   nullptr,
+                                   getDebugFillMode()),
                                PreparationStage::Assets);
         }
         return acceptStage(
