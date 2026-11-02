@@ -73,6 +73,11 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    if (event->button() == Qt::LeftButton && tryActivateProblemChip(event->globalPosition()) == true)
+    {
+        event->accept();
+        return;
+    }
     if (event->button() == Qt::LeftButton && pickRayPathPixel(event->globalPosition()) == true)
     {
         event->accept();

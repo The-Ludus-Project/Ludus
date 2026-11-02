@@ -15,6 +15,7 @@
 #include <QDir>
 #include <QFile>
 #include <QGraphicsEllipseItem>
+#include <QGraphicsPathItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGraphicsSimpleTextItem>
@@ -236,10 +237,14 @@ TEST_CASE("semantic zoom simplifies labels without changing ports, selection or 
         CHECK(title->isVisible() == (scale >= 0.4));
         CHECK(port->isVisible() == (scale >= 0.6));
         CHECK(size->isVisible() == (scale == 1));
-        CHECK(activity->isVisible() == (scale >= 0.4));
+        // Below the working view a card shows its title only: no ports, no captions.
+        CHECK(activity->isVisible() == (scale >= 0.6));
         if (title->isVisible() == true)
         {
             CHECK(title->text() == (scale == 1 ? fullTitle : QStringLiteral("half")));
+        }
+        if (activity->isVisible() == true)
+        {
             CHECK(activity->text() == (scale == 1 ? QStringLiteral("On draft route") : QStringLiteral("Draft route")));
         }
         CHECK(activity->toolTip() == explanation);
@@ -252,7 +257,11 @@ TEST_CASE("semantic zoom simplifies labels without changing ports, selection or 
         if (scale == 0.4)
         {
             CHECK(title->boundingRect().height() * title->scale() * scale >= 11);
-            CHECK(FindNodeText(canvas, QStringLiteral("depth"), QStringLiteral("Inactive")) != nullptr);
+            // An inactive card is shown dimmed, not captioned.
+            CHECK(FindNodeText(canvas, QStringLiteral("depth"), QStringLiteral("Inactive")) == nullptr);
+            QGraphicsRectItem* inactiveFrame = FindFrame(canvas, QStringLiteral("depth"));
+            REQUIRE(inactiveFrame != nullptr);
+            CHECK(inactiveFrame->opacity() < 1);
             canvas.SetReferenceSize(QSize(1280, 720));
             CHECK(size->isVisible() == false);
             canvas.SetReferenceSize(QSize(1920, 1080));
@@ -309,7 +318,7 @@ TEST_CASE("semantic overview preserves unknown and disabled activity classificat
     canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
     canvas.show();
     QCoreApplication::processEvents();
-    canvas.setTransform(QTransform::fromScale(0.4, 0.4));
+    canvas.setTransform(QTransform::fromScale(0.6, 0.6));
     canvas.viewport()->repaint();
     QCoreApplication::processEvents();
     QGraphicsSimpleTextItem* label = FindNodeText(canvas, QStringLiteral("output"), expected);
@@ -814,3 +823,84 @@ TEST_CASE("World drawable changes refresh canvas sizes before any GPU preview st
     CHECK(first.HasDevice() == false);
 }
 #endif
+
+TEST_CASE("hovering a card focuses its wires and fades the others", "[editor][render-graph][canvas-feedback][overview]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeFeedbackPackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    canvas.resize(1000, 650);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.show();
+    QCoreApplication::processEvents();
+    canvas.ResetZoom();
+    const auto findWire = [&canvas](const QString& description) -> QGraphicsPathItem* {
+        for (QGraphicsItem* item : canvas.scene()->items())
+        {
+            QGraphicsPathItem* wireOrNull = qgraphicsitem_cast<QGraphicsPathItem*>(item);
+            if (wireOrNull != nullptr && wireOrNull->toolTip().startsWith(description) == true)
+            {
+                return wireOrNull;
+            }
+        }
+        return nullptr;
+    };
+    QGraphicsPathItem* sizeWire = findWire(QStringLiteral("half.size → color.size"));
+    QGraphicsPathItem* outputWire = findWire(QStringLiteral("color.texture → output.texture"));
+    REQUIRE(sizeWire != nullptr);
+    REQUIRE(outputWire != nullptr);
+    QGraphicsRectItem* half = FindFrame(canvas, QStringLiteral("half"));
+    REQUIRE(half != nullptr);
+    const QPoint hover = canvas.mapFromScene(half->sceneBoundingRect().center());
+    QTest::mouseMove(canvas.viewport(), hover);
+    QCoreApplication::processEvents();
+    CHECK(sizeWire->opacity() == 1);
+    CHECK(outputWire->opacity() < 0.5);
+    QTest::mouseMove(canvas.viewport(), QPoint(2, 2));
+    QCoreApplication::processEvents();
+    CHECK(outputWire->opacity() == 1);
+}
+
+TEST_CASE("display placement never lays an unplaced card over a placed one",
+          "[editor][render-graph][canvas-feedback][layout]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeFeedbackPackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject record = ReadRecord(document);
+    // The author placed one card exactly where the column layout would put the first unplaced one.
+    record.insert(QStringLiteral("layout"),
+                  QJsonObject{{QStringLiteral("positions"),
+                               QJsonArray{QJsonObject{{QStringLiteral("node"), QStringLiteral("color")},
+                                                      {QStringLiteral("x"), 0},
+                                                      {QStringLiteral("y"), 0}}}}});
+    WriteRecord(document, record);
+    RenderGraphCanvas canvas(document);
+    canvas.resize(1000, 650);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.show();
+    QCoreApplication::processEvents();
+    QVector<QRectF> cards;
+    for (const QString& identity : {QStringLiteral("half"),
+                                    QStringLiteral("color"),
+                                    QStringLiteral("depth"),
+                                    QStringLiteral("scene"),
+                                    QStringLiteral("camera"),
+                                    QStringLiteral("dormant"),
+                                    QStringLiteral("output"),
+                                    QStringLiteral("unfinished")})
+    {
+        QGraphicsRectItem* frame = FindFrame(canvas, identity);
+        REQUIRE(frame != nullptr);
+        cards.append(frame->sceneBoundingRect());
+    }
+    for (qsizetype first = 0; first < cards.size(); ++first)
+    {
+        for (qsizetype second = first + 1; second < cards.size(); ++second)
+        {
+            INFO(first << " " << second);
+            CHECK(cards.at(first).intersects(cards.at(second)) == false);
+        }
+    }
+}

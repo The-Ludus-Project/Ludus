@@ -41,6 +41,14 @@ public:
     /// Number of CPU fallback images received; PreviewViewport tracks directly presented GPU frames.
     [[nodiscard]] foundation::uint64 GetPresentedFrames() const noexcept;
 
+    /// True while the status text is the short build-failure chip; the full problem is in the Error List.
+    [[nodiscard]] bool HasProblemChip() const noexcept
+    {
+        return mHasProblemChip;
+    }
+    /// Words that end the chip's text and name where its full problem is listed.
+    [[nodiscard]] static QString GetProblemChipLink();
+
 Q_SIGNALS:
     /// Refreshed overlay text, also consumed by the shared-device presentation.
     void StatisticsChanged();
@@ -49,6 +57,7 @@ Q_SIGNALS:
 
 protected:
     void paintEvent(QPaintEvent*) override;
+    void mousePressEvent(QMouseEvent* event) override;
 
 private:
     ViewportObjectInteraction* mInteractionOrNull = nullptr;
@@ -56,6 +65,7 @@ private:
     void refreshFrame();
     void refreshStatus();
     void refreshStatistics();
+    bool mHasProblemChip = false;
     RendererWorkspace& mWorkspace;
     RenderGraphPreview& mPreview;
     QComboBox* mTargets;

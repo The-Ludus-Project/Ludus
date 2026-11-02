@@ -328,6 +328,11 @@ public:
     [[nodiscard]] QString GetStatusText() const;
     /// Current source, activation, build or extraction diagnostic, even while another graph keeps rendering.
     [[nodiscard]] QString GetRenderProblem() const;
+    /// Ask the shell to show its Error List, selecting the first problem (the viewport's problem chip uses it).
+    void RequestErrorList()
+    {
+        Q_EMIT ErrorListRequested();
+    }
     /// Last current activation failure, including the runtime status and candidate generation.
     /// Cleared by a replacement candidate or document change, independently of compiler results.
     [[nodiscard]] LUDUS_INLINE const QString& GetActivationProblem() const noexcept
@@ -420,6 +425,8 @@ Q_SIGNALS:
     void CodeViewportRequested();
     /// Request that the shell toggle its reversible focus layout for this document.
     void FocusViewRequested();
+    /// A viewport asked to see the problems listed for this graph; the shell shows its Error List.
+    void ErrorListRequested();
     void DocumentChanged();
     /// Node fields changed; the originating surface may retain its active controls.
     /// editOriginOrNull is borrowed during synchronous notification, or null for a full refresh.

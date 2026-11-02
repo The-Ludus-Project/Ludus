@@ -818,7 +818,8 @@ private:
                    const rhi::RasterShaderDescription* shadowOrNull,
                    MaterialProgram& outProgram,
                    const rhi::RasterShaderDescription* depthOrNull = nullptr,
-                   const rhi::RasterShaderDescription* gBufferOrNull = nullptr) noexcept;
+                   const rhi::RasterShaderDescription* gBufferOrNull = nullptr,
+                   const rhi::RasterShaderDescription* opaqueGBufferOrNull = nullptr) noexcept;
     [[nodiscard]] rhi::RasterStatus CreateMaterialData(MaterialProgram program,
                                                        const MaterialDescription& description,
                                                        const ludus::foundation::uint8* bytes,

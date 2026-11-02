@@ -130,8 +130,15 @@ struct RenderGraphPrograms final
     bool HasVisibilityBuffer = false;
     /// Use the complete clustered material ABI and conservative spatial light lists.
     bool HasClusteredForward = false;
-    /// Opaque material fragment writing normal/roughness, base/metallic and emission/coverage in RGBA16F.
+    /// Opaque material fragment writing normal/roughness, base/metallic and emission/coverage in RGBA16F. It applies
+    /// alpha-masked coverage and draws masked materials when DeferredOpaqueGBufferFragment is present, every material
+    /// otherwise.
     rhi::RasterShaderDescription DeferredGBufferFragment{};
+    /// The same G-buffer fragment compiled without the coverage test, drawn for opaque materials before masked ones so
+    /// tile-based GPUs keep hidden-surface removal. Present with HasClusteredDeferred in packages from
+    /// format::OPAQUE_GBUFFER_PACKAGE_VERSION; empty in earlier packages, which draw every material through
+    /// DeferredGBufferFragment.
+    rhi::RasterShaderDescription DeferredOpaqueGBufferFragment{};
     /// Renderer fullscreen geometry for deferred lighting and optional prepass depth transfer.
     rhi::RasterShaderDescription DeferredLightingVertex{};
     /// Clustered lighting resolve; reads the G-buffer and writes linear color plus scene depth.

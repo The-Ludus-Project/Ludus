@@ -152,6 +152,10 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     connect(Renderer_, &RendererWorkspace::FocusViewRequested, mFocusViewportAction, &QAction::toggle);
     connect(Renderer_, &RendererWorkspace::CodeViewportRequested, this, &MainWindow::showCodeAndViewport);
     connect(mErrorList, &ErrorList::EntryActivated, this, &MainWindow::activateErrorEntry);
+    connect(Renderer_, &RendererWorkspace::ErrorListRequested, this, [this]() {
+        showToolWindow(mErrorListDock);
+        static_cast<void>(mErrorList->SelectFirstProblem());
+    });
     connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
     mBuildErrorsTimer.setSingleShot(true);
     mBuildErrorsTimer.setInterval(BUILD_ERRORS_DELAY_MILLISECONDS);
