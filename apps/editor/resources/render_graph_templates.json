@@ -1,6 +1,7 @@
 {
   "version": 1,
   "templates": [
+
     {
       "kind": "graph",
       "identity": "raster",
@@ -171,6 +172,27 @@
       "description": "ReSTIR GI from Ouyang, Liu, Kettunen, Pharr and Pantaleoni (2021): every pixel traces one indirect sample point and path traces the light it scatters back, then reservoirs reuse those samples across frames and nearby pixels, with the reconnection Jacobian and visibility rays that keep the reuse unbiased. Four passes (initial samples, temporal reuse, spatial reuse, shading) share three automatically sized buffers; the shading pass adds direct lighting with light and BSDF sampling. Temporal reuse has no motion reprojection. Requires native ray tracing."
     },
     {
+      "kind": "graph",
+      "identity": "one-more-vertex-nee",
+      "label": "One-more-vertex NEE — hierarchical geometry sampling",
+      "category": "ray-traced",
+      "requirements": [
+        "compute-ray-tracing"
+      ],
+      "keywords": [
+        "garcia-pueyo",
+        "monzon",
+        "jarabo",
+        "muñoz",
+        "hierarchical geometry sampling",
+        "indirect lighting",
+        "one more vertex",
+        "mis"
+      ],
+      "description": "Two-scattering mesh-emitter transport: cached BVH geometry statistics guide an extra vertex between the first surface and a sampled emitter. Exports MIS, geometry-only and BSDF+NEE estimates. Requires Metal or Vulkan compute. Analytic/environment lighting and coated diffuse are unsupported."
+    },
+
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
@@ -338,6 +360,27 @@
       "requirements": ["native-ray-tracing"],
       "keywords": ["reflections", "hybrid", "ray tracing"],
       "description": "Rasterize visibility/depth, reconstruct the surface and trace one reflected ray. Connect scene, view and color; outputs color, visibility and depth. Requires native ray tracing."
+    },
+    {
+      "kind": "snippet",
+      "identity": "one-more-vertex-nee",
+      "label": "One-more-vertex NEE — hierarchical geometry sampling",
+      "category": "lighting",
+      "requirements": [
+        "compute-ray-tracing"
+      ],
+      "keywords": [
+        "garcia-pueyo",
+        "monzon",
+        "jarabo",
+        "muñoz",
+        "hierarchical geometry sampling",
+        "indirect lighting",
+        "one more vertex",
+        "mis"
+      ],
+      "description": "Two-scattering mesh-emitter transport: cached BVH geometry statistics guide an extra vertex between the first surface and a sampled emitter. Exports MIS, geometry-only and BSDF+NEE estimates. Requires Metal or Vulkan compute. Analytic/environment lighting and coated diffuse are unsupported.",
+      "defaultConfiguration": "OneMoreVertexNee"
     },
     {
       "kind": "node",

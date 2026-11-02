@@ -25,6 +25,7 @@ TEMPLATES = {
     'steinberg-physical-optics': ('steinberg_physical_optics', 'Steinberg practical physical optics',
                                   'native-ray-tracing'),
     'rao-blackwell-mh': ('rao_blackwell_mh', 'Rao-Blackwellized MH', 'compute-ray-tracing'),
+    'one-more-vertex-nee': ('one_more_vertex_nee', 'One-more-vertex NEE', 'compute-ray-tracing'),
     'restir-gi': ('restir_gi', 'ReSTIR GI', 'native-ray-tracing'),
 }
 # What each requirement needs, as the capability repair names it.

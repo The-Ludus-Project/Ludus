@@ -1963,3 +1963,53 @@ class RaoBlackwellMhTemplateTests(unittest.TestCase):
             self.assertIn('main_shaders/chain.slang', files)
             self.assertIn('main_shaders/path.slang', files)
             self.assertIn('main.lushader.json', files)
+
+
+class OneMoreVertexNeeTemplateTests(unittest.TestCase):
+    def test_graph_orders_preparation_and_three_raw_estimators(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = graph.new_workspace(Path(directory) / 'Indirect', output='offscreen', renderer_static=True,
+                                       profiles=('metal',), template='one-more-vertex-nee')
+            plan = graph.compile_graph(root)
+            rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+            self.assertEqual(len(rays), 4)
+            self.assertTrue(all(operation['pipeline']['invocation']['traversal'] == 'ComputeBvh' for operation in rays))
+            buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+            self.assertEqual(len(buffers), 2)
+            self.assertEqual(next(b['extent'][0] for b in buffers if 'bytes_per_pixel' not in b), 64 * 1024 * 1024)
+            self.assertEqual(next(b['bytes_per_pixel'] for b in buffers if 'bytes_per_pixel' in b), 64)
+            manifest = json.loads(root.with_name('main.lushader.json').read_text())
+            interface = next(t['scene_interface'] for t in manifest['techniques'] if 'scene_interface' in t)
+            self.assertEqual(interface['surface_queries'], 2)
+            self.assertEqual(interface['visibility_queries'], 4)
+            self.assertEqual([s['id'] for s in manifest['settings']],
+                             ['OMV_DEFENSIVE_WEIGHT', 'OMV_FAR_SOLID_ANGLE', 'OMV_OUTPUT_COMPONENT'])
+            self.assertEqual(len([p for p in plan['passes'] if p['kind'] == 'Accumulate']), 3)
+
+    def test_requires_compute_and_replays_the_installed_source_closure(self):
+        from ludus_tools import render_graph_templates
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'Indirect'
+            with self.assertRaises(ToolingError):
+                graph.new_workspace(destination, output='offscreen', renderer_static=True,
+                                    profiles=('wgsl',), template='one-more-vertex-nee')
+            self.assertFalse(destination.exists())
+            installed = Path(directory) / 'sdk'
+            module = installed / 'ludus_tools/render_graph_templates.py'
+            module.parent.mkdir(parents=True)
+            source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/one_more_vertex_nee'
+            shutil.copytree(source, installed / 'templates/one_more_vertex_nee')
+            with patch.object(render_graph_templates, '__file__', str(module)):
+                files = render_graph_templates.template_files('one-more-vertex-nee', ('spirv',), graph)
+            self.assertIn('main_shaders/prepare.slang', files)
+            self.assertIn('main_shaders/geometry_sampling.slang', files)
+            self.assertIn('main_shaders/statistics.slang', files)
+            self.assertIn('main_shaders/shade.slang', files)
+
+    def test_sdk_install_inventory_contains_every_creatable_template(self):
+        from ludus_tools.render_graph_templates import TEMPLATES
+        import re
+        source = Path(__file__).resolve().parents[2] / 'CMakeLists.txt'
+        declaration = re.search(r'foreach\(template_directory IN ITEMS ([^)]*)\)', source.read_text(), re.S)
+        self.assertIsNotNone(declaration)
+        self.assertEqual(set(declaration.group(1).split()), {definition[0] for definition in TEMPLATES.values()})

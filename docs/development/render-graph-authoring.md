@@ -1436,7 +1436,7 @@ and preserves the draft. Program, source and setting conflicts name the conflict
 input; a program capacity error gives the required count and `budgets.programs` limit.
 Undo restores the previous budgets along with the graph and shader edits.
 Settings are shared by this package's ReSTIR
-configurations. A manifest holds up to 64 settings, enough for every built-in
+configurations. A manifest holds up to 128 settings, enough for every built-in
 template together. If a template's settings would exceed that limit and removing
 authored settings that no `.slang` source names would make room, the picker lists
 those settings and offers **Remove and apply** or **Cancel**. Approval removes only
@@ -3351,6 +3351,124 @@ alpha-tested triangles. Vulkan has not been run for this template.
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/salesin_jarosz_lines/main.lurender.json).
 
+## Sample one more vertex with a geometry hierarchy
+
+Create **One-more-vertex NEE — hierarchical geometry sampling** in the editor's
+New Render Graph dialog, or insert the same configuration through the canvas's
+Add Configuration Template menu. Both routes copy the editable shaders into the
+project. The CLI uses the same sources:
+
+```bash
+ludus render-graph new graphs/Indirect --template one-more-vertex-nee \
+  --output offscreen --renderer-static --profiles metal
+```
+
+Use `--profiles spirv` for Vulkan. Every pass selects `ComputeBvh`; native ray
+tracing is unnecessary. The graph renders the selected World's current geometry,
+materials, emitters and camera. It exports **output** (balance MIS),
+**geometrySamplingOutput** (geometry sampling alone) and **bsdfSamplingOutput**
+(BSDF continuation followed by NEE). All three estimate the same bounded integral:
+visible surface emission, direct mesh-emitter lighting and indirect mesh-emitter
+lighting through exactly one additional scattering surface. Primary misses are
+black. Reflection is one-sided: incoming and outgoing directions must lie above
+the authored geometric normal. Emission retains its authored sidedness. Longer paths, environment/analytic illumination, particle-tracer sensor
+connections, transmission, participating media and coated-diffuse internal walks
+are outside this profile. Unsupported lighting and encountered coatings report a
+failed pixel with a repair instruction; they never select a different integrator.
+
+Thanks to Jorge Garcia-Pueyo, Nestor Monzon, Adrian Jarabo and Adolfo Muñoz,
+[*One-more-vertex Next-Event Estimation with Hierarchical Geometry Sampling*,
+Computer Graphics Forum, EGSR 2026](https://doi.org/10.1111/cgf.70539),
+sections 4–5, equations (2), (8–9), (14), (17), (19–21) and Table 1.
+This is an independent implementation of the paper's surface-path construction.
+The authors' implementation is linked from their
+[project page](https://graphics.unizar.es/projects/OneMoreVertex26/).
+
+The **prepare** pass reuses the renderer's spatial SAH BVH and aggregates each
+node's triangle area, centroid, full second moment, geometric-normal first moment,
+base color, metallic fraction, roughness and specularity. Moments use coordinates
+relative to the scene-bounds centre. Statistics are cached by scene generation;
+a camera or seed change reuses them, while a material or geometry generation
+change rebuilds them. A new/resized buffer is zero-initialized. Preparation writes
+its valid header last, and the ordered Buffer edge publishes it to shading.
+There is no CPU transport or per-bounce readback. The first GPU invocation performs
+the bottom-up preparation serially, once per scene generation; this is a setup
+cost, and large dynamic scenes require further performance work.
+
+At each shading vertex, the sampler first chooses a mesh emitter uniformly and
+then a point by area within that emitter. A stochastic root-to-leaf walk chooses
+children from endpoint-dependent importance weights. It samples triangles in a
+leaf proportional to area, then points uniformly on the selected triangle. The
+area density is the product of every branch probability divided by the leaf's
+area. The cached triangle-to-leaf map evaluates that same density for a BSDF hit.
+The competing BSDF proposal is converted to area measure with
+`pdfSolidAngle * abs(dot(normalGeometric, directionToReceiver)) / distanceSquared`.
+The emitter density is shared by both strategies and cancels in the MIS weights.
+Direct paths are added once, separately from these two-scattering paths.
+
+The importance proxy follows equation (21) with spatial Gaussian points, diffuse
+normal statistics and a harmonically convolved vMF specular lobe. Deliberate
+implementation differences affect variance, not the evaluated transport integral:
+
+- Seven spatial points use a Cholesky covariance square root instead of principal
+  eigenvectors. Singular planar/linear distributions are supported. If raw-moment
+  cancellation prevents correlated factorization, the proxy uses the diagonal
+  covariance. Exact transport uses real triangles; density evaluation reuses the same branch weights as sampling.
+- The diffuse normal integral uses twelve deterministic vMF quadrature samples
+  instead of the authors' fitted polynomial. Normal concentration uses a bounded
+  rational inverse of the mean-resultant mapping. Near-aligned normals cap at
+  concentration 10,000. Typed conductor importance uses metallic/color statistics;
+  actual transport evaluates the conductor's complex-IOR BSDF.
+- Material statistics sample each triangle at its centroid; actual shading,
+  normal maps, emission maps and visibility use the sampled endpoint. Sampled
+  intermediate/emitter endpoints test alpha coverage themselves; uncovered samples
+  remain zero events without retries. The proxy
+  omits visibility, as the paper does. Both connection segments receive actual
+  shadow tests; a BSDF-traced first segment is already visible.
+- Leaves use a bounded area scan instead of an alias table. The renderer's leaves
+  contain at most four triangles. A small additive weight and bounded nonzero
+  branch probabilities preserve support when a proxy is dark or poorly fitted.
+
+Graph settings are available in Properties and the canvas's **Graph Settings**
+menu, with the same undo/save behavior:
+
+| Setting | Meaning |
+| --- | --- |
+| `OMV_DEFENSIVE_WEIGHT` | Positive minimum importance per square world unit; default `1e-6` |
+| `OMV_FAR_SOLID_ANGLE` | Use one mean point when the bounding sphere is below this solid angle at both endpoints; default `0.1` sr, zero disables the shortcut |
+| `OMV_OUTPUT_COMPONENT` | `0` total, `1` visible emission, `2` direct, `3` two-scattering indirect; applies to all three exports before accumulation and tone mapping |
+
+The MIS pass traces both proposals once and publishes geometry-only and BSDF-only
+comparison values to a second, automatically sized Buffer (64 bytes per pixel).
+The comparison passes validate scene generation, sample, extent and producer
+failure before returning those records. They issue no further rays.
+
+The library's **hierarchy** Buffer defaults to 64 MiB. Required bytes are
+`16 + 128 * nodeCount + 16 * triangleCount`, covering its generation header,
+eight 16-byte statistic words per BVH node and triangle-to-leaf map. Insufficient
+capacity rejects preparation and shading explicitly. Increase that Buffer's
+**Bytes** through node Details or Properties, within device storage limits, or
+reduce scene geometry. Rebuild to prepare new statistics. No triangles are
+silently dropped. The shader interface budgets two surface and four visibility
+queries per invocation: camera, BSDF continuation, direct shadow, two geometry
+connection segments and the BSDF continuation's NEE shadow.
+
+The renderer's `[one-more-vertex-nee]` regression compares raw linear GPU outputs
+for all three estimators against an independently executable CPU HGS oracle on
+matched Cornell-box inputs (diffuse, legacy metallic/roughness and rough conductor),
+with two seeds, including fixed-mip color/surface/emission maps and alpha masks
+on the second seed, 24×16 pixels and 128 samples per
+pixel. Emission/direct/indirect/total means use absolute `0.025` plus relative
+`8%` channel tolerance. PDF integration checks normalization. These are statistical
+fixture tolerances; they do not establish the paper's convergence speedups or
+qualification on every backend. No denoising or temporal reuse enters comparison.
+Local validation passed on 2026-11-02 with Apple M5, macOS 26.6, Metal and pinned
+Clang 23.1.3. The GPU-free `ludus_one_more_vertex_oracle_tests` additionally checks
+sparse-reflector variance (geometry sampling below one quarter of BSDF variance)
+and that uncovered sampled reflectors remain null events with fixed-mip maps;
+its sampling/Gaussian sources pass ASan/UBSan. Vulkan execution remains a batch
+qualification task; this local evidence does not qualify that backend.
+
 ## Use the Rao-Blackwellized MH template
 
 Choose **Rao-Blackwellized MH and Jump Restore light transport** in the new-graph picker or the
@@ -3725,7 +3843,9 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | EvaluateEmission | Emission at a hit or sampled surface, respecting geometric sidedness |
 | GetLightInfo | Checked typed record for directional, point, spot, mesh or aggregate environment source |
 | GetEmitter / GetEmitterTriangle / GetTriangle | Emitter range/area and checked world geometry for custom proposals |
+| GetGeometryHierarchyNodeCount / GetGeometryHierarchyNode / GetGeometryHierarchyTriangle | Immutable preorder BVH topology, world bounds and checked leaf-order triangle indices; see [geometry sampling](#sample-one-more-vertex-with-a-geometry-hierarchy) |
 | GetEmitterBounds | Precomputed emitter bounding sphere, geometric-normal cone and emission sidedness, for one weight per emitter without a triangle loop |
+| IsSurfaceCovered | Fixed-mip sampled-endpoint alpha coverage, using the same inclusive cutoff as closest-hit traversal, with no ray query; keep uncovered area samples as zero events |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
 | SelectLight / SampleIncidentLight | Optional default source selection and incident-light proposal; SelectLight(scene, queries) uses the invocation stream; no radiance estimate is added |
 | EvaluateLightSelectionPmf / EvaluateLightPdfSolidAngle | Matching source PMF / emitter-endpoint joint solid-angle density |
@@ -5432,7 +5552,7 @@ The closed version-1 `.lushader.json` source has these fields:
 | `programs` | Named stage/function/source records; input/output schemas and explicit uniform bindings |
 | `techniques` | Explicit `DefaultStaticOpaque.ColorAndDepth`/`.DepthOnly` and/or `DefaultStaticMasked.ColorAndDepth`/`.DepthOnly` mappings and legal pipeline recipes |
 | `budgets` | Author bounds for configurations, programs, emitted artifacts and pipeline recipes |
-| `settings` (optional) | Up to 64 typed shader constants exposed in Properties and the canvas Graph Settings dialog |
+| `settings` (optional) | Up to 128 typed shader constants exposed in Properties and the canvas Graph Settings dialog |
 
 Each setting declares `id`, `label`, `type`, and `value`. Types are `UInt32`,
 `Float32`, or `Bool`; numeric settings also require `minimum` and `maximum` with

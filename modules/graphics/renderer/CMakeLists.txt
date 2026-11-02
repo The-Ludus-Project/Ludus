@@ -75,7 +75,7 @@ install(TARGETS ludus_graphics_renderer EXPORT LudusTargets ARCHIVE DESTINATION 
 # Source is cooked by the existing installed shader helper; no runtime compiler dependency.
 install(FILES include/ludus/graphics/renderer/detail/deferred_binding_slots.inc
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ludus/graphics/renderer/detail")
-install(FILES "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/content/scene_format/material.h" "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_grid.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/display_tone_mapping.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/metropolis_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/material_scattering.slang shaders/coated_diffuse.slang shaders/coated_diffuse_layout.h shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/content/scene_format/material.h" "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/geometry_sampling_layout.h shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_grid.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/display_tone_mapping.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/metropolis_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/material_scattering.slang shaders/coated_diffuse.slang shaders/coated_diffuse_layout.h shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 # Engine-owned default render graph: the RendererStatic static opaque profile the editor
 # shows when a project has no graph of its own, and the read-only starting point a project
 # copies when it customizes the renderer. Profiles follow the host device family, as the
@@ -116,6 +116,12 @@ if(LUDUS_BUILD_TESTS)
     ludus_apply_project_defaults(ludus_metropolis_tests)
     ludus_enable_test_exceptions(ludus_metropolis_tests)
     add_test(NAME ludus_metropolis_tests COMMAND ludus_metropolis_tests)
+    add_executable(ludus_one_more_vertex_oracle_tests tests/one_more_vertex_oracle_tests.cpp tests/one_more_vertex_oracle.cpp)
+    target_link_libraries(ludus_one_more_vertex_oracle_tests PRIVATE Ludus::GraphicsRenderer
+        Ludus::FoundationContainers Catch2::Catch2WithMain)
+    ludus_apply_project_defaults(ludus_one_more_vertex_oracle_tests)
+    ludus_enable_test_exceptions(ludus_one_more_vertex_oracle_tests)
+    add_test(NAME ludus_one_more_vertex_oracle_tests COMMAND ludus_one_more_vertex_oracle_tests)
     # Exercise the production renderer/RHI registry with the existing deterministic backend.
     add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/tone_mapping_tests.cpp tests/reference_backend.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/raster_mesh_lights.cpp src/raster_mesh_light_polygons.cpp src/raster_mesh_light_grid.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_capture.cpp src/render_graph_failures.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_coating.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" src/reference_scene.cpp src/reference_path.cpp src/reference_light_sampling.cpp src/reference_compute.cpp src/metropolis.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_ray_path_decode_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp tests/reference_emitter_selection_tests.cpp tests/ltc_table_tests.cpp tests/reference_light_sampling_tests.cpp tests/raster_mesh_lights_tests.cpp tests/raster_mesh_light_grid_tests.cpp tests/reference_bvh_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_oracle_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_oracle_tests.cpp
         ../rhi/src/rhi.cpp ../rhi/src/device.cpp ../rhi/src/dxil_container.cpp ../rhi/src/gpu_scope.cpp ../rhi/src/gpu_pass_timing_buffer.cpp ../rhi/src/profile.cpp ../rhi/src/raster.cpp ../rhi/tests/reference_raster.cpp ../rhi/src/ray_unsupported.cpp)
@@ -397,7 +403,7 @@ if(TARGET ludus_renderer_render_tests)
     target_compile_definitions(ludus_metropolis_graph_tests PRIVATE LUDUS_JR_TEMPLATE_DIRECTORY="${jump_restore_graph_directory}")
     add_test(NAME ludus_metropolis_graph_pixels COMMAND ludus_metropolis_graph_tests)
     set_tests_properties(ludus_metropolis_graph_pixels PROPERTIES LABELS "renderer;gpu" TIMEOUT 180)
-    add_executable(ludus_render_graph_ray_tests tests/render_graph_ray_tests.cpp)
+    add_executable(ludus_render_graph_ray_tests tests/render_graph_ray_tests.cpp tests/one_more_vertex_oracle.cpp)
     target_link_libraries(ludus_render_graph_ray_tests PRIVATE Ludus::GraphicsRenderer
         Ludus::FoundationFilesystem Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_render_graph_ray_tests)
@@ -426,7 +432,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics restir_gi rao_blackwell_mh)
+            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics restir_gi rao_blackwell_mh one_more_vertex_nee)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         ludus_stage_render_graph_fixture("${template_source}" "${template_staged}")
@@ -437,6 +443,20 @@ if(TARGET ludus_renderer_render_tests)
         string(TOUPPER "${template_directory}" template_definition)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_${template_definition}_TEMPLATE_DIRECTORY=\"${template_package_directory}\"")
+    endforeach()
+    # Run the same production template with separate raw-linear components for CPU/GPU qualification.
+    set(omv_template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/one_more_vertex_nee_template")
+    file(READ "${omv_template_staged}/main.lushader.json" omv_manifest)
+    foreach(omv_component RANGE 1 3)
+        set(omv_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/one_more_vertex_component_${omv_component}")
+        ludus_stage_render_graph_inputs("${omv_template_staged}" "${omv_staged}" main.lushader.json)
+        string(JSON omv_component_manifest SET "${omv_manifest}" settings 2 value ${omv_component})
+        file(WRITE "${omv_staged}/main.lushader.json" "${omv_component_manifest}\n")
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_one_more_vertex_component_${omv_component}"
+            MANIFEST "${omv_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_one_more_vertex_component_${omv_component}_RUNTIME_PACKAGE" PARENT_PATH omv_package_directory)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_ONE_MORE_VERTEX_COMPONENT_${omv_component}_DIRECTORY=\"${omv_package_directory}\"")
     endforeach()
     # The polygonal-light template's frame capture profile: its ray kernels link the template's
     # scene_interface.capture_visibility_queries, which only RenderGraphPackage::DecodeCaptureProfile admits.
@@ -1181,7 +1201,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_STORAGE_RAY_DIRECTORY="${storage_ray_package_directory}")
     add_test(NAME ludus_render_graph_ray_pixels
         COMMAND ludus_render_graph_ray_tests
-            "~[ris-projected-solid-angle]~[polygonal-light-sampling]~[slice-sampling-luminaire]")
+            "~[ris-projected-solid-angle]~[polygonal-light-sampling]~[slice-sampling-luminaire]~[one-more-vertex-nee]")
     set_tests_properties(ludus_render_graph_ray_pixels PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60)
     # The ris-projected-solid-angle template's convergence and error checks render about 3100 frames and
     # need no native ray tracing, so they also run on software Vulkan adapters; they get their own timeout.
@@ -1200,6 +1220,11 @@ if(TARGET ludus_renderer_render_tests)
     add_test(NAME ludus_render_graph_slice_sampling_luminaire_pixels
         COMMAND ludus_render_graph_ray_tests "[slice-sampling-luminaire]")
     set_tests_properties(ludus_render_graph_slice_sampling_luminaire_pixels PROPERTIES
+        LABELS "renderer;gpu;ray" TIMEOUT 600)
+    # Six material/seed combinations and four components render about 3072 compute-BVH frames.
+    add_test(NAME ludus_render_graph_one_more_vertex_pixels
+        COMMAND ludus_render_graph_ray_tests "[one-more-vertex-nee]")
+    set_tests_properties(ludus_render_graph_one_more_vertex_pixels PROPERTIES
         LABELS "renderer;gpu;ray" TIMEOUT 600)
     add_executable(ludus_graph_workgroup_tests tests/graph_workgroup_tests.cpp)
     target_link_libraries(ludus_graph_workgroup_tests PRIVATE Ludus::GraphicsRenderer

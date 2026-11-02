@@ -3308,3 +3308,60 @@ TEST_CASE("Canvas template picker offers to remove unused settings that block a 
         CHECK(document.GetFiles() == beforeFiles);
     }
 }
+
+TEST_CASE("One-more-vertex template is available from the editor picker with comparison exports",
+          "[editor][render-graph][one-more-vertex-nee]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    workspace.show();
+    CreateGraphFromPicker(workspace, QStringLiteral("one-more-vertex-nee"));
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    CHECK(library.count("\"ComputeBvh\"") == 4);
+    CHECK(library.contains("hierarchy") == true);
+    CHECK(library.contains("GeometryOnly") == true);
+    CHECK(library.contains("BsdfOnly") == true);
+    CHECK(document.GetDraft(ROOT_GRAPH).count("\"Accumulate\"") == 3);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("OMV_OUTPUT_COMPONENT") == true);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("One-more-vertex configuration imports its hierarchy, editable closure and settings transactionally",
+          "[editor][render-graph][one-more-vertex-nee]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray originalManifest = document.GetDraft(COMPUTE_MANIFEST);
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Indirect"), QStringLiteral("one-more-vertex-nee")) ==
+            true);
+    const QByteArray library = document.GetDraft(QStringLiteral("Indirect.lurender.json"));
+    for (const char* program : {"OneMoreVertexNeePrepare",
+                                "OneMoreVertexNeeShade",
+                                "OneMoreVertexNeeGeometryOnly",
+                                "OneMoreVertexNeeBsdfOnly"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    for (const QString& source : {QStringLiteral("prepare.slang"),
+                                  QStringLiteral("statistics.slang"),
+                                  QStringLiteral("geometry_sampling.slang"),
+                                  QStringLiteral("shade.slang")})
+    {
+        CHECK(document.GetDraft(QStringLiteral("one_more_vertex_nee/main_shaders/") + source).isEmpty() == false);
+    }
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("OMV_DEFENSIVE_WEIGHT") == true);
+    workspace.Undo();
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == originalManifest);
+    workspace.Redo();
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("OMV_DEFENSIVE_WEIGHT") == true);
+    RequireValidation(workspace);
+}
