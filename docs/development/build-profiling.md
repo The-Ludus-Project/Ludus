@@ -553,6 +553,12 @@ Qt resources, and the tests' Catch2 entry point. Every executable links the
 same objects it previously compiled itself, so the linked code is unchanged.
 The generated LTC table, 213,000 lines of constant data, is likewise compiled
 once and linked into the renderer and both renderer test executables.
+The assertion runtime also shares its identical objects between FoundationBase
+and the isolated fake-platform death-test executable. Each final binary still
+selects its own platform implementation and owns its own assertion state; the
+fake executable does not link the native FoundationBase runtime. Its object
+target owns the foundational includes directly, including when PCH is enabled,
+so it must not acquire a dependency back on FoundationBase.
 
 Equivalence was checked from the compile databases before and after, with the
 exception mode normalized (test executables compile with `-fexceptions`, the

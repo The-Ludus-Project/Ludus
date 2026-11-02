@@ -50,7 +50,7 @@ if(LUDUS_BUILD_SHADER_WORKER)
     string(SHA256 runtime_inventory_hash "${runtime_inventory}")
     string(SHA256 worker_identity "${worker_identity}${runtime_inventory_hash}")
     # Only the static closure linked into the optional shared compiler needs PIC.
-    set_target_properties(ludus_foundation_base ludus_foundation_memory ludus_foundation_hash
+    set_target_properties(ludus_foundation_base ludus_assert_runtime ludus_foundation_memory ludus_foundation_hash
         ludus_foundation_strings ludus_foundation_containers ludus_foundation_filesystem
         ludus_foundation_parsing ludus_foundation_parsing_json ludus_yyjson ludus_shader_compiler_client
         PROPERTIES POSITION_INDEPENDENT_CODE ON)
