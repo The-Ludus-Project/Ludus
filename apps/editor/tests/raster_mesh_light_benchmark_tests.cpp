@@ -1,6 +1,8 @@
 // Explicit supplied-project benchmark of the default raster graph's mesh-light resolve. Reads assets and the runtime
-// package; writes only the requested report. Compare builds by running each binary in alternation and comparing
-// per-pass ratios within one run: Apple GPU clocks vary several-fold between runs.
+// package; writes only the requested report and, optionally, the last frame's exported colour as a PNG. Compare
+// builds by running each binary in alternation and comparing per-pass ratios within one run: Apple GPU clocks vary
+// several-fold between runs. Compare images of two runtimes of the same World to measure an approximation's error.
+#include "internal/offscreen_frame_reader.h"
 #include "internal/render_graph_defaults.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
@@ -58,6 +60,11 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
         worldName = QStringLiteral("staircase2.world.json");
     }
     const QString output = qEnvironmentVariable("LUDUS_RASTER_BENCHMARK_OUTPUT");
+    // Optional PNG of the last measured frame's first exported colour target.
+    const QString imagePath = qEnvironmentVariable("LUDUS_RASTER_BENCHMARK_IMAGE");
+    // Optional JSON file holding an editor navigation state (RenderPreview::RestoreNavigation) instead of the
+    // default framing of the whole World, for example an orbit pivot, yaw, pitch and zoom inside the scene.
+    const QString navigationPath = qEnvironmentVariable("LUDUS_RASTER_BENCHMARK_NAVIGATION");
     QString runtime = qEnvironmentVariable("LUDUS_RASTER_BENCHMARK_RUNTIME");
     if (runtime.isEmpty() == true)
     {
@@ -95,6 +102,12 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
                 {}) == true);
     RenderPreview viewport;
     REQUIRE(viewport.SetScene(scene) == true);
+    if (navigationPath.isEmpty() == false)
+    {
+        const QJsonDocument navigation = QJsonDocument::fromJson(ReadBenchmarkFile(navigationPath));
+        REQUIRE(navigation.isObject() == true);
+        viewport.RestoreNavigation(navigation.object());
+    }
     renderer::ViewDescription view;
     REQUIRE(viewport.DescribeConventionalView(BENCHMARK_WIDTH, BENCHMARK_HEIGHT, view, error) == true);
     RenderGraphExtraction extraction;
@@ -195,6 +208,35 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
                                             : -1.0);
             }
             passFrames.append(passMilliseconds);
+        }
+        if (imagePath.isEmpty() == false)
+        {
+            const renderer::RenderGraphPlan plan = package.GetPlan();
+            uint32 exported = static_cast<uint32>(plan.Resources.GetSize());
+            for (usize resource = 0; resource < plan.Resources.GetSize(); ++resource)
+            {
+                if (plan.Resources[resource].IsExported != 0 &&
+                    plan.Resources[resource].Kind == ludus::content::render_graph_format::Aspect::Color)
+                {
+                    exported = static_cast<uint32>(resource);
+                    break;
+                }
+            }
+            REQUIRE(exported < plan.Resources.GetSize());
+            rhi::TextureHandle texture;
+            rhi::TextureAspect aspect = rhi::TextureAspect::Color;
+            REQUIRE(graph.GetExport(exported, texture, aspect) == rhi::RasterStatus::Ready);
+            OffscreenFrameReader reader;
+            REQUIRE(reader.Begin(device, texture, BENCHMARK_WIDTH, BENCHMARK_HEIGHT) == true);
+            timer.restart();
+            OffscreenReadStatus read = reader.Poll();
+            while (read == OffscreenReadStatus::Pending && timer.elapsed() < PREPARATION_TIMEOUT_MILLISECONDS)
+            {
+                QThread::msleep(1);
+                read = reader.Poll();
+            }
+            REQUIRE(read == OffscreenReadStatus::Complete);
+            REQUIRE(reader.TakeImage().save(imagePath, "PNG") == true);
         }
         result = {
             {QStringLiteral("adapter"), QString::fromUtf8(adapter.Name)},

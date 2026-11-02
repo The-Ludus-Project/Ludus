@@ -356,6 +356,7 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     {
         Stop();
         Scene_ = {};
+        mHasSceneBounds = false;
         Residency_.Reset();
         OrbitCenter_ = {};
         OrbitRadius_ = 1;
@@ -374,7 +375,9 @@ bool RenderPreview::SetScene(const RenderScene& scene)
         Scene_.HasStartView = scene.HasStartView;
         return true;
     }
-    const bool sameResources = preview_lighting::MakeKey(Scene_) == preview_lighting::MakeKey(scene);
+    // One vertex pass per published scene; per-frame conventional views and framing reuse it.
+    math::Aabb3 sceneBoundsWorld;
+    const bool hasSceneBounds = scene.TryGetBounds({}, sceneBoundsWorld);
     if (Scene_.Identity.isEmpty() && RestoredOrbit_ == false)
     {
         OrbitCenter_ = scene.Center;
@@ -384,10 +387,9 @@ bool RenderPreview::SetScene(const RenderScene& scene)
         const bool isAtStartView =
             scene.HasStartView == true &&
             mCameraController.TrySetLookAt(start.EyeWorld, start.TargetWorld, start.UpWorld, start.VerticalFov) == true;
-        math::Aabb3 boundsWorld;
-        if (isAtStartView == false && scene.TryGetBounds({}, boundsWorld) == true)
+        if (isAtStartView == false && hasSceneBounds == true)
         {
-            static_cast<void>(mCameraController.TryFrame(boundsWorld,
+            static_cast<void>(mCameraController.TryFrame(sceneBoundsWorld,
                                                          static_cast<float32>(RequestedWidth_) /
                                                              static_cast<float32>(RequestedHeight_)));
         }
@@ -406,6 +408,8 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     // Retire the previous lease and provider through the local owner.
     Residency_.Swap(residency);
     Scene_ = scene;
+    mSceneBoundsWorld = sceneBoundsWorld;
+    mHasSceneBounds = hasSceneBounds;
     if (CameraId_.isEmpty() == false)
     {
         Camera_ = -1;
@@ -430,8 +434,12 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     Frames_ = 0;
     if (OwnsDevice_)
     {
-        if (sameResources == true && mResources.Get() != nullptr && mResources->IsPrepared() == true &&
-            mHasPreparationFailed == false)
+        // MakeKey hashes every mesh and texture byte, so it runs only when a prepared generation could be
+        // kept. That generation's key equals the current scene's: equal keys are its only way to outlive a
+        // scene change. A project graph draws the World without creating a generation, and skips the hash.
+        const bool canKeepResources =
+            mResources.Get() != nullptr && mResources->IsPrepared() == true && mHasPreparationFailed == false;
+        if (canKeepResources == true && mResources->LightingKey == preview_lighting::MakeKey(scene))
         {
             ViewDirty_ = true;
         }
@@ -1047,7 +1055,7 @@ bool RenderPreview::FrameSelection() noexcept
 void RenderPreview::FrameAll() noexcept
 {
     math::Aabb3 boundsWorld;
-    if (Scene_.TryGetBounds({}, boundsWorld) == false || beginNavigation() == false ||
+    if (TryGetSceneBounds(boundsWorld) == false || beginNavigation() == false ||
         mCameraController.TryFrame(boundsWorld,
                                    static_cast<float32>(RequestedWidth_) / static_cast<float32>(RequestedHeight_)) ==
             false)
@@ -1252,7 +1260,7 @@ void RenderPreview::Fly(math::Vector3 movementControls, float32 deltaSeconds, fl
 void RenderPreview::SetAxisView(EditorAxisView view)
 {
     math::Aabb3 boundsWorld;
-    const bool hasBounds = Scene_.TryGetBounds({}, boundsWorld);
+    const bool hasBounds = TryGetSceneBounds(boundsWorld);
     if (beginNavigation() == true &&
         mCameraController.TrySetAxisView(view, hasBounds == true ? &boundsWorld : nullptr) == true)
     {
@@ -1262,7 +1270,7 @@ void RenderPreview::SetAxisView(EditorAxisView view)
 void RenderPreview::SetOrthographic(bool isOrthographic)
 {
     math::Aabb3 boundsWorld;
-    const bool hasBounds = Scene_.TryGetBounds({}, boundsWorld);
+    const bool hasBounds = TryGetSceneBounds(boundsWorld);
     if (beginNavigation() == true &&
         mCameraController.TrySetOrthographic(isOrthographic, hasBounds == true ? &boundsWorld : nullptr) == true)
     {
@@ -1353,7 +1361,17 @@ PreviewViewOptions RenderPreview::makeViewOptions(uint32 width, uint32 height) c
     options.OrbitCenter = &OrbitCenter_;
     options.OrbitRadius = OrbitRadius_;
     options.EditorCameraOrNull = &mCameraController.GetSample();
+    options.BoundsWorldOrNull = mHasSceneBounds == true ? &mSceneBoundsWorld : nullptr;
     return options;
+}
+bool RenderPreview::TryGetSceneBounds(math::Aabb3& outBoundsWorld) const noexcept
+{
+    if (mHasSceneBounds == false)
+    {
+        return false;
+    }
+    outBoundsWorld = mSceneBoundsWorld;
+    return true;
 }
 bool RenderPreview::DescribeView(uint32 width, uint32 height, rr::ViewDescription& outView, QString& outError) const
 {
@@ -1572,7 +1590,7 @@ bool RenderPreview::prepare()
                                                            ? Scene_.Cameras[Camera_].Sample.Lens
                                                            : mCameraController.GetSample().Lens;
             math::Aabb3 boundsWorld;
-            const bool hasBounds = Scene_.TryGetBounds({}, boundsWorld);
+            const bool hasBounds = TryGetSceneBounds(boundsWorld);
             description.DebugDepthRange = ComputeDebugDepthRange(description,
                                                                  lens.NearPlane,
                                                                  lens.FarPlane,

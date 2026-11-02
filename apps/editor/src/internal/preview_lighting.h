@@ -167,8 +167,21 @@ struct Inputs final
     uint64 DependencyRevision = 0;
 };
 
-inline rhi::RasterStatus
-BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs, bool shouldBuildShadows = true)
+/// Consumer of BuildInputs.
+enum class InputsTarget : uint8
+{
+    /// Raster Lit shading: authored lights, one area proxy per planar emissive patch, and shadow regions.
+    Raster,
+    /// Reference transport samples emissive triangles and traces visibility itself, so it receives the
+    /// authored lights and resolved surface emission only. Area proxies are not built and their capacity
+    /// never limits a reference.
+    Reference,
+};
+
+inline rhi::RasterStatus BuildInputs(const RenderScene& scene,
+                                     const QByteArray& key,
+                                     Inputs& outInputs,
+                                     InputsTarget target = InputsTarget::Raster)
 {
     if (scene.Definition == nullptr || key.size() < static_cast<isize>(sizeof(uint64) * 2) ||
         scene.Definition->Objects.GetSize() > MAX_INSTANCES ||
@@ -254,6 +267,10 @@ BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs, 
         {
             continue; // A black emission map emits nothing to approximate.
         }
+        if (target == InputsTarget::Reference)
+        {
+            continue;
+        }
         uint32 added = 0;
         const rhi::RasterStatus status = AppendPreviewAreaLights(mesh,
                                                                  object.Transform,
@@ -277,7 +294,7 @@ BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs, 
         return normalizedStatus;
     }
     result.Lights = normalized;
-    if (shouldBuildShadows == false)
+    if (target == InputsTarget::Reference)
     {
         outInputs = Move(result);
         return rhi::RasterStatus::Ready;

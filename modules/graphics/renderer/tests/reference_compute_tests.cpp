@@ -75,6 +75,19 @@ S Prepare(rhi::DeviceHandle device, rr::ReferenceTraversal traversal, Session& o
     REQUIRE(status == S::Ready);
     return ludus::qa::BuildL6Snapshot(renderer, outSession.Program, outSession.Snapshot, -.7F);
 }
+/// How BuildSphereSnapshot's authored normals relate to its triangle winding.
+enum class NormalLayout : uint8
+{
+    /// Every corner normal lies on the winding's side of its face.
+    Matched,
+    /// The sphere's winding is reversed against its outward normals.
+    ReversedWinding,
+    /// ReversedWinding, an inward band of sphere normals, and quad corner normals on both sides of every face, so the
+    /// wall and the emitters straddle as smoothed normals across a crease do.
+    Mixed,
+};
+/// Every SPHERE_INWARD_ROW_PERIOD-th sphere ring of a Mixed layout points its normals inwards.
+constexpr uint32 SPHERE_INWARD_ROW_PERIOD = 8;
 // A tessellated glossy metal sphere in front of a diffuse wall and two emitters of
 // unequal area: thousands of triangles exercise deep BVH traversal and visible-GGX
 // sampling, and the unequal emitters exercise the power-weighted emitter CDF.
@@ -83,7 +96,8 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
                       rr::MaterialProgram program,
                       rr::Snapshot& outSnapshot,
                       bool shouldUseTypedMaterials = false,
-                      bool shouldUseCoating = false)
+                      bool shouldUseCoating = false,
+                      NormalLayout normalLayout = NormalLayout::Matched)
 {
     constexpr uint32 LONGITUDES = 96;
     constexpr uint32 LATITUDES = 48;
@@ -101,7 +115,9 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
                                        math::Cos(polar),
                                        math::Sin(polar) * math::Sin(azimuth)};
             REQUIRE(positions.TryAdd(normal * RADIUS) == true);
-            REQUIRE(normals.TryAdd(normal) == true);
+            const bool isInward =
+                normalLayout == NormalLayout::Mixed && row % SPHERE_INWARD_ROW_PERIOD == SPHERE_INWARD_ROW_PERIOD / 2;
+            REQUIRE(normals.TryAdd(isInward == true ? -normal : normal) == true);
         }
     }
     for (uint32 row = 1; row + 1 < LATITUDES; ++row)
@@ -111,7 +127,8 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
             const uint32 a = row * (LONGITUDES + 1) + column;
             const uint32 b = a + LONGITUDES + 1;
             const uint32 quad[]{a, a + 1, b, a + 1, b + 1, b};
-            for (const uint32 index : quad)
+            const uint32 reversedQuad[]{a, b, a + 1, a + 1, b, b + 1};
+            for (const uint32 index : normalLayout == NormalLayout::Matched ? quad : reversedQuad)
             {
                 REQUIRE(indices.TryAdd(index) == true);
             }
@@ -124,10 +141,11 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
     sphereDescription.Normals = normals.GetData();
     const math::Vector3 quadPositions[]{{-2, -2, 0}, {2, -2, 0}, {2, 2, 0}, {-2, 2, 0}};
     const math::Vector3 quadNormals[]{{0, 0, -1}, {0, 0, -1}, {0, 0, -1}, {0, 0, -1}};
+    const math::Vector3 straddlingQuadNormals[]{{0, 0, -1}, {0, 0, -1}, {0, 0, 1}, {0, 0, 1}};
     const uint32 quadIndices[]{0, 2, 1, 0, 3, 2};
     const math::Vector2 quadUvs[]{{0, 1}, {1, 1}, {1, 0}, {0, 0}};
     rr::MeshDescription quadDescription{quadPositions, 4, quadIndices, 6};
-    quadDescription.Normals = quadNormals;
+    quadDescription.Normals = normalLayout == NormalLayout::Mixed ? straddlingQuadNormals : quadNormals;
     quadDescription.Texcoords = quadUvs;
     rr::Mesh meshes[2];
     const rr::MeshDescription* descriptions[]{&sphereDescription, &quadDescription};
@@ -966,6 +984,10 @@ struct QuadItem final
     StaticArray<math::Vector3, 4> CornersWorld;
     math::Vector3 Emission{};
     bool IsEmissionTwoSided = true;
+    /// Linear base color.
+    math::Vector3 BaseColor{.7F, .6F, .5F};
+    /// Typed Diffuse with a black BaseColor reflects nothing, as pbrt scene lights author their surfaces.
+    ludus::content::scene_format::MaterialModel Model = ludus::content::scene_format::MaterialModel::MetallicRoughness;
     float32 Metallic = 0;
     float32 Roughness = 1;
 };
@@ -1000,9 +1022,10 @@ S BuildQuadSnapshot(rr::Renderer& inoutRenderer,
         }
         REQUIRE(status == S::Ready);
         rr::LitMaterialDescription material;
-        material.Surface.Tint = {.7F, .6F, .5F, 1};
+        material.Surface.Tint = {quad.BaseColor.X, quad.BaseColor.Y, quad.BaseColor.Z, 1};
         material.Metallic = quad.Metallic;
         material.Roughness = quad.Roughness;
+        material.Scattering.Model = quad.Model;
         material.Emission = quad.Emission;
         material.IsEmissionTwoSided = quad.IsEmissionTwoSided;
         rr::LightSelection selection;
@@ -1042,6 +1065,11 @@ usize MakeRoomQuads(bool isDimEmitterPresent, StaticArray<QuadItem, 4>& outQuads
     bright.CornersWorld = {{{-.6F, .9F, -.6F}, {-.6F, .9F, .6F}, {.6F, .9F, .6F}, {.6F, .9F, -.6F}}};
     bright.Emission = {400, 400, 400};
     bright.IsEmissionTwoSided = false;
+    // Reflection is two-sided, so a reflective panel would scatter light reaching its underside, and a receiver on its
+    // own plane would weigh it by a side that only rounding decides. Like pbrt scene lights, the panels reflect
+    // nothing.
+    bright.BaseColor = {};
+    bright.Model = ludus::content::scene_format::MaterialModel::Diffuse;
     if (isDimEmitterPresent == false)
     {
         return 3;
@@ -1049,6 +1077,8 @@ usize MakeRoomQuads(bool isDimEmitterPresent, StaticArray<QuadItem, 4>& outQuads
     QuadItem& dim = outQuads[3];
     dim.CornersWorld = {{{-.9F, .2F, .1F}, {-.9F, .6F, .1F}, {-.9F, .6F, .5F}, {-.9F, .2F, .5F}}};
     dim.Emission = {3, 2.5F, 2};
+    dim.BaseColor = {};
+    dim.Model = ludus::content::scene_format::MaterialModel::Diffuse;
     return 4;
 }
 } // namespace
@@ -1301,6 +1331,118 @@ TEST_CASE("GPU-compute resampled reference matches the CPU oracle",
                 CHECK(visibilityDifference <= oracleInfo.VisibilityQueries / VISIBILITY_COUNT_DIVISOR + 3);
             }
         }
+    }
+}
+
+TEST_CASE("Reference transport orients geometric normals by authored normals as pbrt-v4 does",
+          "[renderer][gpu][reference-compute]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    rr::ReferenceCaptureDescription capture = MakePerspectiveCapture({.3F, .2F, -2}, 32, 24);
+    capture.TargetSamples = 16;
+    capture.MaxDepth = 6;
+    capture.Seed = 99;
+    capture.Environment = {.2F, .25F, .3F};
+    // Reversing the winding against authored normals leaves the side that reflects and emits unchanged.
+    StaticArray<Array<rr::ReferencePixel>, 2> images;
+    const NormalLayout layouts[]{NormalLayout::Matched, NormalLayout::ReversedWinding};
+    for (usize i = 0; i < images.GetSize(); ++i)
+    {
+        CAPTURE(i);
+        REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
+        REQUIRE(BuildSphereSnapshot(device, cpu.Renderer, cpu.Program, cpu.Snapshot, false, false, layouts[i]) ==
+                S::Ready);
+        rr::ReferenceCaptureInfo information;
+        Capture(cpu, capture, surface, images[i], information);
+        CHECK(information.InvalidContributions == 0);
+    }
+    const Comparison comparison = Compare(images[0], images[1], capture.TargetSamples);
+    const float32 radianceMean = math::Distance(MeasureImage(images[0]).Radiance, MeasureImage(images[1]).Radiance);
+    CAPTURE(comparison.MaximumRadiance, math::Sqrt(comparison.SquaredRadiance), radianceMean);
+    // Swapped corners only reorder barycentric arithmetic; a rare near-edge hit can send one path elsewhere.
+    CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
+    CHECK(radianceMean <= 1e-4F);
+    CHECK(MeasureImage(images[1]).Radiance.X > 0);
+}
+
+TEST_CASE("GPU-compute reference matches the CPU oracle where shading normals straddle their faces",
+          "[renderer][gpu][reference-compute][resampled-light]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    for (Session* session : {&cpu, &gpu})
+    {
+        REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+        REQUIRE(BuildSphereSnapshot(device,
+                                    session->Renderer,
+                                    session->Program,
+                                    session->Snapshot,
+                                    false,
+                                    false,
+                                    NormalLayout::Mixed) == S::Ready);
+    }
+    rr::ReferenceCaptureDescription capture = MakePerspectiveCapture({.3F, .2F, -2}, 32, 24);
+    capture.TargetSamples = 16;
+    capture.MaxDepth = 6;
+    capture.Seed = 99;
+    capture.Environment = {.2F, .25F, .3F};
+    for (const rr::ReferenceLightSampling mode :
+         {rr::ReferenceLightSampling::UniformArea, rr::ReferenceLightSampling::ResampledProjectedSolidAngle})
+    {
+        capture.LightSampling = mode;
+        CAPTURE(static_cast<uint32>(mode));
+        Array<rr::ReferencePixel> oracle;
+        Array<rr::ReferencePixel> compute;
+        rr::ReferenceCaptureInfo oracleInfo;
+        rr::ReferenceCaptureInfo computeInfo;
+        Capture(cpu, capture, surface, oracle, oracleInfo);
+        Capture(gpu, capture, surface, compute, computeInfo);
+        const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+        const float32 radianceMean = math::Distance(MeasureImage(oracle).Radiance, MeasureImage(compute).Radiance);
+        CAPTURE(comparison.MaximumRadiance, math::Sqrt(comparison.SquaredRadiance), radianceMean);
+        CHECK(oracleInfo.InvalidContributions == 0);
+        CHECK(computeInfo.InvalidContributions == 0);
+        CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
+        CHECK(MeasureImage(oracle).Emission.X > 0);
+        // A rare near-edge hit or a near-tangent orientation can send one path elsewhere; the image stays matched.
+        CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
+        CHECK(radianceMean <= 1e-4F);
     }
 }
 

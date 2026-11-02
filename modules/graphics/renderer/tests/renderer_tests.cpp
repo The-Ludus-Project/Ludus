@@ -2583,6 +2583,105 @@ TEST_CASE("Pending and failed grid preparation preserve the previous drawable vi
     REQUIRE(session.Renderer.Submit(previous, session.Surface, completion) == rhi::RasterStatus::Ready);
 }
 
+TEST_CASE("RT1 orients each geometric normal towards the interpolated shading normal as pbrt-v4 does",
+          "[renderer][rt1]")
+{
+    namespace reference = rr::internal;
+    reference::ReferenceTriangle triangle;
+    triangle.Positions[0] = {0, 0, 0};
+    triangle.Positions[1] = {1, 0, 0};
+    triangle.Positions[2] = {0, 1, 0};
+    triangle.GeometricNormal = {0, 0, 1};
+    const math::Vector3 up{0, 0, 1};
+    const math::Vector3 down{0, 0, -1};
+    const math::Vector3 above{.25F, .25F, 1};
+    const math::Vector3 below{.25F, .25F, -1};
+    // Corner normals agreeing with the winding keep it everywhere.
+    for (math::Vector3& normalWorld : triangle.Normals)
+    {
+        normalWorld = up;
+    }
+    CHECK(reference::OrientReferenceGeometricNormal(triangle, .2F, .3F) == up);
+    CHECK(reference::CanReferenceTriangleFace(triangle, above) == true);
+    CHECK(reference::CanReferenceTriangleFace(triangle, below) == false);
+    // Normals opposing the winding flip the whole face.
+    for (math::Vector3& normalWorld : triangle.Normals)
+    {
+        normalWorld = down;
+    }
+    CHECK(reference::OrientReferenceGeometricNormal(triangle, .2F, .3F) == down);
+    CHECK(reference::CanReferenceTriangleFace(triangle, above) == false);
+    CHECK(reference::CanReferenceTriangleFace(triangle, below) == true);
+    // Straddling corners orient each point by its interpolated normal, so the face can face both sides.
+    triangle.Normals[0] = up;
+    triangle.Normals[1] = up;
+    triangle.Normals[2] = down;
+    CHECK(reference::OrientReferenceGeometricNormal(triangle, 0, 0) == up);
+    CHECK(reference::OrientReferenceGeometricNormal(triangle, .1F, .8F) == down);
+    CHECK(reference::CanReferenceTriangleFace(triangle, above) == true);
+    CHECK(reference::CanReferenceTriangleFace(triangle, below) == true);
+    // A tangent interpolated normal keeps the winding, as FaceForward does for a zero dot product.
+    triangle.Normals[0] = up;
+    triangle.Normals[1] = down;
+    triangle.Normals[2] = down;
+    CHECK(reference::OrientReferenceGeometricNormal(triangle, .5F, 0) == up);
+}
+
+TEST_CASE("RT1 reflects on the viewer's side of a back face as pbrt-v4 does", "[renderer][rt1]")
+{
+    namespace reference = rr::internal;
+    reference::ReferenceJob job;
+    reference::ReferenceSurfaceData surface;
+    surface.Bsdf.BaseColor = {.5F, .5F, .5F};
+    reference::ReferenceTriangle triangle;
+    triangle.Positions[0] = {-1, -1, 0};
+    triangle.Positions[1] = {1, -1, 0};
+    triangle.Positions[2] = {-1, 1, 0};
+    triangle.GeometricNormal = {0, 0, 1};
+    triangle.Area = 2;
+    for (math::Vector3& normalWorld : triangle.Normals)
+    {
+        normalWorld = triangle.GeometricNormal;
+    }
+    REQUIRE(job.Scene.Triangles.TryAdd(triangle) == true);
+    reference::ReferenceInstance instance;
+    instance.Surface = &surface;
+    instance.TriangleCount = 1;
+    REQUIRE(job.Scene.Instances.TryAdd(instance) == true);
+    job.Scene.InstanceCount = 1;
+    REQUIRE(math::TryMakeRandomKey(1, reference::REFERENCE_RANDOM_DOMAIN, job.Key) == math::MathStatus::Success);
+    job.Description.LightCount = 1;
+    job.Lights[0].Kind = rr::LightKind::Directional;
+    job.Lights[0].Intensity = 1;
+    // The ray arrives from below the face, against its normal.
+    rhi::RayResult hit;
+    hit.Hit = 1;
+    hit.Distance = 1;
+    hit.U = .25F;
+    hit.V = .25F;
+    for (const bool isLightBelow : {true, false})
+    {
+        CAPTURE(isLightBelow);
+        // A directional light travels along Direction: from below it shines up onto the viewed side.
+        job.Lights[0].Direction = {0, 0, isLightBelow == true ? 1.F : -1.F};
+        reference::ReferencePath path;
+        path.Ray = reference::ReferenceRay({-.5F, -.5F, -1}, {0, 0, 1}, 2);
+        rr::ReferenceCaptureInfo information;
+        REQUIRE(reference::PrepareReferenceVertex(job, information, path, hit) == rhi::RasterStatus::Ready);
+        CHECK(information.InvalidContributions == 0);
+        // Light from the viewer's side reaches it; light on the far side never leaks through the surface.
+        CHECK(path.ShadowCount == (isLightBelow == true ? 1U : 0U));
+        if (path.ShadowCount == 1)
+        {
+            CHECK(path.PendingDirects[0].X > 0);
+            CHECK(path.Shadows[0].Direction[2] < 0);
+        }
+        // The continuation leaves on the viewer's side instead of the path ending at the back face.
+        REQUIRE(path.HasNext == true);
+        CHECK(path.Next.Direction[2] < 0);
+    }
+}
+
 TEST_CASE("RT1 authored white vertex colors remain in the BSDF domain at interior barycentrics",
           "[renderer][rt1][authored-color]")
 {

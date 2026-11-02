@@ -619,6 +619,55 @@ TEST_CASE("RG3b editor reverse-Z camera yields a finite conventional view of the
     CHECK(unchanged.WorldToClip == conventional.WorldToClip);
 }
 
+TEST_CASE("RG3b conventional views reuse the bounds published with each scene", "[editor][render-graph][preview]")
+{
+    // Every graph camera update describes a conventional view; its far plane must come from the
+    // bounds stored when the scene was published rather than from another pass over all vertices.
+    RenderScene scene = MakeCookedScene();
+    math::Aabb3 expectedWorld;
+    REQUIRE(scene.TryGetBounds({}, expectedWorld) == true);
+    PreviewViewOptions options;
+    options.Width = WIDTH;
+    options.Height = HEIGHT;
+    options.ShouldUseConventionalDepth = true;
+    QString error;
+    renderer::ViewDescription computed;
+    REQUIRE(scene.View(options, computed, error) == true);
+    options.BoundsWorldOrNull = &expectedWorld;
+    renderer::ViewDescription supplied;
+    REQUIRE(scene.View(options, supplied, error) == true);
+    CHECK(supplied.WorldToClip == computed.WorldToClip);
+
+    RenderPreview viewport;
+    viewport.Resize(WIDTH, HEIGHT);
+    REQUIRE(viewport.SetScene(scene) == true);
+    math::Aabb3 publishedWorld;
+    REQUIRE(viewport.TryGetSceneBounds(publishedWorld) == true);
+    CHECK(publishedWorld.Min == expectedWorld.Min);
+    CHECK(publishedWorld.Max == expectedWorld.Max);
+    renderer::ViewDescription before;
+    REQUIRE(viewport.DescribeConventionalView(WIDTH, HEIGHT, before, error) == true);
+
+    // A moved object publishes new bounds with its scene, which bound the next far plane.
+    scene.Objects[0].Transform.Translation = {0, 0, -50};
+    scene.Identity.append('2');
+    REQUIRE(scene.TryGetBounds({}, expectedWorld) == true);
+    REQUIRE(viewport.SetScene(scene) == true);
+    REQUIRE(viewport.TryGetSceneBounds(publishedWorld) == true);
+    CHECK(publishedWorld.Min == expectedWorld.Min);
+    CHECK(publishedWorld.Max == expectedWorld.Max);
+    renderer::ViewDescription after;
+    REQUIRE(viewport.DescribeConventionalView(WIDTH, HEIGHT, after, error) == true);
+    CHECK((after.WorldToClip == before.WorldToClip) == false);
+    CHECK(GetDepth(after, {0, 0, -50}) < 1);
+
+    // Clearing the scene clears its bounds; the last result stays with the caller.
+    REQUIRE(viewport.SetScene({}) == true);
+    math::Aabb3 unchanged = publishedWorld;
+    CHECK(viewport.TryGetSceneBounds(unchanged) == false);
+    CHECK(unchanged.Min == publishedWorld.Min);
+}
+
 TEST_CASE("RG3b preview renders a cooked World through the editor camera", "[editor][render-graph][preview]")
 {
     DeviceFixture device;

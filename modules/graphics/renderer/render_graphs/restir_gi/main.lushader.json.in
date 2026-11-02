@@ -1,0 +1,266 @@
+{
+  "version": 1,
+  "id": "RendererStaticBuild",
+  "profiles": @LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@,
+  "schemas": [
+    {
+      "id": "RendererStatic",
+      "role": "Vertex",
+      "fields": [
+        {
+          "id": "PositionMesh",
+          "type": "Float3",
+          "semantic": "POSITION",
+          "location": 0
+        },
+        {
+          "id": "MeshToClipRow0",
+          "type": "Float4",
+          "semantic": "TEXCOORD0",
+          "location": 1
+        },
+        {
+          "id": "MeshToClipRow1",
+          "type": "Float4",
+          "semantic": "TEXCOORD1",
+          "location": 2
+        },
+        {
+          "id": "MeshToClipRow2",
+          "type": "Float4",
+          "semantic": "TEXCOORD2",
+          "location": 3
+        },
+        {
+          "id": "MeshToClipRow3",
+          "type": "Float4",
+          "semantic": "TEXCOORD3",
+          "location": 4
+        },
+        {
+          "id": "Color",
+          "type": "Float4",
+          "semantic": "COLOR0",
+          "location": 5
+        }
+      ]
+    },
+    {
+      "id": "RasterVarying",
+      "role": "Varying",
+      "fields": [
+        {
+          "id": "PositionClip",
+          "type": "Float4",
+          "semantic": "SV_Position",
+          "location": 0
+        },
+        {
+          "id": "Color",
+          "type": "Float4",
+          "semantic": "COLOR0",
+          "location": 0
+        }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "id": "Geometry",
+      "stage": "vertex",
+      "source": "main_shaders/geometry.slang",
+      "function": "TransformGeometry",
+      "input": "RendererStatic",
+      "output": "RasterVarying",
+      "bindings": []
+    },
+    {
+      "id": "Color",
+      "stage": "fragment",
+      "source": "main_shaders/color.slang",
+      "function": "ShadeColor",
+      "input": "RasterVarying",
+      "output": "Color",
+      "bindings": []
+    },
+    {
+      "id": "Depth",
+      "stage": "fragment",
+      "source": "main_shaders/depth.slang",
+      "function": "WriteDepth",
+      "input": "RasterVarying",
+      "output": "Depth",
+      "bindings": []
+    },
+    {
+      "id": "Initial",
+      "stage": "compute",
+      "source": "main_shaders/initial.slang",
+      "function": "GenerateInitialSample",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "Temporal",
+      "stage": "compute",
+      "source": "main_shaders/temporal.slang",
+      "function": "ResampleTemporal",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "Spatial",
+      "stage": "compute",
+      "source": "main_shaders/spatial.slang",
+      "function": "ResampleSpatial",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "Shade",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "ShadeRestirGi",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    }
+  ],
+  "techniques": [
+    {
+      "id": "DefaultStaticOpaque.ColorAndDepth",
+      "configuration": "ColorAndDepth",
+      "vertex": "Geometry",
+      "fragment": "Color",
+      "recipes": [
+        {
+          "id": "Default",
+          "color": "RGBA8Unorm",
+          "depth": "Depth32Float",
+          "samples": 1,
+          "topology": "TriangleList",
+          "cull": "None",
+          "front": "CounterClockwise",
+          "depth_compare": "Less",
+          "depth_write": true,
+          "blend": "Opaque"
+        }
+      ]
+    },
+    {
+      "id": "DefaultStaticOpaque.DepthOnly",
+      "configuration": "DepthOnly",
+      "vertex": "Geometry",
+      "fragment": "Depth",
+      "recipes": [
+        {
+          "id": "Default",
+          "color": "None",
+          "depth": "Depth32Float",
+          "samples": 1,
+          "topology": "TriangleList",
+          "cull": "None",
+          "front": "CounterClockwise",
+          "depth_compare": "Less",
+          "depth_write": true,
+          "blend": "Opaque"
+        }
+      ]
+    },
+    {
+      "id": "RendererTriangles.RayTracing",
+      "configuration": "RayTracing",
+      "recipes": [
+        {
+          "id": "Triangles"
+        }
+      ],
+      "scene_interface": {
+        "version": 1,
+        "surface_queries": 4,
+        "visibility_queries": 16
+      }
+    }
+  ],
+  "budgets": {
+    "configurations": 8,
+    "programs": 16
+  },
+  "settings": [
+    {
+      "id": "RESTIR_GI_SOURCE_DISTRIBUTION",
+      "label": "Initial sample directions (0 uniform hemisphere, 1 cosine-weighted)",
+      "type": "UInt32",
+      "value": 0,
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "id": "IS_RESTIR_GI_TARGET_SCATTERED",
+      "label": "Target includes BSDF and cosine (Equation 9)",
+      "type": "Bool",
+      "value": false
+    },
+    {
+      "id": "RESTIR_GI_PATH_BOUNCES",
+      "label": "Path bounces after the sample point",
+      "type": "UInt32",
+      "value": 1,
+      "minimum": 0,
+      "maximum": 2
+    },
+    {
+      "id": "IS_RESTIR_GI_TEMPORAL_ENABLED",
+      "label": "Temporal reuse",
+      "type": "Bool",
+      "value": true
+    },
+    {
+      "id": "RESTIR_GI_TEMPORAL_MAX_M",
+      "label": "Temporal reservoir sample limit (M)",
+      "type": "UInt32",
+      "value": 30,
+      "minimum": 1,
+      "maximum": 1000
+    },
+    {
+      "id": "IS_RESTIR_GI_SPATIAL_ENABLED",
+      "label": "Spatial reuse",
+      "type": "Bool",
+      "value": true
+    },
+    {
+      "id": "RESTIR_GI_SPATIAL_MAX_M",
+      "label": "Spatial reservoir sample limit (M)",
+      "type": "UInt32",
+      "value": 500,
+      "minimum": 1,
+      "maximum": 10000
+    },
+    {
+      "id": "RESTIR_GI_SPATIAL_NEIGHBORS",
+      "label": "Spatial neighbours",
+      "type": "UInt32",
+      "value": 3,
+      "minimum": 0,
+      "maximum": 7
+    },
+    {
+      "id": "RESTIR_GI_SPATIAL_SPARSE_NEIGHBORS",
+      "label": "Spatial neighbours below half the sample limit",
+      "type": "UInt32",
+      "value": 7,
+      "minimum": 0,
+      "maximum": 7
+    },
+    {
+      "id": "IS_RESTIR_GI_UNBIASED",
+      "label": "Unbiased reuse (visibility rays)",
+      "type": "Bool",
+      "value": true
+    }
+  ]
+}

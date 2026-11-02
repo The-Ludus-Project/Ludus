@@ -140,6 +140,26 @@ float3 GetGeometricNormalWorld(uint triangle)
 {
     return TriangleValue(triangle, LUDUS_GPU_PREVIEW_GEOMETRIC_NORMAL_WORD).xyz;
 }
+// OrientReferenceGeometricNormal: pbrt-v4's FaceForward of the geometric normal into the hemisphere of the
+// interpolated shading normal (Pharr, Jakob and Humphreys, PBR 4th edition, section 6.5.3).
+float3 GetOrientedGeometricNormalWorld(uint triangle, float u, float v)
+{
+    float3 geometricNormalWorld = GetGeometricNormalWorld(triangle);
+    return dot(InterpolateTriangle(triangle, 3, u, v).xyz, geometricNormalWorld) < 0 ? -geometricNormalWorld
+                                                                                     : geometricNormalWorld;
+}
+// CanReferenceTriangleFace: whether some point of the triangle faces pointWorld once oriented.
+bool CanTriangleFace(uint triangle, float3 pointWorld)
+{
+    float3 geometricNormalWorld = GetGeometricNormalWorld(triangle);
+    float side = dot(geometricNormalWorld, pointWorld - TriangleValue(triangle, 0).xyz);
+    for (uint corner = 0; corner < 3; ++corner)
+    {
+        if ((dot(TriangleValue(triangle, 3 + corner).xyz, geometricNormalWorld) < 0 ? -side : side) > 0)
+            return true;
+    }
+    return false;
+}
 float3 GetPositionErrorWorld(uint triangle)
 {
     return TriangleValue(triangle, LUDUS_GRAPH_EMITTER_WORD).xyz;
@@ -925,7 +945,7 @@ LightProposal SampleLight(uint pixel, uint sample, uint depth, float3 positionWo
         }
         result.DirectionWorld = deltaWorld / result.DistanceWorld;
         result.ErrorWorld = GetPositionErrorWorld(triangle);
-        result.NormalWorld = GetGeometricNormalWorld(triangle);
+        result.NormalWorld = GetOrientedGeometricNormalWorld(triangle, u, v);
         result.HasFiniteEndpoint = true;
         result.Pdf = GetAreaPdf(triangle, positionWorld, result.PositionWorld, GetEmitterSelection(emitter, count));
         uint instance = GetInstance(triangle);
@@ -1042,9 +1062,8 @@ struct EmitterTarget
 float GetEmitterLuminanceTowards(ReferenceReceiverFrame frame, uint triangle)
 {
     uint instance = GetInstance(triangle);
-    // A planar triangle faces the receiver from every point on it, as the emitter-hit test sees it at one point.
-    if (IsEmissionTwoSided(instance) == false &&
-        dot(GetGeometricNormalWorld(triangle), frame.PositionWorld - TriangleValue(triangle, 0).xyz) <= 0)
+    // Zero only when no point of the triangle emits towards the receiver; the emitter-hit test orients each point.
+    if (IsEmissionTwoSided(instance) == false && CanTriangleFace(triangle, frame.PositionWorld) == false)
         return 0;
     return ComputeReferenceLuminance(max(SurfaceValue(instance, 4).xyz, float3(0)));
 }
@@ -1300,7 +1319,8 @@ struct ResampledLightSample
     result.PositionWorld = GetPositionWorld(triangle, u, v);
     result.DistanceWorld = distanceWorld;
     // Sidedness, range and opacity at the sampled point, as UniformArea applies them.
-    if ((IsEmissionTwoSided(instance) == true || dot(GetGeometricNormalWorld(triangle), -directionWorld) > 0) &&
+    if ((IsEmissionTwoSided(instance) == true ||
+         dot(GetOrientedGeometricNormalWorld(triangle, u, v), -directionWorld) > 0) &&
         distanceWorld <= Options.x && IsOpaque(instance, uv, GetVertexAlpha(triangle, u, v)) == true)
         result.Radiance = SampleEmission(instance, uv);
     float2 techniqueWeights =
@@ -1518,7 +1538,7 @@ PathSample TracePath(uint pixel, uint sample)
         float2 uv = GetTexcoordUv(triangle, u, v);
         float3 positionWorld = GetPositionWorld(triangle, u, v);
         float3 viewWorld = -ray.DirectionWorld;
-        float3 geometricNormalWorld = GetGeometricNormalWorld(triangle);
+        float3 geometricNormalWorld = GetOrientedGeometricNormalWorld(triangle, u, v);
         if (HasPositiveComponent(SurfaceValue(instance, 4).xyz) == true &&
             (IsEmissionTwoSided(instance) == true || dot(geometricNormalWorld, viewWorld) > 0))
         {
@@ -1550,13 +1570,20 @@ PathSample TracePath(uint pixel, uint sample)
             float weight = depth == 0 ? 1 : PowerWeight(previousPdf, pdf);
             AddTransport(path, throughput * SampleEmission(instance, uv) * weight, depth, true);
         }
-        if (depth >= Dimensions.z || dot(geometricNormalWorld, viewWorld) <= 0)
+        // pbrt-v4's reflection models scatter on the viewer's side of the surface (reference_path.cpp cites the
+        // source); emission above stays one-sided.
+        bool isBackFace = dot(geometricNormalWorld, viewWorld) < 0;
+        float3 scatteringNormalWorld = isBackFace == true ? -geometricNormalWorld : geometricNormalWorld;
+        if (depth >= Dimensions.z || dot(scatteringNormalWorld, viewWorld) <= 0)
         {
             if (HasValidTransport(path) == false)
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_RADIANCE);
             return path;
         }
+        // Corner normals on both sides of the face can cancel; pbrt-v4 then shades with the geometric normal.
         float3 normalWorld = NormalizeOrZero(InterpolateTriangle(triangle, 3, u, v).xyz);
+        if (all(normalWorld == float3(0)) == true)
+            normalWorld = geometricNormalWorld;
         float4 texel = SampleImage(instance, COLOR_IMAGE, uv);
         if (asuint(SurfaceValue(instance, 7).z) != 0)
             texel *= InterpolateTriangleColor(triangle, u, v);
@@ -1589,6 +1616,8 @@ PathSample TracePath(uint pixel, uint sample)
             bsdf.Roughness = parameters.Roughness;
             normalWorld = ApplySurfaceNormal(triangle, instance, normalWorld, parameters.NormalTangent, u, v);
         }
+        if (isBackFace == true)
+            normalWorld = -normalWorld;
         ReferenceReceiverFrame frame = previousFrame;
         TargetTotal targetTotal = MakeTargetTotal();
         if (isResampled == true)
@@ -1610,7 +1639,7 @@ PathSample TracePath(uint pixel, uint sample)
                                                                           depth,
                                                                           triangle,
                                                                           positionWorld,
-                                                                          geometricNormalWorld,
+                                                                          scatteringNormalWorld,
                                                                           normalWorld,
                                                                           viewWorld,
                                                                           bsdf,
@@ -1624,7 +1653,7 @@ PathSample TracePath(uint pixel, uint sample)
         uint directDepth = depth;
         float cosine = dot(normalWorld, proposal.DirectionWorld);
         if (proposal.Pdf > 0 && HasPositiveComponent(proposal.Radiance) == true && cosine > 0 &&
-            dot(geometricNormalWorld, proposal.DirectionWorld) > 0)
+            dot(scatteringNormalWorld, proposal.DirectionWorld) > 0)
         {
             if (IsValidBsdf(bsdf) == false || IsUnit(normalWorld) == false || IsUnit(viewWorld) == false ||
                 IsUnit(proposal.DirectionWorld) == false)
@@ -1691,7 +1720,7 @@ PathSample TracePath(uint pixel, uint sample)
             }
         }
         bool hasNext = false;
-        if (isAccepted == false || dot(geometricNormalWorld, outgoingWorld) <= 0)
+        if (isAccepted == false || dot(scatteringNormalWorld, outgoingWorld) <= 0)
             path.Status |= LUDUS_REFERENCE_NULL_FLAG;
         else
         {

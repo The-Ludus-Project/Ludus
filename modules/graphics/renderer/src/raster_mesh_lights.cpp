@@ -32,6 +32,8 @@ constexpr float32 DIELECTRIC_F0 = 0.04F;
 constexpr float32 FRAME_AXIS_THRESHOLD = 0.9F;
 constexpr float32 PLANE_EPSILON_METERS = static_cast<float32>(LUDUS_MESH_LIGHT_PLANE_EPSILON_METERS);
 constexpr float32 PLANE_RELATIVE_EPSILON = static_cast<float32>(LUDUS_MESH_LIGHT_PLANE_RELATIVE_EPSILON);
+constexpr float32 FAR_DISTANCE_RATIO = static_cast<float32>(LUDUS_MESH_LIGHT_FAR_DISTANCE_RATIO);
+constexpr float32 FAR_SPECULAR_ANGLE_PER_ALPHA = static_cast<float32>(LUDUS_MESH_LIGHT_FAR_SPECULAR_ANGLE_PER_ALPHA);
 constexpr usize NORMAL_WORD = 0;
 constexpr usize EMISSION_WORD = 1;
 // The CPU check fans a record into pieces whose receiver-horizon clip, which adds at most one corner, still fits
@@ -45,16 +47,30 @@ math::Vector3 GetPosition(math::Vector4 word) noexcept
 {
     return {word.X, word.Y, word.Z};
 }
-// One record: unit normal and sidedness, emission and corner count, then exactly that many world corners. The first
-// corner's w holds the convex polygon's area in square metres, for the culling bound; the other corners' w are zero.
+// One record: unit normal and sidedness, emission and corner count, the corners' bounding sphere, then exactly that
+// many world corners. The first corner's w holds the convex polygon's area in square metres, for the culling bound;
+// the other corners' w are zero.
 [[nodiscard]] bool TryAppendRecord(BorrowedView<const math::Vector3> cornersWorld,
                                    math::Vector3 normalWorld,
                                    math::Vector3 emission,
                                    bool isTwoSided,
                                    Array<math::Vector4>& inoutWords) noexcept
 {
+    math::Vector3 sumWorld{};
+    for (usize corner = 0; corner < cornersWorld.GetSize(); ++corner)
+    {
+        sumWorld = sumWorld + cornersWorld[corner];
+    }
+    const math::Vector3 centerWorld = sumWorld * (1.0F / static_cast<float32>(cornersWorld.GetSize()));
+    float32 radius = 0;
+    for (usize corner = 0; corner < cornersWorld.GetSize(); ++corner)
+    {
+        radius = math::Max(radius, math::Length(cornersWorld[corner] - centerWorld));
+    }
     if (inoutWords.TryAdd({normalWorld.X, normalWorld.Y, normalWorld.Z, isTwoSided == true ? 1.0F : 0.0F}) == false ||
-        inoutWords.TryAdd({emission.X, emission.Y, emission.Z, static_cast<float32>(cornersWorld.GetSize())}) == false)
+        inoutWords.TryAdd({emission.X, emission.Y, emission.Z, static_cast<float32>(cornersWorld.GetSize())}) ==
+            false ||
+        inoutWords.TryAdd({centerWorld.X, centerWorld.Y, centerWorld.Z, radius}) == false)
     {
         return false;
     }
@@ -321,7 +337,76 @@ usize GetRasterMeshLightRecordWords(BorrowedView<const math::Vector4> words, usi
     const usize recordWords = MESH_LIGHT_POLYGON_HEADER_WORDS + static_cast<usize>(cornerWord);
     return words.GetSize() - offset >= recordWords ? recordWords : 0;
 }
+namespace
+{
+// The receiver terms the resolve builds once per shaded sample (MakeMeshLightReceiver in renderer_mesh_lights.slang).
+struct Receiver final
+{
+    math::Vector3 TangentWorld;
+    math::Vector3 BitangentWorld;
+    math::Vector3 DiffuseAlbedo;
+    math::Vector3 SpecularAlbedo;
+    math::LinearlyTransformedCosine Distribution;
+    bool HasSpecular = false;
+};
+// Whether the record in words, which must be exactly one record, can light positionWorld: the receiver faces the
+// viewer, lies off the emitter's plane and in front of a one-sided emitter (CanMeshLightRecordReach without culling).
+// Position, normal and view are distinct vectors.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+bool CanReach(BorrowedView<const math::Vector4> words,
+              math::Vector3 positionWorld,
+              math::Vector3 normalWorld,
+              math::Vector3 viewWorld) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    if (words.IsEmpty() == true || GetRasterMeshLightRecordWords(words, 0) != words.GetSize() ||
+        math::Dot(normalWorld, viewWorld) <= 0)
+    {
+        return false;
+    }
+    const math::Vector3 emitterNormalWorld = GetPosition(words[NORMAL_WORD]);
+    const math::Vector3 originWorld = GetPosition(words[MESH_LIGHT_POLYGON_HEADER_WORDS]);
+    const float32 facing = math::Dot(emitterNormalWorld, positionWorld - originWorld);
+    const float32 planeTolerance =
+        PLANE_EPSILON_METERS +
+        PLANE_RELATIVE_EPSILON * math::Max(ComputeMagnitude(positionWorld), ComputeMagnitude(originWorld));
+    return math::Abs(facing) > planeTolerance && (words[NORMAL_WORD].W != 0 || facing >= 0);
+}
 // Position, normal, view and base colour are distinct vectors, and metallic and roughness distinct material terms.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+bool TryMakeReceiver(math::Vector3 normalWorld,
+                     math::Vector3 viewWorld,
+                     math::Vector3 baseColor,
+                     float32 metallic,
+                     float32 roughness,
+                     Receiver& outReceiver) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    const math::Vector3 helperWorld =
+        math::Abs(normalWorld.Z) < FRAME_AXIS_THRESHOLD ? math::Vector3{0, 0, 1} : math::Vector3{1, 0, 0};
+    Receiver receiver;
+    if (math::TryNormalize(math::Cross(helperWorld, normalWorld), receiver.TangentWorld) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    receiver.BitangentWorld = math::Cross(normalWorld, receiver.TangentWorld);
+    const math::Vector3 f0 =
+        math::Vector3{DIELECTRIC_F0, DIELECTRIC_F0, DIELECTRIC_F0} * (1 - metallic) + baseColor * metallic;
+    const float32 complement = 1 - math::Max(math::Dot(normalWorld, viewWorld), 0.0F);
+    const float32 fifth = complement * complement * complement * complement * complement;
+    const math::Vector3 fresnel = f0 + (math::Vector3{1, 1, 1} - f0) * fifth;
+    receiver.DiffuseAlbedo = math::Hadamard(baseColor, math::Vector3{1, 1, 1} - fresnel) * (1 - metallic);
+    const math::Vector3 viewTangent{math::Dot(viewWorld, receiver.TangentWorld),
+                                    math::Dot(viewWorld, receiver.BitangentWorld),
+                                    math::Dot(viewWorld, normalWorld)};
+    const SpecularLtc specular = LookupSpecularLtc(roughness, viewTangent, f0);
+    receiver.HasSpecular = math::TryMakeLinearlyTransformedCosine(specular.InverseTransform, receiver.Distribution) ==
+                           math::MathStatus::Success;
+    receiver.SpecularAlbedo = ComputeSpecularLtcAlbedo(specular, f0);
+    outReceiver = receiver;
+    return true;
+}
+} // namespace
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 math::Vector3 EvaluateRasterMeshLight(BorrowedView<const math::Vector4> words,
                                       math::Vector3 positionWorld,
@@ -332,44 +417,15 @@ math::Vector3 EvaluateRasterMeshLight(BorrowedView<const math::Vector4> words,
                                       float32 roughness) noexcept
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
-    if (words.IsEmpty() == true || GetRasterMeshLightRecordWords(words, 0) != words.GetSize() ||
-        math::Dot(normalWorld, viewWorld) <= 0)
+    Receiver receiver;
+    if (CanReach(words, positionWorld, normalWorld, viewWorld) == false ||
+        TryMakeReceiver(normalWorld, viewWorld, baseColor, metallic, roughness, receiver) == false)
     {
         return {};
     }
     const usize cornerCount = words.GetSize() - MESH_LIGHT_POLYGON_HEADER_WORDS;
-    const math::Vector3 emitterNormalWorld = GetPosition(words[NORMAL_WORD]);
-    const math::Vector3 originWorld = GetPosition(words[MESH_LIGHT_POLYGON_HEADER_WORDS]);
-    const float32 facing = math::Dot(emitterNormalWorld, positionWorld - originWorld);
-    const float32 planeTolerance =
-        PLANE_EPSILON_METERS +
-        PLANE_RELATIVE_EPSILON * math::Max(ComputeMagnitude(positionWorld), ComputeMagnitude(originWorld));
-    if (math::Abs(facing) <= planeTolerance || (words[NORMAL_WORD].W == 0 && facing < 0))
-    {
-        return {};
-    }
-    const math::Vector3 helperWorld =
-        math::Abs(normalWorld.Z) < FRAME_AXIS_THRESHOLD ? math::Vector3{0, 0, 1} : math::Vector3{1, 0, 0};
-    math::Vector3 tangentWorld;
-    if (math::TryNormalize(math::Cross(helperWorld, normalWorld), tangentWorld) != math::MathStatus::Success)
-    {
-        return {};
-    }
-    const math::Vector3 bitangentWorld = math::Cross(normalWorld, tangentWorld);
-    const math::Vector3 f0 =
-        math::Vector3{DIELECTRIC_F0, DIELECTRIC_F0, DIELECTRIC_F0} * (1 - metallic) + baseColor * metallic;
-    const float32 complement = 1 - math::Max(math::Dot(normalWorld, viewWorld), 0.0F);
-    const float32 fifth = complement * complement * complement * complement * complement;
-    const math::Vector3 fresnel = f0 + (math::Vector3{1, 1, 1} - f0) * fifth;
-    const math::Vector3 diffuseAlbedo = math::Hadamard(baseColor, math::Vector3{1, 1, 1} - fresnel) * (1 - metallic);
-    const math::Vector3 viewTangent{math::Dot(viewWorld, tangentWorld),
-                                    math::Dot(viewWorld, bitangentWorld),
-                                    math::Dot(viewWorld, normalWorld)};
-    const SpecularLtc specular = LookupSpecularLtc(roughness, viewTangent, f0);
-    math::LinearlyTransformedCosine distribution;
-    const bool hasSpecular =
-        math::TryMakeLinearlyTransformedCosine(specular.InverseTransform, distribution) == math::MathStatus::Success;
-    const math::Vector3 specularAlbedo = ComputeSpecularLtcAlbedo(specular, f0);
+    const math::Vector3& tangentWorld = receiver.TangentWorld;
+    const math::Vector3& bitangentWorld = receiver.BitangentWorld;
     // Fan from the first corner; each piece is clipped and integrated with the sampling preparation.
     math::Vector3 result{};
     for (usize start = 1; start + 1 < cornerCount;)
@@ -398,15 +454,73 @@ math::Vector3 EvaluateRasterMeshLight(BorrowedView<const math::Vector4> words,
         {
             continue;
         }
-        result = result + diffuseAlbedo * (diffuse.ProjectedSolidAngle / math::kPiF);
+        result = result + receiver.DiffuseAlbedo * (diffuse.ProjectedSolidAngle / math::kPiF);
         math::LinearlyTransformedCosinePolygon specularPolygon;
-        if (hasSpecular == true &&
-            math::TryPrepareLinearlyTransformedCosinePolygon(clipped, distribution, specularPolygon) ==
+        if (receiver.HasSpecular == true &&
+            math::TryPrepareLinearlyTransformedCosinePolygon(clipped, receiver.Distribution, specularPolygon) ==
                 math::MathStatus::Success)
         {
-            result = result + specularAlbedo * math::GetLinearlyTransformedCosinePolygonIntegral(specularPolygon);
+            result =
+                result + receiver.SpecularAlbedo * math::GetLinearlyTransformedCosinePolygonIntegral(specularPolygon);
         }
     }
     return math::Hadamard(GetPosition(words[EMISSION_WORD]), result);
+}
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+bool TryEvaluateRasterMeshLightFar(BorrowedView<const math::Vector4> words,
+                                   math::Vector3 positionWorld,
+                                   math::Vector3 normalWorld,
+                                   math::Vector3 viewWorld,
+                                   math::Vector3 baseColor,
+                                   float32 metallic,
+                                   float32 roughness,
+                                   math::Vector3& outContribution) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    if (words.IsEmpty() == true || GetRasterMeshLightRecordWords(words, 0) != words.GetSize())
+    {
+        return false;
+    }
+    const math::Vector4 bound = words[MESH_LIGHT_POLYGON_BOUND_WORD];
+    const math::Vector3 toLightWorld = GetPosition(bound) - positionWorld;
+    const float32 distance = math::Length(toLightWorld);
+    if ((distance > FAR_DISTANCE_RATIO * bound.W) == false)
+    {
+        return false;
+    }
+    const float32 alpha = roughness * roughness;
+    Receiver receiver;
+    if (CanReach(words, positionWorld, normalWorld, viewWorld) == false ||
+        TryMakeReceiver(normalWorld, viewWorld, baseColor, metallic, roughness, receiver) == false)
+    {
+        outContribution = {};
+        return true;
+    }
+    if (receiver.HasSpecular == true && (bound.W < FAR_SPECULAR_ANGLE_PER_ALPHA * alpha * distance) == false)
+    {
+        return false;
+    }
+    const math::Vector3 directionWorld = toLightWorld * (1.0F / distance);
+    const float32 emitterCosine = -math::Dot(GetPosition(words[NORMAL_WORD]), directionWorld);
+    const float32 area = words[MESH_LIGHT_POLYGON_HEADER_WORDS].W;
+    const float32 solidAngle = area *
+                               (words[NORMAL_WORD].W != 0 ? math::Abs(emitterCosine) : math::Max(emitterCosine, 0.0F)) /
+                               (distance * distance);
+    const math::Vector3 directionTangent{math::Dot(directionWorld, receiver.TangentWorld),
+                                         math::Dot(directionWorld, receiver.BitangentWorld),
+                                         math::Dot(directionWorld, normalWorld)};
+    math::Vector3 result{};
+    if (directionTangent.Z > 0)
+    {
+        result = receiver.DiffuseAlbedo * (directionTangent.Z * solidAngle / math::kPiF);
+        if (receiver.HasSpecular == true)
+        {
+            result = result + receiver.SpecularAlbedo *
+                                  (math::EvaluateLinearlyTransformedCosine(receiver.Distribution, directionTangent) *
+                                   solidAngle);
+        }
+    }
+    outContribution = math::Hadamard(GetPosition(words[EMISSION_WORD]), result);
+    return true;
 }
 } // namespace ludus::graphics::renderer::internal

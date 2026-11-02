@@ -1632,6 +1632,146 @@ and [Appendix A.2, “Reservoir Sampling”](https://pbr-book.org/4ed/Sampling_A
 it adapts their sampling ideas to bounded GPU-local tables and one shared emitter
 stream, rather than copying the book's container implementation.
 
+### Use the built-in ReSTIR GI template
+
+The **ReSTIR GI — path resampling for indirect lighting** template (`restir-gi`)
+implements Yaobin Ouyang, Shiqiu Liu, Markus Kettunen, Matt Pharr and Jacopo
+Pantaleoni, [*ReSTIR GI: Path Resampling for Real-Time Path Tracing*, Computer
+Graphics Forum 40(8), High-Performance Graphics 2021, pp. 17–29](https://doi.org/10.1111/cgf.14378).
+Every pixel traces one indirect sample point per frame and path traces the light
+that point scatters back. Reservoirs then share good sample points across frames and
+nearby pixels. Create it from **New Render Graph → Template**, or with the CLI:
+
+```bash
+ludus render-graph new graphs/Indirect --template restir-gi --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. Every pass issues native ray queries, so the template
+requires native ray tracing; a `wgsl`-only package is rejected with a `Capability`
+diagnostic. **Apply Configuration Template...** and Quick Add also offer the
+`RestirGi` configuration, with `scene`, `view` and `color` inputs and a required
+`color` output. Imported programs have `RestirGi`-prefixed IDs and sources under
+`restir_gi/main_shaders/`. Import raises the shared ray technique's budgets to four
+surface and sixteen visibility queries per invocation. The root graph accumulates
+and tone maps the shaded color; remove its **Accumulate** node to see each frame's
+real-time estimate instead.
+
+Four scene compute passes map onto the paper's workflow (its Figure 4). Each pass
+traces its pixel's camera ray to the same visible point. Three **Buffer** nodes,
+sized from the color target through a texture-derived **RenderSize**, hold the
+paper's three image-sized buffers:
+
+| Pipeline node | Function | Buffers (`GraphBuffer0`, `GraphBuffer1`) | Work |
+| --- | --- | --- | --- |
+| `initial` | `GenerateInitialSample` in `initial.slang` | `samples` | Algorithm 2: sample a direction, trace the sample point, estimate its outgoing radiance |
+| `temporal` | `ResampleTemporal` in `temporal.slang` | `samples`, `temporalReservoirs` | Algorithm 3: merge the initial sample into the pixel's temporal reservoir |
+| `spatial` | `ResampleSpatial` in `spatial.slang` | `temporalReservoirs`, `spatialReservoirs` | Algorithm 4: merge similar neighbours' temporal reservoirs into the pixel's spatial reservoir |
+| `shade` | `ShadeRestirGi` in `shade.slang` | `spatialReservoirs` | Emission, direct lighting and the RIS estimate of indirect lighting |
+
+`samples` stores 32 bytes per pixel (the sample point's triangle and barycentrics,
+its radiance, the source PDF and the frame). Each reservoir stores 64 bytes per
+pixel: the sample, `W`, `M`, the visible point's triangle and barycentrics, the
+scene generation and the extent. At 1920 × 1080 the three buffers take 332 MB.
+Positions and normals are rebuilt from the stored triangles with `GetSurfaceHit`,
+so neither buffer quantizes them. Every pass reads only records that earlier passes
+finished, and writes only its own pixel's record, so no pass races another and no
+reservoir is double-buffered. A pass that fails stores its failure reason in its
+record; later passes report that reason instead of hiding it.
+
+The sample point's radiance `L_o` is reflected light only: next-event estimation at
+the sample point, plus `RESTIR_GI_PATH_BOUNCES` further BSDF-sampled vertices, each
+with next-event estimation combined by the power heuristic (section 4.1, Figure 5).
+Emission at the sample point and sample rays that reach the environment are left
+out, because the shade pass estimates direct lighting at the visible point with
+light and BSDF sampling, as the [MIS template](#compare-light-and-bsdf-sampling-with-mis)
+does. Resampling follows the paper:
+
+- **Target function.** The luminance of `L_o` (Equation 10), or of
+  `L_o · f · cos` (Equation 9) with the scattered-target setting. The target is zero
+  where the sample point lies below the visible point's hemisphere.
+- **Reconnection Jacobian.** A sample reused at another visible point is weighted by
+  `|J| = (|cos φ_r| / |cos φ_q|) · (‖x_q − x_s‖² / ‖x_r − x_s‖²)` (Equation 11).
+- **Spatial reuse.** Neighbours are chosen uniformly in a disk of 10% of the image's
+  larger dimension, halved after each neighbour that provides no sample, down to
+  3 pixels. They must pass the similarity test: normals within 25° and depths within
+  5%. Spatial reservoirs with fewer than half their sample limit use the sparse
+  neighbour count (section 5).
+- **Unbiased reuse.** A neighbour's sample is merged only if it is visible from this
+  visible point (Algorithm 4, lines 12–13). The count `Z` then keeps only the `M`
+  of candidates whose own visible points could have proposed the selected sample:
+  above their hemisphere and visible (lines 16–19). The biased variant traces none
+  of these rays and normalizes by every merged `M`.
+
+| Setting | Default | Range |
+| --- | --- | --- |
+| Initial sample directions (0 uniform hemisphere, 1 cosine-weighted) | 0 | 0–1 |
+| Target includes BSDF and cosine (Equation 9) | Disabled | Enabled/disabled |
+| Path bounces after the sample point | 1 | 0–2 |
+| Temporal reuse | Enabled | Enabled/disabled |
+| Temporal reservoir sample limit (M) | 30 | 1–1000 |
+| Spatial reuse | Enabled | Enabled/disabled |
+| Spatial reservoir sample limit (M) | 500 | 1–10000 |
+| Spatial neighbours | 3 | 0–7 |
+| Spatial neighbours below half the sample limit | 7 | 0–7 |
+| Unbiased reuse (visibility rays) | Enabled | Enabled/disabled |
+
+The defaults are the paper's: uniform hemisphere sampling and Equation 10, which
+section 6 found more stable, and `M` limits of 30 and 500. One path bounce gives
+two-bounce global illumination. The settings are compile-time constants like the
+[ReSTIR DI settings](#use-the-built-in-restir-di-template), so a change rebuilds the
+shaders and starts with empty reservoirs.
+
+Departures from the paper, also listed in `reservoir.slang`:
+
+- Algorithm 4 writes `p̂′ = p̂ / |J|`, while section 4.2 divides the source PDF by
+  `|J|`. The template multiplies the resampling weight by `|J|`, which is what
+  dividing the PDF means, and which makes reuse agree with the estimator without
+  reuse (below).
+- There are no motion vectors. Temporal history is the same pixel's reservoir. It is
+  kept when its visible point passes the similarity test, and shifted to this frame's
+  visible point with the Jacobian, a visibility ray and the count `Z`. With a still
+  camera the visible points are identical and none of these change the weight.
+- The paper uses 9 neighbours while a spatial reservoir is sparse. The template
+  allows 7: with two visibility rays per neighbour and two for the previous spatial
+  reservoir, that fills the interface's limit of 16 visibility queries.
+- Spatial reuse also merges the pixel's own temporal reservoir, so fresh samples
+  reach the spatial reservoir when no neighbour is similar. Spatial reservoirs never
+  reuse other spatial reservoirs (the paper's Figure 10): that would read records
+  that the same pass writes.
+- Sample points are assumed Lambertian when reused elsewhere, as in the paper's
+  implementation (section 5). Directions are sampled around the interpolated vertex
+  normal; normal maps change the BSDF evaluation only.
+- The scene is static within a scene generation. A World edit starts a new
+  generation, which empties every reservoir, so the periodic sample validation of
+  section 4.3 is not implemented. Multi-bounce paths run in every pixel rather than
+  in a quarter of the tiles.
+
+Evidence, on an Apple M5 GPU with Metal, in a diffuse Cornell box at 96 × 64 lit only
+by its ceiling light (`[restir-gi]` in `ludus_render_graph_ray_tests`):
+
+- **Unbiased.** After 256 frames, the image mean with temporal and spatial reuse
+  (0.285, 0.286, 0.241) agrees within 0.3% with the template's own estimator without
+  reuse (0.285, 0.287, 0.241), which keeps each pixel's initial sample with weight
+  `1 / p_q`. The Veach and Guibas template's direct lighting alone reads 0.204, so
+  indirect lighting adds about 40% that both estimators share.
+- **Less error.** After 32 frames of resampling, one frame with reuse has 2.5 times
+  less mean squared error than one frame without it (0.0064 against 0.0161), against
+  an independently seeded 2048-frame image. Both frames carry the same direct
+  lighting noise, so the indirect gain alone is larger.
+- **Biased reuse** renders failure-free; in the closed box, where every wall sees
+  most others, its mean stays within 0.1% of the unbiased one.
+
+Vulkan has not been run for this template. See the canonical
+[package](../../modules/graphics/renderer/render_graphs/restir_gi/main.lurender.json).
+
+Thanks also to Benedikt Bitterli, Chris Wyman, Matt Pharr, Peter Shirley, Aaron
+Lefohn and Wojciech Jarosz for the reservoir algorithms the paper builds on, to
+Eric Veach and Leonidas J. Guibas for the power heuristic, and to Tom Duff, James
+Burgess, Per Christensen, Christophe Hery, Andrew Kensler, Max Liani and Ryusuke
+Villemin, [*Building an Orthonormal Basis, Revisited*, JCGT 6(1), 2017](https://jcgt.org/published/0006/01/01/),
+for the tangent frame of the hemisphere samples.
+
 <a id="use-the-compute-ray-tracing-template"></a>
 
 ### Use the simple triangle-loop template
@@ -4620,22 +4760,57 @@ wholly behind a one-sided emitter. The sphere encloses the polygon plus a reach
 `A` its area and `epsilon = 2^-12`. A polygon's projected solid angle never exceeds
 `A / d^2` at nearest distance `d`, so every record a cell omits contributes a
 Lambert term below 2^-12 there: less than one 8-bit sRGB step at unit exposure, even
-next to black. The resolve applies the same bound per pixel with the distance to the
-emitter's plane, which never exceeds the distance to the polygon, and skips a listed
-record whose bound is already below 2^-12 there. The specular LTC term has no such bound; a mirror-like reflection of
-an emitter beyond its reach is omitted. Pixels outside the grid evaluate every record.
+next to black. The resolve applies the same bound per pixel with the larger of the
+distances to the emitter's plane and to the record's bounding sphere, neither of which
+exceeds the distance to the polygon, and skips a listed record whose bound is already
+below 2^-12 there. The specular LTC term has no such bound; a mirror-like reflection of
+an emitter beyond its reach is omitted. Every shaded surface lies inside the grid, so a
+position reconstructed just outside it, such as a floor pixel below the padded bounds,
+reads the nearest boundary cell. Such pixels previously evaluated every record without
+the per-pixel bound; in Bistro and Sponza a handful of them walked all 17,571 or 4,225
+records and held the whole resolve pass for several milliseconds.
 
-This replaces the earlier evaluation of every record at every pixel. On an Apple M5 at
+A record whose bounding-sphere centre lies more than eight sphere radii from the
+receiver is integrated as a point at that centre instead of by its clipped edges: the
+differential form factor `A cos(theta_e) / d^2` times the receiver's Lambert cosine,
+plus the specular LTC density in that direction times the same solid angle. Its error
+falls as `(r / d)^2`; the CPU check (`TryEvaluateRasterMeshLightFar`) bounds it by 0.5%
+of the largest value the record can reach. The specular term uses the point only while
+the sphere's angular radius `r / d` stays below a quarter of the receiver's GGX alpha
+(roughness squared), so a glossy reflection of a nearby emitter keeps the exact
+integral. Both thresholds are `LUDUS_MESH_LIGHT_FAR_*` in
+[`deferred_binding_slots.inc`](../../modules/graphics/renderer/include/ludus/graphics/renderer/detail/deferred_binding_slots.inc).
+
+The grid replaced the earlier evaluation of every record at every pixel. On an Apple M5 at
 1600 x 1080, the Intel Sponza light bulbs (8,098 radiance-1 triangles in about 5,000
-records) took about 214 ms of resolve time per frame that way; with the grid the whole
-frame takes about 8 ms (about 6 ms of resolve), measured with the
-`[.raster-mesh-light-benchmark]` editor test (`LUDUS_RASTER_BENCHMARK_WORLD` selects the
-World). The Sample project's Bistro, 17,571 emitter records (from about 21,000 emissive
-triangles in its pbrt source), prepares in about 0.5 to 1.6 s on the loaded test machine and
-renders in about 14 ms (about 3 ms of G-buffer and 12 ms of resolve), with a 1.8 MB
-mesh-light upload of 67,269 grid entries. Dim, small emitters now reach a few decimetres, and a bright large emitter
-still reaches the whole scene, so the cost grows with the records near each pixel
-rather than with all of them. Staircase2's large disk lights still reach every pixel.
+records) took about 214 ms of resolve time per frame that way, and about 8 ms for the
+whole frame with the grid alone. The Sample project's Bistro has 17,571 emitter records
+(from about 21,000 emissive triangles in its pbrt source) and 67,269 grid entries,
+prepares in about 0.5 to 1.6 s on the loaded test machine, and uploads 2.1 MB of
+records and grid. Dim, small emitters reach a few decimetres, and a bright large
+emitter still reaches the whole scene, so the cost grows with the records near each
+pixel rather than with all of them. Staircase2's large disk lights still reach every pixel.
+
+The boundary-cell lookup and the far-field point evaluation together, measured with the
+`[.raster-mesh-light-benchmark]` editor test (the fastest of two interleaved runs on the
+loaded M5, whole GPU frame; develop's resolve cooked against the same record layout):
+
+| View | Before | After | Without mesh lights |
+| --- | --- | --- | --- |
+| Bistro, camera inside the square | 27.0 ms | 13.3 ms | 6.2 ms |
+| Bistro, default orbit | 14.9 ms | 6.3 ms | 4.2 ms |
+| Bistro, street | 6.8 ms | 4.4 ms | 4.5 ms |
+| Staircase2, default orbit | 54.9 ms | 25.9 ms | 1.5 ms |
+| Sponza, default orbit | 3.2 ms | 2.7 ms | 2.6 ms |
+
+At most 1.2% of the pixels changed, all but eight of them by one 8-bit step. Inside
+Bistro a lit pixel's cell lists about 160 records on average (790 at the 99th
+percentile), of which about 40 pass the per-pixel bound. Staircase2's remaining cost is
+the exact integral of its nearby 64-corner disks. The benchmark takes
+`LUDUS_RASTER_BENCHMARK_WORLD` (a World under the project's assets folder),
+`LUDUS_RASTER_BENCHMARK_NAVIGATION` (a JSON editor navigation state such as
+`{"yaw": 35, "pitch": 8, "zoom": 0.12}`, an orbit about the scene centre) and
+`LUDUS_RASTER_BENCHMARK_IMAGE` (a PNG of the last frame, for comparing two runtimes).
 A scene whose lists would exceed 1,048,576 entries uploads no grid and evaluates
 every record as before.
 
@@ -4643,11 +4818,11 @@ There is no mesh-light visibility test yet: area lights can illuminate through
 walls. At most 32,768 nonzero-emission
 polygon records are admitted per scene; excess geometry rejects preparation and
 retains the last drawable generation. Because the culling grid bounds the per-pixel
-cost by the records near each pixel, this limit bounds the upload instead: at most 66
+cost by the records near each pixel, this limit bounds the upload instead: at most 67
 words per record keeps the records and a full grid under 40 MB, and every word offset
 exact in float32. The former limit of 8,192 rejected Bistro. The immutable scene upload stores each record
-as two Float4 header words (normal and sidedness, emission and corner count)
-followed by its corners, plus a zero header for an empty light set, then the
+as three Float4 header words (normal and sidedness, emission and corner count, and
+the corners' centroid with the largest corner distance from it) followed by its corners, plus a zero header for an empty light set, then the
 culling grid: three header words, a cell table of (first entry, count) pairs and the
 cell lists of record word offsets. The first corner's `w` holds the record's area ([`deferred_layout.h`](../../modules/graphics/renderer/include/ludus/graphics/renderer/deferred_layout.h)).
 Camera-only updates reuse it. Fragment read-only storage is required for this upload and the shared
@@ -4657,6 +4832,8 @@ package version 26 changed these two deferred binding kinds, and version 27 chan
 the mesh-light record layout its resolve reads; older deferred packages must be
 cooked again. Version 29 appends each pass's ToneMap curve and admits ToneMap on
 this raster output; earlier packages read as Reinhard and keep clamped linear output.
+Version 30 adds the bounding-sphere header word to each mesh-light record, so earlier
+deferred packages are rejected and must be cooked again.
 
 Select **ZPrepass** in the preview configuration
 selector to enable a separate depth-only pass. That pass clears and stores depth;
@@ -6882,7 +7059,9 @@ preview asks for a finite conventional projection of the same camera instead:
 - An infinite perspective lens becomes a finite one whose far plane is 1% beyond
   the farthest corner of the World's geometry bounds from the camera (at least
   twice the near plane). Finite authored perspective and orthographic lenses keep
-  their planes.
+  their planes. The viewport computes those bounds once, when a scene is
+  published, so each camera change during navigation does not transform every
+  vertex again.
 - The finite reverse-Z clip z is rewritten as `w - z`. This is exact only for a
   finite projection; applied to an infinite one it would leave a degenerate far
   plane at depth 1.

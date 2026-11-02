@@ -4,7 +4,9 @@
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
+#include <ludus/foundation/math/queries.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
@@ -45,6 +47,10 @@ constexpr float64 GLYPH_WIDTH_PIXELS = 6;
 constexpr float64 GLYPH_HEIGHT_PIXELS = 8;
 constexpr usize MAX_HANDLE_STROKES = ViewportObjectOverlay::MAX_HANDLE_STROKES;
 constexpr float64 MAXIMUM_GESTURE_PIXELS = 10000000;
+/// Mesh-bounds growth per unit of its largest extent, so a hit on a box face survives slab rounding.
+constexpr float32 PICK_BOUNDS_PADDING = 0.0001F;
+/// Ray parameter bound before any hit; finite because FoundationMath intervals reject NaN bounds.
+constexpr float64 UNBOUNDED_PICK_DISTANCE = 1.0e300;
 
 constexpr StaticArray<QRgb, AXIS_COUNT> AXIS_COLORS{0xffff6060, 0xff68df85, 0xff639fff};
 math::Vector3 ReadVector(const QJsonArray& values) noexcept
@@ -270,7 +276,47 @@ bool ViewportObjectInteraction::project(math::Vector3 positionWorld, QPointF& ou
                         mFramePixel.top() + (1 - static_cast<float64>(clip.Y / clip.W)) * mFramePixel.height() * 0.5};
     return true;
 }
-QString ViewportObjectInteraction::Pick(QPointF positionPixel, const QRectF& outerFramePixel) const
+bool ViewportObjectInteraction::refreshMeshBounds()
+{
+    const RenderScene& scene = mPreviewOrNull->Scene();
+    if (scene.Identity == mMeshBoundsIdentity && mMeshBoundsMesh.GetSize() == static_cast<usize>(scene.Meshes.size()))
+    {
+        return true;
+    }
+    mMeshBoundsIdentity.clear();
+    mMeshBoundsMesh.Clear();
+    if (mMeshBoundsMesh.TryResize(static_cast<usize>(scene.Meshes.size())) == false)
+    {
+        return false;
+    }
+    for (int32 meshIndex = 0; meshIndex < scene.Meshes.size(); ++meshIndex)
+    {
+        const BorrowedView<const math::Vector3> positionsMesh = GetPositions(scene, meshIndex);
+        math::Aabb3 boundsMesh = math::EmptyAabb3();
+        for (usize i = 0; i < positionsMesh.GetSize(); ++i)
+        {
+            const math::Vector3 positionMesh = positionsMesh[i];
+            boundsMesh.Min = {math::Min(boundsMesh.Min.X, positionMesh.X),
+                              math::Min(boundsMesh.Min.Y, positionMesh.Y),
+                              math::Min(boundsMesh.Min.Z, positionMesh.Z)};
+            boundsMesh.Max = {math::Max(boundsMesh.Max.X, positionMesh.X),
+                              math::Max(boundsMesh.Max.Y, positionMesh.Y),
+                              math::Max(boundsMesh.Max.Z, positionMesh.Z)};
+        }
+        if (math::IsEmpty(boundsMesh) == false)
+        {
+            const math::Vector3 extentMesh = boundsMesh.Max - boundsMesh.Min;
+            const float32 padding =
+                math::Max(math::Max(extentMesh.X, extentMesh.Y), extentMesh.Z) * PICK_BOUNDS_PADDING;
+            boundsMesh.Min = boundsMesh.Min - math::Vector3{padding, padding, padding};
+            boundsMesh.Max = boundsMesh.Max + math::Vector3{padding, padding, padding};
+        }
+        mMeshBoundsMesh[static_cast<usize>(meshIndex)] = boundsMesh;
+    }
+    mMeshBoundsIdentity = scene.Identity;
+    return true;
+}
+QString ViewportObjectInteraction::Pick(QPointF positionPixel, const QRectF& outerFramePixel)
 {
     const QRectF framePixel = resolveFrame(outerFramePixel);
     math::Matrix4 worldToClip;
@@ -296,6 +342,7 @@ QString ViewportObjectInteraction::Pick(QPointF positionPixel, const QRectF& out
     bool hasHit = false;
     QString result;
     const RenderScene& scene = mPreviewOrNull->Scene();
+    const bool hasMeshBounds = refreshMeshBounds();
     for (const PreviewObject& object : scene.Objects)
     {
         math::Affine3 worldToMesh;
@@ -306,6 +353,17 @@ QString ViewportObjectInteraction::Pick(QPointF positionPixel, const QRectF& out
         }
         const math::Ray3 rayMesh{math::TransformPoint(worldToMesh, rayWorld.Origin),
                                  math::TransformVector(worldToMesh, rayWorld.Direction)};
+        // An affine map preserves the ray parameter, so mesh-space box entry compares with the world hit.
+        math::RayHit boundsHit;
+        if (hasMeshBounds == true &&
+            math::TryRayAabb(rayMesh,
+                             mMeshBoundsMesh[static_cast<usize>(object.Mesh)],
+                             {0, hasHit == true ? nearest : UNBOUNDED_PICK_DISTANCE},
+                             boundsHit) == math::MathStatus::Success &&
+            boundsHit.Result == math::HitResult::Miss)
+        {
+            continue;
+        }
         const BorrowedView<const math::Vector3> positionsMesh = GetPositions(scene, object.Mesh);
         const BorrowedView<const uint32> indices = GetIndices(scene, object.Mesh);
         for (usize index = 0; index + TRIANGLE_VERTICES <= indices.GetSize(); index += TRIANGLE_VERTICES)

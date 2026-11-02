@@ -37,8 +37,13 @@ static const LightingLayoutValue DEFERRED_LTC_BINDING = LUDUS_DEFERRED_LTC_BINDI
 /// Most corners of one convex emitter polygon record; covers a 64-segment pbrt disk outline. Larger convex
 /// outlines are fanned into records of at most this many corners.
 static const LightingLayoutValue MAX_MESH_LIGHT_POLYGON_CORNERS = 64;
-/// Float4 words before an emitter polygon's corners: unit normal/sidedness, then emission/corner count.
-static const LightingLayoutValue MESH_LIGHT_POLYGON_HEADER_WORDS = 2;
+/// Float4 words before an emitter polygon's corners: unit normal/sidedness, emission/corner count, then the bounding
+/// sphere (MESH_LIGHT_POLYGON_BOUND_WORD).
+static const LightingLayoutValue MESH_LIGHT_POLYGON_HEADER_WORDS = 3;
+/// Header word holding the centroid of the record's corners in world metres (xyz) and the largest corner distance
+/// from it (w), a sphere enclosing the polygon. It tightens the culling bound and selects the far-field point
+/// evaluation (render-graph-authoring.md, "Mesh-light culling").
+static const LightingLayoutValue MESH_LIGHT_POLYGON_BOUND_WORD = 2;
 /// Float4 words of the largest record. A record is its header followed by exactly its corner count of world
 /// positions, so records have variable length. The first corner's w holds the polygon's area in square metres, which
 /// bounds its contribution for culling; the other corners' w are zero.
@@ -46,7 +51,7 @@ static const LightingLayoutValue MAX_MESH_LIGHT_POLYGON_WORDS =
     MESH_LIGHT_POLYGON_HEADER_WORDS + MAX_MESH_LIGHT_POLYGON_CORNERS;
 /// Maximum retained emitter polygon records: merged convex polygons, unmerged triangles and four subtriangles per
 /// textured source triangle. Exceeding this admission limit rejects the candidate without truncating lights. The
-/// culling grid bounds per-pixel cost by the records near each pixel, so the limit bounds the upload: at most 66 words
+/// culling grid bounds per-pixel cost by the records near each pixel, so the limit bounds the upload: at most 67 words
 /// per record keeps records and grid under 40 MB and every word offset exact in float32. The Sample project's Bistro
 /// needs 17,571 records.
 static const LightingLayoutValue MAX_RASTER_MESH_LIGHT_POLYGONS = 32768;

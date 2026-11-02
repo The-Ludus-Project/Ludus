@@ -723,6 +723,127 @@ class SteinbergPhysicalOpticsTemplateTests(unittest.TestCase):
         self.assertEqual(arguments.template, 'steinberg-physical-optics')
 
 
+class RestirGiTemplateTests(unittest.TestCase):
+    """Ouyang et al.'s ReSTIR GI: initial samples, temporal and spatial reuse, then shading, over three buffers."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def create(self, profiles=('metal', 'wgsl'), name='Indirect'):
+        return graph.new_workspace(Path(self.directory.name) / name, output='offscreen', renderer_static=True,
+                                   profiles=profiles, template='restir-gi')
+
+    def test_four_passes_hand_samples_and_reservoirs_through_three_buffers(self):
+        root = self.create()
+        plan = graph.compile_graph(root)
+        rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+        self.assertEqual([operation['id'].rsplit('/', 1)[-1] for operation in rays],
+                         ['initial', 'temporal', 'spatial', 'shade'])
+        for operation in rays:
+            self.assertEqual(operation['pipeline']['kind'], 'ComputePipeline')
+        self.assertTrue(ray.requires_native_queries(plan))
+        # The paper's initial-sample, temporal-reservoir and spatial-reservoir buffers, sized by the render size.
+        buffers = {identity.rsplit('/', 1)[-1]: resource for identity, resource in plan['resources'].items()
+                   if resource['type'] == 'Buffer'}
+        self.assertEqual({identity: resource['bytes_per_pixel'] for identity, resource in buffers.items()},
+                         {'samples': 32, 'temporalReservoirs': 64, 'spatialReservoirs': 64})
+        # Only the shade pass's color is presented: accumulated and tone mapped.
+        for operation in rays[:3]:
+            self.assertNotIn('accumulation', operation)
+        self.assertEqual(4096, rays[3]['accumulation']['samples'])
+        self.assertEqual(1, rays[3]['tone_mapping']['exposure'])
+        library = json.loads(root.with_name('library.lurender.json').read_text())
+        edges = {(edge['from'], edge['to']) for edge in library['configurations'][0]['edges']}
+        # Each pass binds the buffer it reads first (GraphBuffer0) and the one it updates second (GraphBuffer1).
+        for edge in (('samples.buffer', 'initial.samples'), ('initial.samples', 'temporal.samples'),
+                     ('temporalReservoirs.buffer', 'temporal.temporalReservoirs'),
+                     ('temporal.temporalReservoirs', 'spatial.temporalReservoirs'),
+                     ('spatialReservoirs.buffer', 'spatial.spatialReservoirs'),
+                     ('spatial.spatialReservoirs', 'shade.spatialReservoirs')):
+            self.assertIn(edge, edges)
+        nodes = {node['id']: node for node in library['configurations'][0]['nodes']}
+        self.assertEqual([port['id'] for port in nodes['spatial']['inputs'] if port['type'] == 'Buffer'],
+                         ['temporalReservoirs', 'spatialReservoirs'])
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        build.validate_manifest(manifest)
+        technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
+        # Spatial reuse with seven neighbours traces 2 * 7 + 2 visibility rays at most; the initial pass traces the
+        # camera ray, the sample ray and two path bounces.
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 4, 'visibility_queries': 16})
+        compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
+        self.assertEqual([(program['id'], program['function']) for program in compute],
+                         [('Initial', 'GenerateInitialSample'), ('Temporal', 'ResampleTemporal'),
+                          ('Spatial', 'ResampleSpatial'), ('Shade', 'ShadeRestirGi')])
+
+    def test_settings_use_the_paper_defaults_and_shaders_cite_it(self):
+        import re
+        root = self.create()
+        shaders = root.with_name('main_shaders')
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        values = {setting['id']: setting for setting in manifest['settings']}
+        # Section 5: M is limited to 30 in temporal and 500 in spatial reservoirs; uniform hemisphere sampling and the
+        # outgoing-radiance target of Equation 10 are the variants section 6 recommends.
+        self.assertEqual(values['RESTIR_GI_TEMPORAL_MAX_M']['value'], 30)
+        self.assertEqual(values['RESTIR_GI_SPATIAL_MAX_M']['value'], 500)
+        self.assertEqual(values['RESTIR_GI_SOURCE_DISTRIBUTION']['value'], 0)
+        self.assertIs(values['IS_RESTIR_GI_TARGET_SCATTERED']['value'], False)
+        self.assertIs(values['IS_RESTIR_GI_UNBIASED']['value'], True)
+        self.assertEqual(values['RESTIR_GI_SPATIAL_NEIGHBORS']['value'], 3)
+        reservoir = shaders.joinpath('reservoir.slang').read_text()
+        capacity = int(re.search(r'static const uint SPATIAL_NEIGHBOR_CAPACITY = (\d+);', reservoir).group(1))
+        for identity in ('RESTIR_GI_SPATIAL_NEIGHBORS', 'RESTIR_GI_SPATIAL_SPARSE_NEIGHBORS'):
+            self.assertEqual(values[identity]['maximum'], capacity)
+        technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
+        self.assertEqual(technique['scene_interface']['visibility_queries'], 2 * capacity + 2)
+        self.assertLessEqual(technique['scene_interface']['visibility_queries'],
+                             ray.SCENE_QUERY_LIMITS['MAX_VISIBILITY_QUERIES'])
+        self.assertEqual(technique['scene_interface']['surface_queries'],
+                         2 + values['RESTIR_GI_PATH_BOUNCES']['maximum'])
+        self.assertIn('0.906307787f', reservoir)
+        self.assertIn('SIMILARITY_DEPTH_FRACTION = 0.05f', reservoir)
+        for source in ('reservoir.slang', 'transport.slang'):
+            text = shaders.joinpath(source).read_text()
+            for name in ('Yaobin Ouyang', 'Shiqiu Liu', 'Markus Kettunen', 'Matt Pharr', 'Jacopo Pantaleoni',
+                         '10.1111/cgf.14378'):
+                self.assertIn(name, text)
+        # Every pass draws from its own addressed scope, never from the automatic stream that all passes share.
+        for kernel in ('initial', 'temporal', 'spatial', 'shade', 'transport', 'reservoir'):
+            source = shaders.joinpath(f'{kernel}.slang').read_text()
+            self.assertNotIn('SampleSceneRandom(queries', source)
+            self.assertNotIn('SelectLight(scene, queries', source)
+
+    def test_native_ray_tracing_is_required_and_destinations_are_preserved(self):
+        for profile in ('metal', 'spirv'):
+            with self.subTest(profile=profile):
+                graph.compile_graph(self.create((profile,), name=profile))
+        with self.assertRaises(ToolingError):
+            self.create(('wgsl',), name='Browser')
+        self.assertFalse((Path(self.directory.name) / 'Browser').exists())
+        root = self.create(name='Existing')
+        before = root.read_bytes()
+        with self.assertRaises(ToolingError):
+            self.create(name='Existing')
+        self.assertEqual(root.read_bytes(), before)
+
+    def test_relocated_sdk_and_cli_expose_the_template(self):
+        from ludus_tools import render_graph_templates
+        from ludus_tools.cli import build_parser
+        installed = Path(self.directory.name) / 'sdk/lib/cmake/Ludus/render_graph'
+        module = installed / 'ludus_tools/render_graph_templates.py'
+        module.parent.mkdir(parents=True)
+        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/restir_gi'
+        shutil.copytree(source, installed / 'templates/restir_gi')
+        with patch.object(render_graph_templates, '__file__', str(module)):
+            files = render_graph_templates.template_files('restir-gi', ('spirv',), graph)
+        build.validate_manifest(json.loads(files['main.lushader.json']))
+        self.assertIn('ComputeReconnectionJacobian', files['main_shaders/reservoir.slang'])
+        self.assertIn('EstimateRadianceOut', files['main_shaders/transport.slang'])
+        arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Indirect', '--template', 'restir-gi',
+                                               '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])
+        self.assertEqual(arguments.template, 'restir-gi')
+
+
 class LineSamplingTemplateTests(unittest.TestCase):
     """Billen and Dutre's surface-area line estimator in one direction, beside its visible fraction."""
 

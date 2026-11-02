@@ -985,9 +985,11 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
             {
                 return Status::Unsupported;
             }
+            // Shading normals may face away from the winding, or straddle the face: transport orients the
+            // geometric normal towards them at each point (OrientReferenceGeometricNormal), as pbrt-v4 does.
             for (auto normal : triangle.Normals)
             {
-                if (math::IsFinite(normal) == false || math::Dot(normal, triangle.GeometricNormal) <= 0)
+                if (math::IsFinite(normal) == false || math::Length(normal) == 0)
                 {
                     return Status::Unsupported;
                 }

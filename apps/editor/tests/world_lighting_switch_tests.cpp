@@ -131,7 +131,8 @@ TEST_CASE("Switching imported Worlds replaces every direct light and preserves f
             CHECK(extracted.Direction == stored.DirectionWorld);
             CHECK(extracted.Range == stored.Range);
         }
-        REQUIRE(preview_lighting::BuildInputs(scene, key, direct, false) == rhi::RasterStatus::Ready);
+        REQUIRE(preview_lighting::BuildInputs(scene, key, direct, preview_lighting::InputsTarget::Reference) ==
+                rhi::RasterStatus::Ready);
         REQUIRE(preview_lighting::BuildInputs(scene, key, shadowed) == rhi::RasterStatus::Ready);
         REQUIRE(direct.Lights.Count == expectedLights);
         REQUIRE(shadowed.Lights.Count == expectedLights);

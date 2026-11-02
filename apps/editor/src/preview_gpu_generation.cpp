@@ -707,10 +707,11 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
     const usize count = resources.Source.Definition->Objects.GetSize();
     if (resources.LightingStage == PreviewLightingStage::Inputs)
     {
-        const rhi::RasterStatus status = preview_lighting::BuildInputs(resources.Source,
-                                                                       resources.LightingKey,
-                                                                       resources.Lighting,
-                                                                       IsReference == false);
+        const rhi::RasterStatus status = preview_lighting::BuildInputs(
+            resources.Source,
+            resources.LightingKey,
+            resources.Lighting,
+            IsReference == true ? preview_lighting::InputsTarget::Reference : preview_lighting::InputsTarget::Raster);
         if (status != rhi::RasterStatus::Ready)
         {
             outError = QStringLiteral("Authored lighting admission failed (%1); no lights were dropped.")

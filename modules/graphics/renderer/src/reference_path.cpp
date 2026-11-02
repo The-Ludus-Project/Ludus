@@ -233,12 +233,11 @@ LightProposal SampleLight(const ReferenceJob& job, const ReferencePath& path, ma
         }
         result.Direction = delta / result.Distance;
         result.Error = triangle.Error;
-        result.Normal = triangle.GeometricNormal;
+        result.Normal = OrientReferenceGeometricNormal(triangle, u, v);
         result.FiniteEndpoint = true;
         result.Pdf = AreaPdf(triangle, point, result.Point, ComputeEmitterSelection(job, emitter, count));
         const auto& instance = job.Scene.Instances[triangle.Instance];
-        if ((instance.Surface->IsEmissionTwoSided == true ||
-             math::Dot(triangle.GeometricNormal, -result.Direction) > 0) &&
+        if ((instance.Surface->IsEmissionTwoSided == true || math::Dot(result.Normal, -result.Direction) > 0) &&
             result.Distance <= job.Description.SecondaryDistance &&
             ReferenceOpacity(instance, Uv(triangle, u, v), InterpolateReferenceColor(triangle, u, v).W))
         {
@@ -313,6 +312,7 @@ rhi::RasterStatus SampleResampledEmitter(const ReferenceJob& job,
                                          ReferenceCaptureInfo& inoutInfo,
                                          ReferencePath& inoutPath,
                                          const ReferenceTriangle& triangle,
+                                         math::Vector3 geometricNormalWorld,
                                          const ReferenceBsdf& bsdf,
                                          math::Vector3 normalWorld,
                                          math::Vector3 viewWorld,
@@ -346,7 +346,7 @@ rhi::RasterStatus SampleResampledEmitter(const ReferenceJob& job,
         }
         const float32 cosine = math::Dot(normalWorld, sample.DirectionWorld);
         if (sample.HasSample == false || Positive(sample.Radiance) == false || cosine <= 0 ||
-            math::Dot(triangle.GeometricNormal, sample.DirectionWorld) <= 0)
+            math::Dot(geometricNormalWorld, sample.DirectionWorld) <= 0)
         {
             continue;
         }
@@ -435,8 +435,9 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     const auto point = Position(triangle, hit.U, hit.V);
     const auto view = -ReferenceDirection(path.Ray);
     const auto& surface = *instance.Surface;
+    const math::Vector3 geometricNormal = OrientReferenceGeometricNormal(triangle, hit.U, hit.V);
     if (Positive(surface.Emission) == true &&
-        (surface.IsEmissionTwoSided == true || math::Dot(triangle.GeometricNormal, view) > 0))
+        (surface.IsEmissionTwoSided == true || math::Dot(geometricNormal, view) > 0))
     {
         // An emitter missing from the proposal list cannot be light-sampled; BSDF sampling then owns it.
         const uint32 triangleIndex = static_cast<uint32>(instance.FirstTriangle + hit.Primitive);
@@ -474,14 +475,23 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                      path.Depth,
                      true);
     }
-    if (path.Depth >= job.Description.MaxDepth || math::Dot(triangle.GeometricNormal, view) <= 0)
+    // Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, "Physically Based Rendering", 4th edition (2023),
+    // sections 9.2 (Diffuse Reflection) and 14.3 (Scattering from Layered Materials): pbrt-v4's reflection models
+    // scatter on whichever side of the surface the viewer is (SameHemisphere, LayeredBxDF twoSided), so a back face
+    // reflects as its front does while emission above stays one-sided. Mirroring the geometric and shading normals
+    // towards the viewer evaluates these models the same way.
+    // https://pbr-book.org/4ed/Reflection_Models/Diffuse_Reflection
+    const bool isBackFace = math::Dot(geometricNormal, view) < 0;
+    const math::Vector3 scatteringNormal = isBackFace == true ? -geometricNormal : geometricNormal;
+    if (path.Depth >= job.Description.MaxDepth || math::Dot(scatteringNormal, view) <= 0)
     {
         return ValidContribution(path.Emission) && ValidContribution(path.Direct) && ValidContribution(path.Indirect)
                    ? rhi::RasterStatus::Ready
                    : FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidRadiance);
     }
-    math::Vector3 normal = ReferenceNormalize(triangle.Normals[0] * (1 - hit.U - hit.V) + triangle.Normals[1] * hit.U +
-                                              triangle.Normals[2] * hit.V);
+    // Corner normals on both sides of the face can cancel; pbrt-v4 then shades with the geometric normal.
+    math::Vector3 normal = geometricNormal;
+    static_cast<void>(math::TryNormalize(InterpolateReferenceShadingNormal(triangle, hit.U, hit.V), normal));
     math::Vector4 texel = SampleReferenceTexture(instance, Uv(triangle, hit.U, hit.V));
     if (surface.AreAuthoredInputsEnabled == true)
     {
@@ -505,6 +515,10 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         bsdf.Roughness = parameters.Roughness;
         normal = ApplyReferenceNormal(triangle, surface, normal, parameters.NormalTangent, hit.U, hit.V);
     }
+    if (isBackFace == true)
+    {
+        normal = -normal;
+    }
     // ResampledProjectedSolidAngle keeps the receiver for this vertex's light sample and its continuation's BSDF-hit
     // density; Z-hat is computed once, on first use.
     ReferenceReceiverFrame frame;
@@ -524,6 +538,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                                                                  inoutInfo,
                                                                  path,
                                                                  triangle,
+                                                                 scatteringNormal,
                                                                  bsdf,
                                                                  normal,
                                                                  view,
@@ -537,7 +552,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     }
     const auto cosine = math::Dot(normal, proposal.Direction);
     if (proposal.Pdf > 0 && Positive(proposal.Radiance) && cosine > 0 &&
-        math::Dot(triangle.GeometricNormal, proposal.Direction) > 0)
+        math::Dot(scatteringNormal, proposal.Direction) > 0)
     {
         ReferenceBsdfEvaluation evaluation;
         if (EvaluateReferenceBsdf(bsdf,
@@ -578,7 +593,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     {
         return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidBsdfSample);
     }
-    if (sample.Accepted == false || math::Dot(triangle.GeometricNormal, sample.Direction) <= 0)
+    if (sample.Accepted == false || math::Dot(scatteringNormal, sample.Direction) <= 0)
     {
         ++inoutInfo.NullBsdfSamples;
         return rhi::RasterStatus::Ready;
@@ -642,7 +657,7 @@ rhi::RasterStatus EvaluateReferenceDiffuseProbe(const ReferenceJob& job,
     const uint32 sampleIndex = address.SampleIndex;
     const ReferenceTriangle& triangle = job.Scene.Triangles[triangleIndex];
     const math::Vector3 pointWorld = Position(triangle, 1.F / 3.F, 1.F / 3.F);
-    const math::Vector3 normalWorld = triangle.GeometricNormal;
+    const math::Vector3 normalWorld = OrientReferenceGeometricNormal(triangle, 1.F / 3.F, 1.F / 3.F);
     ReferencePath path;
     path.Pixel = triangleIndex;
     path.Sample = sampleIndex;

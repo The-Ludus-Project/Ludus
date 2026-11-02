@@ -2041,7 +2041,7 @@ void PreviewViewport::updateRayPathOverlay()
         return;
     }
     math::Aabb3 boundsWorld;
-    const bool hasBounds = Preview_->Scene().TryGetBounds({}, boundsWorld);
+    const bool hasBounds = Preview_->TryGetSceneBounds(boundsWorld);
     Preview_->SetRayPathOverlay(mRayPaths->BuildOverlay(hasBounds == true ? &boundsWorld : nullptr));
 #endif
 }

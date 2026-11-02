@@ -63,22 +63,13 @@ TryMakeInfluence(BorrowedView<const math::Vector4> words, usize offset, Influenc
     {
         return false;
     }
-    const usize cornerCount = recordWords - MESH_LIGHT_POLYGON_HEADER_WORDS;
     const usize firstCorner = offset + MESH_LIGHT_POLYGON_HEADER_WORDS;
-    math::Vector3 sumWorld{};
-    for (usize corner = 0; corner < cornerCount; ++corner)
-    {
-        sumWorld = sumWorld + GetPosition(words[firstCorner + corner]);
-    }
+    // The header's sphere about the corners' centroid encloses the polygon (deferred_layout.h).
+    const math::Vector4 bound = words[offset + MESH_LIGHT_POLYGON_BOUND_WORD];
     Influence influence;
-    influence.CenterWorld = sumWorld * (1.0F / static_cast<float32>(cornerCount));
-    float32 polygonRadius = 0;
+    influence.CenterWorld = GetPosition(bound);
+    const float32 polygonRadius = bound.W;
     const math::Vector3 originWorld = GetPosition(words[firstCorner]);
-    for (usize corner = 0; corner < cornerCount; ++corner)
-    {
-        polygonRadius =
-            math::Max(polygonRadius, math::Length(GetPosition(words[firstCorner + corner]) - influence.CenterWorld));
-    }
     const math::Vector4 emission = words[offset + EMISSION_WORD];
     const float32 radiance = math::Max(emission.X, math::Max(emission.Y, emission.Z));
     // The first corner's w holds the polygon's area (deferred_layout.h).
@@ -90,7 +81,8 @@ TryMakeInfluence(BorrowedView<const math::Vector4> words, usize offset, Influenc
     influence.OriginWorld = originWorld;
     influence.IsTwoSided = words[offset + NORMAL_WORD].W != 0;
     influence.Word = static_cast<uint32>(offset);
-    if (math::IsFinite(influence.CenterWorld) == false || math::IsFinite(influence.Radius) == false || area < 0)
+    if (math::IsFinite(influence.CenterWorld) == false || math::IsFinite(influence.Radius) == false || area < 0 ||
+        polygonRadius < 0)
     {
         return false;
     }
@@ -314,17 +306,17 @@ bool GetRasterMeshLightCell(BorrowedView<const math::Vector4> words,
     const math::Vector4 origin = words[gridWord];
     const math::Vector4 cells = words[gridWord + 1];
     const math::Vector3 cellWorld = (positionWorld - GetPosition(origin)) * (1.0F / origin.W);
-    const StaticArray<float64, AXIS_COUNT> coordinates{{math::Floor(static_cast<float64>(cellWorld.X)),
-                                                        math::Floor(static_cast<float64>(cellWorld.Y)),
-                                                        math::Floor(static_cast<float64>(cellWorld.Z))}};
-    const StaticArray<float32, AXIS_COUNT> dimensions{{cells.X, cells.Y, cells.Z}};
-    for (usize axis = 0; axis < AXIS_COUNT; ++axis)
+    if (math::IsFinite(cellWorld) == false)
     {
-        if (coordinates[axis] < 0 || coordinates[axis] >= static_cast<float64>(dimensions[axis]))
-        {
-            return false;
-        }
+        return false;
     }
+    const StaticArray<float32, AXIS_COUNT> dimensions{{cells.X, cells.Y, cells.Z}};
+    // Every shaded surface lies inside the padded receiver bounds, so a position outside the grid is depth
+    // reconstruction error: it reads the nearest boundary cell, as the resolve does.
+    const StaticArray<float64, AXIS_COUNT> coordinates{
+        {math::Clamp(math::Floor(static_cast<float64>(cellWorld.X)), 0.0, static_cast<float64>(dimensions[0]) - 1),
+         math::Clamp(math::Floor(static_cast<float64>(cellWorld.Y)), 0.0, static_cast<float64>(dimensions[1]) - 1),
+         math::Clamp(math::Floor(static_cast<float64>(cellWorld.Z)), 0.0, static_cast<float64>(dimensions[2]) - 1)}};
     const usize cell =
         static_cast<usize>(coordinates[0]) +
         static_cast<usize>(dimensions[0]) * (static_cast<usize>(coordinates[1]) +
