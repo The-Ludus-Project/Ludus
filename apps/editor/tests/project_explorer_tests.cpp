@@ -15,6 +15,7 @@
 #include <QTest>
 #include <QToolButton>
 #include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 
 using namespace ludus::editor;
 namespace
@@ -170,4 +171,23 @@ TEST_CASE("Explorer menus target the clicked file and expose each authoring cate
     requests.clear();
     newWorld->trigger();
     CHECK(requests.isEmpty() == true);
+}
+
+TEST_CASE("Without a project the explorer lists only its hint, not the Configuration item",
+          "[editor][project-explorer]")
+{
+    ProjectExplorer explorer;
+    explorer.SetProject({}, {});
+    QTreeWidget* tree = explorer.findChild<QTreeWidget*>(QStringLiteral("projectExplorerTree"));
+    REQUIRE(tree != nullptr);
+    CHECK(tree->topLevelItemCount() == 0);
+
+    QTemporaryDir project;
+    explorer.SetProject(QFileInfo(project.path()).canonicalFilePath(), QStringLiteral("Test"));
+    bool hasConfiguration = false;
+    for (QTreeWidgetItemIterator iterator(tree); *iterator != nullptr; ++iterator)
+    {
+        hasConfiguration = hasConfiguration == true || (*iterator)->text(0) == QStringLiteral("Configuration");
+    }
+    CHECK(hasConfiguration == true);
 }

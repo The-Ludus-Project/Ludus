@@ -235,6 +235,19 @@ void EditorController::ClearRecentProjects()
     Publish();
 }
 
+void EditorController::RemoveRecentProject(const QString& descriptorPath)
+{
+    if (Caps().CanOpen == false)
+    {
+        return;
+    }
+    if (RecentProjects_.Remove(descriptorPath) == false)
+    {
+        LUDUS_LOG_TEXT(LOG_EDITOR_CTRL, Warning, "could not persist removed recent project");
+    }
+    Publish();
+}
+
 void EditorController::EditDraft(const ProjectDescriptor& draft, bool merge)
 {
     if (Caps().CanEdit == false)

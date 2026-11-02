@@ -200,7 +200,10 @@ void ProjectExplorer::Refresh()
         mStatus->setText(QStringLiteral("No project is open. Open or create a project to browse its documents."));
         mStatus->show();
     }
-    static_cast<void>(addItem(nullptr, QStringLiteral("Configuration"), ProjectItemKind::Configuration, {}));
+    if (mRoot.isEmpty() == false)
+    {
+        static_cast<void>(addItem(nullptr, QStringLiteral("Configuration"), ProjectItemKind::Configuration, {}));
+    }
     for (QTreeWidgetItemIterator iterator(mTree); *iterator != nullptr; ++iterator)
     {
         QTreeWidgetItem* item = *iterator;

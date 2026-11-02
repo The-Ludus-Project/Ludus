@@ -13,6 +13,7 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -22,6 +23,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QStatusBar>
+#include <QStyleOptionComboBox>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTest>
@@ -177,4 +179,55 @@ TEST_CASE("Style gallery renders for visual comparison", "[editor][style][.galle
     qputenv(HIGH_CONTRAST_VARIABLE, QByteArrayLiteral("0"));
     qunsetenv(HIGH_CONTRAST_VARIABLE);
     QApplication::setPalette(original);
+}
+
+TEST_CASE("Combo boxes keep room for their whole text and draw a small chevron", "[editor][style]")
+{
+    QWidget root;
+    ApplyWorkspaceStyle(&root);
+    auto* layout = new QVBoxLayout(&root);
+    QList<QComboBox*> combos;
+    for (const QString& text : {QStringLiteral("Default"), QStringLiteral("(asset default)"), QStringLiteral("Edit")})
+    {
+        auto* combo = new QComboBox(&root);
+        combo->setFocusPolicy(Qt::NoFocus);
+        combo->addItem(text);
+        layout->addWidget(combo);
+        combos.append(combo);
+    }
+    root.show();
+    QApplication::processEvents();
+    for (QComboBox* combo : combos)
+    {
+        INFO(combo->currentText().toStdString());
+        QStyleOptionComboBox option;
+        option.initFrom(combo);
+        const QRect field =
+            combo->style()->subControlRect(QStyle::CC_ComboBox, &option, QStyle::SC_ComboBoxEditField, combo);
+        const QRect arrow =
+            combo->style()->subControlRect(QStyle::CC_ComboBox, &option, QStyle::SC_ComboBoxArrow, combo);
+        // The sized-to-content combo fits its text and leaves the arrow its own column.
+        CHECK(field.width() >= combo->fontMetrics().horizontalAdvance(combo->currentText()));
+        CHECK(field.right() < arrow.left());
+        CHECK(combo->rect().contains(arrow) == true);
+        // The chevron stays inside its column and is small: a few pixels either way, not a platform-sized arrow.
+        const QImage image = combo->grab().toImage();
+        const QColor background = combo->palette().color(QPalette::Base);
+        QRect inked;
+        // Scan inside the edge so only the chevron can leave a mark.
+        const QRect scan = arrow.adjusted(1, 1, -1, -1);
+        for (int y = scan.top(); y <= scan.bottom(); ++y)
+        {
+            for (int x = scan.left(); x <= scan.right(); ++x)
+            {
+                if (image.pixelColor(x, y) != background)
+                {
+                    inked = inked.united(QRect(x, y, 1, 1));
+                }
+            }
+        }
+        CHECK(inked.isNull() == false);
+        CHECK(inked.width() <= arrow.width() / 2 + 2);
+        CHECK(inked.height() <= arrow.height() / 3);
+    }
 }
