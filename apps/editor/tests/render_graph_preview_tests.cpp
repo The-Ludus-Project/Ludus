@@ -841,6 +841,7 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view",
         QJsonDocument::fromJson(names.readAll()).object().value(QStringLiteral("generation")).toString().toLatin1(),
         QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex(),
         {},
+        {},
         42};
     RenderGraphPreview preview = MakePreview();
     REQUIRE(preview.Attach(device.Device, device.Surface) == true);
