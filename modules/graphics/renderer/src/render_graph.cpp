@@ -2537,6 +2537,33 @@ bool RenderGraph::GetResourceDescription(uint32 resource, format::Resource& outR
     outResource = mState->Resources[resource];
     return true;
 }
+Status RenderGraph::GetPersistentBuffer(uint32 resource, rhi::BufferHandle& outBuffer, usize& outBytes) const noexcept
+{
+    if (mState.Get() == nullptr || resource >= mState->Header.ResourceCount)
+    {
+        return Status::InvalidDescription;
+    }
+    const State& state = *mState;
+    if (state.Resources[resource].Kind != format::Aspect::Buffer)
+    {
+        return Status::Unsupported;
+    }
+    if (state.IsReady == false || state.HasOpenFrame == true || state.HasExternalRecording == true ||
+        state.Pending.Get() != nullptr || state.PendingCamera.Get() != nullptr || state.Resizing.Get() != nullptr ||
+        (state.Producer.IsNull() == false && rhi::GetStatus(state.Device, state.Producer) != Status::Ready))
+    {
+        return Status::NotReady;
+    }
+    const uint32 backing = state.Resources[resource].Backing;
+    const Status status = rhi::GetStatus(state.Device, state.Buffers[backing]);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    outBuffer = state.Buffers[backing];
+    outBytes = state.Resources[backing].Width;
+    return Status::Ready;
+}
 Status RenderGraph::Poll() noexcept
 {
     LUDUS_PROFILE_SCOPE(RenderGraphPoll);

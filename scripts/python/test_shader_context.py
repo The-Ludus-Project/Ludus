@@ -253,6 +253,7 @@ class SlangSemanticAcceptance(unittest.TestCase):
             context = export_context(manifest, root / 'language', source, helper=os.environ['LUDUS_RG1_HELPER'])
             peer = SlangPeer(os.environ['LUDUS_TEST_SLANGD'], root / 'language')
             try:
+                previous = ''
                 for serial, (probe, method, expected) in enumerate((
                     ('scene.', 'completion', 'Version'),
                     ('material.', 'completion', 'BaseColor'),

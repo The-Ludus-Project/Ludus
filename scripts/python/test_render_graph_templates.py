@@ -172,7 +172,9 @@ class RestirProductionTemplateTests(unittest.TestCase):
                 variants = {ray.program_tuple(operation["pipeline"]) for plan in plans for operation in plan["passes"]
                             if operation["kind"] == "RayTracing"}
                 # Each built-in package has five distinct callbacks but no configuration runs more than four.
-                self.assertGreater(len(variants), ray.MAX_RAY_PASSES)
+                maximum_active = max(sum(operation["kind"] == "RayTracing" for operation in plan["passes"])
+                                     for plan in plans)
+                self.assertGreater(len(variants), maximum_active)
                 self.assertLessEqual(len(variants), ray.MAX_RAY_PROGRAMS)
                 files = render_graph_templates.template_files("restir-" + kind, ("metal",), graph)
                 # Graph allocation and shader addressing must agree on both banks and the explicit word layout.
@@ -199,19 +201,27 @@ class RestirProductionTemplateTests(unittest.TestCase):
             asset = json.loads(root.read_text())
             library = json.loads(library_path.read_text())
             manifest = json.loads(manifest_path.read_text())
+            production = library["configurations"][1]
+            base_node = next(node for node in production["nodes"] if node["id"] == "shade")
+            previous = "shade"
             for index in range(ray.MAX_RAY_PROGRAMS - 4):
                 identity = "Extra" + str(index)
-                configuration = copy.deepcopy(asset["configurations"][1])
-                configuration["id"] = identity
-                next(node for node in configuration["nodes"] if node["kind"] == "Subgraph")["configuration"] = identity
-                asset["configurations"].append(configuration)
-                configuration = copy.deepcopy(library["configurations"][1])
-                configuration["id"] = identity
-                next(node for node in configuration["nodes"] if node["id"] == "shade")["shaders"][0]["program"] = identity
-                library["configurations"].append(configuration)
+                node = copy.deepcopy(base_node)
+                node["id"] = identity
+                node["shaders"][0]["program"] = identity
+                production["nodes"].append(node)
+                production["edges"].extend([
+                    {"from": "input.scene", "to": identity + ".scene"},
+                    {"from": "input.view", "to": identity + ".view"},
+                    {"from": previous + ".color", "to": identity + ".color"},
+                    {"from": previous + ".history", "to": identity + ".history"},
+                ])
+                previous = identity
                 program = copy.deepcopy(next(program for program in manifest["programs"] if program["id"] == "ProductionShade"))
                 program["id"] = identity
                 manifest["programs"].append(program)
+            production["outputs"][0]["source"] = previous + ".color"
+            manifest["budgets"]["programs"] = len(manifest["programs"])
             root.write_text(json.dumps(asset))
             library_path.write_text(json.dumps(library))
             manifest_path.write_text(json.dumps(manifest))
@@ -238,6 +248,7 @@ class BuiltInTemplateSettingsTests(unittest.TestCase):
         from ludus_tools import render_graph_templates as templates
         root = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs'
         merged = {}
+        merged_values = {}
         for identity, (directory, _, _) in templates.TEMPLATES.items():
             text = (root / directory / 'main.lushader.json.in').read_text()
             text = text.replace('@LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@', json.dumps(['metal']))
@@ -245,7 +256,17 @@ class BuiltInTemplateSettingsTests(unittest.TestCase):
                 definition = {key: value for key, value in setting.items() if key != 'value'}
                 with self.subTest(template=identity, setting=setting['id']):
                     self.assertEqual(merged.setdefault(setting['id'], definition), definition)
+                    merged_values.setdefault(setting['id'], setting)
         self.assertLessEqual(len(merged), settings.MAX_SETTINGS)
+        settings.validate(list(merged_values.values()), build)
+
+    def test_manifest_setting_capacity_accepts_the_limit_and_rejects_one_more(self):
+        values = [{'id': f'SETTING_{index}', 'label': f'Setting {index}', 'type': 'Bool', 'value': False}
+                  for index in range(settings.MAX_SETTINGS)]
+        settings.validate(values, build)
+        values.append({'id': 'OVERFLOW', 'label': 'One more setting', 'type': 'Bool', 'value': False})
+        with self.assertRaises(ToolingError):
+            settings.validate(values, build)
 
 
 class VisibilityTemplateTests(unittest.TestCase):
@@ -1999,3 +2020,53 @@ class RaoBlackwellMhTemplateTests(unittest.TestCase):
             self.assertIn('main_shaders/chain.slang', files)
             self.assertIn('main_shaders/path.slang', files)
             self.assertIn('main.lushader.json', files)
+
+
+class OneMoreVertexNeeTemplateTests(unittest.TestCase):
+    def test_graph_orders_preparation_and_three_raw_estimators(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = graph.new_workspace(Path(directory) / 'Indirect', output='offscreen', renderer_static=True,
+                                       profiles=('metal',), template='one-more-vertex-nee')
+            plan = graph.compile_graph(root)
+            rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+            self.assertEqual(len(rays), 4)
+            self.assertTrue(all(operation['pipeline']['invocation']['traversal'] == 'ComputeBvh' for operation in rays))
+            buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+            self.assertEqual(len(buffers), 2)
+            self.assertEqual(next(b['extent'][0] for b in buffers if 'bytes_per_pixel' not in b), 64 * 1024 * 1024)
+            self.assertEqual(next(b['bytes_per_pixel'] for b in buffers if 'bytes_per_pixel' in b), 64)
+            manifest = json.loads(root.with_name('main.lushader.json').read_text())
+            interface = next(t['scene_interface'] for t in manifest['techniques'] if 'scene_interface' in t)
+            self.assertEqual(interface['surface_queries'], 2)
+            self.assertEqual(interface['visibility_queries'], 4)
+            self.assertEqual([s['id'] for s in manifest['settings']],
+                             ['OMV_DEFENSIVE_WEIGHT', 'OMV_FAR_SOLID_ANGLE', 'OMV_OUTPUT_COMPONENT'])
+            self.assertEqual(len([p for p in plan['passes'] if p['kind'] == 'Accumulate']), 3)
+
+    def test_requires_compute_and_replays_the_installed_source_closure(self):
+        from ludus_tools import render_graph_templates
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'Indirect'
+            with self.assertRaises(ToolingError):
+                graph.new_workspace(destination, output='offscreen', renderer_static=True,
+                                    profiles=('wgsl',), template='one-more-vertex-nee')
+            self.assertFalse(destination.exists())
+            installed = Path(directory) / 'sdk'
+            module = installed / 'ludus_tools/render_graph_templates.py'
+            module.parent.mkdir(parents=True)
+            source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/one_more_vertex_nee'
+            shutil.copytree(source, installed / 'templates/one_more_vertex_nee')
+            with patch.object(render_graph_templates, '__file__', str(module)):
+                files = render_graph_templates.template_files('one-more-vertex-nee', ('spirv',), graph)
+            self.assertIn('main_shaders/prepare.slang', files)
+            self.assertIn('main_shaders/geometry_sampling.slang', files)
+            self.assertIn('main_shaders/statistics.slang', files)
+            self.assertIn('main_shaders/shade.slang', files)
+
+    def test_sdk_install_inventory_contains_every_creatable_template(self):
+        from ludus_tools.render_graph_templates import TEMPLATES
+        import re
+        source = Path(__file__).resolve().parents[2] / 'CMakeLists.txt'
+        declaration = re.search(r'foreach\(template_directory IN ITEMS ([^)]*)\)', source.read_text(), re.S)
+        self.assertIsNotNone(declaration)
+        self.assertEqual(set(declaration.group(1).split()), {definition[0] for definition in TEMPLATES.values()})

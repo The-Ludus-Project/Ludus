@@ -1905,7 +1905,11 @@ do not substitute “reuse the last ray” for an estimator. The May 2026 paper
 by Daqi Lin, Markus Kettunen and Chris Wyman identifies contemporary work on
 reconnection, correlation and reuse cost. Its abstract is discovery evidence,
 not a completed algorithm review or a Ludus speedup. Review the full estimator
-and validate it against the independent reference before adopting it. The
+and validate it against the independent reference before adopting it. The [Guided ReSTIR FG+ graph template](../development/render-graph-authoring.md#use-the-built-in-guided-restir-fg-template)
+implements a bounded reflective/static-history photon pipeline with separate path
+and caustic reservoirs. Its owning guide states the material, sampling, memory and
+qualification limits; it is not a completed dynamic/transmissive reference pair.
+The
 [many-area-light resampling review](many-area-light-sampling-reference-review.md)
 proposes RIS over emissive triangles with projected solid angle/LTC sampling,
 first as a `ris-projected-solid-angle` render graph template and then as an

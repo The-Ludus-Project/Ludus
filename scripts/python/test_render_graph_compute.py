@@ -194,8 +194,8 @@ class SceneComputeLoweringTests(SceneComputeFixture):
         self.configuration['nodes'] = nodes
         self.configuration['edges'] = edges
 
-    def test_four_pass_limit_counts_compute_members(self):
-        for count, admitted in ((4, True), (5, False)):
+    def test_ray_pass_limit_counts_compute_members(self):
+        for count, admitted in ((ray.MAX_RAY_PASSES, True), (ray.MAX_RAY_PASSES + 1, False)):
             with self.subTest(count=count):
                 self.chain_compute_passes(count)
                 plan = self.compile()
@@ -204,7 +204,7 @@ class SceneComputeLoweringTests(SceneComputeFixture):
                     _, _, records, _ = execution.lower_plan(package, 'Default')
                     self.assertEqual(count, len(records))
                 else:
-                    with self.assertRaisesRegex(ToolingError, 'at most four triangle ray passes'):
+                    with self.assertRaisesRegex(ToolingError, f'at most {ray.MAX_RAY_PASSES} triangle ray passes'):
                         execution.lower_plan(package, 'Default')
                 self.setUp()
 

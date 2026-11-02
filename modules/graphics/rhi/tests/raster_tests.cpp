@@ -352,15 +352,15 @@ TEST_CASE("Pending dependencies publish no handles and multiple validation scope
 TEST_CASE("Portable pool capacity and owner restart preserve stale handle rejection", "[rhi][raster]")
 {
     Session session;
-    SamplerHandle samplers[internal::RASTER_CAPACITY];
-    for (auto& sampler : samplers)
+    StaticArray<SamplerHandle, DEFAULT_RESOURCE_RECORD_COUNT> samplers{};
+    for (SamplerHandle& sampler : samplers)
     {
         REQUIRE(CreateSampler(session.Device, {}, sampler) == RasterStatus::Ready);
     }
     SamplerHandle extra;
     CHECK(CreateSampler(session.Device, {}, extra) == RasterStatus::CapacityExceeded);
-    const auto stale = samplers[0];
-    const auto owner = session.Device;
+    const SamplerHandle stale = samplers[0];
+    const DeviceHandle owner = session.Device;
     REQUIRE(Destroy(session.Device, samplers[0]) == RasterStatus::Ready);
     REQUIRE(CreateSampler(session.Device, {}, extra) == RasterStatus::Ready);
     CHECK(GetStatus(session.Device, stale) == RasterStatus::InvalidHandle);
@@ -714,8 +714,8 @@ TEST_CASE("Pipeline pending failure cancellation and request capacity remain exp
     REQUIRE(Release(session.Device, first) == RasterStatus::Ready);
     REQUIRE(PollLifetime(session.Device) == RasterStatus::Ready);
     CHECK(reference::Creates[7] == created);
-    PipelineRequest requests[internal::RASTER_CAPACITY];
-    for (auto& request : requests)
+    StaticArray<PipelineRequest, DEFAULT_RESOURCE_RECORD_COUNT> requests{};
+    for (PipelineRequest& request : requests)
     {
         REQUIRE(RequestPipeline(session.Device, description, request) == RasterStatus::Pending);
     }
@@ -728,7 +728,7 @@ TEST_CASE("Pipeline pending failure cancellation and request capacity remain exp
     CHECK(GetStatus(session.Device, requests[1]) == RasterStatus::OutOfMemory);
     RasterPipelineHandle pipeline;
     CHECK(GetRequestedPipeline(session.Device, requests[1], pipeline) == RasterStatus::OutOfMemory);
-    for (auto& request : requests)
+    for (PipelineRequest& request : requests)
     {
         REQUIRE(Release(session.Device, request) == RasterStatus::Ready);
     }

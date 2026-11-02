@@ -18,7 +18,10 @@
 
 namespace ludus::graphics::renderer::internal
 {
-inline constexpr usize GPU_PREVIEW_JOB_COUNT = 16; // Four passes, three retained scenes and retiring work.
+// Current, candidate and idle scene generations can coexist while submitted work retires.
+inline constexpr usize GPU_PREVIEW_RETAINED_SCENE_COUNT = 3;
+inline constexpr usize GPU_PREVIEW_JOB_COUNT =
+    content::render_graph_format::MAX_RAY_PASSES * (GPU_PREVIEW_RETAINED_SCENE_COUNT + 1);
 inline constexpr usize GPU_GRAPH_BUFFER_COUNT = 2;
 /// Every compute binding of one job: the frozen ABI, visibility textures, structured storage, the
 /// ray path capture buffer of a diagnostic capture-variant kernel, the LTC table and, last, the failure summary.
