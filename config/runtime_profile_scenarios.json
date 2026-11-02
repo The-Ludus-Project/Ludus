@@ -184,7 +184,7 @@
     {
       "id": "editor-viewport-navigation",
       "owner": "apps/editor",
-      "description": "Native editor raster viewport: lit sample World, warmed camera navigation, active GUI CPU work, GPU duration, interaction-to-present latency, no output readback, and idle retention. CPU Perfetto capture is retained.",
+      "description": "Native editor raster viewport: analytic-light and emissive-mesh sample Worlds, warmed camera navigation, active GUI CPU work, GPU duration, interaction-to-present latency, no output readback, and idle retention. CPU Perfetto capture is retained.",
       "target": "ludus_editor_tests",
       "executable": "apps/editor/ludus_editor_tests",
       "arguments": ["[.editor-viewport-benchmark]"],
@@ -192,7 +192,7 @@
       "environment": {},
       "requires": ["editor", "shader-tools", "presentation", "gpu"],
       "trace": true,
-      "parser": {"kind": "tagged-rows", "tables": [{"tag": "EDVIEW", "columns": ["sample", "cpu_ns", "gpu_ns", "latency_ns"], "key": [], "metrics": ["cpu_ns", "gpu_ns", "latency_ns"], "where": {}, "rows": 30}], "observe": ["R7ADAPTER"]},
+      "parser": {"kind": "tagged-rows", "tables": [{"tag": "EDVIEW", "columns": ["workload", "sample", "cpu_ns", "gpu_ns", "latency_ns"], "key": ["workload"], "metrics": ["cpu_ns", "gpu_ns", "latency_ns"], "where": {}, "rows": 60}], "observe": ["R7ADAPTER"]},
       "warmup": 1,
       "repetitions": 3,
       "timeout_seconds": 300

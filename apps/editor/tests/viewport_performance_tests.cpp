@@ -21,6 +21,7 @@
 #include <QTextStream>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <cstdio>
 
@@ -41,6 +42,7 @@ constexpr float64 NANOSECONDS_PER_MILLISECOND = 1'000'000;
 
 TEST_CASE("Editor viewport reports navigation CPU GPU and presentation latency", "[.editor-viewport-benchmark]")
 {
+    const bool hasMeshLights = GENERATE(false, true);
     REQUIRE(PreviewViewport::GetPresentation() == ViewportPresentation::SharedDevice);
     rhi::Shutdown();
     QTemporaryDir project;
@@ -55,6 +57,15 @@ TEST_CASE("Editor viewport reports navigation CPU GPU and presentation latency",
     REQUIRE(workspace.PreviewRuntime() == true);
     RenderScene scene;
     tests::MakeLitScene(QFileInfo(project.path()).canonicalFilePath(), scene);
+    if (hasMeshLights == true)
+    {
+        REQUIRE(scene.Surfaces.isEmpty() == false);
+        constexpr float32 EMITTED_RADIANCE = 2;
+        for (PreviewSurface& surface : scene.Surfaces)
+        {
+            surface.Emission = {EMITTED_RADIANCE, EMITTED_RADIANCE, EMITTED_RADIANCE};
+        }
+    }
     viewport.resize(WIDTH, HEIGHT);
     viewport.show();
     REQUIRE(QTest::qWaitForWindowExposed(&viewport) == true);
@@ -102,16 +113,21 @@ TEST_CASE("Editor viewport reports navigation CPU GPU and presentation latency",
         LUDUS_PROFILE_FRAME();
         if (sample >= 0)
         {
-            output << "EDVIEW," << sample << ','
+            output << "EDVIEW," << (hasMeshLights == true ? "mesh-lights" : "analytic-lights") << ',' << sample << ','
                    << graph.GetStatistics().GetCpuMilliseconds().GetLatest() * NANOSECONDS_PER_MILLISECOND << ','
                    << gpuNanoseconds << ',' << latency.nsecsElapsed() << '\n';
         }
     }
     rhi::MeasurementAdapter adapter;
     REQUIRE(rhi::GetMeasurementAdapter(source.GetDevice(), adapter) == rhi::RasterStatus::Ready);
-    output << "R7ADAPTER," << QByteArray(adapter.Name).toHex() << ',' << adapter.VendorId << ',' << adapter.DeviceId
-           << ',' << adapter.DriverVersion << ',' << (adapter.SoftwareKnown == true ? 1 : 0) << ','
-           << (adapter.Software == true ? 1 : 0) << '\n';
+    // Both generated workloads use the same default adapter selection. The report
+    // accepts exactly one adapter observation for this process.
+    if (hasMeshLights == true)
+    {
+        output << "R7ADAPTER," << QByteArray(adapter.Name).toHex() << ',' << adapter.VendorId << ',' << adapter.DeviceId
+               << ',' << adapter.DriverVersion << ',' << (adapter.SoftwareKnown == true ? 1 : 0) << ','
+               << (adapter.Software == true ? 1 : 0) << '\n';
+    }
     // An unchanged on-demand graph must stop producing GPU frames while retaining its image.
     QTest::qWait(IDLE_MILLISECONDS);
     const uint64 settledRevision = graph.GetPresentedRevision();

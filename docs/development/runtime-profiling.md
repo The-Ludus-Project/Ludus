@@ -326,7 +326,7 @@ it builds anything.
 | `input-reducer` | Input | Keyboard reducer step and batch latency | — |
 | `containers-associative` | FoundationContainers | Sorted/hash/tree lookup and insertion by element count | — |
 | `editor-texture-display` | Editor | Production RGBA8, HDR and depth display conversion at 320×180 and 1280×720, with every output pixel checked | `editor` |
-| `editor-viewport-navigation` | Editor | Native raster viewport navigation: active GUI work, GPU frame duration, interaction-to-presentation latency, CPU trace and idle retention | `editor`, `shader-tools`, `presentation`, `gpu` |
+| `editor-viewport-navigation` | Editor | Native raster viewport navigation with analytic and emissive mesh lights: active GUI work, GPU frame duration, interaction-to-presentation latency, CPU trace and idle retention | `editor`, `shader-tools`, `presentation`, `gpu` |
 | `renderer-view-preparation` | Renderer | Camera-view CPU preparation at 128/512/1024 ordered heterogeneous objects, with visibility and batching checks on the deterministic RHI backend | — |
 
 The world demo scenarios use the demo's `--trace-output <path>` option. With

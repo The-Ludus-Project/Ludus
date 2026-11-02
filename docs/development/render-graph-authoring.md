@@ -5073,6 +5073,19 @@ second horizon clip feeds the specular edge sum. Each corner costs one edge term
 and no ellipse/sector state for importance sampling is built. The independent CPU
 check fans each record into clip-safe pieces of at most six corners and retains that
 sampling preparation; both integrals are additive over the fan.
+Raster edge integration uses a degree-nine polynomial for
+`acos(x) / sqrt(1 - x*x)` on `[0,1]`, with the finite limit one at the endpoint.
+Its coefficients are generated from ten Chebyshev interpolation nodes in
+FoundationMath's shader owner. Obtuse edges use `pi - angle` and the measured
+cross-product length, preserving the antipodal behavior without subtracting
+nearly equal squared lengths. This removes an `atan2` and, for acute edges, a
+square root and division per edge. The GPU regression checks signed edge terms
+against the independent exact CPU angle within 2e-6 radians across the full angle
+range, both windings, grazing endpoints and coordinate scales from 1e-30 to 1e30.
+This is a raster numerical approximation; reference transport and the CPU oracle
+retain exact trigonometric integration. In the measured 1600 x 1080 Staircase2
+saved view, 224 of 1,728,000 output pixels changed by at most one 8-bit step.
+
 Polygons entirely below the receiver horizon contribute zero; crossing polygons
 are clipped before the LTC transform. This preserves emitter geometry and the
 lighting integral without sampling lights.

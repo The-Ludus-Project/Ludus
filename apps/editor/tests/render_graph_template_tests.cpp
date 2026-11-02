@@ -2005,6 +2005,7 @@ TEST_CASE("ReSTIR GI template is created from the editor picker with its four pa
     const QByteArray root = document.GetDraft(ROOT_GRAPH);
     const QJsonObject graph = QJsonDocument::fromJson(root).object();
     const QString defaultConfiguration = graph.value(QStringLiteral("default")).toString();
+    bool hasDefaultConfiguration = false;
     for (const QJsonValue& value : graph.value(QStringLiteral("configurations")).toArray())
     {
         const QJsonObject configuration = value.toObject();
@@ -2012,6 +2013,7 @@ TEST_CASE("ReSTIR GI template is created from the editor picker with its four pa
         {
             continue;
         }
+        hasDefaultConfiguration = true;
         usize accumulationCount = 0;
         usize toneMappingCount = 0;
         for (const QJsonValue& node : configuration.value(QStringLiteral("nodes")).toArray())
@@ -2023,6 +2025,7 @@ TEST_CASE("ReSTIR GI template is created from the editor picker with its four pa
         CHECK(accumulationCount == 1);
         CHECK(toneMappingCount == 1);
     }
+    REQUIRE(hasDefaultConfiguration == true);
     CHECK(document.GetDraft(QStringLiteral("main_shaders/reservoir.slang")).contains("ComputeReconnectionJacobian") ==
           true);
     CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("RESTIR_GI_SPATIAL_MAX_M") == true);
