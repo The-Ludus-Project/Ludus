@@ -592,6 +592,11 @@ RenderGraphCaptureInfo RenderGraphCapture::GetInfo() const noexcept
 {
     return mState.Get() != nullptr ? mState->Info : RenderGraphCaptureInfo{};
 }
+
+rhi::RasterStatus RenderGraphCapture::PollRayFailures(uint32 pass, RenderGraphRayFailures& outFailures) noexcept
+{
+    return mState.Get() != nullptr ? mState->Graph.PollRayFailures(pass, outFailures) : Status::NotReady;
+}
 foundation::BorrowedView<const RenderGraphCapturePixel> RenderGraphCapture::GetPixels() const noexcept
 {
     if (mState.Get() == nullptr)

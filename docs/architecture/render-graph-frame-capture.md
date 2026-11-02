@@ -46,7 +46,7 @@ to zero. A zero-valued warm-up setting adds no work. The requested count plus
 warm-up must fit the existing capture limit; an oversized request names both counts
 and asks for fewer requested samples or a lower authored warm-up setting.
 
-Runtime package version 32 appends `MAX_RAY_PROGRAMS` uint32 warm-up counts after
+Runtime package version 33 appends `MAX_RAY_PROGRAMS` uint32 warm-up counts after
 the scene resource word. Earlier versions decode with zero. Generated C++ programs
 and runtime packages carry the same values. Raw LURGCAP sample counts and the
 capture's `TargetSamples` still count **all invocations**, including warm-up, so

@@ -1,0 +1,113 @@
+{
+  "version": 2,
+  "id": "LightTransformerLibrary",
+  "default": "LightTransformer",
+  "configurations": [
+    {
+      "id": "LightTransformer",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "color",
+          "type": "ColorTexture",
+          "source": "decode.color",
+          "required": true
+        }
+      ],
+      "nodes": [
+        {
+          "id": "embedding",
+          "kind": "Buffer",
+          "bytes": 8388608
+        },
+        {
+          "id": "decode",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "embedding",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "embedding",
+              "type": "Buffer",
+              "target": "embedding",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "DecodeIrradiance"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "decode.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "decode.view"
+        },
+        {
+          "from": "input.color",
+          "to": "decode.color"
+        },
+        {
+          "from": "embedding.buffer",
+          "to": "decode.embedding"
+        }
+      ]
+    }
+  ]
+}

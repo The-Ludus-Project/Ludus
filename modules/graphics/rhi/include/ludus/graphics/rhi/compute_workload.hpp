@@ -39,6 +39,11 @@ struct ComputeWorkloadKernel final
     foundation::uint32 GroupsX = 1; ///< Positive workgroup count along X, bounded by device capability.
     foundation::uint32 GroupsY = 1; ///< Positive workgroup count along Y.
     foundation::uint32 GroupsZ = 1; ///< Positive workgroup count along Z.
+    /// Reuse one earlier kernel's shader/layout/pipeline instead of Shader. The
+    /// referenced kernel must declare its own program (no chains). Bindings are
+    /// still validated against that program and each dispatch owns its snapshot.
+    /// The default selects Shader. This avoids compiling identical layer kernels.
+    foundation::uint32 UseProgramFrom = ~foundation::uint32{0};
 };
 /// Prepared buffer-only GPU work, including model weights, embeddings and scratch.
 /// No scene, camera, render target, native ray queries or runtime compiler is required.
@@ -80,19 +85,26 @@ public:
     /// Failure is retained for inspection; Reset releases a failed workload.
     [[nodiscard]] RasterStatus Poll() noexcept;
     /// Build a fresh, uncompiled ordered graph importing each allocation exactly once.
-    /// Every mutable final version is a History root. Uses match reflected ranges;
+    /// By default every mutable final version is a History root. Uses match reflected ranges;
     /// read/write hazards are tracked across all kernels. No upload or GPU execution.
     /// outGraph must be empty. Failure preserves it and this workload; discard a
     /// successful graph with DiscardOrderedGraph if it will not be executed.
     /// Optional outVersions must be empty or have one entry per described buffer;
     /// success copies final versions for appending consumers without duplicate imports.
     /// Failure preserves the supplied version entries.
+    /// @param outGraph Empty output, receives the uncompiled graph on Ready and is preserved on failure.
+    /// @param outVersions Empty or one entry per buffer; receives final versions on Ready only.
+    /// @param shouldRootBuffers False lets an appending consumer root the final versions itself;
+    /// supply outVersions and add roots after all writers when extending the graph.
     [[nodiscard]] RasterStatus BuildGraph(OrderedGraph& outGraph,
-                                          foundation::BorrowedView<GraphVersion> outVersions = {}) const noexcept;
+                                          foundation::BorrowedView<GraphVersion> outVersions = {},
+                                          bool shouldRootBuffers = true) const noexcept;
     /// Borrow a ready allocation for subsequent compute/raster consumers. The handle
     /// expires on Reset/replacement; consumers must acquire their own RHI leases.
     /// Invalid index, empty or pending owner preserves outBuffer. Never transfer ownership.
     [[nodiscard]] RasterStatus GetBuffer(foundation::usize index, BufferHandle& outBuffer) const noexcept;
+    /// Number of persistent allocations described by this owner; zero when empty.
+    [[nodiscard]] foundation::usize GetBufferCount() const noexcept;
     /// Total logical allocated buffer bytes; zero for an empty owner. Does not include driver scratch.
     [[nodiscard]] foundation::usize GetBufferBytes() const noexcept;
     /// Release all public owners without waiting; requires no open device frame.

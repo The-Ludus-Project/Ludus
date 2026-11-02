@@ -15,6 +15,7 @@ namespace internal
 // Bounded packing workspace; negotiated descriptor/graph limits still apply.
 constexpr usize WORKLOAD_BINDINGS = 16;
 constexpr usize WORKLOAD_NAME_BYTES = 64;
+constexpr uint32 OWN_PROGRAM = ~uint32{0};
 struct WorkloadBuffer final
 {
     BufferHandle Handle{};
@@ -33,6 +34,7 @@ struct WorkloadKernel final
     uint32 GroupsX = 1;
     uint32 GroupsY = 1;
     uint32 GroupsZ = 1;
+    uint32 UseProgramFrom = OWN_PROGRAM;
 };
 struct ComputeWorkloadState final
 {
@@ -45,10 +47,13 @@ struct ComputeWorkloadState final
     {
         for (WorkloadKernel& kernel : Kernels)
         {
-            static_cast<void>(Destroy(Device, kernel.Pipeline));
             static_cast<void>(Destroy(Device, kernel.Set));
-            static_cast<void>(Destroy(Device, kernel.Layout));
-            static_cast<void>(Destroy(Device, kernel.Shader));
+            if (kernel.UseProgramFrom == OWN_PROGRAM)
+            {
+                static_cast<void>(Destroy(Device, kernel.Pipeline));
+                static_cast<void>(Destroy(Device, kernel.Layout));
+                static_cast<void>(Destroy(Device, kernel.Shader));
+            }
         }
         for (WorkloadBuffer& buffer : Buffers)
         {
@@ -112,10 +117,18 @@ ValidateDescription(DeviceHandle device, const ComputeWorkloadDescription& descr
     for (usize kernelIndex = 0; kernelIndex < description.Kernels.GetSize(); ++kernelIndex)
     {
         const ComputeWorkloadKernel& kernel = description.Kernels[kernelIndex];
+        if (kernel.UseProgramFrom != internal::OWN_PROGRAM &&
+            (kernel.UseProgramFrom >= kernelIndex ||
+             description.Kernels[kernel.UseProgramFrom].UseProgramFrom != internal::OWN_PROGRAM))
+        {
+            return RasterStatus::InvalidDescription;
+        }
+        const RasterShaderDescription& shader = kernel.UseProgramFrom == internal::OWN_PROGRAM
+                                                    ? kernel.Shader
+                                                    : description.Kernels[kernel.UseProgramFrom].Shader;
         if (kernel.NameOrNull == nullptr || kernel.NameOrNull[0] == '\0' || kernel.Bindings.IsValid() == false ||
-            kernel.Bindings.GetSize() > internal::WORKLOAD_BINDINGS ||
-            kernel.Shader.Artifact.Stage != ShaderStage::Compute ||
-            kernel.Shader.Bindings.size() != kernel.Bindings.GetSize())
+            kernel.Bindings.GetSize() > internal::WORKLOAD_BINDINGS || shader.Artifact.Stage != ShaderStage::Compute ||
+            shader.Bindings.size() != kernel.Bindings.GetSize())
         {
             return RasterStatus::InvalidDescription;
         }
@@ -141,7 +154,7 @@ ValidateDescription(DeviceHandle device, const ComputeWorkloadDescription& descr
             const RasterBindingKind kind =
                 binding.IsWritable == true ? RasterBindingKind::StorageReadWrite : RasterBindingKind::StorageRead;
             usize matches = 0;
-            for (const RasterBinding& reflected : kernel.Shader.Bindings)
+            for (const RasterBinding& reflected : shader.Bindings)
             {
                 if (reflected.Binding == binding.Slot && reflected.Kind == kind &&
                     reflected.Visibility == RasterVisibility::Compute)
@@ -178,12 +191,14 @@ RasterStatus Prepare(ComputeWorkloadState& inoutState) noexcept
     }
     for (WorkloadKernel& kernel : inoutState.Kernels)
     {
-        RasterStatus status = GetStatus(inoutState.Device, kernel.Shader);
+        WorkloadKernel& program =
+            kernel.UseProgramFrom == internal::OWN_PROGRAM ? kernel : inoutState.Kernels[kernel.UseProgramFrom];
+        RasterStatus status = GetStatus(inoutState.Device, program.Shader);
         if (status != RasterStatus::Ready)
         {
             return status;
         }
-        status = GetStatus(inoutState.Device, kernel.Layout);
+        status = GetStatus(inoutState.Device, program.Layout);
         if (status != RasterStatus::Ready)
         {
             return status;
@@ -197,7 +212,7 @@ RasterStatus Prepare(ComputeWorkloadState& inoutState) noexcept
                 resources[i] = {binding.Slot, inoutState.Buffers[binding.Buffer].Handle, binding.Offset, binding.Size};
             }
             status = CreateBindingSet(inoutState.Device,
-                                      kernel.Layout,
+                                      program.Layout,
                                       {resources.GetData(), kernel.Bindings.GetSize()},
                                       kernel.Set);
             if (IsAccepted(status) == false)
@@ -210,15 +225,15 @@ RasterStatus Prepare(ComputeWorkloadState& inoutState) noexcept
         {
             return status;
         }
-        if (GetStatus(inoutState.Device, kernel.Pipeline) == RasterStatus::InvalidHandle)
+        if (GetStatus(inoutState.Device, program.Pipeline) == RasterStatus::InvalidHandle)
         {
-            status = CreateComputePipeline(inoutState.Device, {kernel.Shader, kernel.Layout}, kernel.Pipeline);
+            status = CreateComputePipeline(inoutState.Device, {program.Shader, program.Layout}, program.Pipeline);
             if (IsAccepted(status) == false)
             {
                 return status;
             }
         }
-        status = GetStatus(inoutState.Device, kernel.Pipeline);
+        status = GetStatus(inoutState.Device, program.Pipeline);
         if (status != RasterStatus::Ready)
         {
             return status;
@@ -307,6 +322,11 @@ RasterStatus ComputeWorkload::Initialize(DeviceHandle device, const ComputeWorkl
         kernel.GroupsX = source.GroupsX;
         kernel.GroupsY = source.GroupsY;
         kernel.GroupsZ = source.GroupsZ;
+        kernel.UseProgramFrom = source.UseProgramFrom;
+        if (kernel.UseProgramFrom != internal::OWN_PROGRAM)
+        {
+            continue;
+        }
         status = CreateBindingLayout(device, source.Shader.Bindings, kernel.Layout);
         if (IsAccepted(status) == false)
         {
@@ -339,7 +359,9 @@ RasterStatus ComputeWorkload::Poll() noexcept
     }
     return mState->Status;
 }
-RasterStatus ComputeWorkload::BuildGraph(OrderedGraph& outGraph, BorrowedView<GraphVersion> outVersions) const noexcept
+RasterStatus ComputeWorkload::BuildGraph(OrderedGraph& outGraph,
+                                         BorrowedView<GraphVersion> outVersions,
+                                         bool shouldRootBuffers) const noexcept
 {
     if (mState.Get() == nullptr || mState->Status != RasterStatus::Ready)
     {
@@ -401,7 +423,9 @@ RasterStatus ComputeWorkload::BuildGraph(OrderedGraph& outGraph, BorrowedView<Gr
                            binding.Size,
                            RasterVisibility::Compute};
             }
-            const ComputeDispatch dispatch{kernel.Pipeline,
+            const WorkloadKernel& program =
+                kernel.UseProgramFrom == internal::OWN_PROGRAM ? kernel : mState->Kernels[kernel.UseProgramFrom];
+            const ComputeDispatch dispatch{program.Pipeline,
                                            kernel.Set,
                                            {kernel.GroupsX, kernel.GroupsY, kernel.GroupsZ}};
             GraphPassDescription pass;
@@ -417,7 +441,7 @@ RasterStatus ComputeWorkload::BuildGraph(OrderedGraph& outGraph, BorrowedView<Gr
         }
         for (usize i = 0; i < versions.GetSize(); ++i)
         {
-            if (mState->Buffers[i].IsReadOnly == false)
+            if (shouldRootBuffers == true && mState->Buffers[i].IsReadOnly == false)
             {
                 const RasterStatus rooted = AddGraphRoot(device, candidate, versions[i], GraphRoot::History);
                 if (rooted != RasterStatus::Ready)
@@ -452,6 +476,10 @@ RasterStatus ComputeWorkload::GetBuffer(usize index, BufferHandle& outBuffer) co
     }
     outBuffer = mState->Buffers[index].Handle;
     return RasterStatus::Ready;
+}
+usize ComputeWorkload::GetBufferCount() const noexcept
+{
+    return mState.Get() == nullptr ? 0 : mState->Buffers.GetSize();
 }
 usize ComputeWorkload::GetBufferBytes() const noexcept
 {

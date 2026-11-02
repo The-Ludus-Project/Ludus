@@ -363,7 +363,7 @@ def parse_runtime(data):
                                  'artifact': artifact, 'blocks': names, 'workgroup': workgroup})
     result['storage_buffers'] = [take(4) for _ in range(take(1)[0])] if version >= 8 else []
     result['scene_resources'] = take(1)[0] if version >= 25 else 0
-    result['capture_warmup_samples'] = take(execution.ray.MAX_RAY_PROGRAMS) if version >= 32 else (0,) * execution.ray.MAX_RAY_PROGRAMS
+    result['capture_warmup_samples'] = take(execution.ray.MAX_RAY_PROGRAMS) if version >= 33 else (0,) * execution.ray.MAX_RAY_PROGRAMS
     result['pass_names'] = []
     if version >= 3:
         for _ in range(passes):

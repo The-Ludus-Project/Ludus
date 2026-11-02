@@ -273,12 +273,16 @@ def validate_manifest(value):
             f'increase budgets.programs to at least {program_count} or reuse existing programs')
     for program in value['programs']:
         keys(program, ('id', 'stage', 'source', 'function', 'input', 'output', 'bindings'), 'program',
-             ('capture_warmup_setting',))
+             ('capture_warmup_setting', 'light_transformer'))
         if 'capture_warmup_setting' in program:
             setting = next((item for item in value.get('settings', [])
                             if item['id'] == program['capture_warmup_setting']), None)
             require(program['stage'] == ray.COMPUTE_STAGE and setting is not None and setting['type'] == 'UInt32',
                     'Schema', 'capture_warmup_setting', 'name an existing UInt32 graph setting on a scene compute program')
+        if 'light_transformer' in program:
+            require(type(program['light_transformer']) is bool and
+                    (program['light_transformer'] is False or program['stage'] == ray.COMPUTE_STAGE),
+                    'Schema', program['id'], 'light_transformer is a Boolean supported only by scene compute programs')
         name(program['id'], 'program id')
         name(program['function'], 'source function')
         require(program['source'] != 'wrapper.slang', 'Source', program['id'], 'wrapper.slang is reserved')
@@ -1031,6 +1035,9 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
         authored_programs = programs
         linked_programs = {}
         for profile in ray_profiles:
+            profile['light_transformer_programs'] = [index for index, variant in enumerate(profile['variants'])
+                if any(authored_programs[identity].get('light_transformer', False)
+                       for identity in ray.callback_programs(variant))]
             technique = deepcopy(techniques[ray.TECHNIQUE])
             if 'scene_interface' in technique:
                 technique['scene_interface']['visibility_buffer'] = profile['visibility_buffer']
@@ -1192,6 +1199,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                             record['native_ray_queries'] = profile['native_ray_queries']
                             if profile.get('native_compute') and target == 'metal':
                                 record['native_pipeline'] = entries[(profile['native_compute'], target)]
+                            if profile['light_transformer_programs']:
+                                record['light_transformer_programs'] = profile['light_transformer_programs']
                             record['scene_interface_version'] = technique.get('scene_interface', {}).get('version', 0)
                             from . import render_graph_settings
                             record['capture_warmup_samples'] = [

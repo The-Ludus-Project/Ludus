@@ -70,6 +70,18 @@ class ReferenceExportTests(unittest.TestCase):
         struct.pack_into('<I', data, 44, 288)
         with self.assertRaises(ValueError): hdr.decode(data)
 
+    def test_optical_capture_retains_its_declared_wavelength(self):
+        data = self.capture()
+        struct.pack_into('<I', data, 44, 32 | 64 | 256)
+        struct.pack_into('<f', data, 92, 550e-9)
+        metadata, _ = hdr.decode(data)
+        self.assertAlmostEqual(metadata['optical_wavelength_world'], 550e-9, delta=1e-13)
+        for flags, wavelength in ((96, 550e-9), (352, 0), (288, 550e-9), (352, float('nan'))):
+            with self.subTest(flags=flags, wavelength=wavelength):
+                struct.pack_into('<I', data, 44, flags)
+                struct.pack_into('<f', data, 92, wavelength)
+                with self.assertRaises(ValueError): hdr.decode(data)
+
     def test_light_sampling_pairs_the_sampler_version_with_its_flag(self):
         for sampler, flags, light_sampling in ((1, 96, 'uniform_area'), (2, 224, 'resampled_projected_solid_angle'),
                                                (2, 161, 'resampled_projected_solid_angle'),

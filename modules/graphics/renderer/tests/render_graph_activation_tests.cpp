@@ -1051,7 +1051,9 @@ TEST_CASE("runtime packages preserve capture warm-up and default older packages 
           "[render-graph][activation][capture]")
 {
     constexpr uint32 WARMUP = 128;
-    for (const uint32 version : {format::OPAQUE_GBUFFER_PACKAGE_VERSION, format::CAPTURE_WARMUP_PACKAGE_VERSION})
+    for (const uint32 version : {format::OPAQUE_GBUFFER_PACKAGE_VERSION,
+                                 format::LIGHT_TRANSFORMER_PACKAGE_VERSION,
+                                 format::CAPTURE_WARMUP_PACKAGE_VERSION})
     {
         PackageOptions options;
         options.Version = version;

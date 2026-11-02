@@ -204,6 +204,13 @@ public:
     [[nodiscard]] rhi::RasterStatus GetStatus() const noexcept;
     /// Copy progress and provenance.
     [[nodiscard]] RenderGraphCaptureInfo GetInfo() const noexcept;
+    /// Read the private graph's per-pass shader failure counts, including after a LatchedPixels failure.
+    /// Owner thread, between Service calls; never waits or changes the captured image.
+    /// @param pass Plan ray-pass index.
+    /// @param outFailures Receives counts on Ready; preserved otherwise.
+    /// @return The same asynchronous statuses as RenderGraph::PollRayFailures; NotReady before Start.
+    [[nodiscard]] rhi::RasterStatus PollRayFailures(foundation::uint32 pass,
+                                                    RenderGraphRayFailures& outFailures) noexcept;
     /// Borrow the read-back pixels in top-left row order until the next Start or Release. Empty until a
     /// read-back finished; a Complete, Stopped or LatchedPixels capture has one per pixel.
     [[nodiscard]] foundation::BorrowedView<const RenderGraphCapturePixel> GetPixels() const noexcept;
