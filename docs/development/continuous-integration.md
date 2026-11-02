@@ -297,7 +297,11 @@ analyzer. This limits simultaneous runner demand after hosted ARM capacity left
 parallel jobs unacquired until GitHub cancelled them. Later jobs use an explicit
 status condition so a test failure does not suppress independent evidence;
 cancelling the workflow still stops the chain. All required results remain part
-of the promotion gate. This ordering reduces demand; a platform-wide shortage
+of the promotion gate. The batch also admits ARM-owning workflows in order:
+native, threading, installed host tooling, then wiki. This prevents short ARM
+jobs from expiring behind native work in a different reusable workflow. Browser,
+Windows and recovery workflows remain parallel; the ARM sequence can increase
+the total batch duration. This ordering reduces demand; a platform-wide shortage
 can still require retrying a job whose annotations confirm runner acquisition
 failed before execution.
 
