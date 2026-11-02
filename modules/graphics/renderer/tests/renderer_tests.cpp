@@ -356,8 +356,8 @@ void MakeOrderedSnapshot(Session& inoutSession, uint32 objectCount, rr::Snapshot
         item.Transform.Columns[1].Y = ORDERED_MESH_SCALE;
         item.Transform.Translation.X =
             ORDERED_GRID_ORIGIN + static_cast<float32>(index % ORDERED_GRID_COLUMNS) * ORDERED_GRID_SPACING;
-        item.Transform.Translation.Y =
-            ORDERED_GRID_ORIGIN + static_cast<float32>(index / ORDERED_GRID_COLUMNS) * ORDERED_GRID_SPACING;
+        const usize gridRow = index / ORDERED_GRID_COLUMNS;
+        item.Transform.Translation.Y = ORDERED_GRID_ORIGIN + static_cast<float32>(gridRow) * ORDERED_GRID_SPACING;
     }
     REQUIRE(inoutSession.Renderer.CreateSnapshot(items.GetData(), items.GetSize(), outSnapshot) ==
             rhi::RasterStatus::Ready);

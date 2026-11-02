@@ -1645,12 +1645,15 @@ magic `LUHDR01\0`, little-endian version/profile/sampler/header sizes at bytes
 8/12/16/20, width/height/target/depth/roulette/flags at 24–44, seed/revision and two
 64-bit scene digest words at 48–72, secondary range/mip/light count at 80–88,
 column-major world-to-clip floats at 96–159, eye at 160–171 and environment at
-172–183. Remaining header bytes are reserved zero. Flags encode CPU (1), center
+172–183. Optical wavelength in metres occupies byte 92 (zero for geometric transport);
+remaining header bytes are reserved zero. Flags encode CPU (1), center
 rays (2), orthographic (4), reverse-Z (8), infinite far (16), partial (32),
-GPU compute (64) and `ResampledProjectedSolidAngle` light sampling (128); neither
+GPU compute (64), resampled light sampling (128) and scalar optical connections (256); neither
 traversal bit marks native queries. The sampler field is 1 for `UniformArea` and 2
 with flag 128; `scripts/reference-hdr` rejects any other pairing and records
 `light_sampling` in its manifest.
+The scalar optical connection profile and its CPU/GPU contract are described in
+[render-graph authoring](../development/render-graph-authoring.md#trace-scene-optical-connections).
 Each top-left ordered pixel contains three FP32 mean RGB channels and a uint32
 committed count. The light count/digest identify the retained scene; applications
 must save original light/asset inputs for independent scene reconstruction.

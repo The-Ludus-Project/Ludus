@@ -96,6 +96,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                QStringLiteral("slice-sampling-luminaire"),
                                                QStringLiteral("steinberg-plt"),
                                                QStringLiteral("steinberg-physical-optics"),
+                                               QStringLiteral("wave-tracing"),
                                                QStringLiteral("rao-blackwell-mh"),
                                                QStringLiteral("restir-gi"),
                                                QStringLiteral("guided-restir-fg-plus"),
@@ -127,6 +128,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                graph.Identity == QStringLiteral("polygonal-light-sampling") ||
                graph.Identity == QStringLiteral("slice-sampling-luminaire") ||
                graph.Identity == QStringLiteral("rao-blackwell-mh") ||
+               graph.Identity == QStringLiteral("wave-tracing") ||
                graph.Identity == QStringLiteral("guided-restir-fg-plus") ||
                graph.Identity == QStringLiteral("one-more-vertex-nee")));
     }
@@ -148,6 +150,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                  QStringLiteral("slice-sampling-luminaire"),
                                                  QStringLiteral("steinberg-plt"),
                                                  QStringLiteral("steinberg-physical-optics"),
+                                                 QStringLiteral("wave-tracing"),
                                                  QStringLiteral("rao-blackwell-mh"),
                                                  QStringLiteral("restir-gi"),
                                                  QStringLiteral("guided-restir-fg-plus"),

@@ -9038,7 +9038,9 @@ constexpr PackageLocation CONDITIONAL_RESTIR_IMMEDIATE{LUDUS_RG3_CONDITIONAL_RES
 constexpr PackageLocation CONDITIONAL_RESTIR_MAXIMUM{LUDUS_RG3_CONDITIONAL_RESTIR_MAXIMUM_DIRECTORY,
                                                      "rg2_conditional_restir_maximum.lurgrt"};
 
-math::Vector3 ComputeConditionalOracleMean(const CornellBox& room, uint32 scatteringCount, uint64 randomSeed = 123)
+math::Vector3 ComputeConditionalOracleMean(const CornellBox& room,
+                                           uint32 scatteringCount,
+                                           math::RandomKey randomKey = math::RandomKey{123})
 {
     namespace internal = renderer::internal;
     renderer::RenderGraphSceneDescription scene;
@@ -9057,7 +9059,7 @@ math::Vector3 ComputeConditionalOracleMean(const CornellBox& room, uint32 scatte
     constexpr usize SCENE_BYTES = usize{8} * 1024 * 1024;
     core::UniquePtr<internal::ReferenceJob> oracle;
     REQUIRE(internal::BuildMaterialGraphRayScene(scene, camera, SCENE_BYTES, oracle) == rhi::RasterStatus::Ready);
-    oracle->Key = math::RandomKey{randomSeed};
+    oracle->Key = randomKey;
     // Graph traversal preserves original mesh primitive IDs across material slots. CPU transport expects
     // material-instance-local IDs when indexing FirstTriangle + Primitive; adapt only this oracle snapshot.
     for (const internal::ReferenceInstance& instance : oracle->Scene.Instances)
@@ -9136,7 +9138,9 @@ TEST_CASE("Conditional ReSTIR independent final gather agrees with CPU transport
         const math::Vector3 actual = ComputeImageMean(pixels);
         math::Vector3 peak{};
         for (const math::Vector3& pixel : pixels)
+        {
             peak = {math::Max(peak.X, pixel.X), math::Max(peak.Y, pixel.Y), math::Max(peak.Z, pixel.Z)};
+        }
         INFO("image peak RGB " << peak.X << ',' << peak.Y << ',' << peak.Z);
         INFO("conditional gather RGB " << actual.X << ',' << actual.Y << ',' << actual.Z << ", CPU RGB " << expected.X
                                        << ',' << expected.Y << ',' << expected.Z);
@@ -9152,7 +9156,9 @@ TEST_CASE("Conditional ReSTIR independent final gather agrees with CPU transport
     // Isolate indirect energy so primary emission/direct lighting cannot hide a missing tail.
     constexpr float32 RELATIVE_INDIRECT_TOLERANCE = .1F;
     for (const math::Vector3& mean : means)
+    {
         CheckMeansAgree(mean - directMean, expected - directExpected, RELATIVE_INDIRECT_TOLERANCE);
+    }
     // The CPU oracle must contain actual indirect transport, rather than agreeing because both paths omit it.
     constexpr float32 MINIMUM_INDIRECT_GAIN = 1.1F;
     CHECK(expected.Y > MINIMUM_INDIRECT_GAIN * directExpected.Y);
@@ -9180,7 +9186,8 @@ TEST_CASE("Conditional ReSTIR traces variable-length suffixes at immediate and m
     }};
     for (const DepthCase& depthCase : cases)
     {
-        const math::Vector3 expected = ComputeConditionalOracleMean(room, depthCase.ScatteringCount, randomSeed);
+        const math::Vector3 expected =
+            ComputeConditionalOracleMean(room, depthCase.ScatteringCount, math::RandomKey{randomSeed});
         PreparedGraph graph(fixture, depthCase.Location, room, randomSeed);
         Array<math::Vector3> pixels;
         RenderRestirGiMean(graph, fixture, FRAME_COUNT, pixels);

@@ -1,11 +1,15 @@
 #include "internal/render_graph_node_details.h"
+#include "design_tokens.h"
 #include "internal/overlay_widgets.h"
+#include "internal/theme_colour.h"
 
 #include <ludus/foundation/base/types.h>
 
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QFrame>
 #include <QLabel>
+#include <QPalette>
 #include <QPointer>
 #include <QScrollArea>
 #include <QTabWidget>
@@ -24,16 +28,30 @@ RenderGraphNodeDetails::RenderGraphNodeDetails(QWidget* parentOrNull)
     : QDialog(parentOrNull), mScroll(new QScrollArea(this)), mPath(new QLabel(this)), mError(new QLabel(this))
 {
     setObjectName(QStringLiteral("renderGraphNodeEditor"));
+    // The dialog is Properties at full size: the same fields, in the editor's palette, with the same spacing.
+    if (parentOrNull != nullptr)
+    {
+        setPalette(parentOrNull->palette());
+    }
     QVBoxLayout* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(design::SPACING_MEDIUM,
+                               design::SPACING_MEDIUM,
+                               design::SPACING_MEDIUM,
+                               design::SPACING_MEDIUM);
+    layout->setSpacing(design::SPACING_SMALL);
     mPath->setTextFormat(Qt::PlainText);
+    mPath->setForegroundRole(QPalette::PlaceholderText);
     layout->addWidget(mPath);
     mError->setObjectName(QStringLiteral("renderGraphNodeError"));
     mError->setTextFormat(Qt::PlainText);
     mError->setWordWrap(true);
     mError->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    mError->setMargin(design::SPACING_SMALL);
+    mError->setAutoFillBackground(true);
     mError->hide();
     layout->addWidget(mError);
     mScroll->setWidgetResizable(true);
+    mScroll->setFrameShape(QFrame::NoFrame);
     layout->addWidget(mScroll);
     QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -60,6 +78,10 @@ void RenderGraphNodeDetails::Refresh(const QString& title, const QString& path)
     }
     QWidget* fields = new QWidget(mScroll);
     QFormLayout* form = new QFormLayout(fields);
+    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setHorizontalSpacing(design::SPACING_MEDIUM);
+    form->setVerticalSpacing(design::SPACING_SMALL);
     Q_EMIT PopulateRequested(form, fields);
     QTabWidget* partsOrNull = fields->findChild<QTabWidget*>(QStringLiteral("renderGraphPipelineParts"));
     if (partsOrNull != nullptr)
@@ -70,6 +92,11 @@ void RenderGraphNodeDetails::Refresh(const QString& title, const QString& path)
 }
 void RenderGraphNodeDetails::ShowError(const QString& message)
 {
+    // A banner in the danger tokens, so a failed edit is not mistaken for another field.
+    QPalette banner = mError->palette();
+    banner.setColor(QPalette::Window, GetThemeQColour(design::ThemeColour::StatusDangerSurface));
+    banner.setColor(QPalette::WindowText, GetThemeQColour(design::ThemeColour::TextPrimary));
+    mError->setPalette(banner);
     mError->setText(message);
     mError->setVisible(message.isEmpty() == false);
 }

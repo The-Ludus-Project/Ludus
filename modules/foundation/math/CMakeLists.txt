@@ -36,6 +36,7 @@ target_sources(
         src/stochastic_pairwise_mis.cpp
         src/metropolis.cpp
         src/shading_normal.cpp
+        src/elliptical_cone.cpp
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
@@ -68,6 +69,7 @@ target_sources(
             include/ludus/foundation/math/stochastic_pairwise_mis.hpp
             include/ludus/foundation/math/metropolis.hpp
             include/ludus/foundation/math/shading_normal.hpp
+            include/ludus/foundation/math/elliptical_cone.hpp
 )
 
 # Dependency direction: FoundationMath may use FoundationBase (types,
@@ -137,6 +139,7 @@ if(LUDUS_BUILD_TESTS)
             tests/stochastic_pairwise_mis_tests.cpp
             tests/metropolis_tests.cpp
             tests/shading_normal_tests.cpp
+            tests/elliptical_cone_tests.cpp
     )
     target_include_directories(ludus_foundation_math_tests PRIVATE tests src)
     target_link_libraries(
@@ -182,4 +185,4 @@ if(LUDUS_BUILD_TESTS)
     endif()
 endif()
 
-install(FILES shaders/stochastic_pairwise_mis.slang shaders/math.slang shaders/gaussian.slang shaders/projected_solid_angle.slang shaders/linearly_transformed_cosine.slang shaders/weighted_reservoir.slang shaders/metropolis.slang shaders/shading_normal.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES shaders/elliptical_cone.slang shaders/math.slang shaders/gaussian.slang shaders/projected_solid_angle.slang shaders/linearly_transformed_cosine.slang shaders/weighted_reservoir.slang shaders/metropolis.slang shaders/shading_normal.slang shaders/stochastic_pairwise_mis.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")

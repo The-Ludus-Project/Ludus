@@ -47,6 +47,14 @@ public:
     /// @return False while the menu selects the graph's final output or one of its attachments.
     [[nodiscard]] bool TryGetDebugView(PreviewShading& outShading) const;
 
+    /// True while the status text is the short build-failure chip; the full problem is in the Error List.
+    [[nodiscard]] bool HasProblemChip() const noexcept
+    {
+        return mHasProblemChip;
+    }
+    /// Words that end the chip's text and name where its full problem is listed.
+    [[nodiscard]] static QString GetProblemChipLink();
+
 Q_SIGNALS:
     /// Refreshed overlay text, also consumed by the shared-device presentation.
     void StatisticsChanged();
@@ -57,6 +65,7 @@ Q_SIGNALS:
 
 protected:
     void paintEvent(QPaintEvent*) override;
+    void mousePressEvent(QMouseEvent* event) override;
 
 private:
     ViewportObjectInteraction* mInteractionOrNull = nullptr;
@@ -64,6 +73,7 @@ private:
     void refreshFrame();
     void refreshStatus();
     void refreshStatistics();
+    bool mHasProblemChip = false;
     RendererWorkspace& mWorkspace;
     RenderGraphPreview& mPreview;
     QComboBox* mTargets;

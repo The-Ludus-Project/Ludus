@@ -171,6 +171,8 @@ private:
     /// Snap the camera to the axis view of the orientation handle under globalPosition. False when the
     /// widget is hidden or the point misses every handle.
     [[nodiscard]] bool tryPickOrientationWidget(QPointF globalPosition);
+    /// Open the Error List when globalPosition hits the build-failure chip over the frame. False otherwise.
+    [[nodiscard]] bool tryActivateProblemChip(QPointF globalPosition);
     void resizeSurface();
     /// Letterbox the frame and resize the drawable for the preview's current size preset.
     void applyViewportSize();

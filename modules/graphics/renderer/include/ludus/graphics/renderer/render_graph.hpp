@@ -130,8 +130,15 @@ struct RenderGraphPrograms final
     bool HasVisibilityBuffer = false;
     /// Use the complete clustered material ABI and conservative spatial light lists.
     bool HasClusteredForward = false;
-    /// Opaque material fragment writing normal/roughness, base/metallic and emission/coverage in RGBA16F.
+    /// Opaque material fragment writing normal/roughness, base/metallic and emission/coverage in RGBA16F. It applies
+    /// alpha-masked coverage and draws masked materials when DeferredOpaqueGBufferFragment is present, every material
+    /// otherwise.
     rhi::RasterShaderDescription DeferredGBufferFragment{};
+    /// The same G-buffer fragment compiled without the coverage test, drawn for opaque materials before masked ones so
+    /// tile-based GPUs keep hidden-surface removal. Present with HasClusteredDeferred in packages from
+    /// format::OPAQUE_GBUFFER_PACKAGE_VERSION; empty in earlier packages, which draw every material through
+    /// DeferredGBufferFragment.
+    rhi::RasterShaderDescription DeferredOpaqueGBufferFragment{};
     /// Renderer fullscreen geometry for deferred lighting and optional prepass depth transfer.
     rhi::RasterShaderDescription DeferredLightingVertex{};
     /// Clustered lighting resolve; reads the G-buffer and writes linear color plus scene depth.
@@ -184,6 +191,11 @@ enum class RenderGraphFailureReason : foundation::uint8
     PhotonDispatch,             ///< Photon maps and spatial reuse require a whole-image dispatch.
     GeometrySamplingLights,     ///< A geometry-sampling template received analytic or environment lighting.
     GeometryStatisticsCapacity, ///< A geometry-sampling statistics buffer cannot hold the scene hierarchy.
+    WaveDirection,              ///< The wave aperture plane has no propagation direction.
+    WaveResolution,             ///< The aperture quadrature cannot resolve the Fresnel phase gradient.
+    WaveCapacity,               ///< A scalar optical connection exceeds the region or triangle workspace.
+    WaveConnection,             ///< The optical wavelength or finite connection is outside the paraxial profile.
+    WavePropagationCapacity,    ///< An optical connection exceeds the admitted number of successive regions.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;

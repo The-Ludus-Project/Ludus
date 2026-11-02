@@ -1373,7 +1373,7 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
     template selects raster (the default), forward-lit, restir-di, visibility-buffer,
     visibility-secondary-rays, tiled-vbuffer-nee, compute-ray-tracing, simple-compute-ray-tracing,
     veach-guibas-mis, line-sampling, ris-projected-solid-angle, salesin-jarosz-lines,
-    polygonal-light-sampling, slice-sampling-luminaire, steinberg-plt, steinberg-physical-optics, restir-gi,
+    polygonal-light-sampling, slice-sampling-luminaire, steinberg-plt, steinberg-physical-optics, wave-tracing, restir-gi,
     rao-blackwell-mh, conditional-restir or one-more-vertex-nee. Offscreen
     Renderer raster creation copies the engine default package, including its shaders and shared
     view-relative RenderSize controls. Other Renderer templates also use offscreen output.

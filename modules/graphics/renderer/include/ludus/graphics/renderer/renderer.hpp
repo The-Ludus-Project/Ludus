@@ -822,6 +822,7 @@ private:
                                                    MaterialProgram& outProgram,
                                                    const rhi::RasterShaderDescription* depthOrNull = nullptr,
                                                    const rhi::RasterShaderDescription* gBufferOrNull = nullptr,
+                                                   const rhi::RasterShaderDescription* opaqueGBufferOrNull = nullptr,
                                                    rhi::RasterFillMode fillMode = rhi::RasterFillMode::Solid) noexcept;
     [[nodiscard]] rhi::RasterStatus CreateMaterialData(MaterialProgram program,
                                                        const MaterialDescription& description,

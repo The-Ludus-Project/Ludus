@@ -120,6 +120,31 @@ advisory analyzer steps; required inventories and clang-tidy remain mandatory.
 Linux builds/tidy use four workers and native macOS jobs use three. The uncached
 build-time budget retains two workers for comparable measurements.
 
+### Run focused MCMC Vulkan parity
+
+The native `ci` workflow has a manual `mcmc_vulkan_parity_only` input for the
+MH/Jump Restore CPU oracle, GPU parity kernel and both cooked template
+configurations. Dispatch it on the exact review branch:
+
+```bash
+gh workflow run ci.yml --ref <branch> -f mcmc_vulkan_parity_only=true
+```
+
+This mode uses Ubuntu 24.04, the pinned native/shader toolchains, Mesa Vulkan and
+`VK_LAYER_KHRONOS_validation`. Skipped parity/capture cases and Vulkan validation
+errors fail the job. Its `mcmc-vulkan-parity` artifact records the tested commit,
+adapter details, emitted SPIR-V/compiler manifest and complete CPU/parity/HDR-capture logs. Mesa software-device
+evidence validates Vulkan execution; it does not establish hardware-GPU performance.
+The estimator profile and numerical tolerance belong to the
+[template contract](render-graph-authoring.md#use-the-rao-blackwellized-mh-template).
+
+The focused dispatch skips the other native jobs and the aggregate gate. Its
+skipped aggregate uses a separate check name, so it cannot replace the required
+**Ubuntu Clang** check on the same commit. The
+input has no effect on pull requests, scheduled runs or batch calls, and does not
+promote a commit, publish a site or move the batch marker. It supplements the
+required integration/batch checks.
+
 ## Activate the process once
 
 The coordinator is disabled until `BATCH_CI_ENABLED=true`. These settings need a
@@ -217,10 +242,16 @@ deployment; it does not promote a new source commit.
 The shared change-scope action tests routing before classifying the complete
 change. PRs compare the merge base with their head; legacy queue runs compare the
 queue base and candidate. Integration PRs select the cheap `integration` tier;
-legacy main PRs keep their earlier fast tier, and legacy queue/manual/batch runs
-select `full`. Standalone scheduled/manual native runs select `nightly`, including
-the advisory analysis. Scheduled and manually dispatched batches always run full native
-validation, including a documentation-only batch.
+legacy main PRs keep their earlier fast tier, and legacy queue/batch runs select
+`full`. Standalone scheduled native runs select `nightly`, including advisory
+analysis. Manual native runs default to `nightly`; choose `validation_tier=full`
+when dispatching `ci.yml` to reproduce the batch's required native qualification
+without the separate advisory nightly reports. This choice affects only
+standalone manual native runs; PR and batch routing ignore it. For qualification,
+leave `mcmc_vulkan_parity_only=false`; that separate diagnostic option runs only
+its named parity lane. Scheduled and
+manually dispatched batches always run full native validation, including a
+documentation-only batch.
 
 The documentation exemption for individual PRs is an explicit allowlist in
 `scripts/python/ci_scope.py`: docs, the README, MkDocs and pinned Doxygen inputs,

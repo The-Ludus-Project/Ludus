@@ -112,8 +112,10 @@ inline constexpr foundation::uint32 RASTER_TONE_MAPPING_PACKAGE_VERSION = 29;
 /// First generation whose deferred resolve reads a bounding-sphere header word in each emitter polygon record
 /// (deferred_layout.h), which it uses to cull and to evaluate far records as points.
 inline constexpr foundation::uint32 RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION = 30;
+/// First generation whose clustered deferred packages carry DeferredOpaqueGBufferFragment.
+inline constexpr foundation::uint32 OPAQUE_GBUFFER_PACKAGE_VERSION = 31;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = OPAQUE_GBUFFER_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.
@@ -181,8 +183,12 @@ inline constexpr foundation::usize FORWARD_DEPTH_STAGE_ROLE = CLUSTERED_FORWARD_
 inline constexpr foundation::usize DEFERRED_STAGE_ROLE_FIRST = FORWARD_DEPTH_STAGE_ROLE + 1;
 /// Geometry fragment, lighting vertex/fragment and depth-copy fragment roles.
 inline constexpr foundation::usize DEFERRED_STAGE_ROLE_COUNT = 4;
+/// Appended G-buffer fragment compiled without the alpha-coverage test, for opaque materials; packages from
+/// OPAQUE_GBUFFER_PACKAGE_VERSION carry it with every deferred target.
+inline constexpr foundation::usize DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE =
+    DEFERRED_STAGE_ROLE_FIRST + DEFERRED_STAGE_ROLE_COUNT;
 /// Complete role table including clustered deferred support.
-inline constexpr foundation::usize STAGE_ROLE_COUNT = DEFERRED_STAGE_ROLE_FIRST + DEFERRED_STAGE_ROLE_COUNT;
+inline constexpr foundation::usize STAGE_ROLE_COUNT = DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE + 1;
 /// Return a raster pair's vertex (stage 0) or fragment (stage 1) role.
 /// @pre technique is a bounded raster role and stage is below TECHNIQUE_STAGE_COUNT.
 [[nodiscard]] LUDUS_INLINE constexpr foundation::usize GetRasterStageRole(Technique technique,
@@ -257,6 +263,9 @@ enum class StageRole : foundation::uint32
     DeferredLightingVertex,                              ///< Fullscreen clustered lighting geometry.
     DeferredLightingFragment,  ///< Authored lighting resolve with reconstructed world position and exported depth.
     DeferredDepthCopyFragment, ///< Copies optional prepass depth to the G-buffer owner.
+    /// DeferredGBufferFragment without the alpha-coverage discard, drawn for opaque materials so tile-based GPUs keep
+    /// hidden-surface removal; masked materials keep DeferredGBufferFragment.
+    DeferredOpaqueGBufferFragment = DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE,
     NativeRayStages = NATIVE_RAY_STAGE_ROLE, ///< Linked native ray stages sharing the persistent scene ABI.
 };
 /// Float vertex input width of one stage input record.

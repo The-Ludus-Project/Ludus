@@ -1954,7 +1954,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
             if (mFrameSource == &mState->ProjectGraph->GetDisplayFrames())
             {
                 mState->ShaderStatusText = text;
-                mState->HasShaderError = false;
+                mState->HasShaderError = mState->GraphViewOrNull->HasProblemChip();
                 mState->applyShaderStatus();
             }
         });
@@ -2143,6 +2143,30 @@ bool PreviewViewport::tryPickOrientationWidget(QPointF globalPosition)
     }
     Preview_->SetAxisView(view);
     return true;
+}
+bool PreviewViewport::tryActivateProblemChip(QPointF globalPosition)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->GraphViewOrNull == nullptr || mState->GraphViewOrNull->HasProblemChip() == false ||
+        mState->FrameLayoutOrNull == nullptr || mState->ProjectWorkspace == nullptr ||
+        mState->ShaderStatusText.isEmpty() == true)
+    {
+        return false;
+    }
+    const QRect frame = mState->FrameLayoutOrNull->GetFrameRectangle();
+    const QPointF local = getInteractionPosition(globalPosition) - QPointF(frame.topLeft());
+    const QString fitted = FitOverlayText(mState->ShaderStatusText, static_cast<qreal>(frame.width()));
+    const QRectF chip(GetShaderStatusOrigin(mState->StatisticsText), MeasureStatistics(fitted));
+    if (chip.contains(local) == false)
+    {
+        return false;
+    }
+    mState->ProjectWorkspace->RequestErrorList();
+    return true;
+#else
+    static_cast<void>(globalPosition);
+    return false;
+#endif
 }
 QRectF PreviewViewport::getInteractionFrame() const
 {
