@@ -428,7 +428,8 @@ float2 RotateIntoCoherenceBasis(SurfaceCoherence coherence, float2 surface)
                                                     float3 shape,
                                                     SurfaceFrame frame,
                                                     float wavenumberPerWorld,
-                                                    float longitudinalCoherenceWorld) {
+                                                    float longitudinalCoherenceWorld)
+{
     SurfaceCoherence result;
     float2 projected =
         float2(dot(frame.TangentWorld, beam.PropagationWorld), dot(frame.BitangentWorld, beam.PropagationWorld));
@@ -712,7 +713,8 @@ float3 GetHessianSampleWeights(uint sampleIndex)
                                                 ScatteringFrames frames,
                                                 Complex eta,
                                                 out float4 outDeformationX,
-                                                out float4 outDeformationY) {
+                                                out float4 outDeformationY)
+{
     float3 firstAxisWorld = frames.OutgoingParallelWorld * OPTICS_HESSIAN_STEP;
     float3 secondAxisWorld = frames.PerpendicularWorld * OPTICS_HESSIAN_STEP;
     float2 center = float2(0);
@@ -748,7 +750,8 @@ struct Interaction
 /// Scatter a beam that arrives along -incidentWorld towards outgoingWorld: Eq. (16) (or Eq. (21), (32)) for the
 /// Stokes vector, Eq. (20) for the shapes. The returned beam's Stokes vector is the scattered radiance per unit
 /// incident radiance and solid angle times the incident Stokes vector, in the s/p frame (x = p) of the scattering.
-[noinline] Beam ScatterBeam(Beam incident, float3 outgoingWorld, Interaction interaction) {
+[noinline] Beam ScatterBeam(Beam incident, float3 outgoingWorld, Interaction interaction)
+{
     float3 incidentWorld = -incident.PropagationWorld;
     ScatteringFrames frames = MakeScatteringFrames(incident, outgoingWorld);
     float rotation = ComputeFrameRotation(incident, frames);

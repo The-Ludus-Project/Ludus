@@ -12,7 +12,8 @@ struct InitialGiSampleResult
     RayQueryContext Queries;
 };
 [noinline] InitialGiSampleResult
-ComputeInitialGiSample(SceneContext scene, RayLaunch launch, Receiver receiver, RayQueryContext queries) {
+ComputeInitialGiSample(SceneContext scene, RayLaunch launch, Receiver receiver, RayQueryContext queries)
+{
     SampleRecord record = (SampleRecord)0;
     record.Sample.TriangleIndex = SCENE_INVALID_INDEX;
     record.SampleIndex = launch.SampleIndex;

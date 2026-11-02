@@ -43,7 +43,8 @@ struct ShadingPoint
                                     bool isPrimary,
                                     inout RayQueryContext queries,
                                     out ShadingPoint outPoint,
-                                    out float3 outRadiance) {
+                                    out float3 outRadiance)
+{
     outPoint = (ShadingPoint)0;
     outRadiance = float3(0);
     if (HasHitRecordCapacity(launch) == false)
@@ -101,16 +102,16 @@ struct ShadingPoint
     return true;
 }
 
-    /// One sample of one technique of a prepared triangle, with its emission and shadow ray; zero when the technique
-    /// cannot sample, the estimator gives the sample no weight or the sample is occluded.
-    [noinline] float3 SamplePolygonalLightTechnique(SceneContext scene,
-                                                    ShadingPoint shadingPoint,
-                                                    TriangleData triangle,
-                                                    PolygonalLight light,
-                                                    uint estimator,
-                                                    uint technique,
-                                                    float2 randomSample,
-                                                    inout RayQueryContext queries)
+/// One sample of one technique of a prepared triangle, with its emission and shadow ray; zero when the technique
+/// cannot sample, the estimator gives the sample no weight or the sample is occluded.
+[noinline] float3 SamplePolygonalLightTechnique(SceneContext scene,
+                                                ShadingPoint shadingPoint,
+                                                TriangleData triangle,
+                                                PolygonalLight light,
+                                                uint estimator,
+                                                uint technique,
+                                                float2 randomSample,
+                                                inout RayQueryContext queries)
 {
     PolygonalLightSample lightSample;
     if (UsesPolygonalLightTechnique(estimator, technique) == false ||
@@ -155,7 +156,8 @@ struct ShadingPoint
                                        RayLaunch launch,
                                        ShadingPoint shadingPoint,
                                        uint estimator,
-                                       inout RayQueryContext queries) {
+                                       inout RayQueryContext queries)
+{
     uint emitterCount = GetEmitterCount(scene);
     uint lightCount = 0;
     for (uint emitter = 0; emitter < emitterCount; ++emitter)
