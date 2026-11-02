@@ -31,7 +31,26 @@ QString ReadShaderApi(bool isScene)
 {
     QFile file(isScene == true ? QStringLiteral(":/shader-api/scene_shader.slang")
                                : QStringLiteral(":/shader-api/ray_shader.slang"));
-    return file.open(QIODevice::ReadOnly) == true ? QString::fromUtf8(file.readAll()) : QString{};
+    if (file.open(QIODevice::ReadOnly) == false)
+    {
+        return {};
+    }
+    QString api = QString::fromUtf8(file.readAll());
+    if (isScene == true)
+    {
+        const QStringList samplingResources{QStringLiteral(":/shader-api/stochastic_pairwise_mis.slang"),
+                                            QStringLiteral(":/shader-api/stochastic_reuse.slang")};
+        for (const QString& resource : samplingResources)
+        {
+            QFile sampling(resource);
+            if (sampling.open(QIODevice::ReadOnly) == false)
+            {
+                return {};
+            }
+            api += QLatin1Char('\n') + QString::fromUtf8(sampling.readAll());
+        }
+    }
+    return api;
 }
 
 QString GetStructDeclaration(const QString& source, QStringView name)
@@ -79,7 +98,8 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
     }
     if (api.isEmpty() == true)
     {
-        return QStringLiteral("Shader API unavailable: bundled callback declarations are missing.");
+        return QStringLiteral(
+            "Shader API unavailable: bundled shader declarations are missing; repair the editor installation.");
     }
     QStringList lines{QStringLiteral("// %1 (%2)").arg(program.value(QStringLiteral("id")).toString(), stage)};
     if (isScene == true)
@@ -127,7 +147,7 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
         }
         return lines.join(QStringLiteral("\n\n"));
     }
-    const QRegularExpression structures(QStringLiteral("\\bstruct\\s+(\\w+)\\s*\\{[^}]*\\};"));
+    const QRegularExpression structures(QStringLiteral("\\b(?:struct|interface)\\s+(\\w+)\\s*\\{[^}]*\\};"));
     QRegularExpressionMatchIterator structureMatches = structures.globalMatch(api);
     while (structureMatches.hasNext() == true)
     {
@@ -180,7 +200,7 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
     QStringList functions{
         QStringLiteral("uint TraceAndShade(\n    SceneContext scene,\n    inout RayQueryContext queries,\n"
                        "    Ray ray,\n    inout ScenePayload payload);")};
-    const QRegularExpression signatures(QStringLiteral("^\\w+ [A-Z]\\w*\\([^)]*\\)(?=\\s*\\{)"),
+    const QRegularExpression signatures(QStringLiteral("^\\w+ [A-Z]\\w*(?:<[^>]+>)?\\([^)]*\\)(?=\\s*\\{)"),
                                         QRegularExpression::MultilineOption);
     QRegularExpressionMatchIterator signatureMatches = signatures.globalMatch(api);
     while (signatureMatches.hasNext() == true)

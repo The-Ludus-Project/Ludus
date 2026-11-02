@@ -398,6 +398,22 @@ float ComputeReconnectionJacobian(float3 sourceReceiverWorld, float3 destination
     return isfinite(jacobian) == true ? jacobian : 0;
 }
 
+// Share the scattered target's BSDF evaluation without changing the original
+// unscattered target arithmetic in the Default and Production configurations.
+[noinline] float
+EvaluateScatteredGiTarget(TargetContext target, GiSample sample, float3 offsetWorld, float distanceSquared) {
+    float3 directionWorld = offsetWorld * rsqrt(distanceSquared);
+    float cosSurface = dot(target.Shading.ShadingNormalWorld, directionWorld);
+    float3 bsdfValue;
+    float bsdfDensity;
+    EvaluateStandardBsdf(target.Shading.Material,
+                         target.Shading.ViewDirectionWorld,
+                         directionWorld,
+                         bsdfValue,
+                         bsdfDensity);
+    return cosSurface > 0 ? max(ComputeLuminance(sample.RadianceOut * bsdfValue * cosSurface), 0) : 0;
+}
+
 /// Target function p_q at this pixel's visible point (section 4.2): the luminance of L_o (Equation 10) or, with
 /// IS_RESTIR_GI_TARGET_SCATTERED, of L_o f cos (Equation 9). Zero below the visible point's hemisphere.
 float EvaluateTarget(TargetContext target, GiSample sample, SurfaceHit samplePoint)
@@ -410,16 +426,7 @@ float EvaluateTarget(TargetContext target, GiSample sample, SurfaceHit samplePoi
         return 0;
     if (IS_RESTIR_GI_TARGET_SCATTERED == false)
         return max(ComputeLuminance(sample.RadianceOut), 0);
-    float3 directionWorld = offsetWorld * rsqrt(distanceSquared);
-    float cosSurface = dot(target.Shading.ShadingNormalWorld, directionWorld);
-    float3 bsdfValue;
-    float bsdfDensity;
-    EvaluateStandardBsdf(target.Shading.Material,
-                         target.Shading.ViewDirectionWorld,
-                         directionWorld,
-                         bsdfValue,
-                         bsdfDensity);
-    return cosSurface > 0 ? max(ComputeLuminance(sample.RadianceOut * bsdfValue * cosSurface), 0) : 0;
+    return EvaluateScatteredGiTarget(target, sample, offsetWorld, distanceSquared);
 }
 
 /// Algorithm 1's UPDATE with a candidate that represents candidateCount samples. Zero-weight candidates still count.

@@ -1,31 +1,7 @@
 #pragma once
 
-static const uint PAIRWISE_TILE_WIDTH = 8;
-// A uniform mixture preserves positive selection probability even when a tiny
-// positive mass disappears during floating-point prefix accumulation.
-static const float PAIRWISE_UNIFORM_PROBABILITY = 0.05f;
-
-uint2 GetPairwiseTileExtent(RayLaunch launch)
-{
-    uint2 originPixel = launch.PositionPixel / PAIRWISE_TILE_WIDTH * PAIRWISE_TILE_WIDTH;
-    return min(uint2(PAIRWISE_TILE_WIDTH), launch.ExtentPixel - originPixel);
-}
-
-uint GetPairwisePixel(RayLaunch launch, uint slot)
-{
-    uint2 originPixel = launch.PositionPixel / PAIRWISE_TILE_WIDTH * PAIRWISE_TILE_WIDTH;
-    uint2 extentPixel = GetPairwiseTileExtent(launch);
-    uint2 positionPixel = originPixel + uint2(slot % extentPixel.x, slot / extentPixel.x);
-    return positionPixel.y * launch.ExtentPixel.x + positionPixel.x;
-}
-
-uint GetPairwiseCanonicalSlot(RayLaunch launch)
-{
-    uint2 extentPixel = GetPairwiseTileExtent(launch);
-    uint2 localPixel = launch.PositionPixel % PAIRWISE_TILE_WIDTH;
-    return localPixel.y * extentPixel.x + localPixel.x;
-}
-
+// DI adapter: immutable CDF tail follows four history words per pixel.
+static const uint PAIRWISE_TILE_WIDTH = REUSE_CELL_WIDTH;
 bool HasPairwiseCellCapacity(RayLaunch launch)
 {
     uint words;
@@ -49,24 +25,40 @@ void StorePairwiseCell(RayLaunch launch, uint pixel, uint4 record)
     GraphBuffer0[offset + pixel] = record;
 }
 
+struct DiPairwiseCellReader : IPairwiseCellReader
+{
+    uint Offset;
+    float ReadPrefix(uint pixel)
+    {
+        return asfloat(GraphBuffer0[Offset + pixel].x);
+    }
+};
+DiPairwiseCellReader MakeDiPairwiseCellReader(RayLaunch launch)
+{
+    DiPairwiseCellReader reader;
+    reader.Offset = launch.ExtentPixel.x * launch.ExtentPixel.y * RESERVOIR_WORD_COUNT;
+    return reader;
+}
+uint2 GetPairwiseTileExtent(RayLaunch launch)
+{
+    return GetReuseCellExtent(launch);
+}
+uint GetPairwisePixel(RayLaunch launch, uint slot)
+{
+    return GetReuseCellPixel(launch, slot);
+}
+uint GetPairwiseCanonicalSlot(RayLaunch launch)
+{
+    return GetReuseCanonicalSlot(launch);
+}
 float GetPairwiseMass(RayLaunch launch, uint slot)
 {
-    float prefix = asfloat(LoadPairwiseCell(launch, GetPairwisePixel(launch, slot)).x);
-    float previous = slot == 0 ? 0 : asfloat(LoadPairwiseCell(launch, GetPairwisePixel(launch, slot - 1)).x);
-    return max(prefix - previous, 0);
+    return ComputeReuseCellMass(launch, MakeDiPairwiseCellReader(launch), slot);
 }
-
 uint SamplePairwiseIndex(RayLaunch launch, uint dimension, uint bound, inout RayQueryContext queries)
 {
-    uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
-    RandomAddress address = MakeRandomAddress(uint2(pixel, GetGraphPassIndex()), launch.SampleIndex, dimension);
-    uint result = 0;
-    if (TrySampleRandomBounded(launch.Seed, address, bound, result) == false)
-        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_RANDOM_EXHAUSTED);
-    return result;
+    return SampleReuseCellIndex(launch, GetGraphPassIndex(), dimension, bound, queries);
 }
-
-// Draws with replacement; the canonical pixel is excluded from both proposals.
 uint SamplePairwiseNeighbor(RayLaunch launch,
                             uint dimension,
                             uint canonicalSlot,
@@ -74,31 +66,12 @@ uint SamplePairwiseNeighbor(RayLaunch launch,
                             out float outProbability,
                             inout RayQueryContext queries)
 {
-    uint2 extentPixel = GetPairwiseTileExtent(launch);
-    uint count = extentPixel.x * extentPixel.y - 1;
-    float uniformProbability = totalMass > 0 ? PAIRWISE_UNIFORM_PROBABILITY : 1;
-    uint slot = SamplePairwiseIndex(launch, dimension + 1, count, queries);
-    slot += slot >= canonicalSlot ? 1 : 0;
-    if (SampleReuseRandom(launch, dimension) >= uniformProbability)
-    {
-        float position = SampleReuseRandom(launch, dimension + 2) * totalMass;
-        // Scan only cached scalar masses, never shifted BSDFs or visibility.
-        [loop] for (uint candidate = 0; candidate <= count; ++candidate)
-        {
-            if (candidate == canonicalSlot)
-                continue;
-            float mass = GetPairwiseMass(launch, candidate);
-            if (mass > 0)
-            {
-                slot = candidate;
-                if (position < mass)
-                    break;
-                position -= mass;
-            }
-        }
-    }
-    outProbability = uniformProbability / float(count);
-    if (totalMass > 0)
-        outProbability += (1 - uniformProbability) * GetPairwiseMass(launch, slot) / totalMass;
-    return slot;
+    return SampleReuseCellNeighbor(launch,
+                                   MakeDiPairwiseCellReader(launch),
+                                   GetGraphPassIndex(),
+                                   dimension,
+                                   canonicalSlot,
+                                   totalMass,
+                                   outProbability,
+                                   queries);
 }

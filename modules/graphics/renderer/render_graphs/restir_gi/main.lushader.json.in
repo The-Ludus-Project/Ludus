@@ -136,6 +136,33 @@
       "input": "RayLaunch",
       "output": "Radiance",
       "bindings": []
+    },
+    {
+      "id": "UnbiasedPairwiseInitial",
+      "stage": "compute",
+      "source": "main_shaders/pairwise_initial.slang",
+      "function": "InitializePairwiseGi",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "UnbiasedPairwiseCells",
+      "stage": "compute",
+      "source": "main_shaders/pairwise_cells.slang",
+      "function": "BuildPairwiseGiCells",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "UnbiasedPairwiseSpatial",
+      "stage": "compute",
+      "source": "main_shaders/pairwise_spatial.slang",
+      "function": "ResamplePairwiseGi",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
     }
   ],
   "techniques": [
@@ -270,6 +297,22 @@
       "label": "Unbiased reuse (visibility rays)",
       "type": "Bool",
       "value": true
+    },
+    {
+      "id": "RESTIR_PAIRWISE_SAMPLES",
+      "label": "Stochastic pairwise: neighbor draws",
+      "type": "UInt32",
+      "value": 3,
+      "minimum": 1,
+      "maximum": 8
+    },
+    {
+      "id": "RESTIR_PAIRWISE_CANONICAL_SAMPLES",
+      "label": "Stochastic pairwise: canonical draws",
+      "type": "UInt32",
+      "value": 1,
+      "minimum": 1,
+      "maximum": 8
     }
   ]
 }
