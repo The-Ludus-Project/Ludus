@@ -207,6 +207,25 @@ void ViewportObjectInteraction::SetImageSize(QSize size)
         Q_EMIT Changed();
     }
 }
+void ViewportObjectInteraction::SetPresentedView(const math::Matrix4& worldToClip)
+{
+    if (mHasPresentedView == true && worldToClip == mPresentedWorldToClip)
+    {
+        return;
+    }
+    // A drag keeps the projection it was pressed with; the next build or press picks this one up.
+    mPresentedWorldToClip = worldToClip;
+    mHasPresentedView = true;
+    Q_EMIT Changed();
+}
+void ViewportObjectInteraction::ClearPresentedView()
+{
+    if (mHasPresentedView == true)
+    {
+        mHasPresentedView = false;
+        Q_EMIT Changed();
+    }
+}
 QRectF ViewportObjectInteraction::resolveFrame(const QRectF& framePixel) const
 {
     if (mImageSize.isEmpty() == true)
@@ -236,7 +255,8 @@ bool ViewportObjectInteraction::describe(const QRectF& framePixel, math::Matrix4
     {
         return false;
     }
-    outWorldToClip = view.WorldToClip;
+    // The live camera can be ahead of an asynchronously rendered image; draw over what is shown.
+    outWorldToClip = mHasPresentedView == true ? mPresentedWorldToClip : view.WorldToClip;
     return true;
 }
 bool ViewportObjectInteraction::project(math::Vector3 positionWorld, QPointF& outPositionPixel) const

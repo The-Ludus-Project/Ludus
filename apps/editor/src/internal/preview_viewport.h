@@ -154,6 +154,8 @@ private:
     foundation::UniquePtr<State> mState;
     ViewportObjectInteraction* mObjectInteraction;
     void updateObjectInteractionAvailability();
+    /// Point object selection at the camera of the shown project graph frame, or the live camera.
+    void applyPresentedView();
     [[nodiscard]] QRectF getInteractionFrame() const;
     [[nodiscard]] QPointF getInteractionPosition(QPointF globalPosition) const;
     /// Snap the camera to the axis view of the orientation handle under globalPosition. False when the

@@ -8,6 +8,7 @@
 #    include "internal/world_document.h"
 
 #    include <ludus/foundation/base/types.h>
+#    include <ludus/graphics/renderer/renderer.hpp>
 
 #    include <QColor>
 #    include <QGuiApplication>
@@ -67,6 +68,65 @@ TEST_CASE("Native object overlays batch bounded strokes into reusable clipped tr
     REQUIRE(rootOrNull != nullptr);
     overlay.FramePixel = {};
     CHECK(UpdateViewportObjectOverlayNode(overlay, rootOrNull) == nullptr);
+}
+
+TEST_CASE("Selection wire cages and picking follow the presented image camera, not the live one",
+          "[editor][object-interaction]")
+{
+    RenderScene scene;
+    scene.Identity = QByteArrayLiteral("presented-view-object-overlay-fixture");
+    PreviewMesh mesh;
+    mesh.Positions = {{-1, -1, 0}, {1, -1, 0}, {0, 1, 0}};
+    mesh.Indices = {0, 1, 2};
+    scene.Meshes.append(mesh);
+    PreviewObject object;
+    object.Id = QStringLiteral("selected");
+    object.Transform.Translation = {0.5F, 0, 0};
+    scene.Objects.append(object);
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(scene) == true);
+    WorldDocument document;
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, object.Id, false);
+    const QRectF framePixel{0, 0, 800, 600};
+    ViewportObjectOverlay shown;
+    interaction.BuildOverlay(framePixel, shown);
+    REQUIRE(shown.WireLinesPixel.GetSize() == 3);
+    const QPointF centroidPixel =
+        (shown.WireLinesPixel[0].p1() + shown.WireLinesPixel[1].p1() + shown.WireLinesPixel[2].p1()) / 3.0;
+    REQUIRE(interaction.Pick(centroidPixel, framePixel) == object.Id);
+
+    // An asynchronously rendered image still shows the camera it was rendered with.
+    ludus::graphics::renderer::ViewDescription view;
+    QString error;
+    REQUIRE(preview.DescribeConventionalView(static_cast<uint32>(framePixel.width()),
+                                             static_cast<uint32>(framePixel.height()),
+                                             view,
+                                             error) == true);
+    QSignalSpy changes(&interaction, &ViewportObjectInteraction::Changed);
+    interaction.SetPresentedView(view.WorldToClip);
+    CHECK(changes.count() == 1);
+    interaction.SetPresentedView(view.WorldToClip);
+    CHECK(changes.count() == 1);
+    preview.Orbit(40, 15);
+    ViewportObjectOverlay presented;
+    interaction.BuildOverlay(framePixel, presented);
+    REQUIRE(presented.WireLinesPixel.GetSize() == shown.WireLinesPixel.GetSize());
+    constexpr float64 TOLERANCE_PIXELS = 0.01;
+    for (usize line = 0; line < shown.WireLinesPixel.GetSize(); ++line)
+    {
+        const QPointF differencePixel = presented.WireLinesPixel[line].p1() - shown.WireLinesPixel[line].p1();
+        CHECK(differencePixel.manhattanLength() < TOLERANCE_PIXELS);
+    }
+    CHECK(interaction.Pick(centroidPixel, framePixel) == object.Id);
+
+    // Without a presented image the cage follows navigation again.
+    interaction.ClearPresentedView();
+    ViewportObjectOverlay live;
+    interaction.BuildOverlay(framePixel, live);
+    REQUIRE(live.WireLinesPixel.GetSize() == shown.WireLinesPixel.GetSize());
+    const QPointF movedPixel = live.WireLinesPixel[0].p1() - shown.WireLinesPixel[0].p1();
+    CHECK(movedPixel.manhattanLength() > 1);
 }
 
 TEST_CASE("Native selection highlighting renders without a full-viewport painted texture",

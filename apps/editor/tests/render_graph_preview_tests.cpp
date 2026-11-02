@@ -643,12 +643,29 @@ TEST_CASE("RG3b preview renders a cooked World through the editor camera", "[edi
     RenderGraphPreview preview = MakePreview();
     REQUIRE(preview.Attach(device.Device, device.Surface) == true);
     preview.SetExtraction(extraction);
+    renderer::ViewDescription presented;
+    CHECK(preview.TryGetPresentedView(presented) == false);
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
     REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 1; }) == true);
     CHECK(preview.GetPresentedRevision() == 1);
     // The framed triangle covers the center; the corner stays the graph's clear color.
     CheckCenter(preview.GetImage(), 255, 0, 0);
     CHECK(preview.GetImage().pixelColor(0, 0) != preview.GetImage().pixelColor(WIDTH / 2, HEIGHT / 2));
+    REQUIRE(preview.TryGetPresentedView(presented) == true);
+    CHECK(presented.WorldToClip == view.WorldToClip);
+
+    // Selection overlays project through the shown frame's camera: a newer camera is reported
+    // only once a frame rendered with it replaces the image.
+    viewport.Orbit(30, 0);
+    renderer::ViewDescription moved;
+    REQUIRE(viewport.DescribeConventionalView(WIDTH, HEIGHT, moved, error) == true);
+    REQUIRE((moved.WorldToClip == view.WorldToClip) == false);
+    preview.SetCamera(moved, 2);
+    REQUIRE(preview.TryGetPresentedView(presented) == true);
+    CHECK(presented.WorldToClip == view.WorldToClip);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 2; }) == true);
+    REQUIRE(preview.TryGetPresentedView(presented) == true);
+    CHECK(presented.WorldToClip == moved.WorldToClip);
     preview.Detach();
 }
 
