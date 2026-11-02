@@ -5623,7 +5623,9 @@ the mesh-light record layout its resolve reads; older deferred packages must be
 cooked again. Version 29 appends each pass's ToneMap curve and admits ToneMap on
 this raster output; earlier packages read as Reinhard and keep clamped linear output.
 Version 30 adds the bounding-sphere header word to each mesh-light record, so earlier
-deferred packages are rejected and must be cooked again.
+deferred packages are rejected and must be cooked again. Version 31 appends the
+`DeferredOpaqueGBufferFragment` role described below; version 30 packages remain
+accepted and draw every material through the coverage-testing G-buffer fragment.
 
 Select **ZPrepass** in the preview configuration
 selector to enable a separate depth-only pass. That pass clears and stores depth;
@@ -5658,9 +5660,29 @@ depth and sixteen binding slots. Unsupported devices fail explicitly. The initia
 profile admits one clear/store opaque color node and its optional immediately
 preceding prepass with the same camera/depth.
 The profile retains the graph adapter's conventional-depth requirement. Transparent
-and masked deferred materials, MSAA, baked lighting, GPU cluster assignment, image
+deferred materials, MSAA, baked lighting, GPU cluster assignment, image
 upscale integration and arbitrary MRT graph authoring remain outside this initial
 offline profile.
+
+The package compiles the G-buffer stage twice from the same `MaterialMain`. The
+`DeferredGBufferFragment` applies an alpha-masked material's cutoff with a `discard`;
+`DeferredOpaqueGBufferFragment` is compiled with `LUDUS_OPAQUE_COVERAGE` and has no
+discard. The renderer draws every opaque material first through the second, then the
+masked materials through the first. On Apple GPUs a fragment function that merely
+contains a discard produces "feedback" fragments that weaken hidden-surface removal
+for the whole draw, even for materials that never take the branch (Apple, "Optimize
+Metal Performance for Apple silicon Macs", WWDC20 session 10632). Measured with the
+`[.raster-mesh-light-benchmark]` editor test on an Apple M5 at 1600 x 1080 (fastest of
+three interleaved runs; the version 30 package against the version 31 package on the
+same build). The images were bit-identical.
+
+| View | G-buffer pass before | After | Whole frame before | After |
+| --- | --- | --- | --- | --- |
+| Bistro, camera inside the square | 5.77 ms | 2.74 ms | 13.6 ms | 9.9 ms |
+| Bistro, default orbit | 3.60 ms | 2.36 ms | 7.5 ms | 6.2 ms |
+| Bistro, street | 3.24 ms | 2.02 ms | 5.0 ms | 3.3 ms |
+| Sponza, default orbit | 2.35 ms | 1.70 ms | 3.5 ms | 3.2 ms |
+| Bathroom, default orbit | 1.53 ms | 1.19 ms | 2.2 ms | 1.8 ms |
 
 Prepared scenes own immutable resolve bindings and private targets. Camera edits
 replace only the view bindings; resize/scene changes prepare a separate target set
