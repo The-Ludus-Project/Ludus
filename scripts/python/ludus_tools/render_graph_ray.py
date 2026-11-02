@@ -344,7 +344,9 @@ def group_profiles(plans, technique, build):
     if not groups:
         build.require(all(stage in technique for stage in STAGES), 'Configuration', TECHNIQUE,
                       'a ray technique without default callbacks requires a RayTracingPipeline or scene compute pass')
-        groups[(technique.get('scene_interface', {}).get('visibility_buffer', False), True)] = {
+        # No visibility pass dispatches the default callbacks, so the kernel reads no visibility
+        # inputs and reflection drops them, even when scene_interface.visibility_buffer permits them.
+        groups[(False, True)] = {
             'variants': {tuple(technique[stage] for stage in STAGES)}, 'persistent': False, 'structured_buffers': False}
     result = []
     for (has_visibility, has_native_queries), group in sorted(groups.items()):
