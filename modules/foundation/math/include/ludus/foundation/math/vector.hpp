@@ -205,6 +205,11 @@ struct Vector3d
 {
     return Vector3d{v.X * s, v.Y * s, v.Z * s};
 }
+/// Componentwise binary64 product; does not normalize or change coordinate space.
+[[nodiscard]] constexpr Vector3d Hadamard(Vector3d first, Vector3d second) noexcept
+{
+    return Vector3d{first.X * second.X, first.Y * second.Y, first.Z * second.Z};
+}
 [[nodiscard]] constexpr float64 Dot(Vector3d a, Vector3d b) noexcept
 {
     return a.X * b.X + a.Y * b.Y + a.Z * b.Z;

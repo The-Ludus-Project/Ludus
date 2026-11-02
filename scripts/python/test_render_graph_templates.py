@@ -136,7 +136,9 @@ class RestirProductionTemplateTests(unittest.TestCase):
                 variants = {ray.program_tuple(operation["pipeline"]) for plan in plans for operation in plan["passes"]
                             if operation["kind"] == "RayTracing"}
                 # Each built-in package has five distinct callbacks but no configuration runs more than four.
-                self.assertGreater(len(variants), ray.MAX_RAY_PASSES)
+                maximum_active = max(sum(operation["kind"] == "RayTracing" for operation in plan["passes"])
+                                     for plan in plans)
+                self.assertGreater(len(variants), maximum_active)
                 self.assertLessEqual(len(variants), ray.MAX_RAY_PROGRAMS)
                 files = render_graph_templates.template_files("restir-" + kind, ("metal",), graph)
                 # Graph allocation and shader addressing must agree on both banks and the explicit word layout.
@@ -163,19 +165,27 @@ class RestirProductionTemplateTests(unittest.TestCase):
             asset = json.loads(root.read_text())
             library = json.loads(library_path.read_text())
             manifest = json.loads(manifest_path.read_text())
+            production = library["configurations"][1]
+            base_node = next(node for node in production["nodes"] if node["id"] == "shade")
+            previous = "shade"
             for index in range(ray.MAX_RAY_PROGRAMS - 4):
                 identity = "Extra" + str(index)
-                configuration = copy.deepcopy(asset["configurations"][1])
-                configuration["id"] = identity
-                next(node for node in configuration["nodes"] if node["kind"] == "Subgraph")["configuration"] = identity
-                asset["configurations"].append(configuration)
-                configuration = copy.deepcopy(library["configurations"][1])
-                configuration["id"] = identity
-                next(node for node in configuration["nodes"] if node["id"] == "shade")["shaders"][0]["program"] = identity
-                library["configurations"].append(configuration)
+                node = copy.deepcopy(base_node)
+                node["id"] = identity
+                node["shaders"][0]["program"] = identity
+                production["nodes"].append(node)
+                production["edges"].extend([
+                    {"from": "input.scene", "to": identity + ".scene"},
+                    {"from": "input.view", "to": identity + ".view"},
+                    {"from": previous + ".color", "to": identity + ".color"},
+                    {"from": previous + ".history", "to": identity + ".history"},
+                ])
+                previous = identity
                 program = copy.deepcopy(next(program for program in manifest["programs"] if program["id"] == "ProductionShade"))
                 program["id"] = identity
                 manifest["programs"].append(program)
+            production["outputs"][0]["source"] = previous + ".color"
+            manifest["budgets"]["programs"] = len(manifest["programs"])
             root.write_text(json.dumps(asset))
             library_path.write_text(json.dumps(library))
             manifest_path.write_text(json.dumps(manifest))

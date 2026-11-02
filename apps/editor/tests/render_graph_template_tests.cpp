@@ -2002,7 +2002,13 @@ TEST_CASE("ReSTIR GI template is created from the editor picker with its four pa
         INFO(identity);
         CHECK(library.contains(identity) == true);
     }
-    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    // Production is a second root configuration with its own film/display nodes.
+    const QJsonArray configurations = QJsonDocument::fromJson(document.GetDraft(ROOT_GRAPH))
+                                          .object()
+                                          .value(QStringLiteral("configurations"))
+                                          .toArray();
+    REQUIRE(configurations.isEmpty() == false);
+    const QByteArray root = QJsonDocument(configurations.first().toObject()).toJson();
     CHECK(root.count("\"Accumulate\"") == 1);
     CHECK(root.count("\"ToneMap\"") == 1);
     CHECK(document.GetDraft(QStringLiteral("main_shaders/reservoir.slang")).contains("ComputeReconnectionJacobian") ==
@@ -3307,4 +3313,58 @@ TEST_CASE("Canvas template picker offers to remove unused settings that block a 
         CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
         CHECK(document.GetFiles() == beforeFiles);
     }
+}
+
+TEST_CASE("Guided FG imports its complete photon graph and undoes the insertion", "[editor][render-graph][guided-fg]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray before = document.GetDraft(COMPUTE_MANIFEST);
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Photons"), QStringLiteral("guided-restir-fg-plus")) ==
+            true);
+    const QByteArray library = document.GetDraft(QStringLiteral("Photons.lurender.json"));
+    CHECK(library.count("\"ComputePipeline\"") == 10);
+    CHECK(library.count("\"Buffer\"") > 5);
+    CHECK(library.contains("GuidedRestirFgPlusTracePhotons") == true);
+    for (const QString& name : {QStringLiteral("core"),
+                                QStringLiteral("storage"),
+                                QStringLiteral("projection"),
+                                QStringLiteral("path_evaluation"),
+                                QStringLiteral("caustic_evaluation"),
+                                QStringLiteral("transport")})
+        CHECK(document.GetDraft(QStringLiteral("guided_restir_fg_plus/main_shaders/") + name + QStringLiteral(".slang"))
+                  .isEmpty() == false);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("FG_PHOTON_PATHS") == true);
+    workspace.Undo();
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == before);
+    workspace.Redo();
+    CHECK(document.GetDraft(QStringLiteral("Photons.lurender.json")) == library);
+    ReplaceRasterSubgraph(document, QStringLiteral("Photons"));
+    REQUIRE(workspace.Save() == true);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("Guided FG is created from the graph picker with Properties hidden", "[editor][render-graph][guided-fg]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    QWidget properties;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    QWidget* inspector = workspace.TakeInspectorPanel(&properties);
+    REQUIRE(inspector != nullptr);
+    inspector->hide();
+    properties.hide();
+    workspace.show();
+    CreateGraphFromPicker(workspace, QStringLiteral("guided-restir-fg-plus"));
+    RenderGraphDocument& document = workspace.GetDocument();
+    CHECK(document.GetDraft(QStringLiteral("library.lurender.json")).count("\"ComputePipeline\"") == 10);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/photons.slang")).contains("TracePhotons") == true);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("FG_PHOTON_PATHS") == true);
+    RequireValidation(workspace);
 }

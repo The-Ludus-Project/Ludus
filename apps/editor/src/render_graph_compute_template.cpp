@@ -425,6 +425,11 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
         selected.ProgramPrefix = QStringLiteral("RaoBlackwellMh");
         selected.Name = QStringLiteral("Rao-Blackwellized MH");
     }
+    else if (templateIdentity == QStringLiteral("guided-restir-fg-plus"))
+    {
+        selected.ProgramPrefix = QStringLiteral("GuidedRestirFgPlus");
+        selected.Name = QStringLiteral("Guided ReSTIR FG+");
+    }
     else if (templateIdentity == QStringLiteral("restir-gi"))
     {
         selected.ProgramPrefix = QStringLiteral("RestirGi");

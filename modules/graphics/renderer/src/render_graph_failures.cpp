@@ -2,6 +2,7 @@
 #include <ludus/graphics/renderer/scene_shader_layout.h>
 
 #include "../shaders/metropolis_layout.h"
+#include "../shaders/photon_layout.h"
 #include "../shaders/renderer_gpu_preview_layout.h"
 
 // Failure reasons a graph ray kernel counts (renderer_gpu_preview.slang, CountGraphFailure). The shader codes in
@@ -35,6 +36,9 @@ static_assert(ToCode(RenderGraphFailureReason::InvalidWeight) == LUDUS_SCENE_FAI
 static_assert(ToCode(RenderGraphFailureReason::BsdfOnlyLights) == LUDUS_SCENE_FAILURE_BSDF_ONLY_LIGHTS);
 static_assert(ToCode(RenderGraphFailureReason::PrimaryMaterial) == LUDUS_SCENE_FAILURE_PRIMARY_MATERIAL);
 static_assert(RENDER_GRAPH_FAILURE_AUTHORED_FIRST == LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
+static_assert(ToCode(RenderGraphFailureReason::PhotonCamera) == LUDUS_SCENE_FAILURE_PHOTON_CAMERA);
+static_assert(ToCode(RenderGraphFailureReason::PhotonCapacity) == LUDUS_SCENE_FAILURE_PHOTON_CAPACITY);
+static_assert(ToCode(RenderGraphFailureReason::PhotonDispatch) == LUDUS_SCENE_FAILURE_PHOTON_DISPATCH);
 static_assert(MAX_RENDER_GRAPH_FAILURE_REASONS == LUDUS_SCENE_FAILURE_REASON_COUNT);
 static_assert(LUDUS_GRAPH_FAILURE_BYTES == MAX_RENDER_GRAPH_FAILURE_REASONS * sizeof(uint32));
 
@@ -51,11 +55,22 @@ const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
     }
     switch (static_cast<RenderGraphFailureReason>(reason))
     {
+        case RenderGraphFailureReason::PhotonDispatch:
+            return "Guided ReSTIR FG+ needs a whole-image dispatch. Set the ray tile count to one; for an "
+                   "automatically "
+                   "tiled frame capture, reduce resolution or select another render graph.";
+        case RenderGraphFailureReason::PhotonCamera:
+            return "Guided ReSTIR FG+ backprojects photons through a perspective camera. Select a perspective camera "
+                   "or use another render graph for orthographic views.";
+        case RenderGraphFailureReason::PhotonCapacity:
+            return "Guided ReSTIR FG+ requires its 64 MiB photon pool, at most 32768 light records, and at least one "
+                   "render pixel per finite light. Restore the template pool size, reduce the light count, or increase "
+                   "RenderSize to cover the lights. The authoring guide lists the buffer layout and limits.";
         case RenderGraphFailureReason::BsdfOnlyLights:
             return "This BSDF-only path template cannot sample analytic lights. Select a light-sampling graph, or "
                    "replace the analytic lights with authored emissive meshes or an environment.";
         case RenderGraphFailureReason::PrimaryMaterial:
-            return "This primary-sample template does not support coated-diffuse internal random walks. Select a "
+            return "This path template does not support coated-diffuse internal random walks. Select a "
                    "renderer supporting coatings, or explicitly author a diffuse or conductor material.";
         case RenderGraphFailureReason::Unspecified:
             return "A shader set queries.HasFailed without a reason. Building the graph lists each such line as a "

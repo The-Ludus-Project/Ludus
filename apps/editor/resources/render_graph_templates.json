@@ -171,6 +171,25 @@
       "description": "ReSTIR GI from Ouyang, Liu, Kettunen, Pharr and Pantaleoni (2021): every pixel traces one indirect sample point and path traces the light it scatters back, then reservoirs reuse those samples across frames and nearby pixels, with the reconnection Jacobian and visibility rays that keep the reuse unbiased. Four passes (initial samples, temporal reuse, spatial reuse, shading) share three automatically sized buffers; the shading pass adds direct lighting with light and BSDF sampling. Temporal reuse has no motion reprojection. Requires native ray tracing."
     },
     {
+      "kind": "graph",
+      "identity": "guided-restir-fg-plus",
+      "label": "Guided ReSTIR FG+ — photon guiding and caustics",
+      "category": "ray-traced",
+      "requirements": [
+        "compute-ray-tracing"
+      ],
+      "keywords": [
+        "photon",
+        "caustics",
+        "restir",
+        "final gather",
+        "many lights",
+        "kern",
+        "guiding"
+      ],
+      "description": "Bounded reflective Guided ReSTIR FG+ (Kern et al., 2026): photon guiding, final gathering, hybrid replay/reconnection path reuse and backprojected temporal caustics. Uses Metal or Vulkan compute. Static history; no transmission or coated diffuse. Fixed photon radius is biased. See the authoring guide for memory and sampling limits."
+    },
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
@@ -319,6 +338,26 @@
       "requirements": ["native-ray-tracing"],
       "keywords": ["restir", "restir gi", "ouyang", "global illumination", "indirect lighting", "path resampling", "reservoir", "spatiotemporal reuse", "path tracing"],
       "description": "Initial-sample, temporal-reuse, spatial-reuse and shading passes sharing three automatically sized buffers: indirect lighting resampled across frames and nearby pixels (Ouyang et al.) plus direct lighting with light and BSDF sampling. Connect scene, view and color; requires native ray tracing."
+    },
+    {
+      "kind": "snippet",
+      "identity": "guided-restir-fg-plus",
+      "label": "Guided ReSTIR FG+ — photon guiding and caustics",
+      "category": "lighting",
+      "requirements": [
+        "compute-ray-tracing"
+      ],
+      "keywords": [
+        "photon",
+        "caustics",
+        "restir",
+        "final gather",
+        "many lights",
+        "kern",
+        "guiding"
+      ],
+      "description": "Bounded reflective Guided ReSTIR FG+ (Kern et al., 2026): photon guiding, final gathering, hybrid replay/reconnection path reuse and backprojected temporal caustics. Uses Metal or Vulkan compute. Static history; no transmission or coated diffuse. Fixed photon radius is biased. See the authoring guide for memory and sampling limits.",
+      "defaultConfiguration": "GuidedRestirFgPlus"
     },
     {
       "kind": "snippet",

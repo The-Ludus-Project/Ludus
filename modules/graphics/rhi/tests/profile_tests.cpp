@@ -91,7 +91,7 @@ TEST_CASE("Profile requests are copied and enabled snapshots are invalidated by 
     fixture.Complete();
     REQUIRE(GetDeviceInfo(fixture.Device, info) == DeviceStatus::Ready);
     CHECK(info.Enabled.Compute);
-    CHECK(info.Profile.Storage.ResourcesPerKind == 64);
+    CHECK(info.Profile.Storage.ResourcesPerKind == DEFAULT_RESOURCE_RECORD_COUNT);
     CHECK(info.Profile.Storage.HostBytes == StorageLimits{}.HostBytes);
     CHECK(info.Profile.Interface.MaxBindings == RASTER_BINDING_COUNT);
     REQUIRE(GetFormatCapabilities(fixture.Device, RasterFormat::Rg8Unorm, format) == RasterStatus::Ready);
@@ -133,8 +133,7 @@ TEST_CASE("Required profile limits and formats fail before resource creation wit
     ProfileRequirement expected = ProfileRequirement::None;
     SECTION("engine capacity")
     {
-        request.RequiredProfile.Raster.MinResourcesPerKind =
-            static_cast<ludus::foundation::uint32>(internal::RASTER_CAPACITY) + 1;
+        request.RequiredProfile.Raster.MinResourcesPerKind = request.Storage.ResourcesPerKind + 1;
         expected = ProfileRequirement::ResourceCount;
     }
     SECTION("binding capacity")
