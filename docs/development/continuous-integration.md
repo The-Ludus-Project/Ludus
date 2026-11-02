@@ -421,7 +421,13 @@ consuming the raster test's deadline. `--durations yes` identifies completed
 cases when a deadline fails. Render-graph capture tests allow 60 seconds for the
 first submitted ray sample after initialization or a scene/camera reset, including
 first-use software shader work; subsequent samples retain the 10-second completion
-bound. Performance qualification remains in its own lane.
+bound. The interactive graph preview uses the same first-sample allowance while keeping its last presented frame.
+Performance qualification remains in its own lane.
+
+The offscreen editor suite runs as four serial Catch2 shards and the canvas
+configuration suite as two. Declaration order gives each case exactly one shard;
+the existing 600- and 180-second deadlines apply per shard. CTest resource locking
+keeps those GPU and shader-worker owners serial even under a parallel CTest run.
 
 ## Scheduled runtime profiling
 

@@ -30,6 +30,8 @@ namespace
 {
 /// Wall-clock producer deadline, independent of the completion polling cadence.
 constexpr int32 MAX_PRODUCER_MILLISECONDS = 10'000;
+/// First-use software shader execution can exceed an ordinary frame's deadline.
+constexpr int32 FIRST_SAMPLE_PRODUCER_MILLISECONDS = 60'000;
 /// Interval between failure summary read-backs; each reads 256 bytes of one ray pass.
 constexpr int64 FAILURE_POLL_MILLISECONDS = 500;
 constexpr float64 NANOSECONDS_PER_MILLISECOND = 1'000'000.0;
@@ -460,6 +462,7 @@ struct RenderGraphPreview::State final
     QString MaterialStatus;
     bool IsAwaitingProducer = false;
     QElapsedTimer ProducerTimer;
+    int32 ProducerTimeoutMilliseconds = MAX_PRODUCER_MILLISECONDS;
     uint64 RenderedGeneration = 0;
     uint64 RenderedRevision = 0;
     /// Camera the submitted frame was prepared with; HasRenderedView is false when its revision was not retained.
@@ -1102,7 +1105,8 @@ void RenderGraphPreview::tick()
         const rhi::RasterStatus exported = activeOrNull == nullptr
                                                ? rhi::RasterStatus::InvalidState
                                                : activeOrNull->GetResourceAllocation(resource, texture, aspect);
-        if (exported == rhi::RasterStatus::NotReady && state.ProducerTimer.elapsed() < MAX_PRODUCER_MILLISECONDS)
+        if (exported == rhi::RasterStatus::NotReady &&
+            state.ProducerTimer.elapsed() < state.ProducerTimeoutMilliseconds)
         {
             return;
         }
@@ -1403,6 +1407,10 @@ void RenderGraphPreview::advance()
     }
     state.Trace.BeginFrame();
     rhi::SubmissionToken completion;
+    state.ProducerTimeoutMilliseconds =
+        activeOrNull->HasPendingSamples() == true && activeOrNull->GetSubmittedRaySamples() == 0
+            ? FIRST_SAMPLE_PRODUCER_MILLISECONDS
+            : MAX_PRODUCER_MILLISECONDS;
     Q_EMIT PreparingSubmission();
     const rhi::RasterStatus rendered =
         activeOrNull->Render(state.Surface, state.Active.Width, state.Active.Height, completion);
