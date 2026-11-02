@@ -223,8 +223,12 @@ TEST_CASE("Light Transformer template encodes the World, decodes GPU queries and
     Array<uint8> earlierPackageBytes = ReadFile(LUDUS_LIGHT_TRANSFORMER_PACKAGE_FILE);
     constexpr usize VERSION_OFFSET = sizeof(uint32);
     earlierPackageBytes[VERSION_OFFSET] = static_cast<uint8>(format::OPAQUE_GBUFFER_PACKAGE_VERSION);
-    CHECK(runtime.Decode({earlierPackageBytes.GetData(), earlierPackageBytes.GetSize()}) ==
+    renderer::RenderGraphPackage earlierRuntime;
+    CHECK(earlierRuntime.Decode({earlierPackageBytes.GetData(), earlierPackageBytes.GetSize()}) ==
           renderer::RenderGraphPackageStatus::Malformed);
+    CHECK(earlierRuntime.HasLightTransformer() == false);
+    CHECK(runtime.Decode({earlierPackageBytes.GetData(), earlierPackageBytes.GetSize()}) ==
+          renderer::RenderGraphPackageStatus::InvalidState);
     CHECK(runtime.HasLightTransformer() == true);
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
