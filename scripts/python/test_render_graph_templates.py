@@ -1308,6 +1308,20 @@ class RisProjectedSolidAngleTemplateTests(unittest.TestCase):
         staged = set(re.search(r'set\(helper_files (.*?)\)', cmake, re.S).group(1).split())
         recipes = json.loads((repository / 'modules/graphics/renderer/shaders/recipes.json').read_text())
         staged |= {recipe['source'] for recipe in recipes.values() if isinstance(recipe, dict) and 'source' in recipe}
+        # Source staging alone cannot qualify the relocated SDK: a newly required helper
+        # such as photon_layout.h must also enter the installed flat shader directory.
+        import shlex
+        installed = set()
+        install_sources = [repository / 'CMakeLists.txt', *repository.glob('cmake/**/*.cmake'),
+                           *repository.glob('modules/**/CMakeLists.txt')]
+        for source in install_sources:
+            for declaration in re.finditer(
+                    r'install\(FILES\s+([^)]*?)\s+DESTINATION\s+"?'
+                    r'\$\{CMAKE_INSTALL_LIBDIR\}/cmake/Ludus/shaders"?',
+                    source.read_text(encoding='utf-8'), re.S):
+                installed.update(Path(name).name for name in shlex.split(declaration[1]))
+        self.assertFalse(staged - installed,
+                         f'Render-graph helpers missing from the installed SDK: {sorted(staged - installed)}')
         owners = {}
         for pattern in ('modules/**/shaders/*', 'modules/**/include/**/*.h', 'modules/**/include/**/*.inc'):
             for path in repository.glob(pattern):

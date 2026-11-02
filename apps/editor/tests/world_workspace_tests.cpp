@@ -17,6 +17,7 @@
 #include <QImage>
 #include <QMenu>
 #include <QPainter>
+#include <ludus/foundation/base/compiler.h>
 
 #include "internal/workspace_style.h"
 #include <QAction>
@@ -1327,22 +1328,25 @@ namespace
 class PlayModePreference final
 {
 public:
-    PlayModePreference() : mSaved(QSettings().value(KEY))
+    PlayModePreference() : mSaved(QSettings().value(GetKey()))
     {
-        QSettings().remove(KEY);
+        QSettings().remove(GetKey());
     }
     ~PlayModePreference()
     {
         if (mSaved.isValid() == true)
         {
-            QSettings().setValue(KEY, mSaved);
+            QSettings().setValue(GetKey(), mSaved);
             return;
         }
-        QSettings().remove(KEY);
+        QSettings().remove(GetKey());
     }
     PlayModePreference(const PlayModePreference&) = delete;
     PlayModePreference& operator=(const PlayModePreference&) = delete;
-    static inline const QString KEY = QStringLiteral("play/mode");
+    [[nodiscard]] LUDUS_INLINE static QString GetKey()
+    {
+        return QStringLiteral("play/mode");
+    }
 
 private:
     QVariant mSaved;
@@ -1363,12 +1367,12 @@ TEST_CASE("Play mode is a remembered editor preference that defaults to the view
     box->setCurrentIndex(separate);
     Q_EMIT box->activated(separate);
     CHECK(first.GetPlayMode() == PlayMode::SeparateWindow);
-    CHECK(QSettings().value(PlayModePreference::KEY).toString() == QStringLiteral("window"));
+    CHECK(QSettings().value(PlayModePreference::GetKey()).toString() == QStringLiteral("window"));
     WorldWorkspace second;
     CHECK(second.GetPlayMode() == PlayMode::SeparateWindow);
 
     second.SetPlayMode(PlayMode::InViewport);
-    CHECK(QSettings().value(PlayModePreference::KEY).toString() == QStringLiteral("viewport"));
+    CHECK(QSettings().value(PlayModePreference::GetKey()).toString() == QStringLiteral("viewport"));
     const WorldWorkspace third;
     CHECK(third.GetPlayMode() == PlayMode::InViewport);
 }

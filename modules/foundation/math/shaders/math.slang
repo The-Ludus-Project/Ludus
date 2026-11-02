@@ -26,6 +26,16 @@ float ComputeErrorFunction(float value)
     float result = 1 - polynomial * exp(-magnitude * magnitude);
     return value < 0 ? -result : result;
 }
+static const uint FLOAT_EXPONENT_BITS = 0x7f800000u;
+// Finite test on the representation, which fast-math compilation cannot assume away.
+bool IsFiniteBits(float value)
+{
+    return (asuint(value) & FLOAT_EXPONENT_BITS) != FLOAT_EXPONENT_BITS;
+}
+bool IsFiniteBits(float3 value)
+{
+    return IsFiniteBits(value.x) == true && IsFiniteBits(value.y) == true && IsFiniteBits(value.z) == true;
+}
 float3 NormalizeOrZero(float3 v)
 {
     float s = dot(v, v);

@@ -205,7 +205,7 @@ The rule is `w_sum += w`, then select when `ticket * w_sum < w`. Zero weights
 never win, an all-zero stream is a valid empty result, and the contribution
 weight is `w_sum / (M * target(selected))`. NaN, infinite or negative weights,
 tickets outside `[0,1)`, overflow and invalid targets fail with `MathStatus`
-and leave outputs unchanged. Weights below `WeightedReservoirMinimumWeight`
+and leave outputs unchanged. Weights below `WEIGHTED_RESERVOIR_MINIMUM_WEIGHT`
 (`2^-102`) count as zero, so that CPU and GPU selections agree. Kernels use the
 same contract through `weighted_reservoir.slang`, installed beside `math.slang`:
 `MakeWeightedReservoir`, `TryAddReservoirCandidate`, `HasReservoirSelection` and

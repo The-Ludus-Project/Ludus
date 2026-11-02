@@ -1,4 +1,4 @@
-"""Clang-format 18 plus Ludus's designated-initializer brace convention."""
+"""Pinned clang-format plus Ludus's initializer and Slang conventions."""
 from __future__ import annotations
 
 import re
@@ -78,10 +78,30 @@ def add_multiline_commas(source: str) -> str:
 
 def format_source(source: str, filename: Path, clang_format: str) -> str:
     def clang(source: str) -> str:
-        return subprocess.run(
+        # Clang parses Slang's single-bracket noinline attribute as a lambda
+        # capture. Temporarily present a C++ attribute so it recognizes function
+        # boundaries; restore the original attribute without touching literals,
+        # comments, directives or pre-existing double-bracket attributes.
+        # Keep the surrogate's width equal to [noinline], including brackets,
+        # so wrapped parameter columns survive restoration unchanged.
+        marker_number = 0
+        marker = f"L{marker_number:05x}"
+        while marker in source:
+            marker_number += 1
+            marker = f"L{marker_number:05x}"
+        if filename.suffix == ".slang":
+            tokens = list(TOKENS.finditer(source))
+            for index in range(len(tokens) - 3, -1, -1):
+                if ([token.group() for token in tokens[index:index + 3]] == ["[", "noinline", "]"]
+                        and (index == 0 or tokens[index - 1].group() != "[")
+                        and (index + 3 == len(tokens) or tokens[index + 3].group() != "]")):
+                    source = (source[:tokens[index].start()] + "[[" + marker + "]]"
+                              + source[tokens[index + 2].end():])
+        result = subprocess.run(
             [clang_format, "--style=file", f"--assume-filename={filename}"],
             input=source, text=True, capture_output=True, check=True,
         ).stdout
+        return re.sub(r"\[\[\s*" + marker + r"\s*\]\]", "[noinline]", result)
 
     style_path = next(parent / ".clang-format" for parent in filename.parents
                       if (parent / ".clang-format").is_file())

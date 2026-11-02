@@ -456,10 +456,11 @@ public:
     /// Copy bounded progress and profile evidence. Failure preserves output; valid
     /// failed captures still report their diagnostic counters. Owner-thread only.
     [[nodiscard]] rhi::RasterStatus GetReferenceCaptureInfo(ReferenceCapture, ReferenceCaptureInfo&) const noexcept;
-    /// Enable hardware-accelerated preview before creating meshes/materials. Shader
-    /// artifacts must be the installed native-query preview kernels. Requires enabled
-    /// native rays, Compute/StorageVertex and a Ready renderer. Unsupported devices
-    /// reject; no software traversal or CPU rendering fallback is selected.
+    /// Enable GPU preview before creating meshes/materials, with a Ready renderer and
+    /// negotiated Compute/StorageVertex. Select the installed native-query or explicit
+    /// software-triangle preview recipe; a RayScene shader binding additionally requires
+    /// enabled native rays. Unsupported devices reject without selecting another traversal
+    /// recipe or CPU rendering fallback.
     /// Uses the compute artifact's reflected positive X/Y workgroup dimensions; Z must be 1.
     /// Zero dimensions reject with InvalidDescription; device workgroup/dispatch limits reject
     /// with Unsupported. Image extents need not divide evenly into groups.

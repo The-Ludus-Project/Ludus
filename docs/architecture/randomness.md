@@ -435,7 +435,7 @@ dynamic-programming engine remains outside FoundationMath.
 select one candidate from a stream, with replacement, for resampled importance
 sampling (RIS). The reservoir is the [streaming selection](randomness-gems-review.md#streaming-selection)
 of Chris Wyman's *Ray Tracing Gems II* chapter 22, specialized to one sample.
-Selection version 1 (`WeightedReservoirSelectionVersion`) freezes this contract:
+Selection version 1 (`WEIGHTED_RESERVOIR_SELECTION_VERSION`) freezes this contract:
 
 - **Order.** The caller streams every candidate, zero weights included, in one
   fixed order. Each candidate supplies a weight and its own ticket in `[0,1)`,
@@ -460,7 +460,7 @@ Selection version 1 (`WeightedReservoirSelectionVersion`) freezes this contract:
   `M * p̂(y)` or `W` that would overflow returns `OutOfRange`. Every failure
   leaves the reservoir and outputs unchanged. `-0` is a zero weight and a valid
   zero ticket.
-- **Declared approximations.** Weights below `WeightedReservoirMinimumWeight`
+- **Declared approximations.** Weights below `WEIGHTED_RESERVOIR_MINIMUM_WEIGHT`
   (`2^-102`, 2^24 times FP32's smallest normal value) count as zero, and so do
   subnormal tickets. Above that threshold `ticket * w_sum` is normal wherever it
   can approach `w`, so neither FP32 rounding nor GPU subnormal flushing can change

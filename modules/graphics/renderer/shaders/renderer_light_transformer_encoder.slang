@@ -19,7 +19,6 @@ static const uint MAX_CHANNELS = LUDUS_LIGHT_ENCODER_MAX_CHANNELS;
 static const uint HEAD_CHANNELS = LUDUS_LIGHT_ENCODER_HEAD_CHANNELS;
 static const uint NEIGHBORS = LUDUS_LIGHT_ENCODER_NEIGHBORS;
 static const uint PACKET_WORD_CHANNELS = 4;
-static const uint FLOAT_EXPONENT_BITS = 0x7f800000;
 static const float LOWEST_FINITE = -3.402823466e38;
 static const float GELU_INVERSE_ROOT_TWO = 0.7071067811865475;
 groupshared float NeighborHidden[MAX_CHANNELS];

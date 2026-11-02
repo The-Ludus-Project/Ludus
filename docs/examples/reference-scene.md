@@ -344,10 +344,13 @@ This is the explicit optional progressive path-tracing reference mode, distinct
 from the primary interactive raster viewport above.
 
 The installed sample also accepts `gpu` as its optional mode. This selects the
-renderer GPU-compute BVH path, requires compute capability and preserves authored
-emissive lighting with a black environment. It performs GPU tracing, shading,
+`renderer_gpu_preview_software` recipe, requests raster and compute capabilities, and runs
+on adapters without native ray-query support. It preserves authored emissive
+lighting with a black environment. It performs GPU tracing, shading,
 accumulation and display conversion and returns a leased RHI texture. CPU setup
 builds, packs and uploads the static scene; it does not trace or shade pixels.
+The explicit software recipe intersects triangles in the compute shader, with
+linear work per ray; large scenes need separate performance qualification.
 
 ```bash
 examples/reference-scene/out/build/linux-clang-development/reference_scene \

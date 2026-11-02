@@ -108,6 +108,8 @@ constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
 // The source tree stays wide enough for nested node names.
 constexpr int32 MINIMUM_SOURCE_TREE_WIDTH = 200;
 constexpr int32 STATUS_VISIBLE_LINES = 1;
+constexpr int32 SOURCE_PAGE_MARGIN = 2;
+constexpr int32 SOURCE_PAGE_SPACING = 2;
 constexpr int32 STATUS_PADDING_PIXELS = 4;
 constexpr int32 SOURCE_VIEW_STATE_VERSION = 1;
 
@@ -625,7 +627,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     header->addWidget(mPath, 1);
     configurationRow->addWidget(new QLabel(QStringLiteral("Configuration"), this));
     configurationRow->addWidget(mConfiguration);
-    configurationRow->addStretch(1);
+    // Recovery shares this row and appears only when there are unsaved edits or checkpoints to review.
+    mRecovery = new RenderGraphRecovery(mDocument, this);
+    configurationRow->addWidget(mRecovery, 1);
     QPushButton* editInterface = new QPushButton(QStringLiteral("Edit Inputs / Outputs..."), this);
     editInterface->setObjectName(QStringLiteral("renderGraphEditInterface"));
     configurationRow->addWidget(editInterface);
@@ -741,6 +745,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     // Source: graph, build-manifest/schema and shader text share the same draft/undo/save.
     QWidget* sourcePage = new QWidget(this);
     QVBoxLayout* sourceLayout = new QVBoxLayout(sourcePage);
+    // Compact: the code gets the height; every row above it is a single line.
+    sourceLayout->setContentsMargins(0, SOURCE_PAGE_MARGIN, 0, 0);
+    sourceLayout->setSpacing(SOURCE_PAGE_SPACING);
     mSourceFile->setObjectName(QStringLiteral("renderGraphSourceFile"));
     mSourceFile->setItemDelegate(new PathItemDelegate(mSourceFile));
     mSource->setObjectName(QStringLiteral("renderGraphSource"));
@@ -791,7 +798,6 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     // Status changes must not resize the editor; the tooltip retains the full message.
     mSourceStatus->setWordWrap(false);
     mSourceStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-    sourceLayout->addWidget(mSourceStatus);
 #if defined(Q_OS_WASM)
     openCodeEditor->setEnabled(false);
     chooseCodeEditor->setEnabled(false);
@@ -810,6 +816,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     static_cast<void>(
         mSourceSplit->restoreState(QSettings().value(QStringLiteral("renderGraph/sourceSplit")).toByteArray()));
     sourceLayout->addWidget(mSourceSplit, 1);
+    // The status lines sit under the code: they change often and must not move the editor.
+    sourceLayout->addWidget(mSourceStatus);
+    sourceLayout->addWidget(mSourceAssistance->GetStatusLabel());
     connect(mSourceSplit, &QSplitter::splitterMoved, this, [this]() {
         if (mIsChromeVisible == true)
         {
@@ -891,6 +900,19 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         if (buttonOrNull != nullptr)
         {
             buttonOrNull->setChecked(true);
+        }
+    });
+
+    // The Source view is for code: graph-structure commands step aside there and return with the other views.
+    connect(mViews, &QTabWidget::currentChanged, this, [this](int index) {
+        for (const QString& name :
+             {QStringLiteral("renderGraphEditInterface"), QStringLiteral("renderGraphCreateSubgraph")})
+        {
+            QPushButton* buttonOrNull = findChild<QPushButton*>(name);
+            if (buttonOrNull != nullptr)
+            {
+                buttonOrNull->setVisible(index != SOURCE_VIEW);
+            }
         }
     });
 
@@ -985,8 +1007,6 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mContent->addWidget(horizontal);
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->addWidget(mNavigation);
-    mRecovery = new RenderGraphRecovery(mDocument, this);
-    layout->addWidget(mRecovery);
     connect(mRecovery, &RenderGraphRecovery::Restored, this, [this]() {
         documentEdited(RenderGraphDocumentStatus::Ok);
     });

@@ -1338,6 +1338,17 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             else()
                 string(REPLACE "\"state\": {}" "\"state\": {\"group_size\": [64, 1, 1]}" mis_library "${mis_library}")
             endif()
+            # Qualify native presentation and GPU transport without requiring the
+            # hosted Metal device's optional native acceleration-structure capability.
+            string(JSON mis_node_count LENGTH "${mis_library}" configurations 0 nodes)
+            math(EXPR mis_node_last "${mis_node_count} - 1")
+            foreach(node_index RANGE ${mis_node_last})
+                string(JSON node_kind GET "${mis_library}" configurations 0 nodes ${node_index} kind)
+                if(node_kind STREQUAL "ComputePipeline")
+                    string(JSON mis_library SET "${mis_library}" configurations 0 nodes ${node_index}
+                        invocation traversal "\"ComputeBvh\"")
+                endif()
+            endforeach()
             file(WRITE "${mis_staged}.library.json" "${mis_library}")
             file(COPY_FILE "${mis_staged}.library.json" "${mis_staged}/library.lurender.json" ONLY_IF_DIFFERENT)
             ludus_compile_render_graph(TARGET ludus_editor_tests NAME "editor_native_mis_${shape}"
@@ -1354,22 +1365,22 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # Catch2 reports assertion failures by throwing; test targets (only) re-enable
     # exceptions. Engine/app targets above stay exception-free (-fno-exceptions).
     ludus_enable_test_exceptions(ludus_editor_tests)
-    # Print each completed case's duration to diagnose a stopped aggregate suite.
-    add_test(NAME ludus_editor_tests COMMAND ludus_editor_tests --durations yes)
-    # Run the offscreen Qt platform plugin so these logic/widget tests need no
-    # display. This is for display-free tests only, never native acceptance.
-    #
-    # The suite's wall time follows host contention, not the change under test:
-    # 221 cases (MainWindow show/close cycles, Python adapter processes running
-    # CMake preset inspection, a 100,000-row content projection) need about
-    # 17 s of CPU but 42 s on the Linux CI runner and, on a shared 10-core macOS
-    # host, 53 s at load 33-45, 66 s at load 26-31, 156 s at load 46-48 and
-    # 203 s at load 33-63 (the former 120 s TIMEOUT failed there). This TIMEOUT
-    # only catches a hung case; --durations yes names the completed ones.
-    set_tests_properties(ludus_editor_tests PROPERTIES
-        LABELS "unit;editor"
-        TIMEOUT 600
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    # Thanks to Catch2's authors, "Command line", test sharding:
+    # https://github.com/catchorg/Catch2/blob/v3.4.0/docs/command-line.md#test-sharding
+    # The 699-case suite takes 434 s locally and exhausts 600 s on macOS ASan.
+    # Keep each case exactly once in declaration order, with separate hang deadlines.
+    # A resource lock retains serial GPU/worker ownership even when CTest runs in parallel.
+    function(ludus_add_editor_test_shards target_name shard_count timeout labels)
+        math(EXPR last_shard "${shard_count} - 1")
+        foreach(shard_index RANGE 0 ${last_shard})
+            set(test_name "${target_name}_${shard_index}")
+            add_test(NAME "${test_name}" COMMAND "${target_name}" --order decl
+                --shard-count "${shard_count}" --shard-index "${shard_index}" --durations yes)
+            set_tests_properties("${test_name}" PROPERTIES LABELS "${labels}" TIMEOUT "${timeout}"
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" RESOURCE_LOCK ludus_editor)
+        endforeach()
+    endfunction()
+    ludus_add_editor_test_shards(ludus_editor_tests 4 600 "unit;editor")
     # Transitional, empty: batch CI runs the workflow definitions on main against
     # the develop candidate, and main's ci.yml still builds this target, which
     # 547148cf removed with SceneDocument. Delete it once a promotion carries the
@@ -1502,16 +1513,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_editor_add_icons(ludus_render_graph_configuration_tests)
     ludus_apply_project_defaults(ludus_render_graph_configuration_tests)
     ludus_enable_test_exceptions(ludus_render_graph_configuration_tests)
-    add_test(NAME ludus_render_graph_configuration_tests COMMAND ludus_render_graph_configuration_tests
-        --durations yes)
-    # The render-graph workspace suite grows with each canvas and template feature;
-    # no single case dominates. At 152 cases macos-clang-debug took 31.9 s wall
-    # (22.5 s CPU) at load 37 and 54.7 s under CTest at higher load; Linux CI took
-    # 11 s and Linux ASan 22 s. macOS ASan exceeded the former 30 s TIMEOUT in every
-    # batch since 2026-10-26 (a 29.0 s pass on 2026-10-24). This TIMEOUT only catches
-    # a hung case; --durations yes names the completed ones.
-    set_tests_properties(ludus_render_graph_configuration_tests PROPERTIES LABELS "editor;render-graph" TIMEOUT 180
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    # The combined canvas suite exceeds 180 s on macOS, including ASan; keep every case
+    # under its existing hang deadline without accumulating all cases into that deadline.
+    ludus_add_editor_test_shards(ludus_render_graph_configuration_tests 2 180 "editor;render-graph")
 
     add_executable(ludus_render_graph_live_build_tests tests/main.cpp tests/render_graph_live_build_tests.cpp
         src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_line_sampling_template.cpp src/render_graph_point_line_template.cpp src/render_graph_node_transfer.cpp

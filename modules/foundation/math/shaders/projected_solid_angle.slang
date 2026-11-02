@@ -57,7 +57,6 @@ static const float PROJECTED_POLYGON_ITERATION_BOUNDARY_TOLERANCE = 1.0e-5;
 static const uint PROJECTED_ELLIPSE_OUTER = 0;
 static const uint PROJECTED_ELLIPSE_INNER = 1;
 static const uint PROJECTED_ELLIPSE_DEGENERATE = 2;
-static const uint FLOAT_EXPONENT_BITS = 0x7f800000u;
 
 // A convex planar polygon in the tangent space of a shading point (origin at the shading point, normal +z).
 struct ProjectedPolygonInput
@@ -88,15 +87,6 @@ struct SectorEllipses
     uint OuterKind;
 };
 
-// Finite test on the representation, which fast-math compilation cannot assume away.
-bool IsFiniteBits(float value)
-{
-    return (asuint(value) & FLOAT_EXPONENT_BITS) != FLOAT_EXPONENT_BITS;
-}
-bool IsFiniteBits(float3 value)
-{
-    return IsFiniteBits(value.x) == true && IsFiniteBits(value.y) == true && IsFiniteBits(value.z) == true;
-}
 // a * b - c * d with Kahan's algorithm.
 float ComputeDifferenceOfProducts(float a, float b, float c, float d)
 {
@@ -499,7 +489,8 @@ float ComputeProjectedSolidAngleEdge(float3 startTangent, float3 endTangent)
     {
         return 0;
     }
-    return edgeNormalTangent.z * (atan2(sine, dot(startTangent, endTangent)) / sine);
+    // Match the sampling path's bounded arctangent; native atan2 errors survive cancellation for thin polygons.
+    return edgeNormalTangent.z * (ComputeSectorAngle(sine, dot(startTangent, endTangent)) / sine);
 }
 // Raster-only approximation of the same spherical edge integral credited above.
 // Inputs must be unit directions or zero, as produced by NormalizeProjectedDirection.

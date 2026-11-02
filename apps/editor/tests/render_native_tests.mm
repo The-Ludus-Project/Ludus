@@ -383,7 +383,9 @@ TEST_CASE("Native World preview renders authored assets, cameras, culling, updat
     REQUIRE(Frames(preview, preview.Frames() + 3));
     CHECK(preview.Report().Submitted == 1);
     CHECK(preview.Report().Visible == 1);
-    CHECK(preview.Report().Draws == 1);
+    // One instanced scene packet plus the analytic grid's two indexed draws.
+    constexpr uint32 INSTANCED_SCENE_AND_GRID_DRAWS = 3;
+    CHECK(preview.Report().Draws == INSTANCED_SCENE_AND_GRID_DRAWS);
     CHECK(world.Draft() == original);
     CHECK_FALSE(world.Dirty());
     // More than eight identical textured objects consume one shared material.
@@ -401,7 +403,7 @@ TEST_CASE("Native World preview renders authored assets, cameras, culling, updat
     preview.Navigate(0, {0, 0}, 3, false);
     REQUIRE(Frames(preview, 3));
     CHECK(preview.Report().Visible == 12);
-    CHECK(preview.Report().Draws == 1);
+    CHECK(preview.Report().Draws == INSTANCED_SCENE_AND_GRID_DRAWS);
     for (int32 i = 0; i < 11; ++i)
     {
         REQUIRE(world.Undo());
@@ -419,6 +421,7 @@ TEST_CASE("Native World preview renders authored assets, cameras, culling, updat
     embedded = ReadViewport();
     CHECK(embedded.size() == GetViewportPixelSize());
     CHECK(embedded.width() > initialPixelSize.width());
+    const QImage beforeCulling = embedded;
     auto entity = world.Entity(QStringLiteral("starter.cube"));
     auto components = entity.value(QStringLiteral("components")).toObject();
     auto transform = components.value(QStringLiteral("transform")).toObject();
@@ -433,7 +436,8 @@ TEST_CASE("Native World preview renders authored assets, cameras, culling, updat
     CHECK(preview.Report().Culled == 1);
     CHECK(preview.Report().Visible == 0);
     embedded = ReadViewport();
-    CHECK(embedded.pixelColor(embedded.width() / 2, embedded.height() / 2) == embedded.pixelColor(0, 0));
+    // The coordinate grid stays visible when the scene mesh is culled; the old mesh image must change.
+    CHECK(embedded != beforeCulling);
     preview.Navigate(0, {0, 0}, 3, true);
     REQUIRE(Frames(preview, preview.Frames() + 3));
     CHECK(preview.Report().Visible == 1);
@@ -884,6 +888,30 @@ TEST_CASE("Native World-demo World renders its game extraction in the shared vie
     QPoint movedPixel;
     REQUIRE(locate(after, movedPixel));
     CHECK(movedPixel.x() > playerPixel.x());
-    CHECK(after.pixelColor(movedPixel) == drawn);
+    // Grid lines can cross the projected centre after a move. Inspect nearby interior pixels
+    // against the same authored display codes instead of requiring the grid-covered texel.
+    constexpr int32 PLAYER_SAMPLE_RADIUS_PIXEL = 2;
+    constexpr int32 MINIMUM_PLAYER_PIXELS = 4;
+    int32 playerPixels = 0;
+    for (int32 verticalOffsetPixel = -PLAYER_SAMPLE_RADIUS_PIXEL; verticalOffsetPixel <= PLAYER_SAMPLE_RADIUS_PIXEL;
+         ++verticalOffsetPixel)
+    {
+        for (int32 horizontalOffsetPixel = -PLAYER_SAMPLE_RADIUS_PIXEL;
+             horizontalOffsetPixel <= PLAYER_SAMPLE_RADIUS_PIXEL;
+             ++horizontalOffsetPixel)
+        {
+            const QPoint positionPixel = movedPixel + QPoint(horizontalOffsetPixel, verticalOffsetPixel);
+            if (after.rect().contains(positionPixel) == false)
+            {
+                continue;
+            }
+            const QColor color = after.pixelColor(positionPixel);
+            const bool isPlayerColor = std::abs(color.red() - getDisplayCode(mapped.X)) <= DISPLAY_TOLERANCE &&
+                                       std::abs(color.green() - getDisplayCode(mapped.Y)) <= DISPLAY_TOLERANCE &&
+                                       std::abs(color.blue() - getDisplayCode(mapped.Z)) <= DISPLAY_TOLERANCE;
+            playerPixels += isPlayerColor == true ? 1 : 0;
+        }
+    }
+    CHECK(playerPixels >= MINIMUM_PLAYER_PIXELS);
     workspace.StopPreview();
 }

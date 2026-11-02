@@ -457,19 +457,19 @@ Status RasterViewport::SetOverlay(OverlayRenderer* overlaysOrNull, PreparedOverl
     return Status::Ready;
 }
 
-Status RasterViewport::Acquire(ViewportFrame& frame, ViewportImage& image) noexcept
+Status RasterViewport::Acquire(ViewportFrame& inoutFrame, ViewportImage& outImage) noexcept
 {
     if (mState.Get() == nullptr)
     {
         return Status::InvalidState;
     }
-    if (frame.Owner != 0)
+    if (inoutFrame.mOwner != 0)
     {
         return Status::InvalidDescription;
     }
     State& state = *mState;
     const uint32 index = state.Latest;
-    if (state.Written[index] == false || state.Leased[index])
+    if (state.Written[index] == false || state.Leased[index] == true)
     {
         return Status::NotReady;
     }
@@ -483,22 +483,22 @@ Status RasterViewport::Acquire(ViewportFrame& frame, ViewportImage& image) noexc
         return Status::IdentityExhausted;
     }
     state.Leased[index] = true;
-    frame.Owner = state.Owner;
-    frame.Generation = state.Generations[index];
-    frame.Slot = index;
-    image = {state.Images[index], state.Producers[index], state.Width, state.Height};
+    inoutFrame.mOwner = state.Owner;
+    inoutFrame.mGeneration = state.Generations[index];
+    inoutFrame.mSlot = index;
+    outImage = {state.Images[index], state.Producers[index], state.Width, state.Height};
     return Status::Ready;
 }
-Status RasterViewport::Release(ViewportFrame& frame) noexcept
+Status RasterViewport::Release(ViewportFrame& inoutFrame) noexcept
 {
-    if (mState.Get() == nullptr || frame.Owner != mState->Owner || frame.Slot >= 2 ||
-        mState->Leased[frame.Slot] == false || frame.Generation != mState->Generations[frame.Slot])
+    if (mState.Get() == nullptr || inoutFrame.mOwner != mState->Owner || inoutFrame.mSlot >= 2 ||
+        mState->Leased[inoutFrame.mSlot] == false || inoutFrame.mGeneration != mState->Generations[inoutFrame.mSlot])
     {
         return Status::InvalidHandle;
     }
-    mState->Leased[frame.Slot] = false;
-    ++mState->Generations[frame.Slot];
-    frame = {};
+    mState->Leased[inoutFrame.mSlot] = false;
+    ++mState->Generations[inoutFrame.mSlot];
+    inoutFrame = {};
     return Status::Ready;
 }
 } // namespace ludus::graphics::renderer

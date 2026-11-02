@@ -1,4 +1,5 @@
 #include "display_tone_mapping.slang"
+#include "math.slang"
 #include "raster_bindings.slang"
 // Explicit scene-linear -> display-linear tone curve (Reinhard or Khronos PBR Neutral) -> optional sRGB encoding.
 // Parameters.Output: exposure, curve (0 none, 1 Reinhard, 2 PBR Neutral; ToneCurve in tone_mapping.hpp),
@@ -74,7 +75,7 @@ float3 GetBackdrop(float uvY)
     return parameters.Output.z > 0.5 ? backdrop : SrgbToLinear(backdrop);
 }
 // Display colour of one scene texel under the output parameters, with the backdrop composited when it is on.
-float3 DisplayColor(float4 scene, float uvY, bool hasBackdrop)
+[noinline] float3 DisplayColor(float4 scene, float uvY, bool hasBackdrop)
 {
     float3 color = EncodeColor(ToneMapColor(scene.rgb));
     if (hasBackdrop)
@@ -85,30 +86,22 @@ float3 DisplayColor(float4 scene, float uvY, bool hasBackdrop)
 }
 // The tone curve applied to a grey value: ApplyPbrNeutral and the Reinhard branch of ToneMapColor for r = g = b, in
 // one scalar. Edge detection only needs the display brightness, so it skips the three-channel curve.
-float ToneMapGrey(float grey)
+[noinline] float ToneMapGrey(float grey)
 {
     float value = grey * parameters.Output.x;
-    if (parameters.Output.y > 1.5)
-    {
-        if (isfinite(value) == false)
-        {
-            return 1;
-        }
-        float offset =
-            value <= 2 * PBR_NEUTRAL_FRESNEL ? value - value * value / (4 * PBR_NEUTRAL_FRESNEL) : PBR_NEUTRAL_FRESNEL;
-        value -= offset;
-        if (value > PBR_NEUTRAL_START)
-        {
-            float headroom = 1 - PBR_NEUTRAL_START;
-            // A grey has no chroma to desaturate toward the new peak, so the curve's result is the new peak itself.
-            value = 1 - headroom * headroom / (value + 1 - 2 * PBR_NEUTRAL_START);
-        }
-    }
-    else if (parameters.Output.y > 0.5)
-    {
-        value = value / (1 + value);
-    }
-    return parameters.Output.z > 0.5 ? saturate(value) : value;
+    bool isFinite = IsFiniteBits(value);
+    float finiteValue = select(isFinite == true, value, 0.0);
+    float shadow = min(finiteValue, 2 * PBR_NEUTRAL_FRESNEL);
+    float neutral = finiteValue - (shadow - shadow * shadow / (4 * PBR_NEUTRAL_FRESNEL));
+    float headroom = 1 - PBR_NEUTRAL_START;
+    // Evaluate the toe and shoulder without branch regions inside the repeated edge-search samples.
+    neutral = min(neutral, 1 - headroom * headroom / (max(neutral, PBR_NEUTRAL_START) + 1 - 2 * PBR_NEUTRAL_START));
+    neutral = select(isFinite == true, neutral, 1.0);
+    float reinhard = value / (1 + value);
+    float result = select(parameters.Output.y > float(DISPLAY_CURVE_REINHARD) + FLAG_ROUNDING,
+                          neutral,
+                          select(parameters.Output.y > FLAG_ROUNDING, reinhard, value));
+    return select(parameters.Output.z > FLAG_ROUNDING, saturate(result), result);
 }
 // Perceptual brightness for edge detection: the tone-mapped scene brightness on a square-root curve in place of the
 // sRGB encode, so the five-load rejection test of a flat pixel costs no powers. The backdrop is already encoded.
@@ -125,7 +118,7 @@ int2 ClampPixel(int2 pixel, int2 size)
 {
     return clamp(pixel, int2(0), size - 1);
 }
-float LoadLuma(int2 pixel, int2 size, bool hasBackdrop)
+[noinline] float LoadLuma(int2 pixel, int2 size, bool hasBackdrop)
 {
     int2 clamped = ClampPixel(pixel, size);
     return ApproximateLuma(image.Load(int3(clamped, 0)), (clamped.y + 0.5) / size.y, hasBackdrop);

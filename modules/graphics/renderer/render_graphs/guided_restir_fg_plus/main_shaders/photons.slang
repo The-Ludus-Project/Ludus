@@ -3,7 +3,8 @@
 
 // Slang's pinned SPIR-V 1.3 backend crashes on vector-element InterlockedExchange.
 // Compare/exchange implements the same atomic prepend without changing the target profile.
-[noinline] uint ExchangeFgHead(uint address, bool isCaustic, uint value) {
+[noinline] uint ExchangeFgHead(uint address, bool isCaustic, uint value)
+{
     uint expected = FG_INVALID;
     [loop] while (true)
     {
@@ -16,7 +17,8 @@
             return observed;
         expected = observed;
     }
-} float3 ResetPhotonMap(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
+}
+float3 ResetPhotonMap(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
     if (HasCurrentFgPool(scene, launch, queries) == false)
         return float3(0);
@@ -33,7 +35,8 @@
                                 float fluxScale,
                                 inout RayQueryContext queries,
                                 out Ray outRay,
-                                out float3 outFlux) {
+                                out float3 outFlux)
+{
     outRay = (Ray)0;
     outFlux = float3(0);
     LightInfo light = GetLightInfo(scene, lightIndex);
@@ -87,7 +90,8 @@
         outFlux = light.Intensity * (4 * PI * cone * fluxScale);
     }
     return any(outFlux > 0) == true;
-} float3 TracePhotons(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
+}
+float3 TracePhotons(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
     if (HasCurrentFgPool(scene, launch, queries) == false)
         return float3(0);
