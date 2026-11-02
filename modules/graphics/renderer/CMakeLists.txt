@@ -1329,9 +1329,11 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_storage_ray_RUNTIME_PACKAGE PARENT_PATH storage_ray_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_STORAGE_RAY_DIRECTORY="${storage_ray_package_directory}")
-    add_test(NAME ludus_render_graph_ray_pixels COMMAND ludus_render_graph_ray_tests "~[template]" --durations yes)
-    set_tests_properties(ludus_render_graph_ray_pixels
-        PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60 SKIP_RETURN_CODE 4)
+    # Capture/lifecycle cases also prepare private ray graphs. Discover them separately:
+    # a cold capture cannot share one short deadline with every preceding lifecycle case.
+    catch_discover_tests(ludus_render_graph_ray_tests TEST_SPEC "~[template]"
+        TEST_PREFIX "ludus_render_graph_ray: " TEST_LIST LUDUS_RENDER_GRAPH_RAY_CASES
+        EXTRA_ARGS --durations yes PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 4 DISCOVERY_MODE PRE_TEST)
     # Template acceptance renders thousands of compute-BVH frames, including on
     # software adapters. Discover each case with its own existing 600 s deadline;
     # newly added templates receive the same isolation without editing a tag exclusion list.
@@ -1340,6 +1342,9 @@ if(TARGET ludus_renderer_render_tests)
         EXTRA_ARGS --durations yes PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 4 DISCOVERY_MODE PRE_TEST)
     set(render_graph_template_labels_file "${CMAKE_CURRENT_BINARY_DIR}/render_graph_template_labels.cmake")
     file(WRITE "${render_graph_template_labels_file}"
+        "if(LUDUS_RENDER_GRAPH_RAY_CASES)\n"
+        "    set_tests_properties(\${LUDUS_RENDER_GRAPH_RAY_CASES} PROPERTIES LABELS \"renderer;gpu;ray\")\n"
+        "endif()\n"
         "if(LUDUS_RENDER_GRAPH_TEMPLATE_CASES)\n"
         "    set_tests_properties(\${LUDUS_RENDER_GRAPH_TEMPLATE_CASES} PROPERTIES LABELS \"renderer;gpu;ray\")\n"
         "endif()\n")

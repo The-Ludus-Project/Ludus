@@ -405,12 +405,13 @@ These are Q0 inventory/control records, not the proposed Q2 full run schema.
 
 ### GPU correctness test boundaries
 
-Ordinary raster and render-graph lifecycle checks keep their short CTest
-boundaries. GPU reference-compute cases and render-graph template cases are
-registered individually through Catch2 discovery before CTest runs. Their names
-start with `ludus_renderer_reference:` and `ludus_render_graph_template:`;
+Ordinary raster checks keep their short CTest boundary. GPU reference-compute,
+render-graph lifecycle/capture and template cases are registered individually
+through Catch2 discovery before CTest runs. Their names start with
+`ludus_renderer_reference:`, `ludus_render_graph_ray:` and `ludus_render_graph_template:`;
 renderer/GPU/ray labels and explicit unsupported-adapter skips remain available.
-Each reference-compute case has a 300-second deadline; each template case has a
+Each reference-compute or graph lifecycle/capture case has a 300-second deadline;
+each template case has a
 600-second deadline for its convergence captures. Polygon sampling, Metropolis
 and physical-optics parity also have separate named tests. The numerical and
 image assertions are unchanged by this partition.
@@ -421,7 +422,9 @@ consuming the raster test's deadline. `--durations yes` identifies completed
 cases when a deadline fails. Render-graph capture tests allow 60 seconds for the
 first submitted ray sample after initialization or a scene/camera reset, including
 first-use software shader work; subsequent samples retain the 10-second completion
-bound. The interactive graph preview uses the same first-sample allowance while keeping its last presented frame.
+bound. A private frame capture allows 180 seconds including graph preparation
+and readback. The interactive graph preview uses the same first-sample allowance
+while keeping its last presented frame.
 Performance qualification remains in its own lane.
 
 The offscreen editor suite runs as four serial Catch2 shards and the canvas

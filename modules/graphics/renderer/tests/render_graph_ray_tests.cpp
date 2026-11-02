@@ -84,6 +84,10 @@ constexpr usize PIXEL_BYTES = static_cast<usize>(WIDTH) * HEIGHT * 4;
 constexpr usize VERTEX_COUNT = 3;
 constexpr usize INDEX_COUNT = 3;
 constexpr usize TABLE_COUNT = 1;
+/// First-use software shader work belongs to the cold ray sample.
+constexpr uint64 FIRST_SAMPLE_TIMEOUT_NANOSECONDS = 60 * time::NANOSECONDS_PER_SECOND;
+/// Subsequent samples retain the ordinary frame completion bound.
+constexpr uint64 FRAME_TIMEOUT_NANOSECONDS = 10 * time::NANOSECONDS_PER_SECOND;
 struct RhiGuard final
 {
     LUDUS_INLINE RhiGuard() noexcept
@@ -2609,8 +2613,6 @@ void RenderFrame(renderer::RenderGraph& inoutGraph, const GraphGpuFixture& fixtu
 {
     // First-use shader work is included in a submitted sample on software adapters.
     // Preserve the ordinary completion bound after that cold sample, including after a scene/camera reset.
-    constexpr uint64 FIRST_SAMPLE_TIMEOUT_NANOSECONDS = 60 * time::NANOSECONDS_PER_SECOND;
-    constexpr uint64 FRAME_TIMEOUT_NANOSECONDS = 10 * time::NANOSECONDS_PER_SECOND;
     const uint32 submittedSamples = inoutGraph.GetSubmittedRaySamples();
     const uint64 timeoutNanoseconds =
         submittedSamples == 0 ? FIRST_SAMPLE_TIMEOUT_NANOSECONDS : FRAME_TIMEOUT_NANOSECONDS;
@@ -7491,7 +7493,7 @@ TEST_CASE("A render graph kernel reads the renderer-bound LTC table like the CPU
 namespace
 {
 /// Time allowed for one capture to finish, including its private graph's preparation.
-constexpr uint64 CAPTURE_TIMEOUT = 60 * time::NANOSECONDS_PER_SECOND;
+constexpr uint64 CAPTURE_TIMEOUT = 180 * time::NANOSECONDS_PER_SECOND;
 /// A small target keeps the GPU captures quick; it still exceeds the reduced authored limit below.
 constexpr uint32 CAPTURE_TARGET_SAMPLES = 6;
 /// An authored Accumulate limit below CAPTURE_TARGET_SAMPLES, so reaching the target needs the override.
@@ -7541,7 +7543,9 @@ FinishCapture(renderer::RenderGraphCapture& inoutCapture, const Room& room, uint
             return phase;
         }
     }
-    FAIL("The capture did not finish");
+    const renderer::RenderGraphCaptureInfo info = inoutCapture.GetInfo();
+    CAPTURE(phase, info.SubmittedSamples, info.MinimumSamples);
+    FAIL("The capture did not finish, including private graph preparation");
     return phase;
 }
 
@@ -8047,20 +8051,23 @@ namespace
 /// Render one frame of a graph, retrying while it prepares row bands, and wait for its producer.
 void RenderPreparedFrame(renderer::RenderGraph& inoutGraph, const GraphGpuFixture& fixture)
 {
-    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    const uint32 submittedSamples = inoutGraph.GetSubmittedRaySamples();
+    const uint64 timeoutNanoseconds =
+        submittedSamples == 0 ? FIRST_SAMPLE_TIMEOUT_NANOSECONDS : FRAME_TIMEOUT_NANOSECONDS;
     const uint64 beginning = time::NowTicks();
     rhi::SubmissionToken completion;
     rhi::RasterStatus rendered = inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion);
-    while (rendered == rhi::RasterStatus::NotReady && time::NowTicks() - beginning < TIMEOUT)
+    while (rendered == rhi::RasterStatus::NotReady && time::NowTicks() - beginning < timeoutNanoseconds)
     {
         rendered = inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion);
     }
     REQUIRE(rendered == rhi::RasterStatus::Ready);
     rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
-    while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+    while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < timeoutNanoseconds)
     {
         result = rhi::GetStatus(fixture.Device, completion);
     }
+    CAPTURE(submittedSamples, timeoutNanoseconds);
     REQUIRE(result == rhi::RasterStatus::Ready);
 }
 } // namespace
