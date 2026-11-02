@@ -136,6 +136,24 @@
       "input": "SurfaceHit",
       "output": "ScenePayload",
       "bindings": []
+    },
+    {
+      "id": "ProductionPresample",
+      "stage": "compute",
+      "source": "main_shaders/production_presample.slang",
+      "function": "PresampleProductionLights",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ProductionShade",
+      "stage": "compute",
+      "source": "main_shaders/production.slang",
+      "function": "ShadeProductionDi",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
     }
   ],
   "techniques": [
@@ -194,7 +212,7 @@
         "version": 1,
         "payload": "main_shaders/payload.slang",
         "surface_queries": 1,
-        "visibility_queries": 1
+        "visibility_queries": 2
       }
     }
   ],
@@ -248,6 +266,22 @@
       "label": "Temporal reuse",
       "type": "Bool",
       "value": true
+    },
+    {
+      "id": "RESTIR_PRODUCTION_SPATIAL_NEIGHBORS",
+      "label": "Production: previous-frame spatial taps",
+      "type": "UInt32",
+      "value": 1,
+      "minimum": 0,
+      "maximum": 4
+    },
+    {
+      "id": "RESTIR_PRODUCTION_VISIBILITY_DISTANCE_WORLD",
+      "label": "Production: approximate visibility reuse distance (world units)",
+      "type": "Float32",
+      "value": 0,
+      "minimum": 0,
+      "maximum": 1000
     }
   ]
 }

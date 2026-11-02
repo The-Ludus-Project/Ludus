@@ -85,6 +85,92 @@
         }
       ],
       "outputs": []
+    },
+    {
+      "edges": [
+        {
+          "from": "renderSize.size",
+          "to": "color.size"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "scene.scene",
+          "to": "lighting.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "lighting.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "lighting.color"
+        },
+        {
+          "from": "tonemap.color",
+          "to": "output.texture"
+        },
+        {
+          "from": "lighting.color",
+          "to": "tonemap.color"
+        }
+      ],
+      "id": "Production",
+      "inputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": {
+            "reference": "View",
+            "scale": [
+              1,
+              1
+            ]
+          }
+        },
+        {
+          "id": "lighting",
+          "kind": "Subgraph",
+          "asset": "library.lurender.json",
+          "configuration": "Production"
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
+        }
+      ],
+      "outputs": []
     }
   ],
   "default": "Default",

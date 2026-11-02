@@ -979,7 +979,9 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                     'no authored recipe matches the complete node-owned pipeline state')
     variants = sorted({ray.program_tuple(operation['pipeline']) for plan in plans
                        for operation in plan['passes'] if operation['kind'] == 'RayTracing'})
-    require(len(variants) <= ray.MAX_RAY_PASSES, 'Capacity', 'ray programs', 'at most four distinct ray callback sets')
+    require(len(variants) <= ray.MAX_RAY_PROGRAMS, 'Capacity', 'ray programs',
+            f'{len(variants)} distinct ray callback sets exceed the package limit {ray.MAX_RAY_PROGRAMS}; '
+            'reuse existing callback sets or move configurations into another graph package')
     for variant in variants:
         if ray.is_compute_variant(variant):
             require(variant[0] in programs and programs[variant[0]]['stage'] == ray.COMPUTE_STAGE, 'ShaderInterface', variant[0],

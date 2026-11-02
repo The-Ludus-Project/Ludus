@@ -1349,8 +1349,9 @@ packages never contain the variant.
    does today.
 2. Choose what to capture. Selecting a ray or scene compute node in the Renderer
    canvas captures that node's pass. Selecting the graph captures every ray pass
-   of the active configuration (up to `MAX_RAY_PASSES`). Recorded pass indices map
-   back to node names through the runtime package's pass names.
+   of the active configuration (up to `MAX_RAY_PASSES`). Up to `MAX_RAY_PROGRAMS` callback sets may be shared across
+   configurations; capture reserves a summary slot for each callback set, independently
+   of the active invocation count. Recorded pass indices map back to node names through the runtime package's pass names.
 3. Start **Capture ray paths**, then click a pixel in the graph output. A small
    rectangle is possible within the record capacity. Also choose the sample
    count N.

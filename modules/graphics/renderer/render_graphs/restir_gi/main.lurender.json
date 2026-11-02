@@ -97,6 +97,101 @@
           "to": "output.texture"
         }
       ]
+    },
+    {
+      "id": "Production",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": {
+            "reference": "View",
+            "scale": [
+              1,
+              1
+            ]
+          }
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "lighting",
+          "kind": "Subgraph",
+          "asset": "library.lurender.json",
+          "configuration": "Production"
+        },
+        {
+          "id": "accumulate",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
+        }
+      ],
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "lighting.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "lighting.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "lighting.color"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "color.size"
+        },
+        {
+          "from": "lighting.color",
+          "to": "accumulate.color"
+        },
+        {
+          "from": "accumulate.color",
+          "to": "tonemap.color"
+        },
+        {
+          "from": "tonemap.color",
+          "to": "output.texture"
+        }
+      ]
     }
   ]
 }

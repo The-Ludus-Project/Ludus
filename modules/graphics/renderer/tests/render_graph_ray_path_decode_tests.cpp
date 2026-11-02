@@ -27,6 +27,7 @@ renderer::internal::RayPathPassTable MakePasses() noexcept
     }
     passes[1] = FIRST_RAY_PASS;
     passes[0] = FIRST_RAY_PASS + 1;
+    passes[format::MAX_RAY_PROGRAMS - 1] = FIRST_RAY_PASS + 2;
     return passes;
 }
 /// Capture buffer bytes with a written header, edited word by word.
@@ -219,4 +220,25 @@ TEST_CASE("Ray path decoding rejects malformed buffers and preserves outputs", "
     CHECK(rejected.StoredRecords == 99);
     CHECK(events.GetSize() == 1);
     CHECK(summaries.GetSize() == 1);
+}
+
+TEST_CASE("Ray path decoding accepts callback sets beyond the active invocation limit", "[render-graph][ray-path]")
+{
+    constexpr uint32 LAST_CALLBACK = static_cast<uint32>(format::MAX_RAY_PROGRAMS - 1);
+    CaptureBytes capture({ .SampleCount = 1, .RecordCapacity = 1 });
+    capture.WriteSummary(0, LAST_CALLBACK, 1);
+    capture.WriteRecord(0, 0, LAST_CALLBACK, 0, LUDUS_RAY_PATH_KIND_CLOSEST, LUDUS_RAY_PATH_OUTCOME_MISS);
+    capture.SetWord(LUDUS_RAY_PATH_HEADER_APPENDED_WORD, 1);
+    Array<renderer::RayPathEvent> events;
+    Array<renderer::RayPathSummary> summaries;
+    renderer::RayPathCaptureReport report;
+    REQUIRE(capture.Decode(events, summaries, report) == rhi::RasterStatus::Ready);
+    REQUIRE(events.GetSize() == 1);
+    REQUIRE(summaries.GetSize() == 1);
+    CHECK(LAST_CALLBACK >= format::MAX_RAY_PASSES);
+    CHECK(events[0].Pass == MakePasses()[LAST_CALLBACK]);
+    CHECK(summaries[0].Pass == events[0].Pass);
+    capture.SetWord(capture.GetRecordWord(0) + LUDUS_RAY_PATH_RECORD_PASS_WORD,
+                    static_cast<uint32>(format::MAX_RAY_PROGRAMS));
+    CHECK(capture.Decode(events, summaries, report) == rhi::RasterStatus::InvalidDescription);
 }

@@ -1,4 +1,4 @@
-#include "reservoir.slang"
+#include "initial_sampling.slang"
 
 // Pass 1 of 4 (scene compute), the paper's Algorithm 2: trace the camera ray to the visible point, sample a direction
 // from the source distribution, trace it to the sample point and estimate the radiance L_o that the sample point
@@ -19,26 +19,7 @@ float3 GenerateInitialSample(SceneContext scene, RayLaunch launch, inout RayQuer
     Receiver receiver;
     if (TryTraceReceiver(scene, launch, queries, receiver) == true)
     {
-        float3 directionWorld;
-        float sourcePdf = SampleSourceDirection(receiver,
-                                                float2(SampleGiRandom(launch, INITIAL_SOURCE_DIMENSION_FIRST),
-                                                       SampleGiRandom(launch, INITIAL_SOURCE_DIMENSION_FIRST + 1)),
-                                                directionWorld);
-        SurfaceHit samplePoint;
-        if (sourcePdf > 0 &&
-            TraceClosest(scene,
-                         queries,
-                         SpawnSurfaceRay(receiver.Hit, directionWorld, TRANSPORT_MAXIMUM_TRACE_DISTANCE_WORLD),
-                         samplePoint) == SCENE_QUERY_SURFACE)
-        {
-            record.Sample.TriangleIndex = samplePoint.TriangleIndex;
-            record.Sample.Barycentric = samplePoint.Barycentric;
-            record.Sample.RadianceOut =
-                EstimateRadianceOut(scene, launch, samplePoint, INITIAL_PATH_DIMENSION_FIRST, queries);
-            record.SourcePdf = sourcePdf;
-            if (all(isfinite(record.Sample.RadianceOut)) == false || any(record.Sample.RadianceOut < 0) == true)
-                FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
-        }
+        record = MakeInitialGiSample(scene, launch, receiver, queries);
     }
     record.HasFailed = queries.HasFailed;
     record.FailureReason = queries.FailureReason;
