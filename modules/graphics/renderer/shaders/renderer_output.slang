@@ -75,7 +75,8 @@ float3 GetBackdrop(float uvY)
     return parameters.Output.z > 0.5 ? backdrop : SrgbToLinear(backdrop);
 }
 // Display colour of one scene texel under the output parameters, with the backdrop composited when it is on.
-[noinline] float3 DisplayColor(float4 scene, float uvY, bool hasBackdrop) {
+[noinline] float3 DisplayColor(float4 scene, float uvY, bool hasBackdrop)
+{
     float3 color = EncodeColor(ToneMapColor(scene.rgb));
     if (hasBackdrop)
     {
@@ -83,9 +84,9 @@ float3 GetBackdrop(float uvY)
     }
     return color;
 }
-    // The tone curve applied to a grey value: ApplyPbrNeutral and the Reinhard branch of ToneMapColor for r = g = b, in
-    // one scalar. Edge detection only needs the display brightness, so it skips the three-channel curve.
-    [noinline] float ToneMapGrey(float grey)
+// The tone curve applied to a grey value: ApplyPbrNeutral and the Reinhard branch of ToneMapColor for r = g = b, in
+// one scalar. Edge detection only needs the display brightness, so it skips the three-channel curve.
+[noinline] float ToneMapGrey(float grey)
 {
     float value = grey * parameters.Output.x;
     bool isFinite = IsFiniteBits(value);
@@ -117,10 +118,12 @@ int2 ClampPixel(int2 pixel, int2 size)
 {
     return clamp(pixel, int2(0), size - 1);
 }
-[noinline] float LoadLuma(int2 pixel, int2 size, bool hasBackdrop) {
+[noinline] float LoadLuma(int2 pixel, int2 size, bool hasBackdrop)
+{
     int2 clamped = ClampPixel(pixel, size);
     return ApproximateLuma(image.Load(int3(clamped, 0)), (clamped.y + 0.5) / size.y, hasBackdrop);
-} float3 LoadColor(int2 pixel, int2 size, bool hasBackdrop)
+}
+float3 LoadColor(int2 pixel, int2 size, bool hasBackdrop)
 {
     int2 clamped = ClampPixel(pixel, size);
     return DisplayColor(image.Load(int3(clamped, 0)), (clamped.y + 0.5) / size.y, hasBackdrop);
