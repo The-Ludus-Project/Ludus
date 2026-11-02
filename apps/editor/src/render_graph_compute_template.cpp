@@ -430,6 +430,11 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
         selected.ProgramPrefix = QStringLiteral("GuidedRestirFgPlus");
         selected.Name = QStringLiteral("Guided ReSTIR FG+");
     }
+    else if (templateIdentity == QStringLiteral("conditional-restir"))
+    {
+        selected.ProgramPrefix = QStringLiteral("ConditionalRestir");
+        selected.Name = QStringLiteral("Conditional ReSTIR");
+    }
     else if (templateIdentity == QStringLiteral("restir-gi"))
     {
         selected.ProgramPrefix = QStringLiteral("RestirGi");

@@ -176,6 +176,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [S5: Editor authoring, behavior debugging and GameHost generations](architecture/behavior-s5.md)
 - [S6: Behavior safety and platform qualification](architecture/behavior-s6.md)
 - [S7 reference performance and release acceptance](architecture/behavior-s7.md)
+- [Sequencer, cinematics and controlled image sequences](architecture/sequencer-cinematics.md)
 - [Shared scene, material and lighting shader contract](architecture/shared-scene-shader-contract.md)
 - [Skeletal animation architecture](architecture/skeletal-animation.md)
 - [Smart pointer architecture](architecture/smart-pointers.md)

@@ -248,6 +248,7 @@ class BuiltInTemplateSettingsTests(unittest.TestCase):
         from ludus_tools import render_graph_templates as templates
         root = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs'
         merged = {}
+        merged_values = {}
         for identity, (directory, _, _) in templates.TEMPLATES.items():
             text = (root / directory / 'main.lushader.json.in').read_text()
             text = text.replace('@LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@', json.dumps(['metal']))
@@ -255,7 +256,17 @@ class BuiltInTemplateSettingsTests(unittest.TestCase):
                 definition = {key: value for key, value in setting.items() if key != 'value'}
                 with self.subTest(template=identity, setting=setting['id']):
                     self.assertEqual(merged.setdefault(setting['id'], definition), definition)
+                    merged_values.setdefault(setting['id'], setting)
         self.assertLessEqual(len(merged), settings.MAX_SETTINGS)
+        settings.validate(list(merged_values.values()), build)
+
+    def test_manifest_setting_capacity_accepts_the_limit_and_rejects_one_more(self):
+        values = [{'id': f'SETTING_{index}', 'label': f'Setting {index}', 'type': 'Bool', 'value': False}
+                  for index in range(settings.MAX_SETTINGS)]
+        settings.validate(values, build)
+        values.append({'id': 'OVERFLOW', 'label': 'One more setting', 'type': 'Bool', 'value': False})
+        with self.assertRaises(ToolingError):
+            settings.validate(values, build)
 
 
 class VisibilityTemplateTests(unittest.TestCase):

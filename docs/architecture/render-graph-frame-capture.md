@@ -32,6 +32,11 @@ converged images, and the viewport can show those but not save them.
 
 ## Goals and non-goals
 
+The proposed [sequencer image capture runner](sequencer-cinematics.md#capture-execution)
+orchestrates this frozen-frame operation at successive exact sequence times.
+That design owns multi-frame timing, scene overrides and run manifests; this
+page continues to own one render-graph image's convergence and readback.
+
 Goals:
 
 - Capture any cooked project graph, not only the one the viewport draws, using

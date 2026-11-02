@@ -26,6 +26,7 @@ TEMPLATES = {
                                   'native-ray-tracing'),
     'rao-blackwell-mh': ('rao_blackwell_mh', 'Rao-Blackwellized MH', 'compute-ray-tracing'),
     'guided-restir-fg-plus': ('guided_restir_fg_plus', 'Guided ReSTIR FG+', 'compute-ray-tracing'),
+    'conditional-restir': ('conditional_restir', 'Conditional ReSTIR', 'native-ray-tracing'),
     'restir-gi': ('restir_gi', 'ReSTIR GI', 'native-ray-tracing'),
 }
 # What each requirement needs, as the capability repair names it.
