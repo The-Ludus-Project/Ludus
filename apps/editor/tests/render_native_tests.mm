@@ -729,6 +729,61 @@ TEST_CASE("Native Lit viewport renders thirteen shadowed area patches without ba
     REQUIRE(ReadViewport().isNull() == false);
     preview.Stop();
 }
+TEST_CASE("Native viewport screenshot reads the presented GPU frame back without overlays",
+          "[.render-native][screenshot]")
+{
+    RenderScene scene = MakeLightingScene();
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(320, 240);
+    viewport.show();
+    REQUIRE(preview.SetScene(scene));
+    preview.SetShading(PreviewShading::Lit);
+    preview.SetStatisticsVisible(true);
+    REQUIRE(preview.Start());
+    REQUIRE(Frames(preview, 3));
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid());
+    const QString path = QDir(directory.path()).filePath(QStringLiteral("screenshot.png"));
+    QString error;
+    const bool hasStarted = viewport.SaveScreenshot(path, error);
+    INFO(error.toStdString());
+    REQUIRE(hasStarted == true);
+    REQUIRE(QTest::qWaitFor([&viewport]() { return viewport.IsTakingScreenshot() == false; }, 10000) == true);
+    INFO(viewport.GetScreenshotError().toStdString());
+    REQUIRE(viewport.GetScreenshotPath() == path);
+    const QImage window = ReadViewport().convertToFormat(QImage::Format_RGB32);
+    QImage screenshot;
+    REQUIRE(screenshot.load(path, "PNG") == true);
+    CHECK(screenshot.hasAlphaChannel() == false);
+    // The built-in preview renders the window's physical size, so the frame fills it texel for texel.
+    REQUIRE(screenshot.size() == window.size());
+    screenshot = screenshot.convertToFormat(QImage::Format_RGB32);
+    const auto isClose = [](const QImage& first, const QImage& second) {
+        constexpr int32 TOLERANCE = 2;
+        for (int32 y = 0; y < first.height(); ++y)
+        {
+            for (int32 x = 0; x < first.width(); ++x)
+            {
+                const QRgb a = first.pixel(x, y);
+                const QRgb b = second.pixel(x, y);
+                if (qAbs(qRed(a) - qRed(b)) > TOLERANCE || qAbs(qGreen(a) - qGreen(b)) > TOLERANCE ||
+                    qAbs(qBlue(a) - qBlue(b)) > TOLERANCE)
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+    // The bottom half, clear of overlays, is the same frame; the statistics panel in the top-left corner and the
+    // axis widget in the top-right corner are only in the window.
+    const QRect bottom(0, window.height() / 2, window.width(), window.height() - window.height() / 2);
+    CHECK(isClose(screenshot.copy(bottom), window.copy(bottom)) == true);
+    const QRect corner(0, 0, window.width() / 4, window.height() / 4);
+    CHECK(isClose(screenshot.copy(corner), window.copy(corner)) == false);
+    preview.Stop();
+}
 TEST_CASE("Native Lit viewport ignores lightmap UVs and keeps live camera rendering", "[.render-native][lighting]")
 {
     RenderScene scene = MakeLightingScene(LightingReceiverDefect::MismatchedBakeTexcoords);

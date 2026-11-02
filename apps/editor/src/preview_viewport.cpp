@@ -4,6 +4,7 @@
 #include "internal/preview_shading.h"
 #include "internal/reference_capture_window.h"
 #include "internal/theme_colour.h"
+#include "internal/viewport_screenshot.h"
 #include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
 
@@ -18,7 +19,10 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QComboBox>
+#include <QDir>
 #include <QDoubleSpinBox>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QFontMetricsF>
 #include <QGuiApplication>
@@ -29,10 +33,13 @@
 #include <QLinearGradient>
 #include <QList>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPointer>
 #include <QPushButton>
+#include <QSettings>
 #include <QSignalBlocker>
+#include <QStandardPaths>
 #include <QToolBar>
 #include <QToolButton>
 #include <QToolTip>
@@ -53,6 +60,7 @@
 #    include "internal/world_graph_view.h"
 #    include <QLibraryInfo>
 #    include <QQuickItem>
+#    include <QQuickItemGrabResult>
 #    include <QQuickPaintedItem>
 #    include <QQuickWindow>
 #    include <QSGSimpleTextureNode>
@@ -589,6 +597,8 @@ private:
 #    if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 /// Service period for frame polling, about one 60 Hz display refresh.
 constexpr int32 SERVICE_INTERVAL_MILLISECONDS = 16;
+/// Time a screenshot waits for the viewport to draw the frame it reads back, in milliseconds.
+constexpr int32 SCREENSHOT_TIMEOUT_MILLISECONDS = 5000;
 /// Reports whether this QtWayland release breaks a hidden then re-shown Vulkan subsurface.
 ///
 /// Thanks to The Qt Company and the QtWayland contributors. Before 6.5.1:
@@ -632,6 +642,13 @@ struct PreviewViewport::State final
     bool HasShaderError = false;
     bool IsAutomatic = true;
     bool CanShowFrames = true;
+    /// Destination of the screenshot being read back; empty asks with a dialog.
+    QString ScreenshotRequestPath;
+    /// File the last screenshot was written to.
+    QString ScreenshotPath;
+    /// Why the last started screenshot failed.
+    QString ScreenshotError;
+    bool IsTakingScreenshot = false;
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
     /// Reference capture window of this viewport, created on first use and owned by the widget.
     QPointer<ReferenceCaptureWindow> ReferenceWindow;
@@ -744,15 +761,7 @@ struct PreviewViewport::State final
             }
             if (node != nullptr)
             {
-                QRectF target = boundingRect();
-                if (mState.ProjectGraph.isNull() == false &&
-                    mState.Source == &mState.ProjectGraph->GetDisplayFrames() && mState.Active >= 0)
-                {
-                    const rhi::NativeTextureInfo& image = mState.Frames[mState.Active].Read.Image;
-                    const QSizeF size = QSizeF(image.Width, image.Height).scaled(target.size(), Qt::KeepAspectRatio);
-                    target = QRectF(QPointF((width() - size.width()) / 2, (height() - size.height()) / 2), size);
-                }
-                node->setRect(target);
+                node->setRect(mState.getActiveFrameRectangle());
             }
             return node;
         }
@@ -760,6 +769,19 @@ struct PreviewViewport::State final
     private:
         State& mState;
     };
+    /// Item rectangle the active GPU frame is drawn into: the whole item, or a project graph frame
+    /// letterboxed at its own aspect.
+    [[nodiscard]] QRectF getActiveFrameRectangle() const
+    {
+        const QRectF bounds = Item->boundingRect();
+        if (ProjectGraph.isNull() == true || Source != &ProjectGraph->GetDisplayFrames() || Active < 0)
+        {
+            return bounds;
+        }
+        const rhi::NativeTextureInfo& image = Frames[Active].Read.Image;
+        const QSizeF size = QSizeF(image.Width, image.Height).scaled(bounds.size(), Qt::KeepAspectRatio);
+        return QRectF(QPointF((bounds.width() - size.width()) / 2, (bounds.height() - size.height()) / 2), size);
+    }
     QQuickItem* ObjectOverlayOrNull = nullptr;
     QQuickWindow* Window = nullptr;
     StatisticsItem* StatisticsOrNull = nullptr;
@@ -798,6 +820,12 @@ struct PreviewViewport::State final
     QTimer Service;
     /// Retry only while a submitted Qt sampling read is awaiting its GPU completion marker.
     QTimer RetirementRetry;
+    /// Qt Quick read-back of the presented GPU frame for a pending screenshot; null otherwise.
+    QSharedPointer<QQuickItemGrabResult> ScreenshotGrab;
+    /// Render size and frame crop of ScreenshotGrab.
+    ViewportScreenshotGrab ScreenshotGeometry;
+    /// Ends a read-back the viewport never draws, for example while it is hidden.
+    QTimer ScreenshotTimeout;
     static bool Retain(void* context) noexcept
     {
         State& state = *static_cast<State*>(context);
@@ -1266,6 +1294,13 @@ private:
     {
         RetirementRetry.stop();
         Service.stop();
+        if (ScreenshotGrab.isNull() == false)
+        {
+            ScreenshotGrab.reset();
+            ScreenshotTimeout.stop();
+            IsTakingScreenshot = false;
+            ScreenshotError = QStringLiteral("The viewport stopped before its frame was read back.");
+        }
         IsDestroyingWindow = true;
         // Source pins must already have been released by RHI shutdown. The
         // device lease keeps the Qt source handshake until the final release.
@@ -1477,8 +1512,8 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
                                     "outside the scene. With the viewport focused: numpad 7, 1 and 3 for Top, Front "
                                     "and Right (add Ctrl, or Command on macOS, for the opposite side), numpad 5 to "
                                     "switch projection. The menu also sets the perspective field of view and the "
-                                    "mouse look sensitivity, and returns to an imported scene's start view "
-                                    "(Shift+Home)."));
+                                    "mouse look sensitivity, returns to an imported scene's start view "
+                                    "(Shift+Home) and saves a screenshot of the rendered image."));
     QMenu* viewMenu = new QMenu(view);
     viewMenu->setToolTipsVisible(true);
     // The start view is the World level's camera, which an import sets from the scene's own camera.
@@ -1578,6 +1613,19 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         {
             antialiasingActions[static_cast<qsizetype>(index)]->setChecked(
                 static_cast<foundation::usize>(preview->GetAntialiasing()) == index);
+        }
+    });
+    viewMenu->addSeparator();
+    QAction* screenshot = viewMenu->addAction(QStringLiteral("Save screenshot…"));
+    screenshot->setObjectName(QStringLiteral("viewportSaveScreenshot"));
+    screenshot->setToolTip(QStringLiteral("Save the rendered image this viewport shows as a PNG file, at the "
+                                          "resolution it was rendered at, without statistics, legends, the axis "
+                                          "widget or object handles."));
+    connect(screenshot, &QAction::triggered, this, [this]() {
+        QString error;
+        if (SaveScreenshot({}, error) == false)
+        {
+            QMessageBox::information(this, QStringLiteral("Save screenshot"), error);
         }
     });
     view->setMenu(viewMenu);
@@ -1826,6 +1874,14 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     mState->RetirementRetry.setTimerType(Qt::PreciseTimer);
     mState->RetirementRetry.setSingleShot(true);
     connect(&mState->RetirementRetry, &QTimer::timeout, this, [this]() { mState->releaseRetired(); });
+    mState->ScreenshotTimeout.setInterval(SCREENSHOT_TIMEOUT_MILLISECONDS);
+    mState->ScreenshotTimeout.setSingleShot(true);
+    connect(&mState->ScreenshotTimeout, &QTimer::timeout, this, [this]() {
+        mState->ScreenshotGrab.reset();
+        mState->IsTakingScreenshot = false;
+        failScreenshot(QStringLiteral("The viewport did not draw a frame to read back. Make sure it is visible, "
+                                      "then save the screenshot again."));
+    });
 #endif
     mIsAutomatic = isAutomatic;
     connectFrameSource();
@@ -2205,6 +2261,177 @@ QAction& PreviewViewport::GetStartViewSaveAction() noexcept
 {
     LUDUS_ASSERT(mState->StartViewSaveActionOrNull != nullptr);
     return *mState->StartViewSaveActionOrNull;
+}
+bool PreviewViewport::SaveScreenshot(const QString& path, QString& outError)
+{
+    if (mState->IsTakingScreenshot == true)
+    {
+        outError = QStringLiteral("The previous screenshot is still being read from the viewport.");
+        return false;
+    }
+    const QString noFrame = QStringLiteral("The viewport shows no rendered image yet. Open a World with a scene, "
+                                           "wait for its first frame, then save the screenshot again.");
+#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    static_cast<void>(path);
+    static_cast<void>(noFrame);
+    outError = QStringLiteral("The browser editor cannot read its viewport canvas back, so it cannot save "
+                              "screenshots. Use the native editor.");
+    return false;
+#elif defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->MessageOrNull != nullptr && mState->MessageOrNull->isHidden() == false)
+    {
+        outError = noFrame;
+        return false;
+    }
+    QImage image;
+    if (mState->Window != nullptr)
+    {
+        if (mState->CpuWrapperOrNull != nullptr && mState->ProjectGraph.isNull() == false)
+        {
+            image = mState->ProjectGraph->GetImage();
+        }
+        else if (mState->Active >= 0 && mState->Item != nullptr)
+        {
+            const rhi::NativeTextureInfo& frame = mState->Frames[mState->Active].Read.Image;
+            ViewportScreenshotGrab grab;
+            if (ComputeViewportScreenshotGrab(mState->Item->size(),
+                                              mState->getActiveFrameRectangle(),
+                                              QSize(static_cast<int32>(frame.Width), static_cast<int32>(frame.Height)),
+                                              grab) == false)
+            {
+                outError = noFrame;
+                return false;
+            }
+            QSharedPointer<QQuickItemGrabResult> result = mState->Item->grabToImage(
+                GetViewportScreenshotGrabSize(grab, mState->Window->effectiveDevicePixelRatio()));
+            if (result.isNull() == true)
+            {
+                outError = QStringLiteral("The viewport is hidden, so its frame cannot be read back. Show the "
+                                          "viewport, then save the screenshot again.");
+                return false;
+            }
+            const QQuickItemGrabResult* pending = result.data();
+            connect(result.data(), &QQuickItemGrabResult::ready, this, [this, pending]() {
+                if (mState->ScreenshotGrab.data() != pending)
+                {
+                    return;
+                }
+                const QImage frameImage =
+                    CropViewportScreenshot(mState->ScreenshotGrab->image(), mState->ScreenshotGeometry);
+                mState->ScreenshotGrab.reset();
+                mState->ScreenshotTimeout.stop();
+                mState->IsTakingScreenshot = false;
+                if (frameImage.isNull() == true)
+                {
+                    failScreenshot(QStringLiteral("Qt Quick could not read the viewport's frame back."));
+                    return;
+                }
+                finishScreenshot(frameImage);
+            });
+            mState->ScreenshotGrab = Move(result);
+            mState->ScreenshotGeometry = grab;
+            mState->ScreenshotRequestPath = path;
+            mState->ScreenshotError.clear();
+            mState->IsTakingScreenshot = true;
+            mState->ScreenshotTimeout.start();
+            return true;
+        }
+    }
+    else if (mState->CanvasOrNull != nullptr)
+    {
+        image = mState->CanvasOrNull->GetImage();
+    }
+    else if (mState->GraphViewOrNull != nullptr && mState->GraphViewOrNull->isHidden() == false)
+    {
+        image = mState->GraphViewOrNull->GetImage();
+    }
+    if (image.isNull() == true)
+    {
+        outError = noFrame;
+        return false;
+    }
+    mState->ScreenshotRequestPath = path;
+    mState->ScreenshotError.clear();
+    finishScreenshot(image);
+    return true;
+#else
+    static_cast<void>(path);
+    outError = noFrame;
+    return false;
+#endif
+}
+bool PreviewViewport::IsTakingScreenshot() const noexcept
+{
+    return mState->IsTakingScreenshot;
+}
+const QString& PreviewViewport::GetScreenshotPath() const noexcept
+{
+    return mState->ScreenshotPath;
+}
+const QString& PreviewViewport::GetScreenshotError() const noexcept
+{
+    return mState->ScreenshotError;
+}
+void PreviewViewport::finishScreenshot(const QImage& image)
+{
+    const QImage opaque = MakeOpaqueViewportImage(image, VIEWPORT_BACKGROUND);
+    const bool isInteractive = mState->ScreenshotRequestPath.isEmpty() == true;
+    QString path = isInteractive == true ? askScreenshotPath() : mState->ScreenshotRequestPath;
+    while (path.isEmpty() == false)
+    {
+        QString error;
+        if (WriteViewportScreenshot(path, opaque, error) == true)
+        {
+            mState->ScreenshotPath = path;
+            if (isInteractive == true)
+            {
+                QSettings().setValue(QStringLiteral("viewport/screenshotDirectory"), QFileInfo(path).absolutePath());
+            }
+            return;
+        }
+        mState->ScreenshotError = error;
+        if (isInteractive == false)
+        {
+            return;
+        }
+        QMessageBox problem(QMessageBox::Warning, QStringLiteral("Save screenshot"), error, QMessageBox::Cancel, this);
+        QPushButton* chooseAnother =
+            problem.addButton(QStringLiteral("Choose another location…"), QMessageBox::AcceptRole);
+        problem.setDefaultButton(QMessageBox::Cancel);
+        static_cast<void>(problem.exec());
+        if (problem.clickedButton() != chooseAnother)
+        {
+            return;
+        }
+        mState->ScreenshotError.clear();
+        path = askScreenshotPath();
+    }
+}
+void PreviewViewport::failScreenshot(const QString& error)
+{
+    mState->ScreenshotError = error;
+    if (mState->ScreenshotRequestPath.isEmpty() == true)
+    {
+        QMessageBox::warning(this, QStringLiteral("Save screenshot"), error);
+    }
+}
+QString PreviewViewport::askScreenshotPath()
+{
+    QString directory = QSettings().value(QStringLiteral("viewport/screenshotDirectory")).toString();
+    if (directory.isEmpty() == true || QFileInfo(directory).isDir() == false)
+    {
+        directory = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    }
+    QString path = QFileDialog::getSaveFileName(
+        this,
+        QStringLiteral("Save viewport screenshot"),
+        QDir(directory).filePath(MakeViewportScreenshotFileName(QDateTime::currentDateTime())),
+        QStringLiteral("PNG image (*.png)"));
+    if (path.isEmpty() == false && QFileInfo(path).suffix().isEmpty() == true)
+    {
+        path += QStringLiteral(".png");
+    }
+    return path;
 }
 void PreviewViewport::HoldFrame()
 {
