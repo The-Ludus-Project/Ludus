@@ -336,6 +336,31 @@ TEST_CASE("Cooked v3 preserves authored photometric lights, sided emitters, sepa
         REQUIRE(scene.Objects[0].SourceId == 101);
     }
 }
+TEST_CASE("Scene definition copies own every array and leave the source shared and unchanged", "[resources][scene]")
+{
+    Array<uint8> bytes = MakeLightingFixture();
+    r::SceneDefinition scene;
+    REQUIRE(r::SceneDefinition::Decode(bytes.GetData(), bytes.GetSize(), scene) == r::Status::Ok);
+    r::SceneDefinition copy;
+    REQUIRE(scene.TryCopyTo(copy) == r::Status::Ok);
+    REQUIRE(copy.Bytes() == scene.Bytes());
+    REQUIRE(copy.Meshes.GetSize() == scene.Meshes.GetSize());
+    REQUIRE(copy.Objects.GetSize() == scene.Objects.GetSize());
+    CHECK(copy.Meshes[0].Positions.GetData() != scene.Meshes[0].Positions.GetData());
+    CHECK(copy.Meshes[0].BakeTexcoords[0].X == scene.Meshes[0].BakeTexcoords[0].X);
+    CHECK(copy.Meshes[0].Indices.GetSize() == scene.Meshes[0].Indices.GetSize());
+    CHECK(copy.Materials[0].AreaSourceId == 41);
+    CHECK(copy.Objects[0].SourceId == 101);
+    CHECK(copy.Lights[0].Kind == r::SceneLightKind::Spot);
+    CHECK(copy.Environment.Width == scene.Environment.Width);
+    CHECK(copy.Environment.Pixels[1].Z == scene.Environment.Pixels[1].Z);
+    CHECK(copy.Eye == scene.Eye);
+    CHECK(copy.VerticalFov == scene.VerticalFov);
+    copy.Objects[0].Transform.Translation.X += 5;
+    copy.Meshes[0].Positions[0].X += 5;
+    CHECK(scene.Objects[0].Transform.Translation.X + 5 == copy.Objects[0].Transform.Translation.X);
+    CHECK(scene.Meshes[0].Positions[0].X + 5 == copy.Meshes[0].Positions[0].X);
+}
 TEST_CASE("Cooked v3 rejects unknown contracts and invalid transport values atomically", "[resources][scene]")
 {
     const Array<uint8> original = MakeLightingFixture();

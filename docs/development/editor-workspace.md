@@ -1074,18 +1074,46 @@ component, and scale changes one positive local scale component. Hold **Shift**
 for 0.1 metre movement, 15 degree rotation or 0.1 scale-factor increments.
 The wireframe previews the candidate throughout a drag. Release applies one
 validated World edit and refreshes the shaded scene; **Undo** restores the entire
-gesture. The refresh reassembles the level in the background. Each edit parses the
-project scene catalog once and verifies the digest of each artifact the level uses
-once before assembling the bundle. Selection and handles return when that
-operation finishes. **Delete** and **Ctrl+D** use the hierarchy’s delete and duplicate
+gesture. **Delete** and **Ctrl+D** use the hierarchy’s delete and duplicate
 commands while the viewport has focus. **Escape**, a tool change, hiding the view
 or losing focus cancels the candidate. **Save World** persists the accepted placement.
+
+A placement-only edit, from the viewport or from Transform fields applied in the
+inspector, does not wait for the level to be cooked again. The editor
+derives the presented scene from the current one, replacing only object transforms,
+and computes them with the scene cook's own composition, so they equal what the cook
+writes bit for bit. Selection, handles and further moves are available at once.
+The shaded image updates when the renderer has prepared the moved scene; until then
+it keeps the previous frame. The authoritative cook then validates the placement in
+the background. It parses the project scene catalog once and verifies the digest of
+each artifact the level uses once before assembling the bundle:
+
+- A newer move, **Undo** or **Redo** supersedes a running validation; only the
+  latest placement is validated. Returning to the last validated placement shows
+  that cook's scene again with nothing left to validate.
+- When the cook confirms the placement, the derived scene stays presented. If the
+  cooked scene differs (for example because project assets changed on disk), the
+  cooked scene replaces it.
+- When the cook fails, the last validated scene returns and the status line shows the
+  error. The World keeps the edit, as after any failed assembly; **Undo** removes it.
+- **Save World** during a validation waits for it, then verifies the scene assets
+  and writes the World as it is at that point.
+- Any other edit, such as adding, renaming or deleting an entity, stops the running
+  validation and assembles the whole level. Selection, handles and World edits wait
+  for that assembly, as for a reassembly without a pending placement.
+- Opening, creating or importing into a World, a draft preview of inspector fields and
+  restoring recovery wait until the validation has finished.
+
+The gizmo composes a placement exactly as the World stores it for the cook, so an
+object without a parent stays bit-identical when released. A parent's transform is
+composed in double precision by the cook; the gizmo's single-precision composition
+of a child can differ from it in the last bits.
 
 Imported scene instances and project preview transform bindings expose these
 handles. Other extractors can still select and highlight their objects; they need
 an explicit authoring transform binding before the editor can manipulate them.
 A multiple selection, unapplied inspector fields or a running scene operation
-disables transform handles. Axis handles viewed directly end-on are hidden;
+other than a background placement validation disables transform handles. Axis handles viewed directly end-on are hidden;
 orbit to expose them. Wireframes sample very dense meshes to bound overlay cost.
 The native shared-device viewport and native readback fallback show the same
 selection overlay. The shared-device presentation uploads batched stroke geometry

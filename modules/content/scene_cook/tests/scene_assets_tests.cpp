@@ -18,6 +18,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <bit>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -540,6 +541,78 @@ TEST_CASE("Invalid levels report the reference messages", "[scene_assets]")
         R"("profile":"resident-reference-v1","version":1})";
     CHECK_FALSE(ValidateLevel(ToSpan(degenerate), error));
     CHECK(error.Message.View() == "Degenerate authored camera");
+}
+
+TEST_CASE("Composed level transforms match the assembled bundle bit for bit", "[scene_assets]")
+{
+    namespace format = ludus::content::scene_format;
+    namespace resources = ludus::resources;
+    GoldenProject golden;
+    std::string level = ToText(golden.Level);
+    // Give the first object a rotated, scaled placement with integer and fractional numbers, and
+    // parent the second object to it, so the parent chain composes in float64 before narrowing.
+    const std::string identity = R"("transform":[1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0])";
+    const usize first = level.find(identity);
+    REQUIRE(first != std::string::npos);
+    level.replace(first, identity.size(), R"("transform":[0.0,0.7,0.1,-0.3,0.0,0.2,0,0,1.3,10.25,-0.1,3])");
+    const usize second = level.find(identity);
+    REQUIRE(second != std::string::npos);
+    level.replace(second, identity.size(), R"("transform":[1.1,0.2,0.0,0.0,0.9,0.3,0.0,0.0,1,0.37,1.0,-2.5])");
+    const std::string orphan = R"("parent":"")";
+    const usize secondParent = level.rfind(orphan, second);
+    REQUIRE(secondParent != std::string::npos);
+    REQUIRE(secondParent > first);
+    level.replace(secondParent, orphan.size(), R"("parent":"00000000-0000-0000-0000-000000000003")");
+
+    AssetError error;
+    Array<uint8> bundle;
+    INFO(Describe(error));
+    REQUIRE(AssembleLevel(golden.Project.string(), ToSpan(level), {}, bundle, error));
+    resources::SceneDefinition scene;
+    REQUIRE(resources::SceneDefinition::Decode(bundle.GetData(), bundle.GetSize(), scene) == resources::Status::Ok);
+    Array<float32> transforms;
+    REQUIRE(ComposeLevelTransforms(ToSpan(level), transforms, error));
+    REQUIRE(transforms.GetSize() == scene.Objects.GetSize() * format::OBJECT_TRANSFORM_COMPONENTS);
+    for (usize i = 0; i < scene.Objects.GetSize(); ++i)
+    {
+        INFO(i);
+        const math::Affine3& meshToWorld = scene.Objects[i].Transform;
+        const float32* composed = transforms.GetData() + i * format::OBJECT_TRANSFORM_COMPONENTS;
+        for (usize column = 0; column < 3; ++column)
+        {
+            CHECK(std::bit_cast<uint32>(meshToWorld.Columns[column].X) == std::bit_cast<uint32>(composed[column * 3]));
+            CHECK(std::bit_cast<uint32>(meshToWorld.Columns[column].Y) ==
+                  std::bit_cast<uint32>(composed[column * 3 + 1]));
+            CHECK(std::bit_cast<uint32>(meshToWorld.Columns[column].Z) ==
+                  std::bit_cast<uint32>(composed[column * 3 + 2]));
+        }
+        CHECK(std::bit_cast<uint32>(meshToWorld.Translation.X) == std::bit_cast<uint32>(composed[9]));
+        CHECK(std::bit_cast<uint32>(meshToWorld.Translation.Y) == std::bit_cast<uint32>(composed[10]));
+        CHECK(std::bit_cast<uint32>(meshToWorld.Translation.Z) == std::bit_cast<uint32>(composed[11]));
+    }
+    // The child's world translation includes its parent's: the composition is not a copy of the level.
+    CHECK(transforms[format::OBJECT_TRANSFORM_COMPONENTS + 9] != 0.37F);
+
+    // Each authored number is in range, but a chain of 1e12 scales carries the last object beyond float32.
+    std::string unbounded = R"({"camera":{"eye":[0,0,3],"fov":1.0,"target":[0,0,0],"up":[0,1,0]},)"
+                            R"("id":"00000000-0000-0000-0000-000000000001","imports":[],"name":"Chain","objects":[)";
+    constexpr usize CHAIN_LENGTH = 4;
+    for (usize i = 0; i < CHAIN_LENGTH; ++i)
+    {
+        const std::string parent = i == 0 ? std::string() : "00000000-0000-0000-0000-00000000001" + std::to_string(i);
+        unbounded += std::string(i == 0 ? "" : ",") + R"({"id":"00000000-0000-0000-0000-00000000001)" +
+                     std::to_string(i + 1) + R"(","material":"material/0541101d-6fe8-5e87-b056-6d9be61a5213",)" +
+                     R"("mesh":"mesh/312d1234-1ad2-5894-9ef8-dc2bfad15547","name":"Link","parent":")" + parent +
+                     R"(","transform":[1e12,0,0,0,1e12,0,0,0,1e12,0,0,0]})";
+    }
+    unbounded += R"(],"profile":"resident-reference-v1","version":1})";
+    REQUIRE(ValidateLevel(ToSpan(unbounded), error));
+    const usize before = transforms.GetSize();
+    CHECK_FALSE(ComposeLevelTransforms(ToSpan(unbounded), transforms, error));
+    CHECK(error.Message.View() == "World transform outside float32 range");
+    CHECK(transforms.GetSize() == before);
+    CHECK_FALSE(ComposeLevelTransforms(ToSpan(std::string_view("{}")), transforms, error));
+    CHECK(transforms.GetSize() == before);
 }
 
 namespace

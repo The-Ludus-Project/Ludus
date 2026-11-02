@@ -4,6 +4,7 @@
 #include "internal/editor_identity.h"
 #include "internal/import_report.h"
 #include "internal/preview_viewport.h"
+#include "internal/scene_placement.h"
 #include <QGuiApplication>
 #include <ludus/foundation/base/core.h>
 
@@ -237,14 +238,16 @@ void LevelWorkspace::SetProject(const QString& root, foundation::uint64 epoch)
     {
         return;
     }
-    if (Busy_)
+    if (Busy_ == true || mIsValidationRunning == true)
     {
         PendingRoot_ = root;
         PendingEpoch_ = epoch;
         ProjectPending_ = true;
         Cancel();
+        CancelPlacementValidation();
         return;
     }
+    ClearPlacementPresentation();
     StopPreview();
     (void)Preview_.SetScene({});
     Viewport_->ClearFrame(QStringLiteral("Import a reference scene to render it here."));
@@ -284,7 +287,7 @@ bool LevelWorkspace::Relative(const QString& path, QString& relative) const
 bool LevelWorkspace::Create(const QString& path)
 {
     QString relative;
-    if (Busy_)
+    if (CanStartOperation() == false)
     {
         return false;
     }
@@ -327,7 +330,7 @@ bool LevelWorkspace::Create(const QString& path)
 bool LevelWorkspace::Open(const QString& path)
 {
     QString relative;
-    if (Busy_ || Relative(path, relative) == false || ConfirmDiscard() == false)
+    if (CanStartOperation() == false || Relative(path, relative) == false || ConfirmDiscard() == false)
     {
         return false;
     }
@@ -335,7 +338,7 @@ bool LevelWorkspace::Open(const QString& path)
 }
 bool LevelWorkspace::Import(const QString& source)
 {
-    if (Busy_ || Level_.isEmpty())
+    if (CanStartOperation() == false || Level_.isEmpty())
     {
         return false;
     }
@@ -357,7 +360,7 @@ bool LevelWorkspace::ImportPreviewed(const QString& source)
 }
 bool LevelWorkspace::PreviewImport(const QString& source)
 {
-    if (Busy_ == true || Root_.isEmpty() == true || isOperationActive() == true)
+    if (CanStartOperation() == false || Root_.isEmpty() == true)
     {
         return false;
     }
@@ -398,7 +401,7 @@ QString LevelWorkspace::StatusText() const
 }
 bool LevelWorkspace::VerifyAssets(const QJsonObject& level)
 {
-    if (Busy_ || level.isEmpty())
+    if (CanStartOperation() == false || level.isEmpty())
     {
         return false;
     }
@@ -413,7 +416,7 @@ bool LevelWorkspace::VerifyAssets(const QJsonObject& level)
 }
 bool LevelWorkspace::Assemble(const QJsonObject& level)
 {
-    if (Busy_ || level.isEmpty())
+    if (CanStartOperation() == false || level.isEmpty())
     {
         return false;
     }
@@ -423,7 +426,7 @@ bool LevelWorkspace::Assemble(const QJsonObject& level)
 }
 bool LevelWorkspace::ImportInto(const QJsonObject& level, const QString& source)
 {
-    if (Busy_ || level.isEmpty())
+    if (CanStartOperation() == false || level.isEmpty())
     {
         return false;
     }
@@ -433,7 +436,7 @@ bool LevelWorkspace::ImportInto(const QJsonObject& level, const QString& source)
 }
 bool LevelWorkspace::ImportPreviewedInto(const QJsonObject& level, const QString& source)
 {
-    if (Busy_ == true || level.isEmpty() == true)
+    if (CanStartOperation() == false || level.isEmpty() == true)
     {
         return false;
     }
@@ -469,7 +472,7 @@ bool LevelWorkspace::Save()
 }
 bool LevelWorkspace::Start(const QString& operation, const QString& path, const QString& source)
 {
-    if (Busy_ == true || Root_.isEmpty() == true || isOperationActive() == true)
+    if (CanStartOperation() == false || Root_.isEmpty() == true)
     {
         return false;
     }
@@ -714,6 +717,7 @@ void LevelWorkspace::Completed()
         Render();
         Q_EMIT ImportPreviewFinished(isAccepted);
         ApplyPendingProject();
+        startPlacementValidation();
         return;
     }
     if (PublishingCatalog_)
@@ -819,6 +823,10 @@ void LevelWorkspace::CommitImport()
 void LevelWorkspace::CommitCandidate()
 {
     Level_ = Candidate_;
+    if (Operation_ != QStringLiteral("save"))
+    {
+        acceptCommittedScene();
+    }
     ImportReports_ = PendingImportReports_;
     if (Scene_.Identity.isEmpty())
     {
@@ -842,6 +850,7 @@ void LevelWorkspace::CommitCandidate()
     Render();
     Q_EMIT OperationFinished(true);
     ApplyPendingProject();
+    startPlacementValidation();
 }
 void LevelWorkspace::Rollback(const QString& error)
 {
@@ -864,9 +873,15 @@ void LevelWorkspace::Rollback(const QString& error)
     Render();
     Q_EMIT OperationFinished(false);
     ApplyPendingProject();
+    startPlacementValidation();
 }
 void LevelWorkspace::Publish()
 {
+    if (mIsValidationRunning == true)
+    {
+        finishPlacementValidation();
+        return;
+    }
     if (Success_ == false || Cancelling_)
     {
         Busy_ = false;
@@ -883,6 +898,7 @@ void LevelWorkspace::Publish()
             Q_EMIT OperationFinished(false);
         }
         ApplyPendingProject();
+        startPlacementValidation();
         return;
     }
     if (VerificationOnly_)
@@ -893,6 +909,7 @@ void LevelWorkspace::Publish()
         Render();
         Q_EMIT AssetsVerified(true);
         ApplyPendingProject();
+        startPlacementValidation();
         return;
     }
     if (Operation_ == QStringLiteral("save"))
@@ -1087,5 +1104,186 @@ void LevelWorkspace::Edit()
     Candidate_ = Level_;
     Candidate_.insert(QStringLiteral("objects"), objects);
     (void)Start(QStringLiteral("assemble"));
+}
+PlacementPublication LevelWorkspace::PublishPlacement(const QJsonObject& level, const WorldDocument& world)
+{
+    if (Busy_ == true || WorldOwned_ == false || mPresentedScene.Definition == nullptr)
+    {
+        return PlacementPublication::RequiresAssembly;
+    }
+    const QJsonObject unplacedWorld = world.MakeDraftWithoutScenePlacements();
+    if (unplacedWorld != mPresentedWorld)
+    {
+        return PlacementPublication::RequiresAssembly;
+    }
+    if (level == mPresentedLevel)
+    {
+        return PlacementPublication::Unchanged;
+    }
+    if (mPlacementValidation != PlacementValidation::Ready && level == mValidatedLevel &&
+        unplacedWorld == mValidatedWorld)
+    {
+        // Back to the validated placement (Undo): that cook's own scene needs no validation.
+        if (presentScene(mValidatedScene) == false)
+        {
+            return PlacementPublication::RequiresAssembly;
+        }
+        ++mPlacementGeneration;
+        mPresentedLevel = mValidatedLevel;
+        mPlacementValidation = PlacementValidation::Ready;
+        Status_->setText(QStringLiteral("Scene ready."));
+        return PlacementPublication::Published;
+    }
+    RenderScene placed;
+    QString error;
+    const PlacedSceneStatus status = DerivePlacedScene(mPresentedScene, mPresentedLevel, level, placed, error);
+    if (status == PlacedSceneStatus::Unchanged)
+    {
+        return PlacementPublication::Unchanged;
+    }
+    // A failed derivation (for example a placement outside float32 range) is reported by the full assembly.
+    if (status == PlacedSceneStatus::RequiresAssembly || presentScene(placed) == false)
+    {
+        return PlacementPublication::RequiresAssembly;
+    }
+    ++mPlacementGeneration;
+    mPresentedLevel = level;
+    mPlacementWorld = world;
+    mPlacementValidation = PlacementValidation::Pending;
+    Status_->setText(QStringLiteral("Objects placed. Validating scene assets in the background…"));
+    startPlacementValidation();
+    return PlacementPublication::Published;
+}
+void LevelWorkspace::CancelPlacementValidation() noexcept
+{
+    if (mIsValidationRunning == true)
+    {
+        mIsValidationCancelled = true;
+        CancelRequested_.store(true);
+    }
+}
+void LevelWorkspace::ClearPlacementPresentation() noexcept
+{
+    CancelPlacementValidation();
+    ++mPlacementGeneration;
+    mPlacementValidation = PlacementValidation::Ready;
+    mPresentedScene = {};
+    mPresentedLevel = {};
+    mPresentedWorld = {};
+    mValidatedScene = {};
+    mValidatedLevel = {};
+    mValidatedWorld = {};
+    mPlacementWorld = {};
+}
+bool LevelWorkspace::presentScene(const RenderScene& scene)
+{
+    if (Preview_.SetScene(scene) == false)
+    {
+        Error_ = Preview_.Status();
+        return false;
+    }
+    mPresentedScene = scene;
+    return true;
+}
+void LevelWorkspace::acceptCommittedScene()
+{
+    ++mPlacementGeneration;
+    mPlacementValidation = PlacementValidation::Ready;
+    mPresentedScene = Scene_;
+    mPresentedLevel = Level_;
+    mPresentedWorld =
+        WorldSnapshot_.Loaded() == true ? WorldSnapshot_.MakeDraftWithoutScenePlacements() : QJsonObject{};
+    mValidatedScene = mPresentedScene;
+    mValidatedLevel = mPresentedLevel;
+    mValidatedWorld = mPresentedWorld;
+}
+void LevelWorkspace::startPlacementValidation()
+{
+    if (mPlacementValidation != PlacementValidation::Pending || CanStartOperation() == false || Root_.isEmpty() == true)
+    {
+        return;
+    }
+    // The fields Start() resets, without Busy_: placement edits continue while this cook runs.
+    Candidate_ = mPresentedLevel;
+    WorldSnapshot_ = mPlacementWorld;
+    VerificationOnly_ = false;
+    Error_.clear();
+    Scene_ = {};
+    Success_ = false;
+    Cancelling_ = false;
+    Source_.clear();
+    Operation_ = QStringLiteral("assemble");
+    CandidatePath_.clear();
+    mIsValidationCancelled = false;
+    mValidationGeneration = mPlacementGeneration;
+    mIsValidationRunning = true;
+    mPlacementValidation = PlacementValidation::Running;
+    const QJsonValue expected = Disk_.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(Disk_);
+    if (Run({Operation_, {}, {}, expected}) == false)
+    {
+        Error_ = QStringLiteral("Could not start the scene validation.");
+        finishPlacementValidation();
+    }
+}
+void LevelWorkspace::finishPlacementValidation()
+{
+    RenderScene cooked = foundation::Move(Scene_);
+    Scene_ = {};
+    mIsValidationRunning = false;
+    const bool isCurrent = mIsValidationCancelled == false && mValidationGeneration == mPlacementGeneration;
+    mIsValidationCancelled = false;
+    PlacementValidationResult result = PlacementValidationResult::Superseded;
+    if (isCurrent == true)
+    {
+        bool isAccepted = Success_ == true;
+        if (isAccepted == true && IsSamePlacedScene(mPresentedScene, cooked) == false)
+        {
+            // The cook is authoritative: present its scene when it differs from the derived one.
+            isAccepted = presentScene(cooked);
+        }
+        if (isAccepted == true)
+        {
+            Level_ = Candidate_;
+            Warnings_->setText(PendingWarnings_);
+            mPresentedLevel = Level_;
+            mValidatedScene = mPresentedScene;
+            mValidatedLevel = mPresentedLevel;
+            mValidatedWorld = mPresentedWorld;
+            Status_->setText(QStringLiteral("Scene ready."));
+            result = PlacementValidationResult::Accepted;
+        }
+        else
+        {
+            if (Error_.isEmpty() == true)
+            {
+                Error_ = QStringLiteral("Scene validation failed.");
+            }
+            // As after a failed assembly, the last validated scene returns and the World keeps the edit.
+            if (presentScene(mValidatedScene) == true)
+            {
+                mPresentedLevel = mValidatedLevel;
+                mPresentedWorld = mValidatedWorld;
+            }
+            else
+            {
+                mPresentedScene = {};
+                mPresentedLevel = {};
+                mPresentedWorld = {};
+            }
+            Status_->setText(Error_ + QStringLiteral(" Previous scene retained."));
+            result = PlacementValidationResult::Rejected;
+        }
+        ++mPlacementGeneration;
+        mPlacementValidation = PlacementValidation::Ready;
+    }
+    else if (mPlacementValidation == PlacementValidation::Running)
+    {
+        // Cancelled for a full assembly: the derived scene still waits for its validation.
+        mPlacementValidation = PlacementValidation::Pending;
+    }
+    Render();
+    Q_EMIT PlacementValidationFinished(result);
+    ApplyPendingProject();
+    startPlacementValidation();
 }
 } // namespace ludus::editor
