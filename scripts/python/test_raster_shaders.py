@@ -125,7 +125,7 @@ class RasterReflectionTests(unittest.TestCase):
         long = "float x = 0.0;\n" * (MAX_INLINE_TEXT_BYTES // 15 + 1)
         header, companion = emit_text_artifact("renderer_output", "GLSL_FRAGMENT", long)
         self.assertNotIn('R"', header + companion)
-        self.assertEqual(header, f"extern const char GLSL_FRAGMENT[{len(long) + 1}];\n")
+        self.assertEqual(header, f"extern constinit const char GLSL_FRAGMENT[{len(long) + 1}];\n")
         self.assertIn("namespace ludus::shaders::renderer_output {", companion)
         with self.assertRaisesRegex(RuntimeError, 'raw string delimiter'):
             emit_text_artifact("renderer_output", "GLSL_FRAGMENT", short + ')R_GLSL_FRAGMENT"')

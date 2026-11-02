@@ -206,12 +206,12 @@ bool ReadVector(const QString& source, const QString& name, math::Vector3& outVe
     return true;
 }
 
-QString FormatPoint(math::Vector3 point)
+QString FormatPoint(math::Vector3 pointWorld)
 {
     return QStringLiteral("(%1, %2, %3)")
-        .arg(point.X, 0, 'f', COORDINATE_DECIMALS)
-        .arg(point.Y, 0, 'f', COORDINATE_DECIMALS)
-        .arg(point.Z, 0, 'f', COORDINATE_DECIMALS);
+        .arg(static_cast<float64>(pointWorld.X), 0, 'f', COORDINATE_DECIMALS)
+        .arg(static_cast<float64>(pointWorld.Y), 0, 'f', COORDINATE_DECIMALS)
+        .arg(static_cast<float64>(pointWorld.Z), 0, 'f', COORDINATE_DECIMALS);
 }
 
 QString FormatCount(int32 count, const QString& singular, const QString& plural)
@@ -323,10 +323,10 @@ QString DescribeRenderGraphLuminaireCoverage(const RenderGraphLuminairePanel& pa
         {
             reason = QStringLiteral("the %1 m panel at %2 spans %3% of the World's %4 m bounds diagonal, so it lights "
                                     "at most a small patch")
-                         .arg(side, 0, 'f', COORDINATE_DECIMALS)
+                         .arg(static_cast<float64>(side), 0, 'f', COORDINATE_DECIMALS)
                          .arg(FormatPoint(panel.CenterWorld))
-                         .arg(PERCENT * side / diagonal, 0, 'f', 1)
-                         .arg(diagonal, 0, 'f', 1);
+                         .arg(static_cast<float64>(PERCENT * side / diagonal), 0, 'f', 1)
+                         .arg(static_cast<float64>(diagonal), 0, 'f', 1);
         }
     }
     if (reason.isEmpty() == true)
