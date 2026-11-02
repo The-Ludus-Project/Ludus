@@ -321,7 +321,8 @@ public:
     /// For the root graph, create a new library and Subgraph node in parentConfiguration instead;
     /// an empty parent identity selects the root default. Existing files/nodes are never replaced.
     /// Unchanged Raster admission defaults adopt the larger ReSTIR template capacities;
-    /// custom limits are preserved. Conflicts identify the authored program, source or setting.
+    /// custom limits are preserved. Authored sources, programs and settings that collide with the
+    /// template's names are kept, and the import uses numbered names instead (TemplateInstance).
     /// One undo step, no disk writes. Incompatible inputs/capacities preserve the complete draft.
     [[nodiscard]] RenderGraphDocumentStatus ApplyRestirTemplate(const QString& file,
                                                                 const QString& configuration,
@@ -333,13 +334,16 @@ public:
     /// optional budget request reports a blocked program increase. Explicitly approved increases change only
     /// budgets.programs to the required count, in the same undo step as the template; target artifacts are
     /// derived from programs and profiles, and the legacy budgets.artifacts/pipelines fields are removed.
+    /// When the template's own names already hold different content, the import uses the first free numbered
+    /// names instead of failing; on success the optional notice describes them, and is empty otherwise.
     [[nodiscard]] RenderGraphDocumentStatus
     ApplyConfigurationTemplate(const QString& file,
                                const QString& configuration,
                                const QString& templateIdentity,
                                QString& outError,
                                const QString& parentConfiguration = {},
-                               RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
+                               RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr,
+                               QString* outNoticeOrNull = nullptr);
     /// Add an empty named configuration to an existing file without changing its default.
     /// Unique ASCII identifiers are required. One undo step; failure preserves the draft.
     [[nodiscard]] RenderGraphDocumentStatus AddConfiguration(const QString& file, const QString& name);

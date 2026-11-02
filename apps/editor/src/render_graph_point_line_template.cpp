@@ -12,7 +12,8 @@ RenderGraphDocumentStatus PreparePointLineConfiguration(
     const QString& file,
     const QString& configuration,
     QString& outError,
-    RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
+    RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull,
+    TemplateInstance* inoutInstanceOrNull)
 {
     const SceneComputeTemplate selected{
         QStringLiteral("salesin-jarosz-lines"),
@@ -25,6 +26,7 @@ RenderGraphDocumentStatus PreparePointLineConfiguration(
                                                     configuration,
                                                     outError,
                                                     selected,
-                                                    inoutBudgetOrNull);
+                                                    inoutBudgetOrNull,
+                                                    inoutInstanceOrNull);
 }
 } // namespace ludus::editor
