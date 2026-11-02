@@ -205,9 +205,16 @@ class RequiredGateTests(unittest.TestCase):
         # source/tooling job to succeed before promotion.
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         dependencies = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    needs: (.*)$", workflow, re.MULTILINE))
+        # Capacity admission serializes long ARM jobs without depending on formatting
+        # or inheriting the previous lane's success requirement.
+        serial = {"macos-compile": "[changes, macos-sanitizers]",
+                  "macos-analysis": "[changes, macos-compile]"}
         for name in ci_scope.NATIVE_JOBS:
             with self.subTest(job=name):
-                self.assertEqual(dependencies.get(name), "changes")
+                self.assertEqual(dependencies.get(name), serial.get(name, "changes"))
+        conditions = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    if: (.*)$", workflow, re.MULTILINE))
+        for name in serial:
+            self.assertTrue(conditions[name].startswith("${{ !cancelled() && "), name)
         results = self.results(tier=ci_scope.FULL_TIER)
         results["formatting"]["result"] = "failure"
         self.assertIn("formatting: expected success, received failure.", ci_scope.gate_failures(results))

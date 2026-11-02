@@ -292,6 +292,15 @@ Native jobs use `macos-15` arm64. Host and documentation tooling separately chec
 not establish macOS 14 runtime qualification. See GitHub's
 [macOS 14 deprecation notice](https://github.com/actions/runner-images/issues/13518).
 
+The long ARM jobs run in order: sanitizers, native/SDK acceptance, then the nightly
+analyzer. This limits simultaneous runner demand after hosted ARM capacity left
+parallel jobs unacquired until GitHub cancelled them. Later jobs use an explicit
+status condition so a test failure does not suppress independent evidence;
+cancelling the workflow still stops the chain. All required results remain part
+of the promotion gate. This ordering reduces demand; a platform-wide shortage
+can still require retrying a job whose annotations confirm runner acquisition
+failed before execution.
+
 ### Threading platform lanes
 
 `.github/workflows/threading-platforms.yml` runs the Windows threading build and the
