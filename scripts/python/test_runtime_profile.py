@@ -330,7 +330,7 @@ class Parsers(unittest.TestCase):
     def test_p95_uses_nearest_rank_in_the_runner_and_native_benchmarks(self):
         values = list(range(30))
         functions = [runtime_profile.percentile]
-        functions += [runpy.run_path(str(ROOT / "scripts" / name))["percentile"]
+        functions += [runpy.run_path(str(ROOT / "scripts" / name), run_name=name.replace("-", "_"))["percentile"]
                       for name in ("benchmark-rhi", "benchmark-renderer")]
         for function in functions:
             with self.subTest(function=function.__module__):

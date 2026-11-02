@@ -502,6 +502,7 @@ float ComputeProjectedSolidAngleEdge(float3 startTangent, float3 endTangent)
     return edgeNormalTangent.z * (atan2(sine, dot(startTangent, endTangent)) / sine);
 }
 // Raster-only approximation of the same spherical edge integral credited above.
+// Inputs must be unit directions or zero, as produced by NormalizeProjectedDirection.
 // Fit acos(x)/sqrt(1-x*x), with its limit 1 at x=1, at ten Chebyshev nodes
 // x=(1+cos(pi*(j+0.5)/10))/2; a DCT then conversion to powers of x gives
 // these independently generated coefficients. A 100001-point float64 sweep

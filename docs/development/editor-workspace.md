@@ -628,7 +628,7 @@ render-graph ticks. Renderer scopes separate `RenderGraphUpdate`,
 `RendererSortOpaquePackets`, `RenderGraphPoll` and `RenderGraphRender`. A camera
 change should use camera preparation rather than rebuild scene content; inspect
 these scopes when navigation stalls. Texture inspection and readback conversion
-appear as `EditorTextureValueRange` and `EditorTextureDisplay`.
+appear as `EditorTextureValueRange` and `EditorTextureDisplayConversion`.
 CPU recording is not a statistical sampler or a viewport-only CPU filter.
 GPU requires an admitted scene viewport with timing support. Both
 requires both sources and never silently falls back to CPU. The first delivery
