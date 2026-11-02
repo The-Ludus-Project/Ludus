@@ -505,7 +505,7 @@ def cmd_render_graph(args) -> int:
             payload['server'] = str(Path(compiler).with_name('slangd.exe' if os.name == 'nt' else 'slangd'))
             human = _json.dumps(payload, indent=2)
     elif args.graph_action in ("new-build", "build", "verify-package", "emit-runtime", "cook-runtime", "ray-path-capture",
-                               "capture-profile"):
+                               "capture-profile", "capture-library"):
         from . import render_graph_build
         if args.graph_action == "cook-runtime":
             from . import render_graph_execution
@@ -524,7 +524,7 @@ def cmd_render_graph(args) -> int:
             options = dict(helper=args.helper, compiler=args.compiler, validator=args.validator,
                            spirv_cross=args.spirv_cross, root=args.root, worker_socket=args.worker_socket)
             toolchain = None
-            is_generation_rebuild = args.graph_action in ("ray-path-capture", "capture-profile")
+            is_generation_rebuild = args.graph_action in ("ray-path-capture", "capture-profile", "capture-library")
             manifest = None if is_generation_rebuild else args.manifest
             if is_generation_rebuild:
                 from . import render_graph_reload
@@ -546,6 +546,11 @@ def cmd_render_graph(args) -> int:
                 from . import render_graph_reload
                 payload = render_graph_reload.rebuild_capture_profile(args.generation, args.output, args.destination,
                             configuration=args.configuration, **options)
+            elif args.graph_action == "capture-library":
+                from . import render_graph_library_capture
+                payload = render_graph_library_capture.rebuild_library_capture(
+                    args.generation, args.output, args.destination, library=args.library,
+                    library_configuration=args.library_configuration, library_output=args.library_output, **options)
             elif args.runtime_package:
                 from . import render_graph_reload
                 payload = render_graph_reload.rebuild(args.manifest, args.output, args.runtime_package,
@@ -699,6 +704,26 @@ def build_parser() -> argparse.ArgumentParser:
     profile_graph.add_argument("--spirv-cross", help="verified SPIRV-Cross; required for glsl")
     profile_graph.add_argument("--worker-socket", help="existing headless native shader worker endpoint")
     profile_graph.set_defaults(func=cmd_render_graph, root=None)
+    library_graph = graphs.add_parser("capture-library",
+        help="compile a frame capture package for one library configuration output of a published generation "
+             "from its saved sources; the generation and its runtime package are left unchanged")
+    library_graph.add_argument("generation", help="immutable generation or build tree with current.json")
+    library_graph.add_argument("output", help="owned build tree for the library capture, outside the generation")
+    library_graph.add_argument("destination", help="capture runtime package (.lurgrt); a capture profile is "
+                               "written beside it as .lurgcp when the graph declares a larger capture budget")
+    library_graph.add_argument("--library", required=True, help="package-relative library graph, such as "
+                               "PointLineMis.lurender.json")
+    library_graph.add_argument("--library-configuration", required=True, help="configuration of that library")
+    library_graph.add_argument("--library-output", required=True, help="ColorTexture output of that configuration")
+    library_graph.add_argument("--helper", help="installed SDK shader helper override")
+    library_graph.add_argument("--compiler", help="pinned Slang executable override")
+    library_graph.add_argument("--project", help="resolve the SDK and shader tools selected by this project")
+    library_graph.add_argument("--tooling-root", help="trusted checkout with prepared shader tools")
+    library_graph.add_argument("--store", help="SDK store (default: LUDUS_SDK_STORE or user data directory)")
+    library_graph.add_argument("--validator", help="pinned spirv-val; required for spirv/glsl")
+    library_graph.add_argument("--spirv-cross", help="verified SPIRV-Cross; required for glsl")
+    library_graph.add_argument("--worker-socket", help="existing headless native shader worker endpoint")
+    library_graph.set_defaults(func=cmd_render_graph, root=None)
     verify_graph = graphs.add_parser("verify-package", help="verify complete generation inventory without shader tools")
     verify_graph.add_argument("package")
     verify_graph.set_defaults(func=cmd_render_graph)
