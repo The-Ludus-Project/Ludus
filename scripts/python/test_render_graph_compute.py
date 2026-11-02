@@ -278,6 +278,17 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ToolingError, 'without default callbacks'):
             ray.group_profiles([plan], technique, build)
 
+    def test_default_callbacks_without_a_ray_pass_link_no_visibility_inputs(self):
+        # A route without ray passes links the default callbacks, which no visibility pass dispatches.
+        technique = {'ray_generation': 'Generate', 'miss': 'Miss', 'closest_hit': 'Hit',
+                     'scene_interface': {'version': 1, 'surface_queries': 1, 'visibility_queries': 0,
+                                         'visibility_buffer': True}}
+        plan = graph.compile_graph(SCENE_COMPUTE / 'main.lurender.json', configuration='Raster')
+        profiles = ray.group_profiles([plan], technique, build)
+        self.assertEqual([(False, True, ray.COMPUTE_ID)],
+                         [(profile['visibility_buffer'], profile['native_ray_queries'], profile['compute'])
+                          for profile in profiles])
+
 
 @unittest.skipUnless(all(os.environ.get(name) for name in NATIVE_TOOLS), 'requires pinned native shader tools')
 class NativeSceneComputeTests(unittest.TestCase):
