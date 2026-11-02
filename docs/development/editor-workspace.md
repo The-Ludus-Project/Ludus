@@ -1523,8 +1523,11 @@ per pixel so you can inspect it directly:
   WebGPU has none, so the browser editor's GPU viewport reports that Wireframe
   is unavailable; its software viewport draws the same edges on the CPU.
 
-Scenes with authored lights use the same surface maps, clusters and shadows as
-Lit. Authored Worlds without lights get editor-derived vertex normals when the
+Scenes with authored lights use the same surface maps as Lit. Light count also
+uses Lit's clusters and shadows, so it is bounded by the same budget: 128 lights,
+counting one area proxy per planar emissive patch, and 80 shadow faces. The other
+debug views read no lighting, so they build no lights, area proxies or shadows and
+draw any World, however many emissive patches it has. Authored Worlds without lights get editor-derived vertex normals when the
 mesh has none. Light count is the ramp's dark purple end there because no lights exist. Overdraw is
 not offered, because the world pass has no additive blend state to count
 overlapping fragments. The debug view is saved like the other modes. Older
