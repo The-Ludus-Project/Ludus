@@ -77,6 +77,16 @@ TEST_CASE("Light Transformer preview validates a complete paired setup and prese
     CHECK(editor::ReadLightTransformerPreviewSetup(directory.path(), setup, error) == false);
     CHECK(error.contains(QStringLiteral("fixed dataset scale")) == true);
     CHECK(setup.Description.ScenePoints == LUDUS_LIGHT_ENCODER_MIN_POINTS);
+    document.insert(QStringLiteral("world_units_per_model_unit"), 2);
+    document.insert(QStringLiteral("decoder_sha256"), QString::fromLatin1(decoder));
+    WriteConfiguration(configurationPath, document);
+    REQUIRE(QFile::remove(QDir(modelDirectory).filePath(QStringLiteral("decoder.lltd"))) == true);
+    CHECK(editor::ReadLightTransformerPreviewSetup(directory.path(), setup, error) == false);
+    CHECK(error.contains(QString::number(DECODER_BYTES)) == true);
+    CHECK(error.contains(modelDirectory) == true);
+    CHECK(error.contains(QStringLiteral("%2")) == false);
+    CHECK(error.contains(QStringLiteral("%3")) == false);
+    CHECK(setup.Description.ScenePoints == LUDUS_LIGHT_ENCODER_MIN_POINTS);
 }
 TEST_CASE("Light Transformer model diagnostics name repair inputs", "[editor][light-transformer]")
 {

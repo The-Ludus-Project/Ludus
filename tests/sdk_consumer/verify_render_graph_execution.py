@@ -31,6 +31,16 @@ def read_package_version():
     return int(constants.get(version, version))
 
 
+def require_shader_helpers(sdk):
+    """Keep required inventory admission active under Python optimization."""
+    for name in ('photon_layout.h', 'light_transformer_layout.h', 'light_transformer_encoder_layout.h',
+                 'point_search.slang', 'point_search_layout.h', 'renderer_light_transformer_query.slang',
+                 'renderer_light_transformer_encoder.slang', 'renderer_light_transformer_encoded_queries.slang'):
+        path = sdk / 'lib/cmake/Ludus/shaders' / name
+        if not path.is_file():
+            raise RuntimeError(f'Missing installed shader helper: {path}; reinstall the SDK with shader recipes')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ('cli', 'sdk', 'slang', 'cxx', 'cmake', 'output'):
@@ -44,11 +54,7 @@ def main():
         raise RuntimeError('Acceptance output must be a new directory')
     output.mkdir(parents=True)
     sdk = Path(args.sdk).resolve()
-    # Every shared dependency is required even when the selected recipe does not use it.
-    for name in ('photon_layout.h', 'light_transformer_layout.h', 'light_transformer_encoder_layout.h',
-                 'point_search.slang', 'point_search_layout.h', 'renderer_light_transformer_query.slang',
-                 'renderer_light_transformer_encoder.slang', 'renderer_light_transformer_encoded_queries.slang'):
-        assert (sdk / 'lib/cmake/Ludus/shaders' / name).is_file(), f'missing installed shader helper: {name}'
+    require_shader_helpers(sdk)
     relocated = output / 'relocated'
     shutil.copytree(sdk / 'lib/cmake/Ludus', relocated / 'cmake')
     shutil.copytree(sdk / 'include', relocated / 'include')

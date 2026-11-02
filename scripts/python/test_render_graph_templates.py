@@ -2022,8 +2022,6 @@ class EditorTemplateCatalogTests(unittest.TestCase):
                 self.assertEqual(ray_requirements, [requirement] if requirement else [])
 
 
-if __name__ == '__main__':
-    unittest.main()
 
 
 class RaoBlackwellMhTemplateTests(unittest.TestCase):
@@ -2125,6 +2123,19 @@ class OneMoreVertexNeeTemplateTests(unittest.TestCase):
         self.assertEqual(set(declaration.group(1).split()), {definition[0] for definition in TEMPLATES.values()})
 
 class LightTransformerTemplateTests(unittest.TestCase):
+    def test_required_sdk_helpers_reject_missing_files_under_optimization(self):
+        import subprocess
+        import sys
+        root = Path(__file__).resolve().parents[2]
+        verifier = root / 'tests/sdk_consumer/verify_render_graph_execution.py'
+        with tempfile.TemporaryDirectory() as directory:
+            code = ('import runpy; from pathlib import Path; '
+                    f"runpy.run_path({str(verifier)!r})['require_shader_helpers'](Path({directory!r}))")
+            result = subprocess.run([sys.executable, '-O', '-c', code], text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('photon_layout.h', result.stderr)
+            self.assertIn('reinstall the SDK', result.stderr)
+
     def test_native_template_has_complete_model_setup_and_admits_maximum_packet(self):
         from ludus_tools import light_transformer_encoder as encoder
         from ludus_tools import light_transformer as decoder
@@ -2168,3 +2179,7 @@ class LightTransformerTemplateTests(unittest.TestCase):
                 graph.new_workspace(destination, output='offscreen', renderer_static=True,
                                     profiles=('wgsl',), template='light-transformer')
             self.assertFalse(destination.exists())
+
+
+if __name__ == '__main__':
+    unittest.main()

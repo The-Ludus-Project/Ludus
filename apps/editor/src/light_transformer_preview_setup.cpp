@@ -30,8 +30,7 @@ bool ReadAsset(const QString& path, int64 requiredBytes, QByteArray& outBytes, Q
         outError = QStringLiteral("Light Transformer needs a readable %1-byte %2. Export the complete trained "
                                   "checkpoint with export-light-transformer --model-directory %3 "
                                   "--world-units-per-model-unit <fixed training scale>, then preview again.")
-                       .arg(requiredBytes)
-                       .arg(path, QFileInfo(path).absolutePath());
+                       .arg(QString::number(requiredBytes), path, QFileInfo(path).absolutePath());
         return false;
     }
     QByteArray bytes = file.read(requiredBytes + 1);

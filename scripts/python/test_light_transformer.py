@@ -155,10 +155,19 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [path])
 
 
-if __name__ == '__main__':
-    unittest.main()
 
 class EncoderLayoutTests(unittest.TestCase):
+    def test_direct_entrypoints_follow_all_test_classes(self):
+        import ast
+        for name in ('test_light_transformer.py', 'test_render_graph_templates.py'):
+            tree = ast.parse(Path(__file__).with_name(name).read_text())
+            entrypoint = next(node for node in tree.body if isinstance(node, ast.If) and
+                              any(isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and
+                                  call.func.attr == 'main' and isinstance(call.func.value, ast.Name) and
+                                  call.func.value.id == 'unittest' for call in ast.walk(node)))
+            self.assertFalse([node.name for node in tree.body if isinstance(node, ast.ClassDef) and
+                              node.lineno > entrypoint.lineno], name)
+
     def test_encoder_schema_matches_shared_asset_counts(self):
         from ludus_tools import light_transformer_encoder as encoder
         schema = list(encoder.encoder_schema())
@@ -176,3 +185,7 @@ class EncoderLayoutTests(unittest.TestCase):
             self.assertFalse(adapter.is_representable_training_scale(scale))
         for scale in (0.5, 1, 100, 1e20):
             self.assertTrue(adapter.is_representable_training_scale(scale))
+
+
+if __name__ == '__main__':
+    unittest.main()
