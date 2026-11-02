@@ -307,6 +307,11 @@ float2 EvaluateEnvironmentDfg(float roughness, float cosineView)
 #ifdef LUDUS_DEBUG_VIEW
 // Largest display-linear value the inverse reproduces (about 0.998 sRGB); mirrors PBR_NEUTRAL_INVERSE_LIMIT.
 static const float DEBUG_DISPLAY_LINEAR_LIMIT = 0.995;
+// Display sRGB wireframe colour of edges on surfaces facing the camera.
+static const float3 DEBUG_WIREFRAME_COLOUR =
+    float3(MATERIAL_DEBUG_WIREFRAME_RED, MATERIAL_DEBUG_WIREFRAME_GREEN, MATERIAL_DEBUG_WIREFRAME_BLUE) / 255.0;
+// Fraction of that colour kept on surfaces seen exactly edge-on.
+static const float DEBUG_WIREFRAME_EDGE_ON_SHADE = MATERIAL_DEBUG_WIREFRAME_EDGE_ON_PERCENT / 100.0;
 // Khronos PBR Neutral constants, shared with renderer_output.slang.
 #    include "display_tone_mapping.slang"
 // Scene-linear colour that renderer_output.slang's PBR Neutral curve maps to a wanted display-linear colour;
@@ -385,6 +390,15 @@ float3 ComputeDebugColour(int mode,
         return float3(frac(input.TexcoordUv), 0);
     if (mode == int(MATERIAL_DEBUG_VIEW_LIGHT_COUNT))
         return ComputeRampColour(float(lightCount) / float(MATERIAL_DEBUG_LIGHT_COUNT_SATURATION));
+    if (mode == int(MATERIAL_DEBUG_VIEW_WIREFRAME))
+    {
+        // Edges of surfaces seen edge-on dim, so overlapping wire layers keep a sense of shape.
+        float3 viewDirectionWorld = (GetEyeFlags(input) & 2) != 0
+                                        ? NormalizeOrZero(input.EyeWorld.xyz)
+                                        : NormalizeOrZero(input.EyeWorld.xyz - input.PositionWorld);
+        float facing = abs(dot(normalWorld, viewDirectionWorld));
+        return DEBUG_WIREFRAME_COLOUR * lerp(DEBUG_WIREFRAME_EDGE_ON_SHADE, 1, facing);
+    }
     return shaded;
 }
 #endif

@@ -208,6 +208,7 @@ bool IsDebugDepthRangeValid(math::Vector2 range) noexcept
                                                                                 range.Y <= MAX_DEBUG_DEPTH_DISTANCE));
 }
 static_assert(static_cast<uint32>(MaterialDebugView::LightCount) == MATERIAL_DEBUG_VIEW_LIGHT_COUNT);
+static_assert(static_cast<uint32>(MaterialDebugView::Wireframe) == MATERIAL_DEBUG_VIEW_WIREFRAME);
 bool ValidColor(math::Vector4 color) noexcept
 {
     return math::IsFinite(color) && color.X >= 0 && color.X <= 1 && color.Y >= 0 && color.Y <= 1 && color.Z >= 0 &&
@@ -664,6 +665,8 @@ struct Renderer::State final
         static constexpr usize REQUEST_CAPACITY = PROGRAM_VARIANT_COUNT + 2 + GBUFFER_PIPELINE_COUNT;
         StaticArray<rhi::PipelineRequest, REQUEST_CAPACITY> Requests{};
         bool HasDepthPrepass = false;
+        /// Colour variants and the depth prepass; shadow and G-buffer pipelines always fill.
+        rhi::RasterFillMode FillMode = rhi::RasterFillMode::Solid;
         rhi::RasterPipelineHandle Pipelines[6]{};
         uint32 References = 0;
         uint32 Phase = 0;
@@ -2331,16 +2334,18 @@ Status Renderer::PrewarmLitProgram(const rhi::RasterShaderDescription& vertex,
                                    const rhi::RasterShaderDescription& fragment,
                                    const rhi::RasterShaderDescription& shadowFragment,
                                    MaterialProgram& outProgram,
-                                   const rhi::RasterShaderDescription* depthOrNull) noexcept
+                                   const rhi::RasterShaderDescription* depthOrNull,
+                                   rhi::RasterFillMode fillMode) noexcept
 {
-    return prewarmProgram(vertex, fragment, &shadowFragment, outProgram, depthOrNull);
+    return prewarmProgram(vertex, fragment, &shadowFragment, outProgram, depthOrNull, nullptr, fillMode);
 }
 Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
                                 const rhi::RasterShaderDescription& fragment,
                                 const rhi::RasterShaderDescription* shadowOrNull,
                                 MaterialProgram& outProgram,
                                 const rhi::RasterShaderDescription* depthOrNull,
-                                const rhi::RasterShaderDescription* gBufferOrNull) noexcept
+                                const rhi::RasterShaderDescription* gBufferOrNull,
+                                rhi::RasterFillMode fillMode) noexcept
 {
     constexpr usize PLAIN_BINDING_COUNT = 3;
     constexpr usize CLUSTER_BINDING_COUNT = 8;
@@ -2353,6 +2358,11 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     constexpr usize LIT_VERTEX_ATTRIBUTE_COUNT = 16;
     constexpr usize WORD_BYTES = sizeof(math::Vector4);
     const bool isLit = shadowOrNull != nullptr;
+    if (static_cast<uint8>(fillMode) > static_cast<uint8>(rhi::RasterFillMode::Lines) ||
+        (fillMode == rhi::RasterFillMode::Lines && (isLit == false || gBufferOrNull != nullptr)))
+    {
+        return Status::InvalidDescription;
+    }
     if (depthOrNull != nullptr &&
         (shadowOrNull == nullptr || depthOrNull->Artifact.Stage != rhi::ShaderStage::Fragment ||
          depthOrNull->Inputs.empty() == false || depthOrNull->Bindings.empty() == false ||
@@ -2564,7 +2574,8 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
         {
             return ready;
         }
-        if (caps.MaxVertexAttributes < 16 || caps.MaxUniformRange < byteSize)
+        if (caps.MaxVertexAttributes < LIT_VERTEX_ATTRIBUTE_COUNT || caps.MaxUniformRange < byteSize ||
+            (fillMode == rhi::RasterFillMode::Lines && caps.HasLineFill == false))
         {
             return Status::Unsupported;
         }
@@ -2581,6 +2592,7 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     p.Lit = isLit;
     p.Clustered = isClustered;
     p.HasDepthPrepass = depthOrNull != nullptr;
+    p.FillMode = fillMode;
     p.HasGBuffer = gBufferOrNull != nullptr;
     p.HasSurfaceMapProfile = hasSurfaceMapProfile;
     p.HasAuthoredProfile = hasAuthoredProfile;
@@ -2747,6 +2759,7 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
                                     : (p->Phase < 3 ? rhi::RasterTarget::Surface : rhi::RasterTarget::Rgba8Unorm);
         description.DepthWrite = variant != 2;
         description.DepthCompare = variant == 1 ? rhi::RasterDepthCompare::Greater : rhi::RasterDepthCompare::Less;
+        description.FillMode = p->FillMode;
         if (p->HasDepthPrepass == true && variant == 0)
         {
             description.DepthCompare = rhi::RasterDepthCompare::LessEqual;
@@ -2754,6 +2767,7 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
         if (p->Lit && p->Phase == p->VariantCount)
         {
             description.Fragment = p->ShadowFragment;
+            description.FillMode = rhi::RasterFillMode::Solid;
             description.Target = rhi::RasterTarget::Rgba8Unorm;
             description.Depth = description.DepthWrite = true;
             description.Blend = false;
@@ -2784,6 +2798,7 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
             static constexpr StaticArray<rhi::RasterFormat, DEFERRED_TARGET_COUNT> formats{
                 {rhi::RasterFormat::Rgba16Float, rhi::RasterFormat::Rgba16Float, rhi::RasterFormat::Rgba16Float}};
             description.Fragment = p->GBufferFragment;
+            description.FillMode = rhi::RasterFillMode::Solid;
             description.Target = rhi::RasterTarget::Rgba16Float;
             description.ColorFormats = formats.AsSpan();
             description.Depth = true;
@@ -4562,7 +4577,7 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
     {
         return Status::InvalidDescription;
     }
-    if (static_cast<uint8>(description.DebugView) > static_cast<uint8>(MaterialDebugView::LightCount))
+    if (static_cast<uint8>(description.DebugView) > static_cast<uint8>(MaterialDebugView::Wireframe))
     {
         return Status::InvalidDescription;
     }
