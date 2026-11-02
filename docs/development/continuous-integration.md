@@ -247,7 +247,9 @@ legacy main PRs keep their earlier fast tier, and legacy queue/batch runs select
 analysis. Manual native runs default to `nightly`; choose `validation_tier=full`
 when dispatching `ci.yml` to reproduce the batch's required native qualification
 without the separate advisory nightly reports. This choice affects only
-standalone manual native runs; PR and batch routing ignore it. Scheduled and
+standalone manual native runs; PR and batch routing ignore it. For qualification,
+leave `mcmc_vulkan_parity_only=false`; that separate diagnostic option runs only
+its named parity lane. Scheduled and
 manually dispatched batches always run full native validation, including a
 documentation-only batch.
 
