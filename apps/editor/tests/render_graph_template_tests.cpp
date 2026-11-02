@@ -2055,7 +2055,7 @@ TEST_CASE("ReSTIR GI configuration imports its passes, shader closure and settin
     }
     // The shared ray technique's budgets rise to the template's: the sample path and the spatial reuse's rays.
     const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
-    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 4);
+    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 5);
     CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 16);
     ReplaceRasterSubgraph(document, QStringLiteral("Indirect"));
     REQUIRE(workspace.Save() == true);

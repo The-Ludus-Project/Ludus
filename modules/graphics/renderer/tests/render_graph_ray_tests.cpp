@@ -55,6 +55,7 @@
 #include <ludus/graphics/rhi/measurement.h>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <cstdlib>
 #include <cstring>
 #include <new>
@@ -1965,12 +1966,16 @@ TEST_CASE("One visibility raster feeds every pass of an ordered ray sequence",
     checkFrame(GetPixel(SHIFTED_COLUMN, HEIGHT / 2));
 }
 
-TEST_CASE("Three ReSTIR shader passes shade mesh emitters and invalidate stale history", "[render-graph][gpu][restir]")
+TEST_CASE("ReSTIR DI configurations shade mesh emitters and invalidate stale history", "[render-graph][gpu][restir]")
 {
+    const bool isProduction = GENERATE(false, true);
+    INFO("production configuration " << isProduction);
     GraphGpuFixture fixture;
     const core::UniquePtr<renderer::RenderGraphPackage> package =
-        LoadPackage({LUDUS_RG3_RESTIR_DIRECTORY, "rg2_restir_di.lurgrt"});
-    REQUIRE(package->GetPlan().Passes.GetSize() == 3);
+        LoadPackage(isProduction == true
+                        ? PackageLocation{LUDUS_RG3_RESTIR_DI_PRODUCTION_DIRECTORY, "rg2_restir_di_production.lurgrt"}
+                        : PackageLocation{LUDUS_RG3_RESTIR_DIRECTORY, "rg2_restir_di.lurgrt"});
+    REQUIRE(package->GetPlan().Passes.GetSize() == (isProduction == true ? 2 : 3));
     const renderer::RenderGraphPrograms programs =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
     const renderer::RenderGraphPrograms compiled =
@@ -2040,7 +2045,8 @@ TEST_CASE("Three ReSTIR shader passes shade mesh emitters and invalidate stale h
                                   revision,
                                   renderer::RenderGraphCoveragePolicy::RejectIncomplete,
                                   report,
-                                  &inputs));
+                                  &inputs,
+                                  revision));
     };
     const auto read = [&fixture, &package, started, hasFullCapacity]() {
         rhi::SubmissionToken completion;
@@ -2143,7 +2149,9 @@ TEST_CASE("Three ReSTIR shader passes shade mesh emitters and invalidate stale h
         {
             format::Resource description{};
             REQUIRE(fixture.Graph.GetResourceDescription(i, description) == true);
-            CHECK(description.Width == WIDTH * HEIGHT * 64);
+            CHECK(description.Width == (plan.Resources[i].BytesPerPixel == 0
+                                            ? plan.Resources[i].Width
+                                            : WIDTH * HEIGHT * plan.Resources[i].BytesPerPixel));
         }
     }
     update(1);
@@ -2153,7 +2161,9 @@ TEST_CASE("Three ReSTIR shader passes shade mesh emitters and invalidate stale h
         {
             format::Resource description{};
             REQUIRE(fixture.Graph.GetResourceDescription(i, description) == true);
-            CHECK(description.Width == WIDTH * HEIGHT * 64 * 4);
+            CHECK(description.Width == (plan.Resources[i].BytesPerPixel == 0
+                                            ? plan.Resources[i].Width
+                                            : WIDTH * HEIGHT * plan.Resources[i].BytesPerPixel * 4));
         }
     }
     read();
@@ -2183,8 +2193,28 @@ TEST_CASE("Three ReSTIR shader passes shade mesh emitters and invalidate stale h
     CHECK(fixture.Pixels[center] == 213);
     CHECK(fixture.Pixels[center + 1] == 188);
     CHECK(fixture.Pixels[center + 2] == 0);
+    // Exercise the actual camera-only publication path, including the high callback selector used by Production.
+    // A packed selector lost to the camera epoch would dispatch an earlier pass and lose the emissive result.
+    fixture.Cameras[0].WorldToClip.Columns[3].X = .125F;
+    renderer::RenderGraphReport cameraReport;
+    const auto updateCamera = [&fixture, &wait, &cameraReport](uint64 revision) {
+        constexpr uint64 UNCHANGED_CONTENT = 4;
+        wait(fixture.Graph.Update({},
+                                  {},
+                                  {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                  revision,
+                                  renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                  cameraReport,
+                                  nullptr,
+                                  UNCHANGED_CONTENT));
+    };
+    updateCamera(5);
+    read();
+    CHECK(fixture.Pixels[center] == 213);
+    CHECK(fixture.Pixels[center + 1] == 188);
+    CHECK(fixture.Pixels[center + 2] == 0);
     fixture.Cameras[0].WorldToClip.Columns[3].X = -2;
-    update(5);
+    updateCamera(6);
     read();
     CHECK(fixture.Pixels[center] == 0);
     CHECK(fixture.Pixels[center + 1] == 0);
@@ -8411,10 +8441,11 @@ namespace
 {
 constexpr PackageLocation RESTIR_GI_TEMPLATE{LUDUS_RG3_RESTIR_GI_TEMPLATE_DIRECTORY, "rg2_restir_gi_template.lurgrt"};
 constexpr PackageLocation RESTIR_GI_NO_REUSE{LUDUS_RG3_RESTIR_GI_NO_REUSE_DIRECTORY, "rg2_restir_gi_no_reuse.lurgrt"};
+constexpr PackageLocation RESTIR_GI_PRODUCTION{LUDUS_RG3_RESTIR_GI_PRODUCTION_DIRECTORY,
+                                               "rg2_restir_gi_production.lurgrt"};
 constexpr PackageLocation RESTIR_GI_BIASED{LUDUS_RG3_RESTIR_GI_BIASED_DIRECTORY, "rg2_restir_gi_biased.lurgrt"};
 // Initial samples, temporal reuse, spatial reuse and shading; only the last pass is presented.
 constexpr usize RESTIR_GI_PASS_COUNT = 4;
-constexpr uint32 RESTIR_GI_SHADE_PASS = 3;
 
 /// Render frameCount more frames, require every pass to be failure-free and read the shade pass's accumulated sum of
 /// linear radiance, one value per pixel, which must hold accumulatedCount frames.
@@ -8424,20 +8455,21 @@ void RenderRestirGiSums(PreparedGraph& inoutGraph,
                         usize accumulatedCount,
                         Array<math::Vector3>& outSums)
 {
-    REQUIRE(inoutGraph.Plan.Passes.GetSize() == RESTIR_GI_PASS_COUNT);
+    const usize passCount = inoutGraph.Plan.Passes.GetSize();
+    REQUIRE((passCount == RESTIR_GI_PASS_COUNT || passCount == 1));
     for (usize frame = 0; frame < frameCount; ++frame)
     {
         RenderFrame(inoutGraph.Graph, fixture);
     }
     // Every pass reports its own failures; a later pass would otherwise hide an earlier one's.
-    for (uint32 pass = 0; pass < RESTIR_GI_PASS_COUNT; ++pass)
+    for (uint32 pass = 0; pass < passCount; ++pass)
     {
         const renderer::RenderGraphRayFailures failures = ReadRayFailures(inoutGraph.Graph, pass);
         INFO("pass " << pass << " failed pixels " << failures.TotalPixels << ", main reason " << failures.MainReason);
         REQUIRE(failures.TotalPixels == 0);
     }
     Array<math::Vector4> records;
-    ReadAccumulation(inoutGraph.Graph, fixture, RESTIR_GI_SHADE_PASS, records);
+    ReadAccumulation(inoutGraph.Graph, fixture, static_cast<uint32>(passCount - 1), records);
     REQUIRE(outSums.TryResize(usize{WIDTH} * HEIGHT) == true);
     for (usize pixel = 0; pixel < outSums.GetSize(); ++pixel)
     {
@@ -8513,13 +8545,15 @@ TEST_CASE("The ReSTIR GI template's unbiased reuse converges to its estimator wi
     // PDF: plain Monte Carlo with the same direct lighting and sample-point paths. Unbiased reuse (the reconnection
     // Jacobian, visibility rays and the count Z) must estimate the same image; a missing Jacobian brightens corners
     // and darkens open walls (the paper's Figure 7), and a wrong Z scales whole regions.
+    const bool isProduction = GENERATE(false, true);
+    INFO("production configuration " << isProduction);
     GraphGpuFixture fixture;
     CornellBox room;
     constexpr usize FRAME_COUNT = 256;
     // One graph at a time: each holds its own scene copy and buffers within the device's resource budget.
     Array<math::Vector3> reused;
     {
-        PreparedGraph restir(fixture, RESTIR_GI_TEMPLATE, room, 1);
+        PreparedGraph restir(fixture, isProduction == true ? RESTIR_GI_PRODUCTION : RESTIR_GI_TEMPLATE, room, 1);
         REQUIRE(restir.Programs.HasPersistentRayBuffers == true);
         REQUIRE(renderer::RequiresHardwareRayTracing(restir.Plan) == true);
         for (usize pass = 0; pass < restir.Plan.Passes.GetSize(); ++pass)
@@ -8527,7 +8561,7 @@ TEST_CASE("The ReSTIR GI template's unbiased reuse converges to its estimator wi
             INFO("pass " << pass);
             CHECK(restir.Plan.Passes[pass].Program == format::Technique::RayTracing);
             CHECK(restir.Plan.Passes[pass].Traversal == format::RayTraversal::NativeQuery);
-            CHECK((restir.Plan.Passes[pass].AccumulationSamples > 0) == (pass == RESTIR_GI_SHADE_PASS));
+            CHECK((restir.Plan.Passes[pass].AccumulationSamples > 0) == (pass == restir.Plan.Passes.GetSize() - 1));
         }
         RenderRestirGiMean(restir, fixture, FRAME_COUNT, reused);
     }
@@ -8567,6 +8601,8 @@ TEST_CASE("A ReSTIR GI frame has less error than a frame of its estimator withou
     // resampled earlier frames and nearby pixels has much less error than one path-traced frame. Each image is a single
     // frame, the difference of the last two accumulated sums. The reference is an independent converged image: another
     // instance whose scene revision reseeds sampling.
+    const bool isProduction = GENERATE(false, true);
+    INFO("production configuration " << isProduction);
     GraphGpuFixture fixture;
     CornellBox room;
     constexpr usize REFERENCE_FRAME_COUNT = 2048;
@@ -8580,7 +8616,7 @@ TEST_CASE("A ReSTIR GI frame has less error than a frame of its estimator withou
     }
     Array<math::Vector3> reused;
     {
-        PreparedGraph restir(fixture, RESTIR_GI_TEMPLATE, room, 1);
+        PreparedGraph restir(fixture, isProduction == true ? RESTIR_GI_PRODUCTION : RESTIR_GI_TEMPLATE, room, 1);
         RenderRestirGiLastFrame(restir, fixture, FRAME_COUNT, reused);
     }
     Array<math::Vector3> independent;
@@ -8621,4 +8657,22 @@ TEST_CASE("The ReSTIR GI template's biased reuse renders without visibility rays
                         << expected.Y << ',' << expected.Z);
     constexpr float32 RELATIVE_MEAN_TOLERANCE = .1F;
     CheckMeansAgree(mean, expected, RELATIVE_MEAN_TOLERANCE);
+}
+
+TEST_CASE("Production ReSTIR GI admits its maximum path depth with cosine sampling and a scattered target",
+          "[render-graph][gpu][restir-gi][template]")
+{
+    GraphGpuFixture fixture;
+    CornellBox room;
+    const PackageLocation maximum{LUDUS_RG3_RESTIR_GI_PRODUCTION_MAX_BOUNCES_DIRECTORY,
+                                  "rg2_restir_gi_production_max_bounces.lurgrt"};
+    PreparedGraph restir(fixture, maximum, room, 1);
+    REQUIRE(restir.Plan.Passes.GetSize() == 1);
+    // At maximum depth the fused kernel needs five surface queries: camera, sample point, two path continuations
+    // and the visible point's direct-light BSDF ray. The source/target alternatives exercise the same budget.
+    constexpr usize FRAME_COUNT = 32;
+    Array<math::Vector3> mean;
+    RenderRestirGiMean(restir, fixture, FRAME_COUNT, mean);
+    constexpr float32 MINIMUM_ROOM_RADIANCE = .05F;
+    CHECK(ComputeImageMean(mean).Y > MINIMUM_ROOM_RADIANCE);
 }

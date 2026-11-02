@@ -1436,7 +1436,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
          invocationOrNull->DenoisingQuality >
              static_cast<uint32>(content::render_graph_format::ProcessingQuality::High) ||
          invocationOrNull->AccumulationSamples > MAX_RENDER_GRAPH_CAPTURE_SAMPLES ||
-         invocationOrNull->Program >= content::render_graph_format::MAX_RAY_PASSES ||
+         invocationOrNull->Program >= content::render_graph_format::MAX_RAY_PROGRAMS ||
          invocationOrNull->Buffers.IsValid() == false ||
          (invocationOrNull->Buffers.GetSize() != 0 &&
           invocationOrNull->Buffers.GetSize() != internal::GPU_GRAPH_BUFFER_COUNT)))

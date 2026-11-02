@@ -388,6 +388,125 @@
           "to": "renderSize.texture"
         }
       ]
+    },
+    {
+      "id": "Production",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "color",
+          "type": "ColorTexture",
+          "source": "shade.color",
+          "required": true
+        }
+      ],
+      "nodes": [
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": "Texture"
+        },
+        {
+          "id": "history",
+          "kind": "Buffer",
+          "bytes_per_pixel": 128,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "shade",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "history",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "history",
+              "type": "Buffer",
+              "target": "history",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "ProductionShade"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "shade.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shade.view"
+        },
+        {
+          "from": "history.buffer",
+          "to": "shade.history"
+        },
+        {
+          "from": "input.color",
+          "to": "renderSize.texture"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "history.size"
+        },
+        {
+          "from": "input.color",
+          "to": "shade.color"
+        }
+      ]
     }
   ]
 }

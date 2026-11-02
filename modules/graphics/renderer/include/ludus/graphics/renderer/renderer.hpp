@@ -32,7 +32,7 @@ struct GpuPreviewGraphBuffer final
 /// One graph node's sampling policy and cooked callback selection; consumed during BeginGpuPreview.
 struct GpuPreviewGraphInvocation final
 {
-    foundation::uint32 Program = 0; ///< Cooked callback-set index below RenderGraphFormat::MAX_RAY_PASSES.
+    foundation::uint32 Program = 0; ///< Cooked callback-set index below RenderGraphFormat::MAX_RAY_PROGRAMS.
     /// Zero or two slots. A null Buffer with zero Size requests a private zeroed dummy.
     /// Non-null storage remains owned by the caller through job release and submitted completion.
     foundation::BorrowedView<const GpuPreviewGraphBuffer> Buffers;

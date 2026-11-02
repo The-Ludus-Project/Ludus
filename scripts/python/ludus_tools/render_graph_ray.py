@@ -13,6 +13,8 @@ from . import render_graph_metal_ray as metal_ray
 TECHNIQUE = 'RendererTriangles.RayTracing'
 STAGES = ('ray_generation', 'miss', 'closest_hit')
 MAX_RAY_PASSES = 4
+# Matches RenderGraphFormat::MAX_RAY_PROGRAMS; packages share callbacks across configurations.
+MAX_RAY_PROGRAMS = 8
 DEFAULT_WORKGROUP_SIZE = [64, 1, 1]
 SUPPORTED_WORKGROUP_SIZES = (DEFAULT_WORKGROUP_SIZE, [8, 8, 1])
 MAX_BUFFERS = 2

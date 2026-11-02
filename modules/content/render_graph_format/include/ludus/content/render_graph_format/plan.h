@@ -45,6 +45,9 @@ inline constexpr foundation::usize IMAGE_TECHNIQUE_COUNT = 3;
 inline constexpr foundation::usize TECHNIQUE_COUNT = SCENE_TECHNIQUE_COUNT + IMAGE_TECHNIQUE_COUNT;
 /// Maximum consecutive ray invocations in one configuration.
 inline constexpr foundation::usize MAX_RAY_PASSES = 4;
+/// Maximum distinct callback sets shared by all configurations in one shader package.
+/// This bounds callback selection, independently of each configuration's invocation count.
+inline constexpr foundation::usize MAX_RAY_PROGRAMS = 8;
 /// Read/write uint4 storage slots per ray invocation; shared across passes and frames.
 inline constexpr foundation::usize MAX_RAY_BUFFERS = 2;
 /// Byte width of one persistent buffer word, matching RWStructuredBuffer<uint4>.

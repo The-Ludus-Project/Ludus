@@ -127,6 +127,15 @@
       "input": "RayLaunch",
       "output": "Radiance",
       "bindings": []
+    },
+    {
+      "id": "ProductionShade",
+      "stage": "compute",
+      "source": "main_shaders/production.slang",
+      "function": "ShadeProductionGi",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
     }
   ],
   "techniques": [
@@ -180,7 +189,7 @@
       ],
       "scene_interface": {
         "version": 1,
-        "surface_queries": 4,
+        "surface_queries": 5,
         "visibility_queries": 16
       }
     }
