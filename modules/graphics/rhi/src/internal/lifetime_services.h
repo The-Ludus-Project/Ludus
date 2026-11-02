@@ -228,7 +228,7 @@ bool SamePipeline(const RasterPipelineInfo& a, const RasterPipelineInfo& b) noex
 {
     if (a.Vertex != b.Vertex || a.Fragment != b.Fragment || a.Layout != b.Layout || a.Depth != b.Depth ||
         a.Blend != b.Blend || a.Target != b.Target || a.DepthWrite != b.DepthWrite ||
-        a.ShouldWriteColor != b.ShouldWriteColor || a.DepthCompare != b.DepthCompare ||
+        a.ShouldWriteColor != b.ShouldWriteColor || a.FillMode != b.FillMode || a.DepthCompare != b.DepthCompare ||
         a.StreamCount != b.StreamCount || a.AttributeCount != b.AttributeCount)
     {
         return false;

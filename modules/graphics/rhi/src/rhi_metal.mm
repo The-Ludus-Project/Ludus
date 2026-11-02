@@ -709,6 +709,7 @@ ResourceStatus Draw(usize slot) noexcept
     [gEncoder
         setViewport:MTLViewport{0, 0, static_cast<float64>(gFrame.Width), static_cast<float64>(gFrame.Height), 0, 1}];
     [gEncoder setCullMode:MTLCullModeNone];
+    [gEncoder setTriangleFillMode:MTLTriangleFillModeFill];
     [gEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     return ResourceStatus::Ready;
 }
