@@ -38,11 +38,17 @@ float32 ComputeTarget(const MetropolisOptions& options, math::Vector3 radiance) 
 void AddPathAov(math::Vector3 contribution, uint32 depth, MetropolisPathAovs& inoutAovs) noexcept
 {
     if (depth == 0)
+    {
         inoutAovs.Emission = inoutAovs.Emission + contribution;
+    }
     else if (depth == 1)
+    {
         inoutAovs.Direct = inoutAovs.Direct + contribution;
+    }
     else
+    {
         inoutAovs.Indirect = inoutAovs.Indirect + contribution;
+    }
 }
 rhi::RasterStatus AdvanceChain(const MetropolisOptions& options,
                                MetropolisEstimator estimator,
@@ -58,20 +64,28 @@ rhi::RasterStatus AdvanceChain(const MetropolisOptions& options,
         options.LargeStepProbability <= 0 || options.LargeStepProbability > 1 ||
         math::IsFinite(options.TargetFloor) == false || options.TargetFloor <= 0 ||
         static_cast<uint32>(estimator) > static_cast<uint32>(MetropolisEstimator::RaoBlackwell))
+    {
         return rhi::RasterStatus::InvalidDescription;
+    }
     if (inoutChain.Iteration == ~uint32{0})
+    {
         return rhi::RasterStatus::CapacityExceeded;
+    }
     MetropolisChain chain = inoutChain;
     const uint32 initialScope = isJumpRestore == true ? RESTORE_INITIAL_SCOPE : INITIAL_SCOPE;
     const uint32 proposalScope = isJumpRestore == true ? RESTORE_PROPOSAL_SCOPE : PROPOSAL_SCOPE;
     if (chain.IsInitialized == false)
     {
         for (usize dimension = 0; dimension < METROPOLIS_PRIMARY_DIMENSIONS; ++dimension)
+        {
             chain.Primary[dimension] =
                 Sample(key, pixel, initialScope, chain.Iteration, static_cast<uint16>(dimension));
+        }
         const rhi::RasterStatus status = evaluate(context, chain.Primary, chain.Radiance);
         if (status != rhi::RasterStatus::Ready)
+        {
             return status;
+        }
         chain.Target = ComputeTarget(options, chain.Radiance);
         chain.IsInitialized = true;
     }
@@ -86,7 +100,9 @@ rhi::RasterStatus AdvanceChain(const MetropolisOptions& options,
                 Sample(key, pixel, proposalScope, chain.Iteration, HOLDING_TIME_DIMENSION),
                 rates.MeanHoldingTime,
                 holdingTime) != math::MathStatus::Success)
+        {
             return rhi::RasterStatus::InvalidDescription;
+        }
         isRestoration =
             Sample(key, pixel, proposalScope, chain.Iteration, LARGE_STEP_DIMENSION) < rates.RestoreProbability;
     }
@@ -103,26 +119,36 @@ rhi::RasterStatus AdvanceChain(const MetropolisOptions& options,
                 options.SmallStepRadius,
                 isLargeStep,
                 proposal[dimension]) != math::MathStatus::Success)
+        {
             return rhi::RasterStatus::InvalidDescription;
+        }
     }
     math::Vector3 proposedRadiance;
     const rhi::RasterStatus evaluated = evaluate(context, proposal, proposedRadiance);
     if (evaluated != rhi::RasterStatus::Ready)
+    {
         return evaluated;
+    }
     if (IsValidRadiance(chain.Radiance) == false || IsValidRadiance(proposedRadiance) == false)
+    {
         return rhi::RasterStatus::Failed;
+    }
     const float32 proposedTarget = ComputeTarget(options, proposedRadiance);
     float32 acceptance = 0;
     if (math::TryComputeSymmetricMetropolisAcceptance(chain.Target, proposedTarget, acceptance) !=
         math::MathStatus::Success)
+    {
         return rhi::RasterStatus::Failed;
+    }
     const bool isAccepted =
         isRestoration == true || Sample(key, pixel, proposalScope, chain.Iteration, ACCEPTANCE_DIMENSION) < acceptance;
     if (chain.Iteration >= options.BurnIn)
     {
         math::MathStatus status = math::MathStatus::Success;
         if (estimator == MetropolisEstimator::Standard)
+        {
             status = math::TryAddWeightedRadiance(chain.Radiance, holdingTime / chain.Target, chain.Accumulation);
+        }
         else if (estimator == MetropolisEstimator::WasteRecycling)
         {
             const float32 currentWeight = isRestoration == true ? 1 : 1 - acceptance;
@@ -130,21 +156,29 @@ rhi::RasterStatus AdvanceChain(const MetropolisOptions& options,
                                                   holdingTime * currentWeight / chain.Target,
                                                   chain.Accumulation);
             if (status == math::MathStatus::Success && isRestoration == false)
+            {
                 status = math::TryAddWeightedRadiance(proposedRadiance,
                                                       holdingTime * acceptance / proposedTarget,
                                                       chain.Accumulation);
+            }
         }
         else
         {
             if (isRestoration == false)
+            {
                 status = math::TryAdvanceMetropolisTour(acceptance, chain.Tour);
+            }
             if (status == math::MathStatus::Success && isAccepted == true)
+            {
                 status = math::TryAddWeightedRadiance(chain.Radiance,
                                                       chain.Tour.HoldingWeight * rates.MeanHoldingTime / chain.Target,
                                                       chain.Accumulation);
+            }
         }
         if (status != math::MathStatus::Success)
+        {
             return rhi::RasterStatus::Failed;
+        }
     }
     if (isAccepted == true)
     {
@@ -155,7 +189,9 @@ rhi::RasterStatus AdvanceChain(const MetropolisOptions& options,
     }
     math::Vector3 radiance;
     if (math::TryResolveWeightedRadiance(chain.Accumulation, radiance) != math::MathStatus::Success)
+    {
         return rhi::RasterStatus::Failed;
+    }
     ++chain.Iteration;
     inoutChain = chain;
     outRadiance = radiance;
@@ -201,13 +237,17 @@ rhi::RasterStatus EvaluateMetropolisPath(const ReferenceSceneData& scene,
                                          MetropolisPathAovs* outAovsOrNull) noexcept
 {
     if (scatteringDepth == 0 || scatteringDepth > METROPOLIS_MAXIMUM_DEPTH || IsValidRadiance(environment) == false)
+    {
         return rhi::RasterStatus::InvalidDescription;
+    }
     const math::Vector3 directionWorld = ReferenceDirection(ray);
     if (math::IsFinite(ReferenceOrigin(ray)) == false || math::IsFinite(directionWorld) == false ||
         math::IsFinite(ray.MinDistance) == false || math::IsFinite(ray.MaxDistance) == false || ray.MinDistance < 0 ||
         ray.MaxDistance < ray.MinDistance ||
         math::Abs(math::Dot(directionWorld, directionWorld) - 1) > RAY_UNIT_SQUARED_LENGTH_TOLERANCE)
+    {
         return rhi::RasterStatus::InvalidDescription;
+    }
     math::Vector3 radiance{};
     MetropolisPathAovs aovs;
     math::Vector3 throughput{1, 1, 1};
@@ -216,7 +256,9 @@ rhi::RasterStatus EvaluateMetropolisPath(const ReferenceSceneData& scene,
         rhi::RayResult hit;
         const rhi::RasterStatus status = TraceReferenceOracle(scene, ray, hit);
         if (status != rhi::RasterStatus::Ready)
+        {
             return status;
+        }
         if (hit.Hit == 0)
         {
             const math::Vector3 contribution = math::Hadamard(
@@ -228,7 +270,9 @@ rhi::RasterStatus EvaluateMetropolisPath(const ReferenceSceneData& scene,
             break;
         }
         if (hit.Instance >= scene.Instances.GetSize())
+        {
             return rhi::RasterStatus::Failed;
+        }
         const ReferenceInstance& instance = scene.Instances[hit.Instance];
         const ReferenceTriangle& triangle = scene.Triangles[instance.FirstTriangle + hit.Primitive];
         const ReferenceSurfaceData& surface = *instance.Surface;
@@ -241,13 +285,19 @@ rhi::RasterStatus EvaluateMetropolisPath(const ReferenceSceneData& scene,
             AddPathAov(contribution, depth, aovs);
         }
         if (depth == scatteringDepth || math::Dot(triangle.GeometricNormal, viewDirectionWorld) <= 0)
+        {
             break;
+        }
         if (surface.Bsdf.Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse)
+        {
             return rhi::RasterStatus::Unsupported;
+        }
         ReferenceBsdf bsdf = surface.Bsdf;
         math::Vector4 texel = SampleReferenceTexture(instance, uv);
         if (surface.AreAuthoredInputsEnabled == true)
+        {
             texel = math::Hadamard(texel, InterpolateReferenceColor(triangle, hit.U, hit.V));
+        }
         bsdf.BaseColor = math::Hadamard(bsdf.BaseColor, {texel.X, texel.Y, texel.Z});
         math::Vector3 normalWorld = ReferenceNormalize(triangle.Normals[0] * (1 - hit.U - hit.V) +
                                                        triangle.Normals[1] * hit.U + triangle.Normals[2] * hit.V);
@@ -259,7 +309,9 @@ rhi::RasterStatus EvaluateMetropolisPath(const ReferenceSceneData& scene,
                                         bsdf.Roughness,
                                         surface.NormalScale,
                                         parameters) != rhi::RasterStatus::Ready)
+            {
                 return rhi::RasterStatus::Failed;
+            }
             bsdf.Metallic = parameters.Metallic;
             bsdf.Roughness = parameters.Roughness;
             normalWorld = ApplyReferenceNormal(triangle, surface, normalWorld, parameters.NormalTangent, hit.U, hit.V);
@@ -271,22 +323,32 @@ rhi::RasterStatus EvaluateMetropolisPath(const ReferenceSceneData& scene,
                                 viewDirectionWorld,
                                 {primary[dimension], primary[dimension + 1], primary[dimension + 2]},
                                 sample) != rhi::RasterStatus::Ready)
+        {
             return rhi::RasterStatus::Failed;
+        }
         if (sample.Accepted == false || math::Dot(triangle.GeometricNormal, sample.Direction) <= 0)
+        {
             break;
+        }
         throughput = math::Hadamard(throughput, sample.Weight);
         const math::Vector3 positionWorld = InterpolateReferencePosition(triangle, hit.U, hit.V);
         math::Vector3 originWorld;
         if (math::TryOffsetRayOrigin({positionWorld, triangle.Error, triangle.GeometricNormal, sample.Direction},
                                      originWorld) != math::MathStatus::Success)
+        {
             return rhi::RasterStatus::Failed;
+        }
         ray = ReferenceRay(originWorld, sample.Direction, MAXIMUM_DISTANCE_WORLD);
     }
     if (IsValidRadiance(radiance) == false)
+    {
         return rhi::RasterStatus::Failed;
+    }
     outRadiance = radiance;
     if (outAovsOrNull != nullptr)
+    {
         *outAovsOrNull = aovs;
+    }
     return rhi::RasterStatus::Ready;
 }
 } // namespace ludus::graphics::renderer::internal
