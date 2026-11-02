@@ -1850,6 +1850,36 @@ TEST_CASE("Steinberg physical-optics template is created from the editor picker 
     RequireValidation(workspace);
 }
 
+TEST_CASE("Wave tracing template is created from the editor picker with wave, geometric and "
+          "transmission outputs",
+          "[editor][render-graph][wave-tracing-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    workspace.show();
+    CreateGraphFromPicker(workspace, QStringLiteral("wave-tracing"));
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    for (const char* program : {"ShadeWave", "ShadeGeometric", "MeasureTransmission"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    // The wave-optics image is exported first, so the viewport shows it by default. The transmission is a
+    // linear measurement: it accumulates but is not tone mapped.
+    CHECK(root.indexOf("\"output\"") < root.indexOf("\"geometricOutput\""));
+    CHECK(root.count("\"Accumulate\"") == 3);
+    CHECK(root.count("\"ToneMap\"") == 2);
+    CHECK(root.count("\"Export\"") == 3);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/shade.slang")).contains("EvaluateWaveConnection") == true);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("WT_WAVELENGTH_NANOMETERS") == true);
+    RequireValidation(workspace);
+}
+
 TEST_CASE("Steinberg physical-optics configuration imports its passes, shader closure and settings on the root canvas",
           "[editor][render-graph][steinberg-physical-optics-configuration]")
 {

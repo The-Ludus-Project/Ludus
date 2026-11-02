@@ -1437,7 +1437,9 @@ input; a program capacity error gives the required count and `budgets.programs` 
 Undo restores the previous budgets along with the graph and shader edits.
 Settings are shared by this package's ReSTIR
 configurations. A manifest holds up to 128 settings, enough for every built-in
-template together. If a template's settings would exceed that limit and removing
+template together. Float32 settings admit signed finite values within +/-1,000,000;
+UInt32 settings remain nonnegative. Spatial positions and directions can therefore
+be edited directly in Graph settings. If a template's settings would exceed that limit and removing
 authored settings that no `.slang` source names would make room, the picker lists
 those settings and offers **Remove and apply** or **Cancel**. Approval removes only
 the listed settings in the same undoable edit as the template; a template's own
@@ -4232,9 +4234,10 @@ Imported emissive material slots remain actual geometry and do not become point-
 need no mesh. Raster area quadrature records are not accepted as exact sources:
 provide their emitting geometry instead, avoiding duplicate illumination.
 
-The current graph limits still apply, including 32 meshes and 128 draw items.
-The initial material/slot table is bounded by MAX_ITEMS; scene CPU/GPU setup
-shares the existing 256 MiB budgets. Unsupported masked/transmissive/deformed
+The current graph limits still apply, including 256 meshes and 1024 draw items.
+The material/slot table is bounded by MAX_ITEMS. Scene CPU/GPU setup also follows
+the independent [scene byte budgets](../architecture/renderer-systems.md#l51-budgeted-scene-capacity).
+Ray profiles use authored alpha masks; unsupported transmissive/deformed
 geometry rejects or uses the graph's explicit diagnostic coverage policy; it
 does not acquire transparent transport by connecting Scene. Material evaluation
 uses the supplied fixed mip and UV0; derivative mip selection is not inferred.
@@ -6310,8 +6313,8 @@ allocation as well. Resize, foreign image import and history need another
 qualified profile/generation; they reject here instead of silently changing
 allocation identity. Reset before destroying the device.
 
-The profile is bounded to 16 passes, 32 logical resources, 8 cameras, 128 draw
-items and 32 meshes. It qualifies RGBA8/Depth32, single-sample static geometry,
+The profile is bounded to 16 passes, 32 logical resources, 8 cameras, 1024 draw
+items and 256 meshes. It qualifies RGBA8/Depth32, single-sample static geometry,
 TriangleList, no culling, counter-clockwise front and conventional
 Less/depth-write, for the opaque and explicitly authored masked families. A depth
 export does not establish pre-Z equivalence for later shading with another
@@ -8648,6 +8651,171 @@ validation, allocation, completion collection and scene updates still have costs
 no universal frame-time bound is claimed. The test reports service/pipeline timing
 separately from source compilation and refuses a skipped GPU case. Linux, browser
 and physical-device qualification remain distinct from any local macOS result.
+
+## Trace scene optical connections
+
+The **Wave tracing — scene optical transport** template (`wave-tracing`) uses the
+selected World's camera, geometry, lights, emissive meshes, textures and supported
+reflection materials. It samples truncated surface paths, with coherent scalar
+Gaussian-mode connections to finite lights. Its CPU oracle and GPU implementation
+estimate the same declared integral; transport, shading and accumulation execute
+on the GPU when GPU compute is selected.
+
+The design adopts scene interaction regions and coherent field sums from Shlomi
+Steinberg and Matt Pharr,
+[Wave Tracing: Generalizing The Path Integral To Wave Optics](https://doi.org/10.1111/cgf.70322),
+Computer Graphics Forum 45(2), e70322 (2026), Sections 3.1 and 4.2. Thank you to the
+authors, and to Umut Emre, Aryan Kanak and Shlomi Steinberg,
+[High-Performance Elliptical Cone Tracing](https://doi.org/10.1111/cgf.70230),
+Computer Graphics Forum 44(7), e70230 (2025), for the cone/triangle geometric
+formulation. These implementations are original; no noncommercial reference
+implementation code is incorporated.
+
+```sh
+ludus render-graph new graphs/Waves --template wave-tracing \
+  --renderer-static --output offscreen --profiles metal
+```
+
+Choose `spirv` for Vulkan. The Renderer canvas template picker and **Add
+configuration** menu create the same editable package; Graph settings are
+available on the canvas and in Properties. Hardware ray tracing is not required.
+The template uses the renderer's packed scene BVH, including geometry that a
+beam's centre ray misses. It does not require a manually positioned screen or a
+replacement light source.
+
+- **Optical** renders surface emission and next-event lighting through the optical
+  connection operator. `WT_WAVELENGTH_NANOMETERS` defaults to 550 nm. The scalar
+  transmission multiplies the authored RGB light; this is not spectral colour
+  integration or wavelength-dependent material scattering.
+- **Geometric** traces matching surface paths and light proposals with ordinary
+  binary visibility. Both paths use next-event estimation alone for light
+  endpoints. Secondary emitter/environment hits are omitted to avoid inconsistent
+  MIS weights when optical and geometric visibility differ.
+- **Transmission** shows the first receiver's sampled light-connection power,
+  relative to the unobstructed Gaussian mode, without tone mapping. It is zero
+  without a contributing light sample. Diffraction can redistribute power above
+  one locally. Linear capture data retains that range; RGBA8 presentation clips
+  values above one.
+
+`WT_PATH_VERTICES` defaults to three surface scattering vertices, with a maximum
+of eight. Every vertex uses the current material's reflection model, including
+normal maps, diffuse, rough conductor and coated diffuse inputs. Infinite lights
+and the environment use ordinary geometric visibility. Finite point, spot and
+mesh-light connections use the optical operator. A scene lit only by an infinite
+environment therefore does not gain free-space diffraction from this profile.
+
+### Declared scalar connection integral
+
+For a finite light-to-surface connection of length `L`, wavelength `lambda` and
+wavenumber `k = 2*pi/lambda`, the source mode is a circular Gaussian waist with
+`Sigma = L/k`. Its free-space field, with the common axial phase omitted, is
+
+```text
+psi(x,y,z) = Sigma/(Sigma + i*z/k)
+             * exp(-(x*x + y*y)/(2*(Sigma + i*z/k))).
+```
+
+The connection measures the field on the mean axis at `z=L`, divided by the
+unobstructed analytic field. Its power is the squared magnitude of this ratio.
+Distinct light/path samples add powers; open parts of one connection add complex
+fields before squaring, preserving cross-opening interference.
+
+A finite cylindrical envelope (a supported elliptical-cone special case)
+encloses the mode over the connection. BVH traversal finds the nearest axial
+intersection, then gathers every intersecting triangle in a frustum of depth
+twice the envelope's major radius. Distances have working-precision axial padding
+so a second gather cannot lose the triangle that established the nearest hit.
+Each region projects its triangle union along propagation onto its midpoint
+plane. Coverage is evaluated directly in transverse coordinates, avoiding
+reconstruction of tiny samples in large world coordinates; fixed-mip texture and vertex alpha determine coverage. Successive masks
+multiply the complex field, with propagation between them.
+
+The propagation lattice has 16 by 16 complex samples over a half-width of
+`3*sqrt(2*Sigma)`, with four coverage samples per cell. Separable FFTs apply the
+paraxial angular-spectrum transfer function
+`exp(-i*pi*lambda*dz*(fx*fx + fy*fy))`. The finite periodic window and spatial
+sampling are part of the declared approximation. More camera samples do not
+refine this lattice. Very fine apertures and near-grazing geometry need independent
+spatial convergence studies before making quantitative optical claims.
+
+Ballistic escape starts at the larger of two wavelengths and eight binary32
+epsilons times the connection's world-coordinate scale. It grows by four up to
+65536 wavelengths (or the initial rounding guard, if larger), checking the
+centre-ray segment while seeking a clear, finite-thickness beam probe. The probe
+thickness is the initial rounding guard, avoiding numerically degenerate
+zero-thickness intersections. Both offset endpoints are retained explicitly. Escape is applied at the source,
+receiver and after interactions to
+avoid repeated self-intersections. At the escape cap this scalar profile retains
+a ballistic connection through the remaining interval; it does not simulate
+near-wall guided modes. The optical kernel requires positive finite distances,
+unit directions and `lambda/L <= 1/32`. Invalid inputs and exhaustion of the
+256-triangle region or 64-region connection limit reject the contribution
+with an actionable diagnostic, preserving the last accepted image.
+
+This is a scene-capable **scalar paraxial connection profile**, with classical RGB
+surface scattering between connections. It is not the paper's full polarimetric
+bidirectional cone path tracer: Fraunhofer/UTD edge operators, interference-aware
+material-direction rejection sampling, coherent reflection/transmission between
+surface events and spectral material transport are not implemented here.
+
+### CPU oracle and validation
+
+Set `ReferenceCaptureDescription::OpticalWavelengthWorld` to a positive wavelength
+in metres to select the same connection profile in reference captures. Zero
+preserves the geometric reference profile. Select `CpuOracle` or `GpuCompute` and
+`UniformArea` light sampling; incompatible native-query or resampled requests
+reject explicitly. Changing wavelength resets progressive accumulation. Raw
+`LUHDR01` exports retain the wavelength at byte 92 and optical flag 256.
+
+The existing scene benchmark accepts an optional final wavelength in nanometres:
+
+```sh
+ludus_reference_benchmark COOKED_SCENE 64 32 16 3 cpu 1 550
+ludus_reference_benchmark COOKED_SCENE 64 32 16 3 gpu 1 550
+```
+
+`LUDUS_REFERENCE_BENCHMARK_OUTPUT` saves raw linear RGB for matched comparisons.
+The benchmark retains authored analytic lights and HDR environments. It does not
+add lights when the authored scene is dark.
+
+Primitive regressions cover off-axis geometry, clipped extrema and degenerate
+rays; BVH queries are compared with brute force. CPU/GPU tests compare region
+membership, complex fields and raw reference AOVs. Analytic fixtures test an
+unobstructed beam, an opaque screen, the quarter-power half-plane boundary,
+cross-opening interference and propagation through two separated regions. A
+cooked production-graph regression checks authored lighting and diffraction in
+geometric shadow. The Metal compiler boundary preserves emitted SPIR-V
+`DontInline` controls for the optical solver, traversal and FFT routines. Keeping
+these routines isolated prevents live-state corruption in a merged ray kernel;
+the translated helper gate and cooked staircase capture cover this path. The
+former manually authored Gaussian-aperture graph remains
+a test fixture, with its separate analytic Fresnel and double-slit checks.
+
+The macOS Metal validation uses the existing cooked scenes with their authored
+camera, geometry, reflection materials, alpha/normal/emission maps and lights.
+Raw linear RGB comparisons at 550 nm and three surface vertices give:
+
+| Scene | Triangles | Capture | RGB RMSE | Maximum component difference |
+| --- | ---: | --- | ---: | ---: |
+| staircase2 | 28,815 | 64 × 32, 16 spp | 0.000552 | 0.0324 |
+| Bistro | 2,838,960 | 32 × 16, 8 spp | 0.0000256 | 0.000788 |
+| Sponza | 3,747,018 | 32 × 16, 8 spp | 0.000000000813 | 0.0000000152 |
+
+The scene checks admit RMSE below 0.001 and relative mean radiance difference
+below 0.1%; these are numerical comparisons of matched inputs, without denoising
+or temporal reuse. Rare float32 surface-path branch differences prevent a uniform
+per-pixel bound as tight as the analytic field fixtures. Sponza's authored mean
+radiance is about 0.000000882, so that capture mainly establishes geometry and
+material compatibility, not a strong illuminated diffraction test. The small
+analytic and authored-point-light fixtures establish nonzero diffraction and
+cross-opening interference. The graph scene adapter also retains zero-area primitive diagnostics and shares
+camera-relative inversion with the deferred renderer, so a distant conventional
+camera is admitted without changing its authored view. Local Metal evidence does
+not qualify physical Vulkan, browser or editor interaction paths.
+
+`wave_tracing.hpp` also exposes allocation-free Gaussian moment propagation
+(Eqs. 20–21) and a float64 Fresnel aperture oracle. These retain independent
+numerical checks; an aperture-only result does not establish scene capability.
 
 ## Use the forward-lit template
 

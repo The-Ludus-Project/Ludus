@@ -49,7 +49,10 @@ struct Session final
     rr::MaterialProgram Program;
     rr::Snapshot Snapshot;
 };
-S Prepare(rhi::DeviceHandle device, rr::ReferenceTraversal traversal, Session& outSession)
+S Prepare(rhi::DeviceHandle device,
+          rr::ReferenceTraversal traversal,
+          Session& outSession,
+          bool shouldIncludeDegenerateTriangles = false)
 {
     rr::Renderer& renderer = outSession.Renderer;
     REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
@@ -79,7 +82,11 @@ S Prepare(rhi::DeviceHandle device, rr::ReferenceTraversal traversal, Session& o
         status = renderer.GetStatus(outSession.Program);
     }
     REQUIRE(status == S::Ready);
-    return ludus::qa::BuildL6Snapshot(renderer, outSession.Program, outSession.Snapshot, -.7F);
+    return ludus::qa::BuildL6Snapshot(renderer,
+                                      outSession.Program,
+                                      outSession.Snapshot,
+                                      -.7F,
+                                      shouldIncludeDegenerateTriangles);
 }
 /// How BuildSphereSnapshot's authored normals relate to its triangle winding.
 enum class NormalLayout : uint8
@@ -418,14 +425,14 @@ TEST_CASE("GPU-compute reference matches the CPU oracle's raw AOVs", "[renderer]
                                                 shaders::renderer_reference_reduce::Compute(),
                                                 unbudgeted) == S::InvalidDescription);
     }
-    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu, true);
     if (enabled == S::Unsupported)
     {
         SKIP("Compute storage is unavailable on this device");
     }
     REQUIRE(enabled == S::Ready);
     Session cpu;
-    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu, true) == S::Ready);
 
     constexpr usize ENVIRONMENT_PIXEL_COUNT = 4;
     // Reconstruct a factored import's radiance before either reference implementation
@@ -486,12 +493,16 @@ TEST_CASE("GPU-compute reference matches the CPU oracle's raw AOVs", "[renderer]
         uint64 Seed = 871;
         usize LightCount = 1;
         bool HasEnvironmentMap = false;
+        float32 OpticalWavelengthWorld = 0;
+        bool IsFarConventional = false;
     };
     const Case cases[]{
         {"orthographic emitter and environment", false, 4, 3, 871, 1},
         {"perspective analytic lights and roulette", true, 8, 2, 1729, 4},
         {"single bounce", true, 1, 1, 5, 4},
+        {"scalar optical scene connections", true, 4, 3, 871, 4, false, 0.001F},
         {"perspective textured environment", true, 4, 3, 314159, 1, true},
+        {"far conventional optical camera", true, 4, 3, 871, 4, false, 0.001F, true},
     };
     for (const Case& test : cases)
     {
@@ -502,6 +513,7 @@ TEST_CASE("GPU-compute reference matches the CPU oracle's raw AOVs", "[renderer]
             capture.Height = 12;
             capture.TargetSamples = 64;
             capture.MaxDepth = test.MaxDepth;
+            capture.OpticalWavelengthWorld = test.OpticalWavelengthWorld;
             capture.RouletteDepth = test.RouletteDepth;
             capture.Seed = test.Seed;
             capture.Environment = {.3F, .4F, .5F};
@@ -512,7 +524,8 @@ TEST_CASE("GPU-compute reference matches the CPU oracle's raw AOVs", "[renderer]
             {
                 math::Matrix4 view;
                 math::Matrix4 projection;
-                capture.CameraPosition = {.1F, -.2F, -2.5F};
+                capture.CameraPosition =
+                    test.IsFarConventional == true ? math::Vector3{300, -.2F, -2.5F} : math::Vector3{.1F, -.2F, -2.5F};
                 REQUIRE(math::TryLookAt(capture.CameraPosition, {0, 0, 0}, {0, 1, 0}, view) ==
                         math::MathStatus::Success);
                 REQUIRE(math::TryPerspectiveReverseZ(1,
@@ -521,7 +534,14 @@ TEST_CASE("GPU-compute reference matches the CPU oracle's raw AOVs", "[renderer]
                                                      20,
                                                      projection) == math::MathStatus::Success);
                 capture.WorldToClip = projection * view;
-                capture.ReverseZ = true;
+                if (test.IsFarConventional == true)
+                {
+                    for (math::Vector4& column : capture.WorldToClip.Columns)
+                    {
+                        column.Z = column.W - column.Z;
+                    }
+                }
+                capture.ReverseZ = test.IsFarConventional == false;
             }
             else
             {
@@ -537,6 +557,8 @@ TEST_CASE("GPU-compute reference matches the CPU oracle's raw AOVs", "[renderer]
             Capture(gpu, capture, surface, compute, computeInfo);
             CHECK(computeInfo.Traversal == rr::ReferenceTraversal::GpuCompute);
             CHECK(computeInfo.InvalidContributions == 0);
+            CHECK(computeInfo.SkippedTriangles > 0);
+            CHECK(computeInfo.SkippedTriangles == oracleInfo.SkippedTriangles);
             CHECK(computeInfo.Complete == true);
             CHECK(computeInfo.MinimumSamples == capture.TargetSamples);
             CHECK(computeInfo.MaximumSamples == capture.TargetSamples);

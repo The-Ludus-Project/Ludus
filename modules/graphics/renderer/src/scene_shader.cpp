@@ -524,7 +524,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                     if (geometry.Normals != nullptr)
                     {
                         triangle.Normals[corner] = ReferenceNormalize(normalMatrix * geometry.Normals[vertex]);
-                        if (math::Length(triangle.Normals[corner]) == 0)
+                        if (math::IsFinite(geometry.Normals[vertex]) == false)
                         {
                             return Status::InvalidDescription;
                         }
@@ -553,7 +553,17 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                 triangle.GeometricNormal = ReferenceNormalize(normalMatrix * math::Cross(edgeMesh, otherEdgeMesh));
                 if (math::Length(triangle.GeometricNormal) == 0)
                 {
-                    return Status::Unsupported;
+                    triangle.GeometricNormal = ReferenceNormalize(crossWorld);
+                }
+                if (geometry.Normals != nullptr)
+                {
+                    for (const math::Vector3 normalWorld : triangle.Normals)
+                    {
+                        if (math::Length(normalWorld) == 0)
+                        {
+                            return Status::InvalidDescription;
+                        }
+                    }
                 }
                 const float32 rounding = (math::Length(edgeWorld) + math::Length(otherEdgeWorld)) * POSITION_ROUNDING;
                 triangle.Error = triangle.Error + math::Vector3{rounding, rounding, rounding};

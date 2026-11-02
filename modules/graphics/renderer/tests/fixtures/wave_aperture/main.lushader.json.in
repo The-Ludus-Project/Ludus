@@ -1,0 +1,306 @@
+{
+  "version": 1,
+  "id": "RendererStaticBuild",
+  "profiles": @LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@,
+  "schemas": [
+    {
+      "id": "RendererStatic",
+      "role": "Vertex",
+      "fields": [
+        {
+          "id": "PositionMesh",
+          "type": "Float3",
+          "semantic": "POSITION",
+          "location": 0
+        },
+        {
+          "id": "MeshToClipRow0",
+          "type": "Float4",
+          "semantic": "TEXCOORD0",
+          "location": 1
+        },
+        {
+          "id": "MeshToClipRow1",
+          "type": "Float4",
+          "semantic": "TEXCOORD1",
+          "location": 2
+        },
+        {
+          "id": "MeshToClipRow2",
+          "type": "Float4",
+          "semantic": "TEXCOORD2",
+          "location": 3
+        },
+        {
+          "id": "MeshToClipRow3",
+          "type": "Float4",
+          "semantic": "TEXCOORD3",
+          "location": 4
+        },
+        {
+          "id": "Color",
+          "type": "Float4",
+          "semantic": "COLOR0",
+          "location": 5
+        }
+      ]
+    },
+    {
+      "id": "RasterVarying",
+      "role": "Varying",
+      "fields": [
+        {
+          "id": "PositionClip",
+          "type": "Float4",
+          "semantic": "SV_Position",
+          "location": 0
+        },
+        {
+          "id": "Color",
+          "type": "Float4",
+          "semantic": "COLOR0",
+          "location": 0
+        }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "id": "Geometry",
+      "stage": "vertex",
+      "source": "main_shaders/geometry.slang",
+      "function": "TransformGeometry",
+      "input": "RendererStatic",
+      "output": "RasterVarying",
+      "bindings": []
+    },
+    {
+      "id": "Color",
+      "stage": "fragment",
+      "source": "main_shaders/color.slang",
+      "function": "ShadeColor",
+      "input": "RasterVarying",
+      "output": "Color",
+      "bindings": []
+    },
+    {
+      "id": "Depth",
+      "stage": "fragment",
+      "source": "main_shaders/depth.slang",
+      "function": "WriteDepth",
+      "input": "RasterVarying",
+      "output": "Depth",
+      "bindings": []
+    },
+    {
+      "id": "Primary",
+      "stage": "compute",
+      "source": "main_shaders/primary.slang",
+      "function": "TracePrimaryHit",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ShadeWave",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "ShadeWave",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ShadeGeometric",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "ShadeGeometric",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "MeasureAperture",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "MeasureAperture",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    }
+  ],
+  "techniques": [
+    {
+      "id": "DefaultStaticOpaque.ColorAndDepth",
+      "configuration": "ColorAndDepth",
+      "vertex": "Geometry",
+      "fragment": "Color",
+      "recipes": [
+        {
+          "id": "Default",
+          "color": "RGBA8Unorm",
+          "depth": "Depth32Float",
+          "samples": 1,
+          "topology": "TriangleList",
+          "cull": "None",
+          "front": "CounterClockwise",
+          "depth_compare": "Less",
+          "depth_write": true,
+          "blend": "Opaque"
+        }
+      ]
+    },
+    {
+      "id": "DefaultStaticOpaque.DepthOnly",
+      "configuration": "DepthOnly",
+      "vertex": "Geometry",
+      "fragment": "Depth",
+      "recipes": [
+        {
+          "id": "Default",
+          "color": "None",
+          "depth": "Depth32Float",
+          "samples": 1,
+          "topology": "TriangleList",
+          "cull": "None",
+          "front": "CounterClockwise",
+          "depth_compare": "Less",
+          "depth_write": true,
+          "blend": "Opaque"
+        }
+      ]
+    },
+    {
+      "id": "RendererTriangles.RayTracing",
+      "configuration": "RayTracing",
+      "recipes": [
+        {
+          "id": "Triangles"
+        }
+      ],
+      "scene_interface": {
+        "version": 1,
+        "surface_queries": 1,
+        "visibility_queries": 0
+      }
+    }
+  ],
+  "budgets": {
+    "configurations": 8,
+    "programs": 16
+  },
+  "settings": [
+    {
+      "id": "WT_WAVELENGTH_MILLIMETERS",
+      "label": "Scalar wavelength (mm)",
+      "type": "Float32",
+      "value": 20,
+      "minimum": 0.001,
+      "maximum": 1000
+    },
+    {
+      "id": "WT_SIGMA_X_MILLIMETERS",
+      "label": "Gaussian waist shape radius X (mm)",
+      "type": "Float32",
+      "value": 100,
+      "minimum": 0.01,
+      "maximum": 10000
+    },
+    {
+      "id": "WT_SIGMA_Y_MILLIMETERS",
+      "label": "Gaussian waist shape radius Y (mm)",
+      "type": "Float32",
+      "value": 100,
+      "minimum": 0.01,
+      "maximum": 10000
+    },
+    {
+      "id": "WT_HALF_WIDTH_MILLIMETERS",
+      "label": "Aperture integration half width (mm)",
+      "type": "Float32",
+      "value": 300,
+      "minimum": 0.01,
+      "maximum": 10000
+    },
+    {
+      "id": "WT_HALF_HEIGHT_MILLIMETERS",
+      "label": "Aperture integration half height (mm)",
+      "type": "Float32",
+      "value": 300,
+      "minimum": 0.01,
+      "maximum": 10000
+    },
+    {
+      "id": "WT_RESOLUTION",
+      "label": "Aperture quadrature cells per axis",
+      "type": "UInt32",
+      "value": 64,
+      "minimum": 8,
+      "maximum": 128
+    },
+    {
+      "id": "WT_SCREEN_X",
+      "label": "Screen centre world X (m)",
+      "type": "Float32",
+      "value": 0,
+      "minimum": -10000,
+      "maximum": 10000
+    },
+    {
+      "id": "WT_SCREEN_Y",
+      "label": "Screen centre world Y (m)",
+      "type": "Float32",
+      "value": 0,
+      "minimum": -10000,
+      "maximum": 10000
+    },
+    {
+      "id": "WT_SCREEN_Z",
+      "label": "Screen centre world Z (m)",
+      "type": "Float32",
+      "value": 0,
+      "minimum": -10000,
+      "maximum": 10000
+    },
+    {
+      "id": "WT_DIRECTION_X",
+      "label": "Beam propagation world X",
+      "type": "Float32",
+      "value": 0,
+      "minimum": -1,
+      "maximum": 1
+    },
+    {
+      "id": "WT_DIRECTION_Y",
+      "label": "Beam propagation world Y",
+      "type": "Float32",
+      "value": 0,
+      "minimum": -1,
+      "maximum": 1
+    },
+    {
+      "id": "WT_DIRECTION_Z",
+      "label": "Beam propagation world Z",
+      "type": "Float32",
+      "value": 1,
+      "minimum": -1,
+      "maximum": 1
+    },
+    {
+      "id": "WT_SCREEN_TOLERANCE_MILLIMETERS",
+      "label": "Screen coplanarity tolerance (mm)",
+      "type": "Float32",
+      "value": 0.1,
+      "minimum": 0.001,
+      "maximum": 10
+    },
+    {
+      "id": "WT_PEAK_IRRADIANCE",
+      "label": "Authored Gaussian illuminator peak irradiance",
+      "type": "Float32",
+      "value": 1,
+      "minimum": 0,
+      "maximum": 10000
+    }
+  ]
+}

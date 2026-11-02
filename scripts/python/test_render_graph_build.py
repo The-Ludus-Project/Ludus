@@ -725,6 +725,29 @@ class BuildTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'not delimited'):
             isolate_metal_ray_queries(helper[:helper.rindex('}')])
 
+    def test_translated_metal_preserves_spirv_dontinline_controls(self):
+        import sys
+        import struct
+        sys.path.insert(0, str(ROOT / 'cmake/shaders'))
+        from compile_graph_stage import restore_spirv_metal_noinline
+        encoded = b'TraceWave\0'
+        encoded += b'\0' * ((-len(encoded)) % 4)
+        name_words = struct.unpack('<' + 'I' * (len(encoded) // 4), encoded)
+        words = [0x07230203, 0x00010300, 0, 5, 0,
+                 ((2 + len(name_words)) << 16) | 5, 2, *name_words,
+                 (5 << 16) | 54, 1, 2, 2, 3]
+        module = struct.pack('<' + 'I' * len(words), *words)
+        prefix = 'static inline __attribute__((always_inline))\n'
+        code = prefix + 'uint TraceWave(uint value)\n{\nreturn value;\n}\n'
+        unrelated = prefix + 'uint Shade(uint value)\n{\nreturn value;\n}\n'
+        result = restore_spirv_metal_noinline(code + unrelated, module)
+        self.assertIn('__attribute__((noinline))\nuint TraceWave(', result)
+        self.assertIn(prefix + 'uint Shade(', result)
+        with self.assertRaisesRegex(RuntimeError, 'missing or ambiguous'):
+            restore_spirv_metal_noinline(unrelated, module)
+        with self.assertRaisesRegex(RuntimeError, 'Malformed'):
+            restore_spirv_metal_noinline(code, b'bad')
+
     def test_forward_metal_arrays_are_opt_in_and_independently_sized(self):
         import sys
         sys.path.insert(0, str(ROOT / 'cmake/shaders'))
