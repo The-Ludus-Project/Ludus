@@ -4969,7 +4969,11 @@ exposure and display conversion. The offline plan retains the Accumulate operati
 and its resource version; the GPU backend fuses it into its producing ray dispatch.
 It does not average quantized RGBA8 pixels or allocate an extra display pass.
 It accepts ray output, including the final ray output of a subgraph or a persistent
-sequence. Raster inputs and already accumulated images are rejected. The input
+sequence. Raster inputs and already accumulated images are rejected; a second
+running mean would overweight early frames. When a subgraph output already passes
+through its own Accumulate, the diagnostic names that node: clear **Enabled** on
+the outer Accumulate, or remove the inner one so its ray output reaches the outer
+node. The input
 version belongs to this operation: route its other consumers through its output.
 For simultaneous raw and averaged images, author separate ray targets.
 
