@@ -432,7 +432,13 @@ renderer/GPU/ray labels and explicit unsupported-adapter skips remain available.
 Each reference-compute or graph lifecycle/capture case has a 300-second deadline;
 each template case has a
 600-second deadline for its convergence captures. Polygon sampling, Metropolis
-and physical-optics parity also have separate named tests. The numerical and
+and physical-optics parity also have separate named tests. Metropolis parity has
+a 300-second case deadline, allowing its material/estimator variants to share
+the cold shader setup. Its readiness helper yields between polls and allows
+120 seconds for cold shader/pipeline preparation and the first submission;
+buffer readiness and readback retain their 30-second bounds. Failed readiness
+reports the operation, status, elapsed time and deadline, and retires the RHI
+even when a test assertion aborts the case. The numerical and
 image assertions are unchanged by this partition.
 
 These correctness deadlines include shader preparation on software adapters.

@@ -340,7 +340,7 @@ if(TARGET ludus_rhi_render_tests)
     set_tests_properties(ludus_renderer_polygon_sampling_parity
         PROPERTIES LABELS "renderer;gpu" TIMEOUT 300)
     set_tests_properties(ludus_renderer_metropolis_parity
-        PROPERTIES LABELS "renderer;gpu" TIMEOUT 180)
+        PROPERTIES LABELS "renderer;gpu" TIMEOUT 300)
     if(APPLE)
         set_property(TEST ludus_renderer_pixels ludus_renderer_polygon_sampling_parity
             ludus_renderer_metropolis_parity ludus_renderer_physical_optics_parity APPEND PROPERTY LABELS macos)
