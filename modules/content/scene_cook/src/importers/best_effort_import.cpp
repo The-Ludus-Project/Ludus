@@ -26,7 +26,7 @@
 
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
-#include <ludus/foundation/parsing/json.hpp>
+#include <ludus/foundation/parsing/parsing.hpp>
 
 namespace ludus::content::scene_cook
 {
