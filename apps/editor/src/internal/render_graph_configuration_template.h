@@ -96,7 +96,8 @@ PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
 /// payload and larger budgets are retained. Requires a Metal or Vulkan profile. Authored shader bytes are never
 /// replaced: source/program collisions, unsupported scene interface versions and capacity limits report a repair.
 /// Caller owns/discards the snapshot; GUI thread; no disk writes.
-/// wave-tracing imports four compute-BVH passes and a render-size hit Buffer under wave_tracing/.
+/// wave-tracing imports four compute-BVH passes and a render-size hit Buffer under wave_tracing/: scene optical
+/// surface paths, a matched geometric comparison and scalar connection transmission.
 [[nodiscard]] RenderGraphDocumentStatus
 PrepareComputeRayTracingConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                       const QString& rootGraph,

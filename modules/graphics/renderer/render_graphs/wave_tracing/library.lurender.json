@@ -33,9 +33,9 @@
           "required": false
         },
         {
-          "id": "aperture",
+          "id": "transmission",
           "type": "ColorTexture",
-          "source": "measureAperture.color",
+          "source": "measureTransmission.color",
           "required": false
         }
       ],
@@ -228,7 +228,7 @@
         {
           "extent": "RenderSize",
           "format": "RGBA8Unorm",
-          "id": "aperture",
+          "id": "transmission",
           "imported": false,
           "initialized": false,
           "kind": "Target",
@@ -237,7 +237,7 @@
           "type": "ColorTexture"
         },
         {
-          "id": "measureAperture",
+          "id": "measureTransmission",
           "kind": "ComputePipeline",
           "inputs": [
             {
@@ -283,7 +283,7 @@
             {
               "id": "compute",
               "stage": "compute",
-              "program": "MeasureAperture"
+              "program": "MeasureTransmission"
             }
           ],
           "state": {},
@@ -357,19 +357,19 @@
         },
         {
           "from": "input.scene",
-          "to": "measureAperture.scene"
+          "to": "measureTransmission.scene"
         },
         {
           "from": "input.view",
-          "to": "measureAperture.view"
+          "to": "measureTransmission.view"
         },
         {
-          "from": "aperture.texture",
-          "to": "measureAperture.color"
+          "from": "transmission.texture",
+          "to": "measureTransmission.color"
         },
         {
           "from": "shadeGeometric.hits",
-          "to": "measureAperture.hits"
+          "to": "measureTransmission.hits"
         },
         {
           "from": "renderSize.size",
@@ -377,7 +377,7 @@
         },
         {
           "from": "renderSize.size",
-          "to": "aperture.size"
+          "to": "transmission.size"
         }
       ]
     }

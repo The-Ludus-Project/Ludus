@@ -1,3 +1,4 @@
+#include "../shaders/wave_scene_layout.h"
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/scene_shader_layout.h>
 
@@ -38,6 +39,10 @@ static_assert(ToCode(RenderGraphFailureReason::BsdfOnlyLights) == LUDUS_SCENE_FA
 static_assert(ToCode(RenderGraphFailureReason::PrimaryMaterial) == LUDUS_SCENE_FAILURE_PRIMARY_MATERIAL);
 static_assert(ToCode(RenderGraphFailureReason::WaveDirection) == LUDUS_SCENE_FAILURE_WAVE_DIRECTION);
 static_assert(ToCode(RenderGraphFailureReason::WaveResolution) == LUDUS_SCENE_FAILURE_WAVE_RESOLUTION);
+static_assert(ToCode(RenderGraphFailureReason::WaveCapacity) == LUDUS_SCENE_FAILURE_WAVE_CAPACITY);
+static_assert(ToCode(RenderGraphFailureReason::WavePropagationCapacity) ==
+              LUDUS_SCENE_FAILURE_WAVE_PROPAGATION_CAPACITY);
+static_assert(ToCode(RenderGraphFailureReason::WaveConnection) == LUDUS_SCENE_FAILURE_WAVE_CONNECTION);
 static_assert(ToCode(RenderGraphFailureReason::GeometrySamplingLights) == LUDUS_SCENE_FAILURE_GEOMETRY_SAMPLING_LIGHTS);
 static_assert(ToCode(RenderGraphFailureReason::GeometryStatisticsCapacity) ==
               LUDUS_SCENE_FAILURE_GEOMETRY_STATISTICS_CAPACITY);
@@ -61,6 +66,15 @@ const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
     }
     switch (static_cast<RenderGraphFailureReason>(reason))
     {
+        case RenderGraphFailureReason::WaveCapacity:
+            return "The optical connection exceeds its region workspace. Reduce wavelength to narrow the probe or use "
+                   "the geometric output; no partial field was accepted.";
+        case RenderGraphFailureReason::WavePropagationCapacity:
+            return "The optical connection crosses too many successive regions. Increase wavelength to widen the "
+                   "interaction depth or shorten the connection; no partial field was accepted.";
+        case RenderGraphFailureReason::WaveConnection:
+            return "The optical connection needs a finite positive distance and wavelength no greater than distance / "
+                   "32. Reduce wavelength or move coincident light and surface endpoints apart.";
         case RenderGraphFailureReason::WaveDirection:
             return "The Gaussian illuminator has a zero propagation direction. Set at least one WT_DIRECTION_X, "
                    "WT_DIRECTION_Y or WT_DIRECTION_Z component to a nonzero value in Graph settings.";

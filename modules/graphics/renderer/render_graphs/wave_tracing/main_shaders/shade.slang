@@ -1,79 +1,69 @@
 #include "hit_record.slang"
-#include "wave.slang"
+// Scene optical renderer: truncated RGB surface paths with coherent, scalar paraxial finite-light connections.
+// Thanks to Steinberg and Pharr, "Wave Tracing: Generalizing The Path Integral To Wave Optics", CGF45(2),
+// e70322 (2026), Sections3.1 and4.2, https://doi.org/10.1111/cgf.70322 . See wave_connection.cpp for the
+// Gaussian connection integral and angular-spectrum departure from their Fraunhofer/UTD operators.
+// All geometry, lights, textures and supported typed reflection materials come from the current World.
+// Each surface path samples light endpoints only by NEE. Secondary emitter/environment hits are omitted,
+// so the scalar optical visibility and classical continuation visibility cannot receive inconsistent MIS.
+static const float WAVE_METRES_PER_NANOMETRE = 0.000000001;
+static const float WAVE_MAXIMUM_TRACE_DISTANCE_WORLD = 2000000;
+static const uint WAVE_VERTEX_LIMIT = 8;
+static const uint WAVE_RANDOM_VERTEX_STRIDE = 8;
+static const uint WAVE_LIGHT_SHAPE_FIRST = 1;
+static const uint WAVE_CONTINUATION_FIRST = 4;
+static const uint WAVE_MATERIAL_RANDOM_SCOPE = 0x57415645;
 
-// Scalar Fresnel thin-screen specialization of Steinberg and Pharr (2026), Section 3.1's bilinear path integral.
-// The authored Gaussian illuminator is a coherent waist field on a selected plane. Only World triangles coplanar
-// with that plane form the opaque mask, as a union; a hole must be real mesh geometry, not an alpha texture.
-// All open midpoint cells contribute complex fields, so cross terms survive between different aperture regions.
-// Primary camera visibility and receiver materials come from the current World; no CPU transport is uploaded.
-// Other scene lights, multiple screens, reflected/transmitted wave paths, polarization and UTD are outside this
-// profile. Cost: Resolution^2 * World triangle count per receiving pixel. Intended for small diffraction experiments.
-static const float WORLD_UNITS_PER_MILLIMETER = 0.001;
-static const float FRAME_HELPER_COSINE = 0.9;
-
-struct ApertureFrame
+CoatingRandomContext MakeWaveMaterialRandom(RayLaunch launch, uint depth)
 {
-    float3 OriginWorld;
-    float3 DirectionWorld;
-    float3 AxisXWorld;
-    float3 AxisYWorld;
-};
-
-ApertureFrame MakeApertureFrame()
-{
-    ApertureFrame frame;
-    frame.OriginWorld = float3(WT_SCREEN_X, WT_SCREEN_Y, WT_SCREEN_Z);
-    frame.DirectionWorld = normalize(float3(WT_DIRECTION_X, WT_DIRECTION_Y, WT_DIRECTION_Z));
-    float3 helperWorld = abs(frame.DirectionWorld.y) < FRAME_HELPER_COSINE ? float3(0, 1, 0) : float3(1, 0, 0);
-    frame.AxisXWorld = normalize(cross(helperWorld, frame.DirectionWorld));
-    frame.AxisYWorld = cross(frame.DirectionWorld, frame.AxisXWorld);
-    return frame;
+    CoatingRandomContext result;
+    result.Key = launch.Seed;
+    result.Address = MakeRandomAddress(
+        uint2(launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x, WAVE_MATERIAL_RANDOM_SCOPE),
+        launch.SampleIndex,
+        depth);
+    return result;
 }
-
-float3 TransformToApertureWorld(ApertureFrame frame, float3 positionWorld)
+float EvaluateOpticalVisibility(SceneContext scene,
+                                SurfaceHit receiver,
+                                LightSample light,
+                                inout RayQueryContext queries)
 {
-    float3 offsetWorld = positionWorld - frame.OriginWorld;
-    return float3(dot(offsetWorld, frame.AxisXWorld),
-                  dot(offsetWorld, frame.AxisYWorld),
-                  dot(offsetWorld, frame.DirectionWorld));
-}
-
-/// The entire triangle must lie in the authored coplanarity slab. Remote receiver geometry is not a screen.
-float EvaluateApertureTransmission(SceneContext scene, ApertureFrame frame, float2 positionApertureWorld)
-{
-    float toleranceWorld = WT_SCREEN_TOLERANCE_MILLIMETERS * WORLD_UNITS_PER_MILLIMETER;
-    uint triangleCount = GetSceneInfo(scene).TriangleCount;
-    for (uint index = 0; index < triangleCount; ++index)
+    if (light.HasFiniteEndpoint == false)
+        return TestVisibility(scene, queries, receiver, light) == SCENE_QUERY_MISS ? 1 : 0;
+    if (queries.VisibilityQueries >= queries.MaximumVisibilityQueries)
     {
-        TriangleData triangle = GetTriangle(scene, index);
-        float3 firstApertureWorld = TransformToApertureWorld(frame, triangle.Position0World);
-        float3 secondApertureWorld = TransformToApertureWorld(frame, triangle.Position1World);
-        float3 thirdApertureWorld = TransformToApertureWorld(frame, triangle.Position2World);
-        if (abs(firstApertureWorld.z) > toleranceWorld || abs(secondApertureWorld.z) > toleranceWorld ||
-            abs(thirdApertureWorld.z) > toleranceWorld)
-            continue;
-        if (IsWavePointCovered(positionApertureWorld,
-                               firstApertureWorld.xy,
-                               secondApertureWorld.xy,
-                               thirdApertureWorld.xy) == true)
-            return 0;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET);
+        return 0;
     }
-    return 1;
+    queries.VisibilityQueries += 1;
+    Ray shadow = SpawnSurfaceRay(receiver, light.DirectionWorld, 0);
+    float3 sourceWorld = light.PositionWorld;
+    if (light.TriangleIndex != SCENE_INVALID_INDEX)
+        sourceWorld = OffsetPositionWorld(sourceWorld, light.TriangleIndex, -light.DirectionWorld);
+    float3 deltaWorld = shadow.OriginWorld - sourceWorld;
+    float distanceWorld = length(deltaWorld);
+    float2 field = float2(0);
+    uint status = EvaluateWaveConnectionToReceiver(scene,
+                                                   sourceWorld,
+                                                   shadow.OriginWorld,
+                                                   deltaWorld / distanceWorld,
+                                                   distanceWorld,
+                                                   WT_WAVELENGTH_NANOMETERS * WAVE_METRES_PER_NANOMETRE,
+                                                   field);
+    if (status != WAVE_QUERY_READY)
+    {
+        FailSceneQuery(queries,
+                       status == WAVE_QUERY_CAPACITY
+                           ? LUDUS_SCENE_FAILURE_WAVE_CAPACITY
+                           : ((status == WAVE_QUERY_PROPAGATION_CAPACITY || status == WAVE_QUERY_ESCAPE_CAPACITY)
+                                  ? LUDUS_SCENE_FAILURE_WAVE_PROPAGATION_CAPACITY
+                                  : LUDUS_SCENE_FAILURE_WAVE_CONNECTION));
+        return 0;
+    }
+    return dot(field, field);
 }
-
-ScalarWaveAperture MakeWaveAperture()
-{
-    ScalarWaveAperture aperture;
-    aperture.WavelengthWorld = WT_WAVELENGTH_MILLIMETERS * WORLD_UNITS_PER_MILLIMETER;
-    float2 radiusWorld = float2(WT_SIGMA_X_MILLIMETERS, WT_SIGMA_Y_MILLIMETERS) * WORLD_UNITS_PER_MILLIMETER;
-    aperture.SigmaWorldSquared = radiusWorld * radiusWorld;
-    aperture.HalfExtentWorld =
-        float2(WT_HALF_WIDTH_MILLIMETERS, WT_HALF_HEIGHT_MILLIMETERS) * WORLD_UNITS_PER_MILLIMETER;
-    aperture.Resolution = WT_RESOLUTION;
-    return aperture;
-}
-
-float3 EvaluateWaveReceiver(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, uint mode)
+float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, uint mode)
 {
     HitRecord record;
     if (HasHitRecordCapacity(launch) == false || TryLoadHitRecord(scene, launch, record) == false)
@@ -81,78 +71,93 @@ float3 EvaluateWaveReceiver(SceneContext scene, RayLaunch launch, inout RayQuery
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_STORED_RECORD);
         return float3(0);
     }
-    Ray cameraRay = MakeCameraRay(launch, record.JitterPixel);
+    Ray ray = MakeCameraRay(launch, record.JitterPixel);
     if (record.IsHit == false)
-        return EvaluateEnvironment(scene, cameraRay.DirectionWorld);
-    SurfaceHit hit = GetSurfaceHit(scene, record.TriangleIndex, record.Barycentric);
-    hit.IncomingRay = cameraRay;
-    hit.DistanceWorld = record.DistanceWorld;
-    hit.IsFrontFace = record.IsFrontFace;
-    MaterialSample material = EvaluateMaterial(scene, hit);
-    float3 directionWorld = float3(WT_DIRECTION_X, WT_DIRECTION_Y, WT_DIRECTION_Z);
-    if (dot(directionWorld, directionWorld) == 0)
+        return mode == 2 ? float3(0) : EvaluateEnvironment(scene, ray.DirectionWorld);
+    if (WT_PATH_VERTICES == 0 || WT_PATH_VERTICES > WAVE_VERTEX_LIMIT)
     {
-        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_WAVE_DIRECTION);
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SURFACE_BUDGET);
         return float3(0);
     }
-    ApertureFrame frame = MakeApertureFrame();
-    float3 receiverApertureWorld = TransformToApertureWorld(frame, hit.PositionWorld);
-    float toleranceWorld = WT_SCREEN_TOLERANCE_MILLIMETERS * WORLD_UNITS_PER_MILLIMETER;
-    if (receiverApertureWorld.z <= toleranceWorld)
-        return material.Emission;
-    ScalarWaveAperture aperture = MakeWaveAperture();
-    if (mode == 2)
-        return float3(EvaluateApertureTransmission(scene, frame, receiverApertureWorld.xy));
-    float irradiance = 0;
-    if (mode == 1)
+    SurfaceHit hit = GetSurfaceHit(scene, record.TriangleIndex, record.Barycentric);
+    hit.IncomingRay = ray;
+    hit.DistanceWorld = record.DistanceWorld;
+    hit.IsFrontFace = record.IsFrontFace;
+    float3 radiance = mode == 2 ? float3(0) : EvaluateEmission(scene, hit, -ray.DirectionWorld);
+    float3 throughput = float3(1);
+    for (uint depth = 0; depth < WT_PATH_VERTICES; ++depth)
     {
-        bool isInside = all(abs(receiverApertureWorld.xy) <= aperture.HalfExtentWorld) == true;
-        irradiance =
-            isInside == true
-                ? EvaluateApertureTransmission(scene, frame, receiverApertureWorld.xy) *
-                      exp(-dot(receiverApertureWorld.xy * receiverApertureWorld.xy, 1 / aperture.SigmaWorldSquared))
-                : 0;
-    }
-    else
-    {
-        if (CanResolveWavePhase(aperture, receiverApertureWorld) == false)
+        float3 viewWorld = -ray.DirectionWorld;
+        MaterialSample material = EvaluateMaterial(scene, hit);
+        if (material.IsValid == false)
         {
-            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_WAVE_RESOLUTION);
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
             return float3(0);
         }
-        float2 field = float2(0);
-        float2 compensation = float2(0);
-        for (uint y = 0; y < aperture.Resolution; ++y)
+        if (dot(material.ShadingNormalWorld, viewWorld) < 0)
+            material.ShadingNormalWorld = -material.ShadingNormalWorld;
+        float3 geometricNormalWorld =
+            dot(hit.GeometricNormalWorld, viewWorld) < 0 ? -hit.GeometricNormalWorld : hit.GeometricNormalWorld;
+        uint dimension = SHADE_RANDOM_DIMENSION_FIRST + depth * WAVE_RANDOM_VERTEX_STRIDE;
+        SelectedLight selected = SelectLight(scene, launch, dimension);
+        if (selected.HasSample == true)
         {
-            for (uint x = 0; x < aperture.Resolution; ++x)
+            float3 shapeSample = float3(SampleSceneRandom(launch, dimension + WAVE_LIGHT_SHAPE_FIRST),
+                                        SampleSceneRandom(launch, dimension + WAVE_LIGHT_SHAPE_FIRST + 1),
+                                        SampleSceneRandom(launch, dimension + WAVE_LIGHT_SHAPE_FIRST + 2));
+            LightSample light = SampleIncidentLight(scene, selected, hit, shapeSample);
+            float probability = light.SelectionPmf * light.ConditionalPdf;
+            float cosine = dot(material.ShadingNormalWorld, light.DirectionWorld);
+            if (light.HasSample == true && probability > 0 && cosine > 0 &&
+                dot(geometricNormalWorld, light.DirectionWorld) > 0 && any(light.IncidentCoefficient > 0) == true)
             {
-                float2 positionApertureWorld = GetWaveCellPosition(aperture, uint2(x, y));
-                float transmission = EvaluateApertureTransmission(scene, frame, positionApertureWorld);
-                float2 contribution =
-                    transmission * EvaluateWaveCell(aperture, positionApertureWorld, receiverApertureWorld);
-                float2 corrected = contribution - compensation;
-                float2 sum = field + corrected;
-                compensation = (sum - field) - corrected;
-                field = sum;
+                float3 value;
+                float pdf;
+                EvaluateStandardBsdf(material,
+                                     viewWorld,
+                                     light.DirectionWorld,
+                                     MakeWaveMaterialRandom(launch, depth),
+                                     value,
+                                     pdf);
+                float transmission = mode == 1
+                                         ? (TestVisibility(scene, queries, hit, light) == SCENE_QUERY_MISS ? 1 : 0)
+                                         : EvaluateOpticalVisibility(scene, hit, light, queries);
+                if (mode == 2)
+                    return float3(transmission);
+                radiance += throughput * value * light.IncidentCoefficient * (cosine * transmission / probability);
             }
         }
-        irradiance = dot(field, field);
+        if (mode == 2 || depth + 1 == WT_PATH_VERTICES)
+            break;
+        float3 samples = float3(SampleSceneRandom(launch, dimension + WAVE_CONTINUATION_FIRST),
+                                SampleSceneRandom(launch, dimension + WAVE_CONTINUATION_FIRST + 1),
+                                SampleSceneRandom(launch, dimension + WAVE_CONTINUATION_FIRST + 2));
+        StandardBsdfTransportSample continuation =
+            SampleStandardBsdfTransport(material, viewWorld, samples, MakeWaveMaterialRandom(launch, depth));
+        if (continuation.HasSample == false || dot(geometricNormalWorld, continuation.DirectionWorld) <= 0)
+            break;
+        throughput *= continuation.Weight;
+        ray = SpawnSurfaceRay(hit, continuation.DirectionWorld, WAVE_MAXIMUM_TRACE_DISTANCE_WORLD);
+        uint query = TraceClosest(scene, queries, ray, hit);
+        if (query != SCENE_QUERY_SURFACE)
+            break;
     }
-    // Lambertian receiver, monochromatic irradiance displayed in neutral RGB. No invented scene light is added;
-    // the Gaussian illuminator's authored peak controls the only source used by this experimental profile.
-    float cosine = abs(dot(hit.GeometricNormalWorld, frame.DirectionWorld));
-    return material.Emission + material.BaseColor * (WT_PEAK_IRRADIANCE * irradiance * cosine / PI);
+    if (all(isfinite(radiance)) == false || any(radiance < 0) == true)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
+        return float3(0);
+    }
+    return radiance;
 }
-
 float3 ShadeWave(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
-    return EvaluateWaveReceiver(scene, launch, queries, 0);
+    return TraceOpticalSurfacePath(scene, launch, queries, 0);
 }
 float3 ShadeGeometric(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
-    return EvaluateWaveReceiver(scene, launch, queries, 1);
+    return TraceOpticalSurfacePath(scene, launch, queries, 1);
 }
-float3 MeasureAperture(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
+float3 MeasureTransmission(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
-    return EvaluateWaveReceiver(scene, launch, queries, 2);
+    return TraceOpticalSurfacePath(scene, launch, queries, 2);
 }

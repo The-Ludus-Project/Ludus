@@ -11,3 +11,13 @@
     (LUDUS_WAVE_PARITY_HEADER_RECORDS +                                                                                \
      LUDUS_WAVE_PARITY_RESOLUTION * LUDUS_WAVE_PARITY_RESOLUTION / LUDUS_WAVE_PARITY_COMPONENTS)
 #define LUDUS_WAVE_PARITY_RESULT_RECORDS 2
+
+// Cone mode: origin/radius, direction/slope, axis/tag, aspect/near/far/reserved, three triangle vertices.
+#define LUDUS_WAVE_PARITY_CONE_TAG 0x434f4e45
+
+#define LUDUS_WAVE_PARITY_REGION_TAG 0x5245474e
+#define LUDUS_WAVE_PARITY_REGION_CONE_FIRST 4
+#define LUDUS_WAVE_PARITY_REGION_CONE_RECORDS 4
+#define LUDUS_WAVE_PARITY_REGION_HASH_FACTOR 1664525
+
+#define LUDUS_WAVE_PARITY_CONNECTION_TAG 0x434f4e4e

@@ -12,7 +12,7 @@
 namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
-/// and authored primary triangle ray functions with flat opaque World inputs.
+/// and authored ray functions over immutable scene geometry, materials and lighting.
 inline constexpr foundation::uint32 VERSION = 14;
 /// Opt-in portable raster ABI: static inputs plus primitive halves and draw/instance references.
 inline constexpr foundation::usize VISIBILITY_INPUT_COUNT = 8;
@@ -22,10 +22,10 @@ inline constexpr foundation::usize MAX_PASSES = 16;
 inline constexpr foundation::usize MAX_RESOURCES = 32;
 /// Maximum camera inputs per plan; indices are stable within its generation.
 inline constexpr foundation::usize MAX_CAMERAS = 8;
-/// Largest supported scene extraction in this initial profile.
-inline constexpr foundation::usize MAX_ITEMS = 128;
+/// Largest live draw extraction; admits the current imported scene profile. Setup byte budgets remain separate.
+inline constexpr foundation::usize MAX_ITEMS = 1024;
 /// Largest supported mesh table in one scene replacement.
-inline constexpr foundation::usize MAX_MESHES = 32;
+inline constexpr foundation::usize MAX_MESHES = 256;
 /// Legacy program roles, including the one ray role; their numeric IDs remain stable.
 inline constexpr foundation::usize LEGACY_TECHNIQUE_COUNT = 5;
 /// Maximum authored techniques, matching the build-manifest configuration bound.

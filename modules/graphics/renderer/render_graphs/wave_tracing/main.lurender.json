@@ -52,7 +52,7 @@
           "type": "ColorTexture"
         },
         {
-          "id": "apertureOutput",
+          "id": "transmissionOutput",
           "kind": "Export",
           "type": "ColorTexture"
         },
@@ -83,7 +83,7 @@
           "exposure": 1
         },
         {
-          "id": "accumulateAperture",
+          "id": "accumulateTransmission",
           "kind": "Accumulate",
           "samples": 64
         }
@@ -134,12 +134,12 @@
           "to": "geometricOutput.texture"
         },
         {
-          "from": "transport.aperture",
-          "to": "accumulateAperture.color"
+          "from": "transport.transmission",
+          "to": "accumulateTransmission.color"
         },
         {
-          "from": "accumulateAperture.color",
-          "to": "apertureOutput.texture"
+          "from": "accumulateTransmission.color",
+          "to": "transmissionOutput.texture"
         }
       ]
     }

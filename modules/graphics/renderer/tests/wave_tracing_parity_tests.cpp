@@ -1,9 +1,12 @@
+#include "../src/internal/wave_connection.h"
+#include "../src/internal/wave_scene_queries.h"
 #include "wave_tracing_parity.h"
 #include "wave_tracing_parity_layout.h"
 #include <catch2/catch_test_macros.hpp>
 #include <cstring>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/elliptical_cone.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/wave_tracing.hpp>
@@ -244,5 +247,256 @@ TEST_CASE("Scalar wave transport and beam propagation match the CPU oracle on GP
         // float32 tau and Metal reciprocal rounding contribute up to three ulps to the covariance.
         CHECK(math::Abs(ReadFloat(results, resultBase + 6) - moments.CovarianceX) < 2e-7);
         CHECK(math::Abs(ReadFloat(results, resultBase + 7) - moments.CovarianceY) < 2e-7);
+    }
+}
+
+TEST_CASE("Elliptical cone GPU extrema match the independent float64 oracle",
+          "[renderer][gpu][elliptical-cone][parity]")
+{
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    Array<uint32> words;
+    REQUIRE(words.TryResize(CASE_WORDS, uint32{0}) == true);
+    // Rotate an oblique triangle through the beam footprint, exercising plane and edge extrema,
+    // cylindrical and opening envelopes, nonzero origins, clipping and misses.
+    for (usize batch = 0; batch < 8; ++batch)
+    {
+        rhi::Shutdown();
+        for (usize index = 0; index < CASE_COUNT; ++index)
+        {
+            const usize base = index * LUDUS_WAVE_PARITY_CASE_RECORDS * WORDS_PER_RECORD;
+            const float64 angle = static_cast<float64>(batch * CASE_COUNT + index) * 0.37;
+            WriteFloat(base, words, 2);
+            WriteFloat(base + 1, words, -3);
+            WriteFloat(base + 2, words, 1);
+            WriteFloat(base + 3, words, batch % 2 == 0 ? 0.2 : 0);
+            WriteFloat(base + 4, words, 0);
+            WriteFloat(base + 5, words, 0);
+            WriteFloat(base + 6, words, 1);
+            WriteFloat(base + 7, words, batch % 3 == 0 ? 0 : 0.1);
+            WriteFloat(base + 8, words, math::Cos(angle));
+            WriteFloat(base + 9, words, math::Sin(angle));
+            WriteFloat(base + 10, words, 0);
+            words[base + 11] = LUDUS_WAVE_PARITY_CONE_TAG;
+            WriteFloat(base + 12, words, batch % 2 == 0 ? 0.25 : 1);
+            WriteFloat(base + 13, words, 0.1);
+            WriteFloat(base + 14, words, 8);
+            const float64 offset = static_cast<float64>(index) * 0.1;
+            WriteFloat(base + 16, words, 1.5 + offset);
+            WriteFloat(base + 17, words, -4);
+            WriteFloat(base + 18, words, 2);
+            WriteFloat(base + 20, words, 2.5 + offset);
+            WriteFloat(base + 21, words, -4);
+            WriteFloat(base + 22, words, 4);
+            WriteFloat(base + 24, words, 2 + offset);
+            WriteFloat(base + 25, words, -2);
+            WriteFloat(base + 26, words, 3);
+        }
+        Array<uint32> results;
+        if (RunParityKernel(words, results) == false)
+        {
+            SKIP("GPU adapter unavailable");
+        }
+        for (usize index = 0; index < CASE_COUNT; ++index)
+        {
+            INFO("batch " << batch << " case " << index);
+            const usize base = index * LUDUS_WAVE_PARITY_CASE_RECORDS * WORDS_PER_RECORD;
+            const auto readVector = [&](usize position) {
+                return math::Vector3d{ReadFloat(words, base + position),
+                                      ReadFloat(words, base + position + 1),
+                                      ReadFloat(words, base + position + 2)};
+            };
+            math::EllipticalCone cone;
+            cone.OriginWorld = readVector(0);
+            cone.RadiusWorld = ReadFloat(words, base + 3);
+            cone.DirectionWorld = readVector(4);
+            cone.Slope = ReadFloat(words, base + 7);
+            cone.AxisXWorld = readVector(8);
+            cone.MinorToMajor = ReadFloat(words, base + 12);
+            cone.NearWorld = ReadFloat(words, base + 13);
+            cone.FarWorld = ReadFloat(words, base + 14);
+            const math::ConeTriangle triangle{readVector(16), readVector(20), readVector(24)};
+            math::ConeTriangleIntersection intersection;
+            REQUIRE(math::TryIntersectEllipticalConeTriangle(cone, triangle, intersection) == true);
+            const usize destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS * WORDS_PER_RECORD;
+            REQUIRE(ReadFloat(results, destination + 3) == 1);
+            REQUIRE((ReadFloat(results, destination + 2) == 1) == intersection.IsHit);
+            if (intersection.IsHit == true)
+            {
+                CHECK(math::Abs(ReadFloat(results, destination) - intersection.NearWorld) < 2e-4);
+                CHECK(math::Abs(ReadFloat(results, destination + 1) - intersection.FarWorld) < 2e-4);
+                const math::Vector3d barycentric{ReadFloat(results, destination + 4),
+                                                 ReadFloat(results, destination + 5),
+                                                 ReadFloat(results, destination + 6)};
+                const math::Vector3d pointWorld = triangle.FirstWorld * barycentric.X +
+                                                  triangle.SecondWorld * barycentric.Y +
+                                                  triangle.ThirdWorld * barycentric.Z;
+                CHECK(math::Abs(math::Dot(pointWorld - cone.OriginWorld, cone.DirectionWorld) -
+                                intersection.NearWorld) < 2e-4);
+            }
+        }
+    }
+}
+
+TEST_CASE("Wave region GPU traversal matches the CPU scene BVH", "[renderer][gpu][wave-region][parity]")
+{
+    namespace internal = ludus::graphics::renderer::internal;
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    internal::ReferenceSceneData scene;
+    for (uint32 layer = 0; layer < 10; ++layer)
+    {
+        for (uint32 column = 0; column < 10; ++column)
+        {
+            internal::ReferenceTriangle triangle;
+            const float32 x = static_cast<float32>(column) * 0.3F - 1;
+            const float32 z = static_cast<float32>(layer) * 0.2F + 2;
+            triangle.Positions[0] = {x, -1, z};
+            triangle.Positions[1] = {x + 1, -1, z};
+            triangle.Positions[2] = {x, 1, z};
+            triangle.Area = 1;
+            triangle.GeometricNormal = {0, 0, 1};
+            REQUIRE(scene.Triangles.TryAdd(triangle) == true);
+        }
+    }
+    SECTION("Layered aperture regions") {}
+    SECTION("Grazing near-field wall")
+    {
+        internal::ReferenceTriangle wall;
+        wall.Positions[0] = {-0.001F, -1, 0};
+        wall.Positions[1] = {-0.001F, 1, 0};
+        wall.Positions[2] = {-0.001F, -1, 10};
+        wall.Area = 10;
+        wall.GeometricNormal = {1, 0, 0};
+        REQUIRE(scene.Triangles.TryAdd(wall) == true);
+        wall.Positions[0] = {-0.001F, 1, 0};
+        wall.Positions[1] = {-0.001F, 1, 10};
+        REQUIRE(scene.Triangles.TryAdd(wall) == true);
+    }
+    REQUIRE(internal::BuildReferenceBvh(scene) == RasterStatus::Ready);
+    Array<uint32> words;
+    REQUIRE(words.TryResize(CASE_WORDS, uint32{0}) == true);
+    const usize nodeFirst = LUDUS_WAVE_PARITY_REGION_CONE_FIRST + CASE_COUNT * LUDUS_WAVE_PARITY_REGION_CONE_RECORDS;
+    const usize triangleFirst = nodeFirst + scene.Nodes.GetSize() * 3;
+    const usize orderFirst = triangleFirst + scene.Triangles.GetSize() * 3;
+    REQUIRE(orderFirst * WORDS_PER_RECORD + scene.Order.GetSize() < CASE_WORDS);
+    words[0] = static_cast<uint32>(nodeFirst);
+    words[1] = static_cast<uint32>(scene.Nodes.GetSize());
+    words[2] = static_cast<uint32>(triangleFirst);
+    words[3] = LUDUS_WAVE_PARITY_REGION_TAG;
+    words[4] = static_cast<uint32>(orderFirst);
+    words[5] = static_cast<uint32>(scene.Triangles.GetSize());
+    const auto writeVector = [&](usize position, math::Vector3 value) {
+        WriteFloat(position, words, static_cast<float64>(value.X));
+        WriteFloat(position + 1, words, static_cast<float64>(value.Y));
+        WriteFloat(position + 2, words, static_cast<float64>(value.Z));
+    };
+    for (usize index = 0; index < scene.Nodes.GetSize(); ++index)
+    {
+        const internal::ReferenceBvhNode& node = scene.Nodes[index];
+        const usize base = (nodeFirst + index * 3) * WORDS_PER_RECORD;
+        writeVector(base, node.Bounds.Min);
+        writeVector(base + WORDS_PER_RECORD, node.Bounds.Max);
+        words[base + 3] = node.Left;
+        words[base + 7] = node.Right;
+        words[base + 8] = node.First;
+        words[base + 9] = node.Count;
+    }
+    for (usize index = 0; index < scene.Triangles.GetSize(); ++index)
+    {
+        for (usize corner = 0; corner < 3; ++corner)
+        {
+            writeVector((triangleFirst + index * 3 + corner) * WORDS_PER_RECORD,
+                        scene.Triangles[index].Positions[corner]);
+        }
+        words[orderFirst * WORDS_PER_RECORD + index] = scene.Order[index];
+    }
+    StaticArray<math::EllipticalCone, CASE_COUNT> cones;
+    for (usize index = 0; index < CASE_COUNT; ++index)
+    {
+        const usize base =
+            (LUDUS_WAVE_PARITY_REGION_CONE_FIRST + index * LUDUS_WAVE_PARITY_REGION_CONE_RECORDS) * WORDS_PER_RECORD;
+        WriteFloat(base, words, static_cast<float64>(index) * 0.17);
+        WriteFloat(base + 3, words, 0.2);
+        WriteFloat(base + 6, words, 1);
+        WriteFloat(base + 7, words, 0.02);
+        WriteFloat(base + 8, words, 1);
+        WriteFloat(base + 12, words, 0.3);
+        WriteFloat(base + 14, words, 10);
+        math::EllipticalCone& cone = cones[index];
+        cone.OriginWorld.X = ReadFloat(words, base);
+        cone.RadiusWorld = ReadFloat(words, base + 3);
+        cone.Slope = ReadFloat(words, base + 7);
+        cone.MinorToMajor = ReadFloat(words, base + 12);
+        cone.FarWorld = ReadFloat(words, base + 14);
+    }
+    Array<uint32> results;
+    if (RunParityKernel(words, results) == false)
+    {
+        SKIP("GPU adapter unavailable");
+    }
+    for (usize index = 0; index < CASE_COUNT; ++index)
+    {
+        INFO("region " << index);
+        internal::WaveInteractionRegion region;
+        REQUIRE(internal::FindWaveInteractionRegion(scene, cones[index], region) == RasterStatus::Ready);
+        const usize destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS * WORDS_PER_RECORD;
+        REQUIRE(results[destination + 3] == 0);
+        CHECK(results[destination + 2] == region.TriangleCount);
+        CHECK(math::Abs(ReadFloat(results, destination) - region.Frustum.NearWorld) < 2e-5);
+        CHECK(math::Abs(ReadFloat(results, destination + 1) - region.Frustum.FarWorld) < 2e-5);
+        uint32 hash = 0;
+        for (uint32 slot = 0; slot < region.TriangleCount; ++slot)
+        {
+            hash = hash * LUDUS_WAVE_PARITY_REGION_HASH_FACTOR + region.Triangles[slot];
+        }
+        CHECK(results[destination + 4] == hash);
+    }
+    // Run the same production connection propagator through these scene regions, including successive masks.
+    rhi::Shutdown();
+    words[3] = LUDUS_WAVE_PARITY_CONNECTION_TAG;
+    float64 wavelengthWorld = 0.01;
+    SECTION("Macroscopic diffraction lattice") {}
+    SECTION("Visible wavelength diffraction lattice")
+    {
+        wavelengthWorld = 550e-9;
+    }
+    for (usize index = 0; index < CASE_COUNT; ++index)
+    {
+        const usize base =
+            (LUDUS_WAVE_PARITY_REGION_CONE_FIRST + index * LUDUS_WAVE_PARITY_REGION_CONE_RECORDS) * WORDS_PER_RECORD;
+        WriteFloat(base + 15, words, wavelengthWorld);
+    }
+    REQUIRE(RunParityKernel(words, results) == true);
+    for (usize index = 0; index < CASE_COUNT; ++index)
+    {
+        INFO("connection " << index);
+        WaveField field;
+        const usize base =
+            (LUDUS_WAVE_PARITY_REGION_CONE_FIRST + index * LUDUS_WAVE_PARITY_REGION_CONE_RECORDS) * WORDS_PER_RECORD;
+        REQUIRE(internal::EvaluateWaveConnection(scene,
+                                                 cones[index].OriginWorld,
+                                                 cones[index].DirectionWorld,
+                                                 cones[index].FarWorld,
+                                                 ReadFloat(words, base + 15),
+                                                 field) == RasterStatus::Ready);
+        const usize destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS * WORDS_PER_RECORD;
+        REQUIRE(results[destination + 3] == 0);
+        CHECK(math::Abs(ReadFloat(results, destination) - field.Real) < 3e-4);
+        CHECK(math::Abs(ReadFloat(results, destination + 1) - field.Imaginary) < 3e-4);
+        CHECK(math::Abs(ReadFloat(results, destination + 2) - field.Real * field.Real -
+                        field.Imaginary * field.Imaginary) < 3e-4);
     }
 }

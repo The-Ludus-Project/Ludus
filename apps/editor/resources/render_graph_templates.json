@@ -146,11 +146,11 @@
     {
       "kind": "graph",
       "identity": "wave-tracing",
-      "label": "Wave tracing — scalar aperture diffraction",
+      "label": "Wave tracing — scene optical transport",
       "category": "ray-traced",
       "requirements": ["compute-ray-tracing"],
       "keywords": ["wave tracing", "steinberg", "pharr", "bilinear", "fresnel", "diffraction", "aperture", "gaussian", "coherent"],
-      "description": "Scalar thin-screen specialization of Steinberg and Pharr (2026). An authored coherent Gaussian illuminator diffracts through coplanar opaque World geometry. Exports wave, geometric and aperture images. Single wavelength, one planar screen, Lambertian receivers; no polarized or multi-region wave transport. Requires Metal or Vulkan compute."
+      "description": "Scene-capable scalar optical renderer inspired by Steinberg and Pharr (2026). Uses authored cameras, lights, textures and reflection materials, with Gaussian-mode diffraction through successive geometry-derived regions. Exports optical, geometric and transmission images. Paraxial scalar connections; no polarization or UTD. Requires Metal or Vulkan compute."
     },
     {
       "kind": "graph",
@@ -361,12 +361,12 @@
     {
       "kind": "snippet",
       "identity": "wave-tracing",
-      "label": "Wave tracing — scalar aperture diffraction",
+      "label": "Wave tracing — scene optical transport",
       "category": "lighting",
       "defaultConfiguration": "WaveTracing",
       "requirements": ["compute-ray-tracing"],
       "keywords": ["wave tracing", "steinberg", "pharr", "bilinear", "fresnel", "diffraction", "aperture", "gaussian", "coherent"],
-      "description": "Scalar thin-screen specialization of Steinberg and Pharr (2026). An authored coherent Gaussian illuminator diffracts through coplanar opaque World geometry. Exports wave, geometric and aperture images. Single wavelength, one planar screen, Lambertian receivers; no polarized or multi-region wave transport. Requires Metal or Vulkan compute."
+      "description": "Scene-capable scalar optical renderer inspired by Steinberg and Pharr (2026). Uses authored cameras, lights, textures and reflection materials, with Gaussian-mode diffraction through successive geometry-derived regions. Exports optical, geometric and transmission images. Paraxial scalar connections; no polarization or UTD. Requires Metal or Vulkan compute."
     },
     {
       "kind": "snippet",

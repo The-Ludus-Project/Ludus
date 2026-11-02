@@ -16,22 +16,22 @@ from ludus_tools.errors import ToolingError
 
 
 class WaveTracingTemplateTests(unittest.TestCase):
-    def test_template_exports_wave_geometric_and_aperture_using_compute(self):
+    def test_template_exports_wave_geometric_and_transmission_using_compute(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = graph.new_workspace(Path(temporary) / 'Wave', output='offscreen', renderer_static=True,
                                        profiles=('metal',), template='wave-tracing')
             plan = graph.compile_graph(root)
             passes = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
             self.assertEqual([operation['id'].rsplit('/', 1)[-1] for operation in passes],
-                             ['primary', 'shadeWave', 'shadeGeometric', 'measureAperture'])
+                             ['primary', 'shadeWave', 'shadeGeometric', 'measureTransmission'])
             self.assertFalse(ray.requires_native_queries(plan))
             self.assertTrue(all(operation['pipeline']['invocation']['traversal'] == 'ComputeBvh' for operation in passes))
             manifest = json.loads(root.with_name('main.lushader.json').read_text())
             build.validate_manifest(manifest)
             self.assertEqual(next(t for t in manifest['techniques'] if t['id'] == ray.TECHNIQUE)['scene_interface'],
-                             {'version': 1, 'surface_queries': 1, 'visibility_queries': 0})
+                             {'version': 1, 'surface_queries': 8, 'visibility_queries': 8})
             self.assertNotIn('tone_mapping', passes[-1])
-            self.assertIn('wave.slang', root.parent.joinpath('main_shaders/shade.slang').read_text())
+            self.assertIn('EvaluateWaveConnection', root.parent.joinpath('main_shaders/shade.slang').read_text())
 
     def test_editor_catalog_snippet_names_the_actual_library_configuration(self):
         root = Path(__file__).resolve().parents[2]
@@ -52,7 +52,8 @@ class WaveTracingTemplateTests(unittest.TestCase):
             shutil.copytree(source, installed / 'templates/wave_tracing')
             with patch.object(templates, '__file__', str(module)):
                 files = templates.template_files('wave-tracing', ('spirv',), graph)
-            self.assertIn('main_shaders/wave.slang', files)
+            self.assertIn('main_shaders/shade.slang', files)
+            self.assertNotIn('main_shaders/wave.slang', files)
             build.validate_manifest(json.loads(files['main.lushader.json']))
             arguments = build_parser().parse_args(['render-graph', 'new', 'Wave', '--template', 'wave-tracing',
                                                    '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])

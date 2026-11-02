@@ -7,11 +7,11 @@
 // When LUDUS_REFERENCE_BENCHMARK_OUTPUT names a directory, the last run's linear
 // radiance is published there as reference-{gpu,cpu}.rgb32f (float32 RGB rows).
 //
-// usage: ludus_reference_benchmark SCENE_DIRECTORY [WIDTH HEIGHT SAMPLES DEPTH {gpu|cpu} RUNS]
+// usage: ludus_reference_benchmark SCENE_DIRECTORY [WIDTH HEIGHT SAMPLES DEPTH {gpu|cpu} RUNS [WAVELENGTH_NANOMETERS]]
+#include "renderer_authored.h"
+#include "renderer_authored_shadow.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
-#include "renderer_lit.h"
-#include "renderer_lit_shadow.h"
 #include "renderer_output.h"
 #include "renderer_reference.h"
 #include "renderer_reference_reduce.h"
@@ -56,8 +56,10 @@ constexpr uint32 MAX_RUNS = 64;
 constexpr uint32 ROULETTE_DEPTH = 3;
 constexpr uint64 SEED = 871;
 constexpr usize SCENE_BYTES = usize{384} * 1024 * 1024;
-constexpr usize CPU_BUDGET = usize{1024} * 1024 * 1024;
-constexpr usize GPU_BUDGET = usize{512} * 1024 * 1024;
+constexpr usize CPU_BUDGET = usize{4096} * 1024 * 1024;
+constexpr usize GPU_BUDGET = usize{2048} * 1024 * 1024;
+constexpr usize RHI_HOST_BUDGET = usize{1024} * 1024 * 1024;
+constexpr uint64 RHI_RESOURCE_BUDGET = uint64{4096} * 1024 * 1024;
 constexpr uint32 CPU_TILE_PIXELS = 2048; // The largest tile ReferenceRenderingOptions admits.
 constexpr float32 NEAR_DISTANCE = .05F;
 constexpr float32 FAR_DISTANCE = 100;
@@ -67,7 +69,8 @@ constexpr float64 RAYS_PER_MEGARAY_MILLISECOND = 1e3;
 constexpr usize RGBA8_BYTES = 4;
 constexpr usize TRIANGLE_CORNERS = 3;
 // A lit material retains several texture views, in addition to its parameter buffer.
-constexpr uint32 REFERENCE_RESOURCES_PER_KIND = 256;
+constexpr uint32 REFERENCE_RESOURCES_PER_KIND = 1536;
+constexpr uint32 REFERENCE_BINDING_DESCRIPTORS = 8192;
 constexpr uint64 FNV_OFFSET = 0xcbf29ce484222325;
 constexpr uint64 FNV_PRIME = 0x100000001b3;
 // Positional arguments after the scene directory.
@@ -77,7 +80,12 @@ constexpr int SAMPLES_ARGUMENT = 4;
 constexpr int DEPTH_ARGUMENT = 5;
 constexpr int TRAVERSAL_ARGUMENT = 6;
 constexpr int RUNS_ARGUMENT = 7;
-constexpr int ARGUMENT_COUNT = 8;
+constexpr int WAVELENGTH_ARGUMENT = 8;
+constexpr int ARGUMENT_COUNT = 9;
+constexpr uint32 MAX_WAVELENGTH_NANOMETERS = 1000000;
+constexpr float32 METRES_PER_NANOMETRE = 1e-9F;
+constexpr uint32 ENVIRONMENT_FILTER_WIDTH = 64;
+constexpr uint32 ENVIRONMENT_FILTER_SAMPLES = 16;
 
 template <typename Handle>
 [[nodiscard]] Status Wait(rr::Renderer& inoutRenderer, const Handle& handle, Status status) noexcept
@@ -144,6 +152,7 @@ template <typename Handle>
     {
         const resources::SceneMaterial& source = scene.Materials[i];
         rr::LitMaterialDescription description;
+        description.AreAuthoredInputsEnabled = true;
         description.Metallic = source.Metallic;
         description.Roughness = source.Roughness;
         description.Scattering = source.Scattering;
@@ -290,6 +299,7 @@ void CollectTransportTimings(rhi::DeviceHandle device, RunResult& inoutResult) n
     Status status = inoutRenderer.BeginReferenceCapture(snapshot, description, capture);
     if (status != Status::Ready && status != Status::Pending)
     {
+        std::fprintf(stderr, "capture preparation rejected: status %u\n", static_cast<uint32>(status));
         return false;
     }
     // A Ready setup still has zero samples; only Advance reports completion.
@@ -309,7 +319,12 @@ void CollectTransportTimings(rhi::DeviceHandle device, RunResult& inoutResult) n
     }
     outResult.TotalMilliseconds = float64(time::NowTicks() - start) / NANOSECONDS_PER_MILLISECOND;
     Array<rr::ReferencePixel> pixels;
-    if (status != Status::Ready || inoutRenderer.GetReferenceCaptureInfo(capture, outResult.Info) != Status::Ready ||
+    const Status informationStatus = inoutRenderer.GetReferenceCaptureInfo(capture, outResult.Info);
+    if (status != Status::Ready)
+    {
+        std::fprintf(stderr, "capture advancement returned status %u\n", static_cast<uint32>(status));
+    }
+    if (status != Status::Ready || informationStatus != Status::Ready ||
         pixels.TryResize(usize(description.Width) * description.Height) == false ||
         inoutRenderer.CopyReferencePixels(capture, pixels.GetData(), pixels.GetSize()) != Status::Ready)
     {
@@ -354,6 +369,7 @@ int main(int argc, char** argv)
     description.RouletteDepth = ROULETTE_DEPTH;
     description.Seed = SEED;
     uint32 runs = DEFAULT_RUNS;
+    uint32 wavelengthNanometers = 0;
     const bool isCpu = argc > TRAVERSAL_ARGUMENT && std::strcmp(argv[TRAVERSAL_ARGUMENT], "cpu") == 0;
     if (argc < 2 || argc > ARGUMENT_COUNT ||
         ParseArgument(argc, argv, WIDTH_ARGUMENT, MAX_EXTENT, description.Width) == false ||
@@ -361,13 +377,15 @@ int main(int argc, char** argv)
         ParseArgument(argc, argv, SAMPLES_ARGUMENT, MAX_SAMPLES, description.TargetSamples) == false ||
         ParseArgument(argc, argv, DEPTH_ARGUMENT, MAX_DEPTH, description.MaxDepth) == false ||
         ParseArgument(argc, argv, RUNS_ARGUMENT, MAX_RUNS, runs) == false ||
+        ParseArgument(argc, argv, WAVELENGTH_ARGUMENT, MAX_WAVELENGTH_NANOMETERS, wavelengthNanometers) == false ||
         (argc > TRAVERSAL_ARGUMENT && isCpu == false && std::strcmp(argv[TRAVERSAL_ARGUMENT], "gpu") != 0))
     {
         std::fprintf(stderr,
-                     "usage: %s SCENE_DIRECTORY [WIDTH HEIGHT SAMPLES DEPTH {gpu|cpu} RUNS]\n",
+                     "usage: %s SCENE_DIRECTORY [WIDTH HEIGHT SAMPLES DEPTH {gpu|cpu} RUNS [WAVELENGTH_NANOMETERS]]\n",
                      argc > 0 ? argv[0] : "ludus_reference_benchmark");
         return 1;
     }
+    description.OpticalWavelengthWorld = static_cast<float32>(wavelengthNanometers) * METRES_PER_NANOMETRE;
     ludus::content::Bytes bundle;
     resources::SceneDefinition scene;
     if (ludus::content::ReadFile(argv[1], "scene.luscn", SCENE_BYTES, bundle) != ludus::content::Status::Ok ||
@@ -391,9 +409,39 @@ int main(int argc, char** argv)
     description.CameraPosition = scene.Eye;
     description.ReverseZ = true;
     description.Environment = scene.Environment.Width == 0 ? scene.Environment.Rgb : math::Vector3{};
+    Array<rr::DirectLight> authoredLights;
+    for (const resources::SceneLight& source : scene.Lights)
+    {
+        if (source.IsEnabled == false)
+        {
+            continue;
+        }
+        rr::DirectLight light;
+        light.SourceId = source.SourceId;
+        light.Kind =
+            source.Kind == resources::SceneLightKind::Directional
+                ? rr::LightKind::Directional
+                : (source.Kind == resources::SceneLightKind::Spot ? rr::LightKind::Spot : rr::LightKind::Point);
+        light.Color = source.IntensityRgb;
+        light.Intensity = 1;
+        light.Position = source.PositionWorld;
+        light.Direction = source.DirectionWorld;
+        light.Range = source.Range;
+        light.InnerCos = source.InnerCos;
+        light.OuterCos = source.OuterCos;
+        if (authoredLights.TryAdd(light) == false)
+        {
+            return 3;
+        }
+    }
+    description.Lights = authoredLights.GetData();
+    description.LightCount = authoredLights.GetSize();
 
     rhi::DeviceDescription request;
     request.Storage.ResourcesPerKind = REFERENCE_RESOURCES_PER_KIND;
+    request.Storage.BindingDescriptors = REFERENCE_BINDING_DESCRIPTORS;
+    request.Storage.HostBytes = RHI_HOST_BUDGET;
+    request.Storage.ResourceBytes = RHI_RESOURCE_BUDGET;
     request.Required.PortableRaster = true;
     request.Required.Compute = isCpu == false;
     request.EnableGpuTiming = isCpu == false;
@@ -447,9 +495,9 @@ int main(int argc, char** argv)
                                              shaders::renderer_shadow::Fragment()) != Status::Ready ||
                  Wait(renderer,
                       program,
-                      renderer.PrewarmLitProgram(shaders::renderer_lit::Vertex(),
-                                                 shaders::renderer_lit::Fragment(),
-                                                 shaders::renderer_lit_shadow::Fragment(),
+                      renderer.PrewarmLitProgram(shaders::renderer_authored::Vertex(),
+                                                 shaders::renderer_authored::Fragment(),
+                                                 shaders::renderer_authored_shadow::Fragment(),
                                                  program)) != Status::Ready)
         {
             failureOrNull = "lighting programs";
@@ -472,6 +520,44 @@ int main(int argc, char** argv)
                     description.TargetSamples,
                     description.MaxDepth,
                     isCpu == true ? "CPU oracle" : "GPU compute");
+        rr::EnvironmentMap environment;
+        if (scene.Environment.Width != 0)
+        {
+            Array<math::Vector4> pixels;
+            if (pixels.TryResize(scene.Environment.Pixels.GetSize()) == false)
+            {
+                return 5;
+            }
+            for (usize index = 0; index < pixels.GetSize(); ++index)
+            {
+                const math::Vector3 value = math::Hadamard(scene.Environment.Pixels[index], scene.Environment.Rgb);
+                pixels[index] = {value.X, value.Y, value.Z, 1};
+            }
+            rr::EnvironmentDescription environmentDescription;
+            environmentDescription.PixelsOrNull = pixels.GetData();
+            environmentDescription.Width = scene.Environment.Width;
+            environmentDescription.Height = scene.Environment.Height;
+            environmentDescription.FilterWidth = ENVIRONMENT_FILTER_WIDTH;
+            environmentDescription.FilterSamples = ENVIRONMENT_FILTER_SAMPLES;
+            environmentDescription.CpuByteBudget = CPU_BUDGET;
+            Status environmentStatus = environment.Initialize(device, environmentDescription);
+            const uint64 environmentStart = time::NowTicks();
+            while (environmentStatus == Status::Pending && time::NowTicks() - environmentStart < TIMEOUT)
+            {
+                environmentStatus = environment.GetStatus();
+            }
+            if (environmentStatus != Status::Ready)
+            {
+                std::fprintf(stderr, "authored environment preparation failed\n");
+                return 5;
+            }
+            description.EnvironmentTextureOrNull = &environment;
+        }
+        std::printf("optical wavelength %u nm; %zu authored analytic lights; environment %ux%u\n",
+                    wavelengthNanometers,
+                    authoredLights.GetSize(),
+                    scene.Environment.Width,
+                    scene.Environment.Height);
         Array<float64> totals;
         RunResult result; // The last run's radiance is published below.
         for (uint32 run = 0; run < runs; ++run)
@@ -480,13 +566,20 @@ int main(int argc, char** argv)
             if (RunCapture(renderer, device, snapshot, description, surface, result) == false ||
                 result.Info.InvalidContributions != 0 || totals.TryAdd(result.TotalMilliseconds) == false)
             {
-                std::fprintf(stderr, "capture %u failed\n", run);
+                std::fprintf(stderr,
+                             "capture %u failed: pixel %u depth %u sample %u reason %u, invalid %llu\n",
+                             run,
+                             result.Info.FailurePixel,
+                             result.Info.FailureDepth,
+                             result.Info.FailureSample,
+                             static_cast<uint32>(result.Info.Failure),
+                             static_cast<unsigned long long>(result.Info.InvalidContributions));
                 exitCode = 6;
                 break;
             }
             const float64 queries = float64(result.Info.ClosestQueries + result.Info.VisibilityQueries);
             std::printf("run %u: %u-%u spp, first sample %.1f ms, total %.1f ms, GPU transport %.1f ms in %u timed "
-                        "dispatches, %.2f Mrays/s (%llu closest, %llu visibility), mean luminance %.6f, checksum "
+                        "dispatches, %.2f Mqueries/s (%llu closest, %llu visibility), mean luminance %.6f, checksum "
                         "%016llx\n",
                         run,
                         result.Info.MinimumSamples,

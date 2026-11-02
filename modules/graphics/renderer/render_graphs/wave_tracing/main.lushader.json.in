@@ -120,10 +120,10 @@
       "bindings": []
     },
     {
-      "id": "MeasureAperture",
+      "id": "MeasureTransmission",
       "stage": "compute",
       "source": "main_shaders/shade.slang",
-      "function": "MeasureAperture",
+      "function": "MeasureTransmission",
       "input": "RayLaunch",
       "output": "Radiance",
       "bindings": []
@@ -180,8 +180,8 @@
       ],
       "scene_interface": {
         "version": 1,
-        "surface_queries": 1,
-        "visibility_queries": 0
+        "surface_queries": 8,
+        "visibility_queries": 8
       }
     }
   ],
@@ -190,117 +190,7 @@
     "programs": 16
   },
   "settings": [
-    {
-      "id": "WT_WAVELENGTH_MILLIMETERS",
-      "label": "Scalar wavelength (mm)",
-      "type": "Float32",
-      "value": 20,
-      "minimum": 0.001,
-      "maximum": 1000
-    },
-    {
-      "id": "WT_SIGMA_X_MILLIMETERS",
-      "label": "Gaussian waist shape radius X (mm)",
-      "type": "Float32",
-      "value": 100,
-      "minimum": 0.01,
-      "maximum": 10000
-    },
-    {
-      "id": "WT_SIGMA_Y_MILLIMETERS",
-      "label": "Gaussian waist shape radius Y (mm)",
-      "type": "Float32",
-      "value": 100,
-      "minimum": 0.01,
-      "maximum": 10000
-    },
-    {
-      "id": "WT_HALF_WIDTH_MILLIMETERS",
-      "label": "Aperture integration half width (mm)",
-      "type": "Float32",
-      "value": 300,
-      "minimum": 0.01,
-      "maximum": 10000
-    },
-    {
-      "id": "WT_HALF_HEIGHT_MILLIMETERS",
-      "label": "Aperture integration half height (mm)",
-      "type": "Float32",
-      "value": 300,
-      "minimum": 0.01,
-      "maximum": 10000
-    },
-    {
-      "id": "WT_RESOLUTION",
-      "label": "Aperture quadrature cells per axis",
-      "type": "UInt32",
-      "value": 64,
-      "minimum": 8,
-      "maximum": 128
-    },
-    {
-      "id": "WT_SCREEN_X",
-      "label": "Screen centre world X (m)",
-      "type": "Float32",
-      "value": 0,
-      "minimum": -10000,
-      "maximum": 10000
-    },
-    {
-      "id": "WT_SCREEN_Y",
-      "label": "Screen centre world Y (m)",
-      "type": "Float32",
-      "value": 0,
-      "minimum": -10000,
-      "maximum": 10000
-    },
-    {
-      "id": "WT_SCREEN_Z",
-      "label": "Screen centre world Z (m)",
-      "type": "Float32",
-      "value": 0,
-      "minimum": -10000,
-      "maximum": 10000
-    },
-    {
-      "id": "WT_DIRECTION_X",
-      "label": "Beam propagation world X",
-      "type": "Float32",
-      "value": 0,
-      "minimum": -1,
-      "maximum": 1
-    },
-    {
-      "id": "WT_DIRECTION_Y",
-      "label": "Beam propagation world Y",
-      "type": "Float32",
-      "value": 0,
-      "minimum": -1,
-      "maximum": 1
-    },
-    {
-      "id": "WT_DIRECTION_Z",
-      "label": "Beam propagation world Z",
-      "type": "Float32",
-      "value": 1,
-      "minimum": -1,
-      "maximum": 1
-    },
-    {
-      "id": "WT_SCREEN_TOLERANCE_MILLIMETERS",
-      "label": "Screen coplanarity tolerance (mm)",
-      "type": "Float32",
-      "value": 0.1,
-      "minimum": 0.001,
-      "maximum": 10
-    },
-    {
-      "id": "WT_PEAK_IRRADIANCE",
-      "label": "Authored Gaussian illuminator peak irradiance",
-      "type": "Float32",
-      "value": 1,
-      "minimum": 0,
-      "maximum": 10000
-    }
+    {"id": "WT_WAVELENGTH_NANOMETERS", "label": "Scalar optical wavelength (nm)", "type": "Float32", "value": 550, "minimum": 1, "maximum": 1000000},
+    {"id": "WT_PATH_VERTICES", "label": "Surface scattering vertices", "type": "UInt32", "value": 3, "minimum": 1, "maximum": 8}
   ]
 }

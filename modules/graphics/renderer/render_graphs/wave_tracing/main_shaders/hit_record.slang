@@ -1,10 +1,10 @@
 #pragma once
-// Per-pixel primary hit record: the primary-hits pass of this template writes it and its wave-optics,
-// radiometric and coherence passes read it. The layout is the steinberg-plt template's.
+// Per-pixel primary hit record: the primary-hits pass of this template writes it and its optical,
+// geometric and transmission passes read it. The layout is the steinberg-plt template's.
 // Thanks to Samuli Laine, Tero Karras and Timo Aila, "Megakernels Considered Harmful: Wavefront
 // Path Tracing on GPUs", HPG 2013, https://doi.org/10.1145/2492045.2492060 : their stage split
-// motivates generating hits and shading them in separate kernels. This template stops at two
-// passes over every pixel; it has no ray queues or compaction.
+// motivates generating hits and shading them in separate kernels. This template shares primary hits
+// between three shading outputs; it has no ray queues or compaction.
 // Thanks to Christopher A. Burns and Warren A. Hunt, "The Visibility Buffer: A Cache-Friendly
 // Approach to Deferred Shading", JCGT 2(2), 2013, https://jcgt.org/published/0002/02/04/ :
 // the record stores hit identity (triangle and barycentrics), not shaded attributes.
@@ -27,25 +27,8 @@ static const uint HIT_RECORD_FLAG_FAILED = 2;
 // Primary pass: subpixel jitter x, y.
 static const uint PRIMARY_RANDOM_DIMENSION_FIRST = 0;
 static const uint PRIMARY_RANDOM_DIMENSION_COUNT = 2;
-// Shade passes, all three with one layout, so the wave-optics and radiometric images trace the same wavelengths,
-// lights, lobes and directions wherever their materials agree: the hero wavelength rotation, then for each path
-// vertex its light selection, the three SampleIncidentLight shape coordinates, the lobe selection, the two
-// coordinates of the continuation direction and the offset of the wavelength-window quadrature.
+// All shade outputs use the same explicit light and continuation dimensions, after camera jitter.
 static const uint SHADE_RANDOM_DIMENSION_FIRST = PRIMARY_RANDOM_DIMENSION_FIRST + PRIMARY_RANDOM_DIMENSION_COUNT;
-static const uint SHADE_WAVELENGTH_DIMENSION = SHADE_RANDOM_DIMENSION_FIRST;
-static const uint SHADE_VERTEX_DIMENSION_FIRST = SHADE_WAVELENGTH_DIMENSION + 1;
-static const uint SHADE_VERTEX_LIGHT_SELECTION_DIMENSION = 0;
-static const uint SHADE_VERTEX_LIGHT_SHAPE_DIMENSION_FIRST = SHADE_VERTEX_LIGHT_SELECTION_DIMENSION + 1;
-static const uint SHADE_VERTEX_LOBE_DIMENSION = SHADE_VERTEX_LIGHT_SHAPE_DIMENSION_FIRST + 3;
-static const uint SHADE_VERTEX_DIRECTION_DIMENSION_FIRST = SHADE_VERTEX_LOBE_DIMENSION + 1;
-static const uint SHADE_VERTEX_WINDOW_DIMENSION = SHADE_VERTEX_DIRECTION_DIMENSION_FIRST + 2;
-static const uint SHADE_VERTEX_DIMENSION_COUNT = SHADE_VERTEX_WINDOW_DIMENSION + 1;
-
-/// Explicit random dimension of one per-vertex draw; vertexIndex 0 is the primary hit.
-uint GetShadeVertexDimension(uint vertexIndex, uint offset)
-{
-    return SHADE_VERTEX_DIMENSION_FIRST + vertexIndex * SHADE_VERTEX_DIMENSION_COUNT + offset;
-}
 
 struct HitRecord
 {
