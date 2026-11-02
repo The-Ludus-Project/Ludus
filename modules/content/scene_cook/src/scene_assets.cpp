@@ -40,6 +40,11 @@ constexpr std::string_view IMPORTER_SHA256 = "d0d1e78b7e206b3034c7897cf27794cf31
 constexpr std::string_view PUBLISHER_SHA256 = "ba9bd32092878c5ba7e06d1c8472ddabb805e51e6a72c5a460cfb5a87f3c96e1";
 constexpr std::string_view IMPORTER_NAME = "pbrt-reference-v1";
 constexpr std::string_view BUILD_TARGET = "portable-rgba8-f32-le";
+// Artifact build records list every source input and its digest ("source_inputs").
+constexpr int64 INPUT_MAP_BUILD_SCHEMA = 1;
+// Artifact build records carry one digest of the import's canonical input map
+// ("source_inputs_sha256"); the scene manifest keeps the map.
+constexpr int64 INPUT_DIGEST_BUILD_SCHEMA = 2;
 constexpr std::string_view CATALOG_PATH = "assets/catalog.json";
 constexpr std::string_view LOCK_PATH = "assets/.scene-writer.lock";
 constexpr std::string_view OBJECTS_PATH = "assets/objects/";
@@ -4198,13 +4203,34 @@ ComputeSourceDigest(const JsonTree& manifest, JsonIndex root, HexDigest& outHex,
         buildTree.SetMember(build.Root, "importer_sha256", buildTree.AddString(IMPORTER_SHA256));
     }
     buildTree.SetMember(build.Root, "publisher_sha256", buildTree.AddString(PUBLISHER_SHA256));
-    buildTree.SetMember(build.Root,
-                        "source_inputs",
-                        buildTree.CopyFrom(manifest.Tree, manifest.Tree.GetMember(manifest.Root, "inputs")));
+    // The build record feeds every artifact key of the import, so it must identify the exact
+    // source set. The frozen reference profile keeps its full input map, so its keys stay
+    // equal to the Phase 0 goldens. Other profiles record the digest of the canonical map:
+    // the scene manifest keeps the map itself, and repeating it in each record grew the
+    // catalog with resources x source files (Bistro alone would exceed MAX_CATALOG_BYTES).
+    const JsonIndex inputs = manifest.Tree.GetMember(manifest.Root, "inputs");
+    if (routed.Profile == IMPORTER_NAME)
+    {
+        buildTree.SetMember(build.Root, "source_inputs", buildTree.CopyFrom(manifest.Tree, inputs));
+    }
+    else
+    {
+        Array<uint8> inputBytes;
+        if (WriteCanonical(manifest.Tree, inputs, inputBytes, inoutFailure) == false)
+        {
+            return false;
+        }
+        HexDigest inputDigest;
+        ComputeHexDigest(GetSpan(inputBytes), inputDigest);
+        buildTree.SetMember(build.Root, "source_inputs_sha256", buildTree.AddString(inputDigest.View()));
+    }
     const JsonIndex settings = buildTree.AddObject();
     buildTree.SetMember(settings, "profile", buildTree.AddString(LEVEL_PROFILE));
     buildTree.SetMember(build.Root, "settings", settings);
-    buildTree.SetMember(build.Root, "schema", buildTree.AddInteger(1));
+    buildTree.SetMember(
+        build.Root,
+        "schema",
+        buildTree.AddInteger(routed.Profile == IMPORTER_NAME ? INPUT_MAP_BUILD_SCHEMA : INPUT_DIGEST_BUILD_SCHEMA));
     buildTree.SetMember(build.Root,
                         "target",
                         buildTree.AddString(parts.Version >= format::VERSION_6   ? SURFACE_MAP_BUILD_TARGET
