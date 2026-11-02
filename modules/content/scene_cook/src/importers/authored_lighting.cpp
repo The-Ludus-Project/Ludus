@@ -27,7 +27,8 @@ constexpr usize MAX_ENVIRONMENT_FILE_BYTES = MAX_SOURCE_IMAGE_BYTES;
 }
 // Thanks to Pharr, Jakob and Humphreys, Physically Based Rendering, fourth
 // edition, section 12 and pbrt-v4 Light::Create, for the photometric source
-// normalization. RGB/Y replaces spectral photometry explicitly in this profile.
+// normalization. RGB/Y replaces spectral photometry; Scale carries the luminance an
+// RGB source keeps (pbrt_parser.cpp findRetainedLuminance).
 // The squared engine spot lobe integrates to 2*PI*((1-inner)+(inner-outer)/3),
 // rather than PBRT's smoothstep lobe integral with /2.
 // https://pbrt.org/fileformat-v4#lights
