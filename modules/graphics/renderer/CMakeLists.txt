@@ -842,13 +842,16 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_RESTIR_GI_${restir_gi_definition}_DIRECTORY=\"${restir_gi_package_directory}\"")
     endforeach()
-    # Conditional light suffixes: independent no-reuse baseline and direct-only specialization.
+    # Conditional suffix transport: independent baselines, legacy endpoints and maximum path length.
     set(conditional_restir_template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/conditional_restir_template")
     file(READ "${conditional_restir_template_staged}/main.lushader.json" conditional_restir_manifest)
     string(JSON conditional_restir_setting_count LENGTH "${conditional_restir_manifest}" settings)
     math(EXPR conditional_restir_setting_last "${conditional_restir_setting_count} - 1")
     foreach(conditional_restir_variant IN ITEMS "no_reuse;IS_CRIS_TEMPORAL_ENABLED;false;IS_CRIS_SPATIAL_ENABLED;false"
-            "direct;CRIS_PREFIX_BOUNCES;0")
+            "direct;CRIS_PREFIX_BOUNCES;0;CRIS_SUFFIX_BOUNCES;0"
+            "endpoints;CRIS_SUFFIX_BOUNCES;0"
+            "immediate;CRIS_PREFIX_BOUNCES;0;IS_CRIS_TEMPORAL_ENABLED;false;IS_CRIS_SPATIAL_ENABLED;false"
+            "maximum;CRIS_SUFFIX_BOUNCES;7;IS_CRIS_TEMPORAL_ENABLED;false;IS_CRIS_SPATIAL_ENABLED;false")
         list(POP_FRONT conditional_restir_variant conditional_restir_name)
         set(conditional_restir_variant_manifest "${conditional_restir_manifest}")
         while(conditional_restir_variant)

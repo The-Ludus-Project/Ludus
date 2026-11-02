@@ -1,35 +1,45 @@
 #pragma once
 #include "weights.slang"
 
-// Kettunen et al.'s conditional estimator, specialized to a one-vertex emissive suffix; attribution and
-// equations are in weights.slang. Supporting camera prefixes are regenerated independently of suffixes.
-// Integration draws another prefix in the shade pass's distinct random scope. The positive area target
-// and uniform emitter/triangle proposals cover ALL nondegenerate mesh emitters even for a missed prefix.
-// Consequently every reservoir has the same suffix domain. No canonical MIS correction is needed for
-// missing support; fresh canonical light proposals are still injected on every frame.
-// This is not the paper's arbitrary-length Suffix ReSTIR PT or hybrid reconnection shift.
+// Kettunen et al.'s conditional estimator; attribution and equations are in weights.slang.
+// A suffix is an emissive endpoint, or a surface point with a cached, variable-length transport tail.
+// Its first point is sampled in world area, independently of the supporting prefix. The outgoing
+// direction at that point is also prefix independent; its BSDF is evaluated only when reconnecting.
+// All later BSDF-sampled edges and the terminal NEE are cached. The marked suffix domain is common
+// to every prefix, so the identity shift has Jacobian one and constant confidence shares suffice.
+// Independent final-gather prefixes never participate in selection or tail generation.
 
-static const uint RESERVOIR_WORDS = 4;
-static const uint IDENTITY_WORD = RESERVOIR_WORDS - 1;
-static const uint LAYOUT_TAG = 0x43524901u;
-static const uint FAILED_LAYOUT_TAG = 0x435249ffu;
+static const uint RESERVOIR_WORDS = 6;
+static const uint IDENTITY_WORD = 3;
+static const uint DIRECTION_WORD = 4;
+static const uint RADIANCE_WORD = 5;
+// Include both depth settings in the identity: a recompiled graph cannot reuse a different integral.
+static const uint LAYOUT_TAG = 0x43520003u | (CRIS_SUFFIX_BOUNCES << 8) | (CRIS_PREFIX_BOUNCES << 12);
+static const uint FAILED_LAYOUT_TAG = 0x4352ffffu;
 static const uint EXTENT_MASK = 0xffffu;
 static const uint EXTENT_SHIFT = 16;
 static const float MINIMUM_AREA_TARGET = 0.000001f;
 static const float MAXIMUM_TRACE_DISTANCE_WORLD = 3.402823466e38f;
 static const float3 LUMINANCE_WEIGHTS = float3(0.2126f, 0.7152f, 0.0722f);
-static const uint PREFIX_DIMENSIONS = 3;
 static const uint MATERIAL_RANDOM_SCOPE = 0x43524953u;
 static const uint PREFIX_MATERIAL_EVENT = 0;
 static const uint DIRECT_MATERIAL_EVENT = 1;
 static const uint GATHER_MATERIAL_EVENT = 2;
+static const uint SUFFIX_GATHER_EVENT_OFFSET = 16;
 static const uint CANDIDATE_DIMENSIONS = 5;
+static const uint SUFFIX_DEPTH_DIMENSION = 3;
+static const uint SUFFIX_DIMENSION_FIRST = 4;
+static const uint TAIL_MATERIAL_EVENT_FIRST = 3;
+static const uint TAIL_VERTEX_DIMENSIONS = 3;
+static const uint MAXIMUM_SUFFIX_BOUNCES = 7;
 static const uint MAXIMUM_NEIGHBORS = 7;
 static const float NEIGHBOR_RADIUS_PIXELS = 8;
 
-/// A light endpoint and its conditional world-area UCW, plus the supporting prefix endpoint and view.
-/// Four uint4 words: light triangle/barycentric/W; M/support triangle/barycentric;
-/// support view/layout tag (failure reason in x on failure); scene generation/packed extent/frame index.
+/// A marked suffix and its conditional area UCW, plus supporting prefix and identity.
+/// Six uint4 words: first triangle/barycentric/W; M/support triangle/barycentric;
+/// support view/layout (failure reason in x on failure); scene/extent/frame;
+/// outgoing direction/suffix scattering count; cached tail coefficient/reserved.
+/// The tail coefficient excludes the first suffix BSDF, which depends on the gather prefix.
 struct Reservoir
 {
     uint TriangleIndex;
@@ -44,6 +54,9 @@ struct Reservoir
     uint2 ExtentPixel;
     uint SampleIndex;
     uint FailureReason;
+    uint SuffixBounces;
+    float3 DirectionWorld;
+    float3 TailCoefficient;
 };
 
 /// A separately traced prefix endpoint and its f*cos/pdf throughput. A miss has IsValid=false.
@@ -151,6 +164,10 @@ Reservoir LoadReservoir(uint pixel, bool isSecond)
     result.SceneGeneration = identity.xy;
     result.ExtentPixel = uint2(identity.z & EXTENT_MASK, identity.z >> EXTENT_SHIFT);
     result.SampleIndex = identity.w;
+    uint4 direction = LoadWord(pixel, DIRECTION_WORD, isSecond);
+    result.DirectionWorld = asfloat(direction.xyz);
+    result.SuffixBounces = direction.w;
+    result.TailCoefficient = asfloat(LoadWord(pixel, RADIANCE_WORD, isSecond).xyz);
     return result;
 }
 
@@ -176,13 +193,19 @@ void StoreReservoir(RayLaunch launch, bool isSecond, Reservoir reservoir, RayQue
               uint4(reservoir.SceneGeneration,
                     reservoir.ExtentPixel.x | (reservoir.ExtentPixel.y << EXTENT_SHIFT),
                     reservoir.SampleIndex));
+    StoreWord(pixel, DIRECTION_WORD, isSecond, uint4(asuint(reservoir.DirectionWorld), reservoir.SuffixBounces));
+    StoreWord(pixel, RADIANCE_WORD, isSecond, uint4(asuint(reservoir.TailCoefficient), 0));
 }
 
 bool HasIdentity(Reservoir source, SceneContext scene, RayLaunch launch)
 {
     return source.LayoutTag == LAYOUT_TAG && all(source.SceneGeneration == scene.Generation) == true &&
            all(source.ExtentPixel == launch.ExtentPixel) == true && source.CandidateCount <= CRIS_HISTORY_LIMIT &&
-           isfinite(source.Weight) == true && source.Weight >= 0;
+           isfinite(source.Weight) == true && source.Weight >= 0 && source.SuffixBounces <= CRIS_SUFFIX_BOUNCES &&
+           all(isfinite(source.DirectionWorld)) == true && all(isfinite(source.TailCoefficient)) == true &&
+           all(source.TailCoefficient >= 0) == true &&
+           (source.SuffixBounces == 0 || any(source.TailCoefficient > 0) == false ||
+            abs(dot(source.DirectionWorld, source.DirectionWorld) - 1) <= SCENE_UNIT_TOLERANCE);
 }
 
 bool IsCurrentRecord(Reservoir source, SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
@@ -194,6 +217,33 @@ bool IsCurrentRecord(Reservoir source, SceneContext scene, RayLaunch launch, ino
                        ? source.FailureReason
                        : LUDUS_SCENE_FAILURE_STORED_RECORD);
     return false;
+}
+
+// Thanks to the Slang authors, "noinline", core module reference,
+// https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html .
+// Value-only boundaries keep layered walks shared in emitted Metal/SPIR-V instead of duplicating
+// them at every connection and continuation site. No forwarded inout query context crosses here.
+[noinline] float3 EvaluateSuffixBsdf(MaterialSample material,
+                                    float3 viewWorld,
+                                    float3 lightWorld,
+                                    CoatingRandomContext random,
+                                    bool shouldUseLayeredBsdf)
+{
+    float3 value;
+    float density;
+    if (shouldUseLayeredBsdf == true)
+        EvaluateStandardBsdf(material, viewWorld, lightWorld, random, value, density);
+    else
+        EvaluateStandardBsdf(material, viewWorld, lightWorld, value, density);
+    return value;
+}
+
+[noinline] StandardBsdfTransportSample SampleSuffixBsdf(MaterialSample material,
+                                                       float3 viewWorld,
+                                                       float3 random,
+                                                       CoatingRandomContext materialRandom)
+{
+    return SampleStandardBsdfTransport(material, viewWorld, random, materialRandom);
 }
 
 /// One BSDF-sampled segment. Its emission is handled by primary direct lighting, never counted twice.
@@ -215,7 +265,7 @@ Prefix TracePrefix(SceneContext scene, RayLaunch launch, SurfaceHit primary, ino
         return result;
     }
     float3 random = float3(SamplePassRandom(launch, 0), SamplePassRandom(launch, 1), SamplePassRandom(launch, 2));
-    StandardBsdfTransportSample step = SampleStandardBsdfTransport(material,
+    StandardBsdfTransportSample step = SampleSuffixBsdf(material,
                                                                    result.ViewWorld,
                                                                    random,
                                                                    MakeMaterialRandom(launch, PREFIX_MATERIAL_EVENT));
@@ -253,19 +303,21 @@ Prefix LoadSupport(SceneContext scene, Reservoir reservoir)
     return result;
 }
 
-/// RGB direct contribution per unit world area, with the current connection's BSDF and emitter sidedness.
-float3 EvaluateAreaContribution(SceneContext scene,
+/// RGB suffix contribution per unit world area, reevaluating both connection BSDFs for this prefix.
+float3 EvaluateAreaContributionBody(SceneContext scene,
                                 Prefix prefix,
-                                SurfaceHit endpoint,
+                                Reservoir suffix,
                                 bool shouldUseLayeredBsdf,
                                 inout RayQueryContext queries)
 {
+    SurfaceHit endpoint = GetSurfaceHit(scene, suffix.TriangleIndex, suffix.Barycentric);
     if (endpoint.IsValid == false)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return float3(0);
     }
-    if (prefix.IsValid == false)
+    if (prefix.IsValid == false ||
+        (suffix.SuffixBounces > 0 && any(suffix.TailCoefficient > 0) == false))
         return float3(0);
     float3 offsetWorld = endpoint.PositionWorld - prefix.Hit.PositionWorld;
     float distanceSquaredWorld = dot(offsetWorld, offsetWorld);
@@ -273,12 +325,11 @@ float3 EvaluateAreaContribution(SceneContext scene,
         return float3(0);
     float3 directionWorld = offsetWorld * rsqrt(distanceSquaredWorld);
     MaterialSample material = EvaluateMaterial(scene, prefix.Hit);
-    float3 bsdfValue;
-    float density;
-    if (shouldUseLayeredBsdf == true)
-        EvaluateStandardBsdf(material, prefix.ViewWorld, directionWorld, prefix.MaterialRandom, bsdfValue, density);
-    else
-        EvaluateStandardBsdf(material, prefix.ViewWorld, directionWorld, bsdfValue, density);
+    float3 bsdfValue = EvaluateSuffixBsdf(material,
+                                           prefix.ViewWorld,
+                                           directionWorld,
+                                           prefix.MaterialRandom,
+                                           shouldUseLayeredBsdf);
     float receiverCosine = max(dot(NormalizeOrZero(material.ShadingNormalWorld), directionWorld), 0);
     float emitterCosine = abs(dot(NormalizeOrZero(endpoint.GeometricNormalWorld), -directionWorld));
     if (material.IsValid == false)
@@ -286,7 +337,25 @@ float3 EvaluateAreaContribution(SceneContext scene,
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return float3(0);
     }
-    float3 contribution = bsdfValue * EvaluateEmission(scene, endpoint, -directionWorld) *
+    float3 suffixRadiance = EvaluateEmission(scene, endpoint, -directionWorld);
+    if (suffix.SuffixBounces > 0)
+    {
+        MaterialSample suffixMaterial = EvaluateMaterial(scene, endpoint);
+        if (suffixMaterial.IsValid == false)
+        {
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
+            return float3(0);
+        }
+        CoatingRandomContext suffixRandom = prefix.MaterialRandom;
+        suffixRandom.Address.Dimension += SUFFIX_GATHER_EVENT_OFFSET;
+        float3 suffixBsdf = EvaluateSuffixBsdf(suffixMaterial,
+                                              -directionWorld,
+                                              suffix.DirectionWorld,
+                                              suffixRandom,
+                                              shouldUseLayeredBsdf);
+        suffixRadiance = suffixBsdf * suffix.TailCoefficient;
+    }
+    float3 contribution = bsdfValue * suffixRadiance *
                           (receiverCosine * emitterCosine / distanceSquaredWorld);
     if (all(isfinite(contribution)) == false || any(contribution < 0) == true)
     {
@@ -296,20 +365,59 @@ float3 EvaluateAreaContribution(SceneContext scene,
     return contribution;
 }
 
-float EvaluateTarget(SceneContext scene,
-                     Prefix support,
-                     uint triangleIndex,
-                     float2 barycentric,
-                     inout RayQueryContext queries)
+// Slang preserves the shared boundary when the incoming context is a value and the updated context
+// is a distinct output. Forwarding inout through a noinline function can still expand the body.
+[noinline] float3 EvaluateAreaContributionOutOfLine(SceneContext scene,
+                                                   Prefix prefix,
+                                                   Reservoir suffix,
+                                                   bool shouldUseLayeredBsdf,
+                                                   RayQueryContext queriesIn,
+                                                   out RayQueryContext outQueries)
 {
-    return max(
-        dot(EvaluateAreaContribution(scene, support, GetSurfaceHit(scene, triangleIndex, barycentric), false, queries),
-            LUMINANCE_WEIGHTS),
-        MINIMUM_AREA_TARGET);
+    RayQueryContext queries = queriesIn;
+    float3 value = EvaluateAreaContributionBody(scene, prefix, suffix, shouldUseLayeredBsdf, queries);
+    outQueries = queries;
+    return value;
 }
 
-void StreamCandidate(uint triangleIndex,
-                     float2 barycentric,
+float3 EvaluateAreaContribution(SceneContext scene,
+                                Prefix prefix,
+                                Reservoir suffix,
+                                bool shouldUseLayeredBsdf,
+                                inout RayQueryContext queries)
+{
+    RayQueryContext resultQueries;
+    float3 value = EvaluateAreaContributionOutOfLine(scene, prefix, suffix, shouldUseLayeredBsdf, queries, resultQueries);
+    queries = resultQueries;
+    return value;
+}
+
+// A prefix-independent envelope keeps retargeting between freshly sampled supporting prefixes
+// bounded. A tiny absolute floor alone allows a near-zero source target to acquire an enormous
+// weight and persist as a rare bright tail across many frames. Only the SELECTION target is bounded;
+// the final radiance and contribution weights are never clamped.
+[noinline] float EvaluateIntrinsicTarget(SceneContext scene, Reservoir suffix)
+{
+    float3 coefficient = suffix.SuffixBounces > 0
+                             ? suffix.TailCoefficient
+                             : EvaluateMaterial(scene, GetSurfaceHit(scene, suffix.TriangleIndex, suffix.Barycentric)).Emission;
+    return max(dot(coefficient, LUMINANCE_WEIGHTS), MINIMUM_AREA_TARGET);
+}
+
+float EvaluateTarget(SceneContext scene,
+                     Prefix support,
+                     Reservoir suffix,
+                     inout RayQueryContext queries)
+{
+    float intrinsic = EvaluateIntrinsicTarget(scene, suffix);
+    float connection = dot(EvaluateAreaContribution(scene, support, suffix, false, queries), LUMINANCE_WEIGHTS);
+    // Stable connection/(intrinsic+connection), even when both finite inputs approach float's limit.
+    float ratio = connection > intrinsic ? 1 / (1 + intrinsic / connection)
+                                         : (connection / intrinsic) / (1 + connection / intrinsic);
+    return intrinsic * (1 + ratio);
+}
+
+void StreamCandidate(Reservoir suffix,
                      float mass,
                      uint count,
                      float coin,
@@ -326,8 +434,11 @@ void StreamCandidate(uint triangleIndex,
     }
     if (shouldSelect == true)
     {
-        inoutResult.TriangleIndex = triangleIndex;
-        inoutResult.Barycentric = barycentric;
+        inoutResult.TriangleIndex = suffix.TriangleIndex;
+        inoutResult.Barycentric = suffix.Barycentric;
+        inoutResult.SuffixBounces = suffix.SuffixBounces;
+        inoutResult.DirectionWorld = suffix.DirectionWorld;
+        inoutResult.TailCoefficient = suffix.TailCoefficient;
     }
 }
 
@@ -347,9 +458,8 @@ void MergeReservoir(SceneContext scene,
         inoutResult.CandidateCount += source.CandidateCount;
         return;
     }
-    float target = EvaluateTarget(scene, support, source.TriangleIndex, source.Barycentric, queries);
-    StreamCandidate(source.TriangleIndex,
-                    source.Barycentric,
+    float target = EvaluateTarget(scene, support, source, queries);
+    StreamCandidate(source,
                     ComputeConditionalMass(target, source.Weight, source.CandidateCount),
                     source.CandidateCount,
                     SamplePassRandom(launch, dimension),
@@ -365,7 +475,7 @@ void FinalizeReservoir(SceneContext scene,
                        inout RayQueryContext queries)
 {
     float target = inoutResult.TriangleIndex != SCENE_INVALID_INDEX
-                       ? EvaluateTarget(scene, support, inoutResult.TriangleIndex, inoutResult.Barycentric, queries)
+                       ? EvaluateTarget(scene, support, inoutResult, queries)
                        : 0;
     inoutResult.Weight = ComputeConditionalWeight(massSum, target, inoutResult.CandidateCount);
     // Capping is a confidence policy; it must never change the finalized contribution weight.
@@ -381,7 +491,7 @@ float3 GatherSuffix(SceneContext scene, Prefix prefix, Reservoir reservoir, inou
     if (prefix.IsValid == false || reservoir.TriangleIndex == SCENE_INVALID_INDEX || reservoir.Weight <= 0)
         return float3(0);
     SurfaceHit endpoint = GetSurfaceHit(scene, reservoir.TriangleIndex, reservoir.Barycentric);
-    float3 contribution = EvaluateAreaContribution(scene, prefix, endpoint, true, queries);
+    float3 contribution = EvaluateAreaContribution(scene, prefix, reservoir, true, queries);
     if (any(contribution > 0) == false)
         return float3(0);
     float3 offsetWorld = endpoint.PositionWorld - prefix.Hit.PositionWorld;

@@ -3,7 +3,8 @@
 // Thanks to Markus Kettunen, Daqi Lin, Ravi Ramamoorthi, Thomas Bashford-Rogers and Chris Wyman,
 // "Conditional Resampled Importance Sampling and ReSTIR", SIGGRAPH Asia 2023, sections 4-6,
 // Equations 12-17 and 22, https://doi.org/10.1145/3610548.3618245 .
-// Specialization: suffixes are mesh-light endpoints in world area, with full support for every prefix.
+// Specialization: world-area suffixes carry a prefix-independent cached transport tail and path length.
+// All lengths share full proposal support for every prefix; the reconnection BSDF is reevaluated.
 // The identity shift has Jacobian one. Confidence/M gives a constant partition of unity, so conditional
 // RIS reduces to target * UCW * M and W = sum / (M * selectedTarget). No support-dependent rejection,
 // visibility conditioning, PDF reconstruction from W, or prefix throughput enters reservoir selection.

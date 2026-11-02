@@ -8971,8 +8971,8 @@ TEST_CASE("One-more-vertex unsupported lighting has a repair and clears after sc
     }
 }
 
-// Conditional ReSTIR specializes Kettunen et al. (SIGGRAPH Asia 2023), Equation 22,
-// https://doi.org/10.1145/3610548.3618245 , to mesh-light endpoints in world area.
+// Conditional ReSTIR adapts Kettunen et al. (SIGGRAPH Asia 2023), Equation 22,
+// https://doi.org/10.1145/3610548.3618245 , to marked area suffixes with cached path tails.
 // The CPU oracle uses independent path tracing, emitter power selection and BSDF/light MIS;
 // it shares neither reservoirs nor conditional contribution weights with the GPU implementation.
 namespace
@@ -8984,7 +8984,14 @@ constexpr PackageLocation CONDITIONAL_RESTIR_NO_REUSE{LUDUS_RG3_CONDITIONAL_REST
 constexpr PackageLocation CONDITIONAL_RESTIR_DIRECT{LUDUS_RG3_CONDITIONAL_RESTIR_DIRECT_DIRECTORY,
                                                     "rg2_conditional_restir_direct.lurgrt"};
 
-math::Vector3 ComputeConditionalOracleMean(const CornellBox& room, uint32 scatteringCount)
+constexpr PackageLocation CONDITIONAL_RESTIR_ENDPOINTS{LUDUS_RG3_CONDITIONAL_RESTIR_ENDPOINTS_DIRECTORY,
+                                                       "rg2_conditional_restir_endpoints.lurgrt"};
+constexpr PackageLocation CONDITIONAL_RESTIR_IMMEDIATE{LUDUS_RG3_CONDITIONAL_RESTIR_IMMEDIATE_DIRECTORY,
+                                                       "rg2_conditional_restir_immediate.lurgrt"};
+constexpr PackageLocation CONDITIONAL_RESTIR_MAXIMUM{LUDUS_RG3_CONDITIONAL_RESTIR_MAXIMUM_DIRECTORY,
+                                                     "rg2_conditional_restir_maximum.lurgrt"};
+
+math::Vector3 ComputeConditionalOracleMean(const CornellBox& room, uint32 scatteringCount, uint64 randomSeed = 123)
 {
     namespace internal = renderer::internal;
     renderer::RenderGraphSceneDescription scene;
@@ -9003,7 +9010,7 @@ math::Vector3 ComputeConditionalOracleMean(const CornellBox& room, uint32 scatte
     constexpr usize SCENE_BYTES = 8 * 1024 * 1024;
     core::UniquePtr<internal::ReferenceJob> oracle;
     REQUIRE(internal::BuildMaterialGraphRayScene(scene, camera, SCENE_BYTES, oracle) == rhi::RasterStatus::Ready);
-    oracle->Key = math::RandomKey{123};
+    oracle->Key = math::RandomKey{randomSeed};
     // Graph traversal preserves original mesh primitive IDs across material slots. CPU transport expects
     // material-instance-local IDs when indexing FirstTriangle + Primitive; adapt only this oracle snapshot.
     for (const internal::ReferenceInstance& instance : oracle->Scene.Instances)
@@ -9060,46 +9067,128 @@ TEST_CASE("Conditional ReSTIR independent final gather agrees with CPU transport
 {
     GraphGpuFixture fixture;
     CornellBox room;
-    constexpr usize FRAME_COUNT = 512;
+    constexpr usize FRAME_COUNT = 2048;
     constexpr float32 RELATIVE_MEAN_TOLERANCE = .05F;
-    const math::Vector3 expected = ComputeConditionalOracleMean(room, 2);
+    const math::Vector3 expected = ComputeConditionalOracleMean(room, 5);
+    constexpr usize ESTIMATOR_COUNT = 2;
+    StaticArray<math::Vector3, ESTIMATOR_COUNT> means;
+    usize estimator = 0;
     for (const PackageLocation& location : {CONDITIONAL_RESTIR_TEMPLATE, CONDITIONAL_RESTIR_NO_REUSE})
     {
         PreparedGraph graph(fixture, location, room, 1);
         Array<math::Vector3> pixels;
         RenderRestirGiMean(graph, fixture, FRAME_COUNT, pixels);
         const math::Vector3 actual = ComputeImageMean(pixels);
+        math::Vector3 peak{};
+        for (const math::Vector3& pixel : pixels)
+            peak = {math::Max(peak.X, pixel.X), math::Max(peak.Y, pixel.Y), math::Max(peak.Z, pixel.Z)};
+        INFO("image peak RGB " << peak.X << ',' << peak.Y << ',' << peak.Z);
         INFO("conditional gather RGB " << actual.X << ',' << actual.Y << ',' << actual.Z << ", CPU RGB " << expected.X
                                        << ',' << expected.Y << ',' << expected.Z);
         CheckMeansAgree(actual, expected, RELATIVE_MEAN_TOLERANCE);
+        means[estimator++] = actual;
     }
     const math::Vector3 directExpected = ComputeConditionalOracleMean(room, 1);
     PreparedGraph direct(fixture, CONDITIONAL_RESTIR_DIRECT, room, 1);
     Array<math::Vector3> pixels;
     RenderRestirGiMean(direct, fixture, FRAME_COUNT, pixels);
-    CheckMeansAgree(ComputeImageMean(pixels), directExpected, RELATIVE_MEAN_TOLERANCE);
+    const math::Vector3 directMean = ComputeImageMean(pixels);
+    CheckMeansAgree(directMean, directExpected, RELATIVE_MEAN_TOLERANCE);
+    // Isolate indirect energy so primary emission/direct lighting cannot hide a missing tail.
+    constexpr float32 RELATIVE_INDIRECT_TOLERANCE = .1F;
+    for (const math::Vector3& mean : means)
+        CheckMeansAgree(mean - directMean, expected - directExpected, RELATIVE_INDIRECT_TOLERANCE);
     // The CPU oracle must contain actual indirect transport, rather than agreeing because both paths omit it.
     constexpr float32 MINIMUM_INDIRECT_GAIN = 1.1F;
     CHECK(expected.Y > MINIMUM_INDIRECT_GAIN * directExpected.Y);
 }
 
-TEST_CASE("Conditional ReSTIR preserves layered BSDF prefix weights and gathers",
+TEST_CASE("Conditional ReSTIR traces variable-length suffixes at immediate and maximum gather depths",
+          "[render-graph][gpu][conditional-restir][suffix-depth]")
+{
+    const uint64 randomSeed = GENERATE(1, 2);
+    INFO("sampling seed " << randomSeed);
+    GraphGpuFixture fixture;
+    CornellBox room;
+    constexpr usize FRAME_COUNT = 4096;
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .05F;
+    struct DepthCase
+    {
+        PackageLocation Location;
+        uint32 ScatteringCount;
+    };
+    constexpr usize DEPTH_CASE_COUNT = 3;
+    const StaticArray<DepthCase, DEPTH_CASE_COUNT> cases{{
+        {CONDITIONAL_RESTIR_ENDPOINTS, 2},
+        {CONDITIONAL_RESTIR_IMMEDIATE, 4},
+        {CONDITIONAL_RESTIR_MAXIMUM, 9},
+    }};
+    for (const DepthCase& depthCase : cases)
+    {
+        const math::Vector3 expected = ComputeConditionalOracleMean(room, depthCase.ScatteringCount, randomSeed);
+        PreparedGraph graph(fixture, depthCase.Location, room, randomSeed);
+        Array<math::Vector3> pixels;
+        RenderRestirGiMean(graph, fixture, FRAME_COUNT, pixels);
+        const math::Vector3 actual = ComputeImageMean(pixels);
+        INFO("scattering count " << depthCase.ScatteringCount << ", GPU RGB " << actual.X << ',' << actual.Y << ','
+                                 << actual.Z << ", CPU RGB " << expected.X << ',' << expected.Y << ',' << expected.Z);
+        CheckMeansAgree(actual, expected, RELATIVE_MEAN_TOLERANCE);
+    }
+    const math::Vector3 shortMean = ComputeConditionalOracleMean(room, 2);
+    const math::Vector3 longMean = ComputeConditionalOracleMean(room, 9);
+    // The matched integral must contain substantial higher-order light, so parity cannot pass by
+    // accidentally rendering the old one-bounce approximation at every configured length.
+    constexpr float32 MINIMUM_HIGHER_ORDER_GAIN = 1.1F;
+    CHECK(longMean.Y > MINIMUM_HIGHER_ORDER_GAIN * shortMean.Y);
+}
+
+TEST_CASE("Conditional ReSTIR preserves layered and glossy BSDF weights along multi-bounce suffixes",
           "[render-graph][gpu][conditional-restir][coating]")
+{
+    using ludus::content::scene_format::MaterialModel;
+    const MaterialModel model = GENERATE(MaterialModel::CoatedDiffuse, MaterialModel::Conductor);
+    INFO("material model " << static_cast<uint32>(model));
+    GraphGpuFixture fixture;
+    CornellBox room;
+    for (renderer::SceneShaderMaterial& material : room.Materials)
+    {
+        material.Scattering.Model = model;
+        material.Scattering.AlphaU = model == MaterialModel::CoatedDiffuse ? .1F : .6F;
+        material.Scattering.AlphaV = material.Scattering.AlphaU;
+        material.Scattering.Eta = {.2F, .2F, .2F};
+        material.Scattering.K = {3, 3, 3};
+    }
+    const math::Vector3 expected = ComputeConditionalOracleMean(room, 5);
+    for (const PackageLocation& location : {CONDITIONAL_RESTIR_TEMPLATE, CONDITIONAL_RESTIR_NO_REUSE})
+    {
+        PreparedGraph graph(fixture, location, room, 1);
+        Array<math::Vector3> pixels;
+        constexpr usize FRAME_COUNT = 4096;
+        RenderRestirGiMean(graph, fixture, FRAME_COUNT, pixels);
+        const math::Vector3 actual = ComputeImageMean(pixels);
+        INFO("layered/glossy GPU RGB " << actual.X << ',' << actual.Y << ',' << actual.Z << ", CPU RGB " << expected.X
+                                       << ',' << expected.Y << ',' << expected.Z);
+        constexpr float32 RELATIVE_MEAN_TOLERANCE = .05F;
+        CheckMeansAgree(actual, expected, RELATIVE_MEAN_TOLERANCE);
+    }
+}
+
+TEST_CASE("Conditional ReSTIR separates primary emission from all reflected scattering orders",
+          "[render-graph][gpu][conditional-restir][emission]")
 {
     GraphGpuFixture fixture;
     CornellBox room;
     for (renderer::SceneShaderMaterial& material : room.Materials)
     {
-        material.Scattering.Model = ludus::content::scene_format::MaterialModel::CoatedDiffuse;
-        material.Scattering.AlphaU = .1F;
-        material.Scattering.AlphaV = .1F;
+        material.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+        material.BaseColor = {};
     }
-    const math::Vector3 expected = ComputeConditionalOracleMean(room, 2);
-    PreparedGraph graph(fixture, CONDITIONAL_RESTIR_TEMPLATE, room, 1);
+    const math::Vector3 expected = ComputeConditionalOracleMean(room, 5);
+    REQUIRE(expected.Y > 0);
+    PreparedGraph graph(fixture, CONDITIONAL_RESTIR_NO_REUSE, room, 1);
     Array<math::Vector3> pixels;
-    constexpr usize FRAME_COUNT = 512;
-    RenderRestirGiMean(graph, fixture, FRAME_COUNT, pixels);
-    constexpr float32 RELATIVE_MEAN_TOLERANCE = .05F;
+    RenderRestirGiMean(graph, fixture, 2, pixels);
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .00001F;
     CheckMeansAgree(ComputeImageMean(pixels), expected, RELATIVE_MEAN_TOLERANCE);
 }
 
