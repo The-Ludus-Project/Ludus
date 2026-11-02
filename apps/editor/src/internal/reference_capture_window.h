@@ -28,6 +28,7 @@ class QTabWidget;
 
 namespace ludus::editor
 {
+class CapturedImageView;
 class RenderGraphCaptureProfile;
 class RenderGraphLibraryCapture;
 class RenderGraphPreview;
@@ -138,7 +139,6 @@ Q_SIGNALS:
     void CaptureFinished();
 
 protected:
-    void resizeEvent(QResizeEvent* event) override;
     void showEvent(QShowEvent* event) override;
 
 private:
@@ -154,7 +154,7 @@ private:
     void refreshGraphTargets();
     void releaseCaptures() noexcept;
     void saveWithDialog();
-    void showScaledImages();
+    void showImages();
     [[nodiscard]] bool isRasterRendering() const noexcept;
     [[nodiscard]] bool isGraphSource() const noexcept;
     /// Request the capture profile of the viewport's drawing generation when a graph capture is selected.
@@ -221,9 +221,10 @@ private:
     QLabel* const mStatus;
     QLabel* const mComparisonText;
     QTabWidget* const mImages;
-    QLabel* const mImageLabel;
-    QLabel* const mRasterLabel;
-    QLabel* const mDifferenceLabel;
+    // Right-click copies or saves the full-resolution image of each tab.
+    CapturedImageView* const mImageView;
+    CapturedImageView* const mRasterView;
+    CapturedImageView* const mDifferenceView;
     QComboBox* const mSource;
     QLabel* const mGraph;
     QLabel* const mGraphProblem;
