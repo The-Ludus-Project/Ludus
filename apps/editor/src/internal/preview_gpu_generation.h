@@ -157,6 +157,12 @@ private:
     {
         return Source.Lit == false && IsPreviewDebugShading(Shading) == true;
     }
+    /// Debug-program rasterization: triangle edges for Wireframe, filled triangles otherwise.
+    [[nodiscard]] LUDUS_INLINE graphics::rhi::RasterFillMode getDebugFillMode() const noexcept
+    {
+        return IsPreviewLineShading(Shading) == true ? graphics::rhi::RasterFillMode::Lines
+                                                     : graphics::rhi::RasterFillMode::Solid;
+    }
     /// Material slot shared by untextured objects in unlit debug views, after the scene's surfaces.
     [[nodiscard]] LUDUS_INLINE foundation::int32 getDefaultDebugMaterial() const noexcept
     {

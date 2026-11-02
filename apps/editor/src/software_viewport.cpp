@@ -6,6 +6,8 @@
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
 
+#include <ludus/graphics/renderer/lighting_layout.h>
+
 #include <QVector>
 
 #include <cmath>
@@ -23,6 +25,10 @@ constexpr float32 DIFFUSE_SHADING = .7F;
 constexpr QRgb BACKGROUND_COLOUR = qRgba(9, 12, 15, 255);
 /// Largest 8-bit channel value.
 constexpr float32 CHANNEL_MAXIMUM = 255.0F;
+/// 8-bit alpha of an opaque pixel.
+constexpr int32 OPAQUE_ALPHA = 255;
+/// Corners of a triangle, averaged for its centroid.
+constexpr float32 TRIANGLE_CORNER_COUNT = 3.0F;
 /// Maximum vertices after clipping a triangle against the near and far planes.
 constexpr usize MAX_CLIPPED_VERTICES = 5;
 /// Depth-buffer clear value; reverse-Z stores 1 at the near plane and 0 at the far plane.
@@ -206,6 +212,46 @@ void DrawTriangle(Target& inoutTarget,
         }
     }
 }
+/// One-pixel depth-tested edge from a to b, as the GPU's line fill draws Wireframe; nearer or equal depth passes.
+void DrawLine(Target& inoutTarget, const ScreenVertex& a, const ScreenVertex& b, QRgb colour) noexcept
+{
+    const float32 deltaX = b.X - a.X;
+    const float32 deltaY = b.Y - a.Y;
+    const float32 length = math::Max(math::Abs(deltaX), math::Abs(deltaY));
+    const int32 steps = static_cast<int32>(std::ceil(length));
+    for (int32 step = 0; step <= steps; ++step)
+    {
+        const float32 t = steps == 0 ? 0.0F : static_cast<float32>(step) / static_cast<float32>(steps);
+        const int32 x = static_cast<int32>(std::floor(a.X + deltaX * t));
+        const int32 y = static_cast<int32>(std::floor(a.Y + deltaY * t));
+        if (x < 0 || y < 0 || x >= inoutTarget.Width || y >= inoutTarget.Height)
+        {
+            continue;
+        }
+        const float32 fragmentDepth = a.Depth + (b.Depth - a.Depth) * t;
+        float32& depth = (*inoutTarget.DepthOrNull)[y * inoutTarget.Width + x];
+        if (fragmentDepth < depth)
+        {
+            continue;
+        }
+        depth = fragmentDepth;
+        reinterpret_cast<QRgb*>(inoutTarget.ImageOrNull->scanLine(y))[x] = colour;
+    }
+}
+/// Wireframe edge colour shared with renderer_lit.slang, dimmed as the surface turns edge-on to the camera.
+[[nodiscard]] QRgb ComputeWireframeColour(float32 facing) noexcept
+{
+    constexpr float32 PERCENT = 100.0F;
+    const float32 edgeOn = static_cast<float32>(graphics::renderer::MATERIAL_DEBUG_WIREFRAME_EDGE_ON_PERCENT) / PERCENT;
+    const float32 shade = edgeOn + (1.0F - edgeOn) * math::Clamp(facing, 0.0F, 1.0F);
+    const auto scale = [shade](graphics::renderer::LightingLayoutValue channel) noexcept {
+        return static_cast<int32>(std::lround(static_cast<float64>(static_cast<float32>(channel) * shade)));
+    };
+    return qRgba(scale(graphics::renderer::MATERIAL_DEBUG_WIREFRAME_RED),
+                 scale(graphics::renderer::MATERIAL_DEBUG_WIREFRAME_GREEN),
+                 scale(graphics::renderer::MATERIAL_DEBUG_WIREFRAME_BLUE),
+                 OPAQUE_ALPHA);
+}
 [[nodiscard]] SurfaceColour DescribeSurface(const RenderScene& scene, const PreviewObject& object) noexcept
 {
     SurfaceColour result;
@@ -306,6 +352,26 @@ QImage RenderSoftwareView(const RenderScene& scene,
                 continue;
             }
             const ScreenVertex first = ProjectVertex(clipped[0], target.Width, target.Height);
+            if (IsPreviewLineShading(mode) == true)
+            {
+                // Near/far clipping can add polygon edges; they lie on the clip planes, as GPU line fill draws them.
+                math::Vector3 toCameraWorld =
+                    view.OrthographicCamera == true
+                        ? -view.CameraForward
+                        : view.CameraPosition - (world[0] + world[1] + world[2]) / TRIANGLE_CORNER_COUNT;
+                static_cast<void>(math::TryNormalize(toCameraWorld, 0.0F, toCameraWorld));
+                const QRgb colour =
+                    ComputeWireframeColour(hasNormal == true ? math::Abs(math::Dot(normal, toCameraWorld)) : 1.0F);
+                ScreenVertex previous = ProjectVertex(clipped[count - 1], target.Width, target.Height);
+                for (usize corner = 0; corner < count; ++corner)
+                {
+                    const ScreenVertex current =
+                        corner == 0 ? first : ProjectVertex(clipped[corner], target.Width, target.Height);
+                    DrawLine(target, previous, current, colour);
+                    previous = current;
+                }
+                continue;
+            }
             for (usize fan = 1; fan + 1 < count; ++fan)
             {
                 DrawTriangle(target,

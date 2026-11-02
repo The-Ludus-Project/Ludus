@@ -34,15 +34,24 @@ enum class PreviewShading : foundation::uint8
     Uv,
     /// Direct lights affecting each pixel, as a viridis ramp.
     LightCount,
+    /// Triangle edges only, light grey dimming where surfaces turn edge-on. Needs a GPU backend with line fill.
+    Wireframe,
 };
 /// Number of PreviewShading values, for enumeration and validation.
 inline constexpr foundation::usize PREVIEW_SHADING_COUNT =
-    static_cast<foundation::usize>(PreviewShading::LightCount) + 1;
+    static_cast<foundation::usize>(PreviewShading::Wireframe) + 1;
 
 /// Whether the mode is a renderer debug view rather than an ordinary shading mode.
 [[nodiscard]] bool IsPreviewDebugShading(PreviewShading shading) noexcept;
 /// Renderer debug view for the mode; None for Solid, Albedo and Lit.
 [[nodiscard]] graphics::renderer::MaterialDebugView GetMaterialDebugView(PreviewShading shading) noexcept;
+/// Whether the mode rasterizes triangle edges rather than filled triangles (Wireframe).
+[[nodiscard]] bool IsPreviewLineShading(PreviewShading shading) noexcept;
+/// Whether a project-graph viewport offers the mode as a built-in debug view: Albedo and every renderer debug view.
+/// Solid and Lit are left to the graph, whose final output is the lit image.
+[[nodiscard]] bool IsPreviewGraphDebugView(PreviewShading shading) noexcept;
+/// Short mode name, the label before its explanation, such as "Normal" or "Light count".
+[[nodiscard]] QString GetPreviewShadingName(PreviewShading shading);
 /// Stable lower-case persistence key, such as "lit" or "lightCount".
 [[nodiscard]] QString GetPreviewShadingKey(PreviewShading shading);
 /// Parse a persistence key; unknown keys return false and preserve outShading.

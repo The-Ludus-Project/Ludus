@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include "internal/preview_shading.h"
 #include "internal/viewport_trace.h"
 
 #include <QImage>
@@ -40,12 +41,19 @@ public:
     [[nodiscard]] const QImage& GetImage() const noexcept;
     /// Number of complete images received by this display.
     [[nodiscard]] foundation::uint64 GetPresentedFrames() const noexcept;
+    /// Built-in debug view chosen in the output menu instead of a graph image (see
+    /// IsPreviewGraphDebugView). The owning viewport presents its own raster frames in that shading.
+    /// @param outShading Receives the chosen mode; preserved when false.
+    /// @return False while the menu selects the graph's final output or one of its attachments.
+    [[nodiscard]] bool TryGetDebugView(PreviewShading& outShading) const;
 
 Q_SIGNALS:
     /// Refreshed overlay text, also consumed by the shared-device presentation.
     void StatisticsChanged();
     /// Current authoring/progress diagnostic, shared with the GPU viewport overlay.
     void StatusChanged(const QString& text);
+    /// The output menu switched to, from or between built-in debug views; read TryGetDebugView.
+    void DebugViewChanged();
 
 protected:
     void paintEvent(QPaintEvent*) override;

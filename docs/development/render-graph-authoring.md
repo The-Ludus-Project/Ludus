@@ -5308,12 +5308,26 @@ error; the viewport explicitly labels its engine-default fallback until a usable
 generation is ready. Fallback rendering leaves the authored sources unchanged. Opening a library in an existing package keeps
 its `main.lurender.json` as the execution root while editing the library.
 
+### World viewport output selector
+
 The viewport's output selector lists **Final output** and every attachment of the active
 runtime generation, including intermediate colour and depth targets. It does not require
 an Export node for each diagnostic target. Selection follows expanded resource names across
 rebuilds; a removed target returns to Final output. Discarded/undefined attachments report
 that their contents cannot be shown. Depth is displayed with an automatic value range.
 The separate texture inspector has an independent selection.
+
+After the graph's own outputs, the selector offers the editor's built-in debug views:
+**Debug: Albedo**, **Normal**, **Depth**, **Roughness**, **Metallic**, **UV**, **Light count**
+and **Wireframe**. These work with every graph, including ones that write no G-buffer, because
+they do not read graph attachments. Choosing one makes the viewport present its built-in raster
+renderer's frames of the same World extraction and live camera in that quantity, as ray path
+inspection does; selection and navigation keep working. They show the authored inputs as the
+built-in renderer interprets them, not values computed by your graph's own shaders; inspect
+those through the graph's attachments above. The graph is not rebuilt. Choosing **Final output**
+or an attachment presents the graph again. The views and their colours are described under
+[the built-in viewport profile](editor-workspace.md#earlier-built-in-viewport-profile) in the editor
+workspace guide.
 
 The **Stats** toggle beside the viewport controls shows a live performance overlay.
 The preference is saved with World navigation. It refreshes four times a second;

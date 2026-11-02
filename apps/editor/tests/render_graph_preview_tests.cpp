@@ -11,6 +11,7 @@
 #include "internal/graph_display_frames.h"
 #include "internal/main_window.h"
 #include "internal/offscreen_frame_reader.h"
+#include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
 #include "internal/reference_capture_window.h"
 #include "internal/render_graph_defaults.h"
@@ -2176,6 +2177,142 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     {
         REQUIRE(world.grab().save(capture) == true);
     }
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+TEST_CASE("Graph output menu offers built-in debug views drawn by the World preview",
+          "[editor][render-graph][world-graph][shading]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const std::string_view level = ludus::world_demo::ExampleLevel();
+    const QString path = QFileInfo(WriteBytes(project,
+                                              QStringLiteral("room.world.json"),
+                                              QByteArray(level.data(), static_cast<qsizetype>(level.size()))))
+                             .canonicalFilePath();
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    world.SetProject(project.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Open(path) == true);
+    world.ResumePreview();
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewport != nullptr);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+    RenderPreview& preview = world.GetRenderPreview();
+    const PreviewShading original = preview.GetShading();
+    QComboBox* targets = viewport->findChild<QComboBox*>(QStringLiteral("worldGraphTargets"));
+    REQUIRE(targets != nullptr);
+    // Every built-in debug view follows the graph's own outputs, named and explained.
+    QStringList debugItems;
+    for (int32 i = 0; i < targets->count(); ++i)
+    {
+        if (targets->itemText(i).startsWith(QStringLiteral("Debug: ")) == true)
+        {
+            debugItems.append(targets->itemText(i));
+            CHECK(targets->itemData(i, Qt::ToolTipRole).toString().contains(QStringLiteral(" — ")) == true);
+        }
+    }
+    usize expectedCount = 0;
+    for (usize i = 0; i < PREVIEW_SHADING_COUNT; ++i)
+    {
+        expectedCount += IsPreviewGraphDebugView(static_cast<PreviewShading>(i)) == true ? 1U : 0U;
+    }
+    CHECK(static_cast<usize>(debugItems.size()) == expectedCount);
+    CHECK(debugItems.contains(QStringLiteral("Debug: Albedo")) == true);
+    CHECK(debugItems.contains(QStringLiteral("Debug: Normal")) == true);
+    CHECK(debugItems.contains(QStringLiteral("Debug: Wireframe")) == true);
+    const auto selectDebugView = [&](PreviewShading shading) {
+        const int32 index = targets->findText(QStringLiteral("Debug: %1").arg(GetPreviewShadingName(shading)));
+        REQUIRE(index >= 0);
+        targets->setCurrentIndex(index);
+    };
+    // Optional render evidence: the preview's displayed debug frame of the example level.
+    const QString shotDirectory = qEnvironmentVariable("LUDUS_VIEWPORT_DEBUG_SHOTS");
+    const auto saveShot = [&](PreviewShading shading) {
+        if (shotDirectory.isEmpty() == true)
+        {
+            return;
+        }
+        REQUIRE(waitFor([&]() { return preview.HasPendingFrame(); }) == true);
+        renderer::ViewportFrame frame;
+        renderer::ViewportImage image;
+        REQUIRE(preview.TakeFrame(frame, image) == true);
+        OffscreenFrameReader reader;
+        REQUIRE(reader.Begin(preview.GetDevice(), image.Texture, image.Width, image.Height) == true);
+        OffscreenReadStatus status = OffscreenReadStatus::Pending;
+        REQUIRE(waitFor([&]() {
+                    static_cast<void>(rhi::PollLifetime(preview.GetDevice()));
+                    status = reader.Poll();
+                    return status != OffscreenReadStatus::Pending;
+                }) == true);
+        REQUIRE(status == OffscreenReadStatus::Complete);
+        const QString name = QStringLiteral("%1/world-%2.png").arg(shotDirectory, GetPreviewShadingKey(shading));
+        CHECK(reader.TakeImage().save(name) == true);
+        preview.ReleaseFrame(frame);
+    };
+    PreviewShading chosen = PreviewShading::Solid;
+    CHECK(graphView->TryGetDebugView(chosen) == false);
+    // A debug view hands frame production to the World preview, which draws that shading itself.
+    selectDebugView(PreviewShading::Normal);
+    REQUIRE(graphView->TryGetDebugView(chosen) == true);
+    CHECK(chosen == PreviewShading::Normal);
+    CHECK(preview.GetShading() == PreviewShading::Normal);
+    CHECK(preview.IsBuiltInViewShown() == true);
+    // Saved navigation keeps the earlier shading; a debug view chosen here is not persisted.
+    CHECK(preview.Navigation().value(QStringLiteral("shading")).toString() == GetPreviewShadingKey(original));
+    // The graph image no longer covers the viewport, as during ray path inspection.
+    CHECK(graphView->isHidden() == true);
+    // The status names the shading only after the preview drew a frame with it.
+    REQUIRE(waitFor([&]() {
+                return preview.Status().contains(GetPreviewShadingStatus(PreviewShading::Normal)) == true;
+            }) == true);
+    saveShot(PreviewShading::Normal);
+    // Switching between debug views keeps the preview in charge; Wireframe draws edges when the device can.
+    selectDebugView(PreviewShading::Wireframe);
+    CHECK(preview.GetShading() == PreviewShading::Wireframe);
+    CHECK(preview.IsBuiltInViewShown() == true);
+    REQUIRE(waitFor([&]() {
+                return preview.Status().contains(GetPreviewShadingStatus(PreviewShading::Wireframe)) == true ||
+                       preview.Status().contains(QStringLiteral("line rasterization")) == true;
+            }) == true);
+    saveShot(PreviewShading::Wireframe);
+    // The graph's final output returns frame production to the graph and restores the earlier shading.
+    targets->setCurrentIndex(0);
+    CHECK(preview.Navigation().value(QStringLiteral("shading")).toString() == GetPreviewShadingKey(original));
+    CHECK(graphView->TryGetDebugView(chosen) == false);
+    CHECK(preview.IsBuiltInViewShown() == false);
+    CHECK(preview.GetShading() == original);
+    CHECK(graphView->isHidden() == false);
+    // Moving between graph outputs leaves the preview's shading alone.
+    REQUIRE(targets->count() > 1);
+    targets->setCurrentIndex(1);
+    CHECK(preview.GetShading() == original);
+    CHECK(preview.IsBuiltInViewShown() == false);
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();

@@ -1,5 +1,9 @@
+#include "internal/offscreen_frame_reader.h"
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
+#include "internal/render_preview.h"
+#include "internal/render_scene.h"
+#include "internal/software_viewport.h"
 #include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
 
@@ -7,13 +11,21 @@
 #include <ludus/foundation/math/vector.hpp>
 
 #include <ludus/graphics/renderer/lighting.hpp>
+#include <ludus/graphics/renderer/lighting_layout.h>
 #include <ludus/graphics/renderer/renderer.hpp>
+#include <ludus/graphics/renderer/viewport.hpp>
+#include <ludus/graphics/rhi/lifetime.h>
+#include <ludus/graphics/rhi/raster.h>
+#include <ludus/graphics/rhi/rhi.h>
 
+#include <QImage>
+#include <QObject>
 #include <QRect>
 #include <QSet>
 #include <QSize>
 #include <QString>
 #include <QStringList>
+#include <QTest>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -30,6 +42,126 @@ namespace
 constexpr float64 STEADY_MILLISECONDS = 4;
 /// Arbitrary outlier added after the window fills, in milliseconds.
 constexpr float64 OUTLIER_MILLISECONDS = 34;
+/// Side of the square wireframe test frames, in pixels.
+constexpr int32 WIREFRAME_FRAME_PIXELS = 96;
+/// Smallest channel of a light pixel: the white triangle or a wireframe edge, not the dark grid or background.
+constexpr int32 LIGHT_CHANNEL_MINIMUM = 100;
+/// Largest channel spread of a light pixel, which excludes the saturated red, green and blue axes.
+constexpr int32 LIGHT_CHANNEL_SPREAD = 40;
+/// Largest difference of red/blue and green/blue ratios from the shared wireframe colour's ratios.
+constexpr float64 WIREFRAME_RATIO_TOLERANCE = .03;
+/// Largest per-channel difference from the shared wireframe colour on the software edge, which faces the camera
+/// within a few degrees.
+constexpr int32 SOFTWARE_WIREFRAME_TOLERANCE = 4;
+
+/// One camera-facing triangle in an unlit World, framed automatically by the preview.
+RenderScene MakeTriangleScene()
+{
+    RenderScene scene;
+    scene.Identity = QByteArrayLiteral("wireframe-triangle");
+    scene.AssetsIdentity = scene.Identity;
+    PreviewMesh mesh;
+    mesh.Positions = {{-1, -1, 0}, {1, -1, 0}, {0, 1, 0}};
+    mesh.Uvs = {{0, 0}, {1, 0}, {.5F, 1}};
+    mesh.Indices = {0, 1, 2};
+    scene.Meshes.append(mesh);
+    PreviewObject object;
+    object.Id = QStringLiteral("triangle");
+    object.Mesh = 0;
+    scene.Objects.append(object);
+    return scene;
+}
+/// Whether pixel is light and nearly grey: the white triangle or a wireframe edge, never the editor's dark world
+/// grid, background or saturated axes.
+bool IsLightPixel(QRgb pixel) noexcept
+{
+    const int32 smallest = qMin(qRed(pixel), qMin(qGreen(pixel), qBlue(pixel)));
+    const int32 largest = qMax(qRed(pixel), qMax(qGreen(pixel), qBlue(pixel)));
+    return smallest >= LIGHT_CHANNEL_MINIMUM && largest - smallest <= LIGHT_CHANNEL_SPREAD;
+}
+usize CountLightPixels(const QImage& image)
+{
+    usize count = 0;
+    for (int32 y = 0; y < image.height(); ++y)
+    {
+        for (int32 x = 0; x < image.width(); ++x)
+        {
+            count += IsLightPixel(image.pixel(x, y)) == true ? 1U : 0U;
+        }
+    }
+    return count;
+}
+/// The brightest pixel of image by channel sum, which on a wireframe is an edge facing the camera.
+QRgb FindBrightestPixel(const QImage& image)
+{
+    QRgb brightest = image.pixel(0, 0);
+    for (int32 y = 0; y < image.height(); ++y)
+    {
+        for (int32 x = 0; x < image.width(); ++x)
+        {
+            const QRgb pixel = image.pixel(x, y);
+            if (IsLightPixel(pixel) == true &&
+                qRed(pixel) + qGreen(pixel) + qBlue(pixel) > qRed(brightest) + qGreen(brightest) + qBlue(brightest))
+            {
+                brightest = pixel;
+            }
+        }
+    }
+    return brightest;
+}
+/// Check that pixel is the shared wireframe colour at some facing shade: equal channel ratios, no brighter.
+void CheckWireframeHue(QRgb pixel)
+{
+    CAPTURE(qRed(pixel), qGreen(pixel), qBlue(pixel));
+    REQUIRE(qBlue(pixel) > 0);
+    const float64 blue = static_cast<float64>(renderer::MATERIAL_DEBUG_WIREFRAME_BLUE);
+    CHECK(qAbs(static_cast<float64>(qRed(pixel)) / qBlue(pixel) - renderer::MATERIAL_DEBUG_WIREFRAME_RED / blue) <=
+          WIREFRAME_RATIO_TOLERANCE);
+    CHECK(qAbs(static_cast<float64>(qGreen(pixel)) / qBlue(pixel) - renderer::MATERIAL_DEBUG_WIREFRAME_GREEN / blue) <=
+          WIREFRAME_RATIO_TOLERANCE);
+    CHECK(qBlue(pixel) <= static_cast<int32>(renderer::MATERIAL_DEBUG_WIREFRAME_BLUE) + 1);
+}
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+/// Timeout for preparing and reading back one preview frame, in milliseconds.
+constexpr int32 PREVIEW_TIMEOUT_MILLISECONDS = 30000;
+/// Draw the running preview in shading and read the displayed frame back; null on timeout or failure.
+QImage CaptureShading(RenderPreview& inoutPreview, PreviewShading shading)
+{
+    inoutPreview.SetShading(shading);
+    const bool hasFrame = QTest::qWaitFor(
+        [&inoutPreview]() {
+            return (inoutPreview.Frames() >= 2 && inoutPreview.HasPendingFrame() == true) ||
+                   inoutPreview.Running() == false;
+        },
+        PREVIEW_TIMEOUT_MILLISECONDS);
+    renderer::ViewportFrame frame;
+    renderer::ViewportImage image;
+    if (hasFrame == false || inoutPreview.TakeFrame(frame, image) == false)
+    {
+        return {};
+    }
+    OffscreenFrameReader reader;
+    QImage result;
+    if (reader.Begin(inoutPreview.GetDevice(), image.Texture, image.Width, image.Height) == true)
+    {
+        OffscreenReadStatus status = OffscreenReadStatus::Pending;
+        const bool isRead = QTest::qWaitFor(
+            [&inoutPreview, &reader, &status]() {
+                static_cast<void>(ludus::graphics::rhi::PollLifetime(inoutPreview.GetDevice()));
+                status = reader.Poll();
+                return status != OffscreenReadStatus::Pending;
+            },
+            PREVIEW_TIMEOUT_MILLISECONDS);
+        if (isRead == true && status == OffscreenReadStatus::Complete)
+        {
+            result = reader.TakeImage();
+        }
+        reader.Cancel();
+    }
+    inoutPreview.ReleaseFrame(frame);
+    return result;
+}
+#endif
 } // namespace
 
 TEST_CASE("Viewport shading modes have unique keys, self-explaining labels and renderer debug views",
@@ -65,6 +197,18 @@ TEST_CASE("Viewport shading modes have unique keys, self-explaining labels and r
     CHECK(GetMaterialDebugView(PreviewShading::Metallic) == renderer::MaterialDebugView::Metallic);
     CHECK(GetMaterialDebugView(PreviewShading::Uv) == renderer::MaterialDebugView::TexcoordUv);
     CHECK(GetMaterialDebugView(PreviewShading::LightCount) == renderer::MaterialDebugView::LightCount);
+    CHECK(GetMaterialDebugView(PreviewShading::Wireframe) == renderer::MaterialDebugView::Wireframe);
+    CHECK(GetPreviewShadingLabel(PreviewShading::Wireframe).contains(QStringLiteral("edges")) == true);
+    CHECK(GetPreviewShadingName(PreviewShading::LightCount) == QStringLiteral("Light count"));
+    CHECK(GetPreviewShadingName(PreviewShading::Wireframe) == QStringLiteral("Wireframe"));
+    for (usize i = 0; i < PREVIEW_SHADING_COUNT; ++i)
+    {
+        const PreviewShading shading = static_cast<PreviewShading>(i);
+        INFO(GetPreviewShadingKey(shading).toStdString());
+        CHECK(IsPreviewLineShading(shading) == (shading == PreviewShading::Wireframe));
+        // The graph viewport leaves Solid and Lit to the graph's own output.
+        CHECK(IsPreviewGraphDebugView(shading) == (shading != PreviewShading::Solid && shading != PreviewShading::Lit));
+    }
     PreviewShading unchanged = PreviewShading::Metallic;
     CHECK(TryParsePreviewShading(QStringLiteral("overdraw"), unchanged) == false);
     CHECK(TryParsePreviewShading(QString(), unchanged) == false);
@@ -388,4 +532,94 @@ TEST_CASE("Viewport status overlays wrap sentences and shorten only words wider 
     // Explicit line breaks survive, and a width the overlay cannot use keeps the text.
     CHECK(FitOverlayText(QStringLiteral("one\ntwo"), NARROW_WIDTH) == QStringLiteral("one\ntwo"));
     CHECK(FitOverlayText(sentence, 0) == sentence);
+}
+
+TEST_CASE("Wireframe draws only triangle edges in the shared colour on the GPU", "[editor][viewport][shading][gpu]")
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    ludus::graphics::rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            ludus::graphics::rhi::Shutdown();
+        }
+    } guard;
+    RenderPreview preview;
+    bool isAdmitted = false;
+    QObject::connect(&preview, &RenderPreview::DeviceRequested, &preview, [&preview, &isAdmitted]() {
+        isAdmitted = preview.AdmitOffscreenDevice();
+    });
+    preview.Resize(WIREFRAME_FRAME_PIXELS, WIREFRAME_FRAME_PIXELS);
+    REQUIRE(preview.SetScene(MakeTriangleScene()) == true);
+    const bool hasStarted = preview.Start();
+    if (isAdmitted == false)
+    {
+        SKIP("No headless GPU device on this host");
+    }
+    REQUIRE(hasStarted == true);
+    ludus::graphics::rhi::RasterCapabilities capabilities;
+    REQUIRE(ludus::graphics::rhi::GetRasterCapabilities(preview.GetDevice(), capabilities) ==
+            ludus::graphics::rhi::RasterStatus::Ready);
+    const QImage albedo = CaptureShading(preview, PreviewShading::Albedo);
+    INFO(preview.Status().toStdString());
+    REQUIRE(albedo.isNull() == false);
+    if (capabilities.HasLineFill == false)
+    {
+        preview.SetShading(PreviewShading::Wireframe);
+        CHECK(QTest::qWaitFor([&preview]() { return preview.Status().contains(QStringLiteral("line rasterization")); },
+                              PREVIEW_TIMEOUT_MILLISECONDS) == true);
+        preview.Stop();
+        SKIP("The GPU backend has no line fill; the viewport reports it instead of drawing");
+    }
+    const QImage wireframe = CaptureShading(preview, PreviewShading::Wireframe);
+    INFO(preview.Status().toStdString());
+    REQUIRE(wireframe.isNull() == false);
+    CHECK(preview.Status().contains(GetPreviewShadingStatus(PreviewShading::Wireframe)) == true);
+    const QString shotDirectory = qEnvironmentVariable("LUDUS_VIEWPORT_DEBUG_SHOTS");
+    if (shotDirectory.isEmpty() == false)
+    {
+        CHECK(albedo.save(QStringLiteral("%1/wireframe-albedo.png").arg(shotDirectory)) == true);
+        CHECK(wireframe.save(QStringLiteral("%1/wireframe.png").arg(shotDirectory)) == true);
+    }
+    // The white triangle covers its interior; its wireframe only the three one-pixel edges. The world grid and
+    // axes are drawn in both views, so only light, nearly grey pixels count.
+    const usize filled = CountLightPixels(albedo);
+    const usize edges = CountLightPixels(wireframe);
+    CHECK(edges > 0);
+    CHECK(edges * 3 < filled);
+    // The camera looks down on the triangle at an angle, so its edges show the shared colour partly dimmed.
+    CheckWireframeHue(FindBrightestPixel(wireframe));
+    preview.Stop();
+#else
+    SKIP("The GPU wireframe needs the native preview");
+#endif
+}
+
+TEST_CASE("Software wireframe draws only triangle edges in the shared colour", "[editor][viewport][shading]")
+{
+    const RenderScene scene = MakeTriangleScene();
+    renderer::ViewDescription view;
+    // A camera at z = 2 looks down -Z; the triangle spans the middle half of the frame.
+    view.CameraPosition = {0, 0, 2};
+    view.CameraForward = {0, 0, -1};
+    constexpr float32 NEAR_PLANE = .1F;
+    view.WorldToClip = math::Matrix4::Identity();
+    // Reverse-Z perspective: clip Z = near, W = distance in front of the camera.
+    view.WorldToClip.Columns[2] = {0, 0, 0, -1};
+    view.WorldToClip.Columns[3] = {0, 0, NEAR_PLANE, 2};
+    const uint32 side = static_cast<uint32>(WIREFRAME_FRAME_PIXELS);
+    const QImage albedo = RenderSoftwareView(scene, view, side, side, PreviewShading::Albedo);
+    const QImage wireframe = RenderSoftwareView(scene, view, side, side, PreviewShading::Wireframe);
+    REQUIRE(albedo.isNull() == false);
+    REQUIRE(wireframe.isNull() == false);
+    const usize filled = CountLightPixels(albedo);
+    const usize edges = CountLightPixels(wireframe);
+    CHECK(edges > 0);
+    CHECK(edges * 3 < filled);
+    // The triangle nearly faces the camera, so its edges keep almost the whole shared colour.
+    const QRgb brightest = FindBrightestPixel(wireframe);
+    CheckWireframeHue(brightest);
+    CHECK(qBlue(brightest) >=
+          static_cast<int32>(renderer::MATERIAL_DEBUG_WIREFRAME_BLUE) - SOFTWARE_WIREFRAME_TOLERANCE);
 }

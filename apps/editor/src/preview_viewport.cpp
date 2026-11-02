@@ -1419,12 +1419,12 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     {
         shading->addItem(GetPreviewShadingLabel(static_cast<PreviewShading>(i)));
     }
-    shading->setToolTip(
-        QStringLiteral("Solid uses an editor-only neutral material and preview light; Albedo shows "
-                       "base colours without illumination. Lit shows authored lights, emitting surfaces "
-                       "as shadowed area lights. The viewport uses direct lighting without baking lightmaps.\n"
-                       "Debug views (Normal, Depth, Roughness, Metallic, UV, Light count) replace shading with "
-                       "one material or lighting quantity per pixel so it can be inspected directly."));
+    shading->setToolTip(QStringLiteral(
+        "Solid uses an editor-only neutral material and preview light; Albedo shows "
+        "base colours without illumination. Lit shows authored lights, emitting surfaces "
+        "as shadowed area lights. The viewport uses direct lighting without baking lightmaps.\n"
+        "Debug views (Normal, Depth, Roughness, Metallic, UV, Light count, Wireframe) replace shading with "
+        "one material, geometry or lighting quantity per pixel so it can be inspected directly."));
     shading->setCurrentIndex(static_cast<foundation::int32>(preview->GetShading()));
     // A toolbar rather than a plain row: controls that do not fit move behind its overflow chevron instead of
     // being squeezed until their text is cut off.
@@ -1935,6 +1935,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
     mState->FrameLayoutOrNull->addWidget(mState->GraphViewOrNull);
+    connect(mState->GraphViewOrNull, &WorldGraphView::DebugViewChanged, this, &PreviewViewport::updateGraphDebugView);
     QWidget* graphControls = mState->GraphViewOrNull->TakeControls(this);
     mState->ControlsOrNull->insertWidget(mState->ControlsOrNull->actions().value(0), graphControls);
     SetControlVisible(*mState->ControlsOrNull, findChild<QComboBox*>(QStringLiteral("viewportShading")), false);
@@ -1963,7 +1964,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
         });
     }
     connect(mState->ProjectGraph, &RenderGraphPreview::FramePresented, this, [this]() {
-        if (mIsInspectingRayPaths == false)
+        if (isShowingBuiltInView() == false)
         {
             mObjectInteraction->SetImageSize(mState->ProjectGraph->GetTargetSize());
             applyPresentedView();
@@ -2016,21 +2017,62 @@ void PreviewViewport::updateRayPathInspection()
     {
         return;
     }
-    mObjectInteraction->SetImageSize(shouldInspect == true ? QSize{} : mState->ProjectGraph->GetTargetSize());
+    const bool wasShowingBuiltInView = isShowingBuiltInView();
     mIsInspectingRayPaths = shouldInspect;
-    applyPresentedView();
     updateObjectInteractionAvailability();
     // The inspection view is the built-in raster preview from the free camera; never the frozen graph image.
     Preview_->SetRayPathInspection(shouldInspect);
+    applyBuiltInPresentation(wasShowingBuiltInView);
+    updateRayPathOverlay();
+#endif
+}
+void PreviewViewport::updateGraphDebugView()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->GraphViewOrNull == nullptr)
+    {
+        return;
+    }
+    PreviewShading shading = PreviewShading::Lit;
+    const bool shouldShow = mState->GraphViewOrNull->TryGetDebugView(shading);
+    if (shouldShow == false && mIsShowingGraphDebugView == false)
+    {
+        return;
+    }
+    const bool wasShowingBuiltInView = isShowingBuiltInView();
+    mIsShowingGraphDebugView = shouldShow;
+    // The debug view is the built-in raster preview from the live camera, as in ray path inspection.
+    if (shouldShow == true)
+    {
+        Preview_->ShowBuiltInView(shading);
+    }
+    else
+    {
+        Preview_->HideBuiltInView();
+    }
+    applyBuiltInPresentation(wasShowingBuiltInView);
+#endif
+}
+void PreviewViewport::applyBuiltInPresentation(bool wasShowing)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const bool isShowing = isShowingBuiltInView();
+    mObjectInteraction->SetImageSize(isShowing == true ? QSize{} : mState->ProjectGraph->GetTargetSize());
+    applyPresentedView();
+    if (isShowing == wasShowing)
+    {
+        return;
+    }
     if (mState->Window != nullptr)
     {
-        SetFrameSource(shouldInspect == true ? Preview_ : nullptr);
+        SetFrameSource(isShowing == true ? Preview_ : nullptr);
     }
     else if (mState->GraphViewOrNull != nullptr)
     {
-        mState->GraphViewOrNull->setVisible(shouldInspect == false && Preview_->Scene().Identity.isEmpty() == false);
+        mState->GraphViewOrNull->setVisible(isShowing == false && Preview_->Scene().Identity.isEmpty() == false);
     }
-    updateRayPathOverlay();
+#else
+    static_cast<void>(wasShowing);
 #endif
 }
 void PreviewViewport::updateRayPathOverlay()
@@ -2049,9 +2091,9 @@ void PreviewViewport::applyPresentedView()
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     // The graph image trails navigation by its render latency; selection follows the image.
-    // Ray path inspection rasterizes the live camera synchronously instead.
+    // Ray path inspection and debug views rasterize the live camera synchronously instead.
     graphics::renderer::ViewDescription view;
-    if (mIsInspectingRayPaths == false && mState->ProjectGraph.isNull() == false &&
+    if (isShowingBuiltInView() == false && mState->ProjectGraph.isNull() == false &&
         mState->ProjectGraph->TryGetPresentedView(view) == true)
     {
         mObjectInteraction->SetPresentedView(view.WorldToClip);

@@ -71,6 +71,11 @@ constexpr ShadingDescription SHADING_DESCRIPTIONS[PREVIEW_SHADING_COUNT]{
      "Light count — lights reaching each pixel as a ramp",
      " · Light count: direct lights per pixel, dark purple none to yellow many",
      rr::MaterialDebugView::LightCount},
+    {PreviewShading::Wireframe,
+     "wireframe",
+     "Wireframe — triangle edges only",
+     " · Wireframe: triangle edges, dimmer where surfaces turn edge-on",
+     rr::MaterialDebugView::Wireframe},
 };
 /// Degree of the viridis polynomial that renderer_lit.slang evaluates.
 constexpr usize VIRIDIS_DEGREE = 6;
@@ -100,6 +105,18 @@ bool IsPreviewDebugShading(PreviewShading shading) noexcept
 rr::MaterialDebugView GetMaterialDebugView(PreviewShading shading) noexcept
 {
     return Describe(shading).DebugView;
+}
+bool IsPreviewLineShading(PreviewShading shading) noexcept
+{
+    return shading == PreviewShading::Wireframe;
+}
+bool IsPreviewGraphDebugView(PreviewShading shading) noexcept
+{
+    return shading == PreviewShading::Albedo || IsPreviewDebugShading(shading) == true;
+}
+QString GetPreviewShadingName(PreviewShading shading)
+{
+    return GetPreviewShadingLabel(shading).section(QStringLiteral(" — "), 0, 0);
 }
 QString GetPreviewShadingKey(PreviewShading shading)
 {
