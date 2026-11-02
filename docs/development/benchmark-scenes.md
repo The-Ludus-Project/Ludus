@@ -196,3 +196,255 @@ them required gates. See the owning engineering quality policy for details.
 Update this table with links to evidence as cases are implemented and executed.
 An external sample running in its original engine is reference behavior; a
 Ludus result requires the corresponding Ludus execution and observations.
+
+## Controlled directional luminaire room
+
+`tools/luminaire-benchmark/benchmark.py` generates a two-metre, Y-up room with
+matte floor, three walls and a raised receiver. The ceiling panel faces down;
+its centre is `(0, 0.97, 0)` metres and its side is 0.7 metres. The open front
+admits a camera at `(0, 0, -3.2)` looking towards `(0, -0.1, 0)`. Receivers have
+unit diffuse reflectance. No other lights or environment illuminate surfaces.
+This is an analytic-panel diagnostic, with no internal fixture optics.
+
+The generator emits the same receiver vertices as PBRT triangle meshes for
+Ludus import and OBJ meshes referenced by a Mitsuba XML scene. It copies the
+existing [slice-sampling graph](render-graph-authoring.md#sample-a-directional-luminaire-with-slice-sampling)
+without changing its shader implementation. The graph supplies the panel;
+the scene files contain receiver geometry only. The XML alone therefore renders
+black until a luminaire estimator is attached. The panel is not camera-visible.
+
+Requires Python 3.10 or newer and NumPy in a separate benchmark environment;
+this optional research tool adds no dependency to installed Ludus host tooling.
+From the checkout root:
+
+```bash
+python tools/luminaire-benchmark/benchmark.py prepare --output out/luminaire-room
+ludus-cook pbrt out/luminaire-room/scene-v4.pbrt out/luminaire-cooked
+python tools/luminaire-benchmark/benchmark.py run --output out/luminaire-cpu --samples 131072
+python -m unittest discover -s tools/luminaire-benchmark -v
+```
+
+Use a fresh output directory for each run; existing data is never overwritten.
+To inspect the room in an existing configured Ludus project, import
+`scene-v4.pbrt`, add the generated `graph` package, and route its
+`SliceSamplingLuminaire` configuration to the viewport. The configuration exposes
+`color` (defensive slice sampling), `sliceSampling`, and `uniformArea` outputs.
+The panel placement already fits this room. Follow the linked graph guide for
+native compilation, output selection and raw linear frame capture. Camera and
+visibility rays execute in the existing GPU compute-BVH implementation.
+
+### Shared radiance and CPU diagnostic
+
+The CPU evaluator reads the GPU-owned steering, width, strength and tint tables
+from `luminaire.slang`; it implements that file's affine Gaussian radiance with
+the default graph profile. Both CPU proposal paths call this one evaluator.
+The fixture fingerprint covers the tables, profile, placement and radiance scale.
+A checkpoint from another profile is rejected rather than silently compared.
+
+`run` evaluates eight fixed receivers, including overlapping beams and far tails.
+It reports RGB means, sample variance, standard errors, null rate and wall time.
+Independent tensor-product Gauss-Legendre integration on each tile supplies the
+reference; orders 128 and 256 must agree within the declared tolerance before
+measurements are written. The CPU point diagnostic is **unoccluded**; it does not
+replace room image comparisons or visibility tests. The generated GPU graph
+traces the room's actual shadows. The Python reference does not add a new engine
+transport mode; the existing production GPU proposal is retained unchanged.
+
+Null draws count in the requested sample budget. The defensive mixture retains
+10% uniform-area sampling. The normalization regression integrates a constant
+through the actual mixture, including null outcomes. Area-to-solid-angle
+conversion is checked independently against the geometric cosine/distance law.
+
+### PureLight receiver-flow comparison
+
+Thanks to Pedro Figueiredo, Zixuan Li, Beibei Wang, Miloš Hašan and Nima Khademi
+Kalantari, *PureLight: Learning Complex Luminaires with Light Tracing*, SIGGRAPH
+Asia 2026, [section 3.4](https://arxiv.org/abs/2606.04319), for the released
+conditional receiver-flow architecture and spherical-cap maps. Thanks to Shlomi
+Steinberg, *Slice Sampling: Importance sampling with an auxiliary map* (draft),
+sections 6.2 and 6.4, for the analytic panel and branch construction. The GPU
+source preserves its original attribution.
+
+The optional `purelight_adapter.py` imports the **official implementation** at
+commit `d0969834eef28f1453056508ba39eaef0471a5a2` from a separate checkout. Set up
+its documented CUDA, PyTorch and tiny-cuda-nn environment first. Nothing downloads
+or installs implicitly when a benchmark runs.
+
+```bash
+git clone https://github.com/pedrovfigueiredo/purelight.git out/purelight-upstream
+git -C out/purelight-upstream checkout d0969834eef28f1453056508ba39eaef0471a5a2
+python tools/luminaire-benchmark/purelight_adapter.py --upstream out/purelight-upstream --output out/luminaire-training --steps 10000
+python tools/luminaire-benchmark/benchmark.py run --output out/luminaire-comparison --upstream out/purelight-upstream --purelight out/luminaire-training/receiver-flow.pt --samples 131072
+```
+
+The adapter uses the released TCNN model dimensions and encodings (four coupling
+layers, five hidden layers of width 128, 32 bins), and the released concentric-disk
+spherical-cap mapping. It retrains a grayscale radiance guide on the analytic
+panel's eight receivers with forward KL. Exact panel radiance and the defensive
+proposal supply importance-weighted training examples. Both comparison estimators
+then evaluate **the same analytic RGB radiance**, receiver cosine and Lambertian
+BSDF. PureLight proposal directions missing the panel remain null draws. Its
+PDF is converted from cap coordinates to solid angle, then to panel area.
+
+This is a controlled adaptation of the receiver sampler, not reproduction of the
+full PureLight system, its original training distribution/schedule, or its Fast
+radiance estimator. Training on fixed probes establishes no unseen-position
+performance. Training duration is saved separately. CPU reports include NumPy
+physical evaluation and GPU-to-CPU adapter transfers; they are not a fair native
+GPU speed comparison. Repeat seeds and use matched implementations/hardware for
+equal-time claims. Missing CUDA or dependencies is an explicit failure; no
+histogram is labelled PureLight and no absent result is reported as measured.
+
+### CUDA-free portable compute implementation
+
+CUDA is a dependency of the released implementation, not of the sampling
+construction. `portable_flow.py` trains the receiver flow on the CPU and
+`export_compute.py` emits a Ludus package whose Slang compute shader executes the
+encodings, MLPs, inverse splines, spherical-cap mapping and PDF on the GPU.
+Both proposals retain the original analytic panel radiance. The generated shader
+specializes the shared receiver BSDF to unit Lambertian, matching this room and
+its CPU oracle. Use this package only with the declared matte benchmark geometry.
+
+The portable model keeps four coupling layers, five hidden layers of width 128,
+32 spline bins, periodic quartic OneBlob encoding and eight smoothstep dense-grid
+levels with eight features each. It uses explicit MLP biases and zero-initialized
+grid nodes, stores only trained grid vertices, and treats absent vertices as zero.
+These training/implementation differences must be reported when discussing
+PureLight; this is a portable adaptation rather than an official checkpoint port.
+
+The exporter stores weights as per-layer signed bytes and evaluates in float32.
+It also exports the exact decoded CPU model as `portable-model.npz`, so CPU/GPU
+parity compares the same quantized function. This changes the learned proposal;
+it does not quantize physical radiance or replace the actual proposal PDF.
+Weight quantization is a benchmark variable, not evidence of equivalence to the
+released CUDA implementation. A float32 parameter-buffer implementation remains
+useful future work for a stronger baseline. Emission settings are frozen in the
+exported package; retrain and re-export after profile edits.
+
+For an isolated local environment, use Python 3.12 and the recorded dependencies:
+
+```bash
+python3.12 -m venv out/luminaire-env
+out/luminaire-env/bin/python -m pip install -r tools/luminaire-benchmark/requirements-portable.txt
+out/luminaire-env/bin/python tools/luminaire-benchmark/portable_flow.py --upstream out/purelight-upstream --output out/portable-training --steps 1000
+out/luminaire-env/bin/python tools/luminaire-benchmark/export_compute.py --model out/portable-training/flow.npz --room out/luminaire-room --output out/portable-room-graph
+out/luminaire-env/bin/python tools/luminaire-benchmark/benchmark.py run --room out/luminaire-room --output out/portable-cpu-comparison --portable out/portable-room-graph/portable-model.npz --samples 131072
+```
+
+Acquire the pinned PureLight checkout as above. Only its differentiable spline
+reference is imported by the CPU trainer; CUDA, tiny-cuda-nn and Mitsuba are not
+needed for this route. The initial training uses eight fixed receivers and a
+finite frozen training dataset; it establishes no unseen-position performance.
+Use a fresh output directory for every command that writes artifacts.
+
+Build the exported `main.lushader.json` through the same Ludus graph workflow.
+Its outputs are `color` (defensive slice), `sliceSampling` (raw slice), and
+`portablePureLight` (portable learned proposal); the root exports the latter as
+`portablePureLightOutput`. The original room package retains the uniform-area
+control. Generated Metal indentation is compacted at the shader-helper boundary
+without changing tokens, literals, comments, continuations, or line numbers.
+This keeps the combined shader inside the existing artifact budget; no source,
+package or artifact capacity is raised.
+
+For raw GPU parity, with the pinned Slang compiler selected:
+
+```bash
+out/luminaire-env/bin/python tools/luminaire-benchmark/validate_compute.py --graph out/portable-room-graph --compiler /path/to/pinned/slangc --output out/portable-parity
+```
+
+This uses wgpu solely as a verification driver for the same exported Slang code.
+A physical GPU is required; software adapters are rejected. It saves raw inputs,
+CPU expectations, GPU outputs, tolerances and model/shader identities. The final
+Metal run on Apple M5 checked 256 draws across eight receivers and passed all five
+records: transformed coordinates/PDF, inverse replay, cap direction/PDF, and
+physical radiance weights and incoming light directions. The endpoint-derived
+incoming direction avoids a pinned Slang WGSL code-generation error for unary
+negation of a sum of vector products; checking radiance alone misses that error.
+The exported graph also compiled to Metal and WGSL
+and cooked into a native runtime package. This is execution evidence for compute
+inference, not a complete Ludus room image benchmark or an equal-time claim.
+
+### Headless equal-time room images
+
+`render_comparison.py` runs the generated room triangles and both exported
+sampling shaders on a physical GPU through wgpu. Both methods execute primary
+intersection, direct lighting, receiver shading, shadow intersection and
+accumulation on the GPU, with the same analytic radiance and unit Lambertian
+BSDF. This is a standalone research driver with linear triangle traversal;
+its timings do not measure the Ludus editor or the native compute-BVH renderer.
+The CPU oracle independently implements geometry, visibility and tile-area
+quadrature. This harness does not introduce a new native reference transport mode.
+
+```bash
+out/luminaire-env/bin/python tools/luminaire-benchmark/render_comparison.py --graph out/portable-room-graph --room out/luminaire-room --compiler /path/to/pinned/slangc --output out/room-equal-time --extent 128 --seconds 25 --runs 3 --reference-samples 65536
+out/luminaire-env/bin/python tools/luminaire-benchmark/check_room_reference.py --room out/luminaire-room --results out/room-equal-time
+python tools/luminaire-benchmark/show_comparison.py out/room-equal-time
+```
+
+The last command additionally requires Pillow. Both estimators use fixed pixel
+centres without antialiasing, indirect illumination, denoising or temporal reuse.
+Null draws count in samples per pixel. Each dispatch shades one sample over an
+eight-row band; band order is shuffled per sweep. Completed rendering wall time
+includes uniform updates, command encoding/submission, GPU completion and
+timestamp readback. Compilation, warmup, training, final image readback and
+reference construction are excluded and reported separately. Host synchronization
+can dominate slice timings; GPU timestamp totals are recorded separately.
+
+Trials alternate method order and share independent seeds. The budget is at
+least twice the slower full-frame warmup. The faster method is extended to match
+the slower method's actual completed time, without consulting image error; a
+remaining mismatch above 1% is rejected. Samples per pixel can differ by one
+between bands. Raw linear RGB, sample counts, source/model/geometry hashes and
+per-trial metrics are retained. The reference averages two independent defensive
+slice runs, each at least the requested sample count and eight times the largest
+measured per-pixel count. Their difference estimates reference noise.
+
+The independent CPU check compares eight selected lit pixels against per-tile
+Gauss-Legendre quadrature with shadows, split at the horizontal rectangular
+occluder's projected silhouette: orders 128/256 must change by at most
+0.1%, and the GPU reference must agree within 3%. Failed checks preserve evidence
+and block preview generation. This spot check complements the raw direction/PDF
+parity test; it does not prove every pixel or the full native renderer correct.
+The preview uses one exposure for all images, the middle trial by run order,
+and a common logarithmic error scale. MSE and NRMSE are computed before display
+conversion across the whole image; NRMSE is the ratio of RGB error and reference
+L2 norms, including black pixels.
+
+The November 2, 2026 Apple M5/Metal run used 128 by 128 pixels, three paired
+seeds and two independent 65,536-sample-per-pixel references. Actual paired wall
+times differed by at most 0.053%. Medians (ranges across three trials) were:
+
+| Measurement | Defensive slice | Portable receiver flow |
+| --- | --- | --- |
+| Completed rendering wall time | 25.467 s (25.155–25.601) | 25.456 s (25.155–25.588) |
+| Mean samples per pixel | 184.06 (162.44–258.00) | 2.50 (2.50–2.56) |
+| Pixel samples per wall second | 119,885 (104,501–165,113) | 1,628 (1,609–1,641) |
+| Linear RGB MSE | 0.00003816 (0.00003015–0.00004781) | 1.3724 (0.6702–4.0874) |
+| Linear RGB NRMSE | 4.82% (4.29–5.40%) | 914.32% (638.93–1577.91%) |
+| GPU timestamp total | 2.173 s (1.324–2.298) | 23.840 s (23.043–23.915) |
+
+The reference's estimated NRMSE was 0.182%; eight CPU quadrature spot checks
+agreed within 1.125%, with quadrature orders converged. The 256-draw GPU/CPU
+inference and incoming-direction check passed. The flow used 1,000 CPU training
+steps on eight fixed receivers (450.6 seconds), int8 weights and float32
+evaluation. Training and compilation were excluded from the matched budgets.
+The learned proposal produced sparse bright outliers at these sample counts.
+This records the current portable implementation, including substantial host
+synchronization overhead for slice sampling and an unoptimized neural shader.
+It does not measure the official PureLight model or establish a SOTA advantage.
+
+### Qualification still required
+
+The setup does not establish a SOTA advantage. The released rough-flower receiver
+checkpoints represent a different luminaire and are rejected for this panel
+experiment. A complex-fixture comparison additionally needs its invertible
+emission teacher, radiance evaluator, compatible geometry and complete inverse
+branch handling. The release documents pretrained distilled appearance and
+receiver proposals, but its teacher must be acquired or trained separately.
+
+Matched native image captures and timings, convergence/training-budget sweeps,
+quantization ablations, comparison against the official trained receiver model,
+Fast-system bias comparisons, occlusion, distance sweeps, edits and CPU/GPU
+statistical image parity remain unqualified. Report the portable adaptation's
+limitations and all training costs rather than calling its measurements a
+reproduction of PureLight's published performance.

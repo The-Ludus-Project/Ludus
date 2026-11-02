@@ -12,7 +12,7 @@ import re
 
 from compile_raster import (glsl_interface, glsl_varyings, raster_interface,
                             share_glsl_fetch_samplers, uniform_shape, wgsl_contract)
-from compile_shader import entry, relative_line_directives, restore_metal_noinline, run
+from compile_shader import compact_metal_indentation, entry, relative_line_directives, restore_metal_noinline, run
 
 
 def varying_interface(point, stage):
@@ -237,7 +237,7 @@ def compile_graph_stage(args, lock):
         if native_rays:
             code = isolate_metal_ray_queries(code)
         emitted = verify_ray_compute_metal(code, interface, native_rays)
-        artifact.write_text(code)
+        artifact.write_text(compact_metal_indentation(code))
     elif metal:
         native_stage = 'kernel' if stage == 'compute' else stage
         names = re.findall(r'\[\[' + native_stage + r'\]\]\s+\w+\s+(\w+)\s*\(', artifact.read_text())
@@ -250,7 +250,7 @@ def compile_graph_stage(args, lock):
         if stage != 'compute':
             metal_layouts(code, interface, document, getattr(args, 'graph_forward_material', False))
         code = relative_line_directives(code, [Path(args.source).parent])
-        artifact.write_text(code)
+        artifact.write_text(compact_metal_indentation(code))
         emitted = names[0]
     else:
         run([args.spirv_cross, str(intermediate), '--version', '300', '--es', '--fixup-clipspace', '--output', str(artifact)])
