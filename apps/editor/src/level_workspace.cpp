@@ -803,6 +803,11 @@ void LevelWorkspace::decodeCandidate()
             Success_ = RenderScene::Load(Root_, authoredWorld, authored, Error_, false) &&
                        RenderScene::Merge(authored, bytes, Candidate_, Scene_, Error_, CandidateRevisions_);
         }
+        if (Success_ == true)
+        {
+            Scene_.HasStartView =
+                TryParseStartView(Candidate_.value(QStringLiteral("camera")).toObject(), Scene_.StartView);
+        }
     }
 }
 void LevelWorkspace::CommitImport()
@@ -839,6 +844,11 @@ void LevelWorkspace::CommitCandidate()
     Status_->setText(Operation_ == QStringLiteral("save")
                          ? QStringLiteral("Scene saved with verified project-owned assets.")
                          : QStringLiteral("Scene ready."));
+    if (Operation_ == QStringLiteral("import"))
+    {
+        // The import set the level start view from the source scene's camera; show it.
+        static_cast<void>(Preview_.GoToStartView());
+    }
     Render();
     Q_EMIT OperationFinished(true);
     ApplyPendingProject();

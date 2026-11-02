@@ -22,6 +22,9 @@
 #include <QWheelEvent>
 #include <QWidget>
 
+QT_BEGIN_NAMESPACE
+class QAction;
+QT_END_NAMESPACE
 namespace ludus::platform
 {
 class HostedWindowEndpoint;
@@ -107,6 +110,10 @@ public:
     {
         return *mObjectInteraction;
     }
+    /// View menu action "Set start view from this view". Hidden until an owner that can store a
+    /// start view shows it and handles triggered, describing the view with
+    /// RenderPreview::TryDescribeStartView. Owned by this viewport; GUI thread only.
+    [[nodiscard]] QAction& GetStartViewSaveAction() noexcept;
     /// Retain the last shown frame while an import candidate awaits publication.
     void HoldFrame();
     void ShowFrame();

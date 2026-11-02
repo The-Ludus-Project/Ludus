@@ -23,6 +23,7 @@
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLayout>
 #include <QLinearGradient>
@@ -618,6 +619,8 @@ struct PreviewViewport::State final
     /// Shared frame of the presentation widgets; letterboxed by the size preset.
     ViewportFrameLayout* FrameLayoutOrNull = nullptr;
     QToolBar* ControlsOrNull = nullptr;
+    /// View menu action that stores the current view as the start view; created with the controls.
+    QAction* StartViewSaveActionOrNull = nullptr;
     EmptyWorldView* MessageOrNull = nullptr;
     uint64 Presented = 0;
     /// Statistics overlay text currently shown; empty while the overlay is off.
@@ -1474,8 +1477,28 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
                                     "outside the scene. With the viewport focused: numpad 7, 1 and 3 for Top, Front "
                                     "and Right (add Ctrl, or Command on macOS, for the opposite side), numpad 5 to "
                                     "switch projection. The menu also sets the perspective field of view and the "
-                                    "mouse look sensitivity."));
+                                    "mouse look sensitivity, and returns to an imported scene's start view "
+                                    "(Shift+Home)."));
     QMenu* viewMenu = new QMenu(view);
+    viewMenu->setToolTipsVisible(true);
+    // The start view is the World level's camera, which an import sets from the scene's own camera.
+    QAction* goToStartView =
+        viewMenu->addAction(QStringLiteral("Go to start view\t") +
+                            QKeySequence(Qt::SHIFT | Qt::Key_Home).toString(QKeySequence::NativeText));
+    goToStartView->setObjectName(QStringLiteral("viewportViewStart"));
+    goToStartView->setToolTip(QStringLiteral("Look from the viewpoint the World opens at: the imported scene's own "
+                                             "camera, or the view saved with \"Set start view\"."));
+    connect(goToStartView, &QAction::triggered, preview, [preview]() { static_cast<void>(preview->GoToStartView()); });
+    QAction* saveStartView = viewMenu->addAction(QStringLiteral("Set start view from this view"));
+    saveStartView->setObjectName(QStringLiteral("viewportSaveStartView"));
+    saveStartView->setToolTip(QStringLiteral("Open this World at the current perspective view from now on. "
+                                             "Undo restores the previous start view; Save World keeps it."));
+    saveStartView->setVisible(false);
+    mState->StartViewSaveActionOrNull = saveStartView;
+    connect(viewMenu, &QMenu::aboutToShow, goToStartView, [preview, goToStartView]() {
+        goToStartView->setEnabled(preview->HasStartView() == true);
+    });
+    viewMenu->addSeparator();
     QAction* perspective = viewMenu->addAction(QStringLiteral("Perspective"));
     perspective->setObjectName(QStringLiteral("viewportViewPerspective"));
     connect(perspective, &QAction::triggered, preview, [preview]() { preview->SetOrthographic(false); });
@@ -2111,6 +2134,11 @@ bool PreviewViewport::pickRayPathPixel(QPointF globalPosition)
     static_cast<void>(globalPosition);
     return false;
 #endif
+}
+QAction& PreviewViewport::GetStartViewSaveAction() noexcept
+{
+    LUDUS_ASSERT(mState->StartViewSaveActionOrNull != nullptr);
+    return *mState->StartViewSaveActionOrNull;
 }
 void PreviewViewport::HoldFrame()
 {

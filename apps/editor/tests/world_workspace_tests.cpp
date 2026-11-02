@@ -791,6 +791,39 @@ TEST_CASE("Invalid scene placement and parent references preserve the shared doc
     CHECK_FALSE(empty.ImportScene(imported, error));
     CHECK(empty.Draft().value(QStringLiteral("entities")).toArray().isEmpty());
 }
+TEST_CASE("The scene start view is one undoable World edit validated like the imported camera",
+          "[editor][world][unified][start-view]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    const QJsonObject camera{{QStringLiteral("eye"), QJsonArray{1, 2, 3}},
+                             {QStringLiteral("target"), QJsonArray{0, 0, 0}},
+                             {QStringLiteral("up"), QJsonArray{0, 1, 0}},
+                             {QStringLiteral("fov"), 0.8}};
+    const QJsonObject empty = document.Draft();
+    CHECK_FALSE(document.SetSceneStartView(camera, error));
+    CHECK(error.isEmpty() == false);
+    CHECK(document.Draft() == empty);
+    REQUIRE(document.ImportScene(ImportedLevel(), error));
+    const QJsonObject imported = document.Draft();
+    REQUIRE(document.SetSceneStartView(camera, error));
+    CHECK(document.SceneLevel().value(QStringLiteral("camera")).toObject() == camera);
+    CHECK(document.SceneLevel().value(QStringLiteral("objects")).toArray().size() == 1);
+    const QJsonObject accepted = document.Draft();
+    QJsonObject degenerate = camera;
+    degenerate.insert(QStringLiteral("target"), camera.value(QStringLiteral("eye")));
+    QJsonObject wide = camera;
+    wide.insert(QStringLiteral("fov"), 3.5);
+    for (const QJsonObject& rejected : {degenerate, wide})
+    {
+        CHECK_FALSE(document.SetSceneStartView(rejected, error));
+        CHECK(document.Draft() == accepted);
+    }
+    REQUIRE(document.Undo());
+    CHECK(document.Draft() == imported);
+    REQUIRE(document.Redo());
+    CHECK(document.SceneLevel().value(QStringLiteral("camera")).toObject() == camera);
+}
 TEST_CASE("World provides scene authoring without a project component schema", "[editor][world][unified]")
 {
     QTemporaryDir directory;

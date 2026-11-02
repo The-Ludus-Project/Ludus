@@ -369,6 +369,9 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     }
     if (Scene_.Identity == scene.Identity)
     {
+        // The start view is level metadata outside Identity; take a changed one without reloading.
+        Scene_.StartView = scene.StartView;
+        Scene_.HasStartView = scene.HasStartView;
         return true;
     }
     const bool sameResources = preview_lighting::MakeKey(Scene_) == preview_lighting::MakeKey(scene);
@@ -376,8 +379,13 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     {
         OrbitCenter_ = scene.Center;
         OrbitRadius_ = scene.Radius;
+        // An imported scene opens at its level start view; other scenes frame their bounds.
+        const PreviewStartView& start = scene.StartView;
+        const bool isAtStartView =
+            scene.HasStartView == true &&
+            mCameraController.TrySetLookAt(start.EyeWorld, start.TargetWorld, start.UpWorld, start.VerticalFov) == true;
         math::Aabb3 boundsWorld;
-        if (scene.TryGetBounds({}, boundsWorld) == true)
+        if (isAtStartView == false && scene.TryGetBounds({}, boundsWorld) == true)
         {
             static_cast<void>(mCameraController.TryFrame(boundsWorld,
                                                          static_cast<float32>(RequestedWidth_) /
@@ -1048,6 +1056,38 @@ void RenderPreview::FrameAll() noexcept
     }
     OrbitRadius_ = Scene_.Radius;
     navigationChanged();
+}
+bool RenderPreview::GoToStartView()
+{
+    const PreviewStartView& start = Scene_.StartView;
+    if (Scene_.HasStartView == false || beginNavigation() == false ||
+        mCameraController.TrySetLookAt(start.EyeWorld, start.TargetWorld, start.UpWorld, start.VerticalFov) == false)
+    {
+        return false;
+    }
+    navigationChanged();
+    return true;
+}
+bool RenderPreview::TryDescribeStartView(PreviewStartView& outView) const noexcept
+{
+    const gameplay::camera::CameraSample& sample = GetVisibleCameraSample();
+    if (sample.Lens.Projection == gameplay::camera::CameraProjection::OrthographicFinite)
+    {
+        return false;
+    }
+    const math::Vector3 forwardWorld = math::Rotate(sample.Pose.Orientation, {0, 0, -1});
+    const float64 distance = static_cast<float64>(GetFocusDistance());
+    outView =
+    {
+        .EyeWorld = sample.Pose.Position,
+        .TargetWorld = sample.Pose.Position + math::Vector3d{static_cast<float64>(forwardWorld.X),
+                                                             static_cast<float64>(forwardWorld.Y),
+                                                             static_cast<float64>(forwardWorld.Z)} *
+                                                  distance,
+        .UpWorld = math::Rotate(sample.Pose.Orientation, {0, 1, 0}),
+        .VerticalFov = sample.Lens.VerticalFov,
+    };
+    return true;
 }
 void RenderPreview::Navigate(int32 camera, math::Vector2 orbitDegrees, float32 zoom, bool isReference)
 {

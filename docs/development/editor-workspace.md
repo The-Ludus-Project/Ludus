@@ -1192,6 +1192,7 @@ that preview. Zero-motion input leaves the selected camera unchanged.
 | Numpad 7 / 1 / 3 | Orthographic Top / Front / Right view; add Ctrl (Command on macOS) for Bottom / Back / Left |
 | Numpad 5 | Switch between perspective and orthographic projection |
 | Home / **Frame all visible objects** | Fit all extracted visible geometry |
+| Shift+Home / **View → Go to start view** | Return to an imported scene's [start view](#scene-start-view) |
 | Escape, right-button release, focus loss or hiding the viewport | Stop fly movement and release mouse capture |
 
 Plain left-drag is reserved for selection/tools. Double-click no longer resets
@@ -1310,7 +1311,9 @@ World; they do not expose another object hierarchy or authoring document.
    project-contained `.world.json` path, for example `scenes/main.world.json`.
 3. Choose **Import scene…** and select `scene-v4.pbrt` from the supplied
    staircase2 reference directory. Import cooks assets into the project. The
-   admitted instances join the current World's entity list in one undoable edit.
+   admitted instances join the current World's entity list in one undoable edit,
+   and the viewport shows the scene from its own camera (its
+   [start view](#scene-start-view)).
 4. Select an imported entity. Its **Scene instance** inspector edits local
    position in metres, rotation in degrees, and positive scale; gameplay fields
    and **Add Component** are in that same inspector. **Apply Changes** validates
@@ -1341,6 +1344,32 @@ creates an unsaved sibling `<level-name>.world.json`; it preserves the original
 level and refuses an existing conversion destination. Failed conversion preserves
 the active World. Save publishes only the converted World document. Existing
 `.world.json` documents without scene data remain readable.
+
+### Scene start view
+
+A World with an imported scene has a **start view**: the level `camera` (`eye`,
+`target`, `up` and a vertical `fov` in radians). Import sets it from the source
+scene's camera. For pbrt that is the `LookAt`/`Transform` before `Camera`, with
+`fov` converted to the vertical angle; a scene without a usable camera gets a
+view framing its bounds. Importing another scene into the level replaces the start
+view with that scene's camera.
+
+- When a World opens without saved viewport navigation for it, the viewport starts
+  at the start view instead of framing the bounds. Saved navigation, which the
+  editor keeps per World on this machine, still takes precedence on later opens.
+- **View → Go to start view** (Shift+Home with the viewport focused) moves the free
+  editor camera there at any time. The target becomes the orbit pivot and its
+  distance the focus distance; the field of view is clamped to the editor's
+  10°–120° range. It detaches a selected authored camera like other navigation.
+- **View → Set start view from this view** stores the current perspective view as
+  the level `camera`: the eye, a target at the focus distance, the camera's up
+  direction and its field of view. It is one World edit: Undo restores the previous
+  start view and **Save World** keeps it. Orthographic views have no field of view
+  and are refused.
+
+The viewport keeps its own aspect ratio, so a start view can show more or less of
+the scene than the source renderer's film. Thin-lens depth of field is not
+imported.
 
 The optional World root `scene` contains the level's `version`, persistent `id`,
 `name`, `profile`, `camera` and `imports`, with no second object list. An imported

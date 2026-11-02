@@ -1275,6 +1275,18 @@ bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
     candidate.insert(QStringLiteral("entities"), entities);
     return Commit(candidate, error);
 }
+bool WorldDocument::SetSceneStartView(const QJsonObject& camera, QString& outError)
+{
+    QJsonObject scene = Draft_.value(QStringLiteral("scene")).toObject();
+    if (scene.isEmpty() == true)
+    {
+        return Fail(outError, QStringLiteral("This World has no imported scene to start from."));
+    }
+    scene.insert(QStringLiteral("camera"), camera);
+    QJsonObject candidate = Draft_;
+    candidate.insert(QStringLiteral("scene"), scene);
+    return Commit(candidate, outError);
+}
 QJsonObject WorldDocument::ScenePlacement(const QJsonObject& entity) const
 {
     auto scene = entity.value(QStringLiteral("scene")).toObject();
