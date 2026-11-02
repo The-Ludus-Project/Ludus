@@ -1943,6 +1943,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
         if (mIsInspectingRayPaths == false)
         {
             mObjectInteraction->SetImageSize(mState->ProjectGraph->GetTargetSize());
+            applyPresentedView();
         }
     });
     updateStatistics();
@@ -1994,6 +1995,7 @@ void PreviewViewport::updateRayPathInspection()
     }
     mObjectInteraction->SetImageSize(shouldInspect == true ? QSize{} : mState->ProjectGraph->GetTargetSize());
     mIsInspectingRayPaths = shouldInspect;
+    applyPresentedView();
     updateObjectInteractionAvailability();
     // The inspection view is the built-in raster preview from the free camera; never the frozen graph image.
     Preview_->SetRayPathInspection(shouldInspect);
@@ -2018,6 +2020,23 @@ void PreviewViewport::updateRayPathOverlay()
     math::Aabb3 boundsWorld;
     const bool hasBounds = Preview_->Scene().TryGetBounds({}, boundsWorld);
     Preview_->SetRayPathOverlay(mRayPaths->BuildOverlay(hasBounds == true ? &boundsWorld : nullptr));
+#endif
+}
+void PreviewViewport::applyPresentedView()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    // The graph image trails navigation by its render latency; selection follows the image.
+    // Ray path inspection rasterizes the live camera synchronously instead.
+    graphics::renderer::ViewDescription view;
+    if (mIsInspectingRayPaths == false && mState->ProjectGraph.isNull() == false &&
+        mState->ProjectGraph->TryGetPresentedView(view) == true)
+    {
+        mObjectInteraction->SetPresentedView(view.WorldToClip);
+    }
+    else
+    {
+        mObjectInteraction->ClearPresentedView();
+    }
 #endif
 }
 void PreviewViewport::updateObjectInteractionAvailability()

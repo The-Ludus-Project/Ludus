@@ -208,6 +208,20 @@ public:
     {
         return mPresentedRevision;
     }
+    /// Camera the shown frame was rendered with: the conventional-depth view supplied with
+    /// GetPresentedRevision, at the export extent of that frame. Overlays drawn over the image
+    /// project through it so they stay on the pixels while newer cameras are still rendering.
+    /// @return False when nothing was presented or that revision's view was not retained;
+    /// outView is then unchanged.
+    [[nodiscard]] bool TryGetPresentedView(graphics::renderer::ViewDescription& outView) const noexcept
+    {
+        if (mHasPresentedView == false)
+        {
+            return false;
+        }
+        outView = mPresentedView;
+        return true;
+    }
     [[nodiscard]] graphics::renderer::RenderGraphActivationReport GetReport() const noexcept;
 
     /// Provenance belonging to GetTargetCatalogue's active generation, never a pending candidate.
@@ -333,6 +347,8 @@ private:
     InspectedTexture mOutputTexture;
     foundation::uint64 mPresentedGeneration = 0;
     foundation::uint64 mPresentedRevision = 0;
+    graphics::renderer::ViewDescription mPresentedView{};
+    bool mHasPresentedView = false;
     foundation::uint64 mPresentedSession = 0;
     QString mStatus;
     /// GetFailureText: the main latched failure of the active generation, or empty.
