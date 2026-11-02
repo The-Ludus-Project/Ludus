@@ -87,6 +87,7 @@ bool ReadLightTransformerPreviewSetup(const QString& directory,
     const QJsonDocument json = QJsonDocument::fromJson(file.read(MAXIMUM_CONFIGURATION_BYTES + 1), &parseError);
     const QJsonObject document = json.object();
     const float64 scale = document.value(QStringLiteral("world_units_per_model_unit")).toDouble(0);
+    float32 scaleForGpu = 0;
     uint64 version = 0;
     uint64 points = 0;
     uint64 seed = 0;
@@ -96,8 +97,8 @@ bool ReadLightTransformerPreviewSetup(const QString& directory,
     if (parseError.error != QJsonParseError::NoError || json.isObject() == false ||
         ReadInteger(document, QStringLiteral("version"), CONFIGURATION_VERSION, CONFIGURATION_VERSION, version) ==
             false ||
-        math::IsFinite(scale) == false || scale <= 0 || math::IsFinite(static_cast<float32>(scale)) == false ||
-        static_cast<float32>(scale) <= 0 || math::IsFinite(1 / static_cast<float32>(scale)) == false ||
+        math::TryConvertToFloat32(scale, scaleForGpu) == false || scaleForGpu <= 0 ||
+        math::IsFinite(1 / scaleForGpu) == false ||
         ReadInteger(document,
                     QStringLiteral("scene_points"),
                     LUDUS_LIGHT_ENCODER_MIN_POINTS,
@@ -147,7 +148,7 @@ bool ReadLightTransformerPreviewSetup(const QString& directory,
                        .arg(configurationPath);
         return false;
     }
-    candidate.Description.WorldUnitsPerModelUnit = static_cast<float32>(scale);
+    candidate.Description.WorldUnitsPerModelUnit = scaleForGpu;
     candidate.Description.ScenePoints = static_cast<uint32>(points);
     candidate.Description.Seed = seed;
     candidate.Description.MaximumBufferBytes = static_cast<usize>(budget);

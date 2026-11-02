@@ -163,3 +163,21 @@ TEST_CASE("Error function preserves symmetry, bounds and IEEE endpoint values", 
     REQUIRE(ComputeErrorFunction(-std::numeric_limits<float64>::infinity()) == -1);
     REQUIRE(std::isnan(ComputeErrorFunction(std::numeric_limits<float64>::quiet_NaN())) == true);
 }
+
+TEST_CASE("Binary32 conversion rejects range overflow before narrowing and preserves outputs", "[math][scalar]")
+{
+    using ludus::foundation::float32;
+    using ludus::foundation::float64;
+    float32 value = 1;
+    CHECK(TryConvertToFloat32(std::numeric_limits<float64>::max(), value) == false);
+    CHECK(value == 1);
+    CHECK(TryConvertToFloat32(std::numeric_limits<float64>::infinity(), value) == false);
+    CHECK(TryConvertToFloat32(std::numeric_limits<float64>::quiet_NaN(), value) == false);
+    const float64 maximum = static_cast<float64>(std::numeric_limits<float32>::max());
+    CHECK(TryConvertToFloat32(maximum, value) == true);
+    CHECK(value == std::numeric_limits<float32>::max());
+    CHECK(TryConvertToFloat32(-maximum, value) == true);
+    CHECK(value == -std::numeric_limits<float32>::max());
+    CHECK(TryConvertToFloat32(float64{-0.0}, value) == true);
+    CHECK(std::signbit(value) == true);
+}
