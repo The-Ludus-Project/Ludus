@@ -1805,6 +1805,9 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
                                  format::CLUSTERED_DEFERRED_PACKAGE_VERSION,
                                  format::LTC_TABLE_PACKAGE_VERSION,
                                  format::RASTER_MESH_LIGHT_PACKAGE_VERSION,
+                                 // Polygon records without the bounding-sphere header word.
+                                 format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION,
+                                 format::RASTER_TONE_MAPPING_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         const Array<uint8> bytes = makeDeferred(version, format::ABSENT);

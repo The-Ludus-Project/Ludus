@@ -490,3 +490,177 @@ TEST_CASE("non-convex, folded, coincident and textured emitters stay triangles",
     REQUIRE(AppendLights(pair.GetDescription(), {}, material, words) == rhi::RasterStatus::Ready);
     CHECK(CountRecords(words) == pair.Indices.GetSize() / CORNER_COUNT * TEXEL_BYTES);
 }
+
+namespace
+{
+/// Deterministic uniform values in [0, 1).
+struct FarSequence final
+{
+    uint32 State = 0x2545F491U;
+    float32 Next() noexcept
+    {
+        State = State * 1664525U + 1013904223U;
+        return static_cast<float32>(State >> 8U) / static_cast<float32>(1U << 24U);
+    }
+    float32 NextSigned() noexcept
+    {
+        return 2 * Next() - 1;
+    }
+};
+/// One two-sided unit-radiance triangle record whose bounding-sphere centre lies at distanceRatio of its radii from
+/// the origin along directionWorld.
+Array<math::Vector4> MakeFarRecord(FarSequence& inoutSequence, math::Vector3 directionWorld, float32 distanceRatio)
+{
+    StaticArray<math::Vector3, CORNER_COUNT> positions{};
+    for (math::Vector3& positionMesh : positions)
+    {
+        positionMesh = {inoutSequence.NextSigned(), inoutSequence.NextSigned(), inoutSequence.NextSigned()};
+    }
+    renderer::MeshDescription mesh = MakeMesh();
+    mesh.Positions = positions.GetData();
+    renderer::SceneShaderMaterial material;
+    material.Emission = {1, 1, 1};
+    material.IsEmissionTwoSided = true;
+    Array<math::Vector4> words;
+    REQUIRE(AppendLights(mesh, {}, material, words) == rhi::RasterStatus::Ready);
+    REQUIRE(words.GetSize() == TRIANGLE_RECORD_WORDS);
+    const math::Vector4 bound = words[renderer::MESH_LIGHT_POLYGON_BOUND_WORD];
+    math::Affine3 placement;
+    placement.Translation = directionWorld * (distanceRatio * bound.W) - math::Vector3{bound.X, bound.Y, bound.Z};
+    words.Clear();
+    REQUIRE(AppendLights(mesh, placement, material, words) == rhi::RasterStatus::Ready);
+    return words;
+}
+} // namespace
+TEST_CASE("raster emitter records store the bounding sphere of their corners", "[mesh-area]")
+{
+    Array<math::Vector4> words;
+    renderer::SceneShaderMaterial material;
+    material.Emission = {1, 1, 1};
+    REQUIRE(AppendLights(MakeMesh(), {}, material, words) == rhi::RasterStatus::Ready);
+    const math::Vector4 bound = words[renderer::MESH_LIGHT_POLYGON_BOUND_WORD];
+    // Corners (-1, -1), (0, 1) and (1, -1) at z = 1: the centroid is (0, -1/3, 1) and the apex the farthest corner.
+    CHECK(math::Abs(bound.X) <= 1e-6F);
+    CHECK(math::Abs(bound.Y + 1.0F / 3) <= 1e-6F);
+    CHECK(bound.Z == 1);
+    CHECK(math::Abs(bound.W - 4.0F / 3) <= 1e-6F);
+}
+namespace
+{
+/// Largest |point - exact| over the peak unit-radiance value area / distance^2, and the mean relative error where the
+/// exact value exceeds a twentieth of that peak, for receivers of the given material facing far emitters.
+struct FarError final
+{
+    float32 Largest = 0;
+    float32 MeanRelative = 0;
+    usize RelativeCount = 0;
+};
+// Metallic, roughness and the nearest distance ratio are distinct inputs.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+FarError MeasureFarError(float32 metallic, float32 roughness, float32 nearestRatio)
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    FarSequence sequence;
+    constexpr usize SAMPLE_COUNT = 2000;
+    constexpr float32 RATIO_SPAN = 32;
+    const math::Vector3 baseColor{.5F, .5F, .5F};
+    FarError result;
+    float32 relativeSum = 0;
+    for (usize sample = 0; sample < SAMPLE_COUNT; ++sample)
+    {
+        math::Vector3 directionWorld;
+        REQUIRE(math::TryNormalize({sequence.NextSigned(), sequence.NextSigned(), .2F + sequence.Next()},
+                                   directionWorld) == math::MathStatus::Success);
+        const Array<math::Vector4> words =
+            MakeFarRecord(sequence, directionWorld, nearestRatio + RATIO_SPAN * sequence.Next());
+        math::Vector3 normalWorld;
+        REQUIRE(math::TryNormalize({.3F * sequence.NextSigned(), .3F * sequence.NextSigned(), 1}, normalWorld) ==
+                math::MathStatus::Success);
+        math::Vector3 viewWorld;
+        REQUIRE(
+            math::TryNormalize(normalWorld + math::Vector3{.4F * sequence.NextSigned(), .4F * sequence.NextSigned(), 0},
+                               viewWorld) == math::MathStatus::Success);
+        const BorrowedView<const math::Vector4> record{words.GetData(), words.GetSize()};
+        math::Vector3 approximate{-1, -1, -1};
+        REQUIRE(internal::TryEvaluateRasterMeshLightFar(record,
+                                                        {},
+                                                        normalWorld,
+                                                        viewWorld,
+                                                        baseColor,
+                                                        metallic,
+                                                        roughness,
+                                                        approximate) == true);
+        const math::Vector3 exact =
+            internal::EvaluateRasterMeshLight(record, {}, normalWorld, viewWorld, baseColor, metallic, roughness);
+        const math::Vector4 bound = words[renderer::MESH_LIGHT_POLYGON_BOUND_WORD];
+        const float32 distance = math::Length(math::Vector3{bound.X, bound.Y, bound.Z});
+        const float32 peak = words[HEADER_WORDS].W / (distance * distance);
+        result.Largest = math::Max(result.Largest, math::Abs(approximate.X - exact.X) / peak);
+        if (exact.X > .05F * peak)
+        {
+            relativeSum += math::Abs(approximate.X - exact.X) / exact.X;
+            ++result.RelativeCount;
+        }
+    }
+    result.MeanRelative = result.RelativeCount == 0 ? 0 : relativeSum / static_cast<float32>(result.RelativeCount);
+    return result;
+}
+} // namespace
+TEST_CASE("far raster emitters integrate as a point within the documented error", "[mesh-area]")
+{
+    // A rough dielectric just beyond the distance ratio, and a glossy half-metal just beyond its specular gate:
+    // roughness 0.5 accepts lights below 1/16 radian, so beyond 16 radii.
+    const FarError rough = MeasureFarError(0, 1, LUDUS_MESH_LIGHT_FAR_DISTANCE_RATIO + .5F);
+    const FarError glossy = MeasureFarError(.5F, .5F, 16.5F);
+    // Measured: about 0.1% of the peak at worst and 0.06% relative on average.
+    constexpr float32 LARGEST_ERROR = .005F;
+    constexpr float32 MEAN_RELATIVE_ERROR = .005F;
+    REQUIRE(rough.RelativeCount > 0);
+    REQUIRE(glossy.RelativeCount > 0);
+    CHECK(rough.Largest <= LARGEST_ERROR);
+    CHECK(rough.MeanRelative <= MEAN_RELATIVE_ERROR);
+    CHECK(glossy.Largest <= LARGEST_ERROR);
+    CHECK(glossy.MeanRelative <= MEAN_RELATIVE_ERROR);
+}
+TEST_CASE("near or glossy-reflected raster emitters keep the exact integral", "[mesh-area]")
+{
+    FarSequence sequence;
+    const math::Vector3 normalWorld{0, 0, 1};
+    const math::Vector3 untouched{-1, -1, -1};
+    for (const float32 distanceRatio : StaticArray<float32, 2>{{2, 7.5F}})
+    {
+        const Array<math::Vector4> words = MakeFarRecord(sequence, {0, 0, 1}, distanceRatio);
+        math::Vector3 contribution = untouched;
+        CHECK(internal::TryEvaluateRasterMeshLightFar({words.GetData(), words.GetSize()},
+                                                      {},
+                                                      normalWorld,
+                                                      normalWorld,
+                                                      {.5F, .5F, .5F},
+                                                      0,
+                                                      1,
+                                                      contribution) == false);
+        CHECK(contribution == untouched);
+    }
+    // At twenty radii the light spans 0.05 radians: a quarter of roughness one's alpha, but not of roughness 0.3's.
+    const Array<math::Vector4> words = MakeFarRecord(sequence, {0, 0, 1}, 20);
+    math::Vector3 rough = untouched;
+    CHECK(internal::TryEvaluateRasterMeshLightFar({words.GetData(), words.GetSize()},
+                                                  {},
+                                                  normalWorld,
+                                                  normalWorld,
+                                                  {.5F, .5F, .5F},
+                                                  0,
+                                                  1,
+                                                  rough) == true);
+    CHECK(rough.X > 0);
+    math::Vector3 glossy = untouched;
+    CHECK(internal::TryEvaluateRasterMeshLightFar({words.GetData(), words.GetSize()},
+                                                  {},
+                                                  normalWorld,
+                                                  normalWorld,
+                                                  {.5F, .5F, .5F},
+                                                  0,
+                                                  .3F,
+                                                  glossy) == false);
+    CHECK(glossy == untouched);
+}

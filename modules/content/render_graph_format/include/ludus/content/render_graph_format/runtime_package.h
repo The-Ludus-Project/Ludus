@@ -109,8 +109,11 @@ inline constexpr foundation::uint32 RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION = 
 inline constexpr foundation::uint32 TILED_RAY_PACKAGE_VERSION = 28;
 /// First generation carrying a display curve per pass and admitting ToneMap on clustered deferred raster output.
 inline constexpr foundation::uint32 RASTER_TONE_MAPPING_PACKAGE_VERSION = 29;
+/// First generation whose deferred resolve reads a bounding-sphere header word in each emitter polygon record
+/// (deferred_layout.h), which it uses to cull and to evaluate far records as points.
+inline constexpr foundation::uint32 RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION = 30;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = RASTER_TONE_MAPPING_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

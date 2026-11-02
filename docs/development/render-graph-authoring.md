@@ -4760,22 +4760,57 @@ wholly behind a one-sided emitter. The sphere encloses the polygon plus a reach
 `A` its area and `epsilon = 2^-12`. A polygon's projected solid angle never exceeds
 `A / d^2` at nearest distance `d`, so every record a cell omits contributes a
 Lambert term below 2^-12 there: less than one 8-bit sRGB step at unit exposure, even
-next to black. The resolve applies the same bound per pixel with the distance to the
-emitter's plane, which never exceeds the distance to the polygon, and skips a listed
-record whose bound is already below 2^-12 there. The specular LTC term has no such bound; a mirror-like reflection of
-an emitter beyond its reach is omitted. Pixels outside the grid evaluate every record.
+next to black. The resolve applies the same bound per pixel with the larger of the
+distances to the emitter's plane and to the record's bounding sphere, neither of which
+exceeds the distance to the polygon, and skips a listed record whose bound is already
+below 2^-12 there. The specular LTC term has no such bound; a mirror-like reflection of
+an emitter beyond its reach is omitted. Every shaded surface lies inside the grid, so a
+position reconstructed just outside it, such as a floor pixel below the padded bounds,
+reads the nearest boundary cell. Such pixels previously evaluated every record without
+the per-pixel bound; in Bistro and Sponza a handful of them walked all 17,571 or 4,225
+records and held the whole resolve pass for several milliseconds.
 
-This replaces the earlier evaluation of every record at every pixel. On an Apple M5 at
+A record whose bounding-sphere centre lies more than eight sphere radii from the
+receiver is integrated as a point at that centre instead of by its clipped edges: the
+differential form factor `A cos(theta_e) / d^2` times the receiver's Lambert cosine,
+plus the specular LTC density in that direction times the same solid angle. Its error
+falls as `(r / d)^2`; the CPU check (`TryEvaluateRasterMeshLightFar`) bounds it by 0.5%
+of the largest value the record can reach. The specular term uses the point only while
+the sphere's angular radius `r / d` stays below a quarter of the receiver's GGX alpha
+(roughness squared), so a glossy reflection of a nearby emitter keeps the exact
+integral. Both thresholds are `LUDUS_MESH_LIGHT_FAR_*` in
+[`deferred_binding_slots.inc`](../../modules/graphics/renderer/include/ludus/graphics/renderer/detail/deferred_binding_slots.inc).
+
+The grid replaced the earlier evaluation of every record at every pixel. On an Apple M5 at
 1600 x 1080, the Intel Sponza light bulbs (8,098 radiance-1 triangles in about 5,000
-records) took about 214 ms of resolve time per frame that way; with the grid the whole
-frame takes about 8 ms (about 6 ms of resolve), measured with the
-`[.raster-mesh-light-benchmark]` editor test (`LUDUS_RASTER_BENCHMARK_WORLD` selects the
-World). The Sample project's Bistro, 17,571 emitter records (from about 21,000 emissive
-triangles in its pbrt source), prepares in about 0.5 to 1.6 s on the loaded test machine and
-renders in about 14 ms (about 3 ms of G-buffer and 12 ms of resolve), with a 1.8 MB
-mesh-light upload of 67,269 grid entries. Dim, small emitters now reach a few decimetres, and a bright large emitter
-still reaches the whole scene, so the cost grows with the records near each pixel
-rather than with all of them. Staircase2's large disk lights still reach every pixel.
+records) took about 214 ms of resolve time per frame that way, and about 8 ms for the
+whole frame with the grid alone. The Sample project's Bistro has 17,571 emitter records
+(from about 21,000 emissive triangles in its pbrt source) and 67,269 grid entries,
+prepares in about 0.5 to 1.6 s on the loaded test machine, and uploads 2.1 MB of
+records and grid. Dim, small emitters reach a few decimetres, and a bright large
+emitter still reaches the whole scene, so the cost grows with the records near each
+pixel rather than with all of them. Staircase2's large disk lights still reach every pixel.
+
+The boundary-cell lookup and the far-field point evaluation together, measured with the
+`[.raster-mesh-light-benchmark]` editor test (the fastest of two interleaved runs on the
+loaded M5, whole GPU frame; develop's resolve cooked against the same record layout):
+
+| View | Before | After | Without mesh lights |
+| --- | --- | --- | --- |
+| Bistro, camera inside the square | 27.0 ms | 13.3 ms | 6.2 ms |
+| Bistro, default orbit | 14.9 ms | 6.3 ms | 4.2 ms |
+| Bistro, street | 6.8 ms | 4.4 ms | 4.5 ms |
+| Staircase2, default orbit | 54.9 ms | 25.9 ms | 1.5 ms |
+| Sponza, default orbit | 3.2 ms | 2.7 ms | 2.6 ms |
+
+At most 1.2% of the pixels changed, all but eight of them by one 8-bit step. Inside
+Bistro a lit pixel's cell lists about 160 records on average (790 at the 99th
+percentile), of which about 40 pass the per-pixel bound. Staircase2's remaining cost is
+the exact integral of its nearby 64-corner disks. The benchmark takes
+`LUDUS_RASTER_BENCHMARK_WORLD` (a World under the project's assets folder),
+`LUDUS_RASTER_BENCHMARK_NAVIGATION` (a JSON editor navigation state such as
+`{"yaw": 35, "pitch": 8, "zoom": 0.12}`, an orbit about the scene centre) and
+`LUDUS_RASTER_BENCHMARK_IMAGE` (a PNG of the last frame, for comparing two runtimes).
 A scene whose lists would exceed 1,048,576 entries uploads no grid and evaluates
 every record as before.
 
@@ -4783,11 +4818,11 @@ There is no mesh-light visibility test yet: area lights can illuminate through
 walls. At most 32,768 nonzero-emission
 polygon records are admitted per scene; excess geometry rejects preparation and
 retains the last drawable generation. Because the culling grid bounds the per-pixel
-cost by the records near each pixel, this limit bounds the upload instead: at most 66
+cost by the records near each pixel, this limit bounds the upload instead: at most 67
 words per record keeps the records and a full grid under 40 MB, and every word offset
 exact in float32. The former limit of 8,192 rejected Bistro. The immutable scene upload stores each record
-as two Float4 header words (normal and sidedness, emission and corner count)
-followed by its corners, plus a zero header for an empty light set, then the
+as three Float4 header words (normal and sidedness, emission and corner count, and
+the corners' centroid with the largest corner distance from it) followed by its corners, plus a zero header for an empty light set, then the
 culling grid: three header words, a cell table of (first entry, count) pairs and the
 cell lists of record word offsets. The first corner's `w` holds the record's area ([`deferred_layout.h`](../../modules/graphics/renderer/include/ludus/graphics/renderer/deferred_layout.h)).
 Camera-only updates reuse it. Fragment read-only storage is required for this upload and the shared
@@ -4797,6 +4832,8 @@ package version 26 changed these two deferred binding kinds, and version 27 chan
 the mesh-light record layout its resolve reads; older deferred packages must be
 cooked again. Version 29 appends each pass's ToneMap curve and admits ToneMap on
 this raster output; earlier packages read as Reinhard and keep clamped linear output.
+Version 30 adds the bounding-sphere header word to each mesh-light record, so earlier
+deferred packages are rejected and must be cooked again.
 
 Select **ZPrepass** in the preview configuration
 selector to enable a separate depth-only pass. That pass clears and stores depth;

@@ -15,7 +15,8 @@ inline constexpr foundation::float32 MESH_LIGHT_CULL_RADIANCE = 1.0F / 4096.0F;
 /// its influence sphere reaches and that is not wholly behind a one-sided emitter's plane. The sphere bounds the
 /// record's polygon plus the distance beyond which its unshadowed Lambert term, at most
 /// emission * area / (pi * distance^2), stays below MESH_LIGHT_CULL_RADIANCE.
-/// @param receiversWorld Bounds of every surface the resolve shades; positions outside the grid evaluate every record.
+/// @param receiversWorld Bounds of every surface the resolve shades; positions reconstructed outside the grid read
+/// the nearest boundary cell.
 /// @return Ready with outGridWord zero when there is nothing to cull (no records or empty bounds) or the lists would
 /// exceed MAX_MESH_LIGHT_GRID_ASSIGNMENTS; the resolve then evaluates every record as before. OutOfMemory or
 /// InvalidDescription (malformed records) preserve both outputs.
@@ -24,8 +25,8 @@ inline constexpr foundation::float32 MESH_LIGHT_CULL_RADIANCE = 1.0F / 4096.0F;
                                                           const foundation::math::Aabb3& receiversWorld,
                                                           foundation::uint32& outGridWord) noexcept;
 /// Records listed for the cell containing positionWorld, as word offsets of their headers in words, appended to
-/// outRecordWords; false when the position lies outside the grid at gridWord (the resolve then evaluates every
-/// record) or the grid is malformed. Mirrors the resolve's lookup for CPU checks.
+/// outRecordWords. A position outside the grid at gridWord reads the nearest boundary cell. False for a nonfinite
+/// position or a malformed grid. Mirrors the resolve's lookup for CPU checks.
 [[nodiscard]] bool GetRasterMeshLightCell(foundation::BorrowedView<const foundation::math::Vector4> words,
                                           foundation::uint32 gridWord,
                                           foundation::math::Vector3 positionWorld,

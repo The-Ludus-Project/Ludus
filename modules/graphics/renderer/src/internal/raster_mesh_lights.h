@@ -30,4 +30,24 @@ EvaluateRasterMeshLight(foundation::BorrowedView<const foundation::math::Vector4
                         foundation::math::Vector3 baseColor,
                         foundation::float32 metallic,
                         foundation::float32 roughness) noexcept;
+/// CPU check of the resolve's far-field evaluation of exactly one record. When the record's bounding sphere centre
+/// lies farther than LUDUS_MESH_LIGHT_FAR_DISTANCE_RATIO radii from positionWorld, and, for a receiver with a
+/// specular lobe, the sphere's angular radius is below LUDUS_MESH_LIGHT_FAR_SPECULAR_ANGLE_PER_ALPHA times the GGX
+/// alpha (roughness squared), the polygon is integrated as a point at the centre: the differential form factor
+/// area * emitter cosine / distance^2 times the Lambert cosine, plus the specular LTC density in that direction.
+/// Thanks to Michael F. Cohen and John R. Wallace, "Radiosity and Realistic Image Synthesis", Academic Press, 1993,
+/// chapter 4 (the differential-area form factor), and to Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt,
+/// "Real-Time Polygonal-Light Shading with Linearly Transformed Cosines", TOG 35(4), Article 41 (2016), section 3.1,
+/// https://doi.org/10.1145/2897824.2925895, for the LTC density.
+/// @return True with outContribution set, zero for a receiver the record cannot reach, when the point is used; false,
+/// leaving outContribution unchanged, when the record is too near and EvaluateRasterMeshLight applies, or for a
+/// malformed record.
+[[nodiscard]] bool TryEvaluateRasterMeshLightFar(foundation::BorrowedView<const foundation::math::Vector4> words,
+                                                 foundation::math::Vector3 positionWorld,
+                                                 foundation::math::Vector3 normalWorld,
+                                                 foundation::math::Vector3 viewWorld,
+                                                 foundation::math::Vector3 baseColor,
+                                                 foundation::float32 metallic,
+                                                 foundation::float32 roughness,
+                                                 foundation::math::Vector3& outContribution) noexcept;
 } // namespace ludus::graphics::renderer::internal

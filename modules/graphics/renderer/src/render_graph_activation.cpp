@@ -833,7 +833,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::RASTER_TONE_MAPPING_PACKAGE_VERSION && version != format::TILED_RAY_PACKAGE_VERSION &&
+        (version != format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION &&
+         version != format::RASTER_TONE_MAPPING_PACKAGE_VERSION && version != format::TILED_RAY_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_PACKAGE_VERSION && version != format::LTC_TABLE_PACKAGE_VERSION &&
          version != format::CLUSTERED_DEFERRED_PACKAGE_VERSION &&
@@ -858,7 +859,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasPersistentBuffers = version >= format::ORDERED_PACKAGE_VERSION;
     candidate->HasPixelBuffers = version >= format::PIXEL_BUFFER_PACKAGE_VERSION;
     candidate->HasForwardStages = version >= format::FORWARD_PACKAGE_VERSION;
-    candidate->CanHaveClusteredDeferred = version >= format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION;
+    // Earlier clustered deferred resolves read emitter records without the bounding-sphere header word.
+    candidate->CanHaveClusteredDeferred = version >= format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION;
     candidate->HasRayTiles = version >= format::TILED_RAY_PACKAGE_VERSION;
     candidate->CanHaveClusteredForward = version >= format::CLUSTERED_FORWARD_PACKAGE_VERSION;
     candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;
