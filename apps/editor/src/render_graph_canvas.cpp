@@ -1364,10 +1364,16 @@ void RenderGraphCanvas::Rebuild()
         {
             cards.append(view->Frame->sceneBoundingRect());
         }
+        const QVector<QRectF> placed = cards;
         ResolveRenderGraphOverlaps(fixedCards, NODE_ROW_GAP, cards);
         for (qsizetype index = 0; index < movable.size(); ++index)
         {
-            movable.at(index)->Frame->setPos(cards.at(index).topLeft());
+            // Bounding rectangles reach past a card's origin, so move by the shift rather than to the corner.
+            const QPointF shift = cards.at(index).topLeft() - placed.at(index).topLeft();
+            if (shift.isNull() == false)
+            {
+                movable.at(index)->Frame->setPos(movable.at(index)->Frame->pos() + shift);
+            }
         }
     }
     for (const QJsonValueConstRef value : edges)
