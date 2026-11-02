@@ -62,6 +62,14 @@ public:
     [[nodiscard]] bool TryDolly(foundation::float32 steps) noexcept;
     [[nodiscard]] bool TryFly(foundation::math::Vector3 movementLocal, foundation::float32 distance) noexcept;
     [[nodiscard]] bool TryFrame(const foundation::math::Aabb3& boundsWorld, foundation::float32 aspect) noexcept;
+    /// Look from eyeWorld towards targetWorld through an infinite perspective lens, rolled so
+    /// upWorld points up on screen. The target becomes the pivot and its distance the focus
+    /// distance; verticalFov (radians) is clamped to the editor's admitted range. Coincident
+    /// points, an up direction along the view, or nonfinite input preserve the camera.
+    [[nodiscard]] bool TrySetLookAt(foundation::math::Vector3d eyeWorld,
+                                    foundation::math::Vector3d targetWorld,
+                                    foundation::math::Vector3 upWorld,
+                                    foundation::float32 verticalFov) noexcept;
     /// Look along a world axis through an orthographic lens, keeping the pivot and the visible
     /// height at the pivot. With boundsWorldOrNull, the eye backs off outside the bounds and the
     /// far plane covers them, so nothing in the scene is clipped. Failure preserves the camera.

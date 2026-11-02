@@ -28,6 +28,9 @@ constexpr float32 MINIMUM_PERSPECTIVE_NEAR_PLANE = 0.0000001F;
 constexpr float32 MAXIMUM_PERSPECTIVE_NEAR_PLANE = 0.01F;
 /// Fraction of the scene radius kept between an orthographic eye and the scene bounds.
 constexpr float32 ORTHOGRAPHIC_CLEARANCE = 0.01F;
+/// Smallest part of a look-at up direction, relative to its length, that must lie across the
+/// view; anything closer to the view direction leaves the roll undefined.
+constexpr float32 MINIMUM_UP_ACROSS_FRACTION = 0.000001F;
 struct AxisViewDescription final
 {
     EditorAxisView View;
@@ -359,6 +362,62 @@ bool EditorCameraController::TryFrame(const math::Aabb3& boundsWorld, float32 as
     candidate.Pose.Position =
         ConvertToWorld(centerWorld) -
         ConvertToWorld(math::Rotate(candidate.Pose.Orientation, {0, 0, -1})) * static_cast<float64>(distance);
+    return tryPublish(candidate, distance);
+}
+bool EditorCameraController::TrySetLookAt(math::Vector3d eyeWorld,
+                                          math::Vector3d targetWorld,
+                                          math::Vector3 upWorld,
+                                          float32 verticalFov) noexcept
+{
+    if (math::IsFinite(eyeWorld) == false || math::IsFinite(targetWorld) == false || math::IsFinite(upWorld) == false ||
+        math::IsFinite(verticalFov) == false)
+    {
+        return false;
+    }
+    const math::Vector3d offsetWorld = targetWorld - eyeWorld;
+    const float32 distance = static_cast<float32>(math::Length(offsetWorld));
+    if (math::IsFinite(distance) == false || distance < MINIMUM_DISTANCE)
+    {
+        return false;
+    }
+    const math::Vector3 forwardWorld{static_cast<float32>(offsetWorld.X / static_cast<float64>(distance)),
+                                     static_cast<float32>(offsetWorld.Y / static_cast<float64>(distance)),
+                                     static_cast<float32>(offsetWorld.Z / static_cast<float64>(distance))};
+    // Keep only the part of up across the view; a nearly parallel up names no roll.
+    const math::Vector3 acrossWorld = upWorld - forwardWorld * math::Dot(upWorld, forwardWorld);
+    const float32 upLength = math::Length(upWorld);
+    if (math::IsFinite(upLength) == false || upLength <= 0 ||
+        math::Length(acrossWorld) <= upLength * MINIMUM_UP_ACROSS_FRACTION)
+    {
+        return false;
+    }
+    math::Quaternion aim;
+    if (math::TryRotationBetween({0, 0, -1}, forwardWorld, aim) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    // Roll about the view direction by the signed angle from the aimed up to the requested one.
+    const math::Vector3 aimedUpWorld = math::Rotate(aim, {0, 1, 0});
+    const float32 rollRadians = math::Atan2(math::Dot(math::Cross(aimedUpWorld, acrossWorld), forwardWorld),
+                                            math::Dot(aimedUpWorld, acrossWorld));
+    math::Quaternion roll;
+    if (math::TryFromAxisAngle(forwardWorld, rollRadians, roll) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    camera::CameraSample candidate = mSample;
+    if (math::TryNormalize(roll * aim, candidate.Pose.Orientation) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    candidate.Pose.Position = eyeWorld;
+    candidate.Lens.Projection = camera::CameraProjection::PerspectiveInfinite;
+    candidate.Lens.VerticalFov = math::Clamp(verticalFov,
+                                             math::DegreesToRadians(MINIMUM_EDITOR_VERTICAL_FOV_DEGREES),
+                                             math::DegreesToRadians(MAXIMUM_EDITOR_VERTICAL_FOV_DEGREES));
+    candidate.Lens.NearPlane = math::Clamp(distance * PERSPECTIVE_NEAR_FRACTION,
+                                           MINIMUM_PERSPECTIVE_NEAR_PLANE,
+                                           MAXIMUM_PERSPECTIVE_NEAR_PLANE);
     return tryPublish(candidate, distance);
 }
 } // namespace ludus::editor

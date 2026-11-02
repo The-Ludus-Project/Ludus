@@ -125,6 +125,10 @@ public:
     // Version-2 records do not support the scene extension yet and are refused.
     [[nodiscard]] bool ImportScene(const QJsonObject& level, QString& error);
     [[nodiscard]] QJsonObject SceneLevel() const;
+    /// Replace the scene level's start view (`scene.camera`: eye, target, up, fov) as one undo
+    /// step. Fails without a scene level or when the World's validation rejects the camera;
+    /// failure preserves the draft and history, and an unchanged camera adds no history.
+    [[nodiscard]] bool SetSceneStartView(const QJsonObject& camera, QString& outError);
     [[nodiscard]] QJsonObject ScenePlacement(const QJsonObject& entity) const;
     /// Mesh-to-parent transform of a scene placement (basis, then Euler-degree rotation Rz*Ry*Rx and scale,
     /// then position), in float32. SceneLevel stores this basis with the authored position, and the viewport

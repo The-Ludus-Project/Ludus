@@ -203,6 +203,8 @@ private:
     void bindViewportInteraction();
     void updateViewportInteraction();
     void commitViewportPlacement(const QString& id, const QJsonObject& placement);
+    /// Store the scene viewport's current perspective view as the level start view (one undo step).
+    void saveStartView();
     void Changed(const QString& message = {});
     void Pending();
     void PreviewDraft();

@@ -60,6 +60,20 @@ public:
                   foundation::float32 zoom,
                   bool isReference);
     void FrameAll() noexcept;
+    /// True when the current scene carries a level start view (see PreviewStartView).
+    [[nodiscard]] LUDUS_INLINE bool HasStartView() const noexcept
+    {
+        return Scene_.HasStartView;
+    }
+    /// Move the free editor camera to the scene's start view, detaching an authored camera like
+    /// other navigation. The field of view is clamped to the editor's admitted range. Without a
+    /// start view, or for a degenerate one, the camera is preserved and false is returned.
+    /// A scene's first load already opens at its start view unless navigation was restored.
+    bool GoToStartView();
+    /// Describe the visible camera as a start view: its eye, a target at the focus distance along
+    /// the view, its up direction and its vertical field of view. Orthographic views have no
+    /// field of view and fail; failure preserves outView.
+    [[nodiscard]] bool TryDescribeStartView(PreviewStartView& outView) const noexcept;
     void SetSelection(const QString& id);
     [[nodiscard]] bool FrameSelection() noexcept;
     void Look(foundation::float32 deltaX, foundation::float32 deltaY);
