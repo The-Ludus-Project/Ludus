@@ -1425,7 +1425,7 @@ Explicit **Build Graph** includes these new files in its immutable draft snapsho
 before Save; building does not publish them to the project. Existing callbacks remain unchanged; a shared custom payload
 keeps its fields and gains `RayLaunch Launch`. Importing upgrades unchanged Raster
 admission defaults to the ReSTIR template capacity of 16 programs, so an existing
-ray pipeline can coexist with the five imported programs. Custom
+ray pipeline can coexist with the imported programs. Custom
 admission limits are retained unless you approve a program-budget increase. If the
 merged programs exceed `budgets.programs`, the template picker shows the current
 and required counts and offers **Increase and apply** or **Cancel**. Approval raises
@@ -1607,7 +1607,9 @@ It supports both standalone and imported/prefixed programs. It leaves manifests,
 graph wiring, settings, generic emitter helpers and customized initial callbacks
 unchanged; the JSON report lists preserved custom sources for manual adaptation.
 A conflicting helper aborts the update. Originals are backed up under the package's
-`out/template-updates/restir-initial-sampling-v2/`, preserving relative paths.
+`out/template-updates/restir-initial-sampling-v3/`, preserving relative paths.
+The update publishes both the emitter selector and shared initial-reservoir helper
+before replacing the callback, and preserves earlier v2 backups.
 Repeated application is harmless; a missing helper beside an already-current
 callback is repaired. Failed publication rolls back this operation's writes if
 those bytes have not changed externally. Keep the graph closed during the update,
@@ -1633,6 +1635,77 @@ those authors for [Appendix A.1, “The Alias Method”](https://pbr-book.org/4e
 and [Appendix A.2, “Reservoir Sampling”](https://pbr-book.org/4ed/Sampling_Algorithms/Reservoir_Sampling);
 it adapts their sampling ideas to bounded GPU-local tables and one shared emitter
 stream, rather than copying the book's container implementation.
+
+### Use stochastic pairwise MIS for large spatial kernels
+
+A newly created **ReSTIR DI** package also provides the **StochasticPairwise**
+configuration in its root graph and reusable library. Select this configuration
+on the ReSTIR Subgraph (the configuration field is available on the canvas),
+then **Build Graph** and select the built graph for the viewport. From the CLI,
+create the same editable package with `--template restir-di` and build with
+`--configuration StochasticPairwise`. Existing copied packages keep their authored
+sources; create a fresh package to obtain this configuration.
+
+This implements Hedstrom, Kettunen, Lin, Wyman and Li's
+[*Stochastic Pairwise MIS for Unbiased Large-Kernel Reuse in Real-Time*,
+Computer Graphics Forum 45(2), 2026](https://doi.org/10.1111/cgf.70391),
+equations 16, 18 and 19 and the confidence adjustment in section 4.3, for **direct
+lighting from mesh emitters**. It uses common emitter-area coordinates, so shifts
+have unit Jacobian. It does not extend the reference path tracer or implement
+multi-bounce ReSTIR PT, environment sampling, motion reprojection or temporal reuse.
+Fresh initial RIS samples feed this configuration every frame; the existing
+Default and Production configurations retain their separate reuse policies.
+
+The configuration uses three ordered scene compute kernels with native ray
+queries. Camera misses explicitly clear the appropriate reservoir region,
+independently of the configuration's indices in a containing ray sequence.
+
+1. **initial** generates a positive-support reservoir at each nonemissive receiver.
+2. **cells** builds one inclusive selection CDF per 8×8 screen tile, using
+   `confidence * source target * source UCW`. One invocation owns each tile and
+   evaluates each source target once; partial edge tiles use only in-bounds pixels.
+3. **shade** excludes the canonical pixel and draws neighbors with replacement.
+   Each draw receives its actual `1 / (draw count * selection probability)`
+   correction. An independent uniform set of cell pixels estimates the canonical
+   MIS weight. Duplicate selections retain their multiplicity. Neighbor confidences
+   are scaled by `min(draw count / neighbor count, 1)` before either MIS calculation.
+   The selected reservoir's UCW is the streaming weight sum divided by its target,
+   without an additional candidate-count division. Final shading traces visibility.
+
+**Graph Settings** exposes `RESTIR_PAIRWISE_SAMPLES` (default 3) and
+`RESTIR_PAIRWISE_CANONICAL_SAMPLES` (default 1), each from 1 to 16. These settings
+control expensive shifted target evaluations, independently of the tile's up to
+63 neighbors. Selection mixes the cached importance CDF with 5% uniform sampling;
+this preserves selection support even when tiny positive CDF increments round to
+zero. Empty neighbors have zero confidence; empty and single-pixel cells retain
+the canonical estimator. Visibility is excluded from the positive target and is
+reevaluated for the final sample, so source-side darkness does not remove samples
+that can contribute elsewhere.
+
+The immutable cell records occupy a 16-byte-per-pixel tail after the 64-byte
+history region in the `history` buffer (80 bytes per pixel total). `reservoir`
+remains 64 bytes per pixel. Final reservoir writes touch only the history region;
+no invocation overwrites cell data or initial reservoirs that another invocation
+reads. The graph orders initial sampling, CDF construction and shading, and
+resizes both buffers with RenderSize. Capacity failures are reported before indexing.
+
+This first implementation uses fixed screen tiles. It does **not** implement the
+paper's normal/object classification, hashed multimaps or expanding-radius
+neighbor-cell search in section 5. Tile boundaries can therefore remain visible
+in noise and dissimilar surfaces can increase variance. Scalar CDF scans are
+bounded by tile size; only the selected samples need BSDF reevaluation. No
+real-time performance improvement is claimed without scene/device measurements.
+Unbiasedness refers to the raw direct-light estimator with valid input UCWs and
+full emitter proposal support, before display tonemapping and finite precision.
+
+Validation includes an independent CPU enumeration of a finite three-element
+integral, and native GPU evaluation of the production MIS helpers and cell sampler
+against that integral, with 1, 3 and 8 draws, unequal confidences, zero targets,
+sparse cells, canonical exclusion and repeated selections (`[pairwise-reuse]` in
+`ludus_renderer_render_tests`). The graph fixture also covers mesh-emitter energy,
+undersized storage, resize and scene replacement (`[restir]` in
+`ludus_render_graph_ray_tests`). These tests establish the implemented DI scope;
+they do not qualify the paper's full path-space implementation.
 
 ### Run the production ReSTIR DI configuration
 

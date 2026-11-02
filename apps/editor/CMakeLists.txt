@@ -534,6 +534,8 @@ qt_add_executable(ludus_editor
     src/render_panel.cpp
     src/internal/level_workspace.h
     src/level_workspace.cpp
+    src/internal/scene_placement.h
+    src/scene_placement.cpp
     src/internal/import_report.h
     src/import_report.cpp
     src/internal/world_workspace.h
@@ -923,6 +925,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_panel.cpp
         src/internal/level_workspace.h
         src/level_workspace.cpp
+        src/internal/scene_placement.h
+        src/scene_placement.cpp
         src/internal/import_report.h
         src/import_report.cpp
         tests/import_report_tests.cpp
@@ -939,6 +943,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp
         tests/world_lighting_switch_tests.cpp
+        tests/world_start_view_tests.cpp
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp

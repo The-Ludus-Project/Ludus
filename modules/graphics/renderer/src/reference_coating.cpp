@@ -151,6 +151,8 @@ math::Vector3 SampleCoatingNormal(float32 alpha, math::Vector3 viewTangent, math
     return NormalizeCoatingVector(
         {alpha * projectedTangent.X, alpha * projectedTangent.Y, math::Max(COATING_MIN_NORMAL_Z, projectedTangent.Z)});
 }
+// Microfacet width, relative IOR and the three tangent-space directions have distinct optical roles.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 float32 ComputeCoatingInterfaceWithNormal(float32 alpha,
                                           float32 eta,
                                           math::Vector3 viewTangent,
@@ -159,6 +161,7 @@ float32 ComputeCoatingInterfaceWithNormal(float32 alpha,
                                           bool isRadiance,
                                           uint32 choices,
                                           float32& outPdf) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     outPdf = 0;
     if (viewTangent.Z == 0 || lightTangent.Z == 0)
@@ -443,11 +446,14 @@ bool IsCoatingRandomContextValid(ReferenceBsdfRandomContext random) noexcept
 {
     return random.Address.Dimension <= COATING_MAX_EVENT;
 }
+// Normal, outgoing and incident directions deliberately share the same world-space vector type.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 ReferenceBsdfEvaluation EvaluateCoatedDiffuse(const ReferenceBsdf& bsdf,
                                               math::Vector3 normalWorld,
                                               math::Vector3 viewWorld,
                                               math::Vector3 lightWorld,
                                               ReferenceBsdfRandomContext random) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     const CoatingFrame frame = MakeCoatingFrame(normalWorld);
     const math::Vector3 viewTangent = TransformCoatingToTangent(frame, viewWorld);
@@ -466,11 +472,14 @@ ReferenceBsdfEvaluation EvaluateCoatedDiffuse(const ReferenceBsdf& bsdf,
     return {EvaluateCoatingValue(bsdf, viewTangent, lightTangent, random),
             EvaluateCoatingPdf(bsdf, viewTangent, lightTangent, random)};
 }
+// The world-space directions and unit-cube random sample retain the existing BSDF sampling interface.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 ReferenceBsdfSample SampleCoatedDiffuse(const ReferenceBsdf& bsdf,
                                         math::Vector3 normalWorld,
                                         math::Vector3 viewWorld,
                                         math::Vector3 samples,
                                         ReferenceBsdfRandomContext random) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     ReferenceBsdfSample result;
     const CoatingFrame frame = MakeCoatingFrame(normalWorld);

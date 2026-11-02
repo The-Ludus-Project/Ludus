@@ -74,6 +74,7 @@ float32 SpecularProbability(const ReferenceBsdf& b) noexcept
 // Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, Physically Based Rendering,
 // 4th ed., section 9.3, https://pbr-book.org/4ed/Reflection_Models/Specular_Reflection_and_Transmission:
 // evaluate unpolarized complex-IOR Fresnel; RGB optical constants remain a declared proxy.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): incident cosine and optical constants of the Fresnel equation.
 float32 ComputeConductorFresnel(float32 cosine, float32 eta, float32 extinction) noexcept
 {
     if (eta == 1 && extinction == 0)

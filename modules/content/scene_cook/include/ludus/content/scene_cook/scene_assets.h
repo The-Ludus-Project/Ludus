@@ -180,6 +180,19 @@ enum class DumpLayout : uint8
 /// @return true when the level is valid.
 [[nodiscard]] bool ValidateLevel(std::span<const uint8> level, AssetError& outError) noexcept;
 
+/// Compose every level object's mesh-to-world transform exactly as an assembled bundle stores it:
+/// parent chains compose in the reference's float64 order, then each value narrows to float32.
+/// Reads no project files, so the result covers placement only, never asset validity.
+/// @param level Level JSON bytes, validated as ValidateLevel does.
+/// @param outTransforms Replaced on success with twelve values per level object, in level order:
+/// the column-major mesh-to-world basis, then the translation (content::scene_format::OBJECT_TRANSFORM_COMPONENTS).
+/// @param outError Set on failure: an invalid level, a world transform outside the float32 range,
+/// or allocation failure.
+/// @return true on success; failure preserves outTransforms.
+[[nodiscard]] bool ComposeLevelTransforms(std::span<const uint8> level,
+                                          foundation::Array<float32>& outTransforms,
+                                          AssetError& outError) noexcept;
+
 /// catalog(root): the published catalog, or the empty catalog when none exists.
 /// @param root Project directory.
 /// @param outCatalog Canonical catalog bytes.
