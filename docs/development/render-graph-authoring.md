@@ -3237,6 +3237,106 @@ alpha-tested triangles. Vulkan has not been run for this template.
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/salesin_jarosz_lines/main.lurender.json).
 
+## Use the Rao-Blackwellized MH template
+
+Choose **Rao-Blackwellized MH light transport** in the new-graph picker or the
+canvas **Apply Configuration Template** menu. The CLI equivalent is:
+
+```bash
+ludus render-graph new graphs/Metropolis --template rao-blackwell-mh --output offscreen \
+  --renderer-static --profiles metal
+```
+
+Use `spirv` for Vulkan. The `RaoBlackwellMh` library accepts `scene`, `view` and
+`color`. Its main `color` output is the paper's practical RB estimator; optional
+`standard` and `wasteRecycling` outputs expose the corresponding MH baselines.
+The complete package exports all three through Accumulate and ToneMap. Its root
+RenderSize defaults to half the drawable width and height to bound chain/film
+memory; edit that node to change resolution. Buffer and device budgets still apply. It uses
+compute BVH traversal, without hardware ray tracing. Shader sources and Graph
+settings are editable project files; canvas and Properties use the existing
+transactional template importer, undo and Save.
+
+This is a bounded **per-pixel primary-sample-space MH** implementation, not the
+paper's multiplexed bidirectional MLT implementation. One independent chain per
+pixel mutates two camera-jitter dimensions and three BSDF dimensions per scattering
+vertex. A state-independent mixture chooses a uniform large step or a symmetric
+uniform small step wrapped around the unit cube. Symmetry gives acceptance
+`min(1, p(proposed) / p(current))`. Defaults are a 0.3 large-step probability,
+0.05 small-step radius, 128 discarded burn-in proposals and three scattering events.
+Depth is editable from one to three; initialization plus the first proposal use at
+most eight surface queries. Every subsequent invocation evaluates one proposal,
+keeping unfinished chains and RB tours across frames.
+
+The path integrand is jittered-camera RGB radiance with a finite scattering depth,
+BSDF continuation sampling, emissive triangles and the environment. It includes
+legacy metallic/roughness, typed diffuse and isotropic conductor reflection,
+retained material maps and masked geometry through the existing scene interface.
+It has no next-event estimation, roulette, denoising or cross-pixel film splats.
+Analytic lights cannot be reached by this sampler and produce an explicit failure
+with a repair: choose a light-sampling graph, or author mesh emission/environment.
+Coated diffuse also fails explicitly because its stochastic internal walk needs
+additional primary dimensions; choose a renderer supporting coatings or explicitly
+change the material. These failures never silently remove authored lighting or
+select another renderer. Tiny emitters can mix slowly; this baseline does not
+promise a variance improvement for every scene.
+
+The target is `p(u) = MH_TARGET_FLOOR + luminance(L(u))`, using Rec. 709 luminance.
+The finite positive floor gives black paths support. Accumulation estimates the
+unit-cube integral using `sum(w * L/p) / sum(w/p)`, so it needs no separate bootstrap
+brightness estimate. Standard MH adds the current state with `w = 1` each iteration.
+Waste recycling adds current and proposed states with `w = 1-alpha` and `w = alpha`.
+The RB branch uses Holl, Singh and Seidel's section 5.4 / Algorithm 5.2 recurrence:
+`P *= 1-alpha; holding += P`, starting both at one. It includes the accepting
+proposal, adds the previous state's holding weight only at acceptance and then
+resets the tour. An unfinished tour remains pending at a capture stop; it is not
+flushed with an invented weight. No extra proposals are evaluated for RB.
+
+**Bias and interpretation:** a finite self-normalized ratio is biased even for
+standard MH. The paper's practical RB truncation introduces additional bias; the
+authors describe it as an inexact method. Finite depth truncates the transport
+integral as well. Do not call these captures unbiased reference images. Keep the
+independent CPU/GPU reference tracer as a correctness comparison. Jump Restore,
+MALA, H²MC and multiplexed bidirectional transport are not implemented here.
+
+Two render-size Buffers hold 208 bytes per pixel: a 112-byte chain record with
+primary samples, cached contribution/target, unfinished tour and validity metadata,
+and 96 bytes for three compensated RGB numerator/scalar denominator accumulators.
+The first pass advances the common chain and updates all three estimators from the
+same proposals; the other two passes resolve the standard and waste-recycling
+images. Ordered buffer versions establish visibility without atomics. Keep the
+three exported routes' Accumulate limits equal when rendering them together. Generation,
+extent, seed, layout version and the next expected invocation index validate
+history. Invocation zero resets history after camera/scene replacement, including
+cases where the graph's persistent buffer survives. Resize stages replacement
+storage through the existing graph publication boundary. A failed proposal does
+not publish its record or weighted sums.
+
+`ResolveGraphRadiance` tells the renderer that a callback returns an already
+resolved persistent estimate. Accumulate uses its sample limit to count completed
+**MH iterations**, including burn-in and pending tours, and publishes the latest
+ratio. It never averages ratios from successive iterations. The existing raw HDR
+capture sum/count encoding is preserved: the stored numerator is the resolved
+image times the completed invocation count, not the estimator's weight sum. Divide
+by that count to recover the image. Effective sample counts are lower and correlated;
+these iteration counts must not be interpreted as IID samples. Captures that stop
+within burn-in are black. Display exposure and tone mapping apply after resolution.
+
+The CPU chain and BSDF path oracle are independently executable in the renderer;
+FoundationMath owns the checked MH recurrence and compensated weighted accumulator
+and their shader counterparts. `ludus_metropolis_tests` checks domains, failures,
+burn-in, reflection/emission and multi-seed analytic integrals. The native compute
+`[metropolis]` parity test runs the template's actual chain/path shaders over a
+matched emissive scenes with diffuse, conductor and legacy metallic/roughness surfaces,
+comparing emission/direct/indirect path AOVs and
+raw linear RGB for all estimators with
+an absolute 0.001 tolerance after 512 iterations and 32 burn-in steps. These checks
+are evidence for this profile, not qualification of every backend or material.
+
+Thanks to Sascha Holl, Gurprit Singh and Hans-Peter Seidel,
+[Rao-Blackwellized Markov chain Monte Carlo Light Transport](https://arxiv.org/abs/2605.09117),
+SIGGRAPH 2026, section 5.4, Algorithm 5.2 and supplemental bias discussion.
+
 ## Author scene-aware ray shaders
 
 The optional scene interface extends the portable triangle profile above with

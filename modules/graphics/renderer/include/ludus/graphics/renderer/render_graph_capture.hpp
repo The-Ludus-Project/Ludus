@@ -129,8 +129,10 @@ struct RenderGraphCaptureInfo final
 /// One captured pixel: the Accumulate's linear mean radiance and its committed sample count.
 struct RenderGraphCapturePixel final
 {
-    foundation::math::Vector3 Mean{}; ///< Mean linear radiance; zero when no sample committed.
-    foundation::uint32 Samples = 0;   ///< Committed samples; below the target after a latched failure or Stop.
+    foundation::math::Vector3 Mean{}; ///< Linear estimate; latest ratio for ResolveGraphRadiance, otherwise the mean.
+    /// Committed invocations, below target after failure/Stop. For MCMC these include
+    /// burn-in/pending tours and are not independent samples or an effective sample count.
+    foundation::uint32 Samples = 0;
 };
 
 /// Renders a frozen scene through a private RenderGraph until a target sample count and reads back the

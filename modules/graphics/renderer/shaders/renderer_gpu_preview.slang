@@ -44,6 +44,11 @@ float4 SceneValue(uint index)
     return asfloat(sceneWords[index]);
 }
 LUDUS_SHADER_BINDING(2) RWStructuredBuffer<float4> accumulation; // sum/count, compensation/error
+#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+// An authored weighted estimator owns its numerator/denominator in persistent storage.
+// Its resolved image replaces the previous estimate, rather than averaging ratios.
+static bool graphRadianceIsResolved = false;
+#endif
 LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_COLORS_BINDING)
 RWStructuredBuffer<float4> colors; // Encoded RGB and binary32-exact pixel index.
 LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_TEXELS_BINDING) StructuredBuffer<uint4> textureWords;
@@ -1189,6 +1194,7 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 dispatchPixel : SV_Dispat
 #endif
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
         graphFailureReason = LUDUS_SCENE_FAILURE_INVALID_RADIANCE;
+        graphRadianceIsResolved = false;
         // Keep one callback invocation: duplicating it for raw/mean output expands large estimators twice.
         float3 sample = EvaluateGraphRay(pixel);
 #else
@@ -1215,18 +1221,40 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 dispatchPixel : SV_Dispat
         }
         else
         {
-            float3 adjusted = sample - compensation.xyz;
-            float3 next = sum.xyz + adjusted;
-            compensation.xyz = (next - sum.xyz) - adjusted;
-            if (any(isfinite(next) == false) || any(isfinite(compensation.xyz) == false))
+#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+            if (graphRadianceIsResolved == true)
             {
-                LUDUS_COUNT_GRAPH_FAILURE(LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
-                compensation.w = historyTag + 1;
+                // Keep the existing raw-capture sum/count ABI. Count measures completed
+                // invocations, including burn-in and unfinished RB tours, not IID samples.
+                float3 next = sample * float(sampleCount + 1);
+                if (all(isfinite(next)) == false)
+                {
+                    LUDUS_COUNT_GRAPH_FAILURE(LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
+                    compensation.w = historyTag + 1;
+                }
+                else
+                {
+                    sum.xyz = next;
+                    compensation.xyz = float3(0);
+                    sampleCount += 1;
+                }
             }
             else
+#endif
             {
-                sum.xyz = next;
-                sampleCount += 1;
+                float3 adjusted = sample - compensation.xyz;
+                float3 next = sum.xyz + adjusted;
+                compensation.xyz = (next - sum.xyz) - adjusted;
+                if (any(isfinite(next) == false) || any(isfinite(compensation.xyz) == false))
+                {
+                    LUDUS_COUNT_GRAPH_FAILURE(LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
+                    compensation.w = historyTag + 1;
+                }
+                else
+                {
+                    sum.xyz = next;
+                    sampleCount += 1;
+                }
             }
         }
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)

@@ -1,0 +1,374 @@
+{
+  "version": 2,
+  "id": "RaoBlackwellMhLibrary",
+  "default": "RaoBlackwellMh",
+  "configurations": [
+    {
+      "id": "RaoBlackwellMh",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "color",
+          "type": "ColorTexture",
+          "source": "shade.color",
+          "required": true
+        },
+        {
+          "id": "standard",
+          "type": "ColorTexture",
+          "source": "shadeStandard.color",
+          "required": false
+        },
+        {
+          "id": "wasteRecycling",
+          "type": "ColorTexture",
+          "source": "shadeWasteRecycling.color",
+          "required": false
+        }
+      ],
+      "nodes": [
+        {
+          "id": "chains",
+          "kind": "Buffer",
+          "bytes_per_pixel": 112,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "films",
+          "kind": "Buffer",
+          "bytes_per_pixel": 96,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "shade",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "target": "chains",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "target": "films",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "RaoBlackwell"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "standard",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "shadeStandard",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "target": "chains",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "target": "films",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "Standard"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "wasteRecycling",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "shadeWasteRecycling",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "target": "chains",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "target": "films",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "WasteRecycling"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": "Texture"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "shade.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shade.view"
+        },
+        {
+          "from": "input.color",
+          "to": "shade.color"
+        },
+        {
+          "from": "chains.buffer",
+          "to": "shade.chains"
+        },
+        {
+          "from": "input.scene",
+          "to": "shadeStandard.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shadeStandard.view"
+        },
+        {
+          "from": "standard.texture",
+          "to": "shadeStandard.color"
+        },
+        {
+          "from": "shade.chains",
+          "to": "shadeStandard.chains"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "standard.size"
+        },
+        {
+          "from": "input.scene",
+          "to": "shadeWasteRecycling.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shadeWasteRecycling.view"
+        },
+        {
+          "from": "wasteRecycling.texture",
+          "to": "shadeWasteRecycling.color"
+        },
+        {
+          "from": "shadeStandard.chains",
+          "to": "shadeWasteRecycling.chains"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "wasteRecycling.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "chains.size"
+        },
+        {
+          "from": "input.color",
+          "to": "renderSize.texture"
+        },
+        {
+          "from": "films.buffer",
+          "to": "shade.films"
+        },
+        {
+          "from": "shade.films",
+          "to": "shadeStandard.films"
+        },
+        {
+          "from": "shadeStandard.films",
+          "to": "shadeWasteRecycling.films"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "films.size"
+        }
+      ]
+    }
+  ]
+}

@@ -144,6 +144,24 @@
     },
     {
       "kind": "graph",
+      "identity": "rao-blackwell-mh",
+      "label": "Rao-Blackwellized MH light transport",
+      "category": "ray-traced",
+      "requirements": [
+        "compute-ray-tracing"
+      ],
+      "keywords": [
+        "metropolis",
+        "markov chain",
+        "rao blackwell",
+        "mcmc",
+        "weighted accumulation",
+        "path tracing"
+      ],
+      "description": "Three estimators sharing one per-pixel MH chain compare the paper’s RB estimator, standard MH and waste recycling. Bounded BSDF path transport from mesh emission and environment, with primary-space mutations, burn-in and persistent weighted sums. Requires Metal or Vulkan compute. Analytic lights and coated diffuse are unsupported; finite-sample ratios and the paper’s practical RB truncation are biased."
+    },
+    {
+      "kind": "graph",
       "identity": "restir-gi",
       "label": "ReSTIR GI — path resampling for indirect lighting",
       "category": "ray-traced",
@@ -270,6 +288,25 @@
       "requirements": ["native-ray-tracing"],
       "keywords": ["steinberg", "physical light transport", "physical optics", "wave optics", "wave bsdf", "coherence", "polarization", "stokes", "mueller", "diffraction", "grating", "spectral", "path tracing"],
       "description": "A primary-hits scene compute pass and three shading passes that share one automatically sized hit buffer: physical-optics path tracing with coherence and polarization (Steinberg, Sen and Yan), the same paths radiometrically, and the incident light's coherence length. Connect scene, view and color; outputs color plus optional radiometric and coherence images. Requires native ray tracing."
+    },
+    {
+      "kind": "snippet",
+      "identity": "rao-blackwell-mh",
+      "label": "Rao-Blackwellized MH light transport",
+      "category": "lighting",
+      "defaultConfiguration": "RaoBlackwellMh",
+      "requirements": [
+        "compute-ray-tracing"
+      ],
+      "keywords": [
+        "metropolis",
+        "markov chain",
+        "rao blackwell",
+        "mcmc",
+        "weighted accumulation",
+        "path tracing"
+      ],
+      "description": "Three estimators sharing one per-pixel MH chain compare the paper’s RB estimator, standard MH and waste recycling. Bounded BSDF path transport from mesh emission and environment, with primary-space mutations, burn-in and persistent weighted sums. Requires Metal or Vulkan compute. Analytic lights and coated diffuse are unsupported; finite-sample ratios and the paper’s practical RB truncation are biased."
     },
     {
       "kind": "snippet",

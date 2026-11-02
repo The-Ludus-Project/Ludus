@@ -177,6 +177,8 @@ enum class RenderGraphFailureReason : foundation::uint8
     StoredRecord,     ///< Per-pixel data an earlier pass did not write for this pixel or frame.
     SceneData,        ///< An invalid triangle, surface or material from a scene lookup.
     InvalidWeight,    ///< A non-finite or negative sampling weight, probability or PDF.
+    BsdfOnlyLights,   ///< Analytic lights require a light-sampling transport profile.
+    PrimaryMaterial,  ///< A material requires random dimensions outside the primary-sample profile.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;
@@ -746,6 +748,9 @@ public:
     /// such as a frame capture's readback. The buffer holds RENDER_GRAPH_ACCUMULATION_WORDS float4 values per
     /// pixel of the pass's colour resource, in row-major order. The graph owns it; finish every use, including
     /// readbacks, before the next Render, Update or Reset, and never write to it.
+    /// Ordinary accumulated callbacks store RGB sums; ResolveGraphRadiance callbacks
+    /// store their latest resolved estimate times the invocation count. Divide either
+    /// by the bit-preserved uint32 count in the first word's W to recover linear RGB.
     /// @param pass Plan pass index of a ray pass.
     /// @param outBuffer Receives the borrowed buffer; unchanged on failure.
     /// @return Ready after producer completion; NotReady while no completed output exists;

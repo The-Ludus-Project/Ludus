@@ -67,28 +67,30 @@ PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                QString& outError,
                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
 /// Prepare the compute-ray-tracing, simple-compute-ray-tracing, veach-guibas-mis, ris-projected-solid-angle,
-/// polygonal-light-sampling, slice-sampling-luminaire, steinberg-plt, steinberg-physical-optics or restir-gi template
-/// in an absent/empty library. The
-/// simple template imports one triangle-loop kernel under simple_compute_ray_tracing/ with no Buffer. The original
-/// template imports a primary-hits and a shade scene compute pass sharing one render-size hit Buffer under
-/// compute_ray_tracing/. veach-guibas-mis imports the same primary-hits pass with three shade passes (MIS, light
-/// sampling and BSDF sampling) under veach_guibas_mis/; its light and BSDF images are optional library outputs.
-/// ris-projected-solid-angle has the same four-pass shape under ris_projected_solid_angle/, with compute-BVH passes,
-/// and also enables the ray technique's scene_interface.polygonal_light_sampling helpers. polygonal-light-sampling
-/// imports four compute-BVH shade passes under polygonal_light_sampling/, the first of which also records the hits,
-/// with the same helper requirement and a visibility budget of 16. slice-sampling-luminaire imports three compute-BVH
-/// shade passes under slice_sampling_luminaire/ (defensive slice sampling, which also records the hits, slice sampling
-/// and uniform panel area), each with one shadow ray. steinberg-plt imports the primary-hits pass with wave-optics,
-/// geometric-optics and coherence passes under steinberg_plt/; its geometric and coherence images are optional
-/// library outputs. steinberg-physical-optics has the same four-pass shape under steinberg_physical_optics/ (wave
-/// optics, radiometric and coherence), with three surface and three visibility queries. restir-gi imports the
-/// initial-sample, temporal, spatial and shade passes under restir_gi/, which share three render-size Buffers (initial
-/// samples, temporal and spatial reservoirs), with four surface and sixteen visibility queries. Kernels arrive with
-/// their local include closure. A template's Graph settings merge like ReSTIR's (existing values are kept). The shared
-/// ray technique gains scene_interface version 1 when it lacks one, and its query budgets are raised to the template's;
-/// its callbacks, payload and larger budgets are retained. Requires a Metal or Vulkan profile. Authored shader bytes
-/// are never replaced: source/program collisions, unsupported scene interface versions and capacity limits report a
-/// repair. Caller owns/discards the snapshot; GUI thread; no disk writes.
+/// polygonal-light-sampling, slice-sampling-luminaire, steinberg-plt, steinberg-physical-optics, restir-gi or
+/// rao-blackwell-mh template in an absent/empty library. The simple template imports one triangle-loop kernel under
+/// simple_compute_ray_tracing/ with no Buffer. The original template imports a primary-hits and a shade scene compute
+/// pass sharing one render-size hit Buffer under compute_ray_tracing/. veach-guibas-mis imports the same primary-hits
+/// pass with three shade passes (MIS, light sampling and BSDF sampling) under veach_guibas_mis/; its light and BSDF
+/// images are optional library outputs. ris-projected-solid-angle has the same four-pass shape under
+/// ris_projected_solid_angle/, with compute-BVH passes, and also enables the ray technique's
+/// scene_interface.polygonal_light_sampling helpers. polygonal-light-sampling imports four compute-BVH shade passes
+/// under polygonal_light_sampling/, the first of which also records the hits, with the same helper requirement and a
+/// visibility budget of 16. slice-sampling-luminaire imports three compute-BVH shade passes under
+/// slice_sampling_luminaire/ (defensive slice sampling, which also records the hits, slice sampling and uniform panel
+/// area), each with one shadow ray. steinberg-plt imports the primary-hits pass with wave-optics, geometric-optics and
+/// coherence passes under steinberg_plt/; its geometric and coherence images are optional library outputs.
+/// steinberg-physical-optics has the same four-pass shape under steinberg_physical_optics/ (wave optics, radiometric
+/// and coherence), with three surface and three visibility queries. restir-gi imports the initial-sample, temporal,
+/// spatial and shade passes under restir_gi/, which share three render-size Buffers (initial samples, temporal and
+/// spatial reservoirs), with four surface and sixteen visibility queries. rao-blackwell-mh imports three compute-BVH
+/// passes (RB, standard MH, waste recycling), sharing two Buffers (208 bytes per render pixel), eight surface queries
+/// and five Graph settings. Its weighted results replace successive ratios. Kernels arrive with their local include
+/// closure. A template's Graph settings merge like ReSTIR's (existing values are kept). The shared ray technique gains
+/// scene_interface version 1 when it lacks one, and its query budgets are raised to the template's; its callbacks,
+/// payload and larger budgets are retained. Requires a Metal or Vulkan profile. Authored shader bytes are never
+/// replaced: source/program collisions, unsupported scene interface versions and capacity limits report a repair.
+/// Caller owns/discards the snapshot; GUI thread; no disk writes.
 [[nodiscard]] RenderGraphDocumentStatus
 PrepareComputeRayTracingConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                       const QString& rootGraph,

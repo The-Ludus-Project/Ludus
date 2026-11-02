@@ -562,3 +562,31 @@ class NativeStorageRecordTests(unittest.TestCase):
         for invalid in (binary(16), binary(32)[:-1], b''):
             with self.assertRaises(RuntimeError):
                 verify_storage_record_strides(invalid, interface)
+
+
+class SoftwareRayComputeProfileTests(unittest.TestCase):
+    def test_software_queries_require_compute_and_exclude_native_queries(self):
+        import tempfile
+        from types import SimpleNamespace
+        from compile_raster import compile_raster
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(output=directory, include=[], define=[], source='kernel.slang',
+                                   compute='Main', vertex=None, fragment=None,
+                                   native_ray_queries=True, graph_software_rays=True)
+            with self.assertRaisesRegex(RuntimeError, 'exclude native ray queries'):
+                compile_raster(args, {})
+            args.native_ray_queries = False
+            args.compute = None
+            args.vertex, args.fragment = 'Vertex', 'Fragment'
+            with self.assertRaisesRegex(RuntimeError, 'require native compute'):
+                compile_raster(args, {})
+
+    def test_translated_software_compute_cannot_acquire_a_hardware_ray_requirement(self):
+        from compile_graph_stage import verify_ray_compute_metal
+        interface = {'entries': [{'binding': 6, 'kind': 'StorageReadWrite'}]}
+        code = 'kernel void Main(device uint4* words [[buffer(6)]]) {}'
+        self.assertEqual(verify_ray_compute_metal(code, interface, False), 'Main')
+        with self.assertRaisesRegex(RuntimeError, 'must not require native ray traversal'):
+            verify_ray_compute_metal(code + '// metal_raytracing', interface, False)
+        with self.assertRaisesRegex(RuntimeError, 'must not require native ray traversal'):
+            verify_ray_compute_metal(code, {'entries': [{'binding': 5, 'kind': 'RayScene'}]}, False)

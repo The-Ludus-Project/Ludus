@@ -1895,6 +1895,86 @@ TEST_CASE("Steinberg physical-optics configuration imports its passes, shader cl
     RequireValidation(workspace);
 }
 
+TEST_CASE("MH template picker and canvas import expose all estimators with Properties hidden",
+          "[editor][render-graph][metropolis-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    QWidget properties;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    QWidget* inspector = workspace.TakeInspectorPanel(&properties);
+    REQUIRE(inspector != nullptr);
+    inspector->hide();
+    workspace.show();
+    SECTION("new graph picker")
+    {
+        CreateGraphFromPicker(workspace, QStringLiteral("rao-blackwell-mh"));
+        RenderGraphDocument& document = workspace.GetDocument();
+        CHECK(document.GetDraft(ROOT_GRAPH).count("\"Accumulate\"") == 3);
+        CHECK(document.GetDraft(QStringLiteral("main_shaders/chain.slang")).contains("TryAdvanceMetropolisTour") ==
+              true);
+        CHECK(document.GetDraft(QStringLiteral("main_shaders/path.slang")).contains("EvaluateMetropolisPath") == true);
+        RequireValidation(workspace);
+    }
+    SECTION("root canvas import")
+    {
+        REQUIRE(workspace.CustomizeBuiltIn() == true);
+        workspace.resize(TEMPLATE_WORKSPACE_WIDTH, TEMPLATE_WORKSPACE_HEIGHT);
+        bool hasAppliedTemplate = false;
+        QTimer::singleShot(0, &workspace, [&workspace, &hasAppliedTemplate]() {
+            QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            REQUIRE(menuOrNull != nullptr);
+            QAction* actionOrNull =
+                menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphApplyConfigurationTemplate"));
+            REQUIRE(actionOrNull != nullptr);
+            REQUIRE(actionOrNull->isEnabled() == true);
+            menuOrNull->close();
+            QTimer::singleShot(0, &workspace, [&hasAppliedTemplate]() {
+                QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+                REQUIRE(dialogOrNull != nullptr);
+                QComboBox* choiceOrNull =
+                    dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphConfigurationTemplate"));
+                REQUIRE(choiceOrNull != nullptr);
+                const int32 selected = choiceOrNull->findData(QStringLiteral("rao-blackwell-mh"));
+                REQUIRE(selected >= 0);
+                choiceOrNull->setCurrentIndex(selected);
+                QLineEdit* nameOrNull =
+                    dialogOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphTemplateConfiguration"));
+                REQUIRE(nameOrNull != nullptr);
+                nameOrNull->setText(QStringLiteral("Metropolis"));
+                QDialogButtonBox* buttonsOrNull = dialogOrNull->findChild<QDialogButtonBox*>();
+                REQUIRE(buttonsOrNull != nullptr);
+                buttonsOrNull->button(QDialogButtonBox::Apply)->click();
+                hasAppliedTemplate = true;
+            });
+            actionOrNull->trigger();
+        });
+        RenderGraphCanvas& canvas = workspace.GetCanvas();
+        canvas.centerOn(canvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100));
+        QContextMenuEvent event(QContextMenuEvent::Mouse,
+                                canvas.viewport()->rect().center(),
+                                canvas.viewport()->mapToGlobal(canvas.viewport()->rect().center()));
+        QApplication::sendEvent(canvas.viewport(), &event);
+        REQUIRE(hasAppliedTemplate == true);
+        CHECK(inspector->isVisible() == false);
+        RenderGraphDocument& document = workspace.GetDocument();
+        const QByteArray library = document.GetDraft(QStringLiteral("Metropolis.lurender.json"));
+        for (const char* program :
+             {"RaoBlackwellMhRaoBlackwell", "RaoBlackwellMhStandard", "RaoBlackwellMhWasteRecycling"})
+            CHECK(library.contains(program) == true);
+        CHECK(document.GetDraft(QStringLiteral("rao_blackwell_mh/main_shaders/path.slang")).isEmpty() == false);
+        CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("MH_BURN_IN") == true);
+        const QJsonObject interface =
+            FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST)).value(QStringLiteral("scene_interface")).toObject();
+        CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 8);
+        ReplaceRasterSubgraph(document, QStringLiteral("Metropolis"));
+        REQUIRE(workspace.Save() == true);
+        RequireValidation(workspace);
+    }
+}
+
 TEST_CASE("ReSTIR GI template is created from the editor picker with its four passes and three buffers",
           "[editor][render-graph][restir-gi-template]")
 {
