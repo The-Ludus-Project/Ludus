@@ -2062,6 +2062,83 @@ TEST_CASE("ReSTIR GI configuration imports its passes, shader closure and settin
     RequireValidation(workspace);
 }
 
+TEST_CASE("Conditional ReSTIR template is created from the editor picker with its four passes and three buffers",
+          "[editor][render-graph][conditional-restir-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    workspace.show();
+    CreateGraphFromPicker(workspace, QStringLiteral("conditional-restir"));
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    for (const char* identity :
+         {"samples", "temporalReservoirs", "spatialReservoirs", "Initial", "Temporal", "Spatial", "Shade"})
+    {
+        INFO(identity);
+        CHECK(library.contains(identity) == true);
+    }
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    CHECK(root.count("\"Accumulate\"") == 1);
+    CHECK(root.count("\"ToneMap\"") == 1);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/weights.slang")).contains("ComputeConditionalMass") == true);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("CRIS_HISTORY_LIMIT") == true);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("Conditional ReSTIR configuration imports its passes, shader closure and settings on the root canvas",
+          "[editor][render-graph][conditional-restir-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Indirect"), QStringLiteral("conditional-restir")) ==
+            true);
+    const QByteArray library = document.GetDraft(QStringLiteral("Indirect.lurender.json"));
+    for (const char* program : {"ConditionalRestirInitial",
+                                "ConditionalRestirTemporal",
+                                "ConditionalRestirSpatial",
+                                "ConditionalRestirShade"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    // Each kernel's include closure arrives with it.
+    for (const QString& source : {QStringLiteral("conditional_restir/main_shaders/initial.slang"),
+                                  QStringLiteral("conditional_restir/main_shaders/temporal.slang"),
+                                  QStringLiteral("conditional_restir/main_shaders/spatial.slang"),
+                                  QStringLiteral("conditional_restir/main_shaders/shade.slang"),
+                                  QStringLiteral("conditional_restir/main_shaders/reservoir.slang"),
+                                  QStringLiteral("conditional_restir/main_shaders/weights.slang")})
+    {
+        INFO(source.toStdString());
+        CHECK(document.GetDraft(source).isEmpty() == false);
+    }
+    const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
+    for (const char* setting : {"CRIS_INITIAL_CANDIDATES",
+                                "CRIS_PREFIX_BOUNCES",
+                                "IS_CRIS_TEMPORAL_ENABLED",
+                                "IS_CRIS_SPATIAL_ENABLED",
+                                "CRIS_HISTORY_LIMIT",
+                                "CRIS_SPATIAL_NEIGHBORS"})
+    {
+        INFO(setting);
+        CHECK(manifest.contains(setting) == true);
+    }
+    // The shared ray technique's budgets rise to the template's: the sample path and the spatial reuse's rays.
+    const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 2);
+    CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 2);
+    ReplaceRasterSubgraph(document, QStringLiteral("Indirect"));
+    REQUIRE(workspace.Save() == true);
+    RequireValidation(workspace);
+}
+
 TEST_CASE("Line-sampling template is created from the editor picker with Properties hidden",
           "[editor][render-graph][line-sampling-template]")
 {
