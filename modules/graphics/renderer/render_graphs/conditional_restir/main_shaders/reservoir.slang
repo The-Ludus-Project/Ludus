@@ -224,11 +224,10 @@ bool IsCurrentRecord(Reservoir source, SceneContext scene, RayLaunch launch, ino
 // Value-only boundaries keep layered walks shared in emitted Metal/SPIR-V instead of duplicating
 // them at every connection and continuation site. No forwarded inout query context crosses here.
 [noinline] float3 EvaluateSuffixBsdf(MaterialSample material,
-                                    float3 viewWorld,
-                                    float3 lightWorld,
-                                    CoatingRandomContext random,
-                                    bool shouldUseLayeredBsdf)
-{
+                                     float3 viewWorld,
+                                     float3 lightWorld,
+                                     CoatingRandomContext random,
+                                     bool shouldUseLayeredBsdf) {
     float3 value;
     float density;
     if (shouldUseLayeredBsdf == true)
@@ -238,10 +237,8 @@ bool IsCurrentRecord(Reservoir source, SceneContext scene, RayLaunch launch, ino
     return value;
 }
 
-[noinline] StandardBsdfTransportSample SampleSuffixBsdf(MaterialSample material,
-                                                       float3 viewWorld,
-                                                       float3 random,
-                                                       CoatingRandomContext materialRandom)
+    [noinline] StandardBsdfTransportSample
+    SampleSuffixBsdf(MaterialSample material, float3 viewWorld, float3 random, CoatingRandomContext materialRandom)
 {
     return SampleStandardBsdfTransport(material, viewWorld, random, materialRandom);
 }
@@ -265,10 +262,8 @@ Prefix TracePrefix(SceneContext scene, RayLaunch launch, SurfaceHit primary, ino
         return result;
     }
     float3 random = float3(SamplePassRandom(launch, 0), SamplePassRandom(launch, 1), SamplePassRandom(launch, 2));
-    StandardBsdfTransportSample step = SampleSuffixBsdf(material,
-                                                                   result.ViewWorld,
-                                                                   random,
-                                                                   MakeMaterialRandom(launch, PREFIX_MATERIAL_EVENT));
+    StandardBsdfTransportSample step =
+        SampleSuffixBsdf(material, result.ViewWorld, random, MakeMaterialRandom(launch, PREFIX_MATERIAL_EVENT));
     result.IsValid = false;
     if (all(isfinite(step.Weight)) == false || any(step.Weight < 0) == true ||
         all(isfinite(step.DirectionWorld)) == false || isfinite(step.Pdf) == false)
@@ -305,10 +300,10 @@ Prefix LoadSupport(SceneContext scene, Reservoir reservoir)
 
 /// RGB suffix contribution per unit world area, reevaluating both connection BSDFs for this prefix.
 float3 EvaluateAreaContributionBody(SceneContext scene,
-                                Prefix prefix,
-                                Reservoir suffix,
-                                bool shouldUseLayeredBsdf,
-                                inout RayQueryContext queries)
+                                    Prefix prefix,
+                                    Reservoir suffix,
+                                    bool shouldUseLayeredBsdf,
+                                    inout RayQueryContext queries)
 {
     SurfaceHit endpoint = GetSurfaceHit(scene, suffix.TriangleIndex, suffix.Barycentric);
     if (endpoint.IsValid == false)
@@ -316,8 +311,7 @@ float3 EvaluateAreaContributionBody(SceneContext scene,
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return float3(0);
     }
-    if (prefix.IsValid == false ||
-        (suffix.SuffixBounces > 0 && any(suffix.TailCoefficient > 0) == false))
+    if (prefix.IsValid == false || (suffix.SuffixBounces > 0 && any(suffix.TailCoefficient > 0) == false))
         return float3(0);
     float3 offsetWorld = endpoint.PositionWorld - prefix.Hit.PositionWorld;
     float distanceSquaredWorld = dot(offsetWorld, offsetWorld);
@@ -325,11 +319,8 @@ float3 EvaluateAreaContributionBody(SceneContext scene,
         return float3(0);
     float3 directionWorld = offsetWorld * rsqrt(distanceSquaredWorld);
     MaterialSample material = EvaluateMaterial(scene, prefix.Hit);
-    float3 bsdfValue = EvaluateSuffixBsdf(material,
-                                           prefix.ViewWorld,
-                                           directionWorld,
-                                           prefix.MaterialRandom,
-                                           shouldUseLayeredBsdf);
+    float3 bsdfValue =
+        EvaluateSuffixBsdf(material, prefix.ViewWorld, directionWorld, prefix.MaterialRandom, shouldUseLayeredBsdf);
     float receiverCosine = max(dot(NormalizeOrZero(material.ShadingNormalWorld), directionWorld), 0);
     float emitterCosine = abs(dot(NormalizeOrZero(endpoint.GeometricNormalWorld), -directionWorld));
     if (material.IsValid == false)
@@ -349,14 +340,13 @@ float3 EvaluateAreaContributionBody(SceneContext scene,
         CoatingRandomContext suffixRandom = prefix.MaterialRandom;
         suffixRandom.Address.Dimension += SUFFIX_GATHER_EVENT_OFFSET;
         float3 suffixBsdf = EvaluateSuffixBsdf(suffixMaterial,
-                                              -directionWorld,
-                                              suffix.DirectionWorld,
-                                              suffixRandom,
-                                              shouldUseLayeredBsdf);
+                                               -directionWorld,
+                                               suffix.DirectionWorld,
+                                               suffixRandom,
+                                               shouldUseLayeredBsdf);
         suffixRadiance = suffixBsdf * suffix.TailCoefficient;
     }
-    float3 contribution = bsdfValue * suffixRadiance *
-                          (receiverCosine * emitterCosine / distanceSquaredWorld);
+    float3 contribution = bsdfValue * suffixRadiance * (receiverCosine * emitterCosine / distanceSquaredWorld);
     if (all(isfinite(contribution)) == false || any(contribution < 0) == true)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
@@ -368,12 +358,11 @@ float3 EvaluateAreaContributionBody(SceneContext scene,
 // Slang preserves the shared boundary when the incoming context is a value and the updated context
 // is a distinct output. Forwarding inout through a noinline function can still expand the body.
 [noinline] float3 EvaluateAreaContributionOutOfLine(SceneContext scene,
-                                                   Prefix prefix,
-                                                   Reservoir suffix,
-                                                   bool shouldUseLayeredBsdf,
-                                                   RayQueryContext queriesIn,
-                                                   out RayQueryContext outQueries)
-{
+                                                    Prefix prefix,
+                                                    Reservoir suffix,
+                                                    bool shouldUseLayeredBsdf,
+                                                    RayQueryContext queriesIn,
+                                                    out RayQueryContext outQueries) {
     RayQueryContext queries = queriesIn;
     float3 value = EvaluateAreaContributionBody(scene, prefix, suffix, shouldUseLayeredBsdf, queries);
     outQueries = queries;
@@ -387,7 +376,8 @@ float3 EvaluateAreaContribution(SceneContext scene,
                                 inout RayQueryContext queries)
 {
     RayQueryContext resultQueries;
-    float3 value = EvaluateAreaContributionOutOfLine(scene, prefix, suffix, shouldUseLayeredBsdf, queries, resultQueries);
+    float3 value =
+        EvaluateAreaContributionOutOfLine(scene, prefix, suffix, shouldUseLayeredBsdf, queries, resultQueries);
     queries = resultQueries;
     return value;
 }
@@ -396,18 +386,15 @@ float3 EvaluateAreaContribution(SceneContext scene,
 // bounded. A tiny absolute floor alone allows a near-zero source target to acquire an enormous
 // weight and persist as a rare bright tail across many frames. Only the SELECTION target is bounded;
 // the final radiance and contribution weights are never clamped.
-[noinline] float EvaluateIntrinsicTarget(SceneContext scene, Reservoir suffix)
-{
-    float3 coefficient = suffix.SuffixBounces > 0
-                             ? suffix.TailCoefficient
-                             : EvaluateMaterial(scene, GetSurfaceHit(scene, suffix.TriangleIndex, suffix.Barycentric)).Emission;
+[noinline] float EvaluateIntrinsicTarget(SceneContext scene, Reservoir suffix) {
+    float3 coefficient =
+        suffix.SuffixBounces > 0
+            ? suffix.TailCoefficient
+            : EvaluateMaterial(scene, GetSurfaceHit(scene, suffix.TriangleIndex, suffix.Barycentric)).Emission;
     return max(dot(coefficient, LUMINANCE_WEIGHTS), MINIMUM_AREA_TARGET);
 }
 
-float EvaluateTarget(SceneContext scene,
-                     Prefix support,
-                     Reservoir suffix,
-                     inout RayQueryContext queries)
+float EvaluateTarget(SceneContext scene, Prefix support, Reservoir suffix, inout RayQueryContext queries)
 {
     float intrinsic = EvaluateIntrinsicTarget(scene, suffix);
     float connection = dot(EvaluateAreaContribution(scene, support, suffix, false, queries), LUMINANCE_WEIGHTS);
@@ -474,9 +461,8 @@ void FinalizeReservoir(SceneContext scene,
                        inout Reservoir inoutResult,
                        inout RayQueryContext queries)
 {
-    float target = inoutResult.TriangleIndex != SCENE_INVALID_INDEX
-                       ? EvaluateTarget(scene, support, inoutResult, queries)
-                       : 0;
+    float target =
+        inoutResult.TriangleIndex != SCENE_INVALID_INDEX ? EvaluateTarget(scene, support, inoutResult, queries) : 0;
     inoutResult.Weight = ComputeConditionalWeight(massSum, target, inoutResult.CandidateCount);
     // Capping is a confidence policy; it must never change the finalized contribution weight.
     inoutResult.CandidateCount = min(inoutResult.CandidateCount, CRIS_HISTORY_LIMIT);

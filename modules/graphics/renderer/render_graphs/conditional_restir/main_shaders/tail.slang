@@ -24,11 +24,11 @@ float2 SampleAreaBarycentric(RayLaunch launch, uint dimension)
 
 /// Full-support mesh emission proposal. Degenerate draws and empty light sets contribute zero.
 bool TrySampleMeshEndpoint(SceneContext scene,
-                            RayLaunch launch,
-                            uint dimension,
-                            inout RayQueryContext queries,
-                            out SurfaceHit outEndpoint,
-                            out float outInverseDensityArea)
+                           RayLaunch launch,
+                           uint dimension,
+                           inout RayQueryContext queries,
+                           out SurfaceHit outEndpoint,
+                           out float outInverseDensityArea)
 {
     outEndpoint = (SurfaceHit)0;
     outInverseDensityArea = 0;
@@ -59,12 +59,8 @@ float3 SampleTerminalCoefficient(SceneContext scene,
     outDirectionWorld = float3(0);
     SurfaceHit endpoint;
     float inverseDensityArea;
-    if (TrySampleMeshEndpoint(scene,
-                               launch,
-                               TAIL_TERMINAL_DIMENSION_FIRST,
-                               queries,
-                               endpoint,
-                               inverseDensityArea) == false)
+    if (TrySampleMeshEndpoint(scene, launch, TAIL_TERMINAL_DIMENSION_FIRST, queries, endpoint, inverseDensityArea) ==
+        false)
         return float3(0);
     float3 offsetWorld = endpoint.PositionWorld - receiver.PositionWorld;
     float distanceSquaredWorld = dot(offsetWorld, offsetWorld);
@@ -170,10 +166,13 @@ Reservoir GenerateScatteringSuffix(SceneContext scene,
         const uint CONTINUATION_DIMENSION_OFFSET = 5;
         uint dimension = TAIL_DIMENSION_FIRST + CONTINUATION_DIMENSION_OFFSET + depth * TAIL_VERTEX_DIMENSIONS;
         float3 random = float3(SamplePassRandom(launch, dimension),
-                                SamplePassRandom(launch, dimension + 1),
-                                SamplePassRandom(launch, dimension + 2));
-        StandardBsdfTransportSample step = SampleSuffixBsdf(
-            material, viewWorld, random, MakeMaterialRandom(launch, TAIL_MATERIAL_EVENT_FIRST + depth));
+                               SamplePassRandom(launch, dimension + 1),
+                               SamplePassRandom(launch, dimension + 2));
+        StandardBsdfTransportSample step =
+            SampleSuffixBsdf(material,
+                             viewWorld,
+                             random,
+                             MakeMaterialRandom(launch, TAIL_MATERIAL_EVENT_FIRST + depth));
         if (all(isfinite(step.Weight)) == false || any(step.Weight < 0) == true ||
             all(isfinite(step.DirectionWorld)) == false || isfinite(step.Pdf) == false)
         {
