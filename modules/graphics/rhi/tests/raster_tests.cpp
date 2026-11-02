@@ -1269,7 +1269,7 @@ TEST_CASE("Graph owner identities and capacity failures never issue effects", "[
     REQUIRE(CreateOrderedGraph(session.Device, foreign) == RasterStatus::Ready);
     GraphVersion next;
     CHECK(NextGraphVersion(session.Device, foreign, texture.Initial, next) == RasterStatus::InvalidHandle);
-    for (usize i = 0; i < 32; ++i)
+    for (usize i = 0; i < StorageLimits{}.PassesPerGraph; ++i)
     {
         GraphPassDescription pass;
         pass.Name = "surface";

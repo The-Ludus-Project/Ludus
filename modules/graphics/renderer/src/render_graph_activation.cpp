@@ -154,6 +154,7 @@ struct RenderGraphPackage::State final
     StaticArray<format::Pass, format::MAX_PASSES> Passes{};
     StaticArray<BorrowedView<const char>, format::MAX_PASSES> PassNames{};
     bool HasPassNames = false;
+    bool HasLightTransformer = false;
     /// Decoded by DecodeRayPathCapture: the ray kernel is the diagnostic capture variant.
     bool IsRayPathCapture = false;
     /// Decoded by DecodeCaptureProfile: the ray kernels carry the capture shadow-query budget.
@@ -841,7 +842,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::OPAQUE_GBUFFER_PACKAGE_VERSION &&
+        (version != format::LIGHT_TRANSFORMER_PACKAGE_VERSION && version != format::OPAQUE_GBUFFER_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION &&
          version != format::RASTER_TONE_MAPPING_PACKAGE_VERSION && version != format::TILED_RAY_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION &&
@@ -1019,10 +1020,14 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     {
         const uint32 sceneResources = reader.ReadWord();
         if (reader.IsOk() == false ||
-            (sceneResources & ~(format::SCENE_RESOURCE_LTC_TABLE | format::SCENE_RESOURCE_FAILURE_SUMMARY)) != 0)
+            (sceneResources &
+             ~(format::SCENE_RESOURCE_LTC_TABLE | format::SCENE_RESOURCE_FAILURE_SUMMARY |
+               (version >= format::LIGHT_TRANSFORMER_PACKAGE_VERSION ? format::SCENE_RESOURCE_LIGHT_TRANSFORMER
+                                                                     : 0))) != 0)
         {
             return RenderGraphPackageStatus::Malformed;
         }
+        candidate->HasLightTransformer = (sceneResources & format::SCENE_RESOURCE_LIGHT_TRANSFORMER) != 0;
         candidate->HasLtcTable = (sceneResources & format::SCENE_RESOURCE_LTC_TABLE) != 0;
         candidate->HasFailureSummary = (sceneResources & format::SCENE_RESOURCE_FAILURE_SUMMARY) != 0;
     }
@@ -1155,6 +1160,10 @@ RenderGraphPlan RenderGraphPackage::GetPlan() const noexcept
                 : BorrowedView<const BorrowedView<const char>>{},
             {state.StorageBuffers.GetData(), state.StorageBufferCount}};
 }
+bool RenderGraphPackage::HasLightTransformer() const noexcept
+{
+    return mState.Get() != nullptr && mState->HasLightTransformer == true;
+}
 RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescription& compositeVertex,
                                                     const rhi::RasterShaderDescription& compositeFragment,
                                                     bool shouldPrepareAsynchronously) const noexcept
@@ -1171,6 +1180,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
     const State& state = *mState;
     result.HasRayPathCapture = state.IsRayPathCapture;
     result.HasLtcTable = state.HasLtcTable;
+    result.HasLightTransformer = state.HasLightTransformer;
     result.HasRayTiles = state.HasRayTiles;
     for (const State::StageView& view : state.Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE])
     {
@@ -1548,7 +1558,8 @@ Status RenderGraphActivation::Initialize(rhi::DeviceHandle device,
     mState.Swap(candidate);
     return Status::Ready;
 }
-Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package) noexcept
+Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package,
+                                    const LightTransformerModelDescription* modelOrNull) noexcept
 {
     if (mState.Get() == nullptr)
     {
@@ -1563,6 +1574,7 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
     }
     // A newer request supersedes any unactivated candidate, whatever its outcome.
     state.Candidate.Reset();
+    state.Report.CandidateReport = {};
     state.Report.CandidateGeneration = ++state.NextSerial;
     state.Report.CandidateRenderer =
         RequiresHardwareRayTracing(package->GetPlan()) == true
@@ -1600,7 +1612,8 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
                                                        *programs,
                                                        state.IsPooled == true ? &state.Pool : nullptr,
                                                        state.ReferenceWidth,
-                                                       state.ReferenceHeight);
+                                                       state.ReferenceHeight,
+                                                       modelOrNull);
     if (IsAccepted(status) == false)
     {
         state.FailCandidate(status);
@@ -1770,6 +1783,10 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
     const Status candidateStatus =
         candidate.Graph
             .Update(meshes, items, cameras, sceneRevision, policy, candidateReport, sceneInputsOrNull, contentRevision);
+    if (candidateStatus != Status::NotReady)
+    {
+        state.Report.CandidateReport = candidateReport;
+    }
     if (IsAccepted(candidateStatus) == true)
     {
         candidate.SceneRevision = sceneRevision;

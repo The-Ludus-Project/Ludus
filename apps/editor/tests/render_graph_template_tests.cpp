@@ -3608,3 +3608,67 @@ TEST_CASE("One-more-vertex configuration imports its hierarchy, editable closure
     CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("OMV_DEFENSIVE_WEIGHT") == true);
     RequireValidation(workspace);
 }
+
+TEST_CASE("Light Transformer snippet applies from Quick Add on the canvas with Properties hidden",
+          "[editor][render-graph][light-transformer-template]")
+{
+    QTemporaryDir project;
+    QWidget properties;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    QWidget* inspector = workspace.TakeInspectorPanel(&properties);
+    inspector->hide();
+    properties.hide();
+    workspace.resize(TEMPLATE_WORKSPACE_WIDTH, TEMPLATE_WORKSPACE_HEIGHT);
+    workspace.show();
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
+    const QByteArray beforeManifest = document.GetDraft(COMPUTE_MANIFEST);
+    const QStringList beforeFiles = document.GetFiles();
+    RenderGraphQuickAdd* paletteOrNull =
+        workspace.findChild<RenderGraphQuickAdd*>(QStringLiteral("renderGraphQuickAdd"));
+    REQUIRE(paletteOrNull != nullptr);
+    paletteOrNull->SetRecent({});
+    paletteOrNull->SetPinned({});
+    QString offeredConfiguration;
+    QTimer::singleShot(0, &workspace, [&offeredConfiguration]() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        QComboBox* choiceOrNull =
+            dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphConfigurationTemplate"));
+        REQUIRE(choiceOrNull != nullptr);
+        CHECK(choiceOrNull->currentData().toString() == QStringLiteral("light-transformer"));
+        QLineEdit* nameOrNull = dialogOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphTemplateConfiguration"));
+        REQUIRE(nameOrNull != nullptr);
+        offeredConfiguration = nameOrNull->text();
+        QDialogButtonBox* buttonsOrNull = dialogOrNull->findChild<QDialogButtonBox*>();
+        REQUIRE(buttonsOrNull != nullptr);
+        buttonsOrNull->button(QDialogButtonBox::Apply)->click();
+        CHECK(dialogOrNull->isVisible() == false);
+        dialogOrNull->reject();
+    });
+    REQUIRE(workspace.ShowQuickAdd(QPointF(0.0, 0.0)) == true);
+    QLineEdit* searchOrNull = paletteOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
+    REQUIRE(searchOrNull != nullptr);
+    searchOrNull->setText(QStringLiteral("light transformer"));
+    paletteOrNull->SetKind(RenderGraphQuickAddKind::Snippets);
+    REQUIRE(paletteOrNull->GetHighlightedKey() == QStringLiteral("snippet:light-transformer"));
+    REQUIRE(paletteOrNull->InsertHighlighted() == true);
+    CHECK(inspector->isVisible() == false);
+    CHECK(offeredConfiguration == QStringLiteral("LightTransformer"));
+    const QByteArray afterManifest = document.GetDraft(COMPUTE_MANIFEST);
+    CHECK(afterManifest.contains("LightTransformerDecodeIrradiance") == true);
+    CHECK(afterManifest.contains("\"light_transformer\": true") == true);
+    CHECK(document.GetDraft(QStringLiteral("light_transformer/model.json")).isEmpty() == false);
+    CHECK(document.GetDraft(QStringLiteral("light_transformer/main_shaders/query.slang")).isEmpty() == false);
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+    CHECK(document.GetFiles() == beforeFiles);
+    workspace.Redo();
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == afterManifest);
+    CHECK(document.GetDraft(QStringLiteral("light_transformer/model.json")).isEmpty() == false);
+    RequireValidation(workspace);
+}
