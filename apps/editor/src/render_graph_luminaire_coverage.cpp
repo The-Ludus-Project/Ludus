@@ -169,8 +169,8 @@ bool ParseLiteral(QString text, float32& outValue)
 }
 
 /// The literal arguments of the first uncommented `static const <type> <name> = <initializer>;` declaration.
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): source text, type token and declaration name are distinct
-// grammar inputs.
+// Source text, type token and declaration name are distinct grammar inputs.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 bool ReadConstant(const QString& source, const QString& type, const QString& name, QStringList& outValues)
 {
     const QRegularExpression declaration(
