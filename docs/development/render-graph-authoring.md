@@ -1772,6 +1772,87 @@ Burgess, Per Christensen, Christophe Hery, Andrew Kensler, Max Liani and Ryusuke
 Villemin, [*Building an Orthonormal Basis, Revisited*, JCGT 6(1), 2017](https://jcgt.org/published/0006/01/01/),
 for the tangent frame of the hemisphere samples.
 
+### Use the conditional ReSTIR template
+
+Choose **Conditional ReSTIR — mesh light suffixes** in New Render Graph, canvas
+Quick Add, or Apply Configuration Template. The CLI and installed SDK expose the
+same editable package:
+
+```bash
+ludus render-graph new graphs/Conditional --template conditional-restir --output offscreen \
+  --renderer-static --profiles metal
+```
+
+Use `spirv` for Vulkan. The `ConditionalRestir` configuration takes `scene`, `view`
+and `color`, and outputs `color`. Four scene compute passes generate fresh suffix
+proposals, merge temporal history, merge spatial neighbours, and shade. Each of
+the three render-sized buffers holds one 64-byte record per pixel; accumulation
+and tone mapping happen after shading. Native ray queries are required.
+
+This is a bounded specialization of Markus Kettunen, Daqi Lin, Ravi Ramamoorthi,
+Thomas Bashford-Rogers and Chris Wyman's [*Conditional Resampled Importance
+Sampling and ReSTIR*, SIGGRAPH Asia 2023, sections 4–6, Equations 12–17 and
+22](https://doi.org/10.1145/3610548.3618245). Thanks to the authors for conditional
+unbiased contribution weights and independent final-gather prefixes. A suffix
+here is one emissive mesh endpoint; its domain is world-space surface area.
+The template estimates primary emission, direct mesh lighting and, optionally,
+one indirect scattering bounce. It evaluates both connection BSDFs for their
+actual directions, so suffix reuse does not assume Lambertian receivers.
+
+The initial pass draws a supporting camera prefix, ending at a BSDF-sampled
+secondary surface in indirect mode, independently of all suffix proposals.
+Uniform emitter and triangle choices followed by uniform triangle-area sampling
+give each light endpoint a known initial area density. The target is the
+supporting endpoint's unshadowed contribution luminance with a positive floor.
+For coated materials this target uses a base-lobe surrogate; final shading uses
+the layered BSDF and its separate addressed random context. Prefix transport keeps
+the coating walk's returned weight rather than reconstructing its path ratio.
+Even missed supporting prefixes retain that floor. Every prefix therefore has
+the same complete mesh-light area domain, and the identity suffix shift has
+Jacobian one. No visibility or hemisphere rejection removes proposal support.
+
+A source reservoir contributes `target_here × W_source × M_source` to conditional
+RIS. The output weight is `sum / (M_total × selected_target_here)`, finalized before
+capping confidence. Constant confidence shares partition unity in this common
+domain. This avoids reconstructing a conditional PDF from `W` and avoids a
+support-dependent MIS correction. Fresh canonical light proposals are still
+injected on every frame. The shade pass draws a new prefix from a different
+addressed random scope, traces visibility there, and multiplies the conditional
+area weight by the new prefix's `BSDF × cosine / PDF` throughput (Equation 22).
+Neither that throughput nor the gather prefix participates in suffix selection.
+
+Graph settings are available from the canvas's node Details as well as Properties:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `CRIS_PREFIX_BOUNCES` | 1 | 0 estimates direct lighting; 1 adds one indirect bounce. |
+| `CRIS_INITIAL_CANDIDATES` | 8 | Fresh mesh-light suffix proposals, 1–32. |
+| `IS_CRIS_TEMPORAL_ENABLED` | true | Merge the preceding frame's conditional reservoir. |
+| `IS_CRIS_SPATIAL_ENABLED` | true | Merge completed neighbours' temporal reservoirs. |
+| `CRIS_HISTORY_LIMIT` | 30 | Cap represented confidence after finalization, 1–1000. |
+| `CRIS_SPATIAL_NEIGHBORS` | 3 | Screen-space neighbour attempts, 0–7, within an eight-pixel radius. |
+
+History validates its layout, scene generation, extent and preceding frame.
+Spatial reads use the completed temporal buffer, with separate output storage.
+Failed records carry their original diagnostic to later passes; stale identities
+are not reused. The shade pass budgets two surface and two visibility queries.
+
+The template does not implement arbitrary-length Suffix ReSTIR PT, hybrid shifts,
+prefix resampling, motion reprojection or world-space nearest-neighbour gathers.
+Analytic lights and environment illumination are outside this mesh-light integral;
+the environment is displayed only when the primary camera ray misses. Use a
+renderer that supports those lights when they are needed. A positive target floor
+preserves support but can increase variance when supporting and gather prefixes
+see very different lighting. No speed or variance improvement is guaranteed.
+
+The `[conditional-restir]` GPU regression compares raw linear RGB against the
+independent CPU path tracer at matched center rays and scattering depth, and
+against a variant with both reuse stages disabled. Its Cornell-box mean tolerance
+is 5% over 512 GPU frames and 128 CPU samples per pixel, without denoising.
+The direct-only setting has a separate depth-one CPU comparison. Template tests
+also cover installed SDK relocation, capability rejection, preserved destinations,
+editor creation, canvas configuration import, shader closure and settings.
+
 <a id="use-the-compute-ray-tracing-template"></a>
 
 ### Use the simple triangle-loop template

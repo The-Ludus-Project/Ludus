@@ -395,7 +395,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics restir_gi)
+            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics restir_gi conditional_restir)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         ludus_stage_render_graph_fixture("${template_source}" "${template_staged}")
@@ -751,6 +751,42 @@ if(TARGET ludus_renderer_render_tests)
         string(TOUPPER "${restir_gi_name}" restir_gi_definition)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_RESTIR_GI_${restir_gi_definition}_DIRECTORY=\"${restir_gi_package_directory}\"")
+    endforeach()
+    # Conditional light suffixes: independent no-reuse baseline and direct-only specialization.
+    set(conditional_restir_template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/conditional_restir_template")
+    file(READ "${conditional_restir_template_staged}/main.lushader.json" conditional_restir_manifest)
+    string(JSON conditional_restir_setting_count LENGTH "${conditional_restir_manifest}" settings)
+    math(EXPR conditional_restir_setting_last "${conditional_restir_setting_count} - 1")
+    foreach(conditional_restir_variant IN ITEMS "no_reuse;IS_CRIS_TEMPORAL_ENABLED;false;IS_CRIS_SPATIAL_ENABLED;false"
+            "direct;CRIS_PREFIX_BOUNCES;0")
+        list(POP_FRONT conditional_restir_variant conditional_restir_name)
+        set(conditional_restir_variant_manifest "${conditional_restir_manifest}")
+        while(conditional_restir_variant)
+            list(POP_FRONT conditional_restir_variant conditional_restir_setting conditional_restir_value)
+            set(conditional_restir_setting_index -1)
+            foreach(setting_index RANGE ${conditional_restir_setting_last})
+                string(JSON setting_id GET "${conditional_restir_manifest}" settings ${setting_index} id)
+                if(setting_id STREQUAL conditional_restir_setting)
+                    set(conditional_restir_setting_index ${setting_index})
+                endif()
+            endforeach()
+            if(conditional_restir_setting_index LESS 0)
+                message(FATAL_ERROR "The conditional-restir template manifest has no ${conditional_restir_setting} setting.")
+            endif()
+            string(JSON conditional_restir_variant_manifest SET "${conditional_restir_variant_manifest}" settings
+                ${conditional_restir_setting_index} value ${conditional_restir_value})
+        endwhile()
+        set(conditional_restir_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/conditional_restir_${conditional_restir_name}")
+        ludus_stage_render_graph_inputs("${conditional_restir_template_staged}" "${conditional_restir_staged}" main.lushader.json)
+        # Rewrite the staged manifest only when it changes, so reconfiguring does not rebuild the package.
+        file(WRITE "${conditional_restir_staged}.lushader.json" "${conditional_restir_variant_manifest}\n")
+        file(COPY_FILE "${conditional_restir_staged}.lushader.json" "${conditional_restir_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_conditional_restir_${conditional_restir_name}"
+            MANIFEST "${conditional_restir_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_conditional_restir_${conditional_restir_name}_RUNTIME_PACKAGE" PARENT_PATH conditional_restir_package_directory)
+        string(TOUPPER "${conditional_restir_name}" conditional_restir_definition)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_CONDITIONAL_RESTIR_${conditional_restir_definition}_DIRECTORY=\"${conditional_restir_package_directory}\"")
     endforeach()
     # The Veach and Guibas template with every scene compute pass on the triangle loop, so the
     # line-sampling comparison with its lightSampling output needs no native ray profile.

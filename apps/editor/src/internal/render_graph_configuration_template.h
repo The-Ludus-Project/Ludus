@@ -146,10 +146,11 @@ PreparePointLineConfiguration(RenderGraphSnapshot& inoutSnapshot,
                               QString& outError,
                               RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
 /// Prepare a built-in configuration, inserting a library/Subgraph when selected on the root canvas.
+/// Conditional ReSTIR imports four passes and three render-sized reservoirs under conditional_restir/.
 /// Supports restir-di, visibility-buffer, visibility-secondary-rays, tiled-vbuffer-nee,
 /// compute-ray-tracing, simple-compute-ray-tracing, veach-guibas-mis, line-sampling, ris-projected-solid-angle,
 /// salesin-jarosz-lines, polygonal-light-sampling, slice-sampling-luminaire, steinberg-plt,
-/// steinberg-physical-optics and restir-gi.
+/// steinberg-physical-optics, restir-gi and conditional-restir.
 /// Same transaction contract as PrepareRestirTemplate; invalid identities and conflicts leave publication to the
 /// caller.
 [[nodiscard]] RenderGraphDocumentStatus
