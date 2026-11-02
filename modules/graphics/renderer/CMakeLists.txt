@@ -62,7 +62,7 @@ target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADE
     include/ludus/graphics/renderer/viewport_frame.hpp
     include/ludus/graphics/renderer/viewport.hpp)
 target_link_libraries(ludus_graphics_renderer PUBLIC Ludus::FoundationBase Ludus::FoundationMath Ludus::FoundationThreading Ludus::GraphicsRhi Ludus::RenderGraphFormat Ludus::SceneFormat
-    PRIVATE Ludus::FoundationContainers Ludus::FoundationHash Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources)
+    PRIVATE Ludus::FoundationContainers Ludus::FoundationHash Ludus::FoundationProfiling Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources)
 target_compile_options(ludus_graphics_renderer PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
 ludus_apply_project_defaults(ludus_graphics_renderer)
 if(EMSCRIPTEN)

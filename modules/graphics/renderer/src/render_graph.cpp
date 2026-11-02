@@ -17,6 +17,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/queries.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/lifetime.h>
 
@@ -1067,6 +1068,7 @@ struct RenderGraph::State final
     }
     Status PrepareCameras(BorrowedView<const ViewDescription> cameras, uint64 revision) noexcept
     {
+        LUDUS_PROFILE_SCOPE(RenderGraphPrepareCameras);
         CameraUpdate* allocationOrNull = new (std::nothrow) CameraUpdate;
         core::UniquePtr<CameraUpdate> candidate{allocationOrNull};
         if (candidate.Get() == nullptr)
@@ -2537,6 +2539,7 @@ bool RenderGraph::GetResourceDescription(uint32 resource, format::Resource& outR
 }
 Status RenderGraph::Poll() noexcept
 {
+    LUDUS_PROFILE_SCOPE(RenderGraphPoll);
     if (mState.Get() == nullptr)
     {
         return Status::InvalidState;
@@ -2735,6 +2738,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                            uint64 contentRevision,
                            const RenderGraphSceneRevisions& revisions) noexcept
 {
+    LUDUS_PROFILE_SCOPE(RenderGraphUpdate);
     if (mState.Get() == nullptr)
     {
         return Status::InvalidState;
@@ -2799,6 +2803,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             return prepared;
         }
     }
+    LUDUS_PROFILE_SCOPE(RenderGraphBuildScene);
     for (usize itemIndex = 0; itemIndex < items.GetSize(); ++itemIndex)
     {
         const RenderGraphItem& item = items[itemIndex];
@@ -3397,6 +3402,7 @@ Status RenderGraph::Render(rhi::SurfaceHandle surface,
                            uint32 surfaceHeight,
                            rhi::SubmissionToken& outCompletion) noexcept
 {
+    LUDUS_PROFILE_SCOPE(RenderGraphRender);
     if (mState.Get() == nullptr || outCompletion.IsNull() == false)
     {
         return Status::InvalidState;

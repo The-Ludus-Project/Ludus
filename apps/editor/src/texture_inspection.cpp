@@ -1,6 +1,7 @@
 #include "internal/texture_inspection.h"
 
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/profiling/profiling.hpp>
 
 #include <atomic>
 #include <bit>
@@ -32,6 +33,10 @@ constexpr int32 HALF_EXPONENT_BIAS = 15;
 /// 2^-14 (smallest normal exponent) and 2^-10 (one mantissa step) give subnormal values.
 constexpr int32 HALF_SUBNORMAL_EXPONENT = -14;
 constexpr int32 HALF_MANTISSA_BITS = 10;
+constexpr float32 HALF_SUBNORMAL_SCALE = 1.0F / (uint32{1} << (HALF_MANTISSA_BITS - HALF_SUBNORMAL_EXPONENT));
+constexpr uint32 FLOAT32_EXPONENT_SHIFT = 23;
+constexpr uint32 FLOAT32_EXPONENT_BIAS = 127;
+constexpr uint32 FLOAT32_SIGN_SHIFT = 31;
 /// The cleared far plane of the conventional depth convention.
 constexpr float32 DEPTH_BACKGROUND = 1.0F;
 /// Probe text digits: depth needs every binary32 digit to tell nearby surfaces apart.
@@ -54,7 +59,10 @@ uint16 ReadHalf(const uint8* bytes) noexcept
 
 uint8 EncodeUnorm(float32 value) noexcept
 {
-    return static_cast<uint8>(std::lround(math::Clamp(value, 0.0F, 1.0F) * UNORM8_MAXIMUM));
+    // The bounded nonnegative product is rounded in binary32, as before. Widen
+    // before adding half so a value just below a tie cannot round up prematurely.
+    const float32 scaled = math::Clamp(value, 0.0F, 1.0F) * UNORM8_MAXIMUM;
+    return static_cast<uint8>(static_cast<float64>(scaled) + 0.5);
 }
 
 bool IsShown(TexelEncoding encoding, float32 value, bool shouldIgnoreDepthBackground) noexcept
@@ -72,9 +80,12 @@ const char* GetChannelName(TexelEncoding encoding, uint32 channel) noexcept
 
 bool InspectedTexture::IsValid() const noexcept
 {
-    return Width != 0 && Height != 0 &&
-           static_cast<uint64>(Bytes.size()) ==
-               static_cast<uint64>(Width) * static_cast<uint64>(Height) * GetTexelBytes(Encoding);
+    const uint32 texelBytes = GetTexelBytes(Encoding);
+    const uint64 byteCount = static_cast<uint64>(Bytes.size());
+    // The uint32 extent product fits uint64; multiplying it by texelBytes may
+    // overflow. Divide the bounded payload instead, requiring complete texels.
+    return Width != 0 && Height != 0 && texelBytes != 0 && byteCount % texelBytes == 0 &&
+           static_cast<uint64>(Width) * Height == byteCount / texelBytes;
 }
 
 uint32 GetTexelBytes(TexelEncoding encoding) noexcept
@@ -133,10 +144,14 @@ float32 DecodeHalf(uint16 bits) noexcept
     }
     if (exponent == 0)
     {
-        return sign * std::ldexp(static_cast<float32>(mantissa), HALF_SUBNORMAL_EXPONENT - HALF_MANTISSA_BITS);
+        return sign * (static_cast<float32>(mantissa) * HALF_SUBNORMAL_SCALE);
     }
-    const float32 significand = 1.0F + std::ldexp(static_cast<float32>(mantissa), -HALF_MANTISSA_BITS);
-    return sign * std::ldexp(significand, static_cast<int32>(exponent) - HALF_EXPONENT_BIAS);
+    // Normal binary16 values are exactly representable in binary32. Rebias the
+    // exponent and shift the significand instead of calling ldexp twice per channel.
+    const uint32 signBits = (word >> HALF_SIGN_SHIFT) << FLOAT32_SIGN_SHIFT;
+    const uint32 exponentBits = (exponent + FLOAT32_EXPONENT_BIAS - HALF_EXPONENT_BIAS) << FLOAT32_EXPONENT_SHIFT;
+    const uint32 mantissaBits = mantissa << (FLOAT32_EXPONENT_SHIFT - HALF_MANTISSA_BITS);
+    return std::bit_cast<float32>(signBits | exponentBits | mantissaBits);
 }
 
 // Bytes are named by little-endian significance.
@@ -149,18 +164,14 @@ float32 DecodeFloat(uint8 byte0, uint8 byte1, uint8 byte2, uint8 byte3) noexcept
     return std::bit_cast<float32>(bits);
 }
 
-bool ReadTexel(const InspectedTexture& texture, uint32 x, uint32 y, TexelValue& outValue) noexcept
+namespace
 {
-    if (texture.IsValid() == false || x >= texture.Width || y >= texture.Height)
-    {
-        return false;
-    }
-    const uint32 texelBytes = GetTexelBytes(texture.Encoding);
-    const uint8* bytes = reinterpret_cast<const uint8*>(texture.Bytes.constData()) +
-                         (static_cast<usize>(y) * texture.Width + x) * texelBytes;
+/// Callers validate the extent once, before walking tightly packed rows.
+TexelValue DecodeTexel(TexelEncoding encoding, const uint8* bytes) noexcept
+{
     TexelValue value;
-    value.ChannelCount = GetChannelCount(texture.Encoding);
-    switch (texture.Encoding)
+    value.ChannelCount = GetChannelCount(encoding);
+    switch (encoding)
     {
         case TexelEncoding::Rgba8Unorm:
             for (uint32 channel = 0; channel < MAX_TEXEL_CHANNELS; ++channel)
@@ -182,7 +193,20 @@ bool ReadTexel(const InspectedTexture& texture, uint32 x, uint32 y, TexelValue& 
             value.Bits[0] = std::bit_cast<uint32>(value.Channels[0]);
             break;
     }
-    outValue = value;
+    return value;
+}
+} // namespace
+
+bool ReadTexel(const InspectedTexture& texture, uint32 x, uint32 y, TexelValue& outValue) noexcept
+{
+    if (texture.IsValid() == false || x >= texture.Width || y >= texture.Height)
+    {
+        return false;
+    }
+    const uint32 texelBytes = GetTexelBytes(texture.Encoding);
+    const uint8* bytes = reinterpret_cast<const uint8*>(texture.Bytes.constData()) +
+                         (static_cast<usize>(y) * texture.Width + x) * texelBytes;
+    outValue = DecodeTexel(texture.Encoding, bytes);
     return true;
 }
 
@@ -241,6 +265,7 @@ TextureValueRange FindValueRange(const InspectedTexture& texture,
                                  bool shouldIgnoreDepthBackground,
                                  const TextureConversionCancellation* cancellationOrNull) noexcept
 {
+    LUDUS_PROFILE_SCOPE(EditorTextureValueRange);
     TextureValueRange range;
     if (texture.IsValid() == false)
     {
@@ -249,6 +274,8 @@ TextureValueRange FindValueRange(const InspectedTexture& texture,
     // Rgba spans the colour channels; alpha is a separate quantity and stays out.
     const bool isColor = channel == TextureChannel::Rgba && texture.Encoding != TexelEncoding::Depth32Float;
     const uint32 colorChannels = MAX_TEXEL_CHANNELS - 1;
+    const uint32 texelBytes = GetTexelBytes(texture.Encoding);
+    const uint8* bytes = reinterpret_cast<const uint8*>(texture.Bytes.constData());
     for (uint32 y = 0; y < texture.Height; ++y)
     {
         if (cancellationOrNull != nullptr && cancellationOrNull->IsCancelled() == true)
@@ -257,8 +284,8 @@ TextureValueRange FindValueRange(const InspectedTexture& texture,
         }
         for (uint32 x = 0; x < texture.Width; ++x)
         {
-            TexelValue value;
-            static_cast<void>(ReadTexel(texture, x, y, value));
+            const TexelValue value =
+                DecodeTexel(texture.Encoding, bytes + (static_cast<usize>(y) * texture.Width + x) * texelBytes);
             const uint32 count = isColor == true ? colorChannels : 1;
             for (uint32 i = 0; i < count; ++i)
             {
@@ -322,6 +349,7 @@ QImage MakeDisplayImage(const InspectedTexture& texture,
                         TextureValueRange& outRange,
                         const TextureConversionCancellation* cancellationOrNull)
 {
+    LUDUS_PROFILE_SCOPE(EditorTextureDisplayConversion);
     if (texture.IsValid() == false || (cancellationOrNull != nullptr && cancellationOrNull->IsCancelled() == true))
     {
         return {};
@@ -349,6 +377,10 @@ QImage MakeDisplayImage(const InspectedTexture& texture,
     {
         return {};
     }
+    const uint32 texelBytes = GetTexelBytes(texture.Encoding);
+    const uint8* bytes = reinterpret_cast<const uint8*>(texture.Bytes.constData());
+    const bool canCopyColor =
+        texture.Encoding == TexelEncoding::Rgba8Unorm && isColor == true && range.Minimum == 0 && range.Maximum == 1;
     for (uint32 y = 0; y < texture.Height; ++y)
     {
         if (cancellationOrNull != nullptr && cancellationOrNull->IsCancelled() == true)
@@ -356,10 +388,24 @@ QImage MakeDisplayImage(const InspectedTexture& texture,
             return {};
         }
         uint8* row = image.scanLine(static_cast<int32>(y));
+        const uint8* sourceRow = bytes + static_cast<usize>(y) * texture.Width * texelBytes;
+        if (canCopyColor == true)
+        {
+            // The viewer is opaque, even when the inspected resource has alpha.
+            // No decode/remap/round trip is required for the identity UNORM range.
+            for (uint32 x = 0; x < texture.Width; ++x)
+            {
+                const usize offset = static_cast<usize>(x) * RGBA8_TEXEL_BYTES;
+                row[offset] = sourceRow[offset];
+                row[offset + 1] = sourceRow[offset + 1];
+                row[offset + 2] = sourceRow[offset + 2];
+                row[offset + RGBA8_TEXEL_BYTES - 1] = OPAQUE;
+            }
+            continue;
+        }
         for (uint32 x = 0; x < texture.Width; ++x)
         {
-            TexelValue value;
-            static_cast<void>(ReadTexel(texture, x, y, value));
+            const TexelValue value = DecodeTexel(texture.Encoding, sourceRow + static_cast<usize>(x) * texelBytes);
             uint8* pixel = row + static_cast<usize>(x) * RGBA8_TEXEL_BYTES;
             pixel[RGBA8_TEXEL_BYTES - 1] = OPAQUE;
             if (isColor == true)

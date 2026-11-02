@@ -30,6 +30,7 @@ import time
 from typing import Callable, Mapping, Sequence
 
 SCHEMA_VERSION = 1
+PERCENTILE_METHOD = "nearest-rank"
 MANIFEST_PATH = Path("config/runtime_profile_scenarios.json")
 OUTPUT_MARKER = ".ludus-runtime-profile"
 PARSER_KINDS = ("perfetto-scopes", "key-value", "csv", "regex", "tagged-rows")
@@ -104,7 +105,7 @@ class Scenario:
 
 def percentile(values: Sequence[float], fraction: float) -> float:
     ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, int((len(ordered) - 1) * fraction))]
+    return ordered[min(len(ordered) - 1, max(0, math.ceil(len(ordered) * fraction) - 1))]
 
 
 def median(values: Sequence[float]) -> float:
@@ -225,8 +226,8 @@ def load_manifest(path: Path) -> list[Scenario]:
         if not isinstance(entry["trace"], bool):
             raise ProfileError(f"{where}.trace must be a boolean")
         parser = validate_parser(entry["parser"], f"{where}.parser")
-        if (parser["kind"] == "perfetto-scopes") != entry["trace"]:
-            raise ProfileError(f"{where} uses perfetto-scopes exactly when trace is true")
+        if parser["kind"] == "perfetto-scopes" and entry["trace"] is False:
+            raise ProfileError(f"{where} perfetto-scopes requires trace to be true")
         scenarios.append(Scenario(
             id=scenario_id,
             owner=entry["owner"],
@@ -515,14 +516,17 @@ def parse_perfetto_scopes(trace: Mapping[str, object] | Sequence[object]) -> dic
 def parse_metrics(scenario: Scenario, output: str, trace_path: Path | None) -> dict[str, float]:
     parser = scenario.parser
     kind = parser["kind"]
-    if kind == "perfetto-scopes":
+    trace_metrics = {}
+    if scenario.trace:
         if trace_path is None or not trace_path.is_file():
             raise ProfileError("scenario did not write its requested trace")
         try:
             trace = json.loads(trace_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
             raise ProfileError(f"trace is not valid JSON: {error}") from error
-        metrics = parse_perfetto_scopes(trace)
+        trace_metrics = parse_perfetto_scopes(trace)
+    if kind == "perfetto-scopes":
+        metrics = trace_metrics
     elif kind == "key-value":
         metrics = parse_key_value(output, parser["identity"], parser["metrics"])
     elif kind == "csv":
@@ -772,6 +776,9 @@ def compare(report: Mapping[str, object], baseline: Mapping[str, object],
         if entry["status"] != "passed" or old is None:
             continue
         for name, current in entry["metrics"].items():
+            is_tail = "/p95_" in name or "_p95_" in name or name.startswith("p95_")
+            if is_tail and report.get("percentile_method") != baseline.get("percentile_method"):
+                continue
             before = old.get("metrics", {}).get(name)
             if not isinstance(before, dict) or not before.get("median"):
                 continue
@@ -832,6 +839,8 @@ def render_summary(report: Mapping[str, object]) -> str:
     if baseline:
         lines += ["", f"Baseline: commit `{(baseline.get('commit') or 'unknown')[:12]}`"
                   + ("" if baseline.get("same_host") else " (different host identity; deltas are indicative only)") + "."]
+        if baseline.get("same_percentiles", True) is False:
+            lines += ["Percentile convention changed; p95 deltas are omitted until the next matching baseline."]
     lines += ["", "| Scenario | Status | Runs | Wall median | Notable changes |", "| --- | --- | --- | --- | --- |"]
     deltas = report.get("comparison", {})
     for entry in scenarios:
@@ -891,6 +900,7 @@ def run_scenarios(root: Path, preset: str, build_dir: Path, output_dir: Path,
         "schema": SCHEMA_VERSION,
         "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "timing_policy": "report-only",
+        "percentile_method": PERCENTILE_METHOD,
         "preset": preset,
         "compiler": compiler,
         "git": git_identity(root),
@@ -904,7 +914,8 @@ def run_scenarios(root: Path, preset: str, build_dir: Path, output_dir: Path,
     }
     if baseline is not None:
         report["baseline"] = {"commit": baseline.get("git", {}).get("commit"), "created_utc": baseline.get("created_utc"),
-                              "same_host": same_host(report, baseline)}
+                              "same_host": same_host(report, baseline),
+                              "same_percentiles": report["percentile_method"] == baseline.get("percentile_method")}
         report["comparison"] = compare(report, baseline)
     (output_dir / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (output_dir / "summary.md").write_text(render_summary(report), encoding="utf-8")

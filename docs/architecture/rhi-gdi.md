@@ -297,7 +297,11 @@ silently evict a live slot.
 
 Logical destruction prevents new handle resolution immediately. Physical
 release requires **both** no retained CPU references and completion of all GPU
-uses. A built packet, finished encoder, pending submission, binding set, and
+uses. The portable collector repeats dependency-release scans only while a
+scan reclaims records, stopping at the first scan that changes no references.
+Completion and pending native work are still polled on every collection call;
+one call drains an eligible dependency chain without repeated idle pool scans.
+A built packet, finished encoder, pending submission, binding set, and
 readback request can retain a resource record before any submission token
 exists. Therefore last submitted fence alone is insufficient. Each retaining
 owner releases its references on discard, completion, or cancellation. Avoid

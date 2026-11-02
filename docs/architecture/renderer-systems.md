@@ -686,8 +686,10 @@ Snapshots cache conservative unions for contiguous groups of sixteen opaque
 objects. Rejected groups skip individual tests; fully inside groups admit their
 members without further AABB tests. Intersecting groups and overlays retain
 individual conservative classification. Input order and painter semantics remain
-unchanged. Homogeneous mesh/material runs preserve source order and skip pairwise
-overlap searches; other runs retain conservative ordering constraints. Reference
+unchanged. Opaque sequences already ordered by material, uniform set and mesh
+preserve source order and skip pairwise overlap searches. This includes
+heterogeneous batches: every stable subrange sort would leave that sequence
+unchanged. Unordered sequences retain conservative overlap constraints. Reference
 views bypass visibility and packet optimization.
 `ViewReport::CulledGroups` and `BoundsTests` expose the work saved. This fixed
 hierarchy benefits spatially coherent source order; it is not a spatial index.

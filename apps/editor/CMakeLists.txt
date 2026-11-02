@@ -803,6 +803,13 @@ endif()
 # Offscreen Qt tests verify logic and widget wiring without a GPU/compositor.
 # They do NOT prove native Wayland interaction or that a game rendered a frame.
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
+    add_executable(ludus_editor_texture_benchmark EXCLUDE_FROM_ALL
+        tests/texture_display_benchmark.cpp src/texture_inspection.cpp)
+    target_include_directories(ludus_editor_texture_benchmark PRIVATE src)
+    target_compile_definitions(ludus_editor_texture_benchmark PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    target_link_libraries(ludus_editor_texture_benchmark PRIVATE Qt6::Gui
+        Ludus::FoundationMath Ludus::FoundationProfiling)
+    ludus_apply_project_defaults(ludus_editor_texture_benchmark)
     if(TARGET Qt6::Quick)
         add_executable(ludus_viewport_overlay_benchmark EXCLUDE_FROM_ALL
             tests/viewport_object_overlay_benchmark.cpp src/viewport_object_overlay_geometry.cpp)
@@ -1182,7 +1189,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_sources(ludus_editor_tests PRIVATE tests/preview_shader_reload_tests.cpp)
         target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp
             tests/reference_comparison_tests.cpp)
-        target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp
+        target_sources(ludus_editor_tests PRIVATE tests/viewport_performance_tests.cpp tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp
             tests/raster_mesh_light_benchmark_tests.cpp tests/render_graph_capture_profile_tests.cpp
             tests/render_graph_library_capture_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE

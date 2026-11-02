@@ -26,7 +26,7 @@ from ludus_tools.native import default_profile
 EDITOR_FILE_API_CLIENT = "ludus-editor"
 EDITOR_TARGET = "ludus_editor"
 SUPPORTED_PRESETS = tuple(f"{family}-clang-{flavor}" for family in ("linux", "macos")
-                          for flavor in ("debug", "development", "asan-ubsan"))
+                          for flavor in ("debug", "development", "profile", "asan-ubsan"))
 
 
 def _preparation_help(root: Path, preset: str) -> str:
