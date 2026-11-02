@@ -3826,6 +3826,34 @@ struct StoredParts final
                          inoutFailure);
 }
 
+/// Source material name of each bundle material, empty where the bundle carries none. The cooked scene keeps no
+/// mesh or node names, so the material's own name is the one source name an imported object can borrow.
+[[nodiscard]] bool
+GetSourceMaterialNames(const BundleParts& parts, Array<std::string_view>& outNames, Failure& inoutFailure) noexcept
+{
+    for (const BundleMaterial& material : parts.Materials)
+    {
+        std::string_view name;
+        if (material.Bytes.size() == MATERIAL_RECORD_V6_BYTES + format::MATERIAL_EXTENSION_V7_BYTES)
+        {
+            SourceMaterialRecord source;
+            if (DecodeSourceMaterial({material.Bytes.data() + MATERIAL_RECORD_V6_BYTES,
+                                      material.Bytes.size() - MATERIAL_RECORD_V6_BYTES},
+                                     source,
+                                     inoutFailure) == false)
+            {
+                return false;
+            }
+            name = source.Name;
+        }
+        if (outNames.TryAdd(name) == false)
+        {
+            return inoutFailure.FailOutOfMemory();
+        }
+    }
+    return true;
+}
+
 /// Append the imported objects, camera and provenance to the candidate level.
 [[nodiscard]] bool MergeCandidate(const BundleParts& parts,
                                   const StoredParts& stored,
@@ -3835,6 +3863,11 @@ struct StoredParts final
 {
     JsonTree& tree = inoutLevel.Tree;
     const JsonIndex objects = tree.GetMember(inoutLevel.Root, "objects");
+    Array<std::string_view> materialNames;
+    if (GetSourceMaterialNames(parts, materialNames, inoutFailure) == false)
+    {
+        return false;
+    }
     for (usize i = 0; i < parts.Objects.GetSize(); ++i)
     {
         const BundleObject& object = parts.Objects[i];
@@ -3846,8 +3879,18 @@ struct StoredParts final
         }
         Array<uint8> name;
         ByteWriter nameWriter(name);
-        nameWriter.Append("Imported object ");
-        AppendInteger(nameWriter, static_cast<int64>(i) + 1);
+        // The object is named for its source material when the import kept one, and for its place otherwise.
+        const std::string_view sourceName =
+            object.Material < materialNames.GetSize() ? materialNames[object.Material] : std::string_view{};
+        if (sourceName.empty() == false && CountCodePoints(sourceName) <= MAX_NAME_CODE_POINTS)
+        {
+            nameWriter.Append(sourceName);
+        }
+        else
+        {
+            nameWriter.Append("Imported object ");
+            AppendInteger(nameWriter, static_cast<int64>(i) + 1);
+        }
         if (FormatUuid(identity, "", identityText) == false || nameWriter.IsOk() == false)
         {
             return inoutFailure.FailOutOfMemory();

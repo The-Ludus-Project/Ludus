@@ -26,6 +26,7 @@
 
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/parsing/json.hpp>
 
 namespace ludus::content::scene_cook
 {
@@ -1429,7 +1430,33 @@ void ResolveCamera(const SceneIr& scene,
     outCamera.VerticalFov = math::DegreesToRadians(45.0);
 }
 
-void PackBundle(const IrCamera& camera,
+/// Source name of a slot's representative material, or empty when it has none the editor can use as an object name:
+/// unnamed, too long for the name field, or shared with another slot (a name must pick out one object).
+[[nodiscard]] std::string_view GetUniqueSourceName(const SceneIr& scene, const CookPlan& plan, usize slot) noexcept
+{
+    const auto getName = [&scene, &plan](usize index) noexcept -> std::string_view {
+        const uint32 representative = plan.Materials[index].Representative;
+        return representative == IR_NONE ? std::string_view{} : scene.Materials[representative].Name.GetView();
+    };
+    const std::string_view name = getName(slot);
+    foundation::parsing::ParseError utf8;
+    if (name.empty() == true || name.size() > format::MAX_MATERIAL_NAME_BYTES ||
+        foundation::parsing::ValidateUtf8(name, utf8) != foundation::parsing::ParseStatus::Ok)
+    {
+        return {};
+    }
+    for (usize other = 0; other < plan.Materials.GetSize(); ++other)
+    {
+        if (other != slot && getName(other) == name)
+        {
+            return {};
+        }
+    }
+    return name;
+}
+
+void PackBundle(const SceneIr& scene,
+                const IrCamera& camera,
                 const CookPlan& plan,
                 const Array<CookedTexture>& textures,
                 const Array<CookedMesh>& meshes,
@@ -1481,8 +1508,10 @@ void PackBundle(const IrCamera& camera,
                                                                         : planned.CookedEmissionTexture);
         inoutBlob.AppendFloat32(planned.CookedSurfaceTexture == IR_NONE ? 0.0 : planned.NormalScale);
         inoutBlob.AppendUint32(planned.Representative == IR_NONE ? 0 : planned.Representative + 1);
-        inoutBlob.AppendUint32(0); // No counted source name in the best-effort profile.
-        for (usize byte = 0; byte < format::MAX_MATERIAL_NAME_BYTES; ++byte)
+        const std::string_view sourceName = GetUniqueSourceName(scene, plan, slot);
+        inoutBlob.AppendUint32(static_cast<uint32>(sourceName.size()));
+        inoutBlob.Append(sourceName);
+        for (usize byte = sourceName.size(); byte < format::MAX_MATERIAL_NAME_BYTES; ++byte)
         {
             inoutBlob.Append(char{0});
         }
@@ -2170,7 +2199,7 @@ void ResetResult(BestEffortResult& outResult) noexcept
             return FailWith(outError, Status::OutOfMemory, "out of memory");
         }
         detail::ByteWriter blob(outResult.Bundle);
-        PackBundle(camera, plan, textures, meshes, lighting, blob);
+        PackBundle(scene, camera, plan, textures, meshes, lighting, blob);
         if (blob.IsOk() == false)
         {
             status = blob.HasOverflowed() == true ? Status::Invalid : Status::OutOfMemory;
