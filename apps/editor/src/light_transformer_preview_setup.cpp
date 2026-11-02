@@ -127,7 +127,7 @@ bool ReadLightTransformerPreviewSetup(const QString& directory,
     }
     LightTransformerPreviewSetup candidate;
     if (ReadAsset(modelDirectory.filePath(QStringLiteral("encoder.llte")),
-                  LUDUS_LIGHT_ENCODER_ASSET_BYTES,
+                  static_cast<int64>(LUDUS_LIGHT_ENCODER_ASSET_BYTES),
                   candidate.Encoder,
                   outError) == false ||
         ReadAsset(modelDirectory.filePath(QStringLiteral("decoder.lltd")),
@@ -192,10 +192,10 @@ QString DescribeLightTransformerPreparationFailure(const renderer::LightTransfor
             return QStringLiteral(
                        "The World spans (%1, %2, %3) units; this model's fixed training extent is %4 units. Partition "
                        "the World or use a model trained for that extent; do not normalize scenes independently.")
-                .arg(report.ExtentWorld.X)
-                .arg(report.ExtentWorld.Y)
-                .arg(report.ExtentWorld.Z)
-                .arg(report.WorldUnitsPerModelUnit);
+                .arg(static_cast<float64>(report.ExtentWorld.X))
+                .arg(static_cast<float64>(report.ExtentWorld.Y))
+                .arg(static_cast<float64>(report.ExtentWorld.Z))
+                .arg(static_cast<float64>(report.WorldUnitsPerModelUnit));
         case Issue::ModelAsset:
             return QStringLiteral("The encoder asset is incompatible or contains nonfinite parameters. Re-export the "
                                   "complete checkpoint into light_transformer, then preview again.");
