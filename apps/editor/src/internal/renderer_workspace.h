@@ -14,6 +14,7 @@
 #include "internal/render_graph_defaults.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
+#include "internal/render_graph_library_capture.h"
 #include "internal/render_graph_live_build.h"
 #include "internal/render_graph_source.h"
 #include "internal/render_graph_source_watch.h"
@@ -56,6 +57,7 @@ class CodeFormatter;
 class RenderGraphShaderAssistance;
 class RayPathInspection;
 class RenderGraphCaptureProfile;
+class RenderGraphLibraryCapture;
 class RenderGraphPreview;
 struct RenderScene;
 class RenderGraphWorker;
@@ -394,6 +396,16 @@ public:
     {
         return mCaptureProfileOrNull;
     }
+    /// Frame capture package of one library output of the World viewport's drawing generation, which the
+    /// Reference window requests to capture a library the viewport does not show; the workspace compiles it
+    /// from that generation's saved sources. Null without the native GPU preview.
+    [[nodiscard]] RenderGraphLibraryCapture* GetLibraryCaptureOrNull() noexcept
+    {
+        return mLibraryCaptureOrNull;
+    }
+    /// Library configuration outputs of the loaded package that a frame capture can render, read from its
+    /// saved graphs, since library captures are built from a generation's saved sources. Empty without a package.
+    [[nodiscard]] QVector<RenderGraphCaptureTarget> GetCaptureTargets() const;
     /// Capture the rays a canvas node traces: a RayTracingPipeline or scene ComputePipeline node of
     /// the canvas document, or every ray pass of the drawing configuration for an empty node. The
     /// next click on the World viewport's graph output picks the pixel; the capture variant of the
@@ -619,12 +631,23 @@ private:
     /// Generation and `.lurgcp` destination of the running capture-profile job.
     QByteArray mCaptureProfileIdentity;
     QString mCaptureProfilePackage;
+    /// Library capture of a library output of mPreviewOrNull's drawing generation; null without the native
+    /// GPU preview.
+    RenderGraphLibraryCapture* mLibraryCaptureOrNull = nullptr;
+    /// Generation, target and `.lurgrt` destination of the running capture-library job.
+    QByteArray mLibraryCaptureIdentity;
+    RenderGraphCaptureTarget mLibraryCaptureTarget;
+    QString mLibraryCapturePackage;
     /// Compile the capture variant of the frozen generation from its saved source snapshot.
     void startRayPathBuild();
     /// Compile, or reuse, the capture profile of a generation from its saved source snapshot.
     void startCaptureProfileBuild(const QByteArray& generationIdentity);
     /// Report the capture-profile job's outcome to mCaptureProfileOrNull and drop superseded profiles.
     void finishCaptureProfileBuild(const RenderGraphJobResult& result);
+    /// Compile, or reuse, the library capture of a library output of a generation from its saved sources.
+    void startLibraryCaptureBuild(const QByteArray& generationIdentity, const RenderGraphCaptureTarget& target);
+    /// Report the capture-library job's outcome to mLibraryCaptureOrNull.
+    void finishLibraryCaptureBuild(const RenderGraphJobResult& result);
     /// Append the shader worker endpoint a capture build shares with graph builds, when one is available.
     void appendWorkerSocketArgument(QStringList& inoutArguments);
     /// Shader tool selection shared by graph builds and capture builds.

@@ -14,6 +14,7 @@
 #include "internal/preview_viewport.h"
 #include "internal/reference_capture_window.h"
 #include "internal/render_graph_defaults.h"
+#include "internal/render_graph_library_capture.h"
 #include "internal/render_graph_navigation.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_graph_resource_inspection.h"
@@ -3599,6 +3600,67 @@ TEST_CASE("A viewport graph capture converges an accumulating ray output and sav
     CHECK(QImage(ViewportGraphCapture::GetDisplayImagePath(path)).size() == extent);
     capture.Release();
     CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Idle);
+}
+
+TEST_CASE("A library capture names its captured Export rather than the package's first exported colour",
+          "[editor][render-graph][render-graph-capture]")
+{
+    DeviceFixture device({}, true);
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    renderer::RenderGraphRenderer automatic;
+    REQUIRE(renderer::SelectRenderGraphRenderer(device.Device, renderer::RenderGraphPreference::Automatic, automatic) ==
+            rhi::RasterStatus::Ready);
+    if (automatic == renderer::RenderGraphRenderer::Raster)
+    {
+        SKIP("The triangle-loop template needs GPU compute");
+    }
+    const QString package = QStringLiteral(LUDUS_EDITOR_LIBRARY_CAPTURE_FIXTURE);
+    const QString capturedExport = QString::fromLatin1(LIBRARY_CAPTURE_EXPORT);
+    uint32 captured = format::ABSENT;
+    uint32 required = format::ABSENT;
+    QString error;
+    const bool hasCaptured = ViewportGraphCapture::FindExportResource(package, capturedExport, captured, error);
+    INFO(error.toStdString());
+    REQUIRE(hasCaptured == true);
+    // The library's required colour output has its own Export, which runs first: an unnamed output would capture it.
+    REQUIRE(ViewportGraphCapture::FindExportResource(package,
+                                                     QStringLiteral("LibraryCapture/required_color"),
+                                                     required,
+                                                     error) == true);
+    CHECK(captured != required);
+    uint32 missing = format::ABSENT;
+    CHECK(ViewportGraphCapture::FindExportResource(package, QStringLiteral("LibraryCapture/missing"), missing, error) ==
+          false);
+    CHECK(error.contains(QStringLiteral("has no Export LibraryCapture/missing")) == true);
+    CHECK(missing == format::ABSENT);
+
+    RenderScene scene = MakeScene({1, 0, 0, 1});
+    scene.Lit = true;
+    renderer::ViewDescription view{};
+    view.OrthographicCamera = true;
+    ViewportRasterSource source;
+    source.PackagePath = package;
+    source.OutputTarget = capturedExport;
+    source.OutputResource = captured;
+    constexpr uint32 SAMPLES = 2;
+    ViewportGraphCapture capture;
+    QSize extent;
+    REQUIRE(capture.Load(device.Device, device.Surface, source, {}, QSize(32, 32), SAMPLES, extent, error) == true);
+    REQUIRE(capture.Begin(scene, view, error) == true);
+    constexpr int64 CAPTURE_TIMEOUT_MILLISECONDS = 60000;
+    QElapsedTimer timer;
+    timer.start();
+    while (capture.IsRunning() == true && timer.elapsed() < CAPTURE_TIMEOUT_MILLISECONDS)
+    {
+        static_cast<void>(capture.Service());
+    }
+    INFO(capture.GetError().toStdString());
+    REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::Complete);
+    CHECK(capture.GetInfo().MinimumSamples == SAMPLES);
+    capture.Release();
 }
 
 TEST_CASE("A viewport graph capture decodes its generation's capture profile in place of the runtime package",

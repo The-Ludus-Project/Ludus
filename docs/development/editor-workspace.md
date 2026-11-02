@@ -1693,13 +1693,30 @@ the frozen camera, and saves the linear mean as a `.lurgcap` file with a PNG
 beside it. It needs a project graph in the viewport; otherwise the source is
 unavailable. Maximum depth, traversal and comparison describe RT1 and are disabled.
 
-The window has no graph selector of its own. Its **Graph** row names what the
-viewport currently draws, for example
-`Project graph main.lurender.json · configuration raytracing · Final output`, or
-**Engine default renderer** when the project has no render graph. It also shows
-**Force raster** when that is on. The row follows the viewport toolbar while the
+The **Graph** list chooses what the capture renders. **Viewport output**, the
+default, is what the viewport currently draws, and the line below names it, for
+example `Project graph main.lurender.json · configuration raytracing · Final output`,
+or **Engine default renderer** when the project has no render graph. It also shows
+**Force raster** when that is on. That line follows the viewport toolbar while the
 window is open, so choose a different configuration or output there. The
-comparison uses the same graph.
+comparison uses the same choice.
+
+The list also offers every colour output of every library configuration in the
+graph package, written `PointLineMis.lurender.json#PointLineMis.lineSampling`.
+Choose one to capture a slow reference template offline, such as
+[Salesin & Jarosz](render-graph-authoring.md), without making it the viewport's
+graph: the viewport keeps drawing its fast output. The window builds a separate
+capture package for that output from the viewport's current generation, the same
+saved sources the viewport draws, with a generated root that feeds the library its
+scene, camera and colour target and routes the chosen output through Accumulate
+and ToneMap. **Capture viewport** waits while it builds, and the status line says
+so. The first build of a generation compiles the package's shaders; later captures
+of that generation reuse it. The package lives under
+`out/render-graph/<graph>/library-captures/`, and the viewport's own package is
+never written. The library must be imported by the root graph, as templates applied
+from the root canvas are; otherwise the status line asks you to insert it on the
+root canvas and build again. Library outputs list the saved graphs, so save new
+libraries first.
 
 The capture runs a private copy of the graph on the viewport's device. The
 viewport keeps drawing, and its image and accumulation are unchanged. The image

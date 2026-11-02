@@ -8,6 +8,10 @@
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_quick_add.h"
 #include "internal/renderer_workspace.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/reference_capture_window.h"
+#    include "internal/render_graph_library_capture.h"
+#endif
 
 #include <ludus/foundation/base/types.h>
 
@@ -2703,6 +2707,49 @@ qsizetype PadSavedPackage(const QString& project, qsizetype fileCount)
     return savedFiles;
 }
 } // namespace
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+TEST_CASE("The Reference window offers each saved library output, and a library capture needs a built generation",
+          "[editor][render-graph][point-line-configuration][render-graph-capture]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("PointLineMis"), GetPointLineTemplate()) == true);
+    const RenderGraphCaptureTarget lines{QStringLiteral("PointLineMis.lurender.json"),
+                                         QStringLiteral("PointLineMis"),
+                                         QStringLiteral("lineSampling")};
+    // Library captures rebuild a generation's saved sources, so an unsaved library is not offered yet.
+    CHECK(workspace.GetCaptureTargets().contains(lines) == false);
+    REQUIRE(workspace.Save() == true);
+    const QVector<RenderGraphCaptureTarget> targets = workspace.GetCaptureTargets();
+    const qsizetype index = targets.indexOf(lines);
+    REQUIRE(index >= 0);
+    for (const char* output : {"color", "pointSampling"})
+    {
+        INFO(output);
+        CHECK(targets.contains(
+                  RenderGraphCaptureTarget{lines.Library, lines.Configuration, QString::fromLatin1(output)}) == true);
+    }
+
+    ReferenceCaptureWindow window(nullptr);
+    window.SetProjectGraph(&workspace);
+    QComboBox* graphs = window.findChild<QComboBox*>(QStringLiteral("referenceGraphTarget"));
+    REQUIRE(graphs != nullptr);
+    REQUIRE(graphs->count() == targets.size() + 1);
+    CHECK(graphs->itemText(CAPTURE_GRAPH_VIEWPORT_INDEX) == QStringLiteral("Viewport output"));
+    CHECK(graphs->itemText(static_cast<int>(index) + CAPTURE_GRAPH_VIEWPORT_INDEX + 1) == lines.GetLabel());
+
+    // Without a built generation there are no saved sources to rebuild; the failure says how to make one.
+    RenderGraphLibraryCapture* capture = workspace.GetLibraryCaptureOrNull();
+    REQUIRE(capture != nullptr);
+    capture->Request(QByteArray("unbuilt generation"), lines);
+    CHECK(capture->GetState() == LibraryCaptureState::Failed);
+    CHECK(capture->GetError().contains(QStringLiteral("Choose Build & Preview in the Render Graph document")) == true);
+}
+#endif
 
 TEST_CASE("A template applies to a package with more sources than the editor's former 64-file limit",
           "[editor][render-graph][point-line-configuration]")

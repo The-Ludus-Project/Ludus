@@ -523,5 +523,23 @@ class ExecutionTests(unittest.TestCase):
             execution.lower_plan(package, 'Default')
 
 
+class ResourceNameTests(unittest.TestCase):
+    def test_names_list_exactly_the_lowered_resources(self):
+        # A per-pixel Buffer, such as a template's hit record, is a runtime resource record and must be named, or
+        # the editor rejects the whole sidecar for listing a different number of resources. A structured buffer has
+        # no record and no name.
+        plan = {'resources': {
+            'Graph/color': {'type': 'ColorTexture', 'format': 'RGBA8Unorm', 'extent': [4, 4]},
+            'Graph/hits': {'type': 'Buffer', 'format': 'Bytes', 'extent': [512, 1], 'bytes_per_pixel': 32},
+            'Graph/table': {'type': 'Buffer', 'format': 'Bytes', 'extent': [64, 1], 'stride': 16}},
+            'passes': [], 'cameras': []}
+        names = json.loads(execution.encode_resource_names({'plan': plan, 'generation': 'a' * 64}))
+        listed = [entry['name'] for entry in names['resources']]
+        self.assertEqual(listed, execution.lowered_resources(plan))
+        self.assertEqual(listed, ['Graph/color', 'Graph/hits'])
+        self.assertEqual(names['resources'][1]['type'], 'Buffer')
+        self.assertEqual(names['resources'][1]['extent'], [512, 1])
+
+
 if __name__ == '__main__':
     unittest.main()

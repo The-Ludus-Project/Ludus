@@ -1,5 +1,6 @@
 #include "internal/viewport_graph_capture.h"
 
+#include "internal/render_graph_targets.h"
 #include "internal/render_scene.h"
 #include "internal/viewport_reference_capture.h"
 
@@ -317,6 +318,58 @@ bool ViewportGraphCapture::ReadGenerationIdentity(const ViewportRasterSource& so
     outIdentity =
         QByteArray(reinterpret_cast<const char*>(identity.GetDataOrNull()), static_cast<qsizetype>(identity.GetSize()));
     return true;
+}
+
+bool ViewportGraphCapture::FindExportResource(const QString& packagePath,
+                                              const QString& exportId,
+                                              uint32& outResource,
+                                              QString& outError)
+{
+    QByteArray bytes;
+    renderer::RenderGraphPackage* packageOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+    const core::UniquePtr<renderer::RenderGraphPackage> package{packageOrNull};
+    if (ReadPackageBytes(packagePath, bytes) == false || package.Get() == nullptr ||
+        package->Decode({reinterpret_cast<const uint8*>(bytes.constData()), static_cast<usize>(bytes.size())}) !=
+            renderer::RenderGraphPackageStatus::Ready)
+    {
+        outError = QStringLiteral("The capture package %1 could not be read or decoded; capture again to rebuild it.")
+                       .arg(QFileInfo(packagePath).fileName());
+        return false;
+    }
+    QFile names(GetTargetNamesPath(packagePath));
+    const QByteArray namesDocument =
+        names.open(QIODevice::ReadOnly) == true ? names.read(RenderGraphPreview::MAX_PACKAGE_BYTES) : QByteArray();
+    const RenderGraphTargetCatalogue catalogue =
+        MakeTargetCatalogue(package->GetPlan(),
+                            package->GetGenerationIdentity(),
+                            namesDocument,
+                            QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+    if (catalogue.HasNames == false)
+    {
+        outError = QStringLiteral("The capture package %1 has no usable resource names (%2); capture again to rebuild "
+                                  "it.")
+                       .arg(QFileInfo(packagePath).fileName(), catalogue.NamesProblem);
+        return false;
+    }
+    for (const RenderGraphOperation& operation : catalogue.Operations)
+    {
+        if (operation.Id != exportId || operation.Kind != QStringLiteral("Export"))
+        {
+            continue;
+        }
+        for (const RenderGraphAttachmentUse& attachment : operation.Attachments)
+        {
+            const qsizetype index = catalogue.Find(attachment.Resource);
+            if (attachment.Aspect == QStringLiteral("texture") && index >= 0)
+            {
+                outResource = catalogue.Targets[index].Resource;
+                return true;
+            }
+        }
+    }
+    outError = QStringLiteral("The capture package %1 has no Export %2; capture again to rebuild it.")
+                   .arg(QFileInfo(packagePath).fileName(), exportId);
+    return false;
 }
 
 renderer::RenderGraphCapturePhase ViewportGraphCapture::GetPhase() const noexcept

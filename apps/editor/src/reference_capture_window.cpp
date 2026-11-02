@@ -127,7 +127,8 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
       mSaveButton(new QPushButton(QStringLiteral("Save…"), this)), mProgress(new QProgressBar(this)),
       mStatus(new QLabel(this)), mComparisonText(new QLabel(this)), mImages(new QTabWidget(this)),
       mImageLabel(new QLabel(this)), mRasterLabel(new QLabel(this)), mDifferenceLabel(new QLabel(this)),
-      mSource(new QComboBox(this)), mGraph(new QLabel(this)), mGraphProblem(new QLabel(this))
+      mSource(new QComboBox(this)), mGraph(new QLabel(this)), mGraphProblem(new QLabel(this)),
+      mGraphTarget(new QComboBox(this))
 {
     setObjectName(QStringLiteral("referenceCaptureWindow"));
     setWindowTitle(QStringLiteral("Reference capture"));
@@ -170,14 +171,23 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mGraph->setObjectName(QStringLiteral("referenceGraph"));
     mGraph->setWordWrap(true);
     mGraph->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    mGraph->setToolTip(QStringLiteral("The Render graph source and the comparison use the graph, configuration and "
-                                      "output selected in the viewport's toolbar. Change them there."));
+    mGraph->setToolTip(QStringLiteral("Viewport output uses the graph, configuration and output selected in the "
+                                      "viewport's toolbar; change them there. A library output renders one output "
+                                      "of a library configuration, such as a slow reference template, without "
+                                      "changing the viewport."));
+    mGraphTarget->setObjectName(QStringLiteral("referenceGraphTarget"));
+    mGraphTarget->insertItem(CAPTURE_GRAPH_VIEWPORT_INDEX, QStringLiteral("Viewport output"));
+    mGraphTarget->setToolTip(
+        QStringLiteral("What the Render graph source and the comparison render. Viewport output is what the World "
+                       "viewport shows. A library output is built once from the viewport's generation into its own "
+                       "package, so slow estimators can be captured offline while the viewport stays interactive."));
     form->addRow(QStringLiteral("Source"), mSource);
     mGraphProblem->setObjectName(QStringLiteral("referenceGraphProblem"));
     mGraphProblem->setWordWrap(true);
     mGraphProblem->setTextInteractionFlags(Qt::TextSelectableByMouse);
     mGraphProblem->hide();
-    form->addRow(QStringLiteral("Graph"), mGraph);
+    form->addRow(QStringLiteral("Graph"), mGraphTarget);
+    form->addRow(QString(), mGraph);
     form->addRow(QString(), mGraphProblem);
     form->addRow(QStringLiteral("Long side"), mLongSide);
     form->addRow(QStringLiteral("Samples"), mSamples);
@@ -239,6 +249,12 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
         updateControls();
         updateStatus();
     });
+    connect(mGraphTarget, &QComboBox::currentIndexChanged, this, [this]() {
+        updateGraphDescription();
+        requestCaptureProfile();
+        updateControls();
+        updateStatus();
+    });
     connect(mCompare, &QCheckBox::toggled, this, [this]() {
         requestCaptureProfile();
         updateControls();
@@ -291,9 +307,14 @@ void ReferenceCaptureWindow::SetProjectGraph(RendererWorkspace* workspaceOrNull)
         {
             disconnect(mCaptureProfile, nullptr, this, nullptr);
         }
+        if (mLibraryCapture.isNull() == false)
+        {
+            disconnect(mLibraryCapture, nullptr, this, nullptr);
+        }
         mProjectWorkspace = workspaceOrNull;
         mProjectGraph = graphOrNull;
         mCaptureProfile = workspaceOrNull != nullptr ? workspaceOrNull->GetCaptureProfileOrNull() : nullptr;
+        mLibraryCapture = workspaceOrNull != nullptr ? workspaceOrNull->GetLibraryCaptureOrNull() : nullptr;
         // The configuration, output and Force raster choice live in the viewport toolbar and can change while
         // this window is open; keep naming what a capture would use now.
         if (mProjectWorkspace.isNull() == false)
@@ -302,6 +323,11 @@ void ReferenceCaptureWindow::SetProjectGraph(RendererWorkspace* workspaceOrNull)
                     &RendererWorkspace::DocumentChanged,
                     this,
                     &ReferenceCaptureWindow::updateGraphDescription);
+            // Saving a graph can add, rename or remove library outputs.
+            connect(mProjectWorkspace,
+                    &RendererWorkspace::DocumentChanged,
+                    this,
+                    &ReferenceCaptureWindow::refreshGraphTargets);
         }
         if (mProjectGraph.isNull() == false)
         {
@@ -322,7 +348,16 @@ void ReferenceCaptureWindow::SetProjectGraph(RendererWorkspace* workspaceOrNull)
                 updateStatus();
             });
         }
+        // So does a library capture's build.
+        if (mLibraryCapture.isNull() == false)
+        {
+            connect(mLibraryCapture, &RenderGraphLibraryCapture::Changed, this, [this]() {
+                updateControls();
+                updateStatus();
+            });
+        }
     }
+    refreshGraphTargets();
 #else
     static_cast<void>(workspaceOrNull);
 #endif
@@ -330,6 +365,48 @@ void ReferenceCaptureWindow::SetProjectGraph(RendererWorkspace* workspaceOrNull)
     updateGraphDescription();
     requestCaptureProfile();
 }
+
+void ReferenceCaptureWindow::refreshGraphTargets()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    RenderGraphCaptureTarget selected;
+    const bool hasSelected = getLibraryTarget(selected);
+    mCaptureTargets = mProjectWorkspace.isNull() == false && mLibraryCapture.isNull() == false
+                          ? mProjectWorkspace->GetCaptureTargets()
+                          : QVector<RenderGraphCaptureTarget>{};
+    const QSignalBlocker blocker(mGraphTarget);
+    while (mGraphTarget->count() > CAPTURE_GRAPH_VIEWPORT_INDEX + 1)
+    {
+        mGraphTarget->removeItem(mGraphTarget->count() - 1);
+    }
+    int32 index = CAPTURE_GRAPH_VIEWPORT_INDEX;
+    for (qsizetype i = 0; i < mCaptureTargets.size(); ++i)
+    {
+        mGraphTarget->addItem(mCaptureTargets.at(i).GetLabel());
+        if (hasSelected == true && mCaptureTargets.at(i) == selected)
+        {
+            index = static_cast<int32>(i) + CAPTURE_GRAPH_VIEWPORT_INDEX + 1;
+        }
+    }
+    mGraphTarget->setCurrentIndex(index);
+#endif
+    updateGraphDescription();
+    updateControls();
+    updateStatus();
+}
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+bool ReferenceCaptureWindow::getLibraryTarget(RenderGraphCaptureTarget& outTarget) const
+{
+    const qsizetype index = mGraphTarget->currentIndex() - (CAPTURE_GRAPH_VIEWPORT_INDEX + 1);
+    if (index < 0 || index >= mCaptureTargets.size())
+    {
+        return false;
+    }
+    outTarget = mCaptureTargets.at(index);
+    return true;
+}
+#endif
 
 QString ReferenceCaptureWindow::GetGraphText() const
 {
@@ -349,7 +426,13 @@ void ReferenceCaptureWindow::updateGraphDescription()
     {
         updateComparisonAvailability();
     }
-    if (mProjectWorkspace.isNull() == false && hasRequestedGraph == true)
+    RenderGraphCaptureTarget library;
+    if (mProjectWorkspace.isNull() == false && hasRequestedGraph == true && getLibraryTarget(library) == true)
+    {
+        text = QStringLiteral("Library %1 · configuration %2 · output %3, built from the viewport's generation")
+                   .arg(library.Library, library.Configuration, library.Output);
+    }
+    else if (mProjectWorkspace.isNull() == false && hasRequestedGraph == true)
     {
         QStringList parts;
         if (mProjectWorkspace->IsUsingDefaultRenderer() == true)
@@ -379,7 +462,9 @@ void ReferenceCaptureWindow::updateGraphDescription()
     mGraph->setText(text);
     QString problem;
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (mProjectGraph.isNull() == false)
+    // The viewport output's route decides only its own capture; a library output has its own package.
+    RenderGraphCaptureTarget selected;
+    if (mProjectGraph.isNull() == false && getLibraryTarget(selected) == false)
     {
         problem = FindViewportGraphCaptureProblem(*mProjectGraph);
     }
@@ -426,6 +511,16 @@ void ReferenceCaptureWindow::requestCaptureProfile()
         mCaptureProfileSourceKey = key;
         mCaptureProfileSourceIdentity = identity;
     }
+    // A library output builds its own package and capture profile from the viewport's generation.
+    RenderGraphCaptureTarget library;
+    if (getLibraryTarget(library) == true)
+    {
+        if (mLibraryCapture.isNull() == false)
+        {
+            mLibraryCapture->Request(mCaptureProfileSourceIdentity, library);
+        }
+        return;
+    }
     mCaptureProfile->Request(mCaptureProfileSourceIdentity);
 #endif
 }
@@ -435,6 +530,12 @@ bool ReferenceCaptureWindow::isAwaitingCaptureProfile() const noexcept
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     const bool isGraphSelected =
         isGraphSource() == true || (mIsComparisonAvailable == true && mCompare->isChecked() == true);
+    RenderGraphCaptureTarget library;
+    if (getLibraryTarget(library) == true)
+    {
+        return isGraphSelected == true && mLibraryCapture.isNull() == false &&
+               mLibraryCapture->GetState() == LibraryCaptureState::Building;
+    }
     return isGraphSelected == true && mCaptureProfile.isNull() == false &&
            mCaptureProfile->GetState() == CaptureProfileState::Building;
 #else
@@ -447,6 +548,26 @@ QString ReferenceCaptureWindow::describeCaptureProfile() const
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     const bool isGraphSelected =
         isGraphSource() == true || (mIsComparisonAvailable == true && mCompare->isChecked() == true);
+    RenderGraphCaptureTarget library;
+    if (isGraphSelected == true && getLibraryTarget(library) == true && mLibraryCapture.isNull() == false)
+    {
+        switch (mLibraryCapture->GetState())
+        {
+            case LibraryCaptureState::Idle:
+                return {};
+            case LibraryCaptureState::Building:
+                return QStringLiteral("Building the capture package of %1 from the viewport's generation. The first "
+                                      "build of a generation compiles the package's shaders; Capture is available "
+                                      "when it is ready.")
+                    .arg(library.GetLabel());
+            case LibraryCaptureState::Ready:
+                return QStringLiteral("Graph captures render %1 from %2.")
+                    .arg(library.GetLabel(), QFileInfo(mLibraryCapture->GetPackagePath()).fileName());
+            case LibraryCaptureState::Failed:
+                return QStringLiteral("The capture package of %1 could not be built: %2")
+                    .arg(library.GetLabel(), mLibraryCapture->GetError());
+        }
+    }
     if (isGraphSelected == false || mCaptureProfile.isNull() == true)
     {
         return {};
@@ -595,7 +716,43 @@ bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize, QSize
     mRasterSource = GetViewportRasterSource(*mProjectGraph);
     // The profile must belong to the generation this capture decodes; a newer generation needs its own.
     QString profilePath;
-    if (mCaptureProfile.isNull() == false)
+    RenderGraphCaptureTarget library;
+    if (getLibraryTarget(library) == true)
+    {
+        // A library output renders its own package, built from the viewport's current generation.
+        QByteArray identity;
+        if (mLibraryCapture.isNull() == true ||
+            ViewportGraphCapture::ReadGenerationIdentity(mRasterSource, identity, outError) == false)
+        {
+            outError =
+                outError.isEmpty() == true ? QStringLiteral("This viewport cannot build library captures.") : outError;
+            return false;
+        }
+        mLibraryCapture->Request(identity, library);
+        if (mLibraryCapture->IsReadyFor(identity, library) == false)
+        {
+            outError = mLibraryCapture->GetState() == LibraryCaptureState::Failed
+                           ? QStringLiteral("The capture package of %1 could not be built: %2")
+                                 .arg(library.GetLabel(), mLibraryCapture->GetError())
+                           : QStringLiteral("The capture package of %1 is still building; capture again when it is "
+                                            "ready.")
+                                 .arg(library.GetLabel());
+            return false;
+        }
+        // The package also exports the library's other required outputs; capture the generated root's Export.
+        mRasterSource = ViewportRasterSource{};
+        mRasterSource.PackagePath = mLibraryCapture->GetPackagePath();
+        mRasterSource.OutputTarget = QString::fromLatin1(LIBRARY_CAPTURE_EXPORT);
+        if (ViewportGraphCapture::FindExportResource(mRasterSource.PackagePath,
+                                                     mRasterSource.OutputTarget,
+                                                     mRasterSource.OutputResource,
+                                                     outError) == false)
+        {
+            return false;
+        }
+        profilePath = mLibraryCapture->GetProfilePath();
+    }
+    else if (mCaptureProfile.isNull() == false)
     {
         QByteArray identity;
         if (ViewportGraphCapture::ReadGenerationIdentity(mRasterSource, identity, outError) == false)
