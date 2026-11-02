@@ -525,6 +525,8 @@ qt_add_executable(ludus_editor
     src/internal/reference_comparison.h
     src/reference_capture_window.cpp
     src/internal/reference_capture_window.h
+    src/captured_image_view.cpp
+    src/internal/captured_image_view.h
     src/internal/preview_shader_set.h
     src/preview_shader_set.cpp
     src/internal/preview_shading.h
@@ -934,6 +936,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/reference_comparison.h
         src/reference_capture_window.cpp
         src/internal/reference_capture_window.h
+        src/captured_image_view.cpp
+        src/internal/captured_image_view.h
         src/internal/preview_shader_set.h
         src/preview_shader_set.cpp
         src/internal/preview_shading.h
@@ -980,6 +984,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/path_text_tests.cpp
         tests/state_view_tests.cpp
         tests/activity_chip_tests.cpp
+        tests/captured_image_view_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
         tests/world_demo_workspace_tests.cpp
