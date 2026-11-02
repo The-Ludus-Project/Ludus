@@ -3,6 +3,7 @@
 
 #include "../shaders/renderer_gpu_preview_layout.h"
 #include "internal/gpu_denoiser.h"
+#include "internal/light_transformer_graph.h"
 #include "internal/ltc_table_data.h"
 #include "internal/render_graph_deferred.h"
 #include "internal/render_graph_metalfx.h"
@@ -810,6 +811,7 @@ struct RenderGraph::State final
     StaticArray<bool, format::MAX_RESOURCES> IsPooled{};
     RenderGraphAttachmentPool* PoolOrNull = nullptr;
     RenderGraphAllocationReport Allocation{};
+    core::UniquePtr<internal::LightTransformerGraph> Model;
     struct AttachmentReplacement final
     {
         rhi::DeviceHandle Device{};
@@ -929,6 +931,7 @@ struct RenderGraph::State final
         {
             return;
         }
+        Current->HasEncodedModel = true;
         Current->NextRayTile = Current->NextRayTile + 1 < RayTileCount ? Current->NextRayTile + 1 : 0;
         if (Current->NextRayTile == 0 && Current->SubmittedRaySamples < GetMaximumAccumulationSamples())
         {
@@ -950,6 +953,8 @@ struct RenderGraph::State final
     struct Scene final
     {
         State* OwnerOrNull = nullptr;
+        LightTransformerEncoding Model;
+        bool HasEncodedModel = false;
         core::UniquePtr<internal::ForwardSceneGeneration> ForwardGeneration;
         StaticArray<StaticArray<Mesh, format::MAX_MESHES>, format::TECHNIQUE_COUNT> Meshes{};
         StaticArray<bool, format::MAX_MESHES> HasMeshes{};
@@ -1913,7 +1918,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
                                const RenderGraphPrograms& programs,
                                RenderGraphAttachmentPool* poolOrNull,
                                uint32 referenceWidth,
-                               uint32 referenceHeight) noexcept
+                               uint32 referenceHeight,
+                               const LightTransformerModelDescription* modelOrNull) noexcept
 {
     if (mState.Get() != nullptr)
     {
@@ -2246,6 +2252,44 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     candidate->Device = device;
     candidate->Header = plan.Description;
     candidate->Target = target;
+    if (programs.HasLightTransformer != (modelOrNull != nullptr))
+    {
+        return Status::InvalidDescription;
+    }
+    if (modelOrNull != nullptr)
+    {
+        candidate->Model.Reset(new (std::nothrow) internal::LightTransformerGraph);
+        if (candidate->Model.Get() == nullptr)
+        {
+            return Status::OutOfMemory;
+        }
+        const Status modelStatus = candidate->Model->Initialize(*modelOrNull);
+        if (modelStatus != Status::Ready)
+        {
+            return modelStatus;
+        }
+    }
+    if (programs.HasLightTransformer == true)
+    {
+        usize modelPasses = 0;
+        for (usize pass = 0; pass < plan.Passes.GetSize(); ++pass)
+        {
+            if (plan.Passes[pass].Program == format::Technique::RayTracing)
+            {
+                if (plan.Passes[pass].Buffer0 == format::ABSENT ||
+                    plan.Passes[pass].Traversal != format::RayTraversal::ComputeBvh ||
+                    plan.Passes[pass].SceneData != format::SCENE_DATA_ALL)
+                {
+                    return Status::InvalidDescription;
+                }
+                ++modelPasses;
+            }
+        }
+        if (modelPasses != 1 || programs.HasPersistentRayBuffers == false)
+        {
+            return Status::InvalidDescription;
+        }
+    }
     candidate->Programs = programs;
     if (programs.HasRayPathCapture == true)
     {
@@ -2555,6 +2599,29 @@ Status RenderGraph::GetPersistentBuffer(uint32 resource, rhi::BufferHandle& outB
         return Status::NotReady;
     }
     const uint32 backing = state.Resources[resource].Backing;
+    if (state.Model.Get() != nullptr)
+    {
+        for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+        {
+            const uint32 modelResource = state.Passes[pass].Buffer0;
+            if (modelResource != format::ABSENT && state.Resources[modelResource].Backing == backing)
+            {
+                if (state.Current.Get() == nullptr)
+                {
+                    return Status::NotReady;
+                }
+                rhi::BufferHandle packet;
+                const Status ready = state.Current->Model.Workload.GetBuffer(LIGHT_TRANSFORMER_RESULT_BUFFER, packet);
+                if (ready != Status::Ready)
+                {
+                    return ready;
+                }
+                outBuffer = packet;
+                outBytes = state.Current->Model.PacketBytes;
+                return Status::Ready;
+            }
+        }
+    }
     const Status status = rhi::GetStatus(state.Device, state.Buffers[backing]);
     if (status != Status::Ready)
     {
@@ -3193,6 +3260,27 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                                          policy == RenderGraphCoveragePolicy::DiagnosticColor,
                                          &state.Report.SceneDiagnostics,
                                          sceneRevision};
+    if (state.Model.Get() != nullptr)
+    {
+        for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+        {
+            if (state.Passes[pass].Program == format::Technique::RayTracing &&
+                state.Model->GetRequiredPacketBytes() > preparingResources[state.Passes[pass].Buffer0].Width)
+            {
+                state.Report.Model.Issue = LightTransformerPreparationIssue::EmbeddingCapacity;
+                state.Report.Model.RequiredPacketBytes = state.Model->GetRequiredPacketBytes();
+                state.Report.Model.EmbeddingBufferBytes = preparingResources[state.Passes[pass].Buffer0].Width;
+                outReport = state.Report;
+                return Status::CapacityExceeded;
+            }
+        }
+        const Status encoded = state.Model->Prepare(rayScene, state.Device, candidate->Model, state.Report.Model);
+        if (encoded != Status::Ready)
+        {
+            outReport = state.Report;
+            return encoded;
+        }
+    }
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         if (state.Passes[pass].Program != format::Technique::RayTracing)
@@ -3213,6 +3301,17 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                         ? state.Resizing->Buffers[index]
                         : state.Buffers[index];
                 buffers[slot] = {buffer, preparingResources[index].Width};
+                if (slot == 0 && state.Model.Get() != nullptr)
+                {
+                    rhi::BufferHandle packet;
+                    const Status modelBuffer =
+                        candidate->Model.Workload.GetBuffer(LIGHT_TRANSFORMER_RESULT_BUFFER, packet);
+                    if (modelBuffer != Status::Ready)
+                    {
+                        return modelBuffer;
+                    }
+                    buffers[slot] = {packet, candidate->Model.PacketBytes};
+                }
             }
         }
         // Ray passes reading the same scene data of this update share the first one's uploaded
@@ -3415,7 +3514,9 @@ Status RenderGraph::PrepareEncoding() noexcept
                 {targets.GetData(), count},
                 state.Current->NextRayTile,
                 state.Current->RayGraph,
-                visibilityOrNull);
+                visibilityOrNull,
+                state.Model.Get() != nullptr && state.Current->HasEncodedModel == false ? &state.Current->Model.Workload
+                                                                                        : nullptr);
         if (prepared != Status::Ready)
         {
             return prepared;

@@ -230,7 +230,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     # The readback fallback is selected only on Linux, but the shared viewport code references it.
     list(APPEND editor_viewport_sources src/internal/offscreen_frame_reader.h src/offscreen_frame_reader.cpp)
     # RG3b trusted render-graph preview reads exported color back through the same frame reader.
-    list(APPEND editor_viewport_sources src/internal/render_graph_preview.h src/render_graph_preview.cpp
+    list(APPEND editor_viewport_sources src/internal/render_graph_preview.h src/render_graph_preview.cpp src/light_transformer_preview_setup.cpp src/internal/light_transformer_preview_setup.h
         src/internal/viewport_raster_capture.h src/viewport_raster_capture.cpp
         src/internal/viewport_graph_capture.h src/viewport_graph_capture.cpp
         src/internal/render_graph_capture_profile.h src/render_graph_capture_profile.cpp
@@ -786,7 +786,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     target_link_libraries(ludus_editor PRIVATE Ludus::GraphicsRhi Qt6::Quick)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
-        renderer_overlay renderer_grid)
+        renderer_overlay renderer_grid renderer_light_transformer_encoder)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_lit_shadow renderer_clustered renderer_clustered_shadow
         renderer_clustered_authored renderer_clustered_authored_shadow
@@ -903,6 +903,17 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_test(NAME ludus_project_explorer_tests COMMAND ludus_project_explorer_tests)
     set_tests_properties(ludus_project_explorer_tests PROPERTIES LABELS "unit;editor" TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
+        add_executable(ludus_light_transformer_preview_setup_tests tests/light_transformer_preview_setup_tests.cpp
+            src/light_transformer_preview_setup.cpp src/internal/light_transformer_preview_setup.h)
+        target_include_directories(ludus_light_transformer_preview_setup_tests PRIVATE src)
+        target_compile_definitions(ludus_light_transformer_preview_setup_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+        target_link_libraries(ludus_light_transformer_preview_setup_tests PRIVATE Qt6::Core Ludus::GraphicsRenderer Catch2::Catch2WithMain)
+        ludus_apply_project_defaults(ludus_light_transformer_preview_setup_tests)
+        ludus_enable_test_exceptions(ludus_light_transformer_preview_setup_tests)
+        add_test(NAME ludus_light_transformer_preview_setup_tests COMMAND ludus_light_transformer_preview_setup_tests)
+        set_tests_properties(ludus_light_transformer_preview_setup_tests PROPERTIES LABELS "unit;editor;light-transformer" TIMEOUT 60)
+    endif()
     add_executable(ludus_editor_tests
         ${editor_profiling_sources}
         tests/profiling_tests.cpp
@@ -1182,7 +1193,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_link_libraries(ludus_editor_tests PRIVATE Ludus::GraphicsRhi Qt6::Quick)
         ludus_compile_renderer_shaders(TARGET ludus_editor_tests SHADERS
             renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
-            renderer_overlay renderer_grid)
+            renderer_overlay renderer_grid renderer_light_transformer_encoder)
         ludus_compile_renderer_shaders(TARGET ludus_editor_tests SHADERS
             renderer_lit_shadow renderer_clustered renderer_clustered_shadow
             renderer_clustered_authored renderer_clustered_authored_shadow

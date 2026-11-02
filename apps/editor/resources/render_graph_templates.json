@@ -164,6 +164,23 @@
     },
     {
       "kind": "graph",
+      "identity": "light-transformer",
+      "label": "Light Transformer — learned diffuse GI",
+      "category": "ray-traced",
+      "requirements": [
+        "compute-ray-tracing"
+      ],
+      "keywords": [
+        "global illumination",
+        "irradiance",
+        "neural",
+        "point transformer",
+        "Bing Xu"
+      ],
+      "description": "Encode the selected World once, then decode diffuse irradiance per visible surface. Requires externally exported trained model assets and their fixed training scale in light_transformer/model.json. Metal or Vulkan compute; diffuse materials and mesh emitters only."
+    },
+    {
+      "kind": "graph",
       "identity": "restir-gi",
       "label": "ReSTIR GI — path resampling for indirect lighting",
       "category": "ray-traced",
@@ -458,6 +475,24 @@
       ],
       "description": "Two-scattering mesh-emitter transport: cached BVH geometry statistics guide an extra vertex between the first surface and a sampled emitter. Exports MIS, geometry-only and BSDF+NEE estimates. Requires Metal or Vulkan compute. Analytic/environment lighting and coated diffuse are unsupported.",
       "defaultConfiguration": "OneMoreVertexNee"
+    },
+    {
+      "kind": "snippet",
+      "identity": "light-transformer",
+      "label": "Light Transformer — learned diffuse GI",
+      "category": "lighting",
+      "requirements": [
+        "compute-ray-tracing"
+      ],
+      "keywords": [
+        "global illumination",
+        "irradiance",
+        "neural",
+        "point transformer",
+        "Bing Xu"
+      ],
+      "description": "Encode the selected World once, then decode diffuse irradiance per visible surface. Requires externally exported trained model assets and their fixed training scale in light_transformer/model.json. Metal or Vulkan compute; diffuse materials and mesh emitters only.",
+      "defaultConfiguration": "LightTransformer"
     },
     {
       "kind": "node",

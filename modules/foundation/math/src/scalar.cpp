@@ -10,6 +10,14 @@
 
 namespace ludus::foundation::math
 {
+float32 ComputeErrorFunction(float32 value) noexcept
+{
+    return std::erf(value);
+}
+float64 ComputeErrorFunction(float64 value) noexcept
+{
+    return std::erf(value);
+}
 float32 Sqrt(float32 value) noexcept
 {
     return std::sqrt(value);

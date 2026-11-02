@@ -5332,6 +5332,7 @@ bool RendererWorkspace::PreviewRuntime(RenderGraphSource source)
     const bool isPreviousPreviewDefault = mIsDefaultPreview;
     mIsDefaultPreview = runtime == GetDefaultRenderGraphRuntime();
     RenderGraphPreviewSource provenance;
+    provenance.ModelDirectory = mDocument.GetPackageRoot();
     if (mHasResult == true && mLastResult.IsSuccessful == true &&
         (mLastResult.Request.Action == QStringLiteral("build") ||
          mLastResult.Request.Action == QStringLiteral("cook-runtime")) &&

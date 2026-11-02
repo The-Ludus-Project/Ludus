@@ -17,7 +17,7 @@ add_custom_command(
     COMMENT "Embedding the LTC table"
     VERBATIM)
 set_source_files_properties("${ludus_ltc_table_source}" PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/src")
-add_library(ludus_graphics_renderer STATIC src/light_transformer.cpp src/point_neighbors.cpp src/surface_points.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/raster_mesh_lights.cpp src/raster_mesh_light_polygons.cpp src/raster_mesh_light_grid.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_capture.cpp src/render_graph_failures.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_coating.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" src/reference_scene.cpp src/reference_path.cpp src/reference_light_sampling.cpp src/reference_compute.cpp src/metropolis.cpp)
+add_library(ludus_graphics_renderer STATIC src/light_transformer_graph.cpp src/light_transformer_encoded_queries.cpp src/light_transformer_encoder.cpp src/light_transformer_topology.cpp src/light_transformer.cpp src/point_neighbors.cpp src/surface_points.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/raster_mesh_lights.cpp src/raster_mesh_light_polygons.cpp src/raster_mesh_light_grid.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_capture.cpp src/render_graph_failures.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_coating.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" src/reference_scene.cpp src/reference_path.cpp src/reference_light_sampling.cpp src/reference_compute.cpp src/metropolis.cpp)
 add_library(Ludus::GraphicsRenderer ALIAS ludus_graphics_renderer)
 install(FILES "${PROJECT_SOURCE_DIR}/third_party/pbrt/LICENSE.txt" DESTINATION "${CMAKE_INSTALL_DATADIR}/${LUDUS_ENGINE_PACKAGE_NAME}/licenses" RENAME pbrt-LICENSE)
 include(EngineDenoiserOptions)
@@ -40,6 +40,7 @@ if(LUDUS_ENABLE_OIDN)
 endif()
 set_target_properties(ludus_graphics_renderer PROPERTIES EXPORT_NAME GraphicsRenderer)
 target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include FILES
+    include/ludus/graphics/renderer/light_transformer_encoder.hpp
     include/ludus/graphics/renderer/light_transformer.hpp
     include/ludus/graphics/renderer/point_neighbors.hpp
     include/ludus/graphics/renderer/surface_points.hpp
@@ -78,7 +79,7 @@ install(TARGETS ludus_graphics_renderer EXPORT LudusTargets ARCHIVE DESTINATION 
 # Source is cooked by the existing installed shader helper; no runtime compiler dependency.
 install(FILES include/ludus/graphics/renderer/detail/deferred_binding_slots.inc
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ludus/graphics/renderer/detail")
-install(FILES "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/content/scene_format/material.h" "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_light_transformer_decoder.slang "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_layout.h" shaders/renderer_point_neighbors.slang "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/shaders/point_search.slang" "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/include/ludus/foundation/geometry/detail/point_search_layout.h" shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/stochastic_reuse.slang shaders/geometry_sampling_layout.h shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_grid.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/display_tone_mapping.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/metropolis_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/material_scattering.slang shaders/coated_diffuse.slang shaders/coated_diffuse_layout.h shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/content/scene_format/material.h" "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_light_transformer_query.slang shaders/renderer_light_transformer_encoder.slang shaders/renderer_light_transformer_encoded_queries.slang "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_encoder_layout.h" shaders/renderer_light_transformer_decoder.slang "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_layout.h" shaders/renderer_point_neighbors.slang "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/shaders/point_search.slang" "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/include/ludus/foundation/geometry/detail/point_search_layout.h" shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/stochastic_reuse.slang shaders/geometry_sampling_layout.h shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_grid.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/display_tone_mapping.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/metropolis_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/material_scattering.slang shaders/coated_diffuse.slang shaders/coated_diffuse_layout.h shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 # Engine-owned default render graph: the RendererStatic static opaque profile the editor
 # shows when a project has no graph of its own, and the read-only starting point a project
 # copies when it customizes the renderer. Profiles follow the host device family, as the
@@ -451,7 +452,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee)
+            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee light_transformer)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         ludus_stage_render_graph_fixture("${template_source}" "${template_staged}")
@@ -1413,14 +1414,38 @@ if(TARGET ludus_rhi_render_tests)
             "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_layout.h"
         COMMENT "Preparing independent Light Transformer decoder fixture" VERBATIM)
     add_custom_target(ludus_light_transformer_fixture DEPENDS "${light_transformer_fixture}")
-    add_executable(ludus_light_transformer_render_tests tests/light_transformer_render_tests.cpp)
-    add_dependencies(ludus_light_transformer_render_tests ludus_light_transformer_fixture)
+    add_executable(ludus_light_transformer_render_tests tests/light_transformer_render_tests.cpp tests/light_transformer_encoder_tests.cpp tests/light_transformer_graph_tests.cpp)
+    set(encoder_fixture "${CMAKE_CURRENT_BINARY_DIR}/light-transformer-encoder.fixture")
+    set(encoder_asset "${CMAKE_CURRENT_BINARY_DIR}/light-transformer-encoder.llte")
+    set(decoder_asset "${CMAKE_CURRENT_BINARY_DIR}/light-transformer-decoder.lltd")
+    add_custom_command(OUTPUT "${encoder_fixture}" "${encoder_asset}" "${decoder_asset}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/light_transformer_encoder_fixture.py"
+            --encoder "${encoder_asset}" --fixture "${encoder_fixture}" --decoder "${decoder_asset}"
+        DEPENDS tests/light_transformer_encoder_fixture.py tests/light_transformer_encoder_golden.json
+            tests/light_transformer_fixture.py
+            "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/light_transformer.py"
+            "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/light_transformer_encoder.py"
+            "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_encoder_layout.h"
+        VERBATIM)
+    add_custom_target(ludus_light_transformer_encoder_fixture DEPENDS "${encoder_fixture}" "${encoder_asset}" "${decoder_asset}")
+    add_dependencies(ludus_light_transformer_render_tests ludus_light_transformer_fixture ludus_light_transformer_encoder_fixture)
+    set(light_transformer_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/light_transformer_graph")
+    ludus_stage_render_graph_fixture("${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/light_transformer" "${light_transformer_staged}")
+    ludus_compile_render_graph(TARGET ludus_light_transformer_render_tests NAME light_transformer_graph
+        MANIFEST "${light_transformer_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET light_transformer_graph_RUNTIME_PACKAGE PARENT_PATH light_transformer_package_directory)
+    target_compile_definitions(ludus_light_transformer_render_tests PRIVATE
+        "LUDUS_LIGHT_TRANSFORMER_ENCODER_ASSET=\"${encoder_asset}\""
+        "LUDUS_LIGHT_TRANSFORMER_DECODER_ASSET=\"${decoder_asset}\""
+        "LUDUS_LIGHT_TRANSFORMER_ENCODER_FIXTURE=\"${encoder_fixture}\""
+        "LUDUS_LIGHT_TRANSFORMER_PACKAGE_DIRECTORY=\"${light_transformer_package_directory}\""
+        "LUDUS_LIGHT_TRANSFORMER_PACKAGE_FILE=\"${light_transformer_graph_RUNTIME_PACKAGE}\"")
     target_link_libraries(ludus_light_transformer_render_tests PRIVATE Ludus::GraphicsRenderer Ludus::FoundationTime Catch2::Catch2WithMain)
     target_compile_definitions(ludus_light_transformer_render_tests PRIVATE
         "LUDUS_LIGHT_TRANSFORMER_TEST_FIXTURE=\"${light_transformer_fixture}\"")
     ludus_apply_project_defaults(ludus_light_transformer_render_tests)
     ludus_enable_test_exceptions(ludus_light_transformer_render_tests)
-    ludus_compile_renderer_shaders(TARGET ludus_light_transformer_render_tests SHADERS renderer_light_transformer_decoder)
+    ludus_compile_renderer_shaders(TARGET ludus_light_transformer_render_tests SHADERS renderer_composite renderer_light_transformer_decoder renderer_light_transformer_encoder renderer_light_transformer_encoded_queries)
     if(APPLE)
         target_compile_definitions(ludus_light_transformer_render_tests PRIVATE LUDUS_TEST_METAL=1)
     endif()

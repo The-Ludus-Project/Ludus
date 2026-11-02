@@ -157,3 +157,22 @@ class AdapterTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class EncoderLayoutTests(unittest.TestCase):
+    def test_encoder_schema_matches_shared_asset_counts(self):
+        from ludus_tools import light_transformer_encoder as encoder
+        schema = list(encoder.encoder_schema())
+        count = sum(outputs * 2 if kind == encoder.NORMALIZE else inputs * outputs * kernel ** 3 +
+                    outputs * (3 if kind == encoder.POOL else 1)
+                    for kind, _, inputs, outputs, kernel, _, _ in schema)
+        self.assertEqual(len(schema), encoder.ENCODER_LAYOUT['LAYER_COUNT'])
+        self.assertEqual(count, encoder.ENCODER_LAYOUT['WEIGHT_COUNT'])
+        self.assertEqual(sum('.attn.qkv' in name for _, name, *_ in schema), 22)
+        # A negative pool BN scale must stay after the maximum reduction.
+        self.assertEqual(sum(kind == encoder.POOL for kind, *_ in schema), 4)
+
+    def test_training_scale_and_reciprocal_must_fit_gpu_binary32(self):
+        for scale in (None, 0, -1, float('nan'), float('inf'), 1e308, 1e-308, 1e-40):
+            self.assertFalse(adapter.is_representable_training_scale(scale))
+        for scale in (0.5, 1, 100, 1e20):
+            self.assertTrue(adapter.is_representable_training_scale(scale))

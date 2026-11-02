@@ -2123,3 +2123,48 @@ class OneMoreVertexNeeTemplateTests(unittest.TestCase):
         declaration = re.search(r'foreach\(template_directory IN ITEMS ([^)]*)\)', source.read_text(), re.S)
         self.assertIsNotNone(declaration)
         self.assertEqual(set(declaration.group(1).split()), {definition[0] for definition in TEMPLATES.values()})
+
+class LightTransformerTemplateTests(unittest.TestCase):
+    def test_native_template_has_complete_model_setup_and_admits_maximum_packet(self):
+        from ludus_tools import light_transformer_encoder as encoder
+        from ludus_tools import light_transformer as decoder
+        with tempfile.TemporaryDirectory() as directory:
+            root = graph.new_workspace(Path(directory) / 'Model', output='offscreen', renderer_static=True,
+                                       profiles=('metal', 'spirv'), template='light-transformer')
+            plan = graph.compile_graph(root)
+            manifest = json.loads(root.with_name('main.lushader.json').read_text())
+            build.validate_manifest(manifest)
+            self.assertEqual(manifest['profiles'], ['metal', 'spirv'])
+            self.assertEqual([p['id'] for p in manifest['programs'] if p.get('light_transformer')], ['DecodeIrradiance'])
+            self.assertFalse(any(t.get('scene_interface', {}).get('light_transformer') for t in manifest['techniques']))
+            setup = json.loads((root.parent / 'light_transformer/model.json').read_text())
+            self.assertIsNone(setup['world_units_per_model_unit'])
+            self.assertGreater(setup['maximum_surface_preparation_bytes'], 0)
+            buffers = [r for r in plan['resources'].values() if r['type'] == 'Buffer']
+            self.assertEqual(len(buffers), 1)
+            layout = encoder.ENCODER_LAYOUT
+            anchors = layout['MAX_POINTS'] // layout['ANCHOR_DIVISOR']
+            decoder_layout = decoder.read_layout(encoder.find_layout('light_transformer_layout.h'))
+            # Header, 2 uint4 tree words, 33 float4 position/latent words, padded decoder scalars.
+            required = (layout['PACKET_HEADER_WORDS'] + anchors * (2 + layout['ANCHOR_WORDS'])) * 16
+            dimension = decoder_layout['DIMENSION']
+            attention = decoder_layout['ATTENTION_CHANNELS']
+            hidden = decoder_layout['FEED_FORWARD_CHANNELS']
+            affine = lambda inputs, outputs: (inputs + 1) * outputs
+            block = 4 * dimension + 3 * dimension ** 2 + affine(3, attention) + affine(attention, dimension)
+            block += affine(dimension, attention) + affine(attention, dimension) + affine(dimension, dimension)
+            block += affine(dimension, hidden) + affine(hidden, dimension)
+            weights = affine(9, dimension) + affine(dimension, dimension) + decoder_layout['DEPTH'] * block + affine(dimension, 3)
+            required += ((weights + 3) // 4) * 16
+            self.assertGreaterEqual(buffers[0]['extent'][0], required)
+            manifest['programs'][0]['light_transformer'] = True
+            with self.assertRaisesRegex(ToolingError, 'scene compute'):
+                build.validate_manifest(manifest)
+
+    def test_browser_only_model_template_is_rejected_without_publishing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'Model'
+            with self.assertRaises(ToolingError):
+                graph.new_workspace(destination, output='offscreen', renderer_static=True,
+                                    profiles=('wgsl',), template='light-transformer')
+            self.assertFalse(destination.exists())

@@ -113,7 +113,12 @@ inline constexpr foundation::uint32 RASTER_TONE_MAPPING_PACKAGE_VERSION = 29;
 /// (deferred_layout.h), which it uses to cull and to evaluate far records as points.
 inline constexpr foundation::uint32 RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION = 30;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION;
+/// Version 31 admits the scene-resource Light Transformer bit; model assets remain caller-owned inputs.
+inline constexpr foundation::uint32 LIGHT_TRANSFORMER_PACKAGE_VERSION = 31;
+/// Requires fixed-scale trained model setup at graph initialization and GPU encoder preparation per scene.
+inline constexpr foundation::uint32 SCENE_RESOURCE_LIGHT_TRANSFORMER = 4U;
+/// Latest native runtime package version.
+inline constexpr foundation::uint32 PACKAGE_VERSION = LIGHT_TRANSFORMER_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

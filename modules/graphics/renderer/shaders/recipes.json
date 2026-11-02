@@ -1,4 +1,12 @@
 {
+  "renderer_light_transformer_encoded_queries": {
+    "source": "renderer_light_transformer_encoded_queries.slang",
+    "compute": "ComputeMain"
+  },
+  "renderer_light_transformer_encoder": {
+    "source": "renderer_light_transformer_encoder.slang",
+    "compute": "ComputeMain"
+  },
   "renderer_light_transformer_decoder": {
     "source": "renderer_light_transformer_decoder.slang",
     "compute": "ComputeMain"

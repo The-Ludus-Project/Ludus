@@ -97,6 +97,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                QStringLiteral("steinberg-plt"),
                                                QStringLiteral("steinberg-physical-optics"),
                                                QStringLiteral("rao-blackwell-mh"),
+                                               QStringLiteral("light-transformer"),
                                                QStringLiteral("restir-gi"),
                                                QStringLiteral("guided-restir-fg-plus"),
                                                QStringLiteral("conditional-restir"),
@@ -128,7 +129,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                graph.Identity == QStringLiteral("slice-sampling-luminaire") ||
                graph.Identity == QStringLiteral("rao-blackwell-mh") ||
                graph.Identity == QStringLiteral("guided-restir-fg-plus") ||
-               graph.Identity == QStringLiteral("one-more-vertex-nee")));
+               graph.Identity == QStringLiteral("one-more-vertex-nee") ||
+               graph.Identity == QStringLiteral("light-transformer")));
     }
     CHECK(GetRenderGraphTemplateRequirementLabel(QStringLiteral("compute-ray-tracing")) ==
           QStringLiteral("Metal or Vulkan compute"));
@@ -154,7 +156,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                  QStringLiteral("conditional-restir"),
                                                  QStringLiteral("visibility-buffer"),
                                                  QStringLiteral("visibility-secondary-rays"),
-                                                 QStringLiteral("one-more-vertex-nee")});
+                                                 QStringLiteral("one-more-vertex-nee"),
+                                                 QStringLiteral("light-transformer")});
     QStringList defaults;
     for (const RenderGraphTemplate& snippet : snippets)
     {
@@ -178,7 +181,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                   QStringLiteral("ConditionalRestir"),
                                   QStringLiteral("VisibilityBuffer"),
                                   QStringLiteral("VisibilitySecondaryRays"),
-                                  QStringLiteral("OneMoreVertexNee")});
+                                  QStringLiteral("OneMoreVertexNee"),
+                                  QStringLiteral("LightTransformer")});
     CHECK(registry.HasTemplate(RenderGraphTemplateKind::Snippet, QStringLiteral("raster")) == false);
 
     // Upscale presets follow the plain node kinds, once per algorithm, in GetUpscaleAlgorithms() order.

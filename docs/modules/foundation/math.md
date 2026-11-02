@@ -669,3 +669,11 @@ The complete measure, support and sampling contract is in
 [the randomness architecture](../../architecture/randomness.md#stochastic-pairwise-mis).
 The [render-graph guide](../../development/render-graph-authoring.md#use-stochastic-pairwise-mis-for-large-spatial-kernels)
 covers the supplied adapters and reusable cell sampler.
+
+`ComputeErrorFunction` exposes the scalar error function in binary32 and binary64
+on the CPU, and binary32 in the shared `math.slang` include. The CPU uses the
+platform math implementation; the shader uses Abramowitz and Stegun formula
+7.1.26 (maximum absolute approximation error about `1.5e-7` before binary32
+rounding). Signed zero and infinite endpoints are preserved. Neural GELU uses
+this common primitive; it is not a vendor tensor intrinsic. See the attribution
+beside the shader implementation for the original formula.

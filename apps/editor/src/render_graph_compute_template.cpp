@@ -308,6 +308,21 @@ RenderGraphDocumentStatus PrepareSceneComputeTemplateConfiguration(
                                   "installation.");
         return RenderGraphDocumentStatus::NotFound;
     }
+    if (templateIdentity == QStringLiteral("light-transformer"))
+    {
+        const QString modelPath = QStringLiteral("light_transformer/model.json");
+        if (inoutSnapshot.Files.contains(modelPath) == false)
+        {
+            const QByteArray model = ReadComputeTemplate(selected, modelPath);
+            if (model.isEmpty() == true)
+            {
+                outError =
+                    QStringLiteral("The Light Transformer model setup is missing; repair the editor installation.");
+                return RenderGraphDocumentStatus::NotFound;
+            }
+            inoutSnapshot.Files.insert(modelPath, model);
+        }
+    }
     RenderGraphDocumentStatus status =
         MergeComputePrograms(inoutSnapshot, manifest, source, selected, outError, inoutBudgetOrNull);
     if (status == RenderGraphDocumentStatus::Ok)
@@ -439,6 +454,11 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
     {
         selected.ProgramPrefix = QStringLiteral("OneMoreVertexNee");
         selected.Name = QStringLiteral("One-more-vertex NEE");
+    }
+    else if (templateIdentity == QStringLiteral("light-transformer"))
+    {
+        selected.ProgramPrefix = QStringLiteral("LightTransformer");
+        selected.Name = QStringLiteral("Light Transformer irradiance");
     }
     else if (templateIdentity == QStringLiteral("restir-gi"))
     {

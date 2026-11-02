@@ -2,6 +2,30 @@
 
 // GPU counterparts of FoundationMath operations; Slang owns shader scalar spellings.
 static const float PI = 3.14159265358979323846;
+// Thanks to Milton Abramowitz and Irene A. Stegun (eds.), Handbook of Mathematical
+// Functions, NBS Applied Mathematics Series 55 (1964), p.299, equation 7.1.26:
+// https://digital.library.unt.edu/ark:/67531/metadc40302/ . Independently evaluate
+// the published erf approximation (real-arithmetic absolute error <= 1.5e-7).
+// Binary32 rounding adds to that bound; CPU libm remains the independent oracle.
+static const float ERROR_FUNCTION_P = 0.3275911;
+static const float ERROR_FUNCTION_A1 = 0.254829592;
+static const float ERROR_FUNCTION_A2 = -0.284496736;
+static const float ERROR_FUNCTION_A3 = 1.421413741;
+static const float ERROR_FUNCTION_A4 = -1.453152027;
+static const float ERROR_FUNCTION_A5 = 1.061405429;
+float ComputeErrorFunction(float value)
+{
+    if (value == 0)
+        return value;
+    float magnitude = abs(value);
+    float t = 1 / (1 + ERROR_FUNCTION_P * magnitude);
+    float polynomial =
+        ((((ERROR_FUNCTION_A5 * t + ERROR_FUNCTION_A4) * t + ERROR_FUNCTION_A3) * t + ERROR_FUNCTION_A2) * t +
+         ERROR_FUNCTION_A1) *
+        t;
+    float result = 1 - polynomial * exp(-magnitude * magnitude);
+    return value < 0 ? -result : result;
+}
 float3 NormalizeOrZero(float3 v)
 {
     float s = dot(v, v);

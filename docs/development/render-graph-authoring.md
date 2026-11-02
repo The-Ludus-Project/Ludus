@@ -8678,9 +8678,9 @@ checking mesh reuse. The template is owned by
 ## Prepare point features and neighborhoods
 
 The engine provides native SDK preparation APIs for point-based/neural rendering.
-A Light Transformer query decoder is available below; its trained scene encoder
-and an executable Light Transformer JSON template are not available yet. The existing authored
-scene-compute limits described above remain in force. General preprocessing uses
+The portable Light Transformer encoder, query decoder and executable template are
+available below. The existing authored scene-compute limits described above
+remain in force; encoder dispatches use a prepared compute prefix. General preprocessing uses
 [prepared RHI workloads](fullscreen-rendering.md#prepared-buffer-only-workloads-and-caches)
 and shares their device, dependency and completion ledger.
 
@@ -8768,22 +8768,20 @@ use original anchor index order, making the adapter's tie convention explicit.
 Preparation validates storage/dispatch limits before allocating query scratch,
 consumes source borrows synchronously and preserves an empty workload on failure.
 Run its ordered graph through the RHI. `LIGHT_TRANSFORMER_RESULT_BUFFER` contains
-query-major float4 predictions (network RGB, reserved W zero); do not apply albedo
-again. No GPU readback is required to consume that buffer through subsequent GPU
-work. This SDK helper currently uploads CPU-provided latents and query records;
-it does not yet connect visible-surface query generation to an authored graph.
+query-major float4 predictions (raw network RGB, reserved W zero). For the
+diffuse irradiance model, reconstruct outgoing radiance as
+`emission + albedo * prediction / PI`. No GPU readback is required to consume that buffer through subsequent GPU
+work. This standalone helper uploads CPU-provided latents and query records. The
+encoder and template below keep scene latents on the GPU.
 
 The regression fixture uses an independent PyTorch calculation, synthetic
 parameters and stable distance sorting, with absolute tolerance `1e-5` plus
 relative tolerance `1e-4` on raw RGB. A local checkpoint qualification uses the
 same fixture generator's `--checkpoint` option and supplies its output through
 `LUDUS_LIGHT_TRANSFORMER_TEST_FIXTURE`. No released weights or upstream scene data
-are stored in those fixtures. Decoder agreement on supplied latents does not
-establish trained **encoder** agreement, full-scene GI quality or interactive
-performance. The encoder still needs portable sparse convolutions, serialized
-attention and hierarchical pooling/unpooling before a usable paper template can
-be published. No CUDA, vendor-specific tensor API, training runtime or upstream
-weights are bundled.
+are stored in those fixtures. Decoder agreement on supplied latents does not establish full-scene GI quality
+or interactive performance. No CUDA, vendor-specific tensor API, training runtime
+or upstream weights are bundled.
 
 `RenderGraph::GetPersistentBuffer` borrows a stable graph-owned Buffer allocation
 and capacity for prepared compute producers/consumers. Use it as a workload
@@ -8799,6 +8797,95 @@ and never authorizes writes into a pending cache candidate's active generation.
 The point-feature motivation follows Bing Xu, Mukund Varma T, Cheng Wang,
 Tzu-Mao Li, Lifan Wu, Bartlomiej Wronski, Ravi Ramamoorthi and Marco Salvi,
 *A Generalizable Light Transport 3D Embedding for Global Illumination*, SIGGRAPH
-2026, section 3.2 ([paper](https://arxiv.org/abs/2510.18189)). The engine implements
-input/storage/search foundations and the trained query decoder; the full learned
-encoder and paper template remain unavailable.
+2026, section 3.2 ([paper](https://arxiv.org/abs/2510.18189)). The implementation follows the released inference architecture; the numerical
+and scene limitations below are explicit parts of this adapter.
+
+
+### Encode a trained scene and use the Light Transformer template
+
+Create an editable native template with the CLI or choose **Light Transformer**
+from the editor graph canvas template menu:
+
+```sh
+ludus render-graph new /path/to/graph --template light-transformer \
+  --output offscreen --profiles metal spirv
+python scripts/export-light-transformer /path/to/checkpoint.ckpt \
+  --model-directory /path/to/graph/light_transformer \
+  --world-units-per-model-unit <fixed-training-scale>
+```
+
+Use the same fixed scale as the checkpoint's training dataset, in World units per
+model unit. Paper appendix A.3 translates each scene by its minimum and divides
+by a **dataset-wide constant**. Ludus never fits each scene independently to a
+unit cube. The consulted release does not provide an authoritative numerical
+value for that constant; the template leaves it unset rather than inventing one.
+A scene extending beyond that fixed extent fails with a repair diagnostic.
+
+Export validates both networks before writing. It writes versioned little-endian
+`encoder.llte` and `decoder.lltd`, then `model.json` with asset SHA-256 identities,
+scale, seed, surface point count, GPU buffer budget, independent CPU surface
+preparation budget and sampling attempt limit. Keep all three files together.
+The editor verifies those identities before staging a candidate; a partial export
+cannot silently pair different models. These external assets are not authored
+shader sources and are not bundled with Ludus or downloaded at preview time.
+The editable template includes only a setup placeholder. Preserve the model
+subdirectory when moving the graph package. An installed SDK consumer supplies
+`LightTransformerModelDescription` to `RenderGraph::Initialize` or activation
+`Stage` when `RenderGraphPackage::HasLightTransformer()` is true.
+
+`<ludus/graphics/renderer/light_transformer_encoder.hpp>` exposes the standalone
+encoder. Cook the `renderer_light_transformer_encoder` recipe and call
+`PrepareLightTransformerEncoder` with finite model-space position, normal, albedo
+and emission records. The CPU prepares farthest-point samples, exact neighbors,
+sparse voxel pairs, serialization orders and pooling maps. Both scene MLPs,
+neighbor encoders, sparse convolutions, all 22 Point Transformer V3 blocks,
+hierarchical pooling/unpooling and final feature gathering execute on the GPU.
+Every kernel shares one prepared program; only descriptors and dispatch records
+vary. Weight chunks stay below Vulkan's minimum storage-buffer range guarantee.
+The algorithm uses binary32 compute, four storage bindings and bounded shared
+memory, with no subgroup-width or floating-point atomic requirement.
+
+`LightTransformerEncoding::Workload` buffer 3 contains a packet prefix with its
+World-to-model transform, point-search tree, positions and 128-channel GPU latents.
+`PacketBytes` excludes scratch. Optional decoder parameters make that packet
+self-contained for the template. Run the encoder before its consumers.
+`PrepareLightTransformerEncodedQueries` prepares cooperative batched decoding
+against that packet; `PrepareLightTransformerPacketQueries` accepts a packet
+borrowed from a completed graph frame. Neither helper reads latents back.
+
+The template samples the selected World's material-aware surfaces deterministically
+(20,000 points by default, twice reduced by FPS to 5,000 anchors), encodes them
+on its first accepted frame and after scene changes, and reuses the packet for
+camera-only updates. The encoder and visible-surface decoder share one ordered
+GPU graph and resource dependency ledger. The decoder traces the authored World,
+queries its visible surfaces and reconstructs diffuse outgoing radiance with
+mesh emission. Pending or failed candidates preserve the last drawable image.
+The template's declared 8 MiB embedding buffer admits its maximum packet; smaller
+authored capacities fail with the required byte count and a concrete repair.
+
+This first template admits typed diffuse materials with zero metallic response,
+complete material assignments, mesh emission, and no analytic lights or environment
+illumination. Unsupported inputs fail explicitly. It evaluates per-pixel queries
+at one eighth the viewport width and height by default; edit the graph's render
+size for other quality/cost tradeoffs. Serial surface decoding prioritizes the
+existing graph callback ABI and portability. Interactive performance and trained
+full-scene image quality have not been qualified.
+
+The numerical policy is deterministic fixed Morton/Hilbert and transposed orders,
+no inference dropout, stable original-index distance ties and binary32 attention.
+The upstream implementation shuffles orders and uses half-precision FlashAttention.
+Duplicate sparse voxels sum all indexed point contributions; upstream sparse
+runtime duplicate-index behavior is not a bitwise contract of this adapter.
+The released FPS near-origin exclusion is retained. These choices may change
+predictions relative to an upstream CUDA execution.
+
+The default CPU PyTorch oracle fixture has procedurally generated weights and
+exercises all encoder stages without shipping trained assets. A local released
+checkpoint comparison on Metal passed all 128 latent channels at 32 anchors with
+absolute tolerance `5e-4` plus relative tolerance `5e-4`; it compares an independent
+CPU inference calculation using the declared ordering/precision policy, not the
+vendor sparse/FlashAttention runtime. Hilbert codes were separately checked
+against the authors' serialization. End-to-end regressions compare template
+surface output against cooperative packet decoding and retain the old scene after
+failed replacements. Metal execution and SPIR-V compilation are distinct evidence;
+Vulkan device execution must be qualified on the corresponding native batch runner.
