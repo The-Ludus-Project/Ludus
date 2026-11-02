@@ -41,9 +41,10 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     mTargets->setAccessibleName(QStringLiteral("Render graph output"));
     mTargets->setToolTip(
         QStringLiteral("Final output and every render-graph attachment, then built-in debug views. A debug view "
-                       "draws the World with the editor's raster renderer in one material, geometry or lighting "
-                       "quantity per pixel (albedo, normals, depth, wireframe…), whatever the project's graph "
-                       "draws. Other special views use configurations authored in the project's graph."));
+                       "draws the World with the editor's raster renderer, regardless of what the project's graph "
+                       "draws, showing one material, geometry or lighting quantity per pixel (albedo, normals, "
+                       "depth, wireframe…). Other special views use configurations authored in the project's "
+                       "graph."));
     mStatistics->setObjectName(QStringLiteral("worldGraphStatisticsOverlay"));
     mStatistics->setTextFormat(Qt::PlainText);
     mStatistics->setAttribute(Qt::WA_TransparentForMouseEvents);
