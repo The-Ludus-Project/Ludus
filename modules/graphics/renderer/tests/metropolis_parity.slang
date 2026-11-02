@@ -74,6 +74,18 @@ float3 EvaluateGraphRay(uint pixel)
     MetropolisPathAovs aovs;
     EvaluateMetropolisPath(scene, GenerateMetropolisCameraRay(launch, primary), primary, aovQueries, aovs);
     uint resultBase = pixel * LUDUS_MH_PARITY_RESULT_WORDS;
+    // Intrinsic-free primitive parity is exact, independently of path visibility
+    // or the numerical tolerance for transport. Pixel 2 distinguishes fused math.
+    // Keep the ticket dynamic so the compiler cannot constant-fold the product
+    // before deciding whether the primary-sample multiply/add may contract.
+    float mutationTicket = asfloat(Sampling.w);
+    float mutated;
+    bool isMutationValid = TryMutateMetropolisPrimary((float(pixel) + 0.5f) / LUDUS_MH_PARITY_INVOCATIONS,
+                                                      mutationTicket,
+                                                      MH_SMALL_STEP_RADIUS,
+                                                      false,
+                                                      mutated);
+    Results[resultBase + LUDUS_MH_PARITY_MUTATION_WORD] = uint4(asuint(mutated), isMutationValid == true ? 0 : 1, 0, 0);
     Results[resultBase + LUDUS_MH_PARITY_EMISSION_WORD] =
         uint4(asuint(aovs.Emission), aovQueries.HasFailed == true ? 1 : 0);
     Results[resultBase + LUDUS_MH_PARITY_DIRECT_WORD] = uint4(asuint(aovs.Direct), 0);

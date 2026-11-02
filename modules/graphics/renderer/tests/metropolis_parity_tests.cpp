@@ -6,6 +6,7 @@
 #include <cstring>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/metropolis.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/device.h>
@@ -28,6 +29,7 @@ constexpr usize SURFACE_COUNT = 2;
 constexpr uint32 TRIANGLE_COUNT = 3;
 constexpr math::RandomKey RANDOM_KEY{0x0123456789abcdefULL};
 constexpr math::Vector3 ENVIRONMENT{0.2F, 0.3F, 0.5F};
+constexpr float32 MUTATION_TICKET = 0x1.f9adbcp-4F;
 float32 GetFloat(uint32 bits)
 {
     float32 value = 0;
@@ -201,6 +203,7 @@ bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, bool 
     uniform.Sampling[0] = static_cast<uint32>(RANDOM_KEY.Value);
     uniform.Sampling[1] = static_cast<uint32>(RANDOM_KEY.Value >> 32);
     uniform.Sampling[2] = isJumpRestore == true ? 1 : 0;
+    std::memcpy(&uniform.Sampling[3], &MUTATION_TICKET, sizeof(MUTATION_TICKET));
     uniform.Environment = {ENVIRONMENT.X, ENVIRONMENT.Y, ENVIRONMENT.Z, 0};
     uniform.Options.Z = GetFloat(SURFACE_COUNT);
     uniform.Options.W = GetFloat(ludus::content::render_graph_format::SCENE_DATA_ALL);
@@ -370,6 +373,7 @@ TEST_CASE("Template MH transport and all weighted estimators match an independen
     {
         model = MaterialModel::MetallicRoughness;
     }
+    CAPTURE(static_cast<uint32>(model), isJumpRestore);
     rhi::Shutdown();
     Array<uint8> bytes;
     if (RunEstimatorKernel(model, isJumpRestore, bytes) == false)
@@ -387,6 +391,22 @@ TEST_CASE("Template MH transport and all weighted estimators match an independen
     constexpr float32 RAW_LINEAR_TOLERANCE = 0.001F;
     for (uint32 pixel = 0; pixel < LUDUS_MH_PARITY_INVOCATIONS; ++pixel)
     {
+        float32 mutated = 0;
+        REQUIRE(math::TryMutateMetropolisPrimary((static_cast<float32>(pixel) + 0.5F) / LUDUS_MH_PARITY_INVOCATIONS,
+                                                 MUTATION_TICKET,
+                                                 options.SmallStepRadius,
+                                                 false,
+                                                 mutated) == math::MathStatus::Success);
+        uint32 expectedMutationBits = 0;
+        std::memcpy(&expectedMutationBits, &mutated, sizeof(mutated));
+        StaticArray<uint32, LUDUS_MH_COMPONENTS_PER_WORD> mutation;
+        const usize mutationRecord = pixel * LUDUS_MH_PARITY_RESULT_WORDS + LUDUS_MH_PARITY_MUTATION_WORD;
+        std::memcpy(mutation.GetData(),
+                    bytes.GetData() + mutationRecord * sizeof(math::Vector4),
+                    sizeof(math::Vector4));
+        CAPTURE(pixel);
+        CHECK(mutation[0] == expectedMutationBits);
+        CHECK(mutation[1] == 0);
         const PathContext context{scene, pixel};
         for (uint32 estimator = 0; estimator < ESTIMATOR_COUNT; ++estimator)
         {

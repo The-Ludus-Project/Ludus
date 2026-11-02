@@ -541,9 +541,12 @@ class CancelledRunTests(unittest.TestCase):
         focused = workflow.split("\n  mcmc-vulkan-parity:\n", 1)[1].split("\n  macos-compile:\n", 1)[0]
         self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true", focused)
         self.assertIn("VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation", focused)
+        self.assertIn("set -euo pipefail", focused)
         self.assertIn("--target ludus_metropolis_tests ludus_renderer_render_tests ludus_metropolis_graph_tests", focused)
         self.assertIn("assert 'skipped' not in text.lower()", focused)
         self.assertIn("'VUID-' not in text", focused)
+        gate = workflow.split("\n  linux:\n", 1)[1].split("\n    steps:", 1)[0]
+        self.assertIn("&& 'Focused Vulkan dispatch (not integration)' || 'Ubuntu Clang'", gate)
 
     def test_only_pushes_cancel_required_pull_request_workflows(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"

@@ -91,24 +91,30 @@ jobs:
           out/host-tools/venv/bin/cmake --build out/build/linux-clang-development \
             --target ludus_metropolis_tests ludus_renderer_render_tests ludus_metropolis_graph_tests \
             --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          mkdir -p out/mcmc-vulkan
+          shader_directory=out/build/linux-clang-development/modules/graphics/renderer/ludus-shaders/ludus_renderer_render_tests/metropolis_parity
+          cp "$shader_directory/metropolis_parity.compute.spv" "$shader_directory/manifest.json" out/mcmc-vulkan/
       - name: Run with Mesa Vulkan and validation layers; reject skipped tests
         env:
           VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
         run: |
+          set -euo pipefail
+          has_failed=0
           mkdir -p out/mcmc-vulkan
           git rev-parse HEAD | tee out/mcmc-vulkan/commit.txt
           vulkaninfo --summary 2>&1 | tee out/mcmc-vulkan/adapter.log
-          out/build/linux-clang-development/modules/graphics/renderer/ludus_metropolis_tests 2>&1 | tee out/mcmc-vulkan/cpu.log
-          out/build/linux-clang-development/modules/graphics/renderer/ludus_renderer_render_tests '[metropolis]' 2>&1 | tee out/mcmc-vulkan/parity.log
-          out/build/linux-clang-development/modules/graphics/renderer/ludus_metropolis_graph_tests 2>&1 | tee out/mcmc-vulkan/captures.log
+          out/build/linux-clang-development/modules/graphics/renderer/ludus_metropolis_tests 2>&1 | tee out/mcmc-vulkan/cpu.log || has_failed=1
+          out/build/linux-clang-development/modules/graphics/renderer/ludus_renderer_render_tests '[metropolis]' 2>&1 | tee out/mcmc-vulkan/parity.log || has_failed=1
+          out/build/linux-clang-development/modules/graphics/renderer/ludus_metropolis_graph_tests 2>&1 | tee out/mcmc-vulkan/captures.log || has_failed=1
           python3 - <<'PY'
           from pathlib import Path
           for name in ('cpu', 'parity', 'captures'):
               text = Path(f'out/mcmc-vulkan/{name}.log').read_text()
               assert 'All tests passed' in text, text
               assert 'skipped' not in text.lower(), text
-              assert 'Validation Error' not in text and 'VUID-' not in text, text
+              assert 'validation error' not in text.lower() and 'VUID-' not in text, text
           PY
+          exit "$has_failed"
       - name: Preserve Vulkan parity evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -1458,7 +1464,7 @@ jobs:
     # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions
     # A cancelled pull-request run passes only when a newer, uncancelled run of
     # this workflow covers the same head commit; that run's gate owns the result.
-    name: Ubuntu Clang
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true && 'Focused Vulkan dispatch (not integration)' || 'Ubuntu Clang' }}
     needs: [changes, macos-compile, macos-sanitizers, macos-analysis, formatting, debug-runtime, development, sanitizers, filesystem-fuzz, threading-races, analysis, editor, assertion-policy, pch, build-budget, scripting-qualification]
     if: always() && (github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true)
     runs-on: ubuntu-24.04
