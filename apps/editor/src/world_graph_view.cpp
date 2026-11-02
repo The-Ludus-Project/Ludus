@@ -11,6 +11,7 @@
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
@@ -190,7 +191,23 @@ void WorldGraphView::refreshFrame()
 void WorldGraphView::refreshStatus()
 {
     QString text;
-    if (mWorkspace.GetRenderProblem().isEmpty() == false)
+    QString fullText;
+    mHasProblemChip = false;
+    const bool isBuildFailure = mWorkspace.GetLastResult().Request.Request != 0 &&
+                                mWorkspace.GetLastResult().IsSuccessful == false &&
+                                mWorkspace.GetLastResult().Request.Action == QStringLiteral("build");
+    if (mWorkspace.GetRenderProblem().isEmpty() == false && isBuildFailure == true && mWorkspace.IsJobActive() == false)
+    {
+        // The compiler's words are in the Error List and the tooltip; the picture only says what happened.
+        mHasProblemChip = true;
+        fullText = mWorkspace.GetRenderProblem();
+        text =
+            QStringLiteral("%1. %2").arg(mWorkspace.IsUsingDefaultRenderer() == true && mWorkspace.IsBuiltIn() == false
+                                             ? QStringLiteral("Shader build failed, using default renderer")
+                                             : QStringLiteral("Shader build failed, preview unchanged"),
+                                         GetProblemChipLink());
+    }
+    else if (mWorkspace.GetRenderProblem().isEmpty() == false)
     {
         text = mWorkspace.GetRenderProblem();
     }
@@ -218,7 +235,7 @@ void WorldGraphView::refreshStatus()
         }
         text += mWorkspace.GetRenderWarning();
     }
-    if (mWorkspace.IsUsingDefaultRenderer() == true && mWorkspace.IsBuiltIn() == false)
+    if (mHasProblemChip == false && mWorkspace.IsUsingDefaultRenderer() == true && mWorkspace.IsBuiltIn() == false)
     {
         if (text.isEmpty() == false)
         {
@@ -227,8 +244,24 @@ void WorldGraphView::refreshStatus()
         text += QStringLiteral("Engine default renderer fallback.");
     }
     mStatus->setText(text);
+    mStatus->setToolTip(fullText);
     mStatus->setVisible(text.isEmpty() == false);
     Q_EMIT StatusChanged(text);
+}
+QString WorldGraphView::GetProblemChipLink()
+{
+    return QStringLiteral("Show in Error List");
+}
+void WorldGraphView::mousePressEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton && mHasProblemChip == true && mStatus->isVisible() == true &&
+        mStatus->geometry().contains(event->position().toPoint()) == true)
+    {
+        mWorkspace.RequestErrorList();
+        event->accept();
+        return;
+    }
+    event->ignore();
 }
 void WorldGraphView::SetObjectInteraction(ViewportObjectInteraction& inoutInteraction)
 {
