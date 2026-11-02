@@ -77,3 +77,7 @@ class CaptureWarmupTests(unittest.TestCase):
                 self.assertTrue(recipes)
                 for recipe in recipes:
                     self.assertEqual(recipe['capture_warmup_samples'], [7] * len(recipe['ray_programs']))
+
+
+if __name__ == '__main__':
+    unittest.main()
