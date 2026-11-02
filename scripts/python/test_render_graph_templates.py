@@ -311,6 +311,23 @@ class BuiltInTemplateSettingsTests(unittest.TestCase):
         self.assertLessEqual(len(merged), settings.MAX_SETTINGS)
         settings.validate(list(merged_values.values()), build)
 
+    def test_template_shaders_never_redeclare_a_merged_setting(self):
+        # The builder declares every manifest setting as a constant before each kernel, so a template
+        # constant named like another template's setting fails to compile once both are imported.
+        import re
+        from ludus_tools import render_graph_templates as templates
+        root = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs'
+        setting_ids = set()
+        for directory, _, _ in templates.TEMPLATES.values():
+            text = (root / directory / 'main.lushader.json.in').read_text()
+            text = text.replace('@LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@', json.dumps(['metal']))
+            setting_ids.update(setting['id'] for setting in json.loads(text).get('settings', []))
+        declaration = re.compile(r'^\s*(?:static\s+const\s+\w+|#define)\s+([A-Za-z_]\w*)', re.MULTILINE)
+        for shader in sorted(root.glob('*/**/*.slang')):
+            for name in declaration.findall(shader.read_text()):
+                with self.subTest(shader=str(shader.relative_to(root)), name=name):
+                    self.assertFalse(name in setting_ids, f'{name} is also a template Graph setting')
+
     def test_manifest_setting_capacity_accepts_the_limit_and_rejects_one_more(self):
         values = [{'id': f'SETTING_{index}', 'label': f'Setting {index}', 'type': 'Bool', 'value': False}
                   for index in range(settings.MAX_SETTINGS)]
