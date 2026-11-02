@@ -15,6 +15,7 @@
 
 #include <QElapsedTimer>
 #include <QFocusEvent>
+#include <QImage>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPointer>
@@ -117,6 +118,27 @@ public:
     /// start view shows it and handles triggered, describing the view with
     /// RenderPreview::TryDescribeStartView. Owned by this viewport; GUI thread only.
     [[nodiscard]] QAction& GetStartViewSaveAction() noexcept;
+    /// @brief Save the render result this viewport currently shows as a PNG file (View → Save screenshot…).
+    ///
+    /// The file holds the presented frame only, at the resolution it was rendered at: editor overlays
+    /// (statistics, debug legend, axis widget, object handles) and letterbox bars are left out, and a
+    /// translucent frame is composited over the viewport background. A CPU frame (readback canvas or CPU
+    /// fallback) is written before this returns. A GPU frame is read back from Qt Quick when the viewport
+    /// next draws, which needs a visible viewport; IsTakingScreenshot is true until then. The browser
+    /// editor cannot read its canvas back and always fails. GUI thread only.
+    /// @param path Destination file; empty asks for one with a save dialog once the image is read, and a
+    /// write failure then offers to choose another location. A non-empty path is written without asking.
+    /// @param outError Why no screenshot was started: no rendered frame is shown, the viewport cannot be
+    /// read, or another screenshot is still being read. Unchanged when this returns true.
+    /// @return True when the screenshot was written or its read-back started. A later failure is left in
+    /// GetScreenshotError (and, for an empty path, shown in a message box).
+    [[nodiscard]] bool SaveScreenshot(const QString& path, QString& outError);
+    /// True while a screenshot started by SaveScreenshot waits for the viewport to draw.
+    [[nodiscard]] bool IsTakingScreenshot() const noexcept;
+    /// File the last screenshot was written to; empty before one succeeded.
+    [[nodiscard]] const QString& GetScreenshotPath() const noexcept;
+    /// Why the last started screenshot failed; empty while it is pending, after success or a cancelled dialog.
+    [[nodiscard]] const QString& GetScreenshotError() const noexcept;
     /// Retain the last shown frame while an import candidate awaits publication.
     void HoldFrame();
     void ShowFrame();
@@ -164,6 +186,11 @@ private:
     foundation::UniquePtr<State> mState;
     ViewportObjectInteraction* mObjectInteraction;
     void updateObjectInteractionAvailability();
+    /// Write a read screenshot to the requested path, or ask for one; reports failures as SaveScreenshot says.
+    void finishScreenshot(const QImage& image);
+    void failScreenshot(const QString& error);
+    /// Ask where to save a screenshot; empty when the dialog was cancelled.
+    [[nodiscard]] QString askScreenshotPath();
     /// Point object selection at the camera of the shown project graph frame, or the live camera.
     void applyPresentedView();
     [[nodiscard]] QRectF getInteractionFrame() const;

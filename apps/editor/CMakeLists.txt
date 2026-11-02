@@ -204,6 +204,8 @@ set(editor_viewport_sources
     src/empty_world_view.cpp
     src/internal/viewport_size.h
     src/viewport_size.cpp
+    src/internal/viewport_screenshot.h
+    src/viewport_screenshot.cpp
     src/internal/ray_path_overlay.h
     src/ray_path_overlay.cpp
     src/preview_viewport.cpp
@@ -1051,6 +1053,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/captured_image_view_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
+        tests/viewport_screenshot_tests.cpp
         tests/world_demo_workspace_tests.cpp
         tests/world_identity_tests.cpp
         tests/browser_import_tests.cpp

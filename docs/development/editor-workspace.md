@@ -1720,6 +1720,34 @@ documents schemas, identities, capacities and ownership; the
 [staircase2 prototype guide](../examples/reference-scene.md) retains its original
 conversion/visual limitations and higher-quality offline capture evidence.
 
+### Save a screenshot of the viewport
+
+**View → Save screenshot…** in a World viewport's toolbar saves the rendered
+image the viewport currently shows as a PNG file. It holds the frame as the
+current renderer produced it: the built-in preview, the project's render graph
+output (including a progressive graph's accumulation so far), a ray path
+inspection or a game playing in the viewport. It is written at the resolution
+the frame was rendered at, not the size it is drawn at: a project graph at a
+fixed **Viewport size** such as 1080p gives a 1920 × 1080 file however small the
+viewport is, while the built-in preview renders at most 1024 pixels on its long
+side. Editor overlays (statistics,
+debug-view legend, axis widget and object handles) and letterbox bars are left
+out, and the file is opaque: a translucent frame is composited over the viewport
+background, as it appears on screen.
+
+A save dialog proposes a name such as `Ludus 2026-11-02 at 14.03.07.png` in the
+folder used last (your Pictures folder the first time). If the file cannot be
+written, the message offers **Choose another location…**. Saving needs a
+rendered frame: an empty viewport, or one that only shows a message, explains
+that there is nothing to save yet.
+
+In the shared-device viewport the frame is read back from Qt Quick when the
+viewport next draws, so the viewport must be visible. The readback canvas
+(`LUDUS_EDITOR_VIEWPORT=offscreen` on Linux) saves its last copied frame at
+once. The browser editor cannot read its WebGPU canvas back and does not offer
+screenshots yet. For a converged, linear-radiance image of the same camera, use
+the [reference capture](#reference-capture-of-the-viewport) instead.
+
 ### Reference capture of the viewport
 
 **Reference…** in a World viewport's toolbar opens a window that captures the
