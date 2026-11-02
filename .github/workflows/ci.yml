@@ -73,13 +73,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.batch_sha || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/native-setup
         with:
           preset: linux-clang-development
       - name: Prepare Vulkan and the pinned shader tools
         run: |
-          sudo apt-get install -y -qq libvulkan1 mesa-vulkan-drivers vulkan-tools vulkan-validationlayers
+          apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3)
+          timeout --signal=TERM --kill-after=30s 5m sudo apt-get "${apt_options[@]}" update -qq
+          timeout --signal=TERM --kill-after=30s 10m sudo apt-get "${apt_options[@]}" install -y -qq libvulkan1 mesa-vulkan-drivers vulkan-tools vulkan-validationlayers
           ./scripts/shader-probe bootstrap
           ./scripts/bootstrap-spirv-cross
       - name: Build CPU oracle, GPU parity and both template configurations

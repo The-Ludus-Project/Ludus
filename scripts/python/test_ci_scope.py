@@ -540,6 +540,10 @@ class CancelledRunTests(unittest.TestCase):
         self.assertIn("if: github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true", changes)
         focused = workflow.split("\n  mcmc-vulkan-parity:\n", 1)[1].split("\n  macos-compile:\n", 1)[0]
         self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true", focused)
+        self.assertIn("ref: ${{ inputs.batch_sha || github.sha }}", focused)
+        self.assertIn("Acquire::Retries=3", focused)
+        self.assertIn('timeout --signal=TERM --kill-after=30s 5m sudo apt-get "${apt_options[@]}" update -qq', focused)
+        self.assertIn('timeout --signal=TERM --kill-after=30s 10m sudo apt-get "${apt_options[@]}" install', focused)
         self.assertIn("VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation", focused)
         self.assertIn("set -euo pipefail", focused)
         self.assertIn("--target ludus_metropolis_tests ludus_renderer_render_tests ludus_metropolis_graph_tests", focused)
