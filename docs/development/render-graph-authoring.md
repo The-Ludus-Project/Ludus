@@ -8286,3 +8286,131 @@ The installed [forward consumer](../../tests/sdk_consumer/forward_lit.cpp) cooks
 this same canonical template, renders a scene and replaces its material while
 checking mesh reuse. The template is owned by
 [Renderer's source package](../../modules/graphics/renderer/render_graphs/forward_lit/main.lurender.json).
+
+## Prepare point features and neighborhoods
+
+The engine provides native SDK preparation APIs for point-based/neural rendering.
+A Light Transformer query decoder is available below; its trained scene encoder
+and an executable Light Transformer JSON template are not available yet. The existing authored
+scene-compute limits described above remain in force. General preprocessing uses
+[prepared RHI workloads](fullscreen-rendering.md#prepared-buffer-only-workloads-and-caches)
+and shares their device, dependency and completion ledger.
+
+`<ludus/graphics/renderer/surface_points.hpp>` exposes
+`PrepareSurfacePointCloud(scene, sampling, output)`. Supply a complete static
+`RenderGraphSceneDescription` with the material interface and explicit point-count,
+attempt and logical memory budgets. Preparation reuses ordinary scene admission,
+transforms, material assignment, texture filtering, vertex color, normal mapping,
+emission and alpha coverage. It samples triangles by transformed area and samples
+uniform barycentrics, rejecting masked holes within `MaximumAttempts`. Equal inputs
+and seed replay the same points without camera/time dependence. It does not trace
+transport, prune occluded surfaces, normalize for a specific model or generate
+analytic/environment light samples. Those sources remain separate authored inputs.
+
+The output contains World positions/normals and linear albedo/emission, source
+identities and source generation. `ProposalAreaWorld` is triangle area before
+mask rejection, not the normalization of accepted masked samples. Fully masked
+geometry can exhaust any attempt budget. On failure the previous cloud survives;
+reduce Count, raise the exhausted budget, or repair geometry/coverage as appropriate.
+The memory budget covers candidate logical scene/output/sampling storage, excluding
+old caller-owned output, allocator capacity slack and driver memory.
+
+Build `FoundationGeometry::PointSearchTree` over embedding anchor positions, then
+cook `renderer_point_neighbors` with `ludus_compile_renderer_shaders`.
+`PreparePointNeighborWorkload` uploads that tree plus query positions and prepares
+a buffer-only compute workload. Its result allocation is
+`POINT_NEIGHBOR_RESULT_BUFFER`, containing query-major `PointNeighbor` records:
+original anchor indices and squared World distances. Query counts need not be
+multiples of the workgroup width. The preparation helper validates uploaded counts against every bound range;
+the kernel bounds dispatch IDs and traversal against those trusted counts and uses `ABSENT_POINT_NODE` on malformed tree/query failures; a model decoder must
+reject that sentinel before gathering embeddings. The CPU tree is qualified
+against exhaustive distance sorting; GPU regression compares the portable recipe
+against the CPU query. Physical backend qualification is reported separately.
+
+### Decode trained Light Transformer queries
+
+`<ludus/graphics/renderer/light_transformer.hpp>` implements the released model's
+128-dimensional, six-block query decoder. Cook `renderer_light_transformer_decoder`
+with the installed `ludus_compile_renderer_shaders` helper. The implementation uses
+ordinary float32 compute and point-tree queries on Metal and Vulkan. It includes
+both query MLPs, inference BatchNorm folding, LayerNorm, vector attention over the
+32 closest anchors, residual/feed-forward blocks and Softplus. Value projection
+consumes the **projected keys**, matching the released network. Keys are processed
+in two tiles so the declared group-shared arrays fit the Vulkan minimum 16 KiB;
+128 invocations cooperate on each query. Metadata/tree and feature packets keep
+the shader within four storage-buffer bindings. Dispatch uses a two-dimensional group
+grid when the query count exceeds the device's X dispatch limit.
+
+Adapt an externally supplied checkpoint with the optional offline tool:
+
+```sh
+python scripts/export-light-transformer /path/to/checkpoint.ckpt \
+  --decoder-output /path/to/model.decoder.lltd
+```
+
+The tool requires PyTorch 2.6+ and NumPy 2+ in its own environment. The SDK installs
+it at `lib/cmake/Ludus/render_graph/export-light-transformer.py`, with its shared
+layout beside the renderer shader recipes. Neither package enters the engine
+runtime. The adapter accepts a tensor-only state dictionary or a `model` dictionary,
+with a consistent optional `module.` prefix. It checks every consumed tensor's
+shape, finite values and running variance, and rejects unexpected decoder tensors.
+It always uses restricted `weights_only` loading. Only the published checkpoint's
+verified SHA-256 enables its narrowly enumerated NumPy optimizer-metadata types;
+other checkpoints must load through the ordinary restricted tensor path. An export
+failure preserves an existing destination file.
+
+The decoder asset is little-endian. Its eight uint32 header words contain magic
+`0x44544c4c`, version `1`, the exact packed scalar count, then five reserved zero
+words. The payload contains finite IEEE binary32 parameters in the shared
+`light_transformer_layout.h` order: folded query affines; for each block, attention
+and feed-forward LayerNorm scale/bias, Q/K/V matrices, position MLP, attention MLP,
+attention output affine and feed-forward MLP; finally the RGB output affine.
+Affine weights use `[output,input]` row order followed by biases, except bias-free
+Q/K/V. This layout is an inference asset, not a Python checkpoint or optimizer dump.
+
+Read it with `ReadLightTransformerDecoderWeights`, then call
+`PrepareLightTransformerDecoder` with the parameters, `LightTransformerAnchor`
+records and `LightTransformerQuery` records. Positions must already use the
+**same model coordinate system** as the encoder. Normals must be nonzero and
+finite and are normalized during preparation; albedo is linear RGB in `[0,1]`.
+Anchor latents must be genuine, finite encoder outputs; raw scene features or
+zero-filled latent arrays do not implement the paper. Equal-distance neighbors
+use original anchor index order, making the adapter's tie convention explicit.
+
+Preparation validates storage/dispatch limits before allocating query scratch,
+consumes source borrows synchronously and preserves an empty workload on failure.
+Run its ordered graph through the RHI. `LIGHT_TRANSFORMER_RESULT_BUFFER` contains
+query-major float4 predictions (network RGB, reserved W zero); do not apply albedo
+again. No GPU readback is required to consume that buffer through subsequent GPU
+work. This SDK helper currently uploads CPU-provided latents and query records;
+it does not yet connect visible-surface query generation to an authored graph.
+
+The regression fixture uses an independent PyTorch calculation, synthetic
+parameters and stable distance sorting, with absolute tolerance `1e-5` plus
+relative tolerance `1e-4` on raw RGB. A local checkpoint qualification uses the
+same fixture generator's `--checkpoint` option and supplies its output through
+`LUDUS_LIGHT_TRANSFORMER_TEST_FIXTURE`. No released weights or upstream scene data
+are stored in those fixtures. Decoder agreement on supplied latents does not
+establish trained **encoder** agreement, full-scene GI quality or interactive
+performance. The encoder still needs portable sparse convolutions, serialized
+attention and hierarchical pooling/unpooling before a usable paper template can
+be published. No CUDA, vendor-specific tensor API, training runtime or upstream
+weights are bundled.
+
+`RenderGraph::GetPersistentBuffer` borrows a stable graph-owned Buffer allocation
+and capacity for prepared compute producers/consumers. Use it as a workload
+buffer's `External` input, keeping the graph alive. A wired authored scene-compute
+pass can consume GPU-produced data through `GraphBuffer0/1`. Calls during pending
+scene/attachment replacement, open recording or unfinished graph production return
+`NotReady`. Reacquire and rebuild external bindings after pixel-buffer resize or
+graph replacement. Submit external work through the RHI and build the consuming
+graph after that accepted write so its imported revisions/dependencies are current.
+The caller coordinates these generations; the borrowed handle grants no ownership
+and never authorizes writes into a pending cache candidate's active generation.
+
+The point-feature motivation follows Bing Xu, Mukund Varma T, Cheng Wang,
+Tzu-Mao Li, Lifan Wu, Bartlomiej Wronski, Ravi Ramamoorthi and Marco Salvi,
+*A Generalizable Light Transport 3D Embedding for Global Illumination*, SIGGRAPH
+2026, section 3.2 ([paper](https://arxiv.org/abs/2510.18189)). The engine implements
+input/storage/search foundations and the trained query decoder; the full learned
+encoder and paper template remain unavailable.

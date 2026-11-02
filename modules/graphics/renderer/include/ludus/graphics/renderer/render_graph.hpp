@@ -590,6 +590,22 @@ public:
     /// when uninitialized or the index is out of range; never reports a pending replacement.
     [[nodiscard]] bool GetResourceDescription(foundation::uint32 resource,
                                               content::render_graph_format::Resource& outResource) const noexcept;
+    /// Borrow a stable persistent Buffer resource for an external prepared compute
+    /// producer/consumer, using the same RHI device, graph hazards and submission ledger.
+    /// The graph owns the allocation: never Destroy the returned handle. Reacquire
+    /// after a pixel-buffer resize or graph replacement; retained bindings retire normally.
+    /// Call between frames. Pending scene/resize work or an unfinished frame producer
+    /// returns NotReady so callers cannot mutate the last drawable view's storage.
+    /// A subsequent authored scene-compute pass consumes GPU results through its wired
+    /// GraphBuffer slot. No readback, upload or ownership transfer occurs here.
+    /// @param resource Numeric Buffer resource index in this graph's cooked plan.
+    /// @param outBuffer Borrowed allocation, written only on Ready.
+    /// @param outBytes Usable byte capacity, written only on Ready.
+    /// @return Ready; InvalidDescription for an invalid index; Unsupported for a texture;
+    /// NotReady before preparation/while a replacement or GPU producer is outstanding.
+    [[nodiscard]] rhi::RasterStatus GetPersistentBuffer(foundation::uint32 resource,
+                                                        rhi::BufferHandle& outBuffer,
+                                                        foundation::usize& outBytes) const noexcept;
     /// Copy attachment ownership counters; an empty graph reports zeros.
     [[nodiscard]] RenderGraphAllocationReport GetAllocationReport() const noexcept;
     /// Poll prewarming and pending replacement; publish only a complete Ready candidate.
