@@ -1,0 +1,332 @@
+{
+  "version": 2,
+  "id": "RaoBlackwellMh",
+  "default": "Default",
+  "configurations": [
+    {
+      "id": "Default",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": {
+            "reference": "View",
+            "scale": [
+              1,
+              2
+            ]
+          }
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "standardOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "wasteRecyclingOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "transport",
+          "kind": "Subgraph",
+          "asset": "library.lurender.json",
+          "configuration": "RaoBlackwellMh"
+        },
+        {
+          "id": "accumulate",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
+        },
+        {
+          "id": "accumulateStandard",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemapStandard",
+          "kind": "ToneMap",
+          "exposure": 1
+        },
+        {
+          "id": "accumulateWasteRecycling",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemapWasteRecycling",
+          "kind": "ToneMap",
+          "exposure": 1
+        },
+        {
+          "id": "jumpRestoreOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "accumulatejumpRestore",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemapjumpRestore",
+          "kind": "ToneMap",
+          "exposure": 1
+        }
+      ],
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "transport.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "transport.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "transport.color"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "color.size"
+        },
+        {
+          "from": "transport.color",
+          "to": "accumulate.color"
+        },
+        {
+          "from": "accumulate.color",
+          "to": "tonemap.color"
+        },
+        {
+          "from": "tonemap.color",
+          "to": "output.texture"
+        },
+        {
+          "from": "transport.standard",
+          "to": "accumulateStandard.color"
+        },
+        {
+          "from": "accumulateStandard.color",
+          "to": "tonemapStandard.color"
+        },
+        {
+          "from": "tonemapStandard.color",
+          "to": "standardOutput.texture"
+        },
+        {
+          "from": "transport.wasteRecycling",
+          "to": "accumulateWasteRecycling.color"
+        },
+        {
+          "from": "accumulateWasteRecycling.color",
+          "to": "tonemapWasteRecycling.color"
+        },
+        {
+          "from": "tonemapWasteRecycling.color",
+          "to": "wasteRecyclingOutput.texture"
+        },
+        {
+          "from": "transport.jumpRestore",
+          "to": "accumulatejumpRestore.color"
+        },
+        {
+          "from": "accumulatejumpRestore.color",
+          "to": "tonemapjumpRestore.color"
+        },
+        {
+          "from": "tonemapjumpRestore.color",
+          "to": "jumpRestoreOutput.texture"
+        }
+      ]
+    },
+    {
+      "id": "JumpRestore",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": {
+            "reference": "View",
+            "scale": [
+              1,
+              2
+            ]
+          }
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "standardOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "wasteRecyclingOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "transport",
+          "kind": "Subgraph",
+          "asset": "library.lurender.json",
+          "configuration": "JumpRestore"
+        },
+        {
+          "id": "accumulate",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
+        },
+        {
+          "id": "accumulateStandard",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemapStandard",
+          "kind": "ToneMap",
+          "exposure": 1
+        },
+        {
+          "id": "accumulateWasteRecycling",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemapWasteRecycling",
+          "kind": "ToneMap",
+          "exposure": 1
+        }
+      ],
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "transport.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "transport.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "transport.color"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "color.size"
+        },
+        {
+          "from": "transport.color",
+          "to": "accumulate.color"
+        },
+        {
+          "from": "accumulate.color",
+          "to": "tonemap.color"
+        },
+        {
+          "from": "tonemap.color",
+          "to": "output.texture"
+        },
+        {
+          "from": "transport.standard",
+          "to": "accumulateStandard.color"
+        },
+        {
+          "from": "accumulateStandard.color",
+          "to": "tonemapStandard.color"
+        },
+        {
+          "from": "tonemapStandard.color",
+          "to": "standardOutput.texture"
+        },
+        {
+          "from": "transport.wasteRecycling",
+          "to": "accumulateWasteRecycling.color"
+        },
+        {
+          "from": "accumulateWasteRecycling.color",
+          "to": "tonemapWasteRecycling.color"
+        },
+        {
+          "from": "tonemapWasteRecycling.color",
+          "to": "wasteRecyclingOutput.texture"
+        }
+      ]
+    }
+  ]
+}

@@ -1828,3 +1828,52 @@ class EditorTemplateCatalogTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RaoBlackwellMhTemplateTests(unittest.TestCase):
+    def test_six_matched_estimators_have_sized_persistent_storage_and_resolved_capture_routes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = graph.new_workspace(Path(directory) / 'Transport', output='offscreen', renderer_static=True,
+                                       profiles=('metal',), template='rao-blackwell-mh')
+            plan = graph.compile_graph(root)
+            rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+            self.assertEqual(len(rays), 4)
+            buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+            self.assertEqual(len(buffers), 4)
+            self.assertEqual(sorted(resource['bytes_per_pixel'] for resource in buffers), [96, 96, 112, 112])
+            self.assertEqual(len([operation for operation in plan['passes'] if operation['kind'] == 'Accumulate']), 4)
+            manifest = json.loads(root.with_name('main.lushader.json').read_text())
+            interface = next(t['scene_interface'] for t in manifest['techniques'] if 'scene_interface' in t)
+            self.assertEqual(interface['surface_queries'], 8)
+            self.assertEqual(interface['visibility_queries'], 0)
+            self.assertEqual(len(manifest['settings']), 6)
+            restore = graph.compile_graph(root, configuration='JumpRestore')
+            self.assertEqual(len([operation for operation in restore['passes'] if operation['kind'] == 'RayTracing']), 3)
+            self.assertEqual(len([operation for operation in restore['passes'] if operation['kind'] == 'Accumulate']), 3)
+            source = root.parent.joinpath('main_shaders/chain.slang').read_text()
+            self.assertIn('TryAdvanceMetropolisTour(acceptance, tour)', source)
+            self.assertIn('ResolveGraphRadiance(result)', source)
+            self.assertIn('identity.w == launch.SampleIndex', source)
+            self.assertIn('launch.SampleIndex != 0', source)
+
+    def test_browser_only_creation_preserves_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'Transport'
+            with self.assertRaises(ToolingError):
+                graph.new_workspace(destination, output='offscreen', renderer_static=True,
+                                    profiles=('wgsl',), template='rao-blackwell-mh')
+            self.assertFalse(destination.exists())
+
+    def test_installed_sdk_resolves_the_same_shader_closure(self):
+        from ludus_tools import render_graph_templates
+        with tempfile.TemporaryDirectory() as directory:
+            installed = Path(directory) / 'sdk'
+            module = installed / 'ludus_tools/render_graph_templates.py'
+            module.parent.mkdir(parents=True)
+            source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/rao_blackwell_mh'
+            shutil.copytree(source, installed / 'templates/rao_blackwell_mh')
+            with patch.object(render_graph_templates, '__file__', str(module)):
+                files = render_graph_templates.template_files('rao-blackwell-mh', ('spirv',), graph)
+            self.assertIn('main_shaders/chain.slang', files)
+            self.assertIn('main_shaders/path.slang', files)
+            self.assertIn('main.lushader.json', files)

@@ -3237,6 +3237,148 @@ alpha-tested triangles. Vulkan has not been run for this template.
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/salesin_jarosz_lines/main.lurender.json).
 
+## Use the Rao-Blackwellized MH template
+
+Choose **Rao-Blackwellized MH and Jump Restore light transport** in the new-graph picker or the
+canvas **Apply Configuration Template** menu. The CLI equivalent is:
+
+```bash
+ludus render-graph new graphs/Metropolis --template rao-blackwell-mh --output offscreen \
+  --renderer-static --profiles metal
+```
+
+Use `spirv` for Vulkan. The `RaoBlackwellMh` library accepts `scene`, `view` and
+`color`. Its main `color` output is the paper's practical RB estimator; optional
+`standard` and `wasteRecycling` outputs expose the corresponding MH baselines.
+The optional `jumpRestore` output adds Jump Restore RB beside these three MH
+outputs in the default configuration. New-graph and CLI packages also include a
+**JumpRestore** root configuration; select it on the canvas configuration control
+to compare JR RB, standard and waste recycling through its `color`,
+`standard` and `wasteRecycling` library outputs. Every route uses Accumulate and
+ToneMap. The default admits four ray passes; the JR comparison admits three, within
+the engine's four-pass limit. Both configurations share four callback sets: MH
+advance, JR advance, standard resolve and waste-recycling resolve. Canvas import applies the four-pass
+configuration to the chosen library. Its root
+RenderSize defaults to half the drawable width and height to bound chain/film
+memory; edit that node to change resolution. Buffer and device budgets still apply. It uses
+compute BVH traversal, without hardware ray tracing. Shader sources and Graph
+settings are editable project files; canvas and Properties use the existing
+transactional template importer, undo and Save.
+
+This is a bounded **per-pixel primary-sample-space MH** implementation, not the
+paper's multiplexed bidirectional MLT implementation. One independent chain per
+pixel mutates two camera-jitter dimensions and three BSDF dimensions per scattering
+vertex. A state-independent mixture chooses a uniform large step or a symmetric
+uniform small step wrapped around the unit cube. Symmetry gives acceptance
+`min(1, p(proposed) / p(current))`. Defaults are a 0.3 large-step probability,
+0.05 small-step radius, 128 discarded burn-in proposals and three scattering events.
+Depth is editable from one to three; initialization plus the first proposal use at
+most eight surface queries. Every subsequent invocation evaluates one proposal,
+keeping unfinished chains and RB state holding weights across frames.
+
+The path integrand is jittered-camera RGB radiance with a finite scattering depth,
+BSDF continuation sampling, emissive triangles and the environment. It includes
+legacy metallic/roughness, typed diffuse and isotropic conductor reflection,
+retained material maps and masked geometry through the existing scene interface.
+It has no next-event estimation, roulette, denoising or cross-pixel film splats.
+Analytic lights cannot be reached by this sampler and produce an explicit failure
+with a repair: choose a light-sampling graph, or author mesh emission/environment.
+Coated diffuse also fails explicitly because its stochastic internal walk needs
+additional primary dimensions; choose a renderer supporting coatings or explicitly
+change the material. These failures never silently remove authored lighting or
+select another renderer. Tiny emitters can mix slowly; this baseline does not
+promise a variance improvement for every scene.
+
+The target is `p(u) = MH_TARGET_FLOOR + luminance(L(u))`, using Rec. 709 luminance.
+The finite positive floor gives black paths support. Accumulation estimates the
+unit-cube integral using `sum(w * L/p) / sum(w/p)`, so it needs no separate bootstrap
+brightness estimate. Standard MH adds the current state with `w = 1` each iteration.
+Waste recycling adds current and proposed states with `w = 1-alpha` and `w = alpha`.
+The RB branch uses Holl, Singh and Seidel's section 5.4 / Algorithm 5.2 recurrence:
+`P *= 1-alpha; holding += P`, starting both at one. It includes the accepting
+proposal, adds the previous state's holding weight only at acceptance and then
+resets the tour. An unfinished tour remains pending at a capture stop; it is not
+flushed with an invented weight. No extra proposals are evaluated for RB.
+
+Jump Restore follows section 6 / Algorithms 6.1–6.2 with a uniform global
+kernel and unit-rate small-step MH local dynamics. Its killing rate is
+`k(u) = JR_RESTORATION_SCALE / p(u)`; the positive scale defaults to 1 and is
+editable from 0.0001 to 10000. It absorbs the unknown target normalization as in
+Appendix C. Unlike the MH mixture probability, the event choice depends on the
+current target. A restoration occurs with probability `k/(1+k)`, draws a new
+uniform primary state and accepts it without an MH test. Otherwise a wrapped small
+step uses ordinary MH acceptance. One event is processed per invocation, with at
+most one new path evaluation after initialization. Independent addressed tickets
+select the event and holding time, an equivalent simulation of the two competing
+exponential clocks. Scopes 3/4 separate JR initialization/events from MH scopes 1/2;
+the acceptance, event-choice and holding-time dimensions are independent of the
+primary cube.
+
+Standard JR weights the pre-event state by `dt ~ Exp(1+k)`. On a local event,
+waste recycling splits that time between current/proposed states using `1-alpha`
+and `alpha`; on a restoration it assigns the time only to the pre-event state.
+The RB branch accumulates the same rejection-product holding weight as MH on
+local proposals. At an accepted local move **or a restoration**, it adds
+`holding/(1+k)` for the pre-event state and resets the pending weight. A restoration
+does not add a fictitious local rejection or drop the last state. This uses the
+conditional mean of the competing-clock minimum; it is not an IID equal-weight
+average. The restore branch in Algorithm 6.2 line 34 prints the local-clock time;
+we use the actual minimum clock time as specified by Algorithm 6.1 and section 6.2.
+All six estimator variants use the existing ratio `sum(w L/p)/sum(w/p)`. The optional
+completed-tour normalization estimator from Appendix C is not used. Burn-in
+counts events rather than elapsed clock time, and captures stop at their event
+budget, retaining unfinished RB weights for continuation. These finite ratios and
+the practical RB truncation retain their documented bias; equal event budgets do
+not imply equal elapsed process time or equal GPU cost.
+
+**Bias and interpretation:** a finite self-normalized ratio is biased even for
+standard MH. The paper's practical RB truncation introduces additional bias; the
+authors describe it as an inexact method. Finite depth truncates the transport
+integral as well. Do not call these captures unbiased reference images. Keep the
+independent CPU/GPU reference tracer as a correctness comparison. MALA, H²MC and multiplexed bidirectional transport are not implemented here.
+
+Each process has two render-size Buffers holding 208 bytes per pixel: a 112-byte chain record with
+primary samples, cached contribution/target, unfinished tour and validity metadata,
+and 96 bytes for three compensated RGB numerator/scalar denominator accumulators.
+The MH and Jump Restore chains are independent. The default uses four Buffers
+(416 bytes per pixel) and four passes; the JR comparison uses two Buffers and three
+passes. Within each process the owner pass updates all three estimators. The standard
+and waste-recycling passes only resolve their own films, reusing the same resolver
+callbacks for MH and JR. Preserve the buffer version edges from owner to consumers;
+a missing owner invocation fails stored-record validation. Ordered buffer versions establish visibility without atomics. Keep the
+three routes in each process's Accumulate limits equal when rendering them together. Generation,
+extent, seed, layout version and the next expected invocation index validate
+history. Invocation zero resets history after camera/scene replacement, including
+cases where the graph's persistent buffer survives. Resize stages replacement
+storage through the existing graph publication boundary. A failed proposal does
+not publish its record or weighted sums.
+
+`ResolveGraphRadiance` tells the renderer that a callback returns an already
+resolved persistent estimate. Accumulate uses its sample limit to count completed
+**MH iterations / Jump Restore events**, including burn-in and pending state weights, and publishes the latest
+ratio. It never averages ratios from successive iterations. The existing raw HDR
+capture sum/count encoding is preserved: the stored numerator is the resolved
+image times the completed invocation count, not the estimator's weight sum. Divide
+by that count to recover the image. Effective sample counts are lower and correlated;
+these iteration counts must not be interpreted as IID samples. Captures that stop
+within burn-in are black. Display exposure and tone mapping apply after resolution.
+
+The CPU chain and BSDF path oracle are independently executable in the renderer;
+FoundationMath owns the checked MH recurrence and compensated weighted accumulator
+and their shader counterparts. `ludus_metropolis_tests` checks domains, failures,
+burn-in, reflection/emission and multi-seed analytic integrals. The native compute
+`[metropolis]` parity test runs the template's actual chain/path shaders over a
+matched emissive scenes with diffuse, conductor and legacy metallic/roughness surfaces
+for both processes,
+comparing emission/direct/indirect path AOVs and
+raw linear RGB for all estimators with
+an absolute 0.001 tolerance after 512 iterations and 32 burn-in steps. These checks
+are evidence for this profile, not qualification of every backend or material.
+
+Thanks to Sascha Holl, Gurprit Singh and Hans-Peter Seidel,
+[Rao-Blackwellized Markov chain Monte Carlo Light Transport](https://arxiv.org/abs/2605.09117),
+SIGGRAPH 2026, section 5.4, Algorithm 5.2 and supplemental bias discussion.
+
 ## Author scene-aware ray shaders
 
 The optional scene interface extends the portable triangle profile above with

@@ -420,6 +420,11 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
         selected.ProgramPrefix = QStringLiteral("SteinbergPhysicalOptics");
         selected.Name = QStringLiteral("Steinberg practical physical optics");
     }
+    else if (templateIdentity == QStringLiteral("rao-blackwell-mh"))
+    {
+        selected.ProgramPrefix = QStringLiteral("RaoBlackwellMh");
+        selected.Name = QStringLiteral("Rao-Blackwellized MH");
+    }
     else if (templateIdentity == QStringLiteral("restir-gi"))
     {
         selected.ProgramPrefix = QStringLiteral("RestirGi");

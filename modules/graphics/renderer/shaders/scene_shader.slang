@@ -1,4 +1,6 @@
 #include "coated_diffuse.slang"
+#include "metropolis.slang"
+#include "metropolis_layout.h"
 // Public logical scene shader interface v1. Packed buffers and traversal remain Renderer-owned.
 // Thanks to Pharr, Jakob and Humphreys, PBRT 4e (2023), sections 12.1/12.6/13.4:
 // https://pbr-book.org/4ed/Light_Sources/Light_Interface
@@ -28,6 +30,16 @@ struct Ray
     float3 DirectionWorld;
     float MaxDistanceWorld;
 };
+/// Publish an already resolved persistent estimator. With Accumulate, its current
+/// ratio replaces the previous ratio and the node's limit counts invocations.
+/// Ordinary ray samples must return radiance without calling this function.
+#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+float3 ResolveGraphRadiance(float3 radiance)
+{
+    graphRadianceIsResolved = true;
+    return radiance;
+}
+#endif
 struct RayLaunch
 {
     uint2 PositionPixel;
