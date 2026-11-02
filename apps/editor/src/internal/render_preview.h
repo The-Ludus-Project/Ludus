@@ -4,6 +4,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/base/pointer.hpp>
+#include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/viewport_frame.hpp>
@@ -167,6 +168,9 @@ public:
     void Zoom(foundation::float32 steps);
     void SetFocusDistance(foundation::float32 distance);
     [[nodiscard]] QJsonObject Navigation() const;
+    /// Exact world bounds of every object in Scene(), computed once when the scene is published.
+    /// False when the scene has no finite geometry; outBoundsWorld is then unchanged.
+    [[nodiscard]] bool TryGetSceneBounds(foundation::math::Aabb3& outBoundsWorld) const noexcept;
     /// Build the current camera or orbit view for an explicit physical size, without a device.
     /// Software viewports call this after NavigationChanged. Failure preserves outView.
     [[nodiscard]] bool DescribeView(foundation::uint32 width,
@@ -380,6 +384,9 @@ private:
     /// Detach and release every overlay version; resetRenderer also drops the renderer before device loss.
     void releaseRayPathOverlay(bool shouldResetRenderer) noexcept;
     RenderScene Scene_;
+    /// TryGetBounds({}) of Scene_, replaced with it in SetScene.
+    foundation::math::Aabb3 mSceneBoundsWorld{};
+    bool mHasSceneBounds = false;
     static constexpr foundation::int32 DEFAULT_DRAWABLE_WIDTH = 640;
     static constexpr foundation::int32 DEFAULT_DRAWABLE_HEIGHT = 480;
     QSize mDrawableSize{DEFAULT_DRAWABLE_WIDTH, DEFAULT_DRAWABLE_HEIGHT};

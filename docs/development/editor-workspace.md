@@ -1064,6 +1064,8 @@ The selected object has an amber wireframe, drawn over the rendered image so its
 shape stays visible against dark surfaces. Selection works with the inspector
 hidden. Picking chooses the nearest geometric triangle, including back faces;
 texture alpha masks and shader displacement do not alter this editor query.
+A click tests triangles only for objects whose mesh bounds its ray enters before
+the nearest hit found so far. Those bounds are computed once per published scene.
 
 Choose **Select (Q)**, **Move (W)**, **Rotate (E)** or **Scale (R)** in the viewport
 tool menu. Drag a red X, green Y or blue Z handle; rotation uses rings. Move
@@ -1072,7 +1074,10 @@ component, and scale changes one positive local scale component. Hold **Shift**
 for 0.1 metre movement, 15 degree rotation or 0.1 scale-factor increments.
 The wireframe previews the candidate throughout a drag. Release applies one
 validated World edit and refreshes the shaded scene; **Undo** restores the entire
-gesture. **Delete** and **Ctrl+D** use the hierarchy’s delete and duplicate
+gesture. The refresh reassembles the level in the background. Each edit parses the
+project scene catalog once and verifies the digest of each artifact the level uses
+once before assembling the bundle. Selection and handles return when that
+operation finishes. **Delete** and **Ctrl+D** use the hierarchy’s delete and duplicate
 commands while the viewport has focus. **Escape**, a tool change, hiding the view
 or losing focus cancels the candidate. **Save World** persists the accepted placement.
 

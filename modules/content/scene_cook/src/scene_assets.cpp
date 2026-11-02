@@ -2552,21 +2552,16 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     return writer.IsOk() == true ? true : inoutFailure.FailOutOfMemory();
 }
 
-/// assemble(root, level, current).
-[[nodiscard]] bool AssembleBundle(std::string_view root,
-                                  const JsonTree& levelTree,
-                                  JsonIndex level,
-                                  const Document* currentOrNull,
-                                  Array<uint8>& outBundle,
-                                  Failure& inoutFailure) noexcept
+/// assemble(root, level, current) after its closure(root, level, current).
+/// @pre The caller holds a shared scene lock spanning ComputeClosure and this call, so both
+/// read one catalog and artifact snapshot. The closure has already verified every artifact.
+[[nodiscard]] bool AssembleClosureBundle(std::string_view root,
+                                         const JsonTree& levelTree,
+                                         JsonIndex level,
+                                         const Document& closure,
+                                         Array<uint8>& outBundle,
+                                         Failure& inoutFailure) noexcept
 {
-    LockScope lock;
-    Document closure;
-    if (lock.Enter(root, LockMode::Shared, inoutFailure) == false ||
-        ComputeClosure(root, levelTree, level, currentOrNull, closure, inoutFailure) == false)
-    {
-        return false;
-    }
     outBundle.Clear();
     const JsonIndex objects = levelTree.GetMember(level, "objects");
     const usize objectCount = levelTree.GetCount(objects);
@@ -3022,6 +3017,21 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     }
     BundleParts parts;
     return SplitBundle(GetSpan(outBundle), parts, inoutFailure);
+}
+
+/// assemble(root, level, current).
+[[nodiscard]] bool AssembleBundle(std::string_view root,
+                                  const JsonTree& levelTree,
+                                  JsonIndex level,
+                                  const Document* currentOrNull,
+                                  Array<uint8>& outBundle,
+                                  Failure& inoutFailure) noexcept
+{
+    LockScope lock;
+    Document closure;
+    return lock.Enter(root, LockMode::Shared, inoutFailure) == true &&
+           ComputeClosure(root, levelTree, level, currentOrNull, closure, inoutFailure) == true &&
+           AssembleClosureBundle(root, levelTree, level, closure, outBundle, inoutFailure) == true;
 }
 
 /// dump(root, level, current).
@@ -5369,13 +5379,28 @@ void ReportStage(const EditorSceneRequest& request, std::string_view stage) noex
     if (isCommitted == false)
     {
         ReportStage(request, "assemble");
-        if (AssembleBundle(root, level.Tree, level.Root, currentOrNull, outResult.Scene, inoutFailure) == false)
+    }
+    // One shared reader parses the published catalog and verifies the closure's artifacts once for
+    // the bundle, the response records and the warnings; a second closure would read and hash every
+    // artifact again.
+    LockScope lock;
+    Document published;
+    if (lock.Enter(root, LockMode::Shared, inoutFailure) == false)
+    {
+        return false;
+    }
+    if (currentOrNull == nullptr)
+    {
+        if (ReadCatalogDocument(root, published, inoutFailure) == false)
         {
             return false;
         }
+        currentOrNull = &published;
     }
     Document closure;
-    if (ComputeClosure(root, level.Tree, level.Root, currentOrNull, closure, inoutFailure) == false)
+    if (ComputeClosure(root, level.Tree, level.Root, currentOrNull, closure, inoutFailure) == false ||
+        (isCommitted == false &&
+         AssembleClosureBundle(root, level.Tree, level.Root, closure, outResult.Scene, inoutFailure) == false))
     {
         return false;
     }
@@ -5412,16 +5437,7 @@ void ReportStage(const EditorSceneRequest& request, std::string_view stage) noex
         tree.SetMember(response, "catalog_expected", tree.AddNull());
     }
     tree.SetMember(response, "resident_bytes", AddPythonNumber(tree, total.GetResult()));
-    Document published;
     const Document* catalog = currentOrNull;
-    if (catalog == nullptr)
-    {
-        if (ReadCatalogDocument(root, published, inoutFailure) == false)
-        {
-            return false;
-        }
-        catalog = &published;
-    }
     JsonIndex warnings = NO_JSON_NODE;
     if (CollectWarnings(root, level, *catalog, tree, warnings, inoutFailure) == false)
     {

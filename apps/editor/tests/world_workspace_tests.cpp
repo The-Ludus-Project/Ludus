@@ -1476,6 +1476,46 @@ TEST_CASE("Viewport object picking uses the nearest triangle and respects empty 
     ConfigureInteractionPreview(preview, scene);
     CHECK(interaction.Pick(frame.center(), frame) == QStringLiteral("behind"));
 }
+TEST_CASE("Viewport picking skips objects by mesh bounds and follows a replaced scene's geometry",
+          "[editor][world][object-interaction]")
+{
+    RenderScene scene = MakeInteractionScene();
+    // A sliver whose bounds the centre ray enters, nearer than the target, but whose triangle it misses.
+    PreviewMesh sliver;
+    sliver.Positions = {{-1, -1, 0}, {1, -1, 0}, {1, 1, 0}};
+    sliver.Indices = {0, 1, 2};
+    scene.Meshes.append(sliver);
+    PreviewObject boxedMiss = scene.Objects[0];
+    boxedMiss.Id = QStringLiteral("boxed-miss");
+    boxedMiss.Mesh = 1;
+    boxedMiss.Transform.Translation = {2.5F, 2.5F, 5};
+    // Far off the ray: its bounds reject it before any triangle test.
+    PreviewObject aside = scene.Objects[0];
+    aside.Id = QStringLiteral("aside");
+    aside.Transform.Translation = {40, 3, 5};
+    // Farther along the ray and listed first, so the target must still replace a hit already found.
+    PreviewObject behind = scene.Objects[0];
+    behind.Id = QStringLiteral("behind");
+    behind.Transform.Translation.Z -= 2;
+    scene.Objects.prepend(behind);
+    scene.Objects.append(boxedMiss);
+    scene.Objects.append(aside);
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    const QRectF frame{20, 40, 800, 600};
+    CHECK(interaction.Pick(frame.center(), frame) == scene.Objects[1].Id);
+    CHECK(interaction.Pick(frame.center(), frame) == scene.Objects[1].Id);
+
+    // A new scene identity rebuilds the cached bounds: the target's mesh now lies off the ray.
+    for (ludus::foundation::math::Vector3& positionMesh : scene.Meshes[0].Positions)
+    {
+        positionMesh.X += 20;
+    }
+    scene.Identity.append('2');
+    ConfigureInteractionPreview(preview, scene);
+    CHECK(interaction.Pick(frame.center(), frame).isEmpty() == true);
+}
 TEST_CASE("Viewport transform drags preview a highlighted wireframe and commit one undoable placement",
           "[editor][world][object-interaction]")
 {

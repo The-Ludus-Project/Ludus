@@ -7022,7 +7022,9 @@ preview asks for a finite conventional projection of the same camera instead:
 - An infinite perspective lens becomes a finite one whose far plane is 1% beyond
   the farthest corner of the World's geometry bounds from the camera (at least
   twice the near plane). Finite authored perspective and orthographic lenses keep
-  their planes.
+  their planes. The viewport computes those bounds once, when a scene is
+  published, so each camera change during navigation does not transform every
+  vertex again.
 - The finite reverse-Z clip z is rewritten as `w - z`. This is exact only for a
   finite projection; applied to an infinite one it would leave a degenerate far
   plane at depth 1.

@@ -114,6 +114,10 @@ struct PreviewViewOptions final
     /// reverse-Z. An infinite perspective lens is replaced by a finite one whose far plane
     /// encloses the World's geometry from the camera, so clip z can be rewritten as w - z exactly.
     bool ShouldUseConventionalDepth = false;
+    /// Optional precomputed TryGetBounds({}) result for this scene, borrowed for the call.
+    /// Conventional depth then bounds the far plane without transforming every vertex again.
+    /// Null computes the bounds; a caller must not pass bounds of a different scene or transforms.
+    const foundation::math::Aabb3* BoundsWorldOrNull = nullptr;
 };
 struct RenderScene final
 {
