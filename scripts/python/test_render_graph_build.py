@@ -816,6 +816,51 @@ class BuildTests(unittest.TestCase):
                             for call in compile_program.call_args_list))
         self.assertEqual(6, len(self.calls))
 
+    def test_multilibrary_sized_build_crosses_former_source_and_artifact_limits(self):
+        # Reproduce both screenshot counts using real capture, compilation orchestration,
+        # publication and verification. The compiler fixture only replaces external tool IO.
+        value = self.value()
+        original = value['programs'][1]
+        for index in range(67 - len(value['programs'])):
+            program = {**original, 'id': f'LibraryColor{index}',
+                       'source': f'main_shaders/library_color{index}.slang'}
+            (self.manifest.parent / program['source']).write_text(
+                (self.manifest.parent / original['source']).read_text())
+            value['programs'].append(program)
+        value['budgets']['programs'] = len(value['programs'])
+        self.manifest.write_bytes(build.encoded(value))
+        for program in value['programs'][:2]:
+            self.add_shader_dependencies(program, 32)
+        (self.helper / 'visibility_buffer.slang').write_text('// SDK helper\n')
+        result = self.run_build()
+        package = build.verify_package(Path(result['package']))
+        self.assertEqual(134, package['counts']['artifacts'])
+        self.assertGreaterEqual(len(package['provenance']), 132)
+        self.assertEqual(len(package['provenance']), len(list((Path(result['package']) / 'sources').rglob('*.*'))))
+        self.assertEqual(0, self.run_build()['cache_misses'])
+
+    def test_large_inventory_verification_uses_its_own_bound(self):
+        # Integrity metadata has its own encoded bound; it is not an authored shader file.
+        stage = self.root / 'inventory'
+        stage.mkdir()
+        inventory = {}
+        for index in range(1200):
+            relative = f'programs/{index:04d}/' + 'a' * 64 + '.txt'
+            path = stage / relative
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b'artifact')
+            inventory[relative] = build.digest(b'artifact')
+        descriptor = build.encoded({'version': build.VERSION})
+        (stage / 'package.json').write_bytes(descriptor)
+        inventory['package.json'] = build.digest(descriptor)
+        encoded = build.encoded(inventory)
+        self.assertGreater(len(encoded), build.MAX_FILE)
+        self.assertLessEqual(len(encoded), build.MAX_PACKAGE_INDEX_BYTES)
+        (stage / 'integrity.json').write_bytes(encoded)
+        generation = self.root / build.identity(inventory)
+        stage.rename(generation)
+        self.assertEqual({'version': build.VERSION}, build.verify_package(generation))
+
     def test_aggregate_byte_limit_still_preserves_publication(self):
         self.run_build()
         prior = self.pointer()

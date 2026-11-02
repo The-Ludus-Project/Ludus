@@ -15,6 +15,28 @@ from ludus_tools.errors import ToolingError
 
 
 class RestirTemplateTests(unittest.TestCase):
+    def test_shipped_catalog_fits_aggregate_source_and_target_artifact_policy(self):
+        from ludus_tools import render_graph_templates as templates
+        # Count disjoint copies conservatively: real imports reuse schemas, manifests,
+        # callbacks and techniques. Guard new built-ins against the package ceilings.
+        files = []
+        programs = 0
+        for identity in templates.TEMPLATES:
+            contents = templates.template_files(identity, ('metal', 'spirv'), graph)
+            programs += len(json.loads(contents['main.lushader.json'])['programs'])
+            files.extend(text.encode() for text in contents.values())
+        self.assertLessEqual(programs * len(build.TARGETS), build.LIMITS['artifacts'])
+        # Capture every shipped helper too, rather than keeping a guessed helper allowance.
+        from test_render_graph_ray import HELPER_ROOTS, ROOT
+        helpers = {}
+        for owner in HELPER_ROOTS:
+            for path in (ROOT / owner).iterdir():
+                if path.is_file() and path.suffix in ('.h', '.slang', '.json'):
+                    helpers.setdefault(path.name, path.read_bytes())
+        files.extend(helpers.values())
+        self.assertLessEqual(len(files), build.MAX_FILES)
+        self.assertLessEqual(sum(map(len, files)), build.MAX_BYTES)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
