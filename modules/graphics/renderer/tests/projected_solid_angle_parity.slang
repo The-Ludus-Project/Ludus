@@ -41,6 +41,7 @@ ComputeMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
     float3 edgeStartTangent = NormalizeProjectedDirection(input.PositionsTangent[0]);
     float3 edgeEndTangent = NormalizeProjectedDirection(input.PositionsTangent[1]);
     Results[resultBase + 3] = float4(ComputeRasterProjectedSolidAngleEdge(edgeStartTangent, edgeEndTangent),
-                                     ComputeProjectedSolidAngleEdge(edgeStartTangent, edgeEndTangent), 0, 0);
-
+                                     ComputeProjectedSolidAngleEdge(edgeStartTangent, edgeEndTangent),
+                                     0,
+                                     0);
 }
