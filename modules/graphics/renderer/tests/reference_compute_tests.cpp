@@ -1073,10 +1073,12 @@ S BuildQuadSnapshot(rr::Renderer& inoutRenderer,
     }
     return created;
 }
-/// A glossy floor, a diffuse back wall and two emitters. `isBrightEmitterBehind` turns a bright one-sided ceiling panel
-/// away from the room, so its power dominates the CDF while every receiver sees it from behind: most vertices then
+constexpr usize ROOM_QUAD_COUNT = 4;
+
+/// A glossy floor, a diffuse back wall and two emitters. The bright one-sided ceiling panel faces away from the
+/// room, so its power dominates the CDF while every receiver sees it from behind: most vertices then
 /// estimate Z-hat = 0, and with `isDimEmitterPresent` false no emitter lights any receiver at all.
-usize MakeRoomQuads(bool isDimEmitterPresent, StaticArray<QuadItem, 4>& outQuads)
+usize MakeRoomQuads(bool isDimEmitterPresent, StaticArray<QuadItem, ROOM_QUAD_COUNT>& outQuads)
 {
     QuadItem& floor = outQuads[0];
     floor.CornersWorld = {{{-1, -1, -1}, {-1, -1, 1}, {1, -1, 1}, {1, -1, -1}}};
@@ -1106,11 +1108,31 @@ usize MakeRoomQuads(bool isDimEmitterPresent, StaticArray<QuadItem, 4>& outQuads
     dim.Model = ludus::content::scene_format::MaterialModel::Diffuse;
     return 4;
 }
-} // namespace
 
-TEST_CASE("Resampled light sampling agrees with UniformArea across seeds and depths",
-          "[renderer][gpu][reference-compute][resampled-light]")
+enum class ResampledLightScene : uint8
 {
+    L6,
+    Sphere,
+    Room,
+};
+constexpr uint32 L6_MULTIPLE_BOUNCE_DEPTH = 4;
+constexpr uint32 SPHERE_SHALLOW_DEPTH = 3;
+constexpr uint32 SPHERE_DEEP_DEPTH = 6;
+constexpr uint32 ROOM_PATH_DEPTH = 4;
+
+// Discover each scene/depth separately so its independent seed sweep has its own CTest deadline.
+void CheckResampledLightSampling(ResampledLightScene scene, uint32 maximumDepth)
+{
+    constexpr uint32 CAPTURE_WIDTH_PIXELS = 16;
+    constexpr uint32 CAPTURE_HEIGHT_PIXELS = 12;
+    constexpr uint32 TARGET_SAMPLE_COUNT = 64;
+    constexpr uint64 FIRST_SEED = 40;
+    constexpr uint32 EXPECTED_FORM_FACTOR_SAMPLER_VERSION = 3;
+    constexpr math::Vector3 SPHERE_CAMERA_POSITION_WORLD{.3F, .2F, -2};
+    constexpr math::Vector3 ROOM_CAMERA_POSITION_WORLD{0, .1F, -2.4F};
+    constexpr math::Vector3 L6_CAMERA_POSITION_WORLD{.1F, -.2F, -2.5F};
+    constexpr math::Vector3 DEFAULT_ENVIRONMENT_RADIANCE{.05F, .06F, .08F};
+    CAPTURE(scene, maximumDepth);
     rhi::Shutdown();
     struct Guard final
     {
@@ -1127,98 +1149,110 @@ TEST_CASE("Resampled light sampling agrees with UniformArea across seeds and dep
     }
     Session cpu;
     REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
-    enum class Scene : uint8
+    rr::ReferenceCaptureDescription capture =
+        scene == ResampledLightScene::Sphere
+            ? MakePerspectiveCapture(SPHERE_CAMERA_POSITION_WORLD, CAPTURE_WIDTH_PIXELS, CAPTURE_HEIGHT_PIXELS)
+        : scene == ResampledLightScene::Room
+            ? MakePerspectiveCapture(ROOM_CAMERA_POSITION_WORLD, CAPTURE_WIDTH_PIXELS, CAPTURE_HEIGHT_PIXELS)
+            : MakePerspectiveCapture(L6_CAMERA_POSITION_WORLD, CAPTURE_WIDTH_PIXELS, CAPTURE_HEIGHT_PIXELS);
+    capture.TargetSamples = TARGET_SAMPLE_COUNT;
+    capture.MaxDepth = maximumDepth;
+    capture.RouletteDepth = 2;
+    capture.Environment = scene == ResampledLightScene::Room ? math::Vector3{} : DEFAULT_ENVIRONMENT_RADIANCE;
+    if (scene != ResampledLightScene::L6)
     {
-        L6,
-        Sphere,
-        Room,
-    };
-    struct Case final
-    {
-        const char* Name = "";
-        Scene Fixture = Scene::L6;
-        uint32 MaxDepth = 1;
-    };
-    const Case cases[]{
-        {"L6 single bounce", Scene::L6, 1},
-        {"L6 depth 4", Scene::L6, 4},
-        {"glossy sphere single bounce", Scene::Sphere, 1},
-        {"glossy sphere depth 3", Scene::Sphere, 3},
-        {"glossy sphere depth 6", Scene::Sphere, 6},
-        {"room where most vertices estimate Z-hat = 0, depth 4", Scene::Room, 4},
-    };
-    for (const Case& test : cases)
-    {
-        SECTION(test.Name)
-        {
-            rr::ReferenceCaptureDescription capture =
-                test.Fixture == Scene::Sphere ? MakePerspectiveCapture({.3F, .2F, -2}, 16, 12)
-                : test.Fixture == Scene::Room ? MakePerspectiveCapture({0, .1F, -2.4F}, 16, 12)
-                                              : MakePerspectiveCapture({.1F, -.2F, -2.5F}, 16, 12);
-            capture.TargetSamples = 64;
-            capture.MaxDepth = test.MaxDepth;
-            capture.RouletteDepth = 2;
-            capture.Environment = test.Fixture == Scene::Room ? math::Vector3{} : math::Vector3{.05F, .06F, .08F};
-            if (test.Fixture != Scene::L6)
-            {
-                StaticArray<QuadItem, 4> quads{};
-                const usize quadCount = MakeRoomQuads(true, quads);
-                REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
-                const S built =
-                    test.Fixture == Scene::Sphere
-                        ? BuildSphereSnapshot(device, cpu.Renderer, cpu.Program, cpu.Snapshot)
-                        : BuildQuadSnapshot(cpu.Renderer, cpu.Program, quads.GetData(), quadCount, cpu.Snapshot);
-                REQUIRE(built == S::Ready);
-            }
-            const rr::Snapshot snapshot = cpu.Snapshot;
-            // UniformArea, then both resampled modes, which differ only in their RIS target.
-            constexpr usize MODE_COUNT = 3;
-            constexpr StaticArray<rr::ReferenceLightSampling, MODE_COUNT> MODES{
-                {rr::ReferenceLightSampling::UniformArea,
-                 rr::ReferenceLightSampling::ResampledProjectedSolidAngle,
-                 rr::ReferenceLightSampling::ResampledFormFactor}};
-            constexpr StaticArray<uint32, MODE_COUNT> SAMPLER_VERSIONS{{1, 2, 3}};
-            StaticArray<SeedMeans, MODE_COUNT> means{};
-            for (usize seed = 0; seed < RESAMPLED_SEED_COUNT; ++seed)
-            {
-                capture.Seed = 40 + seed;
-                for (usize modeIndex = 0; modeIndex < MODE_COUNT; ++modeIndex)
-                {
-                    const rr::ReferenceLightSampling mode = MODES[modeIndex];
-                    capture.LightSampling = mode;
-                    Array<rr::ReferencePixel> pixels;
-                    rr::ReferenceCaptureInfo info;
-                    rr::ReferenceCapture handle;
-                    const S begun = cpu.Renderer.BeginReferenceCapture(snapshot, capture, handle);
-                    REQUIRE((begun == S::Ready || begun == S::Pending));
-                    REQUIRE(Run(cpu.Renderer, handle, surface) == S::Ready);
-                    REQUIRE(cpu.Renderer.GetReferenceCaptureInfo(handle, info) == S::Ready);
-                    CHECK(info.InvalidContributions == 0);
-                    CHECK(info.LightSampling == mode);
-                    CHECK(info.SamplerVersion == SAMPLER_VERSIONS[modeIndex]);
-                    REQUIRE(pixels.TryResize(usize(capture.Width) * capture.Height) == true);
-                    REQUIRE(cpu.Renderer.CopyReferencePixels(handle, pixels.GetData(), pixels.GetSize()) == S::Ready);
-                    REQUIRE(cpu.Renderer.Release(handle) == S::Ready);
-                    RecordSeed(pixels, seed, means[modeIndex]);
-                }
-                // Primary rays and primary emission use the unchanged dimensions 0 and 1.
-                CHECK(means[0].Emission[seed] == means[1].Emission[seed]);
-                CHECK(means[0].Emission[seed] == means[2].Emission[seed]);
-            }
-            for (usize modeIndex = 1; modeIndex < MODE_COUNT; ++modeIndex)
-            {
-                const SeedMeans& uniform = means[0];
-                const SeedMeans& resampled = means[modeIndex];
-                const float32 direct = MeasureSeparation(uniform.Direct, resampled.Direct);
-                const float32 indirect = MeasureSeparation(uniform.Indirect, resampled.Indirect);
-                const float32 radiance = MeasureSeparation(uniform.Radiance, resampled.Radiance);
-                CAPTURE(modeIndex, direct, indirect, radiance, uniform.Radiance[0], resampled.Radiance[0]);
-                CHECK(direct <= RESAMPLED_STANDARD_ERRORS);
-                CHECK(indirect <= RESAMPLED_STANDARD_ERRORS);
-                CHECK(radiance <= RESAMPLED_STANDARD_ERRORS);
-            }
-        }
+        StaticArray<QuadItem, ROOM_QUAD_COUNT> quads{};
+        const usize quadCount = MakeRoomQuads(true, quads);
+        REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
+        const S built = scene == ResampledLightScene::Sphere
+                            ? BuildSphereSnapshot(device, cpu.Renderer, cpu.Program, cpu.Snapshot)
+                            : BuildQuadSnapshot(cpu.Renderer, cpu.Program, quads.GetData(), quadCount, cpu.Snapshot);
+        REQUIRE(built == S::Ready);
     }
+    const rr::Snapshot snapshot = cpu.Snapshot;
+    // UniformArea, then both resampled modes, which differ only in their RIS target.
+    constexpr usize MODE_COUNT = 3;
+    constexpr StaticArray<rr::ReferenceLightSampling, MODE_COUNT> MODES{
+        {rr::ReferenceLightSampling::UniformArea,
+         rr::ReferenceLightSampling::ResampledProjectedSolidAngle,
+         rr::ReferenceLightSampling::ResampledFormFactor}};
+    constexpr StaticArray<uint32, MODE_COUNT> SAMPLER_VERSIONS{{1, 2, EXPECTED_FORM_FACTOR_SAMPLER_VERSION}};
+    StaticArray<SeedMeans, MODE_COUNT> means{};
+    for (usize seed = 0; seed < RESAMPLED_SEED_COUNT; ++seed)
+    {
+        capture.Seed = FIRST_SEED + seed;
+        for (usize modeIndex = 0; modeIndex < MODE_COUNT; ++modeIndex)
+        {
+            const rr::ReferenceLightSampling mode = MODES[modeIndex];
+            capture.LightSampling = mode;
+            Array<rr::ReferencePixel> pixels;
+            rr::ReferenceCaptureInfo info;
+            rr::ReferenceCapture handle;
+            const S begun = cpu.Renderer.BeginReferenceCapture(snapshot, capture, handle);
+            REQUIRE((begun == S::Ready || begun == S::Pending));
+            REQUIRE(Run(cpu.Renderer, handle, surface) == S::Ready);
+            REQUIRE(cpu.Renderer.GetReferenceCaptureInfo(handle, info) == S::Ready);
+            CHECK(info.InvalidContributions == 0);
+            CHECK(info.LightSampling == mode);
+            CHECK(info.SamplerVersion == SAMPLER_VERSIONS[modeIndex]);
+            REQUIRE(pixels.TryResize(usize(capture.Width) * capture.Height) == true);
+            REQUIRE(cpu.Renderer.CopyReferencePixels(handle, pixels.GetData(), pixels.GetSize()) == S::Ready);
+            REQUIRE(cpu.Renderer.Release(handle) == S::Ready);
+            RecordSeed(pixels, seed, means[modeIndex]);
+        }
+        // Primary rays and primary emission use the unchanged dimensions 0 and 1.
+        CHECK(means[0].Emission[seed] == means[1].Emission[seed]);
+        CHECK(means[0].Emission[seed] == means[2].Emission[seed]);
+    }
+    for (usize modeIndex = 1; modeIndex < MODE_COUNT; ++modeIndex)
+    {
+        const SeedMeans& uniform = means[0];
+        const SeedMeans& resampled = means[modeIndex];
+        const float32 direct = MeasureSeparation(uniform.Direct, resampled.Direct);
+        const float32 indirect = MeasureSeparation(uniform.Indirect, resampled.Indirect);
+        const float32 radiance = MeasureSeparation(uniform.Radiance, resampled.Radiance);
+        CAPTURE(modeIndex, direct, indirect, radiance, uniform.Radiance[0], resampled.Radiance[0]);
+        CHECK(direct <= RESAMPLED_STANDARD_ERRORS);
+        CHECK(indirect <= RESAMPLED_STANDARD_ERRORS);
+        CHECK(radiance <= RESAMPLED_STANDARD_ERRORS);
+    }
+}
+} // namespace
+
+TEST_CASE("Resampled light sampling agrees with UniformArea: L6 single bounce",
+          "[renderer][gpu][reference-compute][resampled-light]")
+{
+    CheckResampledLightSampling(ResampledLightScene::L6, 1);
+}
+
+TEST_CASE("Resampled light sampling agrees with UniformArea: L6 depth 4",
+          "[renderer][gpu][reference-compute][resampled-light]")
+{
+    CheckResampledLightSampling(ResampledLightScene::L6, L6_MULTIPLE_BOUNCE_DEPTH);
+}
+
+TEST_CASE("Resampled light sampling agrees with UniformArea: glossy sphere single bounce",
+          "[renderer][gpu][reference-compute][resampled-light]")
+{
+    CheckResampledLightSampling(ResampledLightScene::Sphere, 1);
+}
+
+TEST_CASE("Resampled light sampling agrees with UniformArea: glossy sphere depth 3",
+          "[renderer][gpu][reference-compute][resampled-light]")
+{
+    CheckResampledLightSampling(ResampledLightScene::Sphere, SPHERE_SHALLOW_DEPTH);
+}
+
+TEST_CASE("Resampled light sampling agrees with UniformArea: glossy sphere depth 6",
+          "[renderer][gpu][reference-compute][resampled-light]")
+{
+    CheckResampledLightSampling(ResampledLightScene::Sphere, SPHERE_DEEP_DEPTH);
+}
+
+TEST_CASE("Resampled light sampling agrees with UniformArea: room with mostly zero Z-hat at depth 4",
+          "[renderer][gpu][reference-compute][resampled-light]")
+{
+    CheckResampledLightSampling(ResampledLightScene::Room, ROOM_PATH_DEPTH);
 }
 
 TEST_CASE("GPU-compute resampled reference matches the CPU oracle",
@@ -1287,7 +1321,7 @@ TEST_CASE("GPU-compute resampled reference matches the CPU oracle",
             // Each session holds one fixture at a time within the renderer's material capacity.
             if (test.Fixture != Scene::L6)
             {
-                StaticArray<QuadItem, 4> quads{};
+                StaticArray<QuadItem, ROOM_QUAD_COUNT> quads{};
                 const usize quadCount = MakeRoomQuads(true, quads);
                 for (Session* session : {&cpu, &gpu})
                 {
@@ -1497,7 +1531,7 @@ TEST_CASE("Resampled light sampling ignores emitters behind every receiver in bo
     REQUIRE(enabled == S::Ready);
     Session cpu;
     REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
-    StaticArray<QuadItem, 4> quads{};
+    StaticArray<QuadItem, ROOM_QUAD_COUNT> quads{};
     const usize quadCount = MakeRoomQuads(false, quads);
     for (Session* session : {&cpu, &gpu})
     {
