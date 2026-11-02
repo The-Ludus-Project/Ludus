@@ -227,7 +227,8 @@ bool IsCurrentRecord(Reservoir source, SceneContext scene, RayLaunch launch, ino
                                      float3 viewWorld,
                                      float3 lightWorld,
                                      CoatingRandomContext random,
-                                     bool shouldUseLayeredBsdf) {
+                                     bool shouldUseLayeredBsdf)
+{
     float3 value;
     float density;
     if (shouldUseLayeredBsdf == true)
@@ -237,8 +238,8 @@ bool IsCurrentRecord(Reservoir source, SceneContext scene, RayLaunch launch, ino
     return value;
 }
 
-    [noinline] StandardBsdfTransportSample
-    SampleSuffixBsdf(MaterialSample material, float3 viewWorld, float3 random, CoatingRandomContext materialRandom)
+[noinline] StandardBsdfTransportSample
+SampleSuffixBsdf(MaterialSample material, float3 viewWorld, float3 random, CoatingRandomContext materialRandom)
 {
     return SampleStandardBsdfTransport(material, viewWorld, random, materialRandom);
 }
@@ -362,7 +363,8 @@ float3 EvaluateAreaContributionBody(SceneContext scene,
                                                     Reservoir suffix,
                                                     bool shouldUseLayeredBsdf,
                                                     RayQueryContext queriesIn,
-                                                    out RayQueryContext outQueries) {
+                                                    out RayQueryContext outQueries)
+{
     RayQueryContext queries = queriesIn;
     float3 value = EvaluateAreaContributionBody(scene, prefix, suffix, shouldUseLayeredBsdf, queries);
     outQueries = queries;
@@ -386,7 +388,8 @@ float3 EvaluateAreaContribution(SceneContext scene,
 // bounded. A tiny absolute floor alone allows a near-zero source target to acquire an enormous
 // weight and persist as a rare bright tail across many frames. Only the SELECTION target is bounded;
 // the final radiance and contribution weights are never clamped.
-[noinline] float EvaluateIntrinsicTarget(SceneContext scene, Reservoir suffix) {
+[noinline] float EvaluateIntrinsicTarget(SceneContext scene, Reservoir suffix)
+{
     float3 coefficient =
         suffix.SuffixBounces > 0
             ? suffix.TailCoefficient
