@@ -22,6 +22,9 @@ static const uint MH_ACCEPTANCE_DIMENSION = MH_PRIMARY_DIMENSIONS;
 static const uint MH_LARGE_STEP_DIMENSION = MH_ACCEPTANCE_DIMENSION + 1;
 static const uint MH_INITIAL_SCOPE = 1;
 static const uint MH_PROPOSAL_SCOPE = 2;
+static const uint JR_INITIAL_SCOPE = 3;
+static const uint JR_PROPOSAL_SCOPE = 4;
+static const uint JR_HOLDING_TIME_DIMENSION = MH_LARGE_STEP_DIMENSION + 1;
 
 float SampleMetropolisRandom(RayLaunch launch, uint scope, uint dimension)
 {
@@ -29,7 +32,11 @@ float SampleMetropolisRandom(RayLaunch launch, uint scope, uint dimension)
     return SampleRandomFloat01(launch.Seed, MakeRandomAddress(uint2(pixel, scope), launch.SampleIndex, dimension));
 }
 
-float3 AdvanceMetropolisChain(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, uint estimator)
+float3 AdvanceMetropolisChain(SceneContext scene,
+                              RayLaunch launch,
+                              inout RayQueryContext queries,
+                              uint estimator,
+                              bool isJumpRestore)
 {
     uint wordCount;
     uint stride;
@@ -83,6 +90,8 @@ float3 AdvanceMetropolisChain(SceneContext scene, RayLaunch launch, inout RayQue
     tour.HoldingWeight = 1;
     uint iteration = 0;
     WeightedRadiance films[MH_ESTIMATOR_COUNT];
+    uint initialScope = isJumpRestore == true ? JR_INITIAL_SCOPE : MH_INITIAL_SCOPE;
+    uint proposalScope = isJumpRestore == true ? JR_PROPOSAL_SCOPE : MH_PROPOSAL_SCOPE;
     [unroll] for (uint index = 0; index < MH_ESTIMATOR_COUNT; ++index) films[index] = (WeightedRadiance)0;
     if (hasHistory == true)
     {
@@ -104,17 +113,33 @@ float3 AdvanceMetropolisChain(SceneContext scene, RayLaunch launch, inout RayQue
     else
     {
         [unroll] for (uint dimension = 0; dimension < MH_PRIMARY_DIMENSIONS; ++dimension) current.Values[dimension] =
-            SampleMetropolisRandom(launch, MH_INITIAL_SCOPE, dimension);
+            SampleMetropolisRandom(launch, initialScope, dimension);
         currentRadiance = EvaluateMetropolisPath(scene, GenerateMetropolisCameraRay(launch, current), current, queries);
         currentTarget = ComputeMetropolisTarget(currentRadiance);
     }
+    JumpRestoreRates rates;
+    rates.RestoreProbability = 0;
+    rates.MeanHoldingTime = 1;
+    float holdingTime = 1;
+    bool isRestoration = false;
+    if (isJumpRestore == true)
+    {
+        if (TryComputeJumpRestoreRates(currentTarget, JR_RESTORATION_SCALE, rates) == false ||
+            TrySampleJumpRestoreHoldingTime(SampleMetropolisRandom(launch, proposalScope, JR_HOLDING_TIME_DIMENSION),
+                                            rates.MeanHoldingTime,
+                                            holdingTime) == false)
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
+        isRestoration =
+            SampleMetropolisRandom(launch, proposalScope, MH_LARGE_STEP_DIMENSION) < rates.RestoreProbability;
+    }
     PrimarySamples proposal;
-    bool isLargeStep =
-        SampleMetropolisRandom(launch, MH_PROPOSAL_SCOPE, MH_LARGE_STEP_DIMENSION) < MH_LARGE_STEP_PROBABILITY;
+    bool isLargeStep = isJumpRestore == true ? isRestoration
+                                             : SampleMetropolisRandom(launch, proposalScope, MH_LARGE_STEP_DIMENSION) <
+                                                   MH_LARGE_STEP_PROBABILITY;
     [unroll] for (uint dimension = 0; dimension < MH_PRIMARY_DIMENSIONS; ++dimension)
     {
         if (TryMutateMetropolisPrimary(current.Values[dimension],
-                                       SampleMetropolisRandom(launch, MH_PROPOSAL_SCOPE, dimension),
+                                       SampleMetropolisRandom(launch, proposalScope, dimension),
                                        MH_SMALL_STEP_RADIUS,
                                        isLargeStep,
                                        proposal.Values[dimension]) == false)
@@ -126,19 +151,24 @@ float3 AdvanceMetropolisChain(SceneContext scene, RayLaunch launch, inout RayQue
     float acceptance;
     if (TryComputeSymmetricMetropolisAcceptance(currentTarget, proposedTarget, acceptance) == false)
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
-    bool isAccepted = SampleMetropolisRandom(launch, MH_PROPOSAL_SCOPE, MH_ACCEPTANCE_DIMENSION) < acceptance;
+    bool isAccepted =
+        isRestoration == true || SampleMetropolisRandom(launch, proposalScope, MH_ACCEPTANCE_DIMENSION) < acceptance;
     bool canCollect = iteration >= MH_BURN_IN;
     if (canCollect == true)
     {
-        if (TryAddWeightedRadiance(currentRadiance, 1 / currentTarget, films[MH_STANDARD]) == false ||
-            TryAddWeightedRadiance(currentRadiance, (1 - acceptance) / currentTarget, films[MH_WASTE_RECYCLING]) ==
-                false ||
-            TryAddWeightedRadiance(proposedRadiance, acceptance / proposedTarget, films[MH_WASTE_RECYCLING]) == false ||
-            TryAdvanceMetropolisTour(acceptance, tour) == false)
+        float currentWeight = isRestoration == true ? 1 : 1 - acceptance;
+        if (TryAddWeightedRadiance(currentRadiance, holdingTime / currentTarget, films[MH_STANDARD]) == false ||
+            TryAddWeightedRadiance(currentRadiance,
+                                   holdingTime * currentWeight / currentTarget,
+                                   films[MH_WASTE_RECYCLING]) == false ||
+            (isRestoration == false && TryAddWeightedRadiance(proposedRadiance,
+                                                              holdingTime * acceptance / proposedTarget,
+                                                              films[MH_WASTE_RECYCLING]) == false) ||
+            (isRestoration == false && TryAdvanceMetropolisTour(acceptance, tour) == false))
             FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
-        if (isAccepted == true &&
-            TryAddWeightedRadiance(currentRadiance, tour.HoldingWeight / currentTarget, films[MH_RAO_BLACKWELL]) ==
-                false)
+        if (isAccepted == true && TryAddWeightedRadiance(currentRadiance,
+                                                         tour.HoldingWeight * rates.MeanHoldingTime / currentTarget,
+                                                         films[MH_RAO_BLACKWELL]) == false)
             FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
     }
 
@@ -181,6 +211,11 @@ float3 AdvanceMetropolisChain(SceneContext scene, RayLaunch launch, inout RayQue
     return ResolveGraphRadiance(result);
 }
 
+float3 AdvanceMetropolisChain(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, uint estimator)
+{
+    return AdvanceMetropolisChain(scene, launch, queries, estimator, false);
+}
+
 float3 ShadeMetropolis(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
     return AdvanceMetropolisChain(scene, launch, queries, MH_STANDARD);
@@ -192,4 +227,14 @@ float3 ShadeWasteRecycling(SceneContext scene, RayLaunch launch, inout RayQueryC
 float3 ShadeRaoBlackwell(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
     return AdvanceMetropolisChain(scene, launch, queries, MH_RAO_BLACKWELL);
+}
+
+// Thanks to Holl, Singh and Seidel, "Rao-Blackwellized Markov chain Monte Carlo
+// Light Transport", SIGGRAPH 2026, Algorithm 6.2 and section 6,
+// https://arxiv.org/abs/2605.09117 . The exponential race is sampled by its
+// independent event identity and minimum time; RB uses the conditional mean.
+// Restorations flush the pending RB state without an additional local proposal.
+float3 ShadeJumpRestore(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
+{
+    return AdvanceMetropolisChain(scene, launch, queries, MH_RAO_BLACKWELL, true);
 }

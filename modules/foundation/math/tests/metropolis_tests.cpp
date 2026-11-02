@@ -7,6 +7,48 @@
 using namespace ludus::foundation;
 namespace math = ludus::foundation::math;
 
+TEST_CASE("Jump Restore rates and exponential race times preserve their domains", "[math][metropolis]")
+{
+    math::JumpRestoreRates rates;
+    REQUIRE(math::TryComputeJumpRestoreRates(2, 2, rates) == math::MathStatus::Success);
+    CHECK(rates.RestoreProbability == 0.5F);
+    CHECK(rates.MeanHoldingTime == 0.5F);
+    REQUIRE(math::TryComputeJumpRestoreRates(3, 1, rates) == math::MathStatus::Success);
+    CHECK(math::Abs(rates.RestoreProbability - 0.25F) < 0.000001F);
+    CHECK(math::Abs(rates.MeanHoldingTime - 0.75F) < 0.000001F);
+    REQUIRE(math::TryComputeJumpRestoreRates(1, 3, rates) == math::MathStatus::Success);
+    CHECK(math::Abs(rates.RestoreProbability - 0.75F) < 0.000001F);
+    CHECK(math::Abs(rates.MeanHoldingTime - 0.25F) < 0.000001F);
+    const math::JumpRestoreRates previous = rates;
+    CHECK(math::TryComputeJumpRestoreRates(0, 1, rates) == math::MathStatus::InvalidArgument);
+    CHECK(rates.MeanHoldingTime == previous.MeanHoldingTime);
+    CHECK(math::TryComputeJumpRestoreRates(1, std::numeric_limits<float32>::infinity(), rates) ==
+          math::MathStatus::NonFiniteInput);
+    const float32 maximum = std::numeric_limits<float32>::max();
+    CHECK(math::TryComputeJumpRestoreRates(std::numeric_limits<float32>::min(), maximum, rates) ==
+          math::MathStatus::OutOfRange);
+    CHECK(rates.MeanHoldingTime == previous.MeanHoldingTime);
+    REQUIRE(math::TryComputeJumpRestoreRates(maximum, maximum, rates) == math::MathStatus::Success);
+    CHECK(rates.MeanHoldingTime == 0.5F);
+    float32 time = 1;
+    REQUIRE(math::TrySampleJumpRestoreHoldingTime(0, 0.5F, time) == math::MathStatus::Success);
+    CHECK(time == 0);
+    REQUIRE(math::TrySampleJumpRestoreHoldingTime(0.5F, 0.5F, time) == math::MathStatus::Success);
+    CHECK(math::Abs(time - 0.34657359F) < 0.000001F);
+    const float32 previousTime = time;
+    CHECK(math::TrySampleJumpRestoreHoldingTime(1, 0.5F, time) == math::MathStatus::InvalidArgument);
+    CHECK(time == previousTime);
+    constexpr uint32 TICKET_COUNT = 4096;
+    float64 mean = 0;
+    for (uint32 index = 0; index < TICKET_COUNT; ++index)
+    {
+        const float32 ticket = (static_cast<float32>(index) + 0.5F) / TICKET_COUNT;
+        REQUIRE(math::TrySampleJumpRestoreHoldingTime(ticket, 0.5F, time) == math::MathStatus::Success);
+        mean += static_cast<float64>(time) / TICKET_COUNT;
+    }
+    CHECK(math::Abs(mean - 0.5) < 0.001);
+}
+
 TEST_CASE("Symmetric MH acceptance and toroidal mutations preserve their domains", "[math][metropolis]")
 {
     float32 acceptance = 0;

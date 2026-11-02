@@ -52,6 +52,48 @@ MathStatus TryMutateMetropolisPrimary(float32 current,
     return MathStatus::Success;
 }
 
+// Thanks to Holl, Singh and Seidel, "Rao-Blackwellized Markov chain Monte Carlo
+// Light Transport", SIGGRAPH 2026, sections 6.1/6.3 and Appendix C,
+// https://arxiv.org/abs/2605.09117 . Sample the exponential race through its
+// independent event identity and minimum time, equivalent to Algorithm 6.1.
+MathStatus TryComputeJumpRestoreRates(float32 target, float32 restorationScale, JumpRestoreRates& outRates) noexcept
+{
+    if (IsFinite(target) == false || IsFinite(restorationScale) == false)
+        return MathStatus::NonFiniteInput;
+    if (target < MINIMUM_NORMAL || restorationScale < MINIMUM_NORMAL)
+        return MathStatus::InvalidArgument;
+    JumpRestoreRates rates;
+    if (target >= restorationScale)
+    {
+        const float32 ratio = restorationScale / target;
+        rates.MeanHoldingTime = 1 / (1 + ratio);
+        rates.RestoreProbability = ratio * rates.MeanHoldingTime;
+    }
+    else
+    {
+        const float32 ratio = target / restorationScale;
+        rates.RestoreProbability = 1 / (1 + ratio);
+        rates.MeanHoldingTime = ratio * rates.RestoreProbability;
+    }
+    if (rates.MeanHoldingTime <= 0 || rates.RestoreProbability <= 0)
+        return MathStatus::OutOfRange;
+    outRates = rates;
+    return MathStatus::Success;
+}
+
+MathStatus TrySampleJumpRestoreHoldingTime(float32 ticket, float32 meanHoldingTime, float32& outTime) noexcept
+{
+    if (IsFinite(ticket) == false || IsFinite(meanHoldingTime) == false)
+        return MathStatus::NonFiniteInput;
+    if (ticket < 0 || ticket >= 1 || meanHoldingTime <= 0 || meanHoldingTime > 1)
+        return MathStatus::InvalidArgument;
+    const float32 time = static_cast<float32>(-Log(static_cast<float64>(1 - ticket))) * meanHoldingTime;
+    if (IsFinite(time) == false)
+        return MathStatus::OutOfRange;
+    outTime = time;
+    return MathStatus::Success;
+}
+
 MathStatus TryAdvanceMetropolisTour(float32 acceptance, MetropolisTour& inoutTour) noexcept
 {
     if (IsFinite(acceptance) == false || IsFinite(inoutTour.RejectionProduct) == false ||

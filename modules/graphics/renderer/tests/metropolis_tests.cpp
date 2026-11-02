@@ -10,10 +10,17 @@ namespace
 using namespace ludus::foundation;
 namespace internal = ludus::graphics::renderer::internal;
 namespace rhi = ludus::graphics::rhi;
+using AdvanceChainFunction = decltype(&internal::AdvanceMetropolisChain);
 struct IntegrandContext final
 {
     bool ShouldFail = false;
 };
+rhi::RasterStatus
+EvaluateStepIntegrand(const void*, const internal::MetropolisPrimary& primary, math::Vector3& outRadiance) noexcept
+{
+    outRadiance = primary[0] >= 0.5F ? math::Vector3{1, 1, 1} : math::Vector3{};
+    return rhi::RasterStatus::Ready;
+}
 rhi::RasterStatus
 EvaluateIntegrand(const void* context, const internal::MetropolisPrimary& primary, math::Vector3& outRadiance) noexcept
 {
@@ -26,8 +33,85 @@ EvaluateIntegrand(const void* context, const internal::MetropolisPrimary& primar
 }
 } // namespace
 
+TEST_CASE("Jump Restore unconditionally restores and flushes its unfinished RB holding weight",
+          "[renderer][metropolis]")
+{
+    internal::MetropolisOptions options;
+    options.BurnIn = 0;
+    options.RestorationScale = 64;
+    internal::MetropolisChain chain;
+    chain.IsInitialized = true;
+    chain.Radiance = {1, 1, 1};
+    chain.Target = 2;
+    chain.Tour = {0.25F, 1.75F};
+    for (float32& sample : chain.Primary)
+        sample = 0.5F;
+    math::RandomKey key;
+    constexpr uint32 PROPOSAL_SCOPE_SHIFT = 32;
+    constexpr uint64 PROPOSAL_SCOPE = uint64{4} << PROPOSAL_SCOPE_SHIFT;
+    constexpr uint16 EVENT_DIMENSION = 12;
+    constexpr uint16 ACCEPTANCE_DIMENSION = 11;
+    constexpr uint64 SEED_COUNT = 256;
+    math::JumpRestoreRates rates;
+    REQUIRE(math::TryComputeJumpRestoreRates(chain.Target, options.RestorationScale, rates) ==
+            math::MathStatus::Success);
+    bool hasRestoreTicket = false;
+    for (uint64 seed = 0; seed < SEED_COUNT; ++seed)
+    {
+        key.Value = seed;
+        if (math::SampleFloat01(key, {PROPOSAL_SCOPE, 0, 0}) < 0.5F &&
+            math::SampleFloat01(key, {PROPOSAL_SCOPE, 0, ACCEPTANCE_DIMENSION}) > 0.5F &&
+            math::SampleFloat01(key, {PROPOSAL_SCOPE, 0, EVENT_DIMENSION}) < rates.RestoreProbability)
+        {
+            hasRestoreTicket = true;
+            break;
+        }
+    }
+    REQUIRE(hasRestoreTicket == true);
+    const IntegrandContext context;
+    math::Vector3 radiance;
+    REQUIRE(internal::AdvanceJumpRestoreChain(options,
+                                              internal::MetropolisEstimator::RaoBlackwell,
+                                              key,
+                                              0,
+                                              EvaluateStepIntegrand,
+                                              &context,
+                                              chain,
+                                              radiance) == rhi::RasterStatus::Ready);
+    CHECK(chain.Primary[0] == math::SampleFloat01(key, {PROPOSAL_SCOPE, 0, 0}));
+    // This lower-target proposal would fail the corresponding MH acceptance test.
+    CHECK(chain.Radiance.X == 0);
+    CHECK(chain.Target == 1);
+    CHECK(chain.Tour.RejectionProduct == 1);
+    CHECK(chain.Tour.HoldingWeight == 1);
+    CHECK(math::Abs(chain.Accumulation.Sum.W - 1.75F * rates.MeanHoldingTime / 2) < 0.000001F);
+    CHECK(math::Abs(radiance.X - 1) < 0.000001F);
+    const internal::MetropolisChain previous = chain;
+    options.RestorationScale = 0;
+    radiance = {2, 2, 2};
+    CHECK(internal::AdvanceJumpRestoreChain(options,
+                                            internal::MetropolisEstimator::RaoBlackwell,
+                                            key,
+                                            0,
+                                            EvaluateStepIntegrand,
+                                            &context,
+                                            chain,
+                                            radiance) == rhi::RasterStatus::InvalidDescription);
+    CHECK(chain.Iteration == previous.Iteration);
+    CHECK(chain.Accumulation.Sum.W == previous.Accumulation.Sum.W);
+    CHECK(radiance.X == 2);
+}
+
 TEST_CASE("CPU MH estimators integrate a known primary-space function over multiple seeds", "[renderer][metropolis]")
 {
+    bool isJumpRestore = false;
+    SECTION("Metropolis-Hastings") {}
+    SECTION("Jump Restore")
+    {
+        isJumpRestore = true;
+    }
+    const AdvanceChainFunction advance =
+        isJumpRestore == true ? internal::AdvanceJumpRestoreChain : internal::AdvanceMetropolisChain;
     constexpr uint32 SEED_COUNT = 16;
     constexpr uint32 ITERATION_COUNT = 8192;
     constexpr float32 MEAN_TOLERANCE = 0.03F;
@@ -43,14 +127,14 @@ TEST_CASE("CPU MH estimators integrate a known primary-space function over multi
             internal::MetropolisChain chain;
             math::Vector3 radiance;
             for (uint32 iteration = 0; iteration < ITERATION_COUNT; ++iteration)
-                REQUIRE(internal::AdvanceMetropolisChain(options,
-                                                         static_cast<internal::MetropolisEstimator>(estimator),
-                                                         {seed},
-                                                         0,
-                                                         EvaluateIntegrand,
-                                                         &context,
-                                                         chain,
-                                                         radiance) == rhi::RasterStatus::Ready);
+                REQUIRE(advance(options,
+                                static_cast<internal::MetropolisEstimator>(estimator),
+                                {seed},
+                                0,
+                                EvaluateIntegrand,
+                                &context,
+                                chain,
+                                radiance) == rhi::RasterStatus::Ready);
             mean = mean + radiance / static_cast<float32>(SEED_COUNT);
         }
         CAPTURE(estimator, mean.X, mean.Y, mean.Z);
@@ -62,46 +146,54 @@ TEST_CASE("CPU MH estimators integrate a known primary-space function over multi
 
 TEST_CASE("CPU MH burn-in, failures and reset preserve accepted weighted history", "[renderer][metropolis]")
 {
+    bool isJumpRestore = false;
+    SECTION("Metropolis-Hastings") {}
+    SECTION("Jump Restore")
+    {
+        isJumpRestore = true;
+    }
+    const AdvanceChainFunction advance =
+        isJumpRestore == true ? internal::AdvanceJumpRestoreChain : internal::AdvanceMetropolisChain;
     internal::MetropolisOptions options;
     options.BurnIn = 2;
     internal::MetropolisChain chain;
     IntegrandContext context;
     math::Vector3 radiance{1, 1, 1};
-    REQUIRE(internal::AdvanceMetropolisChain(options,
-                                             internal::MetropolisEstimator::RaoBlackwell,
-                                             {1},
-                                             0,
-                                             EvaluateIntegrand,
-                                             &context,
-                                             chain,
-                                             radiance) == rhi::RasterStatus::Ready);
+    REQUIRE(advance(options,
+                    internal::MetropolisEstimator::RaoBlackwell,
+                    {1},
+                    0,
+                    EvaluateIntegrand,
+                    &context,
+                    chain,
+                    radiance) == rhi::RasterStatus::Ready);
     CHECK(chain.Accumulation.Sum.W == 0);
     CHECK(radiance.X == 0);
     const internal::MetropolisChain previous = chain;
     context.ShouldFail = true;
     radiance = {1, 1, 1};
-    CHECK(internal::AdvanceMetropolisChain(options,
-                                           internal::MetropolisEstimator::RaoBlackwell,
-                                           {1},
-                                           0,
-                                           EvaluateIntegrand,
-                                           &context,
-                                           chain,
-                                           radiance) == rhi::RasterStatus::Failed);
+    CHECK(advance(options,
+                  internal::MetropolisEstimator::RaoBlackwell,
+                  {1},
+                  0,
+                  EvaluateIntegrand,
+                  &context,
+                  chain,
+                  radiance) == rhi::RasterStatus::Failed);
     CHECK(chain.Iteration == previous.Iteration);
     CHECK(chain.Target == previous.Target);
     CHECK(chain.Tour.HoldingWeight == previous.Tour.HoldingWeight);
     CHECK(radiance.X == 1);
     context.ShouldFail = false;
     options.SmallStepRadius = 0;
-    CHECK(internal::AdvanceMetropolisChain(options,
-                                           internal::MetropolisEstimator::RaoBlackwell,
-                                           {1},
-                                           0,
-                                           EvaluateIntegrand,
-                                           &context,
-                                           chain,
-                                           radiance) == rhi::RasterStatus::InvalidDescription);
+    CHECK(advance(options,
+                  internal::MetropolisEstimator::RaoBlackwell,
+                  {1},
+                  0,
+                  EvaluateIntegrand,
+                  &context,
+                  chain,
+                  radiance) == rhi::RasterStatus::InvalidDescription);
     CHECK(chain.Iteration == previous.Iteration);
     chain = {};
     CHECK(chain.Iteration == 0);

@@ -13,8 +13,11 @@ namespace
 {
 constexpr uint16 ACCEPTANCE_DIMENSION = METROPOLIS_PRIMARY_DIMENSIONS;
 constexpr uint16 LARGE_STEP_DIMENSION = ACCEPTANCE_DIMENSION + 1;
+constexpr uint16 HOLDING_TIME_DIMENSION = LARGE_STEP_DIMENSION + 1;
 constexpr uint32 INITIAL_SCOPE = 1;
 constexpr uint32 PROPOSAL_SCOPE = 2;
+constexpr uint32 RESTORE_INITIAL_SCOPE = 3;
+constexpr uint32 RESTORE_PROPOSAL_SCOPE = 4;
 constexpr uint32 SCOPE_HIGH_SHIFT = 32;
 constexpr math::Vector3 LUMINANCE_WEIGHTS{0.2126F, 0.7152F, 0.0722F};
 constexpr float32 MAXIMUM_DISTANCE_WORLD = 0x1.fffffeP+127F;
@@ -41,16 +44,15 @@ void AddPathAov(math::Vector3 contribution, uint32 depth, MetropolisPathAovs& in
     else
         inoutAovs.Indirect = inoutAovs.Indirect + contribution;
 }
-} // namespace
-
-rhi::RasterStatus AdvanceMetropolisChain(const MetropolisOptions& options,
-                                         MetropolisEstimator estimator,
-                                         math::RandomKey key,
-                                         uint32 pixel,
-                                         MetropolisEvaluator evaluate,
-                                         const void* context,
-                                         MetropolisChain& inoutChain,
-                                         math::Vector3& outRadiance) noexcept
+rhi::RasterStatus AdvanceChain(const MetropolisOptions& options,
+                               MetropolisEstimator estimator,
+                               math::RandomKey key,
+                               uint32 pixel,
+                               MetropolisEvaluator evaluate,
+                               const void* context,
+                               MetropolisChain& inoutChain,
+                               math::Vector3& outRadiance,
+                               bool isJumpRestore) noexcept
 {
     if (evaluate == nullptr || context == nullptr || math::IsFinite(options.LargeStepProbability) == false ||
         options.LargeStepProbability <= 0 || options.LargeStepProbability > 1 ||
@@ -60,25 +62,44 @@ rhi::RasterStatus AdvanceMetropolisChain(const MetropolisOptions& options,
     if (inoutChain.Iteration == ~uint32{0})
         return rhi::RasterStatus::CapacityExceeded;
     MetropolisChain chain = inoutChain;
+    const uint32 initialScope = isJumpRestore == true ? RESTORE_INITIAL_SCOPE : INITIAL_SCOPE;
+    const uint32 proposalScope = isJumpRestore == true ? RESTORE_PROPOSAL_SCOPE : PROPOSAL_SCOPE;
     if (chain.IsInitialized == false)
     {
         for (usize dimension = 0; dimension < METROPOLIS_PRIMARY_DIMENSIONS; ++dimension)
             chain.Primary[dimension] =
-                Sample(key, pixel, INITIAL_SCOPE, chain.Iteration, static_cast<uint16>(dimension));
+                Sample(key, pixel, initialScope, chain.Iteration, static_cast<uint16>(dimension));
         const rhi::RasterStatus status = evaluate(context, chain.Primary, chain.Radiance);
         if (status != rhi::RasterStatus::Ready)
             return status;
         chain.Target = ComputeTarget(options, chain.Radiance);
         chain.IsInitialized = true;
     }
+    math::JumpRestoreRates rates{0, 1};
+    float32 holdingTime = 1;
+    bool isRestoration = false;
+    if (isJumpRestore == true)
+    {
+        if (math::TryComputeJumpRestoreRates(chain.Target, options.RestorationScale, rates) !=
+                math::MathStatus::Success ||
+            math::TrySampleJumpRestoreHoldingTime(
+                Sample(key, pixel, proposalScope, chain.Iteration, HOLDING_TIME_DIMENSION),
+                rates.MeanHoldingTime,
+                holdingTime) != math::MathStatus::Success)
+            return rhi::RasterStatus::InvalidDescription;
+        isRestoration =
+            Sample(key, pixel, proposalScope, chain.Iteration, LARGE_STEP_DIMENSION) < rates.RestoreProbability;
+    }
     const bool isLargeStep =
-        Sample(key, pixel, PROPOSAL_SCOPE, chain.Iteration, LARGE_STEP_DIMENSION) < options.LargeStepProbability;
+        isJumpRestore == true
+            ? isRestoration
+            : Sample(key, pixel, proposalScope, chain.Iteration, LARGE_STEP_DIMENSION) < options.LargeStepProbability;
     MetropolisPrimary proposal;
     for (usize dimension = 0; dimension < METROPOLIS_PRIMARY_DIMENSIONS; ++dimension)
     {
         if (math::TryMutateMetropolisPrimary(
                 chain.Primary[dimension],
-                Sample(key, pixel, PROPOSAL_SCOPE, chain.Iteration, static_cast<uint16>(dimension)),
+                Sample(key, pixel, proposalScope, chain.Iteration, static_cast<uint16>(dimension)),
                 options.SmallStepRadius,
                 isLargeStep,
                 proposal[dimension]) != math::MathStatus::Success)
@@ -95,25 +116,31 @@ rhi::RasterStatus AdvanceMetropolisChain(const MetropolisOptions& options,
     if (math::TryComputeSymmetricMetropolisAcceptance(chain.Target, proposedTarget, acceptance) !=
         math::MathStatus::Success)
         return rhi::RasterStatus::Failed;
-    const bool isAccepted = Sample(key, pixel, PROPOSAL_SCOPE, chain.Iteration, ACCEPTANCE_DIMENSION) < acceptance;
+    const bool isAccepted =
+        isRestoration == true || Sample(key, pixel, proposalScope, chain.Iteration, ACCEPTANCE_DIMENSION) < acceptance;
     if (chain.Iteration >= options.BurnIn)
     {
         math::MathStatus status = math::MathStatus::Success;
         if (estimator == MetropolisEstimator::Standard)
-            status = math::TryAddWeightedRadiance(chain.Radiance, 1 / chain.Target, chain.Accumulation);
+            status = math::TryAddWeightedRadiance(chain.Radiance, holdingTime / chain.Target, chain.Accumulation);
         else if (estimator == MetropolisEstimator::WasteRecycling)
         {
-            status = math::TryAddWeightedRadiance(chain.Radiance, (1 - acceptance) / chain.Target, chain.Accumulation);
-            if (status == math::MathStatus::Success)
-                status =
-                    math::TryAddWeightedRadiance(proposedRadiance, acceptance / proposedTarget, chain.Accumulation);
+            const float32 currentWeight = isRestoration == true ? 1 : 1 - acceptance;
+            status = math::TryAddWeightedRadiance(chain.Radiance,
+                                                  holdingTime * currentWeight / chain.Target,
+                                                  chain.Accumulation);
+            if (status == math::MathStatus::Success && isRestoration == false)
+                status = math::TryAddWeightedRadiance(proposedRadiance,
+                                                      holdingTime * acceptance / proposedTarget,
+                                                      chain.Accumulation);
         }
         else
         {
-            status = math::TryAdvanceMetropolisTour(acceptance, chain.Tour);
+            if (isRestoration == false)
+                status = math::TryAdvanceMetropolisTour(acceptance, chain.Tour);
             if (status == math::MathStatus::Success && isAccepted == true)
                 status = math::TryAddWeightedRadiance(chain.Radiance,
-                                                      chain.Tour.HoldingWeight / chain.Target,
+                                                      chain.Tour.HoldingWeight * rates.MeanHoldingTime / chain.Target,
                                                       chain.Accumulation);
         }
         if (status != math::MathStatus::Success)
@@ -133,6 +160,35 @@ rhi::RasterStatus AdvanceMetropolisChain(const MetropolisOptions& options,
     inoutChain = chain;
     outRadiance = radiance;
     return rhi::RasterStatus::Ready;
+}
+} // namespace
+
+rhi::RasterStatus AdvanceMetropolisChain(const MetropolisOptions& options,
+                                         MetropolisEstimator estimator,
+                                         math::RandomKey key,
+                                         uint32 pixel,
+                                         MetropolisEvaluator evaluate,
+                                         const void* context,
+                                         MetropolisChain& inoutChain,
+                                         math::Vector3& outRadiance) noexcept
+{
+    return AdvanceChain(options, estimator, key, pixel, evaluate, context, inoutChain, outRadiance, false);
+}
+
+// Thanks to Holl, Singh and Seidel, "Rao-Blackwellized Markov chain Monte Carlo
+// Light Transport", SIGGRAPH 2026, section 6, Algorithm 6.2,
+// https://arxiv.org/abs/2605.09117 . Unit-rate MH local moves and uniform
+// restorations; time-weighted ratios retain the template's normalization contract.
+rhi::RasterStatus AdvanceJumpRestoreChain(const MetropolisOptions& options,
+                                          MetropolisEstimator estimator,
+                                          math::RandomKey key,
+                                          uint32 pixel,
+                                          MetropolisEvaluator evaluate,
+                                          const void* context,
+                                          MetropolisChain& inoutChain,
+                                          math::Vector3& outRadiance) noexcept
+{
+    return AdvanceChain(options, estimator, key, pixel, evaluate, context, inoutChain, outRadiance, true);
 }
 
 rhi::RasterStatus EvaluateMetropolisPath(const ReferenceSceneData& scene,

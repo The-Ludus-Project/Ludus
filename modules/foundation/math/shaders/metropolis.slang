@@ -19,6 +19,42 @@ struct WeightedRadiance
     float4 Compensation;
 };
 
+// Holl, Singh and Seidel (2026), sections 6.1/6.3 and Appendix C; see metropolis.cpp.
+struct JumpRestoreRates
+{
+    float RestoreProbability;
+    float MeanHoldingTime;
+};
+bool TryComputeJumpRestoreRates(float target, float restorationScale, out JumpRestoreRates outRates)
+{
+    outRates = (JumpRestoreRates)0;
+    if (isfinite(target) == false || isfinite(restorationScale) == false || target < METROPOLIS_MINIMUM_NORMAL ||
+        restorationScale < METROPOLIS_MINIMUM_NORMAL)
+        return false;
+    if (target >= restorationScale)
+    {
+        float ratio = restorationScale / target;
+        outRates.MeanHoldingTime = 1 / (1 + ratio);
+        outRates.RestoreProbability = ratio * outRates.MeanHoldingTime;
+    }
+    else
+    {
+        float ratio = target / restorationScale;
+        outRates.RestoreProbability = 1 / (1 + ratio);
+        outRates.MeanHoldingTime = ratio * outRates.RestoreProbability;
+    }
+    return outRates.MeanHoldingTime > 0 && outRates.RestoreProbability > 0;
+}
+bool TrySampleJumpRestoreHoldingTime(float ticket, float meanHoldingTime, out float outTime)
+{
+    outTime = 0;
+    if (isfinite(ticket) == false || isfinite(meanHoldingTime) == false || ticket < 0 || ticket >= 1 ||
+        meanHoldingTime <= 0 || meanHoldingTime > 1)
+        return false;
+    outTime = -log(1 - ticket) * meanHoldingTime;
+    return isfinite(outTime);
+}
+
 bool TryComputeSymmetricMetropolisAcceptance(float currentTarget, float proposedTarget, out float outAcceptance)
 {
     outAcceptance = 0;

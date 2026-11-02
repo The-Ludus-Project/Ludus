@@ -874,7 +874,8 @@ measured improvements.
 ## Metropolis sampling and weighted radiance
 
 `metropolis.hpp` owns the versioned symmetric toroidal primary-sample mutation,
-positive-target MH acceptance, the practical RB tour recurrence and transactional
+positive-target MH acceptance, Jump Restore competing-event rates/exponential times,
+the practical RB tour recurrence and transactional
 compensated FP32 weighted radiance sums. `shaders/metropolis.slang` implements the
 same arithmetic on the GPU. Each caller owns one tour and accumulator per chain;
 there is no allocation, shared mutable RNG or hidden reset. Invalid input and
@@ -884,6 +885,10 @@ candidate state. Zero-weight updates are no-ops and an empty sum resolves to bla
 The [MH template contract](../development/render-graph-authoring.md#use-the-rao-blackwellized-mh-template)
 owns transport, random scopes, iteration counts, lifecycle and the estimator's
 finite-sample bias. It credits Holl, Singh and Seidel (2026), section 5.4 and
-Algorithm 5.2. These primitives do not make arbitrary MCMC chains stationary or
+Algorithms 5.2/6.2 and section 6. Jump Restore uses unit local rate and a uniform
+restoration kernel with killing rate `restorationScale/target`. Independent uniform
+tickets select the event and exponential holding time; RB replaces that time with
+its conditional mean. Rates are computed without adding large targets or forming
+an overflowing killing rate. These primitives do not make arbitrary MCMC chains stationary or
 their self-normalized estimates unbiased; the caller must establish proposal
 symmetry, positive support and correct numerator/denominator measures.

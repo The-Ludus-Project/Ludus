@@ -28,6 +28,7 @@ struct MetropolisOptions final
     float32 LargeStepProbability = METROPOLIS_DEFAULT_LARGE_STEP_PROBABILITY;
     float32 SmallStepRadius = METROPOLIS_DEFAULT_SMALL_STEP_RADIUS;
     float32 TargetFloor = 1;
+    float32 RestorationScale = 1;
 };
 struct MetropolisChain final
 {
@@ -58,6 +59,21 @@ using MetropolisEvaluator = rhi::RasterStatus (*)(const void*, const MetropolisP
                                                        const void* context,
                                                        MetropolisChain& inoutChain,
                                                        math::Vector3& outRadiance) noexcept;
+
+/// Independent Jump Restore CPU oracle with unit-rate small-step MH local dynamics
+/// and uniform restorations at rate RestorationScale/target. One competing event
+/// per call; the standard, waste-recycling and RB modes estimate the same weighted
+/// ratio as MH. RB flushes at accepted local moves and restorations. Event clocks
+/// and acceptance use independent addressed dimensions. Failure preserves chain/output.
+/// Keep evaluator/context/key/pixel/options fixed until resetting; no allocation.
+[[nodiscard]] rhi::RasterStatus AdvanceJumpRestoreChain(const MetropolisOptions& options,
+                                                        MetropolisEstimator estimator,
+                                                        math::RandomKey key,
+                                                        uint32 pixel,
+                                                        MetropolisEvaluator evaluate,
+                                                        const void* context,
+                                                        MetropolisChain& inoutChain,
+                                                        math::Vector3& outRadiance) noexcept;
 
 /// CPU transport oracle over the renderer's retained scene. BSDF-only finite-depth
 /// reflection, mesh emission and environment; no NEE, roulette or energy clamps.

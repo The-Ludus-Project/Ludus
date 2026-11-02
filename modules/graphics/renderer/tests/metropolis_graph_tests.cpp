@@ -36,12 +36,14 @@ struct Session final
     }
 };
 
-void LoadPackage(renderer::RenderGraphPackage& outPackage)
+void LoadPackage(bool isJumpRestoreOnly, renderer::RenderGraphPackage& outPackage)
 {
     filesystem::Directory directory;
-    REQUIRE(directory.Open(LUDUS_MH_TEMPLATE_DIRECTORY).Succeeded() == true);
+    REQUIRE(directory.Open(isJumpRestoreOnly == true ? LUDUS_JR_TEMPLATE_DIRECTORY : LUDUS_MH_TEMPLATE_DIRECTORY)
+                .Succeeded() == true);
     filesystem::File file;
-    REQUIRE(directory.OpenRead("mh_graph.lurgrt", file).Succeeded() == true);
+    REQUIRE(directory.OpenRead(isJumpRestoreOnly == true ? "jump_restore_graph.lurgrt" : "mh_graph.lurgrt", file)
+                .Succeeded() == true);
     Array<uint8> bytes;
     REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
     const filesystem::ReadResult read = file.ReadAt(0, bytes.AsSpan());
@@ -53,6 +55,12 @@ void LoadPackage(renderer::RenderGraphPackage& outPackage)
 
 TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in", "[renderer][gpu][metropolis-graph]")
 {
+    bool isJumpRestoreOnly = false;
+    SECTION("MH and Jump Restore RB alongside") {}
+    SECTION("Jump Restore estimator comparison")
+    {
+        isJumpRestoreOnly = true;
+    }
     Session session;
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
@@ -65,12 +73,12 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
         SKIP("No compute adapter");
     REQUIRE(created == rhi::DeviceStatus::Ready);
     renderer::RenderGraphPackage package;
-    LoadPackage(package);
+    LoadPackage(isJumpRestoreOnly, package);
     const renderer::RenderGraphPlan plan = package.GetPlan();
     const renderer::RenderGraphPrograms programs = package.GetPrograms(ludus::shaders::renderer_composite::Vertex(),
                                                                        ludus::shaders::renderer_composite::Fragment());
     REQUIRE(renderer::RequiresHardwareRayTracing(plan) == false);
-    REQUIRE(plan.Passes.GetSize() == 3);
+    REQUIRE(plan.Passes.GetSize() == (isJumpRestoreOnly == true ? 3 : 4));
     renderer::SceneShaderInputs inputs;
     inputs.Environment = ENVIRONMENT;
     StaticArray<renderer::ViewDescription, CAMERA_COUNT> cameras;

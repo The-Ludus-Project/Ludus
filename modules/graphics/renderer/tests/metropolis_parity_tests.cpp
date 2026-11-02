@@ -16,6 +16,7 @@ namespace
 using namespace ludus::foundation;
 namespace internal = ludus::graphics::renderer::internal;
 namespace rhi = ludus::graphics::rhi;
+using AdvanceChainFunction = decltype(&internal::AdvanceMetropolisChain);
 using rhi::RasterStatus;
 constexpr uint64 TIMEOUT_NANOSECONDS = 30 * time::NANOSECONDS_PER_SECOND;
 constexpr usize READBACK_CHUNK_BYTES = 64 * 1024;
@@ -170,7 +171,7 @@ bool IsAccepted(RasterStatus status) noexcept
 }
 
 /// Run the estimator kernel once and read back every record. Returns false without a native GPU adapter.
-bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, Array<uint8>& outBytes)
+bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, bool isJumpRestore, Array<uint8>& outBytes)
 {
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
@@ -199,6 +200,7 @@ bool RunEstimatorKernel(ludus::content::scene_format::MaterialModel model, Array
     uniform.SurfaceLayout[0] = LUDUS_GPU_PREVIEW_SURFACE_WORDS;
     uniform.Sampling[0] = static_cast<uint32>(RANDOM_KEY.Value);
     uniform.Sampling[1] = static_cast<uint32>(RANDOM_KEY.Value >> 32);
+    uniform.Sampling[2] = isJumpRestore == true ? 1 : 0;
     uniform.Environment = {ENVIRONMENT.X, ENVIRONMENT.Y, ENVIRONMENT.Z, 0};
     uniform.Options.Z = GetFloat(SURFACE_COUNT);
     uniform.Options.W = GetFloat(ludus::content::render_graph_format::SCENE_DATA_ALL);
@@ -342,7 +344,24 @@ TEST_CASE("Template MH transport and all weighted estimators match an independen
 {
     using ludus::content::scene_format::MaterialModel;
     MaterialModel model = MaterialModel::Diffuse;
-    SECTION("typed diffuse") {}
+    bool isJumpRestore = false;
+    SECTION("MH diffuse") {}
+    SECTION("Jump Restore diffuse")
+    {
+        isJumpRestore = true;
+    }
+    SECTION("Jump Restore conductor")
+    {
+        isJumpRestore = true;
+        model = MaterialModel::Conductor;
+    }
+    SECTION("Jump Restore legacy")
+    {
+        isJumpRestore = true;
+        model = MaterialModel::MetallicRoughness;
+    }
+    const AdvanceChainFunction advance =
+        isJumpRestore == true ? internal::AdvanceJumpRestoreChain : internal::AdvanceMetropolisChain;
     SECTION("typed conductor")
     {
         model = MaterialModel::Conductor;
@@ -353,7 +372,7 @@ TEST_CASE("Template MH transport and all weighted estimators match an independen
     }
     rhi::Shutdown();
     Array<uint8> bytes;
-    if (RunEstimatorKernel(model, bytes) == false)
+    if (RunEstimatorKernel(model, isJumpRestore, bytes) == false)
     {
         rhi::Shutdown();
         SKIP("No native compute adapter");
@@ -374,14 +393,14 @@ TEST_CASE("Template MH transport and all weighted estimators match an independen
             internal::MetropolisChain chain;
             math::Vector3 expected;
             for (uint32 iteration = 0; iteration < LUDUS_MH_PARITY_ITERATIONS; ++iteration)
-                REQUIRE(internal::AdvanceMetropolisChain(options,
-                                                         static_cast<internal::MetropolisEstimator>(estimator),
-                                                         RANDOM_KEY,
-                                                         pixel,
-                                                         EvaluatePath,
-                                                         &context,
-                                                         chain,
-                                                         expected) == RasterStatus::Ready);
+                REQUIRE(advance(options,
+                                static_cast<internal::MetropolisEstimator>(estimator),
+                                RANDOM_KEY,
+                                pixel,
+                                EvaluatePath,
+                                &context,
+                                chain,
+                                expected) == RasterStatus::Ready);
             if (estimator == 0)
             {
                 internal::MetropolisPathAovs aovs;

@@ -145,7 +145,7 @@
     {
       "kind": "graph",
       "identity": "rao-blackwell-mh",
-      "label": "Rao-Blackwellized MH light transport",
+      "label": "Rao-Blackwellized MH and Jump Restore light transport",
       "category": "ray-traced",
       "requirements": [
         "compute-ray-tracing"
@@ -156,9 +156,10 @@
         "rao blackwell",
         "mcmc",
         "weighted accumulation",
-        "path tracing"
+        "path tracing",
+        "jump restore"
       ],
-      "description": "Three estimators sharing one per-pixel MH chain compare the paper’s RB estimator, standard MH and waste recycling. Bounded BSDF path transport from mesh emission and environment, with primary-space mutations, burn-in and persistent weighted sums. Requires Metal or Vulkan compute. Analytic lights and coated diffuse are unsupported; finite-sample ratios and the paper’s practical RB truncation are biased."
+      "description": "The default compares MH RB, standard, waste recycling and Jump Restore RB. The JumpRestore configuration compares the three JR estimators. Bounded BSDF transport uses mesh emission/environment, burn-in, persistent weighted sums and state-dependent uniform restorations. Requires Metal or Vulkan compute. Analytic lights and coated diffuse are unsupported; finite-sample ratios and practical RB truncation are biased."
     },
     {
       "kind": "graph",
@@ -292,7 +293,7 @@
     {
       "kind": "snippet",
       "identity": "rao-blackwell-mh",
-      "label": "Rao-Blackwellized MH light transport",
+      "label": "Rao-Blackwellized MH and Jump Restore light transport",
       "category": "lighting",
       "defaultConfiguration": "RaoBlackwellMh",
       "requirements": [
@@ -304,9 +305,10 @@
         "rao blackwell",
         "mcmc",
         "weighted accumulation",
-        "path tracing"
+        "path tracing",
+        "jump restore"
       ],
-      "description": "Three estimators sharing one per-pixel MH chain compare the paper’s RB estimator, standard MH and waste recycling. Bounded BSDF path transport from mesh emission and environment, with primary-space mutations, burn-in and persistent weighted sums. Requires Metal or Vulkan compute. Analytic lights and coated diffuse are unsupported; finite-sample ratios and the paper’s practical RB truncation are biased."
+      "description": "The default compares MH RB, standard, waste recycling and Jump Restore RB. The JumpRestore configuration compares the three JR estimators. Bounded BSDF transport uses mesh emission/environment, burn-in, persistent weighted sums and state-dependent uniform restorations. Requires Metal or Vulkan compute. Analytic lights and coated diffuse are unsupported; finite-sample ratios and practical RB truncation are biased."
     },
     {
       "kind": "snippet",

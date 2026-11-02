@@ -83,14 +83,14 @@ PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
 /// steinberg-physical-optics has the same four-pass shape under steinberg_physical_optics/ (wave optics, radiometric
 /// and coherence), with three surface and three visibility queries. restir-gi imports the initial-sample, temporal,
 /// spatial and shade passes under restir_gi/, which share three render-size Buffers (initial samples, temporal and
-/// spatial reservoirs), with four surface and sixteen visibility queries. rao-blackwell-mh imports three compute-BVH
-/// passes (RB, standard MH, waste recycling), sharing two Buffers (208 bytes per render pixel), eight surface queries
-/// and five Graph settings. Its weighted results replace successive ratios. Kernels arrive with their local include
-/// closure. A template's Graph settings merge like ReSTIR's (existing values are kept). The shared ray technique gains
-/// scene_interface version 1 when it lacks one, and its query budgets are raised to the template's; its callbacks,
-/// payload and larger budgets are retained. Requires a Metal or Vulkan profile. Authored shader bytes are never
-/// replaced: source/program collisions, unsupported scene interface versions and capacity limits report a repair.
-/// Caller owns/discards the snapshot; GUI thread; no disk writes.
+/// spatial reservoirs), with four surface and sixteen visibility queries. rao-blackwell-mh imports four compute-BVH
+/// passes (MH RB, standard, waste recycling, JR RB), sharing four Buffers (416 bytes per render pixel),
+/// eight surface queries and six Graph settings. Its weighted results replace successive ratios. Kernels arrive with
+/// their local include closure. A template's Graph settings merge like ReSTIR's (existing values are kept). The shared
+/// ray technique gains scene_interface version 1 when it lacks one, and its query budgets are raised to the template's;
+/// its callbacks, payload and larger budgets are retained. Requires a Metal or Vulkan profile. Authored shader bytes
+/// are never replaced: source/program collisions, unsupported scene interface versions and capacity limits report a
+/// repair. Caller owns/discards the snapshot; GUI thread; no disk writes.
 [[nodiscard]] RenderGraphDocumentStatus
 PrepareComputeRayTracingConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                       const QString& rootGraph,

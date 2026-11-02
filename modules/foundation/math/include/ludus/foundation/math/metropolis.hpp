@@ -36,6 +36,31 @@ struct WeightedRadiance final
 [[nodiscard]] MathStatus
 TryComputeSymmetricMetropolisAcceptance(float32 currentTarget, float32 proposedTarget, float32& outAcceptance) noexcept;
 
+/// Jump Restore event law for unit-rate local MH dynamics and uniform restorations.
+/// Killing rate is restorationScale/target, with the target normalization absorbed
+/// into the positive scale (Holl et al. 2026, section 6 and Appendix C).
+struct JumpRestoreRates final
+{
+    /// Probability that the next event restores a new uniform primary state.
+    float32 RestoreProbability = 0;
+    /// Conditional mean holding time, 1/(1 + restorationScale/target), in local-clock units.
+    float32 MeanHoldingTime = 0;
+};
+
+/// Compute the competing-event probabilities without forming an overflowing rate.
+/// Both inputs must be finite, positive normal FP32 values. No allocation/thread affinity.
+/// @return Success, NonFiniteInput, InvalidArgument or OutOfRange if the mean underflows;
+/// failure preserves outRates.
+[[nodiscard]] MathStatus
+TryComputeJumpRestoreRates(float32 target, float32 restorationScale, JumpRestoreRates& outRates) noexcept;
+
+/// Sample Exp(1/meanHoldingTime) with an independent uniform ticket in [0,1).
+/// meanHoldingTime must be finite and in (0,1], matching the unit local-rate event law.
+/// Uses -log(1-ticket)*meanHoldingTime; a zero ticket gives zero time, never infinity.
+/// @return Success, NonFiniteInput, InvalidArgument or OutOfRange; failure preserves outTime.
+[[nodiscard]] MathStatus
+TrySampleJumpRestoreHoldingTime(float32 ticket, float32 meanHoldingTime, float32& outTime) noexcept;
+
 /// Wrap a symmetric uniform small step on [0,1), or return ticket for a large step.
 /// Inputs are finite, current/ticket in [0,1), and radius in (0,0.5]. Large-step choice
 /// must be independent of the state. The mixture then needs no proposal-density ratio.

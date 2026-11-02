@@ -118,6 +118,15 @@
       "input": "RayLaunch",
       "output": "Radiance",
       "bindings": []
+    },
+    {
+      "id": "JumpRestore",
+      "stage": "compute",
+      "source": "main_shaders/chain.slang",
+      "function": "ShadeJumpRestore",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
     }
   ],
   "techniques": [
@@ -191,7 +200,7 @@
     },
     {
       "id": "MH_BURN_IN",
-      "label": "Burn-in proposals (excluded from weighted sums)",
+      "label": "Burn-in MH iterations / Jump Restore events",
       "type": "UInt32",
       "value": 128,
       "minimum": 0,
@@ -216,6 +225,14 @@
     {
       "id": "MH_TARGET_FLOOR",
       "label": "Positive target floor (linear radiance)",
+      "type": "Float32",
+      "value": 1,
+      "minimum": 0.0001,
+      "maximum": 10000
+    },
+    {
+      "id": "JR_RESTORATION_SCALE",
+      "label": "Jump Restore killing-rate scale (target / local-clock time)",
       "type": "Float32",
       "value": 1,
       "minimum": 0.0001,

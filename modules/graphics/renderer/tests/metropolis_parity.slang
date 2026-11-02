@@ -7,6 +7,7 @@ float3 EvaluateGraphRay(uint pixel);
 
 static const uint MH_SCATTERING_DEPTH = 3;
 static const uint MH_BURN_IN = 32;
+static const float JR_RESTORATION_SCALE = 1;
 static const float MH_LARGE_STEP_PROBABILITY = 0.3f;
 static const float MH_SMALL_STEP_RADIUS = 0.05f;
 static const float MH_TARGET_FLOOR = 1;
@@ -21,6 +22,7 @@ float3 EvaluateGraphRay(uint pixel)
 }
 
 [numthreads(LUDUS_MH_PARITY_GROUP_SIZE, 1, 1)] void MetropolisParityMain(uint3 dispatchPixel : SV_DispatchThreadID) {
+    bool isJumpRestore = Sampling.z != 0;
     uint pixel = dispatchPixel.x;
     if (pixel >= LUDUS_MH_PARITY_INVOCATIONS)
         return;
@@ -51,7 +53,8 @@ float3 EvaluateGraphRay(uint pixel)
             uint estimator = pass == 0 ? MH_RAO_BLACKWELL : pass - 1;
             RayQueryContext queries = (RayQueryContext)0;
             queries.MaximumSurfaceQueries = 8;
-            radiances[estimator] = AdvanceMetropolisChain(scene, launch, queries, estimator);
+            radiances[estimator] = pass == 0 ? AdvanceMetropolisChain(scene, launch, queries, estimator, isJumpRestore)
+                                             : AdvanceMetropolisChain(scene, launch, queries, estimator);
             failures[estimator] += queries.HasFailed == true ? 1 : 0;
         }
     }
@@ -77,18 +80,47 @@ float3 EvaluateGraphRay(uint pixel)
     Results[resultBase + LUDUS_MH_PARITY_INDIRECT_WORD] = uint4(asuint(aovs.Indirect), 0);
     launch.SampleIndex = LUDUS_MH_PARITY_ITERATIONS;
     RayQueryContext failedQueries = (RayQueryContext)0;
-    AdvanceMetropolisChain(scene, launch, failedQueries, MH_RAO_BLACKWELL);
+    AdvanceMetropolisChain(scene, launch, failedQueries, MH_RAO_BLACKWELL, isJumpRestore);
     uint lifecycleFailures = failedQueries.HasFailed == true &&
                                      all(GraphBuffer0[chainBase + MH_IDENTITY_WORD] == previousIdentity) == true &&
                                      all(GraphBuffer1[filmBase] == previousFilm) == true
                                  ? 0
                                  : 1;
+    // Force a real restoration with a known unfinished RB state. The restoration
+    // must flush H/c, reset H/P, and replace the state without an MH acceptance test.
+    if (isJumpRestore == true)
+    {
+        JumpRestoreRates rates;
+        TryComputeJumpRestoreRates(2, JR_RESTORATION_SCALE, rates);
+        static const uint MAXIMUM_RESTORE_TICKETS = 128;
+        uint ticket = 0;
+        [loop] for (; ticket < MAXIMUM_RESTORE_TICKETS; ++ticket)
+        {
+            launch.SampleIndex = LUDUS_MH_PARITY_ITERATIONS + ticket;
+            if (SampleMetropolisRandom(launch, JR_PROPOSAL_SCOPE, MH_LARGE_STEP_DIMENSION) < rates.RestoreProbability)
+                break;
+        }
+        GraphBuffer0[chainBase + MH_CURRENT_WORD] = asuint(float4(1, 1, 1, 2));
+        GraphBuffer0[chainBase + MH_TOUR_WORD] = uint4(asuint(0.25f), asuint(1.75f), MH_BURN_IN, 0);
+        GraphBuffer0[chainBase + MH_IDENTITY_WORD] = uint4(launch.Seed, MH_RECORD_VERSION, launch.SampleIndex);
+        [unroll] for (uint word = 0; word < LUDUS_MH_FILM_WORDS; ++word) GraphBuffer1[filmBase + word] = uint4(0);
+        RayQueryContext restoreQueries = (RayQueryContext)0;
+        restoreQueries.MaximumSurfaceQueries = 8;
+        AdvanceMetropolisChain(scene, launch, restoreQueries, MH_RAO_BLACKWELL, true);
+        float4 restoredFilm = asfloat(GraphBuffer1[filmBase + MH_RAO_BLACKWELL * LUDUS_MH_ACCUMULATOR_WORDS]);
+        float4 restoredTour = asfloat(GraphBuffer0[chainBase + MH_TOUR_WORD]);
+        lifecycleFailures += ticket == MAXIMUM_RESTORE_TICKETS || restoreQueries.HasFailed == true ||
+                                     abs(restoredFilm.w - 1.75f * rates.MeanHoldingTime / 2) > 0.000001f ||
+                                     restoredTour.x != 1 || restoredTour.y != 1
+                                 ? 1
+                                 : 0;
+    }
     // Even pixels model a camera reset with an unchanged scene/seed; odd pixels a World replacement.
     scene.Generation.x += pixel % 2;
     launch.SampleIndex = 0;
     RayQueryContext resetQueries = (RayQueryContext)0;
     resetQueries.MaximumSurfaceQueries = 8;
-    float3 resetRadiance = AdvanceMetropolisChain(scene, launch, resetQueries, MH_RAO_BLACKWELL);
+    float3 resetRadiance = AdvanceMetropolisChain(scene, launch, resetQueries, MH_RAO_BLACKWELL, isJumpRestore);
     lifecycleFailures += resetQueries.HasFailed == true ? 1 : 0;
     // Exercise the same primitives on exact inputs, independently of transport rounding.
     MetropolisTour tour;

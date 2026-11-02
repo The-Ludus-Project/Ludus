@@ -1912,10 +1912,17 @@ TEST_CASE("MH template picker and canvas import expose all estimators with Prope
     {
         CreateGraphFromPicker(workspace, QStringLiteral("rao-blackwell-mh"));
         RenderGraphDocument& document = workspace.GetDocument();
-        CHECK(document.GetDraft(ROOT_GRAPH).count("\"Accumulate\"") == 3);
+        CHECK(document.GetDraft(ROOT_GRAPH).count("\"Accumulate\"") == 7);
         CHECK(document.GetDraft(QStringLiteral("main_shaders/chain.slang")).contains("TryAdvanceMetropolisTour") ==
               true);
         CHECK(document.GetDraft(QStringLiteral("main_shaders/path.slang")).contains("EvaluateMetropolisPath") == true);
+        QComboBox* configurationsOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphConfiguration"));
+        REQUIRE(configurationsOrNull != nullptr);
+        const int32 restoreConfiguration = configurationsOrNull->findText(QStringLiteral("JumpRestore"));
+        REQUIRE(restoreConfiguration >= 0);
+        configurationsOrNull->setCurrentIndex(restoreConfiguration);
+        CHECK(workspace.GetConfiguration() == QStringLiteral("JumpRestore"));
+        CHECK(inspector->isVisible() == false);
         RequireValidation(workspace);
     }
     SECTION("root canvas import")
@@ -1961,8 +1968,10 @@ TEST_CASE("MH template picker and canvas import expose all estimators with Prope
         CHECK(inspector->isVisible() == false);
         RenderGraphDocument& document = workspace.GetDocument();
         const QByteArray library = document.GetDraft(QStringLiteral("Metropolis.lurender.json"));
-        for (const char* program :
-             {"RaoBlackwellMhRaoBlackwell", "RaoBlackwellMhStandard", "RaoBlackwellMhWasteRecycling"})
+        for (const char* program : {"RaoBlackwellMhRaoBlackwell",
+                                    "RaoBlackwellMhJumpRestore",
+                                    "RaoBlackwellMhStandard",
+                                    "RaoBlackwellMhWasteRecycling"})
             CHECK(library.contains(program) == true);
         CHECK(document.GetDraft(QStringLiteral("rao_blackwell_mh/main_shaders/path.slang")).isEmpty() == false);
         CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("MH_BURN_IN") == true);

@@ -37,6 +37,12 @@
           "type": "ColorTexture",
           "source": "shadeWasteRecycling.color",
           "required": false
+        },
+        {
+          "id": "jumpRestore",
+          "type": "ColorTexture",
+          "source": "shadeJumpRestore.color",
+          "required": false
         }
       ],
       "nodes": [
@@ -285,6 +291,98 @@
           "id": "renderSize",
           "kind": "RenderSize",
           "extent": "Texture"
+        },
+        {
+          "id": "jumpRestoreChains",
+          "kind": "Buffer",
+          "bytes_per_pixel": 112,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "jumpRestoreFilms",
+          "kind": "Buffer",
+          "bytes_per_pixel": 96,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "shadeJumpRestore",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "target": "chains",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "target": "films",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "JumpRestore"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "jumpRestore",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
         }
       ],
       "edges": [
@@ -367,6 +465,405 @@
         {
           "from": "renderSize.size",
           "to": "films.size"
+        },
+        {
+          "from": "input.scene",
+          "to": "shadeJumpRestore.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shadeJumpRestore.view"
+        },
+        {
+          "from": "jumpRestore.texture",
+          "to": "shadeJumpRestore.color"
+        },
+        {
+          "from": "jumpRestoreChains.buffer",
+          "to": "shadeJumpRestore.chains"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "jumpRestoreChains.size"
+        },
+        {
+          "from": "jumpRestoreFilms.buffer",
+          "to": "shadeJumpRestore.films"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "jumpRestoreFilms.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "jumpRestore.size"
+        }
+      ]
+    },
+    {
+      "id": "JumpRestore",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "color",
+          "type": "ColorTexture",
+          "source": "shadeJumpRestore.color",
+          "required": true
+        },
+        {
+          "id": "standard",
+          "type": "ColorTexture",
+          "source": "shadeJumpRestoreStandard.color",
+          "required": false
+        },
+        {
+          "id": "wasteRecycling",
+          "type": "ColorTexture",
+          "source": "shadeJumpRestoreWasteRecycling.color",
+          "required": false
+        }
+      ],
+      "nodes": [
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": "Texture"
+        },
+        {
+          "id": "jumpRestoreChains",
+          "kind": "Buffer",
+          "bytes_per_pixel": 112,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "jumpRestoreFilms",
+          "kind": "Buffer",
+          "bytes_per_pixel": 96,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "shadeJumpRestore",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "target": "chains",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "target": "films",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "JumpRestore"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "jumpRestoreStandard",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "shadeJumpRestoreStandard",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "target": "chains",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "target": "films",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "Standard"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "jumpRestoreWasteRecycling",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "shadeJumpRestoreWasteRecycling",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "chains",
+              "type": "Buffer",
+              "target": "chains",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "films",
+              "type": "Buffer",
+              "target": "films",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "WasteRecycling"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "from": "input.color",
+          "to": "renderSize.texture"
+        },
+        {
+          "from": "input.scene",
+          "to": "shadeJumpRestore.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shadeJumpRestore.view"
+        },
+        {
+          "from": "input.color",
+          "to": "shadeJumpRestore.color"
+        },
+        {
+          "from": "jumpRestoreChains.buffer",
+          "to": "shadeJumpRestore.chains"
+        },
+        {
+          "from": "input.scene",
+          "to": "shadeJumpRestoreStandard.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shadeJumpRestoreStandard.view"
+        },
+        {
+          "from": "jumpRestoreStandard.texture",
+          "to": "shadeJumpRestoreStandard.color"
+        },
+        {
+          "from": "shadeJumpRestore.chains",
+          "to": "shadeJumpRestoreStandard.chains"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "jumpRestoreStandard.size"
+        },
+        {
+          "from": "input.scene",
+          "to": "shadeJumpRestoreWasteRecycling.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shadeJumpRestoreWasteRecycling.view"
+        },
+        {
+          "from": "jumpRestoreWasteRecycling.texture",
+          "to": "shadeJumpRestoreWasteRecycling.color"
+        },
+        {
+          "from": "shadeJumpRestoreStandard.chains",
+          "to": "shadeJumpRestoreWasteRecycling.chains"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "jumpRestoreWasteRecycling.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "jumpRestoreChains.size"
+        },
+        {
+          "from": "jumpRestoreFilms.buffer",
+          "to": "shadeJumpRestore.films"
+        },
+        {
+          "from": "shadeJumpRestore.films",
+          "to": "shadeJumpRestoreStandard.films"
+        },
+        {
+          "from": "shadeJumpRestoreStandard.films",
+          "to": "shadeJumpRestoreWasteRecycling.films"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "jumpRestoreFilms.size"
         }
       ]
     }
