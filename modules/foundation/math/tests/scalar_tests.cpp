@@ -133,7 +133,7 @@ TEST_CASE("Standard normal quantile inverts the normal CDF across both tails", "
         CHECK(std::abs(static_cast<float64>(ComputeStandardNormalQuantile(probability)) - expected) <=
               1e-6 * (1 + std::abs(expected)));
     }
-    CHECK(std::abs(ComputeStandardNormalQuantile(std::numeric_limits<float32>::min()) + 13.0) < .1F);
+    CHECK(std::abs(ComputeStandardNormalQuantile(std::numeric_limits<float32>::min()) + 13.0F) < .1F);
     for (const float64 outside : {0.0, 1.0, -.25, 1.25, std::numeric_limits<float64>::quiet_NaN()})
     {
         CHECK(IsNaN(ComputeStandardNormalQuantile(outside)) == true);
