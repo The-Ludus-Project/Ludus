@@ -1128,7 +1128,7 @@ usize MakeRoomQuads(bool isDimEmitterPresent, StaticArray<QuadItem, ROOM_QUAD_CO
     dim.Emission = {3, 2.5F, 2};
     dim.BaseColor = {};
     dim.Model = ludus::content::scene_format::MaterialModel::Diffuse;
-    return 4;
+    return ROOM_QUAD_COUNT;
 }
 
 enum class ResampledLightScene : uint8

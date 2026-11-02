@@ -11,7 +11,8 @@ namespace ludus::graphics::renderer::internal
 namespace
 {
 constexpr usize AXIS = LUDUS_WAVE_CONNECTION_AXIS;
-constexpr usize CELLS = LUDUS_WAVE_CONNECTION_CELLS;
+constexpr usize CELLS = static_cast<usize>(LUDUS_WAVE_CONNECTION_CELLS);
+constexpr usize MASK_SAMPLES = static_cast<usize>(LUDUS_WAVE_CONNECTION_MASK_SAMPLES);
 constexpr float64 FRAME_HELPER_COSINE = 0.9;
 constexpr float64 MIN_WAVELENGTH_WORLD =
     static_cast<float64>(static_cast<float32>(LUDUS_WAVE_CONNECTION_MIN_WAVELENGTH_WORLD));
@@ -74,7 +75,13 @@ void TransformLine(WaveGrid& inoutGrid, usize offset, usize stride, bool isInver
         }
     }
 }
-void PropagateGrid(WaveGrid& inoutGrid, float64 distanceWorld, float64 wavelengthWorld, float64 halfWidthWorld) noexcept
+struct WavePropagation final
+{
+    float64 DistanceWorld;
+    float64 WavelengthWorld;
+    float64 HalfWidthWorld;
+};
+void PropagateGrid(WaveGrid& inoutGrid, const WavePropagation& propagation) noexcept
 {
     for (usize index = 0; index < AXIS; ++index)
     {
@@ -89,15 +96,15 @@ void PropagateGrid(WaveGrid& inoutGrid, float64 distanceWorld, float64 wavelengt
         const float64 frequencyY =
             static_cast<float64>(y <= AXIS / 2 ? static_cast<isize>(y)
                                                : static_cast<isize>(y) - static_cast<isize>(AXIS)) /
-            (2 * halfWidthWorld);
+            (2 * propagation.HalfWidthWorld);
         for (usize x = 0; x < AXIS; ++x)
         {
             const float64 frequencyX =
                 static_cast<float64>(x <= AXIS / 2 ? static_cast<isize>(x)
                                                    : static_cast<isize>(x) - static_cast<isize>(AXIS)) /
-                (2 * halfWidthWorld);
-            const float64 phase =
-                -math::kPi * wavelengthWorld * distanceWorld * (frequencyX * frequencyX + frequencyY * frequencyY);
+                (2 * propagation.HalfWidthWorld);
+            const float64 phase = -math::kPi * propagation.WavelengthWorld * propagation.DistanceWorld *
+                                  (frequencyX * frequencyX + frequencyY * frequencyY);
             inoutGrid[y * AXIS + x] = MultiplyField(inoutGrid[y * AXIS + x], MakePhase(phase));
         }
     }
@@ -110,16 +117,19 @@ void PropagateGrid(WaveGrid& inoutGrid, float64 distanceWorld, float64 wavelengt
         TransformLine(inoutGrid, index, AXIS, true);
     }
 }
-WaveField EvaluateGaussian(float64 radiusSquaredWorld,
-                           float64 distanceWorld,
-                           float64 sigmaWorldSquared,
-                           float64 wavenumber) noexcept
+struct GaussianWaveParameters final
 {
-    const float64 correlation = distanceWorld / wavenumber;
-    const float64 denominator = sigmaWorldSquared * sigmaWorldSquared + correlation * correlation;
-    const float64 amplitude = math::Exp(-radiusSquaredWorld * sigmaWorldSquared / (2 * denominator));
-    const WaveField normalization{sigmaWorldSquared * sigmaWorldSquared / denominator,
-                                  -sigmaWorldSquared * correlation / denominator};
+    float64 DistanceWorld;
+    float64 SigmaWorldSquared;
+    float64 Wavenumber;
+};
+WaveField EvaluateGaussian(float64 radiusSquaredWorld, const GaussianWaveParameters& gaussian) noexcept
+{
+    const float64 correlation = gaussian.DistanceWorld / gaussian.Wavenumber;
+    const float64 denominator = gaussian.SigmaWorldSquared * gaussian.SigmaWorldSquared + correlation * correlation;
+    const float64 amplitude = math::Exp(-radiusSquaredWorld * gaussian.SigmaWorldSquared / (2 * denominator));
+    const WaveField normalization{gaussian.SigmaWorldSquared * gaussian.SigmaWorldSquared / denominator,
+                                  -gaussian.SigmaWorldSquared * correlation / denominator};
     const WaveField phase = MakePhase(radiusSquaredWorld * correlation / (2 * denominator));
     const WaveField value = MultiplyField(normalization, phase);
     return {amplitude * value.Real, amplitude * value.Imaginary};
@@ -128,10 +138,15 @@ math::Vector3d WidenVector(math::Vector3 value) noexcept
 {
     return {static_cast<float64>(value.X), static_cast<float64>(value.Y), static_cast<float64>(value.Z)};
 }
+/// Coordinates in the interaction frustum's transverse basis, in world-distance units.
+struct ProjectedPointFrustum final
+{
+    float64 X;
+    float64 Y;
+};
 bool IsProjectedPointBlocked(const ReferenceSceneData& scene,
                              const WaveInteractionRegion& region,
-                             float64 positionXWorld,
-                             float64 positionYWorld) noexcept
+                             const ProjectedPointFrustum& positionFrustum) noexcept
 {
     const math::Vector3d axisXWorld = region.Frustum.AxisXWorld;
     const math::Vector3d axisYWorld = math::Cross(region.Frustum.DirectionWorld, axisXWorld);
@@ -141,12 +156,12 @@ bool IsProjectedPointBlocked(const ReferenceSceneData& scene,
         const math::Vector3d first = WidenVector(triangle.Positions[0]) - region.Frustum.OriginWorld;
         const math::Vector3d second = WidenVector(triangle.Positions[1]) - region.Frustum.OriginWorld;
         const math::Vector3d third = WidenVector(triangle.Positions[2]) - region.Frustum.OriginWorld;
-        const float64 ax = math::Dot(first, axisXWorld) - positionXWorld;
-        const float64 ay = math::Dot(first, axisYWorld) - positionYWorld;
-        const float64 bx = math::Dot(second, axisXWorld) - positionXWorld;
-        const float64 by = math::Dot(second, axisYWorld) - positionYWorld;
-        const float64 cx = math::Dot(third, axisXWorld) - positionXWorld;
-        const float64 cy = math::Dot(third, axisYWorld) - positionYWorld;
+        const float64 ax = math::Dot(first, axisXWorld) - positionFrustum.X;
+        const float64 ay = math::Dot(first, axisYWorld) - positionFrustum.Y;
+        const float64 bx = math::Dot(second, axisXWorld) - positionFrustum.X;
+        const float64 by = math::Dot(second, axisYWorld) - positionFrustum.Y;
+        const float64 cx = math::Dot(third, axisXWorld) - positionFrustum.X;
+        const float64 cy = math::Dot(third, axisYWorld) - positionFrustum.Y;
         const float64 firstWeight = bx * cy - by * cx;
         const float64 secondWeight = cx * ay - cy * ax;
         const float64 thirdWeight = ax * by - ay * bx;
@@ -188,47 +203,65 @@ TraceBallistic(const ReferenceSceneData& scene, math::EllipticalCone rayCone, bo
     {
         const uint32 nodeIndex = stack[--stackCount];
         if (nodeIndex >= scene.Nodes.GetSize())
+        {
             return rhi::RasterStatus::InvalidDescription;
+        }
         const ReferenceBvhNode& node = scene.Nodes[nodeIndex];
         bool canIntersect = false;
         if (math::TryTestEllipticalConeBounds(rayCone,
                                               WidenVector(node.Bounds.Min),
                                               WidenVector(node.Bounds.Max),
                                               canIntersect) == false)
+        {
             return rhi::RasterStatus::InvalidDescription;
+        }
         if (canIntersect == false)
+        {
             continue;
+        }
         if (node.Count == 0)
         {
             if (stackCount > stack.GetSize() - 2)
+            {
                 return rhi::RasterStatus::InvalidDescription;
+            }
             stack[stackCount++] = node.Right;
             stack[stackCount++] = node.Left;
             continue;
         }
         if (node.First > scene.Order.GetSize() || node.Count > scene.Order.GetSize() - node.First)
+        {
             return rhi::RasterStatus::InvalidDescription;
+        }
         for (uint32 slot = 0; slot < node.Count; ++slot)
         {
             const uint32 triangleIndex = scene.Order[node.First + slot];
             if (triangleIndex >= scene.Triangles.GetSize())
+            {
                 return rhi::RasterStatus::InvalidDescription;
+            }
             const ReferenceTriangle& triangle = scene.Triangles[triangleIndex];
             const math::ConeTriangle geometry{WidenVector(triangle.Positions[0]),
                                               WidenVector(triangle.Positions[1]),
                                               WidenVector(triangle.Positions[2])};
             math::ConeTriangleIntersection intersection;
             if (math::TryIntersectEllipticalConeTriangle(rayCone, geometry, intersection) == false)
+            {
                 return rhi::RasterStatus::InvalidDescription;
+            }
             if (intersection.IsHit == false)
+            {
                 continue;
+            }
             if (scene.Instances.IsEmpty() == true)
             {
                 outIsBlocked = true;
                 return rhi::RasterStatus::Ready;
             }
             if (triangle.Instance >= scene.Instances.GetSize())
+            {
                 return rhi::RasterStatus::InvalidDescription;
+            }
             const float32 u = static_cast<float32>(intersection.NearBarycentric.Y);
             const float32 v = static_cast<float32>(intersection.NearBarycentric.Z);
             if (ReferenceOpacity(scene.Instances[triangle.Instance],
@@ -243,20 +276,24 @@ TraceBallistic(const ReferenceSceneData& scene, math::EllipticalCone rayCone, bo
     outIsBlocked = false;
     return rhi::RasterStatus::Ready;
 }
+struct WaveOriginEscape final
+{
+    float64 DistanceWorld = 0;
+    bool IsBlocked = false;
+    bool IsEntirelyBallistic = false;
+};
 rhi::RasterStatus EscapeWaveOrigin(const ReferenceSceneData& scene,
                                    const math::EllipticalCone& cone,
                                    float64 wavelengthWorld,
-                                   float64& outDistanceWorld,
-                                   bool& outIsBlocked,
-                                   bool& outIsEntirelyBallistic) noexcept
+                                   WaveOriginEscape& outEscape) noexcept
 {
     float64 distanceWorld = cone.NearWorld;
     float64 previousWorld = distanceWorld;
     const float64 maximumBallisticWorld =
         math::Max(cone.NearWorld,
                   math::Min(cone.FarWorld, LUDUS_WAVE_CONNECTION_MAX_BALLISTIC_WAVELENGTHS * wavelengthWorld));
-    outIsBlocked = false;
-    outIsEntirelyBallistic = false;
+    outEscape.IsBlocked = false;
+    outEscape.IsEntirelyBallistic = false;
     for (uint32 attempt = 0; attempt < LUDUS_WAVE_CONNECTION_ESCAPE_ATTEMPTS; ++attempt)
     {
         math::EllipticalCone segment = cone;
@@ -264,8 +301,8 @@ rhi::RasterStatus EscapeWaveOrigin(const ReferenceSceneData& scene,
         segment.FarWorld = distanceWorld;
         if (distanceWorld > previousWorld)
         {
-            const rhi::RasterStatus status = TraceBallistic(scene, segment, outIsBlocked);
-            if (status != rhi::RasterStatus::Ready || outIsBlocked == true)
+            const rhi::RasterStatus status = TraceBallistic(scene, segment, outEscape.IsBlocked);
+            if (status != rhi::RasterStatus::Ready || outEscape.IsBlocked == true)
             {
                 return status;
             }
@@ -276,7 +313,7 @@ rhi::RasterStatus EscapeWaveOrigin(const ReferenceSceneData& scene,
         const rhi::RasterStatus status = FindWaveInteractionRegion(scene, segment, region);
         if (status == rhi::RasterStatus::Ready && region.TriangleCount == 0)
         {
-            outDistanceWorld = distanceWorld;
+            outEscape.DistanceWorld = distanceWorld;
             return status;
         }
         if (status != rhi::RasterStatus::Ready && status != rhi::RasterStatus::CapacityExceeded)
@@ -289,8 +326,8 @@ rhi::RasterStatus EscapeWaveOrigin(const ReferenceSceneData& scene,
             // the same grazing surface. This scalar profile does not model its near-wall guided modes.
             segment.NearWorld = distanceWorld;
             segment.FarWorld = cone.FarWorld;
-            outIsEntirelyBallistic = true;
-            return TraceBallistic(scene, segment, outIsBlocked);
+            outEscape.IsEntirelyBallistic = true;
+            return TraceBallistic(scene, segment, outEscape.IsBlocked);
         }
         previousWorld = distanceWorld;
         distanceWorld = math::Min(maximumBallisticWorld, distanceWorld * LUDUS_WAVE_CONNECTION_BALLISTIC_SCALE);
@@ -342,33 +379,30 @@ rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& sce
     }
     cone.NearWorld = endpointEscapeWorld;
     cone.FarWorld = distanceWorld - cone.NearWorld;
-    float64 sourceEscapeWorld = 0;
-    bool isBlocked = false;
-    bool isEntirelyBallistic = false;
-    rhi::RasterStatus escapeStatus =
-        EscapeWaveOrigin(scene, cone, wavelengthWorld, sourceEscapeWorld, isBlocked, isEntirelyBallistic);
+    WaveOriginEscape escapeResult;
+    rhi::RasterStatus escapeStatus = EscapeWaveOrigin(scene, cone, wavelengthWorld, escapeResult);
+    const float64 sourceEscapeWorld = escapeResult.DistanceWorld;
     if (escapeStatus != rhi::RasterStatus::Ready)
     {
         return escapeStatus;
     }
-    if (isBlocked == true || isEntirelyBallistic == true)
+    if (escapeResult.IsBlocked == true || escapeResult.IsEntirelyBallistic == true)
     {
-        outField = {isBlocked == true ? 0.0 : 1.0, 0};
+        outField = {escapeResult.IsBlocked == true ? 0.0 : 1.0, 0};
         return rhi::RasterStatus::Ready;
     }
     math::EllipticalCone reverse = cone;
     reverse.OriginWorld = receiverWorld;
     reverse.DirectionWorld = -directionWorld;
-    float64 receiverEscapeWorld = 0;
-    escapeStatus =
-        EscapeWaveOrigin(scene, reverse, wavelengthWorld, receiverEscapeWorld, isBlocked, isEntirelyBallistic);
+    escapeStatus = EscapeWaveOrigin(scene, reverse, wavelengthWorld, escapeResult);
+    const float64 receiverEscapeWorld = escapeResult.DistanceWorld;
     if (escapeStatus != rhi::RasterStatus::Ready)
     {
         return escapeStatus;
     }
-    if (isBlocked == true || isEntirelyBallistic == true)
+    if (escapeResult.IsBlocked == true || escapeResult.IsEntirelyBallistic == true)
     {
-        outField = {isBlocked == true ? 0.0 : 1.0, 0};
+        outField = {escapeResult.IsBlocked == true ? 0.0 : 1.0, 0};
         return rhi::RasterStatus::Ready;
     }
     cone.NearWorld = sourceEscapeWorld;
@@ -392,9 +426,16 @@ rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& sce
                 outField = {1, 0};
                 return rhi::RasterStatus::Ready;
             }
-            PropagateGrid(grid, distanceWorld - fieldDistanceWorld, wavelengthWorld, halfWidthWorld);
+            PropagateGrid(grid,
+                          {
+                              .DistanceWorld = distanceWorld - fieldDistanceWorld,
+                              .WavelengthWorld = wavelengthWorld,
+                              .HalfWidthWorld = halfWidthWorld,
+                          });
             const WaveField field = grid[(AXIS / 2) * AXIS + AXIS / 2];
-            const WaveField normalization = EvaluateGaussian(0, distanceWorld, sigmaWorldSquared, wavenumber);
+            const WaveField normalization = EvaluateGaussian(
+                0,
+                { .DistanceWorld = distanceWorld, .SigmaWorldSquared = sigmaWorldSquared, .Wavenumber = wavenumber });
             const float64 power =
                 normalization.Real * normalization.Real + normalization.Imaginary * normalization.Imaginary;
             const WaveField result{
@@ -433,24 +474,28 @@ rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& sce
                             cellWidthWorld;
                         coveredSamples += IsProjectedPointBlocked(scene,
                                                                   region,
-                                                                  positionXWorld + offsetXWorld,
-                                                                  positionYWorld + offsetYWorld) == true
+                                                                  {
+                                                                      .X = positionXWorld + offsetXWorld,
+                                                                      .Y = positionYWorld + offsetYWorld,
+                                                                  }) == true
                                               ? 1
                                               : 0;
                     }
                 }
-                transmission[cell] = 1 - static_cast<float64>(coveredSamples) / LUDUS_WAVE_CONNECTION_MASK_SAMPLES;
+                transmission[cell] = 1 - static_cast<float64>(coveredSamples) / static_cast<float64>(MASK_SAMPLES);
                 blockedCount += coveredSamples;
                 if (hasField == false)
                 {
                     grid[cell] = EvaluateGaussian(positionXWorld * positionXWorld + positionYWorld * positionYWorld,
-                                                  screenDistanceWorld,
-                                                  sigmaWorldSquared,
-                                                  wavenumber);
+                                                  {
+                                                      .DistanceWorld = screenDistanceWorld,
+                                                      .SigmaWorldSquared = sigmaWorldSquared,
+                                                      .Wavenumber = wavenumber,
+                                                  });
                 }
             }
         }
-        if (blockedCount == CELLS * LUDUS_WAVE_CONNECTION_MASK_SAMPLES)
+        if (blockedCount == CELLS * MASK_SAMPLES)
         {
             outField = {};
             return rhi::RasterStatus::Ready;
@@ -459,7 +504,12 @@ rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& sce
         {
             if (hasField == true)
             {
-                PropagateGrid(grid, screenDistanceWorld - fieldDistanceWorld, wavelengthWorld, halfWidthWorld);
+                PropagateGrid(grid,
+                              {
+                                  .DistanceWorld = screenDistanceWorld - fieldDistanceWorld,
+                                  .WavelengthWorld = wavelengthWorld,
+                                  .HalfWidthWorld = halfWidthWorld,
+                              });
             }
             for (usize cell = 0; cell < CELLS; ++cell)
             {
@@ -484,20 +534,20 @@ rhi::RasterStatus EvaluateWaveConnectionToReceiver(const ReferenceSceneData& sce
             escape.OriginWorld = sourceWorld + directionWorld * cone.NearWorld;
             escape.FarWorld = cone.FarWorld - cone.NearWorld;
             escape.NearWorld = math::Min(escape.FarWorld, endpointEscapeWorld);
-            float64 escapedWorld = 0;
-            const rhi::RasterStatus escaped =
-                EscapeWaveOrigin(scene, escape, wavelengthWorld, escapedWorld, isBlocked, isEntirelyBallistic);
+            const rhi::RasterStatus escaped = EscapeWaveOrigin(scene, escape, wavelengthWorld, escapeResult);
+            const float64 escapedWorld = escapeResult.DistanceWorld;
             if (escaped != rhi::RasterStatus::Ready)
             {
                 return escaped;
             }
-            if (isBlocked == true)
+            if (escapeResult.IsBlocked == true)
             {
                 outField = {};
                 return rhi::RasterStatus::Ready;
             }
-            cone.NearWorld =
-                isEntirelyBallistic == true ? cone.FarWorld : math::Min(cone.FarWorld, cone.NearWorld + escapedWorld);
+            cone.NearWorld = escapeResult.IsEntirelyBallistic == true
+                                 ? cone.FarWorld
+                                 : math::Min(cone.FarWorld, cone.NearWorld + escapedWorld);
         }
         // No remaining interval: finish through the normal empty-scene path on the next iteration.
         if (nextNearWorld > cone.FarWorld)

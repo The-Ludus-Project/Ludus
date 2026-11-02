@@ -19,6 +19,11 @@ Pull requests targeting `develop` run source formatting, source-policy and workf
 syntax checks, tooling regressions, the installed host-tooling tests, and public
 API/documentation validation. Drafts retain these inexpensive checks. They do not
 install the native toolchain or compile engine, Editor or shader-worker targets.
+Source policy also rejects direct nested build commands inside changed
+`add_executable`, `add_library` and `target_sources` source lists. This catches
+merge damage that leaves a build command inside another command's arguments.
+Comments, literals and expansions are ignored; this lexical guard does not
+evaluate CMake or establish source existence and target dependency correctness.
 The `Ubuntu Clang` gate requires the source/tooling job for non-documentation
 changes and verifies that every deferred native job is skipped. The installed
 host-tooling and public API checks remain separate required checks. No label
@@ -480,7 +485,15 @@ image assertions are unchanged by this partition.
 These correctness deadlines include shader preparation on software adapters.
 Independent deadlines keep growth in the number of reference captures from
 consuming the raster test's deadline. `--durations yes` identifies completed
-cases when a deadline fails. Render-graph capture tests allow 120 seconds for the
+cases when a deadline fails. GPU math/transport oracle cases use the
+`[reference-compute]` tag to receive independent discovery, including wave kernel
+parity. Wave template cases are discovered separately with the existing
+600-second template deadline; the supplied-scene manual fixture stays hidden.
+Their single-sample captures yield while polling and give initialization and
+first capture separate cold windows. Each authored scene wave scenario has its
+own case; its four-pass graph allows 300 seconds for cold preparation, including
+lavapipe LLVM compilation observed beyond 120 seconds. This does not change
+sample counts, geometry or pixel assertions. Render-graph capture tests allow 120 seconds for the
 first submitted ray sample after initialization or a scene/camera reset, including
 first-use software shader work. ASan/UBSan cases allow 300 seconds for that cold
 work, including driver allocation interception; subsequent samples retain the

@@ -35,7 +35,7 @@ constexpr usize DISPATCH_WORDS = LUDUS_LIGHT_ENCODER_DISPATCH_WORDS;
 constexpr usize HEADER_WORDS = LUDUS_LIGHT_ENCODER_HEADER_WORDS;
 constexpr usize BUFFER_COUNT = 4;
 constexpr usize ARENA_BUFFER = 3;
-constexpr usize WEIGHT_CHUNK_BYTES = 64 * 1024 * 1024;
+constexpr usize WEIGHT_CHUNK_BYTES = usize{64} * 1024 * 1024;
 constexpr uint32 AXES = 3;
 constexpr uint32 CPE_KERNEL_SIZE = 3;
 constexpr uint32 STEM_KERNEL_SIZE = 5;
@@ -49,7 +49,7 @@ constexpr usize DESTINATION_FIELD = LUDUS_LIGHT_ENCODER_DISPATCH_DESTINATION;
 constexpr usize SOURCE_FIELD = LUDUS_LIGHT_ENCODER_DISPATCH_SOURCE;
 constexpr usize OTHER_FIELD = LUDUS_LIGHT_ENCODER_DISPATCH_OTHER;
 constexpr usize GROUPS_X_FIELD = LUDUS_LIGHT_ENCODER_DISPATCH_GROUPS_X;
-constexpr usize PACKET_HEADER_SCALARS = LUDUS_LIGHT_ENCODER_PACKET_HEADER_WORDS * WORD_CHANNELS;
+constexpr usize PACKET_HEADER_SCALARS = usize{LUDUS_LIGHT_ENCODER_PACKET_HEADER_WORDS} * WORD_CHANNELS;
 using Instruction = StaticArray<uint32, DISPATCH_WORDS>;
 using LayerRecord = StaticArray<uint32, LAYER_WORDS>;
 constexpr StaticArray<uint32, LUDUS_LIGHT_ENCODER_LEVELS> ENCODER_CHANNELS{
@@ -82,10 +82,13 @@ BorrowedView<const uint8> GetBytes(BorrowedView<const Element> values) noexcept
 {
     return {reinterpret_cast<const uint8*>(values.GetDataOrNull()), values.GetSize() * sizeof(Element)};
 }
+/// @pre word identifies a complete word in bytes; ReadModel admits the containing range first.
 uint32 ReadWord(BorrowedView<const uint8> bytes, usize word) noexcept
 {
     uint32 value = 0;
-    const bool isRead = TryReadLittleEndian<uint32>({bytes.GetDataOrNull() + word * WORD_BYTES, WORD_BYTES}, value);
+    // The read must execute even when Release omits its invariant assertion.
+    [[maybe_unused]] const bool isRead =
+        TryReadLittleEndian<uint32>({bytes.GetDataOrNull() + word * WORD_BYTES, WORD_BYTES}, value);
     LUDUS_ASSERT(isRead == true);
     return value;
 }
@@ -101,7 +104,12 @@ uint32 EncodeFloat(float32 value) noexcept
     std::memcpy(&bits, &value, sizeof(bits));
     return bits;
 }
-Status ReadModel(BorrowedView<const uint8> asset, usize alignment, usize maximumBytes, Model& outModel) noexcept
+struct EncoderModelLimits final
+{
+    usize AlignmentBytes;
+    usize MaximumBytes;
+};
+Status ReadModel(BorrowedView<const uint8> asset, const EncoderModelLimits& limits, Model& outModel) noexcept
 {
     if (asset.IsValid() == false || asset.GetSize() < HEADER_WORDS * WORD_BYTES ||
         ReadWord(asset, 0) != LUDUS_LIGHT_ENCODER_MAGIC || ReadWord(asset, 1) != LUDUS_LIGHT_ENCODER_VERSION)
@@ -125,7 +133,7 @@ Status ReadModel(BorrowedView<const uint8> asset, usize alignment, usize maximum
     {
         return Status::InvalidDescription;
     }
-    if (asset.GetSize() > maximumBytes)
+    if (asset.GetSize() > limits.MaximumBytes)
     {
         return Status::CapacityExceeded;
     }
@@ -137,7 +145,7 @@ Status ReadModel(BorrowedView<const uint8> asset, usize alignment, usize maximum
     constexpr usize OFFSET_FIELD = LUDUS_LIGHT_ENCODER_LAYER_OFFSET;
     constexpr usize LENGTH_FIELD = LUDUS_LIGHT_ENCODER_LAYER_LENGTH;
     constexpr usize FIRST_RESERVED_LAYER_FIELD = LUDUS_LIGHT_ENCODER_LAYER_RESERVED_FIRST;
-    const usize alignmentScalars = math::Max(alignment / sizeof(float32), usize{1});
+    const usize alignmentScalars = math::Max(limits.AlignmentBytes / sizeof(float32), usize{1});
     for (usize i = 0; i < layers; ++i)
     {
         Layer& layer = outModel.Layers[i];
@@ -321,12 +329,16 @@ struct Program final
                    source,
                    TakeLayer(LUDUS_LIGHT_ENCODER_NORMALIZE, channels, channels));
     }
-    uint32 Block(uint32 source,
-                 const internal::EncoderLevel& level,
-                 uint32 channels,
-                 uint32 sparseStarts,
-                 uint32 sparsePairs,
-                 uint32 patches) noexcept
+    struct BlockTopology final
+    {
+        uint32 SparseStarts;
+        uint32 SparsePairs;
+        uint32 Patches;
+    };
+    uint32 BuildBlock(uint32 source,
+                      const internal::EncoderLevel& level,
+                      uint32 channels,
+                      const BlockTopology& topology) noexcept
     {
         const uint32 count = static_cast<uint32>(level.PositionsModel.GetSize());
         const Layer convolution = TakeLayer(LUDUS_LIGHT_ENCODER_CONVOLUTION, channels, channels, CPE_KERNEL_SIZE);
@@ -337,8 +349,8 @@ struct Program final
                              source,
                              convolution,
                              0,
-                             sparseStarts,
-                             sparsePairs,
+                             topology.SparseStarts,
+                             topology.SparsePairs,
                              NO_TENSOR,
                              CPE_KERNEL_SIZE * CPE_KERNEL_SIZE * CPE_KERNEL_SIZE);
         current = Affine(current, count, channels, channels);
@@ -348,8 +360,17 @@ struct Program final
         current = Normalize(current, count, channels);
         current = Affine(current, count, channels, channels * AXES);
         const uint32 heads = channels == DIMENSION ? channels / FIRST_CHANNELS : channels / (FIRST_CHANNELS / 2);
-        current =
-            Add(LUDUS_LIGHT_ENCODER_ATTENTION, count, channels, channels, current, {}, 0, patches, 0, NO_TENSOR, heads);
+        current = Add(LUDUS_LIGHT_ENCODER_ATTENTION,
+                      count,
+                      channels,
+                      channels,
+                      current,
+                      {},
+                      0,
+                      topology.Patches,
+                      0,
+                      NO_TENSOR,
+                      heads);
         current = Affine(current, count, channels, channels);
         current = Add(LUDUS_LIGHT_ENCODER_ADD, count, channels, channels, residual, {}, 0, 0, 0, current);
         residual = current;
@@ -522,10 +543,13 @@ Status BuildProgram(BorrowedView<const LightTransformerScenePoint> points,
             return status;
         }
         Array<uint32> neighbors;
-        status = internal::PrepareEncoderNeighbors({positionsModel.GetData(), positionsModel.GetSize()},
-                                                   {selectedModel.GetData(), selectedModel.GetSize()},
-                                                   {centers.GetData(), centers.GetSize()},
-                                                   neighbors);
+        status = internal::PrepareEncoderNeighbors(
+            {
+                .PositionsModel = {positionsModel.GetData(), positionsModel.GetSize()},
+                .QueriesModel = {selectedModel.GetData(), selectedModel.GetSize()},
+                .Centers = {centers.GetData(), centers.GetSize()},
+            },
+            neighbors);
         if (status != Status::Ready)
         {
             return status;
@@ -635,12 +659,14 @@ Status BuildProgram(BorrowedView<const LightTransformerScenePoint> points,
         }
         for (uint32 block = 0; block < ENCODER_DEPTHS[stage]; ++block)
         {
-            current = inoutProgram.Block(current,
-                                         level,
-                                         channels,
-                                         sparseStarts[stage],
-                                         sparsePairs[stage],
-                                         patchOffsets[stage][block % LUDUS_LIGHT_ENCODER_ORDERS]);
+            current = inoutProgram.BuildBlock(current,
+                                              level,
+                                              channels,
+                                              {
+                                                  .SparseStarts = sparseStarts[stage],
+                                                  .SparsePairs = sparsePairs[stage],
+                                                  .Patches = patchOffsets[stage][block % LUDUS_LIGHT_ENCODER_ORDERS],
+                                              });
         }
         retained[stage] = current;
     }
@@ -665,12 +691,14 @@ Status BuildProgram(BorrowedView<const LightTransformerScenePoint> points,
             inoutProgram.Add(LUDUS_LIGHT_ENCODER_GATHER, count, channels, channels, current, {}, 0, inverse, 0, skip);
         for (uint32 block = 0; block < 2; ++block)
         {
-            current = inoutProgram.Block(current,
-                                         level,
-                                         channels,
-                                         sparseStarts[stage],
-                                         sparsePairs[stage],
-                                         patchOffsets[stage][block]);
+            current = inoutProgram.BuildBlock(current,
+                                              level,
+                                              channels,
+                                              {
+                                                  .SparseStarts = sparseStarts[stage],
+                                                  .SparsePairs = sparsePairs[stage],
+                                                  .Patches = patchOffsets[stage][block],
+                                              });
         }
     }
     if (inoutProgram.Result != Status::Ready)
@@ -765,7 +793,9 @@ Status PrepareLightTransformerEncoder(BorrowedView<const uint8> encoderAsset,
         return Status::CapacityExceeded;
     }
     Program program;
-    status = ReadModel(encoderAsset, capabilities.StorageOffsetAlignment, maximumBufferBytes, program.Parameters);
+    status = ReadModel(encoderAsset,
+                       { .AlignmentBytes = capabilities.StorageOffsetAlignment, .MaximumBytes = maximumBufferBytes },
+                       program.Parameters);
     if (status != Status::Ready)
     {
         return status;

@@ -132,9 +132,14 @@ if(LUDUS_BUILD_TESTS)
     add_test(NAME ludus_one_more_vertex_oracle_tests COMMAND ludus_one_more_vertex_oracle_tests)
     # Exercise the production renderer/RHI registry with the existing deterministic backend.
     add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/tone_mapping_tests.cpp tests/reference_backend.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/raster_mesh_lights.cpp src/raster_mesh_light_polygons.cpp src/raster_mesh_light_grid.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_capture.cpp src/render_graph_failures.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_coating.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" src/reference_scene.cpp src/reference_path.cpp src/reference_light_sampling.cpp src/reference_compute.cpp src/metropolis.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_ray_path_decode_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp tests/reference_emitter_selection_tests.cpp tests/ltc_table_tests.cpp tests/reference_light_sampling_tests.cpp tests/raster_mesh_lights_tests.cpp tests/raster_mesh_light_grid_tests.cpp tests/reference_bvh_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_oracle_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_oracle_tests.cpp tests/guided_fg_oracle.cpp tests/guided_fg_oracle_tests.cpp
+        ../rhi/src/rhi.cpp ../rhi/src/device.cpp ../rhi/src/dxil_container.cpp ../rhi/src/gpu_scope.cpp ../rhi/src/gpu_pass_timing_buffer.cpp ../rhi/src/profile.cpp ../rhi/src/raster.cpp ../rhi/tests/reference_raster.cpp ../rhi/src/ray_unsupported.cpp)
     target_sources(ludus_renderer_tests PRIVATE src/wave_tracing.cpp src/wave_scene_queries.cpp src/wave_connection.cpp
         tests/wave_tracing_tests.cpp tests/wave_scene_queries_tests.cpp)
-        ../rhi/src/rhi.cpp ../rhi/src/device.cpp ../rhi/src/dxil_container.cpp ../rhi/src/gpu_scope.cpp ../rhi/src/gpu_pass_timing_buffer.cpp ../rhi/src/profile.cpp ../rhi/src/raster.cpp ../rhi/tests/reference_raster.cpp ../rhi/src/ray_unsupported.cpp)
+    # Keep the Light Transformer graph closure on the fixtures' deterministic RHI registry.
+    target_sources(ludus_renderer_tests PRIVATE src/light_transformer_graph.cpp src/light_transformer_encoded_queries.cpp
+        src/light_transformer_encoder.cpp src/light_transformer_topology.cpp src/light_transformer.cpp
+        src/point_neighbors.cpp src/surface_points.cpp ../rhi/src/compute_workload.cpp)
+    target_link_libraries(ludus_renderer_tests PRIVATE Ludus::FoundationGeometry)
     target_include_directories(ludus_renderer_tests PRIVATE include ../rhi/include ../rhi/src ../rhi/tests "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_tests PRIVATE Ludus::FoundationStrings Ludus::RenderGraphFormat Ludus::Platform Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationThreading Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources Ludus::FoundationHash Catch2::Catch2WithMain)
     target_compile_options(ludus_renderer_tests PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
@@ -161,7 +166,10 @@ if(TARGET ludus_rhi_render_tests)
     # Sanitizer allocation interception also affects the driver's compiler;
     # give that cold work room without changing warm-frame or numerical checks.
     set(renderer_test_cold_gpu_timeout_seconds 120)
+    # The four-pass authored wave graph spends more than 120 s in cold lavapipe LLVM compilation.
+    set(renderer_test_scene_cold_gpu_timeout_seconds 300)
     set(renderer_test_case_timeout_seconds 300)
+    set(renderer_test_template_timeout_seconds 600)
     set(renderer_test_raster_timeout_seconds 60)
     if(LUDUS_ENABLE_ASAN OR LUDUS_ENABLE_UBSAN)
         set(renderer_test_cold_gpu_timeout_seconds 300)
@@ -169,8 +177,11 @@ if(TARGET ludus_rhi_render_tests)
         set(renderer_test_raster_timeout_seconds 180)
     endif()
     set_source_files_properties(tests/reference_compute_tests.cpp tests/metropolis_parity_tests.cpp
-        tests/render_graph_ray_tests.cpp PROPERTIES COMPILE_DEFINITIONS
+        tests/render_graph_ray_tests.cpp tests/wave_tracing_parity_tests.cpp
+        tests/wave_tracing_graph_tests.cpp PROPERTIES COMPILE_DEFINITIONS
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_cold_gpu_timeout_seconds}")
+    set_source_files_properties(tests/wave_scene_graph_tests.cpp PROPERTIES COMPILE_DEFINITIONS
+        "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_scene_cold_gpu_timeout_seconds}")
     add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_oracle.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
     target_sources(ludus_renderer_render_tests PRIVATE tests/wave_tracing_parity_tests.cpp)
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
@@ -341,7 +352,7 @@ if(TARGET ludus_rhi_render_tests)
     # Raw-AOV parity alone performs three separately compiled captures (83 s on idle lavapipe).
     # Thanks to Catch2's authors, "CMake integration", automatic test registration:
     # https://github.com/catchorg/Catch2/blob/v3.4.0/docs/cmake-integration.md
-    # Discover each reference case so a growing suite never shares one frame-test deadline.
+    # Discover reference and wave transport/math cases so none shares a frame-test deadline.
     catch_discover_tests(ludus_renderer_render_tests TEST_SPEC "[reference-compute]"
         TEST_PREFIX "ludus_renderer_reference: " TEST_LIST LUDUS_RENDERER_REFERENCE_CASES
         EXTRA_ARGS --durations yes PROPERTIES TIMEOUT ${renderer_test_case_timeout_seconds} SKIP_RETURN_CODE 4 DISCOVERY_MODE PRE_TEST)
@@ -497,8 +508,16 @@ if(TARGET ludus_renderer_render_tests)
         MANIFEST "${wave_scene_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET wave_scene_graph_RUNTIME_PACKAGE PARENT_PATH wave_scene_directory)
     target_compile_definitions(ludus_wave_graph_tests PRIVATE LUDUS_WAVE_SCENE_TEMPLATE_DIRECTORY="${wave_scene_directory}")
-    add_test(NAME ludus_wave_graph_pixels COMMAND ludus_wave_graph_tests)
-    set_tests_properties(ludus_wave_graph_pixels PROPERTIES LABELS "renderer;gpu" TIMEOUT 120)
+    # Every template correctness case gets its own bounded acceptance deadline.
+    catch_discover_tests(ludus_wave_graph_tests TEST_SPEC "~[.]" TEST_PREFIX "ludus_wave_graph_pixels: "
+        TEST_LIST LUDUS_WAVE_GRAPH_CASES EXTRA_ARGS --durations yes
+        PROPERTIES TIMEOUT ${renderer_test_template_timeout_seconds} SKIP_RETURN_CODE 4 DISCOVERY_MODE PRE_TEST)
+    set(wave_graph_labels_file "${CMAKE_CURRENT_BINARY_DIR}/wave_graph_labels.cmake")
+    file(WRITE "${wave_graph_labels_file}"
+        "if(LUDUS_WAVE_GRAPH_CASES)\n"
+        "    set_tests_properties(\${LUDUS_WAVE_GRAPH_CASES} PROPERTIES LABELS \"${renderer_reference_labels}\")\n"
+        "endif()\n")
+    set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES "${wave_graph_labels_file}")
     add_executable(ludus_metropolis_graph_tests tests/metropolis_graph_tests.cpp)
     target_link_libraries(ludus_metropolis_graph_tests PRIVATE Ludus::GraphicsRenderer
         Ludus::FoundationFilesystem Ludus::FoundationTime Catch2::Catch2WithMain)
@@ -1392,7 +1411,7 @@ if(TARGET ludus_renderer_render_tests)
     # newly added templates receive the same isolation without editing a tag exclusion list.
     catch_discover_tests(ludus_render_graph_ray_tests TEST_SPEC "[template]"
         TEST_PREFIX "ludus_render_graph_template: " TEST_LIST LUDUS_RENDER_GRAPH_TEMPLATE_CASES
-        EXTRA_ARGS --durations yes PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 4 DISCOVERY_MODE PRE_TEST)
+        EXTRA_ARGS --durations yes PROPERTIES TIMEOUT ${renderer_test_template_timeout_seconds} SKIP_RETURN_CODE 4 DISCOVERY_MODE PRE_TEST)
     set(render_graph_template_labels_file "${CMAKE_CURRENT_BINARY_DIR}/render_graph_template_labels.cmake")
     file(WRITE "${render_graph_template_labels_file}"
         "if(LUDUS_RENDER_GRAPH_RAY_CASES)\n"

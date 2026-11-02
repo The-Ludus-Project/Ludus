@@ -13,11 +13,15 @@ math::Vector3d ConvertVector(math::Vector3 value) noexcept
 {
     return {static_cast<float64>(value.X), static_cast<float64>(value.Y), static_cast<float64>(value.Z)};
 }
+struct RegionAxialBounds final
+{
+    float64 NearestWorld;
+    float64 NearestFarWorld;
+};
 rhi::RasterStatus WalkRegion(const ReferenceSceneData& scene,
                              const math::EllipticalCone& cone,
                              bool shouldGather,
-                             float64& inoutNearestWorld,
-                             float64& inoutNearestFarWorld,
+                             RegionAxialBounds& inoutBounds,
                              WaveInteractionRegion& inoutRegion) noexcept
 {
     if (scene.Nodes.IsEmpty() == true)
@@ -39,7 +43,7 @@ rhi::RasterStatus WalkRegion(const ReferenceSceneData& scene,
         math::EllipticalCone clipped = cone;
         if (shouldGather == false)
         {
-            clipped.FarWorld = inoutNearestWorld;
+            clipped.FarWorld = inoutBounds.NearestWorld;
         }
         if (math::TryTestEllipticalConeBounds(clipped,
                                               ConvertVector(node.Bounds.Min),
@@ -86,10 +90,10 @@ rhi::RasterStatus WalkRegion(const ReferenceSceneData& scene,
             {
                 continue;
             }
-            if (intersection.NearWorld < inoutNearestWorld)
+            if (intersection.NearWorld < inoutBounds.NearestWorld)
             {
-                inoutNearestWorld = intersection.NearWorld;
-                inoutNearestFarWorld = intersection.FarWorld;
+                inoutBounds.NearestWorld = intersection.NearWorld;
+                inoutBounds.NearestFarWorld = intersection.FarWorld;
             }
             if (shouldGather == true)
             {
@@ -115,21 +119,20 @@ rhi::RasterStatus FindWaveInteractionRegion(const ReferenceSceneData& scene,
     }
     WaveInteractionRegion candidate;
     candidate.Frustum = cone;
-    float64 nearestWorld = cone.FarWorld;
-    float64 nearestFarWorld = cone.FarWorld;
-    rhi::RasterStatus status = WalkRegion(scene, cone, false, nearestWorld, nearestFarWorld, candidate);
+    RegionAxialBounds bounds{ .NearestWorld = cone.FarWorld, .NearestFarWorld = cone.FarWorld };
+    rhi::RasterStatus status = WalkRegion(scene, cone, false, bounds, candidate);
     if (status != rhi::RasterStatus::Ready)
     {
         return status;
     }
-    candidate.Frustum.NearWorld = nearestWorld;
+    candidate.Frustum.NearWorld = bounds.NearestWorld;
     candidate.Frustum.FarWorld =
-        math::Min(cone.FarWorld, nearestWorld + 2 * (cone.RadiusWorld + cone.Slope * nearestWorld));
-    if (cone.RadiusWorld + cone.Slope * nearestWorld == 0)
+        math::Min(cone.FarWorld, bounds.NearestWorld + 2 * (cone.RadiusWorld + cone.Slope * bounds.NearestWorld));
+    if (cone.RadiusWorld + cone.Slope * bounds.NearestWorld == 0)
     {
-        candidate.Frustum.FarWorld = nearestFarWorld;
+        candidate.Frustum.FarWorld = bounds.NearestFarWorld;
     }
-    status = WalkRegion(scene, candidate.Frustum, true, nearestWorld, nearestFarWorld, candidate);
+    status = WalkRegion(scene, candidate.Frustum, true, bounds, candidate);
     if (status == rhi::RasterStatus::Ready)
     {
         Sort(candidate.Triangles.GetData(), candidate.TriangleCount, [](uint32 first, uint32 second) noexcept {

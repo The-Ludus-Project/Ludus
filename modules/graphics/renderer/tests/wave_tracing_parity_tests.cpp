@@ -15,6 +15,9 @@
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
 
+#include <chrono>
+#include <thread>
+
 namespace
 {
 using namespace ludus::foundation;
@@ -23,6 +26,9 @@ namespace math = ludus::foundation::math;
 namespace rhi = ludus::graphics::rhi;
 using rhi::RasterStatus;
 constexpr uint64 TIMEOUT_NANOSECONDS = 30 * time::NANOSECONDS_PER_SECOND;
+constexpr uint64 COLD_GPU_TIMEOUT_NANOSECONDS =
+    LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND;
+constexpr std::chrono::milliseconds COMPLETION_POLL_INTERVAL{1};
 constexpr usize CASE_COUNT = LUDUS_WAVE_PARITY_CASE_COUNT;
 constexpr usize WORDS_PER_RECORD = 4;
 constexpr usize CASE_WORDS = CASE_COUNT * LUDUS_WAVE_PARITY_CASE_RECORDS * WORDS_PER_RECORD;
@@ -31,15 +37,23 @@ constexpr usize CELL_COUNT = usize{LUDUS_WAVE_PARITY_RESOLUTION} * LUDUS_WAVE_PA
 constexpr usize CASE_BYTES = CASE_WORDS * sizeof(uint32);
 constexpr usize RESULT_BYTES = RESULT_WORDS * sizeof(uint32);
 template <typename Handle>
-void WaitReady(rhi::DeviceHandle device, Handle handle)
+void WaitReady(rhi::DeviceHandle device,
+               Handle handle,
+               const char* resourceName = "GPU resource",
+               uint64 timeoutNanoseconds = TIMEOUT_NANOSECONDS)
 {
+    REQUIRE(resourceName != nullptr);
+    CAPTURE(resourceName, timeoutNanoseconds);
     const uint64 start = time::NowTicks();
     RasterStatus status = rhi::GetStatus(device, handle);
-    while (status == RasterStatus::Pending && time::NowTicks() - start < TIMEOUT_NANOSECONDS)
+    while (status == RasterStatus::Pending && time::NowTicks() - start < timeoutNanoseconds)
     {
         REQUIRE(rhi::PollLifetime(device) == RasterStatus::Ready);
+        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
         status = rhi::GetStatus(device, handle);
     }
+    const uint64 elapsedNanoseconds = time::NowTicks() - start;
+    CAPTURE(status, elapsedNanoseconds);
     REQUIRE(status == RasterStatus::Ready);
 }
 
@@ -80,7 +94,7 @@ bool RunParityKernel(const Array<uint32>& caseWords, Array<uint32>& outResults)
     REQUIRE(IsAccepted(rhi::CreateBindingLayout(device, shader.Bindings, layout)) == true);
     WaitReady(device, cases);
     WaitReady(device, results);
-    WaitReady(device, shaderHandle);
+    WaitReady(device, shaderHandle, "wave parity shader", COLD_GPU_TIMEOUT_NANOSECONDS);
     WaitReady(device, layout);
     constexpr usize BINDING_COUNT = 2;
     const StaticArray<rhi::RasterBindingResource, BINDING_COUNT> resources{{
@@ -93,7 +107,7 @@ bool RunParityKernel(const Array<uint32>& caseWords, Array<uint32>& outResults)
     REQUIRE(IsAccepted(rhi::CreateComputePipeline(device, { .Shader = shaderHandle, .Layout = layout }, pipeline)) ==
             true);
     WaitReady(device, set);
-    WaitReady(device, pipeline);
+    WaitReady(device, pipeline, "wave parity pipeline", COLD_GPU_TIMEOUT_NANOSECONDS);
     rhi::OrderedGraph graph;
     REQUIRE(rhi::CreateOrderedGraph(device, graph) == RasterStatus::Ready);
     rhi::GraphVersion casesOriginal;
@@ -132,7 +146,7 @@ bool RunParityKernel(const Array<uint32>& caseWords, Array<uint32>& outResults)
         executed = rhi::ExecuteOrderedGraph(device, surface, graph, completion);
     }
     REQUIRE(executed == RasterStatus::Ready);
-    WaitReady(device, completion);
+    WaitReady(device, completion, "wave parity first submission", COLD_GPU_TIMEOUT_NANOSECONDS);
     rhi::ReadbackTicket ticket;
     RasterStatus status = rhi::RequestBufferReadback(device, results, 0, RESULT_BYTES, ticket);
     const uint64 start = time::NowTicks();
@@ -162,7 +176,7 @@ float64 ReadFloat(const Array<uint32>& words, usize index)
 } // namespace
 
 TEST_CASE("Scalar wave transport and beam propagation match the CPU oracle on GPU",
-          "[renderer][gpu][wave-tracing][parity]")
+          "[renderer][gpu][reference-compute][wave-tracing][parity]")
 {
     rhi::Shutdown();
     struct Guard
@@ -251,7 +265,7 @@ TEST_CASE("Scalar wave transport and beam propagation match the CPU oracle on GP
 }
 
 TEST_CASE("Elliptical cone GPU extrema match the independent float64 oracle",
-          "[renderer][gpu][elliptical-cone][parity]")
+          "[renderer][gpu][reference-compute][elliptical-cone][parity]")
 {
     rhi::Shutdown();
     struct Guard
@@ -344,7 +358,8 @@ TEST_CASE("Elliptical cone GPU extrema match the independent float64 oracle",
     }
 }
 
-TEST_CASE("Wave region GPU traversal matches the CPU scene BVH", "[renderer][gpu][wave-region][parity]")
+TEST_CASE("Wave region GPU traversal matches the CPU scene BVH",
+          "[renderer][gpu][reference-compute][wave-region][parity]")
 {
     namespace internal = ludus::graphics::renderer::internal;
     rhi::Shutdown();

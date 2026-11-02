@@ -13,6 +13,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
+#include <thread>
+
 namespace
 {
 using namespace ludus::foundation;
@@ -24,7 +27,9 @@ constexpr usize QUAD_VERTICES = 4;
 constexpr usize QUAD_INDICES = 6;
 constexpr usize TABLE_COUNT = 2;
 constexpr usize CAMERA_COUNT = 1;
-constexpr uint64 TIMEOUT = 30 * time::NANOSECONDS_PER_SECOND;
+constexpr uint64 COLD_CAPTURE_TIMEOUT_NANOSECONDS =
+    LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND;
+constexpr std::chrono::milliseconds COMPLETION_POLL_INTERVAL{1};
 struct Session final
 {
     LUDUS_INLINE Session() noexcept
@@ -114,12 +119,14 @@ TEST_CASE("Wave template transports through the current World's screen and diffr
         REQUIRE((started == RasterStatus::Ready || started == RasterStatus::Pending));
         const uint64 beginning = time::NowTicks();
         while (capture.GetPhase() == renderer::RenderGraphCapturePhase::Initializing &&
-               time::NowTicks() - beginning < TIMEOUT)
+               time::NowTicks() - beginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
         {
             capture.Service();
+            std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
         }
         REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::AwaitingScene);
         const usize itemCount = screen == 0 ? 1 : TABLE_COUNT;
+        const uint64 captureBeginning = time::NowTicks();
         const RasterStatus submitted = capture.SubmitScene({meshes.GetData(), itemCount},
                                                            {items.GetData(), itemCount},
                                                            {cameras.GetData(), CAMERA_COUNT},
@@ -128,11 +135,19 @@ TEST_CASE("Wave template transports through the current World's screen and diffr
         REQUIRE((submitted == RasterStatus::Ready || submitted == RasterStatus::Pending));
         while (capture.GetPhase() != renderer::RenderGraphCapturePhase::Complete &&
                capture.GetPhase() != renderer::RenderGraphCapturePhase::Failed &&
-               time::NowTicks() - beginning < TIMEOUT)
+               time::NowTicks() - captureBeginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
         {
             capture.Service();
+            std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
         }
-        CAPTURE(pass, screen, capture.GetStatus(), capture.GetProblem());
+        const uint64 elapsedNanoseconds = time::NowTicks() - captureBeginning;
+        CAPTURE(pass,
+                screen,
+                capture.GetPhase(),
+                capture.GetStatus(),
+                capture.GetProblem(),
+                elapsedNanoseconds,
+                COLD_CAPTURE_TIMEOUT_NANOSECONDS);
         REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::Complete);
         const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
         REQUIRE(pixels.GetSize() == usize{EXTENT} * EXTENT);
