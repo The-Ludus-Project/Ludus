@@ -1968,13 +1968,15 @@ TEST_CASE("One visibility raster feeds every pass of an ordered ray sequence",
 
 TEST_CASE("ReSTIR DI configurations shade mesh emitters and invalidate stale history", "[render-graph][gpu][restir]")
 {
-    const bool isProduction = GENERATE(false, true);
-    INFO("production configuration " << isProduction);
+    const uint32 configuration = GENERATE(0U, 1U, 2U);
+    const bool isProduction = configuration == 1;
+    INFO("configuration " << configuration);
     GraphGpuFixture fixture;
-    const core::UniquePtr<renderer::RenderGraphPackage> package =
-        LoadPackage(isProduction == true
-                        ? PackageLocation{LUDUS_RG3_RESTIR_DI_PRODUCTION_DIRECTORY, "rg2_restir_di_production.lurgrt"}
-                        : PackageLocation{LUDUS_RG3_RESTIR_DIRECTORY, "rg2_restir_di.lurgrt"});
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(
+        configuration == 2 ? PackageLocation{LUDUS_RG3_RESTIR_PAIRWISE_DIRECTORY, "rg2_restir_pairwise.lurgrt"}
+        : isProduction == true
+            ? PackageLocation{LUDUS_RG3_RESTIR_DI_PRODUCTION_DIRECTORY, "rg2_restir_di_production.lurgrt"}
+            : PackageLocation{LUDUS_RG3_RESTIR_DIRECTORY, "rg2_restir_di.lurgrt"});
     REQUIRE(package->GetPlan().Passes.GetSize() == (isProduction == true ? 2 : 3));
     const renderer::RenderGraphPrograms programs =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
@@ -1983,17 +1985,29 @@ TEST_CASE("ReSTIR DI configurations shade mesh emitters and invalidate stale his
                                               shaders::renderer_composite::Fragment());
     CheckSameStage(programs.RayCompute, compiled.RayCompute);
     bool hasFullCapacity = true;
+    uint32 limitedBuffer = format::ABSENT;
     SECTION("complete reservoirs") {}
     SECTION("undersized reservoirs fail before indexing")
     {
         hasFullCapacity = false;
+    }
+    SECTION("undersized first buffer fails independently")
+    {
+        hasFullCapacity = false;
+        limitedBuffer = package->GetPlan().Passes[isProduction == true ? 1 : 0].Buffer0;
+    }
+    SECTION("undersized second buffer fails independently")
+    {
+        hasFullCapacity = false;
+        limitedBuffer = package->GetPlan().Passes[isProduction == true ? 1 : 0].Buffer1;
     }
     renderer::RenderGraphPlan plan = package->GetPlan();
     StaticArray<format::Resource, format::MAX_RESOURCES> resources{};
     for (usize i = 0; i < plan.Resources.GetSize(); ++i)
     {
         resources[i] = plan.Resources[i];
-        if (hasFullCapacity == false && resources[i].Kind == format::Aspect::Buffer)
+        if (hasFullCapacity == false && resources[i].Kind == format::Aspect::Buffer &&
+            (limitedBuffer == format::ABSENT || i == limitedBuffer))
         {
             resources[i].Width = sizeof(uint32) * 4;
             resources[i].BytesPerPixel = 0;

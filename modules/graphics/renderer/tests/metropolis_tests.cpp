@@ -26,7 +26,9 @@ EvaluateIntegrand(const void* context, const internal::MetropolisPrimary& primar
 {
     const IntegrandContext& integrand = *static_cast<const IntegrandContext*>(context);
     if (integrand.ShouldFail == true)
+    {
         return rhi::RasterStatus::Failed;
+    }
     // An analytically integrable RGB function over the unit cube: (1, 1/3, 1/2).
     outRadiance = {2 * primary[0], primary[1] * primary[1], primary[2]};
     return rhi::RasterStatus::Ready;
@@ -45,7 +47,9 @@ TEST_CASE("Jump Restore unconditionally restores and flushes its unfinished RB h
     chain.Target = 2;
     chain.Tour = {0.25F, 1.75F};
     for (float32& sample : chain.Primary)
+    {
         sample = 0.5F;
+    }
     math::RandomKey key;
     constexpr uint32 PROPOSAL_SCOPE_SHIFT = 32;
     constexpr uint64 PROPOSAL_SCOPE = uint64{4} << PROPOSAL_SCOPE_SHIFT;
@@ -127,6 +131,7 @@ TEST_CASE("CPU MH estimators integrate a known primary-space function over multi
             internal::MetropolisChain chain;
             math::Vector3 radiance;
             for (uint32 iteration = 0; iteration < ITERATION_COUNT; ++iteration)
+            {
                 REQUIRE(advance(options,
                                 static_cast<internal::MetropolisEstimator>(estimator),
                                 {seed},
@@ -135,6 +140,7 @@ TEST_CASE("CPU MH estimators integrate a known primary-space function over multi
                                 &context,
                                 chain,
                                 radiance) == rhi::RasterStatus::Ready);
+            }
             mean = mean + radiance / static_cast<float32>(SEED_COUNT);
         }
         CAPTURE(estimator, mean.X, mean.Y, mean.Z);
@@ -222,11 +228,15 @@ TEST_CASE("CPU BSDF path oracle retains emission and reflection and rejects unsu
     triangle.GeometricNormal = {0, 0, -1};
     triangle.Error = {0, 0, 0.00001F};
     for (math::Vector3& normalWorld : triangle.Normals)
+    {
         normalWorld = triangle.GeometricNormal;
+    }
     REQUIRE(internal::BuildReferenceBvh(scene) == rhi::RasterStatus::Ready);
     internal::MetropolisPrimary primary;
     for (float32& sample : primary)
+    {
         sample = 0.5F;
+    }
     math::Vector3 radiance;
     internal::MetropolisPathAovs aovs;
     REQUIRE(internal::EvaluateMetropolisPath(scene,

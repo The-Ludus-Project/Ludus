@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/identity/uuid.hpp>
+#include <ludus/foundation/math/transform.hpp>
 
 #include "internal/document_history.h"
 
@@ -124,7 +125,22 @@ public:
     // Version-2 records do not support the scene extension yet and are refused.
     [[nodiscard]] bool ImportScene(const QJsonObject& level, QString& error);
     [[nodiscard]] QJsonObject SceneLevel() const;
+    /// Replace the scene level's start view (`scene.camera`: eye, target, up, fov) as one undo
+    /// step. Fails without a scene level or when the World's validation rejects the camera;
+    /// failure preserves the draft and history, and an unchanged camera adds no history.
+    [[nodiscard]] bool SetSceneStartView(const QJsonObject& camera, QString& outError);
     [[nodiscard]] QJsonObject ScenePlacement(const QJsonObject& entity) const;
+    /// Mesh-to-parent transform of a scene placement (basis, then Euler-degree rotation Rz*Ry*Rx and scale,
+    /// then position), in float32. SceneLevel stores this basis with the authored position, and the viewport
+    /// gizmo composes it with the parent's cooked transform; for an object without a parent it equals the
+    /// cooked object transform bit for bit. A parent composes in float64 when cooked, so a child may differ
+    /// from the gizmo's float32 composition in its last bits.
+    /// @param placement ScenePlacement() fields: basis (nine numbers), position, rotation and scale (three each).
+    [[nodiscard]] static foundation::math::Affine3 MakeSceneMeshToParent(const QJsonObject& placement) noexcept;
+    /// The draft with every scene instance's position, rotation and scale removed, including
+    /// values held by the schema's scene_transform component binding. Two drafts that compare
+    /// equal here differ at most in scene placement, which SceneLevel turns into object transforms.
+    [[nodiscard]] QJsonObject MakeDraftWithoutScenePlacements() const;
     [[nodiscard]] bool Validate(const QJsonObject& candidate, QString& error) const;
     [[nodiscard]] QByteArray Encode() const;
     // Restored candidates must keep the open World's version and document identity.

@@ -141,7 +141,7 @@ if(LUDUS_BUILD_THREADING_BENCHMARK AND NOT EMSCRIPTEN)
     ludus_apply_project_defaults(ludus_static_lighting_benchmark)
 endif()
 if(TARGET ludus_rhi_render_tests)
-    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/guided_fg_oracle.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
+    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_oracle.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_renderer_render_tests)
@@ -249,6 +249,13 @@ if(TARGET ludus_rhi_render_tests)
                  "${CMAKE_CURRENT_SOURCE_DIR}/include/ludus/graphics/renderer"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di/main_shaders/initial_emitter_sampling.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/include/ludus/graphics/renderer/scene_shader_layout.h")
+    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME pairwise_reuse
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/pairwise_reuse.slang" COMPUTE ComputeMain
+        INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di/main_shaders"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/include/ludus/graphics/renderer"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di/main_shaders/pairwise_weights.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di/main_shaders/pairwise_distribution.slang")
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_gpu_preview renderer_gpu_preview_visibility_full renderer_gpu_preview_hit_cached renderer_gpu_preview_group32 renderer_gpu_preview_group64 renderer_gpu_preview_group128 renderer_gpu_preview_group8x8)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_gpu_preview_image)
     # Manual timing tool for reference captures on a cooked scene; not a CTest case.
@@ -1178,6 +1185,11 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_restir_di_RUNTIME_PACKAGE PARENT_PATH restir_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_RESTIR_DIRECTORY="${restir_package_directory}")
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_restir_pairwise
+        MANIFEST "${restir_staged}/main.lushader.json" CONFIGURATION StochasticPairwise RUNTIME_PACKAGE)
+    cmake_path(GET rg2_restir_pairwise_RUNTIME_PACKAGE PARENT_PATH pairwise_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_RESTIR_PAIRWISE_DIRECTORY="${pairwise_package_directory}")
     foreach(restir_kind IN ITEMS di gi)
         if(restir_kind STREQUAL "di")
             set(production_staged "${restir_staged}")

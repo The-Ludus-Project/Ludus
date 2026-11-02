@@ -463,12 +463,14 @@ Status PackGpuScene(const ReferenceJob& job,
 // summary) then need no position arithmetic. parameters is the job's uniform or one row band's copy; failures is the
 // failure summary of the camera history the bindings serve. Returns the binding count, or zero for a slot this
 // renderer does not own.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): uniform and failure-summary buffers occupy distinct layout slots.
 usize MakeGpuComputeBindings(
     const GpuPreviewState& state,
     const GpuPreviewRecord& job,
     rhi::BufferHandle parameters,
     rhi::BufferHandle failures,
     StaticArray<rhi::RasterBindingResource, internal::GPU_PREVIEW_COMPUTE_BINDING_CAPACITY>& outBindings) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     const usize pixels = usize(job.Width) * job.Height;
     outBindings = {};

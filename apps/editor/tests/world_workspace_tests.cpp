@@ -791,6 +791,39 @@ TEST_CASE("Invalid scene placement and parent references preserve the shared doc
     CHECK_FALSE(empty.ImportScene(imported, error));
     CHECK(empty.Draft().value(QStringLiteral("entities")).toArray().isEmpty());
 }
+TEST_CASE("The scene start view is one undoable World edit validated like the imported camera",
+          "[editor][world][unified][start-view]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    const QJsonObject camera{{QStringLiteral("eye"), QJsonArray{1, 2, 3}},
+                             {QStringLiteral("target"), QJsonArray{0, 0, 0}},
+                             {QStringLiteral("up"), QJsonArray{0, 1, 0}},
+                             {QStringLiteral("fov"), 0.8}};
+    const QJsonObject empty = document.Draft();
+    CHECK_FALSE(document.SetSceneStartView(camera, error));
+    CHECK(error.isEmpty() == false);
+    CHECK(document.Draft() == empty);
+    REQUIRE(document.ImportScene(ImportedLevel(), error));
+    const QJsonObject imported = document.Draft();
+    REQUIRE(document.SetSceneStartView(camera, error));
+    CHECK(document.SceneLevel().value(QStringLiteral("camera")).toObject() == camera);
+    CHECK(document.SceneLevel().value(QStringLiteral("objects")).toArray().size() == 1);
+    const QJsonObject accepted = document.Draft();
+    QJsonObject degenerate = camera;
+    degenerate.insert(QStringLiteral("target"), camera.value(QStringLiteral("eye")));
+    QJsonObject wide = camera;
+    wide.insert(QStringLiteral("fov"), 3.5);
+    for (const QJsonObject& rejected : {degenerate, wide})
+    {
+        CHECK_FALSE(document.SetSceneStartView(rejected, error));
+        CHECK(document.Draft() == accepted);
+    }
+    REQUIRE(document.Undo());
+    CHECK(document.Draft() == imported);
+    REQUIRE(document.Redo());
+    CHECK(document.SceneLevel().value(QStringLiteral("camera")).toObject() == camera);
+}
 TEST_CASE("World provides scene authoring without a project component schema", "[editor][world][unified]")
 {
     QTemporaryDir directory;
@@ -2116,4 +2149,321 @@ TEST_CASE("Closing a World with created geometry and lighting retires the delega
                     MAX_PREVIEW_WAIT_MILLISECONDS) == true);
     }
     QApplication::processEvents();
+}
+
+namespace
+{
+/// Longest wait for a fixture scene operation or placement cook on a loaded machine.
+constexpr ludus::foundation::int64 MAX_SCENE_WAIT_MILLISECONDS = 30000;
+
+/// Open a World whose one scene instance comes from the fixture cook, and wait for its first assembly.
+/// @return The instance's stable ID.
+QString OpenPlacementWorld(QTemporaryDir& inoutDirectory, WorldWorkspace& inoutWorkspace)
+{
+    const QString path = Fixture(inoutDirectory);
+    const QString external = inoutDirectory.filePath(QStringLiteral("external"));
+    QString error;
+    REQUIRE(ludus::editor::tests::CreateFixtureSource(external) == true);
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(inoutDirectory.path(),
+                                                       QStringLiteral("scenes/room.lulevel"),
+                                                       external,
+                                                       error) == true);
+    WorldDocument document = Document();
+    const QJsonObject level =
+        QJsonDocument::fromJson(Read(inoutDirectory.filePath(QStringLiteral("scenes/room.lulevel")))).object();
+    REQUIRE(document.ImportScene(level, error) == true);
+    Write(path, document.Encode());
+    inoutWorkspace.SetProject(inoutDirectory.path(), 1);
+    REQUIRE(inoutWorkspace.Open(path) == true);
+    return level.value(QStringLiteral("objects")).toArray()[0].toObject().value(QStringLiteral("id")).toString();
+}
+LevelWorkspace& GetLevel(const WorldWorkspace& workspace)
+{
+    LevelWorkspace* sceneOrNull = workspace.findChild<LevelWorkspace*>();
+    REQUIRE(sceneOrNull != nullptr);
+    return *sceneOrNull;
+}
+/// Wait until no scene operation or placement cook runs and the presented scene is validated.
+void WaitForValidatedScene(const WorldWorkspace& workspace)
+{
+    LevelWorkspace& scene = GetLevel(workspace);
+    QElapsedTimer timer;
+    timer.start();
+    const auto isSettled = [&workspace, &scene]() {
+        return workspace.CanSave() == true && scene.CanStartOperation() == true &&
+               scene.GetPlacementValidation() == PlacementValidation::Ready;
+    };
+    while (isSettled() == false && timer.elapsed() < MAX_SCENE_WAIT_MILLISECONDS)
+    {
+        QTest::qWait(10);
+    }
+    REQUIRE(isSettled() == true);
+}
+/// The selected instance's placement moved along x by deltaMetres from the World's current one.
+QJsonObject MovePlacement(const WorldWorkspace& workspace, const QString& id, ludus::foundation::float64 deltaMetres)
+{
+    QJsonObject placement = workspace.Document().ScenePlacement(workspace.Document().Entity(id));
+    QJsonArray position = placement.value(QStringLiteral("position")).toArray();
+    position[0] = position[0].toDouble() + deltaMetres;
+    placement.insert(QStringLiteral("position"), position);
+    return placement;
+}
+const PreviewObject& GetPresentedObject(const WorldWorkspace& workspace, const QString& id)
+{
+    const RenderScene& scene = GetLevel(workspace).PreviewScene();
+    for (const PreviewObject& object : scene.Objects)
+    {
+        if (object.Id == id)
+        {
+            return object;
+        }
+    }
+    FAIL("The presented scene lacks the instance");
+    return scene.Objects[0];
+}
+ludus::foundation::float32 GetPresentedX(const WorldWorkspace& workspace, const QString& id)
+{
+    return GetPresentedObject(workspace, id).Transform.Translation.X;
+}
+} // namespace
+
+TEST_CASE("Placement-only World edits derive the presented scene and keep everything else assembled",
+          "[editor][world][placement]")
+{
+    using namespace ludus::foundation;
+    WorldDocument document = Document();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    const QString id = QStringLiteral("b8517f65-8127-4bf4-99c2-e53b1a6d9700");
+    const QJsonObject unplaced = document.MakeDraftWithoutScenePlacements();
+    QJsonObject placement = document.ScenePlacement(document.Entity(id));
+    placement.insert(QStringLiteral("position"), QJsonArray{5.25, -1, 7});
+    placement.insert(QStringLiteral("rotation"), QJsonArray{10, 20, 30});
+    placement.insert(QStringLiteral("scale"), QJsonArray{2, 1.5, 0.5});
+    // Bound worlds keep scene placement in the scene_transform component.
+    QJsonObject components = document.Entity(id).value(QStringLiteral("components")).toObject();
+    QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
+    const QStringList names{QStringLiteral("x"),
+                            QStringLiteral("y"),
+                            QStringLiteral("z"),
+                            QStringLiteral("rx"),
+                            QStringLiteral("ry"),
+                            QStringLiteral("rz"),
+                            QStringLiteral("sx"),
+                            QStringLiteral("sy"),
+                            QStringLiteral("sz")};
+    const QStringList keys{QStringLiteral("position"), QStringLiteral("rotation"), QStringLiteral("scale")};
+    for (qsizetype i = 0; i < names.size(); ++i)
+    {
+        transform.insert(names[i], placement.value(keys[i / 3]).toArray()[i % 3]);
+    }
+    components.insert(QStringLiteral("transform"), transform);
+    const QJsonObject before = document.SceneLevel();
+    REQUIRE(document.Edit(id, components, document.Entity(id).value(QStringLiteral("name")).toString(), error) == true);
+    CHECK(document.MakeDraftWithoutScenePlacements() == unplaced);
+    const QJsonObject level = document.SceneLevel();
+    REQUIRE(level != before);
+
+    // The gizmo's composition of a root instance is the cook's object transform, bit for bit.
+    const QByteArray bytes = QJsonDocument(level).toJson(QJsonDocument::Compact);
+    Array<float32> cooked;
+    ludus::content::scene_cook::AssetError cookError;
+    REQUIRE(ludus::content::scene_cook::ComposeLevelTransforms(
+                {reinterpret_cast<const uint8*>(bytes.constData()), static_cast<usize>(bytes.size())},
+                cooked,
+                cookError) == true);
+    const math::Affine3 meshToWorld =
+        WorldDocument::MakeSceneMeshToParent(document.ScenePlacement(document.Entity(id)));
+    for (usize column = 0; column < 3; ++column)
+    {
+        CHECK(meshToWorld.Columns[column].X == cooked[column * 3]);
+        CHECK(meshToWorld.Columns[column].Y == cooked[column * 3 + 1]);
+        CHECK(meshToWorld.Columns[column].Z == cooked[column * 3 + 2]);
+    }
+    CHECK(meshToWorld.Translation.X == cooked[9]);
+    CHECK(meshToWorld.Translation.Y == cooked[10]);
+    CHECK(meshToWorld.Translation.Z == cooked[11]);
+
+    // Renaming is not a placement edit.
+    REQUIRE(document.Edit(id, components, QStringLiteral("Renamed"), error) == true);
+    CHECK(document.MakeDraftWithoutScenePlacements() != unplaced);
+}
+
+TEST_CASE("Viewport placement commits present the cooked transform at once and validate in the background",
+          "[editor][world][object-interaction][placement]")
+{
+    QTemporaryDir directory;
+    WorldWorkspace workspace;
+    const QString id = OpenPlacementWorld(directory, workspace);
+    WaitForValidatedScene(workspace);
+    LevelWorkspace& scene = GetLevel(workspace);
+    ViewportObjectInteraction& interaction = scene.GetViewport().GetObjectInteraction();
+    interaction.SelectionRequested(id);
+    const QByteArray validatedIdentity = scene.PreviewScene().Identity;
+    const ludus::foundation::float32 originalX = GetPresentedX(workspace, id);
+
+    interaction.PlacementCommitted(id, MovePlacement(workspace, id, 2));
+    // No blocking cook: the moved scene is already presented and the gizmo stays usable.
+    CHECK(scene.Busy() == false);
+    CHECK(scene.GetPlacementValidation() == PlacementValidation::Running);
+    CHECK(GetPresentedX(workspace, id) == originalX + 2);
+    CHECK(workspace.CanUndo() == true);
+    CHECK(workspace.CanSave() == true);
+    const QByteArray placedIdentity = scene.PreviewScene().Identity;
+    CHECK(placedIdentity != validatedIdentity);
+    const ludus::foundation::math::Affine3 meshToWorld =
+        WorldDocument::MakeSceneMeshToParent(workspace.Document().ScenePlacement(workspace.Document().Entity(id)));
+    CHECK(GetPresentedObject(workspace, id).Transform.Translation == meshToWorld.Translation);
+    CHECK(GetPresentedObject(workspace, id).Transform.Columns[0] == meshToWorld.Columns[0]);
+
+    WaitForValidatedScene(workspace);
+    // The cook wrote the same transforms, so the derived scene stays presented without a renderer restart.
+    CHECK(scene.PreviewScene().Identity == placedIdentity);
+    QLabel* statusOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldStatus"));
+    REQUIRE(statusOrNull != nullptr);
+    CHECK(statusOrNull->text().contains(QStringLiteral("validated")) == true);
+}
+
+TEST_CASE("Placement edits, Undo and Redo continue while the background validation runs",
+          "[editor][world][object-interaction][placement]")
+{
+    QTemporaryDir directory;
+    WorldWorkspace workspace;
+    const QString id = OpenPlacementWorld(directory, workspace);
+    WaitForValidatedScene(workspace);
+    LevelWorkspace& scene = GetLevel(workspace);
+    ViewportObjectInteraction& interaction = scene.GetViewport().GetObjectInteraction();
+    interaction.SelectionRequested(id);
+    const QByteArray validatedIdentity = scene.PreviewScene().Identity;
+    const ludus::foundation::float32 originalX = GetPresentedX(workspace, id);
+
+    // Without an event loop turn the first cook cannot finish: each edit below happens while it runs.
+    interaction.PlacementCommitted(id, MovePlacement(workspace, id, 2));
+    interaction.PlacementCommitted(id, MovePlacement(workspace, id, 3));
+    CHECK(GetPresentedX(workspace, id) == originalX + 5);
+    // The running cook validates an older placement; the newest waits for it.
+    CHECK(scene.GetPlacementValidation() == PlacementValidation::Pending);
+    REQUIRE(workspace.CanUndo() == true);
+    workspace.Undo();
+    CHECK(GetPresentedX(workspace, id) == originalX + 2);
+    workspace.Undo();
+    // Back at the validated placement, its own cooked scene returns with nothing left to validate.
+    CHECK(GetPresentedX(workspace, id) == originalX);
+    CHECK(scene.PreviewScene().Identity == validatedIdentity);
+    CHECK(scene.GetPlacementValidation() == PlacementValidation::Ready);
+    REQUIRE(workspace.CanRedo() == true);
+    workspace.Redo();
+    CHECK(GetPresentedX(workspace, id) == originalX + 2);
+    CHECK(scene.GetPlacementValidation() != PlacementValidation::Ready);
+
+    WaitForValidatedScene(workspace);
+    CHECK(GetPresentedX(workspace, id) == originalX + 2);
+    CHECK(workspace.Document()
+              .ScenePlacement(workspace.Document().Entity(id))
+              .value(QStringLiteral("position"))
+              .toArray()[0]
+              .toDouble() == static_cast<ludus::foundation::float64>(originalX) + 2);
+    workspace.Redo();
+    CHECK(GetPresentedX(workspace, id) == originalX + 5);
+    WaitForValidatedScene(workspace);
+    CHECK(GetPresentedX(workspace, id) == originalX + 5);
+}
+
+TEST_CASE("Saving during a background placement validation writes the validated latest World",
+          "[editor][world][object-interaction][placement]")
+{
+    QTemporaryDir directory;
+    WorldWorkspace workspace;
+    const QString id = OpenPlacementWorld(directory, workspace);
+    WaitForValidatedScene(workspace);
+    LevelWorkspace& scene = GetLevel(workspace);
+    ViewportObjectInteraction& interaction = scene.GetViewport().GetObjectInteraction();
+    interaction.SelectionRequested(id);
+    const ludus::foundation::float32 originalX = GetPresentedX(workspace, id);
+
+    interaction.PlacementCommitted(id, MovePlacement(workspace, id, 2));
+    REQUIRE(scene.GetPlacementValidation() == PlacementValidation::Running);
+    // Save waits for the validation, then verifies and writes whatever the World holds by then.
+    REQUIRE(workspace.Save() == true);
+    CHECK(workspace.Dirty() == true);
+    interaction.PlacementCommitted(id, MovePlacement(workspace, id, 1));
+    QElapsedTimer timer;
+    timer.start();
+    while ((workspace.Dirty() == true || workspace.CanSave() == false) && timer.elapsed() < MAX_SCENE_WAIT_MILLISECONDS)
+    {
+        QTest::qWait(10);
+    }
+    REQUIRE(workspace.Dirty() == false);
+    CHECK(Read(workspace.Path()) == workspace.Document().Encode());
+    WorldDocument reopened = Document();
+    QString error;
+    REQUIRE(reopened.Load(Read(workspace.Path()), error) == true);
+    CHECK(reopened.ScenePlacement(reopened.Entity(id)).value(QStringLiteral("position")).toArray()[0].toDouble() ==
+          static_cast<ludus::foundation::float64>(originalX) + 3);
+    WaitForValidatedScene(workspace);
+    CHECK(GetPresentedX(workspace, id) == originalX + 3);
+}
+
+TEST_CASE("A non-placement edit during a placement validation waits for a full assembly",
+          "[editor][world][object-interaction][placement]")
+{
+    QTemporaryDir directory;
+    WorldWorkspace workspace;
+    const QString id = OpenPlacementWorld(directory, workspace);
+    WaitForValidatedScene(workspace);
+    LevelWorkspace& scene = GetLevel(workspace);
+    ViewportObjectInteraction& interaction = scene.GetViewport().GetObjectInteraction();
+    interaction.SelectionRequested(id);
+    const ludus::foundation::float32 originalX = GetPresentedX(workspace, id);
+    interaction.PlacementCommitted(id, MovePlacement(workspace, id, 2));
+    const QByteArray placedIdentity = scene.PreviewScene().Identity;
+    const qsizetype entityCount = workspace.Document().Draft().value(QStringLiteral("entities")).toArray().size();
+
+    QPushButton* addOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAdd"));
+    REQUIRE(addOrNull != nullptr);
+    REQUIRE(addOrNull->isEnabled() == true);
+    addOrNull->click();
+    CHECK(workspace.Document().Draft().value(QStringLiteral("entities")).toArray().size() == entityCount + 1);
+    // The derived scene stays presented; World edits wait for the assembly that replaces it.
+    CHECK(scene.PreviewScene().Identity == placedIdentity);
+    CHECK(workspace.CanUndo() == false);
+    CHECK(workspace.CanSave() == false);
+
+    WaitForValidatedScene(workspace);
+    CHECK(GetPresentedX(workspace, id) == originalX + 2);
+    CHECK(workspace.CanUndo() == true);
+}
+
+TEST_CASE("A failed placement validation presents the last validated scene again",
+          "[editor][world][object-interaction][placement]")
+{
+    QTemporaryDir directory;
+    WorldWorkspace workspace;
+    const QString id = OpenPlacementWorld(directory, workspace);
+    WaitForValidatedScene(workspace);
+    LevelWorkspace& scene = GetLevel(workspace);
+    ViewportObjectInteraction& interaction = scene.GetViewport().GetObjectInteraction();
+    interaction.SelectionRequested(id);
+    const QByteArray validatedIdentity = scene.PreviewScene().Identity;
+    const ludus::foundation::float32 originalX = GetPresentedX(workspace, id);
+    QList<PlacementValidationResult> results;
+    QObject::connect(&scene,
+                     &LevelWorkspace::PlacementValidationFinished,
+                     &scene,
+                     [&results](PlacementValidationResult result) { results.append(result); });
+    // Deriving reads no project files; the authoritative cook does, and now fails.
+    REQUIRE(QFile::remove(directory.filePath(QStringLiteral("assets/catalog.json"))) == true);
+
+    interaction.PlacementCommitted(id, MovePlacement(workspace, id, 2));
+    CHECK(GetPresentedX(workspace, id) == originalX + 2);
+    WaitForValidatedScene(workspace);
+    REQUIRE(results.size() == 1);
+    CHECK(results[0] == PlacementValidationResult::Rejected);
+    CHECK(GetPresentedX(workspace, id) == originalX);
+    CHECK(scene.PreviewScene().Identity == validatedIdentity);
+    // The World keeps the edit, as after any failed assembly, and Undo still works.
+    CHECK(workspace.Dirty() == true);
+    REQUIRE(workspace.CanUndo() == true);
+    workspace.Undo();
+    CHECK(GetPresentedX(workspace, id) == originalX);
 }

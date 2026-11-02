@@ -30,6 +30,36 @@ namespace ludus::editor
 // catalogs and save conflicts; it runs in process on a worker thread and no
 // project game code is executed.
 class PreviewViewport;
+/// How LevelWorkspace::PublishPlacement answered.
+enum class PlacementPublication : foundation::uint8
+{
+    /// The viewport presents the level now; its authoritative cook validates it in the background.
+    Published,
+    /// The presented scene already shows the level.
+    Unchanged,
+    /// More than scene placement changed, nothing is presented yet, or deriving failed: Assemble the level.
+    RequiresAssembly,
+};
+/// Validation of the scene LevelWorkspace::PublishPlacement presented.
+enum class PlacementValidation : foundation::uint8
+{
+    /// The presented scene is the last completed cook's, or no scene is presented.
+    Ready,
+    /// A derived scene is presented; its cook waits for the operation thread.
+    Pending,
+    /// The cook of the presented scene runs on the operation thread.
+    Running,
+};
+/// How one background placement cook ended (LevelWorkspace::PlacementValidationFinished).
+enum class PlacementValidationResult : foundation::uint8
+{
+    /// The cook confirmed the presented placement, or replaced it with its own scene.
+    Accepted,
+    /// The cook failed; the last validated scene is presented again and the error is in StatusText().
+    Rejected,
+    /// A newer placement, a cancellation or a project change made this cook obsolete; nothing changed.
+    Superseded,
+};
 class LevelWorkspace final : public QWidget
 {
     Q_OBJECT
@@ -92,13 +122,44 @@ public:
     {
         Cancel();
     }
+    /// A blocking scene operation runs. A background placement cook is not one; see CanStartOperation.
     [[nodiscard]] bool Busy() const noexcept
     {
         return Busy_;
     }
+    /// No scene operation, including a background placement cook, occupies the operation thread,
+    /// so Assemble, VerifyAssets, imports and SetWorldSnapshot may be called.
+    [[nodiscard]] bool CanStartOperation() const noexcept
+    {
+        return Busy_ == false && isOperationActive() == false && mIsValidationRunning == false;
+    }
+    /// @brief Present level at once when it differs from the presented scene only in scene-object placement.
+    ///
+    /// The derived scene carries the cook's own object transforms (DerivePlacedScene). The authoritative
+    /// cook of the level then runs on the operation thread without making Busy() true, so placement
+    /// edits, selection and Undo continue; a newer publication supersedes an older cook, and the result
+    /// arrives through PlacementValidationFinished. Returning to the last validated placement presents
+    /// that cook's scene again and needs no validation. GUI thread; World-owned workspaces only.
+    /// @param level The World's SceneLevel().
+    /// @param world The World that level came from; its other content must equal the presented World's.
+    /// @return Published, Unchanged, or RequiresAssembly when the caller must Assemble (nothing changed).
+    [[nodiscard]] PlacementPublication PublishPlacement(const QJsonObject& level, const WorldDocument& world);
+    /// Validation state of the presented scene; Ready unless PublishPlacement presented a derived one.
+    [[nodiscard]] PlacementValidation GetPlacementValidation() const noexcept
+    {
+        return mPlacementValidation;
+    }
+    /// Stop the background placement cook so a full assembly can replace the presented scene. The derived
+    /// scene stays presented and Pending; PlacementValidationFinished(Superseded) reports the drained cook.
+    void CancelPlacementValidation() noexcept;
+    /// Forget the presented and validated placements (the World replaced or removed its scene), and stop
+    /// a background placement cook. The viewport keeps its current frame; the next level is assembled.
+    void ClearPlacementPresentation() noexcept;
     [[nodiscard]] QWidget* TakeViewport(QWidget* parent);
+    /// World composed with the next Assemble or VerifyAssets. @pre CanStartOperation().
     void SetWorldSnapshot(const WorldDocument& world)
     {
+        LUDUS_ASSERT(mIsValidationRunning == false);
         WorldSnapshot_ = world;
     }
     /// Replace the entropy source that mints new level IDs and that SceneCook
@@ -153,6 +214,9 @@ Q_SIGNALS:
     void OperationFinished(bool accepted);
     void AssetsVerified(bool accepted);
     void ImportPreviewFinished(bool accepted);
+    /// A background placement cook drained; see PlacementValidationResult. Emitted on the GUI thread
+    /// before the next placement cook may start.
+    void PlacementValidationFinished(ludus::editor::PlacementValidationResult result);
 
 private:
     bool Start(const QString& operation, const QString& path = {}, const QString& source = {});
@@ -214,6 +278,32 @@ private:
     }
     /// Decode the cooked candidate and validate it against the World (worker or browser GUI thread).
     void decodeCandidate();
+    /// Start the cook of the presented derived scene when it is Pending and the operation thread is free.
+    void startPlacementValidation();
+    /// Settle a drained placement cook (GUI thread) and report it.
+    void finishPlacementValidation();
+    /// Present scene in the viewport and remember it as the presented scene; failure keeps both.
+    [[nodiscard]] bool presentScene(const RenderScene& scene);
+    /// Record the scene a completed publishing operation presented as presented and validated.
+    void acceptCommittedScene();
+    PlacementValidation mPlacementValidation = PlacementValidation::Ready;
+    /// A placement cook occupies the operation thread (including its decode).
+    bool mIsValidationRunning = false;
+    /// The running placement cook was cancelled or superseded by a project change.
+    bool mIsValidationCancelled = false;
+    /// Advances whenever PublishPlacement changes the presented scene; a cook validates one value.
+    foundation::uint64 mPlacementGeneration = 0;
+    foundation::uint64 mValidationGeneration = 0;
+    /// The scene, level and placement-free World draft the viewport presents.
+    RenderScene mPresentedScene;
+    QJsonObject mPresentedLevel;
+    QJsonObject mPresentedWorld;
+    /// The last completed cook's scene, level and placement-free World draft.
+    RenderScene mValidatedScene;
+    QJsonObject mValidatedLevel;
+    QJsonObject mValidatedWorld;
+    /// The World of the presented derived scene, composed by its cook.
+    WorldDocument mPlacementWorld;
     std::atomic<bool> CancelRequested_{false};
     QThread Decode_;
     WorldDocument WorldSnapshot_;

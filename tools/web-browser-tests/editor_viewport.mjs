@@ -41,7 +41,10 @@ const base = `http://127.0.0.1:${server.address().port}`;
 const canvas = page => page.locator('.ludus-gpu-viewport').last();
 const frames = page => canvas(page).getAttribute('data-frames').then(Number);
 async function click(page, x, y) {
-  await page.mouse.click(x, y);
+  // Qt/Wasm processes hover and button events on separate event-loop turns.
+  await page.mouse.move(x, y);
+  await page.waitForTimeout(100);
+  await page.mouse.click(x, y, {delay: 50});
   // Qt consumes input and relayouts its canvas on the event-loop/animation turn.
   await page.waitForTimeout(200);
 }
@@ -50,20 +53,32 @@ async function open(page) {
   await page.goto(base, {waitUntil: 'domcontentloaded'});
   await page.waitForFunction(() => document.body.dataset.editorState === 'ready', null, {timeout: 60000});
   // Fixed desktop acceptance geometry. Qt controls are canvas-drawn, without DOM locators.
-  await click(page, 210, 191); // World tab.
-  await click(page, 78, 279); // New World.
+  await click(page, 446, 195); // World tab.
+  await click(page, 784, 297); // New World.
   await click(page, 680, 666); // Save dialog filename.
   await page.keyboard.type('gpu.world.json');
   await click(page, 991, 664);
 }
 async function importScene(page) {
-  await click(page, 551, 280);
+  await click(page, 1056, 297);
   await page.screenshot({path: resolve(output, 'import-menu.png')});
   const chooser = page.waitForEvent('filechooser', {timeout: 10000});
-  await click(page, 556, 334);
+  await click(page, 1100, 350);
   await (await chooser).setFiles({name: 'scene.pbrt', mimeType: 'text/plain', buffer: source});
   await page.waitForTimeout(500);
-  await click(page, 1010, 355); // Import previewed scene: actual SceneCook + MEMFS publication.
+  await page.screenshot({path: resolve(output, 'import-preview.png')});
+  await click(page, 1020, 406); // Import previewed scene: actual SceneCook + MEMFS publication.
+}
+async function selectShading(page, mode) {
+  const rectangle = await canvas(page).boundingBox();
+  await click(page, rectangle.x + 100, rectangle.y - 28);
+  // The popup can open above or below the toolbar. Choose its stable enum order through the keyboard.
+  const selectedIndex = ['solid', 'albedo', 'lit'].indexOf(mode);
+  assert.ok(selectedIndex >= 0);
+  for (const key of ['Home', ...Array(selectedIndex).fill('ArrowDown'), 'Enter']) {
+    await page.keyboard.press(key, {delay: 50});
+    await page.waitForTimeout(100);
+  }
 }
 async function rendered(page, previous = 0, isRecovering = false) {
   await page.waitForFunction(({count, isRecovering}) => {
@@ -169,10 +184,7 @@ try {
   report.cases.push('Qt wheel and orbit input reaches the GPU camera');
   for (const mode of ['albedo', 'lit']) {
     const previous = await frames(page);
-    const rectangle = await canvas(page).boundingBox();
-    await click(page, rectangle.x + 100, rectangle.y - 48);
-    await page.screenshot({path: resolve(output, mode + '-menu.png')});
-    await click(page, rectangle.x + 100, rectangle.y - 17);
+    await selectShading(page, mode);
     await page.screenshot({path: resolve(output, mode + '-selected.png')});
     await rendered(page, previous);
     const shaded = await shot(page, mode);
@@ -180,19 +192,16 @@ try {
   }
   report.cases.push('Albedo and authored Lit material replacement with directional shadow preparation');
   const accepted = await shot(page, 'accepted-lit');
-  const toolbar = await canvas(page).boundingBox();
   const previous = await frames(page);
   await page.evaluate(() => { globalThis.qaDelayNextPipeline = true; });
-  await click(page, toolbar.x + 100, toolbar.y - 48);
-  await click(page, toolbar.x + 100, toolbar.y - 98); // Lit -> Solid.
+  await selectShading(page, 'solid');
   assert.deepEqual((await shot(page, 'pending')).bytes, accepted.bytes,
     'Pending preparation must retain the last GPU image');
   await rendered(page, previous);
   const solid = await shot(page, 'published-solid');
   assert.ok(solid.lit > 100 && isNeutral(solid.geometry));
   await page.evaluate(() => { globalThis.qaRejectNextPipeline = true; });
-  await click(page, toolbar.x + 100, toolbar.y - 48);
-  await click(page, toolbar.x + 100, toolbar.y - 17); // Solid -> Albedo.
+  await selectShading(page, 'albedo');
   await page.waitForFunction(() => document.querySelector('#screen').dataset.viewportError, null, {timeout: 10000});
   const retained = await shot(page, 'rejected');
   assert.ok(retained.lit > 50);
@@ -200,19 +209,18 @@ try {
     'A rejected candidate must retain the previous GPU image');
   const beforeRecovery = await frames(page);
   await page.evaluate(() => { globalThis.qaGpuErrors = []; });
-  await click(page, toolbar.x + 100, toolbar.y - 48);
-  await click(page, toolbar.x + 100, toolbar.y - 17); // Requested Albedo -> Lit.
+  await selectShading(page, 'lit');
   await rendered(page, beforeRecovery, true);
   const recovered = await shot(page, 'recovered-lit');
   assert.ok(recovered.warm > 50 && isWarm(recovered.geometry));
   report.cases.push('Synthetic delayed/rejected preparation retains prior pixels, then successfully publishes recovery');
-  await click(page, 45, 191);
+  await click(page, 300, 195); // Project Settings tab.
   await page.waitForTimeout(200);
   assert.equal(await canvas(page).evaluate(node => node.style.display), 'none');
   const hidden = await frames(page);
   await page.waitForTimeout(250);
   assert.equal(await frames(page), hidden, 'Hidden viewports must stop repeated GPU submissions');
-  await click(page, 210, 191);
+  await click(page, 446, 195); // World tab.
   await rendered(page, hidden);
   const beforeResize = await frames(page);
   await page.setViewportSize({width: 1200, height: 900});

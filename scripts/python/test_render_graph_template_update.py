@@ -27,6 +27,8 @@ class RestirTemplateUpdateTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(self.previous).hexdigest(), upgrade.RESTIR_INITIAL_V1_SHA256)
         self.initial.write_bytes(self.previous)
         self.helper.unlink()
+        self.reservoir_helper = self.initial.with_name("initial_reservoir.slang")
+        self.reservoir_helper.unlink()
 
     def test_preview_apply_backup_and_idempotence(self):
         before = self.manifest.read_bytes()
@@ -38,9 +40,28 @@ class RestirTemplateUpdateTests(unittest.TestCase):
         self.assertTrue(result['applied'])
         self.assertEqual(self.initial.read_bytes(), self.updated)
         self.assertTrue(self.helper.exists())
+        self.assertTrue(self.reservoir_helper.exists())
         self.assertEqual((Path(result['backup']) / 'main_shaders/initial.slang').read_bytes(), self.previous)
         self.assertEqual(self.manifest.read_bytes(), before)
         self.assertFalse(upgrade.update_restir_sampling(self.manifest, apply=True)['updates'])
+
+    def test_previous_batched_callback_upgrades_with_its_complete_helper_closure(self):
+        previous = (Path(__file__).with_name('fixtures') / 'restir_initial_v2.slang').read_bytes()
+        self.assertEqual(hashlib.sha256(previous).hexdigest(), upgrade.RESTIR_INITIAL_V2_SHA256)
+        self.initial.write_bytes(previous)
+        older_backup = self.root / 'out/template-updates/restir-initial-sampling-v2/main_shaders/initial.slang'
+        older_backup.parent.mkdir(parents=True)
+        older_backup.write_bytes(self.previous)
+        result = upgrade.update_restir_sampling(self.manifest, apply=True)
+        self.assertTrue(result['applied'])
+        self.assertEqual(self.initial.read_bytes(), self.updated)
+        self.assertTrue(self.helper.exists())
+        self.assertTrue(self.reservoir_helper.exists())
+        self.assertEqual(older_backup.read_bytes(), self.previous)
+        self.reservoir_helper.write_bytes(b'// authored initial reservoir helper')
+        with self.assertRaises(ToolingError):
+            upgrade.update_restir_sampling(self.manifest, apply=True)
+        self.assertEqual(self.reservoir_helper.read_bytes(), b'// authored initial reservoir helper')
 
     def test_custom_callback_and_conflicting_helper_are_preserved(self):
         custom = self.previous + b'// authored change\n'
@@ -60,6 +81,7 @@ class RestirTemplateUpdateTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 upgrade.update_restir_sampling(self.manifest, apply=True)
         self.assertFalse(self.helper.exists())
+        self.assertFalse(self.reservoir_helper.exists())
         self.assertEqual(self.initial.read_bytes(), self.previous)
 
     def test_editor_save_lock_and_escaping_sources_are_rejected(self):
@@ -78,15 +100,17 @@ class RestirTemplateUpdateTests(unittest.TestCase):
     def test_current_callback_repairs_missing_helper_but_preserves_modified_helper(self):
         self.initial.write_bytes(self.updated)
         result = upgrade.update_restir_sampling(self.manifest, apply=True)
-        self.assertEqual(result['updates'], ['main_shaders/initial_emitter_sampling.slang'])
+        self.assertEqual(result['updates'], ['main_shaders/initial_emitter_sampling.slang',
+                                             'main_shaders/initial_reservoir.slang'])
         self.assertTrue(self.helper.exists())
+        self.assertTrue(self.reservoir_helper.exists())
         self.helper.write_text('// custom helper')
         with self.assertRaises(ToolingError):
             upgrade.update_restir_sampling(self.manifest, apply=True)
         self.assertEqual(self.helper.read_text(), '// custom helper')
 
     def test_nested_backup_symlink_cannot_write_outside_package(self):
-        backup = self.root / 'out/template-updates/restir-initial-sampling-v2'
+        backup = self.root / 'out/template-updates/restir-initial-sampling-v3'
         backup.mkdir(parents=True)
         outside = Path(self.directory.name) / 'outside'
         outside.mkdir()
@@ -109,6 +133,7 @@ class RestirTemplateUpdateTests(unittest.TestCase):
         self.assertTrue(result['applied'])
         self.assertEqual(self.initial.read_bytes(), self.updated)
         self.assertTrue(self.helper.exists())
+        self.assertTrue(self.reservoir_helper.exists())
 
     def test_failed_exclusive_publication_leaves_no_partial_helper(self):
         target = self.root / 'new.slang'
