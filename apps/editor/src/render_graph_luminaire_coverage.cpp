@@ -2,6 +2,7 @@
 #include "internal/render_graph_canvas_feedback.h"
 #include "internal/render_graph_document.h"
 
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/parse_number.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/status.hpp>
@@ -40,6 +41,7 @@ bool IsShadeFunction(const QString& function)
            function == QStringLiteral("ShadeSliceSampling") || function == QStringLiteral("ShadeUniformArea");
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): configuration identity is resolved within the named file.
 QJsonObject FindConfiguration(const RenderGraphDocument& document, const QString& file, const QString& identity)
 {
     QJsonObject graph;
@@ -59,7 +61,7 @@ QJsonObject FindConfiguration(const RenderGraphDocument& document, const QString
 /// Program id to its shade.slang source, for every manifest program running a template shade function.
 QHash<QString, QString> FindShadePrograms(const RenderGraphDocument& document)
 {
-    const QString root = document.GetRootGraph();
+    const QString& root = document.GetRootGraph();
     const QString manifestFile =
         root.chopped(QStringLiteral(".lurender.json").size()) + QStringLiteral(".lushader.json");
     const QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
@@ -167,6 +169,8 @@ bool ParseLiteral(QString text, float32& outValue)
 }
 
 /// The literal arguments of the first uncommented `static const <type> <name> = <initializer>;` declaration.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): source text, type token and declaration name are distinct
+// grammar inputs.
 bool ReadConstant(const QString& source, const QString& type, const QString& name, QStringList& outValues)
 {
     const QRegularExpression declaration(
@@ -262,7 +266,7 @@ bool FindRenderGraphLuminairePanel(const RenderGraphDocument& document,
     RenderGraphLuminairePanel panel;
     panel.Source = shadeSource.chopped(QStringLiteral("shade.slang").size()) + QLatin1String(PLACEMENT_SOURCE);
     panel.IsPlacementKnown = ReadRenderGraphLuminairePlacement(document.GetDraft(panel.Source), panel);
-    outPanel = panel;
+    outPanel = Move(panel);
     return true;
 }
 
