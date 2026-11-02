@@ -1651,7 +1651,7 @@ rays (2), orthographic (4), reverse-Z (8), infinite far (16), partial (32),
 GPU compute (64), resampled light sampling (128) and scalar optical connections (256); neither
 traversal bit marks native queries. The sampler field is 1 for `UniformArea` and 2
 with flag 128; `scripts/reference-hdr` rejects any other pairing and records
-`light_sampling` in its manifest.
+`light_sampling` in its manifest, with `center_rays` for flag 2.
 The scalar optical connection profile and its CPU/GPU contract are described in
 [render-graph authoring](../development/render-graph-authoring.md#trace-scene-optical-connections).
 Each top-left ordered pixel contains three FP32 mean RGB channels and a uint32

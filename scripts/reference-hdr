@@ -74,7 +74,7 @@ def decode(data):
                     seed=seed, revision=revision, scene_fingerprint=f'{high:016x}{low:016x}',
                     traversal='cpu_oracle' if flags & 1 else 'gpu_compute' if flags & 64 else 'native_queries',
                     light_sampling={1: 'uniform_area', 2: 'resampled_projected_solid_angle', 3: 'resampled_form_factor'}[sampler],
-                    partial=bool(flags & 32), minimum_samples=min(counts), maximum_samples=max(counts),
+                    center_rays=bool(flags & 2), partial=bool(flags & 32), minimum_samples=min(counts), maximum_samples=max(counts),
                     secondary_distance=struct.unpack_from('<f', data, 80)[0], texture_mip=struct.unpack_from('<I', data, 84)[0],
                     light_count=struct.unpack_from('<I', data, 88)[0], world_to_clip=list(struct.unpack_from('<16f', data, 96)),
                     camera_position=list(struct.unpack_from('<3f', data, 160)), environment=list(struct.unpack_from('<3f', data, 172)),

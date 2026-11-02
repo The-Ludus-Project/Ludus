@@ -70,6 +70,14 @@ class ReferenceExportTests(unittest.TestCase):
         struct.pack_into('<I', data, 44, 288)
         with self.assertRaises(ValueError): hdr.decode(data)
 
+    def test_center_ray_flag_is_named(self):
+        for flags, center_rays in ((33, False), (35, True)):
+            with self.subTest(flags=flags):
+                data = self.capture()
+                struct.pack_into('<I', data, 44, flags)
+                metadata, _ = hdr.decode(data)
+                self.assertEqual(metadata['center_rays'], center_rays)
+
     def test_optical_capture_retains_its_declared_wavelength(self):
         data = self.capture()
         struct.pack_into('<I', data, 44, 32 | 64 | 256)

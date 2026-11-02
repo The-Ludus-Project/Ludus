@@ -1792,6 +1792,15 @@ geometry. They have no area to hit or emit from.
 | GPU compute | Runs the same path tracer in compute shaders: BVH traversal, intersection, light and BSDF sampling, shading and accumulation. Needs only GPU compute support, not ray tracing hardware, and admits masked materials. Its image matches the CPU oracle's sample for sample within float32 rounding. |
 | Native ray queries | Uses the GPU's ray tracing hardware when the device and build support it, otherwise the option is disabled. Masked materials are rejected. Dense scenes have an open precision qualification item. |
 
+**Trace pixel centres** sends every camera ray through its pixel's centre instead
+of a random point in the pixel. A render graph's camera rays do the same, so turn
+it on when you compare a graph with the reference: edges then alias in both
+images, and the difference shows shading rather than antialiasing. The image
+estimates centre rays, not pixel footprints, so leave it off for ground truth. The
+choice applies to every traversal and is recorded in the `LUHDR01` flags, as
+`center_rays` in the `scripts/reference-hdr` manifest and as `centerRays` in a
+saved comparison.
+
 No traversal falls back to another. Work runs on the editor's GUI thread
 in short slices, so large images at high sample counts take minutes with the CPU
 oracle. GPU compute advances the whole image by one sample per dispatch and copies

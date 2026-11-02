@@ -286,6 +286,7 @@ bool ViewportReferenceCapture::Start(rhi::DeviceHandle device,
     description.MaxDepth = settings.MaxDepth;
     description.RouletteDepth = math::Min(REFERENCE_ROULETTE_DEPTH, settings.MaxDepth);
     description.Seed = settings.Seed;
+    description.CenterRays = settings.ShouldCenterRays;
     mGeneration.Reset(new (std::nothrow)
                           PreviewGpuGeneration(device, scene, PreviewShading::Lit, PreviewShaderSet{}, &setup));
     if (mGeneration.Get() == nullptr)
