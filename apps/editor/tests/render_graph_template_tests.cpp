@@ -2002,15 +2002,31 @@ TEST_CASE("ReSTIR GI template is created from the editor picker with its four pa
         INFO(identity);
         CHECK(library.contains(identity) == true);
     }
-    // Production is a second root configuration with its own film/display nodes.
-    const QJsonArray configurations = QJsonDocument::fromJson(document.GetDraft(ROOT_GRAPH))
-                                          .object()
-                                          .value(QStringLiteral("configurations"))
-                                          .toArray();
-    REQUIRE(configurations.isEmpty() == false);
-    const QByteArray root = QJsonDocument(configurations.first().toObject()).toJson();
-    CHECK(root.count("\"Accumulate\"") == 1);
-    CHECK(root.count("\"ToneMap\"") == 1);
+    // Production has its own film/display nodes; count the declared default configuration only.
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    const QJsonObject graph = QJsonDocument::fromJson(root).object();
+    const QString defaultConfiguration = graph.value(QStringLiteral("default")).toString();
+    bool hasDefaultConfiguration = false;
+    for (const QJsonValue& value : graph.value(QStringLiteral("configurations")).toArray())
+    {
+        const QJsonObject configuration = value.toObject();
+        if (configuration.value(QStringLiteral("id")).toString() != defaultConfiguration)
+        {
+            continue;
+        }
+        hasDefaultConfiguration = true;
+        usize accumulationCount = 0;
+        usize toneMappingCount = 0;
+        for (const QJsonValue& node : configuration.value(QStringLiteral("nodes")).toArray())
+        {
+            const QString kind = node.toObject().value(QStringLiteral("kind")).toString();
+            accumulationCount += kind == QStringLiteral("Accumulate") ? 1 : 0;
+            toneMappingCount += kind == QStringLiteral("ToneMap") ? 1 : 0;
+        }
+        CHECK(accumulationCount == 1);
+        CHECK(toneMappingCount == 1);
+    }
+    REQUIRE(hasDefaultConfiguration == true);
     CHECK(document.GetDraft(QStringLiteral("main_shaders/reservoir.slang")).contains("ComputeReconnectionJacobian") ==
           true);
     CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("RESTIR_GI_SPATIAL_MAX_M") == true);

@@ -501,6 +501,53 @@ float ComputeProjectedSolidAngleEdge(float3 startTangent, float3 endTangent)
     }
     return edgeNormalTangent.z * (atan2(sine, dot(startTangent, endTangent)) / sine);
 }
+// Raster-only approximation of the same spherical edge integral credited above.
+// Inputs must be unit directions or zero, as produced by NormalizeProjectedDirection.
+// Fit acos(x)/sqrt(1-x*x), with its limit 1 at x=1, at ten Chebyshev nodes
+// x=(1+cos(pi*(j+0.5)/10))/2; a DCT then conversion to powers of x gives
+// these independently generated coefficients. A 100001-point float64 sweep
+// measures <2e-8 absolute ratio error on [0,1]; GPU tests allow 2e-6 radians
+// in the signed edge term, including float32 normalization and obtuse edges.
+// For negative cosine use angle(-x)=PI-angle(x), keeping the measured cross
+// length rather than sqrt(1-dot*dot) near opposite directions. Exact sampling,
+// reference transport and the independent CPU oracle keep the atan2 path.
+float ComputeRasterProjectedSolidAngleEdge(float3 startTangent, float3 endTangent)
+{
+    static const float EDGE_RATIO_COEFFICIENT_0 = 1.570796307;
+    static const float EDGE_RATIO_COEFFICIENT_1 = -0.9999960003;
+    static const float EDGE_RATIO_COEFFICIENT_2 = 0.785263024;
+    static const float EDGE_RATIO_COEFFICIENT_3 = -0.664857777;
+    static const float EDGE_RATIO_COEFFICIENT_4 = 0.57641359;
+    static const float EDGE_RATIO_COEFFICIENT_5 = -0.480613399;
+    static const float EDGE_RATIO_COEFFICIENT_6 = 0.3483872593;
+    static const float EDGE_RATIO_COEFFICIENT_7 = -0.1921039182;
+    static const float EDGE_RATIO_COEFFICIENT_8 = 0.06787372794;
+    static const float EDGE_RATIO_COEFFICIENT_9 = -0.01116282393;
+    float3 edgeNormalTangent = ComputeStableCross(startTangent, endTangent);
+    float cosine = clamp(dot(startTangent, endTangent), -1, 1);
+    bool isObtuse = cosine < 0;
+    cosine = abs(cosine);
+    float ratio = EDGE_RATIO_COEFFICIENT_9;
+    ratio = fma(ratio, cosine, EDGE_RATIO_COEFFICIENT_8);
+    ratio = fma(ratio, cosine, EDGE_RATIO_COEFFICIENT_7);
+    ratio = fma(ratio, cosine, EDGE_RATIO_COEFFICIENT_6);
+    ratio = fma(ratio, cosine, EDGE_RATIO_COEFFICIENT_5);
+    ratio = fma(ratio, cosine, EDGE_RATIO_COEFFICIENT_4);
+    ratio = fma(ratio, cosine, EDGE_RATIO_COEFFICIENT_3);
+    ratio = fma(ratio, cosine, EDGE_RATIO_COEFFICIENT_2);
+    ratio = fma(ratio, cosine, EDGE_RATIO_COEFFICIENT_1);
+    ratio = fma(ratio, cosine, EDGE_RATIO_COEFFICIENT_0);
+    if (isObtuse == true)
+    {
+        float sine = length(edgeNormalTangent);
+        if (sine == 0)
+        {
+            return 0;
+        }
+        return edgeNormalTangent.z * (PI / sine - ratio);
+    }
+    return edgeNormalTangent.z * ratio;
+}
 // Returns steradians projected onto +z, in [0, PI]; invalid or empty inputs return zero.
 float ComputeProjectedSolidAngleIntegral(ProjectedPolygonInput polygon)
 {

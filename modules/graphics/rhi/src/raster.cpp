@@ -359,6 +359,7 @@ void Collect() noexcept
     // Acyclic dependencies can expose another detached record in each pass.
     for (usize pass = 0; pass < KINDS; ++pass)
     {
+        bool hasRetiredResources = false;
         for (usize kind = KINDS; kind-- > 0;)
         {
             for (usize slot = 0; slot < gRecords[kind].GetSize(); ++slot)
@@ -378,7 +379,14 @@ void Collect() noexcept
                 record.Ray.Reset();
                 record = {};
                 record.Generation = generation;
+                hasRetiredResources = true;
             }
+        }
+        // A pass that released nothing changed no dependency references. Another
+        // complete scan would observe the same records, even in an idle device.
+        if (hasRetiredResources == false)
+        {
+            break;
         }
     }
 }

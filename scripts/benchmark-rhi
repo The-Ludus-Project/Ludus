@@ -16,7 +16,7 @@ import math
 
 def percentile(values, fraction):
     ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, int((len(ordered) - 1) * fraction))]
+    return ordered[min(len(ordered) - 1, max(0, math.ceil(len(ordered) * fraction) - 1))]
 
 
 STATE_NAMES = ("empty", "armed", "pending", "available", "unavailable", "disjoint", "failed")

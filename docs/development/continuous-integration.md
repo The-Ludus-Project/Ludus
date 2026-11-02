@@ -410,7 +410,7 @@ hosted Ubuntu and macOS runners, and on manual dispatch. It is not a pull-reques
 or batch check: scenario correctness failures fail that workflow, and
 timings are report-only. Reports, Perfetto traces and logs are kept as artifacts
 for 90 days. See [Runtime profiling](runtime-profiling.md). The hosted macOS
-lane also runs the RHI and renderer GPU scenarios on its paravirtual Metal GPU,
+lane also runs the RHI, renderer and native editor viewport GPU scenarios on its paravirtual Metal GPU,
 for correctness and rough trends rather than hardware timing.
 
 Its opt-in `device` job adds self-hosted machines with a declared physical GPU,
