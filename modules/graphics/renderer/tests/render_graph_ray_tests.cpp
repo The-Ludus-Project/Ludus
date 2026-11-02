@@ -2607,15 +2607,22 @@ struct ExportExtent final
 /// Render one frame and wait for its completion.
 void RenderFrame(renderer::RenderGraph& inoutGraph, const GraphGpuFixture& fixture)
 {
-    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    // First-use shader work is included in a submitted sample on software adapters.
+    // Preserve the ordinary completion bound after that cold sample, including after a scene/camera reset.
+    constexpr uint64 FIRST_SAMPLE_TIMEOUT_NANOSECONDS = 60 * time::NANOSECONDS_PER_SECOND;
+    constexpr uint64 FRAME_TIMEOUT_NANOSECONDS = 10 * time::NANOSECONDS_PER_SECOND;
+    const uint32 submittedSamples = inoutGraph.GetSubmittedRaySamples();
+    const uint64 timeoutNanoseconds =
+        submittedSamples == 0 ? FIRST_SAMPLE_TIMEOUT_NANOSECONDS : FRAME_TIMEOUT_NANOSECONDS;
     rhi::SubmissionToken completion;
     REQUIRE(inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
     const uint64 beginning = time::NowTicks();
     rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
-    while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+    while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < timeoutNanoseconds)
     {
         result = rhi::GetStatus(fixture.Device, completion);
     }
+    CAPTURE(submittedSamples, timeoutNanoseconds);
     REQUIRE(result == rhi::RasterStatus::Ready);
 }
 

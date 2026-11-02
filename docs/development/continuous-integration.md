@@ -403,6 +403,26 @@ zero. Independent commands still report findings. CI always uploads each shard's
 available evidence with 14-day retention; a missing artifact fails the upload.
 These are Q0 inventory/control records, not the proposed Q2 full run schema.
 
+### GPU correctness test boundaries
+
+Ordinary raster and render-graph lifecycle checks keep their short CTest
+boundaries. GPU reference-compute cases and render-graph template cases are
+registered individually through Catch2 discovery before CTest runs. Their names
+start with `ludus_renderer_reference:` and `ludus_render_graph_template:`;
+renderer/GPU/ray labels and explicit unsupported-adapter skips remain available.
+Each reference-compute case has a 300-second deadline; each template case has a
+600-second deadline for its convergence captures. Polygon sampling, Metropolis
+and physical-optics parity also have separate named tests. The numerical and
+image assertions are unchanged by this partition.
+
+These correctness deadlines include shader preparation on software adapters.
+Independent deadlines keep growth in the number of reference captures from
+consuming the raster test's deadline. `--durations yes` identifies completed
+cases when a deadline fails. Render-graph capture tests allow 60 seconds for the
+first submitted ray sample after initialization or a scene/camera reset, including
+first-use software shader work; subsequent samples retain the 10-second completion
+bound. Performance qualification remains in its own lane.
+
 ## Scheduled runtime profiling
 
 The separate `performance` workflow runs runtime profiling scenarios nightly on

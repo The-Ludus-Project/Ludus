@@ -60,6 +60,10 @@ void BuildScene(ludus::content::scene_format::MaterialModel model,
     outScene.Instances[1].FirstTriangle = 2;
     outScene.Instances[1].TriangleCount = 1;
     REQUIRE(outScene.Triangles.TryResize(TRIANGLE_COUNT) == true);
+    // Use a broad emitter for estimator parity: conservative ray-origin errors at a narrow silhouette can
+    // change one proposal's visibility and desynchronize the entire chain. Visibility-edge precision has
+    // independent ray/visibility coverage.
+    constexpr float32 EMITTER_HALF_EXTENT_WORLD = 2;
     const StaticArray<math::Vector3, TRIANGLE_COUNT * 3> positions{{
         {-10, -10, 0.5F},
         {-10, 10, 0.5F},
@@ -67,9 +71,9 @@ void BuildScene(ludus::content::scene_format::MaterialModel model,
         {10, -10, 0.5F},
         {-10, 10, 0.5F},
         {10, 10, 0.5F},
-        {-1, -1, -0.5F},
-        {1, -1, -0.5F},
-        {0, 1, -0.5F},
+        {-EMITTER_HALF_EXTENT_WORLD, -EMITTER_HALF_EXTENT_WORLD, -0.5F},
+        {EMITTER_HALF_EXTENT_WORLD, -EMITTER_HALF_EXTENT_WORLD, -0.5F},
+        {0, EMITTER_HALF_EXTENT_WORLD, -0.5F},
     }};
     const usize surfaceOffset = TRIANGLE_COUNT * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS;
     REQUIRE(outPacked.TryResize(surfaceOffset + SURFACE_COUNT * LUDUS_GPU_PREVIEW_SURFACE_WORDS) == true);

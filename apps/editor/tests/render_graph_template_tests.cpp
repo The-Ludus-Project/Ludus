@@ -2007,7 +2007,7 @@ TEST_CASE("ReSTIR GI template is created from the editor picker with its four pa
     const QJsonObject graph = QJsonDocument::fromJson(root).object();
     const QString defaultConfiguration = graph.value(QStringLiteral("default")).toString();
     bool hasDefaultConfiguration = false;
-    for (const QJsonValue& value : graph.value(QStringLiteral("configurations")).toArray())
+    for (const QJsonValue value : graph.value(QStringLiteral("configurations")).toArray())
     {
         const QJsonObject configuration = value.toObject();
         if (configuration.value(QStringLiteral("id")).toString() != defaultConfiguration)
@@ -2017,7 +2017,7 @@ TEST_CASE("ReSTIR GI template is created from the editor picker with its four pa
         hasDefaultConfiguration = true;
         usize accumulationCount = 0;
         usize toneMappingCount = 0;
-        for (const QJsonValue& node : configuration.value(QStringLiteral("nodes")).toArray())
+        for (const QJsonValue node : configuration.value(QStringLiteral("nodes")).toArray())
         {
             const QString kind = node.toObject().value(QStringLiteral("kind")).toString();
             accumulationCount += kind == QStringLiteral("Accumulate") ? 1 : 0;

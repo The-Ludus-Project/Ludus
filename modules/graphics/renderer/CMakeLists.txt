@@ -295,10 +295,55 @@ if(TARGET ludus_rhi_render_tests)
     ludus_cook_texture(TARGET ludus_renderer_render_tests NAME l4_bake SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/l4-bake.texture.json")
     ludus_cook_texture(TARGET ludus_renderer_render_tests NAME l3_color
         SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/l3-color.texture.json")
-    add_test(NAME ludus_renderer_pixels COMMAND ludus_renderer_render_tests)
-    set_tests_properties(ludus_renderer_pixels PROPERTIES LABELS "renderer;gpu" TIMEOUT 60)
+    # Keep transport/math parity in named cases: the polygon kernel alone needed 169 s
+    # to compile and execute on the CI software Vulkan adapter. A shared 60 s deadline
+    # hid which kernel stalled and could never qualify the complete pixel suite.
+    add_test(NAME ludus_renderer_pixels COMMAND ludus_renderer_render_tests
+        "~[reference-compute]~[polygon-sampling]~[metropolis]~[steinberg-physical-optics]" --durations yes)
+    # Catch2's installed discovery helpers also ship with the Conan package, whose
+    # generated Catch2_DIR points at CMakeDeps instead of that installation.
+    set(catch_discovery_hints "${Catch2_DIR}")
+    foreach(directory IN LISTS Catch2_INCLUDE_DIRS)
+        list(APPEND catch_discovery_hints "${directory}/../lib/cmake/Catch2")
+    endforeach()
+    find_file(catch_discovery_module Catch.cmake HINTS ${catch_discovery_hints} NO_DEFAULT_PATH NO_CACHE)
+    ludus_require_file("${catch_discovery_module}" "GPU correctness test discovery"
+        "Restore the pinned Catch2 package with ./init.sh --cli, then rerun CMake.")
+    include("${catch_discovery_module}")
+    # Raw-AOV parity alone performs three separately compiled captures (83 s on idle lavapipe).
+    # Thanks to Catch2's authors, "CMake integration", automatic test registration:
+    # https://github.com/catchorg/Catch2/blob/v3.4.0/docs/cmake-integration.md
+    # Discover each reference case so a growing suite never shares one frame-test deadline.
+    catch_discover_tests(ludus_renderer_render_tests TEST_SPEC "[reference-compute]"
+        TEST_PREFIX "ludus_renderer_reference: " TEST_LIST LUDUS_RENDERER_REFERENCE_CASES
+        EXTRA_ARGS --durations yes PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 4 DISCOVERY_MODE PRE_TEST)
+    set(renderer_reference_labels "renderer;gpu")
     if(APPLE)
-        set_property(TEST ludus_renderer_pixels APPEND PROPERTY LABELS macos)
+        list(APPEND renderer_reference_labels macos)
+    endif()
+    # Catch2 3.4 flattens list-valued PROPERTIES. Apply labels after runtime discovery
+    # instead, retaining every label and the scalar timeout/skip properties.
+    set(renderer_reference_labels_file "${CMAKE_CURRENT_BINARY_DIR}/renderer_reference_labels.cmake")
+    file(WRITE "${renderer_reference_labels_file}"
+        "if(LUDUS_RENDERER_REFERENCE_CASES)\n"
+        "    set_tests_properties(\${LUDUS_RENDERER_REFERENCE_CASES} PROPERTIES LABELS \"${renderer_reference_labels}\")\n"
+        "endif()\n")
+    set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES "${renderer_reference_labels_file}")
+    add_test(NAME ludus_renderer_polygon_sampling_parity COMMAND ludus_renderer_render_tests
+        "[polygon-sampling]" --durations yes)
+    add_test(NAME ludus_renderer_metropolis_parity COMMAND ludus_renderer_render_tests
+        "[metropolis]" --durations yes)
+    add_test(NAME ludus_renderer_physical_optics_parity COMMAND ludus_renderer_render_tests
+        "[steinberg-physical-optics]" --durations yes)
+    set_tests_properties(ludus_renderer_pixels ludus_renderer_physical_optics_parity
+        PROPERTIES LABELS "renderer;gpu" TIMEOUT 60)
+    set_tests_properties(ludus_renderer_polygon_sampling_parity
+        PROPERTIES LABELS "renderer;gpu" TIMEOUT 300)
+    set_tests_properties(ludus_renderer_metropolis_parity
+        PROPERTIES LABELS "renderer;gpu" TIMEOUT 180)
+    if(APPLE)
+        set_property(TEST ludus_renderer_pixels ludus_renderer_polygon_sampling_parity
+            ludus_renderer_metropolis_parity ludus_renderer_physical_optics_parity APPEND PROPERTY LABELS macos)
     endif()
 endif()
 
@@ -1284,33 +1329,21 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_storage_ray_RUNTIME_PACKAGE PARENT_PATH storage_ray_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_STORAGE_RAY_DIRECTORY="${storage_ray_package_directory}")
-    add_test(NAME ludus_render_graph_ray_pixels
-        COMMAND ludus_render_graph_ray_tests
-            "~[ris-projected-solid-angle]~[polygonal-light-sampling]~[slice-sampling-luminaire]~[one-more-vertex-nee]")
-    set_tests_properties(ludus_render_graph_ray_pixels PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60)
-    # The ris-projected-solid-angle template's convergence and error checks render about 3100 frames and
-    # need no native ray tracing, so they also run on software Vulkan adapters; they get their own timeout.
-    add_test(NAME ludus_render_graph_ris_projected_solid_angle_pixels
-        COMMAND ludus_render_graph_ray_tests "[ris-projected-solid-angle]")
-    set_tests_properties(ludus_render_graph_ris_projected_solid_angle_pixels PROPERTIES
-        LABELS "renderer;gpu;ray" TIMEOUT 600)
-    # The polygonal-light-sampling template's comparisons render about 2100 compute-BVH frames (20 s on Apple M5)
-    # and need no native ray tracing, so they also run on software Vulkan adapters.
-    add_test(NAME ludus_render_graph_polygonal_light_sampling_pixels
-        COMMAND ludus_render_graph_ray_tests "[polygonal-light-sampling]")
-    set_tests_properties(ludus_render_graph_polygonal_light_sampling_pixels PROPERTIES
-        LABELS "renderer;gpu;ray" TIMEOUT 600)
-    # The slice-sampling-luminaire template's checks render about 1300 compute-BVH frames and need no native ray
-    # tracing, so they also run on software Vulkan adapters.
-    add_test(NAME ludus_render_graph_slice_sampling_luminaire_pixels
-        COMMAND ludus_render_graph_ray_tests "[slice-sampling-luminaire]")
-    set_tests_properties(ludus_render_graph_slice_sampling_luminaire_pixels PROPERTIES
-        LABELS "renderer;gpu;ray" TIMEOUT 600)
-    # Six material/seed combinations and four components render about 3072 compute-BVH frames.
-    add_test(NAME ludus_render_graph_one_more_vertex_pixels
-        COMMAND ludus_render_graph_ray_tests "[one-more-vertex-nee]")
-    set_tests_properties(ludus_render_graph_one_more_vertex_pixels PROPERTIES
-        LABELS "renderer;gpu;ray" TIMEOUT 600)
+    add_test(NAME ludus_render_graph_ray_pixels COMMAND ludus_render_graph_ray_tests "~[template]" --durations yes)
+    set_tests_properties(ludus_render_graph_ray_pixels
+        PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60 SKIP_RETURN_CODE 4)
+    # Template acceptance renders thousands of compute-BVH frames, including on
+    # software adapters. Discover each case with its own existing 600 s deadline;
+    # newly added templates receive the same isolation without editing a tag exclusion list.
+    catch_discover_tests(ludus_render_graph_ray_tests TEST_SPEC "[template]"
+        TEST_PREFIX "ludus_render_graph_template: " TEST_LIST LUDUS_RENDER_GRAPH_TEMPLATE_CASES
+        EXTRA_ARGS --durations yes PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 4 DISCOVERY_MODE PRE_TEST)
+    set(render_graph_template_labels_file "${CMAKE_CURRENT_BINARY_DIR}/render_graph_template_labels.cmake")
+    file(WRITE "${render_graph_template_labels_file}"
+        "if(LUDUS_RENDER_GRAPH_TEMPLATE_CASES)\n"
+        "    set_tests_properties(\${LUDUS_RENDER_GRAPH_TEMPLATE_CASES} PROPERTIES LABELS \"renderer;gpu;ray\")\n"
+        "endif()\n")
+    set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES "${render_graph_template_labels_file}")
     add_executable(ludus_graph_workgroup_tests tests/graph_workgroup_tests.cpp)
     target_link_libraries(ludus_graph_workgroup_tests PRIVATE Ludus::GraphicsRenderer
         Ludus::FoundationTime Catch2::Catch2WithMain)

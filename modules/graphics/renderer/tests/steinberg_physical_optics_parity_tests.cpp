@@ -410,7 +410,7 @@ TEST_CASE("The Steinberg physical-optics template's scattering core matches its 
         SKIP("No native GPU adapter.");
     }
     // Metal compiles with fast math. The D values are exponentials of quadratic forms of up to a few tens, so their
-    // float32 rounding is relative; the shapes pass through finite-difference Hessians with a 0.01 step, which float32
+    // float32 rounding is relative; the shapes pass through finite-difference Hessians with a 0.05 step, which float32
     // evaluates to about 1e-3.
     constexpr float64 RADIANCE_TOLERANCE = 2e-3;
     constexpr float64 SHAPE_TOLERANCE = 2e-2;

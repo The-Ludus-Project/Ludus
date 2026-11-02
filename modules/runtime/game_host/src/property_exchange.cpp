@@ -177,7 +177,8 @@ struct Snapshot
     if (edit.Kind == static_cast<uint32>(PropertyKind::Float32))
     {
         uint64 bits = 0;
-        if (record.Has("value") || record.GetUint("bits", bits) == false || bits > 0xFFFFFFFFULL)
+        if (record.Has("value") == true || record.GetUint("bits", bits) == false ||
+            bits > static_cast<uint64>(~uint32{0}))
         {
             return false;
         }

@@ -10,6 +10,7 @@
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/vector.hpp>
 
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/world_grid.hpp>
@@ -24,12 +25,14 @@
 #include <QPalette>
 #include <QRect>
 #include <QSize>
+#include <QString>
 #include <QTest>
 #include <QToolBar>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QWidgetAction>
+#include <QtGlobal>
 
 #include <algorithm>
 #include <cmath>
@@ -58,7 +61,7 @@ constexpr double CHANNEL_MAXIMUM = 255.0;
 /// Height of the strip at the bottom of the viewport that holds the caption.
 constexpr int CAPTION_STRIP_HEIGHT = 48;
 /// Width of the viewport used by the roomy and narrow cases.
-/// Pixels of an axis letter's exact colour (glyph cores) that must appear on the viewport.
+/// Visible glyph pixels, including antialiased samples, that must appear for each axis letter.
 constexpr int MINIMUM_LETTER_PIXELS = 4;
 constexpr int ROOMY_WIDTH = 1600;
 constexpr int NARROW_WIDTH = 360;
@@ -84,6 +87,46 @@ double ContrastRatio(QRgb first, QRgb second)
     const double lighter = firstLuminance > secondLuminance ? firstLuminance : secondLuminance;
     const double darker = firstLuminance > secondLuminance ? secondLuminance : firstLuminance;
     return (lighter + CONTRAST_FLARE) / (darker + CONTRAST_FLARE);
+}
+
+ludus::foundation::math::Vector3d GetColourComponents(QRgb colour)
+{
+    using ludus::foundation::float64;
+    return {static_cast<float64>(qRed(colour)),
+            static_cast<float64>(qGreen(colour)),
+            static_cast<float64>(qBlue(colour))};
+}
+
+/// Font edges blend with both the viewport and the antialiased axis underneath the letter.
+/// Require a physically valid mixture with at least quarter letter coverage; an axis stroke alone never qualifies.
+bool IsAxisLetterPixel(QRgb pixel, QRgb letterColour, QRgb axisColour)
+{
+    namespace math = ludus::foundation::math;
+    using ludus::foundation::float64;
+    constexpr float64 MINIMUM_GLYPH_COVERAGE = 0.25;
+    constexpr float64 CHANNEL_ROUNDING_TOLERANCE = 2;
+    const math::Vector3d background = GetColourComponents(BACKGROUND);
+    const math::Vector3d letter = GetColourComponents(letterColour) - background;
+    const math::Vector3d axis = GetColourComponents(axisColour) - background;
+    const math::Vector3d sample = GetColourComponents(pixel) - background;
+    const float64 letterSquared = math::Dot(letter, letter);
+    const float64 axisSquared = math::Dot(axis, axis);
+    const float64 letterAxis = math::Dot(letter, axis);
+    const float64 determinant = letterSquared * axisSquared - letterAxis * letterAxis;
+    if (determinant <= 0)
+    {
+        return false;
+    }
+    const float64 sampleLetter = math::Dot(sample, letter);
+    const float64 sampleAxis = math::Dot(sample, axis);
+    const float64 letterCoverage =
+        math::Clamp((sampleLetter * axisSquared - sampleAxis * letterAxis) / determinant, MINIMUM_GLYPH_COVERAGE, 1.0);
+    const float64 axisCoverage =
+        math::Clamp((sampleAxis * letterSquared - sampleLetter * letterAxis) / determinant, 0.0, 1 - letterCoverage);
+    const math::Vector3d difference = sample - letter * letterCoverage - axis * axisCoverage;
+    return math::Abs(difference.X) <= CHANNEL_ROUNDING_TOLERANCE &&
+           math::Abs(difference.Y) <= CHANNEL_ROUNDING_TOLERANCE &&
+           math::Abs(difference.Z) <= CHANNEL_ROUNDING_TOLERANCE;
 }
 
 QPalette MakePalette(bool isDark)
@@ -183,6 +226,11 @@ TEST_CASE("Empty viewport letters its axes in a colour that keeps text contrast"
     foundation::float32 step = 0;
     REQUIRE(renderer::BuildWorldGridLines(view, {lines.GetData(), lines.GetSize()}, count, step) == true);
     const QImage image = caption->grab().toImage();
+    const QString capturePath = qEnvironmentVariable("LUDUS_EDITOR_VIEWPORT_LEGIBILITY_CAPTURE");
+    if (capturePath.isEmpty() == false)
+    {
+        REQUIRE(image.save(capturePath) == true);
+    }
     int letteredAxes = 0;
     for (foundation::usize i = 0; i < count; ++i)
     {
@@ -197,12 +245,14 @@ TEST_CASE("Empty viewport letters its axes in a colour that keeps text contrast"
                              static_cast<qreal>(ludus::foundation::math::EncodeSrgb(lines[i].Color.Z)));
         const QRgb letterColour = GetAxisLetterColour(axisColour).rgb();
         CHECK(ContrastRatio(letterColour, BACKGROUND) >= MINIMUM_TEXT_CONTRAST);
+        CHECK(IsAxisLetterPixel(axisColour.rgb(), letterColour, axisColour.rgb()) == false);
+        CHECK(IsAxisLetterPixel(BACKGROUND, letterColour, axisColour.rgb()) == false);
         int letterPixels = 0;
         for (int y = 0; y < image.height(); ++y)
         {
             for (int x = 0; x < image.width(); ++x)
             {
-                letterPixels += image.pixel(x, y) == letterColour ? 1 : 0;
+                letterPixels += IsAxisLetterPixel(image.pixel(x, y), letterColour, axisColour.rgb()) == true ? 1 : 0;
             }
         }
         INFO("axis " << axis);

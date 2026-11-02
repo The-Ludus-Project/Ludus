@@ -148,9 +148,18 @@ Complex DivideComplex(Complex numerator, Complex denominator)
 Complex ComputeComplexSquareRoot(Complex value)
 {
     float magnitude = sqrt(ComputeSquaredMagnitude(value));
-    float real = sqrt(max((magnitude + value.Real) * 0.5, 0.0));
-    float imaginary = sqrt(max((magnitude - value.Real) * 0.5, 0.0));
-    return MakeComplex(real, value.Imaginary < 0 ? -imaginary : imaginary);
+    if (magnitude == 0)
+        return MakeComplex(0, 0);
+    // Recover the smaller component from 2 * real * imaginary = value.Imaginary;
+    // subtracting nearly equal magnitude and real values destroys its curvature in float32.
+    if (value.Real >= 0)
+    {
+        float real = sqrt((magnitude + value.Real) * 0.5);
+        return MakeComplex(real, value.Imaginary / (2 * real));
+    }
+    float imaginary = sqrt((magnitude - value.Real) * 0.5);
+    imaginary = value.Imaginary < 0 ? -imaginary : imaginary;
+    return MakeComplex(value.Imaginary / (2 * imaginary), imaginary);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
