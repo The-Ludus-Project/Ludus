@@ -231,7 +231,9 @@ TEST_CASE("Delegated graph failures finish scene opening and permit a raster ret
     REQUIRE(finished.size() == 1);
     CHECK(finished.at(0).at(0).toBool() == true);
     CHECK(scene.GetRenderPreview().Frames() != 0);
-    REQUIRE(waitFor([&]() { return viewport.PresentedFrames() > beforeRepair; }) == true);
+    REQUIRE(waitFor([&]() {
+                return viewport.PresentedFrames() > beforeRepair && viewport.HasRetainedGraphFrame() == true;
+            }) == true);
     CHECK(viewport.HasRetainedGraphFrame() == true);
     CHECK(readPresentedImage().isNull() == false);
     scene.StopPreview();
