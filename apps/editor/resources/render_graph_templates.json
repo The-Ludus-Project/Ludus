@@ -145,6 +145,15 @@
     },
     {
       "kind": "graph",
+      "identity": "wave-tracing",
+      "label": "Wave tracing — scene optical transport",
+      "category": "ray-traced",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["wave tracing", "steinberg", "pharr", "bilinear", "fresnel", "diffraction", "aperture", "gaussian", "coherent"],
+      "description": "Scene-capable scalar optical renderer inspired by Steinberg and Pharr (2026). Uses authored cameras, lights, textures and reflection materials, with Gaussian-mode diffraction through successive geometry-derived regions. Exports optical, geometric and transmission images. Paraxial scalar connections; no polarization or UTD. Requires Metal or Vulkan compute."
+    },
+    {
+      "kind": "graph",
       "identity": "rao-blackwell-mh",
       "label": "Rao-Blackwellized MH and Jump Restore light transport",
       "category": "ray-traced",
@@ -365,6 +374,16 @@
       "requirements": ["native-ray-tracing"],
       "keywords": ["steinberg", "physical light transport", "physical optics", "wave optics", "wave bsdf", "coherence", "polarization", "stokes", "mueller", "diffraction", "grating", "spectral", "path tracing"],
       "description": "A primary-hits scene compute pass and three shading passes that share one automatically sized hit buffer: physical-optics path tracing with coherence and polarization (Steinberg, Sen and Yan), the same paths radiometrically, and the incident light's coherence length. Connect scene, view and color; outputs color plus optional radiometric and coherence images. Requires native ray tracing."
+    },
+    {
+      "kind": "snippet",
+      "identity": "wave-tracing",
+      "label": "Wave tracing — scene optical transport",
+      "category": "lighting",
+      "defaultConfiguration": "WaveTracing",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["wave tracing", "steinberg", "pharr", "bilinear", "fresnel", "diffraction", "aperture", "gaussian", "coherent"],
+      "description": "Scene-capable scalar optical renderer inspired by Steinberg and Pharr (2026). Uses authored cameras, lights, textures and reflection materials, with Gaussian-mode diffraction through successive geometry-derived regions. Exports optical, geometric and transmission images. Paraxial scalar connections; no polarization or UTD. Requires Metal or Vulkan compute."
     },
     {
       "kind": "snippet",

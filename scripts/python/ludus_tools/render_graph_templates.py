@@ -24,6 +24,7 @@ TEMPLATES = {
     'steinberg-plt': ('steinberg_plt', 'Steinberg physical light transport', 'native-ray-tracing'),
     'steinberg-physical-optics': ('steinberg_physical_optics', 'Steinberg practical physical optics',
                                   'native-ray-tracing'),
+    'wave-tracing': ('wave_tracing', 'Wave tracing scene optical transport', 'compute-ray-tracing'),
     'rao-blackwell-mh': ('rao_blackwell_mh', 'Rao-Blackwellized MH', 'compute-ray-tracing'),
     'guided-restir-fg-plus': ('guided_restir_fg_plus', 'Guided ReSTIR FG+', 'compute-ray-tracing'),
     'conditional-restir': ('conditional_restir', 'Conditional ReSTIR', 'native-ray-tracing'),

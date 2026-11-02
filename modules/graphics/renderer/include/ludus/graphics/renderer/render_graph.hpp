@@ -194,6 +194,11 @@ enum class RenderGraphFailureReason : foundation::uint8
     PhotonDispatch,             ///< Photon maps and spatial reuse require a whole-image dispatch.
     GeometrySamplingLights,     ///< A geometry-sampling template received analytic or environment lighting.
     GeometryStatisticsCapacity, ///< A geometry-sampling statistics buffer cannot hold the scene hierarchy.
+    WaveDirection,              ///< The wave aperture plane has no propagation direction.
+    WaveResolution,             ///< The aperture quadrature cannot resolve the Fresnel phase gradient.
+    WaveCapacity,               ///< A scalar optical connection exceeds the region or triangle workspace.
+    WaveConnection,             ///< The optical wavelength or finite connection is outside the paraxial profile.
+    WavePropagationCapacity,    ///< An optical connection exceeds the admitted number of successive regions.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;

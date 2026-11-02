@@ -29,10 +29,10 @@ def validate(settings, build):
             continue
         for field in ('minimum', 'value', 'maximum'):
             value = setting[field]
-            build.require(type(value) in (int, float) and 0 <= value <= MAX_NUMERIC_VALUE and
+            build.require(type(value) in (int, float) and -MAX_NUMERIC_VALUE <= value <= MAX_NUMERIC_VALUE and
                           math.isfinite(value), 'Schema', setting['id'], 'finite bounded number required')
             if setting['type'] == 'UInt32':
-                build.require(type(value) is int, 'Schema', setting['id'], 'integer setting required')
+                build.require(type(value) is int and value >= 0, 'Schema', setting['id'], 'integer setting required')
         build.require(setting['minimum'] <= setting['value'] <= setting['maximum'],
                       'Schema', setting['id'], 'setting is outside its authored range')
 
