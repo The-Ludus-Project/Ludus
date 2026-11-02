@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/graphics/rhi/profile.h>
@@ -20,6 +21,9 @@ struct DeviceAccess;
 /// The owner identity never wraps or becomes valid again after destruction/restart.
 struct DeviceHandle final
 {
+    /// Compare session identities only, without querying readiness or retaining ownership.
+    [[nodiscard]] LUDUS_INLINE bool operator==(const DeviceHandle&) const noexcept = default;
+
 private:
     ludus::foundation::uint64 Owner = 0;
     /// Grants private dispatch access to assign and validate the owner identity.

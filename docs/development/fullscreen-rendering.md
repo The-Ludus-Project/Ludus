@@ -816,6 +816,68 @@ checks every Auto attempt before Ready; forced WebGL 2 fails before startup.
 Preferences allow an application to select its own CPU/direct-draw variant after
 Ready. The engine does not translate or emulate a compute kernel on WebGL 2.
 
+### Prepared buffer-only workloads and caches
+
+`<ludus/graphics/rhi/compute_workload.hpp>` adds `ComputeWorkload`: an owned,
+reusable sequence of ordinary buffer compute kernels. Dispatch sizes are
+independent of image dimensions. It does not require Scene/View inputs, a color
+target, native ray queries, a machine-learning SDK or a runtime shader compiler.
+Vulkan and Metal use the existing compute backend; WebGPU can use the same
+contract where its negotiated limits admit the cooked kernels. WebGL 2 and
+unimplemented compute backends reject explicitly.
+
+Describe immutable weight/model uploads, persistent embeddings and mutable
+scratch with `ComputeWorkloadBuffer`. `InitialBytes` must cover `Size` exactly;
+an empty upload zeroes the allocation. `IsReadOnly` rejects writable kernel
+bindings. `External` borrows an existing same-device storage allocation instead
+of uploading: retain its public owner until workload reset. `MaximumBufferBytes`
+charges every described buffer, including borrowed storage; simultaneous cache
+generations and device-wide resource budgets remain independent. It is a logical
+storage limit, not a limit on driver allocations or preparation metadata.
+
+Each `ComputeWorkloadKernel` supplies a cooked Compute artifact, reflected
+storage bindings, exact ranges/access and workgroup counts. One allocation can
+appear only once in a kernel. Initialization copies metadata and uploads;
+artifact bytes remain alive until `Poll` completes. `Ready` or `Pending`
+acquires workload ownership; other results leave an empty owner unchanged.
+Preparation, reset and destruction run between frames on the device owner thread.
+
+`BuildGraph` returns an uncompiled RHI `OrderedGraph`. Compile/execute it normally,
+or supply an output-version view to `BuildGraph` and append consumers using
+those final versions before compilation. It imports each allocation once and tracks
+versions across kernels; mutable final versions are history roots. Limits come
+from the negotiated RHI device, including `StorageLimits::PassesPerGraph`, not
+from the authored ray profile's four-pass bound. The workload reuses buffers and
+pipelines across graph builds. A frozen graph is valid only while its imported
+revisions remain unchanged; rebuild it after another writer executes.
+`GetBuffer` borrows a result for a subsequent GPU consumer. Workloads themselves
+never read results back to the CPU. RHI graph/submission leases retain resources
+when an owner resets, and no private queue or second lifetime ledger is added.
+
+`<ludus/graphics/rhi/compute_cache.hpp>` adds completion-gated publication:
+
+1. Call `Stage(device, key, description)`. Scene and model revisions are nonzero
+   caller promises covering all relevant input bytes and preprocessing policy.
+   Camera-only changes can reuse a view-independent scene key.
+2. Poll preparation until `GetPhase()` is `Prepared`, then call
+   `BuildCandidateGraph`, compile and execute its graph.
+3. Call `SetCandidateCompletion` with the exact ticket from `GetCandidateTicket`
+   and the submission covering its kernels. Foreign/stale attempts and invalid
+   tokens are rejected, including retries of the same scene/model key.
+4. Drive ordinary `PollLifetime` and cache `Poll`. The active result changes only
+   after GPU completion. Pending or rejected replacement leaves it available.
+
+Cache candidates write only fresh owned buffers; writable `External` buffers are
+rejected. Shared read-only weights may be external, but their public owner must
+live outside the cache and outlive both generations. Do not borrow an active
+cache-owned allocation into its replacement: publication releases that owner.
+Admission failure preserves both generations. A failed prepared candidate remains
+inspectable; cancel it or stage a different key to repair. Superseding/cancelling
+an unsubmitted candidate also requires discarding its returned graph. The cache
+cannot prove that a caller-provided submission actually executed that graph;
+that association is an explicit API precondition. It does not promise temporal
+coherence for a model or execute a trained network automatically.
+
 ### Buffers, kernels and limits
 
 `BufferRole::Storage`, `StorageVertex` and `StorageIndirect` allocate buffers

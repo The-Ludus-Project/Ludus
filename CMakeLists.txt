@@ -603,7 +603,8 @@ install(
 
 install(FILES cmake/LudusDependencies.cmake cmake/LudusShaders.cmake cmake/LudusRendererShaders.cmake cmake/LudusRenderGraph.cmake DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus")
 install(FILES cmake/render_graph/build.py DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph")
-install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/errors.py
+install(FILES scripts/export-light-transformer DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph" RENAME export-light-transformer.py)
+install(FILES scripts/python/ludus_tools/light_transformer.py scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/errors.py
     scripts/python/ludus_tools/buildlock.py scripts/python/ludus_tools/render_graph.py
     scripts/python/ludus_tools/render_graph_layout.py
     scripts/python/ludus_tools/render_graph_upscale.py scripts/python/ludus_tools/render_graph_sizes.py
