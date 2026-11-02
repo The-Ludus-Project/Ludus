@@ -157,8 +157,8 @@ public:
         static_cast<qsizetype>(package_policy::MAX_GRAPH_DOCUMENT_BYTES > package_policy::MAX_BUILD_SOURCE_FILE_BYTES
                                    ? package_policy::MAX_GRAPH_DOCUMENT_BYTES
                                    : package_policy::MAX_BUILD_SOURCE_FILE_BYTES);
-    static constexpr qsizetype MAX_TOTAL_BYTES =
-        static_cast<qsizetype>(package_policy::MAX_GRAPH_BYTES + package_policy::MAX_BUILD_SOURCE_BYTES);
+    static constexpr qsizetype MAX_TOTAL_BYTES = static_cast<qsizetype>(package_policy::MAX_GRAPH_BYTES) +
+                                                 static_cast<qsizetype>(package_policy::MAX_BUILD_SOURCE_BYTES);
     static constexpr foundation::usize HISTORY_CAPACITY = 64;
     /// Authoring limits mirrored from the shared render_graph.py format validator.
     static constexpr foundation::int32 MAX_CONFIGURATIONS = 8;
