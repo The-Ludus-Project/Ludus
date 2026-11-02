@@ -110,8 +110,9 @@ struct EmitterUse final
 // Thanks to Pharr, Jakob and Humphreys, Physically Based Rendering, fourth
 // edition, section 12.5, for diffuse power = PI * area * luminance * side count.
 // https://pbr-book.org/4ed/Light_Sources/Area_Lights
-// The frozen RGB/Y proxy is an explicit approximation of PBRT's spectral
-// photometric normalization. Resolve each bound Shape/placement independently.
+// Emission is divided by its Rec.709 luminance and multiplied by EmissionScale, which
+// carries the luminance a source keeps (RGB pbrt lights and material emission keep
+// theirs; spectra are normalized to one nit). Resolve each bound Shape/placement independently.
 [[nodiscard]] bool ResolveEmission(const IrShape& shape, float64 area, math::Vector3& outEmission) noexcept
 {
     const float64 luminance = ComputeLuminance(shape.Emission);
