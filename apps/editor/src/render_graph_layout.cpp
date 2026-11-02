@@ -251,4 +251,33 @@ bool ComputeRenderGraphLayout(const QVector<RenderGraphLayoutNode>& nodes,
     outPositions = result;
     return true;
 }
+
+void ResolveRenderGraphOverlaps(const QVector<QRectF>& fixedCards, float64 gap, QVector<QRectF>& inoutMovableCards)
+{
+    QVector<QRectF> placed = fixedCards;
+    for (QRectF& card : inoutMovableCards)
+    {
+        // Each push clears at least one card, so the loop ends within one pass per placed card.
+        for (qsizetype pass = 0; pass <= placed.size(); ++pass)
+        {
+            const QRectF padded = card.adjusted(-gap / 2, -gap / 2, gap / 2, gap / 2);
+            float64 clearTop = card.top();
+            bool hasOverlap = false;
+            for (const QRectF& other : std::as_const(placed))
+            {
+                if (padded.intersects(other.adjusted(-gap / 2, -gap / 2, gap / 2, gap / 2)) == true)
+                {
+                    hasOverlap = true;
+                    clearTop = qMax(clearTop, other.bottom() + gap);
+                }
+            }
+            if (hasOverlap == false)
+            {
+                break;
+            }
+            card.moveTop(clearTop);
+        }
+        placed.append(card);
+    }
+}
 } // namespace ludus::editor

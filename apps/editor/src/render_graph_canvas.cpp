@@ -4,6 +4,7 @@
 #include "internal/render_graph_diagnostics.h"
 #include "internal/render_graph_execution_plan.h"
 #include "internal/render_graph_history.h"
+#include "internal/render_graph_layout.h"
 #include "internal/render_graph_navigation.h"
 #include "internal/render_graph_node_ports.h"
 #include "internal/render_graph_pipeline_node.h"
@@ -15,6 +16,8 @@
 #include "internal/theme_colour.h"
 
 #include <ludus/foundation/math/scalar.hpp>
+
+#include <algorithm>
 
 #include <QAction>
 #include <QApplication>
@@ -84,7 +87,7 @@ constexpr float64 MAXIMUM_VIEW_SCALE = 8;
 // Keep restored centres representable by Qt's signed 32-bit scroll bars at every supported zoom.
 constexpr float64 MAX_RESTORED_CENTRE_COORDINATE = static_cast<float64>(INT32_MAX) / MAXIMUM_VIEW_SCALE;
 constexpr float64 DETAIL_VIEW_SCALE = 0.75;
-constexpr float64 PORT_LABEL_VIEW_SCALE = 0.45;
+constexpr float64 PORT_LABEL_VIEW_SCALE = 0.6;
 constexpr float64 MINIMUM_TEXT_CARD_WIDTH = 60;
 constexpr float64 MINIMUM_STATUS_CARD_HEIGHT = 38;
 constexpr float64 MINIMUM_TITLE_PIXEL_HEIGHT = 14;
@@ -702,6 +705,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
             return;
         }
         mHoveredPort.clear();
+        mHoveredNode.clear();
         mCommentsOrNull->RevealNode(identity);
         SelectNode(identity);
         notifySelection();
@@ -939,6 +943,7 @@ bool RenderGraphCanvas::RestoreViewState(const RenderGraphViewState& state)
     }
     mShouldFitOnShow = false;
     mHoveredPort.clear();
+    mHoveredNode.clear();
     mCommentsOrNull->SetRevealedFrames(state.RevealedFrames);
     SelectNodes(state.Selection);
     mNavigation->SetTraceDirection(state.Trace);
@@ -1001,9 +1006,8 @@ void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
     const bool hasPortLabels = viewScale >= PORT_LABEL_VIEW_SCALE;
     const bool hasReadableCards = NODE_WIDTH * viewScale >= MINIMUM_TEXT_CARD_WIDTH;
     mZoomLabel->setToolTip(hasDetails == true ? QStringLiteral("Detailed view: ports, activity and resource metadata")
-                           : hasPortLabels == true
-                               ? QStringLiteral("Working view: ports and compact activity")
-                               : QStringLiteral("Overview: node identities and compact activity; hover for details"));
+                           : hasPortLabels == true ? QStringLiteral("Working view: ports and compact activity")
+                                                   : QStringLiteral("Overview: node titles only; hover for details"));
     for (NodeView* view : std::as_const(mNodes))
     {
         if (view->PlanBadgeOrNull != nullptr && view->PlanLabelOrNull != nullptr)
@@ -1058,9 +1062,11 @@ void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
         if (view->ActivityLabelOrNull != nullptr)
         {
             QGraphicsSimpleTextItem& activity = *view->ActivityLabelOrNull;
-            activity.setVisible(
-                hasDetails == true ||
-                (hasReadableCards == true && view->Frame->rect().height() * viewScale >= MINIMUM_STATUS_CARD_HEIGHT));
+            // Titles only in the overview. An inactive card is a dimmed card; its caption is for the detailed view.
+            const bool hasCompactCaption = hasPortLabels == true && hasReadableCards == true &&
+                                           view->CompactActivityText.isEmpty() == false &&
+                                           view->Frame->rect().height() * viewScale >= MINIMUM_STATUS_CARD_HEIGHT;
+            activity.setVisible(hasDetails == true || hasCompactCaption == true);
             SetScaledLabel(activity,
                            hasDetails == true ? view->ActivityText : view->CompactActivityText,
                            viewScale,
@@ -1107,6 +1113,7 @@ void RenderGraphCanvas::Rebuild()
     mSelectionBox->hide();
     mDragNodes.clear();
     mHoveredPort.clear();
+    mHoveredNode.clear();
     qDeleteAll(mNodes);
     mNodes.clear();
     mHiddenSelection.clear();
@@ -1325,6 +1332,41 @@ void RenderGraphCanvas::Rebuild()
             }
         }
     }
+    // Display-only placement can land on a card the author placed, or on an interface box; keep every card legible.
+    {
+        QVector<QRectF> fixedCards;
+        QVector<NodeView*> movable;
+        for (NodeView* view : std::as_const(mNodes))
+        {
+            if (authored.contains(view->Id) == true && view->IsMovable == true)
+            {
+                fixedCards.append(view->Frame->sceneBoundingRect());
+            }
+            else
+            {
+                movable.append(view);
+            }
+        }
+        std::sort(movable.begin(), movable.end(), [](const NodeView* left, const NodeView* right) {
+            const QPointF leftPosition = left->Frame->pos();
+            const QPointF rightPosition = right->Frame->pos();
+            if (leftPosition.x() != rightPosition.x())
+            {
+                return leftPosition.x() < rightPosition.x();
+            }
+            return leftPosition.y() != rightPosition.y() ? leftPosition.y() < rightPosition.y() : left->Id < right->Id;
+        });
+        QVector<QRectF> cards;
+        for (const NodeView* view : std::as_const(movable))
+        {
+            cards.append(view->Frame->sceneBoundingRect());
+        }
+        ResolveRenderGraphOverlaps(fixedCards, NODE_ROW_GAP, cards);
+        for (qsizetype index = 0; index < movable.size(); ++index)
+        {
+            movable.at(index)->Frame->setPos(cards.at(index).topLeft());
+        }
+    }
     for (const QJsonValueConstRef value : edges)
     {
         links.append({value.toObject().value(QStringLiteral("from")).toString(),
@@ -1441,7 +1483,7 @@ void RenderGraphCanvas::refreshFeedback()
         view->ActivityText = label;
         view->CompactActivityText = isInterface == true                               ? QStringLiteral("Interface")
                                     : state.Activity == RenderGraphActivity::Retained ? QStringLiteral("Draft route")
-                                    : state.Activity == RenderGraphActivity::Inactive ? QStringLiteral("Inactive")
+                                    : state.Activity == RenderGraphActivity::Inactive ? QString()
                                     : state.Activity == RenderGraphActivity::Disabled ? QStringLiteral("Disabled")
                                                                                       : QStringLiteral("Unknown");
         if (view->ActivityLabelOrNull != nullptr)
@@ -1929,7 +1971,14 @@ void RenderGraphCanvas::updateConnectionHighlight()
     const bool hasTrace = mNavigation->GetTraceDirection() != RenderGraphTraceDirection::None;
     const RenderGraphDependencyTrace& trace = mNavigation->GetTrace();
     const bool hasHoveredPort = hasTrace == false && mHoveredPort.isEmpty() == false;
-    const bool hasFocus = hasTrace == true || hasHoveredPort == true || selected.isEmpty() == false;
+    // The hovered card focuses its wires like a selected one, so a crowded overview can be read by pointing.
+    QStringList focusNodes = selected;
+    if (hasTrace == false && hasHoveredPort == false && mHoveredNode.isEmpty() == false &&
+        focusNodes.contains(mHoveredNode) == false)
+    {
+        focusNodes.append(mHoveredNode);
+    }
+    const bool hasFocus = hasTrace == true || hasHoveredPort == true || focusNodes.isEmpty() == false;
     QSet<QString> connected;
     QSet<QString> highlightedInputs;
     QSet<QString> highlightedOutputs;
@@ -1938,10 +1987,10 @@ void RenderGraphCanvas::updateConnectionHighlight()
         EdgeView* edge = mEdges.at(index);
         const QString source = GetEndpointNode(edge->From);
         const QString destination = GetEndpointNode(edge->To);
-        const bool isHighlighted = hasTrace == true ? trace.Edges.contains(index)
-                                   : hasHoveredPort == true
-                                       ? (mIsHoveredOutput == true ? edge->From : edge->To) == mHoveredPort
-                                       : selected.contains(source) == true || selected.contains(destination) == true;
+        const bool isHighlighted =
+            hasTrace == true         ? trace.Edges.contains(index)
+            : hasHoveredPort == true ? (mIsHoveredOutput == true ? edge->From : edge->To) == mHoveredPort
+                                     : focusNodes.contains(source) == true || focusNodes.contains(destination) == true;
         const bool isSelected = edge->Path->data(0).toBool();
         if (isHighlighted == true || isSelected == true)
         {
@@ -2685,10 +2734,12 @@ void RenderGraphCanvas::mouseMoveEvent(QMouseEvent* event)
     }
     bool isOutput = false;
     const QString port = portAt(position, isOutput);
-    if (port != mHoveredPort || isOutput != mIsHoveredOutput)
+    const QString hoveredNode = nodeAt(position);
+    if (port != mHoveredPort || isOutput != mIsHoveredOutput || hoveredNode != mHoveredNode)
     {
         mHoveredPort = port;
         mIsHoveredOutput = isOutput;
+        mHoveredNode = hoveredNode;
         updateConnectionHighlight();
     }
     bool isResourceOutput = isOutput;
@@ -2983,6 +3034,7 @@ bool RenderGraphCanvas::viewportEvent(QEvent* event)
     if (event->type() == QEvent::Leave)
     {
         mHoveredPort.clear();
+        mHoveredNode.clear();
         updateConnectionHighlight();
     }
     if (event->type() == QEvent::NativeGesture)
