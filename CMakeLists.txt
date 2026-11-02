@@ -282,6 +282,7 @@ add_subdirectory(modules/foundation/math)
 # FoundationGeometry (ADR 0024) depends on Base, Math and Containers only.
 add_subdirectory(modules/foundation/geometry)
 add_subdirectory(modules/gameplay/camera)
+add_subdirectory(modules/gameplay/sequencer)
 add_subdirectory(modules/physics/fluid)
 add_subdirectory(modules/foundation/time)
 add_subdirectory(modules/foundation/logging)
@@ -481,7 +482,7 @@ write_basic_package_version_file(
 # Public exported components (one per installed Ludus:: module target).
 foreach(_component
     FoundationBase FoundationMemory FoundationHash FoundationIdentity FoundationStrings FoundationContainers FoundationThreading FoundationFilesystem FoundationParsing FoundationParsingJson FoundationMath FoundationGeometry FoundationTime FoundationLogging ShaderCompilerClient
-    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content SceneFormat RenderGraphFormat StringDictionaryFormat StringDictionary StringDictionaryWriter SceneCook AudioContent Resources GameplayWorld GameplayCamera GameApi PhysicsFluid Ui Localization)
+    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content SceneFormat RenderGraphFormat StringDictionaryFormat StringDictionary StringDictionaryWriter SceneCook AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer GameApi PhysicsFluid Ui Localization)
     ludus_sdk_register_component(${_component})
     ludus_sdk_register_feature(${_component})
 endforeach()
@@ -622,7 +623,7 @@ install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/
 foreach(template_directory IN ITEMS default forward_lit restir_di visibility_buffer visibility_secondary_rays tiled_vbuffer_nee
         compute_ray_tracing simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle
         salesin_jarosz_lines polygonal_light_sampling slice_sampling_luminaire steinberg_plt
-        steinberg_physical_optics restir_gi rao_blackwell_mh one_more_vertex_nee)
+        steinberg_physical_optics restir_gi rao_blackwell_mh conditional_restir one_more_vertex_nee)
     install(DIRECTORY "modules/graphics/renderer/render_graphs/${template_directory}/"
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph/templates/${template_directory}")
 endforeach()

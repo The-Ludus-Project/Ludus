@@ -100,6 +100,22 @@ struct PreviewCamera final
     gameplay::camera::CameraSample Sample;
     gameplay::camera::CameraTrace Trace;
 };
+/// Viewpoint an imported scene opens at: the World level's `camera`, which an import sets from
+/// the source scene's camera (or frames on its bounds) and "Set start view" replaces.
+struct PreviewStartView final
+{
+    foundation::math::Vector3d EyeWorld{};
+    /// Point looked at; its distance from the eye becomes the editor camera's focus distance.
+    foundation::math::Vector3d TargetWorld{};
+    foundation::math::Vector3 UpWorld{0, 1, 0};
+    /// Vertical field of view in radians, in (0, pi).
+    foundation::float32 VerticalFov = 1;
+};
+/// Parse a level `camera` object ({eye, target, up, fov}, world units and radians). Failure,
+/// including a degenerate view or a field of view outside (0, pi), preserves outView.
+[[nodiscard]] bool TryParseStartView(const QJsonObject& camera, PreviewStartView& outView);
+/// Level `camera` object describing view; the inverse of TryParseStartView.
+[[nodiscard]] QJsonObject MakeStartViewJson(const PreviewStartView& view);
 struct PreviewViewOptions final
 {
     foundation::int32 Camera = -1;
@@ -156,6 +172,10 @@ struct RenderScene final
     QJsonObject TransformBinding;
     /// Camera the viewport looks through until the user picks another; -1 is the editor camera.
     foundation::int32 DefaultCamera = -1;
+    /// Level start view of an imported scene; absent for Worlds without a scene level.
+    /// Not part of Identity, so changing only the start view never reloads GPU resources.
+    PreviewStartView StartView;
+    bool HasStartView = false;
     /// Choose the extraction source for a World in a project root; reads only file metadata.
     [[nodiscard]] static RenderSceneSource GetSource(const QString& root, const WorldDocument& world);
     /// Load authored objects. Disable lighting composition when passing this snapshot to Merge,

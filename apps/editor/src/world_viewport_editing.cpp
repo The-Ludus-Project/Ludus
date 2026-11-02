@@ -1,9 +1,12 @@
 #include "internal/level_workspace.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_panel.h"
+#include "internal/render_preview.h"
+#include "internal/render_scene.h"
 #include "internal/viewport_object_interaction.h"
 #include "internal/world_workspace.h"
 
+#include <QAction>
 #include <QComboBox>
 #include <QJsonArray>
 #include <QKeySequence>
@@ -56,6 +59,8 @@ void WorldWorkspace::bindViewportInteraction()
                 this,
                 &WorldWorkspace::commitViewportPlacement);
     }
+    // Only the scene viewport shows a level, so only it can store a start view.
+    connect(&Scene_->GetViewport().GetStartViewSaveAction(), &QAction::triggered, this, &WorldWorkspace::saveStartView);
 }
 void WorldWorkspace::updateViewportInteraction()
 {
@@ -63,6 +68,9 @@ void WorldWorkspace::updateViewportInteraction()
         Document_.Loaded() == true && Pending_ == false && SceneBusy() == false && mSelectedEntities.size() == 1;
     Render_->GetViewport().GetObjectInteraction().SetWorld(Document_, Selected_, canEdit);
     Scene_->GetViewport().GetObjectInteraction().SetWorld(Document_, Selected_, canEdit);
+    QAction& saveStartView = Scene_->GetViewport().GetStartViewSaveAction();
+    saveStartView.setVisible(Document_.Loaded() == true && Document_.Draft().contains(QStringLiteral("scene")) == true);
+    saveStartView.setEnabled(Pending_ == false && SceneBusy() == false);
 }
 void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObject& placement)
 {
@@ -127,5 +135,30 @@ void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObjec
     RenderInspector();
     Snapshot();
     Changed(QStringLiteral("Object transformed. Undo restores its placement; Save World keeps the edit."));
+}
+void WorldWorkspace::saveStartView()
+{
+    if (Pending_ == true || SceneBusy() == true)
+    {
+        Changed(
+            QStringLiteral("Apply or reset the pending edits and wait for the scene before setting the start view."));
+        return;
+    }
+    PreviewStartView view;
+    if (Scene_->GetRenderPreview().TryDescribeStartView(view) == false)
+    {
+        Changed(QStringLiteral("Switch the viewport to Perspective to set the start view; orthographic views have no "
+                               "field of view."));
+        return;
+    }
+    QString error;
+    if (Document_.SetSceneStartView(MakeStartViewJson(view), error) == false)
+    {
+        Changed(error);
+        return;
+    }
+    Snapshot();
+    Changed(QStringLiteral("Start view set. The World opens here; Undo restores the previous start view and Save "
+                           "World keeps it."));
 }
 } // namespace ludus::editor

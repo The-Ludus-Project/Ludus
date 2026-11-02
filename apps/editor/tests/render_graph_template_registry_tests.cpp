@@ -98,6 +98,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                QStringLiteral("steinberg-physical-optics"),
                                                QStringLiteral("rao-blackwell-mh"),
                                                QStringLiteral("restir-gi"),
+                                               QStringLiteral("conditional-restir"),
                                                QStringLiteral("one-more-vertex-nee")});
     CHECK(graphs.at(0).Label == QStringLiteral("Raster"));
     CHECK(graphs.at(4).Label == QStringLiteral("ReSTIR DI — mesh emitter lighting"));
@@ -107,15 +108,15 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
         CAPTURE(graph.Identity.toStdString());
         CHECK(graph.Description.isEmpty() == false);
         CHECK(registry.HasTemplate(RenderGraphTemplateKind::Graph, graph.Identity) == true);
-        const bool isRayTraced = graph.Identity == QStringLiteral("restir-di") ||
-                                 graph.Identity == QStringLiteral("visibility-secondary-rays") ||
-                                 graph.Identity == QStringLiteral("tiled-vbuffer-nee") ||
-                                 graph.Identity == QStringLiteral("compute-ray-tracing") ||
-                                 graph.Identity == QStringLiteral("simple-compute-ray-tracing") ||
-                                 graph.Identity == QStringLiteral("veach-guibas-mis") ||
-                                 graph.Identity == QStringLiteral("steinberg-plt") ||
-                                 graph.Identity == QStringLiteral("steinberg-physical-optics") ||
-                                 graph.Identity == QStringLiteral("restir-gi");
+        const bool isRayTraced =
+            graph.Identity == QStringLiteral("restir-di") ||
+            graph.Identity == QStringLiteral("visibility-secondary-rays") ||
+            graph.Identity == QStringLiteral("tiled-vbuffer-nee") ||
+            graph.Identity == QStringLiteral("compute-ray-tracing") ||
+            graph.Identity == QStringLiteral("simple-compute-ray-tracing") ||
+            graph.Identity == QStringLiteral("veach-guibas-mis") || graph.Identity == QStringLiteral("steinberg-plt") ||
+            graph.Identity == QStringLiteral("steinberg-physical-optics") ||
+            graph.Identity == QStringLiteral("restir-gi") || graph.Identity == QStringLiteral("conditional-restir");
         CHECK(graph.Requirements.contains(QStringLiteral("native-ray-tracing")) == isRayTraced);
         // Triangle-loop and compute-BVH templates run on Metal or Vulkan compute and must not claim ray hardware.
         CHECK(graph.Requirements.contains(QStringLiteral("compute-ray-tracing")) ==
@@ -147,6 +148,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                  QStringLiteral("steinberg-physical-optics"),
                                                  QStringLiteral("rao-blackwell-mh"),
                                                  QStringLiteral("restir-gi"),
+                                                 QStringLiteral("conditional-restir"),
                                                  QStringLiteral("visibility-buffer"),
                                                  QStringLiteral("visibility-secondary-rays"),
                                                  QStringLiteral("one-more-vertex-nee")});
@@ -169,6 +171,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                   QStringLiteral("SteinbergPhysicalOptics"),
                                   QStringLiteral("RaoBlackwellMh"),
                                   QStringLiteral("RestirGi"),
+                                  QStringLiteral("ConditionalRestir"),
                                   QStringLiteral("VisibilityBuffer"),
                                   QStringLiteral("VisibilitySecondaryRays"),
                                   QStringLiteral("OneMoreVertexNee")});

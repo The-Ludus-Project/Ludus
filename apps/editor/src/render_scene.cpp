@@ -32,6 +32,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImageReader>
+#include <QJsonArray>
 #include <QJsonDocument>
 
 #include <QSet>
@@ -1546,5 +1547,55 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
     output = foundation::Move(candidate);
     error.clear();
     return true;
+}
+bool TryParseStartView(const QJsonObject& camera, PreviewStartView& outView)
+{
+    constexpr usize COMPONENT_COUNT = 3;
+    StaticArray<math::Vector3d, COMPONENT_COUNT> vectors{};
+    usize index = 0;
+    for (const QString& key : {QStringLiteral("eye"), QStringLiteral("target"), QStringLiteral("up")})
+    {
+        const QJsonArray values = camera.value(key).toArray();
+        if (values.size() != static_cast<qsizetype>(COMPONENT_COUNT))
+        {
+            return false;
+        }
+        for (qsizetype axis = 0; axis < values.size(); ++axis)
+        {
+            if (values[axis].isDouble() == false || math::IsFinite(values[axis].toDouble()) == false)
+            {
+                return false;
+            }
+        }
+        vectors[index++] = {values[0].toDouble(), values[1].toDouble(), values[2].toDouble()};
+    }
+    const QJsonValue fov = camera.value(QStringLiteral("fov"));
+    const math::Vector3d forwardWorld = vectors[1] - vectors[0];
+    if (fov.isDouble() == false || math::IsFinite(fov.toDouble()) == false || fov.toDouble() <= 0 ||
+        fov.toDouble() >= math::kPi || math::Length(forwardWorld) <= 0 ||
+        math::Length(math::Cross(forwardWorld, vectors[2])) <= 0)
+    {
+        return false;
+    }
+    outView =
+    {
+        .EyeWorld = vectors[0],
+        .TargetWorld = vectors[1],
+        .UpWorld = {static_cast<float32>(vectors[2].X),
+                    static_cast<float32>(vectors[2].Y),
+                    static_cast<float32>(vectors[2].Z)},
+        .VerticalFov = static_cast<float32>(fov.toDouble()),
+    };
+    return true;
+}
+QJsonObject MakeStartViewJson(const PreviewStartView& view)
+{
+    return {{QStringLiteral("eye"), QJsonArray{view.EyeWorld.X, view.EyeWorld.Y, view.EyeWorld.Z}},
+            {QStringLiteral("target"), QJsonArray{view.TargetWorld.X, view.TargetWorld.Y, view.TargetWorld.Z}},
+            {QStringLiteral("up"),
+             QJsonArray{static_cast<float64>(view.UpWorld.X),
+                        static_cast<float64>(view.UpWorld.Y),
+                        static_cast<float64>(view.UpWorld.Z)}},
+            {QStringLiteral("fov"), static_cast<float64>(view.VerticalFov)}};
 }
 } // namespace ludus::editor

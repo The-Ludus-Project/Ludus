@@ -154,6 +154,33 @@
       "input": "RayLaunch",
       "output": "Radiance",
       "bindings": []
+    },
+    {
+      "id": "BuildPairwiseCells",
+      "stage": "compute",
+      "source": "main_shaders/pairwise_cells.slang",
+      "function": "BuildPairwiseCells",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "PairwiseInitial",
+      "stage": "compute",
+      "source": "main_shaders/pairwise_initial.slang",
+      "function": "InitializePairwiseReservoir",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "StochasticShade",
+      "stage": "compute",
+      "source": "main_shaders/pairwise_spatial.slang",
+      "function": "ShadeStochasticReservoir",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
     }
   ],
   "techniques": [
@@ -282,6 +309,22 @@
       "value": 0,
       "minimum": 0,
       "maximum": 1000
+    },
+    {
+      "id": "RESTIR_PAIRWISE_SAMPLES",
+      "label": "Stochastic pairwise: neighbor draws",
+      "type": "UInt32",
+      "value": 3,
+      "minimum": 1,
+      "maximum": 16
+    },
+    {
+      "id": "RESTIR_PAIRWISE_CANONICAL_SAMPLES",
+      "label": "Stochastic pairwise: canonical draws",
+      "type": "UInt32",
+      "value": 1,
+      "minimum": 1,
+      "maximum": 16
     }
   ]
 }

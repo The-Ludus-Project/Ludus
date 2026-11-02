@@ -147,7 +147,7 @@ if(LUDUS_BUILD_THREADING_BENCHMARK AND NOT EMSCRIPTEN)
     ludus_apply_project_defaults(ludus_static_lighting_benchmark)
 endif()
 if(TARGET ludus_rhi_render_tests)
-    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
+    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_renderer_render_tests)
@@ -248,6 +248,13 @@ if(TARGET ludus_rhi_render_tests)
                  "${CMAKE_CURRENT_SOURCE_DIR}/include/ludus/graphics/renderer"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di/main_shaders/initial_emitter_sampling.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/include/ludus/graphics/renderer/scene_shader_layout.h")
+    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME pairwise_reuse
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/pairwise_reuse.slang" COMPUTE ComputeMain
+        INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di/main_shaders"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/include/ludus/graphics/renderer"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di/main_shaders/pairwise_weights.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di/main_shaders/pairwise_distribution.slang")
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_gpu_preview renderer_gpu_preview_visibility_full renderer_gpu_preview_hit_cached renderer_gpu_preview_group32 renderer_gpu_preview_group64 renderer_gpu_preview_group128 renderer_gpu_preview_group8x8)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_gpu_preview_image)
     # Manual timing tool for reference captures on a cooked scene; not a CTest case.
@@ -432,7 +439,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics restir_gi rao_blackwell_mh one_more_vertex_nee)
+            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics restir_gi rao_blackwell_mh conditional_restir one_more_vertex_nee)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         ludus_stage_render_graph_fixture("${template_source}" "${template_staged}")
@@ -808,6 +815,42 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_RESTIR_GI_${restir_gi_definition}_DIRECTORY=\"${restir_gi_package_directory}\"")
     endforeach()
+    # Conditional light suffixes: independent no-reuse baseline and direct-only specialization.
+    set(conditional_restir_template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/conditional_restir_template")
+    file(READ "${conditional_restir_template_staged}/main.lushader.json" conditional_restir_manifest)
+    string(JSON conditional_restir_setting_count LENGTH "${conditional_restir_manifest}" settings)
+    math(EXPR conditional_restir_setting_last "${conditional_restir_setting_count} - 1")
+    foreach(conditional_restir_variant IN ITEMS "no_reuse;IS_CRIS_TEMPORAL_ENABLED;false;IS_CRIS_SPATIAL_ENABLED;false"
+            "direct;CRIS_PREFIX_BOUNCES;0")
+        list(POP_FRONT conditional_restir_variant conditional_restir_name)
+        set(conditional_restir_variant_manifest "${conditional_restir_manifest}")
+        while(conditional_restir_variant)
+            list(POP_FRONT conditional_restir_variant conditional_restir_setting conditional_restir_value)
+            set(conditional_restir_setting_index -1)
+            foreach(setting_index RANGE ${conditional_restir_setting_last})
+                string(JSON setting_id GET "${conditional_restir_manifest}" settings ${setting_index} id)
+                if(setting_id STREQUAL conditional_restir_setting)
+                    set(conditional_restir_setting_index ${setting_index})
+                endif()
+            endforeach()
+            if(conditional_restir_setting_index LESS 0)
+                message(FATAL_ERROR "The conditional-restir template manifest has no ${conditional_restir_setting} setting.")
+            endif()
+            string(JSON conditional_restir_variant_manifest SET "${conditional_restir_variant_manifest}" settings
+                ${conditional_restir_setting_index} value ${conditional_restir_value})
+        endwhile()
+        set(conditional_restir_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/conditional_restir_${conditional_restir_name}")
+        ludus_stage_render_graph_inputs("${conditional_restir_template_staged}" "${conditional_restir_staged}" main.lushader.json)
+        # Rewrite the staged manifest only when it changes, so reconfiguring does not rebuild the package.
+        file(WRITE "${conditional_restir_staged}.lushader.json" "${conditional_restir_variant_manifest}\n")
+        file(COPY_FILE "${conditional_restir_staged}.lushader.json" "${conditional_restir_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_conditional_restir_${conditional_restir_name}"
+            MANIFEST "${conditional_restir_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_conditional_restir_${conditional_restir_name}_RUNTIME_PACKAGE" PARENT_PATH conditional_restir_package_directory)
+        string(TOUPPER "${conditional_restir_name}" conditional_restir_definition)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_CONDITIONAL_RESTIR_${conditional_restir_definition}_DIRECTORY=\"${conditional_restir_package_directory}\"")
+    endforeach()
     # The Veach and Guibas template with every scene compute pass on the triangle loop, so the
     # line-sampling comparison with its lightSampling output needs no native ray profile.
     set(veach_guibas_loop_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/veach_guibas_mis_triangle_loop")
@@ -1174,6 +1217,11 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_restir_di_RUNTIME_PACKAGE PARENT_PATH restir_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_RESTIR_DIRECTORY="${restir_package_directory}")
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_restir_pairwise
+        MANIFEST "${restir_staged}/main.lushader.json" CONFIGURATION StochasticPairwise RUNTIME_PACKAGE)
+    cmake_path(GET rg2_restir_pairwise_RUNTIME_PACKAGE PARENT_PATH pairwise_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_RESTIR_PAIRWISE_DIRECTORY="${pairwise_package_directory}")
     foreach(restir_kind IN ITEMS di gi)
         if(restir_kind STREQUAL "di")
             set(production_staged "${restir_staged}")

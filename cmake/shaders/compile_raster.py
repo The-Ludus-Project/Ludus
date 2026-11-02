@@ -43,9 +43,9 @@ def external_text_source(namespace, label, data):
     encoded = data.encode("utf-8") + b"\0"
     values = [str(value) if value < 128 else f"static_cast<char>({value})" for value in encoded]
     rows = [", ".join(values[index:index + 32]) for index in range(0, len(values), 32)]
-    declaration = f"extern const char {label}[{len(encoded)}];\n"
+    declaration = f"extern constinit const char {label}[{len(encoded)}];\n"
     definition = (f"namespace ludus::shaders::{namespace} {{\n"
-                  f"extern const char {label}[{len(encoded)}] = {{\n" +
+                  f"extern constinit const char {label}[{len(encoded)}] = {{\n" +
                   ",\n".join(rows) + "\n};\n}\n")
     return declaration, definition
 

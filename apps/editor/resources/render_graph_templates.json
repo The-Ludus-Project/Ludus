@@ -173,6 +173,25 @@
     },
     {
       "kind": "graph",
+      "identity": "conditional-restir",
+      "label": "Conditional ReSTIR — mesh light suffixes",
+      "category": "ray-traced",
+      "requirements": [
+        "native-ray-tracing"
+      ],
+      "keywords": [
+        "cris",
+        "conditional",
+        "restir",
+        "suffix",
+        "final gather",
+        "indirect lighting",
+        "reservoir"
+      ],
+      "description": "Conditional RIS and ReSTIR (Kettunen et al., 2023), specialized to mesh-light endpoint suffixes: independent supporting and final-gather prefixes, temporal and spatial conditional area reservoirs, and fresh canonical proposals. Direct mesh lighting plus one indirect bounce; optional direct-only mode. Four passes and three automatically sized buffers. Native ray tracing required. Analytic lights and environment illumination are outside this estimator."
+    },
+    {
+      "kind": "graph",
       "identity": "one-more-vertex-nee",
       "label": "One-more-vertex NEE — hierarchical geometry sampling",
       "category": "ray-traced",
@@ -191,7 +210,6 @@
       ],
       "description": "Two-scattering mesh-emitter transport: cached BVH geometry statistics guide an extra vertex between the first surface and a sampled emitter. Exports MIS, geometry-only and BSDF+NEE estimates. Requires Metal or Vulkan compute. Analytic/environment lighting and coated diffuse are unsupported."
     },
-
     {
       "kind": "snippet",
       "identity": "restir-di",
@@ -341,6 +359,26 @@
       "requirements": ["native-ray-tracing"],
       "keywords": ["restir", "restir gi", "ouyang", "global illumination", "indirect lighting", "path resampling", "reservoir", "spatiotemporal reuse", "path tracing"],
       "description": "Initial-sample, temporal-reuse, spatial-reuse and shading passes sharing three automatically sized buffers: indirect lighting resampled across frames and nearby pixels (Ouyang et al.) plus direct lighting with light and BSDF sampling. Connect scene, view and color; requires native ray tracing."
+    },
+    {
+      "kind": "snippet",
+      "identity": "conditional-restir",
+      "label": "Conditional ReSTIR — mesh light suffixes",
+      "category": "lighting",
+      "defaultConfiguration": "ConditionalRestir",
+      "requirements": [
+        "native-ray-tracing"
+      ],
+      "keywords": [
+        "cris",
+        "conditional",
+        "restir",
+        "suffix",
+        "final gather",
+        "indirect lighting",
+        "reservoir"
+      ],
+      "description": "Conditional RIS and ReSTIR (Kettunen et al., 2023), specialized to mesh-light endpoint suffixes: independent supporting and final-gather prefixes, temporal and spatial conditional area reservoirs, and fresh canonical proposals. Direct mesh lighting plus one indirect bounce; optional direct-only mode. Four passes and three automatically sized buffers. Native ray tracing required. Analytic lights and environment illumination are outside this estimator."
     },
     {
       "kind": "snippet",
