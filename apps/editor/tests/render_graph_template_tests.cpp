@@ -2109,6 +2109,8 @@ TEST_CASE("Conditional ReSTIR template is created from the editor picker with it
     CHECK(root.count("\"ToneMap\"") == 1);
     CHECK(document.GetDraft(QStringLiteral("main_shaders/weights.slang")).contains("ComputeConditionalMass") == true);
     CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("CRIS_HISTORY_LIMIT") == true);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("CRIS_SUFFIX_BOUNCES") == true);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/tail.slang")).contains("GenerateScatteringSuffix") == true);
     RequireValidation(workspace);
 }
 
@@ -2138,7 +2140,8 @@ TEST_CASE("Conditional ReSTIR configuration imports its passes, shader closure a
                                   QStringLiteral("conditional_restir/main_shaders/spatial.slang"),
                                   QStringLiteral("conditional_restir/main_shaders/shade.slang"),
                                   QStringLiteral("conditional_restir/main_shaders/reservoir.slang"),
-                                  QStringLiteral("conditional_restir/main_shaders/weights.slang")})
+                                  QStringLiteral("conditional_restir/main_shaders/weights.slang"),
+                                  QStringLiteral("conditional_restir/main_shaders/tail.slang")})
     {
         INFO(source.toStdString());
         CHECK(document.GetDraft(source).isEmpty() == false);
@@ -2146,6 +2149,7 @@ TEST_CASE("Conditional ReSTIR configuration imports its passes, shader closure a
     const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
     for (const char* setting : {"CRIS_INITIAL_CANDIDATES",
                                 "CRIS_PREFIX_BOUNCES",
+                                "CRIS_SUFFIX_BOUNCES",
                                 "IS_CRIS_TEMPORAL_ENABLED",
                                 "IS_CRIS_SPATIAL_ENABLED",
                                 "CRIS_HISTORY_LIMIT",
@@ -2156,7 +2160,7 @@ TEST_CASE("Conditional ReSTIR configuration imports its passes, shader closure a
     }
     // The shared ray technique's budgets rise to the template's: the sample path and the spatial reuse's rays.
     const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
-    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 2);
+    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 8);
     CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 2);
     ReplaceRasterSubgraph(document, QStringLiteral("Indirect"));
     REQUIRE(workspace.Save() == true);

@@ -23,7 +23,10 @@ float3 ShadeConditionalRestir(SceneContext scene, RayLaunch launch, inout RayQue
     direct.MaterialRandom = MakeMaterialRandom(launch, DIRECT_MATERIAL_EVENT);
     direct.IsValid = true;
     float3 radiance = EvaluateEmission(scene, primary, direct.ViewWorld);
-    radiance += GatherSuffix(scene, direct, reservoir, queries);
+    // With a delayed gather, the primary owns only direct mesh lighting. All higher scattering
+    // orders belong to the secondary prefix, preventing overlap with its variable-length suffix.
+    if (CRIS_PREFIX_BOUNCES == 0 || reservoir.SuffixBounces == 0)
+        radiance += GatherSuffix(scene, direct, reservoir, queries);
     if (CRIS_PREFIX_BOUNCES > 0)
     {
         // Independent of the supporting prefixes AND the reservoir coins. The joint UCW is the
