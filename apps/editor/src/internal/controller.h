@@ -140,6 +140,8 @@ public:
     [[nodiscard]] bool CloseProject();
     void OpenProject(const QString& descriptorPath);
     void ClearRecentProjects();
+    /// Forget one recent project, for example one whose descriptor has gone missing.
+    void RemoveRecentProject(const QString& descriptorPath);
     void EditDraft(const ProjectDescriptor& draft, bool merge = false);
     void UndoProjectEdit();
     void RedoProjectEdit();

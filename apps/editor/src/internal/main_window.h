@@ -305,10 +305,13 @@ private:
     // Actions / status.
     QWidget* Welcome_ = nullptr;
     QPushButton* WelcomeNewButton_ = nullptr;
+    /// Says why New Project is unavailable; hidden while it is available.
+    QLabel* mWelcomeNewReasonOrNull = nullptr;
     QAction* CloseProjectAction_ = nullptr;
     QListWidget* RecentList_ = nullptr;
     StateView* mRecentEmptyStateOrNull = nullptr;
     QPushButton* RecentOpenButton_ = nullptr;
+    QPushButton* mRecentRemoveButtonOrNull = nullptr;
     QPushButton* BrowseProjectButton_ = nullptr;
     QMenu* RecentMenu_ = nullptr;
     QAction* ClearRecentAction_ = nullptr;

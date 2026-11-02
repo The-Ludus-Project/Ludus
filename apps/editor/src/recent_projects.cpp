@@ -120,6 +120,14 @@ bool RecentProjectStore::Clear() noexcept
     return Save();
 }
 
+bool RecentProjectStore::Remove(const QString& descriptorPath) noexcept
+{
+    const QString path = QDir::cleanPath(descriptorPath);
+    const foundation::int32 before = static_cast<foundation::int32>(Entries_.size());
+    Entries_.removeIf([&path](const RecentProject& entry) { return entry.DescriptorPath == path; });
+    return static_cast<foundation::int32>(Entries_.size()) == before || Save();
+}
+
 bool RecentProjectStore::Save() const noexcept
 {
     if (Path_.isEmpty() || QDir().mkpath(QFileInfo(Path_).absolutePath()) == false)

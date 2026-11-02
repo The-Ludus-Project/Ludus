@@ -440,6 +440,9 @@ void MainWindow::BuildUi()
     RecentList_->setProperty(ITEM_PADDING_PROPERTY, RECENT_PROJECT_ITEM_PADDING);
     RecentOpenButton_ = new QPushButton(QStringLiteral("Open Selected"), recentPanel);
     RecentOpenButton_->setObjectName(QStringLiteral("openRecentProjectButton"));
+    mRecentRemoveButtonOrNull = new QPushButton(QStringLiteral("Remove from List"), recentPanel);
+    mRecentRemoveButtonOrNull->setObjectName(QStringLiteral("removeRecentProjectButton"));
+    mRecentRemoveButtonOrNull->setToolTip(QStringLiteral("Forget the selected project. Its files are not deleted."));
     BrowseProjectButton_ = new QPushButton(QStringLiteral("Open Project..."), recentPanel);
     recentLayout->setContentsMargins(24, 24, 24, 24);
     recentLayout->setSpacing(12);
@@ -466,6 +469,12 @@ void MainWindow::BuildUi()
     welcomeActions->addWidget(BrowseProjectButton_);
     welcomeActions->addStretch();
     recentLayout->addLayout(welcomeActions);
+    mWelcomeNewReasonOrNull = new QLabel(recentPanel);
+    mWelcomeNewReasonOrNull->setObjectName(QStringLiteral("welcomeNewProjectReason"));
+    mWelcomeNewReasonOrNull->setWordWrap(true);
+    mWelcomeNewReasonOrNull->setProperty("visualRole", QStringLiteral("secondary"));
+    mWelcomeNewReasonOrNull->hide();
+    recentLayout->addWidget(mWelcomeNewReasonOrNull);
     recentLayout->addSpacing(12);
     recentLayout->addWidget(new QLabel(QStringLiteral("Recent projects"), recentPanel));
     recentLayout->addWidget(mRecentEmptyStateOrNull, 0, Qt::AlignHCenter);
@@ -473,6 +482,7 @@ void MainWindow::BuildUi()
     recentLayout->addStretch();
     auto* recentActions = new QHBoxLayout;
     recentActions->addWidget(RecentOpenButton_);
+    recentActions->addWidget(mRecentRemoveButtonOrNull);
     recentActions->addStretch();
     recentLayout->addLayout(recentActions);
     // Document registration order is the Window menu order.
@@ -490,6 +500,37 @@ void MainWindow::BuildUi()
     });
     connect(RecentList_, &QListWidget::currentItemChanged, this, [this]() {
         RecentOpenButton_->setEnabled(Controller_->Caps().CanOpen && RecentList_->currentItem() != nullptr);
+        mRecentRemoveButtonOrNull->setEnabled(Controller_->Caps().CanOpen && RecentList_->currentItem() != nullptr);
+    });
+    connect(mRecentRemoveButtonOrNull, &QPushButton::clicked, this, [this]() {
+        if (const QListWidgetItem* item = RecentList_->currentItem())
+        {
+            Controller_->RemoveRecentProject(item->data(Qt::UserRole).toString());
+        }
+    });
+    RecentList_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(RecentList_, &QListWidget::customContextMenuRequested, this, [this](const QPoint& position) {
+        const QListWidgetItem* itemOrNull = RecentList_->itemAt(position);
+        if (itemOrNull == nullptr)
+        {
+            return;
+        }
+        const QString path = itemOrNull->data(Qt::UserRole).toString();
+        QMenu menu(RecentList_);
+        QAction* open = menu.addAction(QStringLiteral("Open"));
+        open->setEnabled(Controller_->Caps().CanOpen == true);
+        QAction* remove = menu.addAction(QStringLiteral("Remove from Recent Projects"));
+        remove->setObjectName(QStringLiteral("removeRecentProjectAction"));
+        remove->setEnabled(Controller_->Caps().CanOpen == true);
+        const QAction* chosen = menu.exec(RecentList_->viewport()->mapToGlobal(position));
+        if (chosen == open)
+        {
+            QTimer::singleShot(0, this, [this, path]() { OpenProjectPath(path); });
+        }
+        else if (chosen == remove)
+        {
+            Controller_->RemoveRecentProject(path);
+        }
     });
     connect(RecentOpenButton_, &QPushButton::clicked, this, [this]() {
         if (const auto* item = RecentList_->currentItem())
