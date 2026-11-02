@@ -93,6 +93,10 @@ ResolveRenderGraphResource(const content::render_graph_format::Resource& resourc
 /// rather than as a stack temporary.
 struct RenderGraphPrograms final
 {
+    /// Discarded startup invocations before a frame capture collects its requested count; zero for IID graphs.
+    /// Indexed by Pass::RayProgram and cooked from each compute program's UInt32 capture_warmup_setting.
+    /// Interactive limits are unchanged.
+    foundation::StaticArray<foundation::uint32, content::render_graph_format::MAX_RAY_PROGRAMS> CaptureWarmupSamples{};
     rhi::RasterShaderDescription ColorVertex{};         ///< Authored ColorAndDepth geometry entry.
     rhi::RasterShaderDescription ColorFragment{};       ///< Authored color entry.
     rhi::RasterShaderDescription DepthVertex{};         ///< Authored DepthOnly geometry entry.

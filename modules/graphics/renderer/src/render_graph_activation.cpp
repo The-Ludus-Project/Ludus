@@ -149,6 +149,7 @@ struct RenderGraphPackage::State final
     };
     Array<uint8> Bytes;
     format::Header Header{};
+    StaticArray<uint32, format::MAX_RAY_PROGRAMS> CaptureWarmupSamples{};
     StaticArray<format::Resource, format::MAX_RESOURCES> Resources{};
     StaticArray<format::Camera, format::MAX_CAMERAS> Cameras{};
     StaticArray<format::Pass, format::MAX_PASSES> Passes{};
@@ -842,7 +843,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::LIGHT_TRANSFORMER_PACKAGE_VERSION && version != format::OPAQUE_GBUFFER_PACKAGE_VERSION &&
+        (version != format::CAPTURE_WARMUP_PACKAGE_VERSION && version != format::LIGHT_TRANSFORMER_PACKAGE_VERSION &&
+         version != format::OPAQUE_GBUFFER_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION &&
          version != format::RASTER_TONE_MAPPING_PACKAGE_VERSION && version != format::TILED_RAY_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION &&
@@ -1031,6 +1033,17 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
         candidate->HasLtcTable = (sceneResources & format::SCENE_RESOURCE_LTC_TABLE) != 0;
         candidate->HasFailureSummary = (sceneResources & format::SCENE_RESOURCE_FAILURE_SUMMARY) != 0;
     }
+    if (version >= format::CAPTURE_WARMUP_PACKAGE_VERSION)
+    {
+        for (uint32& count : candidate->CaptureWarmupSamples)
+        {
+            count = reader.ReadWord();
+        }
+        if (reader.IsOk() == false)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+    }
     if (version >= format::NAMED_PACKAGE_VERSION)
     {
         for (uint32 index = 0; index < candidate->Header.PassCount; ++index)
@@ -1178,6 +1191,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         return result;
     }
     const State& state = *mState;
+    result.CaptureWarmupSamples = state.CaptureWarmupSamples;
     result.HasRayPathCapture = state.IsRayPathCapture;
     result.HasLtcTable = state.HasLtcTable;
     result.HasLightTransformer = state.HasLightTransformer;

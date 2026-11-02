@@ -118,8 +118,11 @@ inline constexpr foundation::uint32 OPAQUE_GBUFFER_PACKAGE_VERSION = 31;
 inline constexpr foundation::uint32 LIGHT_TRANSFORMER_PACKAGE_VERSION = 32;
 /// Requires fixed-scale trained model setup at graph initialization and GPU encoder preparation per scene.
 inline constexpr foundation::uint32 SCENE_RESOURCE_LIGHT_TRANSFORMER = 4U;
-/// Latest native runtime package version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = LIGHT_TRANSFORMER_PACKAGE_VERSION;
+/// First generation carrying MAX_RAY_PROGRAMS capture warm-up invocation counts after the scene resource word.
+/// Earlier packages imply zero. This metadata does not alter interactive accumulation or shader execution.
+inline constexpr foundation::uint32 CAPTURE_WARMUP_PACKAGE_VERSION = 33;
+/// Current runtime generation layout version.
+inline constexpr foundation::uint32 PACKAGE_VERSION = CAPTURE_WARMUP_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

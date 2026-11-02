@@ -803,6 +803,15 @@ bool ReferenceCaptureWindow::startGraphSource()
                    .arg(extent.height())
                    .arg(mSamples->value());
     mProgress->setRange(0, mSamples->value());
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const renderer::RenderGraphCaptureInfo info = mGraphCapture.GetInfo();
+    if (info.WarmupSamples != 0)
+    {
+        mMessage +=
+            QStringLiteral(" %1 warm-up invocations run before collecting those samples.").arg(info.WarmupSamples);
+    }
+    mProgress->setRange(0, static_cast<int32>(info.TargetSamples));
+#endif
     mProgress->setValue(0);
     mCaptureTimer.start();
     mRefreshTimer.start();
@@ -1250,10 +1259,18 @@ QString ReferenceCaptureWindow::GetStatusText() const
                 graphPhase = QStringLiteral("Preparing the render graph");
                 break;
         }
+        const uint32 collected =
+            info.SubmittedSamples > info.WarmupSamples ? info.SubmittedSamples - info.WarmupSamples : 0;
+        if (info.WarmupSamples != 0 && info.SubmittedSamples < info.WarmupSamples &&
+            (info.Phase == renderer::RenderGraphCapturePhase::Rendering ||
+             info.Phase == renderer::RenderGraphCapturePhase::ReadingBack))
+        {
+            graphPhase = QStringLiteral("Warming up %1/%2").arg(info.SubmittedSamples).arg(info.WarmupSamples);
+        }
         return QStringLiteral("%1\n%2 · %3/%4 samples per pixel · %5 s")
             .arg(mMessage, graphPhase)
-            .arg(info.SubmittedSamples)
-            .arg(info.TargetSamples)
+            .arg(collected)
+            .arg(info.TargetSamples - info.WarmupSamples)
             .arg(static_cast<float64>(mCaptureTimer.elapsed()) / MILLISECONDS_PER_SECOND, 0, 'f', 1);
     }
 #endif
