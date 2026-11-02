@@ -64,11 +64,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <new>
 #include <string>
 #include <string_view>
+#include <thread>
 
 using namespace ludus::foundation;
 namespace renderer = ludus::graphics::renderer;
@@ -84,10 +86,12 @@ constexpr usize PIXEL_BYTES = static_cast<usize>(WIDTH) * HEIGHT * 4;
 constexpr usize VERTEX_COUNT = 3;
 constexpr usize INDEX_COUNT = 3;
 constexpr usize TABLE_COUNT = 1;
-/// First-use software shader work belongs to the cold ray sample.
-constexpr uint64 FIRST_SAMPLE_TIMEOUT_NANOSECONDS = 60 * time::NANOSECONDS_PER_SECOND;
+/// First-use software shader work belongs to the cold ray sample, with headroom for sanitizer instrumentation.
+constexpr uint64 FIRST_SAMPLE_TIMEOUT_NANOSECONDS = 120 * time::NANOSECONDS_PER_SECOND;
 /// Subsequent samples retain the ordinary frame completion bound.
 constexpr uint64 FRAME_TIMEOUT_NANOSECONDS = 10 * time::NANOSECONDS_PER_SECOND;
+/// Test-only completion polling must leave CPU time for software shader compilation.
+constexpr std::chrono::milliseconds COMPLETION_POLL_INTERVAL{1};
 struct RhiGuard final
 {
     LUDUS_INLINE RhiGuard() noexcept
@@ -1666,6 +1670,7 @@ TEST_CASE("Two graph reservoirs retain alternating shader writes and reset on re
         rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
         while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
         {
+            std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
             result = rhi::GetStatus(fixture.Device, completion);
         }
         REQUIRE(result == rhi::RasterStatus::Ready);
@@ -2080,6 +2085,7 @@ TEST_CASE("ReSTIR DI configurations shade mesh emitters and invalidate stale his
         rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
         while (result == rhi::RasterStatus::Pending && time::NowTicks() - started < TIMEOUT)
         {
+            std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
             result = rhi::GetStatus(fixture.Device, completion);
         }
         REQUIRE(result == rhi::RasterStatus::Ready);
@@ -2622,6 +2628,7 @@ void RenderFrame(renderer::RenderGraph& inoutGraph, const GraphGpuFixture& fixtu
     rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
     while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < timeoutNanoseconds)
     {
+        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
         result = rhi::GetStatus(fixture.Device, completion);
     }
     CAPTURE(submittedSamples, timeoutNanoseconds);
@@ -7542,6 +7549,7 @@ FinishCapture(renderer::RenderGraphCapture& inoutCapture, const Room& room, uint
         {
             return phase;
         }
+        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
     }
     const renderer::RenderGraphCaptureInfo info = inoutCapture.GetInfo();
     CAPTURE(phase, info.SubmittedSamples, info.MinimumSamples);
@@ -8059,12 +8067,14 @@ void RenderPreparedFrame(renderer::RenderGraph& inoutGraph, const GraphGpuFixtur
     rhi::RasterStatus rendered = inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion);
     while (rendered == rhi::RasterStatus::NotReady && time::NowTicks() - beginning < timeoutNanoseconds)
     {
+        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
         rendered = inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion);
     }
     REQUIRE(rendered == rhi::RasterStatus::Ready);
     rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
     while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < timeoutNanoseconds)
     {
+        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
         result = rhi::GetStatus(fixture.Device, completion);
     }
     CAPTURE(submittedSamples, timeoutNanoseconds);

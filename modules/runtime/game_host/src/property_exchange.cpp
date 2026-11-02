@@ -2,6 +2,7 @@
 
 #include <ludus/runtime/game_api/properties.h>
 
+#include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/array.hpp>
 
 #include <array>
@@ -177,12 +178,12 @@ struct Snapshot
     if (edit.Kind == static_cast<uint32>(PropertyKind::Float32))
     {
         uint64 bits = 0;
+        uint32 narrowed = 0;
         if (record.Has("value") == true || record.GetUint("bits", bits) == false ||
-            bits > static_cast<uint64>(~uint32{0}))
+            foundation::TryIntegerCast(bits, narrowed) == false)
         {
             return false;
         }
-        const uint32 narrowed = static_cast<uint32>(bits);
         std::memcpy(&edit.Float, &narrowed, sizeof(edit.Float));
         return Finite(edit.Float);
     }

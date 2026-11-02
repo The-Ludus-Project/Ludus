@@ -153,7 +153,23 @@ TEST_CASE("Delegated graph failures finish scene opening and permit a raster ret
         }
         return isReady();
     };
+    const auto readPresentedImage = [graphViewOrNull]() -> QImage {
+        if (graphViewOrNull->GetImage().isNull() == false)
+        {
+            return graphViewOrNull->GetImage();
+        }
+        // Direct presentation has no CPU fallback image: inspect the actual Qt GPU framebuffer.
+        for (QWindow* window : QGuiApplication::allWindows())
+        {
+            if (window->objectName() == QStringLiteral("LudusGpuViewport"))
+            {
+                return static_cast<QQuickWindow*>(window)->grabWindow();
+            }
+        }
+        return {};
+    };
     QImage previousImage;
+    uint64 previousSerial = 0;
     QJsonObject previousDocument;
     QMetaObject::Connection failureConnection;
     SECTION("failure before the candidate starts")
@@ -162,7 +178,8 @@ TEST_CASE("Delegated graph failures finish scene opening and permit a raster ret
     }
     SECTION("failure while waiting for the first frame")
     {
-        failureConnection = QObject::connect(&scene.GetRenderPreview(), &RenderPreview::DeviceRequested, &scene, [&]() {
+        // Scene preparation can reuse an already admitted device; inject at the operation boundary.
+        failureConnection = QObject::connect(&scene, &LevelWorkspace::PreviewStarting, &scene, [&]() {
             QTimer::singleShot(0, &scene, [&]() { scene.GetRenderPreview().SetProjectGraphProblem(problem); });
         });
     }
@@ -172,7 +189,10 @@ TEST_CASE("Delegated graph failures finish scene opening and permit a raster ret
         REQUIRE(scene.Open(QDir(root).filePath(relative)) == true);
         REQUIRE(waitFor([&]() { return scene.Busy() == false; }) == true);
         REQUIRE(scene.GetRenderPreview().Frames() != 0);
-        previousImage = graphViewOrNull->GetImage();
+        REQUIRE(waitFor([&]() { return viewport.HasRetainedGraphFrame() == true && viewport.PresentedFrames() > 0; }) ==
+                true);
+        previousImage = readPresentedImage();
+        previousSerial = viewport.GetPresentedGraphFrameSerial();
         REQUIRE(previousImage.isNull() == false);
         previousDocument = scene.Document();
         QJsonObject replacement = previousDocument;
@@ -197,10 +217,13 @@ TEST_CASE("Delegated graph failures finish scene opening and permit a raster ret
     {
         // WorldWorkspace forwards the failed operation's diagnostic through this production path.
         scene.ShowSceneFailure(problem);
-        CHECK(graphViewOrNull->GetImage() == previousImage);
+        CHECK(viewport.HasRetainedGraphFrame() == true);
+        CHECK(viewport.GetPresentedGraphFrameSerial() == previousSerial);
+        CHECK(readPresentedImage() == previousImage);
     }
     QObject::disconnect(failureConnection);
     scene.GetRenderPreview().SetProjectGraphProblem({});
+    const uint64 beforeRepair = viewport.PresentedFrames();
     REQUIRE(renderer.BuildAndPreview() == true);
     finished.clear();
     REQUIRE(scene.Open(QDir(root).filePath(relative)) == true);
@@ -208,7 +231,9 @@ TEST_CASE("Delegated graph failures finish scene opening and permit a raster ret
     REQUIRE(finished.size() == 1);
     CHECK(finished.at(0).at(0).toBool() == true);
     CHECK(scene.GetRenderPreview().Frames() != 0);
-    CHECK(graphViewOrNull->GetImage().isNull() == false);
+    REQUIRE(waitFor([&]() { return viewport.PresentedFrames() > beforeRepair; }) == true);
+    CHECK(viewport.HasRetainedGraphFrame() == true);
+    CHECK(readPresentedImage().isNull() == false);
     scene.StopPreview();
     renderer.SetPreviewSource(nullptr);
 }

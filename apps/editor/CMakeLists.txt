@@ -1326,6 +1326,17 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             else()
                 string(REPLACE "\"state\": {}" "\"state\": {\"group_size\": [64, 1, 1]}" mis_library "${mis_library}")
             endif()
+            # Qualify native presentation and GPU transport without requiring the
+            # hosted Metal device's optional native acceleration-structure capability.
+            string(JSON mis_node_count LENGTH "${mis_library}" configurations 0 nodes)
+            math(EXPR mis_node_last "${mis_node_count} - 1")
+            foreach(node_index RANGE ${mis_node_last})
+                string(JSON node_kind GET "${mis_library}" configurations 0 nodes ${node_index} kind)
+                if(node_kind STREQUAL "ComputePipeline")
+                    string(JSON mis_library SET "${mis_library}" configurations 0 nodes ${node_index}
+                        invocation traversal "\"ComputeBvh\"")
+                endif()
+            endforeach()
             file(WRITE "${mis_staged}.library.json" "${mis_library}")
             file(COPY_FILE "${mis_staged}.library.json" "${mis_staged}/library.lurender.json" ONLY_IF_DIFFERENT)
             ludus_compile_render_graph(TARGET ludus_editor_tests NAME "editor_native_mis_${shape}"

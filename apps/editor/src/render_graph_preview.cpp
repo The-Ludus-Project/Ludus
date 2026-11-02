@@ -31,7 +31,7 @@ namespace
 /// Wall-clock producer deadline, independent of the completion polling cadence.
 constexpr int32 MAX_PRODUCER_MILLISECONDS = 10'000;
 /// First-use software shader execution can exceed an ordinary frame's deadline.
-constexpr int32 FIRST_SAMPLE_PRODUCER_MILLISECONDS = 60'000;
+constexpr int32 FIRST_SAMPLE_PRODUCER_MILLISECONDS = 120'000;
 /// Interval between failure summary read-backs; each reads 256 bytes of one ray pass.
 constexpr int64 FAILURE_POLL_MILLISECONDS = 500;
 constexpr float64 NANOSECONDS_PER_MILLISECOND = 1'000'000.0;

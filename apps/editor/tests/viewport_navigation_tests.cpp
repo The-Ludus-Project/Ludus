@@ -702,16 +702,32 @@ TEST_CASE("Continuous camera input does not postpone viewport frames",
     CHECK(inputCount > 20);
     CHECK(inputFrames > 2);
 #if defined(Q_OS_MACOS)
-    QScreen* screenOrNull = viewport.screen();
-    REQUIRE(screenOrNull != nullptr);
-    constexpr float64 MINIMUM_REFRESH_FRACTION = 0.75;
-    constexpr float64 MILLISECONDS_PER_SECOND = 1000;
-    const float64 refreshRate = screenOrNull->refreshRate();
-    const uint64 minimumFrames =
-        static_cast<uint64>(refreshRate * SAMPLE_MILLISECONDS / MILLISECONDS_PER_SECOND * MINIMUM_REFRESH_FRACTION);
-    CAPTURE(refreshRate, minimumFrames);
-    CHECK(idleFrames >= minimumFrames);
-    CHECK(inputFrames >= minimumFrames);
+    // Sanitizers qualify scheduling and input progress, not the host's uninstrumented refresh rate.
+    constexpr float64 MINIMUM_IDLE_FRACTION = 0.75;
+    const uint64 minimumInputFrames = static_cast<uint64>(static_cast<float64>(idleFrames) * MINIMUM_IDLE_FRACTION);
+    CHECK(inputFrames >= minimumInputFrames);
+#    if defined(__has_feature)
+#        if __has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)
+    const bool isInstrumented = true;
+#        else
+    const bool isInstrumented = false;
+#        endif
+#    else
+    const bool isInstrumented = false;
+#    endif
+    if (isInstrumented == false)
+    {
+        QScreen* screenOrNull = viewport.screen();
+        REQUIRE(screenOrNull != nullptr);
+        constexpr float64 MINIMUM_REFRESH_FRACTION = 0.75;
+        constexpr float64 MILLISECONDS_PER_SECOND = 1000;
+        const float64 refreshRate = screenOrNull->refreshRate();
+        const uint64 minimumFrames =
+            static_cast<uint64>(refreshRate * SAMPLE_MILLISECONDS / MILLISECONDS_PER_SECOND * MINIMUM_REFRESH_FRACTION);
+        CAPTURE(refreshRate, minimumFrames);
+        CHECK(idleFrames >= minimumFrames);
+        CHECK(inputFrames >= minimumFrames);
+    }
 #endif
     preview.Stop();
 }

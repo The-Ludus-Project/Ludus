@@ -419,9 +419,9 @@ image assertions are unchanged by this partition.
 These correctness deadlines include shader preparation on software adapters.
 Independent deadlines keep growth in the number of reference captures from
 consuming the raster test's deadline. `--durations yes` identifies completed
-cases when a deadline fails. Render-graph capture tests allow 60 seconds for the
+cases when a deadline fails. Render-graph capture tests allow 120 seconds for the
 first submitted ray sample after initialization or a scene/camera reset, including
-first-use software shader work; subsequent samples retain the 10-second completion
+first-use software shader work and instrumentation; subsequent samples retain the 10-second completion
 bound. A private frame capture allows 180 seconds including graph preparation
 and readback. The interactive graph preview uses the same first-sample allowance
 while keeping its last presented frame.
@@ -431,6 +431,10 @@ The offscreen editor suite runs as four serial Catch2 shards and the canvas
 configuration suite as two. Declaration order gives each case exactly one shard;
 the existing 600- and 180-second deadlines apply per shard. CTest resource locking
 keeps those GPU and shader-worker owners serial even under a parallel CTest run.
+
+The mandatory Vulkan pixel proof selects `[render-graph]` and rejects skipped
+cases. Portable bilinear upscaling stays in that set; optional MetalFX variants
+use `[render-graph-metalfx]` and remain in the full GPU and macOS suites.
 
 ## Scheduled runtime profiling
 

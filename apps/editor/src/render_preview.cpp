@@ -945,7 +945,8 @@ void RenderPreview::serviceGpuTiming(bool shouldArm) noexcept
             mStatistics.GpuMilliseconds.Add(timing.DurationNanoseconds / NANOSECONDS_PER_MILLISECOND);
             mStatistics.GpuState = ViewportGpuTimeState::Available;
         }
-        const uint64 duration = isValid == true ? static_cast<uint64>(timing.DurationNanoseconds + 0.5) : 0;
+        const uint64 duration =
+            isValid == true ? static_cast<uint64>(math::Floor(timing.DurationNanoseconds + 0.5)) : 0;
         mHasTimingAssociation = false;
         Q_EMIT GpuProfileSample(mTimingFrameId, mTimingDeviceSession, mTimingSubmissionTicks, duration, isValid);
     }
