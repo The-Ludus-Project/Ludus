@@ -512,6 +512,62 @@ uint64 SceneDefinition::Bytes() const noexcept
     }
     return bytes;
 }
+namespace
+{
+template <typename ElementType>
+[[nodiscard]] bool TryCopyArray(const foundation::Array<ElementType>& source,
+                                foundation::Array<ElementType>& outCopy) noexcept
+{
+    return outCopy.TryAddRange({source.GetData(), source.GetSize()}) == true;
+}
+} // namespace
+Status SceneDefinition::TryCopyTo(SceneDefinition& outScene) const noexcept
+{
+    LUDUS_ASSERT(&outScene != this);
+    SceneDefinition copy;
+    if (copy.Textures.TryResize(Textures.GetSize()) == false || copy.Meshes.TryResize(Meshes.GetSize()) == false ||
+        TryCopyArray(Materials, copy.Materials) == false || TryCopyArray(Objects, copy.Objects) == false ||
+        TryCopyArray(Lights, copy.Lights) == false ||
+        TryCopyArray(Environment.Pixels, copy.Environment.Pixels) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    for (usize i = 0; i < Textures.GetSize(); ++i)
+    {
+        const SceneTexture& source = Textures[i];
+        SceneTexture& texture = copy.Textures[i];
+        texture.Width = source.Width;
+        texture.Height = source.Height;
+        texture.IsLinear = source.IsLinear;
+        if (TryCopyArray(source.Pixels, texture.Pixels) == false)
+        {
+            return Status::OutOfMemory;
+        }
+    }
+    for (usize i = 0; i < Meshes.GetSize(); ++i)
+    {
+        const SceneMesh& source = Meshes[i];
+        SceneMesh& mesh = copy.Meshes[i];
+        if (TryCopyArray(source.Positions, mesh.Positions) == false ||
+            TryCopyArray(source.Normals, mesh.Normals) == false ||
+            TryCopyArray(source.Texcoords, mesh.Texcoords) == false ||
+            TryCopyArray(source.BakeTexcoords, mesh.BakeTexcoords) == false ||
+            TryCopyArray(source.Tangents, mesh.Tangents) == false ||
+            TryCopyArray(source.Indices, mesh.Indices) == false)
+        {
+            return Status::OutOfMemory;
+        }
+    }
+    copy.Environment.Width = Environment.Width;
+    copy.Environment.Height = Environment.Height;
+    copy.Environment.Rgb = Environment.Rgb;
+    copy.Eye = Eye;
+    copy.Target = Target;
+    copy.Up = Up;
+    copy.VerticalFov = VerticalFov;
+    outScene = foundation::Move(copy);
+    return Status::Ok;
+}
 struct SceneDefinitionAdapter::State final
 {
     struct Job final

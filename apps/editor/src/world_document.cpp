@@ -1297,6 +1297,71 @@ QJsonObject WorldDocument::ScenePlacement(const QJsonObject& entity) const
     }
     return scene;
 }
+QJsonObject WorldDocument::MakeDraftWithoutScenePlacements() const
+{
+    const QJsonObject binding = Schema_.value(QStringLiteral("scene_transform")).toObject();
+    const QString component = binding.value(QStringLiteral("component")).toString();
+    QJsonArray entities = Draft_.value(QStringLiteral("entities")).toArray();
+    for (qsizetype i = 0; i < entities.size(); ++i)
+    {
+        QJsonObject entity = entities[i].toObject();
+        QJsonObject scene = entity.value(QStringLiteral("scene")).toObject();
+        if (scene.isEmpty() == true)
+        {
+            continue;
+        }
+        QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+        QJsonObject values = components.value(component).toObject();
+        for (const QString& key : {QStringLiteral("position"), QStringLiteral("rotation"), QStringLiteral("scale")})
+        {
+            scene.remove(key);
+            for (const QJsonValue property : binding.value(key).toArray())
+            {
+                values.remove(property.toString());
+            }
+        }
+        entity.insert(QStringLiteral("scene"), scene);
+        if (components.contains(component) == true)
+        {
+            components.insert(component, values);
+            entity.insert(QStringLiteral("components"), components);
+        }
+        entities[i] = entity;
+    }
+    QJsonObject draft = Draft_;
+    draft.insert(QStringLiteral("entities"), entities);
+    return draft;
+}
+foundation::math::Affine3 WorldDocument::MakeSceneMeshToParent(const QJsonObject& placement) noexcept
+{
+    namespace math = foundation::math;
+    const QJsonArray basis = placement.value(QStringLiteral("basis")).toArray();
+    const QJsonArray position = placement.value(QStringLiteral("position")).toArray();
+    const QJsonArray rotation = placement.value(QStringLiteral("rotation")).toArray();
+    const QJsonArray scale = placement.value(QStringLiteral("scale")).toArray();
+    const auto read = [](const QJsonArray& values, qsizetype index) noexcept {
+        return static_cast<foundation::float32>(values[index].toDouble());
+    };
+    constexpr qsizetype AXIS_COUNT = 3;
+    math::Affine3 importedMeshToParent;
+    for (qsizetype column = 0; column < AXIS_COUNT; ++column)
+    {
+        const qsizetype first = column * AXIS_COUNT;
+        importedMeshToParent.Columns[column] = {read(basis, first), read(basis, first + 1), read(basis, first + 2)};
+    }
+    math::Quaternion rotationX;
+    math::Quaternion rotationY;
+    math::Quaternion rotationZ;
+    static_cast<void>(math::TryFromAxisAngle({1, 0, 0}, math::DegreesToRadians(read(rotation, 0)), rotationX));
+    static_cast<void>(math::TryFromAxisAngle({0, 1, 0}, math::DegreesToRadians(read(rotation, 1)), rotationY));
+    static_cast<void>(math::TryFromAxisAngle({0, 0, 1}, math::DegreesToRadians(read(rotation, 2)), rotationZ));
+    math::TransformTRS adjustmentMesh;
+    static_cast<void>(math::TryNormalize(rotationZ * rotationY * rotationX, adjustmentMesh.Rotation));
+    adjustmentMesh.Scale = {read(scale, 0), read(scale, 1), read(scale, 2)};
+    math::Affine3 meshToParent = math::Compose(importedMeshToParent, math::ToAffine3(adjustmentMesh));
+    meshToParent.Translation = {read(position, 0), read(position, 1), read(position, 2)};
+    return meshToParent;
+}
 QJsonObject WorldDocument::SceneLevel() const
 {
     auto level = Draft_.value(QStringLiteral("scene")).toObject();
@@ -1314,29 +1379,8 @@ QJsonObject WorldDocument::SceneLevel() const
         {
             continue;
         }
-        const auto basis = scene.value(QStringLiteral("basis")).toArray();
         const auto position = scene.value(QStringLiteral("position")).toArray();
-        const auto rotation = scene.value(QStringLiteral("rotation")).toArray();
-        const auto scale = scene.value(QStringLiteral("scale")).toArray();
-        math::Affine3 base;
-        for (foundation::int32 column = 0; column < 3; ++column)
-        {
-            base.Columns[column] = {
-                static_cast<foundation::float32>(basis[static_cast<foundation::isize>(column) * 3].toDouble()),
-                static_cast<foundation::float32>(basis[column * 3 + 1].toDouble()),
-                static_cast<foundation::float32>(basis[column * 3 + 2].toDouble())};
-        }
-        math::Quaternion qx, qy, qz;
-        constexpr foundation::float32 radians = 0.017453292519943295F;
-        (void)math::TryFromAxisAngle({1, 0, 0}, static_cast<foundation::float32>(rotation[0].toDouble()) * radians, qx);
-        (void)math::TryFromAxisAngle({0, 1, 0}, static_cast<foundation::float32>(rotation[1].toDouble()) * radians, qy);
-        (void)math::TryFromAxisAngle({0, 0, 1}, static_cast<foundation::float32>(rotation[2].toDouble()) * radians, qz);
-        math::TransformTRS adjustment;
-        (void)math::TryNormalize(qz * qy * qx, adjustment.Rotation);
-        adjustment.Scale = {static_cast<foundation::float32>(scale[0].toDouble()),
-                            static_cast<foundation::float32>(scale[1].toDouble()),
-                            static_cast<foundation::float32>(scale[2].toDouble())};
-        const auto affine = math::Compose(base, math::ToAffine3(adjustment));
+        const math::Affine3 affine = MakeSceneMeshToParent(scene);
         QJsonArray transform;
         for (const auto column : affine.Columns)
         {

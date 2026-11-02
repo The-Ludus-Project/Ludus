@@ -53,12 +53,6 @@ constexpr float32 PICK_BOUNDS_PADDING = 0.0001F;
 constexpr float64 UNBOUNDED_PICK_DISTANCE = 1.0e300;
 
 constexpr StaticArray<QRgb, AXIS_COUNT> AXIS_COLORS{0xffff6060, 0xff68df85, 0xff639fff};
-math::Vector3 ReadVector(const QJsonArray& values) noexcept
-{
-    return {static_cast<float32>(values[0].toDouble()),
-            static_cast<float32>(values[1].toDouble()),
-            static_cast<float32>(values[2].toDouble())};
-}
 BorrowedView<const math::Vector3> GetPositions(const RenderScene& scene, int32 meshIndex) noexcept
 {
     if (scene.Definition != nullptr)
@@ -392,28 +386,8 @@ QString ViewportObjectInteraction::Pick(QPointF positionPixel, const QRectF& out
 }
 math::Affine3 ViewportObjectInteraction::makeTransform(const QJsonObject& placement) const
 {
-    math::Affine3 importedMeshToParent;
-    const QJsonArray values = placement.value(QStringLiteral("basis")).toArray();
-    for (int32 axis = 0; axis < AXIS_COUNT; ++axis)
-    {
-        const int32 offsetMesh = axis * AXIS_COUNT;
-        importedMeshToParent.Columns[axis] = {static_cast<float32>(values[offsetMesh].toDouble()),
-                                              static_cast<float32>(values[offsetMesh + 1].toDouble()),
-                                              static_cast<float32>(values[offsetMesh + 2].toDouble())};
-    }
-    const math::Vector3 rotationDegrees = ReadVector(placement.value(QStringLiteral("rotation")).toArray());
-    math::Quaternion rotationX;
-    math::Quaternion rotationY;
-    math::Quaternion rotationZ;
-    static_cast<void>(math::TryFromAxisAngle({1, 0, 0}, math::DegreesToRadians(rotationDegrees.X), rotationX));
-    static_cast<void>(math::TryFromAxisAngle({0, 1, 0}, math::DegreesToRadians(rotationDegrees.Y), rotationY));
-    static_cast<void>(math::TryFromAxisAngle({0, 0, 1}, math::DegreesToRadians(rotationDegrees.Z), rotationZ));
-    math::TransformTRS adjustmentMesh;
-    static_cast<void>(math::TryNormalize(rotationZ * rotationY * rotationX, adjustmentMesh.Rotation));
-    adjustmentMesh.Scale = ReadVector(placement.value(QStringLiteral("scale")).toArray());
-    math::Affine3 meshToParent = math::Compose(importedMeshToParent, math::ToAffine3(adjustmentMesh));
-    meshToParent.Translation = ReadVector(placement.value(QStringLiteral("position")).toArray());
-    return math::Compose(mParentToWorld, meshToParent);
+    // The World's own placement composition, so a released object stays where the cook puts it.
+    return math::Compose(mParentToWorld, WorldDocument::MakeSceneMeshToParent(placement));
 }
 void ViewportObjectInteraction::buildHandles()
 {

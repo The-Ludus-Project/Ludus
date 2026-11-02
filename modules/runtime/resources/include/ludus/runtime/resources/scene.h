@@ -125,6 +125,11 @@ struct SceneDefinition final
     [[nodiscard]] static Status Decode(const uint8* bytesOrNull, usize count, SceneDefinition& outScene) noexcept;
     /// Known owned array bytes, excluding allocator metadata and driver allocations.
     [[nodiscard]] uint64 Bytes() const noexcept;
+    /// Deep-copy every array and value into outScene, for a caller that derives a new immutable
+    /// definition (for example with edited object transforms) while this one stays shared.
+    /// @param outScene Replaced on success; a different object than this definition.
+    /// @return Ok, or OutOfMemory when an allocation fails; failure preserves outScene.
+    [[nodiscard]] Status TryCopyTo(SceneDefinition& outScene) const noexcept;
 };
 /// Aggregate CPU scene adapter for the fully resident profile; GPU ownership is separate.
 /// Uses one prevalidated immutable definition borrowed from its composition owner. The owner

@@ -30,6 +30,7 @@ class RenderPanel;
 class RenderPreview;
 class RendererWorkspace;
 class LevelWorkspace;
+enum class PlacementValidationResult : foundation::uint8;
 struct ToolingPaths;
 /// Where Play opens the game: a local editor preference, not project data.
 enum class PlayMode : foundation::uint8
@@ -181,8 +182,17 @@ Q_SIGNALS:
 private:
     [[nodiscard]] bool LoadProjectSchema(WorldDocument& candidate, QByteArray& schema, bool worldDemo = false);
     [[nodiscard]] bool Inside(const QString& path, bool existing) const;
+    /// A blocking scene operation runs, or a full assembly waits for a background placement cook;
+    /// World edits and the viewport gizmo wait. A placement cook alone keeps them available.
     [[nodiscard]] bool SceneBusy() const noexcept;
+    /// SceneBusy(), or a background placement cook occupies the scene operation thread: operations
+    /// that start a scene operation themselves (open, import, draft preview, recovery) wait.
+    [[nodiscard]] bool isSceneWorkerActive() const noexcept;
     void RefreshScene();
+    /// Adopt or report a background placement cook; run a full assembly it deferred.
+    void placementValidationFinished(PlacementValidationResult result);
+    /// Forget the validated and presented scene so the next RefreshScene assembles the level.
+    void invalidateScene();
     void SceneCompleted(bool accepted);
     void SceneVerified(bool accepted);
     void Render();
@@ -250,6 +260,11 @@ private:
     bool SaveValidated_ = false;
     QJsonObject ValidatedScene_;
     QByteArray ValidatedWorld_;
+    /// RefreshScene needs a full assembly that waits for the background placement cook to drain.
+    bool mIsSceneRefreshDeferred = false;
+    /// Encoded World and document generation of the latest placement LevelWorkspace published.
+    QByteArray mPlacementWorld;
+    foundation::uint64 mPlacementDocumentGeneration = 0;
     QString SceneError_;
     QString ConversionPath_;
     QByteArray ConversionSchema_;

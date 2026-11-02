@@ -4872,6 +4872,44 @@ bool ValidateLevel(std::span<const uint8> level, AssetError& outError) noexcept
            ValidateLevelNode(document.Tree, document.Root, failure) == true;
 }
 
+bool ComposeLevelTransforms(std::span<const uint8> level,
+                            foundation::Array<float32>& outTransforms,
+                            AssetError& outError) noexcept
+{
+    Failure failure(outError);
+    Document document;
+    if (ParseInput(level, document, failure) == false ||
+        ValidateLevelNode(document.Tree, document.Root, failure) == false)
+    {
+        return false;
+    }
+    const JsonIndex objects = document.Tree.GetMember(document.Root, "objects");
+    const usize objectCount = document.Tree.GetCount(objects);
+    Array<float32> transforms;
+    if (transforms.TryResize(objectCount * format::OBJECT_TRANSFORM_COMPONENTS) == false)
+    {
+        return failure.FailOutOfMemory();
+    }
+    // The same composition, range check and narrowing as AssembleClosureBundle's object records.
+    for (usize i = 0; i < objectCount; ++i)
+    {
+        Transform world;
+        ComposeWorld(document.Tree, objects, document.Tree.GetItem(objects, i), world, 0);
+        for (usize component = 0; component < format::OBJECT_TRANSFORM_COMPONENTS; ++component)
+        {
+            const PythonNumber& value = world.Values[component];
+            if (IsFinitePython(value) == false ||
+                IsLessOrEqualPython(GetAbsolute(value), MakeNumber(MAX_WORLD_MAGNITUDE)) == false)
+            {
+                return failure.FailInvalid("World transform outside float32 range");
+            }
+            transforms[i * format::OBJECT_TRANSFORM_COMPONENTS + component] = static_cast<float32>(value.ToFloat());
+        }
+    }
+    outTransforms = static_cast<Array<float32>&&>(transforms);
+    return true;
+}
+
 bool ReadCatalog(std::string_view root, foundation::Array<uint8>& outCatalog, AssetError& outError) noexcept
 {
     Failure failure(outError);
