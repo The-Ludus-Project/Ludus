@@ -5,6 +5,8 @@
 #include <QHash>
 #include <QStringList>
 
+#include <utility>
+
 namespace ludus::editor
 {
 using namespace foundation;

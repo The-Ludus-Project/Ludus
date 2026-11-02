@@ -15,9 +15,8 @@
 #include "internal/render_graph_upscale_node.h"
 #include "internal/theme_colour.h"
 
+#include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/math/scalar.hpp>
-
-#include <algorithm>
 
 #include <QAction>
 #include <QApplication>
@@ -1338,7 +1337,8 @@ void RenderGraphCanvas::Rebuild()
         QVector<NodeView*> movable;
         for (NodeView* view : std::as_const(mNodes))
         {
-            if (authored.contains(view->Id) == true && view->IsMovable == true)
+            // The author's cards and the interface boxes stay where they are; the rest make way for them.
+            if (view->IsMovable == false || authored.contains(view->Id) == true)
             {
                 fixedCards.append(view->Frame->sceneBoundingRect());
             }
@@ -1347,15 +1347,18 @@ void RenderGraphCanvas::Rebuild()
                 movable.append(view);
             }
         }
-        std::sort(movable.begin(), movable.end(), [](const NodeView* left, const NodeView* right) {
-            const QPointF leftPosition = left->Frame->pos();
-            const QPointF rightPosition = right->Frame->pos();
-            if (leftPosition.x() != rightPosition.x())
-            {
-                return leftPosition.x() < rightPosition.x();
-            }
-            return leftPosition.y() != rightPosition.y() ? leftPosition.y() < rightPosition.y() : left->Id < right->Id;
-        });
+        foundation::Sort(movable.data(),
+                         static_cast<usize>(movable.size()),
+                         [](const NodeView* left, const NodeView* right) {
+                             const QPointF leftPosition = left->Frame->pos();
+                             const QPointF rightPosition = right->Frame->pos();
+                             if (leftPosition.x() != rightPosition.x())
+                             {
+                                 return leftPosition.x() < rightPosition.x();
+                             }
+                             return leftPosition.y() != rightPosition.y() ? leftPosition.y() < rightPosition.y()
+                                                                          : left->Id < right->Id;
+                         });
         QVector<QRectF> cards;
         for (const NodeView* view : std::as_const(movable))
         {
