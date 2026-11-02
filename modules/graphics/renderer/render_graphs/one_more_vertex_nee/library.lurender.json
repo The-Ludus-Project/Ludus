@@ -1,0 +1,441 @@
+{
+  "version": 2,
+  "id": "OneMoreVertexNeeLibrary",
+  "default": "OneMoreVertexNee",
+  "configurations": [
+    {
+      "id": "OneMoreVertexNee",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "color",
+          "type": "ColorTexture",
+          "source": "shade.color",
+          "required": true
+        },
+        {
+          "id": "geometrySampling",
+          "type": "ColorTexture",
+          "source": "shadeGeometry.color",
+          "required": false
+        },
+        {
+          "id": "bsdfSampling",
+          "type": "ColorTexture",
+          "source": "shadeBsdf.color",
+          "required": false
+        }
+      ],
+      "nodes": [
+        {
+          "id": "hierarchy",
+          "kind": "Buffer",
+          "bytes": 67108864
+        },
+        {
+          "id": "comparisons",
+          "kind": "Buffer",
+          "bytes_per_pixel": 64,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "prepare",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "hierarchy",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "hierarchy",
+              "type": "Buffer",
+              "target": "hierarchy",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "Prepare"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "shade",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "hierarchy",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "comparisons",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "hierarchy",
+              "type": "Buffer",
+              "target": "hierarchy",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "comparisons",
+              "type": "Buffer",
+              "target": "comparisons",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "Shade"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "geometrySampling",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "shadeGeometry",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "hierarchy",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "comparisons",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "hierarchy",
+              "type": "Buffer",
+              "target": "hierarchy",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "comparisons",
+              "type": "Buffer",
+              "target": "comparisons",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "GeometryOnly"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "bsdfSampling",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "shadeBsdf",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "hierarchy",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "comparisons",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "hierarchy",
+              "type": "Buffer",
+              "target": "hierarchy",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "comparisons",
+              "type": "Buffer",
+              "target": "comparisons",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "BsdfOnly"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": "Texture"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "prepare.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "prepare.view"
+        },
+        {
+          "from": "input.color",
+          "to": "prepare.color"
+        },
+        {
+          "from": "hierarchy.buffer",
+          "to": "prepare.hierarchy"
+        },
+        {
+          "from": "input.scene",
+          "to": "shade.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shade.view"
+        },
+        {
+          "from": "prepare.color",
+          "to": "shade.color"
+        },
+        {
+          "from": "prepare.hierarchy",
+          "to": "shade.hierarchy"
+        },
+        {
+          "from": "input.color",
+          "to": "renderSize.texture"
+        },
+        {
+          "from": "input.scene",
+          "to": "shadeGeometry.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shadeGeometry.view"
+        },
+        {
+          "from": "geometrySampling.texture",
+          "to": "shadeGeometry.color"
+        },
+        {
+          "from": "shade.hierarchy",
+          "to": "shadeGeometry.hierarchy"
+        },
+        {
+          "from": "input.scene",
+          "to": "shadeBsdf.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shadeBsdf.view"
+        },
+        {
+          "from": "bsdfSampling.texture",
+          "to": "shadeBsdf.color"
+        },
+        {
+          "from": "shadeGeometry.hierarchy",
+          "to": "shadeBsdf.hierarchy"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "geometrySampling.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "bsdfSampling.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "comparisons.size"
+        },
+        {
+          "from": "comparisons.buffer",
+          "to": "shade.comparisons"
+        },
+        {
+          "from": "shade.comparisons",
+          "to": "shadeGeometry.comparisons"
+        },
+        {
+          "from": "shadeGeometry.comparisons",
+          "to": "shadeBsdf.comparisons"
+        }
+      ]
+    }
+  ]
+}
