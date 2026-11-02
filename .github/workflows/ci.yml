@@ -18,6 +18,11 @@ on:
         required: true
         type: string
   workflow_dispatch:
+    inputs:
+      mcmc_vulkan_parity_only:
+        description: Run only the CPU/Mesa Vulkan MH and Jump Restore parity and capture checks.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -45,6 +50,7 @@ env:
 
 jobs:
   changes:
+    if: github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true
     name: Classify changes
     runs-on: ubuntu-24.04
     outputs:
@@ -58,6 +64,58 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/change-scope
         id: scope
+
+  mcmc-vulkan-parity:
+    if: github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true
+    name: MH and Jump Restore Vulkan parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/native-setup
+        with:
+          preset: linux-clang-development
+      - name: Prepare Vulkan and the pinned shader tools
+        run: |
+          sudo apt-get install -y -qq libvulkan1 mesa-vulkan-drivers vulkan-tools vulkan-validationlayers
+          ./scripts/shader-probe bootstrap
+          ./scripts/bootstrap-spirv-cross
+      - name: Build CPU oracle, GPU parity and both template configurations
+        run: |
+          out/host-tools/venv/bin/cmake --preset linux-clang-development \
+            -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" \
+            -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val" \
+            -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross"
+          out/host-tools/venv/bin/cmake --build out/build/linux-clang-development \
+            --target ludus_metropolis_tests ludus_renderer_render_tests ludus_metropolis_graph_tests \
+            --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+      - name: Run with Mesa Vulkan and validation layers; reject skipped tests
+        env:
+          VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
+        run: |
+          mkdir -p out/mcmc-vulkan
+          git rev-parse HEAD | tee out/mcmc-vulkan/commit.txt
+          vulkaninfo --summary 2>&1 | tee out/mcmc-vulkan/adapter.log
+          out/build/linux-clang-development/modules/graphics/renderer/ludus_metropolis_tests 2>&1 | tee out/mcmc-vulkan/cpu.log
+          out/build/linux-clang-development/modules/graphics/renderer/ludus_renderer_render_tests '[metropolis]' 2>&1 | tee out/mcmc-vulkan/parity.log
+          out/build/linux-clang-development/modules/graphics/renderer/ludus_metropolis_graph_tests 2>&1 | tee out/mcmc-vulkan/captures.log
+          python3 - <<'PY'
+          from pathlib import Path
+          for name in ('cpu', 'parity', 'captures'):
+              text = Path(f'out/mcmc-vulkan/{name}.log').read_text()
+              assert 'All tests passed' in text, text
+              assert 'skipped' not in text.lower(), text
+              assert 'Validation Error' not in text and 'VUID-' not in text, text
+          PY
+      - name: Preserve Vulkan parity evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcmc-vulkan-parity
+          path: out/mcmc-vulkan/
+          if-no-files-found: warn
 
   # Thanks to GitHub Actions runner-images, macOS 14 deprecation announcement #13518:
   # https://github.com/actions/runner-images/issues/13518
@@ -1402,7 +1460,7 @@ jobs:
     # this workflow covers the same head commit; that run's gate owns the result.
     name: Ubuntu Clang
     needs: [changes, macos-compile, macos-sanitizers, macos-analysis, formatting, debug-runtime, development, sanitizers, filesystem-fuzz, threading-races, analysis, editor, assertion-policy, pch, build-budget, scripting-qualification]
-    if: always()
+    if: always() && (github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true)
     runs-on: ubuntu-24.04
     permissions:
       contents: read
