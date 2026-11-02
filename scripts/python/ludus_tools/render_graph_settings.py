@@ -5,7 +5,7 @@ import math
 # Settings become one static constant per manifest setting in each program's source. The bound
 # admits every built-in template together; a regression checks their combined definitions
 # against this limit.
-MAX_SETTINGS = 64
+MAX_SETTINGS = 128
 MAX_NUMERIC_VALUE = 1000000
 MAX_SETTING_LABEL_LENGTH = 128
 
@@ -29,10 +29,10 @@ def validate(settings, build):
             continue
         for field in ('minimum', 'value', 'maximum'):
             value = setting[field]
-            build.require(type(value) in (int, float) and 0 <= value <= MAX_NUMERIC_VALUE and
+            build.require(type(value) in (int, float) and -MAX_NUMERIC_VALUE <= value <= MAX_NUMERIC_VALUE and
                           math.isfinite(value), 'Schema', setting['id'], 'finite bounded number required')
             if setting['type'] == 'UInt32':
-                build.require(type(value) is int, 'Schema', setting['id'], 'integer setting required')
+                build.require(type(value) is int and value >= 0, 'Schema', setting['id'], 'integer setting required')
         build.require(setting['minimum'] <= setting['value'] <= setting['maximum'],
                       'Schema', setting['id'], 'setting is outside its authored range')
 

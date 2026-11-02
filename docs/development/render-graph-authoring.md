@@ -1436,8 +1436,10 @@ and preserves the draft. Program, source and setting conflicts name the conflict
 input; a program capacity error gives the required count and `budgets.programs` limit.
 Undo restores the previous budgets along with the graph and shader edits.
 Settings are shared by this package's ReSTIR
-configurations. A manifest holds up to 64 settings, enough for every built-in
-template together. If a template's settings would exceed that limit and removing
+configurations. A manifest holds up to 128 settings, enough for every built-in
+template together. Float32 settings admit signed finite values within +/-1,000,000;
+UInt32 settings remain nonnegative. Spatial positions and directions can therefore
+be edited directly in Graph settings. If a template's settings would exceed that limit and removing
 authored settings that no `.slang` source names would make room, the picker lists
 those settings and offers **Remove and apply** or **Cancel**. Approval removes only
 the listed settings in the same undoable edit as the template; a template's own
@@ -5432,7 +5434,7 @@ The closed version-1 `.lushader.json` source has these fields:
 | `programs` | Named stage/function/source records; input/output schemas and explicit uniform bindings |
 | `techniques` | Explicit `DefaultStaticOpaque.ColorAndDepth`/`.DepthOnly` and/or `DefaultStaticMasked.ColorAndDepth`/`.DepthOnly` mappings and legal pipeline recipes |
 | `budgets` | Author bounds for configurations, programs, emitted artifacts and pipeline recipes |
-| `settings` (optional) | Up to 64 typed shader constants exposed in Properties and the canvas Graph Settings dialog |
+| `settings` (optional) | Up to 128 typed shader constants exposed in Properties and the canvas Graph Settings dialog |
 
 Each setting declares `id`, `label`, `type`, and `value`. Types are `UInt32`,
 `Float32`, or `Bool`; numeric settings also require `minimum` and `maximum` with
@@ -8062,6 +8064,91 @@ validation, allocation, completion collection and scene updates still have costs
 no universal frame-time bound is claimed. The test reports service/pipeline timing
 separately from source compilation and refuses a skipped GPU case. Linux, browser
 and physical-device qualification remain distinct from any local macOS result.
+
+## Trace a scalar wave through an authored aperture
+
+The **Wave tracing — scalar aperture diffraction** template (`wave-tracing`) is a
+single thin-screen, scalar specialization of Shlomi Steinberg and Matt Pharr's
+[Wave Tracing: Generalizing The Path Integral To Wave Optics](https://doi.org/10.1111/cgf.70322),
+Computer Graphics Forum 45(2), e70322 (2026). Thank you to the authors for the
+bilinear transport formulation (Section 3.1) and Gaussian propagation analysis
+(Section 4.2). This implementation is original; no reference implementation code
+is copied.
+
+Create an editable graph from the Renderer canvas template picker or the CLI:
+
+```sh
+ludus render-graph new graphs/Waves --template wave-tracing \
+  --renderer-static --output offscreen --profiles metal
+```
+
+Use `spirv` for Vulkan. The primary-hit pass uses the compute BVH; wave transport,
+mask evaluation and field integration run on the GPU. Hardware ray tracing is
+not required. The SDK includes the complete editable package. Add the same
+configuration through the canvas **Add configuration** menu. Settings are available
+through both Graph settings on the canvas and Properties.
+
+The template explicitly authors an analytic, coherent Gaussian illuminator in
+its Graph settings. It does not use the World's other lights. Set its screen
+centre (`WT_SCREEN_X/Y/Z`, metres), propagation direction
+(`WT_DIRECTION_X/Y/Z`, normalized by the shader), wavelength (millimetres), waist
+shape radii X/Y (millimetres), and peak irradiance. The default illuminator
+propagates along world +Z through the Z=0 plane. Put opaque coplanar screen
+triangles there, with actual mesh holes for apertures, and a diffuse receiving
+surface at positive Z. View that receiver with the selected World's camera.
+The coplanarity tolerance selects triangles whose **three vertices** lie in the
+screen slab. Overlapping triangles form a union. Other geometry contributes to
+camera visibility, but does not form additional diffraction screens. Alpha masks
+and material transmission are not apertures in this profile.
+
+Three exports share the primary hits:
+
+- **Wave** integrates complex fields over every open aperture cell, then squares
+  the sum. Cross terms between separated openings survive, including destructive
+  interference. The receiving surface uses its authored base colour as a
+  Lambertian reflectance; emission remains visible.
+- **Geometric** propagates the same finite Gaussian footprint without diffraction,
+  with binary screen transmission. It uses the same source, receiver and camera.
+- **Aperture** shows the transmitting mask at the receiver's projected transverse
+  coordinates, without tone mapping.
+
+The numerical integral is
+`psi(x,y,z) = integral_A transmission(u,v) exp(-(u²/SigmaX+v²/SigmaY)/2)
+exp(i*pi*((x-u)²+(y-v)²)/(lambda*z)) du dv / (i*lambda*z)`.
+The common axial phase is omitted because it cancels in `|psi|²`. All dimensions
+inside the kernel use metres. Midpoint quadrature uses `WT_RESOLUTION²` cells over
+the authored integration rectangle; finite integration extents truncate Gaussian
+tails. Each cell tests the union of selected screen triangles, so cost grows as
+resolution squared times World triangle count **per receiving pixel**. Use small
+experiments and a small render size. Accumulation antialiases the camera; it does
+not refine aperture quadrature. Increase resolution and compare raw linear power
+to establish mask-edge convergence. The phase gate rejects a cell phase change
+above pi/2 per axis and offers concrete settings to repair it. Passing that gate
+alone does not establish convergence at discontinuous aperture boundaries.
+
+The CPU API in `ludus/graphics/renderer/wave_tracing.hpp` evaluates the same
+integral in float64 over a borrowed transmission grid. It preserves outputs on
+invalid inputs, nonfinite results and phase undersampling. `TryPropagateWaveBeam`
+implements the paper's Eqs. (20)-(21) for anisotropic Gaussian beams, retaining
+rho and induced position/wavevector correlation. CPU regressions check analytic
+Gaussian propagation, minimum uncertainty, composition, a double-slit maximum
+and null, an opaque aperture, and failure preservation. The GPU parity kernel
+runs the production shader's cell integrator and moments over identical float32
+inputs, comparing raw field components, power and moments to the CPU oracle. The cooked
+graph regression captures the current World with an open, opaque or half-covered
+screen: the half-screen receives nonzero diffracted light in geometric shadow,
+while an opaque screen transmits zero. All three exports are checked before tone mapping.
+
+**Scope:** this profile is monochromatic, scalar, paraxial Fresnel transport
+through one opaque planar screen. The screen is illuminated at a Gaussian waist;
+receivers are Lambertian. It does **not** implement the paper's full elliptical
+cone traversal, ballistic escape, multi-region wave paths, rejection sampling of
+interfering scattering operators, UTD, bidirectional connections, polarization or
+spectral material scattering. Gaussian moment support is not evidence of a
+complete cone tracer. Optical wavelengths and large or near screens often need
+more spatial resolution than this educational template admits. These limitations
+remain explicit; this template is not a replacement for the paper's complete
+wave-tracing system or the existing physical-optics material template.
 
 ## Use the forward-lit template
 

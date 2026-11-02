@@ -420,6 +420,11 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
         selected.ProgramPrefix = QStringLiteral("SteinbergPhysicalOptics");
         selected.Name = QStringLiteral("Steinberg practical physical optics");
     }
+    else if (templateIdentity == QStringLiteral("wave-tracing"))
+    {
+        selected.ProgramPrefix = QStringLiteral("WaveTracing");
+        selected.Name = QStringLiteral("Wave tracing scalar diffraction");
+    }
     else if (templateIdentity == QStringLiteral("rao-blackwell-mh"))
     {
         selected.ProgramPrefix = QStringLiteral("RaoBlackwellMh");

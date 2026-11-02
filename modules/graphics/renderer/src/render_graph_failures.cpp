@@ -34,6 +34,8 @@ static_assert(ToCode(RenderGraphFailureReason::SceneData) == LUDUS_SCENE_FAILURE
 static_assert(ToCode(RenderGraphFailureReason::InvalidWeight) == LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
 static_assert(ToCode(RenderGraphFailureReason::BsdfOnlyLights) == LUDUS_SCENE_FAILURE_BSDF_ONLY_LIGHTS);
 static_assert(ToCode(RenderGraphFailureReason::PrimaryMaterial) == LUDUS_SCENE_FAILURE_PRIMARY_MATERIAL);
+static_assert(ToCode(RenderGraphFailureReason::WaveDirection) == LUDUS_SCENE_FAILURE_WAVE_DIRECTION);
+static_assert(ToCode(RenderGraphFailureReason::WaveResolution) == LUDUS_SCENE_FAILURE_WAVE_RESOLUTION);
 static_assert(RENDER_GRAPH_FAILURE_AUTHORED_FIRST == LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
 static_assert(MAX_RENDER_GRAPH_FAILURE_REASONS == LUDUS_SCENE_FAILURE_REASON_COUNT);
 static_assert(LUDUS_GRAPH_FAILURE_BYTES == MAX_RENDER_GRAPH_FAILURE_REASONS * sizeof(uint32));
@@ -51,6 +53,13 @@ const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
     }
     switch (static_cast<RenderGraphFailureReason>(reason))
     {
+        case RenderGraphFailureReason::WaveDirection:
+            return "The Gaussian illuminator has a zero propagation direction. Set at least one WT_DIRECTION_X, "
+                   "WT_DIRECTION_Y or WT_DIRECTION_Z component to a nonzero value in Graph settings.";
+        case RenderGraphFailureReason::WaveResolution:
+            return "The Fresnel phase changes by more than pi/2 per aperture cell. Increase WT_RESOLUTION, "
+                   "reduce the integration half extents, increase the wavelength or move the receiver farther "
+                   "from the screen in Graph settings and the World.";
         case RenderGraphFailureReason::BsdfOnlyLights:
             return "This BSDF-only path template cannot sample analytic lights. Select a light-sampling graph, or "
                    "replace the analytic lights with authored emissive meshes or an environment.";

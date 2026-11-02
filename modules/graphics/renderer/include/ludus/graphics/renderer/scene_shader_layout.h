@@ -33,5 +33,7 @@
 #define LUDUS_SCENE_FAILURE_STORED_RECORD 12    // Per-pixel data an earlier pass did not write for this pixel or frame.
 #define LUDUS_SCENE_FAILURE_SCENE_DATA 13       // An invalid triangle, surface or material from a scene lookup.
 #define LUDUS_SCENE_FAILURE_INVALID_WEIGHT 14   // A non-finite or negative sampling weight, probability or PDF.
+#define LUDUS_SCENE_FAILURE_WAVE_DIRECTION 17   // The aperture plane needs a nonzero propagation direction.
+#define LUDUS_SCENE_FAILURE_WAVE_RESOLUTION 18  // Fresnel quadrature cannot resolve the phase gradient.
 #define LUDUS_SCENE_FAILURE_AUTHORED_FIRST 32
 #define LUDUS_SCENE_FAILURE_REASON_COUNT 64

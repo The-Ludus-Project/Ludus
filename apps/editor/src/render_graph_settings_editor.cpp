@@ -65,14 +65,14 @@ RenderGraphSettingsEditor::RenderGraphSettingsEditor(const QJsonArray& settings,
         const QJsonValue minimum = setting.value(QStringLiteral("minimum"));
         const QJsonValue maximum = setting.value(QStringLiteral("maximum"));
         if (minimum.isDouble() == false || maximum.isDouble() == false || value.isDouble() == false ||
-            minimum.toDouble() < 0 || maximum.toDouble() > MAX_SETTING_VALUE || minimum.toDouble() > value.toDouble() ||
-            value.toDouble() > maximum.toDouble())
+            minimum.toDouble() < -MAX_SETTING_VALUE || maximum.toDouble() > MAX_SETTING_VALUE ||
+            minimum.toDouble() > value.toDouble() || value.toDouble() > maximum.toDouble())
         {
             continue;
         }
         if (type == QStringLiteral("UInt32"))
         {
-            if (minimum.toDouble() != static_cast<float64>(minimum.toInteger()) ||
+            if (minimum.toDouble() < 0 || minimum.toDouble() != static_cast<float64>(minimum.toInteger()) ||
                 maximum.toDouble() != static_cast<float64>(maximum.toInteger()) ||
                 value.toDouble() != static_cast<float64>(value.toInteger()))
             {

@@ -96,6 +96,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                QStringLiteral("slice-sampling-luminaire"),
                                                QStringLiteral("steinberg-plt"),
                                                QStringLiteral("steinberg-physical-optics"),
+                                               QStringLiteral("wave-tracing"),
                                                QStringLiteral("rao-blackwell-mh"),
                                                QStringLiteral("restir-gi")});
     CHECK(graphs.at(0).Label == QStringLiteral("Raster"));
@@ -123,7 +124,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                graph.Identity == QStringLiteral("salesin-jarosz-lines") ||
                graph.Identity == QStringLiteral("polygonal-light-sampling") ||
                graph.Identity == QStringLiteral("slice-sampling-luminaire") ||
-               graph.Identity == QStringLiteral("rao-blackwell-mh")));
+               graph.Identity == QStringLiteral("rao-blackwell-mh") ||
+               graph.Identity == QStringLiteral("wave-tracing")));
     }
     CHECK(GetRenderGraphTemplateRequirementLabel(QStringLiteral("compute-ray-tracing")) ==
           QStringLiteral("Metal or Vulkan compute"));
@@ -143,6 +145,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                  QStringLiteral("slice-sampling-luminaire"),
                                                  QStringLiteral("steinberg-plt"),
                                                  QStringLiteral("steinberg-physical-optics"),
+                                                 QStringLiteral("wave-tracing"),
                                                  QStringLiteral("rao-blackwell-mh"),
                                                  QStringLiteral("restir-gi"),
                                                  QStringLiteral("visibility-buffer"),

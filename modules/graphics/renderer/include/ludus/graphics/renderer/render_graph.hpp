@@ -179,6 +179,8 @@ enum class RenderGraphFailureReason : foundation::uint8
     InvalidWeight,    ///< A non-finite or negative sampling weight, probability or PDF.
     BsdfOnlyLights,   ///< Analytic lights require a light-sampling transport profile.
     PrimaryMaterial,  ///< A material requires random dimensions outside the primary-sample profile.
+    WaveDirection,    ///< The wave aperture plane has no propagation direction.
+    WaveResolution,   ///< The aperture quadrature cannot resolve the Fresnel phase gradient.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;
