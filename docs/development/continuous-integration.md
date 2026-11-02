@@ -120,6 +120,31 @@ advisory analyzer steps; required inventories and clang-tidy remain mandatory.
 Linux builds/tidy use four workers and native macOS jobs use three. The uncached
 build-time budget retains two workers for comparable measurements.
 
+### Run focused MCMC Vulkan parity
+
+The native `ci` workflow has a manual `mcmc_vulkan_parity_only` input for the
+MH/Jump Restore CPU oracle, GPU parity kernel and both cooked template
+configurations. Dispatch it on the exact review branch:
+
+```bash
+gh workflow run ci.yml --ref <branch> -f mcmc_vulkan_parity_only=true
+```
+
+This mode uses Ubuntu 24.04, the pinned native/shader toolchains, Mesa Vulkan and
+`VK_LAYER_KHRONOS_validation`. Skipped parity/capture cases and Vulkan validation
+errors fail the job. Its `mcmc-vulkan-parity` artifact records the tested commit,
+adapter details, emitted SPIR-V/compiler manifest and complete CPU/parity/HDR-capture logs. Mesa software-device
+evidence validates Vulkan execution; it does not establish hardware-GPU performance.
+The estimator profile and numerical tolerance belong to the
+[template contract](render-graph-authoring.md#use-the-rao-blackwellized-mh-template).
+
+The focused dispatch skips the other native jobs and the aggregate gate. Its
+skipped aggregate uses a separate check name, so it cannot replace the required
+**Ubuntu Clang** check on the same commit. The
+input has no effect on pull requests, scheduled runs or batch calls, and does not
+promote a commit, publish a site or move the batch marker. It supplements the
+required integration/batch checks.
+
 ## Activate the process once
 
 The coordinator is disabled until `BATCH_CI_ENABLED=true`. These settings need a
