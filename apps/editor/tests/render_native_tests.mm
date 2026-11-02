@@ -893,11 +893,14 @@ TEST_CASE("Native World-demo World renders its game extraction in the shared vie
     constexpr int32 PLAYER_SAMPLE_RADIUS_PIXEL = 2;
     constexpr int32 MINIMUM_PLAYER_PIXELS = 4;
     int32 playerPixels = 0;
-    for (int32 y = -PLAYER_SAMPLE_RADIUS_PIXEL; y <= PLAYER_SAMPLE_RADIUS_PIXEL; ++y)
+    for (int32 verticalOffsetPixel = -PLAYER_SAMPLE_RADIUS_PIXEL; verticalOffsetPixel <= PLAYER_SAMPLE_RADIUS_PIXEL;
+         ++verticalOffsetPixel)
     {
-        for (int32 x = -PLAYER_SAMPLE_RADIUS_PIXEL; x <= PLAYER_SAMPLE_RADIUS_PIXEL; ++x)
+        for (int32 horizontalOffsetPixel = -PLAYER_SAMPLE_RADIUS_PIXEL;
+             horizontalOffsetPixel <= PLAYER_SAMPLE_RADIUS_PIXEL;
+             ++horizontalOffsetPixel)
         {
-            const QPoint positionPixel = movedPixel + QPoint(x, y);
+            const QPoint positionPixel = movedPixel + QPoint(horizontalOffsetPixel, verticalOffsetPixel);
             if (after.rect().contains(positionPixel) == false)
             {
                 continue;
