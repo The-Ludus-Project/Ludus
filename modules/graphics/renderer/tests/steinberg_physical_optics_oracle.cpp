@@ -77,12 +77,22 @@ OpticsComplex Divide(OpticsComplex numerator, OpticsComplex denominator) noexcep
     return {product.Real / squaredMagnitude, product.Imaginary / squaredMagnitude};
 }
 
-OpticsComplex SquareRoot(OpticsComplex value) noexcept
+OpticsComplex ComputeSquareRoot(OpticsComplex value) noexcept
 {
     const float64 magnitude = math::Sqrt(SquaredMagnitude(value));
-    const float64 real = math::Sqrt(math::Max((magnitude + value.Real) * .5, 0.0));
-    const float64 imaginary = math::Sqrt(math::Max((magnitude - value.Real) * .5, 0.0));
-    return {real, value.Imaginary < 0 ? -imaginary : imaginary};
+    if (magnitude == 0)
+    {
+        return {};
+    }
+    // Use the product of the root's components for the smaller component, preserving near-real curvature.
+    if (value.Real >= 0)
+    {
+        const float64 real = math::Sqrt((magnitude + value.Real) * .5);
+        return {real, value.Imaginary / (2 * real)};
+    }
+    const float64 unsignedImaginary = math::Sqrt((magnitude - value.Real) * .5);
+    const float64 imaginary = value.Imaginary < 0 ? -unsignedImaginary : unsignedImaginary;
+    return {value.Imaginary / (2 * imaginary), imaginary};
 }
 
 OpticsStokes
@@ -340,7 +350,7 @@ void ComputeOpticsFresnel(float64 cosine,
     const float64 clampedCosine = math::Clamp(cosine, 0.0, 1.0);
     const OpticsComplex incidentCosine{clampedCosine, 0};
     const OpticsComplex sineOverEtaSquared = Divide({1 - clampedCosine * clampedCosine, 0}, Multiply(eta, eta));
-    const OpticsComplex transmittedCosine = SquareRoot(Subtract({1, 0}, sineOverEtaSquared));
+    const OpticsComplex transmittedCosine = ComputeSquareRoot(Subtract({1, 0}, sineOverEtaSquared));
     const OpticsComplex etaTransmittedCosine = Multiply(eta, transmittedCosine);
     const OpticsComplex etaIncidentCosine = Multiply(eta, incidentCosine);
     outPerpendicular =

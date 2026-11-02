@@ -19,7 +19,8 @@ bool IsFgDiffuse(MaterialSample material)
                                SurfaceHit hit,
                                float3 viewDirectionWorld,
                                inout RayQueryContext queries,
-                               out FgPoint outPoint) {
+                               out FgPoint outPoint)
+{
     outPoint = (FgPoint)0;
     outPoint.Hit = hit;
     outPoint.Material = EvaluateMaterial(scene, hit);
@@ -32,14 +33,16 @@ bool IsFgDiffuse(MaterialSample material)
     }
     outPoint.IsValid = true;
     return true;
-}[noinline] float3 EvaluateFgBsdf(FgPoint point, float3 incomingWorld)
+}
+[noinline] float3 EvaluateFgBsdf(FgPoint point, float3 incomingWorld)
 {
     float3 value;
     float density;
     EvaluateStandardBsdf(point.Material, point.ViewDirectionWorld, incomingWorld, value, density);
     return value;
 }
-[noinline] bool TrySampleFgBsdf(FgPoint point, float3 samples, out float3 outDirectionWorld, out float3 outWeight) {
+[noinline] bool TrySampleFgBsdf(FgPoint point, float3 samples, out float3 outDirectionWorld, out float3 outWeight)
+{
     outDirectionWorld = SampleStandardBsdf(point.Material, point.ViewDirectionWorld, samples);
     float3 value;
     float density;
@@ -47,7 +50,8 @@ bool IsFgDiffuse(MaterialSample material)
     float cosine = dot(point.Material.ShadingNormalWorld, outDirectionWorld);
     outWeight = density > 0 && cosine > 0 ? value * (cosine / density) : float3(0);
     return any(outWeight > 0) == true && all(isfinite(outWeight)) == true;
-} Ray MakeFgCameraRay(RayLaunch launch)
+}
+Ray MakeFgCameraRay(RayLaunch launch)
 {
     float2 positionUv = (float2(launch.PositionPixel) + 0.5) / float2(launch.ExtentPixel);
     float4 nearH = mul(launch.CameraClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 0, 1));
@@ -119,16 +123,18 @@ FgPoint TraceFgCameraBody(SceneContext scene,
                                           uint4 randomKey,
                                           RayQueryContext queriesIn,
                                           out RayQueryContext outQueries,
-                                          out float3 outEmission) {
+                                          out float3 outEmission)
+{
     RayQueryContext queries = queriesIn;
     FgPoint point = TraceFgCameraBody(scene, launch, randomKey, queries, outEmission);
     outQueries = queries;
     return point;
-} FgPoint TraceFgCamera(SceneContext scene,
-                        RayLaunch launch,
-                        uint4 randomKey,
-                        inout RayQueryContext queries,
-                        out float3 outEmission)
+}
+FgPoint TraceFgCamera(SceneContext scene,
+                      RayLaunch launch,
+                      uint4 randomKey,
+                      inout RayQueryContext queries,
+                      out float3 outEmission)
 {
     RayQueryContext resultQueries;
     float3 emission;
@@ -138,7 +144,8 @@ FgPoint TraceFgCameraBody(SceneContext scene,
     return point;
 }
 
-[noinline] float3 EstimateFgDirect(SceneContext scene, RayLaunch launch, FgPoint point, inout RayQueryContext queries) {
+[noinline] float3 EstimateFgDirect(SceneContext scene, RayLaunch launch, FgPoint point, inout RayQueryContext queries)
+{
     float3 radiance = float3(0);
     uint count = GetLightCount(scene);
     if (count > 0)

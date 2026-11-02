@@ -282,7 +282,8 @@ bool FindLineProposal(SceneContext scene,
                                      uint positionDimension,
                                      RayQueryContext initialQueries,
                                      out RayQueryContext outQueries,
-                                     out LineProposal outProposal) {
+                                     out LineProposal outProposal)
+{
     RayQueryContext queries = initialQueries;
     bool hasProposal = FindLineProposal(scene,
                                         launch,
@@ -473,7 +474,8 @@ float FindLineDensity(SceneContext scene,
                                               float2 barycentric,
                                               uint direction,
                                               RayQueryContext initialQueries,
-                                              out RayQueryContext outQueries) {
+                                              out RayQueryContext outQueries)
+{
     RayQueryContext queries = initialQueries;
     float density = FindLineDensity(scene, receiver, triangleIndex, barycentric, direction, queries);
     outQueries = queries;

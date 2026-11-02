@@ -16,8 +16,9 @@ class RasterViewport;
 struct ViewportFrame final
 {
 private:
-    ludus::foundation::uint64 Owner = 0, Generation = 0;
-    ludus::foundation::uint32 Slot = 0;
+    ludus::foundation::uint64 mOwner = 0;
+    ludus::foundation::uint64 mGeneration = 0;
+    ludus::foundation::uint32 mSlot = 0;
     friend class RasterViewport; ///< Validates the private lease identity.
 };
 /// Borrowed GPU display image, valid until its ViewportFrame is released.

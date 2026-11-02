@@ -93,6 +93,11 @@
     "compute": "ComputeMain",
     "native_ray_queries": true
   },
+  "renderer_gpu_preview_software": {
+    "source": "renderer_gpu_preview_software.slang",
+    "compute": "ComputeMain",
+    "software_ray_queries": true
+  },
   "renderer_reference": {
     "source": "renderer_reference.slang",
     "compute": "TraceMain"

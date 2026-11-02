@@ -3,7 +3,8 @@
 // One invocation owns each tile. All other invocations return without barriers,
 // including partial edge tiles. O(pixels) cached target work precedes all reuse.
 // Record: inclusive selection CDF, source target, total confidence, total CDF.
-[noinline] float3 BuildPairwiseCells(SceneContext scene, RayLaunch launch, inout RayQueryContext queries) {
+[noinline] float3 BuildPairwiseCells(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
+{
     if (HasReservoirCapacity(launch) == false || HasPairwiseCellCapacity(launch) == false)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_STORAGE_CAPACITY);

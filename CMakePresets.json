@@ -149,6 +149,7 @@
         "LUDUS_ENABLE_TSAN": "OFF",
         "CMAKE_C_COMPILER": "${sourceDir}/out/host-tools/bin/clang",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "14.0",
+        "LUDUS_SPIRV_CROSS": "${sourceDir}/out/shader-tools/spirv-cross/bin/spirv-cross",
         "CMAKE_OSX_SYSROOT": "${sourceDir}/out/host-tools/macos-sdk",
         "CMAKE_CXX_FLAGS": "-stdlib=libc++ -nostdinc++ -isystem \"${sourceDir}/out/host-tools/libcxx-include\"",
         "CMAKE_OBJCXX_COMPILER": "${sourceDir}/out/host-tools/bin/clang++",

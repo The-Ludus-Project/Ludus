@@ -14,6 +14,18 @@ LLVM_MAJOR = engine.pinned_llvm_major(engine.repo_root())
 
 
 class MacosSetupTests(unittest.TestCase):
+    def test_mac_presets_share_the_prepared_shader_translator(self):
+        # Fresh Debug/Release caches must work after Development prepared the tools;
+        # trusted promotion workflows do not repeat editor-specific configure flags.
+        presets = json.loads((engine.repo_root() / "CMakePresets.json").read_text())["configurePresets"]
+        by_name = {preset["name"]: preset for preset in presets}
+        expected = "${sourceDir}/out/shader-tools/spirv-cross/bin/spirv-cross"
+        self.assertEqual(by_name["macos-clang-base"]["cacheVariables"]["LUDUS_SPIRV_CROSS"], expected)
+        for flavor in ("debug", "development", "profile", "release", "asan-ubsan"):
+            preset = by_name["macos-clang-" + flavor]
+            self.assertEqual(preset["inherits"], "macos-clang-base")
+            self.assertNotIn("LUDUS_SPIRV_CROSS", preset["cacheVariables"])
+
     def test_native_profiles_distinguish_mac_architectures(self):
         for arch in ("arm64", "x86_64"):
             with self.subTest(arch=arch), patch.object(engine.platform, "system", return_value="Darwin"), \

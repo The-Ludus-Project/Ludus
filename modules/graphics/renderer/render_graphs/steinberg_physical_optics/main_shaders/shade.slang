@@ -508,7 +508,8 @@ static const uint BEAM_COMPONENT_COUNT = 3;
                                                              float wavelengthNanometers,
                                                              OpticsSettings settings,
                                                              bool isWave,
-                                                             int selectedOrder) {
+                                                             int selectedOrder)
+{
     float wavenumber = ComputeWavenumberPerWorld(wavelengthNanometers);
     float2 halfVector = ComputeSurfaceHalfVector(vertex.Frame, incidentWorld, vertex.OutgoingWorld);
     Grating grating = vertex.Profile;
@@ -643,7 +644,8 @@ float ReadSensorIntensity(Beam beam, OpticsSettings settings, float3 polarizerAx
                                       OpticsSettings settings,
                                       bool isWave,
                                       float3 polarizerAxisWorld,
-                                      int selectedOrder) {
+                                      int selectedOrder)
+{
     Beam beam = MakeLightBeam(endpoint, wavelengthNanometers, settings);
     if (beam.Stokes.x <= 0)
         return 0;
@@ -746,7 +748,8 @@ bool TryGetGratingWindow(GratingWindows windows, int order, out float outMinimum
                                    float windowOffset,
                                    OpticsSettings settings,
                                    bool isWave,
-                                   float3 polarizerAxisWorld) {
+                                   float3 polarizerAxisWorld)
+{
     bool isWindowed = isWave == true && lastVertex == 0 && vertex.Lobe == LOBE_GRATING && endpoint.IsDiscrete == true;
     GratingWindows windows = (GratingWindows)0;
     uint sampleCount = SPECTRUM_HERO_WAVELENGTH_COUNT;
@@ -884,7 +887,8 @@ bool TryMakeShadingVertex(SurfaceHit hit,
 
 /// Rebuild path vertex index from the scene, without a ray: the same surface, material and frame that the camera path
 /// built there. Returns false when the scene no longer gives a valid material.
-[noinline] bool TryRebuildShadingVertex(SceneContext scene, CameraPath path, uint index, out ShadingVertex outVertex) {
+[noinline] bool TryRebuildShadingVertex(SceneContext scene, CameraPath path, uint index, out ShadingVertex outVertex)
+{
     outVertex = (ShadingVertex)0;
     PathVertex stored = GetPathVertex(path, index);
     SurfaceHit hit = GetSurfaceHit(scene, stored.TriangleIndex, stored.Barycentric);
@@ -972,7 +976,8 @@ bool TryMakeConnection(SceneContext scene,
                                      RayLaunch launch,
                                      bool isWave,
                                      RayQueryContext queriesIn,
-                                     out RayQueryContext outQueries) {
+                                     out RayQueryContext outQueries)
+{
     RayQueryContext queries = queriesIn;
     float3 radiance = TracePathBody(scene, launch, isWave, queries);
     outQueries = queries;

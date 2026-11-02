@@ -867,8 +867,13 @@ void LevelWorkspace::Rollback(const QString& error)
     const bool hasPreviousFrame = Viewport_->HasRetainedGraphFrame();
     AwaitingViewport_ = false;
     PublishingCatalog_ = false;
-    Preview_.Stop();
-    if (Preview_.SetScene(PreviousScene_) && PreviousScene_.Identity.isEmpty() == false)
+    // A retained native image leases this device and Qt window. Keep both alive while restoring
+    // the accepted scene; stopping would erase the image before a replacement is drawable.
+    if (hasPreviousFrame == false)
+    {
+        Preview_.Stop();
+    }
+    if (Preview_.SetScene(PreviousScene_) == true && PreviousScene_.Identity.isEmpty() == false)
     {
         (void)Preview_.Start();
     }

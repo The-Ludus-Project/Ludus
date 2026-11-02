@@ -11,6 +11,33 @@
 using namespace ludus::editor;
 using namespace ludus::foundation;
 
+TEST_CASE("Repeated viewport starts preserve the active timer deadline", "[editor][frame-pump]")
+{
+    ViewportFramePump pump;
+    pump.Start();
+    QTimer* serviceOrNull = nullptr;
+    for (QTimer* timer : pump.findChildren<QTimer*>())
+    {
+        if (timer->isActive() == true)
+        {
+            REQUIRE(serviceOrNull == nullptr);
+            serviceOrNull = timer;
+        }
+    }
+    REQUIRE(serviceOrNull != nullptr);
+    const int32 timerIdentity = serviceOrNull->timerId();
+    constexpr int32 START_REQUEST_COUNT = 64;
+    for (int32 request = 0; request < START_REQUEST_COUNT; ++request)
+    {
+        pump.Start();
+        // Thanks to The Qt Company, "QTimer Class", start() documentation:
+        // https://doc.qt.io/qt-6/qtimer.html#start
+        // Restarting an active QTimer assigns a new ID, even before its next timeout.
+        CHECK(serviceOrNull->timerId() == timerIdentity);
+    }
+    pump.Stop();
+}
+
 TEST_CASE("Viewport frame servicing survives continuous requests to start", "[editor][frame-pump]")
 {
     ViewportFramePump pump;

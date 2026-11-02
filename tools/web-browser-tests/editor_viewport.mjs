@@ -14,11 +14,12 @@ const launchArgs = process.env.LUDUS_QA_GPU === 'hardware'
   : ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-webgpu-adapter=swiftshader',
     '--use-angle=swiftshader', '--use-vulkan=swiftshader', '--disable-vulkan-surface', '--enable-unsafe-swiftshader'];
 const report = {kind: process.env.LUDUS_QA_GPU || 'software-GPU', launchArgs, cases: [], errors: []};
-const source = Buffer.from(`LookAt 0 0 -4 0 0 0 0 1 0
+// The imported start camera sees the triangle's +Z front face; PBRT cameras are now honored.
+const source = Buffer.from(`LookAt 0 0 4 0 0 0 0 1 0
 Camera "perspective" "float fov" [45]
 WorldBegin
 LightSource "infinite" "rgb L" [0.2 0.2 0.2]
-LightSource "distant" "point3 from" [0 2 -2] "point3 to" [0 0 0] "rgb L" [2 2 2]
+LightSource "distant" "point3 from" [0 2 2] "point3 to" [0 0 0] "rgb L" [2 2 2]
 Material "diffuse" "rgb reflectance" [0.8 0.15 0.05]
 Shape "trianglemesh" "point3 P" [-1 -1 0 1 -1 0 0 1 0] "integer indices" [0 1 2]
 WorldEnd
@@ -125,6 +126,16 @@ async function shot(page, name) {
   return {bytes, lit, warm, geometry, center: [...image.data.subarray(center, center + 3)],
     width: image.width, height: image.height};
 }
+async function waitForPixels(page, name, predicate) {
+  const deadline = Date.now() + 30000;
+  let captured;
+  do {
+    captured = await shot(page, name);
+    if (predicate(captured)) return captured;
+    await page.waitForTimeout(100);
+  } while (Date.now() < deadline);
+  assert.fail(`Expected ${name} GPU pixels; last geometry sample ${captured.geometry}`);
+}
 let activePage;
 try {
   const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
@@ -142,7 +153,8 @@ try {
       });
       if (globalThis.qaDelayNextPipeline) {
         globalThis.qaDelayNextPipeline = false;
-        return new Promise(done => setTimeout(done, 500)).then(begin);
+        // Hold preparation until the retained pixels have been inspected, independent of host speed.
+        return new Promise(done => { globalThis.qaReleasePipeline = done; }).then(begin);
       }
       return begin();
     };
@@ -163,7 +175,7 @@ try {
   await importScene(page);
   await rendered(page);
   report.adapter = await page.evaluate(() => globalThis.qaViewportAdapter);
-  const first = await shot(page, 'solid');
+  const first = await waitForPixels(page, 'solid', image => image.lit > 100 && isNeutral(image.geometry));
   assert.ok(first.lit > 100 && isNeutral(first.geometry), 'Imported geometry must have visible neutral Solid pixels');
   report.cases.push('PBRT import, immutable MEMFS publication and visible GPU Solid pixels');
   const beforeZoom = await frames(page);
@@ -182,12 +194,18 @@ try {
   await rendered(page, beforeOrbit);
   assert.notDeepEqual((await shot(page, 'orbit')).bytes, zoomed.bytes);
   report.cases.push('Qt wheel and orbit input reaches the GPU camera');
+  // An imported camera carries orientation, not a geometry-centered orbit pivot.
+  // Reframe after testing navigation before sampling a fixed triangle-interior patch.
+  const beforeFrameAll = await frames(page);
+  await click(page, box.x + box.width - 155, box.y - 28);
+  await rendered(page, beforeFrameAll);
+  assert.ok(isNeutral((await shot(page, 'framed-solid')).geometry));
   for (const mode of ['albedo', 'lit']) {
     const previous = await frames(page);
     await selectShading(page, mode);
     await page.screenshot({path: resolve(output, mode + '-selected.png')});
     await rendered(page, previous);
-    const shaded = await shot(page, mode);
+    const shaded = await waitForPixels(page, mode, image => image.warm > 50 && isWarm(image.geometry));
     assert.ok(shaded.warm > 50 && isWarm(shaded.geometry), 'Authored material color must reach the geometry pixels');
   }
   report.cases.push('Albedo and authored Lit material replacement with directional shadow preparation');
@@ -195,10 +213,12 @@ try {
   const previous = await frames(page);
   await page.evaluate(() => { globalThis.qaDelayNextPipeline = true; });
   await selectShading(page, 'solid');
+  await page.waitForFunction(() => typeof globalThis.qaReleasePipeline === 'function');
   assert.deepEqual((await shot(page, 'pending')).bytes, accepted.bytes,
     'Pending preparation must retain the last GPU image');
+  await page.evaluate(() => { globalThis.qaReleasePipeline(); delete globalThis.qaReleasePipeline; });
   await rendered(page, previous);
-  const solid = await shot(page, 'published-solid');
+  const solid = await waitForPixels(page, 'published-solid', image => image.lit > 100 && isNeutral(image.geometry));
   assert.ok(solid.lit > 100 && isNeutral(solid.geometry));
   await page.evaluate(() => { globalThis.qaRejectNextPipeline = true; });
   await selectShading(page, 'albedo');
@@ -211,7 +231,7 @@ try {
   await page.evaluate(() => { globalThis.qaGpuErrors = []; });
   await selectShading(page, 'lit');
   await rendered(page, beforeRecovery, true);
-  const recovered = await shot(page, 'recovered-lit');
+  const recovered = await waitForPixels(page, 'recovered-lit', image => image.warm > 50 && isWarm(image.geometry));
   assert.ok(recovered.warm > 50 && isWarm(recovered.geometry));
   report.cases.push('Synthetic delayed/rejected preparation retains prior pixels, then successfully publishes recovery');
   await click(page, 300, 195); // Project Settings tab.
@@ -225,7 +245,7 @@ try {
   const beforeResize = await frames(page);
   await page.setViewportSize({width: 1200, height: 900});
   await rendered(page, beforeResize);
-  const resized = await shot(page, 'resized');
+  const resized = await waitForPixels(page, 'resized', image => image.lit > 50 && isWarm(image.geometry));
   assert.notEqual(resized.width, first.width);
   assert.ok(resized.lit > 50 && isWarm(resized.geometry));
   report.cases.push('Tab visibility, resumed presentation and resized GPU pixels');

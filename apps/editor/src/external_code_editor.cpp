@@ -55,7 +55,8 @@ bool MakeExternalCodeEditorCommand(const QString& application,
     else
 #    endif
     {
-        command.Program = program.canonicalFilePath();
+        // Preserve the invocation name of executable symlinks (for example multicall launchers).
+        command.Program = program.absoluteFilePath();
         command.Arguments = {source.canonicalFilePath()};
     }
     outCommand = command;
@@ -92,7 +93,7 @@ bool ExternalCodeEditor::Configure(QWidget* ownerOrNull)
         return false;
     }
     QSettings settings;
-    settings.setValue(APPLICATION_KEY, program.canonicalFilePath());
+    settings.setValue(APPLICATION_KEY, program.absoluteFilePath());
     return true;
 #endif
 }
