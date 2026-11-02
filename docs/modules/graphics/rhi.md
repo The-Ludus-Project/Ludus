@@ -72,6 +72,24 @@ on WebGPU where a void fragment stage requires that state. Attachment clears,
 loads and stores still follow the render pass description. The write policy
 participates in pipeline request identity.
 
+## Raster fill mode
+
+`RasterPipelineDescription::FillMode` defaults to `RasterFillMode::Solid`.
+`RasterFillMode::Lines` rasterizes only each triangle's three edges as one-pixel
+lines, for wireframe diagnostics; indexed triangle lists remain the only
+topology, so the same mesh buffers draw either way. Line width and anti-aliasing
+are not configurable. Edge fragments are depth-tested and written like filled
+ones.
+
+Creation returns `Unsupported` unless `RasterCapabilities::HasLineFill`. Metal
+(`setTriangleFillMode`, set per draw) and Direct3D 12 (`D3D12_FILL_MODE_WIREFRAME`)
+always report it. Vulkan reports it when the device enabled `fillModeNonSolid`:
+the RHI enables the feature on devices it creates whenever the adapter supports
+it, and an admitted host device declares it through
+`NativeDeviceDescription::HasFillModeNonSolid`. WebGPU and WebGL have no line
+fill mode and never report it. The fill mode participates in pipeline request
+identity.
+
 ## Vulkan diagnostics
 
 Implementation files formatting VkResult use the private

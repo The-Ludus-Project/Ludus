@@ -896,6 +896,13 @@ RasterCapabilities RasterLimits() noexcept
     };
     vkGetPhysicalDeviceProperties2(gPhysical, &extended);
     const usize bufferBytes = internal::GetResourceSizeLimit(allocation.maxMemoryAllocationSize);
+    // Devices this backend creates enable fillModeNonSolid whenever it is supported; an admitted
+    // device enabled it only when its source declares so.
+    VkPhysicalDeviceFeatures features{};
+    vkGetPhysicalDeviceFeatures(gPhysical, &features);
+    const NativeDeviceDescription* importedOrNull = internal::NativeDeviceRequest();
+    const bool hasLineFill = features.fillModeNonSolid == VK_TRUE &&
+                             (importedOrNull == nullptr || importedOrNull->HasFillModeNonSolid == true);
     return {bufferBytes,
             max,
             alignment > 256 ? alignment : 256,
@@ -904,7 +911,8 @@ RasterCapabilities RasterLimits() noexcept
             internal::CurrentStorageLimits().DrawsPerFrame,
             properties.limits.maxVertexInputAttributes < 16 ? properties.limits.maxVertexInputAttributes : 16,
             gRasterHdr,
-            bufferBytes};
+            bufferBytes,
+            hasLineFill};
 }
 ComputeCapabilities ComputeLimits() noexcept
 {
@@ -1873,7 +1881,7 @@ VkResult VulkanRasterPreparation::Build() noexcept
     viewport.viewportCount = viewport.scissorCount = 1;
     VkPipelineRasterizationStateCreateInfo raster{};
     raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.polygonMode = info.FillMode == RasterFillMode::Lines ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; // Canonical clip-space CCW with the negative-height viewport.
     raster.lineWidth = 1;
     VkPipelineMultisampleStateCreateInfo samples{ .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };

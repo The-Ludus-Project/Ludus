@@ -149,6 +149,9 @@ struct RasterCapabilities final
     /// Independent of transfer-ring slice size; bounded by backend staging/address limits.
     /// Creation separately consumes the configured ResourceBytes budget.
     ludus::foundation::usize MaxTextureUploadBytes = 0;
+    /// Raster pipelines accept RasterFillMode::Lines. Native Metal and Direct3D 12 always do, Vulkan when the
+    /// device enabled fillModeNonSolid; WebGPU and WebGL have no line fill mode.
+    bool HasLineFill = false;
 };
 /// Bounded single-queue buffer compute profile; zero fields mean unavailable.
 /// Storage textures, atomics between queues and indirect dispatch are deferred.

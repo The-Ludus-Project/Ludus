@@ -23,6 +23,8 @@ namespace
 constexpr foundation::int32 MINIMUM_TARGET_TEXT_CHARACTERS = 4;
 constexpr foundation::int32 STATISTICS_REFRESH_MILLISECONDS = 250;
 constexpr foundation::int32 STATISTICS_MARGIN_PIXEL = 8;
+/// Output-menu item role holding a built-in debug view's PreviewShading; graph targets leave it empty.
+constexpr foundation::int32 DEBUG_VIEW_ROLE = Qt::UserRole + 1;
 } // namespace
 WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* parent)
     : QWidget(parent), mWorkspace(inoutWorkspace), mPreview(*inoutWorkspace.GetPreviewOrNull()),
@@ -37,8 +39,12 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     mTargets->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     mTargets->setObjectName(QStringLiteral("worldGraphTargets"));
     mTargets->setAccessibleName(QStringLiteral("Render graph output"));
-    mTargets->setToolTip(QStringLiteral("Final output and every render-graph attachment. Special debug views use "
-                                        "configurations authored in the project's graph."));
+    mTargets->setToolTip(
+        QStringLiteral("Final output and every render-graph attachment, then built-in debug views. A debug view "
+                       "draws the World with the editor's raster renderer, regardless of what the project's graph "
+                       "draws, showing one material, geometry or lighting quantity per pixel (albedo, normals, "
+                       "depth, wireframe…). Other special views use configurations authored in the project's "
+                       "graph."));
     mStatistics->setObjectName(QStringLiteral("worldGraphStatisticsOverlay"));
     mStatistics->setTextFormat(Qt::PlainText);
     mStatistics->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -66,6 +72,7 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     connect(mTargets, &QComboBox::currentIndexChanged, this, [this]() {
         mPreview.SetOutputTarget(mTargets->currentData().toString());
         refreshFrame();
+        Q_EMIT DebugViewChanged();
     });
     refreshTargets();
     refreshFrame();
@@ -152,9 +159,20 @@ foundation::uint64 WorldGraphView::GetPresentedFrames() const noexcept
 {
     return mPresentedFrames;
 }
+bool WorldGraphView::TryGetDebugView(PreviewShading& outShading) const
+{
+    const QVariant shading = mTargets->currentData(DEBUG_VIEW_ROLE);
+    if (shading.isValid() == false)
+    {
+        return false;
+    }
+    outShading = static_cast<PreviewShading>(shading.toInt());
+    return true;
+}
 void WorldGraphView::refreshTargets()
 {
     const QString selected = mTargets->currentData().toString();
+    const QVariant selectedDebugView = mTargets->currentData(DEBUG_VIEW_ROLE);
     const QSignalBlocker blocker(mTargets);
     mTargets->clear();
     mTargets->addItem(QStringLiteral("Final output"), QString());
@@ -165,7 +183,22 @@ void WorldGraphView::refreshTargets()
             mTargets->addItem(target.Name, target.Name);
         }
     }
-    const foundation::int32 index = mTargets->findData(selected);
+    mTargets->insertSeparator(mTargets->count());
+    for (foundation::usize i = 0; i < PREVIEW_SHADING_COUNT; ++i)
+    {
+        const PreviewShading shading = static_cast<PreviewShading>(i);
+        if (IsPreviewGraphDebugView(shading) == false)
+        {
+            continue;
+        }
+        const foundation::int32 item = mTargets->count();
+        mTargets->addItem(QStringLiteral("Debug: %1").arg(GetPreviewShadingName(shading)));
+        mTargets->setItemData(item, static_cast<foundation::int32>(shading), DEBUG_VIEW_ROLE);
+        mTargets->setItemData(item, GetPreviewShadingLabel(shading), Qt::ToolTipRole);
+    }
+    const foundation::int32 index = selectedDebugView.isValid() == true
+                                        ? mTargets->findData(selectedDebugView, DEBUG_VIEW_ROLE)
+                                        : mTargets->findData(selected);
     mTargets->setCurrentIndex(index >= 0 ? index : 0);
     mPreview.SetOutputTarget(mTargets->currentData().toString());
 }

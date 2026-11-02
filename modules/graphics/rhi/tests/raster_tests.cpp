@@ -32,10 +32,12 @@ struct Session final
     SurfaceHandle Surface;
     explicit Session(const StorageLimits& storage = {},
                      uint32 maxTextureDimension = 4096,
-                     Backend activeBackend = Backend::WebGPU)
+                     Backend activeBackend = Backend::WebGPU,
+                     bool hasLineFill = true)
     {
         Shutdown();
         reference::Reset();
+        reference::HasLineFill = hasLineFill;
         backend::ImmediateError = StartupError::None;
         backend::NextFrame = FrameStatus::Ready;
         backend::ActiveKind = activeBackend;
@@ -1406,6 +1408,60 @@ TEST_CASE("L1 depth comparison participates in pipeline request identity", "[rhi
     REQUIRE(Release(session.Device, conventional) == RasterStatus::Ready);
     REQUIRE(Release(session.Device, reverse) == RasterStatus::Ready);
     REQUIRE(Release(session.Device, same) == RasterStatus::Ready);
+}
+TEST_CASE("Line fill mode participates in pipeline identity and requires the device capability",
+          "[rhi][raster][lifetime]")
+{
+    const RasterVertexStream stream{12, false};
+    const RasterVertexAttribute attribute{0, 0, 0, RasterVertexFormat::Float3};
+    {
+        Session session;
+        Scene scene(session.Device);
+        RasterCapabilities capabilities;
+        REQUIRE(GetRasterCapabilities(session.Device, capabilities) == RasterStatus::Ready);
+        CHECK(capabilities.HasLineFill == true);
+        RasterPipelineDescription description{scene.Vertex,
+                                              scene.Fragment,
+                                              scene.Layout,
+                                              {&stream, 1},
+                                              {&attribute, 1},
+                                              true};
+        PipelineRequest solid;
+        PipelineRequest lines;
+        PipelineRequest same;
+        REQUIRE(RequestPipeline(session.Device, description, solid) == RasterStatus::Pending);
+        REQUIRE(GetStatus(session.Device, solid) == RasterStatus::Ready);
+        const usize created = reference::Creates[7];
+        description.FillMode = RasterFillMode::Lines;
+        REQUIRE(RequestPipeline(session.Device, description, lines) == RasterStatus::Pending);
+        REQUIRE(GetStatus(session.Device, lines) == RasterStatus::Ready);
+        CHECK(reference::Creates[7] == created + 1);
+        REQUIRE(RequestPipeline(session.Device, description, same) == RasterStatus::Ready);
+        CHECK(reference::Creates[7] == created + 1);
+        description.FillMode = static_cast<RasterFillMode>(255);
+        PipelineRequest rejected;
+        CHECK(RequestPipeline(session.Device, description, rejected) == RasterStatus::InvalidDescription);
+        CHECK(reference::Creates[7] == created + 1);
+        REQUIRE(Release(session.Device, solid) == RasterStatus::Ready);
+        REQUIRE(Release(session.Device, lines) == RasterStatus::Ready);
+        REQUIRE(Release(session.Device, same) == RasterStatus::Ready);
+    }
+    Session session({}, 4096, Backend::WebGPU, false);
+    Scene scene(session.Device);
+    RasterCapabilities capabilities;
+    REQUIRE(GetRasterCapabilities(session.Device, capabilities) == RasterStatus::Ready);
+    CHECK(capabilities.HasLineFill == false);
+    RasterPipelineDescription description{scene.Vertex,
+                                          scene.Fragment,
+                                          scene.Layout,
+                                          {&stream, 1},
+                                          {&attribute, 1},
+                                          true};
+    description.FillMode = RasterFillMode::Lines;
+    const usize created = reference::Creates[7];
+    RasterPipelineHandle pipeline;
+    CHECK(CreateRasterPipeline(session.Device, description, pipeline) == RasterStatus::Unsupported);
+    CHECK(reference::Creates[7] == created);
 }
 TEST_CASE("L1 frozen surface viewport checks actual acquisition without faulting the device", "[rhi][graph]")
 {

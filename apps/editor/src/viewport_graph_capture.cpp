@@ -212,6 +212,16 @@ bool ViewportGraphCapture::Load(graphics::rhi::DeviceHandle device,
     if (started != graphics::rhi::RasterStatus::Ready && started != graphics::rhi::RasterStatus::Pending)
     {
         outError = DescribeProblem(mCapture.GetProblem(), mCapture.GetStatus());
+        const uint32 warmup = mCapture.GetInfo().WarmupSamples;
+        if (warmup >= renderer::MAX_RENDER_GRAPH_CAPTURE_SAMPLES ||
+            samples > renderer::MAX_RENDER_GRAPH_CAPTURE_SAMPLES - warmup)
+        {
+            outError = QStringLiteral("The capture requests %1 samples plus %2 warm-up invocations; the total "
+                                      "limit is %3. Reduce Samples or the graph's warm-up setting.")
+                           .arg(samples)
+                           .arg(warmup)
+                           .arg(renderer::MAX_RENDER_GRAPH_CAPTURE_SAMPLES);
+        }
         Release();
         return false;
     }

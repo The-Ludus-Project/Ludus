@@ -15,6 +15,7 @@ void Reset() noexcept
     NativePublications = NativeReleases = NativeRetirements = 0;
     ProfileAvailable = true;
     HdrAvailable = true;
+    HasLineFill = true;
     ComputeAvailable = true;
     IsSpatialUpscaleAvailable = false;
     SpatialUpscaleEncodes = 0;
@@ -222,7 +223,8 @@ RasterCapabilities RasterLimits() noexcept
             internal::CurrentStorageLimits().DrawsPerFrame,
             16,
             reference::HdrAvailable,
-            internal::GetResourceSizeLimit(usize{512} * 1024 * 1024)};
+            internal::GetResourceSizeLimit(usize{512} * 1024 * 1024),
+            reference::HasLineFill};
 }
 RasterStatus
 RasterCreateBuffer(usize slot, const BufferDescription&, std::span<const uint8> bytes, uint32 request) noexcept

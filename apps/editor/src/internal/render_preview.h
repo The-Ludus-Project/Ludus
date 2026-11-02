@@ -221,6 +221,19 @@ public:
     {
         return mIsInspectingRayPaths;
     }
+    /// Draw this viewport's built-in raster scene in shading even while UseProjectGraph delegates
+    /// frame production, for the graph viewport's debug views (albedo, normals, depth, wireframe and
+    /// the other material and lighting quantities). Repeated calls only change the shading. Until
+    /// HideBuiltInView, Navigation keeps saving the shading from before the first call, so a debug
+    /// view is not persisted. Without a project graph this preview always draws. GUI thread only.
+    void ShowBuiltInView(PreviewShading shading);
+    /// Return frame production to the project graph and restore the shading from before
+    /// ShowBuiltInView; nothing happens while no built-in view is shown. GUI thread only.
+    void HideBuiltInView();
+    [[nodiscard]] LUDUS_INLINE bool IsBuiltInViewShown() const noexcept
+    {
+        return mIsBuiltInViewShown;
+    }
     /// World-space lines composed into built-in frames while inspecting, depth-tested against
     /// that frame's scene depth unless overlay.IsXRay. The lines are projected with the current
     /// camera every time it changes; an empty overlay draws nothing. Native GPU preview only.
@@ -388,6 +401,14 @@ private:
     [[nodiscard]] bool prepare();
     void restartResources() noexcept;
     bool mIsInspectingRayPaths = false;
+    bool mIsBuiltInViewShown = false;
+    /// Shading restored by HideBuiltInView and saved by Navigation while a built-in view is shown.
+    PreviewShading mShadingBeforeBuiltInView = PreviewShading::Solid;
+    /// Whether the project graph, not this preview, produces the presented frames.
+    [[nodiscard]] LUDUS_INLINE bool isDelegatingToProjectGraph() const noexcept
+    {
+        return mIsProjectGraphEnabled == true && mIsInspectingRayPaths == false && mIsBuiltInViewShown == false;
+    }
     RayPathOverlay mRayPathOverlay;
     foundation::uint64 mRayPathOverlayRevision = 0;
     /// Overlay renderer, list and prepared versions on the owned device; null until first used.

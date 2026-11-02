@@ -635,6 +635,10 @@ void MainWindow::BuildMenus()
     toolsMenu->addAction(mRecordProfileAction);
     toolsMenu->addAction(QStringLiteral("Profiling..."), this, [this]() { showToolWindow(mProfilingDock); });
     toolsMenu->setObjectName(QStringLiteral("toolsMenu"));
+    // The Configuration document works without a project, so it stays reachable when the Explorer hides it.
+    toolsMenu->addAction(QStringLiteral("&Configuration"), this, [this]() {
+        static_cast<void>(mDocuments->OpenDocument(Configuration_));
+    });
     toolsMenu->addAction(mOptionsAction);
     connect(mOptionsAction, &QAction::triggered, this, &MainWindow::showOptions);
     connect(mCommandPaletteAction, &QAction::triggered, this, [this]() { showCommandPalette(false); });
@@ -1124,7 +1128,14 @@ void MainWindow::RenderRecentProjects()
         auto* item = new QListWidgetItem(name + QStringLiteral("\n") + project.DescriptorPath, RecentList_);
         item->setIcon(windowIcon());
         item->setData(Qt::UserRole, project.DescriptorPath);
-        item->setToolTip(project.DescriptorPath);
+        item->setToolTip(isMissing ? QStringLiteral("%1\nThis project's file is missing. Remove it from the list.")
+                                         .arg(project.DescriptorPath)
+                                   : project.DescriptorPath);
+        if (isMissing == true)
+        {
+            // Dimmed like a disabled control so an entry that cannot open reads as unavailable.
+            item->setForeground(palette().color(QPalette::Disabled, QPalette::Text));
+        }
         if (project.DescriptorPath == selectedPath)
         {
             RecentList_->setCurrentItem(item);
@@ -1144,6 +1155,7 @@ void MainWindow::RenderRecentProjects()
         RecentList_->setCurrentRow(0);
     }
     RecentOpenButton_->setEnabled(Controller_->Caps().CanOpen && RecentList_->currentItem() != nullptr);
+    mRecentRemoveButtonOrNull->setEnabled(Controller_->Caps().CanOpen && RecentList_->currentItem() != nullptr);
 }
 
 void MainWindow::RenderFields()
@@ -1271,6 +1283,31 @@ void MainWindow::RenderCapabilities()
     DiscardTuningAction_->setEnabled(playState.TuningDocumentAvailable && playState.TuningDocumentDirty);
     NewProjectAction_->setEnabled(caps.CanProjectCreate && Content_->Importing() == false);
     WelcomeNewButton_->setEnabled(caps.CanProjectCreate && Content_->Importing() == false);
+    QString newProjectBlocker;
+    if (WelcomeNewButton_->isEnabled() == false)
+    {
+        if (Content_->Importing() == true)
+        {
+            newProjectBlocker =
+                QStringLiteral("New Project is unavailable while content is importing. Wait for the import to finish.");
+        }
+        else if (Controller_->PlayState().Phase != PlayPhase::Stopped)
+        {
+            newProjectBlocker =
+                QStringLiteral("New Project is unavailable while a play session is running. Stop it first.");
+        }
+        else if (Controller_->State().Document == DocumentState::ProjectLoaded && Controller_->State().Dirty() == true)
+        {
+            newProjectBlocker = QStringLiteral(
+                "New Project is unavailable while the open project has unsaved changes. Save or close it first.");
+        }
+        else
+        {
+            newProjectBlocker = QStringLiteral(
+                "New Project is unavailable while another task is running. Wait for it to finish, or stop it.");
+        }
+    }
+    WelcomeNewButton_->setToolTip(newProjectBlocker);
     CloseProjectAction_->setEnabled(caps.CanCloseProject && Content_->Importing() == false &&
                                     AudioLaunchPending_ == false && AudioClosing_ == false);
     CloseProjectAction_->setToolTip(QStringLiteral("Close the project and return to Welcome. Stop active work first."));
@@ -1282,6 +1319,8 @@ void MainWindow::RenderCapabilities()
     RecentList_->setEnabled(caps.CanOpen && Content_->Importing() == false);
     RecentOpenButton_->setEnabled(caps.CanOpen && Content_->Importing() == false &&
                                   RecentList_->currentItem() != nullptr);
+    mRecentRemoveButtonOrNull->setEnabled(caps.CanOpen && Content_->Importing() == false &&
+                                          RecentList_->currentItem() != nullptr);
     BrowseProjectButton_->setEnabled(caps.CanOpen && Content_->Importing() == false);
     ClearRecentAction_->setEnabled(caps.CanOpen && Controller_->RecentProjects().isEmpty() == false);
     RenderDocumentActions();
@@ -1317,6 +1356,9 @@ void MainWindow::RenderCapabilities()
         MarkBrowserEdited();
     }
 #endif
+    // The reason sits on the Start page itself, since a disabled button cannot explain itself.
+    mWelcomeNewReasonOrNull->setText(WelcomeNewButton_->toolTip());
+    mWelcomeNewReasonOrNull->setVisible(WelcomeNewButton_->toolTip().isEmpty() == false);
     ClearAction_->setEnabled(caps.CanClearOutput);
     CopyAction_->setEnabled(caps.CanCopyJobDetails);
 

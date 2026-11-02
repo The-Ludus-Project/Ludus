@@ -272,7 +272,13 @@ def validate_manifest(value):
             f'{program_count} exceeds authored budget {value["budgets"]["programs"]}; '
             f'increase budgets.programs to at least {program_count} or reuse existing programs')
     for program in value['programs']:
-        keys(program, ('id', 'stage', 'source', 'function', 'input', 'output', 'bindings'), 'program', ('light_transformer',))
+        keys(program, ('id', 'stage', 'source', 'function', 'input', 'output', 'bindings'), 'program',
+             ('capture_warmup_setting', 'light_transformer'))
+        if 'capture_warmup_setting' in program:
+            setting = next((item for item in value.get('settings', [])
+                            if item['id'] == program['capture_warmup_setting']), None)
+            require(program['stage'] == ray.COMPUTE_STAGE and setting is not None and setting['type'] == 'UInt32',
+                    'Schema', 'capture_warmup_setting', 'name an existing UInt32 graph setting on a scene compute program')
         if 'light_transformer' in program:
             require(type(program['light_transformer']) is bool and
                     (program['light_transformer'] is False or program['stage'] == ray.COMPUTE_STAGE),
@@ -1095,6 +1101,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     helper = Path(helper).resolve()
     snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path, ray_profiles = prepare_sources(
         manifest, helper, root=root, ray_path_capture=ray_path_capture, capture_profile=capture_profile)
+    authored_programs_by_identity = {program['id']: program for program in value['programs']}
     manifest_label = manifest.relative_to(snapshot.root).as_posix()
     worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
     hash_file = ToolFileHashes()
@@ -1195,6 +1202,12 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                             if profile['light_transformer_programs']:
                                 record['light_transformer_programs'] = profile['light_transformer_programs']
                             record['scene_interface_version'] = technique.get('scene_interface', {}).get('version', 0)
+                            from . import render_graph_settings
+                            record['capture_warmup_samples'] = [
+                                max(render_graph_settings.capture_warmup_samples(authored_programs_by_identity[identity],
+                                    value.get('settings', []), snapshot.files)
+                                    for identity in ray.callback_programs(variant))
+                                for variant in profile['variants']]
                             record['visibility_buffer'] = profile['visibility_buffer']
                             if ray_path_capture:
                                 record['ray_path_capture'] = True

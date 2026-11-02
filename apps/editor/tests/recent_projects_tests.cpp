@@ -279,3 +279,62 @@ TEST_CASE("Missing recent projects report an error and clearing history leaves p
     REQUIRE(restored.Load());
     CHECK(restored.Entries().isEmpty());
 }
+
+TEST_CASE("A missing recent project is dimmed and can be removed without touching other entries", "[editor][recent]")
+{
+    QTemporaryDir directory;
+    const QString history = directory.filePath(QStringLiteral("recent.json"));
+    const QString kept = WriteProject(directory, QStringLiteral("kept.json"), QByteArrayLiteral("Kept"));
+    const QString gone = WriteProject(directory, QStringLiteral("gone.json"), QByteArrayLiteral("Gone"));
+    EditorController previous(NoTooling(), nullptr, history);
+    previous.OpenProject(kept);
+    previous.OpenProject(gone);
+    REQUIRE(QFile::remove(gone));
+    EditorController controller(NoTooling(), nullptr, history);
+    MainWindow window(&controller);
+    QListWidget* list = window.findChild<QListWidget*>(QStringLiteral("recentProjectsList"));
+    QPushButton* remove = window.findChild<QPushButton*>(QStringLiteral("removeRecentProjectButton"));
+    REQUIRE(list != nullptr);
+    REQUIRE(remove != nullptr);
+    REQUIRE(list->count() == 2);
+    // The missing project sorts first, being the most recent.
+    const QListWidgetItem* missing = list->item(0);
+    const QListWidgetItem* present = list->item(1);
+    CHECK(missing->text().contains(QStringLiteral("(missing)")));
+    CHECK(missing->foreground().color() == window.palette().color(QPalette::Disabled, QPalette::Text));
+    CHECK(present->foreground().style() == Qt::NoBrush);
+    list->setCurrentRow(0);
+    REQUIRE(remove->isEnabled() == true);
+    remove->click();
+    REQUIRE(list->count() == 1);
+    CHECK(list->item(0)->data(Qt::UserRole).toString() == QDir::cleanPath(kept));
+    CHECK(QFile::exists(kept));
+    RecentProjectStore restored(history);
+    REQUIRE(restored.Load());
+    REQUIRE(restored.Entries().size() == 1);
+    CHECK(restored.Entries().first().DescriptorPath == QDir::cleanPath(kept));
+}
+
+TEST_CASE("The Start page says why New Project is unavailable", "[editor][recent]")
+{
+    QTemporaryDir directory;
+    const QString path = WriteProject(directory, QStringLiteral("game.json"), QByteArrayLiteral("Game"));
+    EditorController controller(NoTooling(), nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller);
+    QPushButton* button = window.findChild<QPushButton*>(QStringLiteral("welcomeNewProject"));
+    QLabel* reason = window.findChild<QLabel*>(QStringLiteral("welcomeNewProjectReason"));
+    REQUIRE(button != nullptr);
+    REQUIRE(reason != nullptr);
+    CHECK(button->isEnabled() == true);
+    CHECK(reason->isHidden() == true);
+    CHECK(button->toolTip().isEmpty() == true);
+
+    controller.OpenProject(path);
+    ProjectDescriptor draft = controller.State().Draft;
+    draft.Name = QStringLiteral("Unsaved edit");
+    controller.EditDraft(draft);
+    CHECK(button->isEnabled() == false);
+    CHECK(reason->isHidden() == false);
+    CHECK(reason->text().contains(QStringLiteral("unsaved changes")));
+    CHECK(button->toolTip() == reason->text());
+}

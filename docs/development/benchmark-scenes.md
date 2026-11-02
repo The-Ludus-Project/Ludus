@@ -135,6 +135,154 @@ Reference collections and attribution:
 These authors and organizations supply the reference assets and scenario ideas;
 Ludus-specific adaptations should document meaningful departures near the code.
 
+## SMS Figure 17 rough reflector
+
+`tools/sms-benchmark` reproduces Figure 17 of Tizian Zeltner, Iliyan Georgiev and
+Wenzel Jakob, *Specular Manifold Sampling for Rendering High-Frequency Caustics
+and Glints*, SIGGRAPH 2020, [doi:10.1145/3386569.3392408](https://doi.org/10.1145/3386569.3392408).
+The [authors' code and scenes](https://github.com/tizian/specular-manifold-sampling)
+are pinned to `1f0e40342a8760450d5aa6202ea096feaa70256a`. Acquisition is explicit;
+the scene descriptions, Gaussian normal map, floor texture and reference optical
+data are hash checked. Preserve the upstream license and texture README.
+
+The original scene has a small rectangular area light, a normal-mapped gold
+rectangle and a diffuse tiled floor. It uses isotropic **Beckmann** roughness
+`0.005`, `0.02` and `0.1`, slope-space normal interpolation, Gaussian pixel
+filtering and a maximum path depth of six. Gold optical constants use the
+reference renderer's spectral-data-to-RGB conversion. Replacing this material
+with GGX or interpolating RGB normals changes the experiment. The public engine
+reference material path does not yet represent this exact combination.
+
+Two executions have different, explicit purposes:
+
+- `render_original.py` runs the actual authors' scalar RGB SMS and filtered path
+  tracer. It preserves geometry, materials, lighting and pixel filtering. Image
+  extent, seed, sample cap, timeout and CPU thread count are recorded overrides.
+  The supplied upstream `render.py` currently requests one second, whereas the
+  paper's Figure 17 reports five minutes; choose the budget explicitly.
+- `render_connections.py` executes sampling, connection transport, shading and
+  accumulation in Slang on a physical GPU. Its declared integral is only
+  **camera → diffuse floor → rough gold → area light**, with pixel-centre rays
+  and level-zero bilinear textures. Camera hits on the gold are outside this
+  integral and remain black. It retains every floor pixel, including contact
+  regions. This is a headless research harness using Ludus's pinned shader
+  compiler and FoundationMath, not an imported World/editor viewport or a full
+  reference path tracer. Its images must not be treated as full-integrator
+  parity with the original Mitsuba renders.
+
+### Set up the reference and assets
+
+Use Python 3.12 and a separate environment. The optional requirements do not
+enter installed Ludus host tooling. Provide the project's prepared CMake/Ninja
+and Slang tools, or equivalent declared reference-build tools.
+
+```bash
+python3 -m venv out/sms-env
+source out/sms-env/bin/activate
+python -m pip install -r tools/sms-benchmark/requirements-reference.txt
+python tools/sms-benchmark/setup_reference.py acquire --upstream out/sms-upstream
+python tools/sms-benchmark/setup_reference.py build --upstream out/sms-upstream \
+  --build-directory out/sms-build --output out/sms-build-record \
+  --cmake out/host-tools/venv/bin/cmake
+python tools/sms-benchmark/benchmark.py prepare --upstream out/sms-upstream --output out/sms-figure17
+python tools/sms-benchmark/render_original.py --original out/sms-figure17/original \
+  --mitsuba out/sms-build/dist/mitsuba --output out/sms-original \
+  --extent 128 --samples 16 --seconds 600 --threads 4
+```
+
+The last command is a fixed-sample reproduction, not an equal-time comparison.
+For timed runs, increase the sample cap and set the timeout explicitly. A very
+short timeout can leave unvisited pixels nonfinite; the wrapper rejects such an
+image and retains its EXR/log. Apple Silicon compatibility changes affect
+libpng headers/SIMD selection, a build-time RGB table generator's rpath, legacy
+Enoki diagnostics and the debugger trap. Transport sources remain unchanged;
+the build record contains the commands, dependency revisions and patches.
+
+### Validate and compare the portable proposals
+
+The CPU oracle preserves the original slope interpolation, shading frame,
+Beckmann distribution and Smith approximation. GPU checks compare raw
+intersections, normals, nonzero narrow highlights, connection contributions and
+analytic derivatives. Independent central differences check the CPU derivatives.
+
+The experimental slice proposal uses a triangulated **surrogate of the inverse
+sampling map**, conditioned on the fixed receiver and light centre. It enumerates
+all regular inverse triangles, selects branches with inverse-determinant weights,
+keeps null outcomes, and mixes ten percent uniform reflector-area sampling for
+support. Conservative seed-space bins accelerate enumeration. The physical
+integrand still evaluates the original continuous normal map and Beckmann BSDF.
+A minimum guide alpha broadens only the proposal to tolerate interpolation error;
+it does not change physical roughness. This is not an exact nonlinear BSDF-map
+inversion, nor does finite-precision replay certify its mathematical density.
+
+Portable SMS uses offset-normal sampling, a smoothed LEAN initialization,
+analytic slope-map derivatives and independent re-hit trials. It estimates its
+own solver's basin probabilities. Its constraints, tolerances and UV re-hit
+criterion differ from the original angle-difference solver. CPU FP64 and GPU
+FP32 may reach different valid branches; constraint checks and estimator/probe
+checks are distinct requirements. Report the finite Bernoulli cap and every
+capped sample rather than claiming an uncapped unbiased implementation.
+
+```bash
+python -m unittest discover -s tools/sms-benchmark -v
+python tools/sms-benchmark/benchmark.py validate --upstream out/sms-upstream \
+  --output out/sms-material-check --compiler out/shader-tools/slang/bin/slangc
+python tools/sms-benchmark/validate_affine.py --upstream out/sms-upstream \
+  --output out/sms-affine-check --compiler out/shader-tools/slang/bin/slangc
+python tools/sms-benchmark/validate_transport.py --upstream out/sms-upstream \
+  --output out/sms-transport-check --compiler out/shader-tools/slang/bin/slangc
+python tools/sms-benchmark/render_connections.py prepare --upstream out/sms-upstream \
+  --output out/sms-connections --extent 32 --resolution 64
+python tools/sms-benchmark/quadrature_reference.py --prepared out/sms-connections \
+  --output out/sms-connection-reference --samples 1048576 --replicates 16 \
+  --compiler out/shader-tools/slang/bin/slangc
+python tools/sms-benchmark/render_connections.py run --prepared out/sms-connections \
+  --output out/sms-connection-comparison --seconds 15 --runs 3 \
+  --reference-samples 33554432 --reference-directory out/sms-connection-reference \
+  --compiler out/shader-tools/slang/bin/slangc
+python tools/sms-benchmark/estimate_cpu.py --upstream out/sms-upstream --output out/sms-cpu-probes
+python tools/sms-benchmark/check_integral.py --upstream out/sms-upstream --output out/sms-integral-check
+python tools/sms-benchmark/estimate_cpu.py --upstream out/sms-upstream \
+  --output out/sms-cpu-mis --methods connection-mis --samples 65536
+python tools/sms-benchmark/analyze_results.py --runs out/sms-connection-comparison \
+  --reference out/sms-connection-reference --output out/sms-analysis \
+  --quadrature out/sms-integral-check --cpu-probes out/sms-cpu-probes --cpu-mis out/sms-cpu-mis
+```
+
+Each output directory must be new. GPU execution requires `wgpu`, a physical
+adapter and timestamp-query support; software fallback is rejected. The uniform
+layout and sampler policy constants have one owner in `layout.py`, which emits
+the corresponding Slang declarations. Portable methods compile into separate
+entry points, avoiding unused solver code in the inexpensive baseline.
+
+The connection-MIS baseline combines uniform reflector-area and cosine-weighted
+floor sampling. The recommended reference uses independently shifted Hammersley
+points for both charts, uniform area-light endpoints and balance MIS. It uses
+neither slice guides nor Newton roots. Each shift estimates a complete image;
+uncertainty comes from variation across shifts, rather than treating correlated
+points as independent. Increase reference samples when its empirical relative
+standard error exceeds two percent. CPU tensor quadrature checks selected pixels
+without either sampler and reports resolution convergence. Neither check is a
+certified global error bound. The older slice/connection mixture reference remains
+available for experiments, but its rare outliers made it unsuitable for this run.
+
+Timing includes completed submission, parameter update and timestamp readback.
+Compilation/warm-up and receiver-dependent table preparation are separate and
+must be included when discussing cold start or motion. Methods rotate order
+across independent seeds; timing-only extensions match completed wall budgets
+and retain the initial arrays. Report actual time mismatch, GPU time, sample
+counts, nulls, caps, memory, raw linear error and reference uncertainty. At this
+small image size, per-band submission/readback overhead and GPU occupancy affect
+rankings. The reference parallelizes over sample blocks; its throughput must not
+be presented as a matched implementation comparison with the serial per-pixel
+samplers. No denoising, outlier clamping or temporal reuse enters these measurements.
+
+This experiment does not establish superiority over present-day SOTA. The
+released [PSMS-ReSTIR](https://graphics.cs.utah.edu/research/projects/psms-restir/)
+ReflectivePlane uses zero roughness; a finite-roughness port needs its own
+matching-integral validation. A coupled **two-rough-reflection** benchmark is
+also a separate extension; the one-reflection result does not validate it.
+
 ## Ludus integration suites
 
 | Suite | Controlled setup | Systems and observations |

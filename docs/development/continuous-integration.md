@@ -657,7 +657,10 @@ for clangd and Ludus tasks without rewriting custom editor files.
 
 GitHub's separate setup/build/test/analysis steps expose phase durations.
 Compiler jobs publish cache statistics, and the budget job uploads its detailed
-profile. Compare cold and warm runs across several commits when evaluating
+profile. The budget, Linux editor and macOS native jobs also run the
+[build graph check](build-profiling.md#build-graph-check), which counts
+compilations instead of timing them and fails when several targets compile the
+same source. Compare cold and warm runs across several commits when evaluating
 changes; parallel jobs can lower completion time while increasing runner minutes.
 The browser workflow continues to test the exact packaged Release ZIP and
 cancels superseded pull-request runs independently. Renderer browser coverage runs

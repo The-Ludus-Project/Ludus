@@ -176,6 +176,7 @@ struct RasterPipelineInfo final
     bool DepthWrite = true;
     RasterDepthCompare DepthCompare = RasterDepthCompare::Less;
     bool ShouldWriteColor = true;
+    RasterFillMode FillMode = RasterFillMode::Solid;
     RasterFormat ColorFormats[4]{};
     foundation::usize ColorCount = 0;
     foundation::uint32 SampleCount = 1;

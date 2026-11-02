@@ -1,5 +1,6 @@
 """Bounded, manifest-owned shader constants exposed by graph authoring tools."""
 
+import hashlib
 import math
 
 # Settings become one static constant per manifest setting in each program's source. The bound
@@ -47,3 +48,18 @@ def shader_source(settings):
             literal = repr(float(value)) + 'f'
         lines.append('static const ' + kind + ' ' + setting['id'] + ' = ' + literal + ';')
     return '\n'.join(lines) + ('\n' if lines else '')
+
+
+# Compatibility with the unchanged chain source shipped before warm-up metadata existed.
+# Match bytes, stage and entry points, so customized shaders keep their authored semantics.
+LEGACY_METROPOLIS_CHAIN_SHA256 = '324ea5ad1977860447e26fc08ae3f771b361088a8603edbff372476b3daf327c'
+LEGACY_METROPOLIS_FUNCTIONS = ('ShadeRaoBlackwell', 'ShadeMetropolis', 'ShadeWasteRecycling', 'ShadeJumpRestore')
+
+
+def capture_warmup_samples(program, settings, sources):
+    setting_id = program.get('capture_warmup_setting')
+    if setting_id is None and program.get('stage') == 'compute' and program.get('function') in LEGACY_METROPOLIS_FUNCTIONS:
+        source = sources.get(program.get('source'), b'')
+        if hashlib.sha256(source).hexdigest() == LEGACY_METROPOLIS_CHAIN_SHA256:
+            setting_id = 'MH_BURN_IN'
+    return next((item['value'] for item in settings if item['id'] == setting_id and item['type'] == 'UInt32'), 0)
