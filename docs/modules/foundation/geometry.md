@@ -507,3 +507,21 @@ Approximate table lookup, certified frame angular error, mitred or split sweeps,
 G1 surface classification, camera-dependent and displaced meshes, quadtree
 tessellation, cooked formats and editor adapters are later work. Performance
 and memory budgets are unmeasured.
+
+## Point neighborhoods
+
+`point_search.hpp` provides `PointSearchTree`, a deterministic balanced 3D point
+tree. `Build` copies World positions, accepting duplicates and rejecting nonfinite
+coordinates, magnitudes above `MAX_POINT_SEARCH_COORDINATE`, and invalid counts.
+Failure preserves the previous tree. Build costs O(n log² n), using Ludus sorting
+and fallible containers. `FindNearest` allocates nothing, returns 1 through
+`MAX_POINT_NEIGHBORS` results, and orders equal distances by original source index.
+The requested count cannot exceed the input point count. Query failure preserves
+outputs. This is ordinary float32 spatial search, not a certified geometric bound;
+nearly equal distances can be ordered differently on different processors.
+
+`GetNodes` exposes immutable packed nodes for GPU upload. `point_search_layout.h`
+owns the shared CPU/GPU representation and traversal limits. The portable shader
+implementation is installed beside the renderer recipes; the
+[scene preparation guide](../../development/render-graph-authoring.md#prepare-point-features-and-neighborhoods)
+explains the GPU query helper and its explicit failure sentinel.

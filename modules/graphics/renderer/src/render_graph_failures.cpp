@@ -3,6 +3,7 @@
 
 #include "../shaders/geometry_sampling_layout.h"
 #include "../shaders/metropolis_layout.h"
+#include "../shaders/photon_layout.h"
 #include "../shaders/renderer_gpu_preview_layout.h"
 
 // Failure reasons a graph ray kernel counts (renderer_gpu_preview.slang, CountGraphFailure). The shader codes in
@@ -39,6 +40,9 @@ static_assert(ToCode(RenderGraphFailureReason::GeometrySamplingLights) == LUDUS_
 static_assert(ToCode(RenderGraphFailureReason::GeometryStatisticsCapacity) ==
               LUDUS_SCENE_FAILURE_GEOMETRY_STATISTICS_CAPACITY);
 static_assert(RENDER_GRAPH_FAILURE_AUTHORED_FIRST == LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
+static_assert(ToCode(RenderGraphFailureReason::PhotonCamera) == LUDUS_SCENE_FAILURE_PHOTON_CAMERA);
+static_assert(ToCode(RenderGraphFailureReason::PhotonCapacity) == LUDUS_SCENE_FAILURE_PHOTON_CAPACITY);
+static_assert(ToCode(RenderGraphFailureReason::PhotonDispatch) == LUDUS_SCENE_FAILURE_PHOTON_DISPATCH);
 static_assert(MAX_RENDER_GRAPH_FAILURE_REASONS == LUDUS_SCENE_FAILURE_REASON_COUNT);
 static_assert(LUDUS_GRAPH_FAILURE_BYTES == MAX_RENDER_GRAPH_FAILURE_REASONS * sizeof(uint32));
 
@@ -55,6 +59,17 @@ const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
     }
     switch (static_cast<RenderGraphFailureReason>(reason))
     {
+        case RenderGraphFailureReason::PhotonDispatch:
+            return "Guided ReSTIR FG+ needs a whole-image dispatch. Set the ray tile count to one; for an "
+                   "automatically "
+                   "tiled frame capture, reduce resolution or select another render graph.";
+        case RenderGraphFailureReason::PhotonCamera:
+            return "Guided ReSTIR FG+ backprojects photons through a perspective camera. Select a perspective camera "
+                   "or use another render graph for orthographic views.";
+        case RenderGraphFailureReason::PhotonCapacity:
+            return "Guided ReSTIR FG+ requires its 64 MiB photon pool, at most 32768 light records, and at least one "
+                   "render pixel per finite light. Restore the template pool size, reduce the light count, or increase "
+                   "RenderSize to cover the lights. The authoring guide lists the buffer layout and limits.";
         case RenderGraphFailureReason::GeometrySamplingLights:
             return "One-more-vertex geometry sampling requires mesh emitters. Select a graph supporting analytic and "
                    "environment lighting, or explicitly replace those sources with emissive meshes.";

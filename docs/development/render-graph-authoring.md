@@ -1776,6 +1776,138 @@ Ludus. At 1920 × 1080 history alone is 265,420,800 bytes, just below the 256 Mi
 per-buffer limit. Larger images must reduce RenderSize scale; an oversized request
 preserves the last drawable view.
 
+### Use the built-in Guided ReSTIR FG+ template
+
+Choose **Guided ReSTIR FG+ — photon guiding and caustics** when creating an offscreen
+Renderer graph, or insert its configuration from the graph canvas. Its identity is
+`guided-restir-fg-plus`, and the reusable configuration is `GuidedRestirFgPlus`.
+The installed SDK and editor copy the same canonical sources from
+`modules/graphics/renderer/render_graphs/guided_restir_fg_plus/`. CLI creation is:
+
+```bash
+ludus render-graph new graphs/Photons --template guided-restir-fg-plus \
+  --output offscreen --renderer-static --profiles metal
+```
+
+Select `spirv` for Vulkan instead. This is compute-BVH transport on the GPU and
+does not require hardware ray queries. Connect `scene`, `view` and `color` when
+inserting the configuration into another graph. Accumulate and ToneMap remain
+editable nodes outside the library. The new graph defaults to half the view
+resolution to keep its storage modest. Changing RenderSize resizes all path and
+caustic records together.
+
+The implementation thanks René Kern, Felix Brüll, Jonas Kastning and Thorsten
+Grosch, **Guided ReSTIR FG+: Photon Resampling for Large Scenes and Many Lights**,
+Eurographics Symposium on Rendering 2026, sections 3–4,
+[DOI 10.2312/sr.20261001](https://doi.org/10.2312/sr.20261001).
+It is an independent, bounded implementation of their reflective, static-history
+subset. It does not reproduce the paper's entire material, motion or performance
+profile. The authors' [implementation](https://github.com/TU-Clausthal-Rendering/Guided-ReSTIR-FG-Plus)
+provided additional algorithm context; no Falcor implementation code is included.
+
+The ten ordered compute passes are:
+
+| Pass | Operation |
+| --- | --- |
+| Guide directions | Normalize the previous frame's finalized reservoir contributions and update each light's 4×4 directional histogram with an exponential moving average. |
+| Guide lights | Reduce contributions, update light probabilities, reserve a photon for every finite source and construct an integer prefix distribution. |
+| Reset map | Clear hash-grid and camera-backprojection heads. |
+| Trace photons | Emit mesh, point and spot photons; trace up to four surface events; link diffuse endpoints into the spatial map and visible caustics into pixel lists. |
+| Initial paths | Trace a glossy camera prefix, sample a BSDF final gather and select a proxy photon with RIS. A caustic density estimate behind a glossy prefix also competes in this reservoir. |
+| Temporal paths | Replay the glossy prefix, reconnect at the diffuse gather endpoint, and merge history using a reconnection Jacobian and binary GRIS balance weights. |
+| Spatial paths | Merge one neighboring temporal reservoir with forward and reverse shifts and visibility checks. |
+| Caustics | Resample backprojected caustic photons and the previous temporal caustic reservoir. Caustics never enter spatial path reuse. |
+| Record guiding | Record the finalized path reservoir's photon contribution; the caustic pass records its own finalized reservoir. |
+| Shade | Sum emission, MIS direct lighting, the path reservoir estimate and backprojected caustics in raw linear RGB. |
+
+Every pass declares its writable Buffer dependencies. A later pass sees complete
+photon records and linked lists; reservoir readers never read a concurrently
+written neighbor. Both photon and path records preserve the original emission UV,
+source random key, light/cell identity and flux scale. The density estimate sums
+`BSDF × photon flux / (pi × radius²)` before RIS selects its proxy. Hash collisions
+are filtered by the original grid cell before the distance/normal test, so they
+never count a photon twice.
+
+Guiding follows Algorithm 1 with smaller directional maps and a serial bounded
+light-prefix reduction instead of a mipmapped quadtree. Each light's integer
+quotas can leave uniform-direction leftovers. This implementation evaluates their
+combined mixture density for **both** guided and leftover samples: a cell with
+`n` guided photons and `r` uniform leftovers uses flux scale `1 / (16*n + r)`.
+This preserves emitted energy even when floor rounding leaves a remainder.
+Contributions are discretized with factor 255 and capped at 255 per reservoir;
+two reservoirs per pixel cannot overflow the unsigned histogram sum at the
+admitted pixel count. Clipping changes the proposal, whose actual density is
+still accounted for in photon flux.
+
+Graph Settings, available in Properties and the canvas menu, expose photon count
+and depth, glossy camera-prefix depth, gather radius in World units, glossy
+roughness threshold, guiding EMA, confidence limit, and independent guiding,
+temporal and spatial switches. Direct light uses NEE plus a BSDF sample with
+power MIS, rather than embedding a second copy of the ReSTIR DI graph.
+
+The photon pool is 64 MiB. Three path buffers use 192 bytes per render pixel each;
+the double-buffered caustic history uses 256 bytes, for 832 bytes per pixel in
+addition to the pool and renderer scene/film resources. A 320×240 render therefore
+uses about 125 MiB for these five buffers. The pool admits up to 32,768 light
+records, 65,536 photon paths, four stored endpoints per path and 2,097,152 pixel
+heads. The shared per-buffer byte ceiling can reject a smaller image first.
+Requested photon paths are clamped to render pixels and increased to at least one
+per finite light. If there are fewer render pixels than finite lights, the shader
+reports `PhotonCapacity`: increase RenderSize or reduce the finite source count.
+A shortened pool reports the same repair. Per-pixel storage failures name the
+ordinary storage-size repair; no photons are silently dropped on overflow.
+The ordered ray/scene-compute ceiling is 12 invocations per configuration,
+which admits all ten passes with headroom. Renderer job slots derive from that
+ceiling for current, candidate, idle and retiring generations. The RHI's default
+per-kind record ceiling is 128, admitting the current and replacement ten-pass
+generations together. A World edit can therefore prepare a replacement while
+the last view remains drawable. The package callback ceiling is 16,
+matching the overall plan pass ceiling, with four
+selector bits below the camera-history epoch. Older eight-callback packages
+remain admissible; rebuild shader packages with the matching SDK.
+
+The following limits are deliberate and visible:
+
+- Perspective cameras only. Orthographic views report `PhotonCamera` and suggest
+  a perspective camera or another graph.
+- Reflection only: diffuse, metallic/roughness and isotropic conductors use the
+  existing scene BSDFs. Coated diffuse reports the material-profile repair.
+  External transmission and glass caustics are unavailable in the scene material
+  contract. Low-roughness conductors use random replay; other surfaces reconnect.
+- Indirect photons originate from finite mesh, point and spot sources. Environment
+  and directional sources contribute through direct lighting and terminal camera
+  emission, not through indirect photon transport.
+- Camera rays use pixel centers. Camera/World edits and resize restart the sampling
+  epoch, histograms and reservoirs. There are no motion vectors, moving-geometry
+  photon replay, cross-camera splats or motion-history confidence interpolation.
+  Static reprojection reduces caustic confidence interpolation to the same pixel's
+  confidence, independent of the number of backprojected photons.
+- The gather radius is fixed and the transport depth is bounded. The output is a
+  biased photon-density approximation, not an unbiased or consistent full rendering
+  equation solver. No denoiser or temporal reconstruction establishes parity.
+- Global-map construction, spatial reuse and guiding require a whole-image dispatch.
+  Keep ray tile count at one. A row-band dispatch reports `PhotonDispatch` and
+  suggests reducing capture resolution or selecting another graph; it cannot
+  publish a partial photon map as a correct whole-image estimate.
+- The hash grid and 4×4 atlas are correctness-oriented bounds. Million-photon,
+  large-scene performance, animated glass and the paper's quality/speed claims
+  require separate qualification; a populated viewport alone establishes none of them.
+
+The independent CPU oracle in `guided_fg_oracle.cpp` traces reflection paths with
+CPU reference BSDFs and brute-force triangle intersections, then performs disc
+photon density estimates. CPU tests cover diffuse flux, glossy-to-diffuse caustic
+classification, empty/support rejection, guiding energy conservation and reversible
+reconnection. The GPU parity test executes the template's own core functions for
+flux density, reconnection, balance weights and backprojection against float64
+checks. Graph execution tests compare raw linear emission with CPU intersection,
+exercise all ten callbacks and scene-history reset, and compare guided/reused image
+means with independent sampling. A 64-frame test splits one point source into 64
+coincident, equal-total-intensity sources and checks raw linear image means within
+15%, exercising per-light quota normalization. End-to-end CPU/GPU image parity
+for indirect and caustic transport remains a coverage gap: the CPU photon oracle
+and numerical shader checks do not replace that evidence. These checks do not
+establish parity for the unsupported paths listed above.
+
 ### Use the built-in ReSTIR GI template
 
 The **ReSTIR GI — path resampling for indirect lighting** template (`restir-gi`)
@@ -7883,7 +8015,7 @@ their consumers may keep views or bindings beyond the graph. Surfaces allocate
 nothing. A pool keeps at most its `idleCapacity` idle entries (default and maximum
 `RENDER_GRAPH_POOL_CAPACITY`, 32) and evicts the least recently released one. Idle
 entries keep their RHI texture records and bytes, which count against
-`StorageLimits::ResourcesPerKind` (default 64) and `ResourceBytes`. Choose a
+`StorageLimits::ResourcesPerKind` (default 128) and `ResourceBytes`. Choose a
 smaller capacity, or trim, when those budgets are tight.
 
 A depth-only backing keeps its compatibility RGBA8 image, at 4 logical bytes per
@@ -8406,3 +8538,131 @@ The installed [forward consumer](../../tests/sdk_consumer/forward_lit.cpp) cooks
 this same canonical template, renders a scene and replaces its material while
 checking mesh reuse. The template is owned by
 [Renderer's source package](../../modules/graphics/renderer/render_graphs/forward_lit/main.lurender.json).
+
+## Prepare point features and neighborhoods
+
+The engine provides native SDK preparation APIs for point-based/neural rendering.
+A Light Transformer query decoder is available below; its trained scene encoder
+and an executable Light Transformer JSON template are not available yet. The existing authored
+scene-compute limits described above remain in force. General preprocessing uses
+[prepared RHI workloads](fullscreen-rendering.md#prepared-buffer-only-workloads-and-caches)
+and shares their device, dependency and completion ledger.
+
+`<ludus/graphics/renderer/surface_points.hpp>` exposes
+`PrepareSurfacePointCloud(scene, sampling, output)`. Supply a complete static
+`RenderGraphSceneDescription` with the material interface and explicit point-count,
+attempt and logical memory budgets. Preparation reuses ordinary scene admission,
+transforms, material assignment, texture filtering, vertex color, normal mapping,
+emission and alpha coverage. It samples triangles by transformed area and samples
+uniform barycentrics, rejecting masked holes within `MaximumAttempts`. Equal inputs
+and seed replay the same points without camera/time dependence. It does not trace
+transport, prune occluded surfaces, normalize for a specific model or generate
+analytic/environment light samples. Those sources remain separate authored inputs.
+
+The output contains World positions/normals and linear albedo/emission, source
+identities and source generation. `ProposalAreaWorld` is triangle area before
+mask rejection, not the normalization of accepted masked samples. Fully masked
+geometry can exhaust any attempt budget. On failure the previous cloud survives;
+reduce Count, raise the exhausted budget, or repair geometry/coverage as appropriate.
+The memory budget covers candidate logical scene/output/sampling storage, excluding
+old caller-owned output, allocator capacity slack and driver memory.
+
+Build `FoundationGeometry::PointSearchTree` over embedding anchor positions, then
+cook `renderer_point_neighbors` with `ludus_compile_renderer_shaders`.
+`PreparePointNeighborWorkload` uploads that tree plus query positions and prepares
+a buffer-only compute workload. Its result allocation is
+`POINT_NEIGHBOR_RESULT_BUFFER`, containing query-major `PointNeighbor` records:
+original anchor indices and squared World distances. Query counts need not be
+multiples of the workgroup width. The preparation helper validates uploaded counts against every bound range;
+the kernel bounds dispatch IDs and traversal against those trusted counts and uses `ABSENT_POINT_NODE` on malformed tree/query failures; a model decoder must
+reject that sentinel before gathering embeddings. The CPU tree is qualified
+against exhaustive distance sorting; GPU regression compares the portable recipe
+against the CPU query. Physical backend qualification is reported separately.
+
+### Decode trained Light Transformer queries
+
+`<ludus/graphics/renderer/light_transformer.hpp>` implements the released model's
+128-dimensional, six-block query decoder. Cook `renderer_light_transformer_decoder`
+with the installed `ludus_compile_renderer_shaders` helper. The implementation uses
+ordinary float32 compute and point-tree queries on Metal and Vulkan. It includes
+both query MLPs, inference BatchNorm folding, LayerNorm, vector attention over the
+32 closest anchors, residual/feed-forward blocks and Softplus. Value projection
+consumes the **projected keys**, matching the released network. Keys are processed
+in two tiles so the declared group-shared arrays fit the Vulkan minimum 16 KiB;
+128 invocations cooperate on each query. Metadata/tree and feature packets keep
+the shader within four storage-buffer bindings. Dispatch uses a two-dimensional group
+grid when the query count exceeds the device's X dispatch limit.
+
+Adapt an externally supplied checkpoint with the optional offline tool:
+
+```sh
+python scripts/export-light-transformer /path/to/checkpoint.ckpt \
+  --decoder-output /path/to/model.decoder.lltd
+```
+
+The tool requires PyTorch 2.6+ and NumPy 2+ in its own environment. The SDK installs
+it at `lib/cmake/Ludus/render_graph/export-light-transformer.py`, with its shared
+layout beside the renderer shader recipes. Neither package enters the engine
+runtime. The adapter accepts a tensor-only state dictionary or a `model` dictionary,
+with a consistent optional `module.` prefix. It checks every consumed tensor's
+shape, finite values and running variance, and rejects unexpected decoder tensors.
+It always uses restricted `weights_only` loading. Only the published checkpoint's
+verified SHA-256 enables its narrowly enumerated NumPy optimizer-metadata types;
+other checkpoints must load through the ordinary restricted tensor path. An export
+failure preserves an existing destination file.
+
+The decoder asset is little-endian. Its eight uint32 header words contain magic
+`0x44544c4c`, version `1`, the exact packed scalar count, then five reserved zero
+words. The payload contains finite IEEE binary32 parameters in the shared
+`light_transformer_layout.h` order: folded query affines; for each block, attention
+and feed-forward LayerNorm scale/bias, Q/K/V matrices, position MLP, attention MLP,
+attention output affine and feed-forward MLP; finally the RGB output affine.
+Affine weights use `[output,input]` row order followed by biases, except bias-free
+Q/K/V. This layout is an inference asset, not a Python checkpoint or optimizer dump.
+
+Read it with `ReadLightTransformerDecoderWeights`, then call
+`PrepareLightTransformerDecoder` with the parameters, `LightTransformerAnchor`
+records and `LightTransformerQuery` records. Positions must already use the
+**same model coordinate system** as the encoder. Normals must be nonzero and
+finite and are normalized during preparation; albedo is linear RGB in `[0,1]`.
+Anchor latents must be genuine, finite encoder outputs; raw scene features or
+zero-filled latent arrays do not implement the paper. Equal-distance neighbors
+use original anchor index order, making the adapter's tie convention explicit.
+
+Preparation validates storage/dispatch limits before allocating query scratch,
+consumes source borrows synchronously and preserves an empty workload on failure.
+Run its ordered graph through the RHI. `LIGHT_TRANSFORMER_RESULT_BUFFER` contains
+query-major float4 predictions (network RGB, reserved W zero); do not apply albedo
+again. No GPU readback is required to consume that buffer through subsequent GPU
+work. This SDK helper currently uploads CPU-provided latents and query records;
+it does not yet connect visible-surface query generation to an authored graph.
+
+The regression fixture uses an independent PyTorch calculation, synthetic
+parameters and stable distance sorting, with absolute tolerance `1e-5` plus
+relative tolerance `1e-4` on raw RGB. A local checkpoint qualification uses the
+same fixture generator's `--checkpoint` option and supplies its output through
+`LUDUS_LIGHT_TRANSFORMER_TEST_FIXTURE`. No released weights or upstream scene data
+are stored in those fixtures. Decoder agreement on supplied latents does not
+establish trained **encoder** agreement, full-scene GI quality or interactive
+performance. The encoder still needs portable sparse convolutions, serialized
+attention and hierarchical pooling/unpooling before a usable paper template can
+be published. No CUDA, vendor-specific tensor API, training runtime or upstream
+weights are bundled.
+
+`RenderGraph::GetPersistentBuffer` borrows a stable graph-owned Buffer allocation
+and capacity for prepared compute producers/consumers. Use it as a workload
+buffer's `External` input, keeping the graph alive. A wired authored scene-compute
+pass can consume GPU-produced data through `GraphBuffer0/1`. Calls during pending
+scene/attachment replacement, open recording or unfinished graph production return
+`NotReady`. Reacquire and rebuild external bindings after pixel-buffer resize or
+graph replacement. Submit external work through the RHI and build the consuming
+graph after that accepted write so its imported revisions/dependencies are current.
+The caller coordinates these generations; the borrowed handle grants no ownership
+and never authorizes writes into a pending cache candidate's active generation.
+
+The point-feature motivation follows Bing Xu, Mukund Varma T, Cheng Wang,
+Tzu-Mao Li, Lifan Wu, Bartlomiej Wronski, Ravi Ramamoorthi and Marco Salvi,
+*A Generalizable Light Transport 3D Embedding for Global Illumination*, SIGGRAPH
+2026, section 3.2 ([paper](https://arxiv.org/abs/2510.18189)). The engine implements
+input/storage/search foundations and the trained query decoder; the full learned
+encoder and paper template remain unavailable.

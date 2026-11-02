@@ -56,19 +56,22 @@ inline constexpr ludus::foundation::usize RUNTIME_BINDING_LENGTH_WORDS = 4;
 /// Native shader bytes of the immutable length record, excluding allocation padding.
 inline constexpr ludus::foundation::usize RUNTIME_BINDING_LENGTH_BYTES =
     sizeof(ludus::foundation::uint32) * RUNTIME_BINDING_LENGTH_WORDS;
-/// Default logical resource ceiling for an ordered plan, including four ray invocations.
+/// Default logical resource ceiling for an ordered plan, including ordered ray invocations.
 /// This is an admission limit; graph metadata remains lazily allocated under HostBytes.
 inline constexpr foundation::uint32 DEFAULT_GRAPH_RESOURCE_COUNT = 64;
+/// Default per-kind record admission for overlapping multi-pass resource generations.
+inline constexpr ludus::foundation::uint32 DEFAULT_RESOURCE_RECORD_COUNT = 128;
+
 /// Copied R6 storage maxima and explicit byte budgets. Configure before startup.
 /// Counts are limits, not reservations; creation may fail under byte/allocation pressure.
-/// Defaults preserve the original general profiles. The fullscreen facade is separate.
+/// Defaults admit overlapping multi-pass generations. The fullscreen facade is separate.
 /// Counts must be nonzero and below UINT32_MAX; byte budgets must be nonzero.
 /// Stable metadata pages persist across device restart; startup rejects a host budget
 /// smaller than already committed metadata. Native resources still retire on shutdown.
 struct StorageLimits final
 {
     /// Maximum live/pending/retained records of each general raster/compute resource kind.
-    ludus::foundation::uint32 ResourcesPerKind = 64;
+    ludus::foundation::uint32 ResourcesPerKind = DEFAULT_RESOURCE_RECORD_COUNT;
     /// Maximum allocated binding descriptors across live, pending and retained snapshots.
     /// Independent of set-record capacity; exhausted creation publishes no ownership.
     ludus::foundation::uint32 BindingDescriptors = 512;
