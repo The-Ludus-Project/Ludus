@@ -3903,6 +3903,14 @@ vertex. A state-independent mixture chooses a uniform large step or a symmetric
 uniform small step wrapped around the unit cube. Symmetry gives acceptance
 `min(1, p(proposed) / p(current))`. Defaults are a 0.3 large-step probability,
 0.05 small-step radius, 128 discarded burn-in proposals and three scattering events.
+Frame captures run the requested collection count after burn-in: requesting 64
+samples with the default 128-step burn-in schedules 192 invocations. The capture
+shows warm-up progress separately. Each of the four compute programs binds
+`capture_warmup_setting` to the existing `MH_BURN_IN` graph setting, so editing it
+changes both the shader and its capture budget. Other programs in the same package
+keep their own budgets. See the [capture contract](../architecture/render-graph-frame-capture.md#estimator-warm-up)
+for raw counts, old imported templates and package compatibility.
+
 Depth is editable from one to three; initialization plus the first proposal use at
 most eight surface queries. Every subsequent invocation evaluates one proposal,
 keeping unfinished chains and RB state holding weights across frames.

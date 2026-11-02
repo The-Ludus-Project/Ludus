@@ -51,7 +51,8 @@ struct RenderGraphCaptureSettings final
 {
     /// Logical plan resource to capture; ABSENT selects the plan's only exported colour resource.
     foundation::uint32 Output = content::render_graph_format::ABSENT;
-    /// Samples per pixel at completion, from MIN_RENDER_GRAPH_CAPTURE_SAMPLES to MAX_RENDER_GRAPH_CAPTURE_SAMPLES.
+    /// Invocations per pixel to collect after the programs' declared warm-up. The sum must fit
+    /// MAX_RENDER_GRAPH_CAPTURE_SAMPLES; IID graphs have no warm-up.
     foundation::uint32 TargetSamples = DEFAULT_RENDER_GRAPH_CAPTURE_SAMPLES;
     /// Samples between progress read-backs, after the first sample and then every interval; zero reads back only
     /// at the end. Each progress read-back pauses rendering until it completes, then GetPixels shows it.
@@ -117,7 +118,8 @@ struct RenderGraphCaptureInfo final
     foundation::uint32 Output = content::render_graph_format::ABSENT;           ///< Captured logical resource.
     foundation::uint32 AccumulationPass = content::render_graph_format::ABSENT; ///< Plan pass whose mean is read.
     foundation::uint32 AuthoredLimit = 0; ///< Accumulate limit authored on that pass.
-    foundation::uint32 TargetSamples = 0; ///< Requested samples per pixel.
+    foundation::uint32 TargetSamples = 0; ///< Total target invocations per pixel, including WarmupSamples.
+    foundation::uint32 WarmupSamples = 0; ///< Declared discarded startup invocations; included in raw file counts.
     /// Samples submitted for every pixel so far: frames, or complete rounds of bands.
     foundation::uint32 SubmittedSamples = 0;
     /// Bands per sample, each submitted alone; zero until the scene is ready.

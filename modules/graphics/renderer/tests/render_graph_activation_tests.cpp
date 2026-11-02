@@ -64,7 +64,7 @@ struct PackageWriter final
     /// Empty structured storage records, then the version 25 scene resource word.
     // The package version selects which words exist; the scene resource bits are that word's value.
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
-    void WriteSceneResources(uint32 version, uint32 sceneResources = 0)
+    void WriteSceneResources(uint32 version, uint32 sceneResources = 0, uint32 warmup = 0)
     // NOLINTEND(bugprone-easily-swappable-parameters)
     {
         if (version >= format::STORAGE_PACKAGE_VERSION)
@@ -74,6 +74,13 @@ struct PackageWriter final
         if (version >= format::LTC_TABLE_PACKAGE_VERSION)
         {
             WriteWord(sceneResources);
+        }
+        if (version >= format::CAPTURE_WARMUP_PACKAGE_VERSION)
+        {
+            for (usize program = 0; program < format::MAX_RAY_PROGRAMS; ++program)
+            {
+                WriteWord(program == 0 ? warmup : 0);
+            }
         }
     }
     void WritePadded(std::string_view text)
@@ -105,6 +112,7 @@ struct PackageOptions final
     uint32 Backing = 0;
     uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
     uint32 AccumulationSamples = 0;
+    uint32 CaptureWarmupSamples = 0;
     uint32 SourceColor = format::ABSENT;
     float32 ToneMappingExposure = 0;
     uint32 DenoisingQuality = 0;
@@ -287,7 +295,7 @@ Array<uint8> MakePackageBytes(const PackageOptions& options)
         WriteStage(writer, format::StageRole::DepthVertex, VERTEX_TEXT, "VertexMain");
         WriteStage(writer, format::StageRole::DepthFragment, FRAGMENT_TEXT, "FragmentMain");
     }
-    writer.WriteSceneResources(options.Version);
+    writer.WriteSceneResources(options.Version, 0, options.CaptureWarmupSamples);
     if (options.Version >= format::NAMED_PACKAGE_VERSION)
     {
         writer.WriteWord(static_cast<uint32>(options.PassName.size()));
@@ -1037,6 +1045,24 @@ TEST_CASE("runtime generation owns validated authored GPU pass names", "[rendere
     renderer::RenderGraphPackage rejected;
     CHECK(rejected.Decode({truncated.GetData(), truncated.GetSize() - 1}) ==
           renderer::RenderGraphPackageStatus::Malformed);
+}
+
+TEST_CASE("runtime packages preserve capture warm-up and default older packages to zero",
+          "[render-graph][activation][capture]")
+{
+    constexpr uint32 WARMUP = 128;
+    for (const uint32 version : {format::OPAQUE_GBUFFER_PACKAGE_VERSION, format::CAPTURE_WARMUP_PACKAGE_VERSION})
+    {
+        PackageOptions options;
+        options.Version = version;
+        options.CaptureWarmupSamples = WARMUP;
+        const Array<uint8> bytes = MakePackageBytes(options);
+        renderer::RenderGraphPackage package;
+        REQUIRE(package.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+        const renderer::RenderGraphPrograms programs = package.GetPrograms({}, {});
+        CHECK(programs.CaptureWarmupSamples[0] == (version >= format::CAPTURE_WARMUP_PACKAGE_VERSION ? WARMUP : 0));
+        CHECK(programs.CaptureWarmupSamples[1] == 0);
+    }
 }
 
 TEST_CASE("runtime packages preserve relative policies and decode fixed legacy versions",

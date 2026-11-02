@@ -2073,6 +2073,9 @@ class RaoBlackwellMhTemplateTests(unittest.TestCase):
             interface = next(t['scene_interface'] for t in manifest['techniques'] if 'scene_interface' in t)
             self.assertEqual(interface['surface_queries'], 8)
             self.assertEqual(interface['visibility_queries'], 0)
+            kernels = [program for program in manifest['programs'] if program['stage'] == 'compute']
+            self.assertTrue(kernels)
+            self.assertTrue(all(program['capture_warmup_setting'] == 'MH_BURN_IN' for program in kernels))
             self.assertEqual(len(manifest['settings']), 6)
             restore = graph.compile_graph(root, configuration='JumpRestore')
             self.assertEqual(len([operation for operation in restore['passes'] if operation['kind'] == 'RayTracing']), 3)

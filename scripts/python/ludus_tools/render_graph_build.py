@@ -272,7 +272,13 @@ def validate_manifest(value):
             f'{program_count} exceeds authored budget {value["budgets"]["programs"]}; '
             f'increase budgets.programs to at least {program_count} or reuse existing programs')
     for program in value['programs']:
-        keys(program, ('id', 'stage', 'source', 'function', 'input', 'output', 'bindings'), 'program')
+        keys(program, ('id', 'stage', 'source', 'function', 'input', 'output', 'bindings'), 'program',
+             ('capture_warmup_setting',))
+        if 'capture_warmup_setting' in program:
+            setting = next((item for item in value.get('settings', [])
+                            if item['id'] == program['capture_warmup_setting']), None)
+            require(program['stage'] == ray.COMPUTE_STAGE and setting is not None and setting['type'] == 'UInt32',
+                    'Schema', 'capture_warmup_setting', 'name an existing UInt32 graph setting on a scene compute program')
         name(program['id'], 'program id')
         name(program['function'], 'source function')
         require(program['source'] != 'wrapper.slang', 'Source', program['id'], 'wrapper.slang is reserved')
@@ -1088,6 +1094,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     helper = Path(helper).resolve()
     snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path, ray_profiles = prepare_sources(
         manifest, helper, root=root, ray_path_capture=ray_path_capture, capture_profile=capture_profile)
+    authored_programs_by_identity = {program['id']: program for program in value['programs']}
     manifest_label = manifest.relative_to(snapshot.root).as_posix()
     worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
     hash_file = ToolFileHashes()
@@ -1186,6 +1193,12 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                             if profile.get('native_compute') and target == 'metal':
                                 record['native_pipeline'] = entries[(profile['native_compute'], target)]
                             record['scene_interface_version'] = technique.get('scene_interface', {}).get('version', 0)
+                            from . import render_graph_settings
+                            record['capture_warmup_samples'] = [
+                                max(render_graph_settings.capture_warmup_samples(authored_programs_by_identity[identity],
+                                    value.get('settings', []), snapshot.files)
+                                    for identity in (variant[:1] if ray.is_compute_variant(variant) else variant))
+                                for variant in profile['variants']]
                             record['visibility_buffer'] = profile['visibility_buffer']
                             if ray_path_capture:
                                 record['ray_path_capture'] = True

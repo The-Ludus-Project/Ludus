@@ -114,8 +114,11 @@ inline constexpr foundation::uint32 RASTER_TONE_MAPPING_PACKAGE_VERSION = 29;
 inline constexpr foundation::uint32 RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION = 30;
 /// First generation whose clustered deferred packages carry DeferredOpaqueGBufferFragment.
 inline constexpr foundation::uint32 OPAQUE_GBUFFER_PACKAGE_VERSION = 31;
+/// First generation carrying MAX_RAY_PROGRAMS capture warm-up invocation counts after the scene resource word.
+/// Earlier packages imply zero. This metadata does not alter interactive accumulation or shader execution.
+inline constexpr foundation::uint32 CAPTURE_WARMUP_PACKAGE_VERSION = 32;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = OPAQUE_GBUFFER_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = CAPTURE_WARMUP_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.
