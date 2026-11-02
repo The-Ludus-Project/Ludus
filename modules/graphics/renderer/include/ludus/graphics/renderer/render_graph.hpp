@@ -162,26 +162,28 @@ struct RenderGraphPrograms final
 /// RENDER_GRAPH_FAILURE_AUTHORED_FIRST. See docs/development/render-graph-authoring.md, "Explain failed pixels".
 enum class RenderGraphFailureReason : foundation::uint8
 {
-    Unspecified,      ///< A shader set queries.HasFailed without a reason.
-    InvalidRadiance,  ///< A sample returned non-finite or negative radiance.
-    InterfaceVersion, ///< The scene interface version does not match the renderer.
-    SurfaceBudget,    ///< More surface queries than scene_interface.surface_queries.
-    VisibilityBudget, ///< More visibility queries than scene_interface.visibility_queries.
-    LineBudget,       ///< More line queries than scene_interface.line_queries.
-    InvalidRay,       ///< A ray with a non-unit direction or an invalid distance range.
-    Traversal,        ///< The traversal could not finish, such as a full BVH stack.
-    RandomExhausted,  ///< The invocation's random stream ran out of dimensions.
-    InvalidArgument,  ///< A scene function received an out-of-range or degenerate input.
-    LightSample,      ///< No light could be selected or sampled.
-    StorageCapacity,  ///< A graph storage buffer has fewer entries than the pixels using it.
-    StoredRecord,     ///< Per-pixel data an earlier pass did not write for this pixel or frame.
-    SceneData,        ///< An invalid triangle, surface or material from a scene lookup.
-    InvalidWeight,    ///< A non-finite or negative sampling weight, probability or PDF.
-    BsdfOnlyLights,   ///< Analytic lights require a light-sampling transport profile.
-    PrimaryMaterial,  ///< A material requires random dimensions outside the primary-sample profile.
-    PhotonCamera,     ///< Guided photon backprojection requires a perspective camera.
-    PhotonCapacity,   ///< Guided photon storage or light admission exceeds its declared template limits.
-    PhotonDispatch,   ///< Photon maps and spatial reuse require a whole-image dispatch.
+    Unspecified,                ///< A shader set queries.HasFailed without a reason.
+    InvalidRadiance,            ///< A sample returned non-finite or negative radiance.
+    InterfaceVersion,           ///< The scene interface version does not match the renderer.
+    SurfaceBudget,              ///< More surface queries than scene_interface.surface_queries.
+    VisibilityBudget,           ///< More visibility queries than scene_interface.visibility_queries.
+    LineBudget,                 ///< More line queries than scene_interface.line_queries.
+    InvalidRay,                 ///< A ray with a non-unit direction or an invalid distance range.
+    Traversal,                  ///< The traversal could not finish, such as a full BVH stack.
+    RandomExhausted,            ///< The invocation's random stream ran out of dimensions.
+    InvalidArgument,            ///< A scene function received an out-of-range or degenerate input.
+    LightSample,                ///< No light could be selected or sampled.
+    StorageCapacity,            ///< A graph storage buffer has fewer entries than the pixels using it.
+    StoredRecord,               ///< Per-pixel data an earlier pass did not write for this pixel or frame.
+    SceneData,                  ///< An invalid triangle, surface or material from a scene lookup.
+    InvalidWeight,              ///< A non-finite or negative sampling weight, probability or PDF.
+    BsdfOnlyLights,             ///< Analytic lights require a light-sampling transport profile.
+    PrimaryMaterial,            ///< A material requires random dimensions outside the primary-sample profile.
+    PhotonCamera,               ///< Guided photon backprojection requires a perspective camera.
+    PhotonCapacity,             ///< Guided photon storage or light admission exceeds its declared template limits.
+    PhotonDispatch,             ///< Photon maps and spatial reuse require a whole-image dispatch.
+    GeometrySamplingLights,     ///< A geometry-sampling template received analytic or environment lighting.
+    GeometryStatisticsCapacity, ///< A geometry-sampling statistics buffer cannot hold the scene hierarchy.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;

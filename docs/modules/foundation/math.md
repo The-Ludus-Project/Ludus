@@ -87,6 +87,20 @@ Vector3 local{};
 (void)TryMakeRelative(playerWorldPosition, cameraOrigin, /*maxAbsComponent=*/4096.0, local);
 ```
 
+### Correlated Gaussian displacements
+
+Include `ludus/foundation/math/gaussian.hpp` to factor a symmetric 3D covariance
+into three displacement axes. `TryComputeGaussianAxes(diagonal, cross, axes)`
+returns `bool`; diagonal holds XX/YY/ZZ variances and cross holds XY/XZ/YZ
+covariances. On success, the sum of the axes' outer products reconstructs the
+covariance within float32 rounding. Zero, planar and linear distributions are
+supported. Nonfinite or indefinite input returns false and preserves `axes`.
+The allocation-free Cholesky factor is a covariance square root, not an
+orientation of principal eigenvectors. `gaussian.slang` provides the same numeric
+operation for GPU callers; its output is zeroed/partial on failure.
+The [one-more-vertex graph](../../development/render-graph-authoring.md#sample-one-more-vertex-with-a-geometry-hierarchy)
+uses these axes for seven-point spatial importance evaluation.
+
 ### Random samples independent of job order
 
 For checked examples, address ownership and reproduction requirements, see the

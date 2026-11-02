@@ -1,6 +1,7 @@
 {
   "version": 1,
   "templates": [
+
     {
       "kind": "graph",
       "identity": "raster",
@@ -207,6 +208,26 @@
         "reservoir"
       ],
       "description": "Conditional RIS and ReSTIR (Kettunen et al., 2023), specialized to mesh-light endpoint suffixes: independent supporting and final-gather prefixes, temporal and spatial conditional area reservoirs, and fresh canonical proposals. Direct mesh lighting plus one indirect bounce; optional direct-only mode. Four passes and three automatically sized buffers. Native ray tracing required. Analytic lights and environment illumination are outside this estimator."
+    },
+    {
+      "kind": "graph",
+      "identity": "one-more-vertex-nee",
+      "label": "One-more-vertex NEE — hierarchical geometry sampling",
+      "category": "ray-traced",
+      "requirements": [
+        "compute-ray-tracing"
+      ],
+      "keywords": [
+        "garcia-pueyo",
+        "monzon",
+        "jarabo",
+        "muñoz",
+        "hierarchical geometry sampling",
+        "indirect lighting",
+        "one more vertex",
+        "mis"
+      ],
+      "description": "Two-scattering mesh-emitter transport: cached BVH geometry statistics guide an extra vertex between the first surface and a sampled emitter. Exports MIS, geometry-only and BSDF+NEE estimates. Requires Metal or Vulkan compute. Analytic/environment lighting and coated diffuse are unsupported."
     },
     {
       "kind": "snippet",
@@ -416,6 +437,27 @@
       "requirements": ["native-ray-tracing"],
       "keywords": ["reflections", "hybrid", "ray tracing"],
       "description": "Rasterize visibility/depth, reconstruct the surface and trace one reflected ray. Connect scene, view and color; outputs color, visibility and depth. Requires native ray tracing."
+    },
+    {
+      "kind": "snippet",
+      "identity": "one-more-vertex-nee",
+      "label": "One-more-vertex NEE — hierarchical geometry sampling",
+      "category": "lighting",
+      "requirements": [
+        "compute-ray-tracing"
+      ],
+      "keywords": [
+        "garcia-pueyo",
+        "monzon",
+        "jarabo",
+        "muñoz",
+        "hierarchical geometry sampling",
+        "indirect lighting",
+        "one more vertex",
+        "mis"
+      ],
+      "description": "Two-scattering mesh-emitter transport: cached BVH geometry statistics guide an extra vertex between the first surface and a sampled emitter. Exports MIS, geometry-only and BSDF+NEE estimates. Requires Metal or Vulkan compute. Analytic/environment lighting and coated diffuse are unsupported.",
+      "defaultConfiguration": "OneMoreVertexNee"
     },
     {
       "kind": "node",

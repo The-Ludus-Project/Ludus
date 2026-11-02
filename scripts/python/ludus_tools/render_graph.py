@@ -1374,7 +1374,7 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
     visibility-secondary-rays, tiled-vbuffer-nee, compute-ray-tracing, simple-compute-ray-tracing,
     veach-guibas-mis, line-sampling, ris-projected-solid-angle, salesin-jarosz-lines,
     polygonal-light-sampling, slice-sampling-luminaire, steinberg-plt, steinberg-physical-optics, restir-gi,
-    rao-blackwell-mh or conditional-restir. Offscreen
+    rao-blackwell-mh, conditional-restir or one-more-vertex-nee. Offscreen
     Renderer raster creation copies the engine default package, including its shaders and shared
     view-relative RenderSize controls. Other Renderer templates also use offscreen output.
     output is presentation, offscreen or depth. Creation never overwrites an

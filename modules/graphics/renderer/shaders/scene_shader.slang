@@ -1,4 +1,6 @@
 #include "coated_diffuse.slang"
+#include "gaussian.slang"
+#include "geometry_sampling_layout.h"
 #include "metropolis.slang"
 #include "metropolis_layout.h"
 #include "photon_layout.h"
@@ -349,6 +351,21 @@ MaterialSample EvaluateMaterial(SceneContext scene, SurfaceHit hit)
         }
     }
     return result;
+}
+/// Test the sampled endpoint's fixed-mip alpha mask, including vertex/tint alpha, without tracing.
+/// Invalid scene/hit indices return false. An opaque endpoint always returns true.
+/// Area/geometry proposals must retain uncovered samples as zero-contribution events, without retrying.
+/// This uses the same inclusive coverage cutoff as TraceClosest; it issues no visibility query.
+bool IsSurfaceCovered(SceneContext scene, SurfaceHit hit)
+{
+    if (scene.Version != SCENE_INTERFACE_VERSION || hit.IsValid == false || hit.TriangleIndex >= Counts.x)
+        return false;
+    uint triangle = hit.TriangleIndex;
+    if (asuint(Surface(triangle, LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD).z) == 0)
+        return true;
+    float alpha = Texture(triangle, hit.TexcoordUv).w * Surface(triangle, 2).w *
+                  InterpolateTriangleColor(triangle, hit.Barycentric).w;
+    return isfinite(alpha) == true && alpha >= Surface(triangle, 1).y;
 }
 float3 EvaluateEmission(SceneContext scene, SurfaceHit hit, float3 directionAwayWorld)
 {
@@ -846,6 +863,46 @@ TriangleData GetTriangle(SceneContext scene, uint triangleIndex)
     result.MaterialIndex = asuint(SceneValue(base).w);
     result.Primitive = asuint(SceneValue(base + 2).w);
     return result;
+}
+/// Logical immutable geometry hierarchy node. Root is index zero; nodes are depth-first preorder, with the complete
+/// Left subtree before Right. Leaf ranges address GetGeometryHierarchyTriangle, not triangle or native-opacity order
+/// directly. Invalid indices return IsValid=false with zero fields. Borrowed values last for scene.Generation.
+struct GeometryHierarchyNode
+{
+    float3 MinimumWorld; ///< Bounds in world units, including every descendant primitive.
+    float3 MaximumWorld;
+    uint Left;          ///< First child for inner nodes (TriangleCount == 0).
+    uint Right;         ///< Second child for inner nodes.
+    uint FirstTriangle; ///< First leaf-order slot for leaves.
+    uint TriangleCount; ///< Positive for leaves, zero for inner nodes.
+    bool IsValid;
+};
+/// Number of immutable hierarchy nodes; zero for empty/invalid scenes. Requires scene geometry.
+uint GetGeometryHierarchyNodeCount(SceneContext scene)
+{
+    return HasSceneData(scene, SCENE_DATA_GEOMETRY) == true ? Counts.y : 0;
+}
+/// Read a logical BVH node without issuing a ray query. Child ordering is independent of native opacity sorting.
+GeometryHierarchyNode GetGeometryHierarchyNode(SceneContext scene, uint nodeIndex)
+{
+    GeometryHierarchyNode result = (GeometryHierarchyNode)0;
+    if (nodeIndex >= GetGeometryHierarchyNodeCount(scene))
+        return result;
+    BvhNode node = LoadBvhNode(nodeIndex);
+    result.MinimumWorld = node.MinimumWorld;
+    result.MaximumWorld = node.MaximumWorld;
+    result.Left = node.Left;
+    result.Right = node.Right;
+    result.FirstTriangle = node.First;
+    result.TriangleCount = node.Count;
+    result.IsValid = true;
+    return result;
+}
+/// Resolve one leaf-order slot to a scene triangle index; invalid slots return SCENE_INVALID_INDEX.
+uint GetGeometryHierarchyTriangle(SceneContext scene, uint slot)
+{
+    return HasSceneData(scene, SCENE_DATA_GEOMETRY) == true && slot < Counts.x ? GetBvhLeafTriangle(slot)
+                                                                               : SCENE_INVALID_INDEX;
 }
 TriangleData GetEmitterTriangle(SceneContext scene, uint emitterIndex, uint primitiveInEmitter)
 {
