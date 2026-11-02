@@ -237,6 +237,12 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
         event->accept();
         return;
     }
+    if (mIsFlying == false && event->modifiers() == Qt::ShiftModifier && event->key() == Qt::Key_Home)
+    {
+        static_cast<void>(Preview_->GoToStartView());
+        event->accept();
+        return;
+    }
     if (mIsFlying == false && event->modifiers() == Qt::NoModifier)
     {
         if (mObjectInteraction->IsActive() == true)

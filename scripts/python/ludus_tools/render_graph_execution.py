@@ -115,7 +115,7 @@ def lower_plan(package, configuration):
     operations = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing', 'Upscale')]
     cameras = sorted({p['view'] for p in rasters})
     build.require(sum(p['kind'] == 'RayTracing' for p in rasters) <= MAX_RAY_PASSES, 'Capacity', configuration,
-                  'at most four triangle ray passes are admitted per configuration')
+                  f'at most {MAX_RAY_PASSES} triangle ray passes are admitted per configuration')
     build.require(all(p['kind'] in ('Raster', 'RayTracing', 'Upscale', 'Accumulate', 'ToneMap', 'Denoise', 'Export', 'Present') for p in plan['passes']) and
                   all((p['kind'] == 'RayTracing' and p['technique'] == ray.TECHNIQUE) or (p['configuration'] in graph.MODES and p['material'] in graph.MATERIALS and
                       (p['technique'] == graph.MATERIALS[p['material']] + '.' + p['configuration'] or

@@ -194,17 +194,21 @@ struct SurfaceCoherence final
     OpticsSymmetric Inverse{};
 };
 
+// Outputs are the ordered coordinates in the rotated two-dimensional basis.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 void RotateIntoBasis(const SurfaceCoherence& coherence,
                      float64 x,
                      float64 y,
                      float64& outFirst,
                      float64& outSecond) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     outFirst = x * coherence.AxisX + y * coherence.AxisY;
     outSecond = -x * coherence.AxisY + y * coherence.AxisX;
 }
 
 /// wave_optics.slang's ComputeSurfaceCoherence.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): normal and tangent frame axes retain the shader equation's order.
 SurfaceCoherence ComputeSurfaceCoherence(const OpticsBeam& beam,
                                          const OpticsSymmetric& shape,
                                          Vector3d normal,
@@ -212,6 +216,7 @@ SurfaceCoherence ComputeSurfaceCoherence(const OpticsBeam& beam,
                                          Vector3d bitangent,
                                          float64 wavenumber,
                                          float64 longitudinalCoherence) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     SurfaceCoherence result;
     const float64 projectedX = math::Dot(tangent, beam.PropagationWorld);
@@ -252,11 +257,14 @@ SurfaceCoherence ComputeSurfaceCoherence(const OpticsBeam& beam,
     return result;
 }
 
+// The two outputs are intensities of the named, orthogonal polarization components.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 void ComputeFresnelIntensities(Vector3d incident,
                                Vector3d outgoing,
                                OpticsComplex eta,
                                float64& outParallel,
                                float64& outPerpendicular) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     const Vector3d half = Normalize(incident + outgoing);
     OpticsComplex perpendicular;
@@ -296,12 +304,15 @@ OpticsSymmetric ComputeShapeDeformation(const OpticsSymmetric& hessian, float64 
             firstScale * sine * sine + secondScale * cosine * cosine};
 }
 
+// Projected coordinates, dimensionless wavelength ratio and phase amplitude have distinct optical meanings.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 float64 EvaluateGratingDiffraction(const OpticsCase& opticsCase,
                                    float64 halfX,
                                    float64 halfY,
                                    const SurfaceCoherence& coherence,
                                    float64 wavelengthOverPeriod,
                                    float64 phaseAmplitude) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     // The grating vector is the surface frame's bitangent, as in shade.slang.
     const int32 maximumOrder = static_cast<int32>(math::Min(opticsCase.GratingMaximumOrder, GRATING_MAXIMUM_ORDER));
@@ -318,10 +329,13 @@ float64 EvaluateGratingDiffraction(const OpticsCase& opticsCase,
 }
 } // namespace
 
+// The outputs retain the conventional perpendicular/parallel polarization ordering of the oracle interface.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 void ComputeOpticsFresnel(float64 cosine,
                           OpticsComplex eta,
                           OpticsComplex& outPerpendicular,
                           OpticsComplex& outParallel) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     const float64 clampedCosine = math::Clamp(cosine, 0.0, 1.0);
     const OpticsComplex incidentCosine{clampedCosine, 0};
@@ -390,8 +404,11 @@ float64 EvaluateOpticsBessel(uint32 order, float64 x) noexcept
     return result / (current + 2 * evenSum);
 }
 
+// Radiance, inverse-square transverse shape and propagation distance carry different units.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 OpticsBeam
 MakeOpticsNaturalBeam(Vector3d propagationWorld, float64 radiance, float64 shape, float64 distanceWorld) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     OpticsBeam result;
     result.PropagationWorld = propagationWorld;

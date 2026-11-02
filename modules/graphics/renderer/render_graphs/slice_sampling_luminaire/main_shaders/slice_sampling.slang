@@ -154,9 +154,10 @@ LuminaireLightSample MakeLuminaireLightSample(LuminaireReceiver receiver, uint t
     result.SlopePanel = slopePanel;
     result.PositionPanelTangent = receiver.PositionPanelTangent - receiver.HeightPanel * slopePanel;
     result.PositionWorld = GetLuminairePositionWorld(result.PositionPanelTangent);
-    // y - s = -R h (z_1 tangent + z_2 bitangent + normal).
-    result.DirectionWorld = NormalizeOrZero(
-        -(slopePanel.x * LUMINAIRE_TANGENT_WORLD + slopePanel.y * LUMINAIRE_BITANGENT_WORLD + LUMINAIRE_NORMAL_WORLD));
+    // Derive the incoming direction from its endpoints. The pinned Slang WGSL backend loses
+    // parentheses when lowering unary negation of a sum of vector products.
+    float3 offsetWorld = result.PositionWorld - receiver.PositionWorld;
+    result.DirectionWorld = NormalizeOrZero(offsetWorld);
     return result;
 }
 

@@ -16,7 +16,7 @@ using MetropolisPrimary = StaticArray<float32, METROPOLIS_PRIMARY_DIMENSIONS>;
 inline constexpr uint32 METROPOLIS_DEFAULT_BURN_IN = 128;
 inline constexpr float32 METROPOLIS_DEFAULT_LARGE_STEP_PROBABILITY = 0.3F;
 inline constexpr float32 METROPOLIS_DEFAULT_SMALL_STEP_RADIUS = 0.05F;
-enum class MetropolisEstimator : uint32
+enum class MetropolisEstimator : uint8
 {
     Standard,
     WasteRecycling,

@@ -53,7 +53,7 @@ struct OpticsBeam final
 };
 
 /// The lobe a parity case scatters through.
-enum class OpticsLobe : foundation::uint32
+enum class OpticsLobe : foundation::uint8
 {
     Scattered = 0, ///< Gaussian surface, Eq. (28) with Eq. (22)'s 1 - alpha_direct.
     Diffuse = 1,   ///< Perfectly diffuse, Eq. (32).

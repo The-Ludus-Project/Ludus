@@ -262,10 +262,13 @@ struct TexelCoordinate final
     return Status::Ok;
 }
 } // namespace
+// The companion file is resolved relative to the source root; these paths have distinct roles.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 Status ApplyCompanionEnvironment(std::string_view file,
                                  std::string_view root,
                                  SceneIr& inoutScene,
                                  DiagnosticLog& inoutLog) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     NativeSourceResolver resolver(root);
     ResolvedSource environment;

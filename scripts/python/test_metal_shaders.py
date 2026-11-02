@@ -236,5 +236,34 @@ class NoinlineTests(unittest.TestCase):
         self.assertEqual(restored.count("__attribute__((noinline))"), 2)
 
 
-if __name__ == "__main__":
+
+
+class MetalIndentationTests(unittest.TestCase):
+    def test_generated_indentation_is_removed_without_changing_lines(self):
+        source = 'kernel void main()\n{\n' + ' ' * 100 + 'value = 2;\n}\n'
+        result = DRIVER.compact_metal_indentation(source)
+        self.assertEqual(result, 'kernel void main()\n{\nvalue = 2;\n}\n')
+        self.assertEqual(result.count('\n'), source.count('\n'))
+
+    def test_multiline_literals_and_comments_keep_their_contents(self):
+        source = '  const char* x = R"tag(first\n    second)tag";\n  /* first\n    second */\n  value = "  text"; //  comment\n'
+        result = DRIVER.compact_metal_indentation(source)
+        self.assertIn('R"tag(first\n    second)tag"', result)
+        self.assertIn('/* first\n    second */', result)
+        self.assertIn('"  text"; //  comment', result)
+        self.assertNotIn('  const char', result)
+
+    def test_compaction_is_idempotent_and_keeps_preprocessor_lines(self):
+        source = '  #line 30 "file.metal"\n  #define VALUE \\\n    2\n'
+        result = DRIVER.compact_metal_indentation(source)
+        self.assertIn('#line 30 "file.metal"', result)
+        self.assertEqual(DRIVER.compact_metal_indentation(result), result)
+
+    def test_continuation_whitespace_keeps_tokens_separate(self):
+        source = "  #define TOKEN foo" + chr(92) + "\n    bar\n"
+        result = DRIVER.compact_metal_indentation(source)
+        self.assertEqual(result, source.lstrip(' '))
+
+
+if __name__ == '__main__':
     unittest.main()

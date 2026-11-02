@@ -26,9 +26,13 @@ MathStatus
 TryComputeSymmetricMetropolisAcceptance(float32 currentTarget, float32 proposedTarget, float32& outAcceptance) noexcept
 {
     if (IsFinite(currentTarget) == false || IsFinite(proposedTarget) == false)
+    {
         return MathStatus::NonFiniteInput;
+    }
     if (currentTarget < MINIMUM_NORMAL || proposedTarget < MINIMUM_NORMAL)
+    {
         return MathStatus::InvalidArgument;
+    }
     outAcceptance = proposedTarget >= currentTarget ? 1 : proposedTarget / currentTarget;
     return MathStatus::Success;
 }
@@ -40,14 +44,22 @@ MathStatus TryMutateMetropolisPrimary(float32 current,
                                       float32& outSample) noexcept
 {
     if (IsFinite(current) == false || IsFinite(ticket) == false || IsFinite(radius) == false)
+    {
         return MathStatus::NonFiniteInput;
+    }
     if (current < 0 || current >= 1 || ticket < 0 || ticket >= 1 || radius <= 0 || radius > 0.5F)
+    {
         return MathStatus::InvalidArgument;
+    }
     float32 sample = isLargeStep == true ? ticket : current + (2 * ticket - 1) * radius;
     if (sample < 0)
+    {
         sample += 1;
+    }
     if (sample >= 1)
+    {
         sample -= 1;
+    }
     outSample = sample;
     return MathStatus::Success;
 }
@@ -59,9 +71,13 @@ MathStatus TryMutateMetropolisPrimary(float32 current,
 MathStatus TryComputeJumpRestoreRates(float32 target, float32 restorationScale, JumpRestoreRates& outRates) noexcept
 {
     if (IsFinite(target) == false || IsFinite(restorationScale) == false)
+    {
         return MathStatus::NonFiniteInput;
+    }
     if (target < MINIMUM_NORMAL || restorationScale < MINIMUM_NORMAL)
+    {
         return MathStatus::InvalidArgument;
+    }
     JumpRestoreRates rates;
     if (target >= restorationScale)
     {
@@ -76,7 +92,9 @@ MathStatus TryComputeJumpRestoreRates(float32 target, float32 restorationScale, 
         rates.MeanHoldingTime = ratio * rates.RestoreProbability;
     }
     if (rates.MeanHoldingTime <= 0 || rates.RestoreProbability <= 0)
+    {
         return MathStatus::OutOfRange;
+    }
     outRates = rates;
     return MathStatus::Success;
 }
@@ -84,12 +102,18 @@ MathStatus TryComputeJumpRestoreRates(float32 target, float32 restorationScale, 
 MathStatus TrySampleJumpRestoreHoldingTime(float32 ticket, float32 meanHoldingTime, float32& outTime) noexcept
 {
     if (IsFinite(ticket) == false || IsFinite(meanHoldingTime) == false)
+    {
         return MathStatus::NonFiniteInput;
+    }
     if (ticket < 0 || ticket >= 1 || meanHoldingTime <= 0 || meanHoldingTime > 1)
+    {
         return MathStatus::InvalidArgument;
+    }
     const float32 time = static_cast<float32>(-Log(static_cast<float64>(1 - ticket))) * meanHoldingTime;
     if (IsFinite(time) == false)
+    {
         return MathStatus::OutOfRange;
+    }
     outTime = time;
     return MathStatus::Success;
 }
@@ -98,15 +122,21 @@ MathStatus TryAdvanceMetropolisTour(float32 acceptance, MetropolisTour& inoutTou
 {
     if (IsFinite(acceptance) == false || IsFinite(inoutTour.RejectionProduct) == false ||
         IsFinite(inoutTour.HoldingWeight) == false)
+    {
         return MathStatus::NonFiniteInput;
+    }
     if (acceptance < 0 || acceptance > 1 || inoutTour.RejectionProduct < 0 || inoutTour.RejectionProduct > 1 ||
         inoutTour.HoldingWeight < 1)
+    {
         return MathStatus::InvalidArgument;
+    }
     MetropolisTour candidate = inoutTour;
     candidate.RejectionProduct *= 1 - acceptance;
     candidate.HoldingWeight += candidate.RejectionProduct;
     if (IsFinite(candidate.HoldingWeight) == false)
+    {
         return MathStatus::OutOfRange;
+    }
     inoutTour = candidate;
     return MathStatus::Success;
 }
@@ -115,18 +145,26 @@ MathStatus TryAddWeightedRadiance(Vector3 radiance, float32 weight, WeightedRadi
 {
     if (IsFinite(radiance) == false || IsFinite(weight) == false || IsFinite(inoutAccumulation.Sum) == false ||
         IsFinite(inoutAccumulation.Compensation) == false)
+    {
         return MathStatus::NonFiniteInput;
+    }
     if (IsNonnegative(radiance) == false || weight < 0 || IsNonnegative(inoutAccumulation.Sum) == false)
+    {
         return MathStatus::InvalidArgument;
+    }
     if (weight == 0)
+    {
         return MathStatus::Success;
+    }
     const Vector4 contribution{radiance.X * weight, radiance.Y * weight, radiance.Z * weight, weight};
     const Vector4 adjusted = contribution - inoutAccumulation.Compensation;
     const Vector4 combined = inoutAccumulation.Sum + adjusted;
     const Vector4 compensation = (combined - inoutAccumulation.Sum) - adjusted;
     if (IsFinite(contribution) == false || IsFinite(combined) == false || IsFinite(compensation) == false ||
         IsNonnegative(combined) == false)
+    {
         return MathStatus::OutOfRange;
+    }
     inoutAccumulation.Sum = combined;
     inoutAccumulation.Compensation = compensation;
     return MathStatus::Success;
@@ -135,15 +173,23 @@ MathStatus TryAddWeightedRadiance(Vector3 radiance, float32 weight, WeightedRadi
 MathStatus TryResolveWeightedRadiance(const WeightedRadiance& accumulation, Vector3& outRadiance) noexcept
 {
     if (IsFinite(accumulation.Sum) == false || IsFinite(accumulation.Compensation) == false)
+    {
         return MathStatus::NonFiniteInput;
+    }
     if (IsNonnegative(accumulation.Sum) == false)
+    {
         return MathStatus::InvalidArgument;
+    }
     if (accumulation.Sum.W == 0 && (accumulation.Sum.X != 0 || accumulation.Sum.Y != 0 || accumulation.Sum.Z != 0))
+    {
         return MathStatus::InvalidArgument;
+    }
     const Vector3 numerator{accumulation.Sum.X, accumulation.Sum.Y, accumulation.Sum.Z};
     const Vector3 result = accumulation.Sum.W > 0 ? numerator / accumulation.Sum.W : Vector3{};
     if (IsFinite(result) == false)
+    {
         return MathStatus::OutOfRange;
+    }
     outRadiance = result;
     return MathStatus::Success;
 }

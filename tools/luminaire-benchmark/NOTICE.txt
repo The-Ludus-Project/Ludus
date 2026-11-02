@@ -1,0 +1,20 @@
+Portable PureLight adaptation
+
+Thanks to Pedro Figueiredo, Zixuan Li, Beibei Wang, Miloš Hašan and Nima Khademi
+Kalantari, "PureLight: Learning Complex Luminaires with Light Tracing", SIGGRAPH
+Asia 2026, section 3.4, https://arxiv.org/abs/2606.04319.
+
+The portable implementation adapts the released spline and receiver-flow design:
+https://github.com/pedrovfigueiredo/purelight
+Copyright (c) 2026 Pedro Figueiredo, Zixuan Li, Beibei Wang, Miloš Hašan,
+and Nima Khademi Kalantari. Licensed CC BY 4.0:
+https://creativecommons.org/licenses/by/4.0/legalcode.en
+Changes: independent NumPy/Slang inference, explicit FP32 MLPs with biases,
+sparse zero-initialized dense grid, stable quadratic inverse, deterministic cap
+frame, analytic-fixture training, source export instead of CUDA checkpoint layout.
+
+Thanks to Thomas Müller and the tiny-cuda-nn authors for documenting periodic
+quartic OneBlob encoding and multilevel dense-grid interpolation:
+https://github.com/NVlabs/tiny-cuda-nn/tree/v2.0/include/tiny-cuda-nn
+Their mathematical encoding definitions are independently implemented here;
+no CUDA implementation code is redistributed.

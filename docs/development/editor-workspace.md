@@ -1074,18 +1074,46 @@ component, and scale changes one positive local scale component. Hold **Shift**
 for 0.1 metre movement, 15 degree rotation or 0.1 scale-factor increments.
 The wireframe previews the candidate throughout a drag. Release applies one
 validated World edit and refreshes the shaded scene; **Undo** restores the entire
-gesture. The refresh reassembles the level in the background. Each edit parses the
-project scene catalog once and verifies the digest of each artifact the level uses
-once before assembling the bundle. Selection and handles return when that
-operation finishes. **Delete** and **Ctrl+D** use the hierarchy’s delete and duplicate
+gesture. **Delete** and **Ctrl+D** use the hierarchy’s delete and duplicate
 commands while the viewport has focus. **Escape**, a tool change, hiding the view
 or losing focus cancels the candidate. **Save World** persists the accepted placement.
+
+A placement-only edit, from the viewport or from Transform fields applied in the
+inspector, does not wait for the level to be cooked again. The editor
+derives the presented scene from the current one, replacing only object transforms,
+and computes them with the scene cook's own composition, so they equal what the cook
+writes bit for bit. Selection, handles and further moves are available at once.
+The shaded image updates when the renderer has prepared the moved scene; until then
+it keeps the previous frame. The authoritative cook then validates the placement in
+the background. It parses the project scene catalog once and verifies the digest of
+each artifact the level uses once before assembling the bundle:
+
+- A newer move, **Undo** or **Redo** supersedes a running validation; only the
+  latest placement is validated. Returning to the last validated placement shows
+  that cook's scene again with nothing left to validate.
+- When the cook confirms the placement, the derived scene stays presented. If the
+  cooked scene differs (for example because project assets changed on disk), the
+  cooked scene replaces it.
+- When the cook fails, the last validated scene returns and the status line shows the
+  error. The World keeps the edit, as after any failed assembly; **Undo** removes it.
+- **Save World** during a validation waits for it, then verifies the scene assets
+  and writes the World as it is at that point.
+- Any other edit, such as adding, renaming or deleting an entity, stops the running
+  validation and assembles the whole level. Selection, handles and World edits wait
+  for that assembly, as for a reassembly without a pending placement.
+- Opening, creating or importing into a World, a draft preview of inspector fields and
+  restoring recovery wait until the validation has finished.
+
+The gizmo composes a placement exactly as the World stores it for the cook, so an
+object without a parent stays bit-identical when released. A parent's transform is
+composed in double precision by the cook; the gizmo's single-precision composition
+of a child can differ from it in the last bits.
 
 Imported scene instances and project preview transform bindings expose these
 handles. Other extractors can still select and highlight their objects; they need
 an explicit authoring transform binding before the editor can manipulate them.
 A multiple selection, unapplied inspector fields or a running scene operation
-disables transform handles. Axis handles viewed directly end-on are hidden;
+other than a background placement validation disables transform handles. Axis handles viewed directly end-on are hidden;
 orbit to expose them. Wireframes sample very dense meshes to bound overlay cost.
 The native shared-device viewport and native readback fallback show the same
 selection overlay. The shared-device presentation uploads batched stroke geometry
@@ -1197,6 +1225,7 @@ that preview. Zero-motion input leaves the selected camera unchanged.
 | Numpad 7 / 1 / 3 | Orthographic Top / Front / Right view; add Ctrl (Command on macOS) for Bottom / Back / Left |
 | Numpad 5 | Switch between perspective and orthographic projection |
 | Home / **Frame all visible objects** | Fit all extracted visible geometry |
+| Shift+Home / **View → Go to start view** | Return to an imported scene's [start view](#scene-start-view) |
 | Escape, right-button release, focus loss or hiding the viewport | Stop fly movement and release mouse capture |
 
 Plain left-drag is reserved for selection/tools. Double-click no longer resets
@@ -1315,7 +1344,9 @@ World; they do not expose another object hierarchy or authoring document.
    project-contained `.world.json` path, for example `scenes/main.world.json`.
 3. Choose **Import scene…** and select `scene-v4.pbrt` from the supplied
    staircase2 reference directory. Import cooks assets into the project. The
-   admitted instances join the current World's entity list in one undoable edit.
+   admitted instances join the current World's entity list in one undoable edit,
+   and the viewport shows the scene from its own camera (its
+   [start view](#scene-start-view)).
 4. Select an imported entity. Its **Scene instance** inspector edits local
    position in metres, rotation in degrees, and positive scale; gameplay fields
    and **Add Component** are in that same inspector. **Apply Changes** validates
@@ -1346,6 +1377,32 @@ creates an unsaved sibling `<level-name>.world.json`; it preserves the original
 level and refuses an existing conversion destination. Failed conversion preserves
 the active World. Save publishes only the converted World document. Existing
 `.world.json` documents without scene data remain readable.
+
+### Scene start view
+
+A World with an imported scene has a **start view**: the level `camera` (`eye`,
+`target`, `up` and a vertical `fov` in radians). Import sets it from the source
+scene's camera. For pbrt that is the `LookAt`/`Transform` before `Camera`, with
+`fov` converted to the vertical angle; a scene without a usable camera gets a
+view framing its bounds. Importing another scene into the level replaces the start
+view with that scene's camera.
+
+- When a World opens without saved viewport navigation for it, the viewport starts
+  at the start view instead of framing the bounds. Saved navigation, which the
+  editor keeps per World on this machine, still takes precedence on later opens.
+- **View → Go to start view** (Shift+Home with the viewport focused) moves the free
+  editor camera there at any time. The target becomes the orbit pivot and its
+  distance the focus distance; the field of view is clamped to the editor's
+  10°–120° range. It detaches a selected authored camera like other navigation.
+- **View → Set start view from this view** stores the current perspective view as
+  the level `camera`: the eye, a target at the focus distance, the camera's up
+  direction and its field of view. It is one World edit: Undo restores the previous
+  start view and **Save World** keeps it. Orthographic views have no field of view
+  and are refused.
+
+The viewport keeps its own aspect ratio, so a start view can show more or less of
+the scene than the source renderer's film. Thin-lens depth of field is not
+imported.
 
 The optional World root `scene` contains the level's `version`, persistent `id`,
 `name`, `profile`, `camera` and `imports`, with no second object list. An imported

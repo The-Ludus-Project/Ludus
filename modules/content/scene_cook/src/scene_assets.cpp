@@ -1478,9 +1478,10 @@ JsonIndex AddSourceMaterial(JsonTree& inoutTree, const SourceMaterialRecord& rec
     const JsonNode& identity = tree.GetNode(tree.GetMember(source, "identity"));
     const JsonNode& model = tree.GetNode(tree.GetMember(source, "model"));
     const JsonIndex name = tree.GetMember(source, "name");
+    constexpr uint32 MAXIMUM_SOURCE_IDENTITY = ~uint32{0};
     if (identity.Kind != JsonKind::Integer || identity.Integer < 0 ||
-        identity.Integer > static_cast<int64>(~uint32{0}) || model.Kind != JsonKind::Integer || model.Integer < 0 ||
-        model.Integer > static_cast<int64>(format::MaterialModel::CoatedDiffuse) ||
+        identity.Integer > static_cast<int64>(MAXIMUM_SOURCE_IDENTITY) || model.Kind != JsonKind::Integer ||
+        model.Integer < 0 || model.Integer > static_cast<int64>(format::MaterialModel::CoatedDiffuse) ||
         tree.GetKind(name) != JsonKind::String || tree.GetText(name).size() > format::MAX_MATERIAL_NAME_BYTES)
     {
         return inoutFailure.FailInvalid("invalid source material identity or model");
@@ -4870,6 +4871,44 @@ bool ValidateLevel(std::span<const uint8> level, AssetError& outError) noexcept
     Document document;
     return ParseInput(level, document, failure) == true &&
            ValidateLevelNode(document.Tree, document.Root, failure) == true;
+}
+
+bool ComposeLevelTransforms(std::span<const uint8> level,
+                            foundation::Array<float32>& outTransforms,
+                            AssetError& outError) noexcept
+{
+    Failure failure(outError);
+    Document document;
+    if (ParseInput(level, document, failure) == false ||
+        ValidateLevelNode(document.Tree, document.Root, failure) == false)
+    {
+        return false;
+    }
+    const JsonIndex objects = document.Tree.GetMember(document.Root, "objects");
+    const usize objectCount = document.Tree.GetCount(objects);
+    Array<float32> transforms;
+    if (transforms.TryResize(objectCount * format::OBJECT_TRANSFORM_COMPONENTS) == false)
+    {
+        return failure.FailOutOfMemory();
+    }
+    // The same composition, range check and narrowing as AssembleClosureBundle's object records.
+    for (usize i = 0; i < objectCount; ++i)
+    {
+        Transform world;
+        ComposeWorld(document.Tree, objects, document.Tree.GetItem(objects, i), world, 0);
+        for (usize component = 0; component < format::OBJECT_TRANSFORM_COMPONENTS; ++component)
+        {
+            const PythonNumber& value = world.Values[component];
+            if (IsFinitePython(value) == false ||
+                IsLessOrEqualPython(GetAbsolute(value), MakeNumber(MAX_WORLD_MAGNITUDE)) == false)
+            {
+                return failure.FailInvalid("World transform outside float32 range");
+            }
+            transforms[i * format::OBJECT_TRANSFORM_COMPONENTS + component] = static_cast<float32>(value.ToFloat());
+        }
+    }
+    outTransforms = static_cast<Array<float32>&&>(transforms);
+    return true;
 }
 
 bool ReadCatalog(std::string_view root, foundation::Array<uint8>& outCatalog, AssetError& outError) noexcept

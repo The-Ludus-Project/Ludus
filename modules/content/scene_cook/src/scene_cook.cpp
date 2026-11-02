@@ -517,9 +517,11 @@ struct AllowedParams final
     std::initializer_list<std::string_view> Keys;
 };
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+// Command names and parameter keys occupy distinct positions in the source grammar.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 [[nodiscard]] bool
 IsParameterAllowed(std::string_view command, std::string_view key, bool shouldAdmitCoatingParameters) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     if (shouldAdmitCoatingParameters == true && command == "MakeNamedMaterial")
     {
@@ -1115,6 +1117,8 @@ struct Material final
     float64 Metallic = 0.0;
     float64 Roughness = 0.0;
     float64 Emission[3]{};
+    // Keep a default for partial aggregate initialization under -Wmissing-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
     std::string_view Name{};
     uint32 SourceIdentity = 0;
     uint64 EmissionSourceIdentity = 0;
@@ -2880,6 +2884,7 @@ void WriteHexString(PythonJsonWriter& inoutJson, const Digest& digest) noexcept
         }
     }
     else
+    {
         for (const std::string_view text : {
                  "PBRT coated diffuse mapped to frozen RGB GGX/Lambert; no layer multiple scattering",
                  "conductor eta/k reduced to RGB normal-incidence F0 and Schlick",
@@ -2893,6 +2898,7 @@ void WriteHexString(PythonJsonWriter& inoutJson, const Digest& digest) noexcept
         {
             json.WriteString(text);
         }
+    }
     json.EndArray();
     json.EndObject();
     writer.Append('\n');

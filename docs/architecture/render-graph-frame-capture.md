@@ -32,6 +32,11 @@ converged images, and the viewport can show those but not save them.
 
 ## Goals and non-goals
 
+The proposed [sequencer image capture runner](sequencer-cinematics.md#capture-execution)
+orchestrates this frozen-frame operation at successive exact sequence times.
+That design owns multi-frame timing, scene overrides and run manifests; this
+page continues to own one render-graph image's convergence and readback.
+
 Goals:
 
 - Capture any cooked project graph, not only the one the viewport draws, using
@@ -513,7 +518,7 @@ submission: one `RenderGraph::Render`, one command buffer.
   whose region selects the cursor's band, and its binding set. It builds them from
   the committed camera and replaces the previous band's pair, which retires with
   its completed producer. One pair per band would not scale to 128 bands: the RHI
-  bounds live buffers and binding descriptors per kind, by default 64 records and
+  bounds live buffers and binding descriptors per kind, by default 128 records and
   512 descriptors. A camera commit releases the pair.
 - A sample counts once its last band is submitted. This applies to
   `GetSubmittedRaySamples`, `HasPendingSamples` and the capture's
