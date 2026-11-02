@@ -51,7 +51,8 @@ float2 ClampGiPairwiseBarycentric(float2 barycentric)
     bounded.y = min(bounded.y, 1 - bounded.x);
     return bounded;
 }
-[noinline] Receiver LoadGiPairwiseReceiver(SceneContext scene, RayLaunch launch, Reservoir source) {
+[noinline] Receiver LoadGiPairwiseReceiver(SceneContext scene, RayLaunch launch, Reservoir source)
+{
     Receiver receiver =
         LoadReceiver(scene, source.ReceiverTriangleIndex, ClampGiPairwiseBarycentric(source.ReceiverBarycentric));
     if (receiver.IsValid == true)
@@ -60,10 +61,10 @@ float2 ClampGiPairwiseBarycentric(float2 barycentric)
                                           : NormalizeOrZero(receiver.Hit.PositionWorld - launch.CameraPositionWorld);
     return receiver;
 }
-    // At a canonical sample, a neighbor's proxy is zero when its original hemisphere
-    // and first-hit source distribution could not have proposed that point. Merely
-    // testing the forward connection cannot establish this inverse support.
-    [noinline] float EvaluateGiPairwiseTarget(TargetContext target, GiSample sample, SurfaceHit samplePoint)
+// At a canonical sample, a neighbor's proxy is zero when its original hemisphere
+// and first-hit source distribution could not have proposed that point. Merely
+// testing the forward connection cannot establish this inverse support.
+[noinline] float EvaluateGiPairwiseTarget(TargetContext target, GiSample sample, SurfaceHit samplePoint)
 {
     return EvaluateTarget(target, sample, samplePoint);
 }
@@ -86,6 +87,7 @@ float ComputeGiPairwiseProxy(SceneContext scene,
 }
 
 // Keep repeated endpoint reconstruction below the shared shader artifact budget.
-[noinline] SurfaceHit LoadGiPairwiseSamplePoint(SceneContext scene, GiSample sample) {
+[noinline] SurfaceHit LoadGiPairwiseSamplePoint(SceneContext scene, GiSample sample)
+{
     return GetSurfaceHit(scene, sample.TriangleIndex, ClampGiPairwiseBarycentric(sample.Barycentric));
 }

@@ -114,15 +114,15 @@ ComputeCacheTicket ComputeCache::GetCandidateTicket() const noexcept
     ComputeCacheTicket ticket;
     if (mPhase != ComputeCachePhase::Empty)
     {
-        ticket.OwnerOrNull = this;
-        ticket.Generation = mCandidateGeneration;
+        ticket.mOwnerOrNull = this;
+        ticket.mGeneration = mCandidateGeneration;
     }
     return ticket;
 }
 RasterStatus ComputeCache::SetCandidateCompletion(ComputeCacheTicket ticket, SubmissionToken completion) noexcept
 {
-    if (mPhase != ComputeCachePhase::AwaitingSubmission || ticket.OwnerOrNull != this ||
-        ticket.Generation != mCandidateGeneration)
+    if (mPhase != ComputeCachePhase::AwaitingSubmission || ticket.mOwnerOrNull != this ||
+        ticket.mGeneration != mCandidateGeneration)
     {
         return RasterStatus::InvalidDescription;
     }

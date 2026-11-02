@@ -125,7 +125,8 @@ bool HasMatchingTemporalReceiver(Reservoir source, Reservoir current)
 // https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
 // Keep repeated BSDF evaluation below the existing generated-artifact size limit.
 [noinline] float3
-EvaluateSampleContributionArea(SceneContext scene, SurfaceHit receiver, uint triangleIndex, float2 barycentric) {
+EvaluateSampleContributionArea(SceneContext scene, SurfaceHit receiver, uint triangleIndex, float2 barycentric)
+{
     SurfaceHit endpoint = GetSurfaceHit(scene, triangleIndex, barycentric);
     if (endpoint.IsValid == false)
     {

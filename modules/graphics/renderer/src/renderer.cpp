@@ -461,7 +461,7 @@ Status PrepareWorldGridBuffers(rhi::DeviceHandle device,
     }
     const usize vertexBytes =
         (isAnalytic == true ? WORLD_GRID_ANALYTIC_VERTEX_COUNT : WORLD_GRID_VERTEX_COUNT) * sizeof(Vertex);
-    constexpr StaticArray<uint32, WORLD_GRID_INDEX_COUNT> indices{0, 1, 2, 2, 3, 0};
+    constexpr StaticArray<uint32, WORLD_GRID_INDEX_COUNT> INDICES{0, 1, 2, 2, ANALYTIC_GRID_FOURTH_CORNER, 0};
     for (usize i = 0; i < count; ++i)
     {
         const WorldGridLine& line = inoutScratch.Lines[i];
@@ -490,8 +490,8 @@ Status PrepareWorldGridBuffers(rhi::DeviceHandle device,
     }
     bool isPending = status == Status::Pending;
     status = rhi::CreateBuffer(device,
-                               {rhi::BufferRole::Index32, sizeof(indices)},
-                               {reinterpret_cast<const uint8*>(indices.GetData()), sizeof(indices)},
+                               {rhi::BufferRole::Index32, sizeof(INDICES)},
+                               {reinterpret_cast<const uint8*>(INDICES.GetData()), sizeof(INDICES)},
                                candidate->Indices);
     if (Accepted(status) == false)
     {
@@ -2795,12 +2795,12 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
             {
                 return ready;
             }
-            static constexpr StaticArray<rhi::RasterFormat, DEFERRED_TARGET_COUNT> formats{
+            static constexpr StaticArray<rhi::RasterFormat, DEFERRED_TARGET_COUNT> FORMATS{
                 {rhi::RasterFormat::Rgba16Float, rhi::RasterFormat::Rgba16Float, rhi::RasterFormat::Rgba16Float}};
             description.Fragment = p->GBufferFragment;
             description.FillMode = rhi::RasterFillMode::Solid;
             description.Target = rhi::RasterTarget::Rgba16Float;
-            description.ColorFormats = formats.AsSpan();
+            description.ColorFormats = FORMATS.AsSpan();
             description.Depth = true;
             description.DepthWrite = true;
             description.Blend = false;

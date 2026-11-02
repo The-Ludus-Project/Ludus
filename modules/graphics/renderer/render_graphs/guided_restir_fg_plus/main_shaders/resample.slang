@@ -8,7 +8,8 @@
                                        FgPathReservoir source,
                                        inout RayQueryContext queries,
                                        out float outJacobian,
-                                       out float outTarget) {
+                                       out float outTarget)
+{
     FgPathReservoir shifted = source;
     outJacobian = 0;
     outTarget = 0;
@@ -37,12 +38,13 @@
         outTarget = 0;
     }
     return shifted;
-} FgPathReservoir MergeFgPathsBody(SceneContext scene,
-                                   RayLaunch launch,
-                                   FgPathReservoir own,
-                                   FgPathReservoir other,
-                                   float coin,
-                                   inout RayQueryContext queries)
+}
+FgPathReservoir MergeFgPathsBody(SceneContext scene,
+                                 RayLaunch launch,
+                                 FgPathReservoir own,
+                                 FgPathReservoir other,
+                                 float coin,
+                                 inout RayQueryContext queries)
 {
     if (other.Confidence == 0 || own.Confidence == 0)
         return own;
@@ -86,17 +88,19 @@
                                                  FgPathReservoir other,
                                                  float coin,
                                                  RayQueryContext queriesIn,
-                                                 out RayQueryContext outQueries) {
+                                                 out RayQueryContext outQueries)
+{
     RayQueryContext queries = queriesIn;
     FgPathReservoir result = MergeFgPathsBody(scene, launch, own, other, coin, queries);
     outQueries = queries;
     return result;
-} FgPathReservoir MergeFgPaths(SceneContext scene,
-                               RayLaunch launch,
-                               FgPathReservoir own,
-                               FgPathReservoir other,
-                               float coin,
-                               inout RayQueryContext queries)
+}
+FgPathReservoir MergeFgPaths(SceneContext scene,
+                             RayLaunch launch,
+                             FgPathReservoir own,
+                             FgPathReservoir other,
+                             float coin,
+                             inout RayQueryContext queries)
 {
     RayQueryContext resultQueries;
     FgPathReservoir result = MergeFgPathsOutOfLine(scene, launch, own, other, coin, queries, resultQueries);

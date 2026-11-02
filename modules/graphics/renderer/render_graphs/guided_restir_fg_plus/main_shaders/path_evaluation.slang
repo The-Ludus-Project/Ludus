@@ -19,7 +19,8 @@ void SetFgReceiver(FgPoint point, RayLaunch launch, inout FgPathReservoir inoutR
     inoutReservoir.Throughput = point.Throughput;
     inoutReservoir.CameraDepth = point.Depth | (GetFgPixel(launch) << FG_CAMERA_DEPTH_SHIFT);
 }
-[noinline] FgPoint LoadFgReceiver(SceneContext scene, FgPathReservoir reservoir, inout RayQueryContext queries) {
+[noinline] FgPoint LoadFgReceiver(SceneContext scene, FgPathReservoir reservoir, inout RayQueryContext queries)
+{
     FgPoint result = (FgPoint)0;
     if (reservoir.ReceiverTriangle == FG_INVALID)
         return result;
@@ -30,7 +31,8 @@ void SetFgReceiver(FgPoint point, RayLaunch launch, inout FgPathReservoir inoutR
         result.Depth = GetFgCameraDepth(reservoir);
     }
     return result;
-}[noinline] bool IsFgPhotonNear(SceneContext scene, FgPhoton photon, FgPoint point)
+}
+[noinline] bool IsFgPhotonNear(SceneContext scene, FgPhoton photon, FgPoint point)
 {
     if (photon.Triangle == FG_INVALID || point.IsValid == false)
         return false;
@@ -91,16 +93,18 @@ float3 EvaluateFgPathBody(SceneContext scene,
                                           FgPoint receiver,
                                           bool shouldTestVisibility,
                                           RayQueryContext queriesIn,
-                                          out RayQueryContext outQueries) {
+                                          out RayQueryContext outQueries)
+{
     RayQueryContext queries = queriesIn;
     float3 value = EvaluateFgPathBody(scene, reservoir, receiver, shouldTestVisibility, queries);
     outQueries = queries;
     return value;
-} float3 EvaluateFgPath(SceneContext scene,
-                        FgPathReservoir reservoir,
-                        FgPoint receiver,
-                        bool shouldTestVisibility,
-                        inout RayQueryContext queries)
+}
+float3 EvaluateFgPath(SceneContext scene,
+                      FgPathReservoir reservoir,
+                      FgPoint receiver,
+                      bool shouldTestVisibility,
+                      inout RayQueryContext queries)
 {
     RayQueryContext resultQueries;
     float3 value = EvaluateFgPathOutOfLine(scene, reservoir, receiver, shouldTestVisibility, queries, resultQueries);

@@ -79,6 +79,7 @@ void CheckNativeWorkgroup(const QString& runtime, uint32 width, uint32 height)
     ludus::graphics::renderer::RenderGraphPackage package;
     REQUIRE(package.Decode({reinterpret_cast<const uint8*>(bytes.constData()), static_cast<usize>(bytes.size())}) ==
             ludus::graphics::renderer::RenderGraphPackageStatus::Ready);
+    CHECK(ludus::graphics::renderer::RequiresHardwareRayTracing(package.GetPlan()) == false);
     const ludus::graphics::renderer::RenderGraphPrograms programs = package.GetPrograms({}, {});
     CHECK(programs.RayCompute.WorkgroupSize[0] == width);
     CHECK(programs.RayCompute.WorkgroupSize[1] == height);
@@ -330,7 +331,9 @@ void RunNativeViewportFixture(const QString& runtime, bool shouldVerifyReplaceme
         RenderGraphPreview& graph = *workspace.GetPreviewOrNull();
         const uint64 previousPaint = viewport.PresentedFrames();
         const uint64 previousCandidate = graph.GetReport().CandidateGeneration;
-        REQUIRE(graph.Load(runtime) == RenderGraphPreviewLoad::Staged);
+        const RenderGraphPreviewLoad loaded = graph.Load(runtime);
+        INFO(graph.GetStatus().toStdString());
+        REQUIRE(loaded == RenderGraphPreviewLoad::Staged);
         CHECK(viewport.HasRetainedGraphFrame() == true);
         [NSApp activateIgnoringOtherApps:YES];
         host.raise();

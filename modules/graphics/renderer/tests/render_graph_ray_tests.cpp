@@ -64,11 +64,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <new>
 #include <string>
 #include <string_view>
+#include <thread>
 
 using namespace ludus::foundation;
 namespace renderer = ludus::graphics::renderer;
@@ -84,6 +86,13 @@ constexpr usize PIXEL_BYTES = static_cast<usize>(WIDTH) * HEIGHT * 4;
 constexpr usize VERTEX_COUNT = 3;
 constexpr usize INDEX_COUNT = 3;
 constexpr usize TABLE_COUNT = 1;
+/// First-use software shader work belongs to the cold ray sample, with headroom for sanitizer instrumentation.
+constexpr uint64 FIRST_SAMPLE_TIMEOUT_NANOSECONDS =
+    LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND;
+/// Subsequent samples retain the ordinary frame completion bound.
+constexpr uint64 FRAME_TIMEOUT_NANOSECONDS = 10 * time::NANOSECONDS_PER_SECOND;
+/// Test-only completion polling must leave CPU time for software shader compilation.
+constexpr std::chrono::milliseconds COMPLETION_POLL_INTERVAL{1};
 struct RhiGuard final
 {
     LUDUS_INLINE RhiGuard() noexcept
@@ -360,7 +369,7 @@ TEST_CASE("Shared alpha masks agree between CPU queries and GPU graph traversal"
     REQUIRE(settle(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs)) == rhi::RasterStatus::Ready);
     fixture.Cameras[0].OrthographicCamera = true;
     constexpr usize TEXEL_BYTES = 4;
-    constexpr usize CPU_SCENE_BYTES = 1024 * 1024;
+    constexpr usize CPU_SCENE_BYTES = usize{1024} * 1024;
     StaticArray<uint8, TEXEL_BYTES> texel{{255, 255, 255, 0}};
     StaticArray<math::Vector4, VERTEX_COUNT> colors{{{1, 1, 1, 1}, {1, 1, 1, 1}, {1, 1, 1, 1}}};
     fixture.Meshes[0].Geometry.Colors = {colors.GetData(), colors.GetSize()};
@@ -846,7 +855,8 @@ TEST_CASE("Camera revisions reuse ray scene resources and reset history transact
         rhi::TextureAspect aspect;
         REQUIRE(fixture.Graph.GetExport(0, texture, aspect) == rhi::RasterStatus::Ready);
         rhi::ReadbackTicket ticket;
-        completed = rhi::RequestTextureReadback(fixture.Device, texture, {0, 0, 0, WIDTH, HEIGHT}, WIDTH * 4, ticket);
+        completed =
+            rhi::RequestTextureReadback(fixture.Device, texture, {0, 0, 0, WIDTH, HEIGHT}, usize{WIDTH} * 4, ticket);
         while (completed == rhi::RasterStatus::Pending &&
                time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
         {
@@ -1153,7 +1163,11 @@ TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames",
             }
             REQUIRE(status == rhi::RasterStatus::Ready);
             rhi::ReadbackTicket ticket;
-            status = rhi::RequestTextureReadback(fixture.Device, texture, {0, 0, 0, WIDTH, HEIGHT}, WIDTH * 4, ticket);
+            status = rhi::RequestTextureReadback(fixture.Device,
+                                                 texture,
+                                                 {0, 0, 0, WIDTH, HEIGHT},
+                                                 usize{WIDTH} * 4,
+                                                 ticket);
             REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
             while (rhi::GetStatus(fixture.Device, ticket) == rhi::RasterStatus::Pending &&
                    time::NowTicks() - beginning < TIMEOUT)
@@ -1662,6 +1676,7 @@ TEST_CASE("Two graph reservoirs retain alternating shader writes and reset on re
         rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
         while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
         {
+            std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
             result = rhi::GetStatus(fixture.Device, completion);
         }
         REQUIRE(result == rhi::RasterStatus::Ready);
@@ -2076,6 +2091,7 @@ TEST_CASE("ReSTIR DI configurations shade mesh emitters and invalidate stale his
         rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
         while (result == rhi::RasterStatus::Pending && time::NowTicks() - started < TIMEOUT)
         {
+            std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
             result = rhi::GetStatus(fixture.Device, completion);
         }
         REQUIRE(result == rhi::RasterStatus::Ready);
@@ -2091,7 +2107,8 @@ TEST_CASE("ReSTIR DI configurations shade mesh emitters and invalidate stale his
         rhi::TextureAspect aspect;
         REQUIRE(fixture.Graph.GetExport(resource, texture, aspect) == rhi::RasterStatus::Ready);
         rhi::ReadbackTicket ticket;
-        result = rhi::RequestTextureReadback(fixture.Device, texture, {0, 0, 0, WIDTH, HEIGHT}, WIDTH * 4, ticket);
+        result =
+            rhi::RequestTextureReadback(fixture.Device, texture, {0, 0, 0, WIDTH, HEIGHT}, usize{WIDTH} * 4, ticket);
         while (result == rhi::RasterStatus::Pending && time::NowTicks() - started < TIMEOUT)
         {
             result = rhi::GetStatus(fixture.Device, ticket);
@@ -2101,7 +2118,7 @@ TEST_CASE("ReSTIR DI configurations shade mesh emitters and invalidate stale his
                 rhi::RasterStatus::Ready);
         REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
         // Shader failure is magenta. Check the whole image, including miss/boundary invocations.
-        for (usize pixel = 0; pixel < WIDTH * HEIGHT; ++pixel)
+        for (usize pixel = 0; pixel < usize{WIDTH} * HEIGHT; ++pixel)
         {
             constexpr usize CHANNEL_COUNT = 4;
             const usize address = pixel * CHANNEL_COUNT;
@@ -2607,15 +2624,21 @@ struct ExportExtent final
 /// Render one frame and wait for its completion.
 void RenderFrame(renderer::RenderGraph& inoutGraph, const GraphGpuFixture& fixture)
 {
-    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    // First-use shader work is included in a submitted sample on software adapters.
+    // Preserve the ordinary completion bound after that cold sample, including after a scene/camera reset.
+    const uint32 submittedSamples = inoutGraph.GetSubmittedRaySamples();
+    const uint64 timeoutNanoseconds =
+        submittedSamples == 0 ? FIRST_SAMPLE_TIMEOUT_NANOSECONDS : FRAME_TIMEOUT_NANOSECONDS;
     rhi::SubmissionToken completion;
     REQUIRE(inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
     const uint64 beginning = time::NowTicks();
     rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
-    while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+    while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < timeoutNanoseconds)
     {
+        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
         result = rhi::GetStatus(fixture.Device, completion);
     }
+    CAPTURE(submittedSamples, timeoutNanoseconds);
     REQUIRE(result == rhi::RasterStatus::Ready);
 }
 
@@ -3296,7 +3319,7 @@ struct PreparedGraph final
     PreparedGraph& operator=(const PreparedGraph&) = delete;
 
     /// The single exported color resource of a reference graph.
-    uint32 GetOnlyExport() const
+    [[nodiscard]] uint32 GetOnlyExport() const
     {
         uint32 output = 0;
         usize exportCount = 0;
@@ -3310,7 +3333,7 @@ struct PreparedGraph final
     }
 
     /// The template's exports, identified by the shade pass that writes each one.
-    StaticArray<uint32, VEACH_GUIBAS_OUTPUT_COUNT> GetVeachGuibasExports() const
+    [[nodiscard]] StaticArray<uint32, VEACH_GUIBAS_OUTPUT_COUNT> GetVeachGuibasExports() const
     {
         REQUIRE(Plan.Passes.GetSize() == VEACH_GUIBAS_FIRST_SHADE_PASS + VEACH_GUIBAS_OUTPUT_COUNT);
         StaticArray<uint32, VEACH_GUIBAS_OUTPUT_COUNT> exports{};
@@ -3392,7 +3415,8 @@ float64 ComputeMeanSquaredError(const Array<uint8>& pixels, const Array<uint8>& 
         }
     }
     constexpr float64 CHANNEL_COUNT = 3;
-    return sum / (static_cast<float64>(pixels.GetSize() / 4) * CHANNEL_COUNT);
+    const usize pixelCount = pixels.GetSize() / 4;
+    return sum / (static_cast<float64>(pixelCount) * CHANNEL_COUNT);
 }
 
 /// Mean squared error of the tone-mapped RGB values in [0, 1] against a converged image. Unlike
@@ -3414,7 +3438,8 @@ float64 ComputeDisplayMeanSquaredError(const Array<uint8>& pixels, const Array<u
         }
     }
     constexpr float64 CHANNEL_COUNT = 3;
-    return sum / (static_cast<float64>(pixels.GetSize() / 4) * CHANNEL_COUNT);
+    const usize pixelCount = pixels.GetSize() / 4;
+    return sum / (static_cast<float64>(pixelCount) * CHANNEL_COUNT);
 }
 
 /// Image means agree within a relative tolerance in every channel.
@@ -4197,6 +4222,8 @@ constexpr StaticArray<uint32, MANY_EMITTER_ROOM_QUAD_COUNT> MANY_EMITTER_ROOM_QU
 
 /// Write the two triangles of quad `quad`, whose corners are positions 4 quad to 4 quad + 3 in winding order, into
 /// indices and give both the material slot `material`. indices and slots hold every quad's entries.
+// Both output arrays belong to the same scene and have distinct element addressing below.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 void WriteQuad(usize quad, uint32 material, uint32* indices, uint32* slots)
 {
     const uint32 first = static_cast<uint32>(quad * MANY_EMITTER_QUAD_CORNERS);
@@ -4248,8 +4275,8 @@ struct ManyEmitterRoom final
         {
             const float32 centerX =
                 TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(tile % MANY_EMITTER_GRID);
-            const float32 centerZ =
-                TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(tile / MANY_EMITTER_GRID);
+            const usize tileRow = tile / MANY_EMITTER_GRID;
+            const float32 centerZ = TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(tileRow);
             const usize quad = MANY_EMITTER_ROOM_QUAD_COUNT + tile;
             const usize first = quad * MANY_EMITTER_QUAD_CORNERS;
             Positions[first] = {centerX - TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ - TILE_HALF_SIDE_WORLD};
@@ -4933,8 +4960,8 @@ struct EmitterFieldRoom final
         {
             const float32 centerX =
                 TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(tile % EMITTER_FIELD_GRID);
-            const float32 centerZ =
-                TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(tile / EMITTER_FIELD_GRID);
+            const usize tileRow = tile / EMITTER_FIELD_GRID;
+            const float32 centerZ = TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(tileRow);
             const usize quad = MANY_EMITTER_ROOM_QUAD_COUNT + tile;
             const usize first = quad * MANY_EMITTER_QUAD_CORNERS;
             Positions[first] = {centerX - TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ - TILE_HALF_SIDE_WORLD};
@@ -5336,7 +5363,8 @@ TEST_CASE("Measure RIS projected-solid-angle and Veach and Guibas MIS error at e
             const float64 equalTimeSamples =
                 static_cast<float64>(samples) * sampleMilliseconds[variant] / sampleMilliseconds[VEACH];
             veach.FrameCounts[BENCHMARK_SAMPLE_BUDGET_COUNT * (1 + variant) + budget] =
-                math::Min(math::Max(static_cast<usize>(equalTimeSamples + .5), usize{1}), BENCHMARK_MAXIMUM_FRAMES);
+                math::Min(math::Max(static_cast<usize>(math::Floor(equalTimeSamples + 0.5)), usize{1}),
+                          BENCHMARK_MAXIMUM_FRAMES);
         }
     }
     veach.Count = BENCHMARK_SAMPLE_BUDGET_COUNT * (1 + RIS_BENCHMARK_VARIANT_COUNT);
@@ -6083,6 +6111,8 @@ struct LargeLineScene final
 
 private:
     /// Size the arrays for the scene's vertices and indices plus the added emitter.
+    // The two topology counts are paired explicitly at each fixture construction.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     void reserve(usize vertexCount, usize indexCount)
     {
         REQUIRE(Positions.TryResize(vertexCount + LIGHT_CORNERS) == true);
@@ -7478,13 +7508,13 @@ TEST_CASE("A render graph kernel reads the renderer-bound LTC table like the CPU
             CHECK(math::Abs(actual - expected[channel] * UNORM_MAXIMUM) <= TOLERANCE_STEPS);
         }
     }
-    CHECK(fixture.Pixels[GetPixel(LTC_LOOKUP_CASE_COUNT, row)] == 0);
+    CHECK(fixture.Pixels[GetPixel(static_cast<usize>(LTC_LOOKUP_CASE_COUNT), row)] == 0);
 }
 
 namespace
 {
 /// Time allowed for one capture to finish, including its private graph's preparation.
-constexpr uint64 CAPTURE_TIMEOUT = 60 * time::NANOSECONDS_PER_SECOND;
+constexpr uint64 CAPTURE_TIMEOUT = 180 * time::NANOSECONDS_PER_SECOND;
 /// A small target keeps the GPU captures quick; it still exceeds the reduced authored limit below.
 constexpr uint32 CAPTURE_TARGET_SAMPLES = 6;
 /// An authored Accumulate limit below CAPTURE_TARGET_SAMPLES, so reaching the target needs the override.
@@ -7533,8 +7563,11 @@ FinishCapture(renderer::RenderGraphCapture& inoutCapture, const Room& room, uint
         {
             return phase;
         }
+        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
     }
-    FAIL("The capture did not finish");
+    const renderer::RenderGraphCaptureInfo info = inoutCapture.GetInfo();
+    CAPTURE(phase, info.SubmittedSamples, info.MinimumSamples);
+    FAIL("The capture did not finish, including private graph preparation");
     return phase;
 }
 
@@ -8040,20 +8073,25 @@ namespace
 /// Render one frame of a graph, retrying while it prepares row bands, and wait for its producer.
 void RenderPreparedFrame(renderer::RenderGraph& inoutGraph, const GraphGpuFixture& fixture)
 {
-    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    const uint32 submittedSamples = inoutGraph.GetSubmittedRaySamples();
+    const uint64 timeoutNanoseconds =
+        submittedSamples == 0 ? FIRST_SAMPLE_TIMEOUT_NANOSECONDS : FRAME_TIMEOUT_NANOSECONDS;
     const uint64 beginning = time::NowTicks();
     rhi::SubmissionToken completion;
     rhi::RasterStatus rendered = inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion);
-    while (rendered == rhi::RasterStatus::NotReady && time::NowTicks() - beginning < TIMEOUT)
+    while (rendered == rhi::RasterStatus::NotReady && time::NowTicks() - beginning < timeoutNanoseconds)
     {
+        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
         rendered = inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion);
     }
     REQUIRE(rendered == rhi::RasterStatus::Ready);
     rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
-    while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+    while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < timeoutNanoseconds)
     {
+        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
         result = rhi::GetStatus(fixture.Device, completion);
     }
+    CAPTURE(submittedSamples, timeoutNanoseconds);
     REQUIRE(result == rhi::RasterStatus::Ready);
 }
 } // namespace
@@ -8476,7 +8514,8 @@ constexpr usize RESTIR_GI_PASS_COUNT = 4;
 /// linear radiance, one value per pixel, which must hold accumulatedCount frames.
 void RenderRestirGiSums(PreparedGraph& inoutGraph,
                         const GraphGpuFixture& fixture,
-                        usize frameCount,
+                        // Incremental and total counts are independently checked against readback.
+                        usize frameCount, // NOLINT(bugprone-easily-swappable-parameters)
                         usize accumulatedCount,
                         Array<math::Vector3>& outSums)
 {
@@ -8732,7 +8771,8 @@ rhi::RayInput MakeOmvOracleRay(const math::Matrix4& clipToWorld,
     const float32 jitterX = math::SampleFloat01(key, {pixel, sample, 0});
     const float32 jitterY = math::SampleFloat01(key, {pixel, sample, 1});
     const float32 x = 2 * (static_cast<float32>(pixel % OMV_TEST_WIDTH) + jitterX) / OMV_TEST_WIDTH - 1;
-    const float32 y = 1 - 2 * (static_cast<float32>(pixel / OMV_TEST_WIDTH) + jitterY) / OMV_TEST_HEIGHT;
+    const uint32 pixelRow = pixel / OMV_TEST_WIDTH;
+    const float32 y = 1 - 2 * (static_cast<float32>(pixelRow) + jitterY) / OMV_TEST_HEIGHT;
     math::Vector4 nearWorld = clipToWorld * math::Vector4{x, y, 0, 1};
     math::Vector4 farWorld = clipToWorld * math::Vector4{x, y, 1, 1};
     nearWorld = nearWorld / nearWorld.W;
@@ -8804,7 +8844,7 @@ TEST_CASE("One-more-vertex HGS and both comparison estimators match CPU raw-line
     source.Inputs = room.Inputs;
     source.HasMaterialInterface = true;
     core::UniquePtr<renderer::internal::ReferenceJob> cpu;
-    constexpr usize CPU_BYTES = 16 * 1024 * 1024;
+    constexpr usize CPU_BYTES = usize{16} * 1024 * 1024;
     renderer::ReferenceCaptureDescription cameraDescription;
     cameraDescription.WorldToClip = room.Cameras[0].WorldToClip;
     cameraDescription.CameraPosition = room.Cameras[0].CameraPosition;
@@ -8978,8 +9018,8 @@ TEST_CASE("One-more-vertex unsupported lighting has a repair and clears after sc
     }
 }
 
-// Conditional ReSTIR specializes Kettunen et al. (SIGGRAPH Asia 2023), Equation 22,
-// https://doi.org/10.1145/3610548.3618245 , to mesh-light endpoints in world area.
+// Conditional ReSTIR adapts Kettunen et al. (SIGGRAPH Asia 2023), Equation 22,
+// https://doi.org/10.1145/3610548.3618245 , to marked area suffixes with cached path tails.
 // The CPU oracle uses independent path tracing, emitter power selection and BSDF/light MIS;
 // it shares neither reservoirs nor conditional contribution weights with the GPU implementation.
 namespace
@@ -8991,7 +9031,14 @@ constexpr PackageLocation CONDITIONAL_RESTIR_NO_REUSE{LUDUS_RG3_CONDITIONAL_REST
 constexpr PackageLocation CONDITIONAL_RESTIR_DIRECT{LUDUS_RG3_CONDITIONAL_RESTIR_DIRECT_DIRECTORY,
                                                     "rg2_conditional_restir_direct.lurgrt"};
 
-math::Vector3 ComputeConditionalOracleMean(const CornellBox& room, uint32 scatteringCount)
+constexpr PackageLocation CONDITIONAL_RESTIR_ENDPOINTS{LUDUS_RG3_CONDITIONAL_RESTIR_ENDPOINTS_DIRECTORY,
+                                                       "rg2_conditional_restir_endpoints.lurgrt"};
+constexpr PackageLocation CONDITIONAL_RESTIR_IMMEDIATE{LUDUS_RG3_CONDITIONAL_RESTIR_IMMEDIATE_DIRECTORY,
+                                                       "rg2_conditional_restir_immediate.lurgrt"};
+constexpr PackageLocation CONDITIONAL_RESTIR_MAXIMUM{LUDUS_RG3_CONDITIONAL_RESTIR_MAXIMUM_DIRECTORY,
+                                                     "rg2_conditional_restir_maximum.lurgrt"};
+
+math::Vector3 ComputeConditionalOracleMean(const CornellBox& room, uint32 scatteringCount, uint64 randomSeed = 123)
 {
     namespace internal = renderer::internal;
     renderer::RenderGraphSceneDescription scene;
@@ -9007,20 +9054,22 @@ math::Vector3 ComputeConditionalOracleMean(const CornellBox& room, uint32 scatte
     camera.CenterRays = true;
     camera.MaxDepth = scatteringCount;
     camera.RouletteDepth = scatteringCount + 1;
-    constexpr usize SCENE_BYTES = 8 * 1024 * 1024;
+    constexpr usize SCENE_BYTES = usize{8} * 1024 * 1024;
     core::UniquePtr<internal::ReferenceJob> oracle;
     REQUIRE(internal::BuildMaterialGraphRayScene(scene, camera, SCENE_BYTES, oracle) == rhi::RasterStatus::Ready);
-    oracle->Key = math::RandomKey{123};
+    oracle->Key = math::RandomKey{randomSeed};
     // Graph traversal preserves original mesh primitive IDs across material slots. CPU transport expects
     // material-instance-local IDs when indexing FirstTriangle + Primitive; adapt only this oracle snapshot.
     for (const internal::ReferenceInstance& instance : oracle->Scene.Instances)
     {
         for (usize primitive = 0; primitive < instance.TriangleCount; ++primitive)
+        {
             oracle->Scene.Triangles[instance.FirstTriangle + primitive].Primitive = static_cast<uint32>(primitive);
+        }
     }
     constexpr uint32 SAMPLE_COUNT = 128;
     internal::ReferenceSum sum;
-    for (uint32 pixel = 0; pixel < WIDTH * HEIGHT; ++pixel)
+    for (uint32 pixel = 0; pixel < usize{WIDTH} * HEIGHT; ++pixel)
     {
         for (uint32 sample = 0; sample < SAMPLE_COUNT; ++sample)
         {
@@ -9045,13 +9094,19 @@ math::Vector3 ComputeConditionalOracleMean(const CornellBox& room, uint32 scatte
                     if (visibility.Hit == 0)
                     {
                         if (path.DirectDepth == 0)
+                        {
                             path.Direct = path.Direct + path.PendingDirects[shadow];
+                        }
                         else
+                        {
                             path.Indirect = path.Indirect + path.PendingDirects[shadow];
+                        }
                     }
                 }
                 if (path.HasNext == false)
+                {
                     break;
+                }
                 path.Ray = path.Next;
             }
             REQUIRE(diagnostics.InvalidContributions == 0);
@@ -9067,46 +9122,128 @@ TEST_CASE("Conditional ReSTIR independent final gather agrees with CPU transport
 {
     GraphGpuFixture fixture;
     CornellBox room;
-    constexpr usize FRAME_COUNT = 512;
+    constexpr usize FRAME_COUNT = 2048;
     constexpr float32 RELATIVE_MEAN_TOLERANCE = .05F;
-    const math::Vector3 expected = ComputeConditionalOracleMean(room, 2);
+    const math::Vector3 expected = ComputeConditionalOracleMean(room, 5);
+    constexpr usize ESTIMATOR_COUNT = 2;
+    StaticArray<math::Vector3, ESTIMATOR_COUNT> means;
+    usize estimator = 0;
     for (const PackageLocation& location : {CONDITIONAL_RESTIR_TEMPLATE, CONDITIONAL_RESTIR_NO_REUSE})
     {
         PreparedGraph graph(fixture, location, room, 1);
         Array<math::Vector3> pixels;
         RenderRestirGiMean(graph, fixture, FRAME_COUNT, pixels);
         const math::Vector3 actual = ComputeImageMean(pixels);
+        math::Vector3 peak{};
+        for (const math::Vector3& pixel : pixels)
+            peak = {math::Max(peak.X, pixel.X), math::Max(peak.Y, pixel.Y), math::Max(peak.Z, pixel.Z)};
+        INFO("image peak RGB " << peak.X << ',' << peak.Y << ',' << peak.Z);
         INFO("conditional gather RGB " << actual.X << ',' << actual.Y << ',' << actual.Z << ", CPU RGB " << expected.X
                                        << ',' << expected.Y << ',' << expected.Z);
         CheckMeansAgree(actual, expected, RELATIVE_MEAN_TOLERANCE);
+        means[estimator++] = actual;
     }
     const math::Vector3 directExpected = ComputeConditionalOracleMean(room, 1);
     PreparedGraph direct(fixture, CONDITIONAL_RESTIR_DIRECT, room, 1);
     Array<math::Vector3> pixels;
     RenderRestirGiMean(direct, fixture, FRAME_COUNT, pixels);
-    CheckMeansAgree(ComputeImageMean(pixels), directExpected, RELATIVE_MEAN_TOLERANCE);
+    const math::Vector3 directMean = ComputeImageMean(pixels);
+    CheckMeansAgree(directMean, directExpected, RELATIVE_MEAN_TOLERANCE);
+    // Isolate indirect energy so primary emission/direct lighting cannot hide a missing tail.
+    constexpr float32 RELATIVE_INDIRECT_TOLERANCE = .1F;
+    for (const math::Vector3& mean : means)
+        CheckMeansAgree(mean - directMean, expected - directExpected, RELATIVE_INDIRECT_TOLERANCE);
     // The CPU oracle must contain actual indirect transport, rather than agreeing because both paths omit it.
     constexpr float32 MINIMUM_INDIRECT_GAIN = 1.1F;
     CHECK(expected.Y > MINIMUM_INDIRECT_GAIN * directExpected.Y);
 }
 
-TEST_CASE("Conditional ReSTIR preserves layered BSDF prefix weights and gathers",
+TEST_CASE("Conditional ReSTIR traces variable-length suffixes at immediate and maximum gather depths",
+          "[render-graph][gpu][conditional-restir][suffix-depth]")
+{
+    const uint64 randomSeed = GENERATE(1, 2);
+    INFO("sampling seed " << randomSeed);
+    GraphGpuFixture fixture;
+    CornellBox room;
+    constexpr usize FRAME_COUNT = 4096;
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .05F;
+    struct DepthCase
+    {
+        PackageLocation Location;
+        uint32 ScatteringCount;
+    };
+    constexpr usize DEPTH_CASE_COUNT = 3;
+    const StaticArray<DepthCase, DEPTH_CASE_COUNT> cases{{
+        {CONDITIONAL_RESTIR_ENDPOINTS, 2},
+        {CONDITIONAL_RESTIR_IMMEDIATE, 4},
+        {CONDITIONAL_RESTIR_MAXIMUM, 9},
+    }};
+    for (const DepthCase& depthCase : cases)
+    {
+        const math::Vector3 expected = ComputeConditionalOracleMean(room, depthCase.ScatteringCount, randomSeed);
+        PreparedGraph graph(fixture, depthCase.Location, room, randomSeed);
+        Array<math::Vector3> pixels;
+        RenderRestirGiMean(graph, fixture, FRAME_COUNT, pixels);
+        const math::Vector3 actual = ComputeImageMean(pixels);
+        INFO("scattering count " << depthCase.ScatteringCount << ", GPU RGB " << actual.X << ',' << actual.Y << ','
+                                 << actual.Z << ", CPU RGB " << expected.X << ',' << expected.Y << ',' << expected.Z);
+        CheckMeansAgree(actual, expected, RELATIVE_MEAN_TOLERANCE);
+    }
+    const math::Vector3 shortMean = ComputeConditionalOracleMean(room, 2);
+    const math::Vector3 longMean = ComputeConditionalOracleMean(room, 9);
+    // The matched integral must contain substantial higher-order light, so parity cannot pass by
+    // accidentally rendering the old one-bounce approximation at every configured length.
+    constexpr float32 MINIMUM_HIGHER_ORDER_GAIN = 1.1F;
+    CHECK(longMean.Y > MINIMUM_HIGHER_ORDER_GAIN * shortMean.Y);
+}
+
+TEST_CASE("Conditional ReSTIR preserves layered and glossy BSDF weights along multi-bounce suffixes",
           "[render-graph][gpu][conditional-restir][coating]")
+{
+    using ludus::content::scene_format::MaterialModel;
+    const MaterialModel model = GENERATE(MaterialModel::CoatedDiffuse, MaterialModel::Conductor);
+    INFO("material model " << static_cast<uint32>(model));
+    GraphGpuFixture fixture;
+    CornellBox room;
+    for (renderer::SceneShaderMaterial& material : room.Materials)
+    {
+        material.Scattering.Model = model;
+        material.Scattering.AlphaU = model == MaterialModel::CoatedDiffuse ? .1F : .6F;
+        material.Scattering.AlphaV = material.Scattering.AlphaU;
+        material.Scattering.Eta = {.2F, .2F, .2F};
+        material.Scattering.K = {3, 3, 3};
+    }
+    const math::Vector3 expected = ComputeConditionalOracleMean(room, 5);
+    for (const PackageLocation& location : {CONDITIONAL_RESTIR_TEMPLATE, CONDITIONAL_RESTIR_NO_REUSE})
+    {
+        PreparedGraph graph(fixture, location, room, 1);
+        Array<math::Vector3> pixels;
+        constexpr usize FRAME_COUNT = 4096;
+        RenderRestirGiMean(graph, fixture, FRAME_COUNT, pixels);
+        const math::Vector3 actual = ComputeImageMean(pixels);
+        INFO("layered/glossy GPU RGB " << actual.X << ',' << actual.Y << ',' << actual.Z << ", CPU RGB " << expected.X
+                                       << ',' << expected.Y << ',' << expected.Z);
+        constexpr float32 RELATIVE_MEAN_TOLERANCE = .05F;
+        CheckMeansAgree(actual, expected, RELATIVE_MEAN_TOLERANCE);
+    }
+}
+
+TEST_CASE("Conditional ReSTIR separates primary emission from all reflected scattering orders",
+          "[render-graph][gpu][conditional-restir][emission]")
 {
     GraphGpuFixture fixture;
     CornellBox room;
     for (renderer::SceneShaderMaterial& material : room.Materials)
     {
-        material.Scattering.Model = ludus::content::scene_format::MaterialModel::CoatedDiffuse;
-        material.Scattering.AlphaU = .1F;
-        material.Scattering.AlphaV = .1F;
+        material.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+        material.BaseColor = {};
     }
-    const math::Vector3 expected = ComputeConditionalOracleMean(room, 2);
-    PreparedGraph graph(fixture, CONDITIONAL_RESTIR_TEMPLATE, room, 1);
+    const math::Vector3 expected = ComputeConditionalOracleMean(room, 5);
+    REQUIRE(expected.Y > 0);
+    PreparedGraph graph(fixture, CONDITIONAL_RESTIR_NO_REUSE, room, 1);
     Array<math::Vector3> pixels;
-    constexpr usize FRAME_COUNT = 512;
-    RenderRestirGiMean(graph, fixture, FRAME_COUNT, pixels);
-    constexpr float32 RELATIVE_MEAN_TOLERANCE = .05F;
+    RenderRestirGiMean(graph, fixture, 2, pixels);
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .00001F;
     CheckMeansAgree(ComputeImageMean(pixels), expected, RELATIVE_MEAN_TOLERANCE);
 }
 
@@ -9151,7 +9288,9 @@ void RenderGuidedFgMean(PreparedGraph& inoutGraph,
     constexpr uint32 PASS_COUNT = 10;
     REQUIRE(inoutGraph.Plan.Passes.GetSize() == PASS_COUNT);
     for (usize frame = 0; frame < frameCount; ++frame)
+    {
         RenderFrame(inoutGraph.Graph, fixture);
+    }
     for (uint32 pass = 0; pass < PASS_COUNT; ++pass)
     {
         const renderer::RenderGraphRayFailures failures = ReadRayFailures(inoutGraph.Graph, pass);
@@ -9203,7 +9342,7 @@ TEST_CASE("Guided FG's complete graph matches CPU primary emission and clears ph
     camera.CameraPosition = room.Cameras[0].CameraPosition;
     camera.Width = WIDTH;
     camera.Height = HEIGHT;
-    constexpr usize CPU_SCENE_BYTES = 1024 * 1024;
+    constexpr usize CPU_SCENE_BYTES = usize{1024} * 1024;
     core::UniquePtr<renderer::internal::ReferenceJob> oracle;
     REQUIRE(renderer::internal::BuildMaterialGraphRayScene(scene, camera, CPU_SCENE_BYTES, oracle) ==
             rhi::RasterStatus::Ready);
@@ -9255,11 +9394,15 @@ TEST_CASE("Guided FG's complete graph matches CPU primary emission and clears ph
     constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
     const uint64 start = time::NowTicks();
     while (updated == rhi::RasterStatus::Pending && time::NowTicks() - start < TIMEOUT)
+    {
         updated = graph.Graph.Poll();
+    }
     REQUIRE(updated == rhi::RasterStatus::Ready);
     RenderGuidedFgMean(graph, fixture, 1, mean);
     for (const math::Vector3& pixel : mean)
+    {
         CHECK(pixel.X == 0);
+    }
     REQUIRE(graph.Graph.SetRayTileCount(2) == rhi::RasterStatus::Ready);
     RenderFrame(graph.Graph, fixture);
     RenderFrame(graph.Graph, fixture);
@@ -9274,7 +9417,9 @@ TEST_CASE("Guided FG transports reflected photons and agrees with independent sa
     GraphGpuFixture fixture(false, false);
     CornellBox room;
     for (renderer::SceneShaderMaterial& material : room.Materials)
+    {
         material.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    }
     constexpr usize FRAME_COUNT = 64;
     Array<math::Vector3> guided;
     {
@@ -9312,7 +9457,9 @@ TEST_CASE("Guided FG preserves radiance when one point source is split into many
     CornellBox room;
     room.Materials[CORNELL_LIGHT].Emission = {0, 0, 0};
     for (renderer::SceneShaderMaterial& material : room.Materials)
+    {
         material.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    }
     constexpr usize LIGHT_COUNT = 64;
     constexpr usize FRAME_COUNT = 64;
     constexpr float32 TOTAL_INTENSITY = 2;

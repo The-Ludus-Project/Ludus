@@ -50,7 +50,7 @@ struct Fixture final
 {
     StaticArray<uint8, BUFFER_BYTES> Weights{};
     StaticArray<ComputeWorkloadBuffer, BUFFER_COUNT> Buffers{};
-    StaticArray<RasterBinding, BINDING_COUNT> Reflection{};
+    StaticArray<RasterBinding, BINDING_COUNT> Reflection;
     StaticArray<ComputeWorkloadBinding, BINDING_COUNT> Bindings{};
     StaticArray<ComputeWorkloadKernel, KERNEL_COUNT> Kernels{};
     Fixture()
@@ -72,7 +72,7 @@ struct Fixture final
             kernel.Bindings = {Bindings.GetData(), Bindings.GetSize()};
         }
     }
-    ComputeWorkloadDescription Describe() const noexcept
+    [[nodiscard]] ComputeWorkloadDescription Describe() const noexcept
     {
         return {{Buffers.GetData(), Buffers.GetSize()},
                 {Kernels.GetData(), Kernels.GetSize()},

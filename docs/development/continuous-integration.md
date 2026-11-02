@@ -292,6 +292,29 @@ Native jobs use `macos-15` arm64. Host and documentation tooling separately chec
 not establish macOS 14 runtime qualification. See GitHub's
 [macOS 14 deprecation notice](https://github.com/actions/runner-images/issues/13518).
 
+The long ARM jobs run in order: sanitizers, native/SDK acceptance, then the nightly
+analyzer. This limits simultaneous runner demand after hosted ARM capacity left
+parallel jobs unacquired until GitHub cancelled them. Later jobs use an explicit
+status condition so a test failure does not suppress independent evidence;
+cancelling the workflow still stops the chain. All required results remain part
+of the promotion gate. The batch also admits ARM-owning workflows in order:
+native, threading, installed host tooling, then wiki. This prevents short ARM
+jobs from expiring behind native work in a different reusable workflow. Browser,
+Windows and recovery workflows remain parallel; the ARM sequence can increase
+the total batch duration. This ordering reduces demand; a platform-wide shortage
+can still require retrying a job whose annotations confirm runner acquisition
+failed before execution.
+
+Native viewport scheduling acceptance compares continuous-input presentation
+against an idle window in the same process, retaining a minimum 75% cadence and
+explicit frame/input progress checks. A separate regression verifies that repeated
+start requests preserve the active service timer's identity and deadline. The
+screen's reported refresh rate is approximate, and shared-runner load can delay
+timers; it is not an absolute throughput oracle. See Qt's
+[screen refresh contract](https://doc.qt.io/qt-6/qscreen.html#refreshRate-prop) and
+[timer accuracy contract](https://doc.qt.io/qt-6/qtimer.html#accuracy-and-timer-resolution).
+These checks establish scheduling progress, not a display-performance claim.
+
 ### Threading platform lanes
 
 `.github/workflows/threading-platforms.yml` runs the Windows threading build and the
@@ -402,6 +425,55 @@ missing log, launch failure or omitted result fails even if the process returns
 zero. Independent commands still report findings. CI always uploads each shard's
 available evidence with 14-day retention; a missing artifact fails the upload.
 These are Q0 inventory/control records, not the proposed Q2 full run schema.
+
+### GPU correctness test boundaries
+
+Ordinary raster checks keep their short CTest boundary. GPU reference-compute,
+render-graph lifecycle/capture and template cases are registered individually
+through Catch2 discovery before CTest runs. Their names start with
+`ludus_renderer_reference:`, `ludus_render_graph_ray:` and `ludus_render_graph_template:`;
+renderer/GPU/ray labels and explicit unsupported-adapter skips remain available.
+Each reference-compute or graph lifecycle/capture case has a 300-second deadline
+(600 seconds with ASan/UBSan); each template case has a
+600-second deadline for its convergence captures. Polygon sampling, Metropolis
+and physical-optics parity also have separate named tests. Metropolis parity has
+a 300-second case deadline (600 seconds with ASan/UBSan), allowing its
+material/estimator variants to share the cold shader setup. Its readiness helper yields between polls and allows
+120 seconds for cold shader/pipeline preparation and the first submission
+(300 seconds with ASan/UBSan); buffer readiness and readback retain their
+30-second bounds. Failed readiness
+reports the operation, status, elapsed time and deadline, and retires the RHI
+even when a test assertion aborts the case. The numerical and
+image assertions are unchanged by this partition.
+
+These correctness deadlines include shader preparation on software adapters.
+Independent deadlines keep growth in the number of reference captures from
+consuming the raster test's deadline. `--durations yes` identifies completed
+cases when a deadline fails. Render-graph capture tests allow 120 seconds for the
+first submitted ray sample after initialization or a scene/camera reset, including
+first-use software shader work. ASan/UBSan cases allow 300 seconds for that cold
+work, including driver allocation interception; subsequent samples retain the
+10-second completion bound. A private frame capture allows 180 seconds including
+graph preparation and readback. The interactive graph preview allows 120 seconds
+for the first sample while keeping its last presented frame.
+
+Raw-reference capture tests yield between advances and distinguish preparation
+and first committed samples from the remaining capture. Their cold window uses
+the same ordinary/instrumented allowance; after any samples commit, the complete
+remaining capture retains its 60-second window. Failures include sample coverage
+and elapsed time. Ordinary raster cases retain 60 seconds, with 180 seconds under
+ASan/UBSan. No sampling count, estimator, tolerance or unsupported-adapter rule
+changes with these scheduling allowances. Performance qualification remains in
+its own lane.
+
+The offscreen editor suite runs as four serial Catch2 shards and the canvas
+configuration suite as two. Declaration order gives each case exactly one shard;
+the existing 600- and 180-second deadlines apply per shard. CTest resource locking
+keeps those GPU and shader-worker owners serial even under a parallel CTest run.
+
+The mandatory Vulkan pixel proof selects `[render-graph]` and rejects skipped
+cases. Portable bilinear upscaling stays in that set; optional MetalFX variants
+use `[render-graph-metalfx]` and remain in the full GPU and macOS suites.
 
 ## Scheduled runtime profiling
 

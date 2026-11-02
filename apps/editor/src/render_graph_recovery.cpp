@@ -248,6 +248,16 @@ void RenderGraphRecovery::refreshStatus()
     }
     mStatus->setText(status.simplified());
     mStatus->setToolTip(status + QLatin1Char('\n') + mStore.GetPath(mDocument));
+    // Recovery speaks only when there is something to say: unsaved edits, checkpoints to review or a problem.
+    // Idle it takes no room, so the document header stays compact.
+    const bool isIdle = mError.isEmpty() == true && pending.isEmpty() == true && mDocument.IsDirty() == false;
+#if defined(Q_OS_WASM)
+    mStatus->setVisible(true);
+    mReview->setVisible(true);
+#else
+    mStatus->setVisible(isIdle == false);
+    mReview->setVisible(isIdle == false);
+#endif
 }
 
 bool RenderGraphRecovery::Restore(const QString& path, const QByteArray& expectedDigest)

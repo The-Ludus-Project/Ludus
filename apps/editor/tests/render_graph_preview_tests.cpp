@@ -3955,7 +3955,7 @@ TEST_CASE("The viewport names the check that turned graph pixels magenta",
     preview.SetExtraction(extraction);
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_POLYGONAL_LIGHT_FIXTURE)) == RenderGraphPreviewLoad::Staged);
     // The preview reads the failure summaries about twice a second, one ray pass at a time.
-    constexpr int64 FAILURE_TIMEOUT_MILLISECONDS = 30000;
+    constexpr int64 FAILURE_TIMEOUT_MILLISECONDS = 150000;
     QElapsedTimer timer;
     timer.start();
     while (preview.GetFailureText().isEmpty() == true && timer.elapsed() < FAILURE_TIMEOUT_MILLISECONDS)

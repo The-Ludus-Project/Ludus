@@ -180,7 +180,7 @@
       ],
       "scene_interface": {
         "version": 1,
-        "surface_queries": 2,
+        "surface_queries": 8,
         "visibility_queries": 2
       }
     }
@@ -192,7 +192,7 @@
   "settings": [
     {
       "id": "CRIS_INITIAL_CANDIDATES",
-      "label": "Fresh light suffix candidates",
+      "label": "Fresh endpoint candidates for a zero-bounce suffix",
       "type": "UInt32",
       "value": 8,
       "minimum": 1,
@@ -200,11 +200,19 @@
     },
     {
       "id": "CRIS_PREFIX_BOUNCES",
-      "label": "Gather prefix (0 direct lighting, 1 direct plus one indirect bounce)",
+      "label": "Gather prefix scattering edges (0 or 1)",
       "type": "UInt32",
       "value": 1,
       "minimum": 0,
       "maximum": 1
+    },
+    {
+      "id": "CRIS_SUFFIX_BOUNCES",
+      "label": "Maximum suffix scattering vertices (0 keeps endpoint suffixes)",
+      "type": "UInt32",
+      "value": 3,
+      "minimum": 0,
+      "maximum": 7
     },
     {
       "id": "IS_CRIS_TEMPORAL_ENABLED",

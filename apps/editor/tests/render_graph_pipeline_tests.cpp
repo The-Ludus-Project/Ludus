@@ -1,4 +1,5 @@
 // Pipeline authoring regressions run without a Renderer device, including sanitizer builds.
+#include "internal/render_graph_build_limits.h"
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_configuration_editor.h"
 #include "internal/render_graph_document.h"
@@ -528,6 +529,7 @@ TEST_CASE("pipeline shader creation commits source manifest and references toget
 TEST_CASE("pipeline shader creation rejects conflicts without partial drafts",
           "[editor][render-graph][pipeline][shader-creation]")
 {
+    constexpr qsizetype PROFILE_COUNT = 4;
     QTemporaryDir project;
     const QString package = MakePackage(project);
     RenderGraphDocument document;
@@ -557,7 +559,7 @@ TEST_CASE("pipeline shader creation rejects conflicts without partial drafts",
         QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
         QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
         QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
-        constexpr qsizetype PROGRAM_COUNT_AT_ARTIFACT_LIMIT = 64;
+        constexpr qsizetype PROGRAM_COUNT_AT_ARTIFACT_LIMIT = MAX_SHADER_ARTIFACTS / PROFILE_COUNT;
         while (programs.size() < PROGRAM_COUNT_AT_ARTIFACT_LIMIT)
         {
             QJsonObject program = programs.at(0).toObject();
@@ -565,8 +567,13 @@ TEST_CASE("pipeline shader creation rejects conflicts without partial drafts",
             programs.append(program);
         }
         manifest.insert(QStringLiteral("programs"), programs);
+        manifest.insert(QStringLiteral("profiles"),
+                        QJsonArray{QStringLiteral("metal"),
+                                   QStringLiteral("wgsl"),
+                                   QStringLiteral("spirv"),
+                                   QStringLiteral("glsl")});
         budgets.insert(QStringLiteral("programs"), PROGRAM_COUNT_AT_ARTIFACT_LIMIT);
-        budgets.insert(QStringLiteral("artifacts"), PROGRAM_COUNT_AT_ARTIFACT_LIMIT * 2);
+        budgets.insert(QStringLiteral("artifacts"), PROGRAM_COUNT_AT_ARTIFACT_LIMIT * PROFILE_COUNT);
         manifest.insert(QStringLiteral("budgets"), budgets);
         REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
         expected = RenderGraphDocumentStatus::Capacity;
@@ -640,8 +647,11 @@ TEST_CASE("pipeline shader creation rejects conflicts without partial drafts",
     if (expected == RenderGraphDocumentStatus::Capacity)
     {
         CHECK(error.contains(QStringLiteral("main.lushader.json")) == true);
-        CHECK(error.contains(QStringLiteral("65 programs across 2 target profiles")) == true);
-        CHECK(error.contains(QStringLiteral("supported limit of 128 target artifacts")) == true);
+        CHECK(error.contains(QStringLiteral("%1 programs across %2 target profiles")
+                                 .arg(MAX_SHADER_ARTIFACTS / PROFILE_COUNT + 1)
+                                 .arg(PROFILE_COUNT)) == true);
+        CHECK(error.contains(QStringLiteral("supported limit of %1 target artifacts").arg(MAX_SHADER_ARTIFACTS)) ==
+              true);
     }
     CHECK(document.GetRevision() == revision);
     CHECK(document.GetFiles() == files);

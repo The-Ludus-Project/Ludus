@@ -64,6 +64,18 @@ def line_filter(root: Path, changed: dict[str, list[list[int]]]) -> str:
     return json.dumps(entries)
 
 
+def write_line_filter_response(root: Path, changed: dict[str, list[list[int]]], path: Path) -> Path:
+    """Retain the complete filter without exceeding the POSIX argument-size limit."""
+    # Thanks to the LLVM Project, "Clang-Tidy", "Using Clang-Tidy": parameter files
+    # carry oversized options. Quote one complete JSON argument for the POSIX quality
+    # runner, preserving spaces, apostrophes and JSON escapes in source paths.
+    # https://clang.llvm.org/extra/clang-tidy/#using-clang-tidy
+    # Response expansion removes the outer argument quotes once; the filter itself
+    # remains JSON. Writing the option unquoted would strip its object-key quotes.
+    path.write_text(json.dumps("--line-filter=" + line_filter(root, changed)) + "\n", encoding="utf-8")
+    return path.resolve()
+
+
 def plan(root: Path, entries: list[dict], changed: dict[str, list[list[int]]]) -> list[tuple[dict, Path]]:
     """Pick (compile entry, policy file) pairs for changed translation units."""
     sources = {

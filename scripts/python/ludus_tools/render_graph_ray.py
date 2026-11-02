@@ -507,9 +507,7 @@ def stage_helpers(snapshot, helper, roots, build):
             build.require(snapshot.external.get(relative) == helper / filename and snapshot.files[relative] == data,
                           'Source', relative, 'reserved engine ray helper path')
             continue
-        snapshot.files[relative] = data
-        snapshot.external[relative] = helper / filename
-        snapshot.total += len(data)
+        snapshot.capture(relative, data, external=helper / filename)
         text = data.decode('utf-8', 'replace') if isinstance(data, bytes) else data
         pending += [name for name in HELPER_INCLUDE.findall(text)
                     if '_ludus_ray/' + name not in snapshot.files and (helper / name).is_file()]

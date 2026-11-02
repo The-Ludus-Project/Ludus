@@ -185,6 +185,20 @@ def _validate_web_sdk(root: Path, sdk: Path, native_identity) -> Path:
     return toolchain
 
 
+def _identity_stamp(identity) -> str:
+    """What a project's recorded setup depends on in an SDK, besides where it is: its ABI identity.
+
+    The SDK's path is not hashed here; ``_inputs`` keeps it as the key of the stamps mapping, so moving the SDK
+    still changes the signature. The recorded setup covers presets and cache variables, which name the SDK by path and by the target,
+    compiler and deployment baseline in its manifest. The SDK's library contents are not part of it: a
+    refreshed engine install (./init.sh rebuilds this editor's engine whenever the checkout moved) keeps its
+    path and identity, and its library stamp is tracked per build folder (``resolve.write_stamp``), which
+    reconfigures on the next build. Hashing the contents here made every ./init.sh report "SDK or tool
+    inputs changed; run repair" for every project, and repair is a full configure, build and test.
+    """
+    return hashlib.sha256(json.dumps(identity.abi_key(), sort_keys=True).encode()).hexdigest()
+
+
 def _inputs(root: Path, source: Path, sdk: Path, profile: str, web_sdk: Path | None, *, project: Path | None = None):
     native = load_prefix_manifest(sdk)
     configured = tools(root)
@@ -228,7 +242,7 @@ def _inputs(root: Path, source: Path, sdk: Path, profile: str, web_sdk: Path | N
         if name in shader_paths:
             cache[key] = str(shader_paths[name])
     records = {profile: {"cacheVariables": cache}}
-    stamps = {str(sdk): compute_stamp(sdk)}
+    stamps = {str(sdk): _identity_stamp(native)}
     if web_sdk:
         toolchain = _validate_web_sdk(root, web_sdk, native)
         cross = shader_paths["spirv_cross"]
@@ -240,7 +254,7 @@ def _inputs(root: Path, source: Path, sdk: Path, profile: str, web_sdk: Path | N
         for webprofile, buildtype in (("web-emscripten-development", "RelWithDebInfo"), ("web-emscripten-release", "Release")):
             records[webprofile] = {"toolchainFile": str(toolchain),
                                    "cacheVariables": dict(webcache, CMAKE_BUILD_TYPE=buildtype)}
-        stamps[str(web_sdk)] = compute_stamp(web_sdk)
+        stamps[str(web_sdk)] = _identity_stamp(load_prefix_manifest(web_sdk))
     return configured, records, stamps
 
 
@@ -415,6 +429,8 @@ def repair_project(path: Path, *, tooling_root: Path, sdk: Path | None = None,
     _prepare_shader_tools(tooling_root, sdk, required, runner=runner, cancel_check=cancel_check)
     configured, records, stamps = _inputs(tooling_root, source, sdk, descriptor.preset, web_sdk,
                                          project=paths.project_dir)
+    # The library contents a verified repair builds against; they must not move while it runs.
+    library_stamps = {prefix: compute_stamp(Path(prefix)) for prefix in stamps}
     local = read_object(source / "CMakeUserPresets.json")
     ide = read_object(source / ".vscode/settings.json")
     # CMake validates included roots/inheritance/conditions with real list calls.
@@ -484,7 +500,7 @@ def repair_project(path: Path, *, tooling_root: Path, sdk: Path | None = None,
                 with BuildTreeLock(source / "out/build" / profile):
                     verify()
         cancel_check()
-        if any(compute_stamp(Path(prefix)) != stamp for prefix, stamp in stamps.items()):
+        if any(compute_stamp(Path(prefix)) != stamp for prefix, stamp in library_stamps.items()):
             raise ToolingError("StampChanged", "SDK changed during repair; retry with stable inputs")
         # A verified repair replaces the old mutable-SDK stamp, allowing the
         # ordinary Editor/CLI configure path to use the updated SDK afterward.

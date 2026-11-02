@@ -379,7 +379,7 @@ executable. Related stale IDE CMake-path overrides are removed; unrelated
 settings are preserved. Real CMake configure/build/test preset discovery must
 succeed, followed by a fresh configure, full build and native CTest. No-tests
 is an error. Web profiles configure and build; browser runtime acceptance is
-separate. The setup signature detects changed SDK contents and moved tools.
+separate. The setup signature detects a moved or retargeted SDK (its path and ABI identity), changed presets and moved tools. It does not hash SDK library contents, so a refreshed engine install from `./init.sh` keeps existing projects' setup valid; each build folder's own SDK stamp reconfigures it on the next build.
 
 The **Build and install the engine used by this editor** option explicitly
 initializes and builds the trusted tooling checkout, then installs the desktop

@@ -83,8 +83,7 @@ def expand(programs, techniques, snapshot, helper, build):
     # Capture the renderer manifest and its literal shader closure; consumers never guess paths/entries.
     build.require('_ludus_forward/recipes.json' not in snapshot.files, 'Source', 'ForwardLit', 'reserved engine forward helper path')
     captured = set()
-    snapshot.files['_ludus_forward/recipes.json'] = build.read(helper / 'recipes.json')
-    snapshot.external['_ludus_forward/recipes.json'] = helper / 'recipes.json'
+    snapshot.capture('_ludus_forward/recipes.json', build.read(helper / 'recipes.json'), external=helper / 'recipes.json')
     def capture(filename):
         relative = '_ludus_forward/' + filename
         if relative in captured:
@@ -92,11 +91,7 @@ def expand(programs, techniques, snapshot, helper, build):
         build.require(relative not in snapshot.files, 'Source', relative, 'reserved engine forward helper path')
         captured.add(relative)
         data = build.read(helper / filename)
-        snapshot.files[relative] = data
-        snapshot.external[relative] = helper / filename
-        snapshot.total += len(data)
-        build.require(snapshot.total <= build.MAX_BYTES and len(snapshot.files) <= build.MAX_FILES,
-                      'Capacity', relative, 'forward helper closure exceeds package bounds')
+        snapshot.capture(relative, data, external=helper / filename)
         for child in re.findall(r'^\s*#\s*include\s+"([^"\n]+)"', data.decode(), re.M):
             capture(child)
     technique = selected[0]

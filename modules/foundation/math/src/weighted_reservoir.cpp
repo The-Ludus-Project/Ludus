@@ -13,7 +13,7 @@ constexpr uint32 FLOAT32_MAGNITUDE_BITS = 0x7fffffffu;
 constexpr uint32 FLOAT32_EXPONENT_BITS = 0x7f800000u;
 constexpr uint32 FLOAT32_SMALLEST_NORMAL_BITS = 0x00800000u;
 constexpr uint32 FLOAT32_ONE_BITS = 0x3f800000u;
-// WeightedReservoirMinimumWeight, 2^-102: biased exponent 25.
+// WEIGHTED_RESERVOIR_MINIMUM_WEIGHT, 2^-102: biased exponent 25.
 constexpr uint32 MINIMUM_WEIGHT_BITS = 0x0c800000u;
 constexpr uint32 MAX_CANDIDATE_COUNT = 0xffffffffu;
 
@@ -41,7 +41,7 @@ bool IsZeroOrSubnormalBits(uint32 bits) noexcept
     return (bits & FLOAT32_MAGNITUDE_BITS) < FLOAT32_SMALLEST_NORMAL_BITS;
 }
 
-// Nonnegative weights below WeightedReservoirMinimumWeight count as zero.
+// Nonnegative weights below WEIGHTED_RESERVOIR_MINIMUM_WEIGHT count as zero.
 bool IsBelowMinimumWeightBits(uint32 bits) noexcept
 {
     return (bits & FLOAT32_MAGNITUDE_BITS) < MINIMUM_WEIGHT_BITS;
