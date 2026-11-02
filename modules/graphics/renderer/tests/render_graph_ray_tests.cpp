@@ -8857,3 +8857,212 @@ TEST_CASE("Conditional ReSTIR propagates empty light domains after a scene repla
         CHECK(pixel.Z == 0);
     }
 }
+
+namespace
+{
+void RenderGuidedFgMean(PreparedGraph& inoutGraph,
+                        const GraphGpuFixture& fixture,
+                        usize frameCount,
+                        Array<math::Vector3>& outMean)
+{
+    constexpr uint32 PASS_COUNT = 10;
+    REQUIRE(inoutGraph.Plan.Passes.GetSize() == PASS_COUNT);
+    for (usize frame = 0; frame < frameCount; ++frame)
+        RenderFrame(inoutGraph.Graph, fixture);
+    for (uint32 pass = 0; pass < PASS_COUNT; ++pass)
+    {
+        const renderer::RenderGraphRayFailures failures = ReadRayFailures(inoutGraph.Graph, pass);
+        INFO("pass " << pass << " failed pixels " << failures.TotalPixels << " reason " << failures.MainReason);
+        REQUIRE(failures.TotalPixels == 0);
+    }
+    Array<math::Vector4> records;
+    ReadAccumulation(inoutGraph.Graph, fixture, PASS_COUNT - 1, records);
+    REQUIRE(outMean.TryResize(usize{WIDTH} * HEIGHT) == true);
+    for (usize pixel = 0; pixel < outMean.GetSize(); ++pixel)
+    {
+        const math::Vector4& sum = records[pixel * renderer::RENDER_GRAPH_ACCUMULATION_WORDS];
+        uint32 count = 0;
+        std::memcpy(&count, &sum.W, sizeof(count));
+        REQUIRE(count == frameCount);
+        outMean[pixel] = math::Vector3{sum.X, sum.Y, sum.Z} / static_cast<float32>(count);
+    }
+}
+} // namespace
+
+TEST_CASE("Guided FG's complete graph matches CPU primary emission and clears photon history on scene edits",
+          "[render-graph][gpu][guided-fg]")
+{
+    // A black diffuse room isolates camera emission. It also exercises all ten callback
+    // selectors, pool initialization, empty photon RIS, and temporal caustic publication.
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    for (renderer::SceneShaderMaterial& material : room.Materials)
+    {
+        material.BaseColor = {0, 0, 0};
+        material.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    }
+    constexpr PackageLocation LOCATION{LUDUS_RG3_GUIDED_RESTIR_FG_PLUS_TEMPLATE_DIRECTORY,
+                                       "rg2_guided_restir_fg_plus_template.lurgrt"};
+    // The template defaults to half resolution; doubling its view gives WIDTH x HEIGHT.
+    PreparedGraph graph(fixture, LOCATION, room, 1, {WIDTH * 2, HEIGHT * 2});
+    REQUIRE(graph.Plan.Passes.GetSize() == 10);
+    CHECK(renderer::RequiresHardwareRayTracing(graph.Plan) == false);
+    Array<math::Vector3> mean;
+    constexpr usize FRAME_COUNT = 3;
+    RenderGuidedFgMean(graph, fixture, FRAME_COUNT, mean);
+    renderer::RenderGraphSceneDescription scene;
+    scene.Meshes = {room.Meshes.GetData(), room.Meshes.GetSize()};
+    scene.Items = {room.Items.GetData(), room.Items.GetSize()};
+    scene.Inputs = room.Inputs;
+    scene.HasMaterialInterface = true;
+    renderer::ReferenceCaptureDescription camera;
+    camera.WorldToClip = room.Cameras[0].WorldToClip;
+    camera.CameraPosition = room.Cameras[0].CameraPosition;
+    camera.Width = WIDTH;
+    camera.Height = HEIGHT;
+    constexpr usize CPU_SCENE_BYTES = 1024 * 1024;
+    core::UniquePtr<renderer::internal::ReferenceJob> oracle;
+    REQUIRE(renderer::internal::BuildMaterialGraphRayScene(scene, camera, CPU_SCENE_BYTES, oracle) ==
+            rhi::RasterStatus::Ready);
+    math::Matrix4 clipToWorld;
+    REQUIRE(math::TryInverse(room.Cameras[0].WorldToClip, clipToWorld) == math::MathStatus::Success);
+    usize emitterPixels = 0;
+    constexpr float32 LINEAR_TOLERANCE = 1e-4F;
+    for (uint32 y = 0; y < HEIGHT; ++y)
+    {
+        for (uint32 x = 0; x < WIDTH; ++x)
+        {
+            const math::Vector4 farH = clipToWorld * math::Vector4{(static_cast<float32>(x) + 0.5F) / WIDTH * 2 - 1,
+                                                                   1 - (static_cast<float32>(y) + 0.5F) / HEIGHT * 2,
+                                                                   1,
+                                                                   1};
+            const math::Vector3 farWorld{farH.X / farH.W, farH.Y / farH.W, farH.Z / farH.W};
+            const math::Vector3 eyeWorld = room.Cameras[0].CameraPosition;
+            math::Vector3 directionWorld = farWorld - eyeWorld;
+            directionWorld = directionWorld / math::Length(directionWorld);
+            rhi::RayInput ray;
+            ray.Origin[0] = eyeWorld.X;
+            ray.Origin[1] = eyeWorld.Y;
+            ray.Origin[2] = eyeWorld.Z;
+            ray.Direction[0] = directionWorld.X;
+            ray.Direction[1] = directionWorld.Y;
+            ray.Direction[2] = directionWorld.Z;
+            rhi::RayResult hit;
+            REQUIRE(renderer::internal::TraceReferenceOracle(oracle->Scene, ray, hit) == rhi::RasterStatus::Ready);
+            const bool isEmitter = hit.Hit != 0 && room.Slots[hit.Primitive] == CORNELL_LIGHT;
+            const float32 expected = isEmitter == true ? room.Materials[CORNELL_LIGHT].Emission.X : 0;
+            emitterPixels += isEmitter == true ? 1 : 0;
+            const math::Vector3 pixel = mean[static_cast<usize>(y) * WIDTH + x];
+            CHECK(math::Abs(pixel.X - expected) < LINEAR_TOLERANCE);
+            CHECK(math::Abs(pixel.Y - expected) < LINEAR_TOLERANCE);
+            CHECK(math::Abs(pixel.Z - expected) < LINEAR_TOLERANCE);
+        }
+    }
+    REQUIRE(emitterPixels > 0);
+    room.Materials[CORNELL_LIGHT].Emission = {0, 0, 0};
+    renderer::RenderGraphReport report;
+    rhi::RasterStatus updated = graph.Graph.Update({room.Meshes.GetData(), room.Meshes.GetSize()},
+                                                   {room.Items.GetData(), room.Items.GetSize()},
+                                                   {room.Cameras.GetData(), room.Cameras.GetSize()},
+                                                   2,
+                                                   renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                   report,
+                                                   &room.Inputs,
+                                                   2);
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    const uint64 start = time::NowTicks();
+    while (updated == rhi::RasterStatus::Pending && time::NowTicks() - start < TIMEOUT)
+        updated = graph.Graph.Poll();
+    REQUIRE(updated == rhi::RasterStatus::Ready);
+    RenderGuidedFgMean(graph, fixture, 1, mean);
+    for (const math::Vector3& pixel : mean)
+        CHECK(pixel.X == 0);
+    REQUIRE(graph.Graph.SetRayTileCount(2) == rhi::RasterStatus::Ready);
+    RenderFrame(graph.Graph, fixture);
+    RenderFrame(graph.Graph, fixture);
+    const renderer::RenderGraphRayFailures tiled = ReadRayFailures(graph.Graph, 0);
+    CHECK(tiled.TotalPixels > 0);
+    CHECK(tiled.MainReason == static_cast<uint32>(renderer::RenderGraphFailureReason::PhotonDispatch));
+}
+
+TEST_CASE("Guided FG transports reflected photons and agrees with independent sampling",
+          "[render-graph][gpu][guided-fg][convergence]")
+{
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    for (renderer::SceneShaderMaterial& material : room.Materials)
+        material.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    constexpr usize FRAME_COUNT = 64;
+    Array<math::Vector3> guided;
+    {
+        PreparedGraph graph(
+            fixture,
+            {LUDUS_RG3_GUIDED_RESTIR_FG_PLUS_TEMPLATE_DIRECTORY, "rg2_guided_restir_fg_plus_template.lurgrt"},
+            room,
+            1,
+            {WIDTH * 2, HEIGHT * 2});
+        RenderGuidedFgMean(graph, fixture, FRAME_COUNT, guided);
+    }
+    Array<math::Vector3> independent;
+    {
+        PreparedGraph graph(fixture,
+                            {LUDUS_RG3_GUIDED_FG_INDEPENDENT_DIRECTORY, "rg2_guided_fg_independent.lurgrt"},
+                            room,
+                            1,
+                            {WIDTH * 2, HEIGHT * 2});
+        RenderGuidedFgMean(graph, fixture, FRAME_COUNT, independent);
+    }
+    const math::Vector3 expected = ComputeImageMean(independent);
+    const math::Vector3 measured = ComputeImageMean(guided);
+    INFO("guided linear mean " << measured.X << ',' << measured.Y << ',' << measured.Z << "; independent " << expected.X
+                               << ',' << expected.Y << ',' << expected.Z);
+    constexpr float32 MINIMUM_RADIANCE = 0.1F;
+    REQUIRE(expected.Y > MINIMUM_RADIANCE);
+    constexpr float32 RELATIVE_TOLERANCE = 0.15F;
+    CheckMeansAgree(measured, expected, RELATIVE_TOLERANCE);
+}
+
+TEST_CASE("Guided FG preserves radiance when one point source is split into many lights",
+          "[render-graph][gpu][guided-fg][many-lights]")
+{
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    room.Materials[CORNELL_LIGHT].Emission = {0, 0, 0};
+    for (renderer::SceneShaderMaterial& material : room.Materials)
+        material.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    constexpr usize LIGHT_COUNT = 64;
+    constexpr usize FRAME_COUNT = 64;
+    constexpr float32 TOTAL_INTENSITY = 2;
+    constexpr math::Vector3 POSITION_WORLD{0, .6F, .2F};
+    StaticArray<renderer::DirectLight, LIGHT_COUNT> lights{};
+    for (usize light = 0; light < lights.GetSize(); ++light)
+    {
+        lights[light].SourceId = light + 1;
+        lights[light].Kind = renderer::LightKind::Point;
+        lights[light].Position = POSITION_WORLD;
+        lights[light].Intensity = TOTAL_INTENSITY / static_cast<float32>(LIGHT_COUNT);
+    }
+    constexpr PackageLocation LOCATION{LUDUS_RG3_GUIDED_RESTIR_FG_PLUS_TEMPLATE_DIRECTORY,
+                                       "rg2_guided_restir_fg_plus_template.lurgrt"};
+    Array<math::Vector3> many;
+    room.Inputs.Lights = {lights.GetData(), lights.GetSize()};
+    {
+        PreparedGraph graph(fixture, LOCATION, room, 1, {WIDTH * 2, HEIGHT * 2});
+        RenderGuidedFgMean(graph, fixture, FRAME_COUNT, many);
+    }
+    lights[0].Intensity = TOTAL_INTENSITY;
+    room.Inputs.Lights = {lights.GetData(), 1};
+    Array<math::Vector3> single;
+    {
+        PreparedGraph graph(fixture, LOCATION, room, 1, {WIDTH * 2, HEIGHT * 2});
+        RenderGuidedFgMean(graph, fixture, FRAME_COUNT, single);
+    }
+    const math::Vector3 expected = ComputeImageMean(single);
+    const math::Vector3 measured = ComputeImageMean(many);
+    INFO("64 lights " << measured.X << ',' << measured.Y << ',' << measured.Z << "; one light " << expected.X << ','
+                      << expected.Y << ',' << expected.Z);
+    constexpr float32 MINIMUM_RADIANCE = .01F;
+    REQUIRE(expected.Y > MINIMUM_RADIANCE);
+    constexpr float32 RELATIVE_TOLERANCE = .15F;
+    CheckMeansAgree(measured, expected, RELATIVE_TOLERANCE);
+}

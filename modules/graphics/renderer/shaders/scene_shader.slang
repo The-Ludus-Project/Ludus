@@ -1,6 +1,7 @@
 #include "coated_diffuse.slang"
 #include "metropolis.slang"
 #include "metropolis_layout.h"
+#include "photon_layout.h"
 // Public logical scene shader interface v1. Packed buffers and traversal remain Renderer-owned.
 // Thanks to Pharr, Jakob and Humphreys, PBRT 4e (2023), sections 12.1/12.6/13.4:
 // https://pbr-book.org/4ed/Light_Sources/Light_Interface
@@ -48,6 +49,8 @@ struct RayLaunch
     float4x4 CameraClipToWorld;
     float3 CameraPositionWorld;
     bool IsOrthographic;
+    /// True when this invocation belongs to an entire-image dispatch rather than a capture row band.
+    bool IsFullImageDispatch;
     uint SampleIndex;
     uint2 Seed;
 };
@@ -132,6 +135,8 @@ struct MaterialSample
 };
 struct LightInfo
 {
+    /// GetEmitter/GetEmitterTriangle index for mesh sources; SCENE_INVALID_INDEX otherwise.
+    uint EmitterIndex;
     uint Kind;
     uint Index;
     uint MaterialSlot;
@@ -232,6 +237,7 @@ LightInfo GetLightInfo(SceneContext scene, uint lightIndex)
 {
     LightInfo result = (LightInfo)0;
     result.Index = lightIndex;
+    result.EmitterIndex = SCENE_INVALID_INDEX;
     result.IsValid = lightIndex < GetLightCount(scene);
     if (result.IsValid == false)
         return result;
@@ -253,6 +259,7 @@ LightInfo GetLightInfo(SceneContext scene, uint lightIndex)
     else if (lightIndex - Counts.w < GetEmitterCount(scene))
     {
         result.Kind = SCENE_LIGHT_MESH;
+        result.EmitterIndex = lightIndex - Counts.w;
         float4 emitter = GetEmitter(scene, lightIndex - Counts.w);
         uint triangle = asuint(SceneValue(Offsets.z + uint(emitter.x)).x);
         result.SourceId = asuint(SceneValue(triangle * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 7).zw);

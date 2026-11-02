@@ -1776,6 +1776,138 @@ Ludus. At 1920 × 1080 history alone is 265,420,800 bytes, just below the 256 Mi
 per-buffer limit. Larger images must reduce RenderSize scale; an oversized request
 preserves the last drawable view.
 
+### Use the built-in Guided ReSTIR FG+ template
+
+Choose **Guided ReSTIR FG+ — photon guiding and caustics** when creating an offscreen
+Renderer graph, or insert its configuration from the graph canvas. Its identity is
+`guided-restir-fg-plus`, and the reusable configuration is `GuidedRestirFgPlus`.
+The installed SDK and editor copy the same canonical sources from
+`modules/graphics/renderer/render_graphs/guided_restir_fg_plus/`. CLI creation is:
+
+```bash
+ludus render-graph new graphs/Photons --template guided-restir-fg-plus \
+  --output offscreen --renderer-static --profiles metal
+```
+
+Select `spirv` for Vulkan instead. This is compute-BVH transport on the GPU and
+does not require hardware ray queries. Connect `scene`, `view` and `color` when
+inserting the configuration into another graph. Accumulate and ToneMap remain
+editable nodes outside the library. The new graph defaults to half the view
+resolution to keep its storage modest. Changing RenderSize resizes all path and
+caustic records together.
+
+The implementation thanks René Kern, Felix Brüll, Jonas Kastning and Thorsten
+Grosch, **Guided ReSTIR FG+: Photon Resampling for Large Scenes and Many Lights**,
+Eurographics Symposium on Rendering 2026, sections 3–4,
+[DOI 10.2312/sr.20261001](https://doi.org/10.2312/sr.20261001).
+It is an independent, bounded implementation of their reflective, static-history
+subset. It does not reproduce the paper's entire material, motion or performance
+profile. The authors' [implementation](https://github.com/TU-Clausthal-Rendering/Guided-ReSTIR-FG-Plus)
+provided additional algorithm context; no Falcor implementation code is included.
+
+The ten ordered compute passes are:
+
+| Pass | Operation |
+| --- | --- |
+| Guide directions | Normalize the previous frame's finalized reservoir contributions and update each light's 4×4 directional histogram with an exponential moving average. |
+| Guide lights | Reduce contributions, update light probabilities, reserve a photon for every finite source and construct an integer prefix distribution. |
+| Reset map | Clear hash-grid and camera-backprojection heads. |
+| Trace photons | Emit mesh, point and spot photons; trace up to four surface events; link diffuse endpoints into the spatial map and visible caustics into pixel lists. |
+| Initial paths | Trace a glossy camera prefix, sample a BSDF final gather and select a proxy photon with RIS. A caustic density estimate behind a glossy prefix also competes in this reservoir. |
+| Temporal paths | Replay the glossy prefix, reconnect at the diffuse gather endpoint, and merge history using a reconnection Jacobian and binary GRIS balance weights. |
+| Spatial paths | Merge one neighboring temporal reservoir with forward and reverse shifts and visibility checks. |
+| Caustics | Resample backprojected caustic photons and the previous temporal caustic reservoir. Caustics never enter spatial path reuse. |
+| Record guiding | Record the finalized path reservoir's photon contribution; the caustic pass records its own finalized reservoir. |
+| Shade | Sum emission, MIS direct lighting, the path reservoir estimate and backprojected caustics in raw linear RGB. |
+
+Every pass declares its writable Buffer dependencies. A later pass sees complete
+photon records and linked lists; reservoir readers never read a concurrently
+written neighbor. Both photon and path records preserve the original emission UV,
+source random key, light/cell identity and flux scale. The density estimate sums
+`BSDF × photon flux / (pi × radius²)` before RIS selects its proxy. Hash collisions
+are filtered by the original grid cell before the distance/normal test, so they
+never count a photon twice.
+
+Guiding follows Algorithm 1 with smaller directional maps and a serial bounded
+light-prefix reduction instead of a mipmapped quadtree. Each light's integer
+quotas can leave uniform-direction leftovers. This implementation evaluates their
+combined mixture density for **both** guided and leftover samples: a cell with
+`n` guided photons and `r` uniform leftovers uses flux scale `1 / (16*n + r)`.
+This preserves emitted energy even when floor rounding leaves a remainder.
+Contributions are discretized with factor 255 and capped at 255 per reservoir;
+two reservoirs per pixel cannot overflow the unsigned histogram sum at the
+admitted pixel count. Clipping changes the proposal, whose actual density is
+still accounted for in photon flux.
+
+Graph Settings, available in Properties and the canvas menu, expose photon count
+and depth, glossy camera-prefix depth, gather radius in World units, glossy
+roughness threshold, guiding EMA, confidence limit, and independent guiding,
+temporal and spatial switches. Direct light uses NEE plus a BSDF sample with
+power MIS, rather than embedding a second copy of the ReSTIR DI graph.
+
+The photon pool is 64 MiB. Three path buffers use 192 bytes per render pixel each;
+the double-buffered caustic history uses 256 bytes, for 832 bytes per pixel in
+addition to the pool and renderer scene/film resources. A 320×240 render therefore
+uses about 125 MiB for these five buffers. The pool admits up to 32,768 light
+records, 65,536 photon paths, four stored endpoints per path and 2,097,152 pixel
+heads. The shared per-buffer byte ceiling can reject a smaller image first.
+Requested photon paths are clamped to render pixels and increased to at least one
+per finite light. If there are fewer render pixels than finite lights, the shader
+reports `PhotonCapacity`: increase RenderSize or reduce the finite source count.
+A shortened pool reports the same repair. Per-pixel storage failures name the
+ordinary storage-size repair; no photons are silently dropped on overflow.
+The ordered ray/scene-compute ceiling is 12 invocations per configuration,
+which admits all ten passes with headroom. Renderer job slots derive from that
+ceiling for current, candidate, idle and retiring generations. The RHI's default
+per-kind record ceiling is 128, admitting the current and replacement ten-pass
+generations together. A World edit can therefore prepare a replacement while
+the last view remains drawable. The package callback ceiling is 16,
+matching the overall plan pass ceiling, with four
+selector bits below the camera-history epoch. Older eight-callback packages
+remain admissible; rebuild shader packages with the matching SDK.
+
+The following limits are deliberate and visible:
+
+- Perspective cameras only. Orthographic views report `PhotonCamera` and suggest
+  a perspective camera or another graph.
+- Reflection only: diffuse, metallic/roughness and isotropic conductors use the
+  existing scene BSDFs. Coated diffuse reports the material-profile repair.
+  External transmission and glass caustics are unavailable in the scene material
+  contract. Low-roughness conductors use random replay; other surfaces reconnect.
+- Indirect photons originate from finite mesh, point and spot sources. Environment
+  and directional sources contribute through direct lighting and terminal camera
+  emission, not through indirect photon transport.
+- Camera rays use pixel centers. Camera/World edits and resize restart the sampling
+  epoch, histograms and reservoirs. There are no motion vectors, moving-geometry
+  photon replay, cross-camera splats or motion-history confidence interpolation.
+  Static reprojection reduces caustic confidence interpolation to the same pixel's
+  confidence, independent of the number of backprojected photons.
+- The gather radius is fixed and the transport depth is bounded. The output is a
+  biased photon-density approximation, not an unbiased or consistent full rendering
+  equation solver. No denoiser or temporal reconstruction establishes parity.
+- Global-map construction, spatial reuse and guiding require a whole-image dispatch.
+  Keep ray tile count at one. A row-band dispatch reports `PhotonDispatch` and
+  suggests reducing capture resolution or selecting another graph; it cannot
+  publish a partial photon map as a correct whole-image estimate.
+- The hash grid and 4×4 atlas are correctness-oriented bounds. Million-photon,
+  large-scene performance, animated glass and the paper's quality/speed claims
+  require separate qualification; a populated viewport alone establishes none of them.
+
+The independent CPU oracle in `guided_fg_oracle.cpp` traces reflection paths with
+CPU reference BSDFs and brute-force triangle intersections, then performs disc
+photon density estimates. CPU tests cover diffuse flux, glossy-to-diffuse caustic
+classification, empty/support rejection, guiding energy conservation and reversible
+reconnection. The GPU parity test executes the template's own core functions for
+flux density, reconnection, balance weights and backprojection against float64
+checks. Graph execution tests compare raw linear emission with CPU intersection,
+exercise all ten callbacks and scene-history reset, and compare guided/reused image
+means with independent sampling. A 64-frame test splits one point source into 64
+coincident, equal-total-intensity sources and checks raw linear image means within
+15%, exercising per-light quota normalization. End-to-end CPU/GPU image parity
+for indirect and caustic transport remains a coverage gap: the CPU photon oracle
+and numerical shader checks do not replace that evidence. These checks do not
+establish parity for the unsupported paths listed above.
+
 ### Use the built-in ReSTIR GI template
 
 The **ReSTIR GI — path resampling for indirect lighting** template (`restir-gi`)
@@ -7763,7 +7895,7 @@ their consumers may keep views or bindings beyond the graph. Surfaces allocate
 nothing. A pool keeps at most its `idleCapacity` idle entries (default and maximum
 `RENDER_GRAPH_POOL_CAPACITY`, 32) and evicts the least recently released one. Idle
 entries keep their RHI texture records and bytes, which count against
-`StorageLimits::ResourcesPerKind` (default 64) and `ResourceBytes`. Choose a
+`StorageLimits::ResourcesPerKind` (default 128) and `ResourceBytes`. Choose a
 smaller capacity, or trim, when those budgets are tight.
 
 A depth-only backing keeps its compatibility RGBA8 image, at 4 logical bytes per

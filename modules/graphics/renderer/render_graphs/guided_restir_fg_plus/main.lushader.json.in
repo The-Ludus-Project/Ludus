@@ -1,0 +1,322 @@
+{
+  "version": 1,
+  "id": "RendererStaticBuild",
+  "profiles": @LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@,
+  "schemas": [
+    {
+      "id": "RendererStatic",
+      "role": "Vertex",
+      "fields": [
+        {
+          "id": "PositionMesh",
+          "type": "Float3",
+          "semantic": "POSITION",
+          "location": 0
+        },
+        {
+          "id": "MeshToClipRow0",
+          "type": "Float4",
+          "semantic": "TEXCOORD0",
+          "location": 1
+        },
+        {
+          "id": "MeshToClipRow1",
+          "type": "Float4",
+          "semantic": "TEXCOORD1",
+          "location": 2
+        },
+        {
+          "id": "MeshToClipRow2",
+          "type": "Float4",
+          "semantic": "TEXCOORD2",
+          "location": 3
+        },
+        {
+          "id": "MeshToClipRow3",
+          "type": "Float4",
+          "semantic": "TEXCOORD3",
+          "location": 4
+        },
+        {
+          "id": "Color",
+          "type": "Float4",
+          "semantic": "COLOR0",
+          "location": 5
+        }
+      ]
+    },
+    {
+      "id": "RasterVarying",
+      "role": "Varying",
+      "fields": [
+        {
+          "id": "PositionClip",
+          "type": "Float4",
+          "semantic": "SV_Position",
+          "location": 0
+        },
+        {
+          "id": "Color",
+          "type": "Float4",
+          "semantic": "COLOR0",
+          "location": 0
+        }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "id": "Geometry",
+      "stage": "vertex",
+      "source": "main_shaders/geometry.slang",
+      "function": "TransformGeometry",
+      "input": "RendererStatic",
+      "output": "RasterVarying",
+      "bindings": []
+    },
+    {
+      "id": "Color",
+      "stage": "fragment",
+      "source": "main_shaders/color.slang",
+      "function": "ShadeColor",
+      "input": "RasterVarying",
+      "output": "Color",
+      "bindings": []
+    },
+    {
+      "id": "Depth",
+      "stage": "fragment",
+      "source": "main_shaders/depth.slang",
+      "function": "WriteDepth",
+      "input": "RasterVarying",
+      "output": "Depth",
+      "bindings": []
+    },
+    {
+      "id": "UpdateGuideDirections",
+      "stage": "compute",
+      "source": "main_shaders/guiding.slang",
+      "function": "UpdateGuideDirections",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "UpdateGuideLights",
+      "stage": "compute",
+      "source": "main_shaders/guiding.slang",
+      "function": "UpdateGuideLights",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ResetPhotonMap",
+      "stage": "compute",
+      "source": "main_shaders/photons.slang",
+      "function": "ResetPhotonMap",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "TracePhotons",
+      "stage": "compute",
+      "source": "main_shaders/photons.slang",
+      "function": "TracePhotons",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "GeneratePathSamples",
+      "stage": "compute",
+      "source": "main_shaders/path.slang",
+      "function": "GeneratePathSamples",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ResamplePathTemporal",
+      "stage": "compute",
+      "source": "main_shaders/resample.slang",
+      "function": "ResamplePathTemporal",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ResamplePathSpatial",
+      "stage": "compute",
+      "source": "main_shaders/resample.slang",
+      "function": "ResamplePathSpatial",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ResampleCaustics",
+      "stage": "compute",
+      "source": "main_shaders/caustics.slang",
+      "function": "ResampleCaustics",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "RecordPathGuiding",
+      "stage": "compute",
+      "source": "main_shaders/guiding_record.slang",
+      "function": "RecordPathGuiding",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ShadeGuidedFg",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "ShadeGuidedFg",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    }
+  ],
+  "techniques": [
+    {
+      "id": "DefaultStaticOpaque.ColorAndDepth",
+      "configuration": "ColorAndDepth",
+      "vertex": "Geometry",
+      "fragment": "Color",
+      "recipes": [
+        {
+          "id": "Default",
+          "color": "RGBA8Unorm",
+          "depth": "Depth32Float",
+          "samples": 1,
+          "topology": "TriangleList",
+          "cull": "None",
+          "front": "CounterClockwise",
+          "depth_compare": "Less",
+          "depth_write": true,
+          "blend": "Opaque"
+        }
+      ]
+    },
+    {
+      "id": "DefaultStaticOpaque.DepthOnly",
+      "configuration": "DepthOnly",
+      "vertex": "Geometry",
+      "fragment": "Depth",
+      "recipes": [
+        {
+          "id": "Default",
+          "color": "None",
+          "depth": "Depth32Float",
+          "samples": 1,
+          "topology": "TriangleList",
+          "cull": "None",
+          "front": "CounterClockwise",
+          "depth_compare": "Less",
+          "depth_write": true,
+          "blend": "Opaque"
+        }
+      ]
+    },
+    {
+      "id": "RendererTriangles.RayTracing",
+      "configuration": "RayTracing",
+      "recipes": [
+        {
+          "id": "Triangles"
+        }
+      ],
+      "scene_interface": {
+        "version": 1,
+        "surface_queries": 8,
+        "visibility_queries": 16
+      }
+    }
+  ],
+  "budgets": {
+    "configurations": 8,
+    "programs": 16
+  },
+  "settings": [
+    {
+      "id": "FG_PHOTON_PATHS",
+      "label": "Photon paths (clamped to render pixels; at least one per finite light)",
+      "type": "UInt32",
+      "value": 16384,
+      "minimum": 1,
+      "maximum": 65536
+    },
+    {
+      "id": "FG_PHOTON_BOUNCES",
+      "label": "Photon scattering depth",
+      "type": "UInt32",
+      "value": 4,
+      "minimum": 1,
+      "maximum": 4
+    },
+    {
+      "id": "FG_CAMERA_BOUNCES",
+      "label": "Camera glossy prefix depth",
+      "type": "UInt32",
+      "value": 3,
+      "minimum": 0,
+      "maximum": 3
+    },
+    {
+      "id": "FG_GATHER_RADIUS_WORLD",
+      "label": "Photon gather radius in World units",
+      "type": "Float32",
+      "value": 0.25,
+      "minimum": 0.001,
+      "maximum": 100.0
+    },
+    {
+      "id": "FG_SPECULAR_ROUGHNESS",
+      "label": "Glossy conductor replay threshold",
+      "type": "Float32",
+      "value": 0.2,
+      "minimum": 0.001,
+      "maximum": 1.0
+    },
+    {
+      "id": "FG_GUIDING_ALPHA",
+      "label": "Guiding history exponential update",
+      "type": "Float32",
+      "value": 0.3,
+      "minimum": 0.001,
+      "maximum": 1.0
+    },
+    {
+      "id": "FG_HISTORY_LIMIT",
+      "label": "Reservoir confidence limit",
+      "type": "UInt32",
+      "value": 20,
+      "minimum": 1,
+      "maximum": 100
+    },
+    {
+      "id": "IS_FG_GUIDING_ENABLED",
+      "label": "Photon light and direction guiding",
+      "type": "Bool",
+      "value": true
+    },
+    {
+      "id": "IS_FG_TEMPORAL_ENABLED",
+      "label": "Temporal path and caustic reuse",
+      "type": "Bool",
+      "value": true
+    },
+    {
+      "id": "IS_FG_SPATIAL_ENABLED",
+      "label": "Spatial path reuse (caustics remain temporal only)",
+      "type": "Bool",
+      "value": true
+    }
+  ]
+}

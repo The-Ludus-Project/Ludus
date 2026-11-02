@@ -419,7 +419,7 @@ The original R1 profile:
 
 | Facility | Contract |
 | --- | --- |
-| Records | Configured `Storage.ResourcesPerKind` (default 64), including pending/detached records retained by dependencies or submitted work |
+| Records | Configured `Storage.ResourcesPerKind` (default 128), including pending/detached records retained by dependencies or submitted work |
 | Buffers | Complete immutable initial bytes up to enabled `MaxBufferSize`, subject to logical resource budgets; Vertex, Index16, Index32 or Uniform role |
 | Uniforms | Bound range at most 16 KiB, range size a multiple of 16, offsets aligned to the queried limit (at least 256); allocation may be larger than a bound range |
 | Textures | RGBA8 linear or sRGB sampling, within the enabled per-format/device dimensions; one mip/layer/sample |

@@ -179,6 +179,9 @@ enum class RenderGraphFailureReason : foundation::uint8
     InvalidWeight,    ///< A non-finite or negative sampling weight, probability or PDF.
     BsdfOnlyLights,   ///< Analytic lights require a light-sampling transport profile.
     PrimaryMaterial,  ///< A material requires random dimensions outside the primary-sample profile.
+    PhotonCamera,     ///< Guided photon backprojection requires a perspective camera.
+    PhotonCapacity,   ///< Guided photon storage or light admission exceeds its declared template limits.
+    PhotonDispatch,   ///< Photon maps and spatial reuse require a whole-image dispatch.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;
