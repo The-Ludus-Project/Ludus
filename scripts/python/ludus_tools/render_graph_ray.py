@@ -12,7 +12,9 @@ from . import render_graph_metal_ray as metal_ray
 
 TECHNIQUE = 'RendererTriangles.RayTracing'
 STAGES = ('ray_generation', 'miss', 'closest_hit')
-MAX_RAY_PASSES = 4
+MAX_RAY_PASSES = 12
+# Matches RenderGraphFormat::MAX_RAY_PROGRAMS; packages share callbacks across configurations.
+MAX_RAY_PROGRAMS = 16
 DEFAULT_WORKGROUP_SIZE = [64, 1, 1]
 SUPPORTED_WORKGROUP_SIZES = (DEFAULT_WORKGROUP_SIZE, [8, 8, 1])
 MAX_BUFFERS = 2
@@ -654,6 +656,7 @@ float3 EvaluateGraphRay(uint pixel)
     launch.CameraClipToWorld = ClipToWorld;
     launch.CameraPositionWorld = CameraPositionWorld.xyz;
     launch.IsOrthographic = CameraPositionWorld.w != 0;
+    launch.IsFullImageDispatch = all(Tile.xy == uint2(0)) && all(Tile.zw == Dimensions.xy);
     launch.SampleIndex = asuint(accumulation[pixel * 2].w);
     launch.Seed = Sampling.xy;
     queries.RandomSeed = launch.Seed;

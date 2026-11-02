@@ -2,6 +2,7 @@
 #include "internal/render_graph_canvas_feedback.h"
 #include "internal/render_graph_document.h"
 
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/parse_number.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/status.hpp>
@@ -40,6 +41,7 @@ bool IsShadeFunction(const QString& function)
            function == QStringLiteral("ShadeSliceSampling") || function == QStringLiteral("ShadeUniformArea");
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): configuration identity is resolved within the named file.
 QJsonObject FindConfiguration(const RenderGraphDocument& document, const QString& file, const QString& identity)
 {
     QJsonObject graph;
@@ -59,7 +61,7 @@ QJsonObject FindConfiguration(const RenderGraphDocument& document, const QString
 /// Program id to its shade.slang source, for every manifest program running a template shade function.
 QHash<QString, QString> FindShadePrograms(const RenderGraphDocument& document)
 {
-    const QString root = document.GetRootGraph();
+    const QString& root = document.GetRootGraph();
     const QString manifestFile =
         root.chopped(QStringLiteral(".lurender.json").size()) + QStringLiteral(".lushader.json");
     const QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
@@ -167,6 +169,8 @@ bool ParseLiteral(QString text, float32& outValue)
 }
 
 /// The literal arguments of the first uncommented `static const <type> <name> = <initializer>;` declaration.
+// Source text, type token and declaration name are distinct grammar inputs.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 bool ReadConstant(const QString& source, const QString& type, const QString& name, QStringList& outValues)
 {
     const QRegularExpression declaration(
@@ -206,12 +210,12 @@ bool ReadVector(const QString& source, const QString& name, math::Vector3& outVe
     return true;
 }
 
-QString FormatPoint(math::Vector3 point)
+QString FormatPoint(math::Vector3 pointWorld)
 {
     return QStringLiteral("(%1, %2, %3)")
-        .arg(point.X, 0, 'f', COORDINATE_DECIMALS)
-        .arg(point.Y, 0, 'f', COORDINATE_DECIMALS)
-        .arg(point.Z, 0, 'f', COORDINATE_DECIMALS);
+        .arg(static_cast<float64>(pointWorld.X), 0, 'f', COORDINATE_DECIMALS)
+        .arg(static_cast<float64>(pointWorld.Y), 0, 'f', COORDINATE_DECIMALS)
+        .arg(static_cast<float64>(pointWorld.Z), 0, 'f', COORDINATE_DECIMALS);
 }
 
 QString FormatCount(int32 count, const QString& singular, const QString& plural)
@@ -262,7 +266,7 @@ bool FindRenderGraphLuminairePanel(const RenderGraphDocument& document,
     RenderGraphLuminairePanel panel;
     panel.Source = shadeSource.chopped(QStringLiteral("shade.slang").size()) + QLatin1String(PLACEMENT_SOURCE);
     panel.IsPlacementKnown = ReadRenderGraphLuminairePlacement(document.GetDraft(panel.Source), panel);
-    outPanel = panel;
+    outPanel = Move(panel);
     return true;
 }
 
@@ -323,10 +327,10 @@ QString DescribeRenderGraphLuminaireCoverage(const RenderGraphLuminairePanel& pa
         {
             reason = QStringLiteral("the %1 m panel at %2 spans %3% of the World's %4 m bounds diagonal, so it lights "
                                     "at most a small patch")
-                         .arg(side, 0, 'f', COORDINATE_DECIMALS)
+                         .arg(static_cast<float64>(side), 0, 'f', COORDINATE_DECIMALS)
                          .arg(FormatPoint(panel.CenterWorld))
-                         .arg(PERCENT * side / diagonal, 0, 'f', 1)
-                         .arg(diagonal, 0, 'f', 1);
+                         .arg(static_cast<float64>(PERCENT * side / diagonal), 0, 'f', 1)
+                         .arg(static_cast<float64>(diagonal), 0, 'f', 1);
         }
     }
     if (reason.isEmpty() == true)

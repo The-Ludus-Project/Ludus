@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Export external trained decoder weights without a runtime ML dependency."""
+import sys
+from pathlib import Path
+
+directory = Path(__file__).resolve().parent
+sys.path.insert(0, str(directory / 'python' if (directory / 'python').is_dir() else directory))
+from ludus_tools.light_transformer import main
+
+raise SystemExit(main())

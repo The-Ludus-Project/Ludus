@@ -122,6 +122,7 @@ bool CanReach(const Influence& influence, const math::Aabb3& cellWorld) noexcept
     return math::Dot(influence.NormalWorld, frontWorld - influence.OriginWorld) >= 0;
 }
 // Inclusive cell range [outFirst, outLast] of the sphere's bounding box on one axis; false when it misses the grid.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): ordered lower and upper bounds of the same cell range.
 bool GetCellRange(const Grid& grid, const Influence& influence, usize axis, uint32& outFirst, uint32& outLast) noexcept
 {
     const float32 center = GetAxis(influence.CenterWorld, axis) - GetAxis(grid.OriginWorld, axis);

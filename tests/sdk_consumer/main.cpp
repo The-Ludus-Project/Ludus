@@ -44,6 +44,7 @@ bool ExerciseInstalledFluid() noexcept;
 bool ExerciseInstalledCurves() noexcept;
 bool ExerciseInstalledGeometry() noexcept;
 bool ExerciseInstalledCamera() noexcept;
+bool ExerciseInstalledSequencer() noexcept;
 bool ExerciseInstalledDenoiser() noexcept;
 
 static_assert(ludus::foundation::kTarget.PointerBits == sizeof(void*) * 8);
@@ -247,6 +248,10 @@ int main()
     if (ExerciseInstalledCamera() == false)
     {
         return 41;
+    }
+    if (ExerciseInstalledSequencer() == false)
+    {
+        return 106;
     }
     if (ExerciseInstalledDenoiser() == false)
     {

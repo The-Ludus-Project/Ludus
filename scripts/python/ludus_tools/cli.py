@@ -626,7 +626,8 @@ def build_parser() -> argparse.ArgumentParser:
                                                    "ris-projected-solid-angle", "salesin-jarosz-lines",
                                                    "polygonal-light-sampling", "slice-sampling-luminaire",
                                                    "steinberg-plt", "steinberg-physical-optics",
-                                                   "restir-gi"),
+                                                   "restir-gi", "rao-blackwell-mh", "guided-restir-fg-plus", "conditional-restir",
+                                                   "one-more-vertex-nee"),
                            default="raster",
                            help="built-in editable render graph template")
     new_graph.add_argument("--output", choices=("presentation", "offscreen", "depth"), default="presentation")

@@ -15,7 +15,7 @@
 namespace ludus::graphics::renderer::internal
 {
 /// Plan pass of each cooked callback-set index; ABSENT where no ray pass uses that set.
-using RayPathPassTable = foundation::StaticArray<foundation::uint32, content::render_graph_format::MAX_RAY_PASSES>;
+using RayPathPassTable = foundation::StaticArray<foundation::uint32, content::render_graph_format::MAX_RAY_PROGRAMS>;
 /// Bytes of one capture buffer for a validated description: header, summaries and records.
 [[nodiscard]] foundation::usize GetRayPathCaptureBytes(const RayPathCaptureDescription& description) noexcept;
 /// Write the CPU-owned header of a zeroed capture buffer.

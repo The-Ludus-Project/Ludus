@@ -1447,7 +1447,7 @@ TEST_CASE("Every graph failure reason has a description for the author", "[rende
     CHECK(std::string_view(DescribeRenderGraphFailureReason(MAX_RENDER_GRAPH_FAILURE_REASONS)).empty() == true);
     // Every named reason has its own sentence, not the one for codes no enumerator names yet.
     constexpr ludus::foundation::uint32 LAST_NAMED =
-        static_cast<ludus::foundation::uint32>(RenderGraphFailureReason::InvalidWeight);
+        static_cast<ludus::foundation::uint32>(RenderGraphFailureReason::GeometryStatisticsCapacity);
     const std::string_view unnamed = DescribeRenderGraphFailureReason(LAST_NAMED + 1);
     for (ludus::foundation::uint32 reason = 0; reason <= LAST_NAMED; ++reason)
     {
@@ -1458,4 +1458,36 @@ TEST_CASE("Every graph failure reason has a description for the author", "[rende
     CHECK(std::string_view(DescribeRenderGraphFailureReason(
               static_cast<ludus::foundation::uint32>(RenderGraphFailureReason::VisibilityBudget))) !=
           std::string_view(DescribeRenderGraphFailureReason(RENDER_GRAPH_FAILURE_AUTHORED_FIRST)));
+}
+
+TEST_CASE("Render graph exposes stable persistent buffers without transferring ownership",
+          "[render-graph][compute-workload]")
+{
+    GraphFixture fixture;
+    constexpr uint32 STORAGE_BYTES = 64;
+    constexpr usize EXTENDED_RESOURCES = RESOURCE_COUNT + 1;
+    StaticArray<format::Resource, EXTENDED_RESOURCES> resources{};
+    for (usize i = 0; i < RESOURCE_COUNT; ++i)
+    {
+        resources[i] = fixture.Resources[i];
+    }
+    resources[RESOURCE_COUNT] = {STORAGE_BYTES, 1, format::Aspect::Buffer, RESOURCE_COUNT, 0, 0};
+    renderer::RenderGraphPlan plan = fixture.MakePlan();
+    plan.Description.ResourceCount = EXTENDED_RESOURCES;
+    plan.Resources = {resources.GetData(), resources.GetSize()};
+    REQUIRE(fixture.Graph.Initialize(fixture.Device, plan, fixture.MakePrograms()) == rhi::RasterStatus::Ready);
+    rhi::BufferHandle buffer;
+    usize bytes = 0;
+    REQUIRE(fixture.Graph.GetPersistentBuffer(RESOURCE_COUNT, buffer, bytes) == rhi::RasterStatus::Ready);
+    CHECK(bytes == STORAGE_BYTES);
+    CHECK(rhi::GetStatus(fixture.Device, buffer) == rhi::RasterStatus::Ready);
+    const rhi::BufferHandle saved = buffer;
+    CHECK(fixture.Graph.GetPersistentBuffer(0, buffer, bytes) == rhi::RasterStatus::Unsupported);
+    CHECK(buffer == saved);
+    CHECK(bytes == STORAGE_BYTES);
+    CHECK(fixture.Graph.GetPersistentBuffer(EXTENDED_RESOURCES, buffer, bytes) ==
+          rhi::RasterStatus::InvalidDescription);
+    CHECK(buffer == saved);
+    fixture.Graph.Reset();
+    CHECK(rhi::GetStatus(fixture.Device, saved) == rhi::RasterStatus::InvalidHandle);
 }

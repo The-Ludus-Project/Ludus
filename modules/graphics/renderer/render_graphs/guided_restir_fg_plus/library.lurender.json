@@ -1,0 +1,912 @@
+{
+  "version": 2,
+  "id": "GuidedRestirFgPlusLibrary",
+  "default": "GuidedRestirFgPlus",
+  "configurations": [
+    {
+      "id": "GuidedRestirFgPlus",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "color",
+          "type": "ColorTexture",
+          "source": "shade.color",
+          "required": true
+        }
+      ],
+      "nodes": [
+        {
+          "id": "pool",
+          "kind": "Buffer",
+          "bytes": 67108864
+        },
+        {
+          "id": "initialPaths",
+          "kind": "Buffer",
+          "bytes_per_pixel": 192,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "temporalPaths",
+          "kind": "Buffer",
+          "bytes_per_pixel": 192,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "spatialPaths",
+          "kind": "Buffer",
+          "bytes_per_pixel": 192,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "causticHistory",
+          "kind": "Buffer",
+          "bytes_per_pixel": 256,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "guideDirections",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "target": "pool",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "UpdateGuideDirections"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "guideLights",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "target": "pool",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "UpdateGuideLights"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "reset",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "target": "pool",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "ResetPhotonMap"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "photons",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "target": "pool",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "TracePhotons"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "initial",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "initialPaths",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "target": "pool",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "initialPaths",
+              "type": "Buffer",
+              "target": "initialPaths",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "GeneratePathSamples"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "temporal",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "initialPaths",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "temporalPaths",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "initialPaths",
+              "type": "Buffer",
+              "target": "initialPaths",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "temporalPaths",
+              "type": "Buffer",
+              "target": "temporalPaths",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "ResamplePathTemporal"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "spatial",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "temporalPaths",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "spatialPaths",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "temporalPaths",
+              "type": "Buffer",
+              "target": "temporalPaths",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "spatialPaths",
+              "type": "Buffer",
+              "target": "spatialPaths",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "ResamplePathSpatial"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "caustics",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "causticHistory",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "target": "pool",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "causticHistory",
+              "type": "Buffer",
+              "target": "causticHistory",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "ResampleCaustics"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "record",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "spatialPaths",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "pool",
+              "type": "Buffer",
+              "target": "pool",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "spatialPaths",
+              "type": "Buffer",
+              "target": "spatialPaths",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "RecordPathGuiding"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "shade",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "spatialPaths",
+              "type": "Buffer",
+              "required": true
+            },
+            {
+              "id": "causticHistory",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "spatialPaths",
+              "type": "Buffer",
+              "target": "spatialPaths",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            },
+            {
+              "id": "causticHistory",
+              "type": "Buffer",
+              "target": "causticHistory",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "ShadeGuidedFg"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": "Texture"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "guideDirections.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "guideDirections.view"
+        },
+        {
+          "from": "input.color",
+          "to": "guideDirections.color"
+        },
+        {
+          "from": "pool.buffer",
+          "to": "guideDirections.pool"
+        },
+        {
+          "from": "input.scene",
+          "to": "guideLights.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "guideLights.view"
+        },
+        {
+          "from": "guideDirections.color",
+          "to": "guideLights.color"
+        },
+        {
+          "from": "guideDirections.pool",
+          "to": "guideLights.pool"
+        },
+        {
+          "from": "input.scene",
+          "to": "reset.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "reset.view"
+        },
+        {
+          "from": "guideLights.color",
+          "to": "reset.color"
+        },
+        {
+          "from": "guideLights.pool",
+          "to": "reset.pool"
+        },
+        {
+          "from": "input.scene",
+          "to": "photons.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "photons.view"
+        },
+        {
+          "from": "reset.color",
+          "to": "photons.color"
+        },
+        {
+          "from": "reset.pool",
+          "to": "photons.pool"
+        },
+        {
+          "from": "input.scene",
+          "to": "initial.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "initial.view"
+        },
+        {
+          "from": "photons.color",
+          "to": "initial.color"
+        },
+        {
+          "from": "photons.pool",
+          "to": "initial.pool"
+        },
+        {
+          "from": "initialPaths.buffer",
+          "to": "initial.initialPaths"
+        },
+        {
+          "from": "input.scene",
+          "to": "temporal.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "temporal.view"
+        },
+        {
+          "from": "initial.color",
+          "to": "temporal.color"
+        },
+        {
+          "from": "initial.initialPaths",
+          "to": "temporal.initialPaths"
+        },
+        {
+          "from": "temporalPaths.buffer",
+          "to": "temporal.temporalPaths"
+        },
+        {
+          "from": "input.scene",
+          "to": "spatial.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "spatial.view"
+        },
+        {
+          "from": "temporal.color",
+          "to": "spatial.color"
+        },
+        {
+          "from": "temporal.temporalPaths",
+          "to": "spatial.temporalPaths"
+        },
+        {
+          "from": "spatialPaths.buffer",
+          "to": "spatial.spatialPaths"
+        },
+        {
+          "from": "input.scene",
+          "to": "caustics.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "caustics.view"
+        },
+        {
+          "from": "spatial.color",
+          "to": "caustics.color"
+        },
+        {
+          "from": "initial.pool",
+          "to": "caustics.pool"
+        },
+        {
+          "from": "causticHistory.buffer",
+          "to": "caustics.causticHistory"
+        },
+        {
+          "from": "input.scene",
+          "to": "record.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "record.view"
+        },
+        {
+          "from": "caustics.color",
+          "to": "record.color"
+        },
+        {
+          "from": "caustics.pool",
+          "to": "record.pool"
+        },
+        {
+          "from": "spatial.spatialPaths",
+          "to": "record.spatialPaths"
+        },
+        {
+          "from": "input.scene",
+          "to": "shade.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "shade.view"
+        },
+        {
+          "from": "record.color",
+          "to": "shade.color"
+        },
+        {
+          "from": "record.spatialPaths",
+          "to": "shade.spatialPaths"
+        },
+        {
+          "from": "caustics.causticHistory",
+          "to": "shade.causticHistory"
+        },
+        {
+          "from": "input.color",
+          "to": "renderSize.texture"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "initialPaths.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "temporalPaths.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "spatialPaths.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "causticHistory.size"
+        }
+      ]
+    }
+  ]
+}

@@ -20,7 +20,9 @@ using foundation::uint8;
 using foundation::usize;
 using Status = rhi::RasterStatus;
 
-static_assert(LUDUS_RAY_PATH_CAPTURE_PASS_COUNT == format::MAX_RAY_PASSES);
+static_assert(LUDUS_RAY_PATH_CAPTURE_PASS_COUNT == format::MAX_RAY_PROGRAMS);
+static_assert(((LUDUS_GRAPH_PROGRAM_COUNT - 1) << LUDUS_GRAPH_PASS_INDEX_SHIFT) <
+              (1U << LUDUS_GPU_PREVIEW_HISTORY_SHIFT));
 static_assert(LUDUS_RAY_PATH_CAPTURE_WORD_BYTES == sizeof(uint32));
 static_assert(RAY_PATH_INVALID_INDEX == LUDUS_GPU_PREVIEW_INVALID_TRIANGLE);
 /// The first slice selects one pixel; the buffer layout already admits a rectangle.

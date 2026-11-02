@@ -209,6 +209,15 @@ SpawnSurfaceRay(hit, directionWorld, maximumDistanceWorld) -> Ray or Failure
 TraceAndShade(scene, inout queries, ray, inout UserPayload) -> {Surface, Miss, Failure}
 ```
 
+`RayLaunch.IsFullImageDispatch` is true only when the dispatched tile covers the
+entire image. Algorithms with cross-pixel dependencies can explicitly reject
+row-band capture instead of treating a partial map as a complete frame.
+
+`LightInfo.EmitterIndex` is the `GetEmitter` / `GetEmitterTriangle` index of a mesh
+source, and `SCENE_INVALID_INDEX` for every other kind and invalid source. Emission
+samplers can use this checked mapping without interpreting packed scene offsets.
+
+
 Expose resolved typed source data and a checked emitter-triangle iterator so
 authors can implement their own selection/sampling. `GetEmitterBounds` adds
 per-emitter world bounds computed once with the scene from the same

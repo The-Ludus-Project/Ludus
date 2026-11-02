@@ -412,6 +412,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     Viewport_->hide();
     connect(Scene_, &LevelWorkspace::OperationFinished, this, &WorldWorkspace::SceneCompleted);
     connect(Scene_, &LevelWorkspace::AssetsVerified, this, &WorldWorkspace::SceneVerified);
+    connect(Scene_, &LevelWorkspace::PlacementValidationFinished, this, &WorldWorkspace::placementValidationFinished);
     connect(Scene_, &LevelWorkspace::ImportPreviewFinished, this, &WorldWorkspace::ShowImportPreview);
     connect(Scene_, &LevelWorkspace::DocumentChanged, this, [this]() { Changed(); });
     connect(Scene_, &LevelWorkspace::PreviewStarting, this, [this]() {
@@ -672,8 +673,7 @@ void WorldWorkspace::SetProject(const QString& root, foundation::uint64 epoch)
     Scene_->RestoreNavigation({});
     Scene_->SetProject(canonical, epoch);
     ClearImportState();
-    ValidatedScene_ = {};
-    ValidatedWorld_.clear();
+    invalidateScene();
     SceneError_.clear();
     Importing_ = false;
     SavePending_ = false;
@@ -756,8 +756,9 @@ bool WorldWorkspace::LoadProjectSchema(WorldDocument& candidate, QByteArray& sch
 }
 bool WorldWorkspace::Open(const QString& path)
 {
-    if (SceneBusy())
+    if (isSceneWorkerActive() == true)
     {
+        Changed(QStringLiteral("Wait for the scene operation to finish before opening a World."));
         return false;
     }
     if (path.endsWith(QStringLiteral(".lulevel")))
@@ -833,8 +834,7 @@ bool WorldWorkspace::Open(const QString& path)
     }
     RecoveryFailed_ = false;
     StopPreview();
-    ValidatedScene_ = {};
-    ValidatedWorld_.clear();
+    invalidateScene();
     SceneError_.clear();
     ++DocumentGeneration_;
     Document_ = foundation::Move(candidate);
@@ -854,8 +854,9 @@ bool WorldWorkspace::Open(const QString& path)
 }
 bool WorldWorkspace::Create(const QString& path)
 {
-    if (SceneBusy())
+    if (isSceneWorkerActive() == true)
     {
+        Changed(QStringLiteral("Wait for the scene operation to finish before creating a World."));
         return false;
     }
     if (Inside(path, false) == false)
@@ -881,8 +882,7 @@ bool WorldWorkspace::Create(const QString& path)
     }
     RecoveryFailed_ = false;
     StopPreview();
-    ValidatedScene_ = {};
-    ValidatedWorld_.clear();
+    invalidateScene();
     SceneError_.clear();
     ++DocumentGeneration_;
     Document_ = foundation::Move(candidate);
@@ -906,7 +906,11 @@ void WorldWorkspace::SetEntropySource(const foundation::identity::EntropySource&
 }
 bool WorldWorkspace::SceneBusy() const noexcept
 {
-    return Scene_ != nullptr && Scene_->Busy();
+    return Scene_ != nullptr && (Scene_->Busy() == true || mIsSceneRefreshDeferred == true);
+}
+bool WorldWorkspace::isSceneWorkerActive() const noexcept
+{
+    return SceneBusy() == true || (Scene_ != nullptr && Scene_->CanStartOperation() == false);
 }
 bool WorldWorkspace::ImportScene(const QString& source)
 {
@@ -928,7 +932,7 @@ bool WorldWorkspace::StartSceneImport(const QString& source, bool isPreviewed)
         Changed(QStringLiteral("Apply or reset the inspector edits before importing a scene."));
         return false;
     }
-    if (SceneBusy() == true)
+    if (isSceneWorkerActive() == true)
     {
         Changed(QStringLiteral("A scene operation is still running; wait for it or cancel it before importing."));
         return false;
@@ -986,7 +990,7 @@ bool WorldWorkspace::PreviewImportScene(const QString& source, const QString& en
         Changed(QStringLiteral("Apply or reset the inspector edits before importing a scene."));
         return false;
     }
-    if (SceneBusy() == true)
+    if (isSceneWorkerActive() == true)
     {
         Changed(QStringLiteral("A scene operation is still running; wait for it or cancel it before importing."));
         return false;
@@ -1060,19 +1064,81 @@ void WorldWorkspace::ShowImportReports()
     mImportReportToggleOrNull->setVisible(text.isEmpty() == false);
     ImportReport_->setVisible(text.isEmpty() == false && mImportReportToggleOrNull->isChecked() == true);
 }
+void WorldWorkspace::invalidateScene()
+{
+    ValidatedScene_ = {};
+    ValidatedWorld_.clear();
+    mIsSceneRefreshDeferred = false;
+    Scene_->ClearPlacementPresentation();
+}
 void WorldWorkspace::RefreshScene()
 {
-    const auto level = Document_.SceneLevel();
+    const QJsonObject level = Document_.SceneLevel();
     if (level.isEmpty())
     {
         Scene_->StopPreview();
-        ValidatedScene_ = {};
+        invalidateScene();
+        return;
     }
-    else if (SceneBusy() == false && (level != ValidatedScene_ || Document_.Encode() != ValidatedWorld_))
+    if (SceneBusy() == true)
     {
-        SceneGeneration_ = DocumentGeneration_;
-        Scene_->SetWorldSnapshot(Document_);
-        (void)Scene_->Assemble(level);
+        return;
+    }
+    // A placement-only edit is presented at once; its cook then validates it in the background.
+    const PlacementPublication publication = Scene_->PublishPlacement(level, Document_);
+    if (publication == PlacementPublication::Published)
+    {
+        mPlacementWorld = Document_.Encode();
+        mPlacementDocumentGeneration = DocumentGeneration_;
+        return;
+    }
+    if (publication == PlacementPublication::Unchanged ||
+        (level == ValidatedScene_ && Document_.Encode() == ValidatedWorld_))
+    {
+        return;
+    }
+    if (Scene_->CanStartOperation() == false)
+    {
+        // The placement cook still occupies the operation thread: stop it and assemble once it drains.
+        mIsSceneRefreshDeferred = true;
+        Scene_->CancelPlacementValidation();
+        return;
+    }
+    SceneGeneration_ = DocumentGeneration_;
+    Scene_->SetWorldSnapshot(Document_);
+    (void)Scene_->Assemble(level);
+}
+void WorldWorkspace::placementValidationFinished(PlacementValidationResult result)
+{
+    QString message;
+    if (mIsSceneRefreshDeferred == true)
+    {
+        // The edit that deferred this refresh needs a full assembly, which supersedes the placement cook.
+        mIsSceneRefreshDeferred = false;
+        RefreshScene();
+    }
+    else if (result != PlacementValidationResult::Superseded && mPlacementDocumentGeneration == DocumentGeneration_)
+    {
+        if (result == PlacementValidationResult::Accepted)
+        {
+            SceneError_.clear();
+            ValidatedScene_ = Scene_->Document();
+            ValidatedWorld_ = mPlacementWorld;
+            message = QStringLiteral("Scene assets validated.");
+        }
+        else
+        {
+            SceneError_ = Scene_->StatusText();
+            message = SceneError_;
+        }
+    }
+    Changed(message);
+    // A save waits for the presented placement's validation; a newer placement's cook starts after this.
+    if (SavePending_ == true && Scene_->Busy() == false &&
+        Scene_->GetPlacementValidation() == PlacementValidation::Ready)
+    {
+        SavePending_ = false;
+        (void)Save();
     }
 }
 void WorldWorkspace::SceneCompleted(bool accepted)
@@ -1133,7 +1199,7 @@ void WorldWorkspace::SceneCompleted(bool accepted)
             currentSchema != ConversionSchema_ || candidate.LoadSchema(ConversionSchema_, error) == false ||
             candidate.New(error) == false || candidate.ImportScene(Scene_->Document(), error) == false)
         {
-            ValidatedScene_ = {};
+            invalidateScene();
             RefreshScene();
             Changed(error.isEmpty() ? QStringLiteral("Conversion inputs changed; previous World retained.") : error);
             return;
@@ -1155,7 +1221,7 @@ void WorldWorkspace::SceneCompleted(bool accepted)
         QString error;
         if (Document_.ImportScene(Scene_->Document(), error) == false)
         {
-            ValidatedScene_ = {};
+            invalidateScene();
             RefreshScene();
             Changed(error);
             return;
@@ -1606,7 +1672,9 @@ void WorldWorkspace::Changed(const QString& message)
         field->setEnabled(isBusy == false || DraftPreview_);
     }
     Entities_->setEnabled(Pending_ == false && isBusy == false);
-    Import_->setEnabled(Document_.Loaded() && IsWorldDemo(Document_) == false && Pending_ == false && isBusy == false);
+    const bool isWorkerActive = isSceneWorkerActive();
+    Import_->setEnabled(Document_.Loaded() && IsWorldDemo(Document_) == false && Pending_ == false &&
+                        isWorkerActive == false);
     PlayButton_->setEnabled(Document_.Loaded() && isBusy == false);
     CancelScene_->setVisible(isBusy);
     CancelScene_->setEnabled(Scene_->CanCancel());
@@ -1624,7 +1692,7 @@ void WorldWorkspace::Changed(const QString& message)
     const bool hasRecovery = Document_.Loaded() && Dirty() == false && Unsaved_ == false &&
                              QFileInfo::exists(Path_ + QStringLiteral(".ludus-recovery"));
     Recovery_->setVisible(hasRecovery);
-    Recovery_->setEnabled(hasRecovery == true && isBusy == false);
+    Recovery_->setEnabled(hasRecovery == true && isWorkerActive == false);
     PathLabel_->setText(Path_.isEmpty()
                             ? QStringLiteral("No world open")
                             : (Dirty() ? QStringLiteral("● ") : QString()) + QDir(Root_).relativeFilePath(Path_));
@@ -1726,7 +1794,7 @@ void WorldWorkspace::PreviewDraft()
     {
         return;
     }
-    if (SceneBusy())
+    if (isSceneWorkerActive() == true)
     {
         DraftTimer_.start();
         return;
@@ -1918,13 +1986,14 @@ bool WorldWorkspace::Save()
     SaveValidated_ = false;
     if (level.isEmpty() == false && validated == false)
     {
-        if (SceneBusy() == false)
+        if (isSceneWorkerActive() == false)
         {
             SceneGeneration_ = DocumentGeneration_;
             Scene_->SetWorldSnapshot(Document_);
             (void)Scene_->VerifyAssets(level);
         }
-        if (SceneBusy() == false)
+        // A background placement cook finishes first; placementValidationFinished then saves.
+        if (isSceneWorkerActive() == false)
         {
             Changed(QStringLiteral("Scene validation could not start; World edits remain open."));
             return false;
@@ -2017,7 +2086,7 @@ bool WorldWorkspace::Recover()
     QByteArray envelope, current, schema;
     const auto header = RecoveryHeader();
     WorldDocument definition;
-    if (SceneBusy() || Dirty() || Unsaved_ || Inside(Path_, true) == false ||
+    if (isSceneWorkerActive() || Dirty() || Unsaved_ || Inside(Path_, true) == false ||
         Read(Path_, current, WorldDocument::MaxBytes) == false || current != Disk_ ||
         LoadProjectSchema(definition, schema, IsWorldDemo(Document_)) == false || schema != SchemaDisk_ ||
         Read(Path_ + QStringLiteral(".ludus-recovery"),
@@ -2078,7 +2147,7 @@ bool WorldWorkspace::ConfirmDiscard()
     if (answer == QMessageBox::Save)
     {
         const bool requested = Save();
-        return requested && SceneBusy() == false && SavePending_ == false && Dirty() == false;
+        return requested && isSceneWorkerActive() == false && SavePending_ == false && Dirty() == false;
     }
     if (answer != QMessageBox::Discard)
     {

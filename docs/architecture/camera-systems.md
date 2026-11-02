@@ -564,6 +564,10 @@ from visual shake or a detached debug camera.
 
 ## Rail cameras and cinematic tracks
 
+The [sequencer and cinematic capture design](sequencer-cinematics.md) owns
+object/camera track authoring, exact sequence timing and image-sequence export.
+The camera contract below supplies its pose/lens evaluation boundary.
+
 The camera consumes a prepared path through an optional adapter. Baseline fixed,
 follow and orbit rigs do not depend on the proposed FoundationGeometry module.
 When that module exists, reuse its [path preparation and distance map](curves-surfaces.md)

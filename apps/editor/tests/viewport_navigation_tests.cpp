@@ -15,6 +15,7 @@
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/gameplay/camera/camera.hpp>
 
+#include <QAction>
 #include <QApplication>
 #include <QColor>
 #include <QComboBox>
@@ -26,6 +27,7 @@
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPixmap>
 #include <QPoint>
@@ -989,4 +991,125 @@ TEST_CASE("Force raster is a saved local viewport preference", "[editor][viewpor
     preview.RestoreNavigation({});
     CHECK(preview.ShouldForceRaster() == false);
     CHECK(buttonOrNull->isChecked() == false);
+}
+
+TEST_CASE("Look-at poses aim and roll the editor camera, clamp its lens and reject degenerate views",
+          "[editor][navigation][start-view]")
+{
+    EditorCameraController controller;
+    REQUIRE(controller.TrySetLookAt({1, 2, 3}, {1, 2, -1}, {1, 0, 0}, math::DegreesToRadians(50.0F)) == true);
+    const camera::CameraSample& sample = controller.GetSample();
+    CHECK(math::Distance(sample.Pose.Position, math::Vector3d{1, 2, 3}) == Catch::Approx(0).margin(0.000001));
+    CHECK(math::Rotate(sample.Pose.Orientation, {0, 0, -1}).Z == Catch::Approx(-1).margin(0.00001));
+    CHECK(math::Rotate(sample.Pose.Orientation, {0, 1, 0}).X == Catch::Approx(1).margin(0.00001));
+    CHECK(controller.GetDistance() == Catch::Approx(4));
+    CHECK(math::Distance(controller.GetPivotWorld(), math::Vector3d{1, 2, -1}) == Catch::Approx(0).margin(0.00001));
+    CHECK(sample.Lens.Projection == camera::CameraProjection::PerspectiveInfinite);
+    CHECK(sample.Lens.VerticalFov == Catch::Approx(math::DegreesToRadians(50.0F)));
+
+    // Looking back along +Z is the opposite of the default view; up must still come out upright.
+    REQUIRE(controller.TrySetOrthographic(true, nullptr) == true);
+    REQUIRE(controller.TrySetLookAt({0, 0, 0}, {0, 0, 5}, {0, 2, 0}, math::DegreesToRadians(170.0F)) == true);
+    CHECK(math::Rotate(controller.GetSample().Pose.Orientation, {0, 0, -1}).Z == Catch::Approx(1).margin(0.00001));
+    CHECK(math::Rotate(controller.GetSample().Pose.Orientation, {0, 1, 0}).Y == Catch::Approx(1).margin(0.00001));
+    CHECK(controller.IsOrthographic() == false);
+    CHECK(controller.GetSample().Lens.VerticalFov ==
+          Catch::Approx(math::DegreesToRadians(MAXIMUM_EDITOR_VERTICAL_FOV_DEGREES)));
+
+    const camera::CameraSample before = controller.GetSample();
+    CHECK(controller.TrySetLookAt({0, 0, 0}, {0, 0, 0}, {0, 1, 0}, 1) == false);
+    CHECK(controller.TrySetLookAt({0, 0, 0}, {0, 3, 0}, {0, 1, 0}, 1) == false);
+    CHECK(controller.TrySetLookAt({0, 0, 0}, {0, 0, 1}, {0, 1, 0}, std::numeric_limits<float32>::quiet_NaN()) == false);
+    CHECK(math::Distance(controller.GetSample().Pose.Position, before.Pose.Position) == 0);
+    CHECK(controller.GetSample().Lens.VerticalFov == before.Lens.VerticalFov);
+    CHECK(controller.GetDistance() == Catch::Approx(5));
+}
+
+TEST_CASE("Imported scenes open at their start view and the View menu and Shift+Home return there",
+          "[editor][navigation][start-view]")
+{
+    const math::Vector3d eyeWorld{4, 3, 2};
+    RenderScene scene = MakeNavigationScene();
+    scene.HasStartView = true;
+    scene.StartView =
+    {
+        .EyeWorld = eyeWorld,
+        .TargetWorld = {0, 1, 0},
+        .UpWorld = {0, 1, 0},
+        .VerticalFov = math::DegreesToRadians(40.0F),
+    };
+    RenderPreview preview;
+    preview.RestoreNavigation({});
+    REQUIRE(preview.SetScene(scene) == true);
+    CHECK(math::Distance(preview.GetVisibleCameraSample().Pose.Position, eyeWorld) == Catch::Approx(0).margin(0.00001));
+    CHECK(preview.GetVisibleCameraSample().Lens.VerticalFov == Catch::Approx(math::DegreesToRadians(40.0F)));
+    CHECK(preview.GetFocusDistance() == Catch::Approx(math::Length(math::Vector3d{4, 2, 2})));
+
+    PreviewViewport viewport(&preview);
+    viewport.resize(800, 600);
+    viewport.show();
+    viewport.activateWindow();
+    viewport.setFocus();
+    QApplication::processEvents();
+    preview.Fly({1, 0, 0}, 1, 50);
+    REQUIRE(math::Distance(preview.GetVisibleCameraSample().Pose.Position, eyeWorld) > 1);
+    QTest::keyClick(&viewport, Qt::Key_Home, Qt::ShiftModifier);
+    CHECK(math::Distance(preview.GetVisibleCameraSample().Pose.Position, eyeWorld) == Catch::Approx(0).margin(0.00001));
+    QAction* goToStartView = viewport.findChild<QAction*>(QStringLiteral("viewportViewStart"));
+    REQUIRE(goToStartView != nullptr);
+    QMenu* viewMenu = qobject_cast<QMenu*>(goToStartView->parent());
+    REQUIRE(viewMenu != nullptr);
+    Q_EMIT viewMenu->aboutToShow();
+    CHECK(goToStartView->isEnabled() == true);
+    preview.Fly({0, 0, 1}, 1, 10);
+    goToStartView->trigger();
+    CHECK(math::Distance(preview.GetVisibleCameraSample().Pose.Position, eyeWorld) == Catch::Approx(0).margin(0.00001));
+    // Storing a start view needs an owner (the World); the viewport alone keeps the action hidden.
+    QAction* saveStartView = viewport.findChild<QAction*>(QStringLiteral("viewportSaveStartView"));
+    REQUIRE(saveStartView != nullptr);
+    CHECK(saveStartView == &viewport.GetStartViewSaveAction());
+    CHECK(saveStartView->isVisible() == false);
+
+    // The description of the current view round-trips through the level camera.
+    PreviewStartView described;
+    REQUIRE(preview.TryDescribeStartView(described) == true);
+    PreviewStartView parsed;
+    REQUIRE(TryParseStartView(MakeStartViewJson(described), parsed) == true);
+    CHECK(math::Distance(parsed.EyeWorld, eyeWorld) == Catch::Approx(0).margin(0.00001));
+    CHECK(math::Distance(parsed.TargetWorld, math::Vector3d{0, 1, 0}) == Catch::Approx(0).margin(0.0001));
+    CHECK(math::Dot(parsed.UpWorld, math::Vector3{0, 1, 0}) > 0.9F);
+    CHECK(parsed.VerticalFov == Catch::Approx(math::DegreesToRadians(40.0F)));
+    QJsonObject degenerate = MakeStartViewJson(described);
+    degenerate.insert(QStringLiteral("fov"), math::kPi);
+    CHECK(TryParseStartView(degenerate, parsed) == false);
+    CHECK(parsed.VerticalFov == Catch::Approx(math::DegreesToRadians(40.0F)));
+    preview.SetOrthographic(true);
+    PreviewStartView orthographic = described;
+    CHECK(preview.TryDescribeStartView(orthographic) == false);
+    CHECK(math::Distance(orthographic.EyeWorld, described.EyeWorld) == 0);
+
+    // Saved navigation wins over the start view when the scene loads again.
+    preview.SetOrthographic(false);
+    preview.Fly({1, 0, 0}, 1, 10);
+    const QJsonObject saved = preview.Navigation();
+    RenderPreview restored;
+    restored.RestoreNavigation(saved);
+    REQUIRE(restored.SetScene(scene) == true);
+    CHECK(restored.Navigation().value(QStringLiteral("eyeX")).toDouble() ==
+          Catch::Approx(saved.value(QStringLiteral("eyeX")).toDouble()));
+    // A changed start view arrives with the same scene identity, without a reload.
+    RenderScene moved = scene;
+    moved.StartView.EyeWorld = {-4, 3, 2};
+    REQUIRE(restored.SetScene(moved) == true);
+    REQUIRE(restored.GoToStartView() == true);
+    CHECK(math::Distance(restored.GetVisibleCameraSample().Pose.Position, math::Vector3d{-4, 3, 2}) ==
+          Catch::Approx(0).margin(0.00001));
+
+    // Scenes without a start view keep framing their bounds and refuse to go to one.
+    RenderPreview plain;
+    REQUIRE(plain.SetScene(MakeNavigationScene()) == true);
+    const QJsonObject framed = plain.Navigation();
+    CHECK(plain.HasStartView() == false);
+    CHECK(plain.GoToStartView() == false);
+    CHECK(plain.Navigation() == framed);
 }

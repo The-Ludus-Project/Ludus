@@ -37,7 +37,7 @@ class RestirTemplateTests(unittest.TestCase):
             self.assertEqual(resource['bytes_per_pixel'], 64)
         manifest = json.loads(root.with_name('main.lushader.json').read_text())
         build.validate_manifest(manifest)
-        self.assertEqual(len(manifest['settings']), 6)
+        self.assertEqual(len(manifest['settings']), 10)
         declarations = settings.shader_source(manifest['settings'])
         self.assertIn('static const uint RESTIR_INITIAL_CANDIDATE_COUNT = 8u;', declarations)
         self.assertIn('static const bool IS_RESTIR_TEMPORAL_ENABLED = true;', declarations)
@@ -110,6 +110,137 @@ class RestirTemplateTests(unittest.TestCase):
             build.validate_manifest(manifest)
 
 
+class StochasticPairwiseTemplateTests(unittest.TestCase):
+    def test_configuration_preserves_ordered_cdf_tail_and_shader_closure(self):
+        from ludus_tools import render_graph_templates
+        for profile in ('metal', 'spirv'):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as temporary:
+                root = graph.new_workspace(Path(temporary) / 'reuse', output='offscreen', renderer_static=True,
+                                           profiles=(profile,), template='restir-di')
+                asset = json.loads(root.read_text())
+                configuration = next(c for c in asset['configurations'] if c['id'] == 'StochasticPairwise')
+                size = next(n for n in configuration['nodes'] if n['id'] == 'renderSize')
+                size['extent'] = [13, 9]  # Partial edge tiles must have bounded buffer extents.
+                root.write_bytes(graph.canonical_asset(asset))
+                plan = graph.compile_graph(root, configuration='StochasticPairwise')
+                passes = [p for p in plan['passes'] if p['kind'] == 'RayTracing']
+                self.assertEqual([p['id'].rsplit('/', 1)[-1] for p in passes], ['initial', 'cells', 'shade'])
+                self.assertEqual([p['pipeline']['kind'] for p in passes],
+                                 ['ComputePipeline', 'ComputePipeline', 'ComputePipeline'])
+                buffers = [r for r in plan['resources'].values() if r['type'] == 'Buffer']
+                self.assertEqual(sorted(r['extent'][0] for r in buffers), [13 * 9 * 64, 13 * 9 * 80])
+                files = render_graph_templates.template_files('restir-di', (profile,), graph)
+                for source in ('pairwise_weights', 'pairwise_distribution', 'pairwise_cells', 'pairwise_spatial', 'pairwise_initial', 'pairwise_common', 'initial_reservoir'):
+                    self.assertIn('main_shaders/' + source + '.slang', files)
+                manifest = json.loads(files['main.lushader.json'])
+                values = {s['id']: s for s in manifest['settings']}
+                self.assertEqual(values['RESTIR_PAIRWISE_SAMPLES']['value'], 3)
+                self.assertEqual(values['RESTIR_PAIRWISE_CANONICAL_SAMPLES']['value'], 1)
+                for identity in ('RESTIR_PAIRWISE_SAMPLES', 'RESTIR_PAIRWISE_CANONICAL_SAMPLES'):
+                    for invalid in (0, 17):
+                        changed = copy.deepcopy(manifest)
+                        next(s for s in changed['settings'] if s['id'] == identity)['value'] = invalid
+                        with self.assertRaises(ToolingError):
+                            build.validate_manifest(changed)
+
+
+class RestirProductionTemplateTests(unittest.TestCase):
+    def test_production_configurations_build_closed_plans_and_package_their_shader_closure(self):
+        import re
+        from ludus_tools import render_graph_templates
+        for kind, first_program in (("di", "ProductionPresample"), ("gi", "Initial")):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                root = graph.new_workspace(Path(temporary) / kind, output="offscreen", renderer_static=True,
+                                           profiles=("metal",), template="restir-" + kind)
+                manifest = json.loads(root.with_name("main.lushader.json").read_text())
+                build.validate_manifest(manifest)
+                asset = json.loads(root.read_text())
+                self.assertEqual([record["id"] for record in asset["configurations"]],
+                                 ["Default", "Production", "StochasticPairwise"] if kind == "di" else
+                                 ["Default", "Production"])
+                plans = [graph.compile_graph(root, configuration=identity) for identity in ("Default", "Production")]
+                operations = [operation for operation in plans[1]["passes"] if operation["kind"] == "RayTracing"]
+                self.assertEqual(len(operations), 2 if kind == "di" else 1)
+                self.assertEqual([operation["pipeline"]["shaders"][0]["program"] for operation in operations],
+                                 [first_program, "ProductionShade"] if kind == "di" else ["ProductionShade"])
+                self.assertTrue(all(operation["pipeline"]["kind"] == "ComputePipeline" for operation in operations))
+                buffers = [resource for resource in plans[1]["resources"].values() if resource["type"] == "Buffer"]
+                self.assertEqual(len(buffers), 2 if kind == "di" else 1)
+                history = next(resource for resource in buffers if resource.get("bytes_per_pixel") == 128)
+                self.assertEqual(history["extent"], [640 * 480 * 128, 1])
+                self.assertEqual(history["view_scale"], [1, 1])
+                variants = {ray.program_tuple(operation["pipeline"]) for plan in plans for operation in plan["passes"]
+                            if operation["kind"] == "RayTracing"}
+                # Each built-in package has five distinct callbacks but no configuration runs more than four.
+                maximum_active = max(sum(operation["kind"] == "RayTracing" for operation in plan["passes"])
+                                     for plan in plans)
+                self.assertGreater(len(variants), maximum_active)
+                self.assertLessEqual(len(variants), ray.MAX_RAY_PROGRAMS)
+                files = render_graph_templates.template_files("restir-" + kind, ("metal",), graph)
+                # Graph allocation and shader addressing must agree on both banks and the explicit word layout.
+                history_source = files["main_shaders/production_reservoir.slang" if kind == "di" else "main_shaders/production.slang"]
+                banks = int(re.search(r"PRODUCTION_HISTORY_BANK_COUNT = (\d+);", history_source).group(1))
+                word_name = "RESERVOIR_WORD_COUNT" if kind == "di" else "RESERVOIR_RECORD_WORDS"
+                words = int(re.search(word_name + r" = (\d+);", files["main_shaders/reservoir.slang"]).group(1))
+                self.assertEqual(history["bytes_per_pixel"], banks * words * ray.BUFFER_WORD_BYTES)
+                if kind == "di":
+                    pools = int(re.search(r"PRODUCTION_POOL_COUNT = (\d+);", history_source).group(1))
+                    samples = int(re.search(r"PRODUCTION_POOL_SAMPLES = (\d+);", history_source).group(1))
+                    pool = next(resource for resource in buffers if resource.get("bytes_per_pixel", 0) == 0)
+                    self.assertEqual(pool["extent"], [pools * samples * ray.BUFFER_WORD_BYTES, 1])
+                self.assertIn("main_shaders/production.slang", files)
+                self.assertIn("10.2312/hpg.20211281", files["main_shaders/production.slang"]
+                              + files.get("main_shaders/production_reservoir.slang", ""))
+
+    def test_callback_overflow_names_the_count_and_a_repair(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = graph.new_workspace(Path(temporary) / "GI", output="offscreen", renderer_static=True,
+                                       profiles=("metal",), template="restir-gi")
+            library_path = root.with_name("library.lurender.json")
+            manifest_path = root.with_name("main.lushader.json")
+            asset = json.loads(root.read_text())
+            library = json.loads(library_path.read_text())
+            manifest = json.loads(manifest_path.read_text())
+            production = library["configurations"][1]
+            base_node = next(node for node in production["nodes"] if node["id"] == "shade")
+            previous = "shade"
+            for index in range(ray.MAX_RAY_PROGRAMS - 4):
+                identity = "Extra" + str(index)
+                node = copy.deepcopy(base_node)
+                node["id"] = identity
+                node["shaders"][0]["program"] = identity
+                production["nodes"].append(node)
+                production["edges"].extend([
+                    {"from": "input.scene", "to": identity + ".scene"},
+                    {"from": "input.view", "to": identity + ".view"},
+                    {"from": previous + ".color", "to": identity + ".color"},
+                    {"from": previous + ".history", "to": identity + ".history"},
+                ])
+                previous = identity
+                program = copy.deepcopy(next(program for program in manifest["programs"] if program["id"] == "ProductionShade"))
+                program["id"] = identity
+                manifest["programs"].append(program)
+            production["outputs"][0]["source"] = previous + ".color"
+            manifest["budgets"]["programs"] = len(manifest["programs"])
+            root.write_text(json.dumps(asset))
+            library_path.write_text(json.dumps(library))
+            manifest_path.write_text(json.dumps(manifest))
+            with self.assertRaises(ToolingError) as failure:
+                build.prepare_sources(manifest_path, Path(temporary))
+            self.assertIn(f"{ray.MAX_RAY_PROGRAMS + 1} distinct ray callback sets", str(failure.exception))
+            self.assertIn("move configurations into another graph package", str(failure.exception))
+
+    def test_callback_capacity_and_shader_selector_agree_with_the_format_owner(self):
+        import re
+        root = Path(__file__).resolve().parents[2]
+        owner = root / "modules/content/render_graph_format/include/ludus/content/render_graph_format/plan.h"
+        for constant in ("MAX_RAY_PROGRAMS", "MAX_RAY_PASSES"):
+            self.assertEqual(int(re.search(constant + r" = (\d+);", owner.read_text()).group(1)), getattr(ray, constant))
+        shader = root / "modules/graphics/renderer/shaders/renderer_gpu_preview_layout.h"
+        self.assertEqual(int(re.search(r"#define LUDUS_GRAPH_PROGRAM_COUNT (\d+)", shader.read_text()).group(1)),
+                         ray.MAX_RAY_PROGRAMS)
+
+
 class BuiltInTemplateSettingsTests(unittest.TestCase):
     def test_every_built_in_template_imports_into_one_manifest(self):
         # The editor merges each imported template's settings into one shared manifest. The engine
@@ -117,6 +248,7 @@ class BuiltInTemplateSettingsTests(unittest.TestCase):
         from ludus_tools import render_graph_templates as templates
         root = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs'
         merged = {}
+        merged_values = {}
         for identity, (directory, _, _) in templates.TEMPLATES.items():
             text = (root / directory / 'main.lushader.json.in').read_text()
             text = text.replace('@LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@', json.dumps(['metal']))
@@ -124,7 +256,17 @@ class BuiltInTemplateSettingsTests(unittest.TestCase):
                 definition = {key: value for key, value in setting.items() if key != 'value'}
                 with self.subTest(template=identity, setting=setting['id']):
                     self.assertEqual(merged.setdefault(setting['id'], definition), definition)
+                    merged_values.setdefault(setting['id'], setting)
         self.assertLessEqual(len(merged), settings.MAX_SETTINGS)
+        settings.validate(list(merged_values.values()), build)
+
+    def test_manifest_setting_capacity_accepts_the_limit_and_rejects_one_more(self):
+        values = [{'id': f'SETTING_{index}', 'label': f'Setting {index}', 'type': 'Bool', 'value': False}
+                  for index in range(settings.MAX_SETTINGS)]
+        settings.validate(values, build)
+        values.append({'id': 'OVERFLOW', 'label': 'One more setting', 'type': 'Bool', 'value': False})
+        with self.assertRaises(ToolingError):
+            settings.validate(values, build)
 
 
 class VisibilityTemplateTests(unittest.TestCase):
@@ -770,11 +912,12 @@ class RestirGiTemplateTests(unittest.TestCase):
         technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
         # Spatial reuse with seven neighbours traces 2 * 7 + 2 visibility rays at most; the initial pass traces the
         # camera ray, the sample ray and two path bounces.
-        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 4, 'visibility_queries': 16})
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 5, 'visibility_queries': 16})
         compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
         self.assertEqual([(program['id'], program['function']) for program in compute],
                          [('Initial', 'GenerateInitialSample'), ('Temporal', 'ResampleTemporal'),
-                          ('Spatial', 'ResampleSpatial'), ('Shade', 'ShadeRestirGi')])
+                          ('Spatial', 'ResampleSpatial'), ('Shade', 'ShadeRestirGi'),
+                          ('ProductionShade', 'ShadeProductionGi')])
 
     def test_settings_use_the_paper_defaults_and_shaders_cite_it(self):
         import re
@@ -799,7 +942,7 @@ class RestirGiTemplateTests(unittest.TestCase):
         self.assertLessEqual(technique['scene_interface']['visibility_queries'],
                              ray.SCENE_QUERY_LIMITS['MAX_VISIBILITY_QUERIES'])
         self.assertEqual(technique['scene_interface']['surface_queries'],
-                         2 + values['RESTIR_GI_PATH_BOUNCES']['maximum'])
+                         3 + values['RESTIR_GI_PATH_BOUNCES']['maximum'])
         self.assertIn('0.906307787f', reservoir)
         self.assertIn('SIMILARITY_DEPTH_FRACTION = 0.05f', reservoir)
         for source in ('reservoir.slang', 'transport.slang'):
@@ -1828,3 +1971,102 @@ class EditorTemplateCatalogTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RaoBlackwellMhTemplateTests(unittest.TestCase):
+    def test_six_matched_estimators_have_sized_persistent_storage_and_resolved_capture_routes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = graph.new_workspace(Path(directory) / 'Transport', output='offscreen', renderer_static=True,
+                                       profiles=('metal',), template='rao-blackwell-mh')
+            plan = graph.compile_graph(root)
+            rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+            self.assertEqual(len(rays), 4)
+            buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+            self.assertEqual(len(buffers), 4)
+            self.assertEqual(sorted(resource['bytes_per_pixel'] for resource in buffers), [96, 96, 112, 112])
+            self.assertEqual(len([operation for operation in plan['passes'] if operation['kind'] == 'Accumulate']), 4)
+            manifest = json.loads(root.with_name('main.lushader.json').read_text())
+            interface = next(t['scene_interface'] for t in manifest['techniques'] if 'scene_interface' in t)
+            self.assertEqual(interface['surface_queries'], 8)
+            self.assertEqual(interface['visibility_queries'], 0)
+            self.assertEqual(len(manifest['settings']), 6)
+            restore = graph.compile_graph(root, configuration='JumpRestore')
+            self.assertEqual(len([operation for operation in restore['passes'] if operation['kind'] == 'RayTracing']), 3)
+            self.assertEqual(len([operation for operation in restore['passes'] if operation['kind'] == 'Accumulate']), 3)
+            source = root.parent.joinpath('main_shaders/chain.slang').read_text()
+            self.assertIn('TryAdvanceMetropolisTour(acceptance, tour)', source)
+            self.assertIn('ResolveGraphRadiance(result)', source)
+            self.assertIn('identity.w == launch.SampleIndex', source)
+            self.assertIn('launch.SampleIndex != 0', source)
+
+    def test_browser_only_creation_preserves_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'Transport'
+            with self.assertRaises(ToolingError):
+                graph.new_workspace(destination, output='offscreen', renderer_static=True,
+                                    profiles=('wgsl',), template='rao-blackwell-mh')
+            self.assertFalse(destination.exists())
+
+    def test_installed_sdk_resolves_the_same_shader_closure(self):
+        from ludus_tools import render_graph_templates
+        with tempfile.TemporaryDirectory() as directory:
+            installed = Path(directory) / 'sdk'
+            module = installed / 'ludus_tools/render_graph_templates.py'
+            module.parent.mkdir(parents=True)
+            source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/rao_blackwell_mh'
+            shutil.copytree(source, installed / 'templates/rao_blackwell_mh')
+            with patch.object(render_graph_templates, '__file__', str(module)):
+                files = render_graph_templates.template_files('rao-blackwell-mh', ('spirv',), graph)
+            self.assertIn('main_shaders/chain.slang', files)
+            self.assertIn('main_shaders/path.slang', files)
+            self.assertIn('main.lushader.json', files)
+
+
+class OneMoreVertexNeeTemplateTests(unittest.TestCase):
+    def test_graph_orders_preparation_and_three_raw_estimators(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = graph.new_workspace(Path(directory) / 'Indirect', output='offscreen', renderer_static=True,
+                                       profiles=('metal',), template='one-more-vertex-nee')
+            plan = graph.compile_graph(root)
+            rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+            self.assertEqual(len(rays), 4)
+            self.assertTrue(all(operation['pipeline']['invocation']['traversal'] == 'ComputeBvh' for operation in rays))
+            buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+            self.assertEqual(len(buffers), 2)
+            self.assertEqual(next(b['extent'][0] for b in buffers if 'bytes_per_pixel' not in b), 64 * 1024 * 1024)
+            self.assertEqual(next(b['bytes_per_pixel'] for b in buffers if 'bytes_per_pixel' in b), 64)
+            manifest = json.loads(root.with_name('main.lushader.json').read_text())
+            interface = next(t['scene_interface'] for t in manifest['techniques'] if 'scene_interface' in t)
+            self.assertEqual(interface['surface_queries'], 2)
+            self.assertEqual(interface['visibility_queries'], 4)
+            self.assertEqual([s['id'] for s in manifest['settings']],
+                             ['OMV_DEFENSIVE_WEIGHT', 'OMV_FAR_SOLID_ANGLE', 'OMV_OUTPUT_COMPONENT'])
+            self.assertEqual(len([p for p in plan['passes'] if p['kind'] == 'Accumulate']), 3)
+
+    def test_requires_compute_and_replays_the_installed_source_closure(self):
+        from ludus_tools import render_graph_templates
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'Indirect'
+            with self.assertRaises(ToolingError):
+                graph.new_workspace(destination, output='offscreen', renderer_static=True,
+                                    profiles=('wgsl',), template='one-more-vertex-nee')
+            self.assertFalse(destination.exists())
+            installed = Path(directory) / 'sdk'
+            module = installed / 'ludus_tools/render_graph_templates.py'
+            module.parent.mkdir(parents=True)
+            source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/one_more_vertex_nee'
+            shutil.copytree(source, installed / 'templates/one_more_vertex_nee')
+            with patch.object(render_graph_templates, '__file__', str(module)):
+                files = render_graph_templates.template_files('one-more-vertex-nee', ('spirv',), graph)
+            self.assertIn('main_shaders/prepare.slang', files)
+            self.assertIn('main_shaders/geometry_sampling.slang', files)
+            self.assertIn('main_shaders/statistics.slang', files)
+            self.assertIn('main_shaders/shade.slang', files)
+
+    def test_sdk_install_inventory_contains_every_creatable_template(self):
+        from ludus_tools.render_graph_templates import TEMPLATES
+        import re
+        source = Path(__file__).resolve().parents[2] / 'CMakeLists.txt'
+        declaration = re.search(r'foreach\(template_directory IN ITEMS ([^)]*)\)', source.read_text(), re.S)
+        self.assertIsNotNone(declaration)
+        self.assertEqual(set(declaration.group(1).split()), {definition[0] for definition in TEMPLATES.values()})

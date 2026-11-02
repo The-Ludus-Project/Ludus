@@ -25,6 +25,7 @@ target_sources(
         src/surface.cpp
         src/tessellation.cpp
         src/convex_polygon.cpp
+        src/point_search.cpp
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
@@ -41,6 +42,8 @@ target_sources(
             include/ludus/foundation/geometry/surface.hpp
             include/ludus/foundation/geometry/tessellation.hpp
             include/ludus/foundation/geometry/convex_polygon.hpp
+            include/ludus/foundation/geometry/point_search.hpp
+            include/ludus/foundation/geometry/detail/point_search_layout.h
 )
 target_include_directories(ludus_foundation_geometry PRIVATE src)
 
@@ -87,6 +90,7 @@ if(LUDUS_BUILD_TESTS)
             tests/surface_tests.cpp
             tests/tessellation_tests.cpp
             tests/convex_polygon_tests.cpp
+            tests/point_search_tests.cpp
     )
     target_link_libraries(
         ludus_foundation_geometry_tests

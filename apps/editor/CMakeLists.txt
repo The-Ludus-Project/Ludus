@@ -378,7 +378,7 @@ function(ludus_editor_add_default_render_graph target)
               ${restir_template_shaders})
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics restir_gi)
+            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee)
         string(REPLACE "_" "-" template_identity "${template_directory}")
         set(visibility_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/${template_directory}")
         file(GLOB visibility_template_shaders CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")
@@ -534,6 +534,8 @@ qt_add_executable(ludus_editor
     src/render_panel.cpp
     src/internal/level_workspace.h
     src/level_workspace.cpp
+    src/internal/scene_placement.h
+    src/scene_placement.cpp
     src/internal/import_report.h
     src/import_report.cpp
     src/internal/world_workspace.h
@@ -923,6 +925,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_panel.cpp
         src/internal/level_workspace.h
         src/level_workspace.cpp
+        src/internal/scene_placement.h
+        src/scene_placement.cpp
         src/internal/import_report.h
         src/import_report.cpp
         tests/import_report_tests.cpp
@@ -939,6 +943,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp
         tests/world_lighting_switch_tests.cpp
+        tests/world_start_view_tests.cpp
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp

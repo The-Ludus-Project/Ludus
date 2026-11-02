@@ -136,6 +136,51 @@
       "input": "SurfaceHit",
       "output": "ScenePayload",
       "bindings": []
+    },
+    {
+      "id": "ProductionPresample",
+      "stage": "compute",
+      "source": "main_shaders/production_presample.slang",
+      "function": "PresampleProductionLights",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ProductionShade",
+      "stage": "compute",
+      "source": "main_shaders/production.slang",
+      "function": "ShadeProductionDi",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "BuildPairwiseCells",
+      "stage": "compute",
+      "source": "main_shaders/pairwise_cells.slang",
+      "function": "BuildPairwiseCells",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "PairwiseInitial",
+      "stage": "compute",
+      "source": "main_shaders/pairwise_initial.slang",
+      "function": "InitializePairwiseReservoir",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "StochasticShade",
+      "stage": "compute",
+      "source": "main_shaders/pairwise_spatial.slang",
+      "function": "ShadeStochasticReservoir",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
     }
   ],
   "techniques": [
@@ -194,7 +239,7 @@
         "version": 1,
         "payload": "main_shaders/payload.slang",
         "surface_queries": 1,
-        "visibility_queries": 1
+        "visibility_queries": 2
       }
     }
   ],
@@ -248,6 +293,38 @@
       "label": "Temporal reuse",
       "type": "Bool",
       "value": true
+    },
+    {
+      "id": "RESTIR_PRODUCTION_SPATIAL_NEIGHBORS",
+      "label": "Production: previous-frame spatial taps",
+      "type": "UInt32",
+      "value": 1,
+      "minimum": 0,
+      "maximum": 4
+    },
+    {
+      "id": "RESTIR_PRODUCTION_VISIBILITY_DISTANCE_WORLD",
+      "label": "Production: approximate visibility reuse distance (world units)",
+      "type": "Float32",
+      "value": 0,
+      "minimum": 0,
+      "maximum": 1000
+    },
+    {
+      "id": "RESTIR_PAIRWISE_SAMPLES",
+      "label": "Stochastic pairwise: neighbor draws",
+      "type": "UInt32",
+      "value": 3,
+      "minimum": 1,
+      "maximum": 16
+    },
+    {
+      "id": "RESTIR_PAIRWISE_CANONICAL_SAMPLES",
+      "label": "Stochastic pairwise: canonical draws",
+      "type": "UInt32",
+      "value": 1,
+      "minimum": 1,
+      "maximum": 16
     }
   ]
 }

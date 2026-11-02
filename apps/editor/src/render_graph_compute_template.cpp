@@ -420,6 +420,26 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
         selected.ProgramPrefix = QStringLiteral("SteinbergPhysicalOptics");
         selected.Name = QStringLiteral("Steinberg practical physical optics");
     }
+    else if (templateIdentity == QStringLiteral("rao-blackwell-mh"))
+    {
+        selected.ProgramPrefix = QStringLiteral("RaoBlackwellMh");
+        selected.Name = QStringLiteral("Rao-Blackwellized MH");
+    }
+    else if (templateIdentity == QStringLiteral("guided-restir-fg-plus"))
+    {
+        selected.ProgramPrefix = QStringLiteral("GuidedRestirFgPlus");
+        selected.Name = QStringLiteral("Guided ReSTIR FG+");
+    }
+    else if (templateIdentity == QStringLiteral("conditional-restir"))
+    {
+        selected.ProgramPrefix = QStringLiteral("ConditionalRestir");
+        selected.Name = QStringLiteral("Conditional ReSTIR");
+    }
+    else if (templateIdentity == QStringLiteral("one-more-vertex-nee"))
+    {
+        selected.ProgramPrefix = QStringLiteral("OneMoreVertexNee");
+        selected.Name = QStringLiteral("One-more-vertex NEE");
+    }
     else if (templateIdentity == QStringLiteral("restir-gi"))
     {
         selected.ProgramPrefix = QStringLiteral("RestirGi");

@@ -15,6 +15,7 @@ target_sources(
         src/color.cpp
         src/vector.cpp
         src/quaternion.cpp
+        src/gaussian.cpp
         src/matrix.cpp
         src/transform.cpp
         src/projection.cpp
@@ -32,6 +33,7 @@ target_sources(
         src/projected_solid_angle.cpp
         src/linearly_transformed_cosine.cpp
         src/weighted_reservoir.cpp
+        src/metropolis.cpp
         src/shading_normal.cpp
     PUBLIC
         FILE_SET public_headers
@@ -43,6 +45,7 @@ target_sources(
             include/ludus/foundation/math/scalar.hpp
             include/ludus/foundation/math/vector.hpp
             include/ludus/foundation/math/quaternion.hpp
+            include/ludus/foundation/math/gaussian.hpp
             include/ludus/foundation/math/matrix.hpp
             include/ludus/foundation/math/summation.hpp
             include/ludus/foundation/math/transform.hpp
@@ -61,6 +64,7 @@ target_sources(
             include/ludus/foundation/math/projected_solid_angle.hpp
             include/ludus/foundation/math/linearly_transformed_cosine.hpp
             include/ludus/foundation/math/weighted_reservoir.hpp
+            include/ludus/foundation/math/metropolis.hpp
             include/ludus/foundation/math/shading_normal.hpp
 )
 
@@ -95,6 +99,13 @@ install(
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
 
+    add_executable(ludus_gaussian_tests tests/gaussian_tests.cpp)
+    target_link_libraries(ludus_gaussian_tests PRIVATE Ludus::FoundationMath Catch2::Catch2WithMain)
+    ludus_apply_project_defaults(ludus_gaussian_tests)
+    ludus_enable_test_exceptions(ludus_gaussian_tests)
+    add_test(NAME ludus_gaussian_tests COMMAND ludus_gaussian_tests)
+    set_tests_properties(ludus_gaussian_tests PROPERTIES LABELS "unit;foundation;math")
+
     add_executable(ludus_foundation_math_tests)
     target_sources(
         ludus_foundation_math_tests
@@ -121,6 +132,7 @@ if(LUDUS_BUILD_TESTS)
             tests/projected_solid_angle_tests.cpp
             tests/linearly_transformed_cosine_tests.cpp
             tests/weighted_reservoir_tests.cpp
+            tests/metropolis_tests.cpp
             tests/shading_normal_tests.cpp
     )
     target_include_directories(ludus_foundation_math_tests PRIVATE tests src)
@@ -167,4 +179,4 @@ if(LUDUS_BUILD_TESTS)
     endif()
 endif()
 
-install(FILES shaders/math.slang shaders/projected_solid_angle.slang shaders/linearly_transformed_cosine.slang shaders/weighted_reservoir.slang shaders/shading_normal.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES shaders/math.slang shaders/gaussian.slang shaders/projected_solid_angle.slang shaders/linearly_transformed_cosine.slang shaders/weighted_reservoir.slang shaders/metropolis.slang shaders/shading_normal.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")

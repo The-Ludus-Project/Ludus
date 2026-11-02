@@ -494,8 +494,14 @@ Shape "plymesh" "string filename" "bare.ply"
         CHECK(mesh.Uvs[corner * 2 + 1] == (corner % 3 == 2 ? 0.0F : 1.0F));
     }
     // Shared source corner 2 must split: its second triangle has a different UV.
-    CHECK(mesh.Positions[2 * 3] == mesh.Positions[4 * 3]);
-    CHECK(mesh.Uvs[2 * 2 + 1] != mesh.Uvs[4 * 2 + 1]);
+    constexpr usize SHARED_SOURCE_CORNER = 2;
+    constexpr usize SPLIT_SOURCE_CORNER = 4;
+    constexpr usize POSITION_COMPONENT_COUNT = 3;
+    constexpr usize UV_COMPONENT_COUNT = 2;
+    CHECK(mesh.Positions[SHARED_SOURCE_CORNER * POSITION_COMPONENT_COUNT] ==
+          mesh.Positions[SPLIT_SOURCE_CORNER * POSITION_COMPONENT_COUNT]);
+    CHECK(mesh.Uvs[SHARED_SOURCE_CORNER * UV_COMPONENT_COUNT + 1] !=
+          mesh.Uvs[SPLIT_SOURCE_CORNER * UV_COMPONENT_COUNT + 1]);
     IrMesh invalid = mesh;
     invalid.Uvs.Clear();
     invalid.Indices[0] = IR_NONE;

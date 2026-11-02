@@ -162,21 +162,28 @@ struct RenderGraphPrograms final
 /// RENDER_GRAPH_FAILURE_AUTHORED_FIRST. See docs/development/render-graph-authoring.md, "Explain failed pixels".
 enum class RenderGraphFailureReason : foundation::uint8
 {
-    Unspecified,      ///< A shader set queries.HasFailed without a reason.
-    InvalidRadiance,  ///< A sample returned non-finite or negative radiance.
-    InterfaceVersion, ///< The scene interface version does not match the renderer.
-    SurfaceBudget,    ///< More surface queries than scene_interface.surface_queries.
-    VisibilityBudget, ///< More visibility queries than scene_interface.visibility_queries.
-    LineBudget,       ///< More line queries than scene_interface.line_queries.
-    InvalidRay,       ///< A ray with a non-unit direction or an invalid distance range.
-    Traversal,        ///< The traversal could not finish, such as a full BVH stack.
-    RandomExhausted,  ///< The invocation's random stream ran out of dimensions.
-    InvalidArgument,  ///< A scene function received an out-of-range or degenerate input.
-    LightSample,      ///< No light could be selected or sampled.
-    StorageCapacity,  ///< A graph storage buffer has fewer entries than the pixels using it.
-    StoredRecord,     ///< Per-pixel data an earlier pass did not write for this pixel or frame.
-    SceneData,        ///< An invalid triangle, surface or material from a scene lookup.
-    InvalidWeight,    ///< A non-finite or negative sampling weight, probability or PDF.
+    Unspecified,                ///< A shader set queries.HasFailed without a reason.
+    InvalidRadiance,            ///< A sample returned non-finite or negative radiance.
+    InterfaceVersion,           ///< The scene interface version does not match the renderer.
+    SurfaceBudget,              ///< More surface queries than scene_interface.surface_queries.
+    VisibilityBudget,           ///< More visibility queries than scene_interface.visibility_queries.
+    LineBudget,                 ///< More line queries than scene_interface.line_queries.
+    InvalidRay,                 ///< A ray with a non-unit direction or an invalid distance range.
+    Traversal,                  ///< The traversal could not finish, such as a full BVH stack.
+    RandomExhausted,            ///< The invocation's random stream ran out of dimensions.
+    InvalidArgument,            ///< A scene function received an out-of-range or degenerate input.
+    LightSample,                ///< No light could be selected or sampled.
+    StorageCapacity,            ///< A graph storage buffer has fewer entries than the pixels using it.
+    StoredRecord,               ///< Per-pixel data an earlier pass did not write for this pixel or frame.
+    SceneData,                  ///< An invalid triangle, surface or material from a scene lookup.
+    InvalidWeight,              ///< A non-finite or negative sampling weight, probability or PDF.
+    BsdfOnlyLights,             ///< Analytic lights require a light-sampling transport profile.
+    PrimaryMaterial,            ///< A material requires random dimensions outside the primary-sample profile.
+    PhotonCamera,               ///< Guided photon backprojection requires a perspective camera.
+    PhotonCapacity,             ///< Guided photon storage or light admission exceeds its declared template limits.
+    PhotonDispatch,             ///< Photon maps and spatial reuse require a whole-image dispatch.
+    GeometrySamplingLights,     ///< A geometry-sampling template received analytic or environment lighting.
+    GeometryStatisticsCapacity, ///< A geometry-sampling statistics buffer cannot hold the scene hierarchy.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;
@@ -588,6 +595,22 @@ public:
     /// when uninitialized or the index is out of range; never reports a pending replacement.
     [[nodiscard]] bool GetResourceDescription(foundation::uint32 resource,
                                               content::render_graph_format::Resource& outResource) const noexcept;
+    /// Borrow a stable persistent Buffer resource for an external prepared compute
+    /// producer/consumer, using the same RHI device, graph hazards and submission ledger.
+    /// The graph owns the allocation: never Destroy the returned handle. Reacquire
+    /// after a pixel-buffer resize or graph replacement; retained bindings retire normally.
+    /// Call between frames. Pending scene/resize work or an unfinished frame producer
+    /// returns NotReady so callers cannot mutate the last drawable view's storage.
+    /// A subsequent authored scene-compute pass consumes GPU results through its wired
+    /// GraphBuffer slot. No readback, upload or ownership transfer occurs here.
+    /// @param resource Numeric Buffer resource index in this graph's cooked plan.
+    /// @param outBuffer Borrowed allocation, written only on Ready.
+    /// @param outBytes Usable byte capacity, written only on Ready.
+    /// @return Ready; InvalidDescription for an invalid index; Unsupported for a texture;
+    /// NotReady before preparation/while a replacement or GPU producer is outstanding.
+    [[nodiscard]] rhi::RasterStatus GetPersistentBuffer(foundation::uint32 resource,
+                                                        rhi::BufferHandle& outBuffer,
+                                                        foundation::usize& outBytes) const noexcept;
     /// Copy attachment ownership counters; an empty graph reports zeros.
     [[nodiscard]] RenderGraphAllocationReport GetAllocationReport() const noexcept;
     /// Poll prewarming and pending replacement; publish only a complete Ready candidate.
@@ -746,6 +769,9 @@ public:
     /// such as a frame capture's readback. The buffer holds RENDER_GRAPH_ACCUMULATION_WORDS float4 values per
     /// pixel of the pass's colour resource, in row-major order. The graph owns it; finish every use, including
     /// readbacks, before the next Render, Update or Reset, and never write to it.
+    /// Ordinary accumulated callbacks store RGB sums; ResolveGraphRadiance callbacks
+    /// store their latest resolved estimate times the invocation count. Divide either
+    /// by the bit-preserved uint32 count in the first word's W to recover linear RGB.
     /// @param pass Plan pass index of a ray pass.
     /// @param outBuffer Receives the borrowed buffer; unchanged on failure.
     /// @return Ready after producer completion; NotReady while no completed output exists;
