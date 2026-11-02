@@ -503,7 +503,7 @@ void MainWindow::BuildUi()
         mRecentRemoveButtonOrNull->setEnabled(Controller_->Caps().CanOpen && RecentList_->currentItem() != nullptr);
     });
     connect(mRecentRemoveButtonOrNull, &QPushButton::clicked, this, [this]() {
-        if (const auto* item = RecentList_->currentItem())
+        if (const QListWidgetItem* item = RecentList_->currentItem())
         {
             Controller_->RemoveRecentProject(item->data(Qt::UserRole).toString());
         }

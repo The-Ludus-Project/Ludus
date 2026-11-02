@@ -292,8 +292,8 @@ TEST_CASE("A missing recent project is dimmed and can be removed without touchin
     REQUIRE(QFile::remove(gone));
     EditorController controller(NoTooling(), nullptr, history);
     MainWindow window(&controller);
-    auto* list = window.findChild<QListWidget*>(QStringLiteral("recentProjectsList"));
-    auto* remove = window.findChild<QPushButton*>(QStringLiteral("removeRecentProjectButton"));
+    QListWidget* list = window.findChild<QListWidget*>(QStringLiteral("recentProjectsList"));
+    QPushButton* remove = window.findChild<QPushButton*>(QStringLiteral("removeRecentProjectButton"));
     REQUIRE(list != nullptr);
     REQUIRE(remove != nullptr);
     REQUIRE(list->count() == 2);
@@ -321,8 +321,8 @@ TEST_CASE("The Start page says why New Project is unavailable", "[editor][recent
     const QString path = WriteProject(directory, QStringLiteral("game.json"), QByteArrayLiteral("Game"));
     EditorController controller(NoTooling(), nullptr, directory.filePath(QStringLiteral("recent.json")));
     MainWindow window(&controller);
-    auto* button = window.findChild<QPushButton*>(QStringLiteral("welcomeNewProject"));
-    auto* reason = window.findChild<QLabel*>(QStringLiteral("welcomeNewProjectReason"));
+    QPushButton* button = window.findChild<QPushButton*>(QStringLiteral("welcomeNewProject"));
+    QLabel* reason = window.findChild<QLabel*>(QStringLiteral("welcomeNewProjectReason"));
     REQUIRE(button != nullptr);
     REQUIRE(reason != nullptr);
     CHECK(button->isEnabled() == true);

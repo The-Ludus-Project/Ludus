@@ -185,11 +185,11 @@ TEST_CASE("Combo boxes keep room for their whole text and draw a small chevron",
 {
     QWidget root;
     ApplyWorkspaceStyle(&root);
-    auto* layout = new QVBoxLayout(&root);
+    QVBoxLayout* layout = new QVBoxLayout(&root);
     QList<QComboBox*> combos;
     for (const QString& text : {QStringLiteral("Default"), QStringLiteral("(asset default)"), QStringLiteral("Edit")})
     {
-        auto* combo = new QComboBox(&root);
+        QComboBox* combo = new QComboBox(&root);
         combo->setFocusPolicy(Qt::NoFocus);
         combo->addItem(text);
         layout->addWidget(combo);
