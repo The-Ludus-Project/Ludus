@@ -395,7 +395,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics)
+            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics restir_gi)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         ludus_stage_render_graph_fixture("${template_source}" "${template_staged}")
@@ -713,6 +713,44 @@ if(TARGET ludus_renderer_render_tests)
         string(TOUPPER "${physical_optics_name}" physical_optics_definition)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_STEINBERG_PHYSICAL_OPTICS_${physical_optics_definition}_DIRECTORY=\"${physical_optics_package_directory}\"")
+    endforeach()
+    # The restir-gi template with Graph settings replaced, in the same name/setting/value form: without temporal and
+    # spatial reuse every pixel keeps only its own initial sample, the plain Monte Carlo estimator that unbiased reuse
+    # must agree with; and the biased variant, which normalizes by every merged M without visibility rays.
+    set(restir_gi_template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/restir_gi_template")
+    file(READ "${restir_gi_template_staged}/main.lushader.json" restir_gi_manifest)
+    string(JSON restir_gi_setting_count LENGTH "${restir_gi_manifest}" settings)
+    math(EXPR restir_gi_setting_last "${restir_gi_setting_count} - 1")
+    foreach(restir_gi_variant IN ITEMS "no_reuse;IS_RESTIR_GI_TEMPORAL_ENABLED;false;IS_RESTIR_GI_SPATIAL_ENABLED;false"
+            "biased;IS_RESTIR_GI_UNBIASED;false")
+        list(POP_FRONT restir_gi_variant restir_gi_name)
+        set(restir_gi_variant_manifest "${restir_gi_manifest}")
+        while(restir_gi_variant)
+            list(POP_FRONT restir_gi_variant restir_gi_setting restir_gi_value)
+            set(restir_gi_setting_index -1)
+            foreach(setting_index RANGE ${restir_gi_setting_last})
+                string(JSON setting_id GET "${restir_gi_manifest}" settings ${setting_index} id)
+                if(setting_id STREQUAL restir_gi_setting)
+                    set(restir_gi_setting_index ${setting_index})
+                endif()
+            endforeach()
+            if(restir_gi_setting_index LESS 0)
+                message(FATAL_ERROR "The restir-gi template manifest has no ${restir_gi_setting} setting.")
+            endif()
+            string(JSON restir_gi_variant_manifest SET "${restir_gi_variant_manifest}" settings
+                ${restir_gi_setting_index} value ${restir_gi_value})
+        endwhile()
+        set(restir_gi_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/restir_gi_${restir_gi_name}")
+        ludus_stage_render_graph_inputs("${restir_gi_template_staged}" "${restir_gi_staged}" main.lushader.json)
+        # Rewrite the staged manifest only when it changes, so reconfiguring does not rebuild the package.
+        file(WRITE "${restir_gi_staged}.lushader.json" "${restir_gi_variant_manifest}\n")
+        file(COPY_FILE "${restir_gi_staged}.lushader.json" "${restir_gi_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_restir_gi_${restir_gi_name}"
+            MANIFEST "${restir_gi_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_restir_gi_${restir_gi_name}_RUNTIME_PACKAGE" PARENT_PATH restir_gi_package_directory)
+        string(TOUPPER "${restir_gi_name}" restir_gi_definition)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_RESTIR_GI_${restir_gi_definition}_DIRECTORY=\"${restir_gi_package_directory}\"")
     endforeach()
     # The Veach and Guibas template with every scene compute pass on the triangle loop, so the
     # line-sampling comparison with its lightSampling output needs no native ray profile.

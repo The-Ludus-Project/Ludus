@@ -1891,6 +1891,84 @@ TEST_CASE("Steinberg physical-optics configuration imports its passes, shader cl
     RequireValidation(workspace);
 }
 
+TEST_CASE("ReSTIR GI template is created from the editor picker with its four passes and three buffers",
+          "[editor][render-graph][restir-gi-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    workspace.show();
+    CreateGraphFromPicker(workspace, QStringLiteral("restir-gi"));
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    for (const char* identity :
+         {"samples", "temporalReservoirs", "spatialReservoirs", "Initial", "Temporal", "Spatial", "Shade"})
+    {
+        INFO(identity);
+        CHECK(library.contains(identity) == true);
+    }
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    CHECK(root.count("\"Accumulate\"") == 1);
+    CHECK(root.count("\"ToneMap\"") == 1);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/reservoir.slang")).contains("ComputeReconnectionJacobian") ==
+          true);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("RESTIR_GI_SPATIAL_MAX_M") == true);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("ReSTIR GI configuration imports its passes, shader closure and settings on the root canvas",
+          "[editor][render-graph][restir-gi-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Indirect"), QStringLiteral("restir-gi")) == true);
+    const QByteArray library = document.GetDraft(QStringLiteral("Indirect.lurender.json"));
+    for (const char* program : {"RestirGiInitial", "RestirGiTemporal", "RestirGiSpatial", "RestirGiShade"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    // Each kernel's include closure arrives with it.
+    for (const QString& source : {QStringLiteral("restir_gi/main_shaders/initial.slang"),
+                                  QStringLiteral("restir_gi/main_shaders/temporal.slang"),
+                                  QStringLiteral("restir_gi/main_shaders/spatial.slang"),
+                                  QStringLiteral("restir_gi/main_shaders/shade.slang"),
+                                  QStringLiteral("restir_gi/main_shaders/reservoir.slang"),
+                                  QStringLiteral("restir_gi/main_shaders/transport.slang")})
+    {
+        INFO(source.toStdString());
+        CHECK(document.GetDraft(source).isEmpty() == false);
+    }
+    const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
+    for (const char* setting : {"RESTIR_GI_SOURCE_DISTRIBUTION",
+                                "IS_RESTIR_GI_TARGET_SCATTERED",
+                                "RESTIR_GI_PATH_BOUNCES",
+                                "IS_RESTIR_GI_TEMPORAL_ENABLED",
+                                "RESTIR_GI_TEMPORAL_MAX_M",
+                                "IS_RESTIR_GI_SPATIAL_ENABLED",
+                                "RESTIR_GI_SPATIAL_MAX_M",
+                                "RESTIR_GI_SPATIAL_NEIGHBORS",
+                                "RESTIR_GI_SPATIAL_SPARSE_NEIGHBORS",
+                                "IS_RESTIR_GI_UNBIASED"})
+    {
+        INFO(setting);
+        CHECK(manifest.contains(setting) == true);
+    }
+    // The shared ray technique's budgets rise to the template's: the sample path and the spatial reuse's rays.
+    const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 4);
+    CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 16);
+    ReplaceRasterSubgraph(document, QStringLiteral("Indirect"));
+    REQUIRE(workspace.Save() == true);
+    RequireValidation(workspace);
+}
+
 TEST_CASE("Line-sampling template is created from the editor picker with Properties hidden",
           "[editor][render-graph][line-sampling-template]")
 {
