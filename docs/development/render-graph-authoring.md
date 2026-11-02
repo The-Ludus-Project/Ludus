@@ -8884,7 +8884,9 @@ exercises all encoder stages without shipping trained assets. A local released
 checkpoint comparison on Metal passed all 128 latent channels at 32 anchors with
 absolute tolerance `5e-4` plus relative tolerance `5e-4`; it compares an independent
 CPU inference calculation using the declared ordering/precision policy, not the
-vendor sparse/FlashAttention runtime. Hilbert codes were separately checked
+vendor sparse/FlashAttention runtime. A larger 4,100-input/1,025-anchor trained
+comparison also passed every channel with the same tolerance, including a partial
+1,024-point attention patch. Hilbert codes were separately checked
 against the authors' serialization. End-to-end regressions compare template
 surface output against cooperative packet decoding and retain the old scene after
 failed replacements. Metal execution and SPIR-V compilation are distinct evidence;
