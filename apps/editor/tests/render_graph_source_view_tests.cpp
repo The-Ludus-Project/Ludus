@@ -11,8 +11,11 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
+#include <QPushButton>
 #include <QString>
 #include <QStringList>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -186,4 +189,50 @@ TEST_CASE("Workspace source navigation crosses package drafts and resets on docu
     sourceOrNull->GetNavigation().Back();
     CHECK(filesOrNull->currentText() == current);
     CHECK(workspace.GetDocument().GetDraft(first) == accepted);
+}
+
+TEST_CASE("The Source view header is compact and the code editor gets most of the height",
+          "[editor][code-viewport][usability]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString graph = MakeSourcePackage(project, QStringLiteral("A"));
+    RendererWorkspace workspace(ToolingPaths{});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(graph) == true);
+    workspace.resize(1000, 640);
+    workspace.show();
+    QTest::qWait(50);
+    QPushButton* editInterface = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphEditInterface"));
+    QPushButton* createSubgraph = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphCreateSubgraph"));
+    REQUIRE(editInterface != nullptr);
+    REQUIRE(createSubgraph != nullptr);
+    CHECK(editInterface->isVisible() == true);
+    REQUIRE(workspace.ShowSourceView() == true);
+    QTest::qWait(50);
+    // Graph-structure commands step aside, and an idle recovery takes no row of its own.
+    CHECK(editInterface->isVisible() == false);
+    CHECK(createSubgraph->isVisible() == false);
+    QWidget* recovery = workspace.findChild<QWidget*>(QStringLiteral("renderGraphRecovery"));
+    REQUIRE(recovery != nullptr);
+    CHECK(recovery->findChild<QLabel*>(QStringLiteral("renderGraphRecoveryStatus"))->isVisible() == false);
+    CodeEditor* sourceOrNull = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(sourceOrNull != nullptr);
+    // The editor is most of the document: at least half of the workspace's height, and many lines tall.
+    const int lineHeight = sourceOrNull->fontMetrics().lineSpacing();
+    CHECK(sourceOrNull->height() >= workspace.height() / 2);
+    CHECK(sourceOrNull->height() / lineHeight >= 10);
+    // The status lines are under the editor, not above it.
+    QLabel* status = workspace.findChild<QLabel*>(QStringLiteral("renderGraphSourceStatus"));
+    QLabel* assistance = workspace.findChild<QLabel*>(QStringLiteral("shaderAssistanceStatus"));
+    REQUIRE(status != nullptr);
+    REQUIRE(assistance != nullptr);
+    const int editorBottom = sourceOrNull->mapTo(&workspace, QPoint(0, sourceOrNull->height())).y();
+    CHECK(status->mapTo(&workspace, QPoint(0, 0)).y() >= editorBottom);
+    CHECK(assistance->mapTo(&workspace, QPoint(0, 0)).y() >= editorBottom);
+    // The graph views bring the commands back.
+    QTabWidget* views = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    REQUIRE(views != nullptr);
+    views->setCurrentIndex(0);
+    CHECK(editInterface->isVisible() == true);
 }
