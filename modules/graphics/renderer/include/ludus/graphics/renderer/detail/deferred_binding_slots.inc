@@ -16,6 +16,8 @@
 // Resolve-only storage replaces resources unused after material evaluation.
 #define LUDUS_DEFERRED_MESH_LIGHT_BINDING 3
 #define LUDUS_DEFERRED_LTC_BINDING 4
+// Resolve-only mesh-light shadow atlas, replacing the material base-colour texture the resolve never samples.
+#define LUDUS_DEFERRED_MESH_LIGHT_SHADOW_BINDING 1
 // Reconstructed positions within this plane tolerance are treated as coplanar,
 // preventing a triangle from illuminating its own rasterized surface.
 #define LUDUS_MESH_LIGHT_PLANE_EPSILON_METERS 0.00001
@@ -27,3 +29,9 @@
 // The specular term also uses the point only when the sphere's angular radius, radius / distance, stays below this
 // fraction of the GGX alpha (roughness squared), so the LTC density barely varies across the emitter.
 #define LUDUS_MESH_LIGHT_FAR_SPECULAR_ANGLE_PER_ALPHA 0.25
+// Mesh-light shadow lookups move the receiver this many shadow-map texels along its normal, so a surface does not
+// shadow itself where the map's depth steps across it at grazing angles.
+#define LUDUS_MESH_LIGHT_SHADOW_NORMAL_OFFSET_TEXELS 1.5
+// A stored depth shadows a receiver only when nearer by more than this many 16-bit depth codes, absorbing the
+// quantization of the RGBA8 atlas.
+#define LUDUS_MESH_LIGHT_SHADOW_DEPTH_BIAS_CODES 3.0

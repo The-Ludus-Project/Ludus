@@ -1070,6 +1070,8 @@ struct RenderGraph::State final
                                                         lighting.GetMeshLights(),
                                                         lighting.GetMeshLightCount(),
                                                         lighting.GetMeshLightGridWord(),
+                                                        lighting.GetMeshLightShadowCasters().IsEmpty() == false,
+                                                        lighting.GetMeshLightShadowView(),
                                                         operation);
             if (IsAccepted(status) == false)
             {
@@ -1497,6 +1499,22 @@ struct RenderGraph::State final
             }
             if (Programs.HasClusteredDeferred == true && Passes[i].Program == format::Technique::ColorAndDepth)
             {
+                // Mesh-light shadow face packets are built and uploaded between frames, before publication.
+                internal::MeshLightShadowAtlas* shadowsOrNull =
+                    inoutScene.ForwardGeneration.Get() != nullptr
+                        ? inoutScene.ForwardGeneration->GetMeshLightShadowAtlasOrNull()
+                        : nullptr;
+                if (shadowsOrNull != nullptr)
+                {
+                    const Status shadows =
+                        context.prepareMeshLightShadows(inoutScene.Snapshots[i],
+                                                        inoutScene.ForwardGeneration->GetMeshLightShadowCasters(),
+                                                        *shadowsOrNull);
+                    if (shadows != Status::Ready)
+                    {
+                        return shadows;
+                    }
+                }
                 if (inoutScene.DeferredTargets[i].Get() == nullptr)
                 {
                     internal::RenderGraphDeferredTargets* allocationOrNull =
@@ -1550,6 +1568,7 @@ struct RenderGraph::State final
         RecordingRevision = Current->Revision;
         RecordingStatus = Status::Ready;
         HasAttemptedDraw = false;
+        bool hasDrawnMeshLightShadows = false;
         rhi::FrameInfo information;
         const rhi::DeviceStatus acquired = rhi::GetFrameInfo(Device, surface, information);
         if (acquired != rhi::DeviceStatus::Ready)
@@ -1614,6 +1633,22 @@ struct RenderGraph::State final
                 description.Clear[ALPHA_CHANNEL] = 0;
             }
             HasAttemptedDraw = true;
+            // The scene's mesh-light shadow faces render once, a budgeted slice per frame, before its first resolve.
+            internal::MeshLightShadowAtlas* shadowsOrNull =
+                Programs.HasClusteredDeferred == true && operation.Program == format::Technique::ColorAndDepth &&
+                        hasDrawnMeshLightShadows == false
+                    ? Current->ForwardGeneration->GetMeshLightShadowAtlasOrNull()
+                    : nullptr;
+            if (shadowsOrNull != nullptr)
+            {
+                hasDrawnMeshLightShadows = true;
+                RecordingStatus =
+                    GetContext(operation.Program).drawMeshLightShadows(Current->Views[pass], *shadowsOrNull);
+                if (RecordingStatus != Status::Ready)
+                {
+                    continue;
+                }
+            }
             RecordingStatus =
                 Programs.HasClusteredDeferred == true && operation.Program == format::Technique::ColorAndDepth
                     ? Current->DeferredPasses[pass]->Draw(GetContext(operation.Program),

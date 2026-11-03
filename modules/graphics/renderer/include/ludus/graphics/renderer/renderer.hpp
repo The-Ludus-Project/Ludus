@@ -73,6 +73,8 @@ namespace internal
 {
 class RenderGraphDeferredPass;
 struct DeferredMaterialBindings;
+struct MeshLightShadowAtlas;
+struct MeshLightShadowCaster;
 /// Private access to renderer logical identities.
 struct Access;
 class RenderGraphRayPass;
@@ -821,6 +823,18 @@ private:
     drawView(PreparedView handle, const rhi::RasterPassDescription& description, DrawMode mode) noexcept;
     [[nodiscard]] rhi::RasterStatus getDeferredMaterial(PreparedView handle,
                                                         internal::DeferredMaterialBindings& outBindings) noexcept;
+    /// Between frames, build a prepared scene's mesh-light shadow face packets from snapshot, culling its opaque and
+    /// masked items to each face's frustum and caster range, and upload their instances. Repeated calls poll the
+    /// upload: Pending until it is usable, then Ready.
+    [[nodiscard]] rhi::RasterStatus
+    prepareMeshLightShadows(Snapshot snapshot,
+                            foundation::BorrowedView<const internal::MeshLightShadowCaster> casters,
+                            internal::MeshLightShadowAtlas& inoutAtlas) noexcept;
+    /// Inside the open frame and before frameView's deferred passes, clear the prepared atlas once to the far depth,
+    /// then draw whole faces while the frame's draw budget, less frameView's draws, allows. Faces not yet drawn read
+    /// as unoccluded.
+    [[nodiscard]] rhi::RasterStatus drawMeshLightShadows(PreparedView frameView,
+                                                         internal::MeshLightShadowAtlas& inoutAtlas) noexcept;
     [[nodiscard]] rhi::RasterStatus prewarmProgram(const rhi::RasterShaderDescription& vertex,
                                                    const rhi::RasterShaderDescription& fragment,
                                                    const rhi::RasterShaderDescription* shadowOrNull,
