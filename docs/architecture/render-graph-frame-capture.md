@@ -30,6 +30,36 @@ The motivating case is the
 Its four outputs compare Peters' estimators. Comparing their variance requires
 converged images, and the viewport can show those but not save them.
 
+## Estimator warm-up
+
+A scene compute program may declare `capture_warmup_setting` in its shader manifest,
+naming an existing UInt32 graph setting. The cooked package carries that setting's
+value per callback set. A capture follows the selected output to its ray pass and
+runs that many startup invocations **before** the requested collection budget.
+For example, 64 requested MH samples with 128 burn-in steps runs 192 invocations.
+The progress text distinguishes warm-up from collection; it never calls a capture
+complete after only the 64 discarded startup invocations.
+
+This adds scheduling metadata, without changing shader transport, estimator
+weights, random addresses or interactive accumulation limits. IID programs default
+to zero. A zero-valued warm-up setting adds no work. The requested count plus
+warm-up must fit the existing capture limit; an oversized request names both counts
+and asks for fewer requested samples or a lower authored warm-up setting.
+
+Runtime package version 33 appends `MAX_RAY_PROGRAMS` uint32 warm-up counts after
+the scene resource word. Earlier versions decode with zero. Generated C++ programs
+and runtime packages carry the same values. Raw LURGCAP sample counts and the
+capture's `TargetSamples` still count **all invocations**, including warm-up, so
+the existing file layout and latest-ratio arithmetic remain unchanged. MCMC counts
+are not independent samples or an effective sample count. Pending RB tours keep
+the estimator's existing behavior; the capture does not invent a final tour weight.
+
+Older imported copies of the shipped MH/Jump Restore template are recognized by
+the exact unchanged chain-source SHA-256, entry point and UInt32 `MH_BURN_IN`
+setting. Rebuilding adds the same metadata without rewriting authored files.
+Customized copies need the explicit declaration; they are never guessed from a
+program name or from a black output.
+
 ## Goals and non-goals
 
 The proposed [sequencer image capture runner](sequencer-cinematics.md#capture-execution)

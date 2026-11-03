@@ -97,6 +97,7 @@
       "stage": "compute",
       "source": "main_shaders/chain.slang",
       "function": "ShadeRaoBlackwell",
+      "capture_warmup_setting": "MH_BURN_IN",
       "input": "RayLaunch",
       "output": "Radiance",
       "bindings": []
@@ -106,6 +107,7 @@
       "stage": "compute",
       "source": "main_shaders/chain.slang",
       "function": "ShadeMetropolis",
+      "capture_warmup_setting": "MH_BURN_IN",
       "input": "RayLaunch",
       "output": "Radiance",
       "bindings": []
@@ -115,6 +117,7 @@
       "stage": "compute",
       "source": "main_shaders/chain.slang",
       "function": "ShadeWasteRecycling",
+      "capture_warmup_setting": "MH_BURN_IN",
       "input": "RayLaunch",
       "output": "Radiance",
       "bindings": []
@@ -124,6 +127,7 @@
       "stage": "compute",
       "source": "main_shaders/chain.slang",
       "function": "ShadeJumpRestore",
+      "capture_warmup_setting": "MH_BURN_IN",
       "input": "RayLaunch",
       "output": "Radiance",
       "bindings": []

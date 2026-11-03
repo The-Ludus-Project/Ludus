@@ -71,6 +71,9 @@ public:
     /// image than have Initialize reject the graph when IsDenoisingAvailable is false.
     /// Call before staging; graphs already initialized from this package are unaffected.
     void BypassDenoising() noexcept;
+    /// Whether this package requires externally supplied trained encoder/decoder setup.
+    /// False for an empty package; no allocation or model loading occurs.
+    [[nodiscard]] bool HasLightTransformer() const noexcept;
     /// Describe the cooked stages, borrowing owned artifacts and the caller's composite recipes.
     /// The composite descriptions are copied by value; their artifact storage must outlive use.
     /// A role the generation carries no stage for (for example DepthOnly in a color-only graph)
@@ -161,7 +164,9 @@ struct RenderGraphActivationReport final
     RenderGraphRenderer ActiveRenderer =
         RenderGraphRenderer::Raster; ///< Drawing model; meaningful with ActiveGeneration.
     RenderGraphRenderer CandidateRenderer =
-        RenderGraphRenderer::Raster; ///< Last staged model; meaningful with CandidateGeneration.
+        RenderGraphRenderer::Raster;     ///< Last staged model; meaningful with CandidateGeneration.
+    RenderGraphReport CandidateReport{}; ///< Latest candidate extraction diagnostics, retained after rejection
+                                         ///< independently of the active graph.
 };
 /// Stage a complete graph + shader + plan generation and publish it atomically
 /// between frames. The active generation keeps rendering while a candidate
@@ -204,7 +209,11 @@ public:
     /// A diagnostic ray path capture package (RenderGraphPackage::IsRayPathCapture) or a frame capture profile
     /// (RenderGraphPackage::IsCaptureProfile) returns InvalidDescription without staging: it never becomes a
     /// drawing generation.
-    [[nodiscard]] rhi::RasterStatus Stage(foundation::core::UniquePtr<RenderGraphPackage> package) noexcept;
+    /// @param package Owned cooked candidate; ownership is consumed by this call, including on failure.
+    /// @param modelOrNull Optional trained model setup, required by Light Transformer packages;
+    /// assets are consumed/copied during this call, encoder artifact storage survives Poll.
+    [[nodiscard]] rhi::RasterStatus Stage(foundation::core::UniquePtr<RenderGraphPackage> package,
+                                          const LightTransformerModelDescription* modelOrNull = nullptr) noexcept;
     /// Select and stage an authored renderer, taking ownership of both packages.
     /// @param rasterPackage Loaded raster-only graph; mandatory on every device.
     /// @param rayPackageOrNull Optional loaded graph containing software or native triangle ray passes.

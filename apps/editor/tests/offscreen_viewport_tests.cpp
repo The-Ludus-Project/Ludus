@@ -812,6 +812,18 @@ TEST_CASE("Statistics overlay paints over the offscreen readback canvas",
     // The panel sits in the top-left corner; the rest of the frame is unchanged by the overlay.
     const QRect corner(0, 0, shown.width() / 4, shown.height() / 4);
     CHECK(shown.copy(corner) != hidden.copy(corner));
+    // A screenshot holds the rendered frame at its own size, without the overlay painted over it.
+    const QString screenshotPath = QDir(directory.path()).filePath(QStringLiteral("screenshot.png"));
+    QString screenshotError;
+    REQUIRE(viewport.SaveScreenshot(screenshotPath, screenshotError) == true);
+    CHECK(viewport.IsTakingScreenshot() == false);
+    CHECK(viewport.GetScreenshotError().isEmpty() == true);
+    CHECK(viewport.GetScreenshotPath() == screenshotPath);
+    QImage screenshot;
+    REQUIRE(screenshot.load(screenshotPath, "PNG") == true);
+    REQUIRE(screenshot.size() == hidden.size());
+    CHECK(screenshot.convertToFormat(QImage::Format_RGB32).copy(corner) ==
+          hidden.convertToFormat(QImage::Format_RGB32).copy(corner));
     statistics->click();
     CHECK(viewport.GetStatisticsText().isEmpty() == true);
     preview.Stop();

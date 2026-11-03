@@ -242,6 +242,9 @@ struct NativeDeviceDescription final
     /// also supports the extension with the device and host time domains; otherwise the timings stay
     /// duration-only. Declaring an extension that the device did not enable is invalid usage.
     NativeCalibratedTimestamps CalibratedTimestamps = NativeCalibratedTimestamps::None;
+    /// Vulkan only, false for Metal: the source enabled the fillModeNonSolid device feature, so raster pipelines
+    /// may use RasterFillMode::Lines. Declaring a feature that the device did not enable is invalid usage.
+    bool HasFillModeNonSolid = false;
 };
 
 /// Negotiated native sharing profile; query only after device startup is Ready.

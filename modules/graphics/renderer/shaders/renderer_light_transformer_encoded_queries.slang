@@ -1,0 +1,2 @@
+#define LUDUS_LIGHT_TRANSFORMER_PACKED_ENCODER 1
+#include "renderer_light_transformer_decoder.slang"

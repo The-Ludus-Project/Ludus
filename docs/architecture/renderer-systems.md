@@ -1647,12 +1647,15 @@ magic `LUHDR01\0`, little-endian version/profile/sampler/header sizes at bytes
 8/12/16/20, width/height/target/depth/roulette/flags at 24–44, seed/revision and two
 64-bit scene digest words at 48–72, secondary range/mip/light count at 80–88,
 column-major world-to-clip floats at 96–159, eye at 160–171 and environment at
-172–183. Remaining header bytes are reserved zero. Flags encode CPU (1), center
+172–183. Optical wavelength in metres occupies byte 92 (zero for geometric transport);
+remaining header bytes are reserved zero. Flags encode CPU (1), center
 rays (2), orthographic (4), reverse-Z (8), infinite far (16), partial (32),
-GPU compute (64) and `ResampledProjectedSolidAngle` light sampling (128); neither
+GPU compute (64), resampled light sampling (128) and scalar optical connections (256); neither
 traversal bit marks native queries. The sampler field is 1 for `UniformArea` and 2
 with flag 128; `scripts/reference-hdr` rejects any other pairing and records
-`light_sampling` in its manifest.
+`light_sampling` in its manifest, with `center_rays` for flag 2.
+The scalar optical connection profile and its CPU/GPU contract are described in
+[render-graph authoring](../development/render-graph-authoring.md#trace-scene-optical-connections).
 Each top-left ordered pixel contains three FP32 mean RGB channels and a uint32
 committed count. The light count/digest identify the retained scene; applications
 must save original light/asset inputs for independent scene reconstruction.
@@ -3026,7 +3029,8 @@ index. A refracted continuation must leave on the far side of the geometric
 surface; any other lobe stays on the viewer's side. Specular vertices skip
 next-event estimation, because no light proposal can reach a delta direction.
 Emission or environment found after a specular bounce takes full weight instead of
-a MIS weight (`ReferenceBsdfSample::IsSpecular`). Shadow rays stay opaque to glass,
+a MIS weight (`ReferenceBsdfSample::IsSpecular`), also under `OpticalWavelengthWorld`,
+whose wave connections carry all other light but cannot reach a delta direction. Shadow rays stay opaque to glass,
 as in pbrt-v4, so a surface behind glass receives light through it only by BSDF
 sampling. Delta bounces count towards `MaxDepth` and roulette like any other event.
 `Metropolis` captures report `Unsupported` for dielectrics.
@@ -3362,14 +3366,20 @@ camera movement and exposure do not change these view-independent irradiance cha
 `LitMaterialDescription::DebugView` (`MaterialDebugView`) replaces a lit
 material's shaded output with one inspection quantity per pixel: world-space
 normal as RGB (`n * 0.5 + 0.5`), linear depth, perceptual roughness, metallic,
-UV0 as red/green, or the number of lights whose shadowed contribution is nonzero
-as a viridis ramp saturating at `MATERIAL_DEBUG_LIGHT_COUNT_SATURATION`.
+UV0 as red/green, the number of lights whose shadowed contribution is nonzero
+as a viridis ramp saturating at `MATERIAL_DEBUG_LIGHT_COUNT_SATURATION`, or a
+wireframe colour (`MATERIAL_DEBUG_WIREFRAME_RED`/`GREEN`/`BLUE`) dimmed toward
+`MATERIAL_DEBUG_WIREFRAME_EDGE_ON_PERCENT` as the surface turns edge-on.
+Wireframe draws edges only when the program was prewarmed with
+`PrewarmLitProgram(..., rhi::RasterFillMode::Lines)`, which applies line fill to
+its colour and depth-prepass pipelines while its shadow pipeline keeps filling
+triangles; a solid program fills triangles in the wireframe colour.
 Only the debug recipes honour it: `renderer_lit_debug` and
 `renderer_clustered_authored_debug`, with matching shadow recipes. They compile
 the production sources with `LUDUS_DEBUG_VIEW`, keep the production binding and
 parameter layout, and read the mode from the reserved `Options.w`; the
 production recipes are unchanged and ignore it (it stays zero). Creation rejects
-values above `MaterialDebugView::LightCount`.
+values above `MaterialDebugView::Wireframe`.
 
 `ViewDescription::DebugDepthRange` supplies the linear-depth `{near, far}` in
 world units: radial distance from the camera for perspective views and distance

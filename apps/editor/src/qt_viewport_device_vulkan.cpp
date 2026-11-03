@@ -89,6 +89,8 @@ struct QtViewportDevice::State final
     bool IsHostedImportEnabled = false;
     /// Calibrated-timestamp extension enabled for the RHI's profiling clock mapping.
     graphics::rhi::NativeCalibratedTimestamps CalibratedTimestamps = graphics::rhi::NativeCalibratedTimestamps::None;
+    /// The device enabled fillModeNonSolid, so the RHI admits wireframe pipelines.
+    bool HasFillModeNonSolid = false;
     ~State()
     {
         if (Device != VK_NULL_HANDLE)
@@ -248,6 +250,7 @@ bool QtViewportDevice::PrepareWindow(QQuickWindow& inoutWindow)
     mState->QueueFamily = best.QueueFamily;
     mState->IsHostedImportEnabled = hasHostedImport;
     mState->CalibratedTimestamps = calibratedTimestamps;
+    mState->HasFillModeNonSolid = features.fillModeNonSolid == VK_TRUE;
     mState->Instance.deviceFunctions(mState->Device)
         ->vkGetDeviceQueue(mState->Device, best.QueueFamily, SHARED_QUEUE_INDEX, &mState->Queue);
     inoutWindow.setGraphicsDevice(
@@ -282,6 +285,7 @@ bool QtViewportDevice::GetDescription(QQuickWindow& inoutWindow, graphics::rhi::
                                                             static_cast<foundation::uint32>(version.microVersion()));
     outDescription.SerializedOwnerQueue = true;
     outDescription.CalibratedTimestamps = mState->CalibratedTimestamps;
+    outDescription.HasFillModeNonSolid = mState->HasFillModeNonSolid;
     // IsCompatible confirms Qt Quick really adopted this device and queue.
     return IsCompatible(inoutWindow, outDescription.Identity);
 }

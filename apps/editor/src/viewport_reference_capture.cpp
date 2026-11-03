@@ -95,6 +95,12 @@ QString DescribeReferenceFailure(renderer::ReferenceFailure failure)
             return QStringLiteral("camera ray construction failed");
         case renderer::ReferenceFailure::InvalidSceneLayout:
             return QStringLiteral("incompatible GPU scene layout");
+        case renderer::ReferenceFailure::OpticalRegionCapacity:
+            return QStringLiteral("The optical connection exceeds its triangle workspace. Reduce wavelength to narrow "
+                                  "the beam or select the geometric renderer; no partial field was accepted.");
+        case renderer::ReferenceFailure::OpticalPropagationCapacity:
+            return QStringLiteral("The optical connection exceeds its propagation-step workspace. Reduce wavelength or "
+                                  "select the geometric renderer; no partial field was accepted.");
         case renderer::ReferenceFailure::TraversalCapacityExceeded:
             return QStringLiteral("GPU traversal stack capacity exceeded");
         case renderer::ReferenceFailure::None:
@@ -280,6 +286,7 @@ bool ViewportReferenceCapture::Start(rhi::DeviceHandle device,
     description.MaxDepth = settings.MaxDepth;
     description.RouletteDepth = math::Min(REFERENCE_ROULETTE_DEPTH, settings.MaxDepth);
     description.Seed = settings.Seed;
+    description.CenterRays = settings.ShouldCenterRays;
     mGeneration.Reset(new (std::nothrow)
                           PreviewGpuGeneration(device, scene, PreviewShading::Lit, PreviewShaderSet{}, &setup));
     if (mGeneration.Get() == nullptr)

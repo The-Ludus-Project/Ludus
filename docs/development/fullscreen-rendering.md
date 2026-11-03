@@ -842,9 +842,22 @@ artifact bytes remain alive until `Poll` completes. `Ready` or `Pending`
 acquires workload ownership; other results leave an empty owner unchanged.
 Preparation, reset and destruction run between frames on the device owner thread.
 
+`UseProgramFrom` can name an earlier kernel that owns a program. Its shader is
+ignored, its bindings are checked against that owner's reflection, and it keeps
+its own descriptor set and dispatch. References to self, later kernels or another
+reference reject. This permits a deep inference workload to share one compiled
+shader/layout/pipeline without duplicating ownership or losing graph hazards.
+Default admission limits allow 512 compute passes, 2,048 dependencies, 1,024
+resources per kind and 4,096 binding descriptors. These are lazy admission limits,
+not preallocated storage; host/device byte budgets still apply independently.
+
+
 `BuildGraph` returns an uncompiled RHI `OrderedGraph`. Compile/execute it normally,
 or supply an output-version view to `BuildGraph` and append consumers using
-those final versions before compilation. It imports each allocation once and tracks
+those final versions before compilation. When appending additional writers, pass
+`shouldRootBuffers=false` and root their final versions after the consumers; the
+graph does not allow conflicting roots for different versions of one allocation.
+It imports each allocation once and tracks
 versions across kernels; mutable final versions are history roots. Limits come
 from the negotiated RHI device, including `StorageLimits::PassesPerGraph`, not
 from the authored ray profile's four-pass bound. The workload reuses buffers and

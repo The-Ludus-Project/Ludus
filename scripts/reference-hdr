@@ -50,12 +50,17 @@ def decode(data):
     schema, profile, sampler, header, width, height, target, depth, roulette, flags = struct.unpack_from('<10I', data, 8)
     # Sampler 1 is UniformArea light sampling; flag 128 marks the resampled samplers, 2 for
     # ResampledProjectedSolidAngle and 3 for ResampledFormFactor.
-    if (schema, header) != (1, 256) or profile not in (1, 2, 3, 4, 5, 6, 7, 8) or not width or not height or flags & ~255 or (flags & 1 and flags & 64):
+    if (schema, header) != (1, 256) or profile not in (1, 2, 3, 4, 5, 6, 7, 8) or not width or not height or flags & ~511 or (flags & 1 and flags & 64):
         raise ValueError('Unsupported capture profile/header')
     if (sampler, bool(flags & 128)) not in ((1, False), (2, True), (3, True)):
         raise ValueError('Unsupported sampler version or light-sampling flag')
     if len(data) != 256 + width * height * 16 or not 1 <= target <= 16777215 or not 1 <= depth <= 64 or not 1 <= roulette <= 64:
         raise ValueError('Invalid capture extent or sampling limits')
+    optical_wavelength = struct.unpack_from('<f', data, 92)[0]
+    if not math.isfinite(optical_wavelength) or optical_wavelength < 0 or bool(flags & 256) != (optical_wavelength > 0):
+        raise ValueError('Invalid optical wavelength/flag')
+    if flags & 256 and (sampler != 1 or not flags & (1 | 64)):
+        raise ValueError('Optical captures require UniformArea and CPU oracle or GPU compute')
     pixels = list(struct.iter_unpack('<fffI', data[256:]))
     if any(not all(math.isfinite(c) and c >= 0 for c in pixel[:3]) or pixel[3] > 16777215 for pixel in pixels):
         raise ValueError('Nonfinite/negative radiance or invalid count')
@@ -64,11 +69,12 @@ def decode(data):
         raise ValueError('Complete capture has uncommitted pixels')
     seed, revision, low, high = struct.unpack_from('<4Q', data, 48)
     metadata = dict(schema=schema, profile=profile, sampler=sampler, width=width, height=height,
+                    optical_wavelength_world=optical_wavelength,
                     target_samples=target, max_depth=depth, roulette_depth=roulette, flags=flags,
                     seed=seed, revision=revision, scene_fingerprint=f'{high:016x}{low:016x}',
                     traversal='cpu_oracle' if flags & 1 else 'gpu_compute' if flags & 64 else 'native_queries',
                     light_sampling={1: 'uniform_area', 2: 'resampled_projected_solid_angle', 3: 'resampled_form_factor'}[sampler],
-                    partial=bool(flags & 32), minimum_samples=min(counts), maximum_samples=max(counts),
+                    center_rays=bool(flags & 2), partial=bool(flags & 32), minimum_samples=min(counts), maximum_samples=max(counts),
                     secondary_distance=struct.unpack_from('<f', data, 80)[0], texture_mip=struct.unpack_from('<I', data, 84)[0],
                     light_count=struct.unpack_from('<I', data, 88)[0], world_to_clip=list(struct.unpack_from('<16f', data, 96)),
                     camera_position=list(struct.unpack_from('<3f', data, 160)), environment=list(struct.unpack_from('<3f', data, 172)),

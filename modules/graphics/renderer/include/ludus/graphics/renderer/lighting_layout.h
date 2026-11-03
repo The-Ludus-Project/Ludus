@@ -62,6 +62,16 @@ static const LightingLayoutValue MATERIAL_DEBUG_VIEW_METALLIC = 4;
 static const LightingLayoutValue MATERIAL_DEBUG_VIEW_TEXCOORD_UV = 5;
 /// Count of direct lights with a nonzero (shadowed) contribution, as a viridis ramp.
 static const LightingLayoutValue MATERIAL_DEBUG_VIEW_LIGHT_COUNT = 6;
+/// Triangle edges shaded by how directly they face the camera; drawn by a program prewarmed with line fill.
+static const LightingLayoutValue MATERIAL_DEBUG_VIEW_WIREFRAME = 7;
+/// Display-sRGB 8-bit red of wireframe edges on surfaces facing the camera.
+static const LightingLayoutValue MATERIAL_DEBUG_WIREFRAME_RED = 219;
+/// Display-sRGB 8-bit green of wireframe edges on surfaces facing the camera.
+static const LightingLayoutValue MATERIAL_DEBUG_WIREFRAME_GREEN = 224;
+/// Display-sRGB 8-bit blue of wireframe edges on surfaces facing the camera.
+static const LightingLayoutValue MATERIAL_DEBUG_WIREFRAME_BLUE = 235;
+/// Percentage of the wireframe colour kept on surfaces seen exactly edge-on; facing ones keep all of it.
+static const LightingLayoutValue MATERIAL_DEBUG_WIREFRAME_EDGE_ON_PERCENT = 35;
 /// Light count at which the debug viridis ramp saturates to its brightest colour.
 static const LightingLayoutValue MATERIAL_DEBUG_LIGHT_COUNT_SATURATION = 16;
 

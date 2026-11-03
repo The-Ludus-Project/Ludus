@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include "internal/preview_shading.h"
 #include "internal/viewport_trace.h"
 
 #include <QImage>
@@ -40,6 +41,20 @@ public:
     [[nodiscard]] const QImage& GetImage() const noexcept;
     /// Number of CPU fallback images received; PreviewViewport tracks directly presented GPU frames.
     [[nodiscard]] foundation::uint64 GetPresentedFrames() const noexcept;
+    /// Built-in debug view chosen in the output menu instead of a graph image (see
+    /// IsPreviewGraphDebugView). The owning viewport presents its own raster frames in that shading.
+    /// @param outShading Receives the chosen mode; preserved when false.
+    /// @return False while the menu selects the graph's final output or one of its attachments.
+    [[nodiscard]] bool TryGetDebugView(PreviewShading& outShading) const;
+    /// Return the output menu to the graph's final output because the chosen built-in debug view
+    /// cannot be drawn. The reason stays in the status text until another output is chosen, so the
+    /// graph's last image remains on screen instead of an empty viewport. No-op without a debug view.
+    void RejectDebugView(const QString& reason);
+    /// Explanation of the most recently rejected debug view; empty after another output is chosen.
+    [[nodiscard]] const QString& GetDebugViewProblem() const noexcept
+    {
+        return mDebugViewProblem;
+    }
 
     /// True while the status text is the short build-failure chip; the full problem is in the Error List.
     [[nodiscard]] bool HasProblemChip() const noexcept
@@ -54,6 +69,8 @@ Q_SIGNALS:
     void StatisticsChanged();
     /// Current authoring/progress diagnostic, shared with the GPU viewport overlay.
     void StatusChanged(const QString& text);
+    /// The output menu switched to, from or between built-in debug views; read TryGetDebugView.
+    void DebugViewChanged();
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -77,5 +94,6 @@ private:
     ViewportPaintTrace mPaintTrace;
     foundation::uint64 mPresentedFrames = 0;
     bool mCanPresent = true;
+    QString mDebugViewProblem;
 };
 } // namespace ludus::editor

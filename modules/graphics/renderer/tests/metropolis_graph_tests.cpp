@@ -21,7 +21,7 @@ namespace rhi = ludus::graphics::rhi;
 using RasterStatus = rhi::RasterStatus;
 constexpr uint32 EXTENT = 4;
 constexpr usize CAMERA_COUNT = 1;
-constexpr uint32 ITERATIONS = 256;
+constexpr uint32 ITERATIONS = 64;
 constexpr uint64 TIMEOUT = 60 * time::NANOSECONDS_PER_SECOND;
 constexpr math::Vector3 ENVIRONMENT{0.25F, 0.5F, 1};
 struct Session final
@@ -85,6 +85,8 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
     cameras[0].OrthographicCamera = true;
     for (uint32 pass = 0; pass < plan.Passes.GetSize(); ++pass)
     {
+        const uint32 warmup = programs.CaptureWarmupSamples[plan.Passes[pass].RayProgram];
+        REQUIRE(warmup > ITERATIONS);
         renderer::RenderGraphCapture capture;
         renderer::RenderGraphCaptureSettings settings;
         settings.Output = plan.Passes[pass].Color;
@@ -109,9 +111,9 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
         for (usize index = 0; index < pixels.GetSize(); ++index)
         {
             const renderer::RenderGraphCapturePixel& pixel = pixels[index];
-            CHECK(pixel.Samples == ITERATIONS);
-            // The first 128 outputs are black burn-in. Averaging successive ratios
-            // would return half the environment instead of this current estimate.
+            CHECK(pixel.Samples == ITERATIONS + warmup);
+            // A short requested capture must run past the declared warm-up. Its
+            // latest ratio must not average black warm-up outputs into the environment.
             CHECK(math::Abs(pixel.Mean.X - ENVIRONMENT.X) < 0.0001F);
             CHECK(math::Abs(pixel.Mean.Y - ENVIRONMENT.Y) < 0.0001F);
             CHECK(math::Abs(pixel.Mean.Z - ENVIRONMENT.Z) < 0.0001F);

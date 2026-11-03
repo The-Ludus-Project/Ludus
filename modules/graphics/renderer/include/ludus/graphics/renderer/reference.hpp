@@ -228,6 +228,15 @@ struct ReferenceCaptureDescription final
     /// Emissive-triangle next-event estimator. Recorded in the integral key: changing it
     /// replaces the job and resets accumulation. Values outside the enumeration are rejected.
     ReferenceLightSampling LightSampling = ReferenceLightSampling::UniformArea;
+    /// Zero retains geometric reference transport. Positive metres enable scalar paraxial Gaussian-mode
+    /// coupling on finite light connections, including coherent diffraction by successive scene regions.
+    /// The positive range starts at one nanometre; smaller values reject before capture preparation.
+    /// Surface scattering stays RGB and unpolarized. Uses next-event estimation alone for light endpoints;
+    /// continuation emission/environment after the primary is omitted, avoiding double counting with optical
+    /// visibility. Requires UniformArea and CpuOracle/GpuCompute; NativeQueries rejects this profile.
+    /// Lattice, projection and range limits are documented in render-graph-authoring.md, "Wave tracing".
+    /// Changing wavelength resets accumulation. Nonfinite/negative values are rejected. No silent fallback.
+    foundation::float32 OpticalWavelengthWorld = 0;
 };
 /// Renderer-scoped progressive job identity; copies borrow, Release cancels future
 /// work and detaches accepted query uses through their native completion.
@@ -291,6 +300,10 @@ enum class ReferenceFailure : ludus::foundation::uint8
     InvalidSceneLayout,
     /// The GPU traversal exhausted its bounded pending-node stack.
     TraversalCapacityExceeded,
+    /// An optical interaction region contains too many triangles; no partial connection was published.
+    OpticalRegionCapacity,
+    /// Optical propagation or ballistic escape exhausted the bounded interaction steps.
+    OpticalPropagationCapacity,
 };
 
 /// Bounded capture progress, reproducibility and failure evidence.
@@ -334,6 +347,9 @@ struct ReferenceCaptureInfo final
     ludus::foundation::uint64 ClosestQueries = 0;
     /// Accepted opacity-filtered visibility queries.
     ludus::foundation::uint64 VisibilityQueries = 0;
+    /// Zero-area world triangles retained for stable source primitive identity but omitted from transport.
+    /// Their presence does not reject an otherwise valid scene. Matches across CPU and GPU reference paths.
+    foundation::uint64 SkippedTriangles = 0;
     /// Ordinary null BSDF proposals; no density renormalization or sample dropping.
     ludus::foundation::uint64 NullBsdfSamples = 0;
     /// Paths ended by compensated roulette.

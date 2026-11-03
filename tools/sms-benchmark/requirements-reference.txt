@@ -1,0 +1,2 @@
+-r requirements.txt
+setuptools==84.2.1

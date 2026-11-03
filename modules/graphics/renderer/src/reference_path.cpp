@@ -1,5 +1,6 @@
 #include "internal/reference_data.h"
 #include "internal/reference_dielectric.h"
+#include "internal/wave_connection.h"
 
 #include <ludus/foundation/math/status.hpp>
 
@@ -270,7 +271,8 @@ LightProposal SampleLight(const ReferenceJob& job, const ReferencePath& path, ma
     return result;
 }
 // Queue the visibility segment of one light contribution from `point` on `triangle`.
-rhi::RasterStatus QueueShadow(ReferenceCaptureInfo& inoutInfo,
+rhi::RasterStatus QueueShadow(const ReferenceJob& job,
+                              ReferenceCaptureInfo& inoutInfo,
                               ReferencePath& inoutPath,
                               const ReferenceTriangle& triangle,
                               math::Vector3 point,
@@ -280,17 +282,17 @@ rhi::RasterStatus QueueShadow(ReferenceCaptureInfo& inoutInfo,
     ReferencePath& path = inoutPath;
     const math::Vector3 start = Offset(point, triangle, proposal.Direction);
     math::Vector3 direction = proposal.Direction;
+    math::Vector3 endWorld = proposal.Point;
     float32 distance = proposal.Distance;
     if (proposal.FiniteEndpoint == true)
     {
-        math::Vector3 end = proposal.Point;
         if (proposal.Delta == false &&
-            math::TryOffsetRayOrigin({proposal.Point, proposal.Error, proposal.Normal, -direction}, end) !=
+            math::TryOffsetRayOrigin({proposal.Point, proposal.Error, proposal.Normal, -direction}, endWorld) !=
                 math::MathStatus::Success)
         {
             return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidShadowSegment);
         }
-        const math::Vector3 delta = end - start;
+        const math::Vector3 delta = endWorld - start;
         distance = math::Length(delta);
         if (distance <= 0 || math::IsFinite(distance) == false)
         {
@@ -300,6 +302,43 @@ rhi::RasterStatus QueueShadow(ReferenceCaptureInfo& inoutInfo,
         // The target endpoint is excluded by one representable step.
         // Light geometry must not occlude its own sampled emission.
         distance = math::NextFloatDown(distance);
+    }
+    if (job.Description.OpticalWavelengthWorld > 0 && proposal.FiniteEndpoint == true)
+    {
+        // Retain the robustly offset light endpoint; reconstructing it from a rounded direction can land on the
+        // emitter.
+        const math::Vector3 sourceWorld = endWorld;
+        WaveField field;
+        const rhi::RasterStatus opticalStatus = EvaluateWaveConnectionToReceiver(
+            job.Scene,
+            {static_cast<float64>(sourceWorld.X),
+             static_cast<float64>(sourceWorld.Y),
+             static_cast<float64>(sourceWorld.Z)},
+            {static_cast<float64>(start.X), static_cast<float64>(start.Y), static_cast<float64>(start.Z)},
+            {-static_cast<float64>(direction.X),
+             -static_cast<float64>(direction.Y),
+             -static_cast<float64>(direction.Z)},
+            static_cast<float64>(distance),
+            static_cast<float64>(job.Description.OpticalWavelengthWorld),
+            field);
+        if (opticalStatus != rhi::RasterStatus::Ready)
+        {
+            return FailReferencePath(inoutInfo,
+                                     path,
+                                     opticalStatus == rhi::RasterStatus::Unsupported
+                                         ? ReferenceFailure::OpticalPropagationCapacity
+                                         : (opticalStatus == rhi::RasterStatus::CapacityExceeded
+                                                ? ReferenceFailure::OpticalRegionCapacity
+                                                : ReferenceFailure::InvalidShadowSegment));
+        }
+        const float32 transmission = static_cast<float32>(field.Real * field.Real + field.Imaginary * field.Imaginary);
+        if (math::IsFinite(transmission) == false || transmission < 0)
+        {
+            return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidDirectContribution);
+        }
+        AddTransport(path, contribution * transmission, path.Depth, false);
+        ++inoutInfo.VisibilityQueries;
+        return rhi::RasterStatus::Ready;
     }
     LUDUS_ASSERT(path.ShadowCount < REFERENCE_MAX_SHADOWS_PER_VERTEX);
     rhi::RayInput& shadow = path.Shadows[path.ShadowCount];
@@ -385,7 +424,7 @@ rhi::RasterStatus SampleResampledEmitter(const ReferenceJob& job,
         proposal.Distance = sample.DistanceWorld;
         proposal.FiniteEndpoint = true;
         const rhi::RasterStatus queued =
-            QueueShadow(inoutInfo, path, triangle, frame.PositionWorld, proposal, contribution);
+            QueueShadow(job, inoutInfo, path, triangle, frame.PositionWorld, proposal, contribution);
         if (queued != rhi::RasterStatus::Ready)
         {
             return queued;
@@ -412,7 +451,9 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                 : 1 / (4 * math::kPiF);
         const float32 lightPdf = lights == 0 ? 0 : environmentPdf / static_cast<float32>(lights);
         const float32 weight =
-            path.Depth == 0 || path.IsPreviousSpecular == true ? 1 : ReferencePowerWeight(path.PreviousPdf, lightPdf);
+            path.Depth == 0 || path.IsPreviousSpecular == true
+                ? 1
+                : (job.Description.OpticalWavelengthWorld > 0 ? 0 : ReferencePowerWeight(path.PreviousPdf, lightPdf));
         AddTransport(path,
                      math::Hadamard(path.Throughput,
                                     job.EnvironmentOrNull != nullptr
@@ -478,7 +519,9 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
             return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidEmitterPdf);
         }
         const float32 weight =
-            path.Depth == 0 || path.IsPreviousSpecular == true ? 1 : ReferencePowerWeight(path.PreviousPdf, pdf);
+            path.Depth == 0 || path.IsPreviousSpecular == true
+                ? 1
+                : (job.Description.OpticalWavelengthWorld > 0 ? 0 : ReferencePowerWeight(path.PreviousPdf, pdf));
         AddTransport(path,
                      math::Hadamard(path.Throughput, SampleReferenceEmission(instance, Uv(triangle, hit.U, hit.V))) *
                          weight,
@@ -578,7 +621,9 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         {
             return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidBsdfEvaluation);
         }
-        const auto weight = proposal.Delta ? 1 : ReferencePowerWeight(proposal.Pdf, evaluation.Pdf);
+        const float32 weight = proposal.Delta == true || job.Description.OpticalWavelengthWorld > 0
+                                   ? 1
+                                   : ReferencePowerWeight(proposal.Pdf, evaluation.Pdf);
         const math::Vector3 contribution =
             math::Hadamard(path.Throughput, math::Hadamard(evaluation.Value, proposal.Radiance)) *
             (cosine * weight / proposal.Pdf);
@@ -588,7 +633,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         }
         if (Positive(contribution))
         {
-            const rhi::RasterStatus queued = QueueShadow(inoutInfo, path, triangle, point, proposal, contribution);
+            const rhi::RasterStatus queued = QueueShadow(job, inoutInfo, path, triangle, point, proposal, contribution);
             if (queued != rhi::RasterStatus::Ready)
             {
                 return queued;
