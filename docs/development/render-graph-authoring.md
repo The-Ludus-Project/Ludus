@@ -2554,22 +2554,49 @@ highlights and BSDF sampling is noisy on the diffuse walls:
     footprint stay black in every image. Only the louvre against the wall has
     such pixels, six of them.
   - **Tiles.** The summed error of every 4 × 4 pixel tile is within five
-    standard errors beyond the footprint quadrature's error bound. Byte rounding
-    counts as uniform noise. One pixel's mean over 16 images is too skewed to test
-    alone where few BSDF samples reach the emitter. For BSDF sampling the standard
-    error is exact: each sample returns the wall's reflectance times the emitted
-    radiance with probability equal to the visible projected solid angle over π.
-  - **Regions.** The summed error over the fully lit pixels, and for light
-    sampling and MIS over the penumbra pixels, is within four standard errors.
+    standard errors beyond the footprint quadrature's error bound. For light
+    sampling and MIS, byte rounding counts as uniform noise. One pixel's mean over
+    16 images is too skewed to test alone where few BSDF samples reach the
+    emitter.
+  - **Regions.** The summed error over the fully lit pixels and over the
+    penumbra pixels is within four standard errors. The three channels of a
+    pixel scale the same sample, so their errors are perfectly correlated, and a
+    region sums their standard errors before squaring.
+
+  BSDF sampling is compared with the exact distribution of its *decoded bytes*,
+  not with the exact radiance. Each frame reaches the visible emitter with
+  probability p, the footprint's visible projected solid angle over π, and then
+  returns the wall's reflectance times the emitted radiance; otherwise it
+  returns zero. So after 64 frames a pixel holds hits / 64 of that radiance, with
+  binomially distributed hits. At low hit counts these values are further apart
+  than one tone-mapped byte, so rounding them does not average out as it does for
+  the continuous light-sampling estimate. At p = 0.01 the decoded mean exceeds p
+  times the radiance by 0.5% to 0.8%, depending on the channel. The test sums the
+  binomial distribution over the 65 possible values for the exact mean and
+  variance of each decoded byte.
 
   On Apple M5 each case takes about 32 seconds. Over three sets of seeds, light
   sampling's penumbra error stayed within ±0.27% (standard error 0.08%), and its
   tiles within 3.5 standard errors.
 
-  **Open finding:** BSDF sampling exceeds the exact penumbra by about 0.6% with
-  either traversal: +0.46% to +0.84% (standard error 0.23% each) behind the
-  louvre near the emitter, but not in the fully lit region. The cause is not yet
-  known, so the test does not apply the penumbra region check to BSDF sampling.
+  **Resolved finding: BSDF sampling's penumbra excess.** Compared with the exact
+  radiance, BSDF sampling exceeded the penumbra behind the louvre near the
+  emitter by +0.46% to +0.84% over three sets of seeds, with either traversal.
+  Two causes were found, both in the test; the renderer is unbiased:
+  - **Byte rounding.** Over the penumbra, rounding the decoded bytes adds
+    +0.29% behind the louvre near the emitter and +0.55% behind the louvre
+    against the wall.
+  - **Understated standard error.** The region check treated the three channels'
+    errors as independent, which understated the standard error by about 1.6×.
+    What remained after rounding was +0.54% (seeds 1 to 16), which reads as 2.4
+    standard errors but is really 1.5.
+
+  Every BSDF byte triple decodes to exactly one hit count. The hit counts give a
+  rounding-free check. Over 128 images (8192 samples per pixel), the penumbra
+  hits differ from the binomial expectation by −0.03% near the emitter and
+  +0.007% against the wall: −0.24 and +0.03 standard errors. They show no trend
+  with p, and native and triangle-loop traversal agree. Seeds 1 to 16 give +1.5
+  and +0.9 standard errors.
   Vulkan has not run this test; it first runs in batch CI.
 
 See the canonical
