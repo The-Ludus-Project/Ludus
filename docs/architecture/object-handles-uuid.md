@@ -9,7 +9,12 @@ RHI keep their own sources for the reasons recorded in the
 [implementation sequence](#implementation-sequence). Stage 3 is implemented:
 version-2 World records and a one-time migration manifest give World objects
 committed UUIDs ([UUID authoring records](#stage-3-uuid-authoring-records)).
-Durable binding, duplication and restore (stage 4) are proposed.
+Stage 4 is in progress and lands as independently reviewable slices. The first
+slice is implemented: `WorldBindingTable` (`modules/gameplay/world`) holds the two
+derived mappings at the World boundary and resolves durable keys with
+`TryResolve` ([resolution and streaming](#resolution-and-streaming)). Two-pass
+restore and save, graph duplication, and editor selection/stale-operation checks
+are the remaining stage-4 slices.
 
 **Audience:** Engine, gameplay, tools, content, and SDK contributors.
 
@@ -418,6 +423,25 @@ is included in the versioned artifact. These indices are artifact-local; changin
 the package ordering cannot retarget saved references. Rehydrate durable identities
 and rebuild runtime bindings on load. Serialize neither runtime owner/slot/generation
 nor object addresses. Restore uses two passes: create objects, then fix up links.
+
+**Stage 4 implementation (binding table).** `WorldBindingTable`
+([`modules/gameplay/world`](../modules/gameplay/world.md)) implements the two
+derived mappings at the World boundary: a sorted contiguous
+`SortedMap<PersistentObjectKey, EntityId>` forward map and a slot-indexed reverse
+mapping validated by owner and generation, so a recycled slot never inherits a
+former object's UUID. `TryActivate` publishes both mappings and advances a
+monotonic binding revision in one step after reserving capacity through the
+`SortedMap` allocation-failure seam; a failed batch publishes nothing.
+`DetachBinding` removes an entity's binding inside the registry destruction order,
+before the slot is recycled. `TryResolve` performs no I/O, validates the stored
+incarnation (owner and generation) on a hit, drops a stale binding and reports
+`Missing` when the incarnation is gone, and returns the `ResolveStatus` vocabulary
+above. Callers invalidate a cached negative result by comparing
+`GetBindingRevision()`. The caller forms each `PersistentObjectKey` from the
+activating instance scope's `InstanceId` and the authored `SourceObjectId`; a
+standalone level's `InstanceId` comes from its placement or save scope, not minted
+per activation. Two-pass restore (which rebuilds these bindings) is a later
+stage-4 slice.
 
 ## Logical assets and resident payloads
 
