@@ -2302,6 +2302,16 @@ full committed-hit extraction for shadows; it exists for reproducible A/B eviden
 Generated Metal has one set of committed primitive/geometry/distance/barycentric
 reads in the production kernel (closest-hit), versus two sets in that diagnostic.
 
+Committed native barycentrics are clamped to the closed triangle, as the GPU-compute
+reference's traversal does: both to [0,1], and the third corner's weight to at most
+one minus the second's. The hardware rounds the two coordinates separately, so on
+Metal a hit near the edge opposite a triangle's first corner occasionally summed just
+above one. A graph pass that records the hit and rebuilds it later with
+`GetSurfaceHit` then rejected it as `SceneData`. The Veach and Guibas template
+latched one such pixel on a wall's top edge in a few revisions; the
+`[native-barycentrics]` ray test renders two of them. The clamp moves a coordinate
+by at most its rounding error.
+
 Run the frame-interleaved visibility benchmark with:
 
 ```sh

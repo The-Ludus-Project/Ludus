@@ -77,7 +77,7 @@ Hit TraceNative(float3 originWorld,
                                          isVisibility);
     hit.Triangle = result.x;
     hit.DistanceWorld = asfloat(result.y);
-    hit.Barycentric = asfloat(result.zw);
+    hit.Barycentric = ClampBarycentricToTriangle(asfloat(result.zw));
     return hit;
 }
 
