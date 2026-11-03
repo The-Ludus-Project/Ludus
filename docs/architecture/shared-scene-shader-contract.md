@@ -118,8 +118,10 @@ metallic/roughness materials and explicit fixed texture mip evaluation. Missing
 optional maps use their documented neutral factors; missing required attributes
 or unsupported blended alpha/rough transmission/deformation rejects the scene profile.
 Smooth `Dielectric` and `ThinDielectric` materials enter the profile; the reference
-tracers render their transmission, and shaders without transmission shade the
-record's legacy metallic/roughness fields.
+tracers render their transmission, and so do the render graph templates that
+[treat glass](../development/render-graph-authoring.md#how-the-built-in-templates-treat-glass)
+through `FollowSpecularChain` and `SampleStandardBsdfTransport`. Shaders without
+transmission shade the record's legacy metallic/roughness fields.
 `SceneShaderMaterial::IsAlphaMasked` and `AlphaCutoff` select the existing mask
 domain in both the CPU oracle and GPU reference scene. Coverage multiplies base
 texture alpha by interpolated vertex alpha before the inclusive cutoff test;

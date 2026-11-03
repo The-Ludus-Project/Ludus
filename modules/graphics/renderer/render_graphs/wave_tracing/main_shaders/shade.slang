@@ -94,8 +94,12 @@ float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQu
             FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
             return float3(0);
         }
-        if (dot(material.ShadingNormalWorld, viewWorld) < 0)
-            material.ShadingNormalWorld = -material.ShadingNormalWorld;
+        float3 shadingNormalWorld = dot(material.ShadingNormalWorld, viewWorld) < 0 ? -material.ShadingNormalWorld
+                                                                                    : material.ShadingNormalWorld;
+        // Glass keeps its outward normal, which tells its BSDF whether the path is inside; it takes no light sample.
+        bool isDielectric = IsDielectricMaterial(material);
+        if (isDielectric == false)
+            material.ShadingNormalWorld = shadingNormalWorld;
         float3 geometricNormalWorld =
             dot(hit.GeometricNormalWorld, viewWorld) < 0 ? -hit.GeometricNormalWorld : hit.GeometricNormalWorld;
         uint dimension = SHADE_RANDOM_DIMENSION_FIRST + depth * WAVE_RANDOM_VERTEX_STRIDE;
@@ -107,8 +111,8 @@ float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQu
                                         SampleSceneRandom(launch, dimension + WAVE_LIGHT_SHAPE_FIRST + 2));
             LightSample light = SampleIncidentLight(scene, selected, hit, shapeSample);
             float probability = light.SelectionPmf * light.ConditionalPdf;
-            float cosine = dot(material.ShadingNormalWorld, light.DirectionWorld);
-            if (light.HasSample == true && probability > 0 && cosine > 0 &&
+            float cosine = dot(shadingNormalWorld, light.DirectionWorld);
+            if (isDielectric == false && light.HasSample == true && probability > 0 && cosine > 0 &&
                 dot(geometricNormalWorld, light.DirectionWorld) > 0 && any(light.IncidentCoefficient > 0) == true)
             {
                 float3 value;
@@ -134,7 +138,9 @@ float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQu
                                 SampleSceneRandom(launch, dimension + WAVE_CONTINUATION_FIRST + 2));
         StandardBsdfTransportSample continuation =
             SampleStandardBsdfTransport(material, viewWorld, samples, MakeWaveMaterialRandom(launch, depth));
-        if (continuation.HasSample == false || dot(geometricNormalWorld, continuation.DirectionWorld) <= 0)
+        // Refraction must also leave through the geometric back side.
+        bool isContinuationAbove = dot(geometricNormalWorld, continuation.DirectionWorld) > 0;
+        if (continuation.HasSample == false || isContinuationAbove == continuation.IsTransmission)
             break;
         throughput *= continuation.Weight;
         ray = SpawnSurfaceRay(hit, continuation.DirectionWorld, WAVE_MAXIMUM_TRACE_DISTANCE_WORLD);

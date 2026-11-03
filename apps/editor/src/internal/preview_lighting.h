@@ -54,6 +54,12 @@ inline QByteArray MakeKey(const RenderScene& scene)
     stream.setByteOrder(QDataStream::LittleEndian);
     stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
     stream << scene.AssetsIdentity << scene.Lit << static_cast<uint32>(rr::LIGHTING_PROFILE_VERSION);
+    // Switched-off sources change the presented lights but not the definition hashed below.
+    // Unswitched scenes add nothing, so their keys and bake revisions stay as they were.
+    if (scene.LightSwitchIdentity.isEmpty() == false)
+    {
+        stream << scene.LightSwitchIdentity;
+    }
     for (const PreviewObject& object : scene.Objects)
     {
         stream << object.Id << object.Mesh << object.Surface << object.Texture;

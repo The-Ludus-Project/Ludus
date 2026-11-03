@@ -156,7 +156,7 @@ the callbacks. Raygen traces the camera ray once; the template displays material
 color and adds no lighting estimator.
 
 For a scene-aware ray pipeline, **Properties → Scene query budgets** sets the
-maximum **Surface queries** (1–8) and **Visibility queries** (0–16) per camera
+maximum **Surface queries** (1–16) and **Visibility queries** (0–16) per camera
 sample. The same controls are available from the canvas node's **Edit Node**
 dialog with Properties hidden. Surface queries include the camera intersection;
 camera plus one BSDF ray for direct-light MIS needs at least two. Visibility
@@ -2266,8 +2266,11 @@ query bound; longer configured paths require a continuation-dispatch implementat
 Hybrid shifts, prefix resampling, motion reprojection and world-space nearest-neighbour
 gathers are not implemented. Analytic lights and environment illumination remain
 outside this mesh-light integral; the environment is displayed only when the primary
-camera ray misses. External transmission and delta BSDFs are outside this graph's material
-profile; dielectrics shade through their legacy opaque fields. Uniform area and sphere proposals preserve support but can have high variance,
+camera ray misses. The primary surface lies past any smooth glass the camera sees
+through (`FollowSpecularChain`), and suffix continuations refract through glass,
+but a smooth-glass reconnection or terminal vertex contributes nothing, because
+reconnection and terminal next-event estimation cannot reach a delta lobe; glass
+caustics are therefore absent. Uniform area and sphere proposals preserve support but can have high variance,
 especially for narrow glossy lobes, nearby coplanar geometry and long paths. This
 implementation makes no performance or variance-improvement claim.
 
@@ -3483,7 +3486,9 @@ New shader programs have `SteinbergPhysicalOptics`-prefixed IDs and sources unde
 Departures from the paper, also listed in the sources:
 
 - Camera paths with next-event estimation replace the paper's bidirectional
-  tracer. Birefringent slabs (§4.1.4) and transmission are not rendered. Four hero
+  tracer. Birefringent slabs (§4.1.4) and transmission are not rendered; glass
+  (dielectric) surfaces keep their own IOR over a black base, so only their
+  reflective interface appears. Four hero
   wavelengths replace the paper's 16 spectral samples.
 - The paper's D scales with `q²` and its pBSDF with `1/λ²`, which do not combine
   into a dimensionless BRDF. D is normalized to a unit-integral Gaussian in `h / k`,
@@ -4261,7 +4266,7 @@ is not an ABI size or allocation request. Editing the struct requires no matchin
 byte setting. Advanced authors can optionally set `local_payload_bytes` (16..4096)
 in `scene_interface` to impose a lower admission cap; exceeding the cap fails the
 build before package publication. This is ordinary shader-local storage,
-independent of the node's native `payload_bytes: 0`. Surface queries are bounded to 1..8, visibility queries
+independent of the node's native `payload_bytes: 0`. Surface queries are bounded to 1..16, visibility queries
 to 0..16. Budget exhaustion latches failure and does not commit a partial sample.
 
 For example, the author can start with this payload:
@@ -4337,10 +4342,52 @@ source semantics. `MaterialSample.CoatingEta` and `CoatingThickness` expose the
 layer parameters. For layered coatings use the `EvaluateStandardBsdf` overload
 with an explicit `CoatingRandomContext` and `SampleStandardBsdfTransport`; the
 sample contains a complete throughput weight and a separate external MIS density.
-The original direction-only helpers retain their coating approximation. See
+The original direction-only helpers retain their coating approximation.
+
+Glass materials report `LUDUS_MATERIAL_MODEL_DIELECTRIC` (a solid) or
+`LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC` (a thin slab) with their index of
+refraction in `Eta.x`; `IsDielectricMaterial` tests for either. Both are smooth
+interfaces that scatter on either side of the surface: the helpers orient the
+shading normal toward the viewer and treat a viewer behind it as inside a solid,
+so keep the material's own normal rather than flipping it. Glass scatters only
+in delta directions (`IsSpecularMaterial`): `ComputeStandardBsdfCosine` returns
+zero, so light sampling contributes nothing, and `SampleStandardBsdfTransport`
+returns an `IsSpecular` sample whose `Weight` is the complete throughput and
+whose `Pdf` is one. Give emission reached after a specular sample the full MIS
+weight, and never combine that `Pdf` with a light density. `IsTransmission`
+marks a sample that left through the other side. `EvaluateStandardBsdf` and the
+direction-only `SampleStandardBsdf` keep shading glass through the record's
+legacy opaque fields, for graphs without transmission.
+
+`FollowSpecularChain` walks a camera path through glass to the first
+surface an estimator can shade. It chooses reflection or refraction by Fresnel
+probability, collects the glass's emission and the environment of a miss in
+`Radiance`, and returns the final `Hit`, its `ViewDirectionWorld` and the chain
+`Throughput`. Multiply the shaded estimate by `Throughput` and add `Radiance`.
+Reserve `SCENE_SPECULAR_CHAIN_EVENTS` surface queries and
+`SCENE_SPECULAR_CHAIN_DIMENSIONS` explicit random dimensions; shaders that draw
+from the automatic stream use `SCENE_SPECULAR_CHAIN_DEFAULT_DIMENSION_FIRST`.
+Passes that must agree on a pixel's surface pass the same base, so they follow
+the same chain. See [the glass reference contract](../architecture/renderer-systems.md#smooth-dielectric-reference),
 [the layered reference contract](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference),
 [typed reference materials](../architecture/renderer-systems.md#typed-diffuse-and-conductor-reference-materials)
 and the [source-preserving importer](../examples/reference-scene.md#material-preserving-project-imports).
+
+#### How the built-in templates treat glass
+
+| Templates | Glass handling |
+| --- | --- |
+| Compute ray tracing, Veach & Guibas MIS, line sampling, RIS + projected solid angle, Salesin & Jarosz, Peters polygonal lights, slice sampling, Steinberg PLT, tiled vbuffer NEE | Follow glass to the first other surface, then run the estimator there, weighted by the chain |
+| ReSTIR DI, ReSTIR GI, conditional ReSTIR | Every pass finds the visible point past smooth glass with the same chain; ReSTIR GI paths refract through glass with full MIS weight after delta events |
+| Wave tracing | Paths reflect and refract through glass; glass vertices take no next-event estimate |
+| Visibility + secondary rays | Glass traces one Fresnel-chosen reflected or refracted ray instead of the tinted mirror |
+| Steinberg physical optics | Glass keeps its IOR over a black base; its reflection is rendered, its transmission is not |
+| Guided ReSTIR FG+, one-more-vertex NEE, Rao-Blackwellized MH | Shade glass through its legacy opaque fields; these estimators have no transmission |
+| Light Transformer | Glass fails the pixel with the material-profile reason, as any non-diffuse surface does |
+| Raster, forward lit, visibility buffer, simple triangle loop | Draw glass with its record's legacy opaque approximation |
+
+Each chain event costs one surface query, so these templates declare
+`SCENE_SPECULAR_CHAIN_EVENTS` more `surface_queries` than before.
 
 ### Read surfaces, sample sources and trace visibility
 
@@ -4367,7 +4414,9 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
 | SampleSceneRandom / MakeCameraRay | Automatic invocation-stream draw or explicit random dimension / chosen subpixel camera ray |
-| EvaluateStandardBsdf / SampleStandardBsdf | Optional existing reflection-model primitives; no integrator or MIS |
+| EvaluateStandardBsdf / SampleStandardBsdf | Optional existing scattering-model primitives; no integrator or MIS |
+| SampleStandardBsdfTransport / ComputeStandardBsdfCosine | Continuation with complete weight and specular/transmission flags / matching light cosine, zero for glass |
+| IsDielectricMaterial / IsSpecularMaterial / FollowSpecularChain | Glass tests and the bounded glass camera-path walk to the first shadeable surface |
 
 ### Find the visible parts of a segment
 
@@ -5592,7 +5641,8 @@ also registers as mesh area lighting, which reflects from nothing because every 
 colour is black.
 They require static opaque triangles with normals. Masked/transparent materials
 and invalid inputs reject preparation and retain the last drawable generation.
-Emissive meshes also provide unshadowed direct area lighting. No proxy lights, ray tracing, shadow maps or indirect illumination are added.
+Emissive meshes also provide direct area lighting, shadowed by cached cube shadow maps
+([Mesh-light shadows](#mesh-light-shadows)). No proxy lights, ray tracing or indirect illumination are added.
 The graph's ToneMap node (PBR Neutral at unit exposure) is fused into the lighting
 resolve: exposure, the curve and sRGB encoding run before the RGBA8 write, so radiance
 above one compresses toward white instead of clipping, and the exported image holds
@@ -5738,8 +5788,8 @@ the exact integral of its nearby 64-corner disks. The benchmark takes
 A scene whose lists would exceed 1,048,576 entries uploads no grid and evaluates
 every record as before.
 
-There is no mesh-light visibility test yet: area lights can illuminate through
-walls. At most 32,768 nonzero-emission
+Records are shadowed by cached cube shadow maps of their caster; see
+[Mesh-light shadows](#mesh-light-shadows). At most 32,768 nonzero-emission
 polygon records are admitted per scene; excess geometry rejects preparation and
 retains the last drawable generation. Because the culling grid bounds the per-pixel
 cost by the records near each pixel, this limit bounds the upload instead: at most 67
@@ -5833,6 +5883,61 @@ Other raster technique families are rejected by this profile. Existing `ForwardL
 and `ClusteredForward` packages keep their existing lighting ABI and behavior.
 Runtime package version 24 appends four deferred support roles without changing
 record widths or older role IDs; older packages remain readable.
+
+### Mesh-light shadows
+
+Scene preparation groups the emitter records into at most 64 shadow casters, brightest
+first. A record joins a caster while their enclosing sphere stays within 0.5 m, their
+sidedness matches and, for one-sided emitters, their normals lie within 30 degrees;
+records beyond the 64th caster stay unshadowed and are counted in
+`RenderGraphSceneResourceReport::UnshadowedMeshLights`. A two-sided caster sits at the
+centre of its emitters; a one-sided caster sits a little in front of them, so its own
+emitters never occlude what it lights, and it renders no cube face that lies wholly
+behind them. Each caster's range is its members' culling reach, so every receiver the
+grid lists for a member is inside it.
+
+After the scene is published, each caster's cube faces are rendered once, with the
+renderer's flat shadow pipeline, into one 2048 x 2048 RGBA8 atlas holding 16-bit
+conventional depth. Face slots are powers of two from 32 to 512 texels, sized by the
+square root of the caster's flux share and halved together until they fit, and each
+slot has a four-texel gutter rendered with a slightly wider field of view. The first
+frame clears the atlas to the far depth; faces are then drawn whole within the frame's
+draw budget, at most 64 per frame, so a large scene's shadows complete over a few
+frames and undrawn faces read as unoccluded. Camera-only updates reuse the atlas, and
+masked materials cast through their alpha-tested shadow pipeline. The atlas takes the
+resolve's material base-colour slot, which the resolve never samples; the caster table
+follows the culling grid, whose cull word records its position. A package whose resolve
+predates shadows ignores both, so no package version changes.
+
+The resolve multiplies each record's unshadowed integral by its caster's visibility at
+the receiver. It offsets the receiver by 1.5 shadow texels along its normal, searches
+five taps for occluders and, when it finds any, filters nine taps over a penumbra of
+the caster radius times (receiver distance - blocker distance) / blocker distance,
+clamped to the gutter. Each tap compares the stored depth with the depth the
+receiver's tangent plane has along that texel's ray, so a flat receiver never shadows
+itself at grazing angles. The grid lists a caster's records together, so one lookup
+serves a run of them. The penumbra is an estimate from one point per caster: a large
+emitter's contact shadows are approximate, and occluders nearer than a caster's near
+distance (at least a hundredth of its range) are ignored.
+
+Measured with the `[.raster-mesh-light-benchmark]` editor test on an Apple M5 at
+1600 x 1080, with the editor viewport's device budgets (fastest of two interleaved runs
+on a loaded machine, whole GPU frame after the faces are drawn; the unshadowed runs cook
+the same resolve with visibility fixed at one):
+
+| View | Unshadowed | Shadowed | Pixels darkened by more than 8 steps |
+| --- | --- | --- | --- |
+| Staircase2, outside the stair hall | 4.4 ms | 5.3 ms | 10.8% |
+| Staircase2, by the stairs | 4.9 ms | 5.8 ms | 6.4% |
+| Staircase2, in the corridor | 21.5 ms | 23.7 ms | 31.5% |
+| Bathroom, default orbit | 1.2 ms | 1.2 ms | 0.2% |
+| Bistro, camera inside the square | 10.7 ms | 11.0 ms | 0% |
+
+Staircase2's 13 records form 13 casters, so every light is shadowed; its interior
+lights no longer show through the outer walls. Sixty-four casters shadow only the
+brightest 97 of Bistro's 17,571 records and 605 of Sponza's 4,225; the rest stay
+unshadowed, as `UnshadowedMeshLights` reports. Covering such scenes needs coarser or
+hierarchical casters, and drawing more faces over more frames.
 
 ## Create a saved graph and import it
 

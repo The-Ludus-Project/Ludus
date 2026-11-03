@@ -98,6 +98,8 @@ public:
                                                rhi::RasterBindingResource meshLights,
                                                foundation::uint32 meshLightCount,
                                                foundation::uint32 meshLightGridWord,
+                                               bool hasMeshLightShadows,
+                                               rhi::TextureViewHandle meshLightShadows,
                                                const content::render_graph_format::Pass& operation) noexcept;
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
     [[nodiscard]] rhi::RasterStatus
@@ -109,6 +111,9 @@ private:
     rhi::BindingSetHandle mBindings{};
     DeferredMaterialBindings mMaterial;
     rhi::RasterBindingResource mMeshLights{};
+    /// Sampled mesh-light shadow atlas bound in place of the unused material base-colour texture, when present.
+    rhi::TextureViewHandle mMeshLightShadows{};
+    bool mHasMeshLightShadows = false;
     bool mHasBindings = false;
     foundation::float32 mClearDepth = 1;
     rhi::RasterStatus mStatus = rhi::RasterStatus::NotReady;

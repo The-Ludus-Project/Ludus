@@ -16,9 +16,15 @@ float3 ShadeConditionalRestir(SceneContext scene, RayLaunch launch, inout RayQue
         return EvaluateEnvironment(scene, launch.CameraRay.DirectionWorld);
     if (status != SCENE_QUERY_SURFACE)
         return float3(0);
+    // The primary is the first surface past any smooth glass, as in the initial pass.
+    SpecularChain chain =
+        FollowSpecularChain(scene, launch, queries, primary, SCENE_SPECULAR_CHAIN_DEFAULT_DIMENSION_FIRST);
+    if (chain.IsSurface == false)
+        return chain.Radiance;
+    primary = chain.Hit;
     Prefix direct = (Prefix)0;
     direct.Hit = primary;
-    direct.ViewWorld = -launch.CameraRay.DirectionWorld;
+    direct.ViewWorld = chain.ViewDirectionWorld;
     direct.Throughput = float3(1);
     direct.MaterialRandom = MakeMaterialRandom(launch, DIRECT_MATERIAL_EVENT);
     direct.IsValid = true;
@@ -34,6 +40,7 @@ float3 ShadeConditionalRestir(SceneContext scene, RayLaunch launch, inout RayQue
         Prefix gather = TracePrefix(scene, launch, primary, queries);
         radiance += GatherSuffix(scene, gather, reservoir, queries);
     }
+    radiance = chain.Radiance + chain.Throughput * radiance;
     if (all(isfinite(radiance)) == false || any(radiance < 0) == true)
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
     return radiance;

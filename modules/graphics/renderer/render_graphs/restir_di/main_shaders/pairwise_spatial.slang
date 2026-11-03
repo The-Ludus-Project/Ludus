@@ -9,6 +9,15 @@ float3 ShadeStochasticReservoir(SceneContext scene, RayLaunch launch, inout RayQ
     }
     SurfaceHit hit;
     uint status = TraceClosest(scene, queries, launch.CameraRay, hit);
+    SpecularChain chain = (SpecularChain)0;
+    if (status == SCENE_QUERY_SURFACE)
+    {
+        chain = FollowReceiverGlass(scene, launch, queries, hit);
+        hit = chain.Hit;
+        status = chain.IsSurface == true     ? SCENE_QUERY_SURFACE
+                 : queries.HasFailed == true ? SCENE_QUERY_FAILURE
+                                             : SCENE_QUERY_MISS;
+    }
     if (status != SCENE_QUERY_SURFACE)
     {
         if (status == SCENE_QUERY_MISS)
@@ -29,7 +38,7 @@ float3 ShadeStochasticReservoir(SceneContext scene, RayLaunch launch, inout RayQ
     if (current.CandidateCount == 0)
     {
         StoreReservoir(queries.RandomPixel, true, result);
-        return radiance;
+        return chain.Radiance + chain.Throughput * radiance;
     }
     uint2 extentPixel = GetPairwiseTileExtent(launch);
     uint neighborCount = extentPixel.x * extentPixel.y - 1;
@@ -140,5 +149,5 @@ float3 ShadeStochasticReservoir(SceneContext scene, RayLaunch launch, inout RayQ
     radiance += ShadeReservoir(scene, hit, result, queries);
     if (queries.HasFailed == false)
         StoreReservoir(queries.RandomPixel, true, result);
-    return radiance;
+    return chain.Radiance + chain.Throughput * radiance;
 }

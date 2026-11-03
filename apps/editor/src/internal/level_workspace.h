@@ -7,6 +7,7 @@
 #include <ludus/platform/entropy.h>
 
 #include "internal/controller.h"
+#include "internal/light_switches.h"
 #include "internal/render_preview.h"
 #include "internal/world_document.h"
 
@@ -144,6 +145,15 @@ public:
     /// @param world The World that level came from; its other content must equal the presented World's.
     /// @return Published, Unchanged, or RequiresAssembly when the caller must Assemble (nothing changed).
     [[nodiscard]] PlacementPublication PublishPlacement(const QJsonObject& level, const WorldDocument& world);
+    /// @brief Present the World's light switches at once when they are its only change.
+    ///
+    /// The presented scene is re-derived with world.GetLightSwitches() (ApplyLightSwitches), which needs
+    /// no cook: switches change no cooked asset. GUI thread; World-owned workspaces only.
+    /// @param level The World's SceneLevel(); it must equal the presented level.
+    /// @param world The World; apart from `disabled_lights` and scene placement it must equal the presented one.
+    /// @return Published, Unchanged, or RequiresAssembly when the caller must Assemble (nothing changed),
+    /// including while a placement cook validates the presented scene.
+    [[nodiscard]] PlacementPublication PublishLightSwitches(const QJsonObject& level, const WorldDocument& world);
     /// Validation state of the presented scene; Ready unless PublishPlacement presented a derived one.
     [[nodiscard]] PlacementValidation GetPlacementValidation() const noexcept
     {

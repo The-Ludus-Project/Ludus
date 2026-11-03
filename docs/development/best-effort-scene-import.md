@@ -478,6 +478,9 @@ A scene rejects when distinct emitter groups cannot fit the 256 mesh slots,
 required emitter geometry exceeds capacity, lighting exceeds 128 analytic lights,
 or authored energy cannot fit the finite profile. It does not merge all emitters
 into the brightest light or clamp their energy to make the import succeed.
+Emitters with equal radiance, sidedness, power and material share one group, which
+is also the unit the World's [Lights list](editor-workspace.md#switching-lights)
+switches.
 
 pbrt area lights are *required* emitters. glTF emissive materials and MTL `Ke`
 are *decorative*: their units are not photometric, so when emitter slots run

@@ -379,6 +379,8 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                            rhi::RasterBindingResource meshLights,
                                            uint32 meshLightCount,
                                            uint32 meshLightGridWord,
+                                           bool hasMeshLightShadows,
+                                           rhi::TextureViewHandle meshLightShadows,
                                            const content::render_graph_format::Pass& operation) noexcept
 {
     if (mTargetsOrNull != nullptr || inoutTargets.mStatus != Status::Ready)
@@ -397,6 +399,8 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
     }
     mTargetsOrNull = &inoutTargets;
     mMeshLights = meshLights;
+    mHasMeshLightShadows = hasMeshLightShadows;
+    mMeshLightShadows = meshLightShadows;
     mClearDepth = camera.Depth == DepthConvention::ReverseZ ? 0.0F : 1.0F;
     ViewParameters parameters;
     const math::Matrix4 rows = math::Transpose(clipToWorld);
@@ -456,6 +460,14 @@ Status RenderGraphDeferredPass::Poll() noexcept
             bindings[slot] = mMaterial.Resources[slot];
         }
         bindings[DEFERRED_MESH_LIGHT_BINDING] = mMeshLights;
+        if (mHasMeshLightShadows == true)
+        {
+            bindings[DEFERRED_MESH_LIGHT_SHADOW_BINDING] =
+            {
+                .Binding = DEFERRED_MESH_LIGHT_SHADOW_BINDING,
+                .Texture = mMeshLightShadows,
+            };
+        }
         bindings[DEFERRED_LTC_BINDING] =
         {
             .Binding = DEFERRED_LTC_BINDING,

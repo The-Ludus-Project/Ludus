@@ -53,9 +53,11 @@ class ConditionalRestirTests(unittest.TestCase):
         self.assertEqual(settings['CRIS_SUFFIX_BOUNCES']['value'], 3)
         technique = next(t for t in manifest['techniques'] if 'scene_interface' in t)
         # Camera + delayed prefix + one query per continuation after the first suffix point.
-        self.assertEqual(maximum + settings['CRIS_PREFIX_BOUNCES']['maximum'],
+        # Plus the eight smooth-glass events (SCENE_SPECULAR_CHAIN_EVENTS) followed before the primary.
+        specular_chain_events = 8
+        self.assertEqual(maximum + settings['CRIS_PREFIX_BOUNCES']['maximum'] + specular_chain_events,
                          technique['scene_interface']['surface_queries'])
-        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 8, 'visibility_queries': 2})
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 16, 'visibility_queries': 2})
 
     def test_direct_and_indirect_settings_preserve_build_and_graph_validity(self):
         root = self.create()

@@ -43,6 +43,7 @@ struct ShadingPoint
     float3 ShadingNormalWorld;
     float3 ViewDirectionWorld;
     ReceiverLightingFrame Frame;
+    float3 Throughput; ///< Smooth-glass chain weight from the camera to Hit.
 };
 
 /// Per-invocation state of the resampled light strategy shared by its light and BSDF-hit MIS weights.
@@ -101,7 +102,16 @@ ResampledLightContext MakeResampledLightContext(SceneContext scene)
     outPoint.Hit.IncomingRay = cameraRay;
     outPoint.Hit.DistanceWorld = record.DistanceWorld;
     outPoint.Hit.IsFrontFace = record.IsFrontFace;
-    outPoint.ViewDirectionWorld = -cameraRay.DirectionWorld;
+    // Smooth glass is followed to the first surface the estimators can shade (FollowSpecularChain, up to
+    // SCENE_SPECULAR_CHAIN_EVENTS surface queries); every pass draws the same chain.
+    SpecularChain chain =
+        FollowSpecularChain(scene, launch, queries, outPoint.Hit, SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST);
+    outRadiance = chain.Radiance;
+    if (chain.IsSurface == false)
+        return false;
+    outPoint.Hit = chain.Hit;
+    outPoint.Throughput = chain.Throughput;
+    outPoint.ViewDirectionWorld = chain.ViewDirectionWorld;
     outPoint.Material = EvaluateMaterial(scene, outPoint.Hit);
     float normalLengthSquared = dot(outPoint.Material.ShadingNormalWorld, outPoint.Material.ShadingNormalWorld);
     if (outPoint.Material.IsValid == false || normalLengthSquared <= 0)
@@ -125,7 +135,7 @@ ResampledLightContext MakeResampledLightContext(SceneContext scene)
                                                    outPoint.Material.BaseColor,
                                                    outPoint.Material.Metallic,
                                                    outPoint.Material.Roughness);
-    outRadiance = EvaluateEmission(scene, outPoint.Hit, outPoint.ViewDirectionWorld);
+    outRadiance += outPoint.Throughput * EvaluateEmission(scene, outPoint.Hit, outPoint.ViewDirectionWorld);
     return true;
 }
 
@@ -429,8 +439,10 @@ float3 ShadeMultipleImportance(SceneContext scene, RayLaunch launch, inout RayQu
     if (TryLoadShadingPoint(scene, launch, true, passQueries, shadingPoint, radiance) == true)
     {
         ResampledLightContext context = MakeResampledLightContext(scene);
-        radiance += SampleLightStrategy(scene, launch, shadingPoint, true, context, passQueries);
-        radiance += SampleBsdfStrategy(scene, launch, shadingPoint, true, context, passQueries);
+        radiance +=
+            shadingPoint.Throughput * SampleLightStrategy(scene, launch, shadingPoint, true, context, passQueries);
+        radiance +=
+            shadingPoint.Throughput * SampleBsdfStrategy(scene, launch, shadingPoint, true, context, passQueries);
         radiance = FinishRadiance(radiance, passQueries);
     }
     queries = passQueries;
@@ -446,7 +458,8 @@ float3 ShadeLightSampling(SceneContext scene, RayLaunch launch, inout RayQueryCo
     if (TryLoadShadingPoint(scene, launch, true, passQueries, shadingPoint, radiance) == true)
     {
         ResampledLightContext context = MakeResampledLightContext(scene);
-        radiance += SampleLightStrategy(scene, launch, shadingPoint, false, context, passQueries);
+        radiance +=
+            shadingPoint.Throughput * SampleLightStrategy(scene, launch, shadingPoint, false, context, passQueries);
         radiance = FinishRadiance(radiance, passQueries);
     }
     queries = passQueries;
@@ -462,7 +475,8 @@ float3 ShadeBsdfSampling(SceneContext scene, RayLaunch launch, inout RayQueryCon
     if (TryLoadShadingPoint(scene, launch, false, passQueries, shadingPoint, radiance) == true)
     {
         ResampledLightContext context = MakeResampledLightContext(scene);
-        radiance += SampleBsdfStrategy(scene, launch, shadingPoint, false, context, passQueries);
+        radiance +=
+            shadingPoint.Throughput * SampleBsdfStrategy(scene, launch, shadingPoint, false, context, passQueries);
         radiance = FinishRadiance(radiance, passQueries);
     }
     queries = passQueries;

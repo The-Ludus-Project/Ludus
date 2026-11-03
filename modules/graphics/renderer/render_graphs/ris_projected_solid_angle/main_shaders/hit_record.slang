@@ -54,6 +54,9 @@ static const uint RIS_NORMALIZATION_DIMENSION_FIRST =
     RIS_CANDIDATE_DIMENSION_FIRST + RIS_MAX_CANDIDATE_COUNT * RIS_DIMENSIONS_PER_CANDIDATE;
 static const uint SHADE_RANDOM_DIMENSION_COUNT =
     RIS_NORMALIZATION_DIMENSION_FIRST + RIS_MAX_NORMALIZATION_CANDIDATE_COUNT - SHADE_RANDOM_DIMENSION_FIRST;
+// Shade passes: Fresnel choices of the smooth-glass chain followed from the recorded hit, shared by
+// every pass so all of them shade the same final surface.
+static const uint SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST = SHADE_RANDOM_DIMENSION_FIRST + SHADE_RANDOM_DIMENSION_COUNT;
 
 struct HitRecord
 {

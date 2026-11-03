@@ -14,6 +14,7 @@
 #include "internal/render_panel.h"
 #include "internal/state_view.h"
 #include "internal/world_demo_adapter.h"
+#include "internal/world_lights_panel.h"
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/core.h>
@@ -416,6 +417,10 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                     QStringLiteral(" created. Edit its Transform and properties in the inspector. Undo is available."));
         });
     }
+
+    mLightsPanel = new WorldLightsPanel(left);
+    hierarchy->addWidget(mLightsPanel);
+    connect(mLightsPanel, &WorldLightsPanel::LightsChangeRequested, this, &WorldWorkspace::applyLightChange);
 
     BoundViewport_ = Render_->TakeViewport(split);
     Scene_ = new LevelWorkspace(tooling, this);
@@ -1112,6 +1117,21 @@ void WorldWorkspace::RefreshScene()
     {
         return;
     }
+    // Switching imported lights changes no cooked asset: the presented scene is re-derived at once.
+    const PlacementPublication switched = Scene_->PublishLightSwitches(level, Document_);
+    if (switched == PlacementPublication::Published)
+    {
+        if (level == ValidatedScene_)
+        {
+            ValidatedWorld_ = Document_.Encode();
+        }
+        renderLights();
+        return;
+    }
+    if (switched == PlacementPublication::Unchanged)
+    {
+        return;
+    }
     if (Scene_->CanStartOperation() == false)
     {
         // The placement cook still occupies the operation thread: stop it and assemble once it drains.
@@ -1303,6 +1323,7 @@ void WorldWorkspace::Render()
     }
     Rendering_ = false;
     RenderInspector();
+    renderLights();
     const bool scene = Document_.Draft().contains(QStringLiteral("scene"));
     Viewport_->setVisible(scene);
     // World-demo Worlds render in the same bound viewport as every other scene-less World.
@@ -1313,6 +1334,34 @@ void WorldWorkspace::Render()
     // The box only configures Play saved World; without the button it would be an unexplained control.
     mPlayModeBox->setVisible(isPlayable);
     updateShownRenderPreview(scene);
+}
+void WorldWorkspace::renderLights()
+{
+    if (Document_.Loaded() == false)
+    {
+        mLightsPanel->SetRows({}, {});
+        return;
+    }
+    // A scene-less World lists its authored lights from the bound viewport's extraction.
+    const bool hasScene = Document_.Draft().contains(QStringLiteral("scene"));
+    const RenderScene& scene = hasScene == true ? Scene_->PreviewScene() : Render_->Preview().Scene();
+    mLightsPanel->SetRows(CollectWorldLightRows(Document_, scene), Document_.GetLightSwitches());
+}
+void WorldWorkspace::applyLightChange(const WorldLightChange& change, const QString& message)
+{
+    QString error;
+    const bool hasScene = Document_.Draft().contains(QStringLiteral("scene"));
+    const RenderScene& scene = hasScene == true ? Scene_->PreviewScene() : Render_->Preview().Scene();
+    if (SceneBusy() == true || Pending_ == true ||
+        Document_.SetLightSwitches(change.Switches, scene.LightBinding, change.WorldLights, error) == false)
+    {
+        renderLights();
+        Changed(error.isEmpty() == true ? QStringLiteral("Lights cannot change while the scene is busy.") : error);
+        return;
+    }
+    Render();
+    Snapshot();
+    Changed(message);
 }
 void WorldWorkspace::updateShownRenderPreview(bool isSceneShown)
 {
@@ -1687,6 +1736,7 @@ void WorldWorkspace::Changed(const QString& message)
         field->setEnabled(isBusy == false || DraftPreview_);
     }
     Entities_->setEnabled(Pending_ == false && isBusy == false);
+    mLightsPanel->setEnabled(Pending_ == false && isBusy == false);
     const bool isWorkerActive = isSceneWorkerActive();
     Import_->setEnabled(Document_.Loaded() && IsWorldDemo(Document_) == false && Pending_ == false &&
                         isWorkerActive == false);

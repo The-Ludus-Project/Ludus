@@ -1,5 +1,6 @@
 #include "internal/render_graph_scene_resources.h"
 #include "internal/raster_mesh_light_grid.h"
+#include "internal/raster_mesh_light_shadows.h"
 #include "internal/raster_mesh_lights.h"
 #include "internal/scene_material_validation.h"
 #include <ludus/graphics/renderer/deferred_layout.h>
@@ -340,6 +341,10 @@ struct ForwardSceneGeneration::State final
     rhi::BufferHandle MeshLightBuffer{};
     uint32 MeshLightCount = 0;
     uint32 MeshLightGridWord = 0;
+    /// Shadow casters with allocated atlas faces; empty without a culling grid.
+    Array<MeshLightShadowCaster> MeshLightShadowCasters;
+    /// Their atlas; its texture exists exactly when MeshLightShadowCasters is nonempty.
+    MeshLightShadowAtlas MeshLightShadows;
     LightClusterDescription Clusters;
     math::Aabb3 BoundsWorld = math::EmptyAabb3();
     EnvironmentMap Environment;
@@ -352,6 +357,12 @@ struct ForwardSceneGeneration::State final
             return;
         }
         static_cast<void>(rhi::Destroy(OwnerOrNull->Device, MeshLightBuffer));
+        static_cast<void>(rhi::Destroy(OwnerOrNull->Device, MeshLightShadows.Sampled));
+        static_cast<void>(rhi::Destroy(OwnerOrNull->Device, MeshLightShadows.Texture));
+        if (MeshLightShadows.Packets.IsEmpty() == false)
+        {
+            static_cast<void>(rhi::Destroy(OwnerOrNull->Device, MeshLightShadows.Instances));
+        }
         for (MaterialVersion& material : Materials)
         {
             static_cast<void>(OwnerOrNull->RendererOrNull->Release(material));
@@ -430,6 +441,23 @@ uint32 ForwardSceneGeneration::GetMeshLightGridWord() const noexcept
 {
     return mState.Get() == nullptr ? 0 : mState->MeshLightGridWord;
 }
+BorrowedView<const MeshLightShadowCaster> ForwardSceneGeneration::GetMeshLightShadowCasters() const noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return {};
+    }
+    return {mState->MeshLightShadowCasters.GetData(), mState->MeshLightShadowCasters.GetSize()};
+}
+rhi::TextureViewHandle ForwardSceneGeneration::GetMeshLightShadowView() const noexcept
+{
+    return mState.Get() == nullptr ? rhi::TextureViewHandle{} : mState->MeshLightShadows.Sampled;
+}
+MeshLightShadowAtlas* ForwardSceneGeneration::GetMeshLightShadowAtlasOrNull() noexcept
+{
+    return mState.Get() == nullptr || mState->MeshLightShadowCasters.IsEmpty() == true ? nullptr
+                                                                                       : &mState->MeshLightShadows;
+}
 Status ForwardSceneGeneration::Poll() noexcept
 {
     if (mState.Get() == nullptr)
@@ -441,6 +469,24 @@ Status ForwardSceneGeneration::Poll() noexcept
     if (owner.HasMeshLights == true)
     {
         const Status status = rhi::GetStatus(owner.Device, state.MeshLightBuffer);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+    }
+    if (state.MeshLightShadowCasters.IsEmpty() == false)
+    {
+        Status status = rhi::GetStatus(owner.Device, state.MeshLightShadows.Texture);
+        if (status == Status::Ready && state.MeshLightShadows.HasSampled == false)
+        {
+            status =
+                rhi::CreateTextureView(owner.Device, state.MeshLightShadows.Texture, state.MeshLightShadows.Sampled);
+            state.MeshLightShadows.HasSampled = IsAccepted(status);
+        }
+        if (status == Status::Ready)
+        {
+            status = rhi::GetStatus(owner.Device, state.MeshLightShadows.Sampled);
+        }
         if (status != Status::Ready)
         {
             return status;
@@ -771,6 +817,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             static_cast<void>(candidate.Descriptions.TryAdd(description));
         }
     }
+    MeshLightShadowReport shadows;
     if (owner.HasMeshLights == true)
     {
         // An empty light set uploads one zero header, which the resolve never reads.
@@ -782,6 +829,23 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
         // Clustered profiles bound every shaded surface; the resolve then reads only its cell's emitters.
         if (owner.IsClustered == true)
         {
+            // Casters come first: they tag each record, and the grid lists each caster's records together.
+            if (candidate.MeshLightCount != 0)
+            {
+                const Status casters = BuildRasterMeshLightShadowCasters(candidate.MeshLightWords,
+                                                                         candidate.MeshLightCount,
+                                                                         candidate.MeshLightShadowCasters,
+                                                                         shadows);
+                if (casters != Status::Ready)
+                {
+                    return casters;
+                }
+                if (AllocateRasterMeshLightShadowFaces(candidate.MeshLightShadowCasters,
+                                                       MESH_LIGHT_SHADOW_ATLAS_TEXELS) == false)
+                {
+                    return Status::OutOfMemory;
+                }
+            }
             const Status grid = AppendRasterMeshLightGrid(candidate.MeshLightWords,
                                                           candidate.MeshLightCount,
                                                           candidate.BoundsWorld,
@@ -789,6 +853,39 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             if (grid != Status::Ready)
             {
                 return grid;
+            }
+            // The resolve finds the caster table through the grid, so a scene without a grid is unshadowed.
+            if (candidate.MeshLightGridWord == 0)
+            {
+                shadows = { .UnshadowedRecords = shadows.ShadowedRecords + shadows.UnshadowedRecords };
+                candidate.MeshLightShadowCasters.Clear();
+            }
+            else if (candidate.MeshLightShadowCasters.IsEmpty() == false)
+            {
+                uint32 tableWord = 0;
+                const Status table = AppendRasterMeshLightShadowTable(
+                    candidate.MeshLightWords,
+                    {candidate.MeshLightShadowCasters.GetData(), candidate.MeshLightShadowCasters.GetSize()},
+                    MESH_LIGHT_SHADOW_ATLAS_TEXELS,
+                    tableWord);
+                if (table != Status::Ready)
+                {
+                    return table;
+                }
+                candidate.MeshLightWords[candidate.MeshLightGridWord + MESH_LIGHT_GRID_CULL_WORD].Y =
+                    static_cast<float32>(tableWord);
+                // One RGBA8 colour attachment with its private depth; faces are drawn after publication.
+                const Status atlas = rhi::CreateTexture(owner.Device,
+                                                        {MESH_LIGHT_SHADOW_ATLAS_TEXELS,
+                                                         MESH_LIGHT_SHADOW_ATLAS_TEXELS,
+                                                         rhi::RasterFormat::Rgba8Unorm,
+                                                         true},
+                                                        {},
+                                                        candidate.MeshLightShadows.Texture);
+                if (IsAccepted(atlas) == false)
+                {
+                    return atlas;
+                }
             }
         }
         const usize byteCount = candidate.MeshLightWords.GetSize() * sizeof(math::Vector4);
@@ -806,6 +903,9 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
     {
         owner.Report.MeshLightPolygons = candidate.MeshLightCount;
         owner.Report.MeshLightBytes = uint64{candidate.MeshLightWords.GetSize()} * sizeof(math::Vector4);
+        owner.Report.MeshLightShadowCasters = static_cast<uint32>(candidate.MeshLightShadowCasters.GetSize());
+        owner.Report.UnshadowedMeshLights = shadows.UnshadowedRecords;
+        owner.Report.MeshLightShadowFaces = shadows.Faces;
     }
     if (owner.IsClustered == true && math::IsEmpty(candidate.BoundsWorld) == false)
     {

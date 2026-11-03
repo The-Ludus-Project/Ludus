@@ -37,10 +37,16 @@ struct Parameters
 #endif
 };
 LUDUS_SHADER_BINDING(0) ConstantBuffer<Parameters> material : register(b0);
-LUDUS_SHADER_BINDING(1) Texture2D<float4> colorTexture : register(t1);
-LUDUS_SHADER_BINDING(2) SamplerState colorSampler : register(s2);
 #ifdef LUDUS_DEFERRED_MESH_LIGHTS
 #    include "deferred_layout.h"
+// The resolve samples no material texture: the base-colour slot holds the mesh-light shadow atlas.
+LUDUS_SHADER_BINDING(LUDUS_DEFERRED_MESH_LIGHT_SHADOW_BINDING)
+Texture2D<float4> meshLightShadowAtlas LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_DEFERRED_MESH_LIGHT_SHADOW_BINDING);
+#else
+LUDUS_SHADER_BINDING(1) Texture2D<float4> colorTexture : register(t1);
+#endif
+LUDUS_SHADER_BINDING(2) SamplerState colorSampler : register(s2);
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
 LUDUS_SHADER_BINDING(LUDUS_DEFERRED_MESH_LIGHT_BINDING)
 StructuredBuffer<float4> meshLightWords LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_DEFERRED_MESH_LIGHT_BINDING);
 #    define LUDUS_LTC_TABLE_BINDING LUDUS_DEFERRED_LTC_BINDING
@@ -252,30 +258,32 @@ float ComputeShadowVisibility(int light, Varying input)
                : 1; // Local coverage gaps conservatively occlude; directional cascade contract stays explicit.
 #endif
 }
+#ifndef LUDUS_DEFERRED_MESH_LIGHTS
 float4 SampleBaseTexel(Varying input)
 {
     float2 materialUv = input.TexcoordUv;
-#ifdef LUDUS_AUTHORED_INPUTS
+#    ifdef LUDUS_AUTHORED_INPUTS
     if (material.Authored.y > .5)
         materialUv = input.MaterialUv1;
-#endif
+#    endif
     float2 uv = materialUv * material.UvTransform.xy + material.UvTransform.zw;
     float4 texel = material.Options.y < 0 ? colorTexture.Sample(colorSampler, uv)
                                           : colorTexture.SampleLevel(colorSampler, uv, material.Options.y);
     float4 baseColor = texel * material.Tint;
-#ifdef LUDUS_AUTHORED_INPUTS
+#    ifdef LUDUS_AUTHORED_INPUTS
     if (material.Authored.x > .5)
         baseColor *= input.ColorVertex;
-#endif
+#    endif
     // The opaque deferred G-buffer variant (DeferredOpaqueGBufferFragment) defines LUDUS_OPAQUE_COVERAGE: it draws only
     // opaque materials, and a fragment function that merely contains a discard loses hidden-surface removal on
     // tile-based GPUs (renderer.cpp, Renderer::drawView).
-#ifndef LUDUS_OPAQUE_COVERAGE
+#    ifndef LUDUS_OPAQUE_COVERAGE
     if (material.Options.z == 1 && baseColor.a < material.Options.x)
         discard;
-#endif
+#    endif
     return baseColor;
 }
+#endif
 #ifdef LUDUS_AUTHORED_INPUTS
 // Thanks to Guy/Agopian, Filament sections 5.3 and 9.6 (URL above): SH diffuse
 // and prefiltered GGX split-sum IBL. DFG uses Lazarov's fit documented by Filament.
@@ -417,6 +425,7 @@ struct SurfaceSample
     float3 Emission;
     float Alpha;
 };
+#ifndef LUDUS_DEFERRED_MESH_LIGHTS
 SurfaceSample SampleMaterial(in Varying input)
 {
     float4 baseColor = SampleBaseTexel(input);
@@ -431,14 +440,14 @@ SurfaceSample SampleMaterial(in Varying input)
                                     : NormalizeOrZero(input.EyeWorld.xyz - input.PositionWorld);
     float metallic = material.Pbr.x;
     float roughness = material.Pbr.y;
-#ifdef LUDUS_SURFACE_FIDELITY
+#    ifdef LUDUS_SURFACE_FIDELITY
     if (material.SurfaceMap.y > .5)
     {
         float2 materialUv = input.TexcoordUv;
-#    ifdef LUDUS_AUTHORED_INPUTS
+#        ifdef LUDUS_AUTHORED_INPUTS
         if (material.Authored.y > .5)
             materialUv = input.MaterialUv1;
-#    endif
+#        endif
         float2 uv = materialUv * material.UvTransform.xy + material.UvTransform.zw;
         float4 texel = material.Options.y < 0 ? surfaceTexture.Sample(colorSampler, uv)
                                               : surfaceTexture.SampleLevel(colorSampler, uv, material.Options.y);
@@ -447,7 +456,7 @@ SurfaceSample SampleMaterial(in Varying input)
         roughness = parameters.Roughness;
         float2 uvDerivativeXMaterial = ddx(uv);
         float2 uvDerivativeYMaterial = ddy(uv);
-#    ifdef LUDUS_AUTHORED_INPUTS
+#        ifdef LUDUS_AUTHORED_INPUTS
         if (material.Authored.x > .5 && abs(input.TangentWorld.w) > .5)
         {
             float3 tangentWorld =
@@ -458,7 +467,7 @@ SurfaceSample SampleMaterial(in Varying input)
                                 bitangentWorld * parameters.NormalTangent.y + normalWorld * parameters.NormalTangent.z);
         }
         else
-#    endif
+#        endif
             normalWorld = ApplyNormalWorld(normalWorld,
                                            parameters.NormalTangent,
                                            positionDerivativeXWorld,
@@ -466,14 +475,14 @@ SurfaceSample SampleMaterial(in Varying input)
                                            uvDerivativeXMaterial,
                                            uvDerivativeYMaterial);
     }
-#endif
+#    endif
     float3 geometricNormalWorld = cross(positionDerivativeXWorld, positionDerivativeYWorld);
     if (dot(geometricNormalWorld, input.NormalWorld) < 0)
         geometricNormalWorld = -geometricNormalWorld;
     float3 result = material.Emission.w > .5 || dot(geometricNormalWorld, viewDirectionWorld) > 0
                         ? material.Emission.rgb
                         : float3(0);
-#ifdef LUDUS_AUTHORED_INPUTS
+#    ifdef LUDUS_AUTHORED_INPUTS
     if (material.SurfaceMap.z > .5)
     {
         float2 emissionUv =
@@ -484,7 +493,7 @@ SurfaceSample SampleMaterial(in Varying input)
                               : emissionTexture.SampleLevel(colorSampler, emissionUv, material.Options.y).rgb;
         result *= emission;
     }
-#endif
+#    endif
     SurfaceSample output;
     output.BaseColor = baseColor;
     output.NormalWorld = normalWorld;
@@ -495,6 +504,7 @@ SurfaceSample SampleMaterial(in Varying input)
     output.Alpha = material.Options.z == 2 ? baseColor.a : 1;
     return output;
 }
+#endif
 float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
 {
     float4 baseColor = surface.BaseColor;
@@ -634,6 +644,7 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
     float alpha = surface.Alpha;
     return float4(min(max(result, float3(0)), float3(65504)) * alpha, alpha);
 }
+#ifndef LUDUS_DEFERRED_MESH_LIGHTS
 [shader("fragment")] float4 FragmentMain(Varying input) : SV_Target
 {
     return ShadeMaterial(SampleMaterial(input), input);
@@ -645,6 +656,7 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
     float high = floor(encoded / 256);
     return float4(high / 255, (encoded - high * 256) / 255, 0, 1);
 }
+#endif
 
 #ifdef LUDUS_CLUSTERED
 // The prepass retains the exact color vertex entry and evaluates no material terms.

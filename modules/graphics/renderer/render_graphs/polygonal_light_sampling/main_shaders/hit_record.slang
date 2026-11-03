@@ -47,6 +47,10 @@ static const uint POLYGONAL_LIGHT_DIMENSIONS_PER_LIGHT = 4;
 static const uint PROJECTED_SOLID_ANGLE_SAMPLE_DIMENSION_OFFSET = 0;
 static const uint LTC_SAMPLE_DIMENSION_OFFSET = 2;
 static const uint SHADE_RANDOM_DIMENSION_COUNT = MAX_POLYGONAL_LIGHT_COUNT * POLYGONAL_LIGHT_DIMENSIONS_PER_LIGHT;
+// Shade passes: Fresnel choices of the smooth-glass chain followed from the recorded hit, shared by
+// every pass so all of them shade the same final surface.
+static const uint SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST =
+    POLYGONAL_LIGHT_DIMENSION_FIRST + SHADE_RANDOM_DIMENSION_COUNT;
 
 struct HitRecord
 {
