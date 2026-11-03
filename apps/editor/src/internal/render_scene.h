@@ -112,6 +112,9 @@ struct PreviewStartView final
     /// Vertical field of view in radians, in (0, pi).
     foundation::float32 VerticalFov = 1;
 };
+/// Light SourceId of an authored World light entity, and the object SourceId of an authored
+/// renderable, as World composition writes them: a nonzero digest of the entity key.
+[[nodiscard]] foundation::uint64 ComputeEntitySourceId(const QString& entityKey);
 /// Parse a level `camera` object ({eye, target, up, fov}, world units and radians). Failure,
 /// including a degenerate view or a field of view outside (0, pi), preserves outView.
 [[nodiscard]] bool TryParseStartView(const QJsonObject& camera, PreviewStartView& outView);
@@ -164,6 +167,11 @@ struct RenderScene final
                                     RenderScene& output,
                                     QString& error,
                                     const QJsonObject& revisions);
+    /// The enabled analytic lights of a cooked definition, normalized as LoadCooked presents them.
+    /// Failure (more lights than the viewport admits) preserves outLights.
+    [[nodiscard]] static bool LoadCookedLights(const resources::SceneDefinition& scene,
+                                               graphics::renderer::LightSelection& outLights,
+                                               QString& outError);
     QVector<PreviewMesh> Meshes;
     QVector<PreviewTexture> Textures;
     QVector<PreviewObject> Objects;
@@ -174,9 +182,16 @@ struct RenderScene final
     QByteArray Identity;
     QByteArray PacketIdentity;
     QByteArray AssetsIdentity;
+    /// Identity before ApplyLightSwitches disabled any source; empty while nothing is disabled.
+    QByteArray UnswitchedIdentity;
+    /// Digest of the disabled light sources this scene presents; empty while nothing is disabled.
+    /// Lighting keys hash it because the switched emission is not part of the definition.
+    QByteArray LightSwitchIdentity;
     QJsonObject RenderableBinding;
     /// Project-owned position/Euler-degree/scale property binding for viewport manipulation.
     QJsonObject TransformBinding;
+    /// Project-owned light binding ({component, properties}); empty when the World binds no lights.
+    QJsonObject LightBinding;
     /// Camera the viewport looks through until the user picks another; -1 is the editor camera.
     foundation::int32 DefaultCamera = -1;
     /// Level start view of an imported scene; absent for Worlds without a scene level.

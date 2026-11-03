@@ -287,6 +287,48 @@ bool Value(const QJsonObject& p, const QJsonValue& value, QString& error)
                          QStringLiteral("%1: value does not match its type, choices or bounds.")
                              .arg(p.value(QStringLiteral("label")).toString()));
 }
+/// One `disabled_lights` entry: exactly a known `kind` and a nonzero 16-digit lowercase hex `source`.
+bool TryReadLightSwitch(const QJsonValue& value, LightSourceKey& outKey)
+{
+    const QJsonObject entry = value.toObject();
+    LightSourceKey key;
+    if (value.isObject() == false || entry.size() != 2 ||
+        Fields(entry, {QStringLiteral("kind"), QStringLiteral("source")}) == false ||
+        TryParseLightSourceKind(entry.value(QStringLiteral("kind")).toString(), key.Kind) == false ||
+        TryParseLightSourceId(entry.value(QStringLiteral("source")).toString(), key.SourceId) == false ||
+        key.SourceId == 0)
+    {
+        return false;
+    }
+    outKey = key;
+    return true;
+}
+/// The root `disabled_lights` list: only beside a scene level, bounded, with unique valid entries.
+bool IsLightSwitchListValid(const QJsonObject& candidate, QString& outError)
+{
+    const QJsonValue value = candidate.value(QStringLiteral("disabled_lights"));
+    const QJsonArray entries = value.toArray();
+    if (candidate.contains(QStringLiteral("scene")) == false || value.isArray() == false ||
+        static_cast<foundation::usize>(entries.size()) > GetMaxDisabledLightSources())
+    {
+        return Fail(outError,
+                    QStringLiteral("Disabled lights need an imported scene and at most %1 sources.")
+                        .arg(GetMaxDisabledLightSources()));
+    }
+    LightSwitchSet seen;
+    for (const QJsonValue entry : entries)
+    {
+        LightSourceKey key;
+        if (TryReadLightSwitch(entry, key) == false || seen.IsDisabled(key) == true)
+        {
+            return Fail(outError,
+                        QStringLiteral("Every disabled light names a unique emitter or light by its 16-digit "
+                                       "lowercase hexadecimal source ID."));
+        }
+        seen.Disabled.append(key);
+    }
+    return true;
+}
 QJsonObject Defaults(const QJsonObject& component)
 {
     QJsonObject out;
@@ -568,7 +610,8 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                                                           : QStringList{QStringLiteral("version"),
                                                                         QStringLiteral("schema"),
                                                                         QStringLiteral("entities"),
-                                                                        QStringLiteral("scene")};
+                                                                        QStringLiteral("scene"),
+                                                                        QStringLiteral("disabled_lights")};
     if (HasSchema() == false || (hasScopedIds == false && hasUuidRecords == false) ||
         Fields(candidate, rootFields) == false ||
         candidate.value(QStringLiteral("schema")) != Schema_.value(QStringLiteral("id")) ||
@@ -769,6 +812,11 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                 return Fail(error, QStringLiteral("Invalid import provenance."));
             }
         }
+    }
+    if (candidate.contains(QStringLiteral("disabled_lights")) == true &&
+        IsLightSwitchListValid(candidate, error) == false)
+    {
+        return false;
     }
     for (const auto value : entities)
     {
@@ -1285,6 +1333,84 @@ bool WorldDocument::SetSceneStartView(const QJsonObject& camera, QString& outErr
     scene.insert(QStringLiteral("camera"), camera);
     QJsonObject candidate = Draft_;
     candidate.insert(QStringLiteral("scene"), scene);
+    return Commit(candidate, outError);
+}
+LightSwitchSet WorldDocument::GetLightSwitches() const
+{
+    LightSwitchSet switches;
+    for (const QJsonValue entry : Draft_.value(QStringLiteral("disabled_lights")).toArray())
+    {
+        LightSourceKey key;
+        // Validation admitted every entry; an unreadable one cannot occur in a loaded draft.
+        if (TryReadLightSwitch(entry, key) == true)
+        {
+            switches.Disabled.append(key);
+        }
+    }
+    NormalizeLightSwitches(switches);
+    return switches;
+}
+bool WorldDocument::SetLightSwitches(const LightSwitchSet& switches,
+                                     const QJsonObject& lightBinding,
+                                     const QVector<WorldLightEnable>& worldLights,
+                                     QString& outError)
+{
+    LightSwitchSet normalized = switches;
+    NormalizeLightSwitches(normalized);
+    if (normalized.Disabled.isEmpty() == false && Draft_.contains(QStringLiteral("scene")) == false)
+    {
+        return Fail(outError, QStringLiteral("This World has no imported scene whose lights could be switched."));
+    }
+    QJsonObject candidate = Draft_;
+    if (worldLights.isEmpty() == false)
+    {
+        const QString component = lightBinding.value(QStringLiteral("component")).toString();
+        const QString property =
+            lightBinding.value(QStringLiteral("properties")).toObject().value(QStringLiteral("enabled")).toString();
+        if (component.isEmpty() == true || property.isEmpty() == true)
+        {
+            return Fail(outError, QStringLiteral("This World binds no light component to switch."));
+        }
+        QJsonArray entities = candidate.value(QStringLiteral("entities")).toArray();
+        for (const WorldLightEnable& light : worldLights)
+        {
+            qsizetype found = -1;
+            for (qsizetype i = 0; i < entities.size(); ++i)
+            {
+                if (GetEntityKey(entities[i].toObject()) == light.EntityKey)
+                {
+                    found = i;
+                    break;
+                }
+            }
+            QJsonObject entity = found >= 0 ? entities[found].toObject() : QJsonObject{};
+            QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+            if (found < 0 || components.value(component).isObject() == false)
+            {
+                return Fail(outError, QStringLiteral("A switched light entity no longer exists. Nothing was changed."));
+            }
+            QJsonObject values = components.value(component).toObject();
+            values.insert(property, light.IsEnabled);
+            components.insert(component, values);
+            entity.insert(QStringLiteral("components"), components);
+            entities[found] = entity;
+        }
+        candidate.insert(QStringLiteral("entities"), entities);
+    }
+    if (normalized.Disabled.isEmpty() == true)
+    {
+        candidate.remove(QStringLiteral("disabled_lights"));
+    }
+    else
+    {
+        QJsonArray entries;
+        for (const LightSourceKey& key : normalized.Disabled)
+        {
+            entries.append(QJsonObject{{QStringLiteral("kind"), GetLightSourceKindName(key.Kind)},
+                                       {QStringLiteral("source"), FormatLightSourceId(key.SourceId)}});
+        }
+        candidate.insert(QStringLiteral("disabled_lights"), entries);
+    }
     return Commit(candidate, outError);
 }
 QJsonObject WorldDocument::ScenePlacement(const QJsonObject& entity) const

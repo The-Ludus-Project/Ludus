@@ -6,12 +6,14 @@
 #include <ludus/foundation/math/transform.hpp>
 
 #include "internal/document_history.h"
+#include "internal/light_switches.h"
 
 #include <QByteArray>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
+#include <QVector>
 
 namespace ludus::editor
 {
@@ -129,6 +131,30 @@ public:
     /// step. Fails without a scene level or when the World's validation rejects the camera;
     /// failure preserves the draft and history, and an unchanged camera adds no history.
     [[nodiscard]] bool SetSceneStartView(const QJsonObject& camera, QString& outError);
+    /// Imported light sources this World switches off (the root `disabled_lights` list), in
+    /// canonical order. Empty for Worlds without a scene level or without disabled sources.
+    [[nodiscard]] LightSwitchSet GetLightSwitches() const;
+    /// Enabled state to write to one authored light entity's bound `enabled` property.
+    struct WorldLightEnable final
+    {
+        QString EntityKey;
+        bool IsEnabled = true;
+    };
+    /// Replace the switched-off imported light sources and the enabled state of authored light
+    /// entities as one undo step (one light switch, Solo or Enable all). An empty set removes
+    /// `disabled_lights`, so a World without switches keeps its earlier bytes.
+    /// @param switches Imported sources to switch off; nonempty only with a scene level, and at most
+    /// GetMaxDisabledLightSources().
+    /// @param lightBinding The World's light binding ({component, properties}, RenderScene::LightBinding);
+    /// read only when worldLights is nonempty.
+    /// @param worldLights Authored light entities whose bound `enabled` property is written.
+    /// @param outError Why the edit was refused. Failure (no scene, unknown entity, an entity without the
+    /// bound component, or World validation) preserves the draft and history; an unchanged World adds no
+    /// history.
+    [[nodiscard]] bool SetLightSwitches(const LightSwitchSet& switches,
+                                        const QJsonObject& lightBinding,
+                                        const QVector<WorldLightEnable>& worldLights,
+                                        QString& outError);
     [[nodiscard]] QJsonObject ScenePlacement(const QJsonObject& entity) const;
     /// Mesh-to-parent transform of a scene placement (basis, then Euler-degree rotation Rz*Ry*Rx and scale,
     /// then position), in float32. SceneLevel stores this basis with the authored position, and the viewport

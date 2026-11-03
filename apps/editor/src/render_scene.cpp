@@ -148,6 +148,8 @@ void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
 {
     inoutScene.RenderableBinding = authored.RenderableBinding;
     inoutScene.TransformBinding = authored.TransformBinding;
+    // Disabled authored lights stay listed, and switchable, beside the imported ones.
+    inoutScene.LightBinding = authored.LightBinding;
     inoutScene.LuminaireBinding = authored.LuminaireBinding;
     inoutScene.Luminaires = authored.Luminaires;
     if (authored.Cameras.isEmpty() == false)
@@ -699,10 +701,15 @@ bool RenderScene::Load(const QString& root,
     RenderScene candidate;
     candidate.RenderableBinding = renderable;
     candidate.TransformBinding = transform;
+    candidate.LightBinding = lightBinding;
     candidate.LuminaireBinding = luminaireBinding;
     StaticArray<rr::PanelLuminaire, rr::MAX_PANEL_LUMINAIRES> luminaires{};
     usize luminaireCount = 0;
-    QByteArray identity = world.Encode() + bytes;
+    // Light switches are not authored content: ApplyLightSwitches folds them into the presented identity,
+    // so a World presents the same identity whether its switches were published directly or assembled.
+    QJsonObject identityWorld = world.Draft();
+    identityWorld.remove(QStringLiteral("disabled_lights"));
+    QByteArray identity = QJsonDocument(identityWorld).toJson(QJsonDocument::Compact) + '\n' + bytes;
     QByteArray assetsIdentity;
     const auto meshes = descriptor.value(QStringLiteral("meshes")).toArray();
     const auto textures = descriptor.value(QStringLiteral("textures")).toArray();
@@ -1563,6 +1570,39 @@ bool RenderScene::Merge(const RenderScene& authored,
     output = foundation::Move(candidate);
     return true;
 }
+uint64 ComputeEntitySourceId(const QString& entityKey)
+{
+    return ComputeSourceId(entityKey);
+}
+bool RenderScene::LoadCookedLights(const resources::SceneDefinition& scene,
+                                   rr::LightSelection& outLights,
+                                   QString& outError)
+{
+    rr::LightSelection lights;
+    for (const resources::SceneLight& source : scene.Lights)
+    {
+        if (source.IsEnabled == false)
+        {
+            continue;
+        }
+        if (lights.Count == rr::MAX_DIRECT_LIGHTS)
+        {
+            return Fail(outError, QStringLiteral("Cooked light table exceeds viewport capacity."));
+        }
+        rr::DirectLight& light = lights.Lights[lights.Count++];
+        light.SourceId = source.SourceId;
+        light.Kind = static_cast<rr::LightKind>(source.Kind);
+        light.Intensity = math::Max(source.IntensityRgb.X, math::Max(source.IntensityRgb.Y, source.IntensityRgb.Z));
+        light.Color = light.Intensity > 0 ? source.IntensityRgb / light.Intensity : math::Vector3{};
+        light.Position = source.PositionWorld;
+        light.Direction = source.DirectionWorld;
+        light.Range = source.Range;
+        light.InnerCos = source.InnerCos;
+        light.OuterCos = source.OuterCos;
+    }
+    outLights = lights;
+    return true;
+}
 bool RenderScene::LoadCooked(const QByteArray& bytes,
                              const QJsonObject& level,
                              RenderScene& output,
@@ -1651,26 +1691,9 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         }
         candidate.Surfaces.append(surface);
     }
-    for (const resources::SceneLight& source : scene.Lights)
+    if (LoadCookedLights(scene, candidate.AuthoredLights, error) == false)
     {
-        if (source.IsEnabled == false)
-        {
-            continue;
-        }
-        if (candidate.AuthoredLights.Count == rr::MAX_DIRECT_LIGHTS)
-        {
-            return Fail(error, QStringLiteral("Cooked light table exceeds viewport capacity."));
-        }
-        rr::DirectLight& light = candidate.AuthoredLights.Lights[candidate.AuthoredLights.Count++];
-        light.SourceId = source.SourceId;
-        light.Kind = static_cast<rr::LightKind>(source.Kind);
-        light.Intensity = math::Max(source.IntensityRgb.X, math::Max(source.IntensityRgb.Y, source.IntensityRgb.Z));
-        light.Color = light.Intensity > 0 ? source.IntensityRgb / light.Intensity : math::Vector3{};
-        light.Position = source.PositionWorld;
-        light.Direction = source.DirectionWorld;
-        light.Range = source.Range;
-        light.InnerCos = source.InnerCos;
-        light.OuterCos = source.OuterCos;
+        return false;
     }
     const auto objects = level.value(QStringLiteral("objects")).toArray();
     if (objects.size() != static_cast<qsizetype>(scene.Objects.GetSize()))
