@@ -725,63 +725,77 @@ class BuildTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'not delimited'):
             isolate_metal_ray_queries(helper[:helper.rindex('}')])
 
-    def test_translated_metal_preserves_spirv_dontinline_controls(self):
-        import sys
+    @staticmethod
+    def spirv_functions(functions):
+        """Encode (result id, OpName or None, function control) records as a minimal SPIR-V module."""
         import struct
-        sys.path.insert(0, str(ROOT / 'cmake/shaders'))
-        from compile_graph_stage import restore_spirv_metal_noinline
-        encoded = b'TraceWave\0'
-        encoded += b'\0' * ((-len(encoded)) % 4)
-        name_words = struct.unpack('<' + 'I' * (len(encoded) // 4), encoded)
-        words = [0x07230203, 0x00010300, 0, 5, 0,
-                 ((2 + len(name_words)) << 16) | 5, 2, *name_words,
-                 (5 << 16) | 54, 1, 2, 2, 3]
-        module = struct.pack('<' + 'I' * len(words), *words)
-        prefix = 'static inline __attribute__((always_inline))\n'
-        code = prefix + 'uint TraceWave(uint value)\n{\nreturn value;\n}\n'
-        unrelated = prefix + 'uint Shade(uint value)\n{\nreturn value;\n}\n'
-        result = restore_spirv_metal_noinline(code + unrelated, module)
-        self.assertIn('__attribute__((noinline))\nuint TraceWave(', result)
-        self.assertIn(prefix + 'uint Shade(', result)
-        with self.assertRaisesRegex(RuntimeError, 'missing or ambiguous'):
-            restore_spirv_metal_noinline(unrelated, module)
-        with self.assertRaisesRegex(RuntimeError, 'Malformed'):
-            restore_spirv_metal_noinline(code, b'bad')
-
-    def test_translated_metal_matches_module_qualified_dontinline_names(self):
-        import sys
-        import struct
-        sys.path.insert(0, str(ROOT / 'cmake/shaders'))
-        from compile_graph_stage import restore_spirv_metal_noinline, spirv_cross_identifier
-
-        def dont_inline_module(name):
+        words = [0x07230203, 0x00010300, 0, 64, 0]
+        for identity, name, _ in functions:
+            if name is None:
+                continue
             encoded = name.encode() + b'\0'
             encoded += b'\0' * ((-len(encoded)) % 4)
             name_words = struct.unpack('<' + 'I' * (len(encoded) // 4), encoded)
-            words = [0x07230203, 0x00010300, 0, 5, 0,
-                     ((2 + len(name_words)) << 16) | 5, 2, *name_words,
-                     (5 << 16) | 54, 1, 2, 2, 3]
-            return struct.pack('<' + 'I' * len(words), *words)
+            words += [((2 + len(name_words)) << 16) | 5, identity, *name_words]
+        for identity, _, control in functions:
+            words += [(5 << 16) | 54, 1, identity, control, 63]
+        return struct.pack('<' + 'I' * len(words), *words)
 
-        # Slang qualifies functions with their module; SPIRV-Cross spells the dot as an underscore.
+    @staticmethod
+    def spirv_names(module):
+        import struct
+        words = struct.unpack('<' + 'I' * (len(module) // 4), module)
+        names, offset = {}, 5
+        while offset < len(words):
+            count = words[offset] >> 16
+            if words[offset] & 65535 == 5:
+                names[words[offset + 1]] = struct.pack('<' + 'I' * (count - 2), *words[offset + 2:offset + count]).split(b'\0')[0].decode()
+            offset += count
+        return names
+
+    def test_translated_metal_preserves_spirv_dontinline_controls(self):
+        import sys
+        sys.path.insert(0, str(ROOT / 'cmake/shaders'))
+        from compile_graph_stage import name_spirv_dontinline_functions, restore_spirv_metal_noinline
+        module, names = name_spirv_dontinline_functions(self.spirv_functions([(2, 'TraceWave', 2), (3, 'Shade', 0)]))
+        self.assertEqual(names, ['LudusNoinline2_TraceWave'])
+        self.assertEqual(self.spirv_names(module), {2: 'LudusNoinline2_TraceWave', 3: 'Shade'})
         prefix = 'static inline __attribute__((always_inline))\n'
-        code = prefix + 'bool GraphSource0_TryLoadShadingPoint(uint value)\n{\nreturn true;\n}\n'
-        unrelated = prefix + 'bool TryLoadShadingPoint(uint value)\n{\nreturn false;\n}\n'
-        module = dont_inline_module('GraphSource0.TryLoadShadingPoint')
-        result = restore_spirv_metal_noinline(code + unrelated, module)
-        self.assertIn('__attribute__((noinline))\nbool GraphSource0_TryLoadShadingPoint(', result)
-        self.assertIn(prefix + 'bool TryLoadShadingPoint(', result)
-        with self.assertRaisesRegex(RuntimeError, 'GraphSource0_TryLoadShadingPoint is missing or ambiguous'):
-            restore_spirv_metal_noinline(unrelated, module)
+        code = prefix + 'uint LudusNoinline2_TraceWave(uint value)\n{\nreturn value;\n}\n'
+        unrelated = prefix + 'uint Shade(uint value)\n{\nreturn value;\n}\n'
+        result = restore_spirv_metal_noinline(code + unrelated, names)
+        self.assertIn('__attribute__((noinline))\nuint LudusNoinline2_TraceWave(', result)
+        self.assertIn(prefix + 'uint Shade(', result)
         with self.assertRaisesRegex(RuntimeError, 'missing or ambiguous'):
-            restore_spirv_metal_noinline(code + code, module)
-        with self.assertRaisesRegex(RuntimeError, 'no portable name'):
-            restore_spirv_metal_noinline(code, dont_inline_module(''))
-        self.assertEqual(spirv_cross_identifier('Shade'), 'Shade')
-        self.assertEqual(spirv_cross_identifier('a::b..c'), 'a_b_c')
-        self.assertEqual(spirv_cross_identifier('7Shade(f1;'), '_Shade')
-        self.assertEqual(spirv_cross_identifier('spvShade'), '_RESERVED_IDENTIFIER_FIXUP_spvShade')
-        self.assertEqual(spirv_cross_identifier('_12'), '_RESERVED_IDENTIFIER_FIXUP_12')
+            restore_spirv_metal_noinline(unrelated, names)
+        with self.assertRaisesRegex(RuntimeError, 'Malformed'):
+            name_spirv_dontinline_functions(b'bad')
+
+    def test_translated_metal_isolates_namespaced_and_repeated_dontinline_functions(self):
+        import sys
+        sys.path.insert(0, str(ROOT / 'cmake/shaders'))
+        from compile_graph_stage import name_spirv_dontinline_functions, restore_spirv_metal_noinline
+        # Merged graph sources are module-qualified, and Slang emits some isolated routines twice
+        # under one name; SPIRV-Cross would spell those StoreFgPhoton and StoreFgPhoton_1, or keep
+        # one overloaded name. Unique names locate each copy, never the ordinary helper.
+        module, names = name_spirv_dontinline_functions(self.spirv_functions([
+            (7, 'GraphSource0.TryLoadShadingPoint', 2), (8, 'StoreFgPhoton', 2),
+            (9, 'StoreFgPhoton', 2), (10, 'StoreFgPhoton', 0), (11, 'spv::__Reserved(f1;', 2)]))
+        self.assertEqual(names, ['LudusNoinline11_spv_Reserved_f1', 'LudusNoinline7_GraphSource0_TryLoadShadingPoint',
+                                 'LudusNoinline8_StoreFgPhoton', 'LudusNoinline9_StoreFgPhoton'])
+        self.assertEqual(self.spirv_names(module)[10], 'StoreFgPhoton')
+        prefix = 'static inline __attribute__((always_inline))\n'
+        code = ''.join(prefix + f'void {name}(uint value)\n{{\n}}\n' for name in names)
+        helper = prefix + 'void StoreFgPhoton(uint value)\n{\n}\n'
+        result = restore_spirv_metal_noinline(code + helper, names)
+        for name in names:
+            self.assertEqual(result.count(f'__attribute__((noinline))\nvoid {name}('), 1)
+        self.assertEqual(result.count(prefix + 'void StoreFgPhoton('), 1)
+        self.assertEqual(result.count(prefix), 1)
+        with self.assertRaisesRegex(RuntimeError, 'LudusNoinline8_StoreFgPhoton is missing or ambiguous'):
+            restore_spirv_metal_noinline(code + prefix + 'void LudusNoinline8_StoreFgPhoton(uint value)\n{\n}\n', names)
+        with self.assertRaisesRegex(RuntimeError, 'no name'):
+            name_spirv_dontinline_functions(self.spirv_functions([(7, 'Shade', 2), (8, None, 2)]))
 
     def test_forward_metal_arrays_are_opt_in_and_independently_sized(self):
         import sys
