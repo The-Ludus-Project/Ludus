@@ -150,6 +150,7 @@ void RenderPreview::SetRayPathInspection(bool isInspecting)
     {
         releaseRayPathOverlay(false);
         mRayPathOverlay = {};
+        clearBuiltInViewFailure();
     }
     if (OwnsDevice_ == true)
     {
@@ -162,6 +163,35 @@ void RenderPreview::SetRayPathInspection(bool isInspecting)
         mFramePump.Start();
         mFramePump.Wake();
     }
+    Q_EMIT Changed();
+}
+void RenderPreview::ShowBuiltInView(PreviewShading shading)
+{
+    if (mIsBuiltInViewShown == false)
+    {
+        mShadingBeforeBuiltInView = mShading;
+        mIsBuiltInViewShown = true;
+        if (OwnsDevice_ == true && mIsProjectGraphEnabled == true)
+        {
+            ViewDirty_ = true;
+            mFramePump.Start();
+            mFramePump.Wake();
+        }
+        Q_EMIT Changed();
+    }
+    SetShading(shading);
+}
+void RenderPreview::HideBuiltInView()
+{
+    if (mIsBuiltInViewShown == false)
+    {
+        return;
+    }
+    // Cleared first, so the restoring shading change saves the restored mode.
+    mIsBuiltInViewShown = false;
+    SetShading(mShadingBeforeBuiltInView);
+    // An unchanged shading restarts nothing; a failed built-in view must still be retried next time.
+    clearBuiltInViewFailure();
     Q_EMIT Changed();
 }
 void RenderPreview::SetRayPathOverlay(const RayPathOverlay& overlay)
@@ -1329,7 +1359,8 @@ QJsonObject RenderPreview::Navigation() const
         {QStringLiteral("zoom"), mCameraController.GetDistance() / math::Max(OrbitRadius_, MINIMUM_ORBIT_RADIUS_WORLD)},
         {QStringLiteral("camera"), CameraId_},
         {QStringLiteral("reference"), Reference_},
-        {QStringLiteral("shading"), GetPreviewShadingKey(mShading)},
+        {QStringLiteral("shading"),
+         GetPreviewShadingKey(mIsBuiltInViewShown == true ? mShadingBeforeBuiltInView : mShading)},
         {QStringLiteral("statistics"), mIsStatisticsVisible},
         {QStringLiteral("forceRaster"), mShouldForceRaster},
         {QStringLiteral("antialiasing"), GetViewportAntialiasingKey(mAntialiasing)},
@@ -1558,6 +1589,29 @@ void RenderPreview::fail(const QString& message)
     Q_EMIT Changed();
     Q_EMIT Failed(message);
 }
+void RenderPreview::failGeneration(const QString& message)
+{
+    if (mIsProjectGraphEnabled == false || isDelegatingToProjectGraph() == true)
+    {
+        fail(message);
+        return;
+    }
+    // The built-in view is a secondary view: the project graph shares this device and keeps its last
+    // image, so stopping the device here would erase the graph's output as well.
+    mHasPreparationFailed = true;
+    mNeedsResourceRestart = false;
+    Status_ = message;
+    Q_EMIT Changed();
+    Q_EMIT BuiltInViewFailed(message);
+}
+void RenderPreview::clearBuiltInViewFailure() noexcept
+{
+    if (mHasPreparationFailed == true && mIsProjectGraphEnabled == true && OwnsDevice_ == true &&
+        isDelegatingToProjectGraph() == true)
+    {
+        restartResources();
+    }
+}
 bool RenderPreview::prepare()
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
@@ -1640,7 +1694,7 @@ void RenderPreview::SetProjectGraphProblem(const QString& problem)
 }
 void RenderPreview::NotifyProjectFrame()
 {
-    if (mIsProjectGraphEnabled == true && mIsInspectingRayPaths == false && OwnsDevice_ == true)
+    if (isDelegatingToProjectGraph() == true && OwnsDevice_ == true)
     {
         mHasFrame = true;
         ++Frames_;
@@ -1657,13 +1711,18 @@ void RenderPreview::Tick()
 {
     LUDUS_PROFILE_SCOPE(EditorViewportTick);
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
-    if (OwnsDevice_ == false || mHasPreparationFailed == true)
+    if (OwnsDevice_ == false)
     {
         return;
     }
-    if (mIsProjectGraphEnabled == true && mIsInspectingRayPaths == false)
+    // A failed built-in view leaves the device to the project graph, which still retires its resources.
+    if (isDelegatingToProjectGraph() == true || (mHasPreparationFailed == true && mIsProjectGraphEnabled == true))
     {
         static_cast<void>(rhi::PollLifetime(Device_));
+        return;
+    }
+    if (mHasPreparationFailed == true)
+    {
         return;
     }
     QElapsedTimer frameTimer;
@@ -1807,7 +1866,7 @@ void RenderPreview::Tick()
         mIsViewportStale = false;
         if (Accepted(created) == false)
         {
-            fail(QStringLiteral("GPU viewport allocation failed. World edits are preserved."));
+            failGeneration(QStringLiteral("GPU viewport allocation failed. World edits are preserved."));
             return;
         }
         mHasViewport = true;
@@ -1821,7 +1880,7 @@ void RenderPreview::Tick()
             return;
         }
         // Keep a stage's specific reason; the generic text covers unexplained failures.
-        fail(
+        failGeneration(
             mPreparationFailure.isEmpty() == false
                 ? mPreparationFailure + QStringLiteral(" World edits are preserved.")
                 : QStringLiteral("GPU renderer stopped or exceeded its supported profile. World edits are preserved."));
@@ -1838,7 +1897,7 @@ void RenderPreview::Tick()
     }
     if (configured != rhi::RasterStatus::Ready)
     {
-        fail(QStringLiteral("GPU viewport setup failed. World edits are preserved."));
+        failGeneration(QStringLiteral("GPU viewport setup failed. World edits are preserved."));
         return;
     }
     if (mIsPresentationVisible == false && Frames_ != 0)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "internal/preview_shading.h"
 #include "internal/render_preview.h"
 #include "internal/viewport_frame_source.h"
 #include "internal/viewport_object_interaction.h"
@@ -14,6 +15,7 @@
 
 #include <QElapsedTimer>
 #include <QFocusEvent>
+#include <QImage>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPointer>
@@ -98,7 +100,9 @@ public:
     /// While this viewport's preview feeds the graph, it also presents the workspace's ray path
     /// inspection: picking a pixel takes the next left click on the graph output, and inspecting
     /// shows the preview's raster frames from the free camera with the frozen paths over them.
-    /// Leaving inspection presents the live graph again.
+    /// Leaving inspection presents the live graph again. Choosing a debug view in the graph's
+    /// output menu likewise presents the preview's raster frames in that shading until a graph
+    /// output is chosen again.
     void UseProjectGraph(RendererWorkspace& inoutWorkspace);
     /// Whether this viewport presents a ray path inspection (raster frames and frozen paths).
     [[nodiscard]] LUDUS_INLINE bool IsInspectingRayPaths() const noexcept
@@ -114,6 +118,27 @@ public:
     /// start view shows it and handles triggered, describing the view with
     /// RenderPreview::TryDescribeStartView. Owned by this viewport; GUI thread only.
     [[nodiscard]] QAction& GetStartViewSaveAction() noexcept;
+    /// @brief Save the render result this viewport currently shows as a PNG file (View → Save screenshot…).
+    ///
+    /// The file holds the presented frame only, at the resolution it was rendered at: editor overlays
+    /// (statistics, debug legend, axis widget, object handles) and letterbox bars are left out, and a
+    /// translucent frame is composited over the viewport background. A CPU frame (readback canvas or CPU
+    /// fallback) is written before this returns. A GPU frame is read back from Qt Quick when the viewport
+    /// next draws, which needs a visible viewport; IsTakingScreenshot is true until then. The browser
+    /// editor cannot read its canvas back and always fails. GUI thread only.
+    /// @param path Destination file; empty asks for one with a save dialog once the image is read, and a
+    /// write failure then offers to choose another location. A non-empty path is written without asking.
+    /// @param outError Why no screenshot was started: no rendered frame is shown, the viewport cannot be
+    /// read, or another screenshot is still being read. Unchanged when this returns true.
+    /// @return True when the screenshot was written or its read-back started. A later failure is left in
+    /// GetScreenshotError (and, for an empty path, shown in a message box).
+    [[nodiscard]] bool SaveScreenshot(const QString& path, QString& outError);
+    /// True while a screenshot started by SaveScreenshot waits for the viewport to draw.
+    [[nodiscard]] bool IsTakingScreenshot() const noexcept;
+    /// File the last screenshot was written to; empty before one succeeded.
+    [[nodiscard]] const QString& GetScreenshotPath() const noexcept;
+    /// Why the last started screenshot failed; empty while it is pending, after success or a cancelled dialog.
+    [[nodiscard]] const QString& GetScreenshotError() const noexcept;
     /// Retain the last shown frame while an import candidate awaits publication.
     void HoldFrame();
     void ShowFrame();
@@ -161,6 +186,11 @@ private:
     foundation::UniquePtr<State> mState;
     ViewportObjectInteraction* mObjectInteraction;
     void updateObjectInteractionAvailability();
+    /// Write a read screenshot to the requested path, or ask for one; reports failures as SaveScreenshot says.
+    void finishScreenshot(const QImage& image);
+    void failScreenshot(const QString& error);
+    /// Ask where to save a screenshot; empty when the dialog was cancelled.
+    [[nodiscard]] QString askScreenshotPath();
     /// Point object selection at the camera of the shown project graph frame, or the live camera.
     void applyPresentedView();
     [[nodiscard]] QRectF getInteractionFrame() const;
@@ -221,6 +251,17 @@ private:
     bool mIsShowingRayPathStatus = false;
     /// Follow the inspection stage: switch presentation and the picking cursor.
     void updateRayPathInspection();
+    /// The graph output menu selects a built-in debug view, drawn by the preview instead of the graph.
+    bool mIsShowingGraphDebugView = false;
+    /// Follow the graph output menu's debug view: preview shading and presentation.
+    void updateGraphDebugView();
+    /// Whether the preview's raster frames, not the graph's, are presented (inspection or a debug view).
+    [[nodiscard]] LUDUS_INLINE bool isShowingBuiltInView() const noexcept
+    {
+        return mIsInspectingRayPaths == true || mIsShowingGraphDebugView == true;
+    }
+    /// Present the preview's or the graph's frames after isShowingBuiltInView changed from wasShowing.
+    void applyBuiltInPresentation(bool wasShowing);
     /// Hand the inspection's current lines to the preview.
     void updateRayPathOverlay();
     /// Pick the clicked output pixel while the inspection waits for one.

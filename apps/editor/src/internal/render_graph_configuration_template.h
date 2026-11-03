@@ -67,12 +67,12 @@ PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                QString& outError,
                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
 /// Prepare the compute-ray-tracing, simple-compute-ray-tracing, veach-guibas-mis, ris-projected-solid-angle,
-/// polygonal-light-sampling, slice-sampling-luminaire, steinberg-plt, steinberg-physical-optics, restir-gi,
-/// guided-restir-fg-plus, conditional-restir, one-more-vertex-nee or rao-blackwell-mh template in an absent/empty
-/// library. The simple template imports one triangle-loop kernel under simple_compute_ray_tracing/ with no Buffer. The
-/// original template imports a primary-hits and a shade scene compute pass sharing one render-size hit Buffer under
-/// compute_ray_tracing/. veach-guibas-mis imports the same primary-hits pass with three shade passes (MIS, light
-/// sampling and BSDF sampling) under veach_guibas_mis/; its light and BSDF images are optional library outputs.
+/// polygonal-light-sampling, slice-sampling-luminaire, steinberg-plt, steinberg-physical-optics, wave-tracing,
+/// restir-gi, guided-restir-fg-plus, conditional-restir, one-more-vertex-nee or rao-blackwell-mh template in an
+/// absent/empty library. The simple template imports one triangle-loop kernel under simple_compute_ray_tracing/ with no
+/// Buffer. The original template imports a primary-hits and a shade scene compute pass sharing one render-size hit
+/// Buffer under compute_ray_tracing/. veach-guibas-mis imports the same primary-hits pass with three shade passes (MIS,
+/// light sampling and BSDF sampling) under veach_guibas_mis/; its light and BSDF images are optional library outputs.
 /// ris-projected-solid-angle has the same four-pass shape under ris_projected_solid_angle/, with compute-BVH passes,
 /// and also enables the ray technique's scene_interface.polygonal_light_sampling helpers. polygonal-light-sampling
 /// imports four compute-BVH shade passes under polygonal_light_sampling/, the first of which also records the hits,
@@ -96,6 +96,8 @@ PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
 /// payload and larger budgets are retained. Requires a Metal or Vulkan profile. Authored shader bytes are never
 /// replaced: source/program collisions, unsupported scene interface versions and capacity limits report a repair.
 /// Caller owns/discards the snapshot; GUI thread; no disk writes.
+/// wave-tracing imports four compute-BVH passes and a render-size hit Buffer under wave_tracing/: scene optical
+/// surface paths, a matched geometric comparison and scalar connection transmission.
 [[nodiscard]] RenderGraphDocumentStatus
 PrepareComputeRayTracingConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                       const QString& rootGraph,

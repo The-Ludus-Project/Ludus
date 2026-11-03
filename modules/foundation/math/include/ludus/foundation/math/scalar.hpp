@@ -45,6 +45,21 @@ inline constexpr float32 kPiF = 3.14159265358979323846f;
 inline constexpr float32 kTauF = 6.28318530717958647692f;
 inline constexpr float32 kHalfPiF = 1.57079632679489661923f;
 
+/// Convert a finite binary64 value to binary32 after checking the destination's finite range.
+/// Normal floating-point rounding applies, including underflow to signed zero. No allocation/state.
+/// @param value Finite input to narrow; NaN, infinities and finite range overflow reject.
+/// @param outValue Converted value on true; preserved on false.
+/// @return Whether the input was finite and within the finite binary32 range.
+[[nodiscard]] bool TryConvertToFloat32(float64 value, float32& outValue) noexcept;
+
+/// Evaluate the real error function, 2/sqrt(PI) times the integral of exp(-t*t) from 0 to value.
+/// Preserves signed zero, propagates NaN, and maps infinities to signed one. No allocation.
+/// @note CPU uses platform libm; math.slang provides an independently evaluated binary32
+/// approximation. Compare with an absolute tolerance that includes polynomial and backend rounding.
+[[nodiscard]] float32 ComputeErrorFunction(float32 value) noexcept;
+/// @copydoc ComputeErrorFunction(float32)
+[[nodiscard]] float64 ComputeErrorFunction(float64 value) noexcept;
+
 // --- Angle conversion (named; no implicit units) ----------------------------
 [[nodiscard]] constexpr float32 DegreesToRadians(float32 degrees) noexcept
 {

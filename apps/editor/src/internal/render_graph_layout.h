@@ -55,7 +55,8 @@ struct RenderGraphLayoutEdge final
                                             QVector<RenderGraphNodePosition>& outPositions);
 
 /// Display-only placement: move each movable card down, in order, just far enough that no card overlaps a fixed
-/// card or an earlier movable card, keeping gap between them. Fixed cards (those the author placed) never move.
+/// card or an earlier movable card, keeping gap between them. Use whole scene-unit offsets so the caller's integer
+/// node origins remain representable even when borders have fractional bounds. Fixed cards never move.
 /// Cards that already clear every other card stay where they are. GUI thread only.
 void ResolveRenderGraphOverlaps(const QVector<QRectF>& fixedCards,
                                 foundation::float64 gap,

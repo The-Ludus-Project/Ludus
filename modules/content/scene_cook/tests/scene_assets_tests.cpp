@@ -892,6 +892,13 @@ TEST_CASE("Editor import routes glTF, GLB and OBJ entries to their best-effort p
         // The assembled scene is what the editor viewport installs.
         CHECK(imported.Scene.IsEmpty() == false);
         const std::string candidate = GetResponseMember(imported.Response, "level");
+        // Objects take their source material's name rather than a number.
+        CHECK(candidate.find("Imported object") == std::string::npos);
+        if (fixture.Entry == "room.obj")
+        {
+            CHECK(candidate.find("\"name\":\"Checker\"") != std::string::npos);
+            CHECK(candidate.find("\"name\":\"BoxPbr\"") != std::string::npos);
+        }
         request.Operation = EditorSceneOperation::CommitImport;
         request.Level = ToSpan(candidate);
         request.Catalog = ToSpan(imported.Catalog);

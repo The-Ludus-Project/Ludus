@@ -155,5 +155,37 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [path])
 
 
+
+class EncoderLayoutTests(unittest.TestCase):
+    def test_direct_entrypoints_follow_all_test_classes(self):
+        import ast
+        for name in ('test_light_transformer.py', 'test_render_graph_templates.py'):
+            tree = ast.parse(Path(__file__).with_name(name).read_text())
+            entrypoint = next(node for node in tree.body if isinstance(node, ast.If) and
+                              any(isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and
+                                  call.func.attr == 'main' and isinstance(call.func.value, ast.Name) and
+                                  call.func.value.id == 'unittest' for call in ast.walk(node)))
+            self.assertFalse([node.name for node in tree.body if isinstance(node, ast.ClassDef) and
+                              node.lineno > entrypoint.lineno], name)
+
+    def test_encoder_schema_matches_shared_asset_counts(self):
+        from ludus_tools import light_transformer_encoder as encoder
+        schema = list(encoder.encoder_schema())
+        count = sum(outputs * 2 if kind == encoder.NORMALIZE else inputs * outputs * kernel ** 3 +
+                    outputs * (3 if kind == encoder.POOL else 1)
+                    for kind, _, inputs, outputs, kernel, _, _ in schema)
+        self.assertEqual(len(schema), encoder.ENCODER_LAYOUT['LAYER_COUNT'])
+        self.assertEqual(count, encoder.ENCODER_LAYOUT['WEIGHT_COUNT'])
+        self.assertEqual(sum('.attn.qkv' in name for _, name, *_ in schema), 22)
+        # A negative pool BN scale must stay after the maximum reduction.
+        self.assertEqual(sum(kind == encoder.POOL for kind, *_ in schema), 4)
+
+    def test_training_scale_and_reciprocal_must_fit_gpu_binary32(self):
+        for scale in (None, 0, -1, float('nan'), float('inf'), 1e308, 1e-308, 1e-40):
+            self.assertFalse(adapter.is_representable_training_scale(scale))
+        for scale in (0.5, 1, 100, 1e20):
+            self.assertTrue(adapter.is_representable_training_scale(scale))
+
+
 if __name__ == '__main__':
     unittest.main()

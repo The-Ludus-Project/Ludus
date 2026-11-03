@@ -376,7 +376,6 @@ Status RenderGraphCapture::Start(rhi::DeviceHandle device,
     state.Settings = settings;
     state.ReferenceWidth = referenceWidth;
     state.ReferenceHeight = referenceHeight;
-    state.Info.TargetSamples = settings.TargetSamples;
     state.HasRayTiles = programs.HasRayTiles;
     if (settings.TargetSamples < MIN_RENDER_GRAPH_CAPTURE_SAMPLES ||
         settings.TargetSamples > MAX_RENDER_GRAPH_CAPTURE_SAMPLES || settings.TileCount > MAX_RENDER_GRAPH_RAY_TILES ||
@@ -397,6 +396,17 @@ Status RenderGraphCapture::Start(rhi::DeviceHandle device,
         return Status::InvalidDescription;
     }
     const format::Pass& operation = plan.Passes[route.Pass];
+    const uint32 warmup = operation.RayProgram < programs.CaptureWarmupSamples.GetSize()
+                              ? programs.CaptureWarmupSamples[operation.RayProgram]
+                              : 0;
+    state.Info.WarmupSamples = warmup;
+    if (warmup >= MAX_RENDER_GRAPH_CAPTURE_SAMPLES ||
+        settings.TargetSamples > MAX_RENDER_GRAPH_CAPTURE_SAMPLES - warmup)
+    {
+        state.Fail(RenderGraphCaptureProblem::InvalidSettings, Status::InvalidDescription);
+        return Status::InvalidDescription;
+    }
+    state.Info.TargetSamples = settings.TargetSamples + warmup;
     format::Resource resolved{};
     const Status extent =
         ResolveRenderGraphResource(plan.Resources[operation.Color], referenceWidth, referenceHeight, resolved);
@@ -581,6 +591,11 @@ Status RenderGraphCapture::GetStatus() const noexcept
 RenderGraphCaptureInfo RenderGraphCapture::GetInfo() const noexcept
 {
     return mState.Get() != nullptr ? mState->Info : RenderGraphCaptureInfo{};
+}
+
+rhi::RasterStatus RenderGraphCapture::PollRayFailures(uint32 pass, RenderGraphRayFailures& outFailures) noexcept
+{
+    return mState.Get() != nullptr ? mState->Graph.PollRayFailures(pass, outFailures) : Status::NotReady;
 }
 foundation::BorrowedView<const RenderGraphCapturePixel> RenderGraphCapture::GetPixels() const noexcept
 {

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "world_units_per_model_unit": null,
+  "scene_points": 20000,
+  "seed": 1,
+  "maximum_buffer_bytes": 536870912,
+  "maximum_surface_preparation_bytes": 536870912
+}

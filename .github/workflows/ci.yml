@@ -23,6 +23,13 @@ on:
         description: Run only the CPU/Mesa Vulkan MH and Jump Restore parity and capture checks.
         type: boolean
         default: false
+      validation_tier:
+        description: Match promotion qualification or include advisory nightly analysis.
+        type: choice
+        default: nightly
+        options:
+          - full
+          - nightly
 
 permissions:
   contents: read
@@ -166,6 +173,9 @@ jobs:
         run: |
           out/host-tools/venv/bin/cmake --preset macos-clang-development -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross" -DLUDUS_EDITOR_RENDER_PREVIEW=ON -DLUDUS_BUILD_WORLD_DEMO=ON -DLUDUS_BUILD_SHADER_WORKER=ON -DLUDUS_EDITOR_CRASH_CAPTURE_TESTS=ON
           ./scripts/build macos-clang-development
+      # Load-independent: each source compiles in one target (docs/development/build-profiling.md).
+      - name: Check that each source compiles once
+        run: out/host-tools/venv/bin/python tools/check_build_graph.py out/build/macos-clang-development --summary "$GITHUB_STEP_SUMMARY"
       - name: Require complete macOS source inventory
         run: ./scripts/check macos-clang-development --inventory
       - name: Test macOS setup contracts
@@ -637,6 +647,7 @@ jobs:
           python3 -m unittest discover -s scripts/python -p test_check_container_policy.py -v
           python3 tools/check_target_macros.py
           python3 -m unittest discover -s scripts/python -p test_check_target_macros.py -v
+          python3 -m unittest discover -s scripts/python -p test_check_build_graph.py -v
       - name: Verify source formatting
         run: ./scripts/check --format
       - name: Enforce review-derived source rules
@@ -1306,6 +1317,9 @@ jobs:
       # The editor's precompiled headers stay off here, so an editor source that
       # relies on a Qt or standard header it does not include fails this build.
       # The macOS jobs and Linux sanitizer build keep the default (on).
+      # The configured editor and test graph must compile each source in one target.
+      - name: Check that each source compiles once
+        run: out/host-tools/venv/bin/python tools/check_build_graph.py out/build/linux-clang-development --summary "$GITHUB_STEP_SUMMARY" --report out/build-graph/linux-clang-development.json
       - name: Build every default target with the Editor and shader worker
         run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development
       - name: Verify unit and Editor tests and worker-on target detection
@@ -1450,6 +1464,9 @@ jobs:
       # Keep the clean profile uncached and concurrency stable for timing budgets.
       - name: Enforce build-time budget
         run: ./scripts/check-build-budget --profile
+      - name: Check that each source compiles once
+        if: always()
+        run: out/host-tools/venv/bin/python tools/check_build_graph.py out/build/linux-clang-development --summary "$GITHUB_STEP_SUMMARY" --report out/profile/build-graph.json
       - name: Publish build-time profile summary
         if: always()
         run: |

@@ -21,6 +21,8 @@ inline bool AllocationAvailable = true;
 inline foundation::uint64 AllocationBytes = 128;
 inline bool ProfileAvailable = true;
 inline bool HdrAvailable = true;
+/// Reported as RasterCapabilities::HasLineFill; read when a device is created.
+inline bool HasLineFill = true;
 inline bool ComputeAvailable = true;
 inline bool IsSpatialUpscaleAvailable = false;
 inline foundation::usize SpatialUpscaleEncodes = 0;

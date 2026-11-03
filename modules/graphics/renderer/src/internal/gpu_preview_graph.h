@@ -1,4 +1,6 @@
 #pragma once
+#include <ludus/graphics/rhi/compute_workload.hpp>
+
 #include "gpu_preview_data.h"
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -19,5 +21,6 @@ namespace ludus::graphics::renderer::internal
                                                       foundation::BorrowedView<const GpuPreviewRecord*> jobs,
                                                       foundation::BorrowedView<const rhi::TextureHandle> targets,
                                                       rhi::OrderedGraph& outGraph,
-                                                      const VisibilityRasterPass* visibilityOrNull = nullptr) noexcept;
+                                                      const VisibilityRasterPass* visibilityOrNull = nullptr,
+                                                      const rhi::ComputeWorkload* prefixOrNull = nullptr) noexcept;
 } // namespace ludus::graphics::renderer::internal

@@ -13,7 +13,7 @@
 // their power heuristic (exponent 2), as in the veach-guibas-mis template.
 
 static const float TRANSPORT_MAXIMUM_TRACE_DISTANCE_WORLD = 3.402823466e38f;
-static const float MIS_POWER_EXPONENT = 2;
+static const float RESTIR_GI_MIS_POWER_EXPONENT = 2;
 // Rec. 709 luminance, the scalar that the target function of section 4.2 reduces RGB radiance to.
 static const float3 LUMINANCE_WEIGHTS = float3(0.2126f, 0.7152f, 0.0722f);
 
@@ -91,8 +91,8 @@ float ComputePowerHeuristic(float sampledDensity, float otherDensity)
         return 0;
     // Scale both by the larger density, so the powers neither overflow nor flush both terms to zero.
     float largerDensity = max(sampledDensity, otherDensity);
-    float sampled = pow(sampledDensity / largerDensity, MIS_POWER_EXPONENT);
-    float other = pow(otherDensity / largerDensity, MIS_POWER_EXPONENT);
+    float sampled = pow(sampledDensity / largerDensity, RESTIR_GI_MIS_POWER_EXPONENT);
+    float other = pow(otherDensity / largerDensity, RESTIR_GI_MIS_POWER_EXPONENT);
     return sampled / (sampled + other);
 }
 
