@@ -1109,7 +1109,10 @@ TEST_CASE("Best-effort catalog records share one source digest and large catalog
     detail::JsonIndex catalogRoot = detail::NO_JSON_NODE;
     content::MessageText message;
     REQUIRE(detail::ParsePythonJson(ToSpan(imported.Catalog), catalog, catalogRoot, message) == true);
+    // JsonTree::GetCount does not accept a missing node; require each shape before counting it.
     const detail::JsonIndex resources = catalog.GetMember(catalogRoot, "resources");
+    REQUIRE(resources != detail::NO_JSON_NODE);
+    REQUIRE(catalog.GetKind(resources) == detail::JsonKind::Object);
     std::string inputsDigest;
     usize inputsBytes = 0;
     for (usize index = 0; index < catalog.GetCount(resources); ++index)
@@ -1123,6 +1126,8 @@ TEST_CASE("Best-effort catalog records share one source digest and large catalog
             detail::JsonIndex manifestRoot = detail::NO_JSON_NODE;
             REQUIRE(detail::ParsePythonJson(ToSpan(manifestBytes), manifest, manifestRoot, message) == true);
             const detail::JsonIndex inputs = manifest.GetMember(manifestRoot, "inputs");
+            REQUIRE(inputs != detail::NO_JSON_NODE);
+            REQUIRE(manifest.GetKind(inputs) == detail::JsonKind::Object);
             REQUIRE(manifest.GetCount(inputs) > static_cast<usize>(PART_COUNT));
             Array<uint8> canonicalInputs;
             REQUIRE(detail::WriteCanonicalJson(manifest, inputs, canonicalInputs) == true);
@@ -1137,10 +1142,13 @@ TEST_CASE("Best-effort catalog records share one source digest and large catalog
     {
         INFO(catalog.GetKey(resources, index));
         const detail::JsonIndex build = catalog.GetMember(catalog.GetValue(resources, index), "build");
+        REQUIRE(build != detail::NO_JSON_NODE);
         CHECK(catalog.GetMember(build, "source_inputs") == detail::NO_JSON_NODE);
         CHECK(catalog.IsString(catalog.GetMember(build, "source_inputs_sha256"), inputsDigest) == true);
+        const detail::JsonIndex schemaNode = catalog.GetMember(build, "schema");
+        REQUIRE(schemaNode != detail::NO_JSON_NODE);
         Array<uint8> schema;
-        REQUIRE(detail::WriteCanonicalJson(catalog, catalog.GetMember(build, "schema"), schema) == true);
+        REQUIRE(detail::WriteCanonicalJson(catalog, schemaNode, schema) == true);
         CHECK(ToText(schema) == "2\n");
     }
     // The map repeated per record would pass the 1 MiB metadata limit; one digest each stays far below it.
