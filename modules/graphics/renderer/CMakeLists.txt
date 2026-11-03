@@ -171,6 +171,9 @@ if(TARGET ludus_rhi_render_tests)
     # Sanitizer allocation interception also affects the driver's compiler;
     # give that cold work room without changing warm-frame or numerical checks.
     set(renderer_test_cold_gpu_timeout_seconds 120)
+    # The monolithic reference kernel takes 111 s even with Mesa's bounded-JIT CI profile.
+    # Leave readiness margin while retaining the 300 s per-case boundary.
+    set(renderer_test_reference_cold_gpu_timeout_seconds 180)
     # The four-pass authored wave graph spends more than 120 s in cold lavapipe LLVM compilation.
     set(renderer_test_scene_cold_gpu_timeout_seconds 300)
     set(renderer_test_case_timeout_seconds 300)
@@ -178,13 +181,15 @@ if(TARGET ludus_rhi_render_tests)
     set(renderer_test_raster_timeout_seconds 60)
     if(LUDUS_ENABLE_ASAN OR LUDUS_ENABLE_UBSAN)
         set(renderer_test_cold_gpu_timeout_seconds 300)
+        set(renderer_test_reference_cold_gpu_timeout_seconds ${renderer_test_cold_gpu_timeout_seconds})
         set(renderer_test_case_timeout_seconds 600)
         set(renderer_test_raster_timeout_seconds 180)
     endif()
-    set_source_files_properties(tests/reference_compute_tests.cpp tests/metropolis_parity_tests.cpp
-        tests/render_graph_ray_tests.cpp tests/wave_tracing_parity_tests.cpp
+    set_source_files_properties(tests/render_graph_ray_tests.cpp tests/wave_tracing_parity_tests.cpp
         tests/wave_tracing_graph_tests.cpp PROPERTIES COMPILE_DEFINITIONS
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_cold_gpu_timeout_seconds}")
+    set_source_files_properties(tests/reference_compute_tests.cpp tests/metropolis_parity_tests.cpp PROPERTIES COMPILE_DEFINITIONS
+        "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_reference_cold_gpu_timeout_seconds}")
     set_source_files_properties(tests/wave_scene_graph_tests.cpp PROPERTIES COMPILE_DEFINITIONS
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_scene_cold_gpu_timeout_seconds}")
     add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "$<TARGET_OBJECTS:ludus_renderer_ltc_table_data>" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_oracle.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)

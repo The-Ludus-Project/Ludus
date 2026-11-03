@@ -376,8 +376,28 @@ Comparison Compare(const Array<rr::ReferencePixel>& cpu, const Array<rr::Referen
 }
 } // namespace
 
-TEST_CASE("GPU-compute reference matches the CPU oracle's raw AOVs", "[renderer][gpu][reference-compute]")
+namespace
 {
+struct ReferenceRawAovCase final
+{
+    const char* Name = "";
+    bool IsPerspective = false;
+    uint32 MaxDepth = 4;
+    uint32 RouletteDepth = 3;
+    uint64 Seed = 871;
+    usize LightCount = 1;
+    bool HasEnvironmentMap = false;
+    float32 OpticalWavelengthWorld = 0;
+    bool IsFarConventional = false;
+};
+
+void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
+{
+    constexpr uint32 CAPTURE_WIDTH_PIXELS = 16;
+    constexpr uint32 CAPTURE_HEIGHT_PIXELS = 12;
+    constexpr uint32 CAPTURE_SAMPLE_COUNT = 64;
+    CAPTURE(test.Name);
+
     rhi::Shutdown();
     struct Guard final
     {
@@ -459,7 +479,8 @@ TEST_CASE("GPU-compute reference matches the CPU oracle's raw AOVs", "[renderer]
     }
     REQUIRE(environmentStatus == S::Ready);
 
-    rr::DirectLight lights[4];
+    constexpr usize DIRECT_LIGHT_COUNT = 4;
+    StaticArray<rr::DirectLight, DIRECT_LIGHT_COUNT> lights;
     lights[0].SourceId = 41;
     lights[0].Direction = math::Vector3{.2F, -.3F, 1} / math::Length(math::Vector3{.2F, -.3F, 1});
     lights[0].Intensity = .2F;
@@ -484,121 +505,194 @@ TEST_CASE("GPU-compute reference matches the CPU oracle's raw AOVs", "[renderer]
     lights[3].Range = 4;
     lights[3].Intensity = .2F;
 
-    struct Case final
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = CAPTURE_WIDTH_PIXELS;
+    capture.Height = CAPTURE_HEIGHT_PIXELS;
+    capture.TargetSamples = CAPTURE_SAMPLE_COUNT;
+    capture.MaxDepth = test.MaxDepth;
+    capture.OpticalWavelengthWorld = test.OpticalWavelengthWorld;
+    capture.RouletteDepth = test.RouletteDepth;
+    capture.Seed = test.Seed;
+    capture.Environment = {.3F, .4F, .5F};
+    capture.EnvironmentTextureOrNull = test.HasEnvironmentMap == true ? &environment : nullptr;
+    capture.Lights = lights.GetData();
+    capture.LightCount = test.LightCount;
+    if (test.IsPerspective == true)
     {
-        const char* Name = "";
-        bool IsPerspective = false;
-        uint32 MaxDepth = 4;
-        uint32 RouletteDepth = 3;
-        uint64 Seed = 871;
-        usize LightCount = 1;
-        bool HasEnvironmentMap = false;
-        float32 OpticalWavelengthWorld = 0;
-        bool IsFarConventional = false;
-    };
-    const Case cases[]{
-        {"orthographic emitter and environment", false, 4, 3, 871, 1},
-        {"perspective analytic lights and roulette", true, 8, 2, 1729, 4},
-        {"single bounce", true, 1, 1, 5, 4},
-        {"scalar optical scene connections", true, 4, 3, 871, 4, false, 0.001F},
-        {"perspective textured environment", true, 4, 3, 314159, 1, true},
-        {"far conventional optical camera", true, 4, 3, 871, 4, false, 0.001F, true},
-    };
-    for (const Case& test : cases)
-    {
-        SECTION(test.Name)
+        math::Matrix4 view;
+        math::Matrix4 projection;
+        capture.CameraPosition =
+            test.IsFarConventional == true ? math::Vector3{300, -.2F, -2.5F} : math::Vector3{.1F, -.2F, -2.5F};
+        REQUIRE(math::TryLookAt(capture.CameraPosition, {0, 0, 0}, {0, 1, 0}, view) == math::MathStatus::Success);
+        REQUIRE(
+            math::TryPerspectiveReverseZ(1, float32(capture.Width) / float32(capture.Height), .1F, 20, projection) ==
+            math::MathStatus::Success);
+        capture.WorldToClip = projection * view;
+        if (test.IsFarConventional == true)
         {
-            rr::ReferenceCaptureDescription capture;
-            capture.Width = 16;
-            capture.Height = 12;
-            capture.TargetSamples = 64;
-            capture.MaxDepth = test.MaxDepth;
-            capture.OpticalWavelengthWorld = test.OpticalWavelengthWorld;
-            capture.RouletteDepth = test.RouletteDepth;
-            capture.Seed = test.Seed;
-            capture.Environment = {.3F, .4F, .5F};
-            capture.EnvironmentTextureOrNull = test.HasEnvironmentMap == true ? &environment : nullptr;
-            capture.Lights = lights;
-            capture.LightCount = test.LightCount;
-            if (test.IsPerspective == true)
+            for (math::Vector4& column : capture.WorldToClip.Columns)
             {
-                math::Matrix4 view;
-                math::Matrix4 projection;
-                capture.CameraPosition =
-                    test.IsFarConventional == true ? math::Vector3{300, -.2F, -2.5F} : math::Vector3{.1F, -.2F, -2.5F};
-                REQUIRE(math::TryLookAt(capture.CameraPosition, {0, 0, 0}, {0, 1, 0}, view) ==
-                        math::MathStatus::Success);
-                REQUIRE(math::TryPerspectiveReverseZ(1,
-                                                     float32(capture.Width) / float32(capture.Height),
-                                                     .1F,
-                                                     20,
-                                                     projection) == math::MathStatus::Success);
-                capture.WorldToClip = projection * view;
-                if (test.IsFarConventional == true)
-                {
-                    for (math::Vector4& column : capture.WorldToClip.Columns)
-                    {
-                        column.Z = column.W - column.Z;
-                    }
-                }
-                capture.ReverseZ = test.IsFarConventional == false;
+                column.Z = column.W - column.Z;
             }
-            else
-            {
-                capture.OrthographicCamera = true;
-                capture.WorldToClip.Columns[3].Z = .7F;
-                capture.CameraPosition.Z -= .7F;
-            }
-            Array<rr::ReferencePixel> oracle;
-            Array<rr::ReferencePixel> compute;
-            rr::ReferenceCaptureInfo oracleInfo;
-            rr::ReferenceCaptureInfo computeInfo;
-            Capture(cpu, capture, surface, oracle, oracleInfo);
-            Capture(gpu, capture, surface, compute, computeInfo);
-            CHECK(computeInfo.Traversal == rr::ReferenceTraversal::GpuCompute);
-            CHECK(computeInfo.InvalidContributions == 0);
-            CHECK(computeInfo.SkippedTriangles > 0);
-            CHECK(computeInfo.SkippedTriangles == oracleInfo.SkippedTriangles);
-            CHECK(computeInfo.Complete == true);
-            CHECK(computeInfo.MinimumSamples == capture.TargetSamples);
-            CHECK(computeInfo.MaximumSamples == capture.TargetSamples);
-            CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
-            CHECK(computeInfo.SceneFingerprintLow == oracleInfo.SceneFingerprintLow);
-            CHECK(computeInfo.SceneFingerprintHigh == oracleInfo.SceneFingerprintHigh);
-            const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
-            CAPTURE(comparison.MaximumRadiance,
-                    comparison.MaximumEmission,
-                    comparison.MaximumDirect,
-                    comparison.MaximumIndirect,
-                    math::Sqrt(comparison.SquaredRadiance),
-                    oracleInfo.ClosestQueries,
-                    computeInfo.ClosestQueries,
-                    oracleInfo.VisibilityQueries,
-                    computeInfo.VisibilityQueries,
-                    oracleInfo.NullBsdfSamples,
-                    computeInfo.NullBsdfSamples,
-                    oracleInfo.RouletteTerminations,
-                    computeInfo.RouletteTerminations);
-            // Matching addresses: float32 device arithmetic keeps each mean within a
-            // small absolute RGB distance of the float64-intersection oracle.
-            CHECK(comparison.MaximumRadiance <= 2e-3F);
-            CHECK(comparison.MaximumEmission <= 2e-3F);
-            CHECK(comparison.MaximumDirect <= 2e-3F);
-            CHECK(comparison.MaximumIndirect <= 2e-3F);
-            CHECK(math::Sqrt(comparison.SquaredRadiance) <= 2e-4F);
-            CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
-            // Path events agree; a shadow ray whose proposal rounds to zero contribution in one
-            // precision but not the other may be skipped, so visibility counts stay within 0.1%.
-            constexpr uint64 VISIBILITY_COUNT_DIVISOR = 1000;
-            CHECK(computeInfo.ClosestQueries == oracleInfo.ClosestQueries);
-            CHECK(computeInfo.NullBsdfSamples == oracleInfo.NullBsdfSamples);
-            CHECK(computeInfo.RouletteTerminations == oracleInfo.RouletteTerminations);
-            const uint64 visibilityDifference = computeInfo.VisibilityQueries > oracleInfo.VisibilityQueries
-                                                    ? computeInfo.VisibilityQueries - oracleInfo.VisibilityQueries
-                                                    : oracleInfo.VisibilityQueries - computeInfo.VisibilityQueries;
-            CHECK(visibilityDifference <= oracleInfo.VisibilityQueries / VISIBILITY_COUNT_DIVISOR + 1);
         }
+        capture.ReverseZ = test.IsFarConventional == false;
     }
+    else
+    {
+        capture.OrthographicCamera = true;
+        capture.WorldToClip.Columns[3].Z = .7F;
+        capture.CameraPosition.Z -= .7F;
+    }
+    Array<rr::ReferencePixel> oracle;
+    Array<rr::ReferencePixel> compute;
+    rr::ReferenceCaptureInfo oracleInfo;
+    rr::ReferenceCaptureInfo computeInfo;
+    Capture(cpu, capture, surface, oracle, oracleInfo);
+    Capture(gpu, capture, surface, compute, computeInfo);
+    CHECK(computeInfo.Traversal == rr::ReferenceTraversal::GpuCompute);
+    CHECK(computeInfo.InvalidContributions == 0);
+    CHECK(computeInfo.SkippedTriangles > 0);
+    CHECK(computeInfo.SkippedTriangles == oracleInfo.SkippedTriangles);
+    CHECK(computeInfo.Complete == true);
+    CHECK(computeInfo.MinimumSamples == capture.TargetSamples);
+    CHECK(computeInfo.MaximumSamples == capture.TargetSamples);
+    CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
+    CHECK(computeInfo.SceneFingerprintLow == oracleInfo.SceneFingerprintLow);
+    CHECK(computeInfo.SceneFingerprintHigh == oracleInfo.SceneFingerprintHigh);
+    const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+    CAPTURE(comparison.MaximumRadiance,
+            comparison.MaximumEmission,
+            comparison.MaximumDirect,
+            comparison.MaximumIndirect,
+            math::Sqrt(comparison.SquaredRadiance),
+            oracleInfo.ClosestQueries,
+            computeInfo.ClosestQueries,
+            oracleInfo.VisibilityQueries,
+            computeInfo.VisibilityQueries,
+            oracleInfo.NullBsdfSamples,
+            computeInfo.NullBsdfSamples,
+            oracleInfo.RouletteTerminations,
+            computeInfo.RouletteTerminations);
+    // Matching addresses: float32 device arithmetic keeps each mean within a
+    // small absolute RGB distance of the float64-intersection oracle.
+    CHECK(comparison.MaximumRadiance <= 2e-3F);
+    CHECK(comparison.MaximumEmission <= 2e-3F);
+    CHECK(comparison.MaximumDirect <= 2e-3F);
+    CHECK(comparison.MaximumIndirect <= 2e-3F);
+    CHECK(math::Sqrt(comparison.SquaredRadiance) <= 2e-4F);
+    CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
+    // Path events agree; a shadow ray whose proposal rounds to zero contribution in one
+    // precision but not the other may be skipped, so visibility counts stay within 0.1%.
+    constexpr uint64 VISIBILITY_COUNT_DIVISOR = 1000;
+    CHECK(computeInfo.ClosestQueries == oracleInfo.ClosestQueries);
+    CHECK(computeInfo.NullBsdfSamples == oracleInfo.NullBsdfSamples);
+    CHECK(computeInfo.RouletteTerminations == oracleInfo.RouletteTerminations);
+    const uint64 visibilityDifference = computeInfo.VisibilityQueries > oracleInfo.VisibilityQueries
+                                            ? computeInfo.VisibilityQueries - oracleInfo.VisibilityQueries
+                                            : oracleInfo.VisibilityQueries - computeInfo.VisibilityQueries;
+    CHECK(visibilityDifference <= oracleInfo.VisibilityQueries / VISIBILITY_COUNT_DIVISOR + 1);
+}
+} // namespace
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: orthographic emitter and environment",
+          "[renderer][gpu][reference-compute]")
+{
+    CheckReferenceRawAovs(
+    {
+        .Name = "orthographic emitter and environment",
+        .IsPerspective = false,
+        .MaxDepth = 4,
+        .RouletteDepth = 3,
+        .Seed = 871,
+        .LightCount = 1,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0,
+        .IsFarConventional = false,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: perspective analytic lights and roulette",
+          "[renderer][gpu][reference-compute]")
+{
+    CheckReferenceRawAovs(
+    {
+        .Name = "perspective analytic lights and roulette",
+        .IsPerspective = true,
+        .MaxDepth = 8,
+        .RouletteDepth = 2,
+        .Seed = 1729,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0,
+        .IsFarConventional = false,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: single bounce", "[renderer][gpu][reference-compute]")
+{
+    CheckReferenceRawAovs(
+    {
+        .Name = "single bounce",
+        .IsPerspective = true,
+        .MaxDepth = 1,
+        .RouletteDepth = 1,
+        .Seed = 5,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0,
+        .IsFarConventional = false,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: scalar optical scene connections",
+          "[renderer][gpu][reference-compute]")
+{
+    CheckReferenceRawAovs(
+    {
+        .Name = "scalar optical scene connections",
+        .IsPerspective = true,
+        .MaxDepth = 4,
+        .RouletteDepth = 3,
+        .Seed = 871,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0.001F,
+        .IsFarConventional = false,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: perspective textured environment",
+          "[renderer][gpu][reference-compute]")
+{
+    CheckReferenceRawAovs(
+    {
+        .Name = "perspective textured environment",
+        .IsPerspective = true,
+        .MaxDepth = 4,
+        .RouletteDepth = 3,
+        .Seed = 314159,
+        .LightCount = 1,
+        .HasEnvironmentMap = true,
+        .OpticalWavelengthWorld = 0,
+        .IsFarConventional = false,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: far conventional optical camera",
+          "[renderer][gpu][reference-compute]")
+{
+    CheckReferenceRawAovs(
+    {
+        .Name = "far conventional optical camera",
+        .IsPerspective = true,
+        .MaxDepth = 4,
+        .RouletteDepth = 3,
+        .Seed = 871,
+        .LightCount = 4,
+        .HasEnvironmentMap = false,
+        .OpticalWavelengthWorld = 0.001F,
+        .IsFarConventional = true,
+    });
 }
 
 TEST_CASE("GPU-compute reference matches the CPU oracle on a dense glossy sphere", "[renderer][gpu][reference-compute]")

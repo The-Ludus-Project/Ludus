@@ -471,16 +471,31 @@ through Catch2 discovery before CTest runs. Their names start with
 renderer/GPU/ray labels and explicit unsupported-adapter skips remain available.
 Each reference-compute or graph lifecycle/capture case has a 300-second deadline
 (600 seconds with ASan/UBSan); each template case has a
-600-second deadline for its convergence captures. Polygon sampling, Metropolis
+600-second deadline for its convergence captures. Each raw-AOV camera, lighting
+and optical fixture is also an independent case, preserving its samples, seed,
+CPU oracle and numerical assertions. Polygon sampling, Metropolis
 and physical-optics parity also have separate named tests. Metropolis parity has
 a 300-second case deadline (600 seconds with ASan/UBSan), allowing its
 material/estimator variants to share the cold shader setup. Its readiness helper yields between polls and allows
-120 seconds for cold shader/pipeline preparation and the first submission
+180 seconds for cold shader/pipeline preparation and the first submission
 (300 seconds with ASan/UBSan); buffer readiness and readback retain their
 30-second bounds. Failed readiness
 reports the operation, status, elapsed time and deadline, and retires the RHI
 even when a test assertion aborts the case. The numerical and
 image assertions are unchanged by this partition.
+
+The Linux Development/SDK, sanitizer and Editor jobs set `GALLIVM_PERF=nopt`
+for Mesa software-device correctness runs. Thanks to the Mesa authors,
+[Gallivm's optimization flags and pass manager](https://chromium.googlesource.com/chromiumos/third_party/mesa/+/refs/heads/stabilize-13982.70.B-chromeos-amd/src/gallium/auxiliary/gallivm/lp_bld_init.c)
+provide this mode to reduce shader compilation time. The default LLVM
+SROA/memory-promotion work can consume the entire test deadline before the first
+reference sample. The CI profile retains actual Vulkan shader execution,
+validation layers, sample counts and independent CPU/GPU comparisons, while
+bounding driver optimization work. Engine shader artifacts and driver defaults
+are unchanged; performance qualification uses its own normal driver profile.
+The unchanged reference artifact took 111 seconds in a fresh-cache raw-AOV run
+with this profile. Its readiness window has 180 seconds of cold allowance
+(300 with ASan/UBSan), leaving room for capture within the existing case deadline.
 
 These correctness deadlines include shader preparation on software adapters.
 Independent deadlines keep growth in the number of reference captures from
