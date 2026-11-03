@@ -53,6 +53,10 @@ QString GetModelName(format::MaterialModel model)
             return QStringLiteral("Conductor");
         case format::MaterialModel::CoatedDiffuse:
             return QStringLiteral("Coated diffuse");
+        case format::MaterialModel::Dielectric:
+            return QStringLiteral("Dielectric");
+        case format::MaterialModel::ThinDielectric:
+            return QStringLiteral("Thin dielectric");
     }
     return QStringLiteral("Unknown (%1)").arg(static_cast<uint32>(model));
 }
@@ -134,6 +138,11 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
         rows.append({QStringLiteral("Coating thickness"), FormatScalar(scattering.CoatingThickness)});
         rows.append({QStringLiteral("Coating GGX α (U, V)"),
                      QStringLiteral("%1, %2").arg(FormatScalar(scattering.AlphaU), FormatScalar(scattering.AlphaV))});
+    }
+    else if (scattering.Model == format::MaterialModel::Dielectric ||
+             scattering.Model == format::MaterialModel::ThinDielectric)
+    {
+        rows.append({QStringLiteral("IOR η"), FormatScalar(scattering.Eta[0])});
     }
     rows.append({QStringLiteral("Surface map"), DescribeTexture(definition, material.SurfaceTexture)});
     if (material.SurfaceTexture != format::NO_TEXTURE)

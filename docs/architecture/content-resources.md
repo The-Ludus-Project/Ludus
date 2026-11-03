@@ -570,7 +570,8 @@ World composition also preserves these fields when combining imported and author
 geometry. Texture dependencies continue to refer to immutable catalog revisions.
 
 The typed PBRT importer resolves its declared defaults at import. The current
-subset admits diffuse, conductor and coated-diffuse definitions; its coating's
+subset admits diffuse, conductor, coated-diffuse and smooth dielectric or thin
+dielectric definitions (scalar `eta`; roughness below pbrt-v4's smooth threshold); its coating's
 unexposed layer settings retain PBRT's defaults (zero medium scattering albedo,
 zero phase anisotropy, ten internal events and one evaluation sample). It requires
 explicit `remaproughness=false` and positive isotropic alpha for rough source

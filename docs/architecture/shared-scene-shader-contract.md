@@ -116,7 +116,10 @@ space, retains data maps as linear data and performs normal mapping consistently
 The traversal profile supports static opaque and alpha-masked triangles, reflection-only
 metallic/roughness materials and explicit fixed texture mip evaluation. Missing
 optional maps use their documented neutral factors; missing required attributes
-or unsupported blended alpha/transmission/deformation rejects the scene profile.
+or unsupported blended alpha/rough transmission/deformation rejects the scene profile.
+Smooth `Dielectric` and `ThinDielectric` materials enter the profile; the reference
+tracers render their transmission, and shaders without transmission shade the
+record's legacy metallic/roughness fields.
 `SceneShaderMaterial::IsAlphaMasked` and `AlphaCutoff` select the existing mask
 domain in both the CPU oracle and GPU reference scene. Coverage multiplies base
 texture alpha by interpolated vertex alpha before the inclusive cutoff test;

@@ -2396,3 +2396,69 @@ TEST_CASE("Coating parameters round trip and unsupported layer overrides preserv
         CHECK(ToText(result.Bundle) == preserved);
     }
 }
+
+TEST_CASE("Typed PBRT cooks smooth dielectrics and rejects rough transmission", "[scene_assets][dielectric]")
+{
+    namespace format = ludus::content::scene_format;
+    GoldenProject project;
+    const std::filesystem::path source = project.Work / "dielectric-source";
+    std::filesystem::copy(project.Source, source, std::filesystem::copy_options::recursive);
+    const std::filesystem::path entry = source / "scene-v4.pbrt";
+    const std::string original = ReadWhole(entry);
+    constexpr std::string_view PAINT = "\"string type\" [ \"diffuse\" ] \"rgb reflectance\" [ 0.2 0.4 0.6 ]";
+    const usize paintBegin = original.find(PAINT);
+    REQUIRE(paintBegin != std::string::npos);
+    const auto replacePaint = [&](std::string_view definition) noexcept -> std::string {
+        std::string text = original;
+        text.replace(paintBegin, PAINT.size(), definition);
+        return text;
+    };
+    CookResult result;
+    CookError error;
+    for (const bool isThin : {false, true})
+    {
+        CAPTURE(isThin);
+        std::ofstream(entry, std::ios::binary)
+            << replacePaint(isThin == true ? "\"string type\" [ \"thindielectric\" ] \"float eta\" [ 1.33 ]"
+                                           : "\"string type\" [ \"dielectric\" ] \"float eta\" [ 1.33 ]"
+                                             " \"bool remaproughness\" [ false ] \"float roughness\" [ 0 ]");
+        const bool isCooked = CookMaterials(source.string(), result, error);
+        INFO(error.Message.View());
+        REQUIRE(isCooked == true);
+        ludus::resources::SceneDefinition scene;
+        REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), scene) ==
+                ludus::resources::Status::Ok);
+        bool hasGlass = false;
+        for (const ludus::resources::SceneMaterial& material : scene.Materials)
+        {
+            if (material.Name.View() == "Paint")
+            {
+                hasGlass = true;
+                CHECK(material.Scattering.Model ==
+                      (isThin == true ? format::MaterialModel::ThinDielectric : format::MaterialModel::Dielectric));
+                CHECK(material.Scattering.Eta[0] == 1.33F);
+                CHECK(material.Scattering.Eta[2] == 1.33F);
+                CHECK(material.Scattering.K[1] == 0);
+                CHECK(material.Scattering.AlphaU == format::MIN_MATERIAL_ALPHA);
+                CHECK(material.Reflectance.X == format::DIELECTRIC_FALLBACK_REFLECTANCE);
+            }
+        }
+        REQUIRE(hasGlass == true);
+    }
+    const std::string preserved = ToText(result.Bundle);
+    // pbrt remaps 0.25 to alpha 0.5 by default; reflectance has no dielectric meaning.
+    for (const std::string_view unsupported : {
+             "\"string type\" [ \"dielectric\" ] \"float roughness\" [ 0.25 ]",
+             "\"string type\" [ \"dielectric\" ] \"bool remaproughness\" [ false ] \"float uroughness\" [ 0.01 ]",
+             "\"string type\" [ \"dielectric\" ] \"float eta\" [ 0 ]",
+             "\"string type\" [ \"dielectric\" ] \"rgb reflectance\" [ 0.2 0.4 0.6 ]",
+             "\"string type\" [ \"thindielectric\" ] \"spectrum eta\" [ \"glass-BK7\" ]",
+         })
+    {
+        CAPTURE(unsupported);
+        std::ofstream(entry, std::ios::binary) << replacePaint(unsupported);
+        CHECK(CookMaterials(source.string(), result, error) == false);
+        CHECK(error.Result == ludus::content::Status::Invalid);
+        CHECK(ToText(result.Bundle) == preserved);
+    }
+}
