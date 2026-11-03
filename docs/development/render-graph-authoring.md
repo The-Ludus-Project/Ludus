@@ -7138,7 +7138,7 @@ Ctrl is shown below (Qt's native shortcut mapping):
 | Go to line | Ctrl+G |
 | Quick Open source in this package | Ctrl+P |
 | Go to shader symbol in the current source | Ctrl+Shift+O |
-| Go to definition / find references | F12 / Shift+F12 |
+| Go to definition / find references | F12 or Ctrl+click / Shift+F12 |
 | Navigate Back / Forward | Ctrl+Alt+Left / Ctrl+Alt+Right, or the mouse's side Back / Forward buttons over the editor |
 | Indent / outdent selected lines | Tab / Shift+Tab |
 | Toggle Slang line comments | Ctrl+/ |
@@ -7162,6 +7162,11 @@ Find supports forward/backward wrapping, case matching, and replacement; Escape
 closes its controls and returns focus to the source. Go to line uses one-based
 line numbers. Ordinary text and JSON sources share the commands, with Slang
 coloring/comment toggling enabled only for `.slang` files.
+Slang coloring is lexical: besides keywords, built-in types, comments, strings and
+numbers, it colors a name before `(` as a function, an all-capitals name as a
+macro or constant, and a name after `struct`-like keywords or before another
+name as a type. It reads only the current line, so it can differ from the
+compiler's view; parameters, locals and members keep the text color.
 
 #### Source navigation
 
@@ -7171,7 +7176,9 @@ added files. Type words to filter, use Up/Down and Enter to choose, or Escape to
 cancel. Filtering never previews a jump or changes a draft.
 
 **Go to Symbol** searches Slang's symbols in the current authored source, including
-functions, types and members. **Go to Definition** jumps directly when the compiler
+functions, types and members. Hold Ctrl (Command on macOS) to underline the name
+under the pointer, and click it to request **Go to Definition** for that name.
+Names in comments, strings and keywords are not links. **Go to Definition** jumps directly when the compiler
 returns one mapped location; multiple definitions and **Find References** open the
 same filterable chooser. References cover the selected captured compiler context,
 including its declaration, rather than a project-wide text search. These commands

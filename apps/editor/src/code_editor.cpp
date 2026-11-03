@@ -10,6 +10,7 @@
 #include <QBrush>
 #include <QColor>
 #include <QContextMenuEvent>
+#include <QCursor>
 #include <QEvent>
 #include <QFocusEvent>
 #include <QFont>
@@ -24,12 +25,15 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPalette>
 #include <QPen>
+#include <QPoint>
 #include <QPointF>
+#include <QRect>
 #include <QRectF>
 #include <QResizeEvent>
 #include <QScreen>
@@ -59,6 +63,8 @@ constexpr Qt::KeyboardModifier ASSISTANCE_MODIFIER = Qt::MetaModifier; // physic
 #else
 constexpr Qt::KeyboardModifier ASSISTANCE_MODIFIER = Qt::ControlModifier;
 #endif
+/// Qt maps ControlModifier to Command on macOS, matching native Command+click navigation.
+constexpr Qt::KeyboardModifier DEFINITION_LINK_MODIFIER = Qt::ControlModifier;
 constexpr int32 COMPLETION_VISIBLE_ROWS = 9;
 constexpr int32 COMPLETION_WIDTH = 420;
 constexpr int32 SIGNATURE_WIDTH = 680;
@@ -279,6 +285,7 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     connect(mChooseFormatterAction, &QAction::triggered, this, &CodeEditor::ChooseFormatterRequested);
     updateGutterWidth();
     mNavigation = new CodeNavigation(*this);
+    viewport()->setMouseTracking(true);
 }
 
 void CodeEditor::SetFontPointSize(int32 points)
@@ -628,6 +635,7 @@ void CodeEditor::focusOutEvent(QFocusEvent* event)
         Q_EMIT AssistanceDismissed();
     }
     HideAssistance();
+    updateDefinitionLink({}, Qt::NoModifier);
     QPlainTextEdit::focusOutEvent(event);
     Q_EMIT EditBoundary();
 }
@@ -830,6 +838,10 @@ bool CodeEditor::showGutterToolTip(const QHelpEvent& help)
 
 bool CodeEditor::viewportEvent(QEvent* event)
 {
+    if (event->type() == QEvent::Leave)
+    {
+        updateDefinitionLink({}, Qt::NoModifier);
+    }
     if (event->type() == QEvent::ToolTip)
     {
         const QHelpEvent* help = static_cast<QHelpEvent*>(event);
@@ -951,6 +963,14 @@ void CodeEditor::updateSelections()
     currentLine.format.setProperty(QTextFormat::FullWidthSelection, true);
     selections.append(currentLine);
     appendDiagnosticSelections(selections);
+    if (mDefinitionLink.hasSelection() == true)
+    {
+        QTextEdit::ExtraSelection link;
+        link.cursor = mDefinitionLink;
+        link.format.setForeground(palette().color(QPalette::Link));
+        link.format.setFontUnderline(true);
+        selections.append(link);
+    }
 
     const QTextCursor cursor = textCursor();
     const int32 caret = cursor.position();
@@ -1275,8 +1295,139 @@ void CodeEditor::GoToLine(int32 line, int32 column)
     setFocus();
 }
 
+QTextCursor CodeEditor::getDefinitionLinkAt(const QPoint& position) const
+{
+    if (mLanguage != CodeLanguage::Slang)
+    {
+        return {};
+    }
+    const QTextCursor hit = cursorForPosition(position);
+    const QTextBlock block = hit.block();
+    const QString text = block.text();
+    const auto isNameCharacter = [](QChar character) {
+        return character.isLetterOrNumber() == true || character == QLatin1Char('_');
+    };
+    int32 start = hit.positionInBlock();
+    int32 end = start;
+    while (start > 0 && isNameCharacter(text.at(start - 1)) == true)
+    {
+        --start;
+    }
+    while (end < text.size() && isNameCharacter(text.at(end)) == true)
+    {
+        ++end;
+    }
+    if (start == end || text.at(start).isDigit() == true ||
+        IsSlangKeyword(QStringView(text).sliced(start, end - start)) == true)
+    {
+        return {};
+    }
+    const CodeBlockData* dataOrNull = static_cast<CodeBlockData*>(block.userData());
+    if (dataOrNull != nullptr)
+    {
+        for (const CodeExcludedRange& range : dataOrNull->ExcludedRanges)
+        {
+            if (start < range.End && end > range.Start)
+            {
+                return {};
+            }
+        }
+    }
+    QTextCursor boundary(document());
+    boundary.setPosition(block.position() + end);
+    const QRect last = cursorRect(boundary);
+    QTextCursor name(document());
+    name.setPosition(block.position() + start);
+    const QRect first = cursorRect(name);
+    name.setPosition(block.position() + end, QTextCursor::KeepAnchor);
+    // The hit test snaps to the nearest boundary, so require the pointer over the name itself.
+    // A name wrapped across visual lines is accepted as a whole.
+    if (first.top() == last.top() && (position.x() < first.left() || position.x() > last.left() ||
+                                      position.y() < first.top() || position.y() > first.bottom()))
+    {
+        return {};
+    }
+    return name;
+}
+
+void CodeEditor::updateDefinitionLink(const QPoint& position, Qt::KeyboardModifiers modifiers)
+{
+    QTextCursor link;
+    if (modifiers == DEFINITION_LINK_MODIFIER && mIsDefinitionClick == false)
+    {
+        link = getDefinitionLinkAt(position);
+    }
+    if (link.hasSelection() == mDefinitionLink.hasSelection() &&
+        (link.hasSelection() == false ||
+         (link.anchor() == mDefinitionLink.anchor() && link.position() == mDefinitionLink.position())))
+    {
+        return;
+    }
+    mDefinitionLink = link;
+    viewport()->setCursor(link.hasSelection() == true ? Qt::PointingHandCursor : Qt::IBeamCursor);
+    updateSelections();
+}
+
+void CodeEditor::mousePressEvent(QMouseEvent* event)
+{
+    const QPoint position = event->position().toPoint();
+    mIsDefinitionClick = false;
+    if (event->button() == Qt::LeftButton && event->modifiers() == DEFINITION_LINK_MODIFIER &&
+        getDefinitionLinkAt(position).hasSelection() == true)
+    {
+        // Place the caret on the clicked name, then use the same compiler request as F12.
+        setTextCursor(cursorForPosition(position));
+        mIsDefinitionClick = true;
+        updateDefinitionLink(position, Qt::NoModifier);
+        static_cast<void>(mNavigation->RequestDefinition());
+        event->accept();
+        return;
+    }
+    QPlainTextEdit::mousePressEvent(event);
+}
+
+void CodeEditor::mouseMoveEvent(QMouseEvent* event)
+{
+    // A popup may take the release; a buttonless move ends the definition click.
+    if (mIsDefinitionClick == true && event->buttons().testFlag(Qt::LeftButton) == false)
+    {
+        mIsDefinitionClick = false;
+    }
+    if (mIsDefinitionClick == true)
+    {
+        event->accept();
+        return;
+    }
+    updateDefinitionLink(event->position().toPoint(), event->modifiers());
+    QPlainTextEdit::mouseMoveEvent(event);
+}
+
+void CodeEditor::mouseReleaseEvent(QMouseEvent* event)
+{
+    if (mIsDefinitionClick == true && event->button() == Qt::LeftButton)
+    {
+        mIsDefinitionClick = false;
+        event->accept();
+        return;
+    }
+    QPlainTextEdit::mouseReleaseEvent(event);
+}
+
+void CodeEditor::keyReleaseEvent(QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_Control)
+    {
+        updateDefinitionLink(viewport()->mapFromGlobal(QCursor::pos()), event->modifiers());
+    }
+    QPlainTextEdit::keyReleaseEvent(event);
+}
+
 void CodeEditor::keyPressEvent(QKeyEvent* event)
 {
+    if (event->key() == Qt::Key_Control)
+    {
+        updateDefinitionLink(viewport()->mapFromGlobal(QCursor::pos()), event->modifiers());
+    }
     const int32 revision = document()->revision();
     handleKeyPress(event);
     if (document()->revision() != revision && mLanguage == CodeLanguage::Slang && event->text().size() == 1 &&

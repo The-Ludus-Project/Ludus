@@ -256,6 +256,56 @@ TEST_CASE("Slang lexical state crosses lines and excludes strings from bracket m
     CHECK(editor.document()->firstBlock().userState() == 1);
 }
 
+TEST_CASE("Slang coloring distinguishes functions, constants and user type names", "[editor][text]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    const QString text = QStringLiteral("struct Ray { float3 Origin; };\n"
+                                        "Ray Spawn(Ray ray) { return MakeRay(LUDUS_COUNT, ray.Origin); }");
+    editor.setPlainText(text);
+    FinishHighlighting();
+    const auto getColorAt = [&editor, &text](const QString& word, int32 occurrence) {
+        int32 position = -1;
+        for (int32 index = 0; index <= occurrence; ++index)
+        {
+            position = static_cast<int32>(text.indexOf(word, position + 1));
+        }
+        REQUIRE(position >= 0);
+        const QTextBlock block = editor.document()->findBlock(position);
+        const int32 column = position - block.position();
+        for (const QTextLayout::FormatRange& range : block.layout()->formats())
+        {
+            if (range.start <= column && column < range.start + range.length)
+            {
+                REQUIRE(range.start == column);
+                REQUIRE(range.length == word.size());
+                return range.format.foreground().color();
+            }
+        }
+        return QColor();
+    };
+    const QColor type = getColorAt(QStringLiteral("float3"), 0);
+    const QColor keyword = getColorAt(QStringLiteral("return"), 0);
+    const QColor function = getColorAt(QStringLiteral("Spawn"), 0);
+    const QColor constant = getColorAt(QStringLiteral("LUDUS_COUNT"), 0);
+    CHECK(type.isValid() == true);
+    CHECK(function.isValid() == true);
+    CHECK(constant.isValid() == true);
+    // Declared by struct, used as a return type, and used as a parameter type.
+    CHECK(getColorAt(QStringLiteral("Ray"), 0) == type);
+    CHECK(getColorAt(QStringLiteral("Ray"), 1) == type);
+    CHECK(getColorAt(QStringLiteral("Ray"), 2) == type);
+    CHECK(getColorAt(QStringLiteral("MakeRay"), 0) == function);
+    CHECK(function != type);
+    CHECK(function != keyword);
+    CHECK(constant != type);
+    CHECK(constant != keyword);
+    CHECK(constant != function);
+    // Parameters, locals and members keep the editor's text color.
+    CHECK(getColorAt(QStringLiteral("ray"), 0).isValid() == false);
+    CHECK(getColorAt(QStringLiteral("Origin"), 1).isValid() == false);
+}
+
 TEST_CASE("switching a lexical profile preserves contents history and selection", "[editor][text]")
 {
     CodeEditor editor;

@@ -7,17 +7,24 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QFrame>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QList>
 #include <QListWidget>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QPoint>
+#include <QRect>
 #include <QSignalSpy>
 #include <QTest>
+#include <QTextCursor>
 #include <QTextDocument>
+#include <QTextEdit>
 #include <QTimer>
 
 using namespace ludus::editor;
@@ -259,6 +266,76 @@ TEST_CASE("Navigation chooser filters without previewing and Escape preserves so
     CHECK(editor.GetNavigation().IsChoosing() == false);
     CHECK(editor.toPlainText() == QStringLiteral("source"));
     CHECK(editor.textCursor() == before);
+}
+
+TEST_CASE("Ctrl+click on a Slang name requests its definition without selecting or editing",
+          "[editor][code-navigation]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    const QString text = QStringLiteral("float Evaluate();\nvoid Main() { return Evaluate(); } // Evaluate");
+    editor.setPlainText(text);
+    editor.resize(640, 240);
+    editor.show();
+    QCoreApplication::processEvents();
+    QList<CodeNavigationKind> requested;
+    QObject::connect(&editor.GetNavigation(),
+                     &CodeNavigation::Requested,
+                     &editor,
+                     [&requested](CodeNavigationKind kind) { requested.append(kind); });
+    const auto getPointAt = [&editor](int32 position) {
+        QTextCursor cursor(editor.document());
+        cursor.setPosition(position);
+        const QRect rectangle = editor.cursorRect(cursor);
+        return QPoint(rectangle.left() + 2, rectangle.center().y());
+    };
+    const int32 call = static_cast<int32>(text.indexOf(QStringLiteral("Evaluate();"), 10));
+    const QPoint name = getPointAt(call + 2);
+
+    // Holding the modifier underlines the name under the pointer as a link.
+    QMouseEvent hover(QEvent::MouseMove,
+                      QPointF(name),
+                      QPointF(editor.viewport()->mapToGlobal(name)),
+                      Qt::NoButton,
+                      Qt::NoButton,
+                      Qt::ControlModifier);
+    QApplication::sendEvent(editor.viewport(), &hover);
+    bool hasLink = false;
+    for (const QTextEdit::ExtraSelection& selection : editor.extraSelections())
+    {
+        hasLink = hasLink == true || (selection.format.fontUnderline() == true &&
+                                      selection.cursor.selectedText() == QStringLiteral("Evaluate"));
+    }
+    CHECK(hasLink == true);
+    CHECK(editor.viewport()->cursor().shape() == Qt::PointingHandCursor);
+    QEvent leave(QEvent::Leave);
+    QApplication::sendEvent(editor.viewport(), &leave);
+    CHECK(editor.viewport()->cursor().shape() == Qt::IBeamCursor);
+
+    // A plain click only moves the caret.
+    QTest::mouseClick(editor.viewport(), Qt::LeftButton, Qt::NoModifier, name);
+    CHECK(requested.isEmpty() == true);
+    QTest::mouseClick(editor.viewport(), Qt::LeftButton, Qt::ControlModifier, name);
+    REQUIRE(requested.size() == 1);
+    CHECK(requested.first() == CodeNavigationKind::Definition);
+    CHECK(editor.textCursor().hasSelection() == false);
+    CHECK(editor.textCursor().position() >= call);
+    CHECK(editor.textCursor().position() <= call + 8);
+    CHECK(editor.toPlainText() == text);
+
+    // Comments, keywords and empty space past the line end are not links.
+    const int32 comment = static_cast<int32>(text.lastIndexOf(QStringLiteral("Evaluate")));
+    QTest::mouseClick(editor.viewport(), Qt::LeftButton, Qt::ControlModifier, getPointAt(comment + 2));
+    const int32 keyword = static_cast<int32>(text.indexOf(QStringLiteral("return")));
+    QTest::mouseClick(editor.viewport(), Qt::LeftButton, Qt::ControlModifier, getPointAt(keyword + 2));
+    const QPoint lineEnd = getPointAt(static_cast<int32>(text.indexOf(QLatin1Char('\n'))));
+    QTest::mouseClick(editor.viewport(), Qt::LeftButton, Qt::ControlModifier, lineEnd + QPoint(80, 0));
+    CHECK(requested.size() == 1);
+
+    // Plain text has no semantic navigation.
+    editor.SetLanguage(CodeLanguage::PlainText);
+    QTest::mouseClick(editor.viewport(), Qt::LeftButton, Qt::ControlModifier, name);
+    CHECK(requested.size() == 1);
 }
 
 TEST_CASE("Generated definitions are inspected read-only without changing the authored buffer",

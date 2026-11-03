@@ -5,6 +5,7 @@
 #include "internal/code_editor.h"
 
 #include <QPalette>
+#include <QStringView>
 #include <QSyntaxHighlighter>
 #include <QTextBlockUserData>
 #include <QTextCharFormat>
@@ -36,8 +37,13 @@ struct CodeBlockData final : QTextBlockUserData
 /// Whether a palette's base is light, selecting the light code color set.
 [[nodiscard]] bool IsLightCodePalette(const QPalette& palette);
 
+/// Whether a word is a Slang keyword in the lexical coloring profile.
+[[nodiscard]] bool IsSlangKeyword(QStringView word);
+
 /// Bounded single-pass block lexer. Qt propagates changed multiline state to
 /// subsequent blocks; no compiler or whole-document regular expression runs.
+/// Functions, constants and user type names are classified from the
+/// surrounding tokens on the same line, not from compiler symbols.
 class CodeSyntaxHighlighter final : public QSyntaxHighlighter
 {
 public:
@@ -54,5 +60,7 @@ private:
     QTextCharFormat mStringFormat;
     QTextCharFormat mNumberFormat;
     QTextCharFormat mDirectiveFormat;
+    QTextCharFormat mFunctionFormat;
+    QTextCharFormat mConstantFormat;
 };
 } // namespace ludus::editor

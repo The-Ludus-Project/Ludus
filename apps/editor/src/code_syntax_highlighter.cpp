@@ -10,6 +10,9 @@
 // highlightBlock/previousBlockState: incremental multiline lexical state.
 // This lexer supplies Slang coloring only, not semantic shader information.
 // https://doc.qt.io/qt-6/qsyntaxhighlighter.html
+// Function, constant and user-type colors are same-line token heuristics: a
+// name before "(" is a function, an all-capitals name is a macro or constant,
+// and a name declared by struct-like keywords or followed by another name is a type.
 namespace ludus::editor
 {
 namespace
@@ -28,10 +31,16 @@ constexpr uint32 LIGHT_STRING = 0x965019;
 constexpr uint32 DARK_STRING = 0xE4B284;
 constexpr uint32 LIGHT_NUMBER = 0x265C9B;
 constexpr uint32 DARK_NUMBER = 0x94BFEF;
+constexpr uint32 LIGHT_FUNCTION = 0x6B6200;
+constexpr uint32 DARK_FUNCTION = 0xDCDCAA;
+constexpr uint32 LIGHT_CONSTANT = 0xA3195B;
+constexpr uint32 DARK_CONSTANT = 0xF29CB8;
 constexpr QStringView KEYWORDS =
     u"break case continue default discard do else for if return switch while const static uniform in out inout "
     u"struct class interface enum namespace typedef typealias import export public private internal let var "
-    u"func property extension generic where this true false nullptr sizeof __target_switch";
+    u"func property extension generic where this true false nullptr sizeof defined __target_switch";
+/// Keywords whose next name declares a type.
+constexpr QStringView TYPE_DECLARATION_KEYWORDS = u"struct class interface enum typealias extension";
 constexpr QStringView TYPES = u"void bool int uint int8_t uint8_t int16_t uint16_t int32_t uint32_t int64_t uint64_t "
                               u"half float double vector matrix SamplerState SamplerComparisonState Texture1D "
                               u"Texture2D Texture3D TextureCube RWTexture2D StructuredBuffer RWStructuredBuffer "
@@ -51,6 +60,40 @@ bool ContainsWord(QStringView words, QStringView word)
         start = end + 1;
     }
     return false;
+}
+
+bool IsIdentifierStart(QChar character)
+{
+    return character.isLetter() == true || character == QLatin1Char('_');
+}
+
+bool IsIdentifierPart(QChar character)
+{
+    return character.isLetterOrNumber() == true || character == QLatin1Char('_');
+}
+
+isize SkipSpaces(QStringView text, isize position)
+{
+    while (position < text.size() && (text.at(position) == QLatin1Char(' ') || text.at(position) == QLatin1Char('\t')))
+    {
+        ++position;
+    }
+    return position;
+}
+
+/// Macro and constant convention: two or more characters, capitals, digits and underscores.
+bool IsConstantName(QStringView word)
+{
+    bool hasCapital = false;
+    for (const QChar character : word)
+    {
+        if (character.isLower() == true)
+        {
+            return false;
+        }
+        hasCapital = hasCapital == true || character.isUpper() == true;
+    }
+    return word.size() > 1 && hasCapital == true;
 }
 
 bool IsNumericType(QStringView word)
@@ -84,6 +127,11 @@ bool IsLightCodePalette(const QPalette& palette)
     return palette.color(QPalette::Base).lightness() >= LIGHT_PALETTE_THRESHOLD;
 }
 
+bool IsSlangKeyword(QStringView word)
+{
+    return ContainsWord(KEYWORDS, word);
+}
+
 CodeSyntaxHighlighter::CodeSyntaxHighlighter(QTextDocument* document) : QSyntaxHighlighter(document)
 {
     LUDUS_ASSERT(document != nullptr);
@@ -106,6 +154,8 @@ void CodeSyntaxHighlighter::SetPalette(const QPalette& palette)
     mCommentFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_COMMENT : DARK_COMMENT));
     mStringFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_STRING : DARK_STRING));
     mNumberFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_NUMBER : DARK_NUMBER));
+    mFunctionFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_FUNCTION : DARK_FUNCTION));
+    mConstantFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_CONSTANT : DARK_CONSTANT));
     mDirectiveFormat = mKeywordFormat;
     rehighlight();
 }
@@ -128,6 +178,7 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
     const QStringView view(text);
     isize position = 0;
     bool isBlockComment = previousBlockState() == BLOCK_COMMENT_STATE;
+    bool isTypeNameExpected = false;
     while (position < text.size())
     {
         const isize start = position;
@@ -181,22 +232,52 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
             setFormat(static_cast<int32>(start), static_cast<int32>(position - start), mDirectiveFormat);
             continue;
         }
-        if (character.isLetter() == true || character == QLatin1Char('_'))
+        if (IsIdentifierStart(character) == true)
         {
             ++position;
-            while (position < text.size() &&
-                   (text.at(position).isLetterOrNumber() == true || text.at(position) == QLatin1Char('_')))
+            while (position < text.size() && IsIdentifierPart(text.at(position)) == true)
             {
                 ++position;
             }
             const QStringView word = view.sliced(start, position - start);
+            const int32 wordStart = static_cast<int32>(start);
+            const int32 wordLength = static_cast<int32>(position - start);
+            const bool isDeclaredTypeName = isTypeNameExpected;
+            isTypeNameExpected = false;
             if (ContainsWord(KEYWORDS, word) == true)
             {
-                setFormat(static_cast<int32>(start), static_cast<int32>(position - start), mKeywordFormat);
+                setFormat(wordStart, wordLength, mKeywordFormat);
+                isTypeNameExpected = ContainsWord(TYPE_DECLARATION_KEYWORDS, word);
+                continue;
             }
-            else if (ContainsWord(TYPES, word) == true || IsNumericType(word) == true)
+            if (isDeclaredTypeName == true || ContainsWord(TYPES, word) == true || IsNumericType(word) == true)
             {
-                setFormat(static_cast<int32>(start), static_cast<int32>(position - start), mTypeFormat);
+                setFormat(wordStart, wordLength, mTypeFormat);
+                continue;
+            }
+            if (IsConstantName(word) == true)
+            {
+                setFormat(wordStart, wordLength, mConstantFormat);
+                continue;
+            }
+            const isize next = SkipSpaces(view, position);
+            if (next < text.size() && text.at(next) == QLatin1Char('('))
+            {
+                setFormat(wordStart, wordLength, mFunctionFormat);
+                continue;
+            }
+            if (next > position && next < text.size() && IsIdentifierStart(text.at(next)) == true)
+            {
+                isize nextEnd = next + 1;
+                while (nextEnd < text.size() && IsIdentifierPart(text.at(nextEnd)) == true)
+                {
+                    ++nextEnd;
+                }
+                // "Name name" declares a variable, parameter or member of type Name.
+                if (ContainsWord(KEYWORDS, view.sliced(next, nextEnd - next)) == false)
+                {
+                    setFormat(wordStart, wordLength, mTypeFormat);
+                }
             }
             continue;
         }
@@ -217,6 +298,10 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
             }
             setFormat(static_cast<int32>(start), static_cast<int32>(position - start), mNumberFormat);
             continue;
+        }
+        if (character != QLatin1Char(' ') && character != QLatin1Char('\t'))
+        {
+            isTypeNameExpected = false;
         }
         if (QStringView(u"()[]{}").contains(character) == true)
         {
