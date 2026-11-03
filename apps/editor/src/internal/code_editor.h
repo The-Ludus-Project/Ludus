@@ -14,6 +14,8 @@
 
 QT_BEGIN_NAMESPACE
 class QKeyEvent;
+class QMouseEvent;
+class QPoint;
 class QContextMenuEvent;
 class QPaintEvent;
 class QResizeEvent;
@@ -174,7 +176,15 @@ private:
     void paintIndentGuides(const QPaintEvent* event);
     void paintDiagnosticCallout();
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
     void handleKeyPress(QKeyEvent* event);
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+    /// Slang name under a viewport point outside comments and strings, or a null cursor.
+    [[nodiscard]] QTextCursor getDefinitionLinkAt(const QPoint& position) const;
+    /// Underline the name under the pointer while the definition modifier is held.
+    void updateDefinitionLink(const QPoint& position, Qt::KeyboardModifiers modifiers);
     void changeEvent(QEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     void inputMethodEvent(QInputMethodEvent* event) override;
@@ -217,5 +227,9 @@ private:
     QAction* mFormatAction;
     QAction* mChooseFormatterAction;
     CodeNavigation* mNavigation;
+    /// Name underlined for Ctrl+click (Command+click on macOS) Go to Definition.
+    QTextCursor mDefinitionLink;
+    /// A definition click owns the press until release, so dragging never selects.
+    bool mIsDefinitionClick = false;
 };
 } // namespace ludus::editor

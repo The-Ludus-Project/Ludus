@@ -69,6 +69,9 @@ public:
     void RefreshActions();
     /// Provider capability, independent of language selection. Unknown providers start enabled.
     void SetReferencesAvailable(bool canFindReferences);
+    /// Request the definition at the caret, as Go to Definition does. Returns false, without
+    /// emitting Requested, when the current language provides no semantic navigation.
+    bool RequestDefinition();
     [[nodiscard]] bool IsChoosing() const;
     [[nodiscard]] const QString& GetSource() const noexcept;
     [[nodiscard]] QList<QAction*> GetActions() const;
@@ -108,6 +111,7 @@ private:
     QAction* mBack;
     QAction* mForward;
     QAction* mFiles;
+    QAction* mDefinition;
     QAction* mReferences;
     QString mScope;
     QString mFile;

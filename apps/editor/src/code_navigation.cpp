@@ -87,7 +87,7 @@ CodeNavigation::CodeNavigation(CodeEditor& inoutEditor)
     addAction(QStringLiteral("Go to Symbol"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O), [this]() {
         Q_EMIT Requested(CodeNavigationKind::Symbols);
     });
-    addAction(QStringLiteral("Go to Definition"), QKeySequence(Qt::Key_F12), [this]() {
+    mDefinition = addAction(QStringLiteral("Go to Definition"), QKeySequence(Qt::Key_F12), [this]() {
         Q_EMIT Requested(CodeNavigationKind::Definition);
     });
     mReferences = addAction(QStringLiteral("Find References"), QKeySequence(Qt::SHIFT | Qt::Key_F12), [this]() {
@@ -105,6 +105,16 @@ QList<QAction*> CodeNavigation::GetActions() const
 {
     return mActions;
 }
+bool CodeNavigation::RequestDefinition()
+{
+    if (mDefinition->isEnabled() == false)
+    {
+        return false;
+    }
+    mDefinition->trigger();
+    return true;
+}
+
 bool CodeNavigation::IsChoosing() const
 {
     return mPopup->isVisible();
