@@ -157,6 +157,27 @@ def isolate_metal_ray_queries(code):
     return '\n'.join(lines)
 
 
+def spirv_cross_identifier(name):
+    """Spell an OpName as SPIRV-Cross 1.4.313 emits it (ParsedIR::sanitize_identifier).
+
+    Slang qualifies functions with their module, as in GraphSource0.TryLoadShadingPoint; the
+    translator replaces every byte outside [A-Za-z0-9_] with an underscore, collapses repeated
+    underscores and renames identifiers it reserves for itself.
+    """
+    spelled = name.encode()
+    if spelled and (re.fullmatch(rb'[A-Za-z_][A-Za-z0-9_]*', spelled) is None or b'__' in spelled):
+        spelled = spelled.split(b'(')[0]
+        if spelled[:1].isdigit():
+            spelled = b'_' + spelled[1:]
+        spelled = re.sub(rb'_+', b'_', re.sub(rb'[^A-Za-z0-9_]', b'_', spelled))
+    spelled = spelled.decode('ascii')
+    if spelled.startswith(('gl_', 'spv')):
+        return '_RESERVED_IDENTIFIER_FIXUP_' + spelled
+    if re.match(r'_[0-9]+(?:_|$)', spelled):
+        return '_RESERVED_IDENTIFIER_FIXUP' + spelled
+    return spelled
+
+
 def restore_spirv_metal_noinline(code, module):
     """Preserve SPIR-V DontInline through SPIRV-Cross's always_inline helper spelling.
 
@@ -180,8 +201,8 @@ def restore_spirv_metal_noinline(code, module):
             isolated.add(words[offset + 2])
         offset += count
     for identity in isolated:
-        name = names.get(identity, '')
-        if not re.fullmatch(r'[A-Za-z_]\w*', name):
+        name = spirv_cross_identifier(names.get(identity, ''))
+        if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name) is None:
             raise RuntimeError('SPIR-V DontInline function has no portable name')
         pattern = re.compile(re.escape(METAL_FORCE_INLINE) + r'\n([^\n]*\b' + re.escape(name) + r'\s*\()')
         code, count = pattern.subn(METAL_NOINLINE + r'\n\1', code)
