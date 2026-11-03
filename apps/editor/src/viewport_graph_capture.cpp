@@ -255,6 +255,7 @@ renderer::RenderGraphCapturePhase ViewportGraphCapture::Service() noexcept
             extraction.View);
         renderer::SceneShaderInputs shaderInputs = extraction.ShaderInputs;
         shaderInputs.Lights = {extraction.Scene.AuthoredLights.Lights, extraction.Scene.AuthoredLights.Count};
+        shaderInputs.Luminaires = {extraction.Scene.Luminaires.Luminaires, extraction.Scene.Luminaires.Count};
         const graphics::rhi::RasterStatus submitted =
             mCapture.SubmitScene({extraction.Meshes.constData(), static_cast<usize>(extraction.Meshes.size())},
                                  {extraction.Items.constData(), static_cast<usize>(extraction.Items.size())},

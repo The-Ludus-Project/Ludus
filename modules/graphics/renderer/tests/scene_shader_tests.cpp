@@ -207,6 +207,85 @@ TEST_CASE("Scene materials retain texture bytes and analytic lights without geom
     pixels[0] = 0;
     CHECK(job->Scene.Instances[0].Texture.Bytes[0] == 255);
 }
+TEST_CASE("Panel luminaires are admitted with orthonormal frames in source order", "[scene-shader][luminaire]")
+{
+    StaticArray<renderer::PanelLuminaire, 2> luminaires{};
+    luminaires[0].SourceId = 9;
+    // A skewed, unnormalized frame: admission keeps the tangent's direction and makes the bitangent perpendicular.
+    luminaires[0].TangentWorld = {2, 0, 0};
+    luminaires[0].BitangentWorld = {1, 0, 3};
+    luminaires[1].SourceId = 4;
+    renderer::PanelLuminaireSelection selection;
+    REQUIRE(renderer::NormalizePanelLuminaires(luminaires.GetData(), luminaires.GetSize(), selection) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(selection.Count == 2);
+    CHECK(selection.Luminaires[0].SourceId == 4);
+    const renderer::PanelLuminaire& skewed = selection.Luminaires[1];
+    CHECK(skewed.TangentWorld.X == Catch::Approx(1));
+    CHECK(skewed.BitangentWorld.X == Catch::Approx(0).margin(1e-6));
+    CHECK(skewed.BitangentWorld.Z == Catch::Approx(1));
+    // The panel emits along cross(tangent, bitangent) = -Y.
+    CHECK(math::Cross(skewed.TangentWorld, skewed.BitangentWorld).Y == Catch::Approx(-1));
+
+    const renderer::PanelLuminaireSelection before = selection;
+    const auto rejects = [&](const renderer::PanelLuminaire& luminaire) {
+        renderer::PanelLuminaireSelection output = before;
+        const rhi::RasterStatus status = renderer::NormalizePanelLuminaires(&luminaire, 1, output);
+        // Failure preserves the output.
+        CHECK(output.Count == before.Count);
+        return status == rhi::RasterStatus::InvalidDescription;
+    };
+    renderer::PanelLuminaire invalid;
+    CHECK(rejects(invalid) == true); // Zero source identity.
+    invalid.SourceId = 1;
+    invalid.BitangentWorld = {3, 0, 0};
+    CHECK(rejects(invalid) == true); // Parallel frame.
+    invalid = {};
+    invalid.SourceId = 1;
+    invalid.HalfExtentWorld = 0;
+    CHECK(rejects(invalid) == true);
+    invalid = {};
+    invalid.SourceId = 1;
+    invalid.BeamSpread = -0.1F; // Negative spread could focus the beams into a caustic.
+    CHECK(rejects(invalid) == true);
+    invalid = {};
+    invalid.SourceId = 1;
+    invalid.BeamWidth = 0;
+    CHECK(rejects(invalid) == true);
+    const StaticArray<renderer::PanelLuminaire, 2> duplicates{{luminaires[1], luminaires[1]}};
+    renderer::PanelLuminaireSelection output;
+    CHECK(renderer::NormalizePanelLuminaires(duplicates.GetData(), duplicates.GetSize(), output) ==
+          rhi::RasterStatus::InvalidDescription);
+    StaticArray<renderer::PanelLuminaire, renderer::MAX_PANEL_LUMINAIRES + 1> many{};
+    CHECK(renderer::NormalizePanelLuminaires(many.GetData(), many.GetSize(), output) ==
+          rhi::RasterStatus::CapacityExceeded);
+    CHECK(renderer::NormalizePanelLuminaires(nullptr, 1, output) == rhi::RasterStatus::InvalidDescription);
+}
+TEST_CASE("Ray scene jobs carry panel luminaires only with the lights scene data", "[scene-shader][luminaire]")
+{
+    SceneFixture fixture;
+    renderer::PanelLuminaire luminaire;
+    luminaire.SourceId = 5;
+    luminaire.CenterWorld = {0, 2, 0};
+    fixture.Scene.Inputs.Luminaires = {&luminaire, 1};
+    core::UniquePtr<internal::ReferenceJob> job;
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(job->LuminaireCount == 1);
+    CHECK(job->Luminaires[0].SourceId == 5);
+    CHECK(job->Luminaires[0].CenterWorld.Y == 2);
+    job.Reset();
+    fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY;
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+            rhi::RasterStatus::Ready);
+    CHECK(job->LuminaireCount == 0);
+    job.Reset();
+    fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
+    luminaire.BeamTwist = -1;
+    CHECK(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+          rhi::RasterStatus::InvalidDescription);
+    CHECK(job.Get() == nullptr);
+}
 TEST_CASE("Emitter construction skips collapsed faces and computes transformed area", "[scene-shader]")
 {
     SceneFixture fixture;

@@ -353,6 +353,12 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
         extraction.Lights.append(extraction.Scene.AuthoredLights.Lights[i]);
     }
     extraction.ShaderInputs.Lights = {extraction.Lights.constData(), static_cast<usize>(extraction.Lights.size())};
+    for (uint32 i = 0; i < extraction.Scene.Luminaires.Count; ++i)
+    {
+        extraction.Luminaires.append(extraction.Scene.Luminaires.Luminaires[i]);
+    }
+    extraction.ShaderInputs.Luminaires = {extraction.Luminaires.constData(),
+                                          static_cast<usize>(extraction.Luminaires.size())};
     if (definitionOrNull != nullptr)
     {
         extraction.ShaderInputs.Environment = definitionOrNull->Environment.Rgb;
@@ -1329,6 +1335,8 @@ void RenderGraphPreview::advance()
         renderer::SceneShaderInputs shaderInputs = state.Extraction.ShaderInputs;
         shaderInputs.Lights = {state.Extraction.Scene.AuthoredLights.Lights,
                                state.Extraction.Scene.AuthoredLights.Count};
+        shaderInputs.Luminaires = {state.Extraction.Scene.Luminaires.Luminaires,
+                                   state.Extraction.Scene.Luminaires.Count};
         const rhi::RasterStatus updated = state.Activation.Update(
             {state.Extraction.Meshes.constData(), static_cast<usize>(state.Extraction.Meshes.size())},
             {state.Extraction.Items.constData(), static_cast<usize>(state.Extraction.Items.size())},

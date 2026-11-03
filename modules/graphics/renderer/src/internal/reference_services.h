@@ -30,6 +30,9 @@ constexpr usize FINGERPRINT_INSTANCE_BYTES = 7 * sizeof(uint64) + 14 * sizeof(fl
 constexpr usize FINGERPRINT_SURFACE_MAP_BYTES = 3 * sizeof(uint64) + sizeof(float32) + 5 * sizeof(uint32);
 constexpr usize FINGERPRINT_LIGHT_BYTES = sizeof(uint64) + sizeof(uint32) + 13 * sizeof(float32);
 constexpr usize FINGERPRINT_ENVIRONMENT_BYTES = 3 * sizeof(float32);
+// Panel luminaire: source ID, center/tangent/bitangent, half extent and the five beam scalars. A scene without
+// luminaires hashes no luminaire bytes, so its fingerprint is unchanged.
+constexpr usize FINGERPRINT_LUMINAIRE_BYTES = sizeof(uint64) + 15 * sizeof(float32);
 constexpr uint32 FINGERPRINT_SURFACE_MAP_TAG = 0x53555246; // Numeric SURF tag; encoded little-endian.
 /// Largest admitted RT1 tile, in pixels.
 constexpr uint32 MAXIMUM_REFERENCE_TILE_PIXELS = 2048;
@@ -154,9 +157,12 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
     // One bounded cold scratch stream, serialized without padding or host byte order.
     // Hashes are diagnostics; exact retained identities/parameters control resets.
     const usize triangleBytes = inoutJob.Scene.Triangles.GetSize() * FINGERPRINT_TRIANGLE_BYTES;
-    usize bytes = triangleBytes + inoutJob.Scene.InstanceCount * FINGERPRINT_INSTANCE_BYTES +
-                  inoutJob.Description.LightCount * FINGERPRINT_LIGHT_BYTES + FINGERPRINT_ENVIRONMENT_BYTES +
-                  (inoutJob.EnvironmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0);
+    usize bytes =
+        triangleBytes + inoutJob.Scene.InstanceCount * FINGERPRINT_INSTANCE_BYTES +
+        inoutJob.Description.LightCount * FINGERPRINT_LIGHT_BYTES +
+        (inoutJob.LuminaireCount != 0 ? sizeof(uint32) + inoutJob.LuminaireCount * FINGERPRINT_LUMINAIRE_BYTES : 0) +
+        FINGERPRINT_ENVIRONMENT_BYTES +
+        (inoutJob.EnvironmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0);
     for (usize i = 0; i < inoutJob.Scene.InstanceCount; ++i)
     {
         if (inoutJob.Scene.Instances[i].Surface->Bsdf.Scattering.Model !=
@@ -315,6 +321,25 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
         scalar(light.Range);
         scalar(light.InnerCos);
         scalar(light.OuterCos);
+    }
+    if (inoutJob.LuminaireCount != 0)
+    {
+        word(inoutJob.LuminaireCount);
+    }
+    for (usize i = 0; i < inoutJob.LuminaireCount; ++i)
+    {
+        const PanelLuminaire& luminaire = inoutJob.Luminaires[i];
+        Put64(stream.GetData() + offset, luminaire.SourceId);
+        offset += sizeof(uint64);
+        vector(luminaire.CenterWorld);
+        vector(luminaire.TangentWorld);
+        vector(luminaire.BitangentWorld);
+        scalar(luminaire.HalfExtentWorld);
+        scalar(luminaire.RadianceScale);
+        scalar(luminaire.BeamWidth);
+        scalar(luminaire.BeamSteering);
+        scalar(luminaire.BeamSpread);
+        scalar(luminaire.BeamTwist);
     }
     vector(inoutJob.Description.Environment);
     if (inoutJob.EnvironmentOrNull != nullptr)

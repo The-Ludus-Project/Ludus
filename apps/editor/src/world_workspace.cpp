@@ -3,6 +3,7 @@
 #include "internal/import_report.h"
 #include "internal/item_selection.h"
 #include "internal/preview_viewport.h"
+#include "internal/render_scene.h"
 
 #include "internal/controller.h"
 #include "internal/editor_files.h"
@@ -363,8 +364,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     QToolButton* addObject = new QToolButton(left);
     addObject->setObjectName(QStringLiteral("worldAddObject"));
     addObject->setText(QStringLiteral("Add Geometry / Light"));
-    addObject->setToolTip(QStringLiteral("Create geometry or lights in a default World. Project-owned schemas use Add "
-                                         "Entity and their declared components."));
+    addObject->setToolTip(QStringLiteral("Create geometry, lights or luminaires in a default World. Project-owned "
+                                         "schemas use Add Entity and their declared components."));
     addObject->setPopupMode(QToolButton::InstantPopup);
     QMenu* objectMenu = new QMenu(addObject);
     addObject->setMenu(objectMenu);
@@ -374,7 +375,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                   QStringLiteral("Sphere"),
                                   QStringLiteral("Point Light"),
                                   QStringLiteral("Spot Light"),
-                                  QStringLiteral("Directional Light")})
+                                  QStringLiteral("Directional Light"),
+                                  QStringLiteral("Luminaire")})
     {
         QAction* action = objectMenu->addAction(preset);
         action->setObjectName(QStringLiteral("worldCreate") + QString(preset).remove(QLatin1Char(' ')));
@@ -2277,6 +2279,72 @@ void WorldWorkspace::StopPreview() noexcept
 {
     Render_->Stop();
     Scene_->StopPreview();
+}
+bool WorldWorkspace::ApplyLuminaireRepair(const RenderGraphLuminaireCoverage& repair)
+{
+    if (repair.Repair == RenderGraphLuminaireRepair::None || Pending_ == true || SceneBusy() == true ||
+        Add_->isEnabled() == false)
+    {
+        Changed(QStringLiteral("The World cannot be edited now; try the luminaire repair again when it is ready."));
+        return false;
+    }
+    QString id;
+    QString error;
+    if (repair.Repair == RenderGraphLuminaireRepair::AddLuminaire)
+    {
+        if (CreateWorldLuminaire(Document_, mEntropy, repair.Placement, id, error) == false)
+        {
+            Changed(error);
+            return false;
+        }
+    }
+    else
+    {
+        QJsonObject entity;
+        for (const QJsonValue value : Document_.Draft().value(QStringLiteral("entities")).toArray())
+        {
+            const QJsonObject candidate = value.toObject();
+            if (candidate.value(QStringLiteral("components")).toObject().contains(QStringLiteral("luminaire")) ==
+                    true &&
+                ComputeRenderSceneSourceId(Document_.GetEntityKey(candidate)) == repair.LuminaireSourceId)
+            {
+                entity = candidate;
+            }
+        }
+        if (entity.isEmpty() == true || IsBuiltInWorld(Document_) == false)
+        {
+            Changed(QStringLiteral("The luminaire to fit is no longer in this default World."));
+            return false;
+        }
+        id = Document_.GetEntityKey(entity);
+        QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+        QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
+        transform.insert(QStringLiteral("x"), static_cast<foundation::float64>(repair.Placement.PositionWorld.X));
+        transform.insert(QStringLiteral("y"), static_cast<foundation::float64>(repair.Placement.PositionWorld.Y));
+        transform.insert(QStringLiteral("z"), static_cast<foundation::float64>(repair.Placement.PositionWorld.Z));
+        transform.insert(QStringLiteral("rx"), static_cast<foundation::float64>(repair.Placement.RotationDegrees.X));
+        transform.insert(QStringLiteral("ry"), static_cast<foundation::float64>(repair.Placement.RotationDegrees.Y));
+        transform.insert(QStringLiteral("rz"), static_cast<foundation::float64>(repair.Placement.RotationDegrees.Z));
+        QJsonObject luminaire = components.value(QStringLiteral("luminaire")).toObject();
+        luminaire.insert(QStringLiteral("halfExtent"),
+                         static_cast<foundation::float64>(repair.Placement.HalfExtentWorld));
+        components.insert(QStringLiteral("transform"), transform);
+        components.insert(QStringLiteral("luminaire"), luminaire);
+        if (Document_.Edit(id, components, entity.value(QStringLiteral("name")).toString(), error) == false)
+        {
+            Changed(error);
+            return false;
+        }
+    }
+    Selected_ = id;
+    mSelectedEntities = {id};
+    Render();
+    Snapshot();
+    Changed(repair.Repair == RenderGraphLuminaireRepair::AddLuminaire
+                ? QStringLiteral("Luminaire added. Move it with the viewport gizmo or edit it in the inspector. Undo "
+                                 "is available.")
+                : QStringLiteral("Luminaire fitted to the World. Undo is available."));
+    return true;
 }
 void WorldWorkspace::Undo()
 {

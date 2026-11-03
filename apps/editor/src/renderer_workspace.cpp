@@ -43,7 +43,6 @@
 #    include "editor_renderer_static.h"
 #    include "internal/ray_path_inspection.h"
 #    include "internal/render_graph_capture_profile.h"
-#    include "internal/render_graph_luminaire_coverage.h"
 #    include "internal/render_graph_preview.h"
 #    include "internal/texture_viewer.h"
 #    include "renderer_composite.h"
@@ -2251,24 +2250,17 @@ void RendererWorkspace::refreshRenderWarning(const RenderScene& scene)
                                             .toString()
                                       : mConfiguration->currentText();
     QString warning;
-    RenderGraphLuminairePanel panel;
     // The engine default renderer fallback does not run the project route.
-    if (scene.Identity.isEmpty() == false && mIsDefaultPreview == false &&
-        FindRenderGraphLuminairePanel(mDocument, configuration, panel) == true)
+    const bool isLuminaireRoute = scene.Identity.isEmpty() == false && mIsDefaultPreview == false &&
+                                  IsRenderGraphLuminaireRoute(mDocument, configuration) == true;
+    if (isLuminaireRoute == true)
     {
-        RenderGraphLuminaireWorld world;
-        world.HasBounds = scene.TryGetBounds({}, world.BoundsWorld);
-        for (const PreviewObject& object : scene.Objects)
-        {
-            if (object.Surface >= 0 && object.Surface < scene.Surfaces.size())
-            {
-                const foundation::math::Vector3 emission = scene.Surfaces[object.Surface].Emission;
-                world.EmissiveObjectCount += emission.X > 0 || emission.Y > 0 || emission.Z > 0 ? 1 : 0;
-            }
-        }
-        world.LightCount = static_cast<foundation::int32>(scene.AuthoredLights.Count);
-        warning = DescribeRenderGraphLuminaireCoverage(panel, world);
+        // The camera only places a repair, which MakeRenderWarningRepair fits when the user asks for it.
+        warning = DescribeRenderGraphLuminaireCoverage(
+                      SummarizeRenderGraphLuminaireWorld(scene, scene.LuminaireBinding.isEmpty() == false, nullptr))
+                      .Warning;
     }
+    mIsLuminaireWarning = isLuminaireRoute == true && warning.isEmpty() == false;
     if (warning != mRenderWarning)
     {
         mRenderWarning = warning;
@@ -2276,6 +2268,26 @@ void RendererWorkspace::refreshRenderWarning(const RenderScene& scene)
     }
 #else
     static_cast<void>(scene);
+#endif
+}
+RenderGraphLuminaireCoverage RendererWorkspace::MakeRenderWarningRepair() const
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mIsLuminaireWarning == false || mPreviewSourceOrNull == nullptr)
+    {
+        return {};
+    }
+    const RenderScene& scene = mPreviewSourceOrNull->Scene();
+    const gameplay::camera::CameraPose& pose = mPreviewSourceOrNull->GetVisibleCameraSample().Pose;
+    RenderGraphLuminaireView view;
+    view.EyeWorld = {static_cast<foundation::float32>(pose.Position.X),
+                     static_cast<foundation::float32>(pose.Position.Y),
+                     static_cast<foundation::float32>(pose.Position.Z)};
+    view.ForwardWorld = foundation::math::Rotate(pose.Orientation, {0, 0, -1});
+    return DescribeRenderGraphLuminaireCoverage(
+        SummarizeRenderGraphLuminaireWorld(scene, scene.LuminaireBinding.isEmpty() == false, &view));
+#else
+    return {};
 #endif
 }
 void RendererWorkspace::setProblem(QString& inoutProblem, const QString& text)

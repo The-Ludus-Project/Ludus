@@ -27,6 +27,9 @@ namespace
 constexpr int32 AXIS_COUNT = ViewportObjectInteraction::AXIS_COUNT;
 constexpr usize TRIANGLE_VERTICES = ViewportObjectOverlay::TRIANGLE_VERTICES;
 constexpr usize MAX_WIRE_LINES = ViewportObjectOverlay::MAX_WIRE_LINES;
+/// A luminaire's outline: the panel square, its two diagonals and the emission direction.
+constexpr usize LUMINAIRE_OUTLINE_CORNERS = 4;
+constexpr usize LUMINAIRE_OUTLINE_LINES = LUMINAIRE_OUTLINE_CORNERS + 3;
 constexpr float32 PROJECTION_EPSILON = 0.000001F;
 constexpr float64 HANDLE_PIXELS = 80;
 constexpr float64 HANDLE_HIT_PIXELS = 9;
@@ -53,26 +56,6 @@ constexpr float32 PICK_BOUNDS_PADDING = 0.0001F;
 constexpr float64 UNBOUNDED_PICK_DISTANCE = 1.0e300;
 
 constexpr StaticArray<QRgb, AXIS_COUNT> AXIS_COLORS{0xffff6060, 0xff68df85, 0xff639fff};
-BorrowedView<const math::Vector3> GetPositions(const RenderScene& scene, int32 meshIndex) noexcept
-{
-    if (scene.Definition != nullptr)
-    {
-        const resources::SceneMesh& mesh = scene.Definition->Meshes[static_cast<usize>(meshIndex)];
-        return {mesh.Positions.GetData(), mesh.Positions.GetSize()};
-    }
-    const PreviewMesh& mesh = scene.Meshes[meshIndex];
-    return {mesh.Positions.constData(), static_cast<usize>(mesh.Positions.size())};
-}
-BorrowedView<const uint32> GetIndices(const RenderScene& scene, int32 meshIndex) noexcept
-{
-    if (scene.Definition != nullptr)
-    {
-        const resources::SceneMesh& mesh = scene.Definition->Meshes[static_cast<usize>(meshIndex)];
-        return {mesh.Indices.GetData(), mesh.Indices.GetSize()};
-    }
-    const PreviewMesh& mesh = scene.Meshes[meshIndex];
-    return {mesh.Indices.constData(), static_cast<usize>(mesh.Indices.size())};
-}
 float64 ComputeSnap(float64 value, float64 interval) noexcept
 {
     const float64 scaled = value / interval;
@@ -87,37 +70,6 @@ float64 ComputeDistanceSquared(QPointF point, const QLineF& line) noexcept
                           : 0;
     const QPointF difference = point - line.p1() - direction * t;
     return QPointF::dotProduct(difference, difference);
-}
-bool IntersectTriangle(const math::Ray3& rayMesh,
-                       math::Vector3 positionMeshA,
-                       math::Vector3 positionMeshB,
-                       math::Vector3 positionMeshC,
-                       float64& outDistance) noexcept
-{
-    // Mesh units need not match world metres. Double products avoid a fixed
-    // determinant threshold rejecting tiny meshes whose instance scales them up.
-    const auto widen = [](math::Vector3 value) noexcept -> math::Vector3d {
-        return {static_cast<float64>(value.X), static_cast<float64>(value.Y), static_cast<float64>(value.Z)};
-    };
-    const math::Vector3d edge1Mesh = widen(positionMeshB) - widen(positionMeshA);
-    const math::Vector3d edge2Mesh = widen(positionMeshC) - widen(positionMeshA);
-    const math::Vector3d crossMesh = math::Cross(widen(rayMesh.Direction), edge2Mesh);
-    const float64 determinant = math::Dot(edge1Mesh, crossMesh);
-    if (determinant == 0 || math::IsFinite(determinant) == false)
-    {
-        return false;
-    }
-    const math::Vector3d offsetMesh = widen(rayMesh.Origin) - widen(positionMeshA);
-    const float64 u = math::Dot(offsetMesh, crossMesh) / determinant;
-    const math::Vector3d secondCrossMesh = math::Cross(offsetMesh, edge1Mesh);
-    const float64 v = math::Dot(widen(rayMesh.Direction), secondCrossMesh) / determinant;
-    const float64 distance = math::Dot(edge2Mesh, secondCrossMesh) / determinant;
-    if (u < 0 || v < 0 || u + v > 1 || distance < 0 || math::IsFinite(distance) == false)
-    {
-        return false;
-    }
-    outDistance = distance;
-    return true;
 }
 } // namespace
 ViewportObjectInteraction::ViewportObjectInteraction(RenderPreview& inoutPreview, QObject* parentOrNull)
@@ -140,6 +92,24 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
     }
     mSelected = selected;
     mPlacement = world.ScenePlacement(world.Entity(selected));
+    mLuminaireHalfExtentWorld = 0;
+    const QJsonObject luminaireBinding = mPreviewOrNull->Scene().LuminaireBinding;
+    if (luminaireBinding.isEmpty() == false)
+    {
+        const QJsonValue halfExtent = world.Entity(selected)
+                                          .value(QStringLiteral("components"))
+                                          .toObject()
+                                          .value(luminaireBinding.value(QStringLiteral("component")).toString())
+                                          .toObject()
+                                          .value(luminaireBinding.value(QStringLiteral("properties"))
+                                                     .toObject()
+                                                     .value(QStringLiteral("halfExtent"))
+                                                     .toString());
+        if (halfExtent.isDouble() == true && halfExtent.toDouble() > 0)
+        {
+            mLuminaireHalfExtentWorld = static_cast<float32>(halfExtent.toDouble());
+        }
+    }
     if (mPlacement.isEmpty() == true)
     {
         const QJsonObject binding = mPreviewOrNull->Scene().TransformBinding;
@@ -148,6 +118,8 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
                                        .toObject()
                                        .value(binding.value(QStringLiteral("component")).toString())
                                        .toObject();
+        // The preview descriptor's binding names each semantic transform property under "properties".
+        const QJsonObject properties = binding.value(QStringLiteral("properties")).toObject();
         if (binding.isEmpty() == false && values.isEmpty() == false)
         {
             mPlacement.insert(QStringLiteral("basis"), QJsonArray{1, 0, 0, 0, 1, 0, 0, 0, 1});
@@ -162,7 +134,7 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
                 for (int32 axis = 0; axis < AXIS_COUNT; ++axis)
                 {
                     const QString name = prefixes[kind] + QChar('x' + axis);
-                    axes.append(values.value(binding.value(name).toString()));
+                    axes.append(values.value(properties.value(name).toString()));
                 }
                 mPlacement.insert(keys[kind], axes);
             }
@@ -285,7 +257,7 @@ bool ViewportObjectInteraction::refreshMeshBounds()
     }
     for (int32 meshIndex = 0; meshIndex < scene.Meshes.size(); ++meshIndex)
     {
-        const BorrowedView<const math::Vector3> positionsMesh = GetPositions(scene, meshIndex);
+        const BorrowedView<const math::Vector3> positionsMesh = GetRenderSceneMeshPositions(scene, meshIndex);
         math::Aabb3 boundsMesh = math::EmptyAabb3();
         for (usize i = 0; i < positionsMesh.GetSize(); ++i)
         {
@@ -358,8 +330,8 @@ QString ViewportObjectInteraction::Pick(QPointF positionPixel, const QRectF& out
         {
             continue;
         }
-        const BorrowedView<const math::Vector3> positionsMesh = GetPositions(scene, object.Mesh);
-        const BorrowedView<const uint32> indices = GetIndices(scene, object.Mesh);
+        const BorrowedView<const math::Vector3> positionsMesh = GetRenderSceneMeshPositions(scene, object.Mesh);
+        const BorrowedView<const uint32> indices = GetRenderSceneMeshIndices(scene, object.Mesh);
         for (usize index = 0; index + TRIANGLE_VERTICES <= indices.GetSize(); index += TRIANGLE_VERTICES)
         {
             const uint32 a = indices[index];
@@ -367,7 +339,8 @@ QString ViewportObjectInteraction::Pick(QPointF positionPixel, const QRectF& out
             const uint32 c = indices[index + 2];
             float64 distance = 0;
             if (a >= positionsMesh.GetSize() || b >= positionsMesh.GetSize() || c >= positionsMesh.GetSize() ||
-                IntersectTriangle(rayMesh, positionsMesh[a], positionsMesh[b], positionsMesh[c], distance) == false ||
+                IntersectRenderSceneTriangle(rayMesh, positionsMesh[a], positionsMesh[b], positionsMesh[c], distance) ==
+                    false ||
                 (hasHit == true && distance >= nearest))
             {
                 continue;
@@ -645,8 +618,8 @@ void ViewportObjectInteraction::BuildOverlay(const QRectF& outerFramePixel, View
             continue;
         }
         const math::Affine3 meshToWorld = mDragAxis >= 0 ? makeTransform(mCandidate) : object.Transform;
-        const BorrowedView<const math::Vector3> positionsMesh = GetPositions(scene, object.Mesh);
-        const BorrowedView<const uint32> indices = GetIndices(scene, object.Mesh);
+        const BorrowedView<const math::Vector3> positionsMesh = GetRenderSceneMeshPositions(scene, object.Mesh);
+        const BorrowedView<const uint32> indices = GetRenderSceneMeshIndices(scene, object.Mesh);
         const usize triangleCount = indices.GetSize() / TRIANGLE_VERTICES;
         const usize triangleStride =
             math::Max(usize{1},
@@ -671,6 +644,42 @@ void ViewportObjectInteraction::BuildOverlay(const QRectF& outerFramePixel, View
                     outOverlay.WireLinesPixel.Add(QLineF(firstPixel, secondPixel));
                 }
             }
+        }
+    }
+    if (mLuminaireHalfExtentWorld > 0 && mPlacement.isEmpty() == false &&
+        outOverlay.WireLinesPixel.GetSize() + LUMINAIRE_OUTLINE_LINES <= MAX_WIRE_LINES)
+    {
+        // The panel square in the transform's XY plane and its emission along -Z, one half extent long.
+        const math::Affine3 panelToWorld = makeTransform(mDragAxis >= 0 ? mCandidate : mPlacement);
+        const float32 halfExtent = mLuminaireHalfExtentWorld;
+        const StaticArray<math::Vector3, LUMINAIRE_OUTLINE_CORNERS> cornersPanel{{{-halfExtent, -halfExtent, 0},
+                                                                                  {halfExtent, -halfExtent, 0},
+                                                                                  {halfExtent, halfExtent, 0},
+                                                                                  {-halfExtent, halfExtent, 0}}};
+        StaticArray<QPointF, LUMINAIRE_OUTLINE_CORNERS> cornersPixel{};
+        bool isProjected = true;
+        for (usize corner = 0; corner < LUMINAIRE_OUTLINE_CORNERS; ++corner)
+        {
+            isProjected = isProjected == true && project(math::TransformPoint(panelToWorld, cornersPanel[corner]),
+                                                         cornersPixel[corner]) == true;
+        }
+        QPointF centerPixel;
+        QPointF emissionPixel;
+        if (isProjected == true && project(math::TransformPoint(panelToWorld, {0, 0, 0}), centerPixel) == true &&
+            project(math::TransformPoint(panelToWorld, {0, 0, -halfExtent}), emissionPixel) == true)
+        {
+            for (usize corner = 0; corner < LUMINAIRE_OUTLINE_CORNERS; ++corner)
+            {
+                outOverlay.WireLinesPixel.Add(
+                    QLineF(cornersPixel[corner], cornersPixel[(corner + 1) % LUMINAIRE_OUTLINE_CORNERS]));
+            }
+            // The two diagonals join opposite corners.
+            for (usize corner = 0; corner < LUMINAIRE_OUTLINE_CORNERS / 2; ++corner)
+            {
+                outOverlay.WireLinesPixel.Add(
+                    QLineF(cornersPixel[corner], cornersPixel[corner + LUMINAIRE_OUTLINE_CORNERS / 2]));
+            }
+            outOverlay.WireLinesPixel.Add(QLineF(centerPixel, emissionPixel));
         }
     }
     buildHandles();

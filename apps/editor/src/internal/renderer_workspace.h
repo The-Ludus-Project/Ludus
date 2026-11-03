@@ -16,6 +16,7 @@
 #include "internal/render_graph_job.h"
 #include "internal/render_graph_library_capture.h"
 #include "internal/render_graph_live_build.h"
+#include "internal/render_graph_luminaire_coverage.h"
 #include "internal/render_graph_source.h"
 #include "internal/render_graph_source_watch.h"
 #include "internal/viewport_frame_pump.h"
@@ -344,6 +345,10 @@ public:
     {
         return mRenderWarning;
     }
+    /// The World edit that resolves GetRenderWarning, fitted around the viewport's current camera; Repair is None
+    /// when the warning offers none. The caller confirms it with the user and applies it to the World as one
+    /// undoable edit (WorldWorkspace::ApplyLuminaireRepair). GUI thread only.
+    [[nodiscard]] RenderGraphLuminaireCoverage MakeRenderWarningRepair() const;
     /// True while the viewport requests the engine default, including its pending first frame.
     [[nodiscard]] LUDUS_INLINE bool IsUsingDefaultRenderer() const noexcept
     {
@@ -604,6 +609,8 @@ private:
     QString mExtractionProblem;
     QString mActivationProblem;
     QString mRenderWarning;
+    /// Whether mRenderWarning is the slice-sampling-luminaire coverage warning, which offers a repair.
+    bool mIsLuminaireWarning = false;
     /// World, document and configuration the warning was computed for.
     QByteArray mRenderWarningIdentity;
     QLabel* mStatus;

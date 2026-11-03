@@ -144,6 +144,9 @@ private:
     void openProjectItem(ProjectItemKind kind, const QString& path);
     void changeProjectItem(ProjectItemAction action, ProjectItemKind kind, const QString& path);
     void activateErrorEntry(const ErrorListEntry& entry);
+    /// Offer the preview warning's luminaire repair in a confirmation box (Cancel is the default) and apply it to the
+    /// World on acceptance. Returns false when the warning offers no repair.
+    bool offerLuminaireRepair();
     void renderActiveDocument();
     /// Show the context strip while a render graph is current in any group and Focus Viewport is off.
     void updateContextStrip();

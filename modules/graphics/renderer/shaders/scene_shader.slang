@@ -275,6 +275,57 @@ LightInfo GetLightInfo(SceneContext scene, uint lightIndex)
     }
     return result;
 }
+/// One panel luminaire (graphics::renderer::PanelLuminaire): a square exit surface centred at CenterWorld with side
+/// 2 HalfExtentWorld along the orthonormal TangentWorld and BitangentWorld, emitting along NormalWorld =
+/// cross(TangentWorld, BitangentWorld), and the scalars of its beam profile. It is not geometry: no query hits it.
+/// The shader that reads it defines its emission; see the slice-sampling-luminaire template.
+struct LuminaireInfo
+{
+    float3 CenterWorld;
+    float HalfExtentWorld;
+    float3 TangentWorld;
+    float3 BitangentWorld;
+    float3 NormalWorld;
+    float RadianceScale;
+    float BeamWidth;
+    float BeamSteering;
+    float BeamSpread;
+    float BeamTwist;
+    /// False when luminaireIndex is not below GetLuminaireCount; every other field is then zero.
+    bool IsValid;
+};
+/// Panel luminaires of the scene, in source-identity order; zero without the lights scene data.
+uint GetLuminaireCount(SceneContext scene)
+{
+    return HasSceneData(scene, SCENE_DATA_LIGHTS) == true
+               ? asuint(SceneValue(SurfaceLayout.y + Counts.w * LUDUS_GPU_PREVIEW_LIGHT_WORDS).x)
+               : 0;
+}
+/// Read panel luminaire luminaireIndex; constant for one scene source generation.
+LuminaireInfo GetLuminaireInfo(SceneContext scene, uint luminaireIndex)
+{
+    LuminaireInfo result = (LuminaireInfo)0;
+    if (luminaireIndex >= GetLuminaireCount(scene))
+        return result;
+    uint offset = SurfaceLayout.y + Counts.w * LUDUS_GPU_PREVIEW_LIGHT_WORDS +
+                  LUDUS_GPU_PREVIEW_LUMINAIRE_HEADER_WORDS + luminaireIndex * LUDUS_GPU_PREVIEW_LUMINAIRE_WORDS;
+    float4 centerAndHalfExtentWorld = SceneValue(offset);
+    float4 tangentAndRadianceScale = SceneValue(offset + 1);
+    float4 bitangentAndBeamWidth = SceneValue(offset + 2);
+    float4 beamSlopes = SceneValue(offset + LUDUS_GPU_PREVIEW_LUMINAIRE_BEAM_WORD);
+    result.CenterWorld = centerAndHalfExtentWorld.xyz;
+    result.HalfExtentWorld = centerAndHalfExtentWorld.w;
+    result.TangentWorld = tangentAndRadianceScale.xyz;
+    result.RadianceScale = tangentAndRadianceScale.w;
+    result.BitangentWorld = bitangentAndBeamWidth.xyz;
+    result.BeamWidth = bitangentAndBeamWidth.w;
+    result.NormalWorld = cross(result.TangentWorld, result.BitangentWorld);
+    result.BeamSteering = beamSlopes.x;
+    result.BeamSpread = beamSlopes.y;
+    result.BeamTwist = beamSlopes.z;
+    result.IsValid = true;
+    return result;
+}
 MaterialSample GetMaterial(SceneContext scene, uint materialIndex)
 {
     MaterialSample result = (MaterialSample)0;
