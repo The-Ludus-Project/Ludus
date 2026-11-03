@@ -812,7 +812,7 @@ bool WorldWorkspace::Open(const QString& path)
     WorldDocument candidate;
     QByteArray schema, bytes;
     QString error;
-    if (Inside(path, true) == false || Read(path, bytes, WorldDocument::MaxBytes) == false)
+    if (Inside(path, true) == false || Read(path, bytes, WorldDocument::MAX_BYTES) == false)
     {
         Changed(QStringLiteral("Open a regular world file inside the project's source folder (at most 512 KiB)."));
         return false;
@@ -844,7 +844,7 @@ bool WorldWorkspace::Open(const QString& path)
     QByteArray currentSchema;
     WorldDocument currentDefinition;
     if (LoadProjectSchema(currentDefinition, currentSchema, demo) == false || currentSchema != schema ||
-        Read(path, bytes, WorldDocument::MaxBytes) == false ||
+        Read(path, bytes, WorldDocument::MAX_BYTES) == false ||
         (isLegacy ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
     {
         Changed(QStringLiteral("Incoming world/schema changed while opening. Retry Open World."));
@@ -2085,7 +2085,7 @@ bool WorldWorkspace::Save()
     QByteArray current;
     if (lock.tryLock(0) == false ||
         (Unsaved_ ? QFileInfo::exists(Path_)
-                  : (Read(Path_, current, WorldDocument::MaxBytes) == false || current != Disk_)))
+                  : (Read(Path_, current, WorldDocument::MAX_BYTES) == false || current != Disk_)))
     {
         Changed(QStringLiteral(
             "The world changed on disk or is locked. Your edits remain open; resolve the conflict before saving."));
@@ -2119,7 +2119,9 @@ void WorldWorkspace::Snapshot()
     if (Unsaved_ == false && Document_.Dirty() == false && Inside(Path_, true))
     {
         QByteArray old;
-        if (Read(Path_ + QStringLiteral(".ludus-recovery"), old, WorldDocument::MaxBytes + 256) &&
+        if (Read(Path_ + QStringLiteral(".ludus-recovery"),
+                 old,
+                 WorldDocument::MAX_BYTES + MAX_RECOVERY_HEADER_BYTES) &&
             old.startsWith(RecoveryHeader()))
         {
             (void)QFile::remove(Path_ + QStringLiteral(".ludus-recovery"));
@@ -2137,7 +2139,7 @@ void WorldWorkspace::Snapshot()
     }
     QLockFile lock(lockPath);
     QByteArray disk;
-    if (lock.tryLock(0) == false || Read(Path_, disk, WorldDocument::MaxBytes) == false || disk != Disk_)
+    if (lock.tryLock(0) == false || Read(Path_, disk, WorldDocument::MAX_BYTES) == false || disk != Disk_)
     {
         return;
     }
@@ -2152,11 +2154,11 @@ bool WorldWorkspace::Recover()
     const auto header = RecoveryHeader();
     WorldDocument definition;
     if (isSceneWorkerActive() || Dirty() || Unsaved_ || Inside(Path_, true) == false ||
-        Read(Path_, current, WorldDocument::MaxBytes) == false || current != Disk_ ||
+        Read(Path_, current, WorldDocument::MAX_BYTES) == false || current != Disk_ ||
         LoadProjectSchema(definition, schema, IsWorldDemo(Document_)) == false || schema != SchemaDisk_ ||
         Read(Path_ + QStringLiteral(".ludus-recovery"),
              envelope,
-             WorldDocument::MaxBytes + MAX_RECOVERY_HEADER_BYTES) == false ||
+             WorldDocument::MAX_BYTES + MAX_RECOVERY_HEADER_BYTES) == false ||
         envelope.startsWith(header) == false)
     {
         Changed(
@@ -2225,7 +2227,9 @@ bool WorldWorkspace::ConfirmDiscard()
     // Keep a new world marked unsaved until its caller closes/replaces it.
     // Discard only author-owned recovery for the same baseline, never symlinks.
     QByteArray envelope;
-    if (Read(Path_ + QStringLiteral(".ludus-recovery"), envelope, WorldDocument::MaxBytes + 256) &&
+    if (Read(Path_ + QStringLiteral(".ludus-recovery"),
+             envelope,
+             WorldDocument::MAX_BYTES + MAX_RECOVERY_HEADER_BYTES) &&
         envelope.startsWith(RecoveryHeader()))
     {
         (void)QFile::remove(Path_ + QStringLiteral(".ludus-recovery"));

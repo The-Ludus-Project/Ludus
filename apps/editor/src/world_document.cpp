@@ -625,12 +625,13 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         return Fail(error, QStringLiteral("A version-2 World needs a nonnil version-4 document UUID."));
     }
     const auto entities = candidate.value(QStringLiteral("entities")).toArray();
-    if (entities.size() > MAX_ENTITIES || QJsonDocument(candidate).toJson(QJsonDocument::Compact).size() + 1 > MaxBytes)
+    if (entities.size() > MAX_ENTITIES ||
+        QJsonDocument(candidate).toJson(QJsonDocument::Compact).size() + 1 > MAX_BYTES)
     {
         return Fail(error,
                     QStringLiteral("World supports at most %1 entities and %2 KiB.")
                         .arg(MAX_ENTITIES)
-                        .arg(MaxBytes / BYTES_PER_KIBIBYTE));
+                        .arg(MAX_BYTES / BYTES_PER_KIBIBYTE));
     }
     // Entity keys: version-2 UUIDs or version-1 IDs, the values entity-typed properties hold.
     QSet<QString> ids;
@@ -891,7 +892,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
 bool WorldDocument::Load(const QByteArray& bytes, QString& error)
 {
     QJsonObject candidate;
-    if (Decode(bytes, MaxBytes, candidate, error) == false || Validate(candidate, error) == false)
+    if (Decode(bytes, MAX_BYTES, candidate, error) == false || Validate(candidate, error) == false)
     {
         return false;
     }
