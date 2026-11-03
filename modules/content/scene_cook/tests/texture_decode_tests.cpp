@@ -691,8 +691,7 @@ TEST_CASE("Texture decode queue matches inline decoding in and out of planned or
     CHECK(embedded.Decoded == ImageResult::Ok);
 }
 
-TEST_CASE("Texture decode queue read-ahead matches inline decoding across many batches",
-          "[scene_cook][threading]")
+TEST_CASE("Texture decode queue read-ahead matches inline decoding across many batches", "[scene_cook][threading]")
 {
     // Forces several sequential batch boundaries (so the queue prefetches the next batch
     // while the current one decodes) interleaved with skips past the batch end (so a
