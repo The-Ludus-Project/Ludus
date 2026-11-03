@@ -175,6 +175,8 @@ struct ReferencePath final
     uint32 Pixel = 0, Sample = 0, Depth = 0, DirectDepth = 0;
     uint32 ShadowCount = 0;
     float32 PreviousPdf = 0;
+    /// The previous scattering event was a specular delta lobe: emission it reaches takes full weight.
+    bool IsPreviousSpecular = false;
     /// Resampled modes: the previous vertex's receiver and its Z-hat cache, read bit-identically by the
     /// BSDF-hit MIS density of the emitter that the continuation reaches.
     ReferenceReceiverFrame PreviousReceiver{};
@@ -262,6 +264,9 @@ struct ReferenceJob final
     bool IsCpuOnly = false;
     ReferenceCaptureDescription Description;
     DirectLight Lights[128];
+    /// Admitted panel luminaires of a scene-shader job, in SourceId order; packed after the lights.
+    PanelLuminaire Luminaires[MAX_PANEL_LUMINAIRES];
+    uint32 LuminaireCount = 0;
     EnvironmentData* EnvironmentOrNull = nullptr;
     math::Matrix4 ClipToWorld;
     math::RandomKey Key;

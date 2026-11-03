@@ -330,7 +330,7 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
             }
             const uint8* nameOrNull = reader.Take(format::MAX_MATERIAL_NAME_BYTES);
             if (nameOrNull == nullptr || reader.Read(model) == false ||
-                model > static_cast<uint32>(format::MaterialModel::CoatedDiffuse) ||
+                model > static_cast<uint32>(format::MaterialModel::ThinDielectric) ||
                 material.Name.Set({reinterpret_cast<const char*>(nameOrNull), nameBytes}) == false ||
                 reader.Read(material.Reflectance) == false || IsNonnegative(material.Reflectance, 1) == false)
             {

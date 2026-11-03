@@ -286,7 +286,7 @@ and per-texel roughness. The IR already holds, and the cook reports dropping:
 | --- | --- |
 | `diffuse`, `coateddiffuse` | base colour, roughness from the coat |
 | `conductor`, `coatedconductor` | metallic, colour from the named eta/k table |
-| `dielectric`, `thindielectric` | F0 0.04, transmission dropped |
+| `dielectric`, `thindielectric` | typed smooth `Dielectric`/`ThinDielectric` with scalar `eta` (default 1.5; a named spectrum keeps 1.5 with `SPECTRUM_APPROXIMATED`); a rough one imports smooth with `ROUGH_TRANSMISSION_APPROXIMATED`. The [reference tracers](../architecture/renderer-systems.md#smooth-dielectric-reference) render the transmission; raster and render graphs shade the legacy fallback, a smooth reflector with base colour 0.04 |
 | `mix` | the first material |
 | other materials | grey default, `MATERIAL_DEFAULTED` |
 | area lights | emissive material in pbrt-v4 photometric units (RGB keeps its magnitude), source sidedness and optional power; unequal resolved radiances stay separate |
@@ -345,7 +345,7 @@ combine through the durable scene-asset assembly contract.
 
 The RGB proxy, material approximations, finite light range and coarse triangle
 charts prevent pixel parity with PBRT's spectral path tracer. EXR, media,
-transmission and textured area emission remain unsupported. See the
+rough transmission and textured area emission remain unsupported. See the
 [renderer lighting contract](../architecture/renderer-systems.md) for viewport
 area-light, shadow and indirect-transport limits.
 

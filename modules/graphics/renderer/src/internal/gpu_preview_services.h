@@ -102,7 +102,9 @@ Status PackGpuScene(const ReferenceJob& job,
     const uint64 surfacesWide = emittersWide + scene.Emitters.GetSize() +
                                 uint64(job.ShaderEmitters.GetSize()) * (1 + LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS);
     const uint64 lightsWide = surfacesWide + uint64(scene.InstanceCount) * LUDUS_GPU_PREVIEW_SURFACE_WORDS;
-    const uint64 environmentWide = lightsWide + uint64(job.Description.LightCount) * LUDUS_GPU_PREVIEW_LIGHT_WORDS;
+    const uint64 luminairesWide = lightsWide + uint64(job.Description.LightCount) * LUDUS_GPU_PREVIEW_LIGHT_WORDS;
+    const uint64 environmentWide = luminairesWide + LUDUS_GPU_PREVIEW_LUMINAIRE_HEADER_WORDS +
+                                   uint64(job.LuminaireCount) * LUDUS_GPU_PREVIEW_LUMINAIRE_WORDS;
     const uint64 sizeWide =
         environmentWide + (job.EnvironmentOrNull != nullptr ? 1 + job.EnvironmentOrNull->Pixels.GetSize() : 0);
     if (sizeWide > ~uint32{0})
@@ -388,6 +390,20 @@ Status PackGpuScene(const ReferenceJob& job,
             GpuBits(static_cast<uint32>(light.SourceId)),
             GpuBits(static_cast<uint32>(light.SourceId >> LUDUS_GRAPH_SOURCE_HIGH_SHIFT)),
             0};
+    }
+    data[static_cast<usize>(luminairesWide)] = {GpuBits(job.LuminaireCount), 0, 0, 0};
+    for (usize i = 0; i < job.LuminaireCount; ++i)
+    {
+        const PanelLuminaire& luminaire = job.Luminaires[i];
+        math::Vector4* outLuminaire = data.GetData() + static_cast<usize>(luminairesWide) +
+                                      LUDUS_GPU_PREVIEW_LUMINAIRE_HEADER_WORDS + i * LUDUS_GPU_PREVIEW_LUMINAIRE_WORDS;
+        outLuminaire[0] = GpuVector(luminaire.CenterWorld, luminaire.HalfExtentWorld);
+        outLuminaire[1] = GpuVector(luminaire.TangentWorld, luminaire.RadianceScale);
+        outLuminaire[2] = GpuVector(luminaire.BitangentWorld, luminaire.BeamWidth);
+        outLuminaire[LUDUS_GPU_PREVIEW_LUMINAIRE_BEAM_WORD] = {luminaire.BeamSteering,
+                                                               luminaire.BeamSpread,
+                                                               luminaire.BeamTwist,
+                                                               0};
     }
     outUniform.ClipToWorld = job.ClipToWorld;
     outUniform.CameraPositionWorld =

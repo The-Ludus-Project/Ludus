@@ -12,8 +12,16 @@
 // Strides count float4 words, not bytes. Update the version when changing layout.
 #define LUDUS_GPU_PREVIEW_SURFACE_WORDS 12
 #define LUDUS_GPU_PREVIEW_LIGHT_WORDS 4
-// 9: emitter bounds after the emitter records; 8: BVH leaf order in order word Z, beside native opacity ranges in X.
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 11
+// Panel luminaires follow the light records: LUMINAIRE_HEADER_WORDS words whose first X holds the count bits, then
+// LUMINAIRE_WORDS per luminaire: center/half extent, tangent/radiance scale, bitangent/beam width, then beam
+// steering/spread/twist and 0. The frame is orthonormal; the panel emits along cross(tangent, bitangent).
+#define LUDUS_GPU_PREVIEW_LUMINAIRE_HEADER_WORDS 1
+#define LUDUS_GPU_PREVIEW_LUMINAIRE_WORDS 4
+// Word of a luminaire record holding beam steering, spread and twist.
+#define LUDUS_GPU_PREVIEW_LUMINAIRE_BEAM_WORD 3
+// 12: panel luminaires after the lights; 9: emitter bounds after the emitter records; 8: BVH leaf order in order
+// word Z, beside native opacity ranges in X.
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 12
 // Words per mesh emitter in the bounds records that follow the emitter records:
 // sphere centre/radius, normal-cone axis/cosine, then flag bits in word 2 X.
 #define LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS 3

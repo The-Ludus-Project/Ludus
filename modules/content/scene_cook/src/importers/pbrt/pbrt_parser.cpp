@@ -16,6 +16,7 @@ namespace ludus::content::scene_cook::importers::pbrt
 namespace
 {
 using foundation::StringStatus;
+namespace format = scene_format;
 
 // ---------------------------------------------------------------------------
 // Directive arguments.
@@ -301,7 +302,8 @@ private:
     [[nodiscard]] bool resolveSourcePath(std::string_view name, ResolvedSourcePath& outPath) noexcept;
     [[nodiscard]] uint32 findSpectrumTexture(std::string_view name) const noexcept;
     [[nodiscard]] const FloatTexture* findFloatTexture(std::string_view name) const noexcept;
-    void readRoughness(Directive& inoutDirective, float64 defaultValue, float64& outRoughness) noexcept;
+    /// Returns the microfacet alpha before the engine roughness clamp.
+    float64 readRoughness(Directive& inoutDirective, float64 defaultValue, float64& outRoughness) noexcept;
     void readBaseColour(Directive& inoutDirective,
                         std::string_view parameterName,
                         float64 defaultGrey,
@@ -1324,7 +1326,7 @@ Status SceneReader::defineTexture(Directive& inoutDirective) noexcept
 // ---------------------------------------------------------------------------
 // Materials.
 
-void SceneReader::readRoughness(Directive& inoutDirective, float64 defaultValue, float64& outRoughness) noexcept
+float64 SceneReader::readRoughness(Directive& inoutDirective, float64 defaultValue, float64& outRoughness) noexcept
 {
     // pbrt maps roughness r to the microfacet alpha as sqrt(r) when remaproughness
     // is true (the default) and as r otherwise. The engine's perceptual roughness
@@ -1357,6 +1359,7 @@ void SceneReader::readRoughness(Directive& inoutDirective, float64 defaultValue,
     raw = math::Clamp(raw, 0.0, 1.0);
     const float64 alpha = isRemapped == true ? math::Sqrt(raw) : raw;
     outRoughness = math::Clamp(math::Sqrt(alpha), 0.045, 1.0);
+    return alpha;
 }
 
 void SceneReader::readBaseColour(Directive& inoutDirective,
@@ -1424,7 +1427,7 @@ Status SceneReader::defineMaterial(Directive& inoutDirective, std::string_view t
     else if (type == "coateddiffuse")
     {
         readBaseColour(inoutDirective, "reflectance", .5, material);
-        readRoughness(inoutDirective, 0.0, material.Roughness);
+        static_cast<void>(readRoughness(inoutDirective, 0.0, material.Roughness));
     }
     else if (type == "conductor" || type == "coatedconductor" || type == "metal")
     {
@@ -1466,15 +1469,41 @@ Status SceneReader::defineMaterial(Directive& inoutDirective, std::string_view t
         }
         else
         {
-            readRoughness(inoutDirective, 0.0, material.Roughness);
+            static_cast<void>(readRoughness(inoutDirective, 0.0, material.Roughness));
         }
     }
     else if (type == "dielectric" || type == "thindielectric")
     {
-        material.BaseColour[0] = material.BaseColour[1] = material.BaseColour[2] = .04;
-        readRoughness(inoutDirective, 0.0, material.Roughness);
-        material.IsApproximated = true;
-        warn(codes::TRANSMISSION_DROPPED, inoutDirective.Line, label);
+        // The metallic-roughness terms are the fallback of evaluators without transmission.
+        const float64 fallback = static_cast<float64>(format::DIELECTRIC_FALLBACK_REFLECTANCE);
+        material.BaseColour[0] = material.BaseColour[1] = material.BaseColour[2] = fallback;
+        const float64 alpha = readRoughness(inoutDirective, 0.0, material.Roughness);
+        material.Scattering.Model =
+            type == "dielectric" ? format::MaterialModel::Dielectric : format::MaterialModel::ThinDielectric;
+        float64 eta = static_cast<float64>(format::DEFAULT_DIELECTRIC_ETA);
+        const Parameter* etaOrNull = findParameter(inoutDirective, "eta");
+        if (etaOrNull != nullptr && etaOrNull->Value.Numbers.IsEmpty() == false &&
+            math::IsFinite(etaOrNull->Value.Numbers[0]) == true && etaOrNull->Value.Numbers[0] > 0 &&
+            etaOrNull->Value.Numbers[0] <= static_cast<float64>(format::MAX_MATERIAL_OPTICAL_CONSTANT))
+        {
+            eta = etaOrNull->Value.Numbers[0];
+        }
+        else if (etaOrNull != nullptr)
+        {
+            material.IsApproximated = true;
+            inform(codes::SPECTRUM_APPROXIMATED, inoutDirective.Line, "dielectric eta replaced by the default 1.5");
+        }
+        for (float32& channel : material.Scattering.Eta)
+        {
+            channel = static_cast<float32>(eta);
+        }
+        material.Scattering.AlphaU = format::MIN_MATERIAL_ALPHA;
+        material.Scattering.AlphaV = format::MIN_MATERIAL_ALPHA;
+        if (alpha >= static_cast<float64>(format::LUDUS_SMOOTH_INTERFACE_ALPHA))
+        {
+            material.IsApproximated = true;
+            warn(codes::ROUGH_TRANSMISSION_APPROXIMATED, inoutDirective.Line, label);
+        }
     }
     else if (type == "mix")
     {

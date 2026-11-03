@@ -99,6 +99,16 @@ enum class NormalLayout : uint8
     /// wall and the emitters straddle as smoothed normals across a crease do.
     Mixed,
 };
+/// Typed scattering that replaces BuildSphereSnapshot's opaque materials.
+enum class SphereSurfaces : uint8
+{
+    /// The legacy or typed opaque reflectors only.
+    Opaque,
+    /// Coated diffuse on the sphere, the wall and the masked quad.
+    Coated,
+    /// A smooth glass sphere (index 1.5) and a thin masked pane (index 1.33) in front of the wall.
+    Glass,
+};
 /// Every SPHERE_INWARD_ROW_PERIOD-th sphere ring of a Mixed layout points its normals inwards.
 constexpr uint32 SPHERE_INWARD_ROW_PERIOD = 8;
 // A tessellated glossy metal sphere in front of a diffuse wall and two emitters of
@@ -109,7 +119,7 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
                       rr::MaterialProgram program,
                       rr::Snapshot& outSnapshot,
                       bool shouldUseTypedMaterials = false,
-                      bool shouldUseCoating = false,
+                      SphereSurfaces surfaces = SphereSurfaces::Opaque,
                       NormalLayout normalLayout = NormalLayout::Matched)
 {
     constexpr uint32 LONGITUDES = 96;
@@ -218,7 +228,18 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
             material.Scattering.K[1] = 6.269523F;
             material.Scattering.K[2] = 4.837001F;
         }
-        if (shouldUseCoating == true && i != 2)
+        if (surfaces == SphereSurfaces::Glass && (i == 0 || i == 3))
+        {
+            namespace format = ludus::content::scene_format;
+            material.Scattering = {};
+            material.Scattering.Model =
+                i == 0 ? format::MaterialModel::Dielectric : format::MaterialModel::ThinDielectric;
+            const float32 eta = i == 0 ? format::DEFAULT_DIELECTRIC_ETA : 1.33F;
+            material.Scattering.Eta = {{eta, eta, eta}};
+            material.Scattering.AlphaU = format::MIN_MATERIAL_ALPHA;
+            material.Scattering.AlphaV = format::MIN_MATERIAL_ALPHA;
+        }
+        if (surfaces == SphereSurfaces::Coated && i != 2)
         {
             namespace format = ludus::content::scene_format;
             material.Scattering.Model = format::MaterialModel::CoatedDiffuse;
@@ -1037,6 +1058,8 @@ struct QuadItem final
     ludus::content::scene_format::MaterialModel Model = ludus::content::scene_format::MaterialModel::MetallicRoughness;
     float32 Metallic = 0;
     float32 Roughness = 1;
+    /// Real index of a smooth Dielectric or ThinDielectric model.
+    float32 Eta = ludus::content::scene_format::DEFAULT_DIELECTRIC_ETA;
 };
 /// A snapshot of planar quads, wound so that each quad's geometric normal is cross(c1 - c0, c3 - c0).
 S BuildQuadSnapshot(rr::Renderer& inoutRenderer,
@@ -1073,6 +1096,13 @@ S BuildQuadSnapshot(rr::Renderer& inoutRenderer,
         material.Metallic = quad.Metallic;
         material.Roughness = quad.Roughness;
         material.Scattering.Model = quad.Model;
+        if (quad.Model == ludus::content::scene_format::MaterialModel::Dielectric ||
+            quad.Model == ludus::content::scene_format::MaterialModel::ThinDielectric)
+        {
+            material.Scattering.Eta = {{quad.Eta, quad.Eta, quad.Eta}};
+            material.Scattering.AlphaU = ludus::content::scene_format::MIN_MATERIAL_ALPHA;
+            material.Scattering.AlphaV = ludus::content::scene_format::MIN_MATERIAL_ALPHA;
+        }
         material.Emission = quad.Emission;
         material.IsEmissionTwoSided = quad.IsEmissionTwoSided;
         rr::LightSelection selection;
@@ -1412,8 +1442,13 @@ TEST_CASE("Reference transport orients geometric normals by authored normals as 
     {
         CAPTURE(i);
         REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
-        REQUIRE(BuildSphereSnapshot(device, cpu.Renderer, cpu.Program, cpu.Snapshot, false, false, layouts[i]) ==
-                S::Ready);
+        REQUIRE(BuildSphereSnapshot(device,
+                                    cpu.Renderer,
+                                    cpu.Program,
+                                    cpu.Snapshot,
+                                    false,
+                                    SphereSurfaces::Opaque,
+                                    layouts[i]) == S::Ready);
         rr::ReferenceCaptureInfo information;
         Capture(cpu, capture, surface, images[i], information);
         CHECK(information.InvalidContributions == 0);
@@ -1461,7 +1496,7 @@ TEST_CASE("GPU-compute reference matches the CPU oracle where shading normals st
                                     session->Program,
                                     session->Snapshot,
                                     false,
-                                    false,
+                                    SphereSurfaces::Opaque,
                                     NormalLayout::Mixed) == S::Ready);
     }
     rr::ReferenceCaptureDescription capture = MakePerspectiveCapture({.3F, .2F, -2}, 32, 24);
@@ -1637,11 +1672,11 @@ TEST_CASE("GPU-compute light-sampling mode is part of the integral and the raw c
     REQUIRE(gpu.Renderer.Release(handle) == S::Ready);
 }
 
-TEST_CASE("Typed diffuse conductor and coated diffuse match between CPU and GPU reference transport",
+TEST_CASE("Typed diffuse conductor coated diffuse and dielectrics match between CPU and GPU reference transport",
           "[renderer][gpu][reference-compute]")
 {
-    const bool shouldUseCoating = GENERATE(false, true);
-    CAPTURE(shouldUseCoating);
+    const SphereSurfaces surfaces = GENERATE(SphereSurfaces::Opaque, SphereSurfaces::Coated, SphereSurfaces::Glass);
+    CAPTURE(surfaces);
     rhi::Shutdown();
     struct Guard final
     {
@@ -1673,8 +1708,8 @@ TEST_CASE("Typed diffuse conductor and coated diffuse match between CPU and GPU 
     Session cpu;
     REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
     rr::Snapshot spheres[2];
-    REQUIRE(BuildSphereSnapshot(device, cpu.Renderer, cpu.Program, spheres[0], true, shouldUseCoating) == S::Ready);
-    REQUIRE(BuildSphereSnapshot(device, gpu.Renderer, gpu.Program, spheres[1], true, shouldUseCoating) == S::Ready);
+    REQUIRE(BuildSphereSnapshot(device, cpu.Renderer, cpu.Program, spheres[0], true, surfaces) == S::Ready);
+    REQUIRE(BuildSphereSnapshot(device, gpu.Renderer, gpu.Program, spheres[1], true, surfaces) == S::Ready);
     REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
     REQUIRE(gpu.Renderer.Release(gpu.Snapshot) == S::Ready);
     cpu.Snapshot = spheres[0];
@@ -1723,4 +1758,104 @@ TEST_CASE("Typed diffuse conductor and coated diffuse match between CPU and GPU 
     // A rare near-edge hit can send one path elsewhere; the image mean stays matched.
     CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
     CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
+}
+
+TEST_CASE("An emitter seen through smooth glass keeps the Fresnel-transmitted radiance",
+          "[renderer][gpu][reference-compute][dielectric]")
+{
+    namespace format = ludus::content::scene_format;
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    // A one-sided white emitter behind glass, seen along the glass normal by orthographic camera rays, with a black
+    // environment: every path either reaches the emitter (contributing exactly one) or leaves the scene.
+    QuadItem emitter;
+    emitter.CornersWorld = {{{-2, -2, 1}, {-2, 2, 1}, {2, 2, 1}, {2, -2, 1}}};
+    emitter.Emission = {1, 1, 1};
+    emitter.IsEmissionTwoSided = false;
+    emitter.BaseColor = {};
+    emitter.Model = format::MaterialModel::Diffuse;
+    QuadItem front;
+    front.CornersWorld = {{{-1, -1, -.1F}, {-1, 1, -.1F}, {1, 1, -.1F}, {1, -1, -.1F}}};
+    front.Model = format::MaterialModel::Dielectric;
+    QuadItem back;
+    back.CornersWorld = {{{-1, -1, .1F}, {1, -1, .1F}, {1, 1, .1F}, {-1, 1, .1F}}};
+    back.Model = format::MaterialModel::Dielectric;
+    QuadItem pane = front;
+    pane.Model = format::MaterialModel::ThinDielectric;
+    // Normal-incidence Fresnel reflectance ((eta - 1) / (eta + 1))^2 = 0.04 of index 1.5.
+    const float64 reflectance = 0.04;
+    const float64 transmittance = 1 - reflectance;
+    constexpr uint32 MAX_DEPTH = 6;
+    // The slab passes paths with 2, 4 and 6 events: two refractions around k internal reflection pairs. Radiance
+    // scales by eta^-2 entering and eta^2 leaving, so each reaching path carries exactly one.
+    const float64 slab = transmittance * transmittance *
+                         (1 + reflectance * reflectance + reflectance * reflectance * reflectance * reflectance);
+    // A thin slab sums all its interreflections: T' = 1 - (R + T^2 R / (1 - R^2)) = (1 - R) / (1 + R).
+    const float64 thin = transmittance / (1 + reflectance);
+    // Orthographic rays along +z start on the near plane z = -0.7; every pixel is an independent normal-incidence
+    // trial.
+    constexpr uint32 IMAGE_EXTENT = 16;
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = IMAGE_EXTENT;
+    capture.Height = IMAGE_EXTENT;
+    capture.OrthographicCamera = true;
+    capture.WorldToClip.Columns[3].Z = .7F;
+    capture.CenterRays = true;
+    capture.TargetSamples = 64;
+    capture.MaxDepth = MAX_DEPTH;
+    capture.RouletteDepth = 64;
+    capture.Seed = 23;
+    for (const bool isThin : {false, true})
+    {
+        const QuadItem slabQuads[]{emitter, front, back};
+        const QuadItem thinQuads[]{emitter, pane};
+        const float64 expected = isThin == true ? thin : slab;
+        // Each sample is a Bernoulli trial; allow five standard errors of the image mean.
+        const float64 trials = static_cast<float64>(capture.TargetSamples) * IMAGE_EXTENT * IMAGE_EXTENT;
+        const float64 tolerance = 5 * math::Sqrt(expected * (1 - expected) / trials);
+        for (Session* session : {&cpu, &gpu})
+        {
+            REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+            REQUIRE(BuildQuadSnapshot(session->Renderer,
+                                      session->Program,
+                                      isThin == true ? thinQuads : slabQuads,
+                                      isThin == true ? 2 : 3,
+                                      session->Snapshot) == S::Ready);
+            Array<rr::ReferencePixel> pixels;
+            rr::ReferenceCaptureInfo info;
+            Capture(*session, capture, surface, pixels, info);
+            float64 mean = 0;
+            for (const rr::ReferencePixel& pixel : pixels)
+            {
+                mean += static_cast<float64>(pixel.Radiance.X) / static_cast<float64>(pixels.GetSize());
+                CHECK(pixel.Radiance.X == pixel.Radiance.Z);
+            }
+            CAPTURE(isThin, static_cast<uint32>(info.Traversal), mean, expected, tolerance);
+            CHECK(info.InvalidContributions == 0);
+            // Specular vertices skip next-event estimation; the emitter is reached only through the glass.
+            CHECK(info.VisibilityQueries == 0);
+            CHECK(math::Abs(mean - expected) <= tolerance);
+        }
+    }
 }

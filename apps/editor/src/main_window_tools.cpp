@@ -31,7 +31,9 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLatin1StringView>
+#include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QScrollArea>
 #include <QStackedWidget>
 #include <QStatusBar>
@@ -160,10 +162,54 @@ void MainWindow::openProjectItem(ProjectItemKind kind, const QString& path)
     }
 }
 
+bool MainWindow::offerLuminaireRepair()
+{
+    const RenderGraphLuminaireCoverage repair = Renderer_->MakeRenderWarningRepair();
+    if (repair.Repair == RenderGraphLuminaireRepair::None)
+    {
+        return false;
+    }
+    const bool isAdd = repair.Repair == RenderGraphLuminaireRepair::AddLuminaire;
+    QMessageBox confirmation(QMessageBox::Question,
+                             isAdd == true ? QStringLiteral("Add luminaire?") : QStringLiteral("Fit luminaire?"),
+                             QString{},
+                             QMessageBox::Cancel,
+                             this);
+    confirmation.setObjectName(QStringLiteral("renderGraphLuminaireRepairConfirmation"));
+    const QString placement =
+        QStringLiteral("a %1 m panel facing down at (%2, %3, %4)")
+            .arg(static_cast<foundation::float64>(2 * repair.Placement.HalfExtentWorld), 0, 'f', 2)
+            .arg(static_cast<foundation::float64>(repair.Placement.PositionWorld.X), 0, 'f', 2)
+            .arg(static_cast<foundation::float64>(repair.Placement.PositionWorld.Y), 0, 'f', 2)
+            .arg(static_cast<foundation::float64>(repair.Placement.PositionWorld.Z), 0, 'f', 2);
+    confirmation.setText(
+        (isAdd == true ? QStringLiteral("The slice-sampling-luminaire template lights surfaces only with the World's "
+                                        "luminaires, and this World has none. Add %1, above the view of the "
+                                        "viewport camera?")
+                       : QStringLiteral("The World's luminaire cannot light it. Move and resize it to %1, above "
+                                        "the view of the viewport camera?"))
+            .arg(placement) +
+        QStringLiteral("\n\nThe edit can be undone. Save the World to keep it."));
+    QPushButton* accept =
+        confirmation.addButton(isAdd == true ? QStringLiteral("Add luminaire") : QStringLiteral("Fit luminaire"),
+                               QMessageBox::AcceptRole);
+    confirmation.setDefaultButton(QMessageBox::Cancel);
+    confirmation.exec();
+    if (confirmation.clickedButton() == accept)
+    {
+        static_cast<void>(mDocuments->OpenDocument(World_));
+        static_cast<void>(World_->ApplyLuminaireRepair(repair));
+    }
+    return true;
+}
 void MainWindow::activateErrorEntry(const ErrorListEntry& entry)
 {
     if (entry.Producer == ErrorListProducer::RenderPreview)
     {
+        if (entry.Severity == ErrorListSeverity::Warning && offerLuminaireRepair() == true)
+        {
+            return;
+        }
         static_cast<void>(mDocuments->OpenDocument(Renderer_));
         showToolWindow(mRenderPreviewDock);
         return;

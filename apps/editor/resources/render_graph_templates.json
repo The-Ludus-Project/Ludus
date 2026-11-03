@@ -123,7 +123,7 @@
       "category": "ray-traced",
       "requirements": ["compute-ray-tracing"],
       "keywords": ["slice sampling", "steinberg", "directional luminaire", "led panel", "near field", "auxiliary map", "inverse branches", "defensive mixture", "light field", "direct lighting"],
-      "description": "Steinberg's slice sampling for direct light from a near-field directional luminaire: an analytic LED panel of nine tiles with position-dependent Gaussian beams lights the scene. Three shading passes each draw one panel sample with a shadow ray: slice sampling, which turns the panel's emission sampler into a direct-light proposal by solving its seed equation on every tile, in a defensive mixture with uniform panel area (the image shown first); slice sampling alone; and uniform panel-area sampling. The first pass also records the primary hits for the others. Every pass uses the compute BVH, so it needs Metal or Vulkan compute but no hardware ray tracing."
+      "description": "Steinberg's slice sampling for direct light from a near-field directional luminaire: the World's luminaires, analytic LED panels of nine tiles with position-dependent Gaussian beams, light the scene (Add Geometry / Light → Luminaire). Three shading passes each draw one panel sample with a shadow ray: slice sampling, which turns the panel's emission sampler into a direct-light proposal by solving its seed equation on every tile, in a defensive mixture with uniform panel area (the image shown first); slice sampling alone; and uniform panel-area sampling. The first pass also records the primary hits for the others. Every pass uses the compute BVH, so it needs Metal or Vulkan compute but no hardware ray tracing."
     },
     {
       "kind": "graph",

@@ -132,9 +132,14 @@ continue to expose these names for source compatibility.
 The scene asset catalog (`assets/catalog.json`, an object of resource records)
 is a different schema from Content's audio catalog (an array of records): its
 encoded JSON ceiling is **64 MiB**, while scene level/metadata documents remain
-**1 MiB**. Each scene record retains its import's source-input digest map for
-artifact-key compatibility; the catalog grows with resources times source files.
-The 4096-record ceiling is unchanged. Neither catalog's encoded byte ceiling is
+**1 MiB**. Each record's build carries one `source_inputs_sha256`, the SHA-256
+of its import's canonical source-input digest map (build record schema 2). The
+imported scene manifest keeps the map itself, so the catalog grows with resources,
+not resources times source files. Records of the frozen `pbrt-reference-v1`
+profile keep the full map in `source_inputs` (schema 1) so their artifact keys
+stay equal to the scene pipeline goldens. Schema 1 records written by earlier
+imports remain valid; reimporting their source rewrites them in schema 2. The
+4096-record ceiling is unchanged. Neither catalog's encoded byte ceiling is
 a peak-memory guarantee: parsing, candidate construction and serialization can
 coexist with the published representation.
 
@@ -506,10 +511,10 @@ material description carries an alpha mode, or the level exceeds the resident
 reference profile's mesh, material, texture or object counts; otherwise it
 produces the version 2 to 4 bytes it produced before. A level places at most
 1,024 objects, and a closure at most every part of one version 5 bundle plus a
-scene and lighting part per import. The catalog's records carry the full source
-digest map of their import, so the catalog grows with parts times source files;
-a scene with hundreds of materials and hundreds of source files approaches the
-64 MiB catalog limit.
+scene and lighting part per import. Each catalog record identifies its import's
+source set by one digest of the input map, so full Bistro (about 527 records from
+1,131 source files) takes about 0.4 MiB of the 64 MiB catalog limit; the full
+map in every record would have taken about 59 MiB.
 
 ### Surface maps, emission maps and tangents (LUSCN v6)
 
@@ -570,7 +575,8 @@ World composition also preserves these fields when combining imported and author
 geometry. Texture dependencies continue to refer to immutable catalog revisions.
 
 The typed PBRT importer resolves its declared defaults at import. The current
-subset admits diffuse, conductor and coated-diffuse definitions; its coating's
+subset admits diffuse, conductor, coated-diffuse and smooth dielectric or thin
+dielectric definitions (scalar `eta`; roughness below pbrt-v4's smooth threshold); its coating's
 unexposed layer settings retain PBRT's defaults (zero medium scattering albedo,
 zero phase anisotropy, ten internal events and one evaluation sample). It requires
 explicit `remaproughness=false` and positive isotropic alpha for rough source

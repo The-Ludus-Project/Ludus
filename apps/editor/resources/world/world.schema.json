@@ -263,6 +263,82 @@
           "max": 89.9
         }
       ]
+    },
+    {
+      "id": "luminaire",
+      "label": "Luminaire",
+      "help": "Analytic LED panel with steered Gaussian beams (Steinberg's slice sampling, section 6). Uses a rigid Transform: the panel emits along -Z and its tile columns run along +X. Only render graphs that read luminaires, such as the slice-sampling-luminaire template, are lit by it.",
+      "required": false,
+      "properties": [
+        {
+          "id": "enabled",
+          "label": "Enabled",
+          "type": "boolean",
+          "default": true,
+          "help": "Light render graphs that read luminaires.",
+          "unit": ""
+        },
+        {
+          "id": "halfExtent",
+          "label": "Half extent",
+          "type": "number",
+          "default": 0.35,
+          "help": "Half the side of the square panel.",
+          "unit": "m",
+          "min": 0.001,
+          "max": 1000
+        },
+        {
+          "id": "radianceScale",
+          "label": "Radiance scale",
+          "type": "number",
+          "default": 6,
+          "help": "Multiplies every tile's radiance; sampling is unchanged.",
+          "unit": "",
+          "min": 0,
+          "max": 1000000
+        },
+        {
+          "id": "beamWidth",
+          "label": "Beam width",
+          "type": "number",
+          "default": 0.02,
+          "help": "Gaussian width of every tile's beams; tiles vary it by 0.8 to 1.2 times.",
+          "unit": "slope",
+          "min": 0.001,
+          "max": 1
+        },
+        {
+          "id": "beamSteering",
+          "label": "Beam steering",
+          "type": "number",
+          "default": 0.12,
+          "help": "Offset of each tile's beams along its own steering direction.",
+          "unit": "slope",
+          "min": 0,
+          "max": 2
+        },
+        {
+          "id": "beamSpread",
+          "label": "Beam spread",
+          "type": "number",
+          "default": 0.08,
+          "help": "Slope change per half extent of panel position; widens the footprint.",
+          "unit": "slope / half extent",
+          "min": 0,
+          "max": 2
+        },
+        {
+          "id": "beamTwist",
+          "label": "Beam twist",
+          "type": "number",
+          "default": 0.04,
+          "help": "Rotational slope change per half extent of panel position.",
+          "unit": "slope / half extent",
+          "min": 0,
+          "max": 2
+        }
+      ]
     }
   ],
   "assets": [

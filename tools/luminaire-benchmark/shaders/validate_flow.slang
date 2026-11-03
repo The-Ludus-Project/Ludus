@@ -21,21 +21,17 @@ ValidatePortableFlow(uint3 threadIndex : SV_DispatchThreadID) {
     float4 input = Inputs[index * VALIDATION_INPUT_RECORDS];
     float3 positionWorld = input.xyz;
     float2 seed = float2(input.w, Inputs[index * VALIDATION_INPUT_RECORDS + 1].x);
-    float distanceWorld = length(positionWorld - LUMINAIRE_CENTER_WORLD);
+    Luminaire luminaire = MakeRoomLuminaire();
+    float distanceWorld = length(positionWorld - luminaire.CenterWorld);
     float thetaCap = asin(PURELIGHT_RADIUS_WORLD / distanceWorld);
     float logDensity;
-    float2 value = TransformPureLightFlow(positionWorld, thetaCap, seed, true, logDensity);
+    float2 value = TransformPureLightFlow(luminaire, positionWorld, thetaCap, seed, true, logDensity);
     float replayDensity;
-    float2 restored = TransformPureLightFlow(positionWorld, thetaCap, value, false, replayDensity);
+    float2 restored = TransformPureLightFlow(luminaire, positionWorld, thetaCap, value, false, replayDensity);
     float densitySolidAngle;
-    float3 directionWorld = SamplePureLightCap(positionWorld, seed, densitySolidAngle);
-    LuminaireProfile profile;
-    profile.RadianceScale = PURELIGHT_PROFILE_RADIANCE_SCALE;
-    profile.BeamWidth = PURELIGHT_PROFILE_BEAM_WIDTH;
-    profile.BeamSteering = PURELIGHT_PROFILE_BEAM_STEERING;
-    profile.BeamSpread = PURELIGHT_PROFILE_BEAM_SPREAD;
-    profile.BeamTwist = PURELIGHT_PROFILE_BEAM_TWIST;
-    LuminaireLightSample light = SamplePortablePureLight(profile, MakeLuminaireReceiver(positionWorld), seed);
+    float3 directionWorld = SamplePureLightCap(luminaire, positionWorld, seed, densitySolidAngle);
+    LuminaireLightSample light =
+        SamplePortablePureLight(luminaire, MakeLuminaireReceiver(luminaire, positionWorld), seed);
     Results[index * VALIDATION_OUTPUT_RECORDS] = float4(value, logDensity, replayDensity);
     Results[index * VALIDATION_OUTPUT_RECORDS + 1] = float4(restored, directionWorld.xy);
     Results[index * VALIDATION_OUTPUT_RECORDS + 2] = float4(directionWorld.z, densitySolidAngle, 0, 0);

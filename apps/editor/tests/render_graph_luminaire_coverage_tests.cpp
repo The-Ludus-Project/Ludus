@@ -6,7 +6,6 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <QFile>
 #include <QList>
 #include <QPair>
 #include <QTemporaryDir>
@@ -19,28 +18,31 @@ namespace
 {
 const QString ROOT_GRAPH = QStringLiteral("main.lurender.json");
 const QString DEFAULT_CONFIGURATION = QStringLiteral("Default");
-const QString IMPORTED_PLACEMENT = QStringLiteral("slice_sampling_luminaire/main_shaders/luminaire.slang");
-/// Tolerance of placement literals read back from source text, in world units.
-constexpr float32 PLACEMENT_TOLERANCE_WORLD = 1e-6F;
+/// Tolerance of fitted placements, in world units.
+constexpr float32 PLACEMENT_TOLERANCE_WORLD = 1e-5F;
+constexpr foundation::uint64 CEILING_LUMINAIRE_SOURCE = 7;
 
-QByteArray ReadShippedPlacement()
+/// The renderer tests' Cornell-box luminaire: a 0.7 x 0.7 panel facing down at y = 0.97.
+graphics::renderer::PanelLuminaire MakeCornellLuminaire()
 {
-    QFile file(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT) +
-               QStringLiteral("/modules/graphics/renderer/render_graphs/slice_sampling_luminaire/main_shaders/"
-                              "luminaire.slang"));
-    REQUIRE(file.open(QIODevice::ReadOnly) == true);
-    return file.readAll();
+    graphics::renderer::PanelLuminaire luminaire;
+    luminaire.SourceId = CEILING_LUMINAIRE_SOURCE;
+    luminaire.CenterWorld = {0, 0.97F, 0};
+    luminaire.TangentWorld = {1, 0, 0};
+    luminaire.BitangentWorld = {0, 0, 1};
+    return luminaire;
 }
 
-RenderGraphLuminairePanel MakeDefaultPanel()
+/// The downward panel FitRenderGraphLuminaire describes, as the World's Transform would place it.
+graphics::renderer::PanelLuminaire MakeFittedLuminaire(const WorldLuminairePlacement& placement)
 {
-    RenderGraphLuminairePanel panel;
-    panel.Source = IMPORTED_PLACEMENT;
-    panel.IsPlacementKnown = true;
-    panel.CenterWorld = {0, 0.97F, 0};
-    panel.HalfExtentWorld = 0.35F;
-    panel.NormalWorld = {0, -1, 0};
-    return panel;
+    REQUIRE(placement.RotationDegrees.X == WORLD_LUMINAIRE_DOWNWARD_DEGREES);
+    REQUIRE(placement.RotationDegrees.Y == 0);
+    REQUIRE(placement.RotationDegrees.Z == 0);
+    graphics::renderer::PanelLuminaire luminaire = MakeCornellLuminaire();
+    luminaire.CenterWorld = placement.PositionWorld;
+    luminaire.HalfExtentWorld = placement.HalfExtentWorld;
+    return luminaire;
 }
 
 RenderGraphLuminaireWorld
@@ -50,7 +52,14 @@ MakeWorld(foundation::math::Vector3 minimum, foundation::math::Vector3 maximum, 
     world.HasBounds = true;
     world.BoundsWorld = { .Min = minimum, .Max = maximum };
     world.EmissiveObjectCount = emissiveObjects;
+    world.CanRepair = true;
     return world;
+}
+
+void AddLuminaire(RenderGraphLuminaireWorld& inoutWorld, const graphics::renderer::PanelLuminaire& luminaire)
+{
+    REQUIRE(inoutWorld.Luminaires.Count < graphics::renderer::MAX_PANEL_LUMINAIRES);
+    inoutWorld.Luminaires.Luminaires[inoutWorld.Luminaires.Count++] = luminaire;
 }
 
 bool IsNear(float32 a, float32 b)
@@ -59,106 +68,106 @@ bool IsNear(float32 a, float32 b)
 }
 } // namespace
 
-TEST_CASE("The shipped slice-sampling luminaire placement stays readable by the editor's panel check",
+TEST_CASE("A World without a luminaire offers to add one fitted to its bounds",
           "[editor][render-graph][slice-sampling-luminaire-coverage]")
 {
-    RenderGraphLuminairePanel panel;
-    REQUIRE(ReadRenderGraphLuminairePlacement(ReadShippedPlacement(), panel) == true);
-    CHECK(IsNear(panel.CenterWorld.X, 0) == true);
-    CHECK(IsNear(panel.CenterWorld.Y, 0.97F) == true);
-    CHECK(IsNear(panel.CenterWorld.Z, 0) == true);
-    CHECK(IsNear(panel.HalfExtentWorld, 0.35F) == true);
-    CHECK(IsNear(panel.NormalWorld.Y, -1) == true);
-}
-
-TEST_CASE("Luminaire placement accepts Slang literals and rejects expressions and comments",
-          "[editor][render-graph][slice-sampling-luminaire-coverage]")
-{
-    RenderGraphLuminairePanel panel;
-    const QByteArray literals = "static const float3 LUMINAIRE_CENTER_WORLD = float3(-2.5f, .5, 3.);\n"
-                                "static const float LUMINAIRE_HALF_EXTENT_WORLD = 1.25F;\n"
-                                "static const float3 LUMINAIRE_NORMAL_WORLD = float3(0, 0, -2);\n";
-    REQUIRE(ReadRenderGraphLuminairePlacement(literals, panel) == true);
-    CHECK(IsNear(panel.CenterWorld.X, -2.5F) == true);
-    CHECK(IsNear(panel.CenterWorld.Y, 0.5F) == true);
-    CHECK(IsNear(panel.CenterWorld.Z, 3) == true);
-    CHECK(IsNear(panel.HalfExtentWorld, 1.25F) == true);
-    // The normal is normalised.
-    CHECK(IsNear(panel.NormalWorld.Z, -1) == true);
-
-    const RenderGraphLuminairePanel before = panel;
-    const QByteArray expression = "static const float3 LUMINAIRE_CENTER_WORLD = float3(0, CEILING - 0.03, 0);\n"
-                                  "static const float LUMINAIRE_HALF_EXTENT_WORLD = 0.35;\n"
-                                  "static const float3 LUMINAIRE_NORMAL_WORLD = float3(0, -1, 0);\n";
-    CHECK(ReadRenderGraphLuminairePlacement(expression, panel) == false);
-    const QByteArray commented = "// static const float3 LUMINAIRE_CENTER_WORLD = float3(0, 1, 0);\n"
-                                 "static const float LUMINAIRE_HALF_EXTENT_WORLD = 0.35;\n"
-                                 "static const float3 LUMINAIRE_NORMAL_WORLD = float3(0, -1, 0);\n";
-    CHECK(ReadRenderGraphLuminairePlacement(commented, panel) == false);
-    const QByteArray degenerate = "static const float3 LUMINAIRE_CENTER_WORLD = float3(0, 1, 0);\n"
-                                  "static const float LUMINAIRE_HALF_EXTENT_WORLD = 0;\n"
-                                  "static const float3 LUMINAIRE_NORMAL_WORLD = float3(0, -1, 0);\n";
-    CHECK(ReadRenderGraphLuminairePlacement(degenerate, panel) == false);
-    // Failure preserves the previous placement.
-    CHECK(IsNear(panel.CenterWorld.X, before.CenterWorld.X) == true);
-    CHECK(IsNear(panel.HalfExtentWorld, before.HalfExtentWorld) == true);
-}
-
-TEST_CASE("The default panel lights its test room but not a corridor twenty metres long",
-          "[editor][render-graph][slice-sampling-luminaire-coverage]")
-{
-    const RenderGraphLuminairePanel panel = MakeDefaultPanel();
     // The 2 x 2 x 2 room of the renderer's tests, with its ceiling light.
-    CHECK(DescribeRenderGraphLuminaireCoverage(panel, MakeWorld({-1, -1, -1}, {1, 1, 1}, 1)).isEmpty() == true);
+    RenderGraphLuminaireWorld room = MakeWorld({-1, -1, -1}, {1, 1, 1}, 1);
+    const RenderGraphLuminaireCoverage missing = DescribeRenderGraphLuminaireCoverage(room);
+    INFO(missing.Warning.toStdString());
+    CHECK(missing.Warning.contains(QStringLiteral("no enabled luminaire")) == true);
+    CHECK(missing.Warning.contains(QStringLiteral("1 emissive object")) == true);
+    REQUIRE(missing.Repair == RenderGraphLuminaireRepair::AddLuminaire);
+    CHECK(missing.LuminaireSourceId == 0);
+    // Centred below the top of the bounds, with a side of FITTED_PANEL_WORLD_FRACTION of the room's width.
+    CHECK(IsNear(missing.Placement.PositionWorld.X, 0) == true);
+    CHECK(IsNear(missing.Placement.PositionWorld.Z, 0) == true);
+    CHECK(missing.Placement.PositionWorld.Y < 1);
+    CHECK(missing.Placement.PositionWorld.Y > 0.9F);
+    CHECK(IsNear(missing.Placement.HalfExtentWorld, FITTED_PANEL_WORLD_FRACTION) == true);
+
+    // The repaired World is lit.
+    AddLuminaire(room, MakeFittedLuminaire(missing.Placement));
+    CHECK(DescribeRenderGraphLuminaireCoverage(room).Warning.isEmpty() == true);
+
+    // A project schema without the luminaire preset gets the instruction without a repair.
+    RenderGraphLuminaireWorld project = MakeWorld({-1, -1, -1}, {1, 1, 1}, 0);
+    project.CanRepair = false;
+    const RenderGraphLuminaireCoverage manual = DescribeRenderGraphLuminaireCoverage(project);
+    CHECK(manual.Repair == RenderGraphLuminaireRepair::None);
+    CHECK(manual.Warning.contains(QStringLiteral("Attach a luminaire component")) == true);
+}
+
+TEST_CASE("The Cornell luminaire lights its test room but not a corridor twenty metres long",
+          "[editor][render-graph][slice-sampling-luminaire-coverage]")
+{
+    RenderGraphLuminaireWorld room = MakeWorld({-1, -1, -1}, {1, 1, 1}, 1);
+    AddLuminaire(room, MakeCornellLuminaire());
+    CHECK(DescribeRenderGraphLuminaireCoverage(room).Warning.isEmpty() == true);
 
     // Bounds of the staircase2 reference scene: the panel sits inside them but spans under 3% of the diagonal.
-    const QString corridor =
-        DescribeRenderGraphLuminaireCoverage(panel, MakeWorld({-14.09F, -2.86F, -2.99F}, {6.91F, 11.39F, 4.36F}, 13));
-    INFO(corridor.toStdString());
-    CHECK(corridor.contains(QStringLiteral("lights at most a small patch")) == true);
-    CHECK(corridor.contains(QStringLiteral("(0.00, 0.97, 0.00)")) == true);
-    CHECK(corridor.contains(QStringLiteral("13 emissive objects")) == true);
+    RenderGraphLuminaireWorld corridor = MakeWorld({-14.09F, -2.86F, -2.99F}, {6.91F, 11.39F, 4.36F}, 13);
+    AddLuminaire(corridor, MakeCornellLuminaire());
+    const RenderGraphLuminaireCoverage small = DescribeRenderGraphLuminaireCoverage(corridor);
+    INFO(small.Warning.toStdString());
+    CHECK(small.Warning.contains(QStringLiteral("lights at most a small patch")) == true);
+    CHECK(small.Warning.contains(QStringLiteral("(0.00, 0.97, 0.00)")) == true);
+    CHECK(small.Warning.contains(QStringLiteral("13 emissive objects")) == true);
     // Counts of zero are not mentioned.
-    CHECK(corridor.contains(QStringLiteral("0 lights")) == false);
-    // The message names the file and constants to edit.
-    CHECK(corridor.contains(IMPORTED_PLACEMENT) == true);
-    CHECK(corridor.contains(QStringLiteral("LUMINAIRE_CENTER_WORLD")) == true);
+    CHECK(small.Warning.contains(QStringLiteral("0 lights")) == false);
+    // The repair moves and resizes that luminaire, and its fitted placement lights the corridor.
+    REQUIRE(small.Repair == RenderGraphLuminaireRepair::MoveLuminaire);
+    CHECK(small.LuminaireSourceId == CEILING_LUMINAIRE_SOURCE);
+    RenderGraphLuminaireWorld fitted = corridor;
+    fitted.Luminaires.Luminaires[0] = MakeFittedLuminaire(small.Placement);
+    CHECK(DescribeRenderGraphLuminaireCoverage(fitted).Warning.isEmpty() == true);
 }
 
-TEST_CASE("A panel outside the World or facing away from it cannot light it",
+TEST_CASE("A luminaire outside the World or facing away from it cannot light it",
           "[editor][render-graph][slice-sampling-luminaire-coverage]")
 {
-    RenderGraphLuminairePanel panel = MakeDefaultPanel();
-    const RenderGraphLuminaireWorld room = MakeWorld({-1, -1, -1}, {1, 1, 1}, 0);
+    RenderGraphLuminaireWorld room = MakeWorld({-1, -1, -1}, {1, 1, 1}, 0);
+    graphics::renderer::PanelLuminaire luminaire = MakeCornellLuminaire();
     // On the ceiling, facing up: nothing lies in front of it.
-    panel.CenterWorld = {0, 1, 0};
-    panel.NormalWorld = {0, 1, 0};
-    const QString away = DescribeRenderGraphLuminaireCoverage(panel, room);
+    luminaire.CenterWorld = {0, 1, 0};
+    luminaire.BitangentWorld = {0, 0, -1};
+    AddLuminaire(room, luminaire);
+    const QString away = DescribeRenderGraphLuminaireCoverage(room).Warning;
     CHECK(away.contains(QStringLiteral("away from every World object")) == true);
     // No World emitters or lights: the message does not invent them.
     CHECK(away.contains(QStringLiteral("emissive")) == false);
 
-    panel.NormalWorld = {0, -1, 0};
-    panel.CenterWorld = {5, 0.5F, 0};
-    const QString outside = DescribeRenderGraphLuminaireCoverage(panel, room);
-    CHECK(outside.contains(QStringLiteral("outside the World's bounds")) == true);
+    room.Luminaires.Luminaires[0] = MakeCornellLuminaire();
+    room.Luminaires.Luminaires[0].CenterWorld = {5, 0.5F, 0};
+    CHECK(DescribeRenderGraphLuminaireCoverage(room).Warning.contains(QStringLiteral("outside the World's bounds")) ==
+          true);
+    // One luminaire that can light the World is enough.
+    AddLuminaire(room, MakeCornellLuminaire());
+    CHECK(DescribeRenderGraphLuminaireCoverage(room).Warning.isEmpty() == true);
 }
 
-TEST_CASE("An unreadable placement is reported only when the World brings lighting the template ignores",
+TEST_CASE("A fitted luminaire hangs under the ceiling above its anchor when the World has one",
           "[editor][render-graph][slice-sampling-luminaire-coverage]")
 {
-    RenderGraphLuminairePanel panel;
-    panel.Source = IMPORTED_PLACEMENT;
-    CHECK(DescribeRenderGraphLuminaireCoverage(panel, MakeWorld({-1, -1, -1}, {1, 1, 1}, 0)).isEmpty() == true);
-    RenderGraphLuminaireWorld lit = MakeWorld({-1, -1, -1}, {1, 1, 1}, 0);
-    lit.LightCount = 1;
-    const QString unknown = DescribeRenderGraphLuminaireCoverage(panel, lit);
-    CHECK(unknown.contains(QStringLiteral("cannot check it")) == true);
-    CHECK(unknown.contains(QStringLiteral("World's 1 light.")) == true);
-    CHECK(unknown.contains(QStringLiteral("emissive")) == false);
+    RenderGraphLuminaireWorld world = MakeWorld({-10, 0, -4}, {10, 12, 4}, 0);
+    world.HasAnchor = true;
+    world.AnchorWorld = {6, 1.5F, 2};
+    world.HasCeiling = true;
+    world.CeilingHeightWorld = 2;
+    const WorldLuminairePlacement placement = FitRenderGraphLuminaire(world);
+    CHECK(IsNear(placement.PositionWorld.X, 6) == true);
+    CHECK(IsNear(placement.PositionWorld.Z, 2) == true);
+    // One percent of the ceiling distance below it.
+    CHECK(IsNear(placement.PositionWorld.Y, 3.48F) == true);
+    // Without a ceiling above the camera the panel hangs below the top of the bounds.
+    world.HasCeiling = false;
+    CHECK(FitRenderGraphLuminaire(world).PositionWorld.Y > 11.8F);
+    // An anchor outside the bounds falls back to their center.
+    world.AnchorWorld = {50, 1.5F, 2};
+    CHECK(IsNear(FitRenderGraphLuminaire(world).PositionWorld.X, 0) == true);
 }
 
-TEST_CASE("The panel check follows the imported luminaire only while it is on the output route",
+TEST_CASE("The luminaire check follows the imported template only while it is on the output route",
           "[editor][render-graph][slice-sampling-luminaire-coverage]")
 {
     QTemporaryDir project;
@@ -172,9 +181,8 @@ TEST_CASE("The panel check follows the imported luminaire only while it is on th
                                                 QStringLiteral("Luminaire"),
                                                 QStringLiteral("slice-sampling-luminaire"),
                                                 error) == RenderGraphDocumentStatus::Ok);
-    RenderGraphLuminairePanel panel;
     // Inserted but unconnected, the luminaire does not reach the output.
-    CHECK(FindRenderGraphLuminairePanel(document, DEFAULT_CONFIGURATION, panel) == false);
+    CHECK(IsRenderGraphLuminaireRoute(document, DEFAULT_CONFIGURATION) == false);
 
     const QList<QPair<QString, QString>> inputs{
         {QStringLiteral("scene.scene"), QStringLiteral("Luminaire.scene")},
@@ -190,8 +198,5 @@ TEST_CASE("The panel check follows the imported luminaire only while it is on th
                                        DEFAULT_CONFIGURATION,
                                        QStringLiteral("Luminaire.color"),
                                        QStringLiteral("tonemap.color")) == RenderGraphDocumentStatus::Ok);
-    REQUIRE(FindRenderGraphLuminairePanel(document, DEFAULT_CONFIGURATION, panel) == true);
-    CHECK(panel.Source == IMPORTED_PLACEMENT);
-    CHECK(panel.IsPlacementKnown == true);
-    CHECK(IsNear(panel.CenterWorld.Y, 0.97F) == true);
+    CHECK(IsRenderGraphLuminaireRoute(document, DEFAULT_CONFIGURATION) == true);
 }

@@ -21,12 +21,19 @@ static const MaterialModelTag LUDUS_MATERIAL_MODEL_DIFFUSE = 1;
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_CONDUCTOR = 2;
 /// Preserved coated-diffuse scattering wire tag, shared with shader code.
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_COATED_DIFFUSE = 3;
+/// Smooth dielectric interface (reflection and refraction) wire tag, shared with shader code.
+static const MaterialModelTag LUDUS_MATERIAL_MODEL_DIELECTRIC = 4;
+/// Thin dielectric slab (reflection and straight transmission) wire tag, shared with shader code.
+static const MaterialModelTag LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC = 5;
 /// PBRT default bounded internal layer events; independent of scene path depth.
 static const MaterialModelTag LUDUS_COATING_MAX_DEPTH = 10;
 /// PBRT default number of independent layered evaluation/PDF estimates.
 static const MaterialModelTag LUDUS_COATING_SAMPLES = 1;
+/// GGX alpha below which a dielectric interface is perfectly specular: pbrt-v4's
+/// TrowbridgeReitzDistribution::EffectivelySmooth threshold.
+static const MaterialScalar LUDUS_SMOOTH_INTERFACE_ALPHA = 0.001F;
 /// Smallest rough coating alpha; smaller values require a delta dielectric interface.
-static const MaterialScalar LUDUS_COATING_MIN_ALPHA = 0.001F;
+static const MaterialScalar LUDUS_COATING_MIN_ALPHA = LUDUS_SMOOTH_INTERFACE_ALPHA;
 
 #ifdef __cplusplus
 /// Scattering identity retained by scene assets; evaluators declare their supported profile.
@@ -39,6 +46,13 @@ enum class MaterialModel : foundation::uint32
     Conductor = LUDUS_MATERIAL_MODEL_CONDUCTOR,          ///< Isotropic GGX with complex-IOR Fresnel; no diffuse lobe.
     CoatedDiffuse = LUDUS_MATERIAL_MODEL_COATED_DIFFUSE, ///< Rough dielectric coating over a diffuse base;
                                                          ///< non-scattering reference profile.
+    /// Interface of a nonabsorbing dielectric with real index Eta: Fresnel-weighted
+    /// specular reflection and refraction. A closed mesh bounds the medium; its
+    /// oriented front side faces the outside (index one).
+    Dielectric = LUDUS_MATERIAL_MODEL_DIELECTRIC,
+    /// Infinitesimally thin nonabsorbing dielectric slab with real index Eta:
+    /// Fresnel reflection including internal interreflection, and undeviated transmission.
+    ThinDielectric = LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC,
 };
 /// RGB channels in serialized optical constants.
 inline constexpr foundation::usize MATERIAL_RGB_CHANNELS = 3;
@@ -52,11 +66,20 @@ inline constexpr foundation::float32 MAX_MATERIAL_OPTICAL_CONSTANT = 10000;
 inline constexpr foundation::float32 DEFAULT_COATING_ETA = 1.5F;
 /// Default PBRT coated-diffuse optical thickness.
 inline constexpr foundation::float32 DEFAULT_COATING_THICKNESS = 0.01F;
+/// Default PBRT dielectric and thin-dielectric index of refraction.
+inline constexpr foundation::float32 DEFAULT_DIELECTRIC_ETA = 1.5F;
+/// Legacy base colour of an imported dielectric for evaluators without transmission: the
+/// normal-incidence reflectance ((eta - 1) / (eta + 1))^2 of the default index.
+inline constexpr foundation::float32 DIELECTRIC_FALLBACK_REFLECTANCE = 0.04F;
 /// Source material parameters, shared by tools and runtime without renderer dependencies.
 /// AlphaU/V are the resolved GGX distribution widths, not perceptual roughness.
 /// Reference conductors and coatings currently admit isotropic alpha only. The
 /// coating reference profile models absorption without medium scattering; omitted
 /// source coating controls resolve to the shared PBRT default policy constants.
+/// Dielectrics store their real index in every Eta channel with zero K; reference
+/// evaluators admit equal channels and smooth interfaces (alpha below
+/// LUDUS_SMOOTH_INTERFACE_ALPHA). Evaluators without transmission shade a dielectric
+/// through the record's legacy metallic/roughness fields instead.
 struct MaterialScattering final
 {
     MaterialModel Model = MaterialModel::MetallicRoughness; ///< Evaluation model.
@@ -75,7 +98,7 @@ inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHA
 /// This validates storage; an evaluator separately admits the supported anisotropy.
 [[nodiscard]] constexpr bool IsMaterialScatteringValid(const MaterialScattering& scattering) noexcept
 {
-    if (scattering.Model > MaterialModel::CoatedDiffuse ||
+    if (scattering.Model > MaterialModel::ThinDielectric ||
         (scattering.AlphaU >= MIN_MATERIAL_ALPHA && scattering.AlphaU <= 1) == false ||
         (scattering.AlphaV >= MIN_MATERIAL_ALPHA && scattering.AlphaV <= 1) == false ||
         (scattering.CoatingEta > 0 && scattering.CoatingEta <= MAX_MATERIAL_OPTICAL_CONSTANT) == false ||
