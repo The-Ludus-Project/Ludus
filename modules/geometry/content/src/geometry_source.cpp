@@ -24,50 +24,50 @@ using namespace ludus::geometry::content::internal;
 
 namespace
 {
-[[nodiscard]] bool ReadVector3d(const JsonValue& value, math::Vector3d& out) noexcept
+[[nodiscard]] bool ReadVector3d(const JsonValue& value, math::Vector3d& outVector) noexcept
 {
-    if (value.Array() == false || value.Count() != 3)
+    if (value.Array() == false || value.Count() != fg::CONTROL_COMPONENTS)
     {
         return false;
     }
-    float64 component[3]{};
-    for (usize i = 0; i < 3; ++i)
+    float64 component[fg::CONTROL_COMPONENTS]{};
+    for (usize i = 0; i < fg::CONTROL_COMPONENTS; ++i)
     {
         if (value.At(i).Number(component[i]) == false || math::IsFinite(component[i]) == false)
         {
             return false;
         }
     }
-    out = math::Vector3d{component[0], component[1], component[2]};
+    outVector = math::Vector3d{component[0], component[1], component[2]};
     return true;
 }
 
-[[nodiscard]] bool ReadScalar(const JsonValue& value, float64& out) noexcept
+[[nodiscard]] bool ReadScalar(const JsonValue& value, float64& outValue) noexcept
 {
-    return value.Number(out) && math::IsFinite(out);
+    return value.Number(outValue) && math::IsFinite(outValue);
 }
 
-[[nodiscard]] bool ParseMode(std::string_view text, GeometrySourceMode& out) noexcept
+[[nodiscard]] bool ParseMode(std::string_view text, GeometrySourceMode& outMode) noexcept
 {
     if (text == "cubic-path")
     {
-        out = GeometrySourceMode::CubicPath;
+        outMode = GeometrySourceMode::CubicPath;
     }
     else if (text == "hermite-path")
     {
-        out = GeometrySourceMode::HermitePath;
+        outMode = GeometrySourceMode::HermitePath;
     }
     else if (text == "catmull-rom-path")
     {
-        out = GeometrySourceMode::CatmullRomPath;
+        outMode = GeometrySourceMode::CatmullRomPath;
     }
     else if (text == "scalar-track")
     {
-        out = GeometrySourceMode::ScalarTrack;
+        outMode = GeometrySourceMode::ScalarTrack;
     }
     else if (text == "patch-surface")
     {
-        out = GeometrySourceMode::PatchSurface;
+        outMode = GeometrySourceMode::PatchSurface;
     }
     else
     {
@@ -94,7 +94,7 @@ namespace
     return "cubic-path";
 }
 
-[[nodiscard]] bool ReadTolerance(const JsonValue& value, geom::ToleranceProfile& out) noexcept
+[[nodiscard]] bool ReadTolerance(const JsonValue& value, geom::ToleranceProfile& outProfile) noexcept
 {
     if (value.Fields({"positionError", "relativePositionError", "distanceError", "tangentAngleError", "projectionGap",
                       "continuityPosition", "continuityDerivative", "continuityAngle", "normalMinDerivativeLength",
@@ -102,21 +102,21 @@ namespace
     {
         return false;
     }
-    return ReadScalar(value.Get("positionError"), out.PositionError) &&
-           ReadScalar(value.Get("relativePositionError"), out.RelativePositionError) &&
-           ReadScalar(value.Get("distanceError"), out.DistanceError) &&
-           ReadScalar(value.Get("tangentAngleError"), out.TangentAngleError) &&
-           ReadScalar(value.Get("projectionGap"), out.ProjectionGap) &&
-           ReadScalar(value.Get("continuityPosition"), out.ContinuityPosition) &&
-           ReadScalar(value.Get("continuityDerivative"), out.ContinuityDerivative) &&
-           ReadScalar(value.Get("continuityAngle"), out.ContinuityAngle) &&
-           ReadScalar(value.Get("normalMinDerivativeLength"), out.NormalMinDerivativeLength) &&
-           ReadScalar(value.Get("normalMinSinAngle"), out.NormalMinSinAngle) &&
-           ReadScalar(value.Get("normalAngleError"), out.NormalAngleError) &&
-           ReadScalar(value.Get("coincidenceDistance"), out.CoincidenceDistance);
+    return ReadScalar(value.Get("positionError"), outProfile.PositionError) &&
+           ReadScalar(value.Get("relativePositionError"), outProfile.RelativePositionError) &&
+           ReadScalar(value.Get("distanceError"), outProfile.DistanceError) &&
+           ReadScalar(value.Get("tangentAngleError"), outProfile.TangentAngleError) &&
+           ReadScalar(value.Get("projectionGap"), outProfile.ProjectionGap) &&
+           ReadScalar(value.Get("continuityPosition"), outProfile.ContinuityPosition) &&
+           ReadScalar(value.Get("continuityDerivative"), outProfile.ContinuityDerivative) &&
+           ReadScalar(value.Get("continuityAngle"), outProfile.ContinuityAngle) &&
+           ReadScalar(value.Get("normalMinDerivativeLength"), outProfile.NormalMinDerivativeLength) &&
+           ReadScalar(value.Get("normalMinSinAngle"), outProfile.NormalMinSinAngle) &&
+           ReadScalar(value.Get("normalAngleError"), outProfile.NormalAngleError) &&
+           ReadScalar(value.Get("coincidenceDistance"), outProfile.CoincidenceDistance);
 }
 
-[[nodiscard]] bool ReadLimits(const JsonValue& value, geom::WorkLimits& out) noexcept
+[[nodiscard]] bool ReadLimits(const JsonValue& value, geom::WorkLimits& outLimits) noexcept
 {
     if (value.Fields({"maxSpans", "maxLeaves", "maxDepth", "maxSubdivisions", "maxIterations", "maxPreparedBytes",
                       "maxPatches"}) == false)
@@ -124,18 +124,18 @@ namespace
         return false;
     }
     uint64 field = 0;
-    auto readUsize = [&](const char* key, usize& destination) noexcept {
+    auto readUsize = [&](const char* key, usize& outDestination) noexcept {
         if (value.Get(key).Integer(field) == false)
         {
             return false;
         }
-        destination = static_cast<usize>(field);
+        outDestination = static_cast<usize>(field);
         return true;
     };
-    return readUsize("maxSpans", out.MaxSpans) && readUsize("maxLeaves", out.MaxLeaves) &&
-           readUsize("maxDepth", out.MaxDepth) && readUsize("maxSubdivisions", out.MaxSubdivisions) &&
-           readUsize("maxIterations", out.MaxIterations) && readUsize("maxPreparedBytes", out.MaxPreparedBytes) &&
-           readUsize("maxPatches", out.MaxPatches);
+    return readUsize("maxSpans", outLimits.MaxSpans) && readUsize("maxLeaves", outLimits.MaxLeaves) &&
+           readUsize("maxDepth", outLimits.MaxDepth) && readUsize("maxSubdivisions", outLimits.MaxSubdivisions) &&
+           readUsize("maxIterations", outLimits.MaxIterations) && readUsize("maxPreparedBytes", outLimits.MaxPreparedBytes) &&
+           readUsize("maxPatches", outLimits.MaxPatches);
 }
 
 [[nodiscard]] bool HasDuplicateId(const core::Array<uint64>& seen, uint64 id) noexcept
@@ -150,7 +150,7 @@ namespace
     return false;
 }
 
-[[nodiscard]] Status ParseSpans(const JsonValue& spans, GeometrySource& source, GeometryDiagnosticReport& outDiag) noexcept
+[[nodiscard]] Status ParseSpans(const JsonValue& spans, GeometrySource& inoutSource, GeometryDiagnosticReport& outDiag) noexcept
 {
     const usize count = spans.Count();
     if (spans.Array() == false)
@@ -203,7 +203,7 @@ namespace
                             "A control is not a finite 3-vector.", i);
             }
         }
-        if (source.Spans.TryAdd(span) == false)
+        if (inoutSource.Spans.TryAdd(span) == false)
         {
             return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "spans", "Reduce the span count.");
         }
@@ -211,7 +211,7 @@ namespace
     return Status::Ok;
 }
 
-[[nodiscard]] Status ParseKeys(const JsonValue& keys, GeometrySource& source, GeometryDiagnosticReport& outDiag) noexcept
+[[nodiscard]] Status ParseKeys(const JsonValue& keys, GeometrySource& inoutSource, GeometryDiagnosticReport& outDiag) noexcept
 {
     const usize count = keys.Count();
     if (keys.Array() == false)
@@ -275,7 +275,7 @@ namespace
             return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "keys.interpolation",
                         "interpolation must be step, linear or hermite.", i);
         }
-        if (source.Keys.TryAdd(key) == false)
+        if (inoutSource.Keys.TryAdd(key) == false)
         {
             return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "keys", "Reduce the key count.");
         }
@@ -332,9 +332,9 @@ Status ParseGeometrySource(std::string_view json, GeometrySource& outSource, Geo
     float64 assetScale = 0.0;
     (void)ReadScalar(root.Get("assetScale"), assetScale);
     source.AssetScale = assetScale;
-    bool closed = false;
-    (void)root.Get("closed").Boolean(closed);
-    source.IsClosed = closed;
+    bool isClosed = false;
+    (void)root.Get("closed").Boolean(isClosed);
+    source.IsClosed = isClosed;
     if (ReadTolerance(root.Get("tolerance"), source.Tolerance) == false)
     {
         return Fail(outDiagnostic, Status::Invalid, geom::GeometryStatus::InvalidArgument, "tolerance",

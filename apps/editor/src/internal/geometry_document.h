@@ -44,6 +44,14 @@ struct ControlHandle final
 ///
 /// Equality-comparable and exception-free to copy, so DocumentHistory<State> can
 /// store before/after snapshots. One span uses four handles.
+/// Control handles added per cubic span after the first (a path of n spans has
+/// CUBIC_SPAN_STRIDE * n + 1 handles).
+inline constexpr foundation::usize CUBIC_SPAN_STRIDE = 3;
+/// Fewest control handles that form one cubic span.
+inline constexpr foundation::usize CUBIC_MIN_HANDLES = fg::SPAN_CONTROL_COUNT;
+/// Undo history depth kept per curve document.
+inline constexpr foundation::usize CURVE_HISTORY_DEPTH = 64;
+
 struct CurveState final
 {
     static constexpr usize MAX_HANDLES = 4096;
@@ -75,9 +83,9 @@ struct CurveState final
         {
             const ControlHandle& a = Handles[i];
             const ControlHandle& b = other.Handles[i];
-            const bool same = a.AuthorId == b.AuthorId && a.Mode == b.Mode && a.Position.X == b.Position.X &&
+            const bool isSame = a.AuthorId == b.AuthorId && a.Mode == b.Mode && a.Position.X == b.Position.X &&
                               a.Position.Y == b.Position.Y && a.Position.Z == b.Position.Z;
-            if (same == false)
+            if (isSame == false)
             {
                 return false;
             }
@@ -115,7 +123,7 @@ public:
     /// @return True when the validated edit was committed.
     [[nodiscard]] bool MoveControl(uint64 authorId,
                                    const foundation::math::Vector3d& position,
-                                   bool merge,
+                                   bool shouldMerge,
                                    gc::GeometryDiagnosticReport& outDiagnostic) noexcept;
 
     /// @brief Convert a handle to Manual mode as one undoable edit (visible conversion).
@@ -147,11 +155,11 @@ public:
                                    gc::GeometryDiagnosticReport& outDiagnostic) const noexcept;
 
 private:
-    [[nodiscard]] bool commit(const CurveState& candidate, bool merge, gc::GeometryDiagnosticReport& outDiagnostic) noexcept;
+    [[nodiscard]] bool commit(const CurveState& candidate, bool shouldMerge, gc::GeometryDiagnosticReport& outDiagnostic) noexcept;
     [[nodiscard]] const ControlHandle* findHandleOrNull(uint64 authorId) const noexcept;
 
     CurveState mDraft;
-    DocumentHistory<CurveState, 64> mHistory;
+    DocumentHistory<CurveState, CURVE_HISTORY_DEPTH> mHistory;
 };
 
 /// @brief Staged outcome of an async geometry prepare, mirroring PreviewPreparationStatus.

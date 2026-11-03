@@ -54,7 +54,7 @@ const ControlHandle* CurveDocument::findHandleOrNull(uint64 authorId) const noex
     return nullptr;
 }
 
-bool CurveDocument::commit(const CurveState& candidate, bool merge, gc::GeometryDiagnosticReport& outDiagnostic) noexcept
+bool CurveDocument::commit(const CurveState& candidate, bool shouldMerge, gc::GeometryDiagnosticReport& outDiagnostic) noexcept
 {
     // Validate the whole candidate: unique author IDs and a representable count.
     if (candidate.Handles.GetSize() > CurveState::MAX_HANDLES)
@@ -75,7 +75,7 @@ bool CurveDocument::commit(const CurveState& candidate, bool merge, gc::Geometry
             }
         }
     }
-    if (mHistory.Commit(mDraft, candidate, merge) == false)
+    if (mHistory.Commit(mDraft, candidate, shouldMerge) == false)
     {
         // A no-op edit (candidate equals the draft) is not an error, just nothing to record.
         if (candidate == mDraft)
@@ -94,7 +94,7 @@ bool CurveDocument::commit(const CurveState& candidate, bool merge, gc::Geometry
 
 bool CurveDocument::MoveControl(uint64 authorId,
                                 const foundation::math::Vector3d& position,
-                                bool merge,
+                                bool shouldMerge,
                                 gc::GeometryDiagnosticReport& outDiagnostic) noexcept
 {
     if (findHandleOrNull(authorId) == nullptr)
@@ -116,7 +116,7 @@ bool CurveDocument::MoveControl(uint64 authorId,
             }
         }
     }
-    return commit(candidate, merge, outDiagnostic);
+    return commit(candidate, shouldMerge, outDiagnostic);
 }
 
 bool CurveDocument::SetHandleManual(uint64 authorId, gc::GeometryDiagnosticReport& outDiagnostic) noexcept
@@ -191,9 +191,9 @@ bool CurveDocument::BuildSource(const geom::ToleranceProfile& tolerance,
                                 gc::GeometrySource& outSource,
                                 gc::GeometryDiagnosticReport& outDiagnostic) const noexcept
 {
-    // A cubic path needs 3n+1 control handles for n spans.
+    // A cubic path needs CUBIC_SPAN_STRIDE * n + 1 control handles for n spans.
     const usize handleCount = mDraft.Handles.GetSize();
-    if (handleCount < 4 || ((handleCount - 1) % 3) != 0)
+    if (handleCount < CUBIC_MIN_HANDLES || ((handleCount - 1) % CUBIC_SPAN_STRIDE) != 0)
     {
         FailReport(outDiagnostic, content::Status::Invalid, GeometryStatus::InvalidArgument, "Handles",
                    "A cubic path needs 3n+1 control handles.");
@@ -207,16 +207,16 @@ bool CurveDocument::BuildSource(const geom::ToleranceProfile& tolerance,
     source.Tolerance = tolerance;
     source.Limits = limits;
     source.Precision = geom::PrecisionProfile::Visual;
-    const usize spanCount = (handleCount - 1) / 3;
+    const usize spanCount = (handleCount - 1) / CUBIC_SPAN_STRIDE;
     for (usize s = 0; s < spanCount; ++s)
     {
         gc::AuthoredSpan span{};
-        span.AuthorId = mDraft.Handles[s * 3].AuthorId;
+        span.AuthorId = mDraft.Handles[s * CUBIC_SPAN_STRIDE].AuthorId;
         span.Kind = fg::SpanKindTag::Cubic;
         span.DomainWidth = 1.0;
         for (usize c = 0; c < fg::SPAN_CONTROL_COUNT; ++c)
         {
-            span.Control[c] = mDraft.Handles[s * 3 + c].Position;
+            span.Control[c] = mDraft.Handles[s * CUBIC_SPAN_STRIDE + c].Position;
         }
         if (source.Spans.TryAdd(span) == false)
         {
@@ -306,9 +306,9 @@ void GeometryPreview::SetExpected(uint64 documentId, uint64 revision, uint64 gen
 bool GeometryPreview::OfferCompletion(const GeometryPrepareRequest& request, GeometryPrepareStatus status, gc::GeometryLoad&& load) noexcept
 {
     // Reject a late completion: its identity no longer matches the expected one.
-    const bool identityMatches = request.DocumentId == mExpectedDocumentId && request.Revision == mExpectedRevision &&
+    const bool isIdentityMatch = request.DocumentId == mExpectedDocumentId && request.Revision == mExpectedRevision &&
                                  request.Generation == mExpectedGeneration;
-    if (identityMatches == false)
+    if (isIdentityMatch == false)
     {
         // Late or superseded; keep the active load and its stale flag unchanged.
         return false;
@@ -390,7 +390,8 @@ content::Digest ComputeGeometryBuildIdentity(const CurveState& state, geom::Prec
         const ControlHandle& handle = state.Handles[i];
         const uint8* idBytes = reinterpret_cast<const uint8*>(&handle.AuthorId);
         (void)hasher.Add(std::span<const uint8>(idBytes, sizeof(handle.AuthorId)));
-        const foundation::float64 components[3] = {handle.Position.X, handle.Position.Y, handle.Position.Z};
+        const foundation::float64 components[fg::CONTROL_COMPONENTS] = {handle.Position.X, handle.Position.Y,
+                                                                        handle.Position.Z};
         (void)hasher.Add(std::span<const uint8>(reinterpret_cast<const uint8*>(components), sizeof(components)));
         const uint8 modeByte = static_cast<uint8>(handle.Mode);
         (void)hasher.Add(std::span<const uint8>(&modeByte, 1));

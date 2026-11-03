@@ -27,30 +27,30 @@ namespace
 }
 
 /// Append one path span record (field by field).
-[[nodiscard]] bool WriteSpan(ByteWriter& writer, const geom::PreparedSpan& span, const math::Vector3d& origin) noexcept
+[[nodiscard]] bool WriteSpan(ByteWriter& inoutWriter, const geom::PreparedSpan& span, const math::Vector3d& origin) noexcept
 {
     const uint32 kindTag =
         span.Kind == geom::SpanKind::Line ? static_cast<uint32>(fg::SpanKindTag::Line)
                                           : static_cast<uint32>(fg::SpanKindTag::Cubic);
     (void)origin;
-    bool ok = writer.WriteUint32(kindTag) && writer.WriteUint32(static_cast<uint32>(span.SourceElement)) &&
-              writer.WriteFloat64(span.DomainWidth);
-    for (usize c = 0; c < fg::SPAN_CONTROL_COUNT && ok; ++c)
+    bool isOk = inoutWriter.WriteUint32(kindTag) && inoutWriter.WriteUint32(static_cast<uint32>(span.SourceElement)) &&
+              inoutWriter.WriteFloat64(span.DomainWidth);
+    for (usize c = 0; c < fg::SPAN_CONTROL_COUNT && isOk; ++c)
     {
         // Prepared controls are already chunk-relative float32; store them directly.
-        ok = writer.WriteFloat32(span.Control[c].X) && writer.WriteFloat32(span.Control[c].Y) &&
-             writer.WriteFloat32(span.Control[c].Z);
+        isOk = inoutWriter.WriteFloat32(span.Control[c].X) && inoutWriter.WriteFloat32(span.Control[c].Y) &&
+             inoutWriter.WriteFloat32(span.Control[c].Z);
     }
-    return ok;
+    return isOk;
 }
 
-[[nodiscard]] bool WriteJoint(ByteWriter& writer, const geom::JointContinuity& joint) noexcept
+[[nodiscard]] bool WriteJoint(ByteWriter& inoutWriter, const geom::JointContinuity& joint) noexcept
 {
-    return writer.WriteFloat64(joint.PositionGap) && writer.WriteFloat64(joint.DirectionAngle) &&
-           writer.WriteFloat64(joint.DerivativeDifference) && writer.WriteFloat64(joint.SecondDerivativeDifference) &&
-           writer.WriteUint8(joint.IsC0 ? 1 : 0) && writer.WriteUint8(joint.IsG1 ? 1 : 0) &&
-           writer.WriteUint8(joint.IsC1 ? 1 : 0) && writer.WriteUint8(joint.IsC2 ? 1 : 0) && writer.WriteUint8(0) &&
-           writer.WriteUint8(0) && writer.WriteUint8(0) && writer.WriteUint8(0);
+    return inoutWriter.WriteFloat64(joint.PositionGap) && inoutWriter.WriteFloat64(joint.DirectionAngle) &&
+           inoutWriter.WriteFloat64(joint.DerivativeDifference) && inoutWriter.WriteFloat64(joint.SecondDerivativeDifference) &&
+           inoutWriter.WriteUint8(joint.IsC0 ? 1 : 0) && inoutWriter.WriteUint8(joint.IsG1 ? 1 : 0) &&
+           inoutWriter.WriteUint8(joint.IsC1 ? 1 : 0) && inoutWriter.WriteUint8(joint.IsC2 ? 1 : 0) && inoutWriter.WriteUint8(0) &&
+           inoutWriter.WriteUint8(0) && inoutWriter.WriteUint8(0) && inoutWriter.WriteUint8(0);
 }
 
 /// One section directory entry assembled while writing.
@@ -85,54 +85,54 @@ struct HeaderPlan final
     uint32 SectionCount = 0;
 };
 
-[[nodiscard]] bool WriteToleranceFields(ByteWriter& writer, const geom::ToleranceProfile& t) noexcept
+[[nodiscard]] bool WriteToleranceFields(ByteWriter& inoutWriter, const geom::ToleranceProfile& t) noexcept
 {
-    return writer.WriteFloat64(t.PositionError) && writer.WriteFloat64(t.RelativePositionError) &&
-           writer.WriteFloat64(t.DistanceError) && writer.WriteFloat64(t.TangentAngleError) &&
-           writer.WriteFloat64(t.ProjectionGap) && writer.WriteFloat64(t.ContinuityPosition) &&
-           writer.WriteFloat64(t.ContinuityDerivative) && writer.WriteFloat64(t.ContinuityAngle) &&
-           writer.WriteFloat64(t.NormalMinDerivativeLength) && writer.WriteFloat64(t.NormalMinSinAngle) &&
-           writer.WriteFloat64(t.NormalAngleError) && writer.WriteFloat64(t.CoincidenceDistance);
+    return inoutWriter.WriteFloat64(t.PositionError) && inoutWriter.WriteFloat64(t.RelativePositionError) &&
+           inoutWriter.WriteFloat64(t.DistanceError) && inoutWriter.WriteFloat64(t.TangentAngleError) &&
+           inoutWriter.WriteFloat64(t.ProjectionGap) && inoutWriter.WriteFloat64(t.ContinuityPosition) &&
+           inoutWriter.WriteFloat64(t.ContinuityDerivative) && inoutWriter.WriteFloat64(t.ContinuityAngle) &&
+           inoutWriter.WriteFloat64(t.NormalMinDerivativeLength) && inoutWriter.WriteFloat64(t.NormalMinSinAngle) &&
+           inoutWriter.WriteFloat64(t.NormalAngleError) && inoutWriter.WriteFloat64(t.CoincidenceDistance);
 }
 
 /// Write the fixed header prefix (digests and section offsets are patched later).
-[[nodiscard]] bool WriteHeaderPrefix(ByteWriter& writer, const HeaderPlan& plan) noexcept
+[[nodiscard]] bool WriteHeaderPrefix(ByteWriter& inoutWriter, const HeaderPlan& plan) noexcept
 {
-    bool ok = writer.WriteBytes(std::span<const uint8>(reinterpret_cast<const uint8*>(fg::MAGIC.data()), fg::MAGIC.size()));
-    ok = ok && writer.WriteUint32(fg::FORMAT_VERSION) && writer.WriteUint32(fg::COOKER_VERSION) &&
-         writer.WriteUint32(static_cast<uint32>(plan.Kind)) && writer.WriteUint32(static_cast<uint32>(plan.Precision)) &&
-         writer.WriteUint32(plan.Flags) && writer.WriteUint32(plan.SpanCount) && writer.WriteUint32(plan.JointCount) &&
-         writer.WriteUint32(plan.KeyCount) && writer.WriteUint32(plan.PatchCount) &&
-         writer.WriteUint32(plan.AdjacencyCount) && writer.WriteUint32(plan.SourceIdentityCount) &&
-         writer.WriteUint64(plan.Revision) && writer.WriteFloat64(plan.Origin.X) && writer.WriteFloat64(plan.Origin.Y) &&
-         writer.WriteFloat64(plan.Origin.Z) && writer.WriteFloat64(plan.AssetScale) &&
-         writer.WriteFloat64(plan.PositionFloor) && writer.WriteFloat64(plan.EffectivePositionError) &&
-         WriteToleranceFields(writer, plan.Tolerance) && writer.WriteUint32(plan.SectionCount);
+    bool isOk = inoutWriter.WriteBytes(std::span<const uint8>(reinterpret_cast<const uint8*>(fg::MAGIC.data()), fg::MAGIC.size()));
+    isOk = isOk && inoutWriter.WriteUint32(fg::FORMAT_VERSION) && inoutWriter.WriteUint32(fg::COOKER_VERSION) &&
+         inoutWriter.WriteUint32(static_cast<uint32>(plan.Kind)) && inoutWriter.WriteUint32(static_cast<uint32>(plan.Precision)) &&
+         inoutWriter.WriteUint32(plan.Flags) && inoutWriter.WriteUint32(plan.SpanCount) && inoutWriter.WriteUint32(plan.JointCount) &&
+         inoutWriter.WriteUint32(plan.KeyCount) && inoutWriter.WriteUint32(plan.PatchCount) &&
+         inoutWriter.WriteUint32(plan.AdjacencyCount) && inoutWriter.WriteUint32(plan.SourceIdentityCount) &&
+         inoutWriter.WriteUint64(plan.Revision) && inoutWriter.WriteFloat64(plan.Origin.X) && inoutWriter.WriteFloat64(plan.Origin.Y) &&
+         inoutWriter.WriteFloat64(plan.Origin.Z) && inoutWriter.WriteFloat64(plan.AssetScale) &&
+         inoutWriter.WriteFloat64(plan.PositionFloor) && inoutWriter.WriteFloat64(plan.EffectivePositionError) &&
+         WriteToleranceFields(inoutWriter, plan.Tolerance) && inoutWriter.WriteUint32(plan.SectionCount);
     // Directory entries: ids and widths are known now; offsets are patched after
     // the payload is written, so write placeholder zero offsets here.
-    for (uint32 i = 0; i < plan.SectionCount && ok; ++i)
+    for (uint32 i = 0; i < plan.SectionCount && isOk; ++i)
     {
         const PendingSection& section = plan.Sections[i];
-        ok = writer.WriteUint32(static_cast<uint32>(section.Id)) && writer.WriteUint32(0) &&
-             writer.WriteUint32(section.Count) && writer.WriteUint32(section.ElementBytes);
+        isOk = inoutWriter.WriteUint32(static_cast<uint32>(section.Id)) && inoutWriter.WriteUint32(0) &&
+             inoutWriter.WriteUint32(section.Count) && inoutWriter.WriteUint32(section.ElementBytes);
     }
-    return ok;
+    return isOk;
 }
 
 /// Patch a section's offset in the already-written header directory.
-void PatchSectionOffset(ByteWriter& writer, uint32 sectionIndex, uint32 offset) noexcept
+void PatchSectionOffset(ByteWriter& inoutWriter, uint32 sectionIndex, uint32 offset) noexcept
 {
     // Directory starts right after SectionCount in the fixed prefix.
     const usize directoryStart = fg::HEADER_FIXED_BYTES;
     const usize entryStart = directoryStart + static_cast<usize>(sectionIndex) * fg::SECTION_ENTRY_BYTES;
     const usize offsetField = entryStart + sizeof(uint32); // after Id
-    (void)core::TryWriteLittleEndian<uint32>(offset, writer.GetMutableBytes().subspan(offsetField));
+    (void)core::TryWriteLittleEndian<uint32>(offset, inoutWriter.GetMutableBytes().subspan(offsetField));
 }
 
 /// Patch a 32-byte digest at a known offset.
-void PatchDigest(ByteWriter& writer, usize offset, const ludus::content::Digest& digest) noexcept
+void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Digest& digest) noexcept
 {
-    std::span<uint8> bytes = writer.GetMutableBytes();
+    std::span<uint8> bytes = inoutWriter.GetMutableBytes();
     for (usize i = 0; i < fg::DIGEST_BYTES; ++i)
     {
         bytes[offset + i] = digest.Data[i];
@@ -276,10 +276,10 @@ void PatchDigest(ByteWriter& writer, usize offset, const ludus::content::Digest&
                         "Cancelled by the caller.");
         }
         const AuthoredKey& key = source.Keys[i];
-        const bool ok = writer.WriteFloat64(key.Time) && writer.WriteFloat32(key.Value) &&
+        const bool isOk = writer.WriteFloat64(key.Time) && writer.WriteFloat32(key.Value) &&
                         writer.WriteFloat32(key.InSlope) && writer.WriteFloat32(key.OutSlope) &&
                         writer.WriteUint32(static_cast<uint32>(key.Interpolation));
-        if (ok == false)
+        if (isOk == false)
         {
             return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "TrackKeys",
                         RepairForStatus(geom::GeometryStatus::OutOfMemory));
@@ -359,19 +359,19 @@ void PatchDigest(ByteWriter& writer, usize offset, const ludus::content::Digest&
                         "Cancelled by the caller.");
         }
         const AuthoredPatch& patch = source.Patches[i];
-        bool ok = writer.WriteUint64(patch.AuthorId);
-        for (usize u = 0; u < fg::PATCH_CONTROL_ORDER && ok; ++u)
+        bool isOk = writer.WriteUint64(patch.AuthorId);
+        for (usize u = 0; u < fg::PATCH_CONTROL_ORDER && isOk; ++u)
         {
-            for (usize v = 0; v < fg::PATCH_CONTROL_ORDER && ok; ++v)
+            for (usize v = 0; v < fg::PATCH_CONTROL_ORDER && isOk; ++v)
             {
                 // Store chunk-relative controls (subtract the origin as the owner does).
                 const math::Vector3d relative = patch.Control[u][v] - source.Origin;
-                ok = writer.WriteFloat32(static_cast<float32>(relative.X)) &&
+                isOk = writer.WriteFloat32(static_cast<float32>(relative.X)) &&
                      writer.WriteFloat32(static_cast<float32>(relative.Y)) &&
                      writer.WriteFloat32(static_cast<float32>(relative.Z));
             }
         }
-        if (ok == false)
+        if (isOk == false)
         {
             return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "SurfacePatches",
                         RepairForStatus(geom::GeometryStatus::OutOfMemory));
@@ -381,12 +381,12 @@ void PatchDigest(ByteWriter& writer, usize offset, const ludus::content::Digest&
     for (usize i = 0; i < source.Adjacency.GetSize(); ++i)
     {
         const geom::SurfaceAdjacencySource& join = source.Adjacency[i];
-        const bool ok = writer.WriteUint32(static_cast<uint32>(join.FirstPatch)) &&
+        const bool isOk = writer.WriteUint32(static_cast<uint32>(join.FirstPatch)) &&
                         writer.WriteUint32(static_cast<uint32>(join.FirstSide)) &&
                         writer.WriteUint32(static_cast<uint32>(join.SecondPatch)) &&
                         writer.WriteUint32(static_cast<uint32>(join.SecondSide)) &&
                         writer.WriteUint32(join.IsReversed ? 1U : 0U);
-        if (ok == false)
+        if (isOk == false)
         {
             return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "SurfaceAdjacency",
                         RepairForStatus(geom::GeometryStatus::OutOfMemory));

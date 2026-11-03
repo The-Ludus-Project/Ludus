@@ -131,6 +131,12 @@ inline constexpr usize PATCH_CONTROL_ORDER = 4;
 inline constexpr usize JOINT_FLAG_COUNT = 4;
 /// Tolerance profile fields serialized in the header (ADR 0024 ToleranceProfile).
 inline constexpr usize TOLERANCE_FIELD_COUNT = 12;
+/// Byte alignment every payload section's offset satisfies.
+inline constexpr usize SECTION_ALIGNMENT = 4;
+/// Reserved trailing bytes of a JointRecord that keep its width a multiple of eight.
+inline constexpr usize JOINT_RESERVED_BYTES = 4;
+/// SHA-256 digests stored at the end of the header (source, dependency, payload).
+inline constexpr usize HEADER_DIGEST_COUNT = 3;
 
 /// @brief One entry of the checked section directory.
 ///
@@ -170,11 +176,12 @@ struct JointRecord final
     float64 DerivativeDifference = 0.0;       ///< Relative difference of domain-scaled first derivatives.
     float64 SecondDerivativeDifference = 0.0; ///< Relative difference of domain-scaled second derivatives.
     uint8 ContinuityFlags[JOINT_FLAG_COUNT]{}; ///< C0, G1, C1, C2 as 0 or 1.
-    uint8 Reserved[4]{}; ///< Zero; keeps the serialized width a multiple of eight and reserved for growth.
+    uint8 Reserved[JOINT_RESERVED_BYTES]{}; ///< Zero; keeps the width a multiple of eight and reserved for growth.
 };
-/// Serialized width of one JointRecord. The four reserved bytes make the width a
+/// Serialized width of one JointRecord. The reserved bytes make the width a
 /// multiple of eight so the record has no host tail padding.
-inline constexpr usize JOINT_RECORD_BYTES = 4 * sizeof(float64) + JOINT_FLAG_COUNT * sizeof(uint8) + 4 * sizeof(uint8);
+inline constexpr usize JOINT_RECORD_BYTES =
+    JOINT_FLAG_COUNT * sizeof(float64) + JOINT_FLAG_COUNT * sizeof(uint8) + JOINT_RESERVED_BYTES * sizeof(uint8);
 static_assert(sizeof(JointRecord) == JOINT_RECORD_BYTES);
 
 /// @brief One cooked scalar-track key. Slopes are value units per second.
@@ -238,8 +245,8 @@ inline constexpr usize HEADER_FIXED_BYTES = MAGIC.size() + HEADER_UINT32_FIELD_C
                                             sizeof(uint32) /*SourceIdentityCount*/ + sizeof(uint64) /*Revision*/ +
                                             (CONTROL_COMPONENTS + 3 + TOLERANCE_FIELD_COUNT) * sizeof(float64) +
                                             sizeof(uint32) /*SectionCount*/;
-/// Bytes contributed by the three trailing SHA-256 digests.
-inline constexpr usize HEADER_DIGEST_BYTES = 3 * DIGEST_BYTES;
+/// Bytes contributed by the trailing SHA-256 digests.
+inline constexpr usize HEADER_DIGEST_BYTES = HEADER_DIGEST_COUNT * DIGEST_BYTES;
 
 /// @brief Minimum header size with no section directory entries.
 ///

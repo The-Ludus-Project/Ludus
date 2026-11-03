@@ -92,7 +92,7 @@ TEST_CASE("Live build supersedes a stale identity", "[editor][geometry]")
     REQUIRE(document.AddControl(MakeHandle(1, 0.0), diag) == true);
 
     ge::GeometryLiveBuild live;
-    const auto identityA = ge::ComputeGeometryBuildIdentity(document.Draft(), ludus::foundation::geometry::PrecisionProfile::Visual);
+    const ludus::content::Digest identityA = ge::ComputeGeometryBuildIdentity(document.Draft(), ludus::foundation::geometry::PrecisionProfile::Visual);
     live.Schedule(identityA);
     REQUIRE(live.IsBuildRequested() == true);
     live.MarkRequested();
@@ -100,7 +100,7 @@ TEST_CASE("Live build supersedes a stale identity", "[editor][geometry]")
 
     // A new edit produces a new identity that supersedes the dispatched one.
     REQUIRE(document.MoveControl(1, Vector3d{5.0, 0.0, 0.0}, false, diag) == true);
-    const auto identityB = ge::ComputeGeometryBuildIdentity(document.Draft(), ludus::foundation::geometry::PrecisionProfile::Visual);
+    const ludus::content::Digest identityB = ge::ComputeGeometryBuildIdentity(document.Draft(), ludus::foundation::geometry::PrecisionProfile::Visual);
     REQUIRE((identityA == identityB) == false);
     live.Schedule(identityB);
     REQUIRE(live.IsBuildRequested() == true);

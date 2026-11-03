@@ -130,17 +130,17 @@ public:
         mOffset = offset;
         return true;
     }
-    [[nodiscard]] bool ReadUint8(uint8& out) noexcept
+    [[nodiscard]] bool ReadUint8(uint8& outValue) noexcept
     {
         if (GetRemaining() < 1)
         {
             return false;
         }
-        out = mBytes[mOffset];
+        outValue = mBytes[mOffset];
         mOffset += 1;
         return true;
     }
-    [[nodiscard]] bool ReadUint32(uint32& out) noexcept
+    [[nodiscard]] bool ReadUint32(uint32& outValue) noexcept
     {
         uint32 value = 0;
         if (core::TryReadLittleEndian<uint32>(mBytes.subspan(mOffset), value) == false)
@@ -148,10 +148,10 @@ public:
             return false;
         }
         mOffset += sizeof(uint32);
-        out = value;
+        outValue = value;
         return true;
     }
-    [[nodiscard]] bool ReadUint64(uint64& out) noexcept
+    [[nodiscard]] bool ReadUint64(uint64& outValue) noexcept
     {
         uint64 value = 0;
         if (core::TryReadLittleEndian<uint64>(mBytes.subspan(mOffset), value) == false)
@@ -159,10 +159,10 @@ public:
             return false;
         }
         mOffset += sizeof(uint64);
-        out = value;
+        outValue = value;
         return true;
     }
-    [[nodiscard]] bool ReadFloat32(float32& out) noexcept
+    [[nodiscard]] bool ReadFloat32(float32& outValue) noexcept
     {
         uint32 bits = 0;
         if (ReadUint32(bits) == false)
@@ -174,10 +174,10 @@ public:
         {
             return false;
         }
-        out = value;
+        outValue = value;
         return true;
     }
-    [[nodiscard]] bool ReadFloat64(float64& out) noexcept
+    [[nodiscard]] bool ReadFloat64(float64& outValue) noexcept
     {
         uint64 bits = 0;
         if (ReadUint64(bits) == false)
@@ -189,20 +189,20 @@ public:
         {
             return false;
         }
-        out = value;
+        outValue = value;
         return true;
     }
-    [[nodiscard]] bool ReadBytes(std::span<uint8> out) noexcept
+    [[nodiscard]] bool ReadBytes(std::span<uint8> outBytes) noexcept
     {
-        if (GetRemaining() < out.size())
+        if (GetRemaining() < outBytes.size())
         {
             return false;
         }
-        for (usize i = 0; i < out.size(); ++i)
+        for (usize i = 0; i < outBytes.size(); ++i)
         {
-            out[i] = mBytes[mOffset + i];
+            outBytes[i] = mBytes[mOffset + i];
         }
-        mOffset += out.size();
+        mOffset += outBytes.size();
         return true;
     }
 

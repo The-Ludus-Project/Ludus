@@ -118,12 +118,12 @@ TEST_CASE("Cook and load round-trip reproduces the corpus cubic spans", "[geomet
         gc::GeometryDiagnosticReport diag2{};
         REQUIRE(gc::CookGeometry(source, blob2, diag2) == Status::Ok);
         REQUIRE(blob2.GetSize() == blob.GetSize());
-        bool identical = true;
+        bool isIdentical = true;
         for (usize b = 0; b < blob.GetSize(); ++b)
         {
-            identical = identical && blob[b] == blob2[b];
+            isIdentical = isIdentical && blob[b] == blob2[b];
         }
-        CHECK(identical == true);
+        CHECK(isIdentical == true);
     }
 }
 

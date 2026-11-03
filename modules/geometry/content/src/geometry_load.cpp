@@ -77,7 +77,7 @@ struct BlobHeader final
                     "Blob exceeds the geometry admission ceiling; split the asset.");
     }
     ByteReader reader(blob);
-    uint8 magic[8]{};
+    uint8 magic[fg::MAGIC.size()]{};
     if (reader.ReadBytes(magic) == false)
     {
         return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Magic", "Re-cook the source.");
@@ -92,13 +92,13 @@ struct BlobHeader final
     }
     uint32 kindTag = 0;
     uint32 precisionTag = 0;
-    bool ok = reader.ReadUint32(outHeader.FormatVersion) && reader.ReadUint32(outHeader.CookerVersion) &&
+    bool isOk = reader.ReadUint32(outHeader.FormatVersion) && reader.ReadUint32(outHeader.CookerVersion) &&
               reader.ReadUint32(kindTag) && reader.ReadUint32(precisionTag) && reader.ReadUint32(outHeader.Flags) &&
               reader.ReadUint32(outHeader.SpanCount) && reader.ReadUint32(outHeader.JointCount) &&
               reader.ReadUint32(outHeader.KeyCount) && reader.ReadUint32(outHeader.PatchCount) &&
               reader.ReadUint32(outHeader.AdjacencyCount) && reader.ReadUint32(outHeader.SourceIdentityCount) &&
               reader.ReadUint64(outHeader.Revision);
-    if (ok == false)
+    if (isOk == false)
     {
         return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Header", "Re-cook the source.");
     }
@@ -123,38 +123,28 @@ struct BlobHeader final
         return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Flags", "Re-cook the source.");
     }
     float64 origin[fg::CONTROL_COMPONENTS]{};
-    ok = reader.ReadFloat64(origin[0]) && reader.ReadFloat64(origin[1]) && reader.ReadFloat64(origin[2]) &&
+    isOk = reader.ReadFloat64(origin[0]) && reader.ReadFloat64(origin[1]) && reader.ReadFloat64(origin[2]) &&
          reader.ReadFloat64(outHeader.AssetScale) && reader.ReadFloat64(outHeader.PositionFloor) &&
          reader.ReadFloat64(outHeader.EffectivePositionError);
-    if (ok == false)
+    if (isOk == false)
     {
         return Fail(outDiag, Status::Invalid, geom::GeometryStatus::NonFiniteInput, "Origin",
                     "A header value is non-finite; re-cook the source.");
     }
     outHeader.Origin = math::Vector3d{origin[0], origin[1], origin[2]};
-    float64 tolerance[fg::TOLERANCE_FIELD_COUNT]{};
-    for (usize i = 0; i < fg::TOLERANCE_FIELD_COUNT; ++i)
+    geom::ToleranceProfile& tolerance = outHeader.Tolerance;
+    const bool isToleranceOk =
+        reader.ReadFloat64(tolerance.PositionError) && reader.ReadFloat64(tolerance.RelativePositionError) &&
+        reader.ReadFloat64(tolerance.DistanceError) && reader.ReadFloat64(tolerance.TangentAngleError) &&
+        reader.ReadFloat64(tolerance.ProjectionGap) && reader.ReadFloat64(tolerance.ContinuityPosition) &&
+        reader.ReadFloat64(tolerance.ContinuityDerivative) && reader.ReadFloat64(tolerance.ContinuityAngle) &&
+        reader.ReadFloat64(tolerance.NormalMinDerivativeLength) && reader.ReadFloat64(tolerance.NormalMinSinAngle) &&
+        reader.ReadFloat64(tolerance.NormalAngleError) && reader.ReadFloat64(tolerance.CoincidenceDistance);
+    if (isToleranceOk == false)
     {
-        if (reader.ReadFloat64(tolerance[i]) == false)
-        {
-            return Fail(outDiag, Status::Invalid, geom::GeometryStatus::NonFiniteInput, "Tolerance",
-                        "A tolerance value is non-finite; re-cook the source.");
-        }
+        return Fail(outDiag, Status::Invalid, geom::GeometryStatus::NonFiniteInput, "Tolerance",
+                    "A tolerance value is non-finite; re-cook the source.");
     }
-    outHeader.Tolerance = geom::ToleranceProfile{
-        .PositionError = tolerance[0],
-        .RelativePositionError = tolerance[1],
-        .DistanceError = tolerance[2],
-        .TangentAngleError = tolerance[3],
-        .ProjectionGap = tolerance[4],
-        .ContinuityPosition = tolerance[5],
-        .ContinuityDerivative = tolerance[6],
-        .ContinuityAngle = tolerance[7],
-        .NormalMinDerivativeLength = tolerance[8],
-        .NormalMinSinAngle = tolerance[9],
-        .NormalAngleError = tolerance[10],
-        .CoincidenceDistance = tolerance[11],
-    };
     if (reader.ReadUint32(outHeader.SectionCount) == false || outHeader.SectionCount > fg::MAX_SECTIONS)
     {
         return Fail(outDiag, Status::Limit, geom::GeometryStatus::BudgetExceeded, "SectionCount",
@@ -169,18 +159,18 @@ struct BlobHeader final
     for (uint32 i = 0; i < outHeader.SectionCount; ++i)
     {
         fg::SectionEntry entry{};
-        ok = reader.ReadUint32(entry.Id) && reader.ReadUint32(entry.Offset) && reader.ReadUint32(entry.Count) &&
+        isOk = reader.ReadUint32(entry.Id) && reader.ReadUint32(entry.Offset) && reader.ReadUint32(entry.Count) &&
              reader.ReadUint32(entry.ElementBytes);
-        if (ok == false)
+        if (isOk == false)
         {
             return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Section",
                         "Re-cook the source.");
         }
         outHeader.Sections[i] = entry;
     }
-    ok = reader.ReadBytes(outHeader.SourceDigest.Data) && reader.ReadBytes(outHeader.DependencyDigest.Data) &&
+    isOk = reader.ReadBytes(outHeader.SourceDigest.Data) && reader.ReadBytes(outHeader.DependencyDigest.Data) &&
          reader.ReadBytes(outHeader.PayloadDigest.Data);
-    if (ok == false)
+    if (isOk == false)
     {
         return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Digest", "Re-cook the source.");
     }
@@ -222,7 +212,7 @@ struct BlobHeader final
             return Fail(outDiag, Status::Invalid, geom::GeometryStatus::OutOfRange, "Section.Offset",
                         "Section extent overflows; the blob is corrupt.", i);
         }
-        if (entry.Offset < header.HeaderBytes || sectionEnd > blob.size() || (entry.Offset % 4) != 0)
+        if (entry.Offset < header.HeaderBytes || sectionEnd > blob.size() || (entry.Offset % fg::SECTION_ALIGNMENT) != 0)
         {
             return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Section.Offset",
                         "Section is misaligned or out of range; the blob is corrupt.", i);
@@ -234,8 +224,8 @@ struct BlobHeader final
     {
         for (uint32 j = i + 1; j < header.SectionCount; ++j)
         {
-            const bool disjoint = ends[i] <= starts[j] || ends[j] <= starts[i];
-            if (disjoint == false)
+            const bool isDisjoint = ends[i] <= starts[j] || ends[j] <= starts[i];
+            if (isDisjoint == false)
             {
                 return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Section.Offset",
                             "Two sections overlap; the blob is corrupt.", i);
