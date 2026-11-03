@@ -42,9 +42,10 @@ function(ludus_apply_pch target_name)
     # Keep these objects cacheable by ccache, as for the editor's headers.
     ludus_precompiled_header_ccache(${target_name})
 
-    # Ensure the include search path and the generated Band 0 headers
-    # (assert_config.hpp) are visible to the target that precompiles core.h.
-    if(NOT target_name STREQUAL "ludus_foundation_base")
+    # Base and its private assertion objects already own the foundational include paths.
+    # Linking Base into those objects would create a dependency cycle.
+    # Other targets inherit the generated Band 0 headers through Base.
+    if(NOT target_name STREQUAL "ludus_foundation_base" AND NOT target_name STREQUAL "ludus_assert_runtime")
         target_link_libraries(${target_name} PRIVATE Ludus::FoundationBase)
     endif()
 endfunction()

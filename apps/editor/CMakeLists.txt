@@ -381,14 +381,17 @@ function(ludus_editor_add_default_render_graph target)
               ${restir_template_shaders})
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics wave_tracing restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee)
+            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics wave_tracing restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee light_transformer)
         string(REPLACE "_" "-" template_identity "${template_directory}")
         set(visibility_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/${template_directory}")
-        file(GLOB visibility_template_shaders CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")
+        file(GLOB template_sources CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")
+        if(template_directory STREQUAL "light_transformer")
+            list(APPEND template_sources "${visibility_template}/light_transformer/model.json")
+        endif()
         qt_add_resources(${target} "ludus_${template_directory}_configuration"
             PREFIX "/render-graph/templates/${template_identity}" BASE "${visibility_template}"
             FILES "${visibility_template}/library.lurender.json" "${visibility_template}/main.lushader.json.in"
-                  ${visibility_template_shaders})
+                  ${template_sources})
     endforeach()
     # One catalog lists the built-in graphs, snippets and node types every template picker offers.
     qt_add_resources(${target} ludus_render_graph_templates
@@ -1341,7 +1344,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
 endif()
 
 if(EMSCRIPTEN)
-    find_package(Qt6 6.10.3 EXACT REQUIRED COMPONENTS GuiPrivate)
+    find_package(Qt6 6.10.3 EXACT REQUIRED COMPONENTS CorePrivate GuiPrivate)
+    # editor_files.cpp compiles in this object library, before the final editor's usage requirements apply.
+    target_link_libraries(ludus_editor_content PRIVATE Qt6::CorePrivate)
     target_link_libraries(ludus_editor PRIVATE Qt6::GuiPrivate)
     set_property(TARGET ludus_editor APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/browser/files.js")
     set_target_properties(ludus_editor PROPERTIES QT_WASM_INITIAL_MEMORY 33554432 QT_WASM_MAXIMUM_MEMORY 2147483648)
@@ -1442,16 +1447,8 @@ endif()
 # Keep the established editor test build entry point complete as suites move into
 # separate executables. Trusted batch workflows build this target before running
 # the editor CTest label, including during the promotion of newer workflow code.
-if(TARGET ludus_editor_tests)
-    foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests ludus_document_well_tests
-            ludus_project_explorer_tests ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
-            ludus_shader_interface_tests ludus_render_graph_configuration_tests
-            ludus_render_graph_live_build_tests ludus_texture_display_conversion_tests)
-        if(TARGET ${target})
-            add_dependencies(ludus_editor_tests ${target})
-        endif()
-    endforeach()
-endif()
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EditorTestDependencies.cmake")
+ludus_complete_editor_test_target(ludus_editor_tests)
 
 if(TARGET ludus_render_graph_configuration_tests)
     target_sources(ludus_render_graph_configuration_tests PRIVATE tests/render_graph_resolution_tests.cpp

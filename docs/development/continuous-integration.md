@@ -19,6 +19,11 @@ Pull requests targeting `develop` run source formatting, source-policy and workf
 syntax checks, tooling regressions, the installed host-tooling tests, and public
 API/documentation validation. Drafts retain these inexpensive checks. They do not
 install the native toolchain or compile engine, Editor or shader-worker targets.
+Source policy also rejects direct nested build commands inside changed
+`add_executable`, `add_library` and `target_sources` source lists. This catches
+merge damage that leaves a build command inside another command's arguments.
+Comments, literals and expansions are ignored; this lexical guard does not
+evaluate CMake or establish source existence and target dependency correctness.
 The `Ubuntu Clang` gate requires the source/tooling job for non-documentation
 changes and verifies that every deferred native job is skipped. The installed
 host-tooling and public API checks remain separate required checks. No label
@@ -466,21 +471,49 @@ through Catch2 discovery before CTest runs. Their names start with
 renderer/GPU/ray labels and explicit unsupported-adapter skips remain available.
 Each reference-compute or graph lifecycle/capture case has a 300-second deadline
 (600 seconds with ASan/UBSan); each template case has a
-600-second deadline for its convergence captures. Polygon sampling, Metropolis
+600-second deadline for its convergence captures. Each raw-AOV camera, lighting
+and optical fixture is also an independent case, preserving its samples, seed,
+CPU oracle and numerical assertions. Polygon sampling, Metropolis
 and physical-optics parity also have separate named tests. Metropolis parity has
 a 300-second case deadline (600 seconds with ASan/UBSan), allowing its
 material/estimator variants to share the cold shader setup. Its readiness helper yields between polls and allows
-120 seconds for cold shader/pipeline preparation and the first submission
+180 seconds for cold shader/pipeline preparation and the first submission
 (300 seconds with ASan/UBSan); buffer readiness and readback retain their
 30-second bounds. Failed readiness
 reports the operation, status, elapsed time and deadline, and retires the RHI
 even when a test assertion aborts the case. The numerical and
 image assertions are unchanged by this partition.
 
+The captured `native-setup` action sets `GALLIVM_PERF=nopt` for the Linux
+Development/SDK, sanitizer and Editor job/preset pairs. This placement also
+repairs batches using older trusted workflow definitions on `main`: the action
+comes from the captured candidate and needs no new caller input. Other jobs and
+presets retain their driver environment. The action's real shell regression
+checks all admitted pairs and excludes profiling, release and other platforms.
+Thanks to the Mesa authors,
+[Gallivm's optimization flags and pass manager](https://chromium.googlesource.com/chromiumos/third_party/mesa/+/refs/heads/stabilize-13982.70.B-chromeos-amd/src/gallium/auxiliary/gallivm/lp_bld_init.c)
+provide this mode to reduce shader compilation time. The default LLVM
+SROA/memory-promotion work can consume the entire test deadline before the first
+reference sample. The CI profile retains actual Vulkan shader execution,
+validation layers, sample counts and independent CPU/GPU comparisons, while
+bounding driver optimization work. Engine shader artifacts and driver defaults
+are unchanged; performance qualification uses its own normal driver profile.
+The unchanged reference artifact took 111 seconds in a fresh-cache raw-AOV run
+with this profile. Its readiness window has 180 seconds of cold allowance
+(300 with ASan/UBSan), leaving room for capture within the existing case deadline.
+
 These correctness deadlines include shader preparation on software adapters.
 Independent deadlines keep growth in the number of reference captures from
 consuming the raster test's deadline. `--durations yes` identifies completed
-cases when a deadline fails. Render-graph capture tests allow 120 seconds for the
+cases when a deadline fails. GPU math/transport oracle cases use the
+`[reference-compute]` tag to receive independent discovery, including wave kernel
+parity. Wave template cases are discovered separately with the existing
+600-second template deadline; the supplied-scene manual fixture stays hidden.
+Their single-sample captures yield while polling and give initialization and
+first capture separate cold windows. Each authored scene wave scenario has its
+own case; its four-pass graph allows 300 seconds for cold preparation, including
+lavapipe LLVM compilation observed beyond 120 seconds. This does not change
+sample counts, geometry or pixel assertions. Render-graph capture tests allow 120 seconds for the
 first submitted ray sample after initialization or a scene/camera reset, including
 first-use software shader work. ASan/UBSan cases allow 300 seconds for that cold
 work, including driver allocation interception; subsequent samples retain the
@@ -501,6 +534,11 @@ The offscreen editor suite runs as four serial Catch2 shards and the canvas
 configuration suite as two. Declaration order gives each case exactly one shard;
 the existing 600- and 180-second deadlines apply per shard. CTest resource locking
 keeps those GPU and shader-worker owners serial even under a parallel CTest run.
+The `ludus_editor_tests` build entry point also builds every executable target
+ending in `_tests` in the editor's own CMake directory, including optional preview
+suites. A real-CMake contract regression checks optional suites enabled and
+disabled, and excludes helper objects, benchmarks and other directories. This
+keeps older trusted batch workflows complete when a new editor suite is added.
 
 The mandatory Vulkan pixel proof selects `[render-graph]` and rejects skipped
 cases. Portable bilinear upscaling stays in that set; optional MetalFX variants

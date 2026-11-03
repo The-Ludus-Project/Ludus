@@ -551,12 +551,33 @@ canvas and authoring panels, presentation, content, project explorer, document
 well, texture display, the application objects with their compiled shaders, the
 Qt resources, and the tests' Catch2 entry point. Every executable links the
 same objects it previously compiled itself, so the linked code is unchanged.
+Compilation dependencies belong to the object target that compiles each source;
+an executable's usage requirements do not propagate back into its object libraries.
+For the browser editor, `editor_files.cpp` uses Qt's private browser file API, so
+`ludus_editor_content` privately links `Qt6::CorePrivate` only under Emscripten.
+The build-contract regression compiles the actual browser dependency block,
+rejects the former executable-only dependency, and checks the native branch
+without a Qt package.
 The generated LTC table, 213,000 lines of constant data, is likewise compiled
 once and linked into the renderer and both renderer test executables.
+The assertion runtime also shares its identical objects between FoundationBase
+and the isolated fake-platform death-test executable. Each final binary still
+selects its own platform implementation and owns its own assertion state; the
+fake executable does not link the native FoundationBase runtime. Its object
+target owns the foundational includes directly, including when PCH is enabled,
+so it must not acquire a dependency back on FoundationBase.
+
+The shared Catch2 entry object is test-only and keeps exceptions enabled, along
+with its generated MOC aggregation unit. The effective exception-policy check
+identifies the owning target from the object output, admits test source and that
+test target's own generated MOC, and retains exception-free production objects.
+Real-compiler regressions reject production opt-ins even when an include path or
+definition contains a test-like target name.
 
 Equivalence was checked from the compile databases before and after, with the
-exception mode normalized (test executables compile with `-fexceptions`, the
-shared objects without, as engine libraries already are):
+exception mode normalized (test executables and their Catch2 entry objects
+compile with `-fexceptions`; shared production objects use the engine libraries'
+exception-free mode):
 
 - Every shared editor source preprocessed identically (`-E -P`) for all of its
   former consumers, except the variants that now stay per target. Code

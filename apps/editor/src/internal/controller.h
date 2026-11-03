@@ -142,7 +142,7 @@ public:
     void ClearRecentProjects();
     /// Forget one recent project, for example one whose descriptor has gone missing.
     void RemoveRecentProject(const QString& descriptorPath);
-    void EditDraft(const ProjectDescriptor& draft, bool merge = false);
+    void EditDraft(const ProjectDescriptor& draft, bool shouldMerge = false);
     void UndoProjectEdit();
     void RedoProjectEdit();
     [[nodiscard]] bool CanUndoProject() const;

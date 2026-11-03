@@ -24,9 +24,13 @@ add_test(NAME ludus_behavior_acceptance COMMAND ludus_behavior_acceptance)
 set_tests_properties(ludus_behavior_acceptance PROPERTIES TIMEOUT 60 LABELS "scripting;behavior")
 file(READ "${PROJECT_SOURCE_DIR}/out/script-provider/safety/current.json" safety_pointer)
 string(JSON safety_key GET "${safety_pointer}" key)
-add_executable(ludus_behavior_safety safety.cpp fault_allocator.cpp)
+# Compile the override once; each executable links its own copy of the object and allocation-failure state.
+add_library(ludus_behavior_fault_allocator OBJECT fault_allocator.cpp)
+target_link_libraries(ludus_behavior_fault_allocator PRIVATE Ludus::FoundationBase)
+ludus_apply_project_defaults(ludus_behavior_fault_allocator)
+add_executable(ludus_behavior_safety safety.cpp)
 target_include_directories(ludus_behavior_safety PRIVATE "${PROJECT_SOURCE_DIR}/out/script-provider/safety/${safety_key}")
-target_link_libraries(ludus_behavior_safety PRIVATE Ludus::Behavior Ludus::FoundationLogging)
+target_link_libraries(ludus_behavior_safety PRIVATE ludus_behavior_fault_allocator Ludus::Behavior Ludus::FoundationLogging)
 ludus_apply_project_defaults(ludus_behavior_safety)
 if(EMSCRIPTEN)
     target_link_options(ludus_behavior_safety PRIVATE -sEXIT_RUNTIME=1 -sENVIRONMENT=web,node
@@ -46,9 +50,9 @@ set_tests_properties(ludus_behavior_profiles PROPERTIES TIMEOUT 60 LABELS "scrip
 add_test(NAME ludus_behavior_evidence COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_evidence.py")
 set_tests_properties(ludus_behavior_evidence PROPERTIES TIMEOUT 30 LABELS "scripting;behavior;tooling")
 # Exercise the exact private allocator contract separately from SDK-only safety.
-add_executable(ludus_behavior_allocator_contract allocator_contract.cpp fault_allocator.cpp)
+add_executable(ludus_behavior_allocator_contract allocator_contract.cpp)
 target_include_directories(ludus_behavior_allocator_contract PRIVATE "${PROJECT_SOURCE_DIR}/modules/runtime/scripting/src")
-target_link_libraries(ludus_behavior_allocator_contract PRIVATE ludus_runtime_scripting Ludus::FoundationLogging)
+target_link_libraries(ludus_behavior_allocator_contract PRIVATE ludus_behavior_fault_allocator ludus_runtime_scripting Ludus::FoundationLogging)
 ludus_apply_project_defaults(ludus_behavior_allocator_contract)
 if(EMSCRIPTEN)
     target_link_options(ludus_behavior_allocator_contract PRIVATE -sENVIRONMENT=web,node -sEXIT_RUNTIME=1

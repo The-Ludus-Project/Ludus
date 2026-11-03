@@ -217,6 +217,12 @@ Use a system sans-serif font; monospace only for paths, code and numeric debug
 values. Use a small spacing scale (4/8/12/16/24 logical px), clear section titles,
 and text with icons for primary actions. Match command glyphs by optical size,
 stroke weight and modest rounding; reserve the dimensional L for branding.
+Combo boxes reserve the full text advance, including letter spacing and glyph
+bearings, alongside their arrow column. Qt's ink bounds can be narrower than
+that advance; the shared style accounts for the difference while preserving
+icon space and the control's size-adjustment policy. When sizing to contents,
+check every offered item, including an item wider than the current selection,
+with ordinary and spaced fonts.
 Accent identifies selection/focus and primary actions; warning/error/success
 also need words or symbols and separate semantic treatments. In particular,
 mint action styling alone must not imply successful completion.

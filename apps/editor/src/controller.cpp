@@ -248,13 +248,13 @@ void EditorController::RemoveRecentProject(const QString& descriptorPath)
     Publish();
 }
 
-void EditorController::EditDraft(const ProjectDescriptor& draft, bool merge)
+void EditorController::EditDraft(const ProjectDescriptor& draft, bool shouldMerge)
 {
     if (Caps().CanEdit == false)
     {
         return;
     }
-    if (ProjectHistory_.Commit(State_.Draft, draft, merge) == false)
+    if (ProjectHistory_.Commit(State_.Draft, draft, shouldMerge) == false)
     {
         return;
     }

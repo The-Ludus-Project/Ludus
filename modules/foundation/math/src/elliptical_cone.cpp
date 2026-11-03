@@ -113,13 +113,22 @@ void AddEdgeParameter(float64 parameter,
     AddCandidate(first.Z + parameter * delta.Z, firstBarycentric + deltaBarycentric * parameter, inoutIntersection);
 }
 
+struct ConeEdge final
+{
+    Vector3d FirstPositionCone;
+    Vector3d SecondPositionCone;
+    Vector3d FirstBarycentric;
+    Vector3d SecondBarycentric;
+};
+
 bool IntersectEdge(const EllipticalCone& cone,
-                   Vector3d first,
-                   Vector3d second,
-                   Vector3d firstBarycentric,
-                   Vector3d secondBarycentric,
+                   const ConeEdge& edge,
                    ConeTriangleIntersection& inoutIntersection) noexcept
 {
+    const Vector3d first = edge.FirstPositionCone;
+    const Vector3d second = edge.SecondPositionCone;
+    const Vector3d firstBarycentric = edge.FirstBarycentric;
+    const Vector3d secondBarycentric = edge.SecondBarycentric;
     const Vector3d delta = second - first;
     const Vector3d deltaBarycentric = secondBarycentric - firstBarycentric;
     float64 nearParameter = 0;
@@ -261,9 +270,30 @@ bool TryIntersectEllipticalConeTriangle(const EllipticalCone& cone,
         {
             AddPlaneCandidate(nearDistance, normal, planeDistance, first, second, third, intersection);
             AddPlaneCandidate(farDistance, normal, planeDistance, first, second, third, intersection);
-            if (IntersectEdge(normalized, first, second, {1, 0, 0}, {0, 1, 0}, intersection) == false ||
-                IntersectEdge(normalized, second, third, {0, 1, 0}, {0, 0, 1}, intersection) == false ||
-                IntersectEdge(normalized, third, first, {0, 0, 1}, {1, 0, 0}, intersection) == false)
+            if (IntersectEdge(normalized,
+                              {
+                                  .FirstPositionCone = first,
+                                  .SecondPositionCone = second,
+                                  .FirstBarycentric = {1, 0, 0},
+                                  .SecondBarycentric = {0, 1, 0},
+                              },
+                              intersection) == false ||
+                IntersectEdge(normalized,
+                              {
+                                  .FirstPositionCone = second,
+                                  .SecondPositionCone = third,
+                                  .FirstBarycentric = {0, 1, 0},
+                                  .SecondBarycentric = {0, 0, 1},
+                              },
+                              intersection) == false ||
+                IntersectEdge(normalized,
+                              {
+                                  .FirstPositionCone = third,
+                                  .SecondPositionCone = first,
+                                  .FirstBarycentric = {0, 0, 1},
+                                  .SecondBarycentric = {1, 0, 0},
+                              },
+                              intersection) == false)
             {
                 return false;
             }

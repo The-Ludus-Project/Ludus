@@ -20,6 +20,56 @@ ROOTS = {"modules", "apps", "examples", "tests", "tools", "cmake"}
 BINDING_BOUNDARY = "modules/graphics/rhi/shaders/raster_bindings.slang"
 
 
+# Thanks to Kitware and CMake contributors, "cmake-language(7)", Syntax:
+# https://cmake.org/cmake/help/latest/manual/cmake-language.7.html#syntax
+# Use its argument/comment forms for masking; this guard does not evaluate CMake.
+def cmake_code_only(source: str) -> str:
+    """Keep offsets while hiding CMake comments, literals and opaque expansions."""
+    literals = re.compile(
+        r'#?\[(?P<equals>=*)\[[\s\S]*?\](?P=equals)\]'
+        r'|"(?:\\[\s\S]|[^"\\])*"|#[^\n]*|\\[\s\S]'
+    )
+    code = literals.sub(lambda match: re.sub(r"[^\n]", " ", match.group()), source)
+    variables = re.compile(r"\$(?:ENV|CACHE)?\{[^{}]*\}")
+    while variables.search(code):
+        code = variables.sub(lambda match: re.sub(r"[^\n]", " ", match.group()), code)
+    depth = 0
+    beginning = 0
+    pieces = list(code)
+    for match in re.finditer(r"\$<|>", code):
+        if match.group() == "$<":
+            if depth == 0:
+                beginning = match.start()
+            depth += 1
+        elif depth > 0:
+            depth -= 1
+            if depth == 0:
+                for index in range(beginning, match.end()):
+                    if pieces[index] != "\n":
+                        pieces[index] = " "
+    return "".join(pieces)
+
+
+def nested_cmake_build_commands(code: str) -> list[tuple[int, int, int, str, str]]:
+    """Find direct build commands embedded in source lists, without evaluating CMake."""
+    found = []
+    for outer in re.finditer(r"\b(add_executable|add_library|target_sources)\s*\(", code, re.I):
+        depth = 1
+        ending = len(code)
+        for parenthesis in re.finditer(r"[()]", code[outer.end():]):
+            depth += 1 if parenthesis.group() == "(" else -1
+            if depth == 0:
+                ending = outer.end() + parenthesis.start()
+                break
+        for inner in re.finditer(
+            r"\b((?:add|target|ludus)_\w+|set_(?:target|source_files|tests)_properties)\s*\(",
+            code[outer.end():ending], re.I,
+        ):
+            found.append((outer.start(), ending, outer.end() + inner.start(),
+                          outer.group(1), inner.group(1)))
+    return found
+
+
 def code_only(source: str) -> str:
     """Preserve offsets/newlines while removing comments, literals and directives."""
     pieces = []
@@ -209,7 +259,8 @@ def declaration_commas(code: str) -> list[int]:
 
 def violations(path: str, source: str, changed: set[int]) -> list[tuple[int, str]]:
     """Check lexical conventions, not semantic coordinate correctness or C++ types."""
-    code = code_only(source)
+    is_cmake = Path(path).suffix == ".cmake" or Path(path).name == "CMakeLists.txt"
+    code = cmake_code_only(source) if is_cmake else code_only(source)
     found = []
 
     def report(offset: int, message: str) -> None:
@@ -217,7 +268,14 @@ def violations(path: str, source: str, changed: set[int]) -> list[tuple[int, str
         if line in changed:
             found.append((line, message))
 
-    if Path(path).suffix == ".cmake" or Path(path).name == "CMakeLists.txt":
+    if is_cmake:
+        for opening, ending, nested, outer_name, inner_name in nested_cmake_build_commands(code):
+            first_line = code.count("\n", 0, opening) + 1
+            last_line = code.count("\n", 0, ending) + 1
+            if changed.intersection(range(first_line, last_line + 1)):
+                found.append((code.count("\n", 0, nested) + 1,
+                              f"close {outer_name} before invoking {inner_name}; "
+                              "build commands cannot be nested in a source list"))
         for match in re.finditer(
             r"\bludus_compile_shader\s*\([^)]*?\bNAME\s+(renderer_\w+)", code
         ):
