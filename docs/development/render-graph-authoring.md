@@ -8967,7 +8967,11 @@ cooked production-graph regression checks authored lighting and diffraction in
 geometric shadow. The Metal compiler boundary preserves emitted SPIR-V
 `DontInline` controls for the optical solver, traversal and FFT routines. Keeping
 these routines isolated prevents live-state corruption in a merged ray kernel;
-the translated helper gate and cooked staircase capture cover this path. The
+before MSL translation the helper gives those functions unique portable debug
+names, including scoped Slang names such as `GraphSource0.ShadePolygonalLights`.
+Only `OpName` strings change; function identities, controls, instructions and
+resource interfaces remain intact. Other helpers retain their inline policy.
+The translated helper gate and cooked staircase capture cover this path. The
 former manually authored Gaussian-aperture graph remains
 a test fixture, with its separate analytic Fresnel and double-slit checks.
 

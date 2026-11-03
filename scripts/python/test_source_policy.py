@@ -1,5 +1,6 @@
 """Regressions for changed-source review rules and literal safety."""
 
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -13,6 +14,77 @@ class SourcePolicyTests(unittest.TestCase):
         return violations(
             "modules/example/source" + suffix, text, set(range(1, text.count("\n") + 2))
         )
+
+    def test_build_commands_cannot_be_nested_in_source_lists(self):
+        for outer in ["add_executable", "add_library", "target_sources"]:
+            for inner in ["target_sources", "target_link_libraries", "ludus_apply_project_defaults"]:
+                with self.subTest(outer=outer, inner=inner):
+                    source = f"{outer}(example main.cpp\n  {inner}(example extra.cpp)\n)\n"
+                    findings = self.diagnose(source, ".cmake")
+                    self.assertEqual(len(findings), 1, findings)
+                    self.assertIn(f"close {outer} before invoking {inner}", findings[0][1])
+        source = "ADD_EXECUTABLE(example main.cpp\n TARGET_SOURCES(example extra.cpp)\n)\n"
+        self.assertEqual(len(self.diagnose(source, ".cmake")), 1)
+
+    def test_cmake_source_list_literals_comments_and_expansions_are_opaque(self):
+        source = '''add_executable(example main.cpp
+  "target_sources(fake example.cpp)"
+  [=[target_sources(fake example.cpp)]=]
+  # target_sources(fake example.cpp)
+  #[==[
+  target_sources(fake example.cpp)
+  ]==]
+  ${target_sources(fake)}
+  $ENV{target_sources(fake)}
+  $<IF:$<BOOL:1>,target_sources(fake).cpp,other.cpp>
+)
+target_sources(example PRIVATE extra.cpp)
+'''
+        self.assertEqual(self.diagnose(source, ".cmake"), [])
+
+    def test_source_list_nesting_checks_the_changed_enclosing_command(self):
+        source = "add_executable(example main.cpp\n target_sources(example extra.cpp)\n)\n\nset(other value)\n"
+        path = "modules/example/CMakeLists.txt"
+        self.assertEqual(len(violations(path, source, {1})), 1)
+        self.assertEqual(len(violations(path, source, {3})), 1)
+        self.assertEqual(violations(path, source, {5}), [])
+
+    def test_closed_source_lists_configure_and_retain_all_sources(self):
+        cmake = shutil.which("cmake")
+        if cmake is None:
+            self.skipTest("CMake is required for the live source-registration regression")
+        before = '''add_executable(example main.cpp
+target_sources(example PRIVATE extra.cpp)
+)
+'''
+        after = '''add_executable(example main.cpp)
+target_sources(example PRIVATE extra.cpp)
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "main.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+            (root / "extra.cpp").write_text("int GetValue() { return 1; }\n", encoding="utf-8")
+            for name, source in [("before", before), ("after", after)]:
+                (root / "CMakeLists.txt").write_text(
+                    "cmake_minimum_required(VERSION 3.20)\nproject(SourceLists LANGUAGES CXX)\n"
+                    + source
+                    + 'get_target_property(sources example SOURCES)\n'
+                      'file(WRITE "${CMAKE_BINARY_DIR}/sources.txt" "${sources}")\n',
+                    encoding="utf-8",
+                )
+                configured = subprocess.run(
+                    [cmake, "-S", str(root), "-B", str(root / name)],
+                    capture_output=True, text=True, check=False,
+                )
+                if name == "before":
+                    self.assertNotEqual(configured.returncode, 0)
+                    self.assertIn("target_sources", configured.stderr)
+                    self.assertTrue(self.diagnose(source, ".cmake"))
+                else:
+                    self.assertEqual(configured.returncode, 0, configured.stdout + configured.stderr)
+                    self.assertEqual((root / name / "sources.txt").read_text().split(";"),
+                                     ["main.cpp", "extra.cpp"])
+                    self.assertEqual(self.diagnose(source, ".cmake"), [])
 
     def test_admission_capacity_literals_use_their_owner(self):
         paths = ["modules/content/scene_cook/src/scene_cook.cpp",

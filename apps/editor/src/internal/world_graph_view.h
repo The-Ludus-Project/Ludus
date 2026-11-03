@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include "internal/preview_shading.h"
@@ -51,13 +52,13 @@ public:
     /// graph's last image remains on screen instead of an empty viewport. No-op without a debug view.
     void RejectDebugView(const QString& reason);
     /// Explanation of the most recently rejected debug view; empty after another output is chosen.
-    [[nodiscard]] const QString& GetDebugViewProblem() const noexcept
+    [[nodiscard]] LUDUS_INLINE const QString& GetDebugViewProblem() const noexcept
     {
         return mDebugViewProblem;
     }
 
     /// True while the status text is the short build-failure chip; the full problem is in the Error List.
-    [[nodiscard]] bool HasProblemChip() const noexcept
+    [[nodiscard]] LUDUS_INLINE bool HasProblemChip() const noexcept
     {
         return mHasProblemChip;
     }

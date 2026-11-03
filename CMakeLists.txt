@@ -313,7 +313,7 @@ add_subdirectory(modules/foundation/serialization)
 # and serialization codecs statically. Their whole static closure must be
 # position-independent, whether or not the Behavior provider is built.
 if(NOT EMSCRIPTEN)
-    set_target_properties(ludus_foundation_base ludus_foundation_memory ludus_foundation_math
+    set_target_properties(ludus_foundation_base ludus_assert_runtime ludus_foundation_memory ludus_foundation_math
         ludus_foundation_parsing ludus_foundation_parsing_json ludus_yyjson PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 add_subdirectory(modules/foundation/config)

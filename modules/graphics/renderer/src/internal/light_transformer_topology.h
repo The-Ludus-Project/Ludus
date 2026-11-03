@@ -29,11 +29,15 @@ struct EncoderLevel final
 PrepareEncoderFps(foundation::BorrowedView<const foundation::math::Vector3> positionsModel,
                   foundation::Array<foundation::uint32>& outIndices,
                   foundation::Array<foundation::math::Vector3>& outPositionsModel) noexcept;
-[[nodiscard]] rhi::RasterStatus
-PrepareEncoderNeighbors(foundation::BorrowedView<const foundation::math::Vector3> positionsModel,
-                        foundation::BorrowedView<const foundation::math::Vector3> queriesModel,
-                        foundation::BorrowedView<const foundation::uint32> centers,
-                        foundation::Array<foundation::uint32>& outNeighbors) noexcept;
+/// Borrowed source/query positions and the query-to-source center mapping for one neighbor search.
+struct EncoderNeighborSources final
+{
+    foundation::BorrowedView<const foundation::math::Vector3> PositionsModel;
+    foundation::BorrowedView<const foundation::math::Vector3> QueriesModel;
+    foundation::BorrowedView<const foundation::uint32> Centers;
+};
+[[nodiscard]] rhi::RasterStatus PrepareEncoderNeighbors(const EncoderNeighborSources& sources,
+                                                        foundation::Array<foundation::uint32>& outNeighbors) noexcept;
 [[nodiscard]] rhi::RasterStatus
 PrepareEncoderLevels(foundation::BorrowedView<const foundation::math::Vector3> anchorsModel,
                      foundation::StaticArray<EncoderLevel, LUDUS_LIGHT_ENCODER_LEVELS>& outLevels) noexcept;

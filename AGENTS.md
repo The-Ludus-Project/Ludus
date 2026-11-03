@@ -667,6 +667,14 @@ headers. Separate the groups with a blank line.
 
 ## Build, test, and validate
 
+- Tag GPU math/transport oracle cases with `[reference-compute]` so CTest discovers
+  each with its own deadline. Reuse the renderer-owned cold preparation budget and
+  yield during asynchronous polling; keep unrelated scenarios out of a shared
+  short raster deadline. These choices still require semantic review.
+- Close CMake source lists before invoking another build command. The changed-source
+  gate rejects direct nested build commands in `add_executable`, `add_library` and
+  `target_sources` lists touched by a change. This lexical check does not evaluate
+  CMake variables or prove that sources exist; configuration remains required.
 - Keep `unittest.main()` after every test class in Python test modules, so direct
   invocation and discovery include the same tests. Preserve this when appending tests.
 - Required SDK acceptance checks raise explicit errors rather than relying on Python

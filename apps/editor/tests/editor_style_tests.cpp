@@ -1,7 +1,10 @@
-#include <catch2/catch_test_macros.hpp>
-
 #include "internal/theme_preferences.h"
 #include "internal/workspace_style.h"
+
+#include <ludus/foundation/base/types.h>
+
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QApplication>
 #include <QCheckBox>
@@ -10,6 +13,7 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
+#include <QFont>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -183,6 +187,9 @@ TEST_CASE("Style gallery renders for visual comparison", "[editor][style][.galle
 
 TEST_CASE("Combo boxes keep room for their whole text and draw a small chevron", "[editor][style]")
 {
+    const bool hasSpacedLetters = GENERATE(false, true);
+    CAPTURE(hasSpacedLetters);
+    constexpr ludus::foundation::float64 LETTER_SPACING_PIXELS = 4;
     QWidget root;
     ApplyWorkspaceStyle(&root);
     QVBoxLayout* layout = new QVBoxLayout(&root);
@@ -191,7 +198,14 @@ TEST_CASE("Combo boxes keep room for their whole text and draw a small chevron",
     {
         QComboBox* combo = new QComboBox(&root);
         combo->setFocusPolicy(Qt::NoFocus);
+        if (hasSpacedLetters == true)
+        {
+            QFont font = combo->font();
+            font.setLetterSpacing(QFont::AbsoluteSpacing, LETTER_SPACING_PIXELS);
+            combo->setFont(font);
+        }
         combo->addItem(text);
+        combo->addItem(text + QStringLiteral(" option"));
         layout->addWidget(combo);
         combos.append(combo);
     }
@@ -208,6 +222,10 @@ TEST_CASE("Combo boxes keep room for their whole text and draw a small chevron",
             combo->style()->subControlRect(QStyle::CC_ComboBox, &option, QStyle::SC_ComboBoxArrow, combo);
         // The sized-to-content combo fits its text and leaves the arrow its own column.
         CHECK(field.width() >= combo->fontMetrics().horizontalAdvance(combo->currentText()));
+        for (ludus::foundation::int32 item = 0; item < combo->count(); ++item)
+        {
+            CHECK(field.width() >= combo->fontMetrics().horizontalAdvance(combo->itemText(item)));
+        }
         CHECK(field.right() < arrow.left());
         CHECK(combo->rect().contains(arrow) == true);
         // The chevron stays inside its column and is small: a few pixels either way, not a platform-sized arrow.

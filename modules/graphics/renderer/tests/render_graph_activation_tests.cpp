@@ -1741,8 +1741,9 @@ TEST_CASE("RG3 version 25 packages append the LTC table binding to each scene co
         CHECK(failures.Visibility == rhi::RasterVisibility::Compute);
     }
     // Undefined scene resource bits, and a table without a ray kernel to read it, are malformed.
-    constexpr uint32 UNDEFINED_SCENE_RESOURCE = 4;
-    CHECK(DecodeBytes(MakeRayPackageBytes(format::StageRole::SceneRayCompute, UNDEFINED_SCENE_RESOURCE)) ==
+    // Keep reserved bits in the malformed fixture as new resource flags are assigned.
+    constexpr uint32 FLAGS_WITH_UNKNOWN_BITS = std::numeric_limits<uint32>::max();
+    CHECK(DecodeBytes(MakeRayPackageBytes(format::StageRole::SceneRayCompute, FLAGS_WITH_UNKNOWN_BITS)) ==
           renderer::RenderGraphPackageStatus::Malformed);
     PackageWriter raster;
     PackageOptions options;

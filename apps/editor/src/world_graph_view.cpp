@@ -259,17 +259,15 @@ void WorldGraphView::refreshStatus()
     {
         text = mWorkspace.GetRenderProblem();
     }
-    else if (mWorkspace.GetDocument().IsLoaded() == false)
+    else if (mWorkspace.GetDocument().IsLoaded() == false ||
+             (mWorkspace.IsJobActive() == false && mWorkspace.GetLastResult().Request.Request != 0 &&
+              mWorkspace.GetLastResult().IsSuccessful == false))
     {
         text = mWorkspace.GetStatusText();
     }
     else if (mWorkspace.IsJobActive() == true)
     {
         text = QStringLiteral("Compiling shaders…");
-    }
-    else if (mWorkspace.GetLastResult().Request.Request != 0 && mWorkspace.GetLastResult().IsSuccessful == false)
-    {
-        text = mWorkspace.GetStatusText();
     }
     else
     {

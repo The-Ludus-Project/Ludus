@@ -551,7 +551,10 @@ TEST_CASE("Wireframe draws only triangle edges in the shared colour on the GPU",
         isAdmitted = preview.AdmitOffscreenDevice();
     });
     preview.Resize(WIREFRAME_FRAME_PIXELS, WIREFRAME_FRAME_PIXELS);
-    REQUIRE(preview.SetScene(MakeTriangleScene()) == true);
+    // Keep the sampled edge above the world grid: an axis blended into an edge can be the brightest pixel.
+    RenderScene scene = MakeTriangleScene();
+    scene.Objects[0].Transform.Translation.Y = 2;
+    REQUIRE(preview.SetScene(scene) == true);
     const bool hasStarted = preview.Start();
     if (isAdmitted == false)
     {

@@ -22,6 +22,22 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Select software-driver correctness profile
+      shell: bash
+      env:
+        PRESET: ${{ inputs.preset }}
+      run: |
+        # The captured action must also work with older trusted main workflows.
+        # Thanks to GitHub's Variables reference: GITHUB_JOB is the current job ID.
+        # https://docs.github.com/en/actions/reference/workflows-and-actions/variables
+        # Thanks to Mesa's Gallivm authors, lp_bld_init.c, lp_bld_perf_flags/create_pass_manager:
+        # https://chromium.googlesource.com/chromiumos/third_party/mesa/+/refs/heads/stabilize-13982.70.B-chromeos-amd/src/gallium/auxiliary/gallivm/lp_bld_init.c
+        case "$RUNNER_OS:$GITHUB_JOB:$PRESET" in
+          Linux:development:linux-clang-development|Linux:sanitizers:linux-clang-asan-ubsan|Linux:editor:linux-clang-development)
+            printf 'GALLIVM_PERF=nopt\n' >> "$GITHUB_ENV"
+            echo 'Mesa correctness profile: nopt'
+            ;;
+        esac
     - name: Install native prerequisites
       shell: bash
       env:

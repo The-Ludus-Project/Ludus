@@ -4,6 +4,8 @@
 #include "internal/path_text.h"
 #include "internal/theme_preferences.h"
 
+#include <ludus/foundation/base/types.h>
+
 #include <algorithm>
 
 #include <QAbstractItemView>
@@ -41,6 +43,7 @@ constexpr int COMPACT_BUTTON_PADDING_VERTICAL = 2;
 constexpr int COMPACT_BUTTON_PADDING_HORIZONTAL = 8;
 constexpr int INPUT_PADDING = 4;
 constexpr int COMBO_ARROW_PADDING = 20;
+
 /// Drop-down and branch chevron: the width of its two strokes and the pen weight, in logical pixels. The platform
 /// style would size its own arrow, which comes out oversized on macOS, so every arrow is drawn from these.
 constexpr qreal CHEVRON_SPAN = 8.0;
@@ -70,6 +73,13 @@ const char* const SEGMENT_POSITION_PROPERTY = "segmentPosition";
 const char* const DENSITY_PROPERTY = "density";
 const char* const SECONDARY_LABEL_MARKER = "ludusSecondaryLabel";
 
+foundation::int32 ComputeTextAdvancePaddingPixels(const QFontMetrics& fontMetrics, const QString& text) noexcept
+{
+    const foundation::int32 inkWidthPixels = fontMetrics.boundingRect(text).width();
+    const foundation::int32 advanceWidthPixels = fontMetrics.horizontalAdvance(text);
+    return advanceWidthPixels > inkWidthPixels ? advanceWidthPixels - inkWidthPixels : 0;
+}
+
 QColor Token(design::ThemeColour role, bool isDark, bool isHighContrast)
 {
     return QColor::fromRgb(design::GetThemeArgb(role, isDark, isHighContrast));
@@ -85,13 +95,19 @@ bool HasProperty(const QWidget* widgetOrNull, const char* name, const char* valu
     return widgetOrNull != nullptr && widgetOrNull->property(name).toString() == QLatin1String(value);
 }
 
+struct ControlBodyColours final
+{
+    QColor Fill;
+    QColor Edge;
+};
+
 /// Rounded control body with an edge drawn inside rect.
-void DrawControlBody(QPainter* painter, const QRect& rect, const QColor& fill, const QColor& edge, int edgeWidth)
+void DrawControlBody(QPainter* painter, const QRect& rect, const ControlBodyColours& colours, int edgeWidth)
 {
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing);
-    painter->setPen(QPen(edge, edgeWidth));
-    painter->setBrush(fill);
+    painter->setPen(QPen(colours.Edge, edgeWidth));
+    painter->setBrush(colours.Fill);
     const qreal inset = static_cast<qreal>(edgeWidth) * HALF;
     painter->drawRoundedRect(QRectF(rect).adjusted(inset, inset, -inset, -inset),
                              design::RADIUS_CONTROL,
@@ -133,8 +149,7 @@ void DrawChevron(QPainter* painter, const QRect& rect, QStyle::PrimitiveElement 
 /// corners of the first and last segments are rounded and neighbours share a divider.
 void DrawSegmentBody(QPainter* painter,
                      const QRect& rect,
-                     const QColor& fill,
-                     const QColor& edge,
+                     const ControlBodyColours& colours,
                      int edgeWidth,
                      bool isFirst,
                      bool isLast)
@@ -143,10 +158,10 @@ void DrawSegmentBody(QPainter* painter,
     painter->setClipRect(rect);
     const int overhang = static_cast<int>(design::RADIUS_CONTROL) * 2;
     const QRect body = rect.adjusted(isFirst == true ? 0 : -overhang, 0, isLast == true ? 0 : overhang, 0);
-    DrawControlBody(painter, body, fill, edge, edgeWidth);
+    DrawControlBody(painter, body, colours, edgeWidth);
     if (isFirst == false)
     {
-        painter->fillRect(QRect(rect.left(), rect.top(), edgeWidth, rect.height()), edge);
+        painter->fillRect(QRect(rect.left(), rect.top(), edgeWidth, rect.height()), colours.Edge);
     }
     painter->restore();
 }
@@ -279,7 +294,6 @@ int EditorStyle::pixelMetric(PixelMetric metric, const QStyleOption* optionOrNul
         case PM_TabBarTabVSpace:
             return 2 * TAB_PADDING_VERTICAL + TAB_UNDERLINE_WIDTH;
         case PM_ToolBarItemSpacing:
-            return TOOL_BAR_SPACING;
         case PM_ToolBarFrameWidth:
             return TOOL_BAR_SPACING;
         default:
@@ -312,8 +326,7 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
                 const QColor edge = isFocused == true && isEnabled == true ? mColours.Accent : mColours.Border;
                 DrawSegmentBody(painter,
                                 option->rect,
-                                fill,
-                                edge,
+                                { .Fill = fill, .Edge = edge },
                                 isFocused == true && isEnabled == true ? ringWidth : edgeWidth,
                                 HasProperty(widgetOrNull, SEGMENT_POSITION_PROPERTY, "middle") == false &&
                                     HasProperty(widgetOrNull, SEGMENT_POSITION_PROPERTY, "last") == false,
@@ -350,7 +363,7 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
                 edge = mColours.Accent;
                 width = ringWidth;
             }
-            DrawControlBody(painter, option->rect, fill, edge, width);
+            DrawControlBody(painter, option->rect, { .Fill = fill, .Edge = edge }, width);
             return;
         }
         case PE_PanelLineEdit: {
@@ -362,8 +375,10 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
             const bool isRingShown = isFocused == true && isEnabled == true;
             DrawControlBody(painter,
                             option->rect,
-                            option->palette.color(QPalette::Base),
-                            isRingShown == true ? mColours.Accent : mColours.Border,
+                            {
+                                .Fill = option->palette.color(QPalette::Base),
+                                .Edge = isRingShown == true ? mColours.Accent : mColours.Border,
+                            },
                             isRingShown == true ? ringWidth : edgeWidth);
             return;
         }
@@ -378,8 +393,10 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
             const bool isRingShown = isFocused == true && isEnabled == true;
             DrawControlBody(painter,
                             option->rect,
-                            Qt::transparent,
-                            isRingShown == true ? mColours.Accent : mColours.Border,
+                            {
+                                .Fill = Qt::transparent,
+                                .Edge = isRingShown == true ? mColours.Accent : mColours.Border,
+                            },
                             isRingShown == true ? ringWidth : edgeWidth);
             return;
         }
@@ -404,15 +421,18 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
             // A checked toggle (Live Preview) keeps an accent edge so its state reads without hovering.
             if (option->state.testFlag(State_On) == true)
             {
-                DrawControlBody(painter, option->rect, mColours.Raised, mColours.Accent, CONTROL_EDGE_WIDTH);
+                DrawControlBody(painter,
+                                option->rect,
+                                { .Fill = mColours.Raised, .Edge = mColours.Accent },
+                                CONTROL_EDGE_WIDTH);
             }
             else if (isHovered == true)
             {
-                DrawControlBody(painter, option->rect, mColours.Raised, Qt::transparent, 0);
+                DrawControlBody(painter, option->rect, { .Fill = mColours.Raised, .Edge = Qt::transparent }, 0);
             }
             if (isFocused == true && isEnabled == true)
             {
-                DrawControlBody(painter, option->rect, Qt::transparent, mColours.Accent, ringWidth);
+                DrawControlBody(painter, option->rect, { .Fill = Qt::transparent, .Edge = mColours.Accent }, ringWidth);
             }
             return;
         }
@@ -548,7 +568,10 @@ void EditorStyle::drawControl(ControlElement element,
                                   mColours.Accent);
                 if (tab->state.testFlag(State_HasFocus) == true)
                 {
-                    DrawControlBody(painter, tab->rect, Qt::transparent, mColours.Accent, GetFocusRingWidth());
+                    DrawControlBody(painter,
+                                    tab->rect,
+                                    { .Fill = Qt::transparent, .Edge = mColours.Accent },
+                                    GetFocusRingWidth());
                 }
             }
             return;
@@ -608,8 +631,10 @@ void EditorStyle::drawComplexControl(ComplexControl control,
     const auto drawBody = [&]() {
         DrawControlBody(painter,
                         option->rect,
-                        option->palette.color(QPalette::Base),
-                        isRingShown == true ? mColours.Accent : mColours.Border,
+                        {
+                            .Fill = option->palette.color(QPalette::Base),
+                            .Edge = isRingShown == true ? mColours.Accent : mColours.Border,
+                        },
                         isRingShown == true ? GetFocusRingWidth() : GetEdgeWidth());
     };
     if (control == CC_ComboBox)
@@ -752,9 +777,41 @@ QSize EditorStyle::sizeFromContents(ContentsType type,
                         base.height()};
             }
             break;
-        case CT_ComboBox:
-            return contentsSize +
-                   QSize(2 * edgeWidth + INPUT_PADDING + COMBO_ARROW_PADDING, 2 * (INPUT_PADDING + edgeWidth));
+        case CT_ComboBox: {
+            // Thanks to The Qt Company, Qt 6.8 QComboBoxPrivate::recomputeSizeHint:
+            // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/widgets/qcombobox.cpp
+            // Qt budgets glyph ink bounds, which can omit trailing advance. Preserve its icon/size-policy
+            // budget and add the largest advance deficit before reserving our field and arrow padding.
+            const QStyleOptionComboBox* comboOptionOrNull = qstyleoption_cast<const QStyleOptionComboBox*>(option);
+            foundation::int32 advancePaddingPixels =
+                comboOptionOrNull != nullptr
+                    ? ComputeTextAdvancePaddingPixels(comboOptionOrNull->fontMetrics, comboOptionOrNull->currentText)
+                    : 0;
+            const QComboBox* comboWidgetOrNull = qobject_cast<const QComboBox*>(widgetOrNull);
+            if (comboWidgetOrNull != nullptr &&
+                comboWidgetOrNull->sizeAdjustPolicy() != QComboBox::AdjustToMinimumContentsLengthWithIcon)
+            {
+                const QFontMetrics fontMetrics = comboWidgetOrNull->fontMetrics();
+                const foundation::int32 itemCount = comboWidgetOrNull->count();
+                for (foundation::int32 item = 0; item < itemCount; ++item)
+                {
+                    const foundation::int32 itemPaddingPixels =
+                        ComputeTextAdvancePaddingPixels(fontMetrics, comboWidgetOrNull->itemText(item));
+                    if (itemPaddingPixels > advancePaddingPixels)
+                    {
+                        advancePaddingPixels = itemPaddingPixels;
+                    }
+                }
+                const foundation::int32 placeholderPaddingPixels =
+                    ComputeTextAdvancePaddingPixels(fontMetrics, comboWidgetOrNull->placeholderText());
+                if (placeholderPaddingPixels > advancePaddingPixels)
+                {
+                    advancePaddingPixels = placeholderPaddingPixels;
+                }
+            }
+            return contentsSize + QSize(advancePaddingPixels + 2 * edgeWidth + INPUT_PADDING + COMBO_ARROW_PADDING,
+                                        2 * (INPUT_PADDING + edgeWidth));
+        }
         case CT_ItemViewItem: {
             const int padding =
                 std::max(GetItemPadding(widgetOrNull),

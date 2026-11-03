@@ -62,6 +62,8 @@
 /// at LUDUS_GRAPH_FAILURE_BINDING; other bits must be zero. Earlier packages bind neither.
 /// Version 29 appends ToneMappingCurve to every pass and admits ToneMap exposure on clustered deferred
 /// ColorAndDepth raster passes, fused into their lighting resolve. Earlier nonzero exposures imply Reinhard.
+/// Version 33 inserts MAX_RAY_PROGRAMS uint32 capture warm-up counts after the scene resource word and
+/// before the pass-name table. Earlier packages imply zero counts and contain no warm-up table.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.

@@ -138,26 +138,23 @@ Status PrepareEncoderFps(BorrowedView<const math::Vector3> positionsModel,
     }
     return Status::Ready;
 }
-Status PrepareEncoderNeighbors(BorrowedView<const math::Vector3> positionsModel,
-                               BorrowedView<const math::Vector3> queriesModel,
-                               BorrowedView<const uint32> centers,
-                               Array<uint32>& outNeighbors) noexcept
+Status PrepareEncoderNeighbors(const EncoderNeighborSources& sources, Array<uint32>& outNeighbors) noexcept
 {
     constexpr usize NEIGHBORS = LUDUS_LIGHT_ENCODER_NEIGHBORS;
     geometry::PointSearchTree tree;
-    const geometry::GeometryStatus built = tree.Build(positionsModel);
+    const geometry::GeometryStatus built = tree.Build(sources.PositionsModel);
     if (built != geometry::GeometryStatus::Success)
     {
         return built == geometry::GeometryStatus::OutOfMemory ? Status::OutOfMemory : Status::InvalidDescription;
     }
-    if (outNeighbors.TryResize(queriesModel.GetSize() * (NEIGHBORS + 1)) == false)
+    if (outNeighbors.TryResize(sources.QueriesModel.GetSize() * (NEIGHBORS + 1)) == false)
     {
         return Status::OutOfMemory;
     }
     StaticArray<geometry::PointNeighbor, NEIGHBORS> neighbors{};
-    for (usize i = 0; i < queriesModel.GetSize(); ++i)
+    for (usize i = 0; i < sources.QueriesModel.GetSize(); ++i)
     {
-        if (tree.FindNearest(queriesModel[i], {neighbors.GetData(), neighbors.GetSize()}) !=
+        if (tree.FindNearest(sources.QueriesModel[i], {neighbors.GetData(), neighbors.GetSize()}) !=
             geometry::GeometryStatus::Success)
         {
             return Status::InvalidDescription;
@@ -166,7 +163,7 @@ Status PrepareEncoderNeighbors(BorrowedView<const math::Vector3> positionsModel,
         {
             outNeighbors[i * (NEIGHBORS + 1) + neighbor] = neighbors[neighbor].PointIndex;
         }
-        outNeighbors[i * (NEIGHBORS + 1) + NEIGHBORS] = centers[i];
+        outNeighbors[i * (NEIGHBORS + 1) + NEIGHBORS] = sources.Centers[i];
     }
     return Status::Ready;
 }
@@ -354,7 +351,7 @@ Status PrepareEncoderPatches(const EncoderLevel& level, uint32 orderIndex, Array
     for (usize i = 0; i < count; ++i)
     {
         const usize begin = (i / PATCH_SIZE) * PATCH_SIZE;
-        outPatches[order[i].Index * 2] = static_cast<uint32>(count * 2 + begin);
+        outPatches[usize{order[i].Index} * 2] = static_cast<uint32>(count * 2 + begin);
         outPatches[order[i].Index * 2 + 1] = static_cast<uint32>(math::Min(count, PATCH_SIZE));
     }
     for (usize i = 0; i < paddedCount; ++i)

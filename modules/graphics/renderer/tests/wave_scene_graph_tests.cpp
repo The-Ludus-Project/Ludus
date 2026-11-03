@@ -20,6 +20,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
+#include <thread>
+
 namespace
 {
 using namespace ludus::foundation;
@@ -31,7 +34,9 @@ constexpr usize QUAD_VERTICES = 4;
 constexpr usize QUAD_INDICES = 6;
 constexpr usize TABLE_COUNT = 2;
 constexpr usize CAMERA_COUNT = 1;
-constexpr uint64 TIMEOUT = 30 * time::NANOSECONDS_PER_SECOND;
+constexpr uint64 COLD_CAPTURE_TIMEOUT_NANOSECONDS =
+    LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND;
+constexpr std::chrono::milliseconds COMPLETION_POLL_INTERVAL{1};
 struct Session final
 {
     LUDUS_INLINE Session() noexcept
@@ -54,21 +59,8 @@ void LoadPackage(renderer::RenderGraphPackage& outPackage)
     REQUIRE(file.ReadAt(0, bytes.AsSpan()).BytesRead == bytes.GetSize());
     REQUIRE(outPackage.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
 }
-} // namespace
-
-TEST_CASE("Scene wave graph uses authored lighting and diffracts through current World geometry",
-          "[renderer][gpu][wave-tracing][graph]")
+void CheckSceneWaveGraph(uint32 screen)
 {
-    uint32 screen = 0;
-    SECTION("Unobstructed beam") {}
-    SECTION("Opaque screen")
-    {
-        screen = 1;
-    }
-    SECTION("Half screen casts a geometric shadow with nonzero diffracted light")
-    {
-        screen = 2;
-    }
     Session session;
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
@@ -128,12 +120,14 @@ TEST_CASE("Scene wave graph uses authored lighting and diffracts through current
         REQUIRE((started == RasterStatus::Ready || started == RasterStatus::Pending));
         const uint64 beginning = time::NowTicks();
         while (capture.GetPhase() == renderer::RenderGraphCapturePhase::Initializing &&
-               time::NowTicks() - beginning < TIMEOUT)
+               time::NowTicks() - beginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
         {
             capture.Service();
+            std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
         }
         REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::AwaitingScene);
         const usize itemCount = screen == 0 ? 1 : TABLE_COUNT;
+        const uint64 captureBeginning = time::NowTicks();
         const RasterStatus submitted = capture.SubmitScene({meshes.GetData(), itemCount},
                                                            {items.GetData(), itemCount},
                                                            {cameras.GetData(), CAMERA_COUNT},
@@ -142,11 +136,19 @@ TEST_CASE("Scene wave graph uses authored lighting and diffracts through current
         REQUIRE((submitted == RasterStatus::Ready || submitted == RasterStatus::Pending));
         while (capture.GetPhase() != renderer::RenderGraphCapturePhase::Complete &&
                capture.GetPhase() != renderer::RenderGraphCapturePhase::Failed &&
-               time::NowTicks() - beginning < TIMEOUT)
+               time::NowTicks() - captureBeginning < COLD_CAPTURE_TIMEOUT_NANOSECONDS)
         {
             capture.Service();
+            std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
         }
-        CAPTURE(pass, screen, capture.GetStatus(), capture.GetProblem());
+        const uint64 elapsedNanoseconds = time::NowTicks() - captureBeginning;
+        CAPTURE(pass,
+                screen,
+                capture.GetPhase(),
+                capture.GetStatus(),
+                capture.GetProblem(),
+                elapsedNanoseconds,
+                COLD_CAPTURE_TIMEOUT_NANOSECONDS);
         REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::Complete);
         const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
         REQUIRE(pixels.GetSize() == usize{EXTENT} * EXTENT);
@@ -172,6 +174,23 @@ TEST_CASE("Scene wave graph uses authored lighting and diffracts through current
             }
         }
     }
+}
+} // namespace
+
+TEST_CASE("Scene wave graph lights an unobstructed beam from the current World", "[renderer][gpu][wave-tracing][graph]")
+{
+    CheckSceneWaveGraph(0);
+}
+
+TEST_CASE("Scene wave graph blocks an opaque screen from the current World", "[renderer][gpu][wave-tracing][graph]")
+{
+    CheckSceneWaveGraph(1);
+}
+
+TEST_CASE("Scene wave graph diffracts beyond a half screen from the current World",
+          "[renderer][gpu][wave-tracing][graph]")
+{
+    CheckSceneWaveGraph(2);
 }
 
 TEST_CASE("Scene optical template captures a supplied cooked test scene", "[.wave-supplied-scene]")
@@ -337,6 +356,7 @@ TEST_CASE("Scene optical template captures a supplied cooked test scene", "[.wav
            time::NowTicks() - start < SCENE_TIMEOUT)
     {
         capture.Service();
+        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
     }
     REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::AwaitingScene);
     const RasterStatus submitted = capture.SubmitScene({meshes.GetData(), meshes.GetSize()},
@@ -351,6 +371,7 @@ TEST_CASE("Scene optical template captures a supplied cooked test scene", "[.wav
            capture.GetPhase() != renderer::RenderGraphCapturePhase::Failed && time::NowTicks() - start < SCENE_TIMEOUT)
     {
         capture.Service();
+        std::this_thread::sleep_for(COMPLETION_POLL_INTERVAL);
     }
     INFO("scene " << sceneDirectoryOrNull << " triangles " << triangleCount << " status "
                   << static_cast<uint32>(capture.GetStatus()) << " problem "

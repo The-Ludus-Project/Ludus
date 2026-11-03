@@ -44,18 +44,22 @@ configure_file(
     NEWLINE_STYLE UNIX
 )
 
+# The real and fake-platform executables use the same runtime and compiler policy.
+# Share its objects while each final binary selects its own platform implementation.
+add_library(ludus_assert_runtime OBJECT src/assert.cpp src/diagnostic_format.cpp src/diagnostic_control_codec.cpp)
+target_include_directories(ludus_assert_runtime PRIVATE src include "${LUDUS_FOUNDATION_BASE_GENERATED_INCLUDE_DIR}")
+ludus_apply_project_defaults(ludus_assert_runtime)
+
 target_sources(
     ludus_foundation_base
     PRIVATE
         src/version.cpp
         src/types.cpp
         src/parse_number.cpp
-        src/assert.cpp
-        src/diagnostic_format.cpp
+        $<TARGET_OBJECTS:ludus_assert_runtime>
         src/internal/diagnostic_finish.hpp
         src/internal/diagnostic_format.hpp
         src/internal/diagnostic_text.hpp
-        src/diagnostic_control_codec.cpp
         src/internal/diagnostic_platform.hpp
         src/internal/diagnostic_record.hpp
         src/diagnostic.cpp
@@ -98,10 +102,12 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     target_sources(ludus_foundation_base PRIVATE src/diagnostic_output_windows.cpp src/diagnostics_windows.cpp)
     set_source_files_properties(src/diagnostics_windows.cpp PROPERTIES COMPILE_OPTIONS "-fno-optimize-sibling-calls")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    target_sources(ludus_foundation_base PRIVATE src/diagnostic_output.cpp src/diagnostics_macos.cpp)
+    target_sources(ludus_assert_runtime PRIVATE src/diagnostic_output.cpp)
+    target_sources(ludus_foundation_base PRIVATE src/diagnostics_macos.cpp)
     set_source_files_properties(src/diagnostics_macos.cpp PROPERTIES COMPILE_OPTIONS "-fno-optimize-sibling-calls")
 else()
-    target_sources(ludus_foundation_base PRIVATE src/diagnostic_output.cpp src/diagnostics_linux.cpp)
+    target_sources(ludus_assert_runtime PRIVATE src/diagnostic_output.cpp)
+    target_sources(ludus_foundation_base PRIVATE src/diagnostics_linux.cpp)
     set_source_files_properties(src/diagnostics_linux.cpp PROPERTIES COMPILE_OPTIONS "-fno-optimize-sibling-calls")
 endif()
 
@@ -181,7 +187,7 @@ if(LUDUS_BUILD_TESTS)
         set_tests_properties(ludus_assert_blocked_output PROPERTIES LABELS "foundation;assert-death" TIMEOUT 30)
 
         add_executable(ludus_assert_fake_child $<TARGET_OBJECTS:ludus_assert_test_driver> tests/assert_platform_fake.cpp
-            src/assert.cpp src/diagnostic_output.cpp src/diagnostic_control_codec.cpp src/diagnostic_format.cpp)
+            $<TARGET_OBJECTS:ludus_assert_runtime>)
         target_include_directories(ludus_assert_fake_child PRIVATE src include "${LUDUS_FOUNDATION_BASE_GENERATED_INCLUDE_DIR}")
         target_link_libraries(ludus_assert_fake_child PRIVATE Threads::Threads)
         target_link_options(ludus_assert_fake_child PRIVATE -Wl,--wrap=sigtimedwait,--wrap=send)
