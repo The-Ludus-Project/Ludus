@@ -11,10 +11,14 @@
 // MIS_HEURISTIC, MIS_POWER_EXPONENT and MIS_CUTOFF_THRESHOLD are Graph settings (main.lushader.json);
 // the builder declares them before this source and validates their ranges.
 
-static const uint MIS_HEURISTIC_BALANCE = 0;
-static const uint MIS_HEURISTIC_POWER = 1;
-static const uint MIS_HEURISTIC_CUTOFF = 2;
-static const uint MIS_HEURISTIC_MAXIMUM = 3;
+/// The MIS_HEURISTIC Graph setting's values.
+enum MisHeuristic : uint
+{
+    Balance = 0, ///< w_i = p_i / sum_k p_k.
+    Power = 1,   ///< w_i = p_i^beta / sum_k p_k^beta with beta = MIS_POWER_EXPONENT.
+    Cutoff = 2,  ///< Balance among the strategies above MIS_CUTOFF_THRESHOLD of the largest density.
+    Maximum = 3, ///< All weight to the strategy with the largest density.
+};
 
 /// Weight of the strategy that drew a sample against the one other strategy that could have drawn it.
 /// A nonfinite or nonpositive sampled density returns 0. A zero other density, for a delta light or a
@@ -33,12 +37,13 @@ float ComputeMisWeight(float sampledDensity, float otherDensity)
     float largerDensity = max(sampledDensity, otherDensity);
     float sampled = sampledDensity / largerDensity;
     float other = otherDensity / largerDensity;
-    if (MIS_HEURISTIC == MIS_HEURISTIC_POWER)
+    MisHeuristic heuristic = MisHeuristic(MIS_HEURISTIC);
+    if (heuristic == MisHeuristic::Power)
     {
         sampled = pow(sampled, MIS_POWER_EXPONENT);
         other = pow(other, MIS_POWER_EXPONENT);
     }
-    else if (MIS_HEURISTIC == MIS_HEURISTIC_CUTOFF)
+    else if (heuristic == MisHeuristic::Cutoff)
     {
         // A strategy below the threshold fraction of the larger density gets no weight; the rest share
         // it as in the balance heuristic. The larger density is 1 here, so one strategy always remains.
@@ -47,7 +52,7 @@ float ComputeMisWeight(float sampledDensity, float otherDensity)
         if (other < MIS_CUTOFF_THRESHOLD)
             return 1;
     }
-    else if (MIS_HEURISTIC == MIS_HEURISTIC_MAXIMUM)
+    else if (heuristic == MisHeuristic::Maximum)
     {
         // Equal densities split the sample evenly, which keeps the two weights summing to one.
         if (sampled == other)

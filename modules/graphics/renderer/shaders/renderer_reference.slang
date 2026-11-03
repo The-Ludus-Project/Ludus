@@ -1003,21 +1003,21 @@ bool TraceProposal(inout PathSample inoutPath,
     if (Options.y > 0 && proposal.HasFiniteEndpoint == true)
     {
         float2 field = float2(0);
-        uint status = EvaluateWaveConnectionToReceiver((SceneContext)0,
-                                                       endWorld,
-                                                       shadow.OriginWorld,
-                                                       -shadow.DirectionWorld,
-                                                       shadow.MaximumDistanceWorld,
-                                                       Options.y,
-                                                       field);
-        if (status != WAVE_QUERY_READY)
+        WaveQuery status = EvaluateWaveConnectionToReceiver((SceneContext)0,
+                                                            endWorld,
+                                                            shadow.OriginWorld,
+                                                            -shadow.DirectionWorld,
+                                                            shadow.MaximumDistanceWorld,
+                                                            Options.y,
+                                                            field);
+        if (status != WaveQuery::Ready)
         {
-            if (status != WAVE_QUERY_INVALID)
+            if (status != WaveQuery::Invalid)
             {
                 inoutPath.Status |= LUDUS_REFERENCE_CAPACITY_FLAG;
                 MarkInvalid(inoutPath,
                             depth,
-                            status == WAVE_QUERY_CAPACITY ? LUDUS_REFERENCE_FAILURE_OPTICAL_REGION_CAPACITY
+                            status == WaveQuery::Capacity ? LUDUS_REFERENCE_FAILURE_OPTICAL_REGION_CAPACITY
                                                           : LUDUS_REFERENCE_FAILURE_OPTICAL_PROPAGATION_CAPACITY);
             }
             return false;

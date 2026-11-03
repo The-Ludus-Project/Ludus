@@ -92,18 +92,18 @@ bool TryLoadShadingPoint(SceneContext scene,
     return true;
 }
 
-/// Line strategy in direction LINE_DIRECTION_U or LINE_DIRECTION_V, weighted against the other line
+/// Line strategy in direction LineDirection::U or LineDirection::V, weighted against the other line
 /// direction and, with isBsdfWeighted, against BSDF sampling. The other direction's density at a mesh
 /// point costs one line query; for a non-mesh light it equals this strategy's density, because both
 /// directions propose such a light with the same point proposal.
 float3 SampleLineStrategy(SceneContext scene,
                           RayLaunch launch,
                           ShadingPoint shadingPoint,
-                          uint direction,
+                          LineDirection direction,
                           bool isBsdfWeighted,
                           inout RayQueryContext queries)
 {
-    bool isDirectionU = direction == LINE_DIRECTION_U;
+    bool isDirectionU = direction == LineDirection::U;
     LineProposal proposal;
     if (ProposeLine(scene,
                     launch,
@@ -132,7 +132,7 @@ float3 SampleLineStrategy(SceneContext scene,
                                                shadingPoint.Hit,
                                                value.TriangleIndex,
                                                value.Barycentric,
-                                               isDirectionU == true ? LINE_DIRECTION_V : LINE_DIRECTION_U,
+                                               isDirectionU == true ? LineDirection::V : LineDirection::U,
                                                queries);
     float weight = ComputeMisWeight(value.Density, otherLineDensity, isBsdfWeighted == true ? value.BsdfDensity : 0);
     return value.IntegrandValue * (weight / value.Density);
@@ -224,13 +224,13 @@ float3 SampleBsdfStrategy(SceneContext scene,
                                                 shadingPoint.Hit,
                                                 endpoint.TriangleIndex,
                                                 endpoint.Barycentric,
-                                                LINE_DIRECTION_U,
+                                                LineDirection::U,
                                                 queries);
             otherDensity1 = EvaluateLineDensity(scene,
                                                 shadingPoint.Hit,
                                                 endpoint.TriangleIndex,
                                                 endpoint.Barycentric,
-                                                LINE_DIRECTION_V,
+                                                LineDirection::V,
                                                 queries);
         }
         else if (any(incidentRadiance > 0) == true)
@@ -265,9 +265,9 @@ float3 ShadeMultipleImportance(SceneContext scene, RayLaunch launch, inout RayQu
     if (TryLoadShadingPoint(scene, launch, queries, shadingPoint, radiance) == false)
         return radiance;
     radiance +=
-        shadingPoint.Throughput * SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_U, true, queries);
+        shadingPoint.Throughput * SampleLineStrategy(scene, launch, shadingPoint, LineDirection::U, true, queries);
     radiance +=
-        shadingPoint.Throughput * SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_V, true, queries);
+        shadingPoint.Throughput * SampleLineStrategy(scene, launch, shadingPoint, LineDirection::V, true, queries);
     radiance += shadingPoint.Throughput * SampleBsdfStrategy(scene, launch, shadingPoint, true, queries);
     return FinishRadiance(radiance, queries);
 }
@@ -280,9 +280,9 @@ float3 ShadeLineSampling(SceneContext scene, RayLaunch launch, inout RayQueryCon
     if (TryLoadShadingPoint(scene, launch, queries, shadingPoint, radiance) == false)
         return radiance;
     radiance +=
-        shadingPoint.Throughput * SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_U, false, queries);
+        shadingPoint.Throughput * SampleLineStrategy(scene, launch, shadingPoint, LineDirection::U, false, queries);
     radiance +=
-        shadingPoint.Throughput * SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_V, false, queries);
+        shadingPoint.Throughput * SampleLineStrategy(scene, launch, shadingPoint, LineDirection::V, false, queries);
     return FinishRadiance(radiance, queries);
 }
 

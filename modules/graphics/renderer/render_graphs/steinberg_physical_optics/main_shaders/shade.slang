@@ -55,19 +55,26 @@ static const uint RGB_CHANNEL_COUNT = 3;
 static const int GRATING_EVERY_ORDER = 0x7fffffff;
 
 /// Lobes of the scene's materials (section 4.1).
-static const uint LOBE_NONE = 0;
-static const uint LOBE_CONDUCTOR_DIRECT = 1;
-static const uint LOBE_CONDUCTOR_SCATTERED = 2;
-static const uint LOBE_DIELECTRIC_DIRECT = 3;
-static const uint LOBE_DIELECTRIC_SCATTERED = 4;
-static const uint LOBE_DIFFUSE = 5;
-static const uint LOBE_GRATING = 6;
-static const uint LOBE_COUNT = 7;
+enum OpticalLobe : uint
+{
+    None = 0,                ///< No lobe reflects.
+    ConductorDirect = 1,     ///< The conductor's specular (delta) reflection.
+    ConductorScattered = 2,  ///< The conductor's rough scattering.
+    DielectricDirect = 3,    ///< The dielectric coat's specular (delta) reflection.
+    DielectricScattered = 4, ///< The dielectric coat's rough scattering.
+    Diffuse = 5,             ///< The dielectric's diffuse base.
+    Grating = 6,             ///< A diffraction grating's orders.
+};
+/// OpticalLobe values; SelectLobe draws from 1 to OPTICAL_LOBE_COUNT - 1.
+static const uint OPTICAL_LOBE_COUNT = 7;
 
 /// Kinds of light endpoint, by the coherence they emit.
-static const uint ENDPOINT_RADIATOR = 0;    ///< Mesh emitters, point and spot lights: Eq. (25) with A and Omega.
-static const uint ENDPOINT_SUN = 1;         ///< Directional lights: sunlight's coherence.
-static const uint ENDPOINT_ENVIRONMENT = 2; ///< The environment: the envelope's sigma_min.
+enum LightEndpointKind : uint
+{
+    Radiator = 0,    ///< Mesh emitters, point and spot lights: Eq. (25) with A and Omega.
+    Sun = 1,         ///< Directional lights: sunlight's coherence.
+    Environment = 2, ///< The environment: the envelope's sigma_min.
+};
 
 /// A scene material as the paper's materials, before the wavelength is known.
 struct OpticalMaterial
@@ -91,7 +98,7 @@ struct ShadingVertex
     SurfaceFrame Frame;
     OpticalMaterial Material;
     Grating Profile;
-    uint Lobe;
+    OpticalLobe Lobe;
     float LobeProbability;
     /// Scalar factor of light that arrives through the continuation: cos / (P_lobe p_lobe), or 1 / P_lobe for a
     /// delta lobe.
@@ -106,7 +113,7 @@ struct PathVertex
     uint TriangleIndex;
     float2 Barycentric;
     float3 PositionWorld;
-    uint Lobe;
+    OpticalLobe Lobe;
     float LobeProbability;
     float ContinuationWeight;
 };
@@ -142,7 +149,7 @@ void SetPathVertex(inout CameraPath path, uint index, PathVertex vertex)
 /// Light that reaches the last vertex of a sub-path, before its wavelength is chosen.
 struct LightEndpoint
 {
-    uint Kind;
+    LightEndpointKind Kind;
     float3 RadianceRgb;      ///< Incident radiance (or a discrete light's incident coefficient), linear RGB.
     float3 PropagationWorld; ///< Unit direction of travel, towards the receiving vertex.
     float DistanceWorld;     ///< Propagation distance from the radiator; ignored for the sun and environment.
@@ -356,44 +363,41 @@ LobeWeights ComputeLobeWeights(OpticalMaterial material, float outgoingCosine, b
     return result;
 }
 
-float GetLobeWeight(LobeWeights weights, uint lobe)
+float GetLobeWeight(LobeWeights weights, OpticalLobe lobe)
 {
-    if (lobe == LOBE_CONDUCTOR_DIRECT)
+    if (lobe == OpticalLobe::ConductorDirect)
         return weights.ConductorDirect;
-    if (lobe == LOBE_CONDUCTOR_SCATTERED)
+    if (lobe == OpticalLobe::ConductorScattered)
         return weights.ConductorScattered;
-    if (lobe == LOBE_DIELECTRIC_DIRECT)
+    if (lobe == OpticalLobe::DielectricDirect)
         return weights.DielectricDirect;
-    if (lobe == LOBE_DIELECTRIC_SCATTERED)
+    if (lobe == OpticalLobe::DielectricScattered)
         return weights.DielectricScattered;
-    if (lobe == LOBE_DIFFUSE)
+    if (lobe == OpticalLobe::Diffuse)
         return weights.Diffuse;
-    if (lobe == LOBE_GRATING)
+    if (lobe == OpticalLobe::Grating)
         return weights.Grating;
     return 0;
 }
 
-/// Draw a lobe; outProbability is its selection probability. LOBE_NONE when no lobe reflects.
-uint SelectLobe(OpticalMaterial material,
-                float outgoingCosine,
-                bool isWave,
-                float randomValue,
-                out float outProbability)
+/// Draw a lobe; outProbability is its selection probability. OpticalLobe::None when no lobe reflects.
+OpticalLobe
+SelectLobe(OpticalMaterial material, float outgoingCosine, bool isWave, float randomValue, out float outProbability)
 {
     LobeWeights weights = ComputeLobeWeights(material, outgoingCosine, isWave);
     float total = weights.ConductorDirect + weights.ConductorScattered + weights.DielectricDirect +
                   weights.DielectricScattered + weights.Diffuse + weights.Grating;
     outProbability = 0;
     if (total <= 0)
-        return LOBE_NONE;
+        return OpticalLobe::None;
     float target = randomValue * total;
-    uint selected = LOBE_NONE;
-    [loop] for (uint candidate = 1; candidate < LOBE_COUNT; ++candidate)
+    OpticalLobe selected = OpticalLobe::None;
+    [loop] for (uint candidate = 1; candidate < OPTICAL_LOBE_COUNT; ++candidate)
     {
-        float weight = GetLobeWeight(weights, candidate);
+        float weight = GetLobeWeight(weights, OpticalLobe(candidate));
         if (weight <= 0)
             continue;
-        selected = candidate;
+        selected = OpticalLobe(candidate);
         target -= weight;
         if (target < 0)
             break;
@@ -402,9 +406,9 @@ uint SelectLobe(OpticalMaterial material,
     return selected;
 }
 
-bool IsDeltaLobe(uint lobe)
+bool IsDeltaLobe(OpticalLobe lobe)
 {
-    return lobe == LOBE_CONDUCTOR_DIRECT || lobe == LOBE_DIELECTRIC_DIRECT;
+    return lobe == OpticalLobe::ConductorDirect || lobe == OpticalLobe::DielectricDirect;
 }
 
 /// Variance of the envelope's half-vector Gaussian at one wavelength: (k^2 sigma_min)^-1 + (k sigma_s)^-2 for rough
@@ -413,7 +417,7 @@ float ComputeEnvelopeVariance(ShadingVertex vertex, float wavelengthNanometers, 
 {
     float variance =
         1 / ComputeEnvelopeCoherence(wavelengthNanometers, settings.EnvelopeDistanceWorld, settings.RadiatorShape);
-    if (vertex.Lobe == LOBE_GRATING)
+    if (vertex.Lobe == OpticalLobe::Grating)
         return variance;
     float correlation = ComputeWavenumberPerWorld(wavelengthNanometers) * vertex.Material.CorrelationLengthWorld;
     return variance + 1 / (correlation * correlation);
@@ -429,12 +433,12 @@ float EvaluateLobeDensity(ShadingVertex vertex,
     float cosine = dot(incidentWorld, vertex.Frame.NormalWorld);
     if (cosine <= 0 || IsDeltaLobe(vertex.Lobe) == true)
         return 0;
-    if (vertex.Lobe == LOBE_DIFFUSE)
+    if (vertex.Lobe == OpticalLobe::Diffuse)
         return cosine / PI;
     float2 halfVector = ComputeSurfaceHalfVector(vertex.Frame, incidentWorld, vertex.OutgoingWorld);
     float variance = ComputeEnvelopeVariance(vertex, wavelengthNanometers, settings);
     float3 covariance = float3(variance, 0, variance);
-    if (vertex.Lobe != LOBE_GRATING)
+    if (vertex.Lobe != OpticalLobe::Grating)
         return ConvertHalfVectorDensity(EvaluateBivariateNormal(halfVector, covariance), vertex.Frame, incidentWorld);
     // Section 4.1.3: one of the 2N + 1 lobes uniformly, then its Gaussian; the lobes overlap, so the density sums them.
     float wavelengthOverPeriod = wavelengthNanometers / (vertex.Profile.PeriodWorld * NANOMETERS_PER_WORLD_UNIT);
@@ -463,7 +467,7 @@ bool SampleLobeDirection(ShadingVertex vertex,
             2 * dot(vertex.OutgoingWorld, vertex.Frame.NormalWorld) * vertex.Frame.NormalWorld - vertex.OutgoingWorld;
         return dot(outIncidentWorld, vertex.Frame.NormalWorld) > 0;
     }
-    if (vertex.Lobe == LOBE_DIFFUSE)
+    if (vertex.Lobe == OpticalLobe::Diffuse)
     {
         float radius = sqrt(randomValues.x);
         float angle = 2 * PI * randomValues.y;
@@ -474,7 +478,7 @@ bool SampleLobeDirection(ShadingVertex vertex,
     }
     float2 halfVector =
         SampleEnvelopeHalfVector(ComputeEnvelopeVariance(vertex, wavelengthNanometers, settings), randomValues.xy);
-    if (vertex.Lobe == LOBE_GRATING)
+    if (vertex.Lobe == OpticalLobe::Grating)
     {
         int maximumOrder = int(vertex.Profile.MaximumOrder);
         int order = min(int(randomValues.z * float(2 * maximumOrder + 1)), 2 * maximumOrder) - maximumOrder;
@@ -491,9 +495,9 @@ bool SampleLobeDirection(ShadingVertex vertex,
 Beam MakeLightBeam(LightEndpoint endpoint, float wavelengthNanometers, OpticsSettings settings)
 {
     float radiance = EvaluateUpliftedSpectrum(endpoint.RadianceRgb, wavelengthNanometers);
-    if (endpoint.Kind == ENDPOINT_SUN)
+    if (endpoint.Kind == LightEndpointKind::Sun)
         return MakeNaturalBeam(endpoint.PropagationWorld, radiance, settings.SunShape, OPTICS_SUN_DISTANCE_WORLD);
-    if (endpoint.Kind == ENDPOINT_ENVIRONMENT)
+    if (endpoint.Kind == LightEndpointKind::Environment)
     {
         // k^2 Theta = k^2 sigma_min: a radiator beam after the envelope's distance at the shortest wavelength.
         float distanceWorld =
@@ -551,7 +555,7 @@ static const uint BEAM_COMPONENT_COUNT = 3;
             coherence =
                 ComputeSurfaceCoherence(beam, shape, vertex.Frame, wavenumber, settings.LongitudinalCoherenceWorld);
         float value = 0;
-        if (vertex.Lobe == LOBE_GRATING)
+        if (vertex.Lobe == OpticalLobe::Grating)
             value = EvaluateGratingDiffraction(grating,
                                                halfVector,
                                                coherence,
@@ -593,17 +597,17 @@ Interaction MakeInteraction(ShadingVertex vertex,
     OpticalMaterial material = vertex.Material;
     float wavenumber = ComputeWavenumberPerWorld(wavelengthNanometers);
     float direct = ComputeDirectFraction(wavenumber, incidentCosine, material.RmsHeightWorld);
-    bool isConductorLobe =
-        vertex.Lobe == LOBE_CONDUCTOR_DIRECT || vertex.Lobe == LOBE_CONDUCTOR_SCATTERED || vertex.Lobe == LOBE_GRATING;
+    bool isConductorLobe = vertex.Lobe == OpticalLobe::ConductorDirect ||
+                           vertex.Lobe == OpticalLobe::ConductorScattered || vertex.Lobe == OpticalLobe::Grating;
     result.Eta = isConductorLobe == true ? GetConductorEta(material, wavelengthNanometers)
                                          : MakeComplex(material.DielectricEta, 0);
     float share = isConductorLobe == true ? material.ConductorWeight : 1 - material.ConductorWeight;
-    if (vertex.Lobe == LOBE_CONDUCTOR_DIRECT || vertex.Lobe == LOBE_DIELECTRIC_DIRECT)
+    if (vertex.Lobe == OpticalLobe::ConductorDirect || vertex.Lobe == OpticalLobe::DielectricDirect)
     {
         result.Weight = share * direct;
         return result;
     }
-    if (vertex.Lobe == LOBE_DIFFUSE)
+    if (vertex.Lobe == OpticalLobe::Diffuse)
     {
         // Eq. (32): m00 / pi with no polarizing action, under the interface's transmittance at incidence.
         result.HasFresnel = false;
@@ -618,7 +622,7 @@ Interaction MakeInteraction(ShadingVertex vertex,
                                                       settings,
                                                       isWave,
                                                       selectedOrder);
-    if (vertex.Lobe == LOBE_GRATING)
+    if (vertex.Lobe == OpticalLobe::Grating)
     {
         // Every order of Eq. (34) is in the PSD, the DC order included: no separate direct lobe.
         result.Weight = share;
@@ -757,7 +761,8 @@ bool TryGetGratingWindow(GratingWindows windows, int order, out float outMinimum
                                    bool isWave,
                                    float3 polarizerAxisWorld)
 {
-    bool isWindowed = isWave == true && lastVertex == 0 && vertex.Lobe == LOBE_GRATING && endpoint.IsDiscrete == true;
+    bool isWindowed =
+        isWave == true && lastVertex == 0 && vertex.Lobe == OpticalLobe::Grating && endpoint.IsDiscrete == true;
     GratingWindows windows = (GratingWindows)0;
     uint sampleCount = SPECTRUM_HERO_WAVELENGTH_COUNT;
     if (isWindowed == true)
@@ -957,11 +962,11 @@ bool TryMakeConnection(SceneContext scene,
     outEndpoint.PropagationWorld = -light.DirectionWorld;
     outEndpoint.DistanceWorld = light.DistanceWorld;
     outEndpoint.IsDiscrete = light.IsDiscrete;
-    outEndpoint.Kind = ENDPOINT_RADIATOR;
+    outEndpoint.Kind = LightEndpointKind::Radiator;
     if (light.IsDiscrete == true && light.HasFiniteEndpoint == false)
-        outEndpoint.Kind = ENDPOINT_SUN;
+        outEndpoint.Kind = LightEndpointKind::Sun;
     else if (light.IsDiscrete == false && light.TriangleIndex == SCENE_INVALID_INDEX)
-        outEndpoint.Kind = ENDPOINT_ENVIRONMENT;
+        outEndpoint.Kind = LightEndpointKind::Environment;
     float weight = cosine / (vertex.LobeProbability * lightDensity);
     if (light.IsDiscrete == false)
         weight *=
@@ -1007,7 +1012,7 @@ float3 TracePath(SceneContext scene, RayLaunch launch, bool isWave, inout RayQue
         float lobeRandom = SampleSceneRandom(launch, GetShadeVertexDimension(index, SHADE_VERTEX_LOBE_DIMENSION));
         vertex.Lobe =
             SelectLobe(vertex.Material, dot(outgoingWorld, normalWorld), isWave, lobeRandom, vertex.LobeProbability);
-        if (vertex.Lobe == LOBE_NONE)
+        if (vertex.Lobe == OpticalLobe::None)
             break;
         PathVertex stored;
         stored.TriangleIndex = hit.TriangleIndex;
@@ -1057,13 +1062,13 @@ float3 TracePath(SceneContext scene, RayLaunch launch, bool isWave, inout RayQue
                     float lightDensity = 0;
                     if (status == SceneQuery::Miss)
                     {
-                        continuation.Kind = ENDPOINT_ENVIRONMENT;
+                        continuation.Kind = LightEndpointKind::Environment;
                         continuation.RadianceRgb = EvaluateEnvironment(scene, incidentWorld);
                         lightDensity = EvaluateEnvironmentPdfSolidAngle(scene, incidentWorld);
                     }
                     else
                     {
-                        continuation.Kind = ENDPOINT_RADIATOR;
+                        continuation.Kind = LightEndpointKind::Radiator;
                         continuation.RadianceRgb = EvaluateEmission(scene, next, -incidentWorld);
                         continuation.DistanceWorld = next.DistanceWorld;
                         lightDensity = EvaluateLightPdfSolidAngle(scene, hit.PositionWorld, next);
@@ -1164,11 +1169,11 @@ float3 MeasureCoherence(SceneContext scene, RayLaunch launch, inout RayQueryCont
     endpoint.RadianceRgb = float3(1);
     endpoint.PropagationWorld = -light.DirectionWorld;
     endpoint.DistanceWorld = light.DistanceWorld;
-    endpoint.Kind = ENDPOINT_RADIATOR;
+    endpoint.Kind = LightEndpointKind::Radiator;
     if (light.IsDiscrete == true && light.HasFiniteEndpoint == false)
-        endpoint.Kind = ENDPOINT_SUN;
+        endpoint.Kind = LightEndpointKind::Sun;
     else if (light.IsDiscrete == false && light.TriangleIndex == SCENE_INVALID_INDEX)
-        endpoint.Kind = ENDPOINT_ENVIRONMENT;
+        endpoint.Kind = LightEndpointKind::Environment;
     Beam beam = MakeLightBeam(endpoint, PO_COHERENCE_WAVELENGTH_NANOMETERS, GetOpticsSettings());
     float lengthMicrometers =
         ComputeCoherenceLengthWorld(beam, PO_COHERENCE_WAVELENGTH_NANOMETERS) * MICROMETERS_PER_WORLD_UNIT;

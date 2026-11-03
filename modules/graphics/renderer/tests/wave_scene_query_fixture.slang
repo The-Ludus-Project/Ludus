@@ -80,24 +80,24 @@ void EvaluateWaveSceneQueryFixture(uint index)
     if (Cases[0].w == LUDUS_WAVE_PARITY_CONNECTION_TAG)
     {
         float2 field = float2(0);
-        uint status = EvaluateWaveConnection((SceneContext)0,
-                                             cone.OriginWorld,
-                                             cone.DirectionWorld,
-                                             cone.FarWorld,
-                                             asfloat(Cases[base + 3]).w,
-                                             field);
+        WaveQuery status = EvaluateWaveConnection((SceneContext)0,
+                                                  cone.OriginWorld,
+                                                  cone.DirectionWorld,
+                                                  cone.FarWorld,
+                                                  asfloat(Cases[base + 3]).w,
+                                                  field);
         uint destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS;
-        Results[destination] = uint4(asuint(field), asuint(dot(field, field)), status);
+        Results[destination] = uint4(asuint(field), asuint(dot(field, field)), uint(status));
         Results[destination + 1] = uint4(0);
         return;
     }
     WaveInteractionRegion region = (WaveInteractionRegion)0;
-    uint status = FindWaveInteractionRegion((SceneContext)0, cone, region);
+    WaveQuery status = FindWaveInteractionRegion((SceneContext)0, cone, region);
     uint hash = 0;
     for (uint slot = 0; slot < region.TriangleCount; ++slot)
         hash = hash * LUDUS_WAVE_PARITY_REGION_HASH_FACTOR + region.Triangles[slot];
     uint destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS;
     Results[destination] =
-        uint4(asuint(region.Frustum.NearWorld), asuint(region.Frustum.FarWorld), region.TriangleCount, status);
+        uint4(asuint(region.Frustum.NearWorld), asuint(region.Frustum.FarWorld), region.TriangleCount, uint(status));
     Results[destination + 1] = uint4(hash, 0, 0, 0);
 }

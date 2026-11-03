@@ -19,8 +19,12 @@
 // POINT_LINE_MIS_POWER_EXPONENT are Graph settings (main.lushader.json); the builder declares them before this
 // source and validates their ranges.
 
-static const uint MIS_HEURISTIC_BALANCE = 0;
-static const uint MIS_HEURISTIC_POWER = 1;
+/// The POINT_LINE_MIS_HEURISTIC Graph setting's values.
+enum MisHeuristic : uint
+{
+    Balance = 0, ///< w_i = p_i / sum_k p_k.
+    Power = 1,   ///< w_i = p_i^beta / sum_k p_k^beta with beta = POINT_LINE_MIS_POWER_EXPONENT.
+};
 
 /// Weight of the strategy that drew a sample against the two other strategies that could have drawn
 /// it. A nonfinite or nonpositive sampled density returns 0. A zero other density drops that strategy:
@@ -42,7 +46,7 @@ float ComputeMisWeight(float sampledDensity, float otherDensity0, float otherDen
     float sampled = sampledDensity / largestDensity;
     float other0 = other0Density / largestDensity;
     float other1 = other1Density / largestDensity;
-    if (POINT_LINE_MIS_HEURISTIC == MIS_HEURISTIC_POWER)
+    if (MisHeuristic(POINT_LINE_MIS_HEURISTIC) == MisHeuristic::Power)
     {
         // A dropped strategy stays dropped without pow(0, beta), which fast math need not keep exact.
         sampled = pow(sampled, POINT_LINE_MIS_POWER_EXPONENT);

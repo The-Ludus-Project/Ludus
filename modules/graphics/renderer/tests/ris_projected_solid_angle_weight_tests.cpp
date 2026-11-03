@@ -452,7 +452,7 @@ TEST_CASE("RIS projected-solid-angle MIS weights partition unity and handle Z-ha
             CHECK(receiverSum == 0);
         }
         receiverSampleCount += receiver.Words[3] == 1 ? 1 : 0;
-        // RIS_TARGET_FORM_FACTOR's integrals are positive wherever the exact diffuse integral is (the support
+        // RisTarget::FormFactor's integrals are positive wherever the exact diffuse integral is (the support
         // invariant), and lie in [0, 1].
         const WeightRecord integrals = ReadRecord(bytes, invocation, LUDUS_RIS_WEIGHTS_TARGET_RECORD);
         CHECK(integrals.GetFloat(1) >= 0);

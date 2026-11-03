@@ -40,9 +40,13 @@ bool IsRadianceFinite(float3 radiance)
     return all((asuint(radiance) & EXPONENT_BITS) != EXPONENT_BITS);
 }
 
-static const uint DEFENSIVE_SLICE_SAMPLING_ESTIMATOR = 0;
-static const uint SLICE_SAMPLING_ESTIMATOR = 1;
-static const uint UNIFORM_AREA_ESTIMATOR = 2;
+/// The template's estimators, one per pass and output, in output order.
+enum SliceSamplingEstimator : uint
+{
+    DefensiveSlice = 0, ///< Slice sampling mixed with uniform panel-area sampling (section 6.2).
+    Slice = 1,          ///< Slice sampling alone.
+    UniformArea = 2,    ///< Uniform panel-area sampling alone, the baseline of section 6.4.
+};
 
 struct ShadingPoint
 {
@@ -122,7 +126,7 @@ bool TryLoadShadingPoint(SceneContext scene,
 float3 SampleLuminaire(SceneContext scene,
                        RayLaunch launch,
                        ShadingPoint shadingPoint,
-                       uint estimator,
+                       SliceSamplingEstimator estimator,
                        inout RayQueryContext queries)
 {
     uint luminaireCount = GetLuminaireCount(scene);
@@ -145,7 +149,7 @@ float3 SampleLuminaire(SceneContext scene,
     float2 areaSample = float2(SampleSceneRandom(launch, PANEL_AREA_DIMENSION_FIRST),
                                SampleSceneRandom(launch, PANEL_AREA_DIMENSION_FIRST + 1));
     LuminaireLightSample light;
-    if (estimator == DEFENSIVE_SLICE_SAMPLING_ESTIMATOR)
+    if (estimator == SliceSamplingEstimator::DefensiveSlice)
     {
         light = SampleLuminaireDefensive(luminaire,
                                          receiver,
@@ -155,7 +159,7 @@ float3 SampleLuminaire(SceneContext scene,
                                          branchSample,
                                          areaSample);
     }
-    else if (estimator == SLICE_SAMPLING_ESTIMATOR)
+    else if (estimator == SliceSamplingEstimator::Slice)
     {
         float seedWeight;
         float guideDensity;
@@ -194,12 +198,13 @@ float3 SampleLuminaire(SceneContext scene,
 
 /// Emission plus the estimator's luminaire sample; a nonfinite or negative estimate is a shader failure. Each pass
 /// works on a copy of queries and writes it back, as the other templates' passes do.
-float3 ShadeEstimator(SceneContext scene, RayLaunch launch, uint estimator, inout RayQueryContext queries)
+float3
+ShadeEstimator(SceneContext scene, RayLaunch launch, SliceSamplingEstimator estimator, inout RayQueryContext queries)
 {
     RayQueryContext passQueries = queries;
     ShadingPoint shadingPoint;
     float3 radiance;
-    bool isPrimary = estimator == DEFENSIVE_SLICE_SAMPLING_ESTIMATOR;
+    bool isPrimary = estimator == SliceSamplingEstimator::DefensiveSlice;
     if (TryLoadShadingPoint(scene, launch, isPrimary, passQueries, shadingPoint, radiance) == true)
     {
         radiance += shadingPoint.Throughput * SampleLuminaire(scene, launch, shadingPoint, estimator, passQueries);
@@ -215,15 +220,15 @@ float3 ShadeEstimator(SceneContext scene, RayLaunch launch, uint estimator, inou
 
 float3 ShadeDefensiveSliceSampling(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
-    return ShadeEstimator(scene, launch, DEFENSIVE_SLICE_SAMPLING_ESTIMATOR, queries);
+    return ShadeEstimator(scene, launch, SliceSamplingEstimator::DefensiveSlice, queries);
 }
 
 float3 ShadeSliceSampling(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
-    return ShadeEstimator(scene, launch, SLICE_SAMPLING_ESTIMATOR, queries);
+    return ShadeEstimator(scene, launch, SliceSamplingEstimator::Slice, queries);
 }
 
 float3 ShadeUniformArea(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
-    return ShadeEstimator(scene, launch, UNIFORM_AREA_ESTIMATOR, queries);
+    return ShadeEstimator(scene, launch, SliceSamplingEstimator::UniformArea, queries);
 }

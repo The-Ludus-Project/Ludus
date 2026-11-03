@@ -55,8 +55,12 @@ static const uint MAXIMUM_EXTENT_PIXELS = 0xffff;
 static const bool FIRST_BUFFER = false;
 static const bool SECOND_BUFFER = true;
 
-static const uint SOURCE_UNIFORM_HEMISPHERE = 0;
-static const uint SOURCE_COSINE_HEMISPHERE = 1;
+/// The RESTIR_GI_SOURCE_DISTRIBUTION Graph setting's values (section 4.1's source distribution).
+enum GiSourceDistribution : uint
+{
+    UniformHemisphere = 0, ///< Uniform over the hemisphere around the interpolated normal.
+    CosineHemisphere = 1,  ///< Cosine-weighted over that hemisphere.
+};
 
 // Section 4.2: normals within 25 degrees and normalized depths within 0.05, following Bitterli et al.
 static const float SIMILARITY_NORMAL_COSINE = 0.906307787f;
@@ -346,14 +350,16 @@ float SampleSourceDirection(Receiver receiver, float2 random, out float3 outDire
     float3 tangentWorld;
     float3 bitangentWorld;
     MakeTangentFrame(receiver.NormalWorld, tangentWorld, bitangentWorld);
-    float cosTheta = RESTIR_GI_SOURCE_DISTRIBUTION == SOURCE_COSINE_HEMISPHERE ? sqrt(1 - random.x) : random.x;
+    bool isCosineWeighted =
+        GiSourceDistribution(RESTIR_GI_SOURCE_DISTRIBUTION) == GiSourceDistribution::CosineHemisphere;
+    float cosTheta = isCosineWeighted == true ? sqrt(1 - random.x) : random.x;
     float sinTheta = sqrt(max(1 - cosTheta * cosTheta, 0));
     float phi = 2 * PI * random.y;
     outDirectionWorld = NormalizeOrZero(tangentWorld * (sinTheta * cos(phi)) + bitangentWorld * (sinTheta * sin(phi)) +
                                         receiver.NormalWorld * cosTheta);
     if (cosTheta <= 0 || any(outDirectionWorld != 0) == false)
         return 0;
-    return RESTIR_GI_SOURCE_DISTRIBUTION == SOURCE_COSINE_HEMISPHERE ? cosTheta / PI : 1 / (2 * PI);
+    return isCosineWeighted == true ? cosTheta / PI : 1 / (2 * PI);
 }
 
 /// Whether the visible point's source distribution can propose the sample point: in its hemisphere and, for the

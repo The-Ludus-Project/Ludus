@@ -126,7 +126,7 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
     }
     return false;
 }
-[noinline] uint TraceWaveBallistic(SceneContext scene, EllipticalCone rayCone, out bool outIsBlocked)
+[noinline] WaveQuery TraceWaveBallistic(SceneContext scene, EllipticalCone rayCone, out bool outIsBlocked)
 {
     outIsBlocked = false;
     rayCone.RadiusWorld = 0;
@@ -140,16 +140,16 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
         uint nodeIndex = stack[--stackCount];
         GeometryHierarchyNode node = GetGeometryHierarchyNode(scene, nodeIndex);
         if (nodeIndex >= nodeCount || node.IsValid == false)
-            return WAVE_QUERY_INVALID;
+            return WaveQuery::Invalid;
         bool canIntersect;
         if (TryTestEllipticalConeBounds(rayCone, node.MinimumWorld, node.MaximumWorld, canIntersect) == false)
-            return WAVE_QUERY_INVALID;
+            return WaveQuery::Invalid;
         if (canIntersect == false)
             continue;
         if (node.TriangleCount == 0)
         {
             if (stackCount > LUDUS_REFERENCE_STACK_SIZE - 2)
-                return WAVE_QUERY_INVALID;
+                return WaveQuery::Invalid;
             stack[stackCount++] = node.Right;
             stack[stackCount++] = node.Left;
             continue;
@@ -159,30 +159,30 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
             uint triangleIndex = GetGeometryHierarchyTriangle(scene, node.FirstTriangle + slot);
             TriangleData triangle = GetTriangle(scene, triangleIndex);
             if (triangle.IsValid == false)
-                return WAVE_QUERY_INVALID;
+                return WaveQuery::Invalid;
             ConeTriangle geometry;
             geometry.FirstWorld = triangle.Position0World;
             geometry.SecondWorld = triangle.Position1World;
             geometry.ThirdWorld = triangle.Position2World;
             ConeTriangleIntersection intersection = (ConeTriangleIntersection)0;
             if (TryIntersectEllipticalConeTriangle(rayCone, geometry, intersection) == false)
-                return WAVE_QUERY_INVALID;
+                return WaveQuery::Invalid;
             if (intersection.IsHit == true &&
                 IsWaveTriangleCovered(scene, triangleIndex, intersection.NearBarycentric.yz) == true)
             {
                 outIsBlocked = true;
-                return WAVE_QUERY_READY;
+                return WaveQuery::Ready;
             }
         }
     }
-    return WAVE_QUERY_READY;
+    return WaveQuery::Ready;
 }
-[noinline] uint EscapeWaveOrigin(SceneContext scene,
-                                 EllipticalCone cone,
-                                 float wavelengthWorld,
-                                 out float outDistanceWorld,
-                                 out bool outIsBlocked,
-                                 out bool outIsEntirelyBallistic)
+[noinline] WaveQuery EscapeWaveOrigin(SceneContext scene,
+                                      EllipticalCone cone,
+                                      float wavelengthWorld,
+                                      out float outDistanceWorld,
+                                      out bool outIsBlocked,
+                                      out bool outIsEntirelyBallistic)
 {
     float distanceWorld = cone.NearWorld;
     float previousWorld = distanceWorld;
@@ -198,20 +198,20 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
         segment.FarWorld = distanceWorld;
         if (distanceWorld > previousWorld)
         {
-            uint status = TraceWaveBallistic(scene, segment, outIsBlocked);
-            if (status != WAVE_QUERY_READY || outIsBlocked == true)
+            WaveQuery status = TraceWaveBallistic(scene, segment, outIsBlocked);
+            if (status != WaveQuery::Ready || outIsBlocked == true)
                 return status;
         }
         segment.NearWorld = distanceWorld;
         segment.FarWorld = min(cone.FarWorld, distanceWorld + cone.NearWorld);
         WaveInteractionRegion region = (WaveInteractionRegion)0;
-        uint status = FindWaveInteractionRegion(scene, segment, region);
-        if (status == WAVE_QUERY_READY && region.TriangleCount == 0)
+        WaveQuery status = FindWaveInteractionRegion(scene, segment, region);
+        if (status == WaveQuery::Ready && region.TriangleCount == 0)
         {
             outDistanceWorld = distanceWorld;
             return status;
         }
-        if (status != WAVE_QUERY_READY && status != WAVE_QUERY_CAPACITY)
+        if (status != WaveQuery::Ready && status != WaveQuery::Capacity)
             return status;
         if (distanceWorld >= maximumBallisticWorld)
         {
@@ -223,23 +223,23 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
         previousWorld = distanceWorld;
         distanceWorld = min(maximumBallisticWorld, distanceWorld * LUDUS_WAVE_CONNECTION_BALLISTIC_SCALE);
     }
-    return WAVE_QUERY_ESCAPE_CAPACITY;
+    return WaveQuery::EscapeCapacity;
 }
 /// Field / unoccluded Gaussian field. Failure preserves the output and reports invalid input/capacity.
-[noinline] uint EvaluateWaveConnectionToReceiver(SceneContext scene,
-                                                 float3 sourceWorld,
-                                                 float3 receiverWorld,
-                                                 float3 directionWorld,
-                                                 float distanceWorld,
-                                                 float wavelengthWorld,
-                                                 inout float2 inoutField)
+[noinline] WaveQuery EvaluateWaveConnectionToReceiver(SceneContext scene,
+                                                      float3 sourceWorld,
+                                                      float3 receiverWorld,
+                                                      float3 directionWorld,
+                                                      float distanceWorld,
+                                                      float wavelengthWorld,
+                                                      inout float2 inoutField)
 {
     if (IsFiniteBits(sourceWorld) == false || IsFiniteBits(receiverWorld) == false ||
         IsFiniteBits(directionWorld) == false || IsFiniteBits(distanceWorld) == false || distanceWorld <= 0 ||
         IsFiniteBits(wavelengthWorld) == false || wavelengthWorld < LUDUS_WAVE_CONNECTION_MIN_WAVELENGTH_WORLD ||
         wavelengthWorld / distanceWorld > WAVE_CONNECTION_MAX_WAVELENGTH_TO_DISTANCE ||
         abs(dot(directionWorld, directionWorld) - 1) > WAVE_CONNECTION_UNIT_TOLERANCE)
-        return WAVE_QUERY_INVALID;
+        return WaveQuery::Invalid;
     float wavenumber = 2 * PI / wavelengthWorld;
     float sigmaWorldSquared = distanceWorld / wavenumber;
     float halfWidthWorld = LUDUS_WAVE_CONNECTION_TAIL_DEVIATIONS * sqrt(2 * sigmaWorldSquared);
@@ -257,20 +257,20 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
     float endpointEscapeWorld = max(LUDUS_WAVE_CONNECTION_BALLISTIC_WAVELENGTHS * wavelengthWorld,
                                     LUDUS_WAVE_CONNECTION_ENDPOINT_ROUNDOFF_SCALE * coordinateScaleWorld);
     if (2 * endpointEscapeWorld >= distanceWorld)
-        return WAVE_QUERY_INVALID;
+        return WaveQuery::Invalid;
     cone.NearWorld = endpointEscapeWorld;
     cone.FarWorld = distanceWorld - cone.NearWorld;
     float sourceEscapeWorld;
     bool isBlocked;
     bool isEntirelyBallistic;
-    uint escapeStatus =
+    WaveQuery escapeStatus =
         EscapeWaveOrigin(scene, cone, wavelengthWorld, sourceEscapeWorld, isBlocked, isEntirelyBallistic);
-    if (escapeStatus != WAVE_QUERY_READY)
+    if (escapeStatus != WaveQuery::Ready)
         return escapeStatus;
     if (isBlocked == true || isEntirelyBallistic == true)
     {
         inoutField = float2(isBlocked == true ? 0 : 1, 0);
-        return WAVE_QUERY_READY;
+        return WaveQuery::Ready;
     }
     EllipticalCone reverse = cone;
     reverse.OriginWorld = receiverWorld;
@@ -278,12 +278,12 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
     float receiverEscapeWorld;
     escapeStatus =
         EscapeWaveOrigin(scene, reverse, wavelengthWorld, receiverEscapeWorld, isBlocked, isEntirelyBallistic);
-    if (escapeStatus != WAVE_QUERY_READY)
+    if (escapeStatus != WaveQuery::Ready)
         return escapeStatus;
     if (isBlocked == true || isEntirelyBallistic == true)
     {
         inoutField = float2(isBlocked == true ? 0 : 1, 0);
-        return WAVE_QUERY_READY;
+        return WaveQuery::Ready;
     }
     cone.NearWorld = sourceEscapeWorld;
     cone.FarWorld = max(cone.NearWorld, distanceWorld - receiverEscapeWorld);
@@ -293,16 +293,16 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
     for (uint interaction = 0; interaction < LUDUS_WAVE_CONNECTION_REGIONS; ++interaction)
     {
         WaveInteractionRegion region = (WaveInteractionRegion)0;
-        uint status =
-            cone.NearWorld < cone.FarWorld ? FindWaveInteractionRegion(scene, cone, region) : WAVE_QUERY_READY;
-        if (status != WAVE_QUERY_READY)
+        WaveQuery status =
+            cone.NearWorld < cone.FarWorld ? FindWaveInteractionRegion(scene, cone, region) : WaveQuery::Ready;
+        if (status != WaveQuery::Ready)
             return status;
         if (region.TriangleCount == 0)
         {
             if (hasField == false)
             {
                 inoutField = float2(1, 0);
-                return WAVE_QUERY_READY;
+                return WaveQuery::Ready;
             }
             PropagateWaveGrid(grid, distanceWorld - fieldDistanceWorld, wavelengthWorld, halfWidthWorld);
             float2 field = grid.Values[(LUDUS_WAVE_CONNECTION_AXIS / 2) * LUDUS_WAVE_CONNECTION_AXIS +
@@ -311,9 +311,9 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
             float2 result =
                 MultiplyWaveField(field, float2(normalization.x, -normalization.y)) / dot(normalization, normalization);
             if (IsFiniteBits(result.x) == false || IsFiniteBits(result.y) == false)
-                return WAVE_QUERY_INVALID;
+                return WaveQuery::Invalid;
             inoutField = result;
-            return WAVE_QUERY_READY;
+            return WaveQuery::Ready;
         }
         float screenDistanceWorld = region.Frustum.NearWorld * 0.5 + region.Frustum.FarWorld * 0.5;
         float transmission[LUDUS_WAVE_CONNECTION_CELLS];
@@ -356,7 +356,7 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
         if (blockedCount == LUDUS_WAVE_CONNECTION_CELLS * LUDUS_WAVE_CONNECTION_MASK_SAMPLES)
         {
             inoutField = float2(0);
-            return WAVE_QUERY_READY;
+            return WaveQuery::Ready;
         }
         if (blockedCount > 0)
         {
@@ -378,28 +378,28 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
             escape.FarWorld = cone.FarWorld - cone.NearWorld;
             escape.NearWorld = min(escape.FarWorld, endpointEscapeWorld);
             float escapedWorld;
-            uint escaped =
+            WaveQuery escaped =
                 EscapeWaveOrigin(scene, escape, wavelengthWorld, escapedWorld, isBlocked, isEntirelyBallistic);
-            if (escaped != WAVE_QUERY_READY)
+            if (escaped != WaveQuery::Ready)
                 return escaped;
             if (isBlocked == true)
             {
                 inoutField = float2(0);
-                return WAVE_QUERY_READY;
+                return WaveQuery::Ready;
             }
             cone.NearWorld =
                 isEntirelyBallistic == true ? cone.FarWorld : min(cone.FarWorld, cone.NearWorld + escapedWorld);
         }
     }
-    return WAVE_QUERY_PROPAGATION_CAPACITY;
+    return WaveQuery::PropagationCapacity;
 }
 
-uint EvaluateWaveConnection(SceneContext scene,
-                            float3 sourceWorld,
-                            float3 directionWorld,
-                            float distanceWorld,
-                            float wavelengthWorld,
-                            inout float2 inoutField)
+WaveQuery EvaluateWaveConnection(SceneContext scene,
+                                 float3 sourceWorld,
+                                 float3 directionWorld,
+                                 float distanceWorld,
+                                 float wavelengthWorld,
+                                 inout float2 inoutField)
 {
     return EvaluateWaveConnectionToReceiver(scene,
                                             sourceWorld,

@@ -85,7 +85,7 @@ float3 ReadVertexChord(SceneContext scene, RayLaunch launch, inout RayQueryConte
         return float3(0);
     }
     uint vertex = chordCase / LINE_DIRECTION_COUNT;
-    uint direction = chordCase % LINE_DIRECTION_COUNT == 0 ? LINE_DIRECTION_U : LINE_DIRECTION_V;
+    LineDirection direction = chordCase % LINE_DIRECTION_COUNT == 0 ? LineDirection::U : LineDirection::V;
     float2 barycentric = vertex == 0 ? float2(0, 0) : (vertex == 1 ? float2(1, 0) : float2(0, 1));
     TriangleData triangle = GetTriangle(scene, light.TriangleIndex);
     EmitterChord chord;
@@ -151,7 +151,7 @@ float3 ReadPointLineDensities(SceneContext scene, RayLaunch launch, inout RayQue
                                             receiver,
                                             light.TriangleIndex,
                                             light.Barycentric,
-                                            pixel.x % 2 == 0 ? LINE_DIRECTION_U : LINE_DIRECTION_V,
+                                            pixel.x % 2 == 0 ? LineDirection::U : LineDirection::V,
                                             queries);
     if (areaDensity <= 0)
     {

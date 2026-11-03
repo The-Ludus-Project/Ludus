@@ -704,8 +704,8 @@ class VeachGuibasMisTemplateTests(unittest.TestCase):
         self.assertIn('SampleBsdfStrategy(scene, launch, shadingPoint, false, queries)', shade)
         for name in ('Veach', 'Guibas', 'SIGGRAPH 1995', '10.1145/218380.218498'):
             self.assertIn(name, weights)
-        for heuristic in ('MIS_HEURISTIC_BALANCE = 0', 'MIS_HEURISTIC_POWER = 1', 'MIS_HEURISTIC_CUTOFF = 2',
-                          'MIS_HEURISTIC_MAXIMUM = 3'):
+        self.assertIn('enum MisHeuristic : uint', weights)
+        for heuristic in ('Balance = 0', 'Power = 1', 'Cutoff = 2', 'Maximum = 3'):
             self.assertIn(heuristic, weights)
         manifest = json.loads(root.with_name('main.lushader.json').read_text())
         settings = {setting['id']: setting for setting in manifest['settings']}
@@ -1488,16 +1488,17 @@ class SalesinJaroszLinesTemplateTests(unittest.TestCase):
         for call in ('SampleStandardBsdf', 'TraceClosest', 'TestVisibility', 'EvaluateLightPdfSolidAngle',
                      'EvaluateEnvironmentPdfSolidAngle', 'EvaluateLineDensity', 'ComputeMisWeight'):
             self.assertIn(call, shade)
-        for call in ('SampleIncidentLight', 'FindVisibleLineIntervals', 'HasMaskedOccluders', 'LINE_DIRECTION_U',
-                     'LINE_DIRECTION_V', 'EvaluateLineDensity'):
+        for call in ('SampleIncidentLight', 'FindVisibleLineIntervals', 'HasMaskedOccluders', 'LineDirection::U',
+                     'LineDirection::V', 'EvaluateLineDensity'):
             self.assertIn(call, strategy)
         # MIS weights all three strategies in shade; shadeLines drops BSDF sampling.
-        self.assertIn('SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_U, true, queries)', shade)
-        self.assertIn('SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_V, false, queries)', shade)
+        self.assertIn('SampleLineStrategy(scene, launch, shadingPoint, LineDirection::U, true, queries)', shade)
+        self.assertIn('SampleLineStrategy(scene, launch, shadingPoint, LineDirection::V, false, queries)', shade)
         self.assertIn('SampleBsdfStrategy(scene, launch, shadingPoint, true, queries)', shade)
         self.assertIn('SampleBsdfStrategy(scene, launch, shadingPoint, false, queries)', shade)
         self.assertIn('float ComputeMisWeight(float sampledDensity, float otherDensity0, float otherDensity1)', weights)
-        for heuristic in ('MIS_HEURISTIC_BALANCE = 0', 'MIS_HEURISTIC_POWER = 1'):
+        self.assertIn('enum MisHeuristic : uint', weights)
+        for heuristic in ('Balance = 0', 'Power = 1'):
             self.assertIn(heuristic, weights)
         self.assertNotIn('MIS_CUTOFF_THRESHOLD', weights)
         for name in ('Veach', 'Guibas', 'SIGGRAPH 1995', '10.1145/218380.218498', 'Salesin', 'Jarosz',
@@ -1784,8 +1785,8 @@ class SliceSamplingLuminaireTemplateTests(unittest.TestCase):
         for citation in ('Steinberg', '6.2', '6.4'):
             self.assertIn(citation, luminaire)
         # One pass per estimator, in output order.
-        for estimator in ('DEFENSIVE_SLICE_SAMPLING_ESTIMATOR', 'SLICE_SAMPLING_ESTIMATOR', 'UNIFORM_AREA_ESTIMATOR'):
-            self.assertIn(f'ShadeEstimator(scene, launch, {estimator}, queries)', shade)
+        for estimator in ('DefensiveSlice', 'Slice', 'UniformArea'):
+            self.assertIn(f'ShadeEstimator(scene, launch, SliceSamplingEstimator::{estimator}, queries)', shade)
 
     def test_random_dimensions_follow_the_documented_table(self):
         import re

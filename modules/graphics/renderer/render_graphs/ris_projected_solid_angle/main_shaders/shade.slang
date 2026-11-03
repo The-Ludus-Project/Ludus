@@ -33,8 +33,12 @@
 // PROJECTED_SOLID_ANGLE_MIS_VISIBILITY is a Graph setting (main.lushader.json), Peters' v.
 
 static const float SHADE_MAXIMUM_TRACE_DISTANCE_WORLD = 3.402823466e38f;
-static const uint DIFFUSE_LIGHT_TECHNIQUE = 0;
-static const uint SPECULAR_LIGHT_TECHNIQUE = 1;
+/// The two light-sampling techniques of the selected emissive triangle (Peters 2021, section 4.2).
+enum LightTechnique : uint
+{
+    Diffuse = 0,  ///< Projected solid angle sampling of the clipped polygon, omega_0.
+    Specular = 1, ///< Linearly transformed cosine sampling, omega_1.
+};
 
 struct ShadingPoint
 {
@@ -173,7 +177,7 @@ bool TryEvaluateSurrogateProbability(SceneContext scene,
 [noinline] float3 SampleResampledLightTechnique(SceneContext scene,
                                                 ShadingPoint shadingPoint,
                                                 EmissiveTriangleTarget target,
-                                                uint technique,
+                                                LightTechnique technique,
                                                 float2 randomSample,
                                                 float surrogateProbability,
                                                 bool isMisWeighted,
@@ -181,7 +185,7 @@ bool TryEvaluateSurrogateProbability(SceneContext scene,
 {
     float3 directionTangent = float3(0);
     bool isSampled = false;
-    if (technique == DIFFUSE_LIGHT_TECHNIQUE)
+    if (technique == LightTechnique::Diffuse)
         isSampled = TrySampleProjectedSolidAnglePolygon(target.Polygons.Diffuse, randomSample, directionTangent);
     else if (target.Polygons.SpecularIntegral > 0)
         isSampled = TrySampleLinearlyTransformedCosinePolygon(target.Polygons.Specular, randomSample, directionTangent);
@@ -190,7 +194,7 @@ bool TryEvaluateSurrogateProbability(SceneContext scene,
     float3 directionWorld = NormalizeOrZero(TransformTangentToWorld(shadingPoint.Frame, directionTangent));
     float2 densities =
         EvaluateLightTechniqueDensities(target.Polygons, TransformWorldToTangent(shadingPoint.Frame, directionWorld));
-    float techniqueDensity = technique == DIFFUSE_LIGHT_TECHNIQUE ? densities.x : densities.y;
+    float techniqueDensity = technique == LightTechnique::Diffuse ? densities.x : densities.y;
     if ((techniqueDensity > 0) == false)
         return float3(0);
     float cosSurface = dot(shadingPoint.ShadingNormalWorld, directionWorld);
@@ -221,7 +225,7 @@ bool TryEvaluateSurrogateProbability(SceneContext scene,
         return float3(0);
     float2 techniqueWeights =
         ComputeClampedOptimalMisWeights(target.Coefficients, densities, PROJECTED_SOLID_ANGLE_MIS_VISIBILITY);
-    float weight = technique == DIFFUSE_LIGHT_TECHNIQUE ? techniqueWeights.x : techniqueWeights.y;
+    float weight = technique == LightTechnique::Diffuse ? techniqueWeights.x : techniqueWeights.y;
     if (isMisWeighted == true)
         weight *= ComputePowerHeuristicWeight(surrogateProbability * (densities.x + densities.y), bsdfDensity);
     if ((weight > 0) == false)
@@ -273,15 +277,18 @@ float3 SampleResampledEmissiveLight(SceneContext scene,
     float2 specularSample = float2(SampleSceneRandom(launch, SHADE_SPECULAR_TECHNIQUE_DIMENSION_FIRST),
                                    SampleSceneRandom(launch, SHADE_SPECULAR_TECHNIQUE_DIMENSION_FIRST + 1));
     float3 radiance = float3(0);
-    for (uint technique = DIFFUSE_LIGHT_TECHNIQUE; technique <= SPECULAR_LIGHT_TECHNIQUE; ++technique)
+    for (uint index = uint(LightTechnique::Diffuse); index <= uint(LightTechnique::Specular); ++index)
+    {
+        LightTechnique technique = LightTechnique(index);
         radiance += SampleResampledLightTechnique(scene,
                                                   shadingPoint,
                                                   target,
                                                   technique,
-                                                  technique == DIFFUSE_LIGHT_TECHNIQUE ? diffuseSample : specularSample,
+                                                  technique == LightTechnique::Diffuse ? diffuseSample : specularSample,
                                                   surrogateProbability,
                                                   isMisWeighted,
                                                   queries);
+    }
     return radiance * (selection.ContributionWeight / inoutContext.EmissiveCategoryProbability);
 }
 

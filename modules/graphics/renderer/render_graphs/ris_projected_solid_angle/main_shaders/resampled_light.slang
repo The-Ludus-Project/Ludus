@@ -15,8 +15,8 @@
 // weighted_reservoir.slang.
 // RIS_CANDIDATE_COUNT, RIS_NORMALIZATION_CANDIDATE_COUNT and RIS_TARGET are Graph settings (main.lushader.json); the
 // builder declares them before this source and validates their ranges against the maximums in hit_record.slang.
-// RIS_TARGET selects how p-hat evaluates E_0 and E_1: RIS_TARGET_EXACT clips and integrates both polygons of every
-// candidate; RIS_TARGET_FORM_FACTOR uses Hill and Heitz's approximation (TryApproximateTriangleLightIntegrals). Either
+// RIS_TARGET selects how p-hat evaluates E_0 and E_1: RisTarget::Exact clips and integrates both polygons of every
+// candidate; RisTarget::FormFactor uses Hill and Heitz's approximation (TryApproximateTriangleLightIntegrals). Either
 // target is positive wherever the triangle has area above the horizon and positive emission, so both estimate the
 // same integral; the choice changes only variance and cost. The selected light's samples, densities and MIS
 // coefficients always use the exact polygons.
@@ -24,8 +24,12 @@
 // The settings clamped to the dimension table's capacity; the builder already rejects larger values.
 static const uint RIS_ACTIVE_CANDIDATE_COUNT =
     RIS_CANDIDATE_COUNT < RIS_MAX_CANDIDATE_COUNT ? RIS_CANDIDATE_COUNT : RIS_MAX_CANDIDATE_COUNT;
-static const uint RIS_TARGET_EXACT = 0;
-static const uint RIS_TARGET_FORM_FACTOR = 1;
+/// The RIS_TARGET Graph setting's values.
+enum RisTarget : uint
+{
+    Exact = 0,      ///< Clip and integrate both polygons of every candidate.
+    FormFactor = 1, ///< Hill and Heitz's approximate integrals (TryApproximateTriangleLightIntegrals).
+};
 static const uint RIS_ACTIVE_NORMALIZATION_CANDIDATE_COUNT =
     RIS_NORMALIZATION_CANDIDATE_COUNT < RIS_MAX_NORMALIZATION_CANDIDATE_COUNT ? RIS_NORMALIZATION_CANDIDATE_COUNT
                                                                               : RIS_MAX_NORMALIZATION_CANDIDATE_COUNT;
@@ -37,7 +41,7 @@ struct EmissiveTriangleTarget
     TriangleLightPolygons Polygons;
     /// (c_0, c_1) from the exact integrals: Peters' MIS coefficients.
     float2 Coefficients;
-    /// p-hat as RIS_TARGET evaluates it; Coefficients.x + Coefficients.y for RIS_TARGET_EXACT. Zero for a one-sided
+    /// p-hat as RIS_TARGET evaluates it; Coefficients.x + Coefficients.y for RisTarget::Exact. Zero for a one-sided
     /// emitter seen from behind.
     float Target;
     /// Y(L), the luminance of the triangle's constant emission factor (zero from behind).
@@ -66,7 +70,7 @@ bool TryLoadEmissiveTriangle(SceneContext scene,
     return true;
 }
 
-/// p-hat from RIS_TARGET_FORM_FACTOR's approximate integrals; the exact target is the coefficients' sum.
+/// p-hat from RisTarget::FormFactor's approximate integrals; the exact target is the coefficients' sum.
 bool TryApproximateEmissiveTriangleTarget(ReceiverLightingFrame frame,
                                           TriangleData triangle,
                                           float emissionLuminance,
@@ -112,7 +116,7 @@ bool TryApproximateEmissiveTriangleTarget(ReceiverLightingFrame frame,
                                         outTarget.Polygons) == false)
         return false;
     outTarget.Coefficients = ComputeLightTechniqueCoefficients(frame, outTarget.Polygons, outTarget.EmissionLuminance);
-    if (RIS_TARGET == RIS_TARGET_EXACT)
+    if (RisTarget(RIS_TARGET) == RisTarget::Exact)
     {
         outTarget.Target = outTarget.Coefficients.x + outTarget.Coefficients.y;
         return IsFiniteBits(outTarget.Target);
@@ -141,13 +145,13 @@ TargetTotalEstimate MakeTargetTotalEstimate()
 }
 
 /// p-hat alone, for the reservoir's and Z-hat's candidates: the same value TryEvaluateEmissiveTriangleTarget
-/// returns, without preparing polygons under RIS_TARGET_FORM_FACTOR. Returns false as
+/// returns, without preparing polygons under RisTarget::FormFactor. Returns false as
 /// TryEvaluateEmissiveTriangleTarget does.
 [noinline] bool
 TryEvaluateResamplingTarget(SceneContext scene, ReceiverLightingFrame frame, uint triangleIndex, out float outTarget)
 {
     outTarget = 0;
-    if (RIS_TARGET == RIS_TARGET_EXACT)
+    if (RisTarget(RIS_TARGET) == RisTarget::Exact)
     {
         EmissiveTriangleTarget target;
         bool isEvaluated = TryEvaluateEmissiveTriangleTarget(scene, frame, triangleIndex, target);

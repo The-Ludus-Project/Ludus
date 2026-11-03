@@ -37,10 +37,12 @@
 static const float LINE_EMITTER_PLANE_COSINE_TOLERANCE = 0.000001;
 /// Bound on chord end parameters before clipping to the triangle; any finite triangle lies inside it.
 static const float LINE_CHORD_UNBOUNDED_PARAMETER = 1.0e30;
-/// The line direction along the emitter triangle's first edge, P1 - P0.
-static const uint LINE_DIRECTION_U = 0;
-/// The line direction across the first edge, cross(n, P1 - P0) with n the geometric normal.
-static const uint LINE_DIRECTION_V = 1;
+/// The two line-sample directions in an emitter triangle's plane.
+enum LineDirection : uint
+{
+    U = 0, ///< Along the emitter triangle's first edge, P1 - P0.
+    V = 1, ///< Across the first edge, cross(n, P1 - P0) with n the geometric normal.
+};
 
 /// The chord of an emitter triangle through a point, as a line query segment and in barycentrics.
 struct EmitterChord
@@ -146,10 +148,10 @@ float2 GetChordBarycentric(EmitterChord chord, float t)
 
 /// A vector along line direction U or V in the triangle's plane. Its length does not matter: the
 /// chord through a point is the same for any positive multiple.
-float3 GetLineAlongWorld(TriangleData triangle, uint direction)
+float3 GetLineAlongWorld(TriangleData triangle, LineDirection direction)
 {
     float3 alongUWorld = triangle.Position1World - triangle.Position0World;
-    return direction == LINE_DIRECTION_U ? alongUWorld : cross(triangle.GeometricNormalWorld, alongUWorld);
+    return direction == LineDirection::U ? alongUWorld : cross(triangle.GeometricNormalWorld, alongUWorld);
 }
 
 /// Probability with which SelectLight chose one light. Selection is uniform, as in
@@ -178,7 +180,7 @@ float ComputeLineDensitySolidAngle(float selectionPmf,
 }
 
 /// Select a light, propose a point on it and, for a mesh light, build its chord in direction
-/// LINE_DIRECTION_U or LINE_DIRECTION_V, find the chord's visible intervals and draw a chord parameter
+/// LineDirection::U or LineDirection::V, find the chord's visible intervals and draw a chord parameter
 /// uniformly by length over them. Reads dimensions firstDimension to firstDimension + 3, and
 /// positionDimension, at explicit addresses. Consumes one line query for a mesh light unless the
 /// receiver lies in the emitter's plane, the chord is too short to query (IsEmitterChordQueryable) or
@@ -189,7 +191,7 @@ bool FindLineProposal(SceneContext scene,
                       SurfaceHit receiver,
                       float3 shadingNormalWorld,
                       bool isHorizonTested,
-                      uint direction,
+                      LineDirection direction,
                       uint firstDimension,
                       uint positionDimension,
                       inout RayQueryContext queries,
@@ -277,7 +279,7 @@ bool FindLineProposal(SceneContext scene,
                                      SurfaceHit receiver,
                                      float3 shadingNormalWorld,
                                      bool isHorizonTested,
-                                     uint direction,
+                                     LineDirection direction,
                                      uint firstDimension,
                                      uint positionDimension,
                                      RayQueryContext initialQueries,
@@ -305,7 +307,7 @@ bool ProposeLine(SceneContext scene,
                  SurfaceHit receiver,
                  float3 shadingNormalWorld,
                  bool isHorizonTested,
-                 uint direction,
+                 LineDirection direction,
                  uint firstDimension,
                  uint positionDimension,
                  inout RayQueryContext queries,
@@ -426,7 +428,7 @@ float FindLineDensity(SceneContext scene,
                       SurfaceHit receiver,
                       uint triangleIndex,
                       float2 barycentric,
-                      uint direction,
+                      LineDirection direction,
                       inout RayQueryContext queries)
 {
     TriangleData triangle = GetTriangle(scene, triangleIndex);
@@ -472,7 +474,7 @@ float FindLineDensity(SceneContext scene,
                                               SurfaceHit receiver,
                                               uint triangleIndex,
                                               float2 barycentric,
-                                              uint direction,
+                                              LineDirection direction,
                                               RayQueryContext initialQueries,
                                               out RayQueryContext outQueries)
 {
@@ -487,7 +489,7 @@ float EvaluateLineDensity(SceneContext scene,
                           SurfaceHit receiver,
                           uint triangleIndex,
                           float2 barycentric,
-                          uint direction,
+                          LineDirection direction,
                           inout RayQueryContext queries)
 {
     RayQueryContext updatedQueries;

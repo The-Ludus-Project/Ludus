@@ -468,7 +468,7 @@ TEST_CASE("Wave region GPU traversal matches the CPU scene BVH",
         internal::WaveInteractionRegion region;
         REQUIRE(internal::FindWaveInteractionRegion(scene, cones[index], region) == RasterStatus::Ready);
         const usize destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS * WORDS_PER_RECORD;
-        REQUIRE(results[destination + 3] == 0);
+        REQUIRE(results[destination + 3] == LUDUS_WAVE_QUERY_READY);
         CHECK(results[destination + 2] == region.TriangleCount);
         CHECK(math::Abs(ReadFloat(results, destination) - region.Frustum.NearWorld) < 2e-5);
         CHECK(math::Abs(ReadFloat(results, destination + 1) - region.Frustum.FarWorld) < 2e-5);
@@ -508,7 +508,7 @@ TEST_CASE("Wave region GPU traversal matches the CPU scene BVH",
                                                  ReadFloat(words, base + 15),
                                                  field) == RasterStatus::Ready);
         const usize destination = index * LUDUS_WAVE_PARITY_RESULT_RECORDS * WORDS_PER_RECORD;
-        REQUIRE(results[destination + 3] == 0);
+        REQUIRE(results[destination + 3] == LUDUS_WAVE_QUERY_READY);
         CHECK(math::Abs(ReadFloat(results, destination) - field.Real) < 3e-4);
         CHECK(math::Abs(ReadFloat(results, destination + 1) - field.Imaginary) < 3e-4);
         CHECK(math::Abs(ReadFloat(results, destination + 2) - field.Real * field.Real -
