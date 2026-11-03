@@ -456,6 +456,14 @@ struct RenderGraphSceneResourceReport final
     foundation::uint64 ReusedTextures = 0;    ///< Exact cached texture acquisitions.
     foundation::uint32 MeshLightPolygons = 0; ///< Latest prepared deferred scene's emitter polygon records.
     foundation::uint64 MeshLightBytes = 0; ///< Immutable mesh-light upload bytes, including an empty-set dummy record.
+    /// Latest prepared deferred scene's mesh-light shadow casters, each shadowing a cluster of emitter records from
+    /// one point with cube faces rendered once into the shadow atlas.
+    foundation::uint32 MeshLightShadowCasters = 0;
+    /// Latest prepared deferred scene's emitter records left unshadowed because the caster limit,
+    /// MAX_MESH_LIGHT_SHADOW_CASTERS, was reached; the brightest records are shadowed first.
+    foundation::uint32 UnshadowedMeshLights = 0;
+    /// Latest prepared deferred scene's shadow faces, each rendered once after the scene is published.
+    foundation::uint32 MeshLightShadowFaces = 0;
     foundation::uint32 OverflowClusters = 0;   ///< Latest material's cells using the full light-list fallback.
     foundation::uint32 ClusterAssignments = 0; ///< Latest material's stored cell/light intersections.
     foundation::uint32 DroppedLights =

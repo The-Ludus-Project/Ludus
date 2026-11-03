@@ -2112,7 +2112,7 @@ viewport after its consumers finish. Reset the viewport before its borrowed
 Renderer/device; RHI interop leases independently retain external backing.
 
 Raster mode uses authored materials, direct lights, environment and admitted
-bakes/shadows. The default clustered deferred graph evaluates unshadowed direct mesh area lighting
+bakes/shadows. The default clustered deferred graph evaluates direct mesh area lighting, shadowed by cached cube shadow maps,
 from emissive triangles, merged into convex polygons where coplanar, using polygon integrals and fitted LTC specular,
 for the records a conservative world-space culling grid lists at each pixel. Other
 raster profiles retain their existing emission behavior. Emissive indirect transport

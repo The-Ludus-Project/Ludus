@@ -31,4 +31,11 @@ inline constexpr foundation::float32 MESH_LIGHT_CULL_RADIANCE = 1.0F / 4096.0F;
                                           foundation::uint32 gridWord,
                                           foundation::math::Vector3 positionWorld,
                                           foundation::Array<foundation::uint32>& outRecordWords) noexcept;
+/// The influence sphere the grid lists the record starting at offset with: its bounding sphere grown by the distance
+/// beyond which its bounded Lambert term stays below MESH_LIGHT_CULL_RADIANCE. Mesh-light shadow casters cover it.
+/// @return False, leaving both outputs unchanged, for a malformed or nonfinite record.
+[[nodiscard]] bool GetRasterMeshLightReach(foundation::BorrowedView<const foundation::math::Vector4> words,
+                                           foundation::usize offset,
+                                           foundation::math::Vector3& outCenterWorld,
+                                           foundation::float32& outRadius) noexcept;
 } // namespace ludus::graphics::renderer::internal
