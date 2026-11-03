@@ -105,5 +105,7 @@ batch CI. Local verification is close reading against the C++23 contracts plus
   Doxygen and run in CI.
 - [x] 6.7 Local `clang++-15 -fsyntax-only -std=c++2b` syntax check of every new
   TU and the edited `catalog.cpp` passes (the format static_asserts compile).
-- [ ] 6.8 Open the PR against `develop`; list exactly what ran and what didn't;
-  never add `ci:full`; never merge/enqueue; report branch and worktree path.
+- [x] 6.8 PR #913 opened against `develop`
+  (https://github.com/The-Ludus-Project/Ludus/pull/913), listing what ran and
+  what is deferred to CI. No `ci:full` label; not merged or enqueued. Branch
+  `codex/curves-surfaces-g5`, worktree `/projects/sandbox/ludus-g5`.
