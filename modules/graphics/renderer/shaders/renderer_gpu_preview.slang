@@ -192,6 +192,15 @@ struct Hit
     float DistanceWorld;
     float2 Barycentric;
 };
+/// Clamp a native intersector's barycentrics to the closed triangle, which GetSurfaceHit requires of a recorded hit.
+/// The hardware reports the two coordinates as separately rounded values, so a hit near the edge opposite corner 0 can
+/// sum just above one (Metal, on a wall's top edge in the Veach and Guibas template). As in IntersectBvhTriangle,
+/// 1 - second is exact or within half an ulp, so the float32 sum rounds to at most one; the change is within rounding.
+float2 ClampBarycentricToTriangle(float2 barycentric)
+{
+    float second = saturate(barycentric.x);
+    return float2(second, min(saturate(barycentric.y), 1 - second));
+}
 #ifdef LUDUS_GRAPH_CUSTOM_RAY_TRAVERSAL
 // Generated per-pass dispatch to the authored compute query source. The source
 // shares the packed World hit contract with the engine's triangle-loop strategy.
@@ -458,7 +467,7 @@ void TraceNativeQuery(float3 originWorld,
         }
         hit.Triangle = asuint(SceneValue(Offsets.y + primitive).x);
         hit.DistanceWorld = query.CommittedRayT();
-        hit.Barycentric = query.CommittedTriangleBarycentrics();
+        hit.Barycentric = ClampBarycentricToTriangle(query.CommittedTriangleBarycentrics());
     }
     return hit;
 }
