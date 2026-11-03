@@ -27,7 +27,11 @@ struct ReferenceBsdfRandomContext final
 /// absorption and zero medium scattering. Both typed rough models use Scattering
 /// alpha directly. Coatings require isotropy, alpha >= LUDUS_COATING_MIN_ALPHA,
 /// and IOR >= 1. Their internal depth is LUDUS_COATING_MAX_DEPTH; it does not consume
-/// scene bounces. External transmission, scattering media and spectral transport are absent.
+/// scene bounces. Dielectric and ThinDielectric are smooth nonabsorbing interfaces
+/// with one real index (equal Eta channels, zero K, alpha below
+/// LUDUS_SMOOTH_INTERFACE_ALPHA): their reflection and transmission are directional
+/// deltas, sampled only. Rough transmission, scattering media, absorption inside
+/// dielectrics and spectral dispersion are absent.
 struct ReferenceBsdf final
 {
     /// Linear RGB reflectance, each channel in [0,1]; conductor evaluation uses Eta/K instead.
@@ -38,6 +42,9 @@ struct ReferenceBsdf final
     ludus::foundation::float32 Roughness = 0.5F;
     /// Typed optical parameters; default preserves the legacy metallic/roughness model.
     content::scene_format::MaterialScattering Scattering{};
+    /// Dielectric only: the view direction lies inside the medium, behind the surface's
+    /// oriented front side, so refraction uses the inverse relative index. Thin slabs ignore it.
+    bool IsViewerInside = false;
 };
 /// BSDF value and directional density in inverse steradians, without the cosine.
 struct ReferenceBsdfEvaluation final
@@ -49,6 +56,7 @@ struct ReferenceBsdfEvaluation final
 };
 /// One continuation proposal. Below-surface GGX proposals are explicit null events;
 /// their probability mass is retained instead of retrying/renormalizing the sampler.
+/// Dielectric proposals are specular: see IsSpecular.
 struct ReferenceBsdfSample final
 {
     /// Unit outgoing world direction when Accepted, otherwise zero.
@@ -66,10 +74,16 @@ struct ReferenceBsdfSample final
     /// True when Evaluation is a proportional path representation: its f*cos/pdf
     /// ratio remains valid, but Evaluation.Pdf must not be used for external MIS.
     bool HasProportionalPdf = false;
+    /// True for a directional delta lobe (dielectric reflection or transmission). Evaluation
+    /// and MisPdf are zero, Weight is the complete throughput multiplier, Direction may lie
+    /// below the surface (transmission), and no light sample can reach this lobe, so emission
+    /// found along Direction takes full weight instead of a MIS weight.
+    bool IsSpecular = false;
 };
 /// Evaluate the selected reflection profile. Normal, outgoing view and incoming light
 /// must be finite unit vectors within 1e-5 squared-length tolerance. Directions
-/// point away from the surface. Coatings use one stochastic layered estimate and
+/// point away from the surface. Dielectrics evaluate to zero value and density for
+/// every direction pair (their lobes are deltas). Coatings use one stochastic layered estimate and
 /// an independently addressed MIS density estimate. Advance random.Address.Event
 /// between estimates to converge. Invalid input preserves output; no allocation.
 [[nodiscard]] rhi::RasterStatus EvaluateReferenceBsdf(const ReferenceBsdf&,
@@ -81,7 +95,10 @@ struct ReferenceBsdfSample final
 /// Sample the matching mixture with three independent values in [0,1): X selects
 /// the lobe, Y/Z sample it. Diffuse uses cosine sampling; conductors and legacy
 /// pure metals use visible-GGX reflection; legacy mixed surfaces mix cosine diffuse
-/// and GGX equally. Coatings sample an internal layered path using the supplied
+/// and GGX equally. Dielectrics reflect with probability equal to their Fresnel
+/// reflectance (a thin slab's includes its interreflections) and otherwise refract,
+/// or pass straight through a thin slab; transmitted radiance is scaled by the inverse
+/// squared relative index. Coatings sample an internal layered path using the supplied
 /// random context; Weight and MisPdf have distinct contracts. Internal depth and
 /// roulette termination are ordinary null samples. Failure preserves output.
 /// No allocation, retries, global RNG, energy clamp or hidden roughness change.

@@ -86,7 +86,9 @@ bool TraceFgOraclePhotons(BorrowedView<const FgOracleTriangle> triangles,
             break;
         }
         const FgOracleTriangle& triangle = *closestOrNull;
-        if (triangle.Material.Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse)
+        if (triangle.Material.Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse ||
+            triangle.Material.Scattering.Model == content::scene_format::MaterialModel::Dielectric ||
+            triangle.Material.Scattering.Model == content::scene_format::MaterialModel::ThinDielectric)
         {
             return false;
         }

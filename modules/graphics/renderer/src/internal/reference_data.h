@@ -175,6 +175,8 @@ struct ReferencePath final
     uint32 Pixel = 0, Sample = 0, Depth = 0, DirectDepth = 0;
     uint32 ShadowCount = 0;
     float32 PreviousPdf = 0;
+    /// The previous scattering event was a specular delta lobe: emission it reaches takes full weight.
+    bool IsPreviousSpecular = false;
     /// Resampled modes: the previous vertex's receiver and its Z-hat cache, read bit-identically by the
     /// BSDF-hit MIS density of the emitter that the continuation reaches.
     ReferenceReceiverFrame PreviousReceiver{};

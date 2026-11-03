@@ -1936,8 +1936,8 @@ The following limits are deliberate and visible:
   a perspective camera or another graph.
 - Reflection only: diffuse, metallic/roughness and isotropic conductors use the
   existing scene BSDFs. Coated diffuse reports the material-profile repair.
-  External transmission and glass caustics are unavailable in the scene material
-  contract. Low-roughness conductors use random replay; other surfaces reconnect.
+  Dielectrics shade through their legacy opaque fields; external transmission and
+  glass caustics are unavailable to this graph. Low-roughness conductors use random replay; other surfaces reconnect.
 - Indirect photons originate from finite mesh, point and spot sources. Environment
   and directional sources contribute through direct lighting and terminal camera
   emission, not through indirect photon transport.
@@ -2264,8 +2264,8 @@ query bound; longer configured paths require a continuation-dispatch implementat
 Hybrid shifts, prefix resampling, motion reprojection and world-space nearest-neighbour
 gathers are not implemented. Analytic lights and environment illumination remain
 outside this mesh-light integral; the environment is displayed only when the primary
-camera ray misses. External transmission and delta BSDFs are outside the scene material
-profile. Uniform area and sphere proposals preserve support but can have high variance,
+camera ray misses. External transmission and delta BSDFs are outside this graph's material
+profile; dielectrics shade through their legacy opaque fields. Uniform area and sphere proposals preserve support but can have high variance,
 especially for narrow glossy lobes, nearby coplanar geometry and long paths. This
 implementation makes no performance or variance-improvement claim.
 

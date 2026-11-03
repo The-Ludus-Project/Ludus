@@ -1366,7 +1366,9 @@ spot interpolation and unbounded nonzero-distance attenuation; old captures reta
 that profile identity and cannot be compared as the same integral. Emission is two-sided; reflection is restricted to the geometric and
 shading upper hemispheres. Textured RGB decodes sRGB before fixed-mip filtering;
 alpha stays linear. The capture mip overrides per-material LOD/mip filtering
-and LOD clamps. There is no transmission, volume, spectral transport, coat,
+and LOD clamps. Transmission is limited to the
+[smooth dielectric reference](#smooth-dielectric-reference); there is no rough
+transmission, volume, spectral transport, coat,
 multiple-scattering energy compensation or shading-normal energy correction.
 Depth and finite secondary range are declared truncations. Local/world geometry, generated ray origins, UVs and transform components are
 bounded to ±1,000,000 for the reference profile. Admission rejects oversized
@@ -1780,9 +1782,11 @@ and texture encoding with raster/ray AOVs (auxiliary output images).
 
 The first reference profile is RGB, triangle surfaces, diffuse/GGX reflection,
 opaque and explicitly alpha-masked materials, finite area emitters, analytic
-point/spot/directional lights and an environment. Add transmission with Fresnel,
-IOR/medium tracking and total internal reflection under a separate tested profile;
-volumes, subsurface scattering, hair and spectral transport are further features.
+point/spot/directional lights and an environment. Profile 8 adds smooth
+transmission with Fresnel, inside/outside index tracking and total internal
+reflection ([smooth dielectric reference](#smooth-dielectric-reference)); rough
+transmission, volumes, subsurface scattering, hair and spectral transport are
+further features.
 Raster alpha blending is not a physically specified transmission model. Unsupported
 materials make a capture incomplete or fail its requested reference profile;
 an error-material preview must never be labeled a reference image.
@@ -2993,6 +2997,65 @@ mean; divide by the total sample count. Record each mean and its standard error
 `sqrt((mean(square)-square(mean))/count)`, plus the accepted-sample fraction.
 CPU/GPU branch replay is checked separately from agreement of independent sample
 means; numerical/statistical acceptance never uses tone mapping or denoising.
+
+### Smooth dielectric reference
+
+Reference profile 8 renders pbrt-v4's smooth `dielectric` and `thindielectric`
+materials, such as the glass balustrade beside the staircase. `Dielectric` is the
+interface of a nonabsorbing medium with one real index in every `Eta` channel and
+zero `K`. A closed mesh bounds the medium, and its oriented front side faces the
+outside. `ThinDielectric` is an infinitesimally thin slab of that index. Reference
+admission accepts equal RGB indices, zero extinction and GGX alpha below
+`LUDUS_SMOOTH_INTERFACE_ALPHA` (pbrt-v4's `EffectivelySmooth` threshold, 0.001).
+Dispersion, absorption inside the medium and rough transmission are rejected.
+
+Both lobes are directional deltas. Sampling reflects with probability equal to the
+unpolarized Fresnel reflectance and otherwise refracts by Snell's law; total
+internal reflection reflects every sample. Selecting a lobe with its own Fresnel
+probability cancels that factor, so a reflected sample carries weight one and a
+refracted sample `1 / eta^2`, the radiance scaling of pbrt-v4's
+`TransportMode::Radiance`. A thin slab reflects with
+`R + T^2 R / (1 - R^2)`, the sum of its internal reflections, and otherwise passes
+the ray undeviated with weight one. `EvaluateReferenceBsdf` returns zero value and
+density for every direction pair.
+
+The reference tracers keep the pbrt-v4 two-sided convention. Each hit mirrors its
+normals towards the viewer, and `ReferenceBsdf::IsViewerInside` records that the
+viewer was behind the oriented front side, so refraction uses the inverse relative
+index. A refracted continuation must leave on the far side of the geometric
+surface; any other lobe stays on the viewer's side. Specular vertices skip
+next-event estimation, because no light proposal can reach a delta direction.
+Emission or environment found after a specular bounce takes full weight instead of
+a MIS weight (`ReferenceBsdfSample::IsSpecular`). Shadow rays stay opaque to glass,
+as in pbrt-v4, so a surface behind glass receives light through it only by BSDF
+sampling. Delta bounces count towards `MaxDepth` and roulette like any other event.
+`Metropolis` captures report `Unsupported` for dielectrics.
+
+Scene assets need no format extension: LUSCN v7 already stores the model tag,
+`Eta`, `K` and alpha, and readers accept tags 4 and 5. The record's legacy base
+colour, metallic and roughness keep the previous opaque approximation, a smooth
+dark reflector with base colour `DIELECTRIC_FALLBACK_REFLECTANCE` (0.04). Raster
+shading and render-graph shaders without transmission still shade these legacy
+fields. They do not render glass as transparent. The typed `pbrt-reference-materials-v2`
+cooker admits scalar `eta` and smooth roughness, and rejects rough dielectrics. The
+best-effort importer stores the typed model and imports a rough dielectric as a
+smooth one with `ROUGH_TRANSMISSION_APPROXIMATED`. `LIGHTING_PROFILE_VERSION` 8
+separates these captures from the opaque approximation.
+
+`shaders/dielectric.slang` is the GPU twin of `src/reference_dielectric.cpp`.
+The CPU sampler is checked against an independent float64 Fresnel/Snell oracle,
+total internal reflection, the thin-slab series, index-matched pass-through and
+rejected inputs. Both tracers measure an emitter seen through a slab and a thin
+pane against the analytic transmitted fractions `T^2 (1 + R^2 + R^4)` (depth six)
+and `(1 - R) / (1 + R)`, and the raw CPU/GPU parity scene adds a glass sphere and
+a thin pane.
+
+Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys,
+[*Physically Based Rendering*, fourth edition, §9.3 and §9.5](https://pbr-book.org/4ed/Reflection_Models/Dielectric_BSDF),
+and pbrt-v4 revision `b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f`
+(`DielectricBxDF`, `ThinDielectricBxDF`, `FrDielectric`, `Refract`; Apache-2.0,
+`third_party/pbrt/LICENSE.txt`), for the adapted smooth dielectric estimators and
+the specular-bounce MIS convention of §13.4.
 
 ## Implementation phases and acceptance
 

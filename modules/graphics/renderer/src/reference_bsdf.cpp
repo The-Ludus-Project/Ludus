@@ -1,6 +1,7 @@
 #include <ludus/graphics/renderer/reference.hpp>
 
 #include "internal/reference_coating.h"
+#include "internal/reference_dielectric.h"
 
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/status.hpp>
@@ -33,6 +34,7 @@ bool Valid(const ReferenceBsdf& b) noexcept
 {
     return format::IsMaterialScatteringValid(b.Scattering) == true &&
            internal::IsReferenceCoatingSupported(b.Scattering) == true &&
+           internal::IsReferenceDielectricSupported(b.Scattering) == true &&
            (b.Scattering.Model != format::MaterialModel::Conductor || b.Scattering.AlphaU == b.Scattering.AlphaV) &&
            math::IsFinite(b.BaseColor) && b.BaseColor.X >= 0 && b.BaseColor.X <= 1 && b.BaseColor.Y >= 0 &&
            b.BaseColor.Y <= 1 && b.BaseColor.Z >= 0 && b.BaseColor.Z <= 1 && math::IsFinite(b.Metallic) &&
@@ -105,7 +107,7 @@ ReferenceBsdfEvaluation Evaluate(const ReferenceBsdf& b, math::Vector3 n, math::
 {
     const float32 nv = math::Dot(n, v);
     const float32 nl = math::Dot(n, l);
-    if (nv <= 0 || nl <= 0)
+    if (nv <= 0 || nl <= 0 || internal::IsReferenceDielectric(b.Scattering.Model) == true)
     {
         return {};
     }
@@ -195,6 +197,16 @@ rhi::RasterStatus SampleReferenceBsdf(const ReferenceBsdf& b,
     ReferenceBsdfSample result;
     if (math::Dot(normal, view) <= 0)
     {
+        outSample = result;
+        return rhi::RasterStatus::Ready;
+    }
+    if (internal::IsReferenceDielectric(b.Scattering.Model) == true)
+    {
+        result = internal::SampleDielectric(b, normal, view, sample.X);
+        if (Unit(result.Direction) == false || math::IsFinite(result.Weight) == false)
+        {
+            return rhi::RasterStatus::Failed;
+        }
         outSample = result;
         return rhi::RasterStatus::Ready;
     }

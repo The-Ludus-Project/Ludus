@@ -44,8 +44,9 @@ static const LightingLayoutValue CLUSTERED_GRID_OFFSET = CLUSTERED_SHADOW_OFFSET
 /// Byte offset of clustered surface-map controls after the grid transform.
 static const LightingLayoutValue CLUSTERED_SURFACE_OFFSET = CLUSTERED_GRID_OFFSET + CLUSTERED_GRID_WORDS * 16;
 /// CPU/compute transport profile; version 6 adds non-scattering layered coated-diffuse reflection, and version 7
-/// orients geometric normals by shading normals and reflects on both sides of a surface, as pbrt-v4 does.
-static const LightingLayoutValue LIGHTING_PROFILE_VERSION = 7;
+/// orients geometric normals by shading normals and reflects on both sides of a surface, as pbrt-v4 does, and
+/// version 8 adds smooth and thin dielectrics: specular reflection and transmission through their delta lobes.
+static const LightingLayoutValue LIGHTING_PROFILE_VERSION = 8;
 
 /// MaterialDebugView value for ordinary shading; debug-view programs then match their base program.
 static const LightingLayoutValue MATERIAL_DEBUG_VIEW_NONE = 0;

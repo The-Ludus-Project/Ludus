@@ -13,8 +13,10 @@
 // height textures, blended alpha, sidedness, camera clip planes, light range) are
 // reported as dropped by the cook and kept for a later format revision.
 
-#include <ludus/content/content.h>
 #include <ludus/foundation/base/core.h>
+
+#include <ludus/content/content.h>
+#include <ludus/content/scene_format/material.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -176,6 +178,10 @@ struct IrMaterial final
     bool IsDoubleSided = false;
     /// True when the source material had no faithful mapping.
     bool IsApproximated = false;
+    /// Typed scattering the cook stores with the slot; the default keeps the metallic-roughness
+    /// terms above. Dielectrics set their model and index here and keep those terms as the
+    /// fallback for evaluators without transmission.
+    scene_format::MaterialScattering Scattering{};
     uint32 SourceFile = IR_NONE;
     uint32 Line = 0;
 };
