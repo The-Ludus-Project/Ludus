@@ -369,6 +369,7 @@ bool RayPathCapture::prepare() noexcept
     QVector<renderer::ViewDescription> cameras(static_cast<qsizetype>(plan.Description.CameraCount), state.Freeze.View);
     renderer::SceneShaderInputs inputs = extraction.ShaderInputs;
     inputs.Lights = {extraction.Scene.AuthoredLights.Lights, extraction.Scene.AuthoredLights.Count};
+    inputs.Luminaires = {extraction.Scene.Luminaires.Luminaires, extraction.Scene.Luminaires.Count};
     renderer::RenderGraphReport report;
     const rhi::RasterStatus updated =
         state.Graph.Update({extraction.Meshes.constData(), static_cast<usize>(extraction.Meshes.size())},

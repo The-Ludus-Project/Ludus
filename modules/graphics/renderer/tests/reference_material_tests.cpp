@@ -399,3 +399,138 @@ TEST_CASE("Coating estimates agree with the independent PBRT layered oracle", "[
         CHECK(weights.Sum / COUNT <= 1 + STANDARD_ERRORS * error(weights));
     }
 }
+
+TEST_CASE("Smooth dielectrics split by Fresnel reflectance and refract by Snell's law", "[renderer][rt1][dielectric]")
+{
+    namespace format = ludus::content::scene_format;
+    const math::Vector3 normalWorld{0, 0, 1};
+    rr::ReferenceBsdf glass;
+    glass.Scattering.Model = format::MaterialModel::Dielectric;
+    glass.Scattering.Eta = {{1.5F, 1.5F, 1.5F}};
+    glass.Scattering.AlphaU = format::MIN_MATERIAL_ALPHA;
+    glass.Scattering.AlphaV = format::MIN_MATERIAL_ALPHA;
+    const float32 incidentSine = 0.6F;
+    const math::Vector3 viewWorld{incidentSine, 0, 0.8F};
+    // Delta lobes have no density for any finite pair of directions.
+    rr::ReferenceBsdfEvaluation evaluated;
+    REQUIRE(rr::EvaluateReferenceBsdf(glass, normalWorld, viewWorld, {-incidentSine, 0, 0.8F}, evaluated) ==
+            rhi::RasterStatus::Ready);
+    CHECK(evaluated.Value == math::Vector3{});
+    CHECK(evaluated.Pdf == 0);
+    // Independent Fresnel oracle in float64: s and p amplitudes at a 0.8 cosine.
+    for (const bool isViewerInside : {false, true})
+    {
+        CAPTURE(isViewerInside);
+        glass.IsViewerInside = isViewerInside;
+        const float64 eta = isViewerInside == true ? 1 / 1.5 : 1.5;
+        const float64 incidentCosine = 0.8;
+        const float64 transmittedSine = static_cast<float64>(incidentSine) / eta;
+        const float64 transmittedCosine = math::Sqrt(1 - transmittedSine * transmittedSine);
+        const float64 perpendicular =
+            (incidentCosine - eta * transmittedCosine) / (incidentCosine + eta * transmittedCosine);
+        const float64 parallel =
+            (eta * incidentCosine - transmittedCosine) / (eta * incidentCosine + transmittedCosine);
+        const float64 reflectance = (perpendicular * perpendicular + parallel * parallel) * 0.5;
+        rr::ReferenceBsdfSample reflected;
+        REQUIRE(rr::SampleReferenceBsdf(glass,
+                                        normalWorld,
+                                        viewWorld,
+                                        {static_cast<float32>(reflectance) * 0.99F, 0.5F, 0.5F},
+                                        reflected) == rhi::RasterStatus::Ready);
+        REQUIRE(reflected.Accepted == true);
+        CHECK(reflected.IsSpecular == true);
+        CHECK(reflected.MisPdf == 0);
+        CHECK(reflected.Direction.X == Catch::Approx(-incidentSine));
+        CHECK(reflected.Direction.Z == Catch::Approx(0.8F));
+        CHECK(reflected.Weight == math::Vector3{1, 1, 1});
+        rr::ReferenceBsdfSample transmitted;
+        REQUIRE(rr::SampleReferenceBsdf(glass,
+                                        normalWorld,
+                                        viewWorld,
+                                        {static_cast<float32>(reflectance) * 1.01F, 0.5F, 0.5F},
+                                        transmitted) == rhi::RasterStatus::Ready);
+        REQUIRE(transmitted.Accepted == true);
+        CHECK(transmitted.IsSpecular == true);
+        // Snell: the transmitted direction lies below the surface with sine sin(theta_i) / eta.
+        CHECK(transmitted.Direction.X == Catch::Approx(-transmittedSine).margin(1e-6));
+        CHECK(transmitted.Direction.Z == Catch::Approx(-transmittedCosine).margin(1e-6));
+        // Radiance transport: the selected lobe's probability cancels its Fresnel factor and 1 / eta^2 remains.
+        CHECK(transmitted.Weight.Y == Catch::Approx(1 / (eta * eta)));
+    }
+    // Total internal reflection: from inside at a sine beyond 1 / 1.5, every sample reflects.
+    glass.IsViewerInside = true;
+    const math::Vector3 grazingWorld{0.8F, 0, 0.6F};
+    for (const float32 lobeSample : {0.0F, 0.5F, 0.999F})
+    {
+        rr::ReferenceBsdfSample sampled;
+        REQUIRE(rr::SampleReferenceBsdf(glass, normalWorld, grazingWorld, {lobeSample, 0.5F, 0.5F}, sampled) ==
+                rhi::RasterStatus::Ready);
+        CHECK(sampled.Direction.Z == Catch::Approx(0.6F));
+        CHECK(sampled.Weight == math::Vector3{1, 1, 1});
+    }
+}
+
+TEST_CASE("Thin dielectrics sum their interreflections and pass light undeviated", "[renderer][rt1][dielectric]")
+{
+    namespace format = ludus::content::scene_format;
+    const math::Vector3 normalWorld{0, 0, 1};
+    rr::ReferenceBsdf pane;
+    pane.Scattering.Model = format::MaterialModel::ThinDielectric;
+    pane.Scattering.Eta = {{1.5F, 1.5F, 1.5F}};
+    pane.Scattering.AlphaU = format::MIN_MATERIAL_ALPHA;
+    pane.Scattering.AlphaV = format::MIN_MATERIAL_ALPHA;
+    // At normal incidence R = 0.04 and the slab reflects R + T^2 R / (1 - R^2) = 2R / (1 + R).
+    const float32 slabReflectance = 2 * 0.04F / 1.04F;
+    for (const bool isViewerInside : {false, true})
+    {
+        pane.IsViewerInside = isViewerInside; // A thin slab is symmetric.
+        rr::ReferenceBsdfSample reflected;
+        REQUIRE(rr::SampleReferenceBsdf(pane, normalWorld, normalWorld, {slabReflectance * 0.99F, 0, 0}, reflected) ==
+                rhi::RasterStatus::Ready);
+        CHECK(reflected.Direction.Z == Catch::Approx(1));
+        rr::ReferenceBsdfSample transmitted;
+        REQUIRE(rr::SampleReferenceBsdf(pane, normalWorld, normalWorld, {slabReflectance * 1.01F, 0, 0}, transmitted) ==
+                rhi::RasterStatus::Ready);
+        CHECK(transmitted.Direction.Z == Catch::Approx(-1));
+        CHECK(transmitted.Weight == math::Vector3{1, 1, 1});
+    }
+    const math::Vector3 viewWorld{0.6F, 0, 0.8F};
+    rr::ReferenceBsdfSample straight;
+    REQUIRE(rr::SampleReferenceBsdf(pane, normalWorld, viewWorld, {0.999F, 0, 0}, straight) ==
+            rhi::RasterStatus::Ready);
+    CHECK(straight.Direction == -viewWorld);
+}
+
+TEST_CASE("Reference dielectrics admit one real index and a smooth interface only", "[renderer][rt1][dielectric]")
+{
+    namespace format = ludus::content::scene_format;
+    const math::Vector3 normalWorld{0, 0, 1};
+    rr::ReferenceBsdf glass;
+    glass.Scattering.Model = format::MaterialModel::Dielectric;
+    glass.Scattering.Eta = {{1.5F, 1.5F, 1.5F}};
+    glass.Scattering.AlphaU = format::MIN_MATERIAL_ALPHA;
+    glass.Scattering.AlphaV = format::MIN_MATERIAL_ALPHA;
+    rr::ReferenceBsdfSample sampled;
+    REQUIRE(rr::SampleReferenceBsdf(glass, normalWorld, normalWorld, {0.5F, 0, 0}, sampled) ==
+            rhi::RasterStatus::Ready);
+    const rr::ReferenceBsdfSample previous = sampled;
+    rr::ReferenceBsdf dispersive = glass;
+    dispersive.Scattering.Eta[2] = 1.52F;
+    rr::ReferenceBsdf absorbing = glass;
+    absorbing.Scattering.K[0] = 0.1F;
+    rr::ReferenceBsdf rough = glass;
+    rough.Scattering.AlphaU = format::LUDUS_SMOOTH_INTERFACE_ALPHA;
+    rough.Scattering.AlphaV = format::LUDUS_SMOOTH_INTERFACE_ALPHA;
+    for (const rr::ReferenceBsdf& rejected : {dispersive, absorbing, rough})
+    {
+        CHECK(rr::SampleReferenceBsdf(rejected, normalWorld, normalWorld, {0.9F, 0, 0}, sampled) ==
+              rhi::RasterStatus::InvalidDescription);
+        CHECK(sampled.Direction == previous.Direction);
+    }
+    // An index-matched interface never reflects.
+    glass.Scattering.Eta = {{1, 1, 1}};
+    REQUIRE(rr::SampleReferenceBsdf(glass, normalWorld, {0.6F, 0, 0.8F}, {0, 0, 0}, sampled) ==
+            rhi::RasterStatus::Ready);
+    CHECK(sampled.Direction.X == Catch::Approx(-0.6F));
+    CHECK(sampled.Direction.Z == Catch::Approx(-0.8F));
+}

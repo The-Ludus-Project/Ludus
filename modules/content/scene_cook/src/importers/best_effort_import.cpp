@@ -1515,7 +1515,7 @@ void PackBundle(const SceneIr& scene,
         {
             inoutBlob.Append(char{0});
         }
-        const format::MaterialScattering scattering;
+        const format::MaterialScattering& scattering = planned.Scattering;
         inoutBlob.AppendUint32(static_cast<uint32>(scattering.Model));
         for (const float64 value : {planned.Reflectance.X, planned.Reflectance.Y, planned.Reflectance.Z})
         {

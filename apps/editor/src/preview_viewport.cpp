@@ -1992,6 +1992,17 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
     mState->FrameLayoutOrNull->addWidget(mState->GraphViewOrNull);
     connect(mState->GraphViewOrNull, &WorldGraphView::DebugViewChanged, this, &PreviewViewport::updateGraphDebugView);
+    // The project graph keeps its device and last image; return to it rather than an empty viewport.
+    connect(Preview_, &RenderPreview::BuiltInViewFailed, this, [this](const QString& error) {
+        if (mIsShowingGraphDebugView == true)
+        {
+            mState->GraphViewOrNull->RejectDebugView(error);
+            return;
+        }
+        mState->ShaderStatusText = error;
+        mState->HasShaderError = true;
+        mState->applyShaderStatus();
+    });
     QWidget* graphControls = mState->GraphViewOrNull->TakeControls(this);
     mState->ControlsOrNull->insertWidget(mState->ControlsOrNull->actions().value(0), graphControls);
     SetControlVisible(*mState->ControlsOrNull, findChild<QComboBox*>(QStringLiteral("viewportShading")), false);

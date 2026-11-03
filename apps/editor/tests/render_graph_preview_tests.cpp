@@ -9,6 +9,7 @@
 #include "internal/controller.h"
 #include "internal/error_list.h"
 #include "internal/graph_display_frames.h"
+#include "internal/level_workspace.h"
 #include "internal/main_window.h"
 #include "internal/offscreen_frame_reader.h"
 #include "internal/preview_shading.h"
@@ -43,6 +44,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/threading/jobs.hpp>
+#include <ludus/graphics/renderer/light_selection.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/tone_mapping.hpp>
@@ -840,6 +842,7 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view",
         QStringLiteral("Default"),
         QJsonDocument::fromJson(names.readAll()).object().value(QStringLiteral("generation")).toString().toLatin1(),
         QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex(),
+        {},
         {},
         42};
     RenderGraphPreview preview = MakePreview();
@@ -2328,6 +2331,146 @@ TEST_CASE("Graph output menu offers built-in debug views drawn by the World prev
     rhi::Shutdown();
 }
 
+TEST_CASE("A debug view the World preview cannot prepare returns to the graph's final output",
+          "[editor][render-graph][world-graph][shading]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 60000;
+    constexpr int32 IMPORT_TIMEOUT_MILLISECONDS = 30000;
+    // One more separate emissive patch than the built-in raster preview has area-proxy lights.
+    constexpr int32 EMITTER_COUNT = static_cast<int32>(renderer::MAX_DIRECT_LIGHTS) + 1;
+    constexpr int32 EMITTER_COLUMNS = 16;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString root = QFileInfo(project.path()).canonicalFilePath();
+    QByteArray positions;
+    QByteArray indices;
+    for (int32 i = 0; i < EMITTER_COUNT; ++i)
+    {
+        // Disjoint triangles share no edge, so each one is its own planar patch and area proxy.
+        const float32 x = static_cast<float32>(i % EMITTER_COLUMNS) * .25F - 2.0F;
+        const float32 z = static_cast<float32>(i / EMITTER_COLUMNS) * .25F - 1.0F;
+        positions += QStringLiteral("%1 2 %2  %3 2 %2  %1 2 %4  ").arg(x).arg(z).arg(x + .1F).arg(z + .1F).toUtf8();
+        indices +=
+            QByteArray::number(i * 3) + ' ' + QByteArray::number(i * 3 + 1) + ' ' + QByteArray::number(i * 3 + 2) + ' ';
+    }
+    const QString source = QDir(project.path()).filePath(QStringLiteral("source/emitters.pbrt"));
+    REQUIRE(QDir().mkpath(QFileInfo(source).absolutePath()) == true);
+    {
+        QFile file(source);
+        REQUIRE(file.open(QIODevice::WriteOnly) == true);
+        const QByteArray scene =
+            QByteArrayLiteral("LookAt 0 3 6  0 0 0  0 1 0\n"
+                              "Camera \"perspective\" \"float fov\" [45]\nWorldBegin\n"
+                              "AttributeBegin\n"
+                              "AreaLightSource \"diffuse\" \"rgb L\" [4 4 4]\n"
+                              "Shape \"trianglemesh\" \"point3 P\" [") +
+            positions + QByteArrayLiteral("]\n\"integer indices\" [") + indices +
+            QByteArrayLiteral("]\nAttributeEnd\n"
+                              "Material \"diffuse\" \"rgb reflectance\" [.6 .5 .4]\n"
+                              "Shape \"trianglemesh\" \"point3 P\" [-3 0 -3  3 0 -3  3 0 3  -3 0 3]\n"
+                              "\"integer indices\" [0 1 2  0 2 3]\n");
+        REQUIRE(file.write(scene) == scene.size());
+        QFile license(QDir(QFileInfo(source).absolutePath()).filePath(QStringLiteral("LICENSE.txt")));
+        REQUIRE(license.open(QIODevice::WriteOnly) == true);
+        REQUIRE(license.write(QByteArrayLiteral("CC0 synthetic fixture\n")) > 0);
+    }
+    const ToolingPaths tools{{}, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)};
+    const QString path = QDir(root).filePath(QStringLiteral("emitters.world.json"));
+    {
+        WorldWorkspace importer(tools, nullptr);
+        importer.SetProject(root, 1);
+        REQUIRE(importer.Create(path) == true);
+        REQUIRE(importer.ImportScene(source) == true);
+        REQUIRE(QTest::qWaitFor([&importer]() { return importer.CanSave() == true; }, IMPORT_TIMEOUT_MILLISECONDS) ==
+                true);
+        REQUIRE(importer.Save() == true);
+        REQUIRE(QTest::qWaitFor([&importer]() { return importer.CanSave() == true; }, IMPORT_TIMEOUT_MILLISECONDS) ==
+                true);
+        importer.StopPreview();
+    }
+    rhi::Shutdown();
+    RendererWorkspace workspace({});
+    WorldWorkspace world(tools, nullptr);
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(root, 1);
+    world.SetProject(root, 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Open(path) == true);
+    // An imported World opens asynchronously; the viewport starts once its scene is published.
+    REQUIRE(QTest::qWaitFor([&world]() { return world.CanSave() == true; }, IMPORT_TIMEOUT_MILLISECONDS) == true);
+    world.ResumePreview();
+    // An imported scene draws in the level viewport, not the panel viewport of authored Worlds.
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldSceneViewport"));
+    REQUIRE(viewport != nullptr);
+    REQUIRE(viewport->isVisible() == true);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+    RenderPreview& preview = world.GetRenderPreview();
+    const PreviewShading original = preview.GetShading();
+    QComboBox* targets = viewport->findChild<QComboBox*>(QStringLiteral("worldGraphTargets"));
+    REQUIRE(targets != nullptr);
+    const int32 lightCount =
+        targets->findText(QStringLiteral("Debug: %1").arg(GetPreviewShadingName(PreviewShading::LightCount)));
+    REQUIRE(lightCount >= 0);
+    targets->setCurrentIndex(lightCount);
+    CHECK(preview.IsBuiltInViewShown() == true);
+    // Light count cannot count 129 area proxies in the built-in raster preview, so the menu falls back to the
+    // final output.
+    REQUIRE(waitFor([&]() { return graphView->GetDebugViewProblem().isEmpty() == false; }) == true);
+    INFO(graphView->GetDebugViewProblem().toStdString());
+    CHECK(graphView->GetDebugViewProblem().contains(QStringLiteral("final output")) == true);
+    CHECK(targets->currentIndex() == 0);
+    PreviewShading chosen = PreviewShading::Solid;
+    CHECK(graphView->TryGetDebugView(chosen) == false);
+    CHECK(preview.IsBuiltInViewShown() == false);
+    CHECK(preview.GetShading() == original);
+    // The shared device and the graph's last image survive, instead of an empty "Open a World" viewport.
+    CHECK(preview.Running() == true);
+    CHECK(graphView->isHidden() == false);
+    CHECK(graphView->GetImage().isNull() == false);
+    // The graph keeps rendering: a camera move presents a new final-output image.
+    const uint64 presented = graphView->GetPresentedFrames();
+    preview.Orbit(10, 0);
+    REQUIRE(waitFor([&]() { return graphView->GetPresentedFrames() > presented; }) == true);
+    // Views that read no lighting need no lighting budget: Normal draws this World, and choosing it clears the
+    // explanation.
+    const int32 normal =
+        targets->findText(QStringLiteral("Debug: %1").arg(GetPreviewShadingName(PreviewShading::Normal)));
+    REQUIRE(normal >= 0);
+    targets->setCurrentIndex(normal);
+    CHECK(graphView->GetDebugViewProblem().isEmpty() == true);
+    CHECK(preview.IsBuiltInViewShown() == true);
+    REQUIRE(waitFor([&]() {
+                return preview.Status().contains(GetPreviewShadingStatus(PreviewShading::Normal)) == true;
+            }) == true);
+    CHECK(targets->currentIndex() == normal);
+    CHECK(graphView->GetDebugViewProblem().isEmpty() == true);
+    targets->setCurrentIndex(0);
+    CHECK(preview.IsBuiltInViewShown() == false);
+    CHECK(preview.Running() == true);
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
 TEST_CASE("Reference capture window names the viewport's render graph and follows its toolbar",
           "[editor][render-graph][world-graph][reference-capture]")
 {
@@ -2726,6 +2869,146 @@ TEST_CASE("Supplied World replaces a drawable frame through its authored ray gra
     {
         REQUIRE(preview.GetImage().save(capture) == true);
     }
+}
+
+TEST_CASE("Supplied World renders its luminaires through the slice-sampling-luminaire template",
+          "[.supplied-luminaire-capture]")
+{
+    // Opens an isolated copy of a project World, optionally applies the editor's luminaire repair and saves the World,
+    // then renders the slice-sampling-luminaire template package on it from the World's start view and saves the
+    // image. LUDUS_LUMINAIRE_TEST_RUNTIME names the template's `.lurgrt`, for example the renderer tests'
+    // rg2_slice_sampling_luminaire_template.lurgrt.
+    const QString root = qEnvironmentVariable("LUDUS_LUMINAIRE_TEST_PROJECT");
+    const QString runtime = qEnvironmentVariable("LUDUS_LUMINAIRE_TEST_RUNTIME");
+    if (root.isEmpty() == true || runtime.isEmpty() == true)
+    {
+        SKIP("Set LUDUS_LUMINAIRE_TEST_PROJECT to an isolated project copy and LUDUS_LUMINAIRE_TEST_RUNTIME to the "
+             "slice-sampling-luminaire package.");
+    }
+    const QString worldPath =
+        qEnvironmentVariable("LUDUS_LUMINAIRE_TEST_WORLD", QStringLiteral("assets/staircase2.world.json"));
+    constexpr int32 TIMEOUT_MILLISECONDS = 600000;
+    constexpr int32 POLL_MILLISECONDS = 10;
+    WorldWorkspace world;
+    world.SetProject(root, 1);
+    world.resize(1000, 700);
+    REQUIRE(world.Open(QDir(root).filePath(worldPath)) == true);
+    QElapsedTimer timer;
+    const auto waitUntilSettled = [&]() {
+        timer.restart();
+        while (world.CanSave() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(POLL_MILLISECONDS);
+        }
+        REQUIRE(world.CanSave() == true);
+    };
+    waitUntilSettled();
+    // An imported World presents through its scene workspace's viewport.
+    LevelWorkspace* levelOrNull = world.findChild<LevelWorkspace*>();
+    REQUIRE(levelOrNull != nullptr);
+    RenderPreview& worldPreview = levelOrNull->GetRenderPreview();
+    // The assembled scene, with the World's authored bindings, replaces the cooked one once its operation ends.
+    timer.restart();
+    while ((levelOrNull->CanStartOperation() == false || worldPreview.Scene().TransformBinding.isEmpty() == true) &&
+           timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    if (qEnvironmentVariableIntValue("LUDUS_LUMINAIRE_TEST_REPAIR") != 0)
+    {
+        // The repair the Error List offers, fitted around the World's start view.
+        const RenderScene& presented = worldPreview.Scene();
+        const ludus::gameplay::camera::CameraPose& pose = worldPreview.GetVisibleCameraSample().Pose;
+        RenderGraphLuminaireView view;
+        view.EyeWorld = {static_cast<float32>(pose.Position.X),
+                         static_cast<float32>(pose.Position.Y),
+                         static_cast<float32>(pose.Position.Z)};
+        view.ForwardWorld = math::Rotate(pose.Orientation, {0, 0, -1});
+        const RenderGraphLuminaireCoverage repair = DescribeRenderGraphLuminaireCoverage(
+            SummarizeRenderGraphLuminaireWorld(presented, presented.LuminaireBinding.isEmpty() == false, &view));
+        INFO(repair.Warning.toStdString());
+        REQUIRE(repair.Repair != RenderGraphLuminaireRepair::None);
+        WARN("Luminaire repair: " << repair.Warning.toStdString());
+        REQUIRE(world.ApplyLuminaireRepair(repair) == true);
+        waitUntilSettled();
+        timer.restart();
+        while (worldPreview.Scene().Luminaires.Count == 0 && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(POLL_MILLISECONDS);
+        }
+        REQUIRE(world.Save() == true);
+    }
+    const RenderScene scene = worldPreview.Scene();
+    REQUIRE(scene.Luminaires.Count != 0);
+    const RenderGraphLuminaireCoverage coverage =
+        DescribeRenderGraphLuminaireCoverage(SummarizeRenderGraphLuminaireWorld(scene, false, nullptr));
+    INFO(coverage.Warning.toStdString());
+    CHECK(coverage.Warning.isEmpty() == true);
+    for (uint32 i = 0; i < scene.Luminaires.Count; ++i)
+    {
+        const renderer::PanelLuminaire& luminaire = scene.Luminaires.Luminaires[i];
+        WARN("Luminaire " << i << " at " << luminaire.CenterWorld.X << ", " << luminaire.CenterWorld.Y << ", "
+                          << luminaire.CenterWorld.Z << " half extent " << luminaire.HalfExtentWorld);
+    }
+    DeviceFixture device(MakeViewportDeviceDescription().Storage, true);
+    REQUIRE(device.IsAvailable == true);
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    constexpr uint32 TARGET_WIDTH = 640;
+    constexpr uint32 TARGET_HEIGHT = 480;
+    preview.SetReferenceSize(QSize(TARGET_WIDTH, TARGET_HEIGHT));
+    QString error;
+    renderer::ViewDescription view;
+    REQUIRE(worldPreview.DescribeConventionalView(TARGET_WIDTH, TARGET_HEIGHT, view, error) == true);
+    RenderGraphExtraction extraction;
+    REQUIRE(MakeRenderGraphExtraction(scene, view, 1, extraction, error) == true);
+    extraction.ContentRevision = 1;
+    REQUIRE(extraction.ShaderInputs.Luminaires.GetSize() == scene.Luminaires.Count);
+    REQUIRE(preview.Load(runtime) == RenderGraphPreviewLoad::Staged);
+    preview.SetExtraction(extraction);
+    timer.restart();
+    while (preview.GetPresentedRevision() != 1 && timer.elapsed() < TIMEOUT_MILLISECONDS &&
+           preview.GetReport().Candidate != renderer::RenderGraphCandidateState::Failed)
+    {
+        preview.Tick();
+        QTest::qWait(1);
+    }
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(preview.GetPresentedRevision() == 1);
+    // Let the accumulating outputs converge before saving the presented image.
+    const int32 seconds = qEnvironmentVariableIsSet("LUDUS_LUMINAIRE_TEST_SECONDS") == true
+                              ? qEnvironmentVariableIntValue("LUDUS_LUMINAIRE_TEST_SECONDS")
+                              : 20;
+    timer.restart();
+    while (timer.elapsed() < static_cast<int64>(seconds) * 1000)
+    {
+        preview.Tick();
+        QTest::qWait(1);
+    }
+    const QImage image = preview.GetImage();
+    REQUIRE(image.isNull() == false);
+    float64 luminance = 0;
+    for (int32 y = 0; y < image.height(); ++y)
+    {
+        for (int32 x = 0; x < image.width(); ++x)
+        {
+            const QColor color = image.pixelColor(x, y);
+            // Rec. 709 luma weights of the displayed sRGB values.
+            luminance += 0.2126 * static_cast<float64>(color.redF()) + 0.7152 * static_cast<float64>(color.greenF()) +
+                         0.0722 * static_cast<float64>(color.blueF());
+        }
+    }
+    luminance /= static_cast<float64>(image.width() * image.height());
+    WARN("Mean display luminance: " << luminance);
+    // A black image is the failure this test guards against: the luminaire must light the World.
+    constexpr float64 MINIMUM_MEAN_LUMINANCE = 0.01;
+    CHECK(luminance > MINIMUM_MEAN_LUMINANCE);
+    const QString capture = qEnvironmentVariable("LUDUS_LUMINAIRE_TEST_IMAGE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(image.save(capture) == true);
+    }
+    world.StopPreview();
 }
 
 TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.full-sponza-native]")

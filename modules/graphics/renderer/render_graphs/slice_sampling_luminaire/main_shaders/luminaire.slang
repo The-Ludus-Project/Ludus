@@ -5,39 +5,28 @@
 // 6.4. Thanks to the author: the panel, its affine Gaussian tiles and the seed equation solved in slice_sampling.slang
 // follow those sections.
 //
-// The panel is a square exit surface outside the scene geometry. It is not visible to camera rays and it does not
-// occlude; scene geometry between a receiver and the panel does (shade.slang traces a shadow ray). Scene lights,
-// mesh emitters and the environment do not light surfaces in this template. Edit the placement constants below to put
-// the panel into another scene: they are part of this project-owned copy. The emission profile is set by the Graph
-// settings (main.lushader.json): LUMINAIRE_RADIANCE_SCALE, LUMINAIRE_BEAM_WIDTH, LUMINAIRE_BEAM_STEERING,
-// LUMINAIRE_BEAM_SPREAD and LUMINAIRE_BEAM_TWIST.
+// The panel is a square exit surface placed by a World luminaire (graphics::renderer::PanelLuminaire), which
+// shade.slang reads from the scene with GetLuminaireInfo. It is not visible to camera rays and it does not occlude;
+// scene geometry between a receiver and the panel does (shade.slang traces a shadow ray). Scene lights, mesh emitters
+// and the environment do not light surfaces in this template. The World luminaire sets the placement and the scalars
+// of the emission profile (Luminaire below); the per-tile tables are part of this project-owned copy.
 //
-// Panel coordinates: a receiver or panel point is measured from LUMINAIRE_CENTER_WORLD in units of
-// LUMINAIRE_HALF_EXTENT_WORLD along the right-handed frame (tangent, bitangent, normal), so the panel is the square
-// [-1, 1)^2 at height 0 and it emits towards positive height. An emitted direction v is represented by its slope
-// z = (v . tangent, v . bitangent) / (v . normal), the "two-dimensional slope" of the paper's section 6.2.
+// Panel coordinates: a receiver or panel point is measured from Luminaire.CenterWorld in units of
+// Luminaire.HalfExtentWorld along the right-handed orthonormal frame (tangent, bitangent, normal), so the panel is the
+// square [-1, 1)^2 at height 0 and it emits towards positive height. An emitted direction v is represented by its
+// slope z = (v . tangent, v . bitangent) / (v . normal), the "two-dimensional slope" of the paper's section 6.2.
 //
 // The panel has LUMINAIRE_TILE_COUNT equal square tiles, LUMINAIRE_TILES_PER_AXIS per axis; tile i + 3 j covers
 // column i along the tangent and row j along the bitangent. On tile j the radiance leaving panel point a in slope z is
-//   L_o(a, z) = LUMINAIRE_RADIANCE_SCALE * strength_j * tint_j * N(z; M a + b_j, L_j L_j^T),
+//   L_o(a, z) = RadianceScale * strength_j * tint_j * N(z; M a + b_j, L_j L_j^T),
 // a Gaussian density per unit slope area (section 6.4 sets the physical radiance to the same Gaussian), with
-//   M = [[spread, -twist], [twist, spread]]       (LUMINAIRE_BEAM_SPREAD and LUMINAIRE_BEAM_TWIST, per half extent)
-//   b_j = LUMINAIRE_BEAM_STEERING * steering_j     (a pinwheel of unit-scale directions)
-//   L_j = LUMINAIRE_BEAM_WIDTH * width_j           (lower triangular with a positive diagonal)
+//   M = [[spread, -twist], [twist, spread]]       (BeamSpread and BeamTwist, per half extent)
+//   b_j = BeamSteering * steering_j                (a pinwheel of unit-scale directions)
+//   L_j = BeamWidth * width_j                      (lower triangular with a positive diagonal)
 // The per-tile tables below give the tiles different steering, widths between 0.8 and 1.2 times the beam width and
 // strengths, in the spirit of section 6.4's nine tiles; the default widths span 0.016 to 0.024 as there. Nonnegative
 // spread and twist keep det(I + h M) = (1 + h spread)^2 + (h twist)^2 >= 1 at every receiver height h > 0, so a
-// tile's beams never focus into a caustic.
-
-// Placement: the default fits the 2 x 2 x 2 Cornell box of the renderer's tests, just below its ceiling light. The
-// editor reads the center, half extent and normal to warn when the panel cannot light the viewport's World; keep them
-// plain literals so it can.
-static const float3 LUMINAIRE_CENTER_WORLD = float3(0, 0.97, 0);
-static const float LUMINAIRE_HALF_EXTENT_WORLD = 0.35;
-// A right-handed orthonormal frame: LUMINAIRE_NORMAL_WORLD = cross(tangent, bitangent) points into the lit room.
-static const float3 LUMINAIRE_TANGENT_WORLD = float3(1, 0, 0);
-static const float3 LUMINAIRE_BITANGENT_WORLD = float3(0, 0, 1);
-static const float3 LUMINAIRE_NORMAL_WORLD = float3(0, -1, 0);
+// tile's beams never focus into a caustic; the renderer admits only nonnegative values.
 
 static const uint LUMINAIRE_TILES_PER_AXIS = 3;
 static const uint LUMINAIRE_TILE_COUNT = LUMINAIRE_TILES_PER_AXIS * LUMINAIRE_TILES_PER_AXIS;
@@ -96,15 +85,20 @@ static const float3 LUMINAIRE_TILE_TINT[LUMINAIRE_TILE_COUNT] = {
     float3(1.00, 0.75, 0.50),
 };
 
-/// The emission profile's Graph settings. MakeLuminaireProfile in shade.slang fills it from main.lushader.json; test
-/// kernels fill it directly.
-struct LuminaireProfile
+/// One panel luminaire: its placement and the scalars of its emission luminaire. shade.slang fills it from the scene's
+/// LuminaireInfo; test kernels fill it directly.
+struct Luminaire
 {
-    float RadianceScale; ///< Multiplies every tile's radiance; it does not change the sampling densities.
-    float BeamWidth;     ///< Gaussian width scale of every tile in slope units; must be positive.
-    float BeamSteering;  ///< Slope offset of each tile's beams along its steering direction.
-    float BeamSpread;    ///< Slope change per half extent of panel position; nonnegative.
-    float BeamTwist;     ///< Rotational slope change per half extent of panel position; nonnegative.
+    float3 CenterWorld;    ///< Panel center.
+    float HalfExtentWorld; ///< Half the panel side; positive.
+    float3 TangentWorld;   ///< Unit panel tangent: the tiles' columns.
+    float3 BitangentWorld; ///< Unit panel bitangent, perpendicular to the tangent: the tiles' rows.
+    float3 NormalWorld;    ///< cross(TangentWorld, BitangentWorld), the emitting side.
+    float RadianceScale;   ///< Multiplies every tile's radiance; it does not change the sampling densities.
+    float BeamWidth;       ///< Gaussian width scale of every tile in slope units; must be positive.
+    float BeamSteering;    ///< Slope offset of each tile's beams along its steering direction.
+    float BeamSpread;      ///< Slope change per half extent of panel position; nonnegative.
+    float BeamTwist;       ///< Rotational slope change per half extent of panel position; nonnegative.
 };
 
 /// One tile's affine Gaussian emission: mean slope EmissionToSlope * a + SlopeOffset, Cholesky factor WidthFactor.
@@ -119,12 +113,13 @@ struct LuminaireTile
     float2 MaximumPanel; ///< Exclusive upper corner.
 };
 
-LuminaireTile GetLuminaireTile(LuminaireProfile profile, uint tile)
+LuminaireTile GetLuminaireTile(Luminaire luminaire, uint tile)
 {
     LuminaireTile result;
-    result.EmissionToSlope = float2x2(profile.BeamSpread, -profile.BeamTwist, profile.BeamTwist, profile.BeamSpread);
-    result.SlopeOffset = profile.BeamSteering * LUMINAIRE_TILE_STEERING[tile];
-    float3 width = profile.BeamWidth * LUMINAIRE_TILE_WIDTH[tile];
+    result.EmissionToSlope =
+        float2x2(luminaire.BeamSpread, -luminaire.BeamTwist, luminaire.BeamTwist, luminaire.BeamSpread);
+    result.SlopeOffset = luminaire.BeamSteering * LUMINAIRE_TILE_STEERING[tile];
+    float3 width = luminaire.BeamWidth * LUMINAIRE_TILE_WIDTH[tile];
     result.WidthFactor = float2x2(width.x, 0, width.y, width.z);
     result.Strength = LUMINAIRE_TILE_STRENGTH[tile];
     result.Tint = LUMINAIRE_TILE_TINT[tile];
@@ -146,15 +141,15 @@ uint FindLuminaireTile(float2 positionPanel)
 }
 
 /// World position of a panel point.
-float3 GetLuminairePositionWorld(float2 positionPanel)
+float3 GetLuminairePositionWorld(Luminaire luminaire, float2 positionPanel)
 {
-    return LUMINAIRE_CENTER_WORLD + LUMINAIRE_HALF_EXTENT_WORLD * (positionPanel.x * LUMINAIRE_TANGENT_WORLD +
-                                                                   positionPanel.y * LUMINAIRE_BITANGENT_WORLD);
+    return luminaire.CenterWorld + luminaire.HalfExtentWorld * (positionPanel.x * luminaire.TangentWorld +
+                                                                positionPanel.y * luminaire.BitangentWorld);
 }
 
 /// Area of the whole panel in square world units.
-float GetLuminaireAreaWorld()
+float GetLuminaireAreaWorld(Luminaire luminaire)
 {
-    float widthWorld = LUMINAIRE_PANEL_WIDTH * LUMINAIRE_HALF_EXTENT_WORLD;
+    float widthWorld = LUMINAIRE_PANEL_WIDTH * luminaire.HalfExtentWorld;
     return widthWorld * widthWorld;
 }

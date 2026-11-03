@@ -63,6 +63,9 @@ struct SceneShaderInputs final
 {
     foundation::BorrowedView<const SceneShaderMaterial> Materials; ///< Global material table.
     foundation::BorrowedView<const DirectLight> Lights;            ///< Directional, point and spot sources.
+    /// At most MAX_PANEL_LUMINAIRES panel luminaires, admitted by NormalizePanelLuminaires. Only scene shaders that
+    /// read them (GetLuminaireCount/GetLuminaireInfo) are lit by them; they are submitted with the lights.
+    foundation::BorrowedView<const PanelLuminaire> Luminaires;
     foundation::math::Vector3 Environment{};  ///< Constant RGB, or HDR pixel multiplier, [0,10000].
     foundation::uint32 EnvironmentWidth = 0;  ///< Equirectangular width, zero for a constant.
     foundation::uint32 EnvironmentHeight = 0; ///< Equirectangular height, zero for a constant.

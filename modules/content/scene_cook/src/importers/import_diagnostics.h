@@ -47,6 +47,8 @@ inline constexpr std::string_view FACE_INDICES_IGNORED = "FACE_INDICES_IGNORED";
 inline constexpr std::string_view MATERIAL_APPROXIMATED = "MATERIAL_APPROXIMATED";
 inline constexpr std::string_view MATERIAL_DEFAULTED = "MATERIAL_DEFAULTED";
 inline constexpr std::string_view TRANSMISSION_DROPPED = "TRANSMISSION_DROPPED";
+/// A rough dielectric was imported as a smooth one; rough transmission has no engine model yet.
+inline constexpr std::string_view ROUGH_TRANSMISSION_APPROXIMATED = "ROUGH_TRANSMISSION_APPROXIMATED";
 inline constexpr std::string_view MIX_APPROXIMATED = "MIX_APPROXIMATED";
 inline constexpr std::string_view SPECTRUM_APPROXIMATED = "SPECTRUM_APPROXIMATED";
 inline constexpr std::string_view TEXTURE_APPROXIMATED = "TEXTURE_APPROXIMATED";

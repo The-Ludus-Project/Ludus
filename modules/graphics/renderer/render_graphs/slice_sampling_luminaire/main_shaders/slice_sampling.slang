@@ -46,14 +46,14 @@ struct LuminaireReceiver
     bool IsLit;                  ///< False below LUMINAIRE_MINIMUM_RECEIVER_HEIGHT or behind the panel.
 };
 
-LuminaireReceiver MakeLuminaireReceiver(float3 positionWorld)
+LuminaireReceiver MakeLuminaireReceiver(Luminaire luminaire, float3 positionWorld)
 {
     LuminaireReceiver result;
-    float3 offsetPanel = (positionWorld - LUMINAIRE_CENTER_WORLD) / LUMINAIRE_HALF_EXTENT_WORLD;
+    float3 offsetPanel = (positionWorld - luminaire.CenterWorld) / luminaire.HalfExtentWorld;
     result.PositionWorld = positionWorld;
     result.PositionPanelTangent =
-        float2(dot(offsetPanel, LUMINAIRE_TANGENT_WORLD), dot(offsetPanel, LUMINAIRE_BITANGENT_WORLD));
-    result.HeightPanel = dot(offsetPanel, LUMINAIRE_NORMAL_WORLD);
+        float2(dot(offsetPanel, luminaire.TangentWorld), dot(offsetPanel, luminaire.BitangentWorld));
+    result.HeightPanel = dot(offsetPanel, luminaire.NormalWorld);
     result.IsLit = result.HeightPanel > LUMINAIRE_MINIMUM_RECEIVER_HEIGHT;
     return result;
 }
@@ -96,7 +96,7 @@ bool TrySolveSeedEquation(LuminaireTile tile,
     float2 rightSide = mul(tile.EmissionToSlope, receiver.PositionPanelTangent) + tile.SlopeOffset +
                        mul(tile.WidthFactor, standardSeed);
     float systemDeterminant = determinant(system);
-    // Cramer's rule; the determinant is at least one for the nonnegative spread and twist of luminaire.slang.
+    // Cramer's rule; the determinant is at least one for the luminaire's nonnegative spread and twist.
     outSlopePanel = float2(rightSide.x * system[1][1] - rightSide.y * system[0][1],
                            rightSide.y * system[0][0] - rightSide.x * system[1][0]) /
                     systemDeterminant;
@@ -106,12 +106,12 @@ bool TrySolveSeedEquation(LuminaireTile tile,
 /// Seed weight W(eta), the sum of the branch weights of every regular root (Eq. 9). A tile already known to hold a
 /// root is counted without solving again, so rounding at a tile edge cannot drop it; pass LUMINAIRE_INVALID_TILE when
 /// no root is known.
-float ComputeSeedWeight(LuminaireProfile profile, LuminaireReceiver receiver, float2 standardSeed, uint knownRootTile)
+float ComputeSeedWeight(Luminaire luminaire, LuminaireReceiver receiver, float2 standardSeed, uint knownRootTile)
 {
     float weight = 0;
     for (uint tileIndex = 0; tileIndex < LUMINAIRE_TILE_COUNT; ++tileIndex)
     {
-        LuminaireTile tile = GetLuminaireTile(profile, tileIndex);
+        LuminaireTile tile = GetLuminaireTile(luminaire, tileIndex);
         float2 slopePanel;
         if (tileIndex == knownRootTile ||
             TrySolveSeedEquation(tile, tileIndex, receiver, standardSeed, slopePanel) == true)
@@ -146,14 +146,15 @@ float ComputeSolidAnglePerSlopeArea(float2 slopePanel)
 }
 
 /// Fill the geometric fields of a proposal at panel point a with slope z on the given tile.
-LuminaireLightSample MakeLuminaireLightSample(LuminaireReceiver receiver, uint tile, float2 slopePanel)
+LuminaireLightSample
+MakeLuminaireLightSample(Luminaire luminaire, LuminaireReceiver receiver, uint tile, float2 slopePanel)
 {
     LuminaireLightSample result = (LuminaireLightSample)0;
     result.HasSample = true;
     result.Tile = tile;
     result.SlopePanel = slopePanel;
     result.PositionPanelTangent = receiver.PositionPanelTangent - receiver.HeightPanel * slopePanel;
-    result.PositionWorld = GetLuminairePositionWorld(result.PositionPanelTangent);
+    result.PositionWorld = GetLuminairePositionWorld(luminaire, result.PositionPanelTangent);
     // Derive the incoming direction from its endpoints. The pinned Slang WGSL backend loses
     // parentheses when lowering unary negation of a sum of vector products.
     float3 offsetWorld = result.PositionWorld - receiver.PositionWorld;
@@ -165,7 +166,7 @@ LuminaireLightSample MakeLuminaireLightSample(LuminaireReceiver receiver, uint t
 /// seedSample is a [0, 1)^2 random pair, branchSample a [0, 1) random number. A seed without a root is a null outcome.
 /// RadianceOverDensity is L_o a(z) / q(z) = RS tint_j a(z) W (Eq. 13); outSeedWeight is W and outGuideDensity is f(z),
 /// both per unit slope area, for the defensive mixture. All three are 0 for a null outcome.
-LuminaireLightSample SampleLuminaireSlice(LuminaireProfile profile,
+LuminaireLightSample SampleLuminaireSlice(Luminaire luminaire,
                                           LuminaireReceiver receiver,
                                           float2 seedSample,
                                           float branchSample,
@@ -178,7 +179,7 @@ LuminaireLightSample SampleLuminaireSlice(LuminaireProfile profile,
         return (LuminaireLightSample)0;
     float2 standardSeed = float2(ComputeStandardNormalQuantile(seedSample.x + LUMINAIRE_SEED_HALF_SPACING),
                                  ComputeStandardNormalQuantile(seedSample.y + LUMINAIRE_SEED_HALF_SPACING));
-    float seedWeight = ComputeSeedWeight(profile, receiver, standardSeed, LUMINAIRE_INVALID_TILE);
+    float seedWeight = ComputeSeedWeight(luminaire, receiver, standardSeed, LUMINAIRE_INVALID_TILE);
     if (seedWeight <= 0)
         return (LuminaireLightSample)0;
     // Select the root whose cumulative weight interval contains branchSample * W; the last root absorbs rounding.
@@ -188,7 +189,7 @@ LuminaireLightSample SampleLuminaireSlice(LuminaireProfile profile,
     float2 selectedSlope = float2(0);
     for (uint tileIndex = 0; tileIndex < LUMINAIRE_TILE_COUNT; ++tileIndex)
     {
-        LuminaireTile tile = GetLuminaireTile(profile, tileIndex);
+        LuminaireTile tile = GetLuminaireTile(luminaire, tileIndex);
         float2 slopePanel;
         if (TrySolveSeedEquation(tile, tileIndex, receiver, standardSeed, slopePanel) == false)
             continue;
@@ -202,18 +203,18 @@ LuminaireLightSample SampleLuminaireSlice(LuminaireProfile profile,
     // The two loops solve identically, so a positive W always has a root; stay null rather than index past the tiles.
     if (selectedTile == LUMINAIRE_INVALID_TILE)
         return (LuminaireLightSample)0;
-    LuminaireTile selected = GetLuminaireTile(profile, selectedTile);
-    LuminaireLightSample result = MakeLuminaireLightSample(receiver, selectedTile, selectedSlope);
+    LuminaireTile selected = GetLuminaireTile(luminaire, selectedTile);
+    LuminaireLightSample result = MakeLuminaireLightSample(luminaire, receiver, selectedTile, selectedSlope);
     outSeedWeight = seedWeight;
     outGuideDensity = selected.Strength * EvaluateEmissionDensity(selected, standardSeed);
     result.RadianceOverDensity =
-        profile.RadianceScale * selected.Tint * (ComputeSolidAnglePerSlopeArea(selectedSlope) * seedWeight);
+        luminaire.RadianceScale * selected.Tint * (ComputeSolidAnglePerSlopeArea(selectedSlope) * seedWeight);
     return result;
 }
 
 /// Uniform panel-area sampling, the baseline of section 6.4, evaluated in the area measure independently of the
 /// slope parameterization: RadianceOverDensity = L_o cos_panel A / distance^2. areaSample is a [0, 1)^2 random pair.
-LuminaireLightSample SampleLuminaireArea(LuminaireProfile profile, LuminaireReceiver receiver, float2 areaSample)
+LuminaireLightSample SampleLuminaireArea(Luminaire luminaire, LuminaireReceiver receiver, float2 areaSample)
 {
     if (receiver.IsLit == false)
         return (LuminaireLightSample)0;
@@ -225,19 +226,19 @@ LuminaireLightSample SampleLuminaireArea(LuminaireProfile profile, LuminaireRece
     result.HasSample = true;
     result.Tile = tileIndex;
     result.PositionPanelTangent = positionPanel;
-    result.PositionWorld = GetLuminairePositionWorld(positionPanel);
+    result.PositionWorld = GetLuminairePositionWorld(luminaire, positionPanel);
     float3 offsetWorld = result.PositionWorld - receiver.PositionWorld;
     float distanceSquaredWorld = dot(offsetWorld, offsetWorld);
     result.DirectionWorld = offsetWorld * rsqrt(distanceSquaredWorld);
     // The emitted direction leaves the panel towards the receiver.
     float3 emittedWorld = -result.DirectionWorld;
-    float cosinePanel = dot(emittedWorld, LUMINAIRE_NORMAL_WORLD);
+    float cosinePanel = dot(emittedWorld, luminaire.NormalWorld);
     result.SlopePanel =
-        float2(dot(emittedWorld, LUMINAIRE_TANGENT_WORLD), dot(emittedWorld, LUMINAIRE_BITANGENT_WORLD)) / cosinePanel;
-    LuminaireTile tile = GetLuminaireTile(profile, tileIndex);
+        float2(dot(emittedWorld, luminaire.TangentWorld), dot(emittedWorld, luminaire.BitangentWorld)) / cosinePanel;
+    LuminaireTile tile = GetLuminaireTile(luminaire, tileIndex);
     float density = EvaluateEmissionDensity(tile, ComputeStandardSeed(tile, positionPanel, result.SlopePanel));
-    result.RadianceOverDensity = profile.RadianceScale * tile.Strength * tile.Tint *
-                                 (density * cosinePanel * GetLuminaireAreaWorld() / distanceSquaredWorld);
+    result.RadianceOverDensity = luminaire.RadianceScale * tile.Strength * tile.Tint *
+                                 (density * cosinePanel * GetLuminaireAreaWorld(luminaire) / distanceSquaredWorld);
     return result;
 }
 
@@ -245,7 +246,7 @@ LuminaireLightSample SampleLuminaireArea(LuminaireProfile profile, LuminaireRece
 /// sampling, and divide by the mixture density q_mix = (1 - e) q + e b per unit slope area. b = h^2 / 4 is uniform
 /// area density in slope coordinates. A null slice outcome stays null (section 4.2). componentSample chooses the
 /// component; the other samples are those of SampleLuminaireSlice and SampleLuminaireArea.
-LuminaireLightSample SampleLuminaireDefensive(LuminaireProfile profile,
+LuminaireLightSample SampleLuminaireDefensive(Luminaire luminaire,
                                               LuminaireReceiver receiver,
                                               float defensiveFraction,
                                               float componentSample,
@@ -260,25 +261,25 @@ LuminaireLightSample SampleLuminaireDefensive(LuminaireProfile profile,
     float guideDensity;
     if (componentSample < defensiveFraction)
     {
-        result = SampleLuminaireArea(profile, receiver, areaSample);
+        result = SampleLuminaireArea(luminaire, receiver, areaSample);
         if (result.HasSample == false)
             return result;
-        LuminaireTile tile = GetLuminaireTile(profile, result.Tile);
+        LuminaireTile tile = GetLuminaireTile(luminaire, result.Tile);
         float2 standardSeed = ComputeStandardSeed(tile, result.PositionPanelTangent, result.SlopePanel);
         guideDensity = tile.Strength * EvaluateEmissionDensity(tile, standardSeed);
         // The sampled tile is a root of its own seed by construction.
-        seedWeight = guideDensity > 0 ? ComputeSeedWeight(profile, receiver, standardSeed, result.Tile) : 1;
+        seedWeight = guideDensity > 0 ? ComputeSeedWeight(luminaire, receiver, standardSeed, result.Tile) : 1;
     }
     else
     {
-        result = SampleLuminaireSlice(profile, receiver, seedSample, branchSample, seedWeight, guideDensity);
+        result = SampleLuminaireSlice(luminaire, receiver, seedSample, branchSample, seedWeight, guideDensity);
         if (result.HasSample == false)
             return result;
     }
-    LuminaireTile tile = GetLuminaireTile(profile, result.Tile);
+    LuminaireTile tile = GetLuminaireTile(luminaire, result.Tile);
     float uniformAreaDensity = 0.25 * receiver.HeightPanel * receiver.HeightPanel;
     float mixtureDensity = (1 - defensiveFraction) * guideDensity / seedWeight + defensiveFraction * uniformAreaDensity;
-    float3 radiance = profile.RadianceScale * tile.Tint * guideDensity;
+    float3 radiance = luminaire.RadianceScale * tile.Tint * guideDensity;
     result.RadianceOverDensity =
         mixtureDensity > 0 ? radiance * (ComputeSolidAnglePerSlopeArea(result.SlopePanel) / mixtureDensity) : float3(0);
     return result;

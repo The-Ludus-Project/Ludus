@@ -43,8 +43,8 @@ QString FindValue(const QVector<MaterialPropertyRow>& rows, const QString& label
     return {};
 }
 /// A cooked scene of three objects: a named textured conductor, an emissive masked coated diffuse
-/// with a surface map, and an untextured legacy material.
-RenderScene MakeScene()
+/// with a surface map, and an untextured third material of thirdModel (legacy by default).
+RenderScene MakeScene(format::MaterialModel thirdModel = format::MaterialModel::MetallicRoughness)
 {
     using namespace ludus::foundation;
     SharedPtr<ludus::resources::SceneDefinition> definition;
@@ -90,6 +90,12 @@ RenderScene MakeScene()
 
     ludus::resources::SceneMaterial& legacy = definition->Materials[2];
     legacy.Texture = format::NO_TEXTURE;
+    legacy.Scattering.Model = thirdModel;
+    if (thirdModel == format::MaterialModel::Dielectric || thirdModel == format::MaterialModel::ThinDielectric)
+    {
+        legacy.Scattering.Eta = {
+            {format::DEFAULT_DIELECTRIC_ETA, format::DEFAULT_DIELECTRIC_ETA, format::DEFAULT_DIELECTRIC_ETA}};
+    }
 
     RenderScene scene;
     scene.Definition = definition;
@@ -148,6 +154,21 @@ TEST_CASE("Material inspection follows the scattering model of the selected obje
     REQUIRE(DescribeSceneObjectMaterial(scene, QString(LEGACY_ID), rows) == true);
     CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Metallic-roughness"));
     CHECK(FindValue(rows, QStringLiteral("Reflectance (linear RGB)")) == QStringLiteral("0, 0, 0"));
+}
+
+TEST_CASE("Material inspection names dielectrics and their index", "[editor][world][material]")
+{
+    QVector<MaterialPropertyRow> rows;
+    REQUIRE(DescribeSceneObjectMaterial(MakeScene(format::MaterialModel::Dielectric), QString(LEGACY_ID), rows) ==
+            true);
+    CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Dielectric"));
+    CHECK(FindValue(rows, QStringLiteral("IOR η")) == QStringLiteral("1.5"));
+    CHECK(FindValue(rows, QStringLiteral("Coating IOR")).isNull() == true);
+
+    REQUIRE(DescribeSceneObjectMaterial(MakeScene(format::MaterialModel::ThinDielectric), QString(LEGACY_ID), rows) ==
+            true);
+    CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Thin dielectric"));
+    CHECK(FindValue(rows, QStringLiteral("IOR η")) == QStringLiteral("1.5"));
 }
 
 TEST_CASE("Material inspection preserves output without a cooked definition or object", "[editor][world][material]")

@@ -1,4 +1,5 @@
 #include "internal/reference_coating.h"
+#include "internal/reference_dielectric.h"
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/views.hpp>
 
@@ -4605,6 +4606,7 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
     };
     if (content::scene_format::IsMaterialScatteringValid(description.Scattering) == false ||
         internal::IsReferenceCoatingSupported(description.Scattering) == false ||
+        internal::IsReferenceDielectricSupported(description.Scattering) == false ||
         (description.Scattering.Model == content::scene_format::MaterialModel::Conductor &&
          description.Scattering.AlphaU != description.Scattering.AlphaV))
     {
