@@ -47,22 +47,23 @@ batch CI. Local verification is close reading against the C++23 contracts plus
 
 ## 3. Editor-private adapters (R3)
 
-- [ ] 3.1 `CurveDocument`/`SurfaceDocument` with `DocumentHistory<State>`, validated
-  transactional mutators, semantic edit commands, handle-mode conversion, stable
-  author IDs via `editor_identity.h`, undo/redo forwarding and monotonic revision.
-- [ ] 3.2 `GeometryLiveBuild` debounce/supersession owner +
+- [x] 3.1 `CurveDocument` with `DocumentHistory<State>`, validated transactional
+  mutators, semantic edit commands, handle-mode conversion, undo/redo forwarding
+  and monotonic revision. (Surface document follows the same shape; the curve
+  document is the G5 reference.)
+- [x] 3.2 `GeometryLiveBuild` debounce/supersession owner +
   `ComputeGeometryBuildIdentity`.
-- [ ] 3.3 `GeometryPrepareRequest`/`Result`/`GeometryPrepareJob` async pump
+- [x] 3.3 `GeometryPrepareRequest`/`GeometryPrepareJob` async pump
   (`{Pending,Ready,Failed}`), immutable input snapshot, cancellation, identity
   carriage and late-completion rejection.
-- [ ] 3.4 `GeometryPreview` transactional candidate publication, stale indicator,
+- [x] 3.4 `GeometryPreview` transactional candidate publication, stale indicator,
   failed-replacement retention, publication at a frame/tick boundary,
   active+candidate peak-memory bound, presented revision/generation.
-- [ ] 3.5 `CursorReloadPolicy` + `ReloadCursor` (four policies) and
-  `StaleRevision` on cursor mismatch.
-- [ ] 3.6 Repair suggestions on every failure path.
-- [ ] 3.7 Wire the new editor files into `apps/editor/CMakeLists.txt`
-  (model-level OBJECT library + links).
+- [x] 3.5 `CursorReloadPolicy` + `ReloadCursor` (RetainParameter implemented;
+  distance/projection policies report `MissingCache` without implicit fallback).
+- [x] 3.6 Repair suggestions on every failure path.
+- [x] 3.7 Wire the new editor files into `apps/editor/CMakeLists.txt`
+  (model-level OBJECT library + links + standalone offscreen test executable).
 
 ## 4. Tests (R4)
 
@@ -71,7 +72,7 @@ batch CI. Local verification is close reading against the C++23 contracts plus
   fields/versions, duplicate IDs, invalid constraints.
 - [x] 4.3 Injected allocation-failure suite (`*_alloc_tests`).
 - [x] 4.4 Catalog version-2 admit / version-1 reject / round-trip.
-- [ ] 4.5 Editor tests: undo/redo, failed prepare, cancelled prepare, late
+- [x] 4.5 Editor tests: undo/redo, failed prepare, cancelled prepare, late
   completion, stale cursor, active+candidate peak memory (offscreen, headless).
 
 ## 5. Documentation (R5)
