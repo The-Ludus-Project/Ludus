@@ -332,6 +332,8 @@ add_subdirectory(modules/content/string_dictionary_format)
 add_subdirectory(modules/content/string_dictionary)
 # Versioned UUID authoring records and the one-time World ID migration manifest.
 add_subdirectory(modules/content/identity_records)
+# Stage-4 two-pass World restore; bridges ContentIdentity and GameplayWorld.
+add_subdirectory(modules/content/world_restore)
 # Headless procedural scatter kernel (P0); Foundation-only, native and web.
 add_subdirectory(modules/content/procedural/environment)
 # Scene cooker (pbrt-reference-v1). The library builds for every target; its

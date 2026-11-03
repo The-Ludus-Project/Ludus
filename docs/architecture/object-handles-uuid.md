@@ -9,12 +9,13 @@ RHI keep their own sources for the reasons recorded in the
 [implementation sequence](#implementation-sequence). Stage 3 is implemented:
 version-2 World records and a one-time migration manifest give World objects
 committed UUIDs ([UUID authoring records](#stage-3-uuid-authoring-records)).
-Stage 4 is in progress and lands as independently reviewable slices. The first
-slice is implemented: `WorldBindingTable` (`modules/gameplay/world`) holds the two
-derived mappings at the World boundary and resolves durable keys with
-`TryResolve` ([resolution and streaming](#resolution-and-streaming)). Two-pass
-restore and save, graph duplication, and editor selection/stale-operation checks
-are the remaining stage-4 slices.
+Stage 4 is in progress and lands as independently reviewable slices. Implemented
+so far: `WorldBindingTable` (`modules/gameplay/world`) holds the two derived
+mappings at the World boundary and resolves durable keys with `TryResolve`; and
+`TryRestoreWorld` (`modules/content/world_restore`) rebuilds a version-2 World
+record into a registry and binding table in two passes
+([resolution and streaming](#resolution-and-streaming)). Graph duplication and
+editor selection/stale-operation checks are the remaining stage-4 slices.
 
 **Audience:** Engine, gameplay, tools, content, and SDK contributors.
 
@@ -424,6 +425,23 @@ the package ordering cannot retarget saved references. Rehydrate durable identit
 and rebuild runtime bindings on load. Serialize neither runtime owner/slot/generation
 nor object addresses. Restore uses two passes: create objects, then fix up links.
 
+**Stage 4 implementation (two-pass restore).** `TryRestoreWorld`
+([`modules/content/world_restore`](../modules/content/world-restore.md)) rebuilds
+a version-2 World record into an `EntityRegistry` and a `WorldBindingTable` in two
+passes: pass 1 creates one entity per record entity and records its
+`SourceObjectId -> EntityId` mapping without resolving any link; pass 2 resolves
+every required local link (an entity-typed property naming another entity's
+`SourceObjectId`) now that all candidates exist, so forward references resolve.
+It then publishes all durable bindings with one atomic `TryActivate`. The caller
+supplies the activating `InstanceId` (from the level's placement/save) and a
+registry with spare capacity. On any failure — malformed input, an unresolved
+required link, a duplicate identity, or a capacity/allocation failure — the
+entities created in pass 1 are released, no binding is published, and the active
+world is unchanged; runtime owner/slot/generation and addresses are never read
+from or written to the record. The in-tree `world_restore` library bridges
+`Ludus::ContentIdentity` (record parsing) and `Ludus::GameplayWorld` (entity
+creation and binding) so neither of those modules depends on the other.
+
 **Stage 4 implementation (binding table).** `WorldBindingTable`
 ([`modules/gameplay/world`](../modules/gameplay/world.md)) implements the two
 derived mappings at the World boundary: a sorted contiguous
@@ -737,6 +755,13 @@ and reserved capacity on each target before optimizing them.
    Integrate stable editor selection and stale operation checks through the
    current staged-world and gameplay-reload boundaries. This does not by itself
    add in-place world migration to the current whole-level restart behavior.
+   *In progress.* The durable binding table
+   ([`WorldBindingTable`](../modules/gameplay/world.md#durable-binding-table)) and
+   two-pass restore ([`TryRestoreWorld`](../modules/content/world-restore.md)) are
+   implemented; graph duplication and the editor selection/stale-operation checks
+   are the remaining slices. Restore lives in the in-tree `world_restore` bridge
+   library rather than `content/identity_records`, because driving entity creation
+   requires `GameplayWorld`, which the authoring-record parser must not depend on.
 5. Add streaming records and immutable payload leases when a real resource needs
    them. Benchmark the complete consumer before selecting a hash table, local
    handle, paged sparse storage, or concurrent reclamation.
