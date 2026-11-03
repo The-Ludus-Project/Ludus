@@ -671,7 +671,64 @@ TEST_CASE("pbrt reader builds the IR with fallbacks and file:line diagnostics", 
     CHECK(glass.Scattering.AlphaU == ludus::content::scene_format::MIN_MATERIAL_ALPHA);
     CHECK(glass.IsApproximated == false);
     CHECK_THAT(glass.BaseColour[0], Catch::Matchers::WithinAbs(.04, 1e-6));
-    CHECK(scene.Materials[0].Scattering.Model == ludus::content::scene_format::MaterialModel::MetallicRoughness);
+    // The rough coat keeps its layer for the reference tracers, over the legacy terms above.
+    CHECK(scene.Materials[0].Scattering.Model == ludus::content::scene_format::MaterialModel::CoatedDiffuse);
+    CHECK_THAT(scene.Materials[0].Scattering.AlphaU, Catch::Matchers::WithinAbs(.1, 1e-7));
+    CHECK(scene.Materials[0].IsApproximated == false);
+}
+
+TEST_CASE("pbrt coateddiffuse imports as a typed rough coating when the reference profile admits it",
+          "[scene_cook][pbrt]")
+{
+    namespace format = ludus::content::scene_format;
+    SceneIr scene;
+    DiagnosticLog log;
+    const std::string_view text =
+        "WorldBegin\n"
+        "MakeNamedMaterial \"Varnish\" \"string type\" \"coateddiffuse\" \"rgb reflectance\" [ 0.5 0.3 0.1 ]\n"
+        "    \"float uroughness\" 0.1 \"float vroughness\" 0.1 \"bool remaproughness\" false\n"
+        "    \"float eta\" 1.33 \"float thickness\" 0.05 \"integer nsamples\" 4\n"
+        "MakeNamedMaterial \"Remapped\" \"string type\" \"coateddiffuse\" \"float roughness\" 0.04\n"
+        "MakeNamedMaterial \"Smooth\" \"string type\" \"coateddiffuse\"\n"
+        "MakeNamedMaterial \"Brushed\" \"string type\" \"coateddiffuse\" \"float uroughness\" 0.1\n"
+        "    \"float vroughness\" 0.3 \"bool remaproughness\" false\n"
+        "MakeNamedMaterial \"Milky\" \"string type\" \"coateddiffuse\" \"float roughness\" 0.1\n"
+        "    \"bool remaproughness\" false \"rgb albedo\" [ 0.5 0.5 0.5 ]\n"
+        "MakeNamedMaterial \"Shallow\" \"string type\" \"coateddiffuse\" \"float roughness\" 0.1\n"
+        "    \"bool remaproughness\" false \"integer maxdepth\" 3\n"
+        "MakeNamedMaterial \"Matte\" \"string type\" \"diffuse\" \"rgb reflectance\" [ 0.2 0.4 0.6 ]\n"
+        "MakeNamedMaterial \"Leaf\" \"string type\" \"diffusetransmission\"\n";
+    REQUIRE(pbrt::ReadSceneFromMemory({AsBytes(text), {}, "memory.pbrt"}, scene, log) == ludus::content::Status::Ok);
+    REQUIRE(scene.Materials.GetSize() == 8);
+    const IrMaterial& varnish = scene.Materials[0];
+    CHECK(varnish.Scattering.Model == format::MaterialModel::CoatedDiffuse);
+    CHECK(varnish.Scattering.AlphaU == .1F);
+    CHECK(varnish.Scattering.AlphaV == .1F);
+    CHECK(varnish.Scattering.CoatingEta == 1.33F);
+    CHECK(varnish.Scattering.CoatingThickness == .05F);
+    CHECK(varnish.IsApproximated == false);
+    CHECK(format::IsMaterialScatteringValid(varnish.Scattering) == true);
+    // The legacy terms remain for raster and render-graph shading.
+    CHECK_THAT(varnish.BaseColour[2], Catch::Matchers::WithinAbs(.1, 1e-6));
+    CHECK_THAT(varnish.Roughness, Catch::Matchers::WithinAbs(0.316227766, 1e-6));
+    // pbrt remaps by default: alpha = sqrt(0.04); omitted controls take pbrt's defaults.
+    const IrMaterial& remapped = scene.Materials[1];
+    CHECK(remapped.Scattering.Model == format::MaterialModel::CoatedDiffuse);
+    CHECK_THAT(remapped.Scattering.AlphaU, Catch::Matchers::WithinAbs(.2, 1e-7));
+    CHECK(remapped.Scattering.CoatingEta == format::DEFAULT_COATING_ETA);
+    CHECK(remapped.Scattering.CoatingThickness == format::DEFAULT_COATING_THICKNESS);
+    // Smooth (pbrt's default roughness 0), anisotropic, scattering and depth-limited coatings stay legacy.
+    for (usize i = 2; i < 6; ++i)
+    {
+        INFO(scene.Materials[i].Name.GetView());
+        CHECK(scene.Materials[i].Scattering.Model == format::MaterialModel::MetallicRoughness);
+        CHECK(scene.Materials[i].IsApproximated == true);
+    }
+    CHECK(log.CountOccurrences(codes::MATERIAL_APPROXIMATED) == 4);
+    CHECK(log.CountOccurrences(codes::UNKNOWN_PARAMETER) == 0);
+    // pbrt diffuse is ideal Lambertian reflection; dropped transmission keeps the legacy terms.
+    CHECK(scene.Materials[6].Scattering.Model == format::MaterialModel::Diffuse);
+    CHECK(scene.Materials[7].Scattering.Model == format::MaterialModel::MetallicRoughness);
 }
 
 TEST_CASE("pbrt dielectrics import as typed smooth interfaces", "[scene_cook][pbrt]")

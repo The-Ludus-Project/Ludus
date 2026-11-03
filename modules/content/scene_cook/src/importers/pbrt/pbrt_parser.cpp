@@ -308,6 +308,8 @@ private:
                         std::string_view parameterName,
                         float64 defaultGrey,
                         IrMaterial& inoutMaterial) noexcept;
+    /// Types a coateddiffuse the reference coating profile evaluates; others keep their legacy terms.
+    void readCoating(Directive& inoutDirective, std::string_view label, IrMaterial& inoutMaterial) noexcept;
 
     std::string_view mRoot;
     SceneIr& mScene;
@@ -1395,6 +1397,82 @@ void SceneReader::readBaseColour(Directive& inoutDirective,
     warn(codes::NAME_UNDEFINED, inoutDirective.Line, textureName);
 }
 
+// Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, pbrt-v4 CoatedDiffuseMaterial::Create
+// (src/pbrt/materials.cpp): u/v roughness default to `roughness` (0), and eta 1.5, thickness 0.01,
+// albedo 0, g 0, maxdepth 10 and nsamples 1. The reference coating profile evaluates that
+// non-scattering rough layer (docs/architecture/renderer-systems.md); nsamples only changes the
+// estimator's variance. Smooth, anisotropic, textured, scattering or depth-limited coatings keep
+// the legacy GGX/Lambert terms, which ignore the layer's internal reflection and so shade brighter.
+// https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/materials.cpp
+void SceneReader::readCoating(Directive& inoutDirective, std::string_view label, IrMaterial& inoutMaterial) noexcept
+{
+    const auto readScalar = [&](std::string_view name, float64 defaultValue, float64& outValue) noexcept -> bool {
+        const Parameter* parameterOrNull = findParameter(inoutDirective, name);
+        outValue = defaultValue;
+        if (parameterOrNull == nullptr)
+        {
+            return true;
+        }
+        if (parameterOrNull->Value.Numbers.GetSize() != 1 || math::IsFinite(parameterOrNull->Value.Numbers[0]) == false)
+        {
+            return false;
+        }
+        outValue = parameterOrNull->Value.Numbers[0];
+        return true;
+    };
+    float64 roughness = 0.0;
+    float64 roughnessU = 0.0;
+    float64 roughnessV = 0.0;
+    float64 thickness = 0.0;
+    float64 depth = 0.0;
+    bool isRemapped = true;
+    (void)findBoolean(inoutDirective, "remaproughness", isRemapped);
+    bool isSupported =
+        readScalar("roughness", 0.0, roughness) == true && readScalar("uroughness", roughness, roughnessU) == true &&
+        readScalar("vroughness", roughness, roughnessV) == true &&
+        readScalar("thickness", static_cast<float64>(format::DEFAULT_COATING_THICKNESS), thickness) == true &&
+        readScalar("maxdepth", static_cast<float64>(format::LUDUS_COATING_MAX_DEPTH), depth) == true;
+    float64 albedo[IR_RGB_CHANNEL_COUNT] = {0.0, 0.0, 0.0};
+    if (findParameter(inoutDirective, "albedo") != nullptr && findColour(inoutDirective, "albedo", albedo) == false)
+    {
+        isSupported = false;
+    }
+    // g only shapes scattering, which a zero albedo excludes; nsamples only changes variance.
+    (void)findParameter(inoutDirective, "g");
+    (void)findParameter(inoutDirective, "nsamples");
+    float64 eta = static_cast<float64>(format::DEFAULT_COATING_ETA);
+    const Parameter* etaOrNull = findParameter(inoutDirective, "eta");
+    if (etaOrNull != nullptr && etaOrNull->Value.Numbers.GetSize() == 1 &&
+        math::IsFinite(etaOrNull->Value.Numbers[0]) == true)
+    {
+        eta = etaOrNull->Value.Numbers[0];
+    }
+    else if (etaOrNull != nullptr)
+    {
+        inoutMaterial.IsApproximated = true;
+        inform(codes::SPECTRUM_APPROXIMATED, inoutDirective.Line, "coating eta replaced by the default 1.5");
+    }
+    const float64 alphaU = isRemapped == true ? math::Sqrt(math::Max(roughnessU, 0.0)) : roughnessU;
+    const float64 alphaV = isRemapped == true ? math::Sqrt(math::Max(roughnessV, 0.0)) : roughnessV;
+    isSupported = isSupported == true && alphaU == alphaV &&
+                  alphaU >= static_cast<float64>(format::LUDUS_COATING_MIN_ALPHA) && alphaU <= 1.0 && eta >= 1.0 &&
+                  eta <= static_cast<float64>(format::MAX_MATERIAL_OPTICAL_CONSTANT) && thickness >= 0.0 &&
+                  thickness <= static_cast<float64>(format::MAX_MATERIAL_OPTICAL_CONSTANT) &&
+                  depth == static_cast<float64>(format::LUDUS_COATING_MAX_DEPTH) && albedo[0] == 0.0 &&
+                  albedo[1] == 0.0 && albedo[2] == 0.0;
+    if (isSupported == false)
+    {
+        inoutMaterial.IsApproximated = true;
+        inform(codes::MATERIAL_APPROXIMATED, inoutDirective.Line, label);
+        return;
+    }
+    inoutMaterial.Scattering.Model = format::MaterialModel::CoatedDiffuse;
+    inoutMaterial.Scattering.AlphaU = static_cast<float32>(alphaU);
+    inoutMaterial.Scattering.AlphaV = static_cast<float32>(alphaV);
+    inoutMaterial.Scattering.CoatingEta = static_cast<float32>(eta);
+    inoutMaterial.Scattering.CoatingThickness = static_cast<float32>(thickness);
+}
+
 Status SceneReader::defineMaterial(Directive& inoutDirective, std::string_view type, std::string_view name) noexcept
 {
     IrMaterial material;
@@ -1423,11 +1501,16 @@ Status SceneReader::defineMaterial(Directive& inoutDirective, std::string_view t
             material.IsApproximated = true;
             warn(codes::TRANSMISSION_DROPPED, inoutDirective.Line, label);
         }
+        else
+        {
+            material.Scattering.Model = format::MaterialModel::Diffuse;
+        }
     }
     else if (type == "coateddiffuse")
     {
         readBaseColour(inoutDirective, "reflectance", .5, material);
         static_cast<void>(readRoughness(inoutDirective, 0.0, material.Roughness));
+        readCoating(inoutDirective, label, material);
     }
     else if (type == "conductor" || type == "coatedconductor" || type == "metal")
     {
