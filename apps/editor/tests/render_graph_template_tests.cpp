@@ -535,8 +535,8 @@ TEST_CASE("ReSTIR import preserves custom admission budgets and drops derived le
           authored);
 }
 
-TEST_CASE("ReSTIR import identifies conflicting authored inputs without changing the draft",
-          "[editor][render-graph][restir-library]")
+TEST_CASE("ReSTIR import keeps conflicting authored inputs and uses numbered names instead",
+          "[editor][render-graph][restir-library][template-instance]")
 {
     QTemporaryDir project;
     RendererWorkspace workspace({});
@@ -549,6 +549,7 @@ TEST_CASE("ReSTIR import identifies conflicting authored inputs without changing
             RenderGraphDocumentStatus::Ok);
     QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
     QString expectedIdentity;
+    bool isSettingCollision = false;
     SECTION("program definition")
     {
         QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
@@ -577,6 +578,7 @@ TEST_CASE("ReSTIR import identifies conflicting authored inputs without changing
         REQUIRE(settings.isEmpty() == false);
         QJsonObject setting = settings.first().toObject();
         expectedIdentity = setting.value(QStringLiteral("id")).toString();
+        isSettingCollision = true;
         setting.insert(QStringLiteral("maximum"), 2);
         settings.replace(0, setting);
         manifest.insert(QStringLiteral("settings"), settings);
@@ -589,17 +591,128 @@ TEST_CASE("ReSTIR import identifies conflicting authored inputs without changing
     {
         before.Files.insert(file, document.GetDraft(file));
     }
-    const uint64 revision = document.GetRevision();
-    CHECK(document.ApplyRestirTemplate(ROOT_GRAPH, QStringLiteral("OtherLighting"), error) ==
-          RenderGraphDocumentStatus::Conflict);
-    CHECK(error.contains(expectedIdentity) == true);
-    CHECK(error.contains(QStringLiteral("draft was preserved")) == true);
-    CHECK(document.GetRevision() == revision);
-    CHECK(document.GetFiles() == files);
+    // Approve whatever the numbered copy adds; this test is about names, not admission limits.
+    constexpr int32 APPROVED_PROGRAMS = 64;
+    RenderGraphTemplateBudgetIncrease budget;
+    budget.ApprovedPrograms = APPROVED_PROGRAMS;
+    QString notice;
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                QStringLiteral("OtherLighting"),
+                                                QStringLiteral("restir-di"),
+                                                error,
+                                                {},
+                                                &budget,
+                                                &notice) == RenderGraphDocumentStatus::Ok);
+    // Every authored file keeps its bytes; only the manifest and root gain the new import.
     for (const QString& file : files)
     {
-        CHECK(document.GetDraft(file) == before.Files.value(file));
+        if (file != manifestFile && file != ROOT_GRAPH)
+        {
+            INFO(file.toStdString());
+            CHECK(document.GetDraft(file) == before.Files.value(file));
+        }
     }
+    const QJsonObject merged = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    const QByteArray library = document.GetDraft(QStringLiteral("OtherLighting.lurender.json"));
+    if (isSettingCollision == true)
+    {
+        // The authored definition stays; the import's sources spell the numbered setting.
+        const QString renamed = expectedIdentity + QStringLiteral("_2");
+        bool hasAuthored = false;
+        bool hasRenamed = false;
+        for (const QJsonValueConstRef value : merged.value(QStringLiteral("settings")).toArray())
+        {
+            const QJsonObject setting = value.toObject();
+            hasAuthored = hasAuthored || (setting.value(QStringLiteral("id")).toString() == expectedIdentity &&
+                                          setting.value(QStringLiteral("maximum")).toInt() == 2);
+            hasRenamed = hasRenamed || setting.value(QStringLiteral("id")).toString() == renamed;
+        }
+        CHECK(hasAuthored == true);
+        CHECK(hasRenamed == true);
+        CHECK(notice.contains(renamed) == true);
+        bool isSpelled = false;
+        for (const QString& file : document.GetFiles())
+        {
+            isSpelled = isSpelled || (file.endsWith(QStringLiteral(".slang")) == true &&
+                                      document.GetDraft(file).contains(renamed.toUtf8()) == true);
+        }
+        CHECK(isSpelled == true);
+        return;
+    }
+    // A program or source collision moves the whole import to the second instance.
+    CHECK(notice.contains(QStringLiteral("restir_di_2/")) == true);
+    CHECK(library.contains("Restir2Generate") == true);
+    CHECK(library.contains("\"RestirGenerate\"") == false);
+    CHECK(document.GetDraft(QStringLiteral("restir_di_2/main_shaders/generate.slang")).isEmpty() == false);
+    CHECK(document.GetDraft(QStringLiteral("restir_di_2/main_shaders/reservoir.slang")).contains("Authored change") ==
+          false);
+    // A further import shares the identical second instance instead of making a third.
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                QStringLiteral("ThirdLighting"),
+                                                QStringLiteral("restir-di"),
+                                                error,
+                                                {},
+                                                &budget,
+                                                &notice) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetDraft(QStringLiteral("ThirdLighting.lurender.json")).contains("Restir2Generate") == true);
+    for (const QString& file : document.GetFiles())
+    {
+        CHECK(file.startsWith(QStringLiteral("restir_di_3/")) == false);
+    }
+}
+
+TEST_CASE("Template dialog proposes a configuration name that does not collide",
+          "[editor][render-graph][template-instance]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    CHECK(workspace.MakeTemplateConfigurationName(QStringLiteral("RestirDi")) == QStringLiteral("RestirDi"));
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("RestirDi"), QStringLiteral("restir-di")) == true);
+    // Inside the new library its nonempty configuration is taken; on the root its library file is.
+    CHECK(workspace.MakeTemplateConfigurationName(QStringLiteral("RestirDi")) == QStringLiteral("RestirDi2"));
+    CHECK(workspace.MakeTemplateConfigurationName(QStringLiteral("Fresh")) == QStringLiteral("Fresh"));
+}
+
+TEST_CASE("Template instance names number directories, prefixes and whole identifiers",
+          "[editor][render-graph][template-instance]")
+{
+    TemplateInstance first;
+    CHECK(GetInstanceDirectory(QStringLiteral("restir_di/"), first) == QStringLiteral("restir_di/"));
+    CHECK(GetInstancePrefix(QStringLiteral("Restir"), first) == QStringLiteral("Restir"));
+    TemplateInstance second;
+    second.Number = 2;
+    CHECK(GetInstanceDirectory(QStringLiteral("restir_di/"), second) == QStringLiteral("restir_di_2/"));
+    CHECK(GetInstancePrefix(QStringLiteral("Restir"), second) == QStringLiteral("Restir2"));
+    second.Renames.insert(QStringLiteral("RESTIR_COUNT"), QStringLiteral("RESTIR_COUNT_2"));
+    CHECK(RenameTemplateIdentifiers("uint a = RESTIR_COUNT; uint b = RESTIR_COUNT_MAX; // RESTIR_COUNT\n", second) ==
+          QByteArray("uint a = RESTIR_COUNT_2; uint b = RESTIR_COUNT_MAX; // RESTIR_COUNT_2\n"));
+    RenderGraphSnapshot snapshot;
+    snapshot.Files.insert(QStringLiteral("a.slang"), QByteArray("authored"));
+    TemplateInstance instance;
+    CHECK(InsertTemplateSource(snapshot, QStringLiteral("a.slang"), QByteArray("authored"), instance) == true);
+    CHECK(instance.HasCollision == false);
+    CHECK(InsertTemplateSource(snapshot, QStringLiteral("a.slang"), QByteArray("template"), instance) == false);
+    CHECK(instance.HasCollision == true);
+    CHECK(snapshot.Files.value(QStringLiteral("a.slang")) == QByteArray("authored"));
+    const QJsonObject setting{{QStringLiteral("id"), QStringLiteral("COUNT")},
+                              {QStringLiteral("label"), QStringLiteral("Count")},
+                              {QStringLiteral("type"), QStringLiteral("UInt32")},
+                              {QStringLiteral("minimum"), 1},
+                              {QStringLiteral("maximum"), 8},
+                              {QStringLiteral("value"), 4}};
+    QJsonObject authored = setting;
+    authored.insert(QStringLiteral("maximum"), 2);
+    QJsonObject renamedAuthored = setting;
+    renamedAuthored.insert(QStringLiteral("id"), QStringLiteral("COUNT_2"));
+    renamedAuthored.insert(QStringLiteral("maximum"), 3);
+    const QJsonObject manifest{{QStringLiteral("settings"), QJsonArray{authored, renamedAuthored}}};
+    TemplateInstance settings;
+    const QJsonArray additions = RenameTemplateSettings(manifest, QJsonArray{setting}, settings);
+    REQUIRE(additions.size() == 1);
+    CHECK(additions.first().toObject().value(QStringLiteral("id")).toString() == QStringLiteral("COUNT_3"));
+    CHECK(settings.Renames.value(QStringLiteral("COUNT")) == QStringLiteral("COUNT_3"));
 }
 
 TEST_CASE("ReSTIR library import preserves legacy callbacks and extends a custom payload",
@@ -930,7 +1043,7 @@ TEST_CASE("Root visibility insertion is atomic on library collisions and unsuppo
     CHECK(document.GetFiles() == files);
 }
 
-TEST_CASE("Visibility imports reuse compatible shader records and preserve conflicting edits",
+TEST_CASE("Visibility imports reuse compatible shader records and number around conflicting edits",
           "[editor][render-graph][visibility-configuration]")
 {
     QTemporaryDir project;
@@ -958,6 +1071,26 @@ TEST_CASE("Visibility imports reuse compatible shader records and preserve confl
     {
         REQUIRE(document.SetText(shader, original + QByteArray("\n// Authored edit.\n")) ==
                 RenderGraphDocumentStatus::Ok);
+        const QByteArray edited = document.GetDraft(shader);
+        constexpr int32 APPROVED_PROGRAMS = 64;
+        RenderGraphTemplateBudgetIncrease budget;
+        budget.ApprovedPrograms = APPROVED_PROGRAMS;
+        QString notice;
+        REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                    QStringLiteral("Numbered"),
+                                                    QStringLiteral("visibility-secondary-rays"),
+                                                    error,
+                                                    {},
+                                                    &budget,
+                                                    &notice) == RenderGraphDocumentStatus::Ok);
+        // The edit stays, and the shared raster producer is numbered with the rays that use it.
+        CHECK(document.GetDraft(shader) == edited);
+        CHECK(document.GetDraft(QStringLiteral("visibility_buffer_2/main_shaders/color.slang")) == original);
+        const QByteArray library = document.GetDraft(QStringLiteral("Numbered.lurender.json"));
+        CHECK(library.contains("Visibility2Geometry") == true);
+        CHECK(library.contains("VisibilitySecondary2") == true);
+        CHECK(notice.contains(QStringLiteral("visibility_secondary_rays_2/")) == true);
+        return;
     }
     SECTION("incompatible shared payload")
     {
@@ -965,6 +1098,7 @@ TEST_CASE("Visibility imports reuse compatible shader records and preserve confl
                                  QByteArray("struct ScenePayload { float3 Changed; };\n")) ==
                 RenderGraphDocumentStatus::Ok);
     }
+    // A shared payload without the fields every ray callback needs is not a name collision.
     const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
     const QByteArray beforeManifest = document.GetDraft(QStringLiteral("main.lushader.json"));
     const QByteArray beforeShader = document.GetDraft(shader);
@@ -1552,7 +1686,7 @@ void RequireValidation(RendererWorkspace& inoutWorkspace)
 }
 } // namespace
 
-TEST_CASE("Simple triangle-loop configuration imports one kernel and preserves edits on collision",
+TEST_CASE("Simple triangle-loop configuration imports one kernel and numbers around edits",
           "[editor][render-graph][simple-compute-template]")
 {
     QTemporaryDir project;
@@ -1583,12 +1717,27 @@ TEST_CASE("Simple triangle-loop configuration imports one kernel and preserves e
     const QByteArray editedSource = document.GetDraft(source);
     const QStringList existingFiles = document.GetFiles();
     QString error;
-    CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Another"), identity, error) ==
-          RenderGraphDocumentStatus::Conflict);
-    CHECK(error.contains(QStringLiteral("different contents")) == true);
+    constexpr int32 APPROVED_PROGRAMS = 64;
+    RenderGraphTemplateBudgetIncrease budget;
+    budget.ApprovedPrograms = APPROVED_PROGRAMS;
+    QString notice;
+    REQUIRE(
+        document
+            .ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Another"), identity, error, {}, &budget, &notice) ==
+        RenderGraphDocumentStatus::Ok);
     CHECK(document.GetDraft(source) == editedSource);
-    CHECK(document.GetDraft(COMPUTE_MANIFEST) == afterManifest);
-    CHECK(document.GetFiles() == existingFiles);
+    for (const QString& file : existingFiles)
+    {
+        if (file != COMPUTE_MANIFEST && file != ROOT_GRAPH)
+        {
+            INFO(file.toStdString());
+            CHECK(document.GetDraft(file).isEmpty() == false);
+        }
+    }
+    CHECK(document.GetDraft(QStringLiteral("simple_compute_ray_tracing_2/main_shaders/trace.slang"))
+              .contains("TryIntersectTriangle") == true);
+    CHECK(document.GetDraft(QStringLiteral("Another.lurender.json")).contains("SimpleComputeRay2Trace") == true);
+    CHECK(notice.contains(QStringLiteral("simple_compute_ray_tracing_2/")) == true);
 }
 
 TEST_CASE("Compute ray-tracing template is created from the editor picker", "[editor][render-graph][compute-template]")
@@ -3227,7 +3376,7 @@ TEST_CASE("Delete Subgraph and Library is on a Subgraph node's canvas menu with 
     CHECK(document.GetFiles().contains(QStringLiteral("Mis.lurender.json")) == true);
 }
 
-TEST_CASE("Compute ray-tracing import extends a shared ray technique and preserves conflicting edits",
+TEST_CASE("Compute ray-tracing import extends a shared ray technique and numbers around conflicting edits",
           "[editor][render-graph][compute-configuration]")
 {
     QTemporaryDir project;
@@ -3263,7 +3412,9 @@ TEST_CASE("Compute ray-tracing import extends a shared ray technique and preserv
     QJsonObject interface = original.value(QStringLiteral("scene_interface")).toObject();
     SECTION("budgets rise and callbacks remain")
     {
-        constexpr int32 AUTHORED_SURFACE_QUERIES = 3;
+        // Above the template's own surface budget (9 glass-chain queries) and within the cap of 16, so the
+        // authored maximum is kept while the missing visibility budget rises.
+        constexpr int32 AUTHORED_SURFACE_QUERIES = 12;
         interface.insert(QStringLiteral("surface_queries"), AUTHORED_SURFACE_QUERIES);
         interface.insert(QStringLiteral("visibility_queries"), 0);
         setInterface(interface);
@@ -3293,6 +3444,22 @@ TEST_CASE("Compute ray-tracing import extends a shared ray technique and preserv
         const QString header = QStringLiteral("compute_ray_tracing/main_shaders/hit_record.slang");
         REQUIRE(document.SetText(header, document.GetDraft(header) + QByteArray("\n// Authored edit.\n")) ==
                 RenderGraphDocumentStatus::Ok);
+        const QByteArray edited = document.GetDraft(header);
+        constexpr int32 APPROVED_PROGRAMS = 64;
+        RenderGraphTemplateBudgetIncrease budget;
+        budget.ApprovedPrograms = APPROVED_PROGRAMS;
+        REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                    QStringLiteral("Compute"),
+                                                    COMPUTE_TEMPLATE,
+                                                    error,
+                                                    {},
+                                                    &budget) == RenderGraphDocumentStatus::Ok);
+        // An edited include moves the kernels that include it to the numbered copy.
+        CHECK(document.GetDraft(header) == edited);
+        CHECK(document.GetDraft(QStringLiteral("compute_ray_tracing_2/main_shaders/hit_record.slang"))
+                  .contains("Authored edit") == false);
+        CHECK(document.GetDraft(QStringLiteral("Compute.lurender.json")).contains("ComputeRay2Shade") == true);
+        return;
     }
     const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
     const QByteArray beforeManifest = document.GetDraft(COMPUTE_MANIFEST);
@@ -3666,4 +3833,35 @@ TEST_CASE("Light Transformer snippet applies from Quick Add on the canvas with P
     CHECK(document.GetDraft(COMPUTE_MANIFEST) == afterManifest);
     CHECK(document.GetDraft(QStringLiteral("light_transformer/model.json")).isEmpty() == false);
     RequireValidation(workspace);
+}
+
+TEST_CASE("ReSTIR import shares a ray technique that permits visibility-buffer inputs",
+          "[editor][render-graph][restir-library][template-instance]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    QString error;
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                QStringLiteral("Reflections"),
+                                                QStringLiteral("visibility-secondary-rays"),
+                                                error) == RenderGraphDocumentStatus::Ok);
+    constexpr int32 APPROVED_PROGRAMS = 64;
+    RenderGraphTemplateBudgetIncrease budget;
+    budget.ApprovedPrograms = APPROVED_PROGRAMS;
+    const RenderGraphDocumentStatus status = document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                                                 QStringLiteral("Lighting"),
+                                                                                 QStringLiteral("restir-di"),
+                                                                                 error,
+                                                                                 {},
+                                                                                 &budget);
+    INFO(error.toStdString());
+    REQUIRE(status == RenderGraphDocumentStatus::Ok);
+    const QJsonObject interface = FindRayTechnique(document.GetDraft(QStringLiteral("main.lushader.json")))
+                                      .value(QStringLiteral("scene_interface"))
+                                      .toObject();
+    CHECK(interface.value(QStringLiteral("visibility_buffer")).toBool() == true);
+    CHECK(document.GetDraft(QStringLiteral("Lighting.lurender.json")).contains("RestirGenerate") == true);
 }

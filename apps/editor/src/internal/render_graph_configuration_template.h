@@ -1,11 +1,64 @@
 #pragma once
 
+#include <ludus/foundation/base/types.h>
+
 #include "internal/render_graph_document.h"
+
+#include <QMap>
+#include <QString>
 
 namespace ludus::editor
 {
 /// End a template error with "The draft was preserved." exactly once.
 void AppendDraftPreserved(QString& inoutError);
+
+/// Most numbered copies of one built-in template that an import tries before reporting a conflict.
+inline constexpr foundation::int32 MAX_TEMPLATE_INSTANCES = 16;
+
+/// The names one import of a built-in configuration template gives its copies, so that engine
+/// templates never require renaming authored content. Instance 1 keeps the template's own source
+/// directory and program prefix and shares existing copies whose contents are identical. Instance
+/// n > 1 appends n ("restir_di_2/", "Restir2Generate"). A shared Graph setting or varying schema
+/// whose authored definition differs is renamed with the first free suffix ("ID_2" for settings,
+/// "Schema2" for schemas), and this import's copied sources and program records use that name.
+/// Existing files, programs, settings and schemas are never replaced.
+struct TemplateInstance final
+{
+    /// 1 for the template's own names; n > 1 for the numbered copy.
+    foundation::int32 Number = 1;
+    /// Template identifier to the name this import uses, for colliding settings and schemas.
+    QMap<QString, QString> Renames;
+    /// Source directory, with a trailing '/', that the import used; set by the import.
+    QString Directory;
+    /// Program prefix that the import used; set by the import.
+    QString ProgramPrefix;
+    /// Set when a source or program of this instance already exists with different contents,
+    /// so the caller retries with the next instance number.
+    bool HasCollision = false;
+};
+
+/// The instance's copy of a template directory ("name/" or "name_n/"); directory ends in '/'.
+[[nodiscard]] QString GetInstanceDirectory(const QString& directory, const TemplateInstance& instance);
+/// The instance's program prefix ("Prefix" or "Prefixn").
+[[nodiscard]] QString GetInstancePrefix(const QString& prefix, const TemplateInstance& instance);
+/// Replace each renamed template identifier, as a whole word, in copied source text.
+[[nodiscard]] QByteArray RenameTemplateIdentifiers(const QByteArray& source, const TemplateInstance& instance);
+/// Copy template bytes to a package path. A path holding identical bytes is shared; a path holding
+/// different bytes is left unchanged, flags inoutInstance.HasCollision and returns false.
+[[nodiscard]] bool InsertTemplateSource(RenderGraphSnapshot& inoutSnapshot,
+                                        const QString& path,
+                                        const QByteArray& bytes,
+                                        TemplateInstance& inoutInstance);
+/// Add a template program record to a manifest program list. An identical record is shared; a
+/// different record with the same ID is kept, flags inoutInstance.HasCollision and returns false.
+[[nodiscard]] bool
+InsertTemplateProgram(QJsonArray& inoutPrograms, const QJsonObject& program, TemplateInstance& inoutInstance);
+/// Choose this import's names for the template's Graph settings. A setting whose authored
+/// definition (ignoring its value) differs is renamed to the first "ID_k", k >= 2, that is absent
+/// or identical, and recorded in inoutInstance.Renames. Returns the additions with their chosen IDs.
+/// When every candidate collides the setting keeps its ID, and MergeTemplateSettings reports it.
+[[nodiscard]] QJsonArray
+RenameTemplateSettings(const QJsonObject& manifest, const QJsonArray& additions, TemplateInstance& inoutInstance);
 /// Upgrade unchanged engine-default manifest budgets to the selected template's budgets.
 /// Custom limits are retained. Returns false when embedded defaults are unavailable; no disk writes.
 [[nodiscard]] bool UpgradeDefaultTemplateBudgets(QJsonObject& inoutManifest, const QJsonObject& source);
@@ -34,7 +87,9 @@ void AppendDraftPreserved(QString& inoutError);
 /// Prepare a reusable ReSTIR configuration and its shader/manifest closure in an unpublished snapshot.
 /// templateRoot selects a bounded source directory; empty uses the embedded renderer assets.
 /// The destination must be absent or empty. Existing shader bytes, configurations and setting values
-/// are retained; incompatible shared ray interfaces fail with a repair message. GUI thread, no disk writes.
+/// are retained; incompatible shared ray interfaces fail with a repair message. Sources and programs use
+/// the optional instance's names (instance 1 when null); a name holding different content flags the
+/// instance's collision and reports Conflict. GUI thread, no disk writes.
 [[nodiscard]] RenderGraphDocumentStatus
 PrepareRestirConfiguration(RenderGraphSnapshot& inoutSnapshot,
                            const QString& rootGraph,
@@ -42,7 +97,8 @@ PrepareRestirConfiguration(RenderGraphSnapshot& inoutSnapshot,
                            const QString& configuration,
                            QString& outError,
                            const QString& templateRoot = {},
-                           RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
+                           RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr,
+                           TemplateInstance* inoutInstanceOrNull = nullptr);
 /// Prepare library insertion from a root canvas, or configuration application inside a library.
 /// Parent selection is consulted only for root insertion. The caller owns/discards the candidate;
 /// no disk writes occur, and existing on-disk assets are never replaced.
@@ -56,8 +112,9 @@ PrepareRestirConfiguration(RenderGraphSnapshot& inoutSnapshot,
 /// Prepare visibility-buffer, visibility-secondary-rays or tiled-vbuffer-nee in an absent/empty
 /// library configuration. Ray sources arrive with their local include closure. Caller owns/discards
 /// the snapshot; compatible RendererStatic fields are extended, authored shader bytes are preserved,
-/// shared ray query budgets are raised to the template's needs, and ABI/source/budget conflicts
-/// report a repair. GUI thread; no disk writes.
+/// shared ray query budgets are raised to the template's needs, and ABI/budget conflicts report a
+/// repair. Sources, programs, the shared raster producer and a colliding VisibilityRasterVarying schema
+/// use the optional instance's names, as for PrepareRestirConfiguration. GUI thread; no disk writes.
 [[nodiscard]] RenderGraphDocumentStatus
 PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                const QString& rootGraph,
@@ -65,7 +122,8 @@ PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                const QString& configuration,
                                const QString& templateIdentity,
                                QString& outError,
-                               RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
+                               RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr,
+                               TemplateInstance* inoutInstanceOrNull = nullptr);
 /// Prepare the compute-ray-tracing, simple-compute-ray-tracing, veach-guibas-mis, ris-projected-solid-angle,
 /// polygonal-light-sampling, slice-sampling-luminaire, steinberg-plt, steinberg-physical-optics, wave-tracing,
 /// restir-gi, guided-restir-fg-plus, conditional-restir, one-more-vertex-nee or rao-blackwell-mh template in an
@@ -94,7 +152,8 @@ PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
 /// template's Graph settings merge like ReSTIR's (existing values are kept). The shared ray technique gains
 /// scene_interface version 1 when it lacks one, and its query budgets are raised to the template's; its callbacks,
 /// payload and larger budgets are retained. Requires a Metal or Vulkan profile. Authored shader bytes are never
-/// replaced: source/program collisions, unsupported scene interface versions and capacity limits report a repair.
+/// replaced: sources and programs use the optional instance's names, as for PrepareRestirConfiguration, and
+/// unsupported scene interface versions and capacity limits report a repair.
 /// Caller owns/discards the snapshot; GUI thread; no disk writes.
 /// wave-tracing imports four compute-BVH passes and a render-size hit Buffer under wave_tracing/: scene optical
 /// surface paths, a matched geometric comparison and scalar connection transmission.
@@ -105,7 +164,8 @@ PrepareComputeRayTracingConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                       const QString& configuration,
                                       QString& outError,
                                       const QString& templateIdentity,
-                                      RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
+                                      RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr,
+                                      TemplateInstance* inoutInstanceOrNull = nullptr);
 /// A renderer-owned scene compute template: its registry identity (the embedded resource directory
 /// and, with '-' replaced by '_', the destination source directory), the prefix that keeps its
 /// imported program IDs distinct, and the display name used in repairs.
@@ -126,7 +186,8 @@ PrepareSceneComputeTemplateConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                          const QString& configuration,
                                          QString& outError,
                                          const SceneComputeTemplate& selectedTemplate,
-                                         RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
+                                         RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr,
+                                         TemplateInstance* inoutInstanceOrNull = nullptr);
 /// Prepare the line-sampling template (point-line design D8a) in an absent/empty library: a
 /// primary-hits pass and the ShadeLineSampling and ShadeVisibleFraction triangle-loop passes sharing
 /// one render-size hit Buffer, imported under line_sampling/ with LineSampling-prefixed program IDs;
@@ -139,7 +200,8 @@ PrepareLineSamplingConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                  const QString& file,
                                  const QString& configuration,
                                  QString& outError,
-                                 RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
+                                 RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr,
+                                 TemplateInstance* inoutInstanceOrNull = nullptr);
 /// Prepare the salesin-jarosz-lines template (point-line design D8b) in an absent/empty library: a
 /// primary-hits pass and the ShadeMultipleImportance, ShadeLineSampling and ShadePointSampling
 /// triangle-loop passes sharing one render-size hit Buffer, imported under salesin_jarosz_lines/ with
@@ -153,15 +215,19 @@ PreparePointLineConfiguration(RenderGraphSnapshot& inoutSnapshot,
                               const QString& file,
                               const QString& configuration,
                               QString& outError,
-                              RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
+                              RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr,
+                              TemplateInstance* inoutInstanceOrNull = nullptr);
 /// Prepare a built-in configuration, inserting a library/Subgraph when selected on the root canvas.
 /// Conditional ReSTIR imports four passes and three render-sized reservoirs under conditional_restir/.
 /// Supports restir-di, visibility-buffer, visibility-secondary-rays, tiled-vbuffer-nee,
 /// compute-ray-tracing, simple-compute-ray-tracing, veach-guibas-mis, line-sampling, ris-projected-solid-angle,
 /// salesin-jarosz-lines, polygonal-light-sampling, slice-sampling-luminaire, steinberg-plt,
 /// steinberg-physical-optics, restir-gi and conditional-restir.
-/// Same transaction contract as PrepareRestirTemplate; invalid identities and conflicts leave publication to the
-/// caller.
+/// When the template's own source directory, program IDs, settings or varying schema already hold different
+/// content, the import becomes the first numbered TemplateInstance whose names are free or identical, up to
+/// MAX_TEMPLATE_INSTANCES, and the optional notice says where it went; authored content is never replaced or
+/// renamed. Same transaction contract as PrepareRestirTemplate; invalid identities and conflicts leave
+/// publication to the caller.
 [[nodiscard]] RenderGraphDocumentStatus
 PrepareConfigurationTemplate(RenderGraphSnapshot& inoutSnapshot,
                              const QString& rootGraph,
@@ -171,5 +237,6 @@ PrepareConfigurationTemplate(RenderGraphSnapshot& inoutSnapshot,
                              const QString& packageRoot,
                              const QString& templateIdentity,
                              QString& outError,
-                             RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
+                             RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr,
+                             QString* outNoticeOrNull = nullptr);
 } // namespace ludus::editor

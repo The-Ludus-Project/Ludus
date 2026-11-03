@@ -158,6 +158,11 @@ public:
     [[nodiscard]] bool ApplyConfigurationTemplate(const QString& configuration,
                                                   const QString& templateIdentity,
                                                   RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
+    /// The Apply Configuration Template dialog's proposed configuration name: proposed when applying it to the
+    /// selected file creates no collision, else proposed with 2, 3, ... appended. On the root graph
+    /// a name is used by an existing library file or a node of the selected configuration; in a
+    /// library, by a nonempty configuration. Returns proposed when every candidate is used.
+    [[nodiscard]] QString MakeTemplateConfigurationName(const QString& proposed) const;
     /// Delete the selected configuration in one undo step and select the asset default.
     /// Last configurations, referenced configurations and source conflicts preserve the
     /// draft and report the repair in the status line. Save publishes; GUI thread only.

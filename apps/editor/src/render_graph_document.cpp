@@ -1373,8 +1373,13 @@ RenderGraphDocument::ApplyConfigurationTemplate(const QString& file,
                                                 const QString& templateIdentity,
                                                 QString& outError,
                                                 const QString& parentConfiguration,
-                                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
+                                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull,
+                                                QString* outNoticeOrNull)
 {
+    if (outNoticeOrNull != nullptr)
+    {
+        outNoticeOrNull->clear();
+    }
     if (inoutBudgetOrNull != nullptr)
     {
         inoutBudgetOrNull->CurrentPrograms = 0;
@@ -1391,7 +1396,8 @@ RenderGraphDocument::ApplyConfigurationTemplate(const QString& file,
                                                                             mPackageRoot,
                                                                             templateIdentity,
                                                                             outError,
-                                                                            inoutBudgetOrNull);
+                                                                            inoutBudgetOrNull,
+                                                                            outNoticeOrNull);
     if (prepared != RenderGraphDocumentStatus::Ok)
     {
         return prepared;
@@ -1402,6 +1408,10 @@ RenderGraphDocument::ApplyConfigurationTemplate(const QString& file,
     {
         outError =
             QStringLiteral("The template exceeds this package's file or history limits. The draft was preserved.");
+        if (outNoticeOrNull != nullptr)
+        {
+            outNoticeOrNull->clear();
+        }
     }
     return status;
 }

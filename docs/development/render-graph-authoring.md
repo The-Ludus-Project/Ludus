@@ -1430,10 +1430,12 @@ admission limits are retained unless you approve a program-budget increase. If t
 merged programs exceed `budgets.programs`, the template picker shows the current
 and required counts and offers **Increase and apply** or **Cancel**. Approval raises
 only that limit to the required count in the same undoable edit; Cancel preserves
-the draft. An incompatible payload, visibility ray profile,
-source/setting collision or other insufficient admission budget reports a repair
-and preserves the draft. Program, source and setting conflicts name the conflicting
-input; a program capacity error gives the required count and `budgets.programs` limit.
+the draft. A shared ray technique that also permits visibility-buffer inputs is
+shared as is: ReSTIR's passes keep their ordinary bindings. An incompatible payload
+or other insufficient admission budget reports a repair and preserves the draft; a program capacity error
+gives the required count and `budgets.programs` limit. Sources, programs or settings
+that already use the template's names never block it: see
+[When template names are already in use](#when-template-names-are-already-in-use).
 Undo restores the previous budgets along with the graph and shader edits.
 Settings are shared by this package's ReSTIR
 configurations. A manifest holds up to 128 settings, enough for every built-in
@@ -1637,6 +1639,35 @@ those authors for [Appendix A.1, “The Alias Method”](https://pbr-book.org/4e
 and [Appendix A.2, “Reservoir Sampling”](https://pbr-book.org/4ed/Sampling_Algorithms/Reservoir_Sampling);
 it adapts their sampling ideas to bounded GPU-local tables and one shared emitter
 stream, rather than copying the book's container implementation.
+
+### When template names are already in use
+
+Every configuration template is owned by the engine, and applying it never asks you
+to rename your own sources, programs or settings. An import first uses the
+template's own names: sources under its directory (`restir_di/`), programs with its
+prefix (`Restir…`) and its Graph settings. Existing copies with identical contents
+are shared, so applying the same template twice adds only the new configuration.
+
+When one of those names already holds different content, for example sources from an
+earlier editor version of the template or sources you edited, the import uses the
+first free numbered copy instead: `restir_di_2/` with `Restir2…` programs, then
+`restir_di_3/`, and so on. A Graph setting whose definition differs is kept, and the
+import adds `NAME_2` (or the next free number) and uses it in its copied sources; a
+visibility varying schema becomes `VisibilityRasterVarying2`. Existing files,
+programs, settings, schemas and configurations are never changed, so configurations
+built from an earlier copy keep rendering exactly as before. The status bar names
+the numbered copy and any renamed settings. Up to 16 copies are tried; when all
+differ, the error asks you to delete copies the package no longer uses (**Delete
+Subgraph and Library** removes a library with the sources only it uses).
+
+The numbered copy adds programs. When they exceed `budgets.programs`, the picker
+offers **Increase and apply** as above. The proposed configuration name in **Apply
+Configuration Template** is also free: if `RestirDi` already names a library file,
+root node or nonempty configuration, the dialog proposes `RestirDi2`.
+
+Names that describe shared behaviour rather than a copy are not renamed: a shared
+ray payload without the fields the template needs, or an unsupported ray scene
+interface version, still reports its repair and preserves the draft.
 
 ### Use stochastic pairwise MIS for large spatial kernels
 
@@ -2432,8 +2463,9 @@ New shader programs have `ComputeRay`-prefixed IDs (`ComputeRayPrimary`,
 the included `hit_record.slang`. The shared `RendererTriangles.RayTracing` technique
 gains `scene_interface` version 1 when it has none, and its surface and visibility
 query budgets rise to at least one each. Existing callbacks, payload and larger
-budgets are kept. A source or program collision, an unsupported scene interface
-version or a capacity limit reports the repair and preserves the draft.
+budgets are kept. Sources or programs that already hold different content move the
+import to a [numbered copy](#when-template-names-are-already-in-use); an unsupported
+scene interface version or a capacity limit reports the repair and preserves the draft.
 
 `ludus_render_graph_ray_tests` renders the template on a lit Cornell-box-style room
 and compares it with a single-pass RayTracingPipeline
@@ -4595,9 +4627,10 @@ Secondary rays require a native profile. Existing ordinary ray configurations ca
 share the package: their callbacks, payload source and query limits are retained.
 The shared `ScenePayload` needs a `float3 Radiance` field; comments, whitespace and
 additional fields are accepted, with full payload validation at build time. An
-unsupported ray interface version, incompatible payload, changed reserved
-shader/schema or source collision reports the specific repair and preserves the
-draft. The same canonical libraries back the New Render Graph starters and are
+unsupported ray interface version or incompatible payload reports the specific
+repair and preserves the draft. Changed copies of the template's sources, programs or
+varying schema move the import, including its shared raster producer, to a
+[numbered copy](#when-template-names-are-already-in-use). The same canonical libraries back the New Render Graph starters and are
 included in installed SDK packages.
 
 Choose a starter in **New Render Graph → Template**. The editor copies the
