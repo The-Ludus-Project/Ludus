@@ -46,6 +46,15 @@ public:
     /// @param outShading Receives the chosen mode; preserved when false.
     /// @return False while the menu selects the graph's final output or one of its attachments.
     [[nodiscard]] bool TryGetDebugView(PreviewShading& outShading) const;
+    /// Return the output menu to the graph's final output because the chosen built-in debug view
+    /// cannot be drawn. The reason stays in the status text until another output is chosen, so the
+    /// graph's last image remains on screen instead of an empty viewport. No-op without a debug view.
+    void RejectDebugView(const QString& reason);
+    /// Explanation of the most recently rejected debug view; empty after another output is chosen.
+    [[nodiscard]] const QString& GetDebugViewProblem() const noexcept
+    {
+        return mDebugViewProblem;
+    }
 
     /// True while the status text is the short build-failure chip; the full problem is in the Error List.
     [[nodiscard]] bool HasProblemChip() const noexcept
@@ -85,5 +94,6 @@ private:
     ViewportPaintTrace mPaintTrace;
     foundation::uint64 mPresentedFrames = 0;
     bool mCanPresent = true;
+    QString mDebugViewProblem;
 };
 } // namespace ludus::editor

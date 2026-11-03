@@ -170,19 +170,45 @@ struct Inputs final
 /// Consumer of BuildInputs.
 enum class InputsTarget : uint8
 {
-    /// Raster Lit shading: authored lights, one area proxy per planar emissive patch, and shadow regions.
+    /// Raster Lit shading and the Light count debug view, which counts shadowed contributions: authored
+    /// lights, one area proxy per planar emissive patch, and shadow regions.
     Raster,
     /// Reference transport samples emissive triangles and traces visibility itself, so it receives the
     /// authored lights and resolved surface emission only. Area proxies are not built and their capacity
     /// never limits a reference.
     Reference,
+    /// Debug views that read no lighting (normals, depth, roughness, metallic, UV and wireframe) receive
+    /// per-object surfaces only. No lights, area proxies or shadow regions are built, so no lighting budget
+    /// limits them, however many emissive patches the World has.
+    Surfaces,
 };
 
+/// Budget that BuildInputs exceeded when it returned CapacityExceeded.
+enum class InputsLimit : uint8
+{
+    /// Authored lights plus one area proxy per planar emissive patch exceed rr::MAX_DIRECT_LIGHTS.
+    Lights,
+    /// The Raster target's shadow faces exceed rr::SHADOW_REGION_CAPACITY.
+    ShadowFaces,
+    /// One emitter has too many triangles, or its authored power resolves to an unrepresentable radiance.
+    Emitter,
+};
+
+/// Build the preview's lighting inputs for target. outInputs is written only on Ready.
+/// @param outLimitOrNull When not null, receives the exceeded budget on CapacityExceeded; otherwise untouched.
 inline rhi::RasterStatus BuildInputs(const RenderScene& scene,
                                      const QByteArray& key,
                                      Inputs& outInputs,
-                                     InputsTarget target = InputsTarget::Raster)
+                                     InputsTarget target = InputsTarget::Raster,
+                                     InputsLimit* outLimitOrNull = nullptr)
 {
+    const auto exceed = [outLimitOrNull](InputsLimit limit) {
+        if (outLimitOrNull != nullptr)
+        {
+            *outLimitOrNull = limit;
+        }
+        return rhi::RasterStatus::CapacityExceeded;
+    };
     if (scene.Definition == nullptr || key.size() < static_cast<isize>(sizeof(uint64) * 2) ||
         scene.Definition->Objects.GetSize() > MAX_INSTANCES ||
         scene.Definition->Objects.GetSize() != static_cast<usize>(scene.Objects.size()))
@@ -199,7 +225,10 @@ inline rhi::RasterStatus BuildInputs(const RenderScene& scene,
     const float32 radius = math::Max(scene.Radius, .1F);
     result.Clusters.Bounds = {scene.Center - math::Vector3{radius, radius, radius},
                               scene.Center + math::Vector3{radius, radius, radius}};
-    result.Lights = scene.AuthoredLights;
+    if (target != InputsTarget::Surfaces)
+    {
+        result.Lights = scene.AuthoredLights;
+    }
     for (usize objectIndex = 0; objectIndex < scene.Definition->Objects.GetSize(); ++objectIndex)
     {
         const PreviewObject& object = scene.Objects[static_cast<int32>(objectIndex)];
@@ -224,14 +253,15 @@ inline rhi::RasterStatus BuildInputs(const RenderScene& scene,
             overrideSurface.Alpha = rr::MaterialAlpha::Masked;
             overrideSurface.AlphaCutoff = surface.AlphaCutoff;
         }
-        if (surface.Emission.X == 0 && surface.Emission.Y == 0 && surface.Emission.Z == 0)
+        if (target == InputsTarget::Surfaces ||
+            (surface.Emission.X == 0 && surface.Emission.Y == 0 && surface.Emission.Z == 0))
         {
             continue;
         }
         const usize triangles = mesh.Indices.GetSize() / rr::AREA_TRIANGLE_CORNERS;
         if (triangles > MAX_EMITTER_TRIANGLES)
         {
-            return rhi::RasterStatus::CapacityExceeded;
+            return exceed(InputsLimit::Emitter);
         }
         float64 area = 0;
         for (usize i = 0; i < triangles; ++i)
@@ -254,6 +284,10 @@ inline rhi::RasterStatus BuildInputs(const RenderScene& scene,
                                                                             area,
                                                                             material.IsEmissionTwoSided,
                                                                             overrideSurface.Emission);
+            if (resolved == rhi::RasterStatus::CapacityExceeded)
+            {
+                return exceed(InputsLimit::Emitter);
+            }
             if (resolved != rhi::RasterStatus::Ready)
             {
                 return resolved;
@@ -280,6 +314,10 @@ inline rhi::RasterStatus BuildInputs(const RenderScene& scene,
                                                                  math::Min(1000000.0F, math::Max(10.0F, radius * 8)),
                                                                  result.Lights,
                                                                  added);
+        if (status == rhi::RasterStatus::CapacityExceeded)
+        {
+            return exceed(InputsLimit::Lights);
+        }
         if (status != rhi::RasterStatus::Ready)
         {
             return status;
@@ -289,12 +327,16 @@ inline rhi::RasterStatus BuildInputs(const RenderScene& scene,
     rr::LightSelection normalized;
     const rhi::RasterStatus normalizedStatus =
         rr::NormalizeDirectLights(result.Lights.Lights, result.Lights.Count, normalized);
+    if (normalizedStatus == rhi::RasterStatus::CapacityExceeded)
+    {
+        return exceed(InputsLimit::Lights);
+    }
     if (normalizedStatus != rhi::RasterStatus::Ready)
     {
         return normalizedStatus;
     }
     result.Lights = normalized;
-    if (target == InputsTarget::Reference)
+    if (target != InputsTarget::Raster)
     {
         outInputs = Move(result);
         return rhi::RasterStatus::Ready;
@@ -307,7 +349,7 @@ inline rhi::RasterStatus BuildInputs(const RenderScene& scene,
         const uint32 count = isCube == true ? rr::POINT_SHADOW_FACES : 1;
         if (count > rr::SHADOW_REGION_CAPACITY - result.ShadowCount)
         {
-            return rhi::RasterStatus::CapacityExceeded;
+            return exceed(InputsLimit::ShadowFaces);
         }
         for (uint32 face = 0; face < count; ++face)
         {
