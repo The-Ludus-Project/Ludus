@@ -7136,7 +7136,7 @@ Ctrl is shown below (Qt's native shortcut mapping):
 | Quick Open source in this package | Ctrl+P |
 | Go to shader symbol in the current source | Ctrl+Shift+O |
 | Go to definition / find references | F12 / Shift+F12 |
-| Navigate Back / Forward | Ctrl+Alt+Left / Ctrl+Alt+Right |
+| Navigate Back / Forward | Ctrl+Alt+Left / Ctrl+Alt+Right, or the mouse's side Back / Forward buttons over the editor |
 | Indent / outdent selected lines | Tab / Shift+Tab |
 | Toggle Slang line comments | Ctrl+/ |
 | Duplicate selected lines, or current line | Ctrl+D |
@@ -7855,8 +7855,11 @@ nodes that reference the same library can have different navigation paths and
 saved views. Hover a breadcrumb for its package-relative file and configuration.
 Long paths remain accessible through the toolbar's overflow menu.
 
-Use **Back** and **Forward**, or the platform navigation shortcuts shown in their
-tooltips while the canvas has focus, to return through visited configurations.
+Use **Back** and **Forward**, the platform navigation shortcuts shown in their
+tooltips while the canvas has focus, or a mouse's side Back/Forward buttons over
+the canvas and its toolbars, to return through visited configurations. A side
+button press is ignored while another mouse button is held, such as during a pan
+or wire drag.
 Returning restores the saved node selection, magnification, scene centre and
 upstream/downstream trace mode. The Outline, Properties and the Source file also
 follow the restored location. The scene centre remains the reference point if the

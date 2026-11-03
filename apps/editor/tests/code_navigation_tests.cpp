@@ -167,6 +167,27 @@ TEST_CASE("Line and diagnostic jumps share anchored Back and Forward without edi
     CHECK(editor.textCursor().blockNumber() == 3);
 }
 
+TEST_CASE("Mouse Back and Forward buttons follow source navigation history", "[editor][code-navigation]")
+{
+    CodeEditor editor;
+    editor.setPlainText(QStringLiteral("one\ntwo\nthree\nfour\n"));
+    editor.GoToLine(3);
+    editor.GoToLine(4);
+    QTest::mouseClick(editor.viewport(), Qt::BackButton);
+    CHECK(editor.textCursor().blockNumber() == 2);
+    QTest::mouseClick(editor.viewport(), Qt::BackButton);
+    CHECK(editor.textCursor().position() == 0);
+    QTest::mouseClick(editor.viewport(), Qt::ForwardButton);
+    CHECK(editor.textCursor().blockNumber() == 2);
+    QTest::mouseClick(editor.viewport(), Qt::ForwardButton);
+    CHECK(editor.textCursor().blockNumber() == 3);
+    // An unrelated widget does not drive this editor's history.
+    QWidget other;
+    QTest::mouseClick(&other, Qt::BackButton);
+    CHECK(editor.textCursor().blockNumber() == 3);
+    CHECK(editor.document()->isUndoAvailable() == false);
+}
+
 TEST_CASE("Cross-file navigation retains drafts and history and rejects removed targets locally",
           "[editor][code-navigation]")
 {

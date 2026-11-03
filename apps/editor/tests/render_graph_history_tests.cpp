@@ -261,6 +261,39 @@ TEST_CASE("navigation survives viewport focus, resize and pending auto-fit callb
     CHECK(workspace.GetDocument().GetRevision() == 0);
 }
 
+TEST_CASE("mouse Back and Forward buttons navigate graph history from the canvas and its toolbar",
+          "[editor][render-graph][history]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenWorkspace(workspace, project);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    RenderGraphHistory& history = canvas.GetHistory();
+    const RenderGraphViewState parent =
+        SetView(canvas, {QStringLiteral("texture")}, QPointF(180, 150), 0.55, RenderGraphTraceDirection::Downstream);
+    Enter(workspace, QStringLiteral("left"));
+    const int32 entries = history.GetEntryCount();
+    QTest::mousePress(canvas.viewport(), Qt::BackButton);
+    QTest::mouseRelease(canvas.viewport(), Qt::BackButton);
+    QCoreApplication::processEvents();
+    CHECK(canvas.GetFile() == GetRoot());
+    CheckView(canvas, parent);
+    // A press with another button held is consumed without navigating.
+    QTest::mousePress(canvas.viewport(), Qt::MiddleButton);
+    QTest::mousePress(canvas.viewport(), Qt::ForwardButton);
+    QTest::mouseRelease(canvas.viewport(), Qt::ForwardButton);
+    QTest::mouseRelease(canvas.viewport(), Qt::MiddleButton);
+    CHECK(canvas.GetFile() == GetRoot());
+    QTest::mouseClick(&history, Qt::ForwardButton);
+    QCoreApplication::processEvents();
+    CHECK(canvas.GetFile() == GetChild());
+    // Forward at the newest visit is a disabled no-op, as in a browser.
+    QTest::mouseClick(canvas.viewport(), Qt::ForwardButton);
+    CHECK(canvas.GetFile() == GetChild());
+    CHECK(history.GetEntryCount() == entries);
+    CHECK(workspace.GetDocument().GetRevision() == 0);
+}
+
 TEST_CASE("history skips deleted configurations and detaches rebound instance paths", "[editor][render-graph][history]")
 {
     QTemporaryDir project;

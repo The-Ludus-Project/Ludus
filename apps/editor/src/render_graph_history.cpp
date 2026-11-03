@@ -1,4 +1,5 @@
 #include "internal/render_graph_history.h"
+#include "internal/mouse_history_buttons.h"
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
 
@@ -93,6 +94,7 @@ RenderGraphHistory::RenderGraphHistory(const RenderGraphDocument& document, Rend
         mCanvas.addAction(action);
         addAction(action);
     }
+    new MouseHistoryButtons(*this, mCanvas, *mBack, *mForward);
     addSeparator();
     connect(mBack, &QAction::triggered, this, [this]() { static_cast<void>(Back()); });
     connect(mForward, &QAction::triggered, this, [this]() { static_cast<void>(Forward()); });

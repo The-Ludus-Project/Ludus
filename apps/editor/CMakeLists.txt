@@ -464,7 +464,7 @@ set(editor_profiling_sources
 
 # Reusable private text presentation and async native assistance; no renderer link.
 add_library(ludus_editor_code STATIC
-    src/internal/code_navigation.h src/code_navigation.cpp
+    src/internal/code_navigation.h src/code_navigation.cpp src/internal/mouse_history_buttons.h
     src/internal/code_navigation_results.h src/code_navigation_results.cpp
     src/internal/code_editor.h src/code_editor.cpp
     src/internal/code_editor_panel.h src/code_editor_panel.cpp
