@@ -982,8 +982,11 @@ text and never-saved new worlds do not have crash recovery; Save is required to
 preserve them. Each world path has one recovery slot, so concurrent authoring of
 the same document should use version control and separate working copies.
 
-Limits: schema 64 KiB, world 512 KiB, 128 entities, 16 component definitions,
+Limits: schema 64 KiB, 16 component definitions,
 32 properties per component, 4096 declared assets and 32 applied history entries.
+A World admits every object of one imported scene (the cooked import profile's
+1024 objects; Bistro cooks 136) plus 128 authored entities, with 4 KiB of
+compact JSON reserved per entity (4.5 MiB).
 These bounds keep this first slice predictable; large production-world UX,
 hierarchy/parenting, batch property editing, prefab/archetype workflows, schema migrations,
 viewport gizmos, automatic runtime binding and browser import/export are still

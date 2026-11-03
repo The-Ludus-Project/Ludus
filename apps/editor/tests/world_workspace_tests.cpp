@@ -448,15 +448,23 @@ TEST_CASE("World schema and document resource limits are enforced", "[editor][wo
     auto document = Document();
     QString error;
     QString id;
-    for (ludus::foundation::uint32 i = 2; i < 128; ++i)
+    REQUIRE(document.CreateEntity(ludus::platform::GetSystemEntropySource(), error, QStringLiteral("Entity"), id));
+    QJsonObject bounded = document.Draft();
+    QJsonArray entities = bounded.value(QStringLiteral("entities")).toArray();
+    const QJsonObject created = document.Entity(id);
+    while (entities.size() < WorldDocument::MAX_ENTITIES)
     {
-        REQUIRE(document.CreateEntity(ludus::platform::GetSystemEntropySource(), error, QStringLiteral("Entity"), id));
+        QJsonObject entity = created;
+        entity.insert(QStringLiteral("id"), QStringLiteral("capacity.") + QString::number(entities.size()));
+        entities.append(entity);
     }
+    bounded.insert(QStringLiteral("entities"), entities);
+    REQUIRE(document.Restore(bounded, error) == true);
     const auto before = document.Draft();
     CHECK_FALSE(
         document.CreateEntity(ludus::platform::GetSystemEntropySource(), error, QStringLiteral("Overflow"), id));
     CHECK(document.Draft() == before);
-    CHECK_FALSE(document.Load(QByteArray(524289, ' '), error));
+    CHECK_FALSE(document.Load(QByteArray(WorldDocument::MAX_BYTES + 1, ' '), error));
     CHECK(document.Draft() == before);
     WorldDocument fresh;
     CHECK_FALSE(fresh.LoadSchema(QByteArray(65537, ' '), error));
@@ -707,7 +715,47 @@ QJsonObject ImportedLevel()
                          {QStringLiteral("transform"), QJsonArray{1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 3, 4}}}}},
     };
 }
+/// ImportedLevel() with `count` distinct objects, one per cooked mesh and material slot like a
+/// best-effort import such as Bistro's.
+QJsonObject ImportedLevel(ludus::foundation::int32 count)
+{
+    QJsonObject level = ImportedLevel();
+    const QJsonObject source = level.value(QStringLiteral("objects")).toArray()[0].toObject();
+    QJsonArray objects;
+    for (ludus::foundation::int32 i = 0; i < count; ++i)
+    {
+        const QString suffix = QStringLiteral("%1").arg(i, 12, 10, QLatin1Char('0'));
+        QJsonObject object = source;
+        object.insert(QStringLiteral("id"), QStringLiteral("c0000000-0000-4000-8000-") + suffix);
+        object.insert(QStringLiteral("name"), QStringLiteral("Imported object %1").arg(i + 1));
+        object.insert(QStringLiteral("mesh"), QStringLiteral("mesh/00000000-0000-4000-8000-") + suffix);
+        object.insert(QStringLiteral("material"), QStringLiteral("material/00000000-0000-4000-8000-") + suffix);
+        objects.append(object);
+    }
+    level.insert(QStringLiteral("objects"), objects);
+    return level;
+}
 } // namespace
+TEST_CASE("A World admits every object of an import-profile scene", "[editor][world][unified]")
+{
+    // Bistro's best-effort import cooks 136 objects, more than the resident reference profile's 128.
+    const ludus::foundation::int32 importObjects =
+        static_cast<ludus::foundation::int32>(ludus::content::scene_format::IMPORT_LIMITS.Objects);
+    WorldDocument document = UnboundDocument();
+    const ludus::foundation::int32 authored =
+        static_cast<ludus::foundation::int32>(document.Draft().value(QStringLiteral("entities")).toArray().size());
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(importObjects), error) == true);
+    CHECK(document.Draft().value(QStringLiteral("entities")).toArray().size() == authored + importObjects);
+    CHECK(document.SceneLevel().value(QStringLiteral("objects")).toArray().size() == importObjects);
+    CHECK(document.Encode().size() <= WorldDocument::MAX_BYTES);
+
+    WorldDocument overflowing = UnboundDocument();
+    const QJsonObject before = overflowing.Draft();
+    CHECK(overflowing.ImportScene(ImportedLevel(WorldDocument::MAX_ENTITIES - authored + 1), error) == false);
+    CHECK(error.contains(QStringLiteral("at most %1 entities").arg(WorldDocument::MAX_ENTITIES)) == true);
+    CHECK(overflowing.Draft() == before);
+}
 TEST_CASE("Imported scene instances share entity components placement persistence and history",
           "[editor][world][unified]")
 {

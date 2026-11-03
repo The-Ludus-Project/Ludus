@@ -5,6 +5,8 @@
 #include <ludus/foundation/identity/uuid.hpp>
 #include <ludus/foundation/math/transform.hpp>
 
+#include <ludus/content/scene_format/limits.h>
+
 #include "internal/document_history.h"
 #include "internal/light_switches.h"
 
@@ -31,11 +33,19 @@ namespace ludus::editor
 class WorldDocument final
 {
 public:
-    static constexpr foundation::int64 MaxBytes = 524288;
+    /// Most entities a World admits beside the objects of its imported scene.
+    static constexpr foundation::int32 MAX_AUTHORED_ENTITIES = 128;
+    /// Most entities one World admits; validation rejects a larger entity list. Every object of an
+    /// import-profile scene (the cooked bundle's limit, e.g. Bistro's one object per material) fits
+    /// beside the authored entities.
+    static constexpr foundation::int32 MAX_ENTITIES =
+        static_cast<foundation::int32>(content::scene_format::IMPORT_LIMITS.Objects) + MAX_AUTHORED_ENTITIES;
+    /// Encoded bytes the World budget reserves for each admitted entity.
+    static constexpr foundation::int64 MAX_ENTITY_BYTES = 4096;
+    /// Largest encoded World document, compact JSON with its terminator.
+    static constexpr foundation::int64 MAX_BYTES = MAX_ENTITIES * MAX_ENTITY_BYTES;
     /// Largest world schema accepted from a project or the built-in adapter.
     static constexpr foundation::int64 MAX_SCHEMA_BYTES = 65536;
-    /// Most entities one World admits; validation rejects a larger entity list.
-    static constexpr foundation::int32 MAX_ENTITIES = 128;
     [[nodiscard]] bool LoadSchema(const QByteArray& bytes, QString& error);
     [[nodiscard]] bool Load(const QByteArray& bytes, QString& error);
     [[nodiscard]] bool New(QString& error);
