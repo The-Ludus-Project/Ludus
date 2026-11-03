@@ -106,8 +106,8 @@ inline constexpr ludus::foundation::float32 DEFAULT_PANEL_LUMINAIRE_BEAM_TWIST =
 /// Waterloo), section 6.2. It is not scene geometry: camera rays do not see it and it does not occlude. Only scene
 /// shaders that read it, such as the slice-sampling-luminaire render-graph template, are lit by it; the raster,
 /// clustered and reference renderers ignore it. The template owns the per-tile tables; these values place the panel
-/// and scale its beams. See
-/// docs/development/render-graph-authoring.md#sample-a-directional-luminaire-with-slice-sampling.
+/// and scale its beams. See "Sample a directional luminaire with slice sampling" in
+/// docs/development/render-graph-authoring.md.
 struct PanelLuminaire final
 {
     /// Unique nonzero source identity within the submitted list; defines the stable order.
