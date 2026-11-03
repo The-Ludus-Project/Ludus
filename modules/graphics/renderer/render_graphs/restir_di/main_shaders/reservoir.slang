@@ -45,6 +45,15 @@ bool HasReservoirCapacity(RayLaunch launch)
            launch.ExtentPixel.x <= capacity / launch.ExtentPixel.y;
 }
 
+/// The receiver past any smooth glass the camera sees through (FollowSpecularChain, up to SCENE_SPECULAR_CHAIN_EVENTS
+/// more surface queries). Every pass draws the same chain from the default dimensions, above the automatic stream these
+/// shaders use, so all of them find the same receiver. A chain that leaves the scene is a camera miss: like one, it
+/// shades no environment and keeps no reservoir.
+SpecularChain FollowReceiverGlass(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, SurfaceHit hit)
+{
+    return FollowSpecularChain(scene, launch, queries, hit, SCENE_SPECULAR_CHAIN_DEFAULT_DIMENSION_FIRST);
+}
+
 Reservoir MakeReceiverReservoir(SceneContext scene, RayLaunch launch, SurfaceHit hit)
 {
     Reservoir result = (Reservoir)0;

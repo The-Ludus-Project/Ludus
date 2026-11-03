@@ -35,6 +35,7 @@ struct ShadingPoint
     MaterialSample Material;
     float3 ShadingNormalWorld;
     float3 ViewDirectionWorld;
+    float3 Throughput; ///< Smooth-glass chain weight from the camera to Hit.
 };
 
 /// A grating surface point with its groove frame and profile.
@@ -88,7 +89,16 @@ bool TryLoadShadingPoint(SceneContext scene,
     outPoint.Hit.IncomingRay = cameraRay;
     outPoint.Hit.DistanceWorld = record.DistanceWorld;
     outPoint.Hit.IsFrontFace = record.IsFrontFace;
-    outPoint.ViewDirectionWorld = -cameraRay.DirectionWorld;
+    // Smooth glass is followed to the first surface the estimators can shade (FollowSpecularChain, up to
+    // SCENE_SPECULAR_CHAIN_EVENTS surface queries); every pass draws the same chain.
+    SpecularChain chain =
+        FollowSpecularChain(scene, launch, queries, outPoint.Hit, SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST);
+    outRadiance = chain.Radiance;
+    if (chain.IsSurface == false)
+        return false;
+    outPoint.Hit = chain.Hit;
+    outPoint.Throughput = chain.Throughput;
+    outPoint.ViewDirectionWorld = chain.ViewDirectionWorld;
     outPoint.Material = EvaluateMaterial(scene, outPoint.Hit);
     float normalLengthSquared = dot(outPoint.Material.ShadingNormalWorld, outPoint.Material.ShadingNormalWorld);
     if (outPoint.Material.IsValid == false || normalLengthSquared <= 0)
@@ -97,7 +107,7 @@ bool TryLoadShadingPoint(SceneContext scene,
         return false;
     }
     outPoint.ShadingNormalWorld = outPoint.Material.ShadingNormalWorld * rsqrt(normalLengthSquared);
-    outRadiance = EvaluateEmission(scene, outPoint.Hit, outPoint.ViewDirectionWorld);
+    outRadiance += outPoint.Throughput * EvaluateEmission(scene, outPoint.Hit, outPoint.ViewDirectionWorld);
     return true;
 }
 
@@ -469,12 +479,14 @@ float3 ShadeWave(SceneContext scene, RayLaunch launch, inout RayQueryContext que
         return radiance;
     GratingPoint grating;
     if (TryMakeGratingPoint(shadingPoint, grating) == false)
-        return FinishRadiance(radiance + SampleClassicalLight(scene, launch, shadingPoint, queries), queries);
+        return FinishRadiance(radiance +
+                                  shadingPoint.Throughput * SampleClassicalLight(scene, launch, shadingPoint, queries),
+                              queries);
     // A grating seen from behind its mean plane reflects nothing toward the viewer.
     if (dot(shadingPoint.ViewDirectionWorld, grating.Frame.NormalWorld) <= 0)
         return FinishRadiance(radiance, queries);
-    radiance += EstimateWaveDeltaSource(scene, launch, grating, queries);
-    radiance += EstimateWaveTraced(scene, launch, grating, queries);
+    radiance += shadingPoint.Throughput * EstimateWaveDeltaSource(scene, launch, grating, queries);
+    radiance += shadingPoint.Throughput * EstimateWaveTraced(scene, launch, grating, queries);
     return FinishRadiance(radiance, queries);
 }
 
@@ -487,11 +499,13 @@ float3 ShadeGeometricOptics(SceneContext scene, RayLaunch launch, inout RayQuery
         return radiance;
     GratingPoint grating;
     if (TryMakeGratingPoint(shadingPoint, grating) == false)
-        return FinishRadiance(radiance + SampleClassicalLight(scene, launch, shadingPoint, queries), queries);
+        return FinishRadiance(radiance +
+                                  shadingPoint.Throughput * SampleClassicalLight(scene, launch, shadingPoint, queries),
+                              queries);
     if (dot(shadingPoint.ViewDirectionWorld, grating.Frame.NormalWorld) <= 0)
         return FinishRadiance(radiance, queries);
-    radiance += EstimateGeometricDeltaSource(scene, launch, grating, queries);
-    radiance += EstimateGeometricTraced(scene, launch, grating, queries);
+    radiance += shadingPoint.Throughput * EstimateGeometricDeltaSource(scene, launch, grating, queries);
+    radiance += shadingPoint.Throughput * EstimateGeometricTraced(scene, launch, grating, queries);
     return FinishRadiance(radiance, queries);
 }
 

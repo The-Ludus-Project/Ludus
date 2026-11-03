@@ -18,6 +18,8 @@
 // light sample keeps weight one under MIS, because BSDF sampling never proposes its direction.
 // A primary miss returns the environment. There is no indirect bounce. At most one surface and one
 // visibility query; the camera ray is not traced again, because the surface comes from the record.
+// A recorded smooth-glass surface is followed with FollowSpecularChain (up to SCENE_SPECULAR_CHAIN_EVENTS
+// more surface queries) to the first surface the strategies can shade.
 
 static const float SHADE_MAXIMUM_TRACE_DISTANCE_WORLD = 3.402823466e38f;
 
@@ -27,6 +29,7 @@ struct ShadingPoint
     MaterialSample Material;
     float3 ShadingNormalWorld;
     float3 ViewDirectionWorld;
+    float3 Throughput; ///< Smooth-glass chain weight from the camera to Hit.
 };
 
 /// Rebuild this pixel's recorded surface. Returns false when the pixel needs no strategy: a primary
@@ -64,7 +67,14 @@ bool TryLoadShadingPoint(SceneContext scene,
     outPoint.Hit.IncomingRay = cameraRay;
     outPoint.Hit.DistanceWorld = record.DistanceWorld;
     outPoint.Hit.IsFrontFace = record.IsFrontFace;
-    outPoint.ViewDirectionWorld = -cameraRay.DirectionWorld;
+    SpecularChain chain =
+        FollowSpecularChain(scene, launch, queries, outPoint.Hit, SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST);
+    outRadiance = chain.Radiance;
+    if (chain.IsSurface == false)
+        return false;
+    outPoint.Hit = chain.Hit;
+    outPoint.Throughput = chain.Throughput;
+    outPoint.ViewDirectionWorld = chain.ViewDirectionWorld;
     outPoint.Material = EvaluateMaterial(scene, outPoint.Hit);
     float normalLengthSquared = dot(outPoint.Material.ShadingNormalWorld, outPoint.Material.ShadingNormalWorld);
     if (outPoint.Material.IsValid == false || normalLengthSquared <= 0)
@@ -73,7 +83,7 @@ bool TryLoadShadingPoint(SceneContext scene,
         return false;
     }
     outPoint.ShadingNormalWorld = outPoint.Material.ShadingNormalWorld * rsqrt(normalLengthSquared);
-    outRadiance = EvaluateEmission(scene, outPoint.Hit, outPoint.ViewDirectionWorld);
+    outRadiance += outPoint.Throughput * EvaluateEmission(scene, outPoint.Hit, outPoint.ViewDirectionWorld);
     return true;
 }
 
@@ -95,7 +105,8 @@ float3 SampleLightStrategy(SceneContext scene,
     float lightDensity = light.SelectionPmf * light.ConditionalPdf;
     if (light.HasSample == false || lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false)
         return float3(0);
-    float cosSurface = dot(shadingPoint.ShadingNormalWorld, light.DirectionWorld);
+    float cosSurface =
+        ComputeStandardBsdfCosine(shadingPoint.Material, shadingPoint.ViewDirectionWorld, light.DirectionWorld);
     float3 bsdfValue;
     float bsdfDensity;
     EvaluateStandardBsdf(shadingPoint.Material,
@@ -111,7 +122,7 @@ float3 SampleLightStrategy(SceneContext scene,
     // Skip the shadow ray when the sample cannot contribute; an occluded or failed query adds nothing.
     if (weight <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SCENE_QUERY_MISS)
         return float3(0);
-    return bsdfValue * light.IncidentCoefficient * (cosSurface * weight / lightDensity);
+    return shadingPoint.Throughput * bsdfValue * light.IncidentCoefficient * (cosSurface * weight / lightDensity);
 }
 
 /// BSDF strategy: one BSDF-sampled ray and the emitter or environment it reaches. With isMisWeighted
@@ -132,7 +143,8 @@ float3 SampleBsdfStrategy(SceneContext scene,
     if (all(isfinite(sampledDirectionWorld)) == false || sampledLengthSquared <= 0)
         return float3(0);
     float3 directionWorld = sampledDirectionWorld * rsqrt(sampledLengthSquared);
-    float cosSurface = dot(shadingPoint.ShadingNormalWorld, directionWorld);
+    float cosSurface =
+        ComputeStandardBsdfCosine(shadingPoint.Material, shadingPoint.ViewDirectionWorld, directionWorld);
     float3 bsdfValue;
     float bsdfDensity;
     EvaluateStandardBsdf(shadingPoint.Material,
@@ -166,7 +178,7 @@ float3 SampleBsdfStrategy(SceneContext scene,
     if (any(incidentRadiance > 0) == false)
         return float3(0);
     float weight = isMisWeighted == true ? ComputeMisWeight(bsdfDensity, lightDensity) : 1;
-    return bsdfValue * incidentRadiance * (cosSurface * weight / bsdfDensity);
+    return shadingPoint.Throughput * bsdfValue * incidentRadiance * (cosSurface * weight / bsdfDensity);
 }
 
 /// Reject a nonfinite or negative estimate as a shader failure.

@@ -38,6 +38,9 @@ static const uint SLICE_BRANCH_DIMENSION = SLICE_SEED_DIMENSION_FIRST + 2;
 static const uint PANEL_AREA_DIMENSION_FIRST = SLICE_BRANCH_DIMENSION + 1;
 // Appended last so that one luminaire keeps the earlier dimensions' samples.
 static const uint LUMINAIRE_SELECTION_DIMENSION = PANEL_AREA_DIMENSION_FIRST + 2;
+// Shade passes: Fresnel choices of the smooth-glass chain followed from the recorded hit, shared by
+// every pass so all of them shade the same final surface.
+static const uint SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST = LUMINAIRE_SELECTION_DIMENSION + 1;
 
 struct HitRecord
 {

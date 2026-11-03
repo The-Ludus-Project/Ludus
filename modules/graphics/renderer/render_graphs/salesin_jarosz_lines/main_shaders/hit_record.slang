@@ -40,6 +40,9 @@ static const uint SHADE_LINE_V_DIMENSION_FIRST = SHADE_LINE_U_POSITION_DIMENSION
 static const uint SHADE_LINE_V_POSITION_DIMENSION = SHADE_LINE_V_DIMENSION_FIRST + 4;
 static const uint SHADE_BSDF_DIMENSION_FIRST = SHADE_LINE_V_POSITION_DIMENSION + 1;
 static const uint SHADE_POINT_DIMENSION_FIRST = SHADE_LINE_U_DIMENSION_FIRST;
+// Shade passes: Fresnel choices of the smooth-glass chain followed from the recorded hit, shared by
+// every pass so all of them shade the same final surface.
+static const uint SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST = SHADE_RANDOM_DIMENSION_FIRST + SHADE_RANDOM_DIMENSION_COUNT;
 
 struct HitRecord
 {

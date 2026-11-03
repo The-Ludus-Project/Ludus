@@ -2,6 +2,10 @@
 
 void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, inout ScenePayload payload)
 {
+    SpecularChain chain = FollowReceiverGlass(scene, payload.Launch, queries, hit);
+    if (chain.IsSurface == false)
+        return;
+    hit = chain.Hit;
     Reservoir current = LoadReservoir(queries.RandomPixel, false);
     Reservoir history = LoadReservoir(queries.RandomPixel, true);
     Reservoir result = MakeReceiverReservoir(scene, payload.Launch, hit);

@@ -244,6 +244,13 @@ OpticalMaterial MakeOpticalMaterial(MaterialSample material)
         if (material.CoatingEta > 1)
             result.DielectricEta = material.CoatingEta;
     }
+    else if (IsDielectricModel(material.Model) == true)
+    {
+        // Glass keeps its own IOR over a black base: its reflective interface is rendered, its transmission is not.
+        if (material.Eta.x > 1)
+            result.DielectricEta = material.Eta.x;
+        result.DiffuseAlbedoRgb = float3(0);
+    }
     else
     {
         result.ConductorWeight = saturate(material.Metallic);

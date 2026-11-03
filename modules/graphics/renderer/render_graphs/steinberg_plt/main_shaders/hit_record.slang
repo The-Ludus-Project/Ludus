@@ -38,6 +38,9 @@ static const uint SHADE_LIGHT_SELECTION_DIMENSION = SHADE_WAVELENGTH_DIMENSION +
 static const uint SHADE_LIGHT_SHAPE_DIMENSION_FIRST = SHADE_LIGHT_SELECTION_DIMENSION + 1;
 static const uint SHADE_TRACED_DIRECTION_DIMENSION = SHADE_LIGHT_SHAPE_DIMENSION_FIRST + 3;
 static const uint SHADE_FACET_QUADRATURE_DIMENSION = SHADE_TRACED_DIRECTION_DIMENSION + 1;
+// Shade passes: Fresnel choices of the smooth-glass chain followed from the recorded hit, shared by
+// every pass so all of them shade the same final surface.
+static const uint SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST = SHADE_RANDOM_DIMENSION_FIRST + SHADE_RANDOM_DIMENSION_COUNT;
 
 struct HitRecord
 {

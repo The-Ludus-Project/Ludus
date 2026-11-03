@@ -216,7 +216,7 @@
       ],
       "scene_interface": {
         "version": 1,
-        "surface_queries": 5,
+        "surface_queries": 13,
         "visibility_queries": 16
       }
     }

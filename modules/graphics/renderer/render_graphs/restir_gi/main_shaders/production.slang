@@ -88,7 +88,8 @@ float3 ShadeProductionGi(SceneContext scene, RayLaunch launch, inout RayQueryCon
     {
         ShadingPoint shading;
         TargetContext target;
-        if (TryMakeShadingPoint(scene, receiver.Hit, -launch.CameraRay.DirectionWorld, queries, shading) == true &&
+        if (TryMakeShadingPoint(scene, receiver.Hit, -receiver.Hit.IncomingRay.DirectionWorld, queries, shading) ==
+                true &&
             TryMakeTargetContext(scene, receiver, queries, target) == true)
         {
             SampleRecord initial = MakeInitialGiSample(scene, launch, receiver, queries);
@@ -182,11 +183,12 @@ float3 ShadeProductionGi(SceneContext scene, RayLaunch launch, inout RayQueryCon
             if (selected < PRODUCTION_CANDIDATE_COUNT)
                 normalizationCount = counts[selected];
             FinalizeReservoir(scene, target, weightSum, normalizationCount, RESTIR_GI_SPATIAL_MAX_M, result, queries);
+            radiance = receiver.Radiance + receiver.Throughput * radiance;
         }
     }
     else if (queries.HasFailed == false)
     {
-        radiance = EvaluateEnvironment(scene, launch.CameraRay.DirectionWorld);
+        radiance = receiver.Radiance;
     }
     if (all(isfinite(radiance)) == false || any(radiance < 0) == true)
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);

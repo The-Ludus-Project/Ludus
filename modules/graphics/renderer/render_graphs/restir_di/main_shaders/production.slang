@@ -141,8 +141,12 @@ float3 ShadeProductionDi(SceneContext scene, RayLaunch launch, inout RayQueryCon
     result.Value.ExtentPixel = launch.ExtentPixel;
     float3 radiance = float3(0);
     SurfaceHit receiver;
+    SpecularChain chain = (SpecularChain)0;
     if (TraceClosest(scene, queries, launch.CameraRay, receiver) == SCENE_QUERY_SURFACE)
+        chain = FollowReceiverGlass(scene, launch, queries, receiver);
+    if (chain.IsSurface == true)
     {
+        receiver = chain.Hit;
         result.Value = MakeReceiverReservoir(scene, launch, receiver);
         radiance = EvaluateEmission(scene, receiver, result.Value.ViewDirectionWorld);
         if (any(radiance > 0) == false)
@@ -191,6 +195,7 @@ float3 ShadeProductionDi(SceneContext scene, RayLaunch launch, inout RayQueryCon
                                      queries);
             FinalizeReservoir(scene, receiver, weightSum, result.Value, queries);
         }
+        radiance = chain.Radiance + chain.Throughput * radiance;
     }
     if (all(isfinite(radiance)) == false || any(radiance < 0) == true)
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);

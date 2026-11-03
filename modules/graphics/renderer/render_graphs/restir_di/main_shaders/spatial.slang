@@ -2,6 +2,11 @@
 
 void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, inout ScenePayload payload)
 {
+    SpecularChain chain = FollowReceiverGlass(scene, payload.Launch, queries, hit);
+    payload.Radiance = float3(0);
+    if (chain.IsSurface == false)
+        return;
+    hit = chain.Hit;
     Reservoir current = LoadReservoir(queries.RandomPixel, false);
     Reservoir result = MakeReceiverReservoir(scene, payload.Launch, hit);
     if (HasMatchingIdentity(current, scene, payload.Launch) == false ||
@@ -41,6 +46,7 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
         FinalizeReservoir(scene, hit, weightSum, result, queries);
         payload.Radiance = ShadeReservoir(scene, hit, result, queries);
     }
+    payload.Radiance = chain.Radiance + chain.Throughput * payload.Radiance;
     if (queries.HasFailed == false)
     {
         // All neighbor reads use scratch; no invocation reads the history being written.

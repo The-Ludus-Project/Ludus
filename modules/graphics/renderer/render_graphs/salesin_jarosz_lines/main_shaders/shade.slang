@@ -32,6 +32,7 @@ struct ShadingPoint
     MaterialSample Material;
     float3 ShadingNormalWorld;
     float3 ViewDirectionWorld;
+    float3 Throughput; ///< Smooth-glass chain weight from the camera to Hit.
 };
 
 /// Rebuild this pixel's recorded surface. Returns false when the pixel needs no strategy: a primary
@@ -69,7 +70,16 @@ bool TryLoadShadingPoint(SceneContext scene,
     outPoint.Hit.IncomingRay = cameraRay;
     outPoint.Hit.DistanceWorld = record.DistanceWorld;
     outPoint.Hit.IsFrontFace = record.IsFrontFace;
-    outPoint.ViewDirectionWorld = -cameraRay.DirectionWorld;
+    // Smooth glass is followed to the first surface the estimators can shade (FollowSpecularChain, up to
+    // SCENE_SPECULAR_CHAIN_EVENTS surface queries); every pass draws the same chain.
+    SpecularChain chain =
+        FollowSpecularChain(scene, launch, queries, outPoint.Hit, SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST);
+    outRadiance = chain.Radiance;
+    if (chain.IsSurface == false)
+        return false;
+    outPoint.Hit = chain.Hit;
+    outPoint.Throughput = chain.Throughput;
+    outPoint.ViewDirectionWorld = chain.ViewDirectionWorld;
     outPoint.Material = EvaluateMaterial(scene, outPoint.Hit);
     float normalLengthSquared = dot(outPoint.Material.ShadingNormalWorld, outPoint.Material.ShadingNormalWorld);
     if (outPoint.Material.IsValid == false || normalLengthSquared <= 0)
@@ -78,7 +88,7 @@ bool TryLoadShadingPoint(SceneContext scene,
         return false;
     }
     outPoint.ShadingNormalWorld = outPoint.Material.ShadingNormalWorld * rsqrt(normalLengthSquared);
-    outRadiance = EvaluateEmission(scene, outPoint.Hit, outPoint.ViewDirectionWorld);
+    outRadiance += outPoint.Throughput * EvaluateEmission(scene, outPoint.Hit, outPoint.ViewDirectionWorld);
     return true;
 }
 
@@ -253,9 +263,11 @@ float3 ShadeMultipleImportance(SceneContext scene, RayLaunch launch, inout RayQu
     float3 radiance;
     if (TryLoadShadingPoint(scene, launch, queries, shadingPoint, radiance) == false)
         return radiance;
-    radiance += SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_U, true, queries);
-    radiance += SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_V, true, queries);
-    radiance += SampleBsdfStrategy(scene, launch, shadingPoint, true, queries);
+    radiance +=
+        shadingPoint.Throughput * SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_U, true, queries);
+    radiance +=
+        shadingPoint.Throughput * SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_V, true, queries);
+    radiance += shadingPoint.Throughput * SampleBsdfStrategy(scene, launch, shadingPoint, true, queries);
     return FinishRadiance(radiance, queries);
 }
 
@@ -266,8 +278,10 @@ float3 ShadeLineSampling(SceneContext scene, RayLaunch launch, inout RayQueryCon
     float3 radiance;
     if (TryLoadShadingPoint(scene, launch, queries, shadingPoint, radiance) == false)
         return radiance;
-    radiance += SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_U, false, queries);
-    radiance += SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_V, false, queries);
+    radiance +=
+        shadingPoint.Throughput * SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_U, false, queries);
+    radiance +=
+        shadingPoint.Throughput * SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_V, false, queries);
     return FinishRadiance(radiance, queries);
 }
 
@@ -278,7 +292,7 @@ float3 ShadePointSampling(SceneContext scene, RayLaunch launch, inout RayQueryCo
     float3 radiance;
     if (TryLoadShadingPoint(scene, launch, queries, shadingPoint, radiance) == false)
         return radiance;
-    radiance += SamplePointStrategy(scene, launch, shadingPoint, queries);
-    radiance += SampleBsdfStrategy(scene, launch, shadingPoint, false, queries);
+    radiance += shadingPoint.Throughput * SamplePointStrategy(scene, launch, shadingPoint, queries);
+    radiance += shadingPoint.Throughput * SampleBsdfStrategy(scene, launch, shadingPoint, false, queries);
     return FinishRadiance(radiance, queries);
 }
