@@ -5413,7 +5413,10 @@ renderer's frames of the same World extraction and live camera in that quantity,
 inspection does; selection and navigation keep working. They show the authored inputs as the
 built-in renderer interprets them, not values computed by your graph's own shaders; inspect
 those through the graph's attachments above. The graph is not rebuilt. Choosing **Final output**
-or an attachment presents the graph again. The views and their colours are described under
+or an attachment presents the graph again. If the built-in renderer cannot prepare the chosen
+view, for example Light count in a World with more emissive patches than its light budget, the
+selector returns to **Final output** and the status line says why; the graph's device and last
+image are kept, so the viewport never goes blank. The views and their colours are described under
 [the built-in viewport profile](editor-workspace.md#earlier-built-in-viewport-profile) in the editor
 workspace guide.
 

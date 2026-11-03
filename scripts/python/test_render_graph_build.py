@@ -812,6 +812,41 @@ class BuildTests(unittest.TestCase):
             with self.subTest(instruction=instruction), self.assertRaisesRegex(RuntimeError, 'Malformed'):
                 normalize_spirv_metal_noinline_names(struct.pack('<' + 'I' * len(words), *words))
 
+    def test_translated_metal_matches_module_qualified_dontinline_names(self):
+        import sys
+        import struct
+        sys.path.insert(0, str(ROOT / 'cmake/shaders'))
+        from compile_graph_stage import restore_spirv_metal_noinline, spirv_cross_identifier
+
+        def dont_inline_module(name):
+            encoded = name.encode() + b'\0'
+            encoded += b'\0' * ((-len(encoded)) % 4)
+            name_words = struct.unpack('<' + 'I' * (len(encoded) // 4), encoded)
+            words = [0x07230203, 0x00010300, 0, 5, 0,
+                     ((2 + len(name_words)) << 16) | 5, 2, *name_words,
+                     (5 << 16) | 54, 1, 2, 2, 3]
+            return struct.pack('<' + 'I' * len(words), *words)
+
+        # Slang qualifies functions with their module; SPIRV-Cross spells the dot as an underscore.
+        prefix = 'static inline __attribute__((always_inline))\n'
+        code = prefix + 'bool GraphSource0_TryLoadShadingPoint(uint value)\n{\nreturn true;\n}\n'
+        unrelated = prefix + 'bool TryLoadShadingPoint(uint value)\n{\nreturn false;\n}\n'
+        module = dont_inline_module('GraphSource0.TryLoadShadingPoint')
+        result = restore_spirv_metal_noinline(code + unrelated, module)
+        self.assertIn('__attribute__((noinline))\nbool GraphSource0_TryLoadShadingPoint(', result)
+        self.assertIn(prefix + 'bool TryLoadShadingPoint(', result)
+        with self.assertRaisesRegex(RuntimeError, 'GraphSource0_TryLoadShadingPoint is missing or ambiguous'):
+            restore_spirv_metal_noinline(unrelated, module)
+        with self.assertRaisesRegex(RuntimeError, 'missing or ambiguous'):
+            restore_spirv_metal_noinline(code + code, module)
+        with self.assertRaisesRegex(RuntimeError, 'no portable name'):
+            restore_spirv_metal_noinline(code, dont_inline_module(''))
+        self.assertEqual(spirv_cross_identifier('Shade'), 'Shade')
+        self.assertEqual(spirv_cross_identifier('a::b..c'), 'a_b_c')
+        self.assertEqual(spirv_cross_identifier('7Shade(f1;'), '_Shade')
+        self.assertEqual(spirv_cross_identifier('spvShade'), '_RESERVED_IDENTIFIER_FIXUP_spvShade')
+        self.assertEqual(spirv_cross_identifier('_12'), '_RESERVED_IDENTIFIER_FIXUP_12')
+
     def test_forward_metal_arrays_are_opt_in_and_independently_sized(self):
         import sys
         sys.path.insert(0, str(ROOT / 'cmake/shaders'))

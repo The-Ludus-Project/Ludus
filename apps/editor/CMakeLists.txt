@@ -1439,16 +1439,8 @@ endif()
 # Keep the established editor test build entry point complete as suites move into
 # separate executables. Trusted batch workflows build this target before running
 # the editor CTest label, including during the promotion of newer workflow code.
-if(TARGET ludus_editor_tests)
-    foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests ludus_document_well_tests
-            ludus_project_explorer_tests ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
-            ludus_shader_interface_tests ludus_render_graph_configuration_tests
-            ludus_render_graph_live_build_tests ludus_texture_display_conversion_tests)
-        if(TARGET ${target})
-            add_dependencies(ludus_editor_tests ${target})
-        endif()
-    endforeach()
-endif()
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EditorTestDependencies.cmake")
+ludus_complete_editor_test_target(ludus_editor_tests)
 
 if(TARGET ludus_render_graph_configuration_tests)
     target_sources(ludus_render_graph_configuration_tests PRIVATE tests/render_graph_resolution_tests.cpp

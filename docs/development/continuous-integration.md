@@ -529,6 +529,11 @@ The offscreen editor suite runs as four serial Catch2 shards and the canvas
 configuration suite as two. Declaration order gives each case exactly one shard;
 the existing 600- and 180-second deadlines apply per shard. CTest resource locking
 keeps those GPU and shader-worker owners serial even under a parallel CTest run.
+The `ludus_editor_tests` build entry point also builds every executable target
+ending in `_tests` in the editor's own CMake directory, including optional preview
+suites. A real-CMake contract regression checks optional suites enabled and
+disabled, and excludes helper objects, benchmarks and other directories. This
+keeps older trusted batch workflows complete when a new editor suite is added.
 
 The mandatory Vulkan pixel proof selects `[render-graph]` and rejects skipped
 cases. Portable bilinear upscaling stays in that set; optional MetalFX variants

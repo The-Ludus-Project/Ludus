@@ -70,6 +70,7 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     connect(&mWorkspace, &RendererWorkspace::RenderProblemChanged, this, [this]() { refreshStatus(); });
     connect(&mWorkspace, &RendererWorkspace::CommandsChanged, this, [this]() { refreshStatus(); });
     connect(mTargets, &QComboBox::currentIndexChanged, this, [this]() {
+        mDebugViewProblem.clear();
         mPreview.SetOutputTarget(mTargets->currentData().toString());
         refreshFrame();
         Q_EMIT DebugViewChanged();
@@ -169,6 +170,20 @@ bool WorldGraphView::TryGetDebugView(PreviewShading& outShading) const
     outShading = static_cast<PreviewShading>(shading.toInt());
     return true;
 }
+void WorldGraphView::RejectDebugView(const QString& reason)
+{
+    PreviewShading shading = PreviewShading::Lit;
+    if (TryGetDebugView(shading) == false)
+    {
+        return;
+    }
+    const QString problem = QStringLiteral("%1 view is unavailable for this World, so the final output is shown. %2")
+                                .arg(GetPreviewShadingName(shading), reason);
+    mTargets->setCurrentIndex(0);
+    // Selecting the final output clears the previous problem; this one explains that selection.
+    mDebugViewProblem = problem;
+    refreshStatus();
+}
 void WorldGraphView::refreshTargets()
 {
     const QString selected = mTargets->currentData().toString();
@@ -244,7 +259,9 @@ void WorldGraphView::refreshStatus()
     {
         text = mWorkspace.GetRenderProblem();
     }
-    else if (mWorkspace.GetDocument().IsLoaded() == false)
+    else if (mWorkspace.GetDocument().IsLoaded() == false ||
+             (mWorkspace.IsJobActive() == false && mWorkspace.GetLastResult().Request.Request != 0 &&
+              mWorkspace.GetLastResult().IsSuccessful == false))
     {
         text = mWorkspace.GetStatusText();
     }
@@ -252,13 +269,17 @@ void WorldGraphView::refreshStatus()
     {
         text = QStringLiteral("Compiling shaders…");
     }
-    else if (mWorkspace.GetLastResult().Request.Request != 0 && mWorkspace.GetLastResult().IsSuccessful == false)
-    {
-        text = mWorkspace.GetStatusText();
-    }
     else
     {
         text = mPreview.GetDisplayStatus();
+    }
+    if (mDebugViewProblem.isEmpty() == false)
+    {
+        if (text.isEmpty() == false)
+        {
+            text += QLatin1Char('\n');
+        }
+        text += mDebugViewProblem;
     }
     if (mWorkspace.GetRenderProblem().isEmpty() == true && mWorkspace.GetRenderWarning().isEmpty() == false)
     {

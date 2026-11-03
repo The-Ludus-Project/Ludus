@@ -312,6 +312,10 @@ Q_SIGNALS:
     void DeviceStopping();
     void Stopped();
     void Failed(const QString& error);
+    /// The built-in view shown over a project graph (ShowBuiltInView or ray path inspection) cannot be
+    /// prepared. The device, the project graph and its last image stay alive; this preview draws nothing
+    /// until the view is hidden or another shading is chosen. Unlike Failed, World edits are unaffected.
+    void BuiltInViewFailed(const QString& error);
     /// Rate-limited notification that GetStatistics changed while the overlay is visible.
     void StatisticsChanged();
     void GpuProfileSubmission();
@@ -430,6 +434,11 @@ private:
     QString CameraId_;
     void resetFrames() noexcept;
     void fail(const QString& message);
+    /// Generation-scoped failure: over a project graph only the built-in view stops (BuiltInViewFailed);
+    /// otherwise this is fail().
+    void failGeneration(const QString& message);
+    /// Forget a built-in view failure once frame production returns to the project graph.
+    void clearBuiltInViewFailure() noexcept;
 
     graphics::rhi::DeviceHandle Device_{};
     graphics::rhi::SurfaceHandle Surface_{};

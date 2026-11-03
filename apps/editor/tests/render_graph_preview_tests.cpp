@@ -43,6 +43,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/threading/jobs.hpp>
+#include <ludus/graphics/renderer/light_selection.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/tone_mapping.hpp>
@@ -2326,6 +2327,152 @@ TEST_CASE("Graph output menu offers built-in debug views drawn by the World prev
     targets->setCurrentIndex(1);
     CHECK(preview.GetShading() == original);
     CHECK(preview.IsBuiltInViewShown() == false);
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+TEST_CASE("A debug view the World preview cannot prepare returns to the graph's final output",
+          "[editor][render-graph][world-graph][shading]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 60000;
+    constexpr int32 IMPORT_TIMEOUT_MILLISECONDS = 30000;
+    // One more separate emissive patch than the built-in raster preview has area-proxy lights.
+    constexpr int32 EMITTER_COUNT = static_cast<int32>(renderer::MAX_DIRECT_LIGHTS) + 1;
+    constexpr int32 EMITTER_COLUMNS = 16;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString root = QFileInfo(project.path()).canonicalFilePath();
+    QByteArray positions;
+    QByteArray indices;
+    for (int32 i = 0; i < EMITTER_COUNT; ++i)
+    {
+        // Disjoint triangles share no edge, so each one is its own planar patch and area proxy.
+        const float32 x = static_cast<float32>(i % EMITTER_COLUMNS) * .25F - 2.0F;
+        const int32 emitterRow = i / EMITTER_COLUMNS;
+        const float32 z = static_cast<float32>(emitterRow) * .25F - 1.0F;
+        positions += QStringLiteral("%1 2 %2  %3 2 %2  %1 2 %4  ")
+                         .arg(static_cast<float64>(x))
+                         .arg(static_cast<float64>(z))
+                         .arg(static_cast<float64>(x + .1F))
+                         .arg(static_cast<float64>(z + .1F))
+                         .toUtf8();
+        indices +=
+            QByteArray::number(i * 3) + ' ' + QByteArray::number(i * 3 + 1) + ' ' + QByteArray::number(i * 3 + 2) + ' ';
+    }
+    const QString source = QDir(project.path()).filePath(QStringLiteral("source/emitters.pbrt"));
+    REQUIRE(QDir().mkpath(QFileInfo(source).absolutePath()) == true);
+    {
+        QFile file(source);
+        REQUIRE(file.open(QIODevice::WriteOnly) == true);
+        const QByteArray scene =
+            QByteArrayLiteral("LookAt 0 3 6  0 0 0  0 1 0\n"
+                              "Camera \"perspective\" \"float fov\" [45]\nWorldBegin\n"
+                              "AttributeBegin\n"
+                              "AreaLightSource \"diffuse\" \"rgb L\" [4 4 4]\n"
+                              "Shape \"trianglemesh\" \"point3 P\" [") +
+            positions + QByteArrayLiteral("]\n\"integer indices\" [") + indices +
+            QByteArrayLiteral("]\nAttributeEnd\n"
+                              "Material \"diffuse\" \"rgb reflectance\" [.6 .5 .4]\n"
+                              "Shape \"trianglemesh\" \"point3 P\" [-3 0 -3  3 0 -3  3 0 3  -3 0 3]\n"
+                              "\"integer indices\" [0 1 2  0 2 3]\n");
+        REQUIRE(file.write(scene) == scene.size());
+        QFile license(QDir(QFileInfo(source).absolutePath()).filePath(QStringLiteral("LICENSE.txt")));
+        REQUIRE(license.open(QIODevice::WriteOnly) == true);
+        REQUIRE(license.write(QByteArrayLiteral("CC0 synthetic fixture\n")) > 0);
+    }
+    const ToolingPaths tools{{}, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)};
+    const QString path = QDir(root).filePath(QStringLiteral("emitters.world.json"));
+    {
+        WorldWorkspace importer(tools, nullptr);
+        importer.SetProject(root, 1);
+        REQUIRE(importer.Create(path) == true);
+        REQUIRE(importer.ImportScene(source) == true);
+        REQUIRE(QTest::qWaitFor([&importer]() { return importer.CanSave() == true; }, IMPORT_TIMEOUT_MILLISECONDS) ==
+                true);
+        REQUIRE(importer.Save() == true);
+        REQUIRE(QTest::qWaitFor([&importer]() { return importer.CanSave() == true; }, IMPORT_TIMEOUT_MILLISECONDS) ==
+                true);
+        importer.StopPreview();
+    }
+    rhi::Shutdown();
+    RendererWorkspace workspace({});
+    WorldWorkspace world(tools, nullptr);
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(root, 1);
+    world.SetProject(root, 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Open(path) == true);
+    // An imported World opens asynchronously; the viewport starts once its scene is published.
+    REQUIRE(QTest::qWaitFor([&world]() { return world.CanSave() == true; }, IMPORT_TIMEOUT_MILLISECONDS) == true);
+    world.ResumePreview();
+    // An imported scene draws in the level viewport, not the panel viewport of authored Worlds.
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldSceneViewport"));
+    REQUIRE(viewport != nullptr);
+    REQUIRE(viewport->isVisible() == true);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+    RenderPreview& preview = world.GetRenderPreview();
+    const PreviewShading original = preview.GetShading();
+    QComboBox* targets = viewport->findChild<QComboBox*>(QStringLiteral("worldGraphTargets"));
+    REQUIRE(targets != nullptr);
+    const int32 lightCount =
+        targets->findText(QStringLiteral("Debug: %1").arg(GetPreviewShadingName(PreviewShading::LightCount)));
+    REQUIRE(lightCount >= 0);
+    targets->setCurrentIndex(lightCount);
+    CHECK(preview.IsBuiltInViewShown() == true);
+    // Light count cannot count 129 area proxies in the built-in raster preview, so the menu falls back to the
+    // final output.
+    REQUIRE(waitFor([&]() { return graphView->GetDebugViewProblem().isEmpty() == false; }) == true);
+    INFO(graphView->GetDebugViewProblem().toStdString());
+    CHECK(graphView->GetDebugViewProblem().contains(QStringLiteral("final output")) == true);
+    CHECK(targets->currentIndex() == 0);
+    PreviewShading chosen = PreviewShading::Solid;
+    CHECK(graphView->TryGetDebugView(chosen) == false);
+    CHECK(preview.IsBuiltInViewShown() == false);
+    CHECK(preview.GetShading() == original);
+    // The shared device and the graph's last image survive, instead of an empty "Open a World" viewport.
+    CHECK(preview.Running() == true);
+    CHECK(graphView->isHidden() == false);
+    CHECK(graphView->GetImage().isNull() == false);
+    // The graph keeps rendering: a camera move presents a new final-output image.
+    const uint64 presented = graphView->GetPresentedFrames();
+    preview.Orbit(10, 0);
+    REQUIRE(waitFor([&]() { return graphView->GetPresentedFrames() > presented; }) == true);
+    // Views that read no lighting need no lighting budget: Normal draws this World, and choosing it clears the
+    // explanation.
+    const int32 normal =
+        targets->findText(QStringLiteral("Debug: %1").arg(GetPreviewShadingName(PreviewShading::Normal)));
+    REQUIRE(normal >= 0);
+    targets->setCurrentIndex(normal);
+    CHECK(graphView->GetDebugViewProblem().isEmpty() == true);
+    CHECK(preview.IsBuiltInViewShown() == true);
+    REQUIRE(waitFor([&]() {
+                return preview.Status().contains(GetPreviewShadingStatus(PreviewShading::Normal)) == true;
+            }) == true);
+    CHECK(targets->currentIndex() == normal);
+    CHECK(graphView->GetDebugViewProblem().isEmpty() == true);
+    targets->setCurrentIndex(0);
+    CHECK(preview.IsBuiltInViewShown() == false);
+    CHECK(preview.Running() == true);
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
