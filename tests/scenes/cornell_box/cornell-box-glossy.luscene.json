@@ -1,0 +1,111 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Glossy Cornell box",
+  "description": "The Cornell room with glossy metal (roughness 0.3) on its white surfaces and no sky. BSDF sampling suits the highlights of the ceiling light and light sampling the rough red and green walls. The polygonal-light-sampling GPU tests compare their outputs with Veach and Guibas MIS here.",
+  "camera": {
+    "eye": [0, 0, 3.4],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 48.88790956083307
+  },
+  "materials": [
+    {"name": "Glossy white metal", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "metallic": 1, "roughness": 0.3},
+    {"name": "Red", "model": "metallic_roughness", "base_color": [0.8, 0.1, 0.1], "roughness": 1},
+    {"name": "Green", "model": "metallic_roughness", "base_color": [0.1, 0.8, 0.1], "roughness": 1},
+    {"name": "Light", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [12, 12, 12], "two_sided": false}}
+  ],
+  "objects": [
+    {
+      "name": "Floor",
+      "material": "Glossy white metal",
+      "positions": [
+        [-1, -1, 1],
+        [1, -1, 1],
+        [1, -1, -1],
+        [-1, -1, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Ceiling",
+      "material": "Glossy white metal",
+      "positions": [
+        [-1, 1, -1],
+        [1, 1, -1],
+        [1, 1, 1],
+        [-1, 1, 1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Back wall",
+      "material": "Glossy white metal",
+      "positions": [
+        [-1, -1, -1],
+        [1, -1, -1],
+        [1, 1, -1],
+        [-1, 1, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Left wall",
+      "material": "Red",
+      "positions": [
+        [-1, -1, 1],
+        [-1, -1, -1],
+        [-1, 1, -1],
+        [-1, 1, 1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Right wall",
+      "material": "Green",
+      "positions": [
+        [1, -1, -1],
+        [1, -1, 1],
+        [1, 1, 1],
+        [1, 1, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Ceiling light",
+      "material": "Light",
+      "positions": [
+        [-0.35, 0.98, -0.35],
+        [0.35, 0.98, -0.35],
+        [0.35, 0.98, 0.35],
+        [-0.35, 0.98, 0.35]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Block top",
+      "material": "Glossy white metal",
+      "positions": [
+        [-0.5, -0.3, 0],
+        [0, -0.3, 0],
+        [0, -0.3, -0.5],
+        [-0.5, -0.3, -0.5]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    }
+  ]
+}

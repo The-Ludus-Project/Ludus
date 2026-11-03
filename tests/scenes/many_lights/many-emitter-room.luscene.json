@@ -1,0 +1,321 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Many-emitter room",
+  "description": "The Cornell room with its ceiling light replaced by a 4 x 4 grid of small one-sided emitters (0.16 m squares, 0.4 m apart), each its own material, whose radiance spans a factor of 64 in four levels and three tints. The white surfaces are a rough dielectric (roughness 0.4). The RIS projected-solid-angle and polygonal-light-sampling GPU tests compare their many-light estimators with Veach and Guibas MIS here.",
+  "camera": {
+    "eye": [0, 0, 3.4],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 48.88790956083307
+  },
+  "materials": [
+    {"name": "White", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 0.4},
+    {"name": "Red", "model": "metallic_roughness", "base_color": [0.8, 0.1, 0.1], "roughness": 1},
+    {"name": "Green", "model": "metallic_roughness", "base_color": [0.1, 0.8, 0.1], "roughness": 1},
+    {"name": "Emitter 0", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [0.5, 0.5, 0.5], "two_sided": false}},
+    {"name": "Emitter 1", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [32, 19.2, 9.6], "two_sided": false}},
+    {"name": "Emitter 2", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [2.4, 4.8, 8], "two_sided": false}},
+    {"name": "Emitter 3", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [2, 2, 2], "two_sided": false}},
+    {"name": "Emitter 4", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [0.5, 0.3, 0.15], "two_sided": false}},
+    {"name": "Emitter 5", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [9.6, 19.2, 32], "two_sided": false}},
+    {"name": "Emitter 6", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [8, 8, 8], "two_sided": false}},
+    {"name": "Emitter 7", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [2, 1.2, 0.6], "two_sided": false}},
+    {"name": "Emitter 8", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [0.15, 0.3, 0.5], "two_sided": false}},
+    {"name": "Emitter 9", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [32, 32, 32], "two_sided": false}},
+    {"name": "Emitter 10", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [8, 4.8, 2.4], "two_sided": false}},
+    {"name": "Emitter 11", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [0.6, 1.2, 2], "two_sided": false}},
+    {"name": "Emitter 12", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [0.5, 0.5, 0.5], "two_sided": false}},
+    {"name": "Emitter 13", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [32, 19.2, 9.6], "two_sided": false}},
+    {"name": "Emitter 14", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [2.4, 4.8, 8], "two_sided": false}},
+    {"name": "Emitter 15", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [2, 2, 2], "two_sided": false}}
+  ],
+  "objects": [
+    {
+      "name": "Floor",
+      "material": "White",
+      "positions": [
+        [-1, -1, 1],
+        [1, -1, 1],
+        [1, -1, -1],
+        [-1, -1, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Ceiling",
+      "material": "White",
+      "positions": [
+        [-1, 1, -1],
+        [1, 1, -1],
+        [1, 1, 1],
+        [-1, 1, 1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Back wall",
+      "material": "White",
+      "positions": [
+        [-1, -1, -1],
+        [1, -1, -1],
+        [1, 1, -1],
+        [-1, 1, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Left wall",
+      "material": "Red",
+      "positions": [
+        [-1, -1, 1],
+        [-1, -1, -1],
+        [-1, 1, -1],
+        [-1, 1, 1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Right wall",
+      "material": "Green",
+      "positions": [
+        [1, -1, -1],
+        [1, -1, 1],
+        [1, 1, 1],
+        [1, 1, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Block top",
+      "material": "White",
+      "positions": [
+        [-0.5, -0.3, 0],
+        [0, -0.3, 0],
+        [0, -0.3, -0.5],
+        [-0.5, -0.3, -0.5]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 0",
+      "material": "Emitter 0",
+      "positions": [
+        [-0.68, 0.98, -0.68],
+        [-0.52000004, 0.98, -0.68],
+        [-0.52000004, 0.98, -0.52000004],
+        [-0.68, 0.98, -0.52000004]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 1",
+      "material": "Emitter 1",
+      "positions": [
+        [-0.28000003, 0.98, -0.68],
+        [-0.12000002, 0.98, -0.68],
+        [-0.12000002, 0.98, -0.52000004],
+        [-0.28000003, 0.98, -0.52000004]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 2",
+      "material": "Emitter 2",
+      "positions": [
+        [0.11999999, 0.98, -0.68],
+        [0.27999997, 0.98, -0.68],
+        [0.27999997, 0.98, -0.52000004],
+        [0.11999999, 0.98, -0.52000004]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 3",
+      "material": "Emitter 3",
+      "positions": [
+        [0.52000004, 0.98, -0.68],
+        [0.68, 0.98, -0.68],
+        [0.68, 0.98, -0.52000004],
+        [0.52000004, 0.98, -0.52000004]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 4",
+      "material": "Emitter 4",
+      "positions": [
+        [-0.68, 0.98, -0.28000003],
+        [-0.52000004, 0.98, -0.28000003],
+        [-0.52000004, 0.98, -0.12000002],
+        [-0.68, 0.98, -0.12000002]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 5",
+      "material": "Emitter 5",
+      "positions": [
+        [-0.28000003, 0.98, -0.28000003],
+        [-0.12000002, 0.98, -0.28000003],
+        [-0.12000002, 0.98, -0.12000002],
+        [-0.28000003, 0.98, -0.12000002]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 6",
+      "material": "Emitter 6",
+      "positions": [
+        [0.11999999, 0.98, -0.28000003],
+        [0.27999997, 0.98, -0.28000003],
+        [0.27999997, 0.98, -0.12000002],
+        [0.11999999, 0.98, -0.12000002]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 7",
+      "material": "Emitter 7",
+      "positions": [
+        [0.52000004, 0.98, -0.28000003],
+        [0.68, 0.98, -0.28000003],
+        [0.68, 0.98, -0.12000002],
+        [0.52000004, 0.98, -0.12000002]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 8",
+      "material": "Emitter 8",
+      "positions": [
+        [-0.68, 0.98, 0.11999999],
+        [-0.52000004, 0.98, 0.11999999],
+        [-0.52000004, 0.98, 0.27999997],
+        [-0.68, 0.98, 0.27999997]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 9",
+      "material": "Emitter 9",
+      "positions": [
+        [-0.28000003, 0.98, 0.11999999],
+        [-0.12000002, 0.98, 0.11999999],
+        [-0.12000002, 0.98, 0.27999997],
+        [-0.28000003, 0.98, 0.27999997]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 10",
+      "material": "Emitter 10",
+      "positions": [
+        [0.11999999, 0.98, 0.11999999],
+        [0.27999997, 0.98, 0.11999999],
+        [0.27999997, 0.98, 0.27999997],
+        [0.11999999, 0.98, 0.27999997]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 11",
+      "material": "Emitter 11",
+      "positions": [
+        [0.52000004, 0.98, 0.11999999],
+        [0.68, 0.98, 0.11999999],
+        [0.68, 0.98, 0.27999997],
+        [0.52000004, 0.98, 0.27999997]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 12",
+      "material": "Emitter 12",
+      "positions": [
+        [-0.68, 0.98, 0.52000004],
+        [-0.52000004, 0.98, 0.52000004],
+        [-0.52000004, 0.98, 0.68],
+        [-0.68, 0.98, 0.68]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 13",
+      "material": "Emitter 13",
+      "positions": [
+        [-0.28000003, 0.98, 0.52000004],
+        [-0.12000002, 0.98, 0.52000004],
+        [-0.12000002, 0.98, 0.68],
+        [-0.28000003, 0.98, 0.68]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 14",
+      "material": "Emitter 14",
+      "positions": [
+        [0.11999999, 0.98, 0.52000004],
+        [0.27999997, 0.98, 0.52000004],
+        [0.27999997, 0.98, 0.68],
+        [0.11999999, 0.98, 0.68]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Emitter 15",
+      "material": "Emitter 15",
+      "positions": [
+        [0.52000004, 0.98, 0.52000004],
+        [0.68, 0.98, 0.52000004],
+        [0.68, 0.98, 0.68],
+        [0.52000004, 0.98, 0.68]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    }
+  ]
+}

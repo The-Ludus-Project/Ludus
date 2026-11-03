@@ -5679,6 +5679,16 @@ void CheckPolygon(const scene_source::SourceObject& object, usize polygon, const
     }
 }
 
+/// The file's vertical field of view is the fixture camera's, whose projection scales view y by its focal length.
+void CheckVerticalFieldOfView(const scene_source::SourceCamera& camera, const renderer::ViewDescription& view)
+{
+    const float64 halfFov = camera.VerticalFovRadians / 2;
+    const float64 focalLength = math::Cos(halfFov) / math::Sin(halfFov);
+    // The fixture's focal length is a float32 constant.
+    constexpr float64 FOCAL_LENGTH_TOLERANCE = 1e-6;
+    CHECK(math::Abs(focalLength - static_cast<float64>(view.WorldToClip.Columns[1].Y)) < FOCAL_LENGTH_TOLERANCE);
+}
+
 /// The file's camera is the Cornell room's, which looks down -z with +y up.
 void CheckCornellCamera(const scene_source::SourceCamera& camera, const renderer::ViewDescription& view)
 {
@@ -5688,11 +5698,7 @@ void CheckCornellCamera(const scene_source::SourceCamera& camera, const renderer
     CHECK(camera.TargetWorld.Y == 0);
     CHECK(camera.TargetWorld.Z < camera.EyeWorld.Z);
     CHECK(camera.UpWorld == math::Vector3d{0, 1, 0});
-    const float64 halfFov = camera.VerticalFovRadians / 2;
-    const float64 focalLength = math::Cos(halfFov) / math::Sin(halfFov);
-    // The fixture's focal length is a float32 constant.
-    constexpr float64 FOCAL_LENGTH_TOLERANCE = 1e-6;
-    CHECK(math::Abs(focalLength - static_cast<float64>(view.WorldToClip.Columns[1].Y)) < FOCAL_LENGTH_TOLERANCE);
+    CheckVerticalFieldOfView(camera, view);
 }
 
 /// The material's terms are the fixture material's after narrowing.
@@ -7066,7 +7072,168 @@ private:
                                   << eyeWorld.X << ',' << eyeWorld.Y << ',' << eyeWorld.Z);
     }
 };
+
+/// Quads per side of the generated large line scene's floor and ceiling: 102,400 triangles, which the shared-scene-copy
+/// test uploads and line_sampling/large-line-grid.luscene.json reproduces.
+constexpr uint32 LARGE_LINE_GRID_QUADS = 160;
+
+/// Whether fixture triangle `triangle` has the corners cornersWorld, starting at any of its corners.
+bool IsSameTriangle(const StaticArray<math::Vector3, 3>& cornersWorld,
+                    const renderer::MeshDescription& geometry,
+                    usize triangle)
+{
+    for (usize rotation = 0; rotation < 3; ++rotation)
+    {
+        bool isSame = true;
+        for (usize corner = 0; corner < 3; ++corner)
+        {
+            const uint32 vertex = geometry.Indices[triangle * 3 + (rotation + corner) % 3];
+            isSame = isSame == true && cornersWorld[corner] == geometry.Positions[vertex];
+        }
+        if (isSame == true)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// The file's materials are the fixture's, in binding order, and its polygons reproduce the fixture mesh triangle for
+/// triangle as the cook triangulates them: each polygon's fan from its first corner gives the fixture's next triangles
+/// of the polygon's material, with the same corners after narrowing to float32. Objects may group the fixture's
+/// triangles of one material, so the order is the fixture's within each material.
+void CheckSceneMatchesMesh(const scene_source::SceneSource& scene,
+                           const renderer::RenderGraphMesh& mesh,
+                           BorrowedView<const renderer::SceneShaderMaterial> materials)
+{
+    REQUIRE(scene.Materials.GetSize() == materials.GetSize());
+    for (usize material = 0; material < materials.GetSize(); ++material)
+    {
+        INFO("material " << material);
+        CheckMaterial(scene.Materials[material], materials[material]);
+    }
+    const usize triangleCount = mesh.Geometry.IndexCount / 3;
+    REQUIRE(mesh.MaterialSlots.GetSize() == triangleCount);
+    const auto getMaterial = [&mesh](usize triangle) {
+        return static_cast<usize>(mesh.MaterialBindings[mesh.MaterialSlots[triangle]]);
+    };
+    // The next fixture triangle that each material's polygons may match.
+    Array<usize> cursors;
+    REQUIRE(cursors.TryResize(materials.GetSize()) == true);
+    for (usize material = 0; material < materials.GetSize(); ++material)
+    {
+        cursors[material] = 0;
+    }
+    usize matchedCount = 0;
+    usize mismatchCount = 0;
+    for (usize objectIndex = 0; objectIndex < scene.Objects.GetSize(); ++objectIndex)
+    {
+        const scene_source::SourceObject& object = scene.Objects[objectIndex];
+        usize first = 0;
+        for (usize polygon = 0; polygon < object.PolygonVertexCounts.GetSize(); ++polygon)
+        {
+            const usize cornerCount = object.PolygonVertexCounts[polygon];
+            for (usize fan = 1; fan + 1 < cornerCount; ++fan)
+            {
+                usize& cursor = cursors[object.Material];
+                while (cursor < triangleCount && getMaterial(cursor) != object.Material)
+                {
+                    ++cursor;
+                }
+                INFO(object.Name.GetView() << " polygon " << polygon << ", fixture triangle " << cursor);
+                REQUIRE(cursor < triangleCount);
+                const StaticArray<math::Vector3, 3> cornersWorld{{
+                    NarrowToFloat32(object.PositionsWorld[object.PolygonIndices[first]]),
+                    NarrowToFloat32(object.PositionsWorld[object.PolygonIndices[first + fan]]),
+                    NarrowToFloat32(object.PositionsWorld[object.PolygonIndices[first + fan + 1]]),
+                }};
+                const bool isSame = IsSameTriangle(cornersWorld, mesh.Geometry, cursor);
+                // Report the first difference only; a large scene would otherwise repeat it thousands of times.
+                if (isSame == false && mismatchCount == 0)
+                {
+                    CHECK(isSame == true);
+                }
+                mismatchCount += isSame == true ? 0 : 1;
+                ++cursor;
+                ++matchedCount;
+            }
+            first += cornerCount;
+        }
+    }
+    CHECK(mismatchCount == 0);
+    CHECK(matchedCount == triangleCount);
+}
 } // namespace
+
+TEST_CASE("The Cornell box test scene files match the Cornell room", "[render-graph][scene-source]")
+{
+    CornellBox room;
+    scene_source::SceneSource scene;
+    ReadTestScene("cornell_box/cornell-box.luscene.json", scene);
+    CheckCornellCamera(scene.Camera, room.Cameras[0]);
+    CheckSceneMatchesMesh(scene, room.Meshes[0], room.Inputs.Materials);
+    // The polygonal-light-sampling tests' glossy room has no sky, which version 1 files cannot describe.
+    MakeRoomGlossyWithoutSky(room);
+    scene_source::SceneSource glossy;
+    ReadTestScene("cornell_box/cornell-box-glossy.luscene.json", glossy);
+    CheckCornellCamera(glossy.Camera, room.Cameras[0]);
+    CheckSceneMatchesMesh(glossy, room.Meshes[0], room.Inputs.Materials);
+}
+
+TEST_CASE("The many-emitter test scene file matches its room",
+          "[render-graph][scene-source][ris-projected-solid-angle][polygonal-light-sampling]")
+{
+    const ManyEmitterRoom room;
+    scene_source::SceneSource scene;
+    ReadTestScene("many_lights/many-emitter-room.luscene.json", scene);
+    CheckCornellCamera(scene.Camera, room.Cameras[0]);
+    CheckSceneMatchesMesh(scene, room.Meshes[0], room.Inputs.Materials);
+}
+
+TEST_CASE("The emitter-field test scene files match their rooms",
+          "[render-graph][scene-source][ris-projected-solid-angle]")
+{
+    struct EmitterFieldFile final
+    {
+        std::string_view File;
+        SurfaceFinish Finish = SurfaceFinish::Diffuse;
+    };
+    constexpr usize EMITTER_FIELD_FILE_COUNT = 2;
+    const StaticArray<EmitterFieldFile, EMITTER_FIELD_FILE_COUNT> files{{
+        { .File = "many_lights/emitter-field-diffuse.luscene.json", .Finish = SurfaceFinish::Diffuse },
+        { .File = "many_lights/emitter-field-specular.luscene.json", .Finish = SurfaceFinish::Specular },
+    }};
+    for (const EmitterFieldFile& file : files)
+    {
+        INFO(file.File);
+        const EmitterFieldRoom room(file.Finish);
+        scene_source::SceneSource scene;
+        ReadTestScene(file.File, scene);
+        CheckCornellCamera(scene.Camera, room.Cameras[0]);
+        // The room's six quads and one object per emitter level and tint.
+        CHECK(scene.Objects.GetSize() ==
+              MANY_EMITTER_ROOM_QUAD_COUNT + EMITTER_FIELD_LEVEL_COUNT * EMITTER_FIELD_TINT_COUNT);
+        CheckSceneMatchesMesh(scene, room.Meshes[0], room.Inputs.Materials);
+    }
+}
+
+TEST_CASE("The large line grid test scene file matches the generated large line scene",
+          "[render-graph][scene-source][line-sampling]")
+{
+    const LargeLineScene room(LARGE_LINE_GRID_QUADS);
+    scene_source::SceneSource scene;
+    ReadTestScene("line_sampling/large-line-grid.luscene.json", scene);
+    // The camera looks along -x with +y up.
+    const scene_source::SourceCamera& camera = scene.Camera;
+    REQUIRE(camera.IsPresent == true);
+    CHECK(NarrowToFloat32(camera.EyeWorld) == room.Cameras[0].CameraPosition);
+    CHECK(camera.TargetWorld.X < camera.EyeWorld.X);
+    CHECK(camera.TargetWorld.Y == camera.EyeWorld.Y);
+    CHECK(camera.TargetWorld.Z == camera.EyeWorld.Z);
+    CHECK(camera.UpWorld == math::Vector3d{0, 1, 0});
+    CheckVerticalFieldOfView(camera, room.Cameras[0]);
+    CheckSceneMatchesMesh(scene, room.Meshes[0], room.Inputs.Materials);
+}
 
 TEST_CASE("Measure BVH line queries against the line scan on a large reference scene", "[.line-traversal-performance]")
 {
@@ -7167,8 +7334,7 @@ TEST_CASE("Ray passes that read the same scene data upload and charge one packed
     // a third of the scene it should: Intel Sponza's first million triangles needed three copies of
     // 321,936,656 bytes against rhi::StorageLimits' 512 MiB default and failed CapacityExceeded. The
     // passes now share the first pass's copy, so the graph's logical RHI bytes grow by one copy.
-    constexpr uint32 GRID_QUADS = 160; // 102,400 triangles
-    const LargeLineScene scene(GRID_QUADS);
+    const LargeLineScene scene(LARGE_LINE_GRID_QUADS);
     GraphGpuFixture fixture(false, false);
     rhi::StorageUsage before;
     REQUIRE(rhi::GetStorageUsage(fixture.Device, before) == rhi::RasterStatus::Ready);

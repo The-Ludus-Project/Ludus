@@ -43,11 +43,30 @@ MIT license), which the import records like any other source license.
 | `light_occlusion/louvre-near-emitter.luscene.json` | A Lambertian wall lit by one rectangular, one-sided ceiling light through black slats just below the light. Most of the wall sees the light through several gaps. | `[shadow-occlusion]`: [partially occluded light, against an exact reference](../development/render-graph-authoring.md#compare-light-and-bsdf-sampling-with-mis) |
 | `light_occlusion/louvre-at-wall.luscene.json` | The same wall and light with low slats that touch the wall: contact shadows with umbrae, and penumbrae that narrow towards the wall. | `[shadow-occlusion]` |
 | `light_occlusion/occluded-penumbra.luscene.json` | After Peters 2021, Fig. 10: a blue diffuse plane and a white glossy plane under a rectangular light, with a horizontal wall that casts a large penumbra over their lower halves. | The occluded-penumbra check of the [polygonal-light-sampling template](../development/render-graph-authoring.md#compare-brdf-importance-sampling-for-polygonal-lights) |
+| `cornell_box/cornell-box.luscene.json` | The Cornell room of the GPU tests: a white room spanning [−1, 1] on every axis, open towards the camera, with red and green side walls, a square one-sided ceiling light and the floating top of a block that shadows the floor. | Most ray-template tests, for example the [compute ray-tracing template](../development/render-graph-authoring.md#use-the-compute-ray-tracing-template) and the diffuse room of the [polygonal-light-sampling template](../development/render-graph-authoring.md#compare-brdf-importance-sampling-for-polygonal-lights) |
+| `cornell_box/cornell-box-glossy.luscene.json` | The Cornell room with glossy metal (roughness 0.3) on its white surfaces and no sky. | The glossy room of the polygonal-light-sampling template |
+| `many_lights/many-emitter-room.luscene.json` | The Cornell room with its ceiling light replaced by a 4 × 4 grid of small emitters, each its own material, whose radiance spans a factor of 64. | The many-emitter room of the [RIS projected-solid-angle template](../development/render-graph-authoring.md#resample-many-area-lights-with-projected-solid-angle-sampling) and the polygonal-light-sampling template's triangle-budget check |
+| `many_lights/emitter-field-diffuse.luscene.json` | The Cornell room with a 40 × 40 field of small emitters (3200 emissive triangles) in four radiance levels and three tints; one object per level and tint; rough dielectric walls. | The diffuse variant of the hidden `[.ris-projected-solid-angle-benchmark]` |
+| `many_lights/emitter-field-specular.luscene.json` | The same field over glossy metal (roughness 0.2), which mirrors the emitters. | The specular variant of `[.ris-projected-solid-angle-benchmark]` |
+| `line_sampling/large-line-grid.luscene.json` | A 20 m floor and a ceiling 4 m above it, each tessellated into 160 × 160 quads (102,400 triangles), under a 2 m square light. 3.2 MB, because it lists every quad. | The [`[scene-capacity]` regression](renderer-systems.md#l51-budgeted-scene-capacity) of the line-sampling template |
 
-All three use the Cornell room camera of the GPU tests: eye at (0, 0, 3.4) looking
-down −z, with a vertical field of view of 2·atan(1/2.2) ≈ 48.89°. The test camera
-renders 96 × 64 pixels; the viewport keeps its own aspect ratio, so it can show a
-little more or less of the scene.
+All but the large line grid use the Cornell room camera of the GPU tests: eye at
+(0, 0, 3.4) looking down −z, with a vertical field of view of 2·atan(1/2.2) ≈ 48.89°.
+The large line grid's camera stands at (15, 0.6, 10) and looks along −x, with a
+vertical field of view of 2·atan(1/1.2) ≈ 79.61°. The test camera renders 96 × 64
+pixels; the viewport keeps its own aspect ratio, so it can show a little more or less
+of the scene.
+
+Some test rooms need what version 1 cannot describe, so they stay in the test code:
+
+- the grating room of the Steinberg PLT tests, lit only by a point or directional
+  light;
+- the glossy Cornell room under a grey sky (an environment light), and the Cornell
+  light with a 4 × 4 emission map (a texture);
+- the line-visibility scenes, whose line light is the test kernel's segment and whose
+  occluders differ from case to case;
+- the large line scene read from an exported reference scene, such as Intel Sponza,
+  which is not part of the repository.
 
 ### Keeping the files and the GPU fixtures in step
 
@@ -55,7 +74,9 @@ The GPU tests build their geometry in `modules/graphics/renderer/tests`. The
 `[scene-source]` cases of `ludus_render_graph_ray_tests` parse each file and require
 it to equal its fixture. Slat and light polygons, which the exact-irradiance oracle
 reads, must match corner for corner in float64; everything else must match after
-narrowing to float32, which is what the GPU receives. These checks need no GPU. If
+narrowing to float32, which is what the GPU receives. For the Cornell, many-light and
+line rooms, each polygon's fan from its first corner must give the fixture mesh's
+next triangles of the polygon's material, so the cooked triangles are the fixture's. These checks need no GPU. If
 you change a fixture, regenerate the file's polygons from it (the louvre slats come
 from `TryBuildLouvre` in `shadow_occlusion_oracle.cpp`) and print each coordinate
 with the shortest decimal that round-trips, so it reads back as the same binary64

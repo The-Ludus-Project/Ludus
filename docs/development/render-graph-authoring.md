@@ -2476,7 +2476,7 @@ import to a [numbered copy](#when-template-names-are-already-in-use); an unsuppo
 scene interface version or a capacity limit reports the repair and preserves the draft.
 
 `ludus_render_graph_ray_tests` renders the template on a lit Cornell-box-style room
-and compares it with a single-pass RayTracingPipeline
+([importable as a test scene](../architecture/scene-source-format.md#engine-test-scenes)) and compares it with a single-pass RayTracingPipeline
 [reference](../../tests/sdk_consumer/rg2/direct_lighting_reference/main.lurender.json)
 that applies the same direct-lighting policy. The reference draws the same random
 values from its automatic stream, so on Metal the two accumulated images are
@@ -2770,7 +2770,8 @@ These cases run as their own CTest entry,
 `ludus_render_graph_ris_projected_solid_angle_pixels`. The fixtures are:
 
 - the glossy Cornell-box-style room under a sky;
-- a room with sixteen small emitters whose power spans a factor of 64;
+- a room with sixteen small emitters whose power spans a factor of 64
+  ([importable as a test scene](../architecture/scene-source-format.md#engine-test-scenes));
 - a ceiling light with a 4 × 4 emission map, which is black on a quarter of its
   area, over rough dielectric surfaces;
 - a two-sided emitter over minimum-roughness metal.
@@ -2791,7 +2792,7 @@ They check two properties:
 The opt-in `[.ris-projected-solid-angle-benchmark]` case of the same executable
 compares this template with the MIS template at equal samples and at equal kernel
 time. CTest does not run it. Its room has 3200 emissive triangles, and it has a
-diffuse and a specular variant:
+diffuse and a specular variant (both [importable as test scenes](../architecture/scene-source-format.md#engine-test-scenes)):
 
 ```bash
 out/build/macos-clang-debug/modules/graphics/renderer/ludus_render_graph_ray_tests "[.ris-projected-solid-angle-benchmark]"
@@ -3004,7 +3005,7 @@ Evidence:
   the clamped optimal MIS, balance-heuristic and projected-solid-angle outputs agree
   with the [MIS template](#compare-light-and-bsdf-sampling-with-mis)'s MIS output
   within 2% in a diffuse and a glossy-metal Cornell room (within 0.05% on Apple
-  M5). The LTC output is not above it. At 16 samples in the glossy room, against a
+  M5; both [importable as test scenes](../architecture/scene-source-format.md#engine-test-scenes)). The LTC output is not above it. At 16 samples in the glossy room, against a
   1024-sample image with an independent seed, the tone-mapped mean squared error is
   1.24·10⁻⁴ for clamped optimal MIS, 1.25·10⁻⁴ for the balance heuristic and
   1.46·10⁻⁴ for projected solid angle sampling alone; the test requires the first
