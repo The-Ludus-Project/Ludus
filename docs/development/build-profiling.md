@@ -551,6 +551,13 @@ canvas and authoring panels, presentation, content, project explorer, document
 well, texture display, the application objects with their compiled shaders, the
 Qt resources, and the tests' Catch2 entry point. Every executable links the
 same objects it previously compiled itself, so the linked code is unchanged.
+Compilation dependencies belong to the object target that compiles each source;
+an executable's usage requirements do not propagate back into its object libraries.
+For the browser editor, `editor_files.cpp` uses Qt's private browser file API, so
+`ludus_editor_content` privately links `Qt6::CorePrivate` only under Emscripten.
+The build-contract regression compiles the actual browser dependency block,
+rejects the former executable-only dependency, and checks the native branch
+without a Qt package.
 The generated LTC table, 213,000 lines of constant data, is likewise compiled
 once and linked into the renderer and both renderer test executables.
 The assertion runtime also shares its identical objects between FoundationBase

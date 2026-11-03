@@ -1338,7 +1338,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
 endif()
 
 if(EMSCRIPTEN)
-    find_package(Qt6 6.10.3 EXACT REQUIRED COMPONENTS GuiPrivate)
+    find_package(Qt6 6.10.3 EXACT REQUIRED COMPONENTS CorePrivate GuiPrivate)
+    # editor_files.cpp compiles in this object library, before the final editor's usage requirements apply.
+    target_link_libraries(ludus_editor_content PRIVATE Qt6::CorePrivate)
     target_link_libraries(ludus_editor PRIVATE Qt6::GuiPrivate)
     set_property(TARGET ludus_editor APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/browser/files.js")
     set_target_properties(ludus_editor PROPERTIES QT_WASM_INITIAL_MEMORY 33554432 QT_WASM_MAXIMUM_MEMORY 2147483648)

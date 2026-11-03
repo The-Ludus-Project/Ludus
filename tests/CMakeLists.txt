@@ -29,6 +29,11 @@ if(LUDUS_BUILD_TESTS)
                 "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" "${CMAKE_CXX_COMPILER}" "${CMAKE_MAKE_PROGRAM}"
                 "${PROJECT_BINARY_DIR}")
         set_tests_properties(ludus_editor_test_dependencies PROPERTIES LABELS "build-contract;editor" TIMEOUT 120)
+        add_test(NAME ludus_editor_browser_dependencies
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_contract/verify_editor_browser_dependencies.py"
+                "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" "${CMAKE_CXX_COMPILER}" "${CMAKE_MAKE_PROGRAM}"
+                "${PROJECT_BINARY_DIR}")
+        set_tests_properties(ludus_editor_browser_dependencies PROPERTIES LABELS "build-contract;editor" TIMEOUT 120)
     endif()
     add_test(NAME ludus_dependency_diagnostics
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_contract/verify_dependency_diagnostics.py"
