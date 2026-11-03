@@ -71,8 +71,11 @@ Configure these settings in the game repository:
 - An `itch-release` GitHub environment with secret `BUTLER_API_KEY`.
 - Repository variable `ITCH_IO_TARGET` if no destination was saved into the config.
 - For native CI: `LUDUS_RELEASE_SDK_URL` and `LUDUS_RELEASE_SDK_SHA256`, identifying
-  a matching public HTTPS Release SDK archive. Project-specific shader tools and
-  assets should be prepared by `scripts/release-prepare`.
+  a matching Release SDK archive: a public HTTPS URL, or a release asset of the
+  game repository itself, which the job fetches with its read-only token (see
+  [project CI](project-sdk-workflow.md#continuous-integration-github-actions)).
+  Project-specific shader tools and assets should be prepared by
+  `scripts/release-prepare`.
 
 The secret is scoped to the upload step only. Tool installation, project bootstrap,
 CMake, package verification and compiler subprocesses receive no upload secret.
