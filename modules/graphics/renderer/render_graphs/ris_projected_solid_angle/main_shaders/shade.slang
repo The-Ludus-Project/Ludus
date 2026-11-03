@@ -66,8 +66,8 @@ ResampledLightContext MakeResampledLightContext(SceneContext scene)
 /// Rebuild this pixel's recorded surface. Returns false when the pixel needs no strategy: a primary
 /// miss (outRadiance is the environment) or a failure (queries.HasFailed is set, outRadiance is 0).
 /// hasLightFrame also builds the receiver's frame and LTC, which only the light strategy and MIS need.
-/// TryLoadShadingPoint, SampleLightStrategy and SampleBsdfStrategy are not inlined, so the passes that share them
-/// share one copy in the generated artifact.
+/// TryLoadShadingPoint and SampleLightStrategy are not inlined, so the passes that share them share one copy in the
+/// generated artifact. SampleBsdfStrategy is inlined; see its comment.
 [noinline] bool TryLoadShadingPoint(SceneContext scene,
                                     RayLaunch launch,
                                     bool hasLightFrame,
@@ -352,12 +352,15 @@ bool TryEvaluateResampledLightDensity(SceneContext scene,
 
 /// BSDF strategy: one BSDF-sampled ray and the emitter or environment it reaches. With isMisWeighted
 /// it is weighted against light sampling; otherwise it is the plain BSDF-sampling estimator.
-[noinline] float3 SampleBsdfStrategy(SceneContext scene,
-                                     RayLaunch launch,
-                                     ShadingPoint shadingPoint,
-                                     bool isMisWeighted,
-                                     inout ResampledLightContext inoutContext,
-                                     inout RayQueryContext queries)
+/// Inlined at both callers: out of line in the merged Metal kernel on an Apple M5, the MIS image was 3-4% dark while
+/// the BSDF-only and light-only images stayed correct. Recomputing Z-hat inside the call did not help, but calling it
+/// before SampleLightStrategy did, which points at the caller's live state across the call rather than its inputs.
+float3 SampleBsdfStrategy(SceneContext scene,
+                          RayLaunch launch,
+                          ShadingPoint shadingPoint,
+                          bool isMisWeighted,
+                          inout ResampledLightContext inoutContext,
+                          inout RayQueryContext queries)
 {
     float3 directionSample = float3(SampleSceneRandom(launch, SHADE_BSDF_DIMENSION_FIRST),
                                     SampleSceneRandom(launch, SHADE_BSDF_DIMENSION_FIRST + 1),

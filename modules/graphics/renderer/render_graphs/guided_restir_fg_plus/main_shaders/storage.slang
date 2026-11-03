@@ -90,7 +90,9 @@ FgPathReservoir MakeFgPath(SceneContext scene, RayLaunch launch)
     result.RandomKey = uint4(launch.Seed, launch.SampleIndex, GetFgPixel(launch));
     return result;
 }
-[noinline] FgPathReservoir LoadFgPath(bool isSecond, uint pixel)
+// The path record accessors are inlined: out of line in the merged Metal kernel, every
+// pixel's stored reservoir failed the temporal pass's identity check on an Apple M5.
+FgPathReservoir LoadFgPath(bool isSecond, uint pixel)
 {
     uint address = pixel * FG_PATH_WORDS;
     FgPathReservoir result = (FgPathReservoir)0;
@@ -113,7 +115,7 @@ FgPathReservoir MakeFgPath(SceneContext scene, RayLaunch launch)
     result.Flags = d.w;
     return result;
 }
-[noinline] void StoreFgPath(bool isSecond, uint pixel, FgPathReservoir reservoir)
+void StoreFgPath(bool isSecond, uint pixel, FgPathReservoir reservoir)
 {
     uint address = pixel * FG_PATH_WORDS;
     StoreFgPhoton(isSecond, address, reservoir.Photon);

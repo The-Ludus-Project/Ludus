@@ -86,8 +86,11 @@ float3 EvaluateFgPathBody(SceneContext scene,
     return receiver.Throughput * EvaluateFgBsdf(receiver, directionWorld) * cosine *
            EvaluateFgPhotonDensity(EvaluateFgBsdf(gatherPoint, reservoir.Photon.IncomingWorld), reservoir.Photon.Flux);
 }
-// Same value/out boundary as TraceFgCameraOutOfLine: all resampling callers share
-// one density/visibility evaluator instead of expanding it at every shift site.
+// Slang ignores noinline on forwarded inout parameters, so this takes a value context
+// and returns its update explicitly: all resampling callers share one density/visibility
+// evaluator instead of expanding it at every shift site.
+// Slang authors, "noinline", core module reference:
+// https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
 [noinline] float3 EvaluateFgPathOutOfLine(SceneContext scene,
                                           FgPathReservoir reservoir,
                                           FgPoint receiver,

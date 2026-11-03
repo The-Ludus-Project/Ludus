@@ -796,6 +796,14 @@ reason, in pixels that varied between identical runs. Every native query therefo
 build rejects a native-query kernel that would inline a query. Callbacks reach these functions through
 `TraceClosest`, `TestVisibility` and `TraceAndShade`; they need no change.
 
+The Metal translation also keeps every other function that Slang emits as `[noinline]` out of line in
+a ray kernel. That is not safe for every function: on the same GPU, out-of-line calls to some
+functions corrupted their callers' live state instead. The `ris-projected-solid-angle` template's MIS
+image was 3–4% dark with an out-of-line `SampleBsdfStrategy`, and the guided FG templates latched
+garbage failure counts with an out-of-line camera tracer or path record accessors. Those functions
+are therefore inlined. Validate a new `[noinline]` in a ray callback with its Metal GPU tests, twice,
+since this corruption can vary between identical runs; remove the attribute where it fails.
+
 For custom compute queries, supply a source implementing this function:
 
 ```slang
