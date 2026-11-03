@@ -65,10 +65,31 @@ float LoadPureLightGridFeature(uint key, uint feature)
     return GetPureLightModelValue(low * PURELIGHT_GRID_FEATURE_COUNT + feature);
 }
 
-void EncodePureLightCondition(float3 positionWorld, float thetaCap, out float outEncoding[PURELIGHT_CONDITION_COUNT])
+/// The controlled room's panel (benchmark.py CENTER and HALF_EXTENT) with the trained profile, for the headless
+/// kernels. The exported graph reads the World's luminaire instead; author it at this placement.
+Luminaire MakeRoomLuminaire()
+{
+    Luminaire luminaire;
+    luminaire.CenterWorld = float3(0, 0.97, 0);
+    luminaire.HalfExtentWorld = 0.35;
+    luminaire.TangentWorld = float3(1, 0, 0);
+    luminaire.BitangentWorld = float3(0, 0, 1);
+    luminaire.NormalWorld = float3(0, -1, 0);
+    luminaire.RadianceScale = PURELIGHT_PROFILE_RADIANCE_SCALE;
+    luminaire.BeamWidth = PURELIGHT_PROFILE_BEAM_WIDTH;
+    luminaire.BeamSteering = PURELIGHT_PROFILE_BEAM_STEERING;
+    luminaire.BeamSpread = PURELIGHT_PROFILE_BEAM_SPREAD;
+    luminaire.BeamTwist = PURELIGHT_PROFILE_BEAM_TWIST;
+    return luminaire;
+}
+
+void EncodePureLightCondition(Luminaire luminaire,
+                              float3 positionWorld,
+                              float thetaCap,
+                              out float outEncoding[PURELIGHT_CONDITION_COUNT])
 {
     float maximumDistanceWorld = PURELIGHT_CAP_MAXIMUM_DISTANCE_MULTIPLIER * PURELIGHT_RADIUS_WORLD;
-    float3 normalizedPosition = ((positionWorld - LUMINAIRE_CENTER_WORLD) / maximumDistanceWorld + 1) * 0.5;
+    float3 normalizedPosition = ((positionWorld - luminaire.CenterWorld) / maximumDistanceWorld + 1) * 0.5;
     [loop] for (uint level = 0; level < PURELIGHT_GRID_LEVEL_COUNT; ++level)
     {
         float scale = PURELIGHT_GRID_BASE_RESOLUTION * pow(PURELIGHT_GRID_LEVEL_SCALE, float(level)) - 1;
@@ -180,11 +201,15 @@ float TransformPureLightSpline(float value,
     return value;
 }
 
-float2
-TransformPureLightFlow(float3 positionWorld, float thetaCap, float2 value, bool isInverse, out float outLogDensity)
+float2 TransformPureLightFlow(Luminaire luminaire,
+                              float3 positionWorld,
+                              float thetaCap,
+                              float2 value,
+                              bool isInverse,
+                              out float outLogDensity)
 {
     float encoding[PURELIGHT_CONDITION_COUNT];
-    EncodePureLightCondition(positionWorld, thetaCap, encoding);
+    EncodePureLightCondition(luminaire, positionWorld, thetaCap, encoding);
     outLogDensity = 0;
     [loop] for (uint step = 0; step < PURELIGHT_COUPLING_COUNT; ++step)
     {
@@ -200,14 +225,14 @@ TransformPureLightFlow(float3 positionWorld, float thetaCap, float2 value, bool 
     return value;
 }
 
-float3 SamplePureLightCap(float3 positionWorld, float2 seed, out float outDensitySolidAngle)
+float3 SamplePureLightCap(Luminaire luminaire, float3 positionWorld, float2 seed, out float outDensitySolidAngle)
 {
-    float3 offsetWorld = LUMINAIRE_CENTER_WORLD - positionWorld;
+    float3 offsetWorld = luminaire.CenterWorld - positionWorld;
     float distanceWorld = length(offsetWorld);
     float cosineCap = sqrt(1 - PURELIGHT_RADIUS_WORLD * PURELIGHT_RADIUS_WORLD / (distanceWorld * distanceWorld));
     float thetaCap = acos(cosineCap);
     float logDensity;
-    float2 value = TransformPureLightFlow(positionWorld, thetaCap, seed, true, logDensity);
+    float2 value = TransformPureLightFlow(luminaire, positionWorld, thetaCap, seed, true, logDensity);
     float2 square = 2 * value - 1;
     float radius;
     float angle;
@@ -238,27 +263,27 @@ float3 SamplePureLightCap(float3 positionWorld, float2 seed, out float outDensit
     return sineOverRadius * (disk.x * tangentWorld + disk.y * bitangentWorld) + cosine * axisWorld;
 }
 
-LuminaireLightSample SamplePortablePureLight(LuminaireProfile profile, LuminaireReceiver receiver, float2 seed)
+LuminaireLightSample SamplePortablePureLight(Luminaire luminaire, LuminaireReceiver receiver, float2 seed)
 {
-    float distanceToCenterWorld = length(receiver.PositionWorld - LUMINAIRE_CENTER_WORLD);
+    float distanceToCenterWorld = length(receiver.PositionWorld - luminaire.CenterWorld);
     if (receiver.IsLit == false || distanceToCenterWorld <= PURELIGHT_RADIUS_WORLD ||
         distanceToCenterWorld > PURELIGHT_CAP_MAXIMUM_DISTANCE_MULTIPLIER * PURELIGHT_RADIUS_WORLD)
         return (LuminaireLightSample)0;
     float densitySolidAngle;
-    float3 directionWorld = SamplePureLightCap(receiver.PositionWorld, seed, densitySolidAngle);
-    float cosine = -dot(directionWorld, LUMINAIRE_NORMAL_WORLD);
+    float3 directionWorld = SamplePureLightCap(luminaire, receiver.PositionWorld, seed, densitySolidAngle);
+    float cosine = -dot(directionWorld, luminaire.NormalWorld);
     if (cosine <= 0)
         return (LuminaireLightSample)0;
     float2 slopePanel =
-        -float2(dot(directionWorld, LUMINAIRE_TANGENT_WORLD), dot(directionWorld, LUMINAIRE_BITANGENT_WORLD)) / cosine;
+        -float2(dot(directionWorld, luminaire.TangentWorld), dot(directionWorld, luminaire.BitangentWorld)) / cosine;
     float2 positionPanel = receiver.PositionPanelTangent - receiver.HeightPanel * slopePanel;
     uint tileIndex = FindLuminaireTile(positionPanel);
     if (tileIndex == LUMINAIRE_INVALID_TILE)
         return (LuminaireLightSample)0;
-    LuminaireLightSample result = MakeLuminaireLightSample(receiver, tileIndex, slopePanel);
-    LuminaireTile tile = GetLuminaireTile(profile, tileIndex);
+    LuminaireLightSample result = MakeLuminaireLightSample(luminaire, receiver, tileIndex, slopePanel);
+    LuminaireTile tile = GetLuminaireTile(luminaire, tileIndex);
     float radianceDensity = EvaluateEmissionDensity(tile, ComputeStandardSeed(tile, positionPanel, slopePanel));
     result.RadianceOverDensity =
-        profile.RadianceScale * tile.Strength * tile.Tint * radianceDensity / densitySolidAngle;
+        luminaire.RadianceScale * tile.Strength * tile.Tint * radianceDensity / densitySolidAngle;
     return result;
 }

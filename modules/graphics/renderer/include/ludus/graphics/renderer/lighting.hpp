@@ -120,6 +120,16 @@ SelectDirectLights(const DirectLight* lights, ludus::foundation::usize count, Li
 /// reference transport, where silently dropping illumination would change the integral.
 [[nodiscard]] rhi::RasterStatus
 NormalizeDirectLights(const DirectLight* lights, ludus::foundation::usize count, LightSelection& output) noexcept;
+/// Validate every one of at most MAX_PANEL_LUMINAIRES panel luminaires against the PanelLuminaire ranges, make each
+/// frame orthonormal (tangent normalized, bitangent made perpendicular to it) and copy them in SourceId order.
+/// @param luminairesOrNull Borrowed for the call; may be null only when count is zero.
+/// @param count Number of submitted luminaires.
+/// @param outSelection Replaced on success.
+/// @return Ready; CapacityExceeded above MAX_PANEL_LUMINAIRES; InvalidDescription for a value out of range, a zero or
+/// duplicate SourceId, or a degenerate frame. No allocation; failure preserves outSelection.
+[[nodiscard]] rhi::RasterStatus NormalizePanelLuminaires(const PanelLuminaire* luminairesOrNull,
+                                                         ludus::foundation::usize count,
+                                                         PanelLuminaireSelection& outSelection) noexcept;
 /// Largest absolute grid bound coordinate in metres for the portable clustered profile.
 inline constexpr foundation::float32 MAX_CLUSTER_COORDINATE = 1000000;
 /// Minimum grid extent per axis in metres; prevents unstable reciprocal cell sizes.

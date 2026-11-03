@@ -577,7 +577,8 @@ navigation controls, including after resize.
 
 In a default World (a project without `authoring/world.schema.json`), use
 **Add Geometry / Light** below the entity list to create a **Cube**, **Plane**,
-**Sphere**, **Point Light**, **Spot Light**, or **Directional Light**. Each command
+**Sphere**, **Point Light**, **Spot Light**, **Directional Light** or
+**Luminaire**. Each command
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.
 Use **Properties** to edit Transform, visibility and colour, or a light's kind,
@@ -588,6 +589,11 @@ They use -Z as their forward direction and require unit scale. Point and spot
 intensity is candela; directional intensity is lux. Switch the viewport to
 **Lit** and position lights to illuminate the geometry; creation adds no implicit
 lighting. Renderer profiles retain their existing light support and limits.
+A **Luminaire** is a 0.7 m analytic LED panel two metres above the origin, facing
+down. Only render graphs that read luminaires, such as the
+[slice-sampling-luminaire template](render-graph-authoring.md#sample-a-directional-luminaire-with-slice-sampling),
+are lit by it; **Lit** and reference capture ignore it. Selecting it outlines the
+panel and its emission direction in the viewport.
 
 The geometry and default schema ship inside the editor, so this workflow needs
 no model import or project asset files. Imported scenes and these objects can
@@ -1293,8 +1299,9 @@ object containing `schema` equal to the World schema ID, `transform`, `renderabl
 `component` ID and `properties` map. Component and property IDs may be renamed:
 the map keys below are semantic names; the map values are project property IDs.
 The `camera` role may be `null` when the project uses editor orbit only.
-An optional `light` role maps an authored photometric component; absent or null
-keeps older descriptors valid.
+An optional `light` role maps an authored photometric component, and an optional
+`luminaire` role maps a panel luminaire; absent or null keeps older descriptors
+valid.
 Unknown fields, duplicate keys, missing/duplicate mappings and wrong property
 types reject. The shipped descriptor is a complete example.
 
@@ -1304,8 +1311,11 @@ types reject. The shipped descriptor is a complete example.
 | renderable | `mesh`, `texture`: asset; `visible`: boolean; `r`, `g`, `b`: number in [0,1], interpreted as linear tint. Empty texture selects flat color; visible renderables require a mapped mesh. |
 | camera | `projection`: enum with supported values `perspective`, `orthographic`, `infinite`; `fov`, `span`, `near`, `far`: number; `follow`: entity. Empty follow is fixed; nonempty follow resolves a transformed target through C0's immediate orthographic XY recipe with zero offset. |
 | light | `kind`: enum (`point`, `spot`, `directional`); `enabled`: boolean; `r`, `g`, `b`: number in [0,1] linear hue; `intensity`: number in [0,1000000], candela for point/spot or lux for directional; `range`: number in [0.01,1000000] metres; `innerAngle`, `outerAngle`: number in degrees, 0 ≤ inner < outer < 90. |
+| luminaire | `enabled`: boolean; `halfExtent`: number in [0.001,1000] metres; `radianceScale`: number in [0,1000000]; `beamWidth`: number in [0.001,1]; `beamSteering`, `beamSpread`, `beamTwist`: number in [0,2]. See the [slice-sampling-luminaire template](render-graph-authoring.md#sample-a-directional-luminaire-with-slice-sampling) for their meaning. |
 
-Renderable/camera/light entities must also have the mapped transform component.
+Renderable/camera/light/luminaire entities must also have the mapped transform
+component. A luminaire, like a light, requires unit scale and emits along -Z; its
+tile columns run along +X. At most 8 enabled luminaires are admitted.
 Lights require unit scale and use -Z forward; position and rigid rotation update
 authored lighting, with persistent World entity IDs identifying the source. Disabled
 lights are omitted without removing their authored component. The shipped schema

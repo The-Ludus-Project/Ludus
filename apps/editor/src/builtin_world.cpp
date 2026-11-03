@@ -31,12 +31,64 @@ bool ReadBuiltInWorldAsset(const QString& name, QByteArray& outBytes, QString& o
     outBytes = bytes;
     return true;
 }
+namespace
+{
+/// The schema defaults of one component's properties.
+QJsonObject MakeDefaultValues(const WorldDocument& world, const QString& component)
+{
+    QJsonObject values;
+    for (const QJsonValue property : world.Component(component).value(QStringLiteral("properties")).toArray())
+    {
+        const QJsonObject definition = property.toObject();
+        values.insert(definition.value(QStringLiteral("id")).toString(), definition.value(QStringLiteral("default")));
+    }
+    return values;
+}
+} // namespace
+bool CreateWorldLuminaire(WorldDocument& inoutWorld,
+                          const foundation::identity::EntropySource& entropy,
+                          const WorldLuminairePlacement& placement,
+                          QString& outId,
+                          QString& outError)
+{
+    if (IsBuiltInWorld(inoutWorld) == false)
+    {
+        outError = QStringLiteral("Luminaire presets require the default World schema.");
+        return false;
+    }
+    QJsonObject transform = MakeDefaultValues(inoutWorld, QStringLiteral("transform"));
+    transform.insert(QStringLiteral("x"), static_cast<foundation::float64>(placement.PositionWorld.X));
+    transform.insert(QStringLiteral("y"), static_cast<foundation::float64>(placement.PositionWorld.Y));
+    transform.insert(QStringLiteral("z"), static_cast<foundation::float64>(placement.PositionWorld.Z));
+    transform.insert(QStringLiteral("rx"), static_cast<foundation::float64>(placement.RotationDegrees.X));
+    transform.insert(QStringLiteral("ry"), static_cast<foundation::float64>(placement.RotationDegrees.Y));
+    transform.insert(QStringLiteral("rz"), static_cast<foundation::float64>(placement.RotationDegrees.Z));
+    QJsonObject luminaire = MakeDefaultValues(inoutWorld, QStringLiteral("luminaire"));
+    luminaire.insert(QStringLiteral("halfExtent"), static_cast<foundation::float64>(placement.HalfExtentWorld));
+    return inoutWorld.CreateEntity(
+        entropy,
+        outError,
+        QStringLiteral("Luminaire"),
+        outId,
+        QJsonObject{{QStringLiteral("transform"), transform}, {QStringLiteral("luminaire"), luminaire}});
+}
 bool CreateWorldObject(WorldDocument& inoutWorld,
                        const foundation::identity::EntropySource& entropy,
                        const QString& preset,
                        QString& outId,
                        QString& outError)
 {
+    if (preset == QStringLiteral("Luminaire"))
+    {
+        // Facing down above a primitive at the origin.
+        constexpr WorldLuminairePlacement ABOVE_ORIGIN
+        {
+            .PositionWorld = {0, 2, 0},
+            .RotationDegrees = {WORLD_LUMINAIRE_DOWNWARD_DEGREES, 0, 0},
+            .HalfExtentWorld = WORLD_LUMINAIRE_DEFAULT_HALF_EXTENT,
+        };
+        return CreateWorldLuminaire(inoutWorld, entropy, ABOVE_ORIGIN, outId, outError);
+    }
     if (IsBuiltInWorld(inoutWorld) == false)
     {
         outError = QStringLiteral("Geometry and light presets require the default World schema.");
@@ -52,12 +104,7 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
         return false;
     }
     const QString component = isGeometry == true ? QStringLiteral("renderable") : QStringLiteral("light");
-    QJsonObject values;
-    for (const QJsonValue property : inoutWorld.Component(component).value(QStringLiteral("properties")).toArray())
-    {
-        const QJsonObject definition = property.toObject();
-        values.insert(definition.value(QStringLiteral("id")).toString(), definition.value(QStringLiteral("default")));
-    }
+    QJsonObject values = MakeDefaultValues(inoutWorld, component);
     if (isGeometry == true)
     {
         values.insert(QStringLiteral("mesh"), QStringLiteral("mesh.") + preset.toLower());
@@ -66,14 +113,7 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
     {
         values.insert(QStringLiteral("kind"), preset.section(QLatin1Char(' '), 0, 0).toLower());
     }
-    QJsonObject transform;
-    for (const QJsonValue property :
-         inoutWorld.Component(QStringLiteral("transform")).value(QStringLiteral("properties")).toArray())
-    {
-        const QJsonObject definition = property.toObject();
-        transform.insert(definition.value(QStringLiteral("id")).toString(),
-                         definition.value(QStringLiteral("default")));
-    }
+    QJsonObject transform = MakeDefaultValues(inoutWorld, QStringLiteral("transform"));
     if (isLight == true)
     {
         // Place the light above and in front of a primitive at the origin.

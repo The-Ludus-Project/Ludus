@@ -71,17 +71,6 @@ bool TryIntersectRoom(float3 originWorld,
     return outTriangle != ROOM_INVALID_TRIANGLE;
 }
 
-LuminaireProfile MakeRoomProfile()
-{
-    LuminaireProfile profile;
-    profile.RadianceScale = PURELIGHT_PROFILE_RADIANCE_SCALE;
-    profile.BeamWidth = PURELIGHT_PROFILE_BEAM_WIDTH;
-    profile.BeamSteering = PURELIGHT_PROFILE_BEAM_STEERING;
-    profile.BeamSpread = PURELIGHT_PROFILE_BEAM_SPREAD;
-    profile.BeamTwist = PURELIGHT_PROFILE_BEAM_TWIST;
-    return profile;
-}
-
 float DrawRoomRandom(uint2 pixel, uint sampleIndex, uint dimension)
 {
     return SampleRandomFloat01(uint2(Seed, ROOM_RANDOM_KEY), MakeRandomAddress(pixel, sampleIndex, dimension));
@@ -115,8 +104,8 @@ void RenderRoomPixel(uint2 pixel, bool isPureLight)
                                    normalWorld,
                                    triangle);
     float3 positionWorld = originWorld + distanceWorld * directionWorld;
-    LuminaireProfile profile = MakeRoomProfile();
-    LuminaireReceiver receiver = MakeLuminaireReceiver(positionWorld);
+    Luminaire luminaire = MakeRoomLuminaire();
+    LuminaireReceiver receiver = MakeLuminaireReceiver(luminaire, positionWorld);
     [loop] for (uint offset = 0; offset < SamplesPerDispatch; ++offset)
     {
         float3 value = float3(0);
@@ -126,10 +115,10 @@ void RenderRoomPixel(uint2 pixel, bool isPureLight)
             float2 seed = float2(DrawRoomRandom(pixel, sampleIndex, 0), DrawRoomRandom(pixel, sampleIndex, 1));
             LuminaireLightSample light;
             if (isPureLight == true)
-                light = SamplePortablePureLight(profile, receiver, seed);
+                light = SamplePortablePureLight(luminaire, receiver, seed);
             else
                 light =
-                    SampleLuminaireDefensive(profile,
+                    SampleLuminaireDefensive(luminaire,
                                              receiver,
                                              ROOM_DEFENSIVE_FRACTION,
                                              DrawRoomRandom(pixel, sampleIndex, 2),

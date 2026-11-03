@@ -387,6 +387,83 @@ rhi::RasterStatus NormalizeDirectLights(const DirectLight* lights, usize count, 
     output = result;
     return rhi::RasterStatus::Ready;
 }
+namespace
+{
+/// Smallest sine of the angle between a panel's tangent and bitangent; a closer pair is a degenerate frame.
+constexpr float32 MIN_PANEL_FRAME_SINE = 1e-3F;
+bool IsWithin(float32 value, float32 minimum, float32 maximum) noexcept
+{
+    return math::IsFinite(value) == true && value >= minimum && value <= maximum;
+}
+bool NormalizePanelLuminaire(PanelLuminaire& inoutLuminaire) noexcept
+{
+    PanelLuminaire& luminaire = inoutLuminaire;
+    math::Vector3 tangent;
+    math::Vector3 bitangent;
+    if (luminaire.SourceId == 0 ||
+        Bounded(luminaire.CenterWorld, -MAX_PANEL_LUMINAIRE_COORDINATE, MAX_PANEL_LUMINAIRE_COORDINATE) == false ||
+        IsWithin(luminaire.HalfExtentWorld, MIN_PANEL_LUMINAIRE_HALF_EXTENT, MAX_PANEL_LUMINAIRE_HALF_EXTENT) ==
+            false ||
+        IsWithin(luminaire.RadianceScale, 0, MAX_PANEL_LUMINAIRE_RADIANCE_SCALE) == false ||
+        IsWithin(luminaire.BeamWidth, MIN_PANEL_LUMINAIRE_BEAM_WIDTH, MAX_PANEL_LUMINAIRE_BEAM_WIDTH) == false ||
+        IsWithin(luminaire.BeamSteering, 0, MAX_PANEL_LUMINAIRE_BEAM_SLOPE) == false ||
+        IsWithin(luminaire.BeamSpread, 0, MAX_PANEL_LUMINAIRE_BEAM_SLOPE) == false ||
+        IsWithin(luminaire.BeamTwist, 0, MAX_PANEL_LUMINAIRE_BEAM_SLOPE) == false ||
+        math::TryNormalize(luminaire.TangentWorld, tangent) != math::MathStatus::Success ||
+        math::TryNormalize(luminaire.BitangentWorld, bitangent) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    // Gram-Schmidt: keep the tangent and remove its component from the unit bitangent.
+    const math::Vector3 perpendicular = bitangent - math::Dot(bitangent, tangent) * tangent;
+    if (math::TryNormalize(perpendicular, MIN_PANEL_FRAME_SINE, bitangent) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    luminaire.TangentWorld = tangent;
+    luminaire.BitangentWorld = bitangent;
+    return true;
+}
+} // namespace
+rhi::RasterStatus NormalizePanelLuminaires(const PanelLuminaire* luminairesOrNull,
+                                           usize count,
+                                           PanelLuminaireSelection& outSelection) noexcept
+{
+    if (count > MAX_PANEL_LUMINAIRES)
+    {
+        return rhi::RasterStatus::CapacityExceeded;
+    }
+    if (count != 0 && luminairesOrNull == nullptr)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    PanelLuminaireSelection result;
+    for (usize i = 0; i < count; ++i)
+    {
+        PanelLuminaire luminaire = luminairesOrNull[i];
+        if (NormalizePanelLuminaire(luminaire) == false)
+        {
+            return rhi::RasterStatus::InvalidDescription;
+        }
+        usize at = 0;
+        while (at < result.Count && result.Luminaires[at].SourceId < luminaire.SourceId)
+        {
+            ++at;
+        }
+        if (at < result.Count && result.Luminaires[at].SourceId == luminaire.SourceId)
+        {
+            return rhi::RasterStatus::InvalidDescription;
+        }
+        for (usize j = result.Count; j > at; --j)
+        {
+            result.Luminaires[j] = result.Luminaires[j - 1];
+        }
+        result.Luminaires[at] = luminaire;
+        ++result.Count;
+    }
+    outSelection = result;
+    return rhi::RasterStatus::Ready;
+}
 rhi::RasterStatus SelectDirectLights(const DirectLight* lights, usize count, LightSelection& output) noexcept
 {
     if (count > 128)

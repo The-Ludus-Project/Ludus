@@ -2953,8 +2953,9 @@ and `uniformArea` outputs. Every pass selects the `ComputeBvh` traversal, so the
 package needs Metal or Vulkan compute but no hardware ray tracing. Its registry
 requirement is `compute-ray-tracing`.
 
-**The luminaire.** `main_shaders/luminaire.slang` defines the analytic panel of the
-draft's section 6.2:
+**The luminaire.** The template lights the World with its **luminaires**: the
+analytic panel of the draft's section 6.2, authored as World data and read by the
+shaders from the scene. `main_shaders/luminaire.slang` defines its emission:
 
 - **Shape.** A square exit surface split into 3 × 3 tiles.
 - **Emission.** On tile *j* the radiance that leaves panel point *a* with
@@ -2964,38 +2965,70 @@ draft's section 6.2:
 - **Per-tile tables.** Each tile has its own steering direction, width factors
   (0.8 to 1.2 times the beam width), strength `c_j` and RGB tint. The tints make
   each tile's footprint, and so each inverse branch of the seed map, visible on the
-  receivers.
-- **Placement.** The panel is not scene geometry. Camera rays do not see it and it
-  does not occlude, but scene geometry between a receiver and the panel does.
-  Graph settings must be nonnegative, so the placement is a set of constants in
-  the project-owned `luminaire.slang`: `LUMINAIRE_CENTER_WORLD`,
-  `LUMINAIRE_HALF_EXTENT_WORLD` and the tangent, bitangent and emitting normal.
-  The default is a 0.7 × 0.7 panel facing down at `y = 0.97`, just below the
-  ceiling light of a 2 × 2 × 2 room. Edit these constants for another scene.
-- **Placement check.** While the template is on the viewport's output route, the
-  editor compares the panel with the World it renders. It warns when no World
-  geometry lies in front of the panel, when the panel's center lies outside the
-  World's bounds, or when the panel's side is under 5% of the bounds diagonal. The
-  default panel in a 20 m corridor is about 3%, so it lights only a small patch.
-  The warning appears in the viewport status and as a **Renderer preview** row in
-  the Error List. It names the placement, the World's size, how many emissive
-  objects and lights the template ignores, and the constants to edit. If the
-  constants are not plain literals, the editor cannot read them. It then warns only
-  when the World has emitters or lights of its own.
+  receivers. The tables are part of the project-owned `luminaire.slang`.
+- **Not geometry.** Camera rays do not see the panel and it does not occlude, but
+  scene geometry between a receiver and the panel does.
+
+**Add a luminaire to the World.** In a default World, choose
+**Add Geometry / Light → Luminaire**. It creates an entity with a `transform` and a
+`luminaire` component, a 0.7 m panel facing down 2 m above the origin. Select it
+in the entity list to outline the panel and its emission direction in the
+viewport, and move or rotate it with the transform tools. The panel emits along
+its Transform's −Z axis, like a light, and its tile columns run along +X. Its
+scale must be 1. The inspector edits the component's properties:
+
+| Property | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | on | — | A disabled luminaire keeps its values and lights nothing |
+| `halfExtent` | `0.35` m | `0.001`–`1000` | Half the side of the square panel |
+| `radianceScale` | `6` | `0`–`1000000` | Multiplies every tile's radiance. It does not change the sampling densities |
+| `beamWidth` | `0.02` | `0.001`–`1` | Gaussian width scale in slope units; the tiles' widths span 0.016–0.024 by default, as in section 6.4 |
+| `beamSteering` | `0.12` | `0`–`2` | Slope offset of each tile's beams along its steering direction, a pinwheel around the panel center |
+| `beamSpread` | `0.08` | `0`–`2` | Diagonal of `M`: the slope change per panel half extent |
+| `beamTwist` | `0.04` | `0`–`2` | Off-diagonal of `M`: a rotational slope change per panel half extent |
+
+A project-owned schema can declare its own luminaire component: bind it with a
+`luminaire` role in `authoring/render.preview.json`, as
+[the editor workspace guide](editor-workspace.md) describes for the other roles.
+A World holds at most 8 enabled luminaires. With several, each sample chooses one
+uniformly and divides by that probability.
+
+The renderer carries luminaires as `graphics::renderer::PanelLuminaire` records in
+`SceneShaderInputs::Luminaires`, beside the analytic lights. Scene shaders read
+them with `GetLuminaireCount` and `GetLuminaireInfo`. Only shaders that read them
+are lit by them: the raster, clustered and reference renderers, and the other
+templates, ignore luminaires, and this template ignores the World's lights,
+emitters and environment.
+
+**Luminaire check.** While the template is on the viewport's output route, the
+editor compares the World's luminaires with the World it renders. It warns when
+the World has no enabled luminaire, or when no luminaire can light it: no World
+geometry lies in front of the panel, the panel's center lies outside the World's
+bounds, or the panel's side is under 5% of the bounds diagonal. A 0.7 m panel in
+a 20 m corridor is about 3%, so it lights only a small patch. The warning appears
+in the viewport status and as a **Renderer preview** row in the Error List. It
+names the placement, the World's size, and how many emissive objects and lights
+the template ignores.
+
+In a default World, open the warning from the Error List to repair it. A
+confirmation box offers **Add luminaire** for a World without one, or
+**Fit luminaire** to move and resize the first one; **Cancel** is the default.
+The fitted panel faces down, so its footprint lands in view. The editor traces the
+viewport camera's view ray to the surface it looks at and anchors the panel 70% of
+the way there. The panel hangs just under the first surface above that anchor, or
+under the top of the World's bounds when nothing is above it. Its side is 30% of the World's smaller horizontal extent (at least 10%
+of the bounds diagonal). The repair is one undoable World edit; save the World to
+keep it.
 
 | Graph setting | Default | Range | Meaning |
 | --- | --- | --- | --- |
 | `SLICE_DEFENSIVE_FRACTION` | `0.1` | `0`–`1` | Probability ε of the uniform-area component in the color output's defensive mixture (Eq. 15). `0` gives slice sampling alone; `1` gives uniform area |
-| `LUMINAIRE_RADIANCE_SCALE` | `6` | `0`–`1000` | Multiplies every tile's radiance. It does not change the sampling densities |
-| `LUMINAIRE_BEAM_WIDTH` | `0.02` | `0.001`–`1` | Gaussian width scale in slope units; the tiles' widths span 0.016–0.024 by default, as in section 6.4 |
-| `LUMINAIRE_BEAM_STEERING` | `0.12` | `0`–`2` | Slope offset of each tile's beams along its steering direction, a pinwheel around the panel center |
-| `LUMINAIRE_BEAM_SPREAD` | `0.08` | `0`–`2` | Diagonal of `M`: the slope change per panel half extent |
-| `LUMINAIRE_BEAM_TWIST` | `0.04` | `0`–`2` | Off-diagonal of `M`: a rotational slope change per panel half extent |
 
 Nonnegative spread and twist keep `det(I + hM) ≥ 1` at every receiver height
-`h`, so no tile's beams focus into a caustic. An edit to these settings is the
-draft's "edit" of section 6.4: slice sampling adapts at once, because it reads the
-emission profile itself rather than a table fitted to it.
+`h`, so no tile's beams focus into a caustic; the renderer admits only
+nonnegative values. An edit to a luminaire's beam profile is the draft's "edit" of
+section 6.4: slice sampling adapts at once, without a shader rebuild, because it
+reads the emission profile itself rather than a table fitted to it.
 
 Three compute passes share a 32-byte hit record, each with its own
 **Accumulate → ToneMap → Export** chain. The first pass traces the camera ray and
@@ -3043,14 +3076,15 @@ The random layout is in `main_shaders/hit_record.slang`:
 - dimensions 0 and 1 jitter the camera ray;
 - 2 chooses the mixture component;
 - 3 and 4 are the slice seed, and 5 chooses its root;
-- 6 and 7 are the panel-area sample.
+- 6 and 7 are the panel-area sample;
+- 8 chooses one of several World luminaires.
 
 The single-strategy outputs read only their own dimensions, so they share samples
 with the mixture. The technique declares `surface_queries: 1` and
 `visibility_queries: 1`.
 
 New shader programs have `SliceSampling`-prefixed IDs and sources under
-`slice_sampling_luminaire/main_shaders/`. The settings join the manifest's Graph
+`slice_sampling_luminaire/main_shaders/`. The setting joins the manifest's Graph
 settings, and existing values are kept.
 
 Departures from the draft, also listed in `slice_sampling.slang`:
@@ -3067,7 +3101,8 @@ Evidence:
 
 - **Estimators.** `ludus_renderer_render_tests` (`[slice-sampling-luminaire]`)
   runs `slice_sampling.slang` in a test kernel at eight unoccluded receivers under
-  two emission profiles. One is the default; the other has no spread or twist,
+  two emission profiles of the Cornell room's luminaire. One is a new World
+  luminaire's default; the other has no spread or twist,
   which gives a piecewise-constant auxiliary map with jumps, as in the draft's
   running example. Each case draws 262,144 samples of every proposal.
   The checks:
@@ -3091,9 +3126,10 @@ Evidence:
   sampling's relative variance rises to 1.3 and 4.8, against 58 and 131. The
   test takes under a second.
 - **Template.** `ludus_render_graph_ray_tests` runs as its own CTest entry,
-  `ludus_render_graph_slice_sampling_luminaire_pixels`, in the Cornell room.
-  It checks that the template's three passes are compute-BVH ray passes with
-  their own accumulation, and that no pixel shows the failure color.
+  `ludus_render_graph_slice_sampling_luminaire_pixels`, in the Cornell room,
+  whose scene authors a 0.7 m luminaire facing down at `y = 0.97`, just below the
+  ceiling light. It checks that the template's three passes are compute-BVH ray
+  passes with their own accumulation, and that no pixel shows the failure color.
   - **Means.** At 256 samples per pixel, the slice-sampling output must agree
     with the defensive mixture within 2%. Uniform area must agree within 15%,
     because tone mapping its still-noisy running means is biased. On Apple M5
@@ -3102,6 +3138,15 @@ Evidence:
     seed, the tone-mapped mean squared error is 3.8·10⁻⁴ for the mixture,
     3.4·10⁻⁴ for slice sampling and 6.2·10⁻³ for uniform area. The test
     requires both slice-sampling outputs to be at least four times lower.
+  - **Scene data.** Without a luminaire only the ceiling light's own emission is
+    seen. A luminaire moved onto the red left wall, facing the green wall, lights
+    that wall instead of the floor, and two luminaires light the room more than
+    either alone.
+- **Editor.** `ludus_editor_tests` checks that the **Luminaire** preset reaches
+  the scene with its Transform's frame and the schema's beam profile, survives
+  imported-scene composition, outlines its panel, and moves with the viewport
+  gizmo as one undoable edit. The luminaire check's tests cover a missing,
+  misplaced and undersized panel and the fitted repairs.
 - **Not covered.** Vulkan has not been run; it first runs in batch CI. There is no
   equal-time comparison and no comparison with tabulated or learned
   receiver-conditioned samplers, the draft's section 6.5. The exact mixture of
@@ -4274,6 +4319,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetMaterial / EvaluateMaterial | Bound constant factors / sampled base color, metallic, roughness, emission and mapped world normal |
 | EvaluateEmission | Emission at a hit or sampled surface, respecting geometric sidedness |
 | GetLightInfo | Checked typed record for directional, point, spot, mesh or aggregate environment source |
+| GetLuminaireCount / GetLuminaireInfo | The World's [panel luminaires](#sample-a-directional-luminaire-with-slice-sampling) in source-identity order: center, half extent, orthonormal tangent/bitangent/normal frame and beam profile. They are not lights, so SelectLight never chooses them and no query hits them; zero without the lights scene data |
 | GetEmitter / GetEmitterTriangle / GetTriangle | Emitter range/area and checked world geometry for custom proposals |
 | GetGeometryHierarchyNodeCount / GetGeometryHierarchyNode / GetGeometryHierarchyTriangle | Immutable preorder BVH topology, world bounds and checked leaf-order triangle indices; see [geometry sampling](#sample-one-more-vertex-with-a-geometry-hierarchy) |
 | GetEmitterBounds | Precomputed emitter bounding sphere, geometric-normal cone and emission sidedness, for one weight per emitter without a triangle loop |

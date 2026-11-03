@@ -264,6 +264,9 @@ struct ReferenceJob final
     bool IsCpuOnly = false;
     ReferenceCaptureDescription Description;
     DirectLight Lights[128];
+    /// Admitted panel luminaires of a scene-shader job, in SourceId order; packed after the lights.
+    PanelLuminaire Luminaires[MAX_PANEL_LUMINAIRES];
+    uint32 LuminaireCount = 0;
     EnvironmentData* EnvironmentOrNull = nullptr;
     math::Matrix4 ClipToWorld;
     math::RandomKey Key;
