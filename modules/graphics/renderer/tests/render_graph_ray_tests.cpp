@@ -5105,6 +5105,8 @@ struct ExactPixel final
     StaticArray<float64, 3> Radiance{};
     /// The visible projected solid angle averaged over the footprint, in steradians.
     float64 VisibleProjectedSolidAngle = 0;
+    /// The same average from the coarse quadrature that bounds the footprint quadrature's error.
+    float64 CoarseVisibleProjectedSolidAngle = 0;
     /// Difference from a quadrature of half the resolution: a bound on the footprint quadrature's error.
     StaticArray<float64, 3> QuadratureError{};
 };
@@ -5246,6 +5248,7 @@ Array<ExactPixel> ComputeExactImage(const PartiallyOccludedRoom& room)
                 IntegrateFootprint(room, map, column, row, COARSE_FOOTPRINT_QUADRATURE_SIDE, isPartial);
             pixel.Kind = isPartial == true ? OccludedPixelKind::Penumbra : OccludedPixelKind::Lit;
             pixel.VisibleProjectedSolidAngle = fine;
+            pixel.CoarseVisibleProjectedSolidAngle = coarse;
             for (usize channel = 0; channel < 3; ++channel)
             {
                 const float64 scale = GetWallReflectedRadiance(channel) / math::kPi;
@@ -5255,6 +5258,59 @@ Array<ExactPixel> ComputeExactImage(const PartiallyOccludedRoom& room)
         }
     }
     return image;
+}
+
+/// The byte ToneMap writes for one linear radiance channel at exposure 1: Reinhard x / (1 + x), sRGB, then rounding to
+/// the nearest unorm8 value. DecodeToneMapped inverts it.
+uint8 EncodeToneMapped(float32 radiance)
+{
+    constexpr float32 MAXIMUM_CHANNEL = 255;
+    constexpr float32 ROUNDING = .5F;
+    return static_cast<uint8>(math::EncodeSrgb(radiance / (1 + radiance)) * MAXIMUM_CHANNEL + ROUNDING);
+}
+
+/// Mean and variance of one channel's decoded byte.
+struct DecodedMoments final
+{
+    float64 Mean = 0;
+    float64 Variance = 0;
+};
+
+/// The exact distribution of BSDF sampling's decoded byte at a wall pixel after frameCount frames.
+///
+/// Each frame jitters uniformly over the footprint and draws its cosine-weighted direction from an independent random
+/// stream. So it reaches the visible emitter with probability p, the footprint's mean visible projected solid angle
+/// over pi, and then returns the wall's reflectance times the emitted radiance; otherwise it returns zero. The running
+/// mean is therefore hits / frameCount of that radiance, with binomially distributed hits. Where few samples reach the
+/// emitter, these means lie on a lattice coarser than one tone-mapped byte, so byte rounding does not average out as
+/// it does for continuous estimates: at p = 0.01 and 64 frames the decoded mean exceeds p times the radiance by 0.5% to
+/// 0.8%, depending on the channel. Over the louvres' penumbrae that is +0.3% and +0.55%, about one standard error of
+/// the region test at 16 renders, and a bias that more renders would reveal.
+DecodedMoments ComputeBsdfSamplingMoments(float64 visibleProjectedSolidAngle, usize channel, usize frameCount)
+{
+    const float64 probability = visibleProjectedSolidAngle / math::kPi;
+    REQUIRE(probability >= 0);
+    REQUIRE(probability < 1);
+    // Binomial probabilities by the recurrence P(k + 1) = P(k) (n - k) / (k + 1) p / (1 - p), from P(0) = (1 - p)^n.
+    float64 mass = 1;
+    for (usize frame = 0; frame < frameCount; ++frame)
+    {
+        mass *= 1 - probability;
+    }
+    // The same float32 arithmetic as the renderer's running mean of identical samples.
+    const float32 hitRadiance = static_cast<float32>(GetWallReflectedRadiance(channel));
+    float64 sum = 0;
+    float64 sumOfSquares = 0;
+    for (usize hits = 0; hits <= frameCount; ++hits)
+    {
+        const float32 meanRadiance = hitRadiance * static_cast<float32>(hits) / static_cast<float32>(frameCount);
+        const float64 decoded = static_cast<float64>(DecodeToneMapped(EncodeToneMapped(meanRadiance)));
+        sum += mass * decoded;
+        sumOfSquares += mass * decoded * decoded;
+        mass *=
+            static_cast<float64>(frameCount - hits) / static_cast<float64>(hits + 1) * probability / (1 - probability);
+    }
+    return { .Mean = sum, .Variance = math::Max(sumOfSquares - sum * sum, 0.0) };
 }
 
 /// Half the radiance spanned by the tone-mapped bytes next to value: the rounding error of one decoded byte.
@@ -5310,11 +5366,12 @@ void AddRender(const Array<uint8>& pixels, const Array<ExactPixel>& exact, Outpu
 struct SummedError final
 {
     usize PixelCount = 0;
-    float64 Expected = 0;   ///< Sum of the exact radiance.
-    float64 Error = 0;      ///< Sum of mean minus exact radiance.
+    float64 Expected = 0;   ///< Sum of the exact expected values.
+    float64 Error = 0;      ///< Sum of mean minus exact expected value.
     float64 Variance = 0;   ///< Of Error: the means' squared standard errors plus uniform byte rounding.
     float64 Quadrature = 0; ///< Summed footprint quadrature error bound.
 
+    /// Add independent terms; rounding is the half-width of uniform rounding noise.
     void Add(float64 expected, float64 error, float64 standardError, float64 rounding, float64 quadrature)
     {
         Expected += expected;
@@ -5334,7 +5391,8 @@ struct SummedError final
 constexpr usize ERROR_TILE_SIDE = 4;
 
 /// Compare one output's mean over renderCount independent renders of frameCount samples with the exact image.
-/// @param isBsdfSampling Use the exact variance of BSDF sampling instead of the renders' spread.
+/// @param isBsdfSampling Compare with the exact distribution of BSDF sampling's decoded bytes instead of the exact
+/// radiance, the renders' spread and byte rounding.
 void CheckOutputAgainstExactImage(const OutputStatistics& statistics,
                                   const Array<ExactPixel>& exact,
                                   usize renderCount,
@@ -5347,7 +5405,8 @@ void CheckOutputAgainstExactImage(const OutputStatistics& statistics,
     // One pixel's mean over a few renders is too skewed to test alone where few samples reach the emitter, as for
     // BSDF sampling in a penumbra. A tile pools the errors of its pixels, so its summed error is close to normal: about
     // 400 tiles per channel stay within five standard errors under an unbiased estimator, while a band of biased
-    // pixels, such as light leaking along a slat edge, does not. The penumbra and lit regions are tested as wholes.
+    // pixels, such as light leaking along a slat edge, does not. The penumbra and lit regions are tested as wholes. All
+    // three channels of a pixel scale one sample, so a region's variance sums their standard errors before squaring.
     constexpr float64 TILE_STANDARD_ERRORS = 5;
     constexpr float64 REGION_STANDARD_ERRORS = 4;
     constexpr usize TILE_COLUMNS = WIDTH / ERROR_TILE_SIDE;
@@ -5367,29 +5426,42 @@ void CheckOutputAgainstExactImage(const OutputStatistics& statistics,
         SummedError& region = expected.Kind == OccludedPixelKind::Penumbra ? penumbra : lit;
         ++region.PixelCount;
         const usize tile = pixel / WIDTH / ERROR_TILE_SIDE * TILE_COLUMNS + pixel % WIDTH / ERROR_TILE_SIDE;
+        SummedError pixelError;
+        float64 pixelRoundingVariance = 0;
+        float64 pixelStandardError = 0;
         for (usize channel = 0; channel < 3; ++channel)
         {
             const usize entry = pixel * 3 + channel;
             const float64 mean = statistics.Sum[entry] / count;
             const float64 spread = math::Max(statistics.SumOfSquares[entry] - count * mean * mean, 0.0) / (count - 1);
+            float64 expectedValue = expected.Radiance[channel];
             float64 standardError = math::Sqrt(spread / count);
+            float64 rounding = statistics.HalfByteStep[entry];
+            float64 quadrature = expected.QuadratureError[channel];
             if (isBsdfSampling == true)
             {
-                // Cosine sampling of the Lambertian wall returns its reflectance times the emitted radiance where it
-                // reaches the visible emitter, with probability p = visible projected solid angle / pi, and zero
-                // elsewhere. Where few samples reach the emitter, the renders' spread underestimates this exact
-                // variance, and it is zero where none do.
-                const float64 probability = expected.VisibleProjectedSolidAngle / math::kPi;
-                const float64 sampleVariance = GetWallReflectedRadiance(channel) * GetWallReflectedRadiance(channel) *
-                                               probability * (1 - probability);
-                standardError = math::Sqrt(sampleVariance / (count * static_cast<float64>(frameCount)));
+                // The exact moments include byte rounding. Where few samples reach the emitter, the renders' spread
+                // underestimates the exact variance, and it is zero where none do.
+                const DecodedMoments moments =
+                    ComputeBsdfSamplingMoments(expected.VisibleProjectedSolidAngle, channel, frameCount);
+                const DecodedMoments coarse =
+                    ComputeBsdfSamplingMoments(expected.CoarseVisibleProjectedSolidAngle, channel, frameCount);
+                expectedValue = moments.Mean;
+                standardError = math::Sqrt(moments.Variance / count);
+                rounding = 0;
+                quadrature = math::Abs(moments.Mean - coarse.Mean);
             }
-            const float64 error = mean - expected.Radiance[channel];
-            const float64 rounding = statistics.HalfByteStep[entry];
-            const float64 quadrature = expected.QuadratureError[channel];
-            region.Add(expected.Radiance[channel], error, standardError, rounding, quadrature);
-            tiles[tile * 3 + channel].Add(expected.Radiance[channel], error, standardError, rounding, quadrature);
+            const float64 error = mean - expectedValue;
+            pixelError.Add(expectedValue, error, 0, 0, quadrature);
+            pixelRoundingVariance += rounding * rounding;
+            pixelStandardError += standardError;
+            tiles[tile * 3 + channel].Add(expectedValue, error, standardError, rounding, quadrature);
         }
+        region.Add(pixelError.Expected,
+                   pixelError.Error,
+                   pixelStandardError,
+                   math::Sqrt(pixelRoundingVariance),
+                   pixelError.Quadrature);
     }
     float64 largestTileScore = 0;
     usize testedTiles = 0;
@@ -5410,12 +5482,7 @@ void CheckOutputAgainstExactImage(const OutputStatistics& statistics,
     REQUIRE(lit.PixelCount > 0);
     CHECK(largestTileScore <= TILE_STANDARD_ERRORS);
     CHECK(lit.GetStandardScore() <= REGION_STANDARD_ERRORS);
-    // BSDF sampling exceeds the exact penumbra by about 0.6% (render-graph-authoring.md, Veach and Guibas evidence),
-    // with either traversal, which a whole-region test detects in some revisions; its tiles stay within bounds.
-    if (isBsdfSampling == false)
-    {
-        CHECK(penumbra.GetStandardScore() <= REGION_STANDARD_ERRORS);
-    }
+    CHECK(penumbra.GetStandardScore() <= REGION_STANDARD_ERRORS);
 }
 
 /// Render each louvre's room with one Veach and Guibas package over independent revisions and compare its three
