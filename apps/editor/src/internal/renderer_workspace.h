@@ -20,6 +20,7 @@
 #include "internal/render_graph_source.h"
 #include "internal/render_graph_source_watch.h"
 #include "internal/viewport_frame_pump.h"
+#include "internal/world_lighting_coverage.h"
 
 #include <QByteArray>
 #include <QJsonObject>
@@ -158,6 +159,11 @@ public:
     [[nodiscard]] bool ApplyConfigurationTemplate(const QString& configuration,
                                                   const QString& templateIdentity,
                                                   RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
+    /// The Apply Configuration Template dialog's proposed configuration name: proposed when applying it to the
+    /// selected file creates no collision, else proposed with 2, 3, ... appended. On the root graph
+    /// a name is used by an existing library file or a node of the selected configuration; in a
+    /// library, by a nonempty configuration. Returns proposed when every candidate is used.
+    [[nodiscard]] QString MakeTemplateConfigurationName(const QString& proposed) const;
     /// Delete the selected configuration in one undo step and select the asset default.
     /// Last configurations, referenced configurations and source conflicts preserve the
     /// draft and report the repair in the status line. Save publishes; GUI thread only.
@@ -354,6 +360,10 @@ public:
     /// when the warning offers none. The caller confirms it with the user and applies it to the World as one
     /// undoable edit (WorldWorkspace::ApplyLuminaireRepair). GUI thread only.
     [[nodiscard]] RenderGraphLuminaireCoverage MakeRenderWarningRepair() const;
+    /// The sun that resolves GetRenderWarning when the warning says the World renders almost black
+    /// (DescribeWorldLighting); Repair is None otherwise. The caller confirms it with the user and applies it to the
+    /// World as one undoable edit (WorldWorkspace::ApplySunRepair). GUI thread only.
+    [[nodiscard]] WorldLightingCoverage MakeWorldLightingRepair() const;
     /// True while the viewport requests the engine default, including its pending first frame.
     [[nodiscard]] LUDUS_INLINE bool IsUsingDefaultRenderer() const noexcept
     {
@@ -618,6 +628,8 @@ private:
     QString mRenderWarning;
     /// Whether mRenderWarning is the slice-sampling-luminaire coverage warning, which offers a repair.
     bool mIsLuminaireWarning = false;
+    /// The World lighting check mRenderWarning reports when it is not the luminaire warning.
+    WorldLightingCoverage mWorldLighting;
     /// World, document and configuration the warning was computed for.
     QByteArray mRenderWarningIdentity;
     QLabel* mStatus;

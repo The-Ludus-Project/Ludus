@@ -17,6 +17,7 @@ namespace
 {
 const QString RESOURCE_ROOT = QStringLiteral(":/render-graph/templates/restir-di/");
 const QString SOURCE_ROOT = QStringLiteral("restir_di/");
+const QString PROGRAM_PREFIX = QStringLiteral("Restir");
 const QString RAY_TECHNIQUE = QStringLiteral("RendererTriangles.RayTracing");
 
 QByteArray ReadTemplate(const QString& file, const QString& templateRoot)
@@ -29,15 +30,18 @@ QByteArray ReadTemplate(const QString& file, const QString& templateRoot)
     return source.readAll();
 }
 
-QString GetProgramName(const QString& identity)
+QString GetProgramName(const TemplateInstance& instance, const QString& identity)
 {
-    return QStringLiteral("Restir") + identity;
+    return instance.ProgramPrefix + identity;
 }
 
-bool MergePayload(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutInterface, const QString& templateRoot)
+bool MergePayload(RenderGraphSnapshot& inoutSnapshot,
+                  QJsonObject& inoutInterface,
+                  const QString& templateRoot,
+                  TemplateInstance& inoutInstance)
 {
     const QString previous = inoutInterface.value(QStringLiteral("payload")).toString();
-    const QString destination = SOURCE_ROOT + QStringLiteral("main_shaders/payload.slang");
+    const QString destination = inoutInstance.Directory + QStringLiteral("main_shaders/payload.slang");
     QByteArray payload = previous.isEmpty() == true
                              ? ReadTemplate(QStringLiteral("main_shaders/payload.slang"), templateRoot)
                              : inoutSnapshot.Files.value(previous);
@@ -53,6 +57,7 @@ bool MergePayload(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutInterfac
     {
         return false;
     }
+    bool isExtended = false;
     if (LAUNCH_FIELD.match(match.captured(1)).hasMatch() == false)
     {
         if (LAUNCH_NAME.match(match.captured(1)).hasMatch() == true)
@@ -61,13 +66,15 @@ bool MergePayload(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutInterfac
         }
         text.insert(match.capturedEnd(1), QStringLiteral("\n    RayLaunch Launch;\n"));
         payload = text.toUtf8();
+        isExtended = true;
     }
-    if (inoutSnapshot.Files.contains(destination) == true && inoutSnapshot.Files.value(destination) != payload)
+    // A complete shared payload stays where the other ray callbacks already find it.
+    const bool isShared = previous.isEmpty() == false && isExtended == false;
+    if (isShared == false && InsertTemplateSource(inoutSnapshot, destination, payload, inoutInstance) == false)
     {
         return false;
     }
-    inoutSnapshot.Files.insert(destination, payload);
-    inoutInterface.insert(QStringLiteral("payload"), destination);
+    inoutInterface.insert(QStringLiteral("payload"), isShared == true ? previous : destination);
     inoutInterface.insert(QStringLiteral("version"), 1);
     if (inoutInterface.contains(QStringLiteral("surface_queries")) == false)
     {
@@ -85,6 +92,7 @@ bool MergePayload(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutInterfac
 RenderGraphDocumentStatus CopyShaderSources(RenderGraphSnapshot& inoutSnapshot,
                                             QStringList pending,
                                             const QString& templateRoot,
+                                            TemplateInstance& inoutInstance,
                                             QString& outError)
 {
     QSet<QString> visited;
@@ -104,8 +112,8 @@ RenderGraphDocumentStatus CopyShaderSources(RenderGraphSnapshot& inoutSnapshot,
             continue;
         }
         visited.insert(relative);
-        const QByteArray bytes = ReadTemplate(relative, templateRoot);
-        const QString destination = SOURCE_ROOT + relative;
+        const QByteArray bytes = RenameTemplateIdentifiers(ReadTemplate(relative, templateRoot), inoutInstance);
+        const QString destination = inoutInstance.Directory + relative;
         if (bytes.isEmpty() == true)
         {
             outError = QStringLiteral("ReSTIR template source '%1' is unavailable; repair the editor installation. The "
@@ -113,15 +121,13 @@ RenderGraphDocumentStatus CopyShaderSources(RenderGraphSnapshot& inoutSnapshot,
                            .arg(relative);
             return RenderGraphDocumentStatus::NotFound;
         }
-        if (inoutSnapshot.Files.contains(destination) == true && inoutSnapshot.Files.value(destination) != bytes)
+        // PrepareConfigurationTemplate checks the package file limit once the whole template is in.
+        if (InsertTemplateSource(inoutSnapshot, destination, bytes, inoutInstance) == false)
         {
-            outError = QStringLiteral("Shader source '%1' already has different contents. Rename the conflicting "
-                                      "source before importing ReSTIR DI. The draft was preserved.")
+            outError = QStringLiteral("Shader source '%1' already has different contents. The draft was preserved.")
                            .arg(destination);
             return RenderGraphDocumentStatus::Conflict;
         }
-        // PrepareConfigurationTemplate checks the package file limit once the whole template is in.
-        inoutSnapshot.Files.insert(destination, bytes);
         QRegularExpressionMatchIterator includes = INCLUDE.globalMatch(QString::fromUtf8(bytes));
         while (includes.hasNext() == true)
         {
@@ -131,10 +137,13 @@ RenderGraphDocumentStatus CopyShaderSources(RenderGraphSnapshot& inoutSnapshot,
     return RenderGraphDocumentStatus::Ok;
 }
 
+// Sources are copied before the program budget is checked, so a collision moves the import to the
+// next instance before any capacity request is reported.
 RenderGraphDocumentStatus MergePrograms(RenderGraphSnapshot& inoutSnapshot,
                                         QJsonObject& inoutManifest,
                                         const QJsonObject& source,
                                         const QString& templateRoot,
+                                        TemplateInstance& inoutInstance,
                                         QString& outError,
                                         RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
@@ -150,28 +159,23 @@ RenderGraphDocumentStatus MergePrograms(RenderGraphSnapshot& inoutSnapshot,
             continue;
         }
         sources.append(program.value(QStringLiteral("source")).toString());
-        program.insert(QStringLiteral("id"), GetProgramName(program.value(QStringLiteral("id")).toString()));
-        program.insert(QStringLiteral("source"), SOURCE_ROOT + program.value(QStringLiteral("source")).toString());
-        bool hasProgram = false;
-        for (const QJsonValueConstRef existing : programs)
+        program.insert(QStringLiteral("id"),
+                       GetProgramName(inoutInstance, program.value(QStringLiteral("id")).toString()));
+        program.insert(QStringLiteral("source"),
+                       inoutInstance.Directory + program.value(QStringLiteral("source")).toString());
+        if (InsertTemplateProgram(programs, program, inoutInstance) == false)
         {
-            if (existing.toObject().value(QStringLiteral("id")) == program.value(QStringLiteral("id")))
-            {
-                hasProgram = true;
-                if (existing.toObject() != program)
-                {
-                    outError =
-                        QStringLiteral("Shader program '%1' already has a different definition. Rename the "
-                                       "conflicting program before importing ReSTIR DI. The draft was preserved.")
-                            .arg(program.value(QStringLiteral("id")).toString());
-                    return RenderGraphDocumentStatus::Conflict;
-                }
-            }
+            outError =
+                QStringLiteral("Shader program '%1' already has a different definition. The draft was preserved.")
+                    .arg(program.value(QStringLiteral("id")).toString());
+            return RenderGraphDocumentStatus::Conflict;
         }
-        if (hasProgram == false)
-        {
-            programs.append(program);
-        }
+    }
+    const RenderGraphDocumentStatus sourceStatus =
+        CopyShaderSources(inoutSnapshot, sources, templateRoot, inoutInstance, outError);
+    if (sourceStatus != RenderGraphDocumentStatus::Ok)
+    {
+        return sourceStatus;
     }
     if (EnsureTemplateProgramBudget(inoutManifest,
                                     static_cast<int32>(programs.size()),
@@ -182,7 +186,7 @@ RenderGraphDocumentStatus MergePrograms(RenderGraphSnapshot& inoutSnapshot,
         return RenderGraphDocumentStatus::Capacity;
     }
     inoutManifest.insert(QStringLiteral("programs"), programs);
-    return CopyShaderSources(inoutSnapshot, sources, templateRoot, outError);
+    return RenderGraphDocumentStatus::Ok;
 }
 
 // Settings reach shaders only as generated constants, so a setting that no authored shader names as a
@@ -225,6 +229,107 @@ GetUnusedSettings(const RenderGraphSnapshot& snapshot, const QJsonArray& setting
 
 } // namespace
 
+QString GetInstanceDirectory(const QString& directory, const TemplateInstance& instance)
+{
+    if (instance.Number <= 1)
+    {
+        return directory;
+    }
+    return directory.chopped(1) + QStringLiteral("_%1/").arg(instance.Number);
+}
+
+QString GetInstancePrefix(const QString& prefix, const TemplateInstance& instance)
+{
+    return instance.Number <= 1 ? prefix : prefix + QString::number(instance.Number);
+}
+
+QByteArray RenameTemplateIdentifiers(const QByteArray& source, const TemplateInstance& instance)
+{
+    if (instance.Renames.isEmpty() == true || source.isEmpty() == true)
+    {
+        return source;
+    }
+    QString text = QString::fromUtf8(source);
+    for (QMap<QString, QString>::const_iterator rename = instance.Renames.constBegin();
+         rename != instance.Renames.constEnd();
+         ++rename)
+    {
+        const QRegularExpression identifier(QStringLiteral("\\b%1\\b").arg(QRegularExpression::escape(rename.key())));
+        text.replace(identifier, rename.value());
+    }
+    return text.toUtf8();
+}
+
+bool InsertTemplateSource(RenderGraphSnapshot& inoutSnapshot,
+                          const QString& path,
+                          const QByteArray& bytes,
+                          TemplateInstance& inoutInstance)
+{
+    if (inoutSnapshot.Files.contains(path) == true && inoutSnapshot.Files.value(path) != bytes)
+    {
+        inoutInstance.HasCollision = true;
+        return false;
+    }
+    inoutSnapshot.Files.insert(path, bytes);
+    return true;
+}
+
+bool InsertTemplateProgram(QJsonArray& inoutPrograms, const QJsonObject& program, TemplateInstance& inoutInstance)
+{
+    for (const QJsonValueConstRef existing : inoutPrograms)
+    {
+        if (existing.toObject().value(QStringLiteral("id")) != program.value(QStringLiteral("id")))
+        {
+            continue;
+        }
+        if (existing.toObject() != program)
+        {
+            inoutInstance.HasCollision = true;
+            return false;
+        }
+        return true;
+    }
+    inoutPrograms.append(program);
+    return true;
+}
+
+QJsonArray
+RenameTemplateSettings(const QJsonObject& manifest, const QJsonArray& additions, TemplateInstance& inoutInstance)
+{
+    // Definitions are compared without their values: an authored value is kept by a shared setting.
+    QMap<QString, QJsonObject> definitions;
+    for (const QJsonValueConstRef value : manifest.value(QStringLiteral("settings")).toArray())
+    {
+        QJsonObject definition = value.toObject();
+        definition.remove(QStringLiteral("value"));
+        definitions.insert(definition.value(QStringLiteral("id")).toString(), definition);
+    }
+    QJsonArray renamed;
+    for (const QJsonValueConstRef value : additions)
+    {
+        QJsonObject setting = value.toObject();
+        QJsonObject definition = setting;
+        definition.remove(QStringLiteral("value"));
+        const QString identity = setting.value(QStringLiteral("id")).toString();
+        if (definitions.contains(identity) == true && definitions.value(identity) != definition)
+        {
+            for (int32 suffix = 2; suffix <= MAX_TEMPLATE_INSTANCES; ++suffix)
+            {
+                const QString candidate = QStringLiteral("%1_%2").arg(identity).arg(suffix);
+                definition.insert(QStringLiteral("id"), candidate);
+                if (definitions.contains(candidate) == false || definitions.value(candidate) == definition)
+                {
+                    inoutInstance.Renames.insert(identity, candidate);
+                    setting.insert(QStringLiteral("id"), candidate);
+                    break;
+                }
+            }
+        }
+        renamed.append(setting);
+    }
+    return renamed;
+}
+
 RenderGraphDocumentStatus MergeTemplateSettings(const RenderGraphSnapshot& snapshot,
                                                 QJsonObject& inoutManifest,
                                                 const QJsonArray& additions,
@@ -247,9 +352,13 @@ RenderGraphDocumentStatus MergeTemplateSettings(const RenderGraphSnapshot& snaps
                 incoming.remove(QStringLiteral("value"));
                 if (existing != incoming)
                 {
-                    outError = QStringLiteral("Setting '%1' has a different definition. Rename the conflicting "
-                                              "setting before importing %2. The draft was preserved.")
-                                   .arg(incoming.value(QStringLiteral("id")).toString(), templateName);
+                    outError = QStringLiteral("Setting '%1' and its numbered alternatives up to _%2 already have "
+                                              "different definitions, so %3 has no free setting name. Delete "
+                                              "settings this package no longer needs from the shader manifest and "
+                                              "apply again. The draft was preserved.")
+                                   .arg(incoming.value(QStringLiteral("id")).toString())
+                                   .arg(MAX_TEMPLATE_INSTANCES)
+                                   .arg(templateName);
                     return RenderGraphDocumentStatus::Conflict;
                 }
             }
@@ -390,9 +499,14 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
                                                      const QString& configuration,
                                                      QString& outError,
                                                      const QString& templateRoot,
-                                                     RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
+                                                     RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull,
+                                                     TemplateInstance* inoutInstanceOrNull)
 {
     const QString sourceRoot = templateRoot.isEmpty() == true ? RESOURCE_ROOT : templateRoot;
+    TemplateInstance localInstance;
+    TemplateInstance& instance = inoutInstanceOrNull != nullptr ? *inoutInstanceOrNull : localInstance;
+    instance.Directory = GetInstanceDirectory(SOURCE_ROOT, instance);
+    instance.ProgramPrefix = GetInstancePrefix(PROGRAM_PREFIX, instance);
     outError = QStringLiteral(
         "Select a new or empty configuration for the ReSTIR DI template. Existing contents are preserved.");
     static const QRegularExpression CONFIGURATION_IDENTIFIER(QStringLiteral("\\A[A-Za-z][A-Za-z0-9_-]{0,62}\\z"));
@@ -452,19 +566,21 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
     {
         return RenderGraphDocumentStatus::NotFound;
     }
+    // Setting names are chosen first: the copied sources spell the names this import uses.
+    const QJsonArray settings =
+        RenameTemplateSettings(manifest, source.value(QStringLiteral("settings")).toArray(), instance);
     const RenderGraphDocumentStatus programStatus =
-        MergePrograms(inoutSnapshot, manifest, source, sourceRoot, outError, inoutBudgetOrNull);
+        MergePrograms(inoutSnapshot, manifest, source, sourceRoot, instance, outError, inoutBudgetOrNull);
     if (programStatus != RenderGraphDocumentStatus::Ok)
     {
         return programStatus;
     }
-    const RenderGraphDocumentStatus settingsStatus =
-        MergeTemplateSettings(inoutSnapshot,
-                              manifest,
-                              source.value(QStringLiteral("settings")).toArray(),
-                              QStringLiteral("ReSTIR DI"),
-                              outError,
-                              inoutBudgetOrNull);
+    const RenderGraphDocumentStatus settingsStatus = MergeTemplateSettings(inoutSnapshot,
+                                                                           manifest,
+                                                                           settings,
+                                                                           QStringLiteral("ReSTIR DI"),
+                                                                           outError,
+                                                                           inoutBudgetOrNull);
     if (settingsStatus != RenderGraphDocumentStatus::Ok)
     {
         return settingsStatus;
@@ -489,19 +605,20 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
         for (const QString& stage :
              {QStringLiteral("ray_generation"), QStringLiteral("miss"), QStringLiteral("closest_hit")})
         {
-            technique.insert(stage, GetProgramName(technique.value(stage).toString()));
+            technique.insert(stage, GetProgramName(instance, technique.value(stage).toString()));
         }
         QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
         interface.remove(QStringLiteral("payload"));
         technique.insert(QStringLiteral("scene_interface"), interface);
     }
     QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
-    outError = QStringLiteral("ReSTIR DI needs float3 Radiance and RayLaunch Launch in the shared payload, and cannot "
-                              "share a visibility-buffer-only ray technique. Existing sources were preserved.");
+    // visibility_buffer only permits visibility ray inputs in the package: each configuration selects
+    // ordinary or visibility bindings from its own ray inputs, so ReSTIR's ordinary passes may share it.
+    outError = QStringLiteral("ReSTIR DI needs ray scene interface version 1 and a float3 Radiance field in the shared "
+                              "payload, which gains RayLaunch Launch. Existing sources were preserved.");
     if ((interface.contains(QStringLiteral("version")) == true &&
          interface.value(QStringLiteral("version")).toInt() != 1) ||
-        interface.value(QStringLiteral("visibility_buffer")).toBool() == true ||
-        MergePayload(inoutSnapshot, interface, sourceRoot) == false)
+        MergePayload(inoutSnapshot, interface, sourceRoot, instance) == false)
     {
         return RenderGraphDocumentStatus::Conflict;
     }
@@ -541,7 +658,7 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
         {
             QJsonObject shader = shaders.at(shaderIndex).toObject();
             shader.insert(QStringLiteral("program"),
-                          GetProgramName(shader.value(QStringLiteral("program")).toString()));
+                          GetProgramName(instance, shader.value(QStringLiteral("program")).toString()));
             shaders.replace(shaderIndex, shader);
         }
         node.insert(QStringLiteral("shaders"), shaders);
@@ -565,6 +682,169 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
 }
 namespace
 {
+// One attempt at the given instance's names. Template identities are distinct authored records.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+RenderGraphDocumentStatus PrepareTemplateInstance(RenderGraphSnapshot& inoutSnapshot,
+                                                  const QString& rootGraph,
+                                                  const QString& targetFile,
+                                                  const QString& configuration,
+                                                  const QString& templateIdentity,
+                                                  QString& outError,
+                                                  RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull,
+                                                  TemplateInstance& inoutInstance)
+{
+    if (templateIdentity == QStringLiteral("restir-di"))
+    {
+        return PrepareRestirConfiguration(inoutSnapshot,
+                                          rootGraph,
+                                          targetFile,
+                                          configuration,
+                                          outError,
+                                          {},
+                                          inoutBudgetOrNull,
+                                          &inoutInstance);
+    }
+    if (templateIdentity == QStringLiteral("line-sampling"))
+    {
+        return PrepareLineSamplingConfiguration(inoutSnapshot,
+                                                rootGraph,
+                                                targetFile,
+                                                configuration,
+                                                outError,
+                                                inoutBudgetOrNull,
+                                                &inoutInstance);
+    }
+    if (templateIdentity == QStringLiteral("salesin-jarosz-lines"))
+    {
+        return PreparePointLineConfiguration(inoutSnapshot,
+                                             rootGraph,
+                                             targetFile,
+                                             configuration,
+                                             outError,
+                                             inoutBudgetOrNull,
+                                             &inoutInstance);
+    }
+    if (templateIdentity == QStringLiteral("compute-ray-tracing") ||
+        templateIdentity == QStringLiteral("simple-compute-ray-tracing") ||
+        templateIdentity == QStringLiteral("veach-guibas-mis") ||
+        templateIdentity == QStringLiteral("ris-projected-solid-angle") ||
+        templateIdentity == QStringLiteral("polygonal-light-sampling") ||
+        templateIdentity == QStringLiteral("slice-sampling-luminaire") ||
+        templateIdentity == QStringLiteral("steinberg-plt") ||
+        templateIdentity == QStringLiteral("steinberg-physical-optics") ||
+        templateIdentity == QStringLiteral("wave-tracing") ||
+        templateIdentity == QStringLiteral("guided-restir-fg-plus") ||
+        templateIdentity == QStringLiteral("restir-gi") || templateIdentity == QStringLiteral("rao-blackwell-mh") ||
+        templateIdentity == QStringLiteral("conditional-restir") ||
+        templateIdentity == QStringLiteral("one-more-vertex-nee") ||
+        templateIdentity == QStringLiteral("light-transformer"))
+    {
+        return PrepareComputeRayTracingConfiguration(inoutSnapshot,
+                                                     rootGraph,
+                                                     targetFile,
+                                                     configuration,
+                                                     outError,
+                                                     templateIdentity,
+                                                     inoutBudgetOrNull,
+                                                     &inoutInstance);
+    }
+    return PrepareVisibilityConfiguration(inoutSnapshot,
+                                          rootGraph,
+                                          targetFile,
+                                          configuration,
+                                          templateIdentity,
+                                          outError,
+                                          inoutBudgetOrNull,
+                                          &inoutInstance);
+}
+
+QString DescribeTemplateInstance(const TemplateInstance& first, const TemplateInstance& used)
+{
+    QStringList parts;
+    if (used.Number > 1)
+    {
+        parts.append(QStringLiteral("%1 already holds different sources or programs, so this import uses %2 and "
+                                    "%3-prefixed programs.")
+                         .arg(first.Directory, used.Directory, used.ProgramPrefix));
+    }
+    QStringList renames;
+    for (QMap<QString, QString>::const_iterator rename = used.Renames.constBegin(); rename != used.Renames.constEnd();
+         ++rename)
+    {
+        renames.append(QStringLiteral("%1 as %2").arg(rename.key(), rename.value()));
+    }
+    if (renames.isEmpty() == false)
+    {
+        parts.append(
+            QStringLiteral("Existing definitions were kept, so it names %1.").arg(renames.join(QStringLiteral(", "))));
+    }
+    if (parts.isEmpty() == false)
+    {
+        parts.append(QStringLiteral("Existing configurations are unchanged."));
+    }
+    return parts.join(QLatin1Char(' '));
+}
+
+// Engine templates never ask authors to rename their content: each attempt runs on a copy of the
+// candidate, and a name collision moves the import to the next numbered instance.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+RenderGraphDocumentStatus PrepareTemplateInstances(RenderGraphSnapshot& inoutSnapshot,
+                                                   const QString& rootGraph,
+                                                   const QString& targetFile,
+                                                   const QString& configuration,
+                                                   const QString& templateIdentity,
+                                                   QString& outError,
+                                                   RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull,
+                                                   QString* outNoticeOrNull)
+{
+    TemplateInstance first;
+    for (int32 number = 1; number <= MAX_TEMPLATE_INSTANCES; ++number)
+    {
+        RenderGraphSnapshot candidate = inoutSnapshot;
+        TemplateInstance instance;
+        instance.Number = number;
+        if (inoutBudgetOrNull != nullptr)
+        {
+            // Only the attempt that is reported may leave a capacity request.
+            inoutBudgetOrNull->CurrentPrograms = 0;
+            inoutBudgetOrNull->RequiredPrograms = 0;
+            inoutBudgetOrNull->RequiredSettings = 0;
+            inoutBudgetOrNull->UnusedSettings.clear();
+        }
+        const RenderGraphDocumentStatus status = PrepareTemplateInstance(candidate,
+                                                                         rootGraph,
+                                                                         targetFile,
+                                                                         configuration,
+                                                                         templateIdentity,
+                                                                         outError,
+                                                                         inoutBudgetOrNull,
+                                                                         instance);
+        if (number == 1)
+        {
+            first = instance;
+        }
+        if (instance.HasCollision == true)
+        {
+            continue;
+        }
+        if (status == RenderGraphDocumentStatus::Ok)
+        {
+            inoutSnapshot = candidate;
+            if (outNoticeOrNull != nullptr)
+            {
+                *outNoticeOrNull = DescribeTemplateInstance(first, instance);
+            }
+        }
+        return status;
+    }
+    outError = QStringLiteral("%1 and its numbered copies up to %2 all hold different sources or programs. Delete "
+                              "copies this package no longer uses (right-click an unneeded Subgraph and choose Delete "
+                              "Subgraph and Library) and apply again. The draft was preserved.")
+                   .arg(first.Directory)
+                   .arg(MAX_TEMPLATE_INSTANCES);
+    return RenderGraphDocumentStatus::Conflict;
+}
+
 // All paths and configuration identities describe distinct parts of one insertion transaction.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 RenderGraphDocumentStatus PrepareTemplateContents(RenderGraphSnapshot& inoutSnapshot,
@@ -575,7 +855,8 @@ RenderGraphDocumentStatus PrepareTemplateContents(RenderGraphSnapshot& inoutSnap
                                                   const QString& packageRoot,
                                                   const QString& templateIdentity,
                                                   QString& outError,
-                                                  RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
+                                                  RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull,
+                                                  QString* outNoticeOrNull)
 {
     QString targetFile = file;
     if (file == rootGraph)
@@ -653,64 +934,14 @@ RenderGraphDocumentStatus PrepareTemplateContents(RenderGraphSnapshot& inoutSnap
                                                                    {QStringLiteral("default"), configuration},
                                                                    {QStringLiteral("configurations"), QJsonArray{}}}));
     }
-    if (templateIdentity == QStringLiteral("restir-di"))
-    {
-        return PrepareRestirConfiguration(inoutSnapshot,
-                                          rootGraph,
-                                          targetFile,
-                                          configuration,
-                                          outError,
-                                          {},
-                                          inoutBudgetOrNull);
-    }
-    if (templateIdentity == QStringLiteral("line-sampling"))
-    {
-        return PrepareLineSamplingConfiguration(inoutSnapshot,
-                                                rootGraph,
-                                                targetFile,
-                                                configuration,
-                                                outError,
-                                                inoutBudgetOrNull);
-    }
-    if (templateIdentity == QStringLiteral("salesin-jarosz-lines"))
-    {
-        return PreparePointLineConfiguration(inoutSnapshot,
-                                             rootGraph,
-                                             targetFile,
-                                             configuration,
-                                             outError,
-                                             inoutBudgetOrNull);
-    }
-    if (templateIdentity == QStringLiteral("compute-ray-tracing") ||
-        templateIdentity == QStringLiteral("simple-compute-ray-tracing") ||
-        templateIdentity == QStringLiteral("veach-guibas-mis") ||
-        templateIdentity == QStringLiteral("ris-projected-solid-angle") ||
-        templateIdentity == QStringLiteral("polygonal-light-sampling") ||
-        templateIdentity == QStringLiteral("slice-sampling-luminaire") ||
-        templateIdentity == QStringLiteral("steinberg-plt") ||
-        templateIdentity == QStringLiteral("steinberg-physical-optics") ||
-        templateIdentity == QStringLiteral("wave-tracing") ||
-        templateIdentity == QStringLiteral("guided-restir-fg-plus") ||
-        templateIdentity == QStringLiteral("restir-gi") || templateIdentity == QStringLiteral("rao-blackwell-mh") ||
-        templateIdentity == QStringLiteral("conditional-restir") ||
-        templateIdentity == QStringLiteral("one-more-vertex-nee") ||
-        templateIdentity == QStringLiteral("light-transformer"))
-    {
-        return PrepareComputeRayTracingConfiguration(inoutSnapshot,
-                                                     rootGraph,
-                                                     targetFile,
-                                                     configuration,
-                                                     outError,
-                                                     templateIdentity,
-                                                     inoutBudgetOrNull);
-    }
-    return PrepareVisibilityConfiguration(inoutSnapshot,
-                                          rootGraph,
-                                          targetFile,
-                                          configuration,
-                                          templateIdentity,
-                                          outError,
-                                          inoutBudgetOrNull);
+    return PrepareTemplateInstances(inoutSnapshot,
+                                    rootGraph,
+                                    targetFile,
+                                    configuration,
+                                    templateIdentity,
+                                    outError,
+                                    inoutBudgetOrNull,
+                                    outNoticeOrNull);
 }
 } // namespace
 
@@ -724,8 +955,13 @@ RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inou
                                                        const QString& packageRoot,
                                                        const QString& templateIdentity,
                                                        QString& outError,
-                                                       RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
+                                                       RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull,
+                                                       QString* outNoticeOrNull)
 {
+    if (outNoticeOrNull != nullptr)
+    {
+        outNoticeOrNull->clear();
+    }
     const usize existingFiles = static_cast<usize>(inoutSnapshot.Files.size());
     const RenderGraphDocumentStatus status = PrepareTemplateContents(inoutSnapshot,
                                                                      rootGraph,
@@ -735,7 +971,8 @@ RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inou
                                                                      packageRoot,
                                                                      templateIdentity,
                                                                      outError,
-                                                                     inoutBudgetOrNull);
+                                                                     inoutBudgetOrNull,
+                                                                     outNoticeOrNull);
     // One check after the whole template is in counts its library graph and every source it copies.
     const usize templateFiles = static_cast<usize>(inoutSnapshot.Files.size()) - existingFiles;
     if (status == RenderGraphDocumentStatus::Ok && existingFiles + templateFiles > RenderGraphDocument::MAX_FILES)

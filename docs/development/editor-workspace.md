@@ -577,7 +577,7 @@ navigation controls, including after resize.
 
 In a default World (a project without `authoring/world.schema.json`), use
 **Add Geometry / Light** below the entity list to create a **Cube**, **Plane**,
-**Sphere**, **Point Light**, **Spot Light**, **Directional Light** or
+**Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun** or
 **Luminaire**. Each command
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.
@@ -585,6 +585,8 @@ Use **Properties** to edit Transform, visibility and colour, or a light's kind,
 colour, intensity, range and spot angles, then **Apply Changes**. Save the World
 to retain the objects; duplication and deletion use the regular entity commands.
 Lights start two metres above and in front of the origin, aimed down 45 degrees.
+**Sun** is a directional light of 10 lux, placed and aimed as described in
+[Lighting a World that renders black](#lighting-a-world-that-renders-black).
 They use -Z as their forward direction and require unit scale. Point and spot
 intensity is candela; directional intensity is lux. Switch the viewport to
 **Lit** and position lights to illuminate the geometry; creation adds no implicit
@@ -982,8 +984,11 @@ text and never-saved new worlds do not have crash recovery; Save is required to
 preserve them. Each world path has one recovery slot, so concurrent authoring of
 the same document should use version control and separate working copies.
 
-Limits: schema 64 KiB, world 512 KiB, 128 entities, 16 component definitions,
+Limits: schema 64 KiB, 16 component definitions,
 32 properties per component, 4096 declared assets and 32 applied history entries.
+A World admits every object of one imported scene (the cooked import profile's
+1024 objects; Bistro cooks 136) plus 128 authored entities, with 4 KiB of
+compact JSON reserved per entity (4.5 MiB).
 These bounds keep this first slice predictable; large production-world UX,
 hierarchy/parenting, batch property editing, prefab/archetype workflows, schema migrations,
 viewport gizmos, automatic runtime binding and browser import/export are still
@@ -1466,6 +1471,40 @@ Albedo and Solid ignore them. Schema meshes receive generated shading normals an
 matte materials in this combined lit profile; their linear tints are baked into
 transient sRGB texture copies. Original assets are preserved. Worlds without
 imported scene data retain their existing unlit preview adapter.
+
+### Lighting a World that renders black
+
+An imported scene can arrive without usable lighting. The Intel Sponza glTF
+declares 24 punctual lights, its sun among them, all with zero intensity; the
+importer keeps them disabled and reports `LIGHT_DISABLED` in the import report
+(see [Selecting a companion lighting environment](best-effort-scene-import.md#selecting-a-companion-lighting-environment)).
+Its only emitters are small light bulbs of radiance one.
+
+The editor checks the World it renders. When the World presents no enabled
+analytic light, environment or luminaire, and its emitters' luminous flux spread
+over the surface of the World's bounds gives under 0.01 lux, it warns that the
+World renders almost black. At exposure one, a surface of albedo 0.5 under
+0.01 lux encodes below 2% of sRGB white; Sponza's bulbs give about 0.001 lux.
+The estimate counts an emission map at its mean and ignores occlusion, so treat
+it as a guide. The warning names the disabled imported lights and the emitters'
+estimated illuminance. It appears in the viewport status and as a **Renderer
+preview** row in the Error List; render graphs that read only luminaires keep
+their own luminaire warning instead. An unlit viewport never shows it.
+
+In a default World, choose **Add Geometry / Light → Sun**, or double-click the
+warning: a confirmation box then offers **Add sun**, with **Cancel** as the
+default. Both create the same directional light entity named *Sun* of 10 lux,
+aimed like the first disabled imported directional light that shines down, or
+from 60 degrees above the horizon when there is none. It is placed above the
+center of the World's bounds, where its gizmo is visible.
+Sponza's sun comes from 56 degrees above the horizon, along the nave. 10 lux is
+a display choice for exposure one, not daylight: a surface of albedo 0.5 facing
+the sun has a radiance of about 1.6 nits. Adding the sun is one undoable edit
+that selects it; set its intensity, colour and Transform rotation in
+**Properties**, and save the World to keep it. The viewport's raster lighting
+has no indirect bounce, so areas the sun cannot reach stay dark. Reimporting with
+the scene's bundled sky through **Choose environment…** lights them too. A
+project-owned schema gets the instruction without the repair.
 
 ### Switching lights
 

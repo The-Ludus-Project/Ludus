@@ -458,6 +458,27 @@ MeshLightShadowAtlas* ForwardSceneGeneration::GetMeshLightShadowAtlasOrNull() no
     return mState.Get() == nullptr || mState->MeshLightShadowCasters.IsEmpty() == true ? nullptr
                                                                                        : &mState->MeshLightShadows;
 }
+uint32 ForwardSceneGeneration::GetPendingMeshLightShadowFaces() const noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return 0;
+    }
+    const MeshLightShadowAtlas& atlas = mState->MeshLightShadows;
+    if (atlas.HasPackets == false)
+    {
+        uint32 faces = 0;
+        for (const MeshLightShadowCaster& caster : mState->MeshLightShadowCasters)
+        {
+            for (uint32 face = 0; face < MESH_LIGHT_SHADOW_FACE_COUNT; ++face)
+            {
+                faces += (caster.FaceMask >> face) & 1U;
+            }
+        }
+        return faces;
+    }
+    return static_cast<uint32>(atlas.Faces.GetSize()) - atlas.NextFace;
+}
 Status ForwardSceneGeneration::Poll() noexcept
 {
     if (mState.Get() == nullptr)

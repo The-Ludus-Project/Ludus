@@ -3539,6 +3539,86 @@ TEST_CASE("The Veach and Guibas MIS template matches single-pass references for 
     }
 }
 
+namespace
+{
+constexpr usize EDGE_LIT_WALL_VERTEX_COUNT = 8;
+constexpr usize EDGE_LIT_WALL_TRIANGLE_COUNT = 4;
+constexpr usize EDGE_LIT_WALL_MATERIAL_COUNT = 2;
+constexpr uint32 EDGE_LIT_WALL = 0;
+constexpr uint32 EDGE_LIT_WALL_EMITTER = 1;
+
+/// A Lambertian wall at z = -1 up to the plane y = 1.1 of a downward-facing ceiling emitter, both as two-triangle fans,
+/// seen by the Cornell room's camera. The wall's top edge is the edge opposite the first corner of its second triangle,
+/// where a hardware intersector's two separately rounded barycentrics can sum above one. The mesh borrows this object's
+/// arrays, so it is neither copied nor moved.
+struct EdgeLitWall final
+{
+    StaticArray<math::Vector3, EDGE_LIT_WALL_VERTEX_COUNT> PositionsWorld{{
+        {-3.2F, -2.2F, -1.F},
+        {3.2F, -2.2F, -1.F},
+        {3.2F, 1.1F, -1.F},
+        {-3.2F, 1.1F, -1.F},
+        // Counterclockwise seen from below, so the emitter's geometric normal faces -y.
+        {-.8F, 1.1F, -.8F},
+        {.8F, 1.1F, -.8F},
+        {.8F, 1.1F, .2F},
+        {-.8F, 1.1F, .2F},
+    }};
+    StaticArray<uint32, EDGE_LIT_WALL_TRIANGLE_COUNT * 3> Indices{{0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7}};
+    StaticArray<uint32, EDGE_LIT_WALL_TRIANGLE_COUNT> Slots{
+        {EDGE_LIT_WALL, EDGE_LIT_WALL, EDGE_LIT_WALL_EMITTER, EDGE_LIT_WALL_EMITTER}};
+    StaticArray<uint32, EDGE_LIT_WALL_MATERIAL_COUNT> Bindings{{EDGE_LIT_WALL, EDGE_LIT_WALL_EMITTER}};
+    StaticArray<renderer::SceneShaderMaterial, EDGE_LIT_WALL_MATERIAL_COUNT> Materials{};
+    StaticArray<renderer::RenderGraphMesh, 1> Meshes{};
+    StaticArray<renderer::RenderGraphItem, 1> Items{};
+    StaticArray<renderer::ViewDescription, 1> Cameras{};
+    renderer::SceneShaderInputs Inputs;
+
+    EdgeLitWall()
+    {
+        for (renderer::SceneShaderMaterial& material : Materials)
+        {
+            material.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+            material.BaseColor = {};
+        }
+        Materials[EDGE_LIT_WALL].BaseColor = {.8F, .5F, .25F};
+        Materials[EDGE_LIT_WALL_EMITTER].Emission = {6, 6, 6};
+        Meshes[0].Geometry = {PositionsWorld.GetData(), PositionsWorld.GetSize(), Indices.GetData(), Indices.GetSize()};
+        Meshes[0].MaterialSlots = {Slots.GetData(), Slots.GetSize()};
+        Meshes[0].MaterialBindings = {Bindings.GetData(), Bindings.GetSize()};
+        Items[0].SourceId = 1;
+        Inputs.Materials = {Materials.GetData(), Materials.GetSize()};
+        const CornellBox cornell;
+        Cameras[0] = cornell.Cameras[0];
+    }
+    EdgeLitWall(const EdgeLitWall&) = delete;
+    EdgeLitWall& operator=(const EdgeLitWall&) = delete;
+};
+} // namespace
+
+TEST_CASE("Native primary hits on a triangle's edge rebuild their surface in the Veach and Guibas shade passes",
+          "[render-graph][gpu][veach-guibas][template][native-barycentrics]")
+{
+    // Metal's intersector returned barycentrics summing just above one for one jittered camera ray on the wall's top
+    // edge in each of these revisions. The primary pass recorded the hit, and every shade pass then failed to rebuild
+    // its surface (GetSurfaceHit accepts only the closed triangle) and latched the pixel magenta, under SceneData.
+    GraphGpuFixture fixture;
+    const EdgeLitWall room;
+    constexpr usize FAILING_REVISION_COUNT = 2;
+    constexpr StaticArray<uint64, FAILING_REVISION_COUNT> FAILING_REVISIONS{{1017, 1041}};
+    constexpr usize FRAME_COUNT = 64;
+    for (const uint64 revision : FAILING_REVISIONS)
+    {
+        INFO("revision " << revision);
+        PreparedGraph graph(fixture,
+                            {LUDUS_RG3_VEACH_GUIBAS_MIS_TEMPLATE_DIRECTORY, "rg2_veach_guibas_mis_template.lurgrt"},
+                            room,
+                            revision);
+        StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> pixels;
+        RenderVeachGuibasOutputs(graph, fixture, FRAME_COUNT, pixels);
+    }
+}
+
 TEST_CASE("Every MIS heuristic of the Veach and Guibas template estimates the same integral as each strategy alone",
           "[render-graph][gpu][veach-guibas][template][mis]")
 {

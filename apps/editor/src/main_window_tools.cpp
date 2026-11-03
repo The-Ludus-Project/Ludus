@@ -202,11 +202,39 @@ bool MainWindow::offerLuminaireRepair()
     }
     return true;
 }
+bool MainWindow::offerSunRepair()
+{
+    const WorldLightingCoverage repair = Renderer_->MakeWorldLightingRepair();
+    if (repair.Repair != WorldLightingRepair::AddSun)
+    {
+        return false;
+    }
+    // Significant digits of the offered illuminance.
+    constexpr foundation::int32 ILLUMINANCE_DIGITS = 3;
+    QMessageBox confirmation(QMessageBox::Question, QStringLiteral("Add sun?"), QString{}, QMessageBox::Cancel, this);
+    confirmation.setObjectName(QStringLiteral("worldSunRepairConfirmation"));
+    confirmation.setText(
+        repair.Warning +
+        QStringLiteral("\n\nAdd a directional light of %1 lux shining from %2 degrees above the horizon? Set its "
+                       "intensity and turn it in the inspector.\n\nThe edit can be undone. Save the World to keep it.")
+            .arg(static_cast<foundation::float64>(repair.Sun.IlluminanceLux), 0, 'g', ILLUMINANCE_DIGITS)
+            .arg(static_cast<foundation::float64>(-repair.Sun.RotationDegrees.X), 0, 'f', 0));
+    QPushButton* accept = confirmation.addButton(QStringLiteral("Add sun"), QMessageBox::AcceptRole);
+    confirmation.setDefaultButton(QMessageBox::Cancel);
+    confirmation.exec();
+    if (confirmation.clickedButton() == accept)
+    {
+        static_cast<void>(mDocuments->OpenDocument(World_));
+        static_cast<void>(World_->ApplySunRepair(repair));
+    }
+    return true;
+}
 void MainWindow::activateErrorEntry(const ErrorListEntry& entry)
 {
     if (entry.Producer == ErrorListProducer::RenderPreview)
     {
-        if (entry.Severity == ErrorListSeverity::Warning && offerLuminaireRepair() == true)
+        if (entry.Severity == ErrorListSeverity::Warning &&
+            (offerLuminaireRepair() == true || offerSunRepair() == true))
         {
             return;
         }

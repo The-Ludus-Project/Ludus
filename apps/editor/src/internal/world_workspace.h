@@ -7,6 +7,7 @@
 
 #include "internal/render_graph_luminaire_coverage.h"
 #include "internal/world_document.h"
+#include "internal/world_lighting_coverage.h"
 
 #include <QMap>
 #include <QStringList>
@@ -147,6 +148,11 @@ public:
     /// @return False, with the reason in the status, when the World cannot be edited, is not a default World or no
     /// longer has that luminaire; the World is then unchanged.
     [[nodiscard]] bool ApplyLuminaireRepair(const RenderGraphLuminaireCoverage& repair);
+    /// Apply a World lighting repair (RendererWorkspace::MakeWorldLightingRepair) to the open default-schema World as
+    /// one undoable edit: create the sun it describes and select it.
+    /// @return False, with the reason in the status, when the World cannot be edited or is not a default World; the
+    /// World is then unchanged.
+    [[nodiscard]] bool ApplySunRepair(const WorldLightingCoverage& repair);
     [[nodiscard]] bool Apply();
     [[nodiscard]] bool Recover();
     [[nodiscard]] const WorldDocument& Document() const noexcept
@@ -223,6 +229,8 @@ private:
     [[nodiscard]] bool ReadDraft(WorldDocument& document, QString& error, QWidget*& invalid);
     void PickTint(const QString& id, const QJsonObject& binding);
     void Snapshot();
+    /// Create sun as one undoable edit and select it; the status gives the reason when the World cannot be edited.
+    [[nodiscard]] bool addSun(const WorldSunPlacement& sun);
     [[nodiscard]] QByteArray RecoveryHeader() const;
     /// Record which viewport renderer the World shows and emit RenderPreviewChanged on change.
     void updateShownRenderPreview(bool isSceneShown);

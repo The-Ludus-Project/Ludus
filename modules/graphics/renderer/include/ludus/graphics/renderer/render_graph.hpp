@@ -495,6 +495,10 @@ struct RenderGraphReport final
     bool IsAccepted = false;                   ///< Candidate was accepted for asynchronous preparation.
     bool IsReady = false;                      ///< Accepted scene is drawable; producer completion is separate.
     LightTransformerPreparationReport Model{}; ///< Latest model candidate diagnostics; independent of drawable output.
+    /// Mesh-light shadow faces of the drawable scene not yet drawn into its atlas; each Render draws some within its
+    /// per-frame budgets, and receivers of an undrawn face read as unoccluded. Zero without a drawable scene or
+    /// casters; a candidate's faces count only once it is published.
+    foundation::uint32 PendingMeshLightShadowFaces = 0;
 };
 namespace internal
 {

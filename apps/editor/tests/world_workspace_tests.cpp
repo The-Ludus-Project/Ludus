@@ -12,6 +12,7 @@
 #include "internal/renderer_workspace.h"
 #include "internal/viewport_object_interaction.h"
 #include "internal/world_document.h"
+#include "internal/world_lighting_coverage.h"
 #include "internal/world_workspace.h"
 #include "scene_fixture.h"
 #include <QColor>
@@ -448,15 +449,23 @@ TEST_CASE("World schema and document resource limits are enforced", "[editor][wo
     auto document = Document();
     QString error;
     QString id;
-    for (ludus::foundation::uint32 i = 2; i < 128; ++i)
+    REQUIRE(document.CreateEntity(ludus::platform::GetSystemEntropySource(), error, QStringLiteral("Entity"), id));
+    QJsonObject bounded = document.Draft();
+    QJsonArray entities = bounded.value(QStringLiteral("entities")).toArray();
+    const QJsonObject created = document.Entity(id);
+    while (entities.size() < WorldDocument::MAX_ENTITIES)
     {
-        REQUIRE(document.CreateEntity(ludus::platform::GetSystemEntropySource(), error, QStringLiteral("Entity"), id));
+        QJsonObject entity = created;
+        entity.insert(QStringLiteral("id"), QStringLiteral("capacity.") + QString::number(entities.size()));
+        entities.append(entity);
     }
+    bounded.insert(QStringLiteral("entities"), entities);
+    REQUIRE(document.Restore(bounded, error) == true);
     const auto before = document.Draft();
     CHECK_FALSE(
         document.CreateEntity(ludus::platform::GetSystemEntropySource(), error, QStringLiteral("Overflow"), id));
     CHECK(document.Draft() == before);
-    CHECK_FALSE(document.Load(QByteArray(524289, ' '), error));
+    CHECK_FALSE(document.Load(QByteArray(WorldDocument::MAX_BYTES + 1, ' '), error));
     CHECK(document.Draft() == before);
     WorldDocument fresh;
     CHECK_FALSE(fresh.LoadSchema(QByteArray(65537, ' '), error));
@@ -707,7 +716,47 @@ QJsonObject ImportedLevel()
                          {QStringLiteral("transform"), QJsonArray{1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 3, 4}}}}},
     };
 }
+/// ImportedLevel() with `count` distinct objects, one per cooked mesh and material slot like a
+/// best-effort import such as Bistro's.
+QJsonObject ImportedLevel(ludus::foundation::int32 count)
+{
+    QJsonObject level = ImportedLevel();
+    const QJsonObject source = level.value(QStringLiteral("objects")).toArray()[0].toObject();
+    QJsonArray objects;
+    for (ludus::foundation::int32 i = 0; i < count; ++i)
+    {
+        const QString suffix = QStringLiteral("%1").arg(i, 12, 10, QLatin1Char('0'));
+        QJsonObject object = source;
+        object.insert(QStringLiteral("id"), QStringLiteral("c0000000-0000-4000-8000-") + suffix);
+        object.insert(QStringLiteral("name"), QStringLiteral("Imported object %1").arg(i + 1));
+        object.insert(QStringLiteral("mesh"), QStringLiteral("mesh/00000000-0000-4000-8000-") + suffix);
+        object.insert(QStringLiteral("material"), QStringLiteral("material/00000000-0000-4000-8000-") + suffix);
+        objects.append(object);
+    }
+    level.insert(QStringLiteral("objects"), objects);
+    return level;
+}
 } // namespace
+TEST_CASE("A World admits every object of an import-profile scene", "[editor][world][unified]")
+{
+    // Bistro's best-effort import cooks 136 objects, more than the resident reference profile's 128.
+    const ludus::foundation::int32 importObjects =
+        static_cast<ludus::foundation::int32>(ludus::content::scene_format::IMPORT_LIMITS.Objects);
+    WorldDocument document = UnboundDocument();
+    const ludus::foundation::int32 authored =
+        static_cast<ludus::foundation::int32>(document.Draft().value(QStringLiteral("entities")).toArray().size());
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(importObjects), error) == true);
+    CHECK(document.Draft().value(QStringLiteral("entities")).toArray().size() == authored + importObjects);
+    CHECK(document.SceneLevel().value(QStringLiteral("objects")).toArray().size() == importObjects);
+    CHECK(document.Encode().size() <= WorldDocument::MAX_BYTES);
+
+    WorldDocument overflowing = UnboundDocument();
+    const QJsonObject before = overflowing.Draft();
+    CHECK(overflowing.ImportScene(ImportedLevel(WorldDocument::MAX_ENTITIES - authored + 1), error) == false);
+    CHECK(error.contains(QStringLiteral("at most %1 entities").arg(WorldDocument::MAX_ENTITIES)) == true);
+    CHECK(overflowing.Draft() == before);
+}
 TEST_CASE("Imported scene instances share entity components placement persistence and history",
           "[editor][world][unified]")
 {
@@ -2043,6 +2092,120 @@ TEST_CASE("Default World presets create renderable geometry and authored lights 
     reopened.SetProject(root, 2);
     REQUIRE(reopened.Open(path) == true);
     CHECK(reopened.Document().Draft() == workspace.Document().Draft());
+}
+
+TEST_CASE("A dark imported World offers a sun aimed like its disabled light, added as one undoable edit",
+          "[editor][world][world-lighting]")
+{
+    using namespace ludus::foundation;
+    namespace math = ludus::foundation::math;
+    // An imported floor 20 m square lit only by a small emitter, with a sun authored at zero intensity like the Intel
+    // Sponza glTF's.
+    SharedPtr<ludus::resources::SceneDefinition> definition;
+    REQUIRE(TryMakeShared<ludus::resources::SceneDefinition>(GetSystemAllocationDomain(), definition) ==
+            OwnershipStatus::Ok);
+    REQUIRE(definition->Meshes.TryResize(2) == true);
+    for (const math::Vector3 corner :
+         {math::Vector3{-10, 0, -10}, math::Vector3{10, 0, -10}, math::Vector3{10, 0, 10}, math::Vector3{-10, 0, 10}})
+    {
+        REQUIRE(definition->Meshes[0].Positions.TryAdd(corner) == true);
+    }
+    for (const uint32 index : {0U, 1U, 2U, 0U, 2U, 3U})
+    {
+        REQUIRE(definition->Meshes[0].Indices.TryAdd(index) == true);
+    }
+    // A 0.1 m right triangle 2 m up, of area 0.005 m2.
+    for (const math::Vector3 corner : {math::Vector3{0, 2, 0}, math::Vector3{0.1F, 2, 0}, math::Vector3{0, 2, 0.1F}})
+    {
+        REQUIRE(definition->Meshes[1].Positions.TryAdd(corner) == true);
+    }
+    for (const uint32 index : {0U, 1U, 2U})
+    {
+        REQUIRE(definition->Meshes[1].Indices.TryAdd(index) == true);
+    }
+    ludus::resources::SceneLight sun;
+    sun.SourceId = 1;
+    sun.Kind = ludus::resources::SceneLightKind::Directional;
+    sun.IsEnabled = false;
+    sun.DirectionWorld = {1.1011403F, -1.6562406F, 0.2106133F};
+    REQUIRE(definition->Lights.TryAdd(sun) == true);
+    RenderScene scene;
+    scene.Definition = definition;
+    scene.Lit = true;
+    scene.Meshes.resize(2);
+    scene.Surfaces.resize(2);
+    scene.Surfaces[1].Emission = {1, 1, 1};
+    for (int32 index = 0; index < 2; ++index)
+    {
+        PreviewObject object;
+        object.Id = QStringLiteral("object-%1").arg(index);
+        object.Mesh = index;
+        object.Surface = index;
+        scene.Objects.append(object);
+    }
+    const WorldLightingSummary summary = SummarizeWorldLighting(scene, true);
+    REQUIRE(summary.HasBounds == true);
+    CHECK(summary.LightCount == 0);
+    CHECK(summary.DisabledLightCount == 1);
+    CHECK(summary.HasEnvironment == false);
+    CHECK(summary.EmissiveObjectCount == 1);
+    // One-sided radiance one over 0.005 m2.
+    CHECK(summary.EmittedLumens == Catch::Approx(math::kPi * 0.005).epsilon(1e-4));
+    REQUIRE(summary.HasSunDirection == true);
+    CHECK(math::Length(summary.SunDirectionWorld) == Catch::Approx(1).epsilon(1e-5));
+    const WorldLightingCoverage coverage = DescribeWorldLighting(summary);
+    INFO(coverage.Warning.toStdString());
+    REQUIRE(coverage.Repair == WorldLightingRepair::AddSun);
+    // An unlit preview never reports the World dark.
+    scene.Lit = false;
+    CHECK(DescribeWorldLighting(SummarizeWorldLighting(scene, true)).Warning.isEmpty() == true);
+
+    // The repair adds a sun that the World extraction presents along the disabled light's direction.
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("sun.world.json"))) == true);
+    const QJsonObject before = workspace.Document().Draft();
+    REQUIRE(workspace.ApplySunRepair(coverage) == true);
+    const QJsonArray entities = workspace.Document().Draft().value(QStringLiteral("entities")).toArray();
+    REQUIRE(entities.size() == 1);
+    CHECK(entities[0].toObject().value(QStringLiteral("name")).toString() == QStringLiteral("Sun"));
+    RenderScene authored;
+    QString error;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), authored, error) == true);
+    REQUIRE(authored.AuthoredLights.Count == 1);
+    const ludus::graphics::renderer::DirectLight& light = authored.AuthoredLights.Lights[0];
+    CHECK(light.Kind == ludus::graphics::renderer::LightKind::Directional);
+    CHECK(light.Intensity == Catch::Approx(DEFAULT_WORLD_SUN_ILLUMINANCE_LUX));
+    math::Vector3 direction;
+    REQUIRE(math::TryNormalize(light.Direction, direction) == math::MathStatus::Success);
+    CHECK(direction.X == Catch::Approx(summary.SunDirectionWorld.X).margin(1e-4));
+    CHECK(direction.Y == Catch::Approx(summary.SunDirectionWorld.Y).margin(1e-4));
+    CHECK(direction.Z == Catch::Approx(summary.SunDirectionWorld.Z).margin(1e-4));
+    workspace.Undo();
+    CHECK(workspace.Document().Draft() == before);
+    // A repair that offers nothing changes nothing.
+    CHECK(workspace.ApplySunRepair(WorldLightingCoverage{}) == false);
+    CHECK(workspace.Document().Draft() == before);
+
+    // Add Geometry / Light offers the same sun. This World has no imported light to follow, so it takes the default
+    // angle, two metres above the origin.
+    QAction* createOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
+    REQUIRE(createOrNull != nullptr);
+    createOrNull->trigger();
+    const QJsonArray created = workspace.Document().Draft().value(QStringLiteral("entities")).toArray();
+    REQUIRE(created.size() == 1);
+    const QJsonObject components = created[0].toObject().value(QStringLiteral("components")).toObject();
+    CHECK(components.value(QStringLiteral("light")).toObject().value(QStringLiteral("kind")).toString() ==
+          QStringLiteral("directional"));
+    const QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
+    CHECK(transform.value(QStringLiteral("rx")).toDouble() == Catch::Approx(DEFAULT_WORLD_SUN_ROTATION_DEGREES.X));
+    CHECK(transform.value(QStringLiteral("ry")).toDouble() == Catch::Approx(DEFAULT_WORLD_SUN_ROTATION_DEGREES.Y));
+    CHECK(transform.value(QStringLiteral("y")).toDouble() == Catch::Approx(2));
+    workspace.Undo();
+    CHECK(workspace.Document().Draft() == before);
+    workspace.StopPreview();
 }
 
 TEST_CASE("A default World luminaire is scene data with an outline and a working gizmo",

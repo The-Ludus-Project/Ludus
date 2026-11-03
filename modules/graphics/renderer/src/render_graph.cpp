@@ -3453,6 +3453,10 @@ RenderGraphReport RenderGraph::GetReport() const noexcept
     if (mState.Get() != nullptr)
     {
         report.Resources = mState->ForwardResources.GetReport();
+        if (mState->Current.Get() != nullptr && mState->Current->ForwardGeneration.Get() != nullptr)
+        {
+            report.PendingMeshLightShadowFaces = mState->Current->ForwardGeneration->GetPendingMeshLightShadowFaces();
+        }
     }
     return report;
 }

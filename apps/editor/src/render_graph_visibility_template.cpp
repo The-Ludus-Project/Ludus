@@ -39,6 +39,14 @@ VisibilityTemplate GetRasterTemplate()
             false};
 }
 
+/// A template's directory and program prefix as one import instance names them.
+VisibilityTemplate GetInstanceTemplate(VisibilityTemplate selected, const TemplateInstance& instance)
+{
+    selected.Directory = GetInstanceDirectory(selected.Directory, instance);
+    selected.ProgramPrefix = GetInstancePrefix(selected.ProgramPrefix, instance);
+    return selected;
+}
+
 bool FindVisibilityTemplate(const QString& identity, VisibilityTemplate& outTemplate)
 {
     if (identity == QStringLiteral("visibility-buffer"))
@@ -82,9 +90,12 @@ bool IsRasterProgram(const QString& identity)
     return identity == QStringLiteral("Geometry") || identity == QStringLiteral("Color");
 }
 
-QString GetVisibilityProgramName(const QString& identity, const VisibilityTemplate& source)
+QString
+GetVisibilityProgramName(const QString& identity, const VisibilityTemplate& source, const TemplateInstance& instance)
 {
-    return (IsRasterProgram(identity) == true ? GetRasterTemplate().ProgramPrefix : source.ProgramPrefix) + identity;
+    return (IsRasterProgram(identity) == true ? GetInstanceTemplate(GetRasterTemplate(), instance).ProgramPrefix
+                                              : source.ProgramPrefix) +
+           identity;
 }
 
 // Capture an entry source and its literal local include closure: shared helpers such as a
@@ -92,6 +103,7 @@ QString GetVisibilityProgramName(const QString& identity, const VisibilityTempla
 bool CopyVisibilitySources(RenderGraphSnapshot& inoutSnapshot,
                            const VisibilityTemplate& source,
                            const QString& entry,
+                           TemplateInstance& inoutInstance,
                            QString& outError)
 {
     QStringList pending{entry};
@@ -109,16 +121,21 @@ bool CopyVisibilitySources(RenderGraphSnapshot& inoutSnapshot,
         const QString destination = source.Directory + relative;
         const bool isInside =
             relative.startsWith(QStringLiteral("../")) == false && QDir::isAbsolutePath(relative) == false;
-        const QByteArray bytes = isInside == true ? ReadVisibilityTemplate(source.Identity, relative) : QByteArray{};
-        if (bytes.isEmpty() == true ||
-            (inoutSnapshot.Files.contains(destination) == true && inoutSnapshot.Files.value(destination) != bytes))
+        const QByteArray bytes =
+            isInside == true
+                ? RenameTemplateIdentifiers(ReadVisibilityTemplate(source.Identity, relative), inoutInstance)
+                : QByteArray{};
+        if (bytes.isEmpty() == true)
         {
-            outError = QStringLiteral("Visibility shader source %1 is unavailable or has authored changes. "
-                                      "Rename the custom source before importing this template.")
-                           .arg(destination);
+            outError = QStringLiteral("Visibility shader source %1 is unavailable; repair the editor installation.")
+                           .arg(relative);
             return false;
         }
-        inoutSnapshot.Files.insert(destination, bytes);
+        if (InsertTemplateSource(inoutSnapshot, destination, bytes, inoutInstance) == false)
+        {
+            outError = QStringLiteral("Visibility shader source %1 already has different contents.").arg(destination);
+            return false;
+        }
         QRegularExpressionMatchIterator includes = INCLUDE.globalMatch(QString::fromUtf8(bytes));
         while (includes.hasNext() == true)
         {
@@ -128,7 +145,37 @@ bool CopyVisibilitySources(RenderGraphSnapshot& inoutSnapshot,
     return true;
 }
 
-bool MergeVisibilitySchemas(QJsonObject& inoutManifest, const QJsonObject& source, QString& outError)
+// Choose the varying schema name: an authored VisibilityRasterVarying with other fields is kept,
+// and this import names the first VisibilityRasterVarying<k>, k >= 2, that is absent or identical.
+void RenameVisibilityVarying(const QJsonArray& schemas, QJsonObject incoming, TemplateInstance& inoutInstance)
+{
+    for (int32 suffix = 1; suffix <= MAX_TEMPLATE_INSTANCES; ++suffix)
+    {
+        const QString candidate = suffix == 1 ? VISIBILITY_VARYING : VISIBILITY_VARYING + QString::number(suffix);
+        incoming.insert(QStringLiteral("id"), candidate);
+        bool isFree = true;
+        for (const QJsonValueConstRef existing : schemas)
+        {
+            if (existing.toObject().value(QStringLiteral("id")) == candidate)
+            {
+                isFree = existing.toObject() == incoming;
+            }
+        }
+        if (isFree == true)
+        {
+            if (suffix > 1)
+            {
+                inoutInstance.Renames.insert(VISIBILITY_VARYING, candidate);
+            }
+            return;
+        }
+    }
+}
+
+bool MergeVisibilitySchemas(QJsonObject& inoutManifest,
+                            const QJsonObject& source,
+                            TemplateInstance& inoutInstance,
+                            QString& outError)
 {
     QJsonArray schemas = inoutManifest.value(QStringLiteral("schemas")).toArray();
     for (const QJsonValueConstRef value : source.value(QStringLiteral("schemas")).toArray())
@@ -137,7 +184,8 @@ bool MergeVisibilitySchemas(QJsonObject& inoutManifest, const QJsonObject& sourc
         const bool isVertex = incoming.value(QStringLiteral("id")) == QStringLiteral("RendererStatic");
         if (isVertex == false)
         {
-            incoming.insert(QStringLiteral("id"), VISIBILITY_VARYING);
+            RenameVisibilityVarying(schemas, incoming, inoutInstance);
+            incoming.insert(QStringLiteral("id"), inoutInstance.Renames.value(VISIBILITY_VARYING, VISIBILITY_VARYING));
         }
         bool hasSchema = false;
         for (qsizetype index = 0; index < schemas.size(); ++index)
@@ -186,8 +234,10 @@ bool MergeVisibilitySchemas(QJsonObject& inoutManifest, const QJsonObject& sourc
             }
             else if (existing != incoming)
             {
-                outError = QStringLiteral("VisibilityRasterVarying is already defined with different fields. "
-                                          "Rename that custom schema before importing visibility.");
+                outError = QStringLiteral("VisibilityRasterVarying and its numbered alternatives up to %1 already "
+                                          "have different fields. Delete varying schemas this package no longer "
+                                          "uses from the shader manifest and apply again.")
+                               .arg(MAX_TEMPLATE_INSTANCES);
                 return false;
             }
         }
@@ -204,6 +254,7 @@ bool MergeVisibilityPrograms(RenderGraphSnapshot& inoutSnapshot,
                              QJsonObject& inoutManifest,
                              const QJsonObject& source,
                              const VisibilityTemplate& selected,
+                             TemplateInstance& inoutInstance,
                              QString& outError,
                              RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
@@ -216,32 +267,28 @@ bool MergeVisibilityPrograms(RenderGraphSnapshot& inoutSnapshot,
         {
             continue;
         }
-        const VisibilityTemplate owner = IsRasterProgram(identity) == true ? GetRasterTemplate() : selected;
+        const VisibilityTemplate owner =
+            IsRasterProgram(identity) == true ? GetInstanceTemplate(GetRasterTemplate(), inoutInstance) : selected;
         const QString relative = incoming.value(QStringLiteral("source")).toString();
-        if (CopyVisibilitySources(inoutSnapshot, owner, relative, outError) == false)
+        if (CopyVisibilitySources(inoutSnapshot, owner, relative, inoutInstance, outError) == false)
         {
             return false;
         }
-        incoming.insert(QStringLiteral("id"), GetVisibilityProgramName(identity, selected));
+        incoming.insert(QStringLiteral("id"), GetVisibilityProgramName(identity, selected, inoutInstance));
         incoming.insert(QStringLiteral("source"), owner.Directory + relative);
-        bool hasProgram = false;
-        for (const QJsonValueConstRef existing : programs)
+        for (const QString& field : {QStringLiteral("input"), QStringLiteral("output")})
         {
-            if (existing.toObject().value(QStringLiteral("id")) == incoming.value(QStringLiteral("id")))
+            const QString schema = incoming.value(field).toString();
+            if (inoutInstance.Renames.contains(schema) == true)
             {
-                hasProgram = true;
-                if (existing.toObject() != incoming)
-                {
-                    outError = QStringLiteral("Shader program %1 already has a different definition. "
-                                              "Rename that custom program before importing visibility.")
-                                   .arg(incoming.value(QStringLiteral("id")).toString());
-                    return false;
-                }
+                incoming.insert(field, inoutInstance.Renames.value(schema));
             }
         }
-        if (hasProgram == false)
+        if (InsertTemplateProgram(programs, incoming, inoutInstance) == false)
         {
-            programs.append(incoming);
+            outError = QStringLiteral("Shader program %1 already has a different definition.")
+                           .arg(incoming.value(QStringLiteral("id")).toString());
+            return false;
         }
     }
     if (EnsureTemplateProgramBudget(inoutManifest,
@@ -260,6 +307,7 @@ bool MergeVisibilityRayInterface(RenderGraphSnapshot& inoutSnapshot,
                                  QJsonObject& inoutManifest,
                                  const QJsonObject& source,
                                  const VisibilityTemplate& selected,
+                                 TemplateInstance& inoutInstance,
                                  QString& outError)
 {
     QJsonArray techniques = inoutManifest.value(QStringLiteral("techniques")).toArray();
@@ -335,21 +383,24 @@ bool MergeVisibilityRayInterface(RenderGraphSnapshot& inoutSnapshot,
     for (const QString& stage :
          {QStringLiteral("ray_generation"), QStringLiteral("miss"), QStringLiteral("closest_hit")})
     {
-        technique.insert(stage, GetVisibilityProgramName(technique.value(stage).toString(), selected));
+        technique.insert(stage, GetVisibilityProgramName(technique.value(stage).toString(), selected, inoutInstance));
     }
     QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
     const QString relative = interface.value(QStringLiteral("payload")).toString();
     const QString destination = selected.Directory + relative;
     const QByteArray payload = ReadVisibilityTemplate(selected.Identity, relative);
-    if (payload.isEmpty() == true ||
-        (inoutSnapshot.Files.contains(destination) == true && inoutSnapshot.Files.value(destination) != payload))
+    if (payload.isEmpty() == true)
     {
-        outError = QStringLiteral("Shared visibility payload source %1 conflicts with an authored file. "
-                                  "Rename that custom file and retry.")
-                       .arg(destination);
+        outError = QStringLiteral("Visibility payload source %1 is unavailable; repair the editor installation.")
+                       .arg(relative);
         return false;
     }
-    inoutSnapshot.Files.insert(destination, payload);
+    if (InsertTemplateSource(inoutSnapshot, destination, payload, inoutInstance) == false)
+    {
+        outError =
+            QStringLiteral("Shared visibility payload source %1 already has different contents.").arg(destination);
+        return false;
+    }
     interface.insert(QStringLiteral("payload"), destination);
     technique.insert(QStringLiteral("scene_interface"), interface);
     techniques.append(technique);
@@ -366,7 +417,8 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
                                                          const QString& configuration,
                                                          const QString& templateIdentity,
                                                          QString& outError,
-                                                         RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
+                                                         RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull,
+                                                         TemplateInstance* inoutInstanceOrNull)
 {
     VisibilityTemplate selected;
     if (FindVisibilityTemplate(templateIdentity, selected) == false)
@@ -374,6 +426,11 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
         outError = QStringLiteral("Select a built-in configuration template.");
         return RenderGraphDocumentStatus::InvalidEdit;
     }
+    TemplateInstance localInstance;
+    TemplateInstance& instance = inoutInstanceOrNull != nullptr ? *inoutInstanceOrNull : localInstance;
+    selected = GetInstanceTemplate(selected, instance);
+    instance.Directory = selected.Directory;
+    instance.ProgramPrefix = selected.ProgramPrefix;
     QJsonObject graph = QJsonDocument::fromJson(inoutSnapshot.Files.value(file)).object();
     QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
     static const QRegularExpression IDENTIFIER(QStringLiteral("\\A[A-Za-z][A-Za-z0-9_-]{0,62}\\z"));
@@ -432,10 +489,11 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
         outError = QStringLiteral("Visibility template resources are unavailable; repair the editor installation.");
         return RenderGraphDocumentStatus::NotFound;
     }
-    if (MergeVisibilitySchemas(manifest, source, outError) == false ||
-        MergeVisibilityPrograms(inoutSnapshot, manifest, source, selected, outError, inoutBudgetOrNull) == false ||
+    if (MergeVisibilitySchemas(manifest, source, instance, outError) == false ||
+        MergeVisibilityPrograms(inoutSnapshot, manifest, source, selected, instance, outError, inoutBudgetOrNull) ==
+            false ||
         (selected.HasRays == true &&
-         MergeVisibilityRayInterface(inoutSnapshot, manifest, source, selected, outError) == false))
+         MergeVisibilityRayInterface(inoutSnapshot, manifest, source, selected, instance, outError) == false))
     {
         AppendDraftPreserved(outError);
         return RenderGraphDocumentStatus::Conflict;
@@ -450,8 +508,9 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
         for (qsizetype shader = 0; shader < shaders.size(); ++shader)
         {
             QJsonObject entry = shaders.at(shader).toObject();
-            entry.insert(QStringLiteral("program"),
-                         GetVisibilityProgramName(entry.value(QStringLiteral("program")).toString(), selected));
+            entry.insert(
+                QStringLiteral("program"),
+                GetVisibilityProgramName(entry.value(QStringLiteral("program")).toString(), selected, instance));
             shaders.replace(shader, entry);
         }
         if (shaders.isEmpty() == false)

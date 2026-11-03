@@ -47,6 +47,7 @@ QString GetComputeProgramName(const ComputeTemplate& selected, const QString& id
 RenderGraphDocumentStatus CopyComputeSources(RenderGraphSnapshot& inoutSnapshot,
                                              const ComputeTemplate& selected,
                                              QStringList pending,
+                                             TemplateInstance& inoutInstance,
                                              QString& outError)
 {
     QSet<QString> visited;
@@ -62,7 +63,9 @@ RenderGraphDocumentStatus CopyComputeSources(RenderGraphSnapshot& inoutSnapshot,
         visited.insert(relative);
         const bool isInside =
             relative.startsWith(QStringLiteral("../")) == false && QDir::isAbsolutePath(relative) == false;
-        const QByteArray bytes = isInside == true ? ReadComputeTemplate(selected, relative) : QByteArray{};
+        const QByteArray bytes = isInside == true
+                                     ? RenameTemplateIdentifiers(ReadComputeTemplate(selected, relative), inoutInstance)
+                                     : QByteArray{};
         const QString destination = selected.SourceRoot + relative;
         if (bytes.isEmpty() == true)
         {
@@ -70,15 +73,12 @@ RenderGraphDocumentStatus CopyComputeSources(RenderGraphSnapshot& inoutSnapshot,
                            .arg(relative);
             return RenderGraphDocumentStatus::NotFound;
         }
-        if (inoutSnapshot.Files.contains(destination) == true && inoutSnapshot.Files.value(destination) != bytes)
+        // PrepareConfigurationTemplate checks the package file limit once the whole template is in.
+        if (InsertTemplateSource(inoutSnapshot, destination, bytes, inoutInstance) == false)
         {
-            outError = QStringLiteral("Shader source %1 already has different contents. Rename the custom source "
-                                      "before importing compute ray tracing.")
-                           .arg(destination);
+            outError = QStringLiteral("Shader source %1 already has different contents.").arg(destination);
             return RenderGraphDocumentStatus::Conflict;
         }
-        // PrepareConfigurationTemplate checks the package file limit once the whole template is in.
-        inoutSnapshot.Files.insert(destination, bytes);
         QRegularExpressionMatchIterator includes = INCLUDE.globalMatch(QString::fromUtf8(bytes));
         while (includes.hasNext() == true)
         {
@@ -89,11 +89,13 @@ RenderGraphDocumentStatus CopyComputeSources(RenderGraphSnapshot& inoutSnapshot,
 }
 
 // Only scene compute kernels are imported; the raster programs that a New Graph package
-// carries for raster fallback already exist in the destination manifest.
+// carries for raster fallback already exist in the destination manifest. Sources are copied
+// before the budget check, so a collision moves the import on before any capacity request.
 RenderGraphDocumentStatus MergeComputePrograms(RenderGraphSnapshot& inoutSnapshot,
                                                QJsonObject& inoutManifest,
                                                const QJsonObject& source,
                                                const ComputeTemplate& selected,
+                                               TemplateInstance& inoutInstance,
                                                QString& outError,
                                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
@@ -111,26 +113,18 @@ RenderGraphDocumentStatus MergeComputePrograms(RenderGraphSnapshot& inoutSnapsho
                        GetComputeProgramName(selected, program.value(QStringLiteral("id")).toString()));
         program.insert(QStringLiteral("source"),
                        selected.SourceRoot + program.value(QStringLiteral("source")).toString());
-        bool hasProgram = false;
-        for (const QJsonValueConstRef existing : programs)
+        if (InsertTemplateProgram(programs, program, inoutInstance) == false)
         {
-            if (existing.toObject().value(QStringLiteral("id")) != program.value(QStringLiteral("id")))
-            {
-                continue;
-            }
-            hasProgram = true;
-            if (existing.toObject() != program)
-            {
-                outError = QStringLiteral("Shader program %1 already has a different definition. Rename that custom "
-                                          "program before importing compute ray tracing.")
-                               .arg(program.value(QStringLiteral("id")).toString());
-                return RenderGraphDocumentStatus::Conflict;
-            }
+            outError = QStringLiteral("Shader program %1 already has a different definition.")
+                           .arg(program.value(QStringLiteral("id")).toString());
+            return RenderGraphDocumentStatus::Conflict;
         }
-        if (hasProgram == false)
-        {
-            programs.append(program);
-        }
+    }
+    const RenderGraphDocumentStatus sourceStatus =
+        CopyComputeSources(inoutSnapshot, selected, sources, inoutInstance, outError);
+    if (sourceStatus != RenderGraphDocumentStatus::Ok)
+    {
+        return sourceStatus;
     }
     if (EnsureTemplateProgramBudget(inoutManifest,
                                     static_cast<int32>(programs.size()),
@@ -141,7 +135,7 @@ RenderGraphDocumentStatus MergeComputePrograms(RenderGraphSnapshot& inoutSnapsho
         return RenderGraphDocumentStatus::Capacity;
     }
     inoutManifest.insert(QStringLiteral("programs"), programs);
-    return CopyComputeSources(inoutSnapshot, selected, sources, outError);
+    return RenderGraphDocumentStatus::Ok;
 }
 
 // Scene compute passes need scene_interface on the shared ray technique. An existing technique
@@ -238,17 +232,21 @@ RenderGraphDocumentStatus PrepareSceneComputeTemplateConfiguration(
     const QString& configuration,
     QString& outError,
     const SceneComputeTemplate& selectedTemplate,
-    RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
+    RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull,
+    TemplateInstance* inoutInstanceOrNull)
 {
     const QString& templateIdentity = selectedTemplate.Identity;
-    const QString& programPrefix = selectedTemplate.ProgramPrefix;
     const QString& name = selectedTemplate.Name;
+    TemplateInstance localInstance;
+    TemplateInstance& instance = inoutInstanceOrNull != nullptr ? *inoutInstanceOrNull : localInstance;
     QString directory = templateIdentity;
     directory.replace(QLatin1Char('-'), QLatin1Char('_'));
+    instance.Directory = GetInstanceDirectory(directory + QLatin1Char('/'), instance);
+    instance.ProgramPrefix = GetInstancePrefix(selectedTemplate.ProgramPrefix, instance);
     const ComputeTemplate selected{
         QStringLiteral(":/render-graph/templates/") + templateIdentity + QLatin1Char('/'),
-        directory + QLatin1Char('/'),
-        programPrefix,
+        instance.Directory,
+        instance.ProgramPrefix,
         name,
     };
     QJsonObject graph = QJsonDocument::fromJson(inoutSnapshot.Files.value(file)).object();
@@ -323,8 +321,11 @@ RenderGraphDocumentStatus PrepareSceneComputeTemplateConfiguration(
             inoutSnapshot.Files.insert(modelPath, model);
         }
     }
+    // Setting names are chosen first: the copied kernels spell the names this import uses.
+    const QJsonArray settings =
+        RenameTemplateSettings(manifest, source.value(QStringLiteral("settings")).toArray(), instance);
     RenderGraphDocumentStatus status =
-        MergeComputePrograms(inoutSnapshot, manifest, source, selected, outError, inoutBudgetOrNull);
+        MergeComputePrograms(inoutSnapshot, manifest, source, selected, instance, outError, inoutBudgetOrNull);
     if (status == RenderGraphDocumentStatus::Ok)
     {
         status = MergeComputeRayTechnique(manifest, source, outError);
@@ -335,12 +336,7 @@ RenderGraphDocumentStatus PrepareSceneComputeTemplateConfiguration(
         return status;
     }
     // The settings error already says that the draft was preserved.
-    status = MergeTemplateSettings(inoutSnapshot,
-                                   manifest,
-                                   source.value(QStringLiteral("settings")).toArray(),
-                                   selected.Name,
-                                   outError,
-                                   inoutBudgetOrNull);
+    status = MergeTemplateSettings(inoutSnapshot, manifest, settings, selected.Name, outError, inoutBudgetOrNull);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         return status;
@@ -392,7 +388,8 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
     const QString& configuration,
     QString& outError,
     const QString& templateIdentity,
-    RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
+    RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull,
+    TemplateInstance* inoutInstanceOrNull)
 {
     SceneComputeTemplate selected{templateIdentity, {}, {}};
     if (templateIdentity == QStringLiteral("simple-compute-ray-tracing"))
@@ -481,6 +478,7 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
                                                     configuration,
                                                     outError,
                                                     selected,
-                                                    inoutBudgetOrNull);
+                                                    inoutBudgetOrNull,
+                                                    inoutInstanceOrNull);
 }
 } // namespace ludus::editor

@@ -796,6 +796,14 @@ reason, in pixels that varied between identical runs. Every native query therefo
 build rejects a native-query kernel that would inline a query. Callbacks reach these functions through
 `TraceClosest`, `TestVisibility` and `TraceAndShade`; they need no change.
 
+The Metal translation also keeps every other function that Slang emits as `[noinline]` out of line in
+a ray kernel. That is not safe for every function: on the same GPU, out-of-line calls to some
+functions corrupted their callers' live state instead. The `ris-projected-solid-angle` template's MIS
+image was 3–4% dark with an out-of-line `SampleBsdfStrategy`, and the guided FG templates latched
+garbage failure counts with an out-of-line camera tracer or path record accessors. Those functions
+are therefore inlined. Validate a new `[noinline]` in a ray callback with its Metal GPU tests, twice,
+since this corruption can vary between identical runs; remove the attribute where it fails.
+
 For custom compute queries, supply a source implementing this function:
 
 ```slang
@@ -1430,10 +1438,12 @@ admission limits are retained unless you approve a program-budget increase. If t
 merged programs exceed `budgets.programs`, the template picker shows the current
 and required counts and offers **Increase and apply** or **Cancel**. Approval raises
 only that limit to the required count in the same undoable edit; Cancel preserves
-the draft. An incompatible payload, visibility ray profile,
-source/setting collision or other insufficient admission budget reports a repair
-and preserves the draft. Program, source and setting conflicts name the conflicting
-input; a program capacity error gives the required count and `budgets.programs` limit.
+the draft. A shared ray technique that also permits visibility-buffer inputs is
+shared as is: ReSTIR's passes keep their ordinary bindings. An incompatible payload
+or other insufficient admission budget reports a repair and preserves the draft; a program capacity error
+gives the required count and `budgets.programs` limit. Sources, programs or settings
+that already use the template's names never block it: see
+[When template names are already in use](#when-template-names-are-already-in-use).
 Undo restores the previous budgets along with the graph and shader edits.
 Settings are shared by this package's ReSTIR
 configurations. A manifest holds up to 128 settings, enough for every built-in
@@ -1637,6 +1647,35 @@ those authors for [Appendix A.1, “The Alias Method”](https://pbr-book.org/4e
 and [Appendix A.2, “Reservoir Sampling”](https://pbr-book.org/4ed/Sampling_Algorithms/Reservoir_Sampling);
 it adapts their sampling ideas to bounded GPU-local tables and one shared emitter
 stream, rather than copying the book's container implementation.
+
+### When template names are already in use
+
+Every configuration template is owned by the engine, and applying it never asks you
+to rename your own sources, programs or settings. An import first uses the
+template's own names: sources under its directory (`restir_di/`), programs with its
+prefix (`Restir…`) and its Graph settings. Existing copies with identical contents
+are shared, so applying the same template twice adds only the new configuration.
+
+When one of those names already holds different content, for example sources from an
+earlier editor version of the template or sources you edited, the import uses the
+first free numbered copy instead: `restir_di_2/` with `Restir2…` programs, then
+`restir_di_3/`, and so on. A Graph setting whose definition differs is kept, and the
+import adds `NAME_2` (or the next free number) and uses it in its copied sources; a
+visibility varying schema becomes `VisibilityRasterVarying2`. Existing files,
+programs, settings, schemas and configurations are never changed, so configurations
+built from an earlier copy keep rendering exactly as before. The status bar names
+the numbered copy and any renamed settings. Up to 16 copies are tried; when all
+differ, the error asks you to delete copies the package no longer uses (**Delete
+Subgraph and Library** removes a library with the sources only it uses).
+
+The numbered copy adds programs. When they exceed `budgets.programs`, the picker
+offers **Increase and apply** as above. The proposed configuration name in **Apply
+Configuration Template** is also free: if `RestirDi` already names a library file,
+root node or nonempty configuration, the dialog proposes `RestirDi2`.
+
+Names that describe shared behaviour rather than a copy are not renamed: a shared
+ray payload without the fields the template needs, or an unsupported ray scene
+interface version, still reports its repair and preserves the draft.
 
 ### Use stochastic pairwise MIS for large spatial kernels
 
@@ -2432,8 +2471,9 @@ New shader programs have `ComputeRay`-prefixed IDs (`ComputeRayPrimary`,
 the included `hit_record.slang`. The shared `RendererTriangles.RayTracing` technique
 gains `scene_interface` version 1 when it has none, and its surface and visibility
 query budgets rise to at least one each. Existing callbacks, payload and larger
-budgets are kept. A source or program collision, an unsupported scene interface
-version or a capacity limit reports the repair and preserves the draft.
+budgets are kept. Sources or programs that already hold different content move the
+import to a [numbered copy](#when-template-names-are-already-in-use); an unsupported
+scene interface version or a capacity limit reports the repair and preserves the draft.
 
 `ludus_render_graph_ray_tests` renders the template on a lit Cornell-box-style room
 and compares it with a single-pass RayTracingPipeline
@@ -4598,9 +4638,10 @@ Secondary rays require a native profile. Existing ordinary ray configurations ca
 share the package: their callbacks, payload source and query limits are retained.
 The shared `ScenePayload` needs a `float3 Radiance` field; comments, whitespace and
 additional fields are accepted, with full payload validation at build time. An
-unsupported ray interface version, incompatible payload, changed reserved
-shader/schema or source collision reports the specific repair and preserves the
-draft. The same canonical libraries back the New Render Graph starters and are
+unsupported ray interface version or incompatible payload reports the specific
+repair and preserves the draft. Changed copies of the template's sources, programs or
+varying schema move the import, including its shared raster producer, to a
+[numbered copy](#when-template-names-are-already-in-use). The same canonical libraries back the New Render Graph starters and are
 included in installed SDK packages.
 
 Choose a starter in **New Render Graph → Template**. The editor copies the
@@ -5916,14 +5957,33 @@ record widths or older role IDs; older packages remain readable.
 
 ### Mesh-light shadows
 
-Scene preparation groups the emitter records into at most 64 shadow casters, brightest
-first. A record joins a caster while their enclosing sphere stays within 0.5 m, their
-sidedness matches and, for one-sided emitters, their normals lie within 30 degrees;
-records beyond the 64th caster stay unshadowed and are counted in
-`RenderGraphSceneResourceReport::UnshadowedMeshLights`. A two-sided caster sits at the
-centre of its emitters; a one-sided caster sits a little in front of them, so its own
-emitters never occlude what it lights, and it renders no cube face that lies wholly
-behind them. Each caster's range is its members' culling reach, so every receiver the
+Scene preparation groups the emitter records into at most 256 shadow casters, brightest
+first. A record joins a caster while their enclosing sphere stays within a radius
+limit; at the finer levels their sidedness must also match and, for one-sided
+emitters, their normals must lie within a cone about the caster's first member.
+Preparation tries ever coarser levels and keeps the first that needs at most 256
+casters:
+
+| Level | Radius limit | Normals |
+| --- | --- | --- |
+| 1 | 0.5 m | within 30 degrees, same sidedness |
+| 2 | 0.5 m | within 90 degrees, same sidedness |
+| 3 | 0.5 m | any |
+| 4 | 1 m | any |
+| 5 | 2 m | any |
+
+When even the last level needs more, records beyond the 256th caster stay unshadowed
+and are counted in `RenderGraphSceneResourceReport::UnshadowedMeshLights`. Light
+fixtures are often closed shells of one-sided triangles, such as a bulb or a
+lantern, whose normals span every direction. Relaxing the normal cone before the
+radius lets such a fixture form one caster instead of one per facet direction.
+
+A caster whose one-sided members all lie within 30 degrees of their flux-weighted
+mean normal sits a little in front of them, so its own emitters never occlude what
+it lights, and it renders no cube face that lies wholly behind them. Any other caster
+encloses its members: two-sided emitters, or facets facing many ways. It sits at the
+centre of their enclosing sphere, renders all six faces and ignores occluders within
+its radius. Each caster's range is its members' culling reach, so every receiver the
 grid lists for a member is inside it.
 
 After the scene is published, each caster's cube faces are rendered once, with the
@@ -5931,13 +5991,17 @@ renderer's flat shadow pipeline, into one 2048 x 2048 RGBA8 atlas holding 16-bit
 conventional depth. Face slots are powers of two from 32 to 512 texels, sized by the
 square root of the caster's flux share and halved together until they fit, and each
 slot has a four-texel gutter rendered with a slightly wider field of view. The first
-frame clears the atlas to the far depth; faces are then drawn whole within the frame's
-draw budget, at most 64 per frame, so a large scene's shadows complete over a few
-frames and undrawn faces read as unoccluded. Camera-only updates reuse the atlas, and
-masked materials cast through their alpha-tested shadow pipeline. The atlas takes the
-resolve's material base-colour slot, which the resolve never samples; the caster table
-follows the culling grid, whose cull word records its position. A package whose resolve
-predates shadows ignores both, so no package version changes.
+frame clears the atlas to the far depth. Faces are then drawn whole, brightest caster
+first, within the frame's draw budget, at most 64 faces and about four million
+submitted triangles per frame; a single larger face is drawn alone. Undrawn faces read
+as unoccluded, and `RenderGraphReport::PendingMeshLightShadowFaces` counts the faces
+still to draw. A face draws every triangle of each mesh its frustum and its caster's
+range reach, so a scene of large meshes completes its faces over many frames.
+Camera-only updates reuse the atlas, and masked materials cast through their
+alpha-tested shadow pipeline. The atlas takes the resolve's material base-colour
+slot, which the resolve never samples; the caster table follows the culling grid,
+whose cull word records its position. A package whose resolve predates shadows
+ignores both, so no package version changes.
 
 The resolve multiplies each record's unshadowed integral by its caster's visibility at
 the receiver. It offsets the receiver by 1.5 shadow texels along its normal, searches
@@ -5948,26 +6012,37 @@ receiver's tangent plane has along that texel's ray, so a flat receiver never sh
 itself at grazing angles. The grid lists a caster's records together, so one lookup
 serves a run of them. The penumbra is an estimate from one point per caster: a large
 emitter's contact shadows are approximate, and occluders nearer than a caster's near
-distance (at least a hundredth of its range) are ignored.
+distance (at least a hundredth of its range, and its radius when it encloses its
+members) are ignored. Geometry such as window glass that the scene draws as opaque
+also blocks mesh light in the shadow faces.
 
 Measured with the `[.raster-mesh-light-benchmark]` editor test on an Apple M5 at
-1600 x 1080, with the editor viewport's device budgets (fastest of two interleaved runs
-on a loaded machine, whole GPU frame after the faces are drawn; the unshadowed runs cook
-the same resolve with visibility fixed at one):
+1600 x 1080, with the editor viewport's device budgets. Each build ran five times,
+interleaved, on a loaded machine. The test draws every pending face before it times
+the frames, and reports the face-drawing frames apart. The table compares the earlier
+single 0.5 m, 30-degree clustering with at most 64 casters against the levels above:
 
-| View | Unshadowed | Shadowed | Pixels darkened by more than 8 steps |
-| --- | --- | --- | --- |
-| Staircase2, outside the stair hall | 4.4 ms | 5.3 ms | 10.8% |
-| Staircase2, by the stairs | 4.9 ms | 5.8 ms | 6.4% |
-| Staircase2, in the corridor | 21.5 ms | 23.7 ms | 31.5% |
-| Bathroom, default orbit | 1.2 ms | 1.2 ms | 0.2% |
-| Bistro, camera inside the square | 10.7 ms | 11.0 ms | 0% |
+| Scene | Unshadowed records, 64 casters | Unshadowed records, levels | Casters | Faces | Face-drawing frames | Frame after faces, 64 casters | Frame after faces, levels |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Staircase2, outside the stair hall | 0 of 13 | 0 | 13 | 65 | 2 | 6.3 ms | 6.8 ms |
+| Staircase2, by the stairs | 0 of 13 | 0 | 13 | 65 | 2 | 7.2 ms | 7.0 ms |
+| Staircase2, in the corridor | 0 of 13 | 0 | 13 | 65 | 2 | 25.1 ms | 24.8 ms |
+| Bathroom, default orbit | 0 of 3,837 | 0 | 32 | 191 | 3, now 8 | 1.2 ms | 1.3 ms |
+| Bistro, camera inside the square | 17,474 of 17,571 | 0 | 237 | 1,399 | 6, now 203 | 11.4 ms | 12.3 ms |
+| Sponza, inside the atrium | 3,620 of 4,225 | 0 | 83 | 485 | 6, now 130 | 1.9 ms | 2.8 ms |
 
-Staircase2's 13 records form 13 casters, so every light is shadowed; its interior
-lights no longer show through the outer walls. Sixty-four casters shadow only the
-brightest 97 of Bistro's 17,571 records and 605 of Sponza's 4,225; the rest stay
-unshadowed, as `UnshadowedMeshLights` reports. Covering such scenes needs coarser or
-hierarchical casters, and drawing more faces over more frames.
+Staircase2 and Bathroom keep the first level's casters and render identical images, so
+their differences are measurement noise. Bistro's string lights and Sponza's
+chandeliers are bulbs of outward-facing triangles. The first level needs 2,148 and 538
+casters for them and the second 473 and 83, where Sponza stops; Bistro stops at the
+third, with 237. Shadowing every Bistro record costs its resolve about 1.9 ms, because each
+pixel now evaluates visibility for every caster that reaches it. Bistro's faces submit
+748 million triangles in all, about half a million each. Drawing 64 of them in one
+frame took up to 0.8 s, whereas the triangle budget spreads them over 203 frames that
+averaged 27 ms on the loaded machine. With the gain of the mesh-light resolve raised
+64 times so that the lights dominate, 2.2% of Bistro's pixels darken by more than
+eight steps against an unshadowed resolve (0.5% with 64 casters). Sponza's bulbs emit
+too little to change its eight-bit image.
 
 ## Create a saved graph and import it
 

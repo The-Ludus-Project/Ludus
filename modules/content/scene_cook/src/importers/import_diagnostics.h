@@ -93,6 +93,8 @@ inline constexpr std::string_view EMISSION_APPROXIMATED = "EMISSION_APPROXIMATED
 inline constexpr std::string_view TANGENTS_GENERATED = "TANGENTS_GENERATED";
 /// A light term was approximated or ignored.
 inline constexpr std::string_view LIGHT_APPROXIMATED = "LIGHT_APPROXIMATED";
+/// An authored light has zero intensity or colour and is cooked disabled; it keeps its position and direction.
+inline constexpr std::string_view LIGHT_DISABLED = "LIGHT_DISABLED";
 /// A dependency path was rewritten (for example '\\' separators) before resolution.
 inline constexpr std::string_view PATH_NORMALIZED = "PATH_NORMALIZED";
 /// A referenced dependency (buffer, material library) could not be read.

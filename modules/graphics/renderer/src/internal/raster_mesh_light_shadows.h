@@ -63,10 +63,13 @@ struct MeshLightShadowFaceDraw final
     rhi::RasterRectangle Slot{};
     foundation::uint32 FirstPacket = 0;
     foundation::uint32 PacketCount = 0;
+    /// Triangles its packets submit, which bounds the faces drawn per frame.
+    foundation::uint64 Triangles = 0;
 };
 /// GPU state of one prepared scene's shadow atlas. The scene generation creates the texture and its sampled view;
-/// Renderer::drawMeshLightShadows builds the face packets from the scene snapshot on first use, clears the atlas to
-/// the far depth (unoccluded) and then draws whole faces over as many frames as the per-frame draw budget requires.
+/// Renderer::prepareMeshLightShadows builds the face packets from the scene snapshot, and
+/// Renderer::drawMeshLightShadows clears the atlas to the far depth (unoccluded) and then draws whole faces, in caster
+/// order (brightest first), over as many frames as the per-frame draw and triangle budgets require.
 struct MeshLightShadowAtlas final
 {
     rhi::TextureHandle Texture{};
@@ -94,9 +97,14 @@ struct MeshLightShadowReport final
 };
 /// Group the recordCount emitter polygon records that start inoutWords into shadow casters, brightest first, and write
 /// each record's caster plus one into its MESH_LIGHT_SHADOW_CASTER_CORNER w (zero past the caster limit). A record
-/// joins an existing caster when the merged enclosing sphere stays within the caster radius limit, the sidedness
-/// matches and, for one-sided emitters, its normal lies within the caster's normal cone. Call before
-/// AppendRasterMeshLightGrid, which groups cell lists by caster. Face slots are left unallocated.
+/// joins an existing caster when the merged enclosing sphere stays within a radius limit and, at the finer levels,
+/// the sidedness matches and a one-sided normal lies within a cone about the caster's first member. The finest of a
+/// fixed sequence of ever coarser levels (0.5 m within 30 and then 90 degrees, then 0.5, 1 and 2 m across normals)
+/// that needs at most MAX_MESH_LIGHT_SHADOW_CASTERS casters is used, or the coarsest up to that limit. A caster with
+/// two-sided members, or one-sided members beyond 30 degrees of their flux-weighted mean normal, encloses them:
+/// it renders all six faces from their sphere centre with a near distance of at least its radius. Otherwise it
+/// renders from just in front of them. Call before AppendRasterMeshLightGrid, which groups cell lists by caster.
+/// Face slots are left unallocated.
 /// @return Ready; InvalidDescription for malformed records or OutOfMemory, preserving every output.
 [[nodiscard]] rhi::RasterStatus
 BuildRasterMeshLightShadowCasters(foundation::Array<foundation::math::Vector4>& inoutWords,

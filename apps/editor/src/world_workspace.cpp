@@ -389,6 +389,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                   QStringLiteral("Point Light"),
                                   QStringLiteral("Spot Light"),
                                   QStringLiteral("Directional Light"),
+                                  QStringLiteral("Sun"),
                                   QStringLiteral("Luminaire")})
     {
         QAction* action = objectMenu->addAction(preset);
@@ -403,6 +404,14 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
             QString error;
             if (Add_->isEnabled() == false)
             {
+                return;
+            }
+            if (preset == QStringLiteral("Sun"))
+            {
+                // Aimed like the imported scene's disabled sun when it has one (FitWorldSun).
+                const bool hasScene = Document_.Draft().contains(QStringLiteral("scene"));
+                const RenderScene& scene = hasScene == true ? Scene_->PreviewScene() : Render_->Preview().Scene();
+                static_cast<void>(addSun(FitWorldSun(SummarizeWorldLighting(scene, true))));
                 return;
             }
             if (CreateWorldObject(Document_, mEntropy, preset, id, error) == false)
@@ -813,7 +822,7 @@ bool WorldWorkspace::Open(const QString& path)
     WorldDocument candidate;
     QByteArray schema, bytes;
     QString error;
-    if (Inside(path, true) == false || Read(path, bytes, WorldDocument::MaxBytes) == false)
+    if (Inside(path, true) == false || Read(path, bytes, WorldDocument::MAX_BYTES) == false)
     {
         Changed(QStringLiteral("Open a regular world file inside the project's source folder (at most 512 KiB)."));
         return false;
@@ -845,7 +854,7 @@ bool WorldWorkspace::Open(const QString& path)
     QByteArray currentSchema;
     WorldDocument currentDefinition;
     if (LoadProjectSchema(currentDefinition, currentSchema, demo) == false || currentSchema != schema ||
-        Read(path, bytes, WorldDocument::MaxBytes) == false ||
+        Read(path, bytes, WorldDocument::MAX_BYTES) == false ||
         (isLegacy ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
     {
         Changed(QStringLiteral("Incoming world/schema changed while opening. Retry Open World."));
@@ -2086,7 +2095,7 @@ bool WorldWorkspace::Save()
     QByteArray current;
     if (lock.tryLock(0) == false ||
         (Unsaved_ ? QFileInfo::exists(Path_)
-                  : (Read(Path_, current, WorldDocument::MaxBytes) == false || current != Disk_)))
+                  : (Read(Path_, current, WorldDocument::MAX_BYTES) == false || current != Disk_)))
     {
         Changed(QStringLiteral(
             "The world changed on disk or is locked. Your edits remain open; resolve the conflict before saving."));
@@ -2120,7 +2129,9 @@ void WorldWorkspace::Snapshot()
     if (Unsaved_ == false && Document_.Dirty() == false && Inside(Path_, true))
     {
         QByteArray old;
-        if (Read(Path_ + QStringLiteral(".ludus-recovery"), old, WorldDocument::MaxBytes + 256) &&
+        if (Read(Path_ + QStringLiteral(".ludus-recovery"),
+                 old,
+                 WorldDocument::MAX_BYTES + MAX_RECOVERY_HEADER_BYTES) &&
             old.startsWith(RecoveryHeader()))
         {
             (void)QFile::remove(Path_ + QStringLiteral(".ludus-recovery"));
@@ -2138,7 +2149,7 @@ void WorldWorkspace::Snapshot()
     }
     QLockFile lock(lockPath);
     QByteArray disk;
-    if (lock.tryLock(0) == false || Read(Path_, disk, WorldDocument::MaxBytes) == false || disk != Disk_)
+    if (lock.tryLock(0) == false || Read(Path_, disk, WorldDocument::MAX_BYTES) == false || disk != Disk_)
     {
         return;
     }
@@ -2153,11 +2164,11 @@ bool WorldWorkspace::Recover()
     const auto header = RecoveryHeader();
     WorldDocument definition;
     if (isSceneWorkerActive() || Dirty() || Unsaved_ || Inside(Path_, true) == false ||
-        Read(Path_, current, WorldDocument::MaxBytes) == false || current != Disk_ ||
+        Read(Path_, current, WorldDocument::MAX_BYTES) == false || current != Disk_ ||
         LoadProjectSchema(definition, schema, IsWorldDemo(Document_)) == false || schema != SchemaDisk_ ||
         Read(Path_ + QStringLiteral(".ludus-recovery"),
              envelope,
-             WorldDocument::MaxBytes + MAX_RECOVERY_HEADER_BYTES) == false ||
+             WorldDocument::MAX_BYTES + MAX_RECOVERY_HEADER_BYTES) == false ||
         envelope.startsWith(header) == false)
     {
         Changed(
@@ -2226,7 +2237,9 @@ bool WorldWorkspace::ConfirmDiscard()
     // Keep a new world marked unsaved until its caller closes/replaces it.
     // Discard only author-owned recovery for the same baseline, never symlinks.
     QByteArray envelope;
-    if (Read(Path_ + QStringLiteral(".ludus-recovery"), envelope, WorldDocument::MaxBytes + 256) &&
+    if (Read(Path_ + QStringLiteral(".ludus-recovery"),
+             envelope,
+             WorldDocument::MAX_BYTES + MAX_RECOVERY_HEADER_BYTES) &&
         envelope.startsWith(RecoveryHeader()))
     {
         (void)QFile::remove(Path_ + QStringLiteral(".ludus-recovery"));
@@ -2409,6 +2422,37 @@ bool WorldWorkspace::ApplyLuminaireRepair(const RenderGraphLuminaireCoverage& re
                 ? QStringLiteral("Luminaire added. Move it with the viewport gizmo or edit it in the inspector. Undo "
                                  "is available.")
                 : QStringLiteral("Luminaire fitted to the World. Undo is available."));
+    return true;
+}
+bool WorldWorkspace::ApplySunRepair(const WorldLightingCoverage& repair)
+{
+    if (repair.Repair != WorldLightingRepair::AddSun)
+    {
+        Changed(QStringLiteral("This World needs no sun."));
+        return false;
+    }
+    return addSun(repair.Sun);
+}
+bool WorldWorkspace::addSun(const WorldSunPlacement& sun)
+{
+    if (Pending_ == true || SceneBusy() == true || Add_->isEnabled() == false)
+    {
+        Changed(QStringLiteral("The World cannot be edited now; try adding the sun again when it is ready."));
+        return false;
+    }
+    QString id;
+    QString error;
+    if (CreateWorldSun(Document_, mEntropy, sun, id, error) == false)
+    {
+        Changed(error);
+        return false;
+    }
+    Selected_ = id;
+    mSelectedEntities = {id};
+    Render();
+    Snapshot();
+    Changed(QStringLiteral("Sun added. Turn it with the viewport gizmo or set its intensity in the inspector. Undo is "
+                           "available."));
     return true;
 }
 void WorldWorkspace::Undo()

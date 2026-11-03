@@ -1,5 +1,6 @@
 #include "internal/renderer_workspace.h"
 
+#include "internal/render_graph_configuration_template.h"
 #include "internal/render_graph_template_registry.h"
 
 #include <ludus/foundation/base/core.h>
@@ -11,6 +12,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -328,12 +330,14 @@ bool RendererWorkspace::ApplyConfigurationTemplate(const QString& configuration,
         return false;
     }
     QString error;
+    QString notice;
     const RenderGraphDocumentStatus status = mDocument.ApplyConfigurationTemplate(mSelectedFile,
                                                                                   configuration,
                                                                                   templateIdentity,
                                                                                   error,
                                                                                   mSelectedConfiguration,
-                                                                                  inoutBudgetOrNull);
+                                                                                  inoutBudgetOrNull,
+                                                                                  &notice);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         mStatus->setText(error);
@@ -348,10 +352,69 @@ bool RendererWorkspace::ApplyConfigurationTemplate(const QString& configuration,
     mSelectedNodes.clear();
     documentEdited(status);
     mViews->setCurrentWidget(mCanvas);
-    mStatus->setText(QStringLiteral("Created %1#%2. Connect the Subgraph inputs and route its outputs. "
-                                    "Save publishes the graph and shader sources.")
-                         .arg(mSelectedFile, configuration));
+    QString created = QStringLiteral("Created %1#%2.").arg(mSelectedFile, configuration);
+    if (notice.isEmpty() == false)
+    {
+        created += QLatin1Char(' ') + notice;
+    }
+    mStatus->setText(created + QStringLiteral(" Connect the Subgraph inputs and route its outputs. "
+                                              "Save publishes the graph and shader sources."));
     return true;
+}
+
+QString RendererWorkspace::MakeTemplateConfigurationName(const QString& proposed) const
+{
+    QJsonObject graph;
+    if (proposed.isEmpty() == true || mDocument.GetGraph(mSelectedFile, graph) == false)
+    {
+        return proposed;
+    }
+    const bool isRoot = mSelectedFile == mDocument.GetRootGraph();
+    const QString parent = mSelectedConfiguration.isEmpty() == true ? graph.value(QStringLiteral("default")).toString()
+                                                                    : mSelectedConfiguration;
+    const QStringList files = mDocument.GetFiles();
+    // Bounded like the numbered template copies the name will usually accompany.
+    for (int32 suffix = 1; suffix <= MAX_TEMPLATE_INSTANCES; ++suffix)
+    {
+        const QString candidate = suffix == 1 ? proposed : proposed + QString::number(suffix);
+        bool isUsed = false;
+        if (isRoot == true)
+        {
+            const QString library = candidate + QStringLiteral(".lurender.json");
+            const QFileInfo destination(QDir(mDocument.GetPackageRoot()).filePath(library));
+            isUsed = destination.exists() == true || destination.isSymLink() == true;
+            for (const QString& file : files)
+            {
+                isUsed = isUsed || file.compare(library, Qt::CaseInsensitive) == 0;
+            }
+        }
+        for (const QJsonValueConstRef value : graph.value(QStringLiteral("configurations")).toArray())
+        {
+            const QJsonObject configuration = value.toObject();
+            if (isRoot == true && configuration.value(QStringLiteral("id")).toString() == parent)
+            {
+                for (const QJsonValueConstRef node : configuration.value(QStringLiteral("nodes")).toArray())
+                {
+                    isUsed = isUsed || node.toObject().value(QStringLiteral("id")).toString() == candidate;
+                }
+            }
+            if (isRoot == false && configuration.value(QStringLiteral("id")).toString() == candidate)
+            {
+                for (const QString& field : {QStringLiteral("nodes"),
+                                             QStringLiteral("edges"),
+                                             QStringLiteral("inputs"),
+                                             QStringLiteral("outputs")})
+                {
+                    isUsed = isUsed || configuration.value(field).toArray().isEmpty() == false;
+                }
+            }
+        }
+        if (isUsed == false)
+        {
+            return candidate;
+        }
+    }
+    return proposed;
 }
 
 void RendererWorkspace::promptConfigurationTemplate(const QString& templateIdentity)
@@ -374,8 +437,9 @@ void RendererWorkspace::promptConfigurationTemplate(const QString& templateIdent
         choice->setItemData(choice->count() - 1, entry.Description, DESCRIPTION_ROLE);
         defaultConfigurations.append(entry.DefaultConfiguration);
     }
-    const QString firstConfiguration =
-        defaultConfigurations.isEmpty() == true ? QString{} : defaultConfigurations.first();
+    // The dialog proposes a free name, and replaces it only while the author has not edited it.
+    QString proposedConfiguration = MakeTemplateConfigurationName(
+        defaultConfigurations.isEmpty() == true ? QString{} : defaultConfigurations.first());
     fields->addRow(QStringLiteral("Template"), choice);
     QLineEdit* name = new QLineEdit(mSelectedConfiguration, &dialog);
     name->setObjectName(QStringLiteral("renderGraphTemplateConfiguration"));
@@ -390,22 +454,24 @@ void RendererWorkspace::promptConfigurationTemplate(const QString& templateIdent
                  configuration.value(QStringLiteral("inputs")).toArray().isEmpty() == false ||
                  configuration.value(QStringLiteral("outputs")).toArray().isEmpty() == false))
             {
-                name->setText(firstConfiguration);
+                name->setText(proposedConfiguration);
             }
         }
     }
     if (mSelectedFile == mDocument.GetRootGraph())
     {
-        name->setText(firstConfiguration);
+        name->setText(proposedConfiguration);
     }
     fields->addRow(QStringLiteral("Configuration"), name);
     QLabel* description = new QLabel(&dialog);
     description->setWordWrap(true);
     fields->addRow(description);
-    const auto describe = [choice, name, description, defaultConfigurations, &dialog]() {
-        if (defaultConfigurations.contains(name->text()) == true)
+    const auto describe = [this, choice, name, description, &proposedConfiguration, &dialog]() {
+        if (name->text() == proposedConfiguration)
         {
-            name->setText(choice->currentData(DEFAULT_CONFIGURATION_ROLE).toString());
+            proposedConfiguration =
+                MakeTemplateConfigurationName(choice->currentData(DEFAULT_CONFIGURATION_ROLE).toString());
+            name->setText(proposedConfiguration);
         }
         description->setText(QStringLiteral("Create a library configuration or fill an empty one. On the root canvas, "
                                             "also insert a Subgraph node. ") +

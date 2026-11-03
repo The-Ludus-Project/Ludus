@@ -72,6 +72,34 @@ bool CreateWorldLuminaire(WorldDocument& inoutWorld,
         outId,
         QJsonObject{{QStringLiteral("transform"), transform}, {QStringLiteral("luminaire"), luminaire}});
 }
+bool CreateWorldSun(WorldDocument& inoutWorld,
+                    const foundation::identity::EntropySource& entropy,
+                    const WorldSunPlacement& placement,
+                    QString& outId,
+                    QString& outError)
+{
+    if (IsBuiltInWorld(inoutWorld) == false)
+    {
+        outError = QStringLiteral("Light presets require the default World schema.");
+        return false;
+    }
+    QJsonObject transform = MakeDefaultValues(inoutWorld, QStringLiteral("transform"));
+    transform.insert(QStringLiteral("x"), static_cast<foundation::float64>(placement.PositionWorld.X));
+    transform.insert(QStringLiteral("y"), static_cast<foundation::float64>(placement.PositionWorld.Y));
+    transform.insert(QStringLiteral("z"), static_cast<foundation::float64>(placement.PositionWorld.Z));
+    transform.insert(QStringLiteral("rx"), static_cast<foundation::float64>(placement.RotationDegrees.X));
+    transform.insert(QStringLiteral("ry"), static_cast<foundation::float64>(placement.RotationDegrees.Y));
+    transform.insert(QStringLiteral("rz"), static_cast<foundation::float64>(placement.RotationDegrees.Z));
+    QJsonObject light = MakeDefaultValues(inoutWorld, QStringLiteral("light"));
+    light.insert(QStringLiteral("kind"), QStringLiteral("directional"));
+    light.insert(QStringLiteral("intensity"), static_cast<foundation::float64>(placement.IlluminanceLux));
+    return inoutWorld.CreateEntity(
+        entropy,
+        outError,
+        QStringLiteral("Sun"),
+        outId,
+        QJsonObject{{QStringLiteral("transform"), transform}, {QStringLiteral("light"), light}});
+}
 bool CreateWorldObject(WorldDocument& inoutWorld,
                        const foundation::identity::EntropySource& entropy,
                        const QString& preset,

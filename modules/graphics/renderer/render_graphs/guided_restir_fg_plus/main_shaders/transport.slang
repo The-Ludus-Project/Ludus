@@ -66,11 +66,13 @@ Ray MakeFgCameraRay(RayLaunch launch)
 }
 // Replay only the glossy camera prefix; diffuse reconnection happens in resample.slang.
 // Scene/camera edits reset the estimator, so previous-geometry photon replay is unnecessary here.
-FgPoint TraceFgCameraBody(SceneContext scene,
-                          RayLaunch launch,
-                          uint4 randomKey,
-                          inout RayQueryContext queries,
-                          out float3 outEmission)
+// Inlined at each caller: out of line in the merged Metal kernel, this tracer corrupted its
+// callers' live state on an Apple M5 (garbage failure counters and accumulated sample counts).
+FgPoint TraceFgCamera(SceneContext scene,
+                      RayLaunch launch,
+                      uint4 randomKey,
+                      inout RayQueryContext queries,
+                      out float3 outEmission)
 {
     outEmission = float3(0);
     float3 throughput = float3(1);
@@ -113,35 +115,6 @@ FgPoint TraceFgCameraBody(SceneContext scene,
         ray = SpawnSurfaceRay(hit, directionWorld, FG_MAXIMUM_DISTANCE_WORLD);
     }
     return result;
-}
-// Slang ignores noinline on forwarded inout parameters. Keep the heavy camera
-// tracer out of line by taking a value context and returning its update explicitly.
-// Slang authors, "noinline", core module reference:
-// https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
-[noinline] FgPoint TraceFgCameraOutOfLine(SceneContext scene,
-                                          RayLaunch launch,
-                                          uint4 randomKey,
-                                          RayQueryContext queriesIn,
-                                          out RayQueryContext outQueries,
-                                          out float3 outEmission)
-{
-    RayQueryContext queries = queriesIn;
-    FgPoint point = TraceFgCameraBody(scene, launch, randomKey, queries, outEmission);
-    outQueries = queries;
-    return point;
-}
-FgPoint TraceFgCamera(SceneContext scene,
-                      RayLaunch launch,
-                      uint4 randomKey,
-                      inout RayQueryContext queries,
-                      out float3 outEmission)
-{
-    RayQueryContext resultQueries;
-    float3 emission;
-    FgPoint point = TraceFgCameraOutOfLine(scene, launch, randomKey, queries, resultQueries, emission);
-    queries = resultQueries;
-    outEmission = emission;
-    return point;
 }
 
 [noinline] float3 EstimateFgDirect(SceneContext scene, RayLaunch launch, FgPoint point, inout RayQueryContext queries)
