@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
+import os
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -37,8 +42,10 @@ class WorkflowTextTests(unittest.TestCase):
         self.assertIn("ctest --test-dir out/build/linux-clang-release", text)
         self.assertIn(f"CXX: {workflow_steps.pinned_compiler()}", text)
         self.assertIn(workflow_steps.CHECKOUT_STEP, text)
+        # The only credential is the job's own read-only token, for this repository's release assets.
+        self.assertEqual(text.count("GH_TOKEN: ${{ github.token }}\n"), 1)
         for forbidden in ("secrets.", "pull_request_target", "BUTLER_API_KEY", "TOKEN"):
-            self.assertNotIn(forbidden, text)
+            self.assertNotIn(forbidden, text.replace("GH_TOKEN: ${{ github.token }}\n", ""))
 
     def test_macos_workflow_uses_native_runner_and_homebrew_llvm(self):
         text = ci_setup.workflow_text("macos-arm64")
@@ -92,6 +99,98 @@ class WorkflowTextTests(unittest.TestCase):
         text = ci_setup.workflow_text("linux-x64")
         self.assertIn("stdout=subprocess.PIPE", text)
         self.assertNotIn("capture_output", text)
+
+
+@unittest.skipIf(os.name == "nt", "runs POSIX stand-ins for gh and ludus")
+class ReleaseSdkDownloadTests(unittest.TestCase):
+    """Run the generated SDK step's script against stand-in ``gh`` and ``ludus`` commands."""
+
+    REPOSITORY = "owner/game"
+    ARCHIVE = b"sdk archive"
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.runner_temp = self.root / "runner"
+        self.runner_temp.mkdir()
+        self.github_env = self.root / "github-env"
+        self.github_env.write_text("")
+        # gh records its arguments and writes the archive as the requested asset.
+        self.write_command("gh", f"""
+            import json, pathlib, sys
+            arguments = sys.argv[1:]
+            pathlib.Path({str(self.root / "gh-argv.json")!r}).write_text(json.dumps(arguments))
+            directory = pathlib.Path(arguments[arguments.index("--dir") + 1])
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / arguments[arguments.index("--pattern") + 1]).write_bytes({self.ARCHIVE!r})
+        """)
+        self.write_command("ludus", """
+            import json, sys
+            print(json.dumps({"installed": {"prefix": "/sdk/" + sys.argv[sys.argv.index("--digest") + 1]}}))
+        """)
+
+    def write_command(self, name: str, body: str) -> None:
+        path = self.bin / name
+        path.write_text(f"#!{sys.executable}\n" + textwrap.dedent(body))
+        path.chmod(0o755)
+
+    def run_step(self, url: str, digest: str) -> subprocess.CompletedProcess:
+        step = workflow_steps.release_sdk_step("Acquire SDK", "invalid SDK variables")
+        script = textwrap.dedent(step.split("<<'PYTHON'\n", 1)[1].split("          PYTHON\n", 1)[0])
+        env = {"PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", os.defpath), "SDK_URL": url,
+               "SDK_SHA256": digest, "GITHUB_REPOSITORY": self.REPOSITORY, "RUNNER_TEMP": str(self.runner_temp),
+               "GITHUB_ENV": str(self.github_env), "GH_TOKEN": "job-token",
+               # Direct downloads go through an unreachable proxy so tests never use the network.
+               "HTTPS_PROXY": "http://127.0.0.1:1", "https_proxy": "http://127.0.0.1:1"}
+        return subprocess.run([sys.executable, "-I", "-"], input=script, env=env, text=True, capture_output=True,
+                              timeout=60)
+
+    def test_step_passes_the_job_token_to_gh(self):
+        step = workflow_steps.release_sdk_step("Acquire SDK", "invalid SDK variables")
+        self.assertIn("          GH_TOKEN: ${{ github.token }}\n        run: |\n", step)
+        # The CI and release workflows share the step, so private repositories can build and package.
+        for text in (ci_setup.workflow_text("linux-x64"), release_workflow_text("macos-release", "macos", "macos-arm64")):
+            self.assertIn("          GH_TOKEN: ${{ github.token }}\n        run: |\n", text)
+            self.assertIn(step.split("SystemExit('invalid SDK variables')\n", 1)[1], text)
+
+    def test_own_release_asset_is_downloaded_with_gh_and_digest_checked(self):
+        digest = hashlib.sha256(self.ARCHIVE).hexdigest()
+        url = f"https://github.com/{self.REPOSITORY}/releases/download/ludus-sdk-1/ludus-sdk.tar"
+        result = self.run_step(url, digest)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads((self.root / "gh-argv.json").read_text()),
+                         ["release", "download", "ludus-sdk-1", "--repo", self.REPOSITORY, "--pattern",
+                          "ludus-sdk.tar", "--dir", str(self.runner_temp / "ludus-release-sdk-download"), "--clobber"])
+        self.assertEqual((self.runner_temp / "ludus-release-sdk.tar").read_bytes(), self.ARCHIVE)
+        self.assertEqual(self.github_env.read_text(), f"LUDUS_RELEASE_SDK_PREFIX=/sdk/{digest}\n")
+
+    def test_own_release_asset_with_another_digest_is_not_installed(self):
+        url = f"https://github.com/{self.REPOSITORY}/releases/download/ludus-sdk-1/ludus-sdk.tar"
+        result = self.run_step(url, "0" * 64)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SDK archive digest mismatch", result.stderr)
+        self.assertEqual(self.github_env.read_text(), "")
+
+    def test_other_urls_are_downloaded_directly_without_gh(self):
+        digest = hashlib.sha256(self.ARCHIVE).hexdigest()
+        # Another repository's release, and a lookalike repository name, never reach gh and its token.
+        for url in ("https://github.com/other/game/releases/download/ludus-sdk-1/ludus-sdk.tar",
+                    f"https://github.com/{self.REPOSITORY}-fork/releases/download/ludus-sdk-1/ludus-sdk.tar"):
+            with self.subTest(url=url):
+                result = self.run_step(url, digest)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("urlopen", result.stderr)
+                self.assertFalse((self.root / "gh-argv.json").exists())
+                self.assertEqual(self.github_env.read_text(), "")
+
+    def test_invalid_variables_fail_before_any_download(self):
+        result = self.run_step("http://example.invalid/sdk.tar", hashlib.sha256(self.ARCHIVE).hexdigest())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid SDK variables", result.stderr)
+        self.assertFalse((self.root / "gh-argv.json").exists())
 
 
 class MultiPlatformWorkflowTests(unittest.TestCase):

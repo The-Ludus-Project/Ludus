@@ -68,6 +68,7 @@ _SDK_STEP = r"""      - name: STEP_NAME_TOKEN
         env:
           SDK_URL: ${{ vars.URL_VARIABLE_TOKEN }}
           SDK_SHA256: ${{ vars.SHA_VARIABLE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PYTHON'
           import hashlib, json, os, re, subprocess, urllib.request
@@ -76,15 +77,29 @@ _SDK_STEP = r"""      - name: STEP_NAME_TOKEN
               raise SystemExit('INVALID_SDK_TOKEN')
           digest, total = hashlib.sha256(), 0
           path = os.environ['RUNNER_TEMP'] + '/ludus-release-sdk.tar'
-          with urllib.request.urlopen(url, timeout=30) as source, open(path, 'wb') as output:
-              if not source.geturl().startswith('https://'):
-                  raise SystemExit('SDK redirect outside HTTPS')
-              while block := source.read(1024 * 1024):
-                  total += len(block)
-                  if total > 4 * 1024 * 1024 * 1024:
-                      raise SystemExit('SDK download exceeds limit')
-                  digest.update(block)
-                  output.write(block)
+          # A private repository serves its release assets only to authenticated requests, and the
+          # download redirects to signed storage that rejects a forwarded token: let gh fetch this
+          # repository's assets with the job token. Other HTTPS URLs are downloaded directly.
+          release = re.fullmatch('https://github.com/' + re.escape(os.environ['GITHUB_REPOSITORY']) + '/releases/download/([^/]+)/([^/]+)', url)
+          if release:
+              directory = os.environ['RUNNER_TEMP'] + '/ludus-release-sdk-download'
+              subprocess.run(['gh', 'release', 'download', release[1], '--repo', os.environ['GITHUB_REPOSITORY'], '--pattern', release[2], '--dir', directory, '--clobber'], check=True)
+              os.replace(directory + '/' + release[2], path)
+              if os.path.getsize(path) > 4 * 1024 * 1024 * 1024:
+                  raise SystemExit('SDK download exceeds limit')
+              with open(path, 'rb') as source:
+                  while block := source.read(1024 * 1024):
+                      digest.update(block)
+          else:
+              with urllib.request.urlopen(url, timeout=30) as source, open(path, 'wb') as output:
+                  if not source.geturl().startswith('https://'):
+                      raise SystemExit('SDK redirect outside HTTPS')
+                  while block := source.read(1024 * 1024):
+                      total += len(block)
+                      if total > 4 * 1024 * 1024 * 1024:
+                          raise SystemExit('SDK download exceeds limit')
+                      digest.update(block)
+                      output.write(block)
           if digest.hexdigest() != expected:
               raise SystemExit('SDK archive digest mismatch')
           # Leave stderr on the job log so an install failure shows its diagnostic.
@@ -155,7 +170,10 @@ def release_sdk_step(name: str, invalid_message: str, *, url_variable: str = "LU
 
     The step exports ``LUDUS_RELEASE_SDK_PREFIX`` and fails the job with
     ``invalid_message`` unless ``url_variable`` holds an HTTPS URL and
-    ``sha_variable`` a SHA-256 digest.
+    ``sha_variable`` a SHA-256 digest. A release asset of the workflow's own
+    repository is fetched with ``gh release download`` and the job's read-only
+    ``github.token``, so private repositories work; any other URL is downloaded
+    directly without credentials.
     """
     return (_SDK_STEP.replace("STEP_NAME_TOKEN", name).replace("INVALID_SDK_TOKEN", invalid_message)
             .replace("URL_VARIABLE_TOKEN", url_variable).replace("SHA_VARIABLE_TOKEN", sha_variable))

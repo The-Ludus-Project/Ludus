@@ -211,6 +211,16 @@ repository variables `LUDUS_RELEASE_SDK_URL` (HTTPS) and `LUDUS_RELEASE_SDK_SHA2
 unset, a short job reports a notice and the build job is skipped. If only one is
 set, or either is malformed, the build fails.
 
+The SDK archive may be a release asset of the game repository itself, such as
+`https://github.com/<owner>/<game>/releases/download/<tag>/<asset>`. The workflow
+fetches such an asset with `gh release download`, authenticated by the job's own
+read-only `github.token`, so it works when the repository is private. A private
+repository serves release assets only to authenticated requests, and its download
+URL redirects to signed storage that rejects a forwarded token. Any other HTTPS
+URL is downloaded directly without credentials, so it must be publicly readable.
+Either way, the archive must match the SHA-256 digest and stay within 4 GiB
+before `ludus sdk install` accepts it. The release workflow uses the same step.
+
 A workflow for several platforms has one build job per platform, such as
 `build-and-test-macos-arm64`. Each platform needs its own matching Release SDK,
 so each job reads its own variables, suffixed with the platform:
