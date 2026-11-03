@@ -15,7 +15,8 @@ ludus_apply_project_defaults(ludus_content_identity)
 
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
-    add_executable(ludus_content_identity_tests tests/migration_manifest_tests.cpp tests/world_records_tests.cpp)
+    add_executable(ludus_content_identity_tests
+        tests/migration_manifest_tests.cpp tests/world_records_tests.cpp tests/duplicate_tests.cpp)
     if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$" AND NOT EMSCRIPTEN)
         target_sources(ludus_content_identity_tests PRIVATE tests/publish_tests.cpp)
     endif()

@@ -7,6 +7,7 @@
 #include <ludus/content/content.h>
 #include <ludus/content/identity_records/migration_manifest.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/identity/uuid.hpp>
 
 #include <span>
 #include <string_view>
@@ -73,4 +74,43 @@ ReadEntityReferenceProperties(std::string_view schemaJson,
                                                        std::span<const EntityReferenceProperty> references,
                                                        Bytes& outWorldJson,
                                                        IdentityRecordError& outError) noexcept;
+
+/// @brief Duplicate a set of entities of a version-2 World record as one transaction.
+///
+/// Stage 4 graph duplication (docs/architecture/object-handles-uuid.md,
+/// "Authoring and prefab instances"). The selected entities are copied as a group:
+///
+/// 1. A fresh `SourceObjectId` is minted for each selected entity with
+///    TryGenerateUuidV4 and `entropy`, checked against every identity already in
+///    the record and those minted so far. A colliding candidate is regenerated at
+///    most MAX_UUID_GENERATION_ATTEMPTS times before IdentityConflict is reported.
+/// 2. The old-to-new table is built, the selected entities are cloned, and inside
+///    each clone every entity-typed reference whose target is in the copied set is
+///    rewritten to the target's new UUID. References to entities outside the copied
+///    set are deliberately retained unchanged.
+/// 3. The clones are appended to the record and the whole document is re-emitted.
+///
+/// The transaction is all-or-nothing: on any failure — a malformed record, an
+/// unknown selected UUID, an unavailable entropy source, or an unresolved identity
+/// conflict — nothing is minted into the output and `outRecordJson` is unchanged.
+/// Only durable `SourceObjectId` values are produced; no runtime handle, owner,
+/// slot or generation is read or written. Each clone's `label` is left equal to
+/// the source's; callers that need unique labels assign them separately.
+///
+/// @param recordJson A version-2 World record (at most MAX_WORLD_DOCUMENT_BYTES).
+/// @param schemaJson The World schema identifying the entity-typed properties.
+/// @param selected The canonical UUID texts of the entities to duplicate; each must
+/// be an entity of the record and each must be distinct.
+/// @param entropy The injected entropy source used to mint the new UUIDs.
+/// @param outRecordJson Replaced with the version-2 record that also contains the
+/// clones on success; unchanged on failure.
+/// @param outError Receives the failure; reset to Success on success.
+/// @return Success, Malformed, UnsupportedVersion, InvalidIdentity, InvalidSchema's
+/// Malformed, UnresolvedReference, EntropyUnavailable, IdentityConflict, Limit or OutOfMemory.
+[[nodiscard]] IdentityRecordStatus DuplicateEntities(std::string_view recordJson,
+                                                     std::string_view schemaJson,
+                                                     std::span<const std::string_view> selected,
+                                                     const foundation::identity::EntropySource& entropy,
+                                                     Bytes& outRecordJson,
+                                                     IdentityRecordError& outError) noexcept;
 } // namespace ludus::content::identity_records

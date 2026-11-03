@@ -11,11 +11,13 @@ version-2 World records and a one-time migration manifest give World objects
 committed UUIDs ([UUID authoring records](#stage-3-uuid-authoring-records)).
 Stage 4 is in progress and lands as independently reviewable slices. Implemented
 so far: `WorldBindingTable` (`modules/gameplay/world`) holds the two derived
-mappings at the World boundary and resolves durable keys with `TryResolve`; and
+mappings at the World boundary and resolves durable keys with `TryResolve`;
 `TryRestoreWorld` (`modules/content/world_restore`) rebuilds a version-2 World
 record into a registry and binding table in two passes
-([resolution and streaming](#resolution-and-streaming)). Graph duplication and
-editor selection/stale-operation checks are the remaining stage-4 slices.
+([resolution and streaming](#resolution-and-streaming)); and `DuplicateEntities`
+(`modules/content/identity_records`) duplicates a selected set of record entities
+as one graph transaction ([authoring and prefab instances](#authoring-and-prefab-instances)).
+Editor selection and stale-operation checks are the remaining stage-4 slice.
 
 **Audience:** Engine, gameplay, tools, content, and SDK contributors.
 
@@ -379,6 +381,23 @@ to the copied set, retain deliberate external references, validate, then publish
 Duplicating a source document remaps its contained source objects; duplicating a
 placement remaps instance scopes while retaining source-template IDs. If any
 step fails, neither the original nor a partially rewritten clone is published.
+
+**Stage 4 implementation (graph duplication).** `DuplicateEntities`
+([`modules/content/identity_records`](object-handles-uuid.md)) duplicates a set of
+version-2 record entities as one transaction. It mints a fresh `SourceObjectId`
+for each selected entity with `TryGenerateUuidV4` and the injected entropy source,
+checking each candidate against every identity already in the record and those
+minted so far and regenerating a collision at most four times before reporting
+`IdentityConflict`. It then builds the old-to-new table, clones the selected
+entities, rewrites each clone's entity-typed references whose target is in the
+copied set to the target's new UUID, retains references to entities outside the
+set unchanged, and re-emits the whole record. The transaction is all-or-nothing:
+a malformed record, an unknown selection, an unavailable entropy source, or an
+unresolved conflict leaves the output unchanged and mints nothing into it. Only
+durable `SourceObjectId` values are produced; no runtime handle is read or
+written. The Editor's group-duplicate command performs the same old-to-new
+remap over its draft today; converging it onto this shared engine-side
+transaction is tracked as editor follow-up.
 
 ## Resolution and streaming
 
