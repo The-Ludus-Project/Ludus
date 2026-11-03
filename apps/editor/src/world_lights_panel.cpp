@@ -12,6 +12,7 @@
 #include <QPushButton>
 #include <QSet>
 #include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 
 namespace ludus::editor
@@ -32,6 +33,11 @@ constexpr int32 MIN_LIST_HEIGHT = 120;
 bool IsImported(WorldLightOrigin origin) noexcept
 {
     return origin == WorldLightOrigin::ImportedEmitter || origin == WorldLightOrigin::ImportedLight;
+}
+/// Whether `a` and `b` switch the same light; labels, details and states may differ.
+bool IsSameLight(const WorldLightRow& a, const WorldLightRow& b) noexcept
+{
+    return a.Origin == b.Origin && a.Key == b.Key && a.EntityKey == b.EntityKey;
 }
 QString FormatRgb(const foundation::math::Vector3& rgb)
 {
@@ -356,13 +362,62 @@ WorldLightsPanel::WorldLightsPanel(QWidget* parentOrNull) : QWidget(parentOrNull
 }
 void WorldLightsPanel::SetRows(QVector<WorldLightRow> rows, LightSwitchSet switches)
 {
+    bool isSameList = rows.size() == mRows.size() && mTreeOrNull->topLevelItemCount() > 0;
+    for (qsizetype i = 0; isSameList == true && i < rows.size(); ++i)
+    {
+        isSameList = IsSameLight(rows[i], mRows[i]);
+    }
+    // Remember the selected light and the light at the top of the view by identity before the
+    // row indices change. The top row survives an empty list, such as during a re-import.
     const qsizetype selected = getSelectedRow();
-    const WorldLightRow previous = selected >= 0 ? mRows[selected] : WorldLightRow{};
     const bool hasSelection = selected >= 0;
+    const WorldLightRow previous = hasSelection == true ? mRows[selected] : WorldLightRow{};
+    if (mTreeOrNull->topLevelItemCount() > 0)
+    {
+        const QTreeWidgetItem* topOrNull = mTreeOrNull->itemAt(0, 0);
+        mHasTopRow = topOrNull != nullptr && topOrNull->data(0, ROW_ROLE).isValid() == true;
+        mTopRow = mHasTopRow == true ? mRows[static_cast<qsizetype>(topOrNull->data(0, ROW_ROLE).toLongLong())]
+                                     : WorldLightRow{};
+    }
     mRows = foundation::Move(rows);
     mSwitches = foundation::Move(switches);
     mIsRendering = true;
+    if (isSameList == true)
+    {
+        // A switch or a refresh of the same lights: update the items in place so the list keeps
+        // its scroll position, selection and keyboard focus.
+        updateItems();
+    }
+    else
+    {
+        rebuildItems(hasSelection == true ? &previous : nullptr);
+    }
+    mIsRendering = false;
+    setVisible(mRows.isEmpty() == false);
+    updateCommands();
+}
+void WorldLightsPanel::updateItems()
+{
+    for (QTreeWidgetItemIterator it(mTreeOrNull); *it != nullptr; ++it)
+    {
+        QTreeWidgetItem* item = *it;
+        if (item->data(0, ROW_ROLE).isValid() == false)
+        {
+            continue;
+        }
+        const WorldLightRow& row = mRows[static_cast<qsizetype>(item->data(0, ROW_ROLE).toLongLong())];
+        item->setText(0, row.Label);
+        item->setToolTip(0, row.Detail);
+        if (row.Origin != WorldLightOrigin::Missing)
+        {
+            item->setCheckState(0, row.IsEnabled == true ? Qt::Checked : Qt::Unchecked);
+        }
+    }
+}
+void WorldLightsPanel::rebuildItems(const WorldLightRow* selectedOrNull)
+{
     mTreeOrNull->clear();
+    QTreeWidgetItem* topItemOrNull = nullptr;
     for (const WorldLightOrigin origin : {WorldLightOrigin::ImportedEmitter,
                                           WorldLightOrigin::ImportedLight,
                                           WorldLightOrigin::Missing,
@@ -391,19 +446,22 @@ void WorldLightsPanel::SetRows(QVector<WorldLightRow> rows, LightSwitchSet switc
                 item->setCheckState(0, row.IsEnabled == true ? Qt::Checked : Qt::Unchecked);
             }
             item->setFlags(flags);
-            const bool isSameRow = hasSelection == true && row.Origin == previous.Origin && row.Key == previous.Key &&
-                                   row.EntityKey == previous.EntityKey;
-            if (isSameRow == true)
+            if (selectedOrNull != nullptr && IsSameLight(row, *selectedOrNull) == true)
             {
                 item->setSelected(true);
                 mTreeOrNull->setCurrentItem(item, 0, QItemSelectionModel::NoUpdate);
             }
+            if (mHasTopRow == true && IsSameLight(row, mTopRow) == true)
+            {
+                topItemOrNull = item;
+            }
         }
     }
     mTreeOrNull->expandAll();
-    mIsRendering = false;
-    setVisible(mRows.isEmpty() == false);
-    updateCommands();
+    if (topItemOrNull != nullptr)
+    {
+        mTreeOrNull->scrollToItem(topItemOrNull, QAbstractItemView::PositionAtTop);
+    }
 }
 void WorldLightsPanel::rowChanged(QTreeWidgetItem* item)
 {

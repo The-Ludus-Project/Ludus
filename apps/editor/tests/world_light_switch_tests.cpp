@@ -15,11 +15,13 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QString>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
+#include <QVBoxLayout>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -458,4 +460,62 @@ TEST_CASE("World light switch lists are validated before they are admitted",
     CHECK(sceneless.SetLightSwitches(same, {}, {}, error) == false);
     CHECK(sceneless.Draft().contains(QStringLiteral("disabled_lights")) == false);
     workspace.StopPreview();
+}
+
+TEST_CASE("Switching a light keeps the light list's scroll position and selection",
+          "[editor][world][lighting][light-switches]")
+{
+    constexpr qsizetype ROW_COUNT = 40;
+    constexpr int32 LIST_WIDTH = 240;
+    constexpr int32 LIST_HEIGHT = 200;
+    QVector<WorldLightRow> rows;
+    for (qsizetype i = 0; i < ROW_COUNT; ++i)
+    {
+        WorldLightRow row;
+        row.Origin = WorldLightOrigin::ImportedEmitter;
+        row.Key = {LightSourceKind::Emitter, static_cast<uint64>(i + 1)};
+        row.Label = QStringLiteral("Imported object %1").arg(i);
+        rows.append(row);
+    }
+    // The panel hides itself while it has no rows, so it lives in a window of its own.
+    QWidget window;
+    QVBoxLayout* layout = new QVBoxLayout(&window);
+    WorldLightsPanel* panelOrNull = new WorldLightsPanel(&window);
+    layout->addWidget(panelOrNull);
+    WorldLightsPanel& panel = *panelOrNull;
+    window.resize(LIST_WIDTH, LIST_HEIGHT);
+    panel.SetRows(rows, {});
+    window.show();
+    QTreeWidget* treeOrNull = panel.findChild<QTreeWidget*>(QStringLiteral("worldLights"));
+    REQUIRE(treeOrNull != nullptr);
+    REQUIRE(QTest::qWaitForWindowExposed(&window) == true);
+    QScrollBar* scrollOrNull = treeOrNull->verticalScrollBar();
+    REQUIRE(scrollOrNull->maximum() > 0);
+    const qsizetype selectedRow = ROW_COUNT / 2;
+    QTreeWidgetItem* selectedOrNull = FindItem(*treeOrNull, selectedRow);
+    REQUIRE(selectedOrNull != nullptr);
+    treeOrNull->scrollToItem(selectedOrNull, QAbstractItemView::PositionAtTop);
+    selectedOrNull->setSelected(true);
+    const int32 scrolled = scrollOrNull->value();
+    REQUIRE(scrolled > 0);
+
+    // The workspace answers a switch by presenting the same lights with one state changed.
+    rows[selectedRow].IsEnabled = false;
+    panel.SetRows(rows, {{{LightSourceKind::Emitter, rows[selectedRow].Key.SourceId}}});
+    CHECK(scrollOrNull->value() == scrolled);
+    CHECK(FindItem(*treeOrNull, selectedRow) == selectedOrNull);
+    CHECK(selectedOrNull->isSelected() == true);
+    CHECK(selectedOrNull->checkState(0) == Qt::Unchecked);
+
+    // A changed list is recreated with the same light at the top, even across an empty list.
+    panel.SetRows({}, {});
+    WorldLightRow added;
+    added.Origin = WorldLightOrigin::ImportedEmitter;
+    added.Key = {LightSourceKind::Emitter, static_cast<uint64>(ROW_COUNT + 1)};
+    added.Label = QStringLiteral("Added object");
+    rows.prepend(added);
+    panel.SetRows(rows, {});
+    QTreeWidgetItem* topOrNull = treeOrNull->itemAt(0, 0);
+    REQUIRE(topOrNull != nullptr);
+    CHECK(topOrNull->text(0) == QStringLiteral("Imported object %1").arg(selectedRow));
 }
