@@ -383,7 +383,9 @@ TEST_CASE("Native World preview renders authored assets, cameras, culling, updat
     REQUIRE(Frames(preview, preview.Frames() + 3));
     CHECK(preview.Report().Submitted == 1);
     CHECK(preview.Report().Visible == 1);
-    CHECK(preview.Report().Draws == 1);
+    // One instanced scene packet plus the analytic grid's two indexed draws.
+    constexpr uint32 INSTANCED_SCENE_AND_GRID_DRAWS = 3;
+    CHECK(preview.Report().Draws == INSTANCED_SCENE_AND_GRID_DRAWS);
     CHECK(world.Draft() == original);
     CHECK_FALSE(world.Dirty());
     // More than eight identical textured objects consume one shared material.
@@ -401,7 +403,7 @@ TEST_CASE("Native World preview renders authored assets, cameras, culling, updat
     preview.Navigate(0, {0, 0}, 3, false);
     REQUIRE(Frames(preview, 3));
     CHECK(preview.Report().Visible == 12);
-    CHECK(preview.Report().Draws == 1);
+    CHECK(preview.Report().Draws == INSTANCED_SCENE_AND_GRID_DRAWS);
     for (int32 i = 0; i < 11; ++i)
     {
         REQUIRE(world.Undo());
@@ -419,6 +421,7 @@ TEST_CASE("Native World preview renders authored assets, cameras, culling, updat
     embedded = ReadViewport();
     CHECK(embedded.size() == GetViewportPixelSize());
     CHECK(embedded.width() > initialPixelSize.width());
+    const QImage beforeCulling = embedded;
     auto entity = world.Entity(QStringLiteral("starter.cube"));
     auto components = entity.value(QStringLiteral("components")).toObject();
     auto transform = components.value(QStringLiteral("transform")).toObject();
@@ -433,7 +436,8 @@ TEST_CASE("Native World preview renders authored assets, cameras, culling, updat
     CHECK(preview.Report().Culled == 1);
     CHECK(preview.Report().Visible == 0);
     embedded = ReadViewport();
-    CHECK(embedded.pixelColor(embedded.width() / 2, embedded.height() / 2) == embedded.pixelColor(0, 0));
+    // The coordinate grid stays visible when the scene mesh is culled; the old mesh image must change.
+    CHECK(embedded != beforeCulling);
     preview.Navigate(0, {0, 0}, 3, true);
     REQUIRE(Frames(preview, preview.Frames() + 3));
     CHECK(preview.Report().Visible == 1);
@@ -725,6 +729,61 @@ TEST_CASE("Native Lit viewport renders thirteen shadowed area patches without ba
     REQUIRE(ReadViewport().isNull() == false);
     preview.Stop();
 }
+TEST_CASE("Native viewport screenshot reads the presented GPU frame back without overlays",
+          "[.render-native][screenshot]")
+{
+    RenderScene scene = MakeLightingScene();
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(320, 240);
+    viewport.show();
+    REQUIRE(preview.SetScene(scene));
+    preview.SetShading(PreviewShading::Lit);
+    preview.SetStatisticsVisible(true);
+    REQUIRE(preview.Start());
+    REQUIRE(Frames(preview, 3));
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid());
+    const QString path = QDir(directory.path()).filePath(QStringLiteral("screenshot.png"));
+    QString error;
+    const bool hasStarted = viewport.SaveScreenshot(path, error);
+    INFO(error.toStdString());
+    REQUIRE(hasStarted == true);
+    REQUIRE(QTest::qWaitFor([&viewport]() { return viewport.IsTakingScreenshot() == false; }, 10000) == true);
+    INFO(viewport.GetScreenshotError().toStdString());
+    REQUIRE(viewport.GetScreenshotPath() == path);
+    const QImage window = ReadViewport().convertToFormat(QImage::Format_RGB32);
+    QImage screenshot;
+    REQUIRE(screenshot.load(path, "PNG") == true);
+    CHECK(screenshot.hasAlphaChannel() == false);
+    // The built-in preview renders the window's physical size, so the frame fills it texel for texel.
+    REQUIRE(screenshot.size() == window.size());
+    screenshot = screenshot.convertToFormat(QImage::Format_RGB32);
+    const auto isClose = [](const QImage& first, const QImage& second) {
+        constexpr int32 TOLERANCE = 2;
+        for (int32 y = 0; y < first.height(); ++y)
+        {
+            for (int32 x = 0; x < first.width(); ++x)
+            {
+                const QRgb a = first.pixel(x, y);
+                const QRgb b = second.pixel(x, y);
+                if (qAbs(qRed(a) - qRed(b)) > TOLERANCE || qAbs(qGreen(a) - qGreen(b)) > TOLERANCE ||
+                    qAbs(qBlue(a) - qBlue(b)) > TOLERANCE)
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+    // The bottom half, clear of overlays, is the same frame; the statistics panel in the top-left corner and the
+    // axis widget in the top-right corner are only in the window.
+    const QRect bottom(0, window.height() / 2, window.width(), window.height() - window.height() / 2);
+    CHECK(isClose(screenshot.copy(bottom), window.copy(bottom)) == true);
+    const QRect corner(0, 0, window.width() / 4, window.height() / 4);
+    CHECK(isClose(screenshot.copy(corner), window.copy(corner)) == false);
+    preview.Stop();
+}
 TEST_CASE("Native Lit viewport ignores lightmap UVs and keeps live camera rendering", "[.render-native][lighting]")
 {
     RenderScene scene = MakeLightingScene(LightingReceiverDefect::MismatchedBakeTexcoords);
@@ -884,6 +943,30 @@ TEST_CASE("Native World-demo World renders its game extraction in the shared vie
     QPoint movedPixel;
     REQUIRE(locate(after, movedPixel));
     CHECK(movedPixel.x() > playerPixel.x());
-    CHECK(after.pixelColor(movedPixel) == drawn);
+    // Grid lines can cross the projected centre after a move. Inspect nearby interior pixels
+    // against the same authored display codes instead of requiring the grid-covered texel.
+    constexpr int32 PLAYER_SAMPLE_RADIUS_PIXEL = 2;
+    constexpr int32 MINIMUM_PLAYER_PIXELS = 4;
+    int32 playerPixels = 0;
+    for (int32 verticalOffsetPixel = -PLAYER_SAMPLE_RADIUS_PIXEL; verticalOffsetPixel <= PLAYER_SAMPLE_RADIUS_PIXEL;
+         ++verticalOffsetPixel)
+    {
+        for (int32 horizontalOffsetPixel = -PLAYER_SAMPLE_RADIUS_PIXEL;
+             horizontalOffsetPixel <= PLAYER_SAMPLE_RADIUS_PIXEL;
+             ++horizontalOffsetPixel)
+        {
+            const QPoint positionPixel = movedPixel + QPoint(horizontalOffsetPixel, verticalOffsetPixel);
+            if (after.rect().contains(positionPixel) == false)
+            {
+                continue;
+            }
+            const QColor color = after.pixelColor(positionPixel);
+            const bool isPlayerColor = std::abs(color.red() - getDisplayCode(mapped.X)) <= DISPLAY_TOLERANCE &&
+                                       std::abs(color.green() - getDisplayCode(mapped.Y)) <= DISPLAY_TOLERANCE &&
+                                       std::abs(color.blue() - getDisplayCode(mapped.Z)) <= DISPLAY_TOLERANCE;
+            playerPixels += isPlayerColor == true ? 1 : 0;
+        }
+    }
+    CHECK(playerPixels >= MINIMUM_PLAYER_PIXELS);
     workspace.StopPreview();
 }

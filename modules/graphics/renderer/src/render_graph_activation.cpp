@@ -149,11 +149,13 @@ struct RenderGraphPackage::State final
     };
     Array<uint8> Bytes;
     format::Header Header{};
+    StaticArray<uint32, format::MAX_RAY_PROGRAMS> CaptureWarmupSamples{};
     StaticArray<format::Resource, format::MAX_RESOURCES> Resources{};
     StaticArray<format::Camera, format::MAX_CAMERAS> Cameras{};
     StaticArray<format::Pass, format::MAX_PASSES> Passes{};
     StaticArray<BorrowedView<const char>, format::MAX_PASSES> PassNames{};
     bool HasPassNames = false;
+    bool HasLightTransformer = false;
     /// Decoded by DecodeRayPathCapture: the ray kernel is the diagnostic capture variant.
     bool IsRayPathCapture = false;
     /// Decoded by DecodeCaptureProfile: the ray kernels carry the capture shadow-query budget.
@@ -183,6 +185,8 @@ struct RenderGraphPackage::State final
     bool HasDenoising = false;
     /// Version 29 and later carry each pass's display curve and admit raster ToneMap.
     bool HasToneMappingCurve = false;
+    /// Version 31 and later clustered deferred packages carry the opaque G-buffer fragment with every deferred target.
+    bool HasOpaqueGBuffer = false;
     /// The version 25 scene resource word names the LTC table: AppendLtcTableBindings adds its slot.
     bool HasLtcTable = false;
     /// The scene resource word names the failure summary: AppendSceneResourceBindings adds its slot last.
@@ -242,6 +246,10 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         }
         const bool isDeferredRole = role >= format::DEFERRED_STAGE_ROLE_FIRST;
         if (isDeferredRole == true && CanHaveClusteredDeferred == false)
+        {
+            return RenderGraphPackageStatus::UnsupportedVersion;
+        }
+        if (role == format::DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE && HasOpaqueGBuffer == false)
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
         }
@@ -466,7 +474,9 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         const bool hasClusteredTarget = Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE][target].IsPresent;
         for (usize role = format::DEFERRED_STAGE_ROLE_FIRST; role < format::STAGE_ROLE_COUNT; ++role)
         {
-            if (Stages[role][target].IsPresent != (hasDeferred == true && hasClusteredTarget == true))
+            const bool isRequired = hasDeferred == true && hasClusteredTarget == true &&
+                                    (role != format::DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE || HasOpaqueGBuffer == true);
+            if (Stages[role][target].IsPresent != isRequired)
             {
                 return RenderGraphPackageStatus::Malformed;
             }
@@ -833,7 +843,9 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION &&
+        (version != format::CAPTURE_WARMUP_PACKAGE_VERSION && version != format::LIGHT_TRANSFORMER_PACKAGE_VERSION &&
+         version != format::OPAQUE_GBUFFER_PACKAGE_VERSION &&
+         version != format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION &&
          version != format::RASTER_TONE_MAPPING_PACKAGE_VERSION && version != format::TILED_RAY_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_PACKAGE_VERSION && version != format::LTC_TABLE_PACKAGE_VERSION &&
@@ -869,6 +881,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasMetalFxSpatialUpscale = version >= format::METALFX_SPATIAL_PACKAGE_VERSION;
     candidate->HasDenoising = version >= format::DENOISING_PACKAGE_VERSION;
     candidate->HasToneMappingCurve = version >= format::RASTER_TONE_MAPPING_PACKAGE_VERSION;
+    candidate->HasOpaqueGBuffer = version >= format::OPAQUE_GBUFFER_PACKAGE_VERSION;
     candidate->HasExplicitRayWorkgroup = version >= format::RAY_WORKGROUP_PACKAGE_VERSION;
     candidate->HasExplicitRayTraversal = version >= format::SOFTWARE_RAY_PACKAGE_VERSION;
     candidate->HasCustomRayTraversal = version >= format::CUSTOM_RAY_PACKAGE_VERSION;
@@ -1009,12 +1022,27 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     {
         const uint32 sceneResources = reader.ReadWord();
         if (reader.IsOk() == false ||
-            (sceneResources & ~(format::SCENE_RESOURCE_LTC_TABLE | format::SCENE_RESOURCE_FAILURE_SUMMARY)) != 0)
+            (sceneResources &
+             ~(format::SCENE_RESOURCE_LTC_TABLE | format::SCENE_RESOURCE_FAILURE_SUMMARY |
+               (version >= format::LIGHT_TRANSFORMER_PACKAGE_VERSION ? format::SCENE_RESOURCE_LIGHT_TRANSFORMER
+                                                                     : 0))) != 0)
         {
             return RenderGraphPackageStatus::Malformed;
         }
+        candidate->HasLightTransformer = (sceneResources & format::SCENE_RESOURCE_LIGHT_TRANSFORMER) != 0;
         candidate->HasLtcTable = (sceneResources & format::SCENE_RESOURCE_LTC_TABLE) != 0;
         candidate->HasFailureSummary = (sceneResources & format::SCENE_RESOURCE_FAILURE_SUMMARY) != 0;
+    }
+    if (version >= format::CAPTURE_WARMUP_PACKAGE_VERSION)
+    {
+        for (uint32& count : candidate->CaptureWarmupSamples)
+        {
+            count = reader.ReadWord();
+        }
+        if (reader.IsOk() == false)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
     }
     if (version >= format::NAMED_PACKAGE_VERSION)
     {
@@ -1145,6 +1173,10 @@ RenderGraphPlan RenderGraphPackage::GetPlan() const noexcept
                 : BorrowedView<const BorrowedView<const char>>{},
             {state.StorageBuffers.GetData(), state.StorageBufferCount}};
 }
+bool RenderGraphPackage::HasLightTransformer() const noexcept
+{
+    return mState.Get() != nullptr && mState->HasLightTransformer == true;
+}
 RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescription& compositeVertex,
                                                     const rhi::RasterShaderDescription& compositeFragment,
                                                     bool shouldPrepareAsynchronously) const noexcept
@@ -1159,8 +1191,10 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         return result;
     }
     const State& state = *mState;
+    result.CaptureWarmupSamples = state.CaptureWarmupSamples;
     result.HasRayPathCapture = state.IsRayPathCapture;
     result.HasLtcTable = state.HasLtcTable;
+    result.HasLightTransformer = state.HasLightTransformer;
     result.HasRayTiles = state.HasRayTiles;
     for (const State::StageView& view : state.Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE])
     {
@@ -1195,11 +1229,12 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
          &result.LightingFragment,
          &result.LightingShadow},
     };
-    const StaticArray<rhi::RasterShaderDescription*, format::DEFERRED_STAGE_ROLE_COUNT> deferredMembers{
-        {&result.DeferredGBufferFragment,
-         &result.DeferredLightingVertex,
-         &result.DeferredLightingFragment,
-         &result.DeferredDepthCopyFragment}};
+    const StaticArray<rhi::RasterShaderDescription*, format::STAGE_ROLE_COUNT - format::DEFERRED_STAGE_ROLE_FIRST>
+        deferredMembers{{&result.DeferredGBufferFragment,
+                         &result.DeferredLightingVertex,
+                         &result.DeferredLightingFragment,
+                         &result.DeferredDepthCopyFragment,
+                         &result.DeferredOpaqueGBufferFragment}};
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description =
@@ -1537,7 +1572,8 @@ Status RenderGraphActivation::Initialize(rhi::DeviceHandle device,
     mState.Swap(candidate);
     return Status::Ready;
 }
-Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package) noexcept
+Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package,
+                                    const LightTransformerModelDescription* modelOrNull) noexcept
 {
     if (mState.Get() == nullptr)
     {
@@ -1552,6 +1588,7 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
     }
     // A newer request supersedes any unactivated candidate, whatever its outcome.
     state.Candidate.Reset();
+    state.Report.CandidateReport = {};
     state.Report.CandidateGeneration = ++state.NextSerial;
     state.Report.CandidateRenderer =
         RequiresHardwareRayTracing(package->GetPlan()) == true
@@ -1589,7 +1626,8 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
                                                        *programs,
                                                        state.IsPooled == true ? &state.Pool : nullptr,
                                                        state.ReferenceWidth,
-                                                       state.ReferenceHeight);
+                                                       state.ReferenceHeight,
+                                                       modelOrNull);
     if (IsAccepted(status) == false)
     {
         state.FailCandidate(status);
@@ -1759,6 +1797,10 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
     const Status candidateStatus =
         candidate.Graph
             .Update(meshes, items, cameras, sceneRevision, policy, candidateReport, sceneInputsOrNull, contentRevision);
+    if (candidateStatus != Status::NotReady)
+    {
+        state.Report.CandidateReport = candidateReport;
+    }
     if (IsAccepted(candidateStatus) == true)
     {
         candidate.SceneRevision = sceneRevision;

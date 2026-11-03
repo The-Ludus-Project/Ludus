@@ -178,6 +178,8 @@ HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_fu
 # Staged and included only for scene_interface.polygonal_light_sampling: FoundationMath's projected-solid-angle,
 # LTC, weighted-reservoir and shading-normal primitives and the renderer's LTC table lookup, in include order, so
 # packages that do not request them keep their snapshot and cache identity. The table itself is a renderer-bound buffer.
+LIGHT_TRANSFORMER_HELPERS = ('renderer_light_transformer_query.slang',)
+
 POLYGONAL_LIGHT_HELPERS = ('projected_solid_angle.slang', 'linearly_transformed_cosine.slang', 'weighted_reservoir.slang',
                            'shading_normal.slang', 'ltc_table.slang', 'ltc_table_layout.h')
 POLYGONAL_LIGHT_INCLUDES = ('projected_solid_angle.slang', 'linearly_transformed_cosine.slang', 'weighted_reservoir.slang',
@@ -379,9 +381,17 @@ def expand_programs(programs, technique, snapshot, helper, build, variants=None,
     recipes = build.document(build.read(helper / 'recipes.json'), 'renderer recipes')
     compute_recipe = recipes['renderer_gpu_preview']
     image_recipe = recipes['renderer_gpu_preview_image']
+    has_light_transformer = any(programs[identity].get('light_transformer', False)
+                                for variant in (variants or []) for identity in callback_programs(variant))
+    if has_light_transformer:
+        technique = deepcopy(technique)
+        build.require(technique.get('scene_interface') is not None, 'Capability', TECHNIQUE,
+                      'Light Transformer requires scene interface version 1')
+        technique['scene_interface']['light_transformer'] = True
     polygonal_light_helpers = POLYGONAL_LIGHT_HELPERS if technique.get('scene_interface', {}).get(
         'polygonal_light_sampling', False) else ()
-    stage_helpers(snapshot, helper, (*HELPERS, *polygonal_light_helpers, compute_recipe['source'], image_recipe['source']),
+    light_transformer_helpers = LIGHT_TRANSFORMER_HELPERS if technique.get('scene_interface', {}).get('light_transformer', False) else ()
+    stage_helpers(snapshot, helper, (*HELPERS, *polygonal_light_helpers, *light_transformer_helpers, compute_recipe['source'], image_recipe['source']),
                   build)
     wrapper = '''float3 EvaluateGraphRay(uint pixel);
 #define LUDUS_RENDER_GRAPH_RAY_PIPELINE 1
@@ -507,9 +517,7 @@ def stage_helpers(snapshot, helper, roots, build):
             build.require(snapshot.external.get(relative) == helper / filename and snapshot.files[relative] == data,
                           'Source', relative, 'reserved engine ray helper path')
             continue
-        snapshot.files[relative] = data
-        snapshot.external[relative] = helper / filename
-        snapshot.total += len(data)
+        snapshot.capture(relative, data, external=helper / filename)
         text = data.decode('utf-8', 'replace') if isinstance(data, bytes) else data
         pending += [name for name in HELPER_INCLUDE.findall(text)
                     if '_ludus_ray/' + name not in snapshot.files and (helper / name).is_file()]
@@ -614,6 +622,8 @@ def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source='
     compatibility = compatibility or {'sources': {}, 'callbacks': []}
     if interface.get('visibility_buffer', False):
         wrapper += '#define LUDUS_RENDER_GRAPH_VISIBILITY_INPUTS 1\n#include "_ludus_ray/visibility_buffer.slang"\n'
+    if interface.get('light_transformer', False):
+        wrapper += '#include "_ludus_ray/renderer_light_transformer_query.slang"\n'
     if interface.get('polygonal_light_sampling', False):
         # ltc_table.slang reads the renderer's LTC table at this slot; the renderer binds it when reflection keeps it.
         wrapper += '#define LUDUS_LTC_TABLE_BINDING LUDUS_GRAPH_LTC_TABLE_BINDING\n'

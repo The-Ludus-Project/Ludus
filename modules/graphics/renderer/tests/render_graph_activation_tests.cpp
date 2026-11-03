@@ -64,7 +64,7 @@ struct PackageWriter final
     /// Empty structured storage records, then the version 25 scene resource word.
     // The package version selects which words exist; the scene resource bits are that word's value.
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
-    void WriteSceneResources(uint32 version, uint32 sceneResources = 0)
+    void WriteSceneResources(uint32 version, uint32 sceneResources = 0, uint32 warmup = 0)
     // NOLINTEND(bugprone-easily-swappable-parameters)
     {
         if (version >= format::STORAGE_PACKAGE_VERSION)
@@ -74,6 +74,13 @@ struct PackageWriter final
         if (version >= format::LTC_TABLE_PACKAGE_VERSION)
         {
             WriteWord(sceneResources);
+        }
+        if (version >= format::CAPTURE_WARMUP_PACKAGE_VERSION)
+        {
+            for (usize program = 0; program < format::MAX_RAY_PROGRAMS; ++program)
+            {
+                WriteWord(program == 0 ? warmup : 0);
+            }
         }
     }
     void WritePadded(std::string_view text)
@@ -105,6 +112,7 @@ struct PackageOptions final
     uint32 Backing = 0;
     uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
     uint32 AccumulationSamples = 0;
+    uint32 CaptureWarmupSamples = 0;
     uint32 SourceColor = format::ABSENT;
     float32 ToneMappingExposure = 0;
     uint32 DenoisingQuality = 0;
@@ -287,7 +295,7 @@ Array<uint8> MakePackageBytes(const PackageOptions& options)
         WriteStage(writer, format::StageRole::DepthVertex, VERTEX_TEXT, "VertexMain");
         WriteStage(writer, format::StageRole::DepthFragment, FRAGMENT_TEXT, "FragmentMain");
     }
-    writer.WriteSceneResources(options.Version);
+    writer.WriteSceneResources(options.Version, 0, options.CaptureWarmupSamples);
     if (options.Version >= format::NAMED_PACKAGE_VERSION)
     {
         writer.WriteWord(static_cast<uint32>(options.PassName.size()));
@@ -1039,6 +1047,26 @@ TEST_CASE("runtime generation owns validated authored GPU pass names", "[rendere
           renderer::RenderGraphPackageStatus::Malformed);
 }
 
+TEST_CASE("runtime packages preserve capture warm-up and default older packages to zero",
+          "[render-graph][activation][capture]")
+{
+    constexpr uint32 WARMUP = 128;
+    for (const uint32 version : {format::OPAQUE_GBUFFER_PACKAGE_VERSION,
+                                 format::LIGHT_TRANSFORMER_PACKAGE_VERSION,
+                                 format::CAPTURE_WARMUP_PACKAGE_VERSION})
+    {
+        PackageOptions options;
+        options.Version = version;
+        options.CaptureWarmupSamples = WARMUP;
+        const Array<uint8> bytes = MakePackageBytes(options);
+        renderer::RenderGraphPackage package;
+        REQUIRE(package.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+        const renderer::RenderGraphPrograms programs = package.GetPrograms({}, {});
+        CHECK(programs.CaptureWarmupSamples[0] == (version >= format::CAPTURE_WARMUP_PACKAGE_VERSION ? WARMUP : 0));
+        CHECK(programs.CaptureWarmupSamples[1] == 0);
+    }
+}
+
 TEST_CASE("runtime packages preserve relative policies and decode fixed legacy versions",
           "[render-graph][activation][size]")
 {
@@ -1730,7 +1758,7 @@ TEST_CASE("RG3 version 25 packages append the LTC table binding to each scene co
 TEST_CASE("deferred runtime roles are complete per target and require the mesh-light binding version",
           "[render-graph][deferred]")
 {
-    constexpr usize SUPPORT_COUNT = format::FORWARD_STAGE_ROLE_COUNT + 1 + format::DEFERRED_STAGE_ROLE_COUNT;
+    constexpr usize SUPPORT_COUNT = format::FORWARD_STAGE_ROLE_COUNT + 1 + format::DEFERRED_STAGE_ROLE_COUNT + 1;
     const StaticArray<format::StageRole, SUPPORT_COUNT> roles{{format::StageRole::ForwardVertex,
                                                                format::StageRole::ClusteredForwardFragment,
                                                                format::StageRole::ForwardShadow,
@@ -1741,23 +1769,30 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
                                                                format::StageRole::DeferredGBufferFragment,
                                                                format::StageRole::DeferredLightingVertex,
                                                                format::StageRole::DeferredLightingFragment,
-                                                               format::StageRole::DeferredDepthCopyFragment}};
+                                                               format::StageRole::DeferredDepthCopyFragment,
+                                                               format::StageRole::DeferredOpaqueGBufferFragment}};
     // The package version and the omitted stage role are distinct quantities.
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
     const auto makeDeferred = [&](uint32 version,
                                   uint32 omittedRole,
                                   format::ShaderTarget target = format::ShaderTarget::Wgsl,
-                                  format::StageRole blockRole = format::StageRole::DeferredLightingFragment) {
+                                  format::StageRole blockRole = format::StageRole::DeferredLightingFragment,
+                                  bool shouldWriteOpaqueGBuffer = true) {
         // NOLINTEND(bugprone-easily-swappable-parameters)
+        // Packages before the opaque G-buffer version are cooked without its role.
+        const bool hasOpaqueGBuffer =
+            shouldWriteOpaqueGBuffer == true && version >= format::OPAQUE_GBUFFER_PACKAGE_VERSION;
+        const uint32 omittedCount = (omittedRole == format::ABSENT ? 0 : 1) + (hasOpaqueGBuffer == true ? 0 : 1);
         PackageWriter writer;
         PackageOptions options;
         options.Version = version;
-        WritePlan(writer, options, static_cast<uint32>(SUPPORT_COUNT + 2 - (omittedRole == format::ABSENT ? 0 : 1)));
+        WritePlan(writer, options, static_cast<uint32>(SUPPORT_COUNT + 2 - omittedCount));
         WriteStage(writer, format::StageRole::ColorVertex, target, VERTEX_TEXT, "VertexMain");
         WriteStage(writer, format::StageRole::ColorFragment, target, FRAGMENT_TEXT, "FragmentMain");
         for (const format::StageRole role : roles)
         {
-            if (static_cast<uint32>(role) == omittedRole)
+            if (static_cast<uint32>(role) == omittedRole ||
+                (role == format::StageRole::DeferredOpaqueGBufferFragment && hasOpaqueGBuffer == false))
             {
                 continue;
             }
@@ -1808,15 +1843,29 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
                                  // Polygon records without the bounding-sphere header word.
                                  format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION,
                                  format::RASTER_TONE_MAPPING_PACKAGE_VERSION,
+                                 // Bounded records without the opaque G-buffer role.
+                                 format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         const Array<uint8> bytes = makeDeferred(version, format::ABSENT);
         renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
         core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
         REQUIRE(package.Get() != nullptr);
+        const bool isSupported = version >= format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION;
         REQUIRE(package->Decode({bytes.GetData(), bytes.GetSize()}) ==
-                (version == format::PACKAGE_VERSION ? renderer::RenderGraphPackageStatus::Ready
-                                                    : renderer::RenderGraphPackageStatus::UnsupportedVersion));
+                (isSupported == true ? renderer::RenderGraphPackageStatus::Ready
+                                     : renderer::RenderGraphPackageStatus::UnsupportedVersion));
+        if (isSupported == true)
+        {
+            const renderer::RenderGraphPrograms programs = package->GetPrograms({}, {});
+            // Version 30 packages draw every material through the masked G-buffer fragment.
+            const bool hasOpaqueGBuffer = version >= format::OPAQUE_GBUFFER_PACKAGE_VERSION;
+            CHECK(programs.DeferredOpaqueGBufferFragment.Artifact.Wgsl.empty() == (hasOpaqueGBuffer == false));
+            if (hasOpaqueGBuffer == true)
+            {
+                CHECK(programs.DeferredOpaqueGBufferFragment.Bindings.size() == 11);
+            }
+        }
         if (version == format::PACKAGE_VERSION)
         {
             const renderer::RenderGraphPrograms programs = package->GetPrograms({}, {});
@@ -1836,6 +1885,24 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
         REQUIRE(package->Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
         const renderer::RenderGraphPrograms programs = package->GetPrograms({}, {});
         CHECK(programs.DeferredLightingFragment.UniformBlocks[15] == "deferred_view");
+    }
+    {
+        // A current deferred package must carry the opaque G-buffer role, and an earlier one must not.
+        const Array<uint8> missing = makeDeferred(format::PACKAGE_VERSION,
+                                                  format::ABSENT,
+                                                  format::ShaderTarget::Wgsl,
+                                                  format::StageRole::DeferredLightingFragment,
+                                                  false);
+        renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
+        REQUIRE(package.Get() != nullptr);
+        CHECK(package->Decode({missing.GetData(), missing.GetSize()}) == renderer::RenderGraphPackageStatus::Malformed);
+        // The current fixture relabelled as version 30, whose packages cannot name the opaque role.
+        Array<uint8> early = makeDeferred(format::PACKAGE_VERSION, format::ABSENT);
+        constexpr usize VERSION_BYTE = sizeof(uint32);
+        early[VERSION_BYTE] = static_cast<uint8>(format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION);
+        CHECK(package->Decode({early.GetData(), early.GetSize()}) ==
+              renderer::RenderGraphPackageStatus::UnsupportedVersion);
     }
     {
         const Array<uint8> bytes = makeDeferred(format::PACKAGE_VERSION,

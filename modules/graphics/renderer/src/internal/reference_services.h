@@ -2,6 +2,7 @@
 // Included only by renderer.cpp: captured jobs retain the existing snapshot,
 // mesh and material incarnations, while RHI retains accepted native work.
 
+#include "../../shaders/wave_connection_layout.h"
 #include "ltc_table_data.h"
 #include "reference_data.h"
 
@@ -41,6 +42,8 @@ constexpr uint32 HDR_GPU_COMPUTE_FLAG = 64;
 /// LUHDR01 flags bit identifying a resampled capture: ResampledProjectedSolidAngle (sampler version 2) or
 /// ResampledFormFactor (sampler version 3), which the sampler field distinguishes.
 constexpr uint32 HDR_RESAMPLED_LIGHT_FLAG = 128;
+constexpr uint32 HDR_OPTICAL_FLAG = 256;
+constexpr usize HDR_OPTICAL_WAVELENGTH_OFFSET = 92;
 
 usize GetReferenceGpuBytes(const ReferenceJob& job) noexcept
 {
@@ -66,6 +69,7 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
     {
         uniform.Sampling[2] |= LUDUS_REFERENCE_FORM_FACTOR_TARGET_FLAG;
     }
+    uniform.Options.Y = inoutJob.Description.OpticalWavelengthWorld;
     const usize packedBytes = (data.GetSize() + texels.GetSize()) * sizeof(math::Vector4);
     const usize pixels = usize(inoutJob.Description.Width) * inoutJob.Description.Height;
     usize zeroBytes = 0;
@@ -108,7 +112,7 @@ bool SameReferenceIntegral(const ReferenceJob& a,
         d.SecondaryDistance != b.SecondaryDistance || d.Environment != b.Environment ||
         a.EnvironmentOrNull != Access::GetEnvironment(b.EnvironmentTextureOrNull) || d.TextureMip != b.TextureMip ||
         d.Seed != b.Seed || d.CenterRays != b.CenterRays || d.LightSampling != b.LightSampling ||
-        d.LightCount != lights.Count)
+        d.OpticalWavelengthWorld != b.OpticalWavelengthWorld || d.LightCount != lights.Count)
     {
         return false;
     }
@@ -133,6 +137,13 @@ Status ValidateReferenceDescription(const ReferenceCaptureDescription& d, LightS
     }
     if (d.LightSampling != ReferenceLightSampling::UniformArea &&
         internal::IsReferenceResampled(d.LightSampling) == false)
+    {
+        return Status::InvalidDescription;
+    }
+    if (math::IsFinite(d.OpticalWavelengthWorld) == false || d.OpticalWavelengthWorld < 0 ||
+        (d.OpticalWavelengthWorld > 0 &&
+         d.OpticalWavelengthWorld < static_cast<float32>(LUDUS_WAVE_CONNECTION_MIN_WAVELENGTH_WORLD)) ||
+        (d.OpticalWavelengthWorld > 0 && d.LightSampling != ReferenceLightSampling::UniformArea))
     {
         return Status::InvalidDescription;
     }
@@ -717,6 +728,11 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
             return ready == Status::Pending ? Status::NotReady : ready;
         }
     }
+    if (description.OpticalWavelengthWorld > 0 && gpuSetup == false &&
+        Reference->Options.Traversal == ReferenceTraversal::NativeQueries)
+    {
+        return Status::Unsupported;
+    }
     const auto& snapshot = SnapshotRecords[snapshotSlot];
     usize triangles = 0;
     usize instances = 0;
@@ -1005,10 +1021,21 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
             const auto localNormal =
                 math::Cross(mesh.Positions[i1] - mesh.Positions[i0], mesh.Positions[i2] - mesh.Positions[i0]);
             triangle.GeometricNormal = internal::ReferenceNormalize(normalMatrix * localNormal);
-            if (math::IsFinite(triangle.Area) == false || triangle.Area <= 0 ||
-                math::Length(triangle.GeometricNormal) == 0)
+            if (math::IsFinite(triangle.Area) == false)
             {
                 return Status::Unsupported;
+            }
+            if (triangle.Area == 0)
+            {
+                // Preserve original primitive IDs. The oracle/GPU BVH omits zero-area primitives, and
+                // native triangle traversal cannot hit them; they must not reject an otherwise valid scene.
+                ++job->Info.SkippedTriangles;
+                ++triangleAt;
+                continue;
+            }
+            if (math::Length(triangle.GeometricNormal) == 0)
+            {
+                triangle.GeometricNormal = internal::ReferenceNormalize(areaVector);
             }
             // Shading normals may face away from the winding, or straddle the face: transport orients the
             // geometric normal towards them at each point (OrientReferenceGeometricNormal), as pbrt-v4 does.
@@ -1765,12 +1792,14 @@ Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capac
         (job.Description.CenterRays ? 2U : 0U) | (job.Description.OrthographicCamera ? 4U : 0U) |
         (job.Description.ReverseZ ? 8U : 0U) | (job.Description.InfiniteFar ? 16U : 0U) |
         (job.Info.Complete == false ? 32U : 0U) |
-        (internal::IsReferenceResampled(job.Description.LightSampling) == true ? HDR_RESAMPLED_LIGHT_FLAG : 0U);
+        (internal::IsReferenceResampled(job.Description.LightSampling) == true ? HDR_RESAMPLED_LIGHT_FLAG : 0U) |
+        (job.Description.OpticalWavelengthWorld > 0 ? HDR_OPTICAL_FLAG : 0U);
     Put32(output + 44, flags);
     Put64(output + 48, job.Description.Seed);
     Put64(output + 56, job.Info.Revision);
     Put64(output + 64, job.Scene.FingerprintLow);
     Put64(output + 72, job.Scene.FingerprintHigh);
+    PutFloat(output + HDR_OPTICAL_WAVELENGTH_OFFSET, job.Description.OpticalWavelengthWorld);
     PutFloat(output + 80, job.Description.SecondaryDistance);
     Put32(output + 84, job.Description.TextureMip);
     Put32(output + 88, static_cast<uint32>(job.Description.LightCount));

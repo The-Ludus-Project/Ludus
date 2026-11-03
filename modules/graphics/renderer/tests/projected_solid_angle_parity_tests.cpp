@@ -22,6 +22,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <span>
@@ -355,6 +356,7 @@ TEST_CASE("GPU projected solid angle sampling matches the C++ implementation", "
         const float32 projectedSolidAngle = words[1];
         REQUIRE(math::Abs(projectedSolidAngle - expected.ProjectedSolidAngle) <=
                 1.0e-6F + 1.0e-3F * expected.ProjectedSolidAngle);
+        INFO("raster integral " << words[10] << ", sampling integral " << expected.ProjectedSolidAngle);
         // The raster integral must agree with the independent CPU sampling preparation,
         // including reversed winding, horizon clips and thin/distant polygons.
         REQUIRE(math::Abs(words[10] - expected.ProjectedSolidAngle) <=
@@ -386,6 +388,79 @@ TEST_CASE("GPU projected solid angle sampling matches the C++ implementation", "
     REQUIRE(GetPercentile(areaErrors, 0.99F) <= 1.0e-4F);
     REQUIRE(GetPercentile(directionErrors, 0.99F) <= 1.0e-4F);
     REQUIRE(GetPercentile(directionErrors, 1.0F) <= 5.0e-2F);
+}
+
+// The raster fit is intentionally independent of the exact CPU sampler. Test its
+// signed edge vector area directly over the full angle range, grazing endpoints,
+// both windings and very large/small coordinate scales on the actual GPU.
+TEST_CASE("GPU raster edge fit agrees with exact signed angular integrals", "[renderer][gpu][polygon-sampling]")
+{
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    constexpr usize RASTER_EDGE_WORD = 12;
+    constexpr usize EXACT_EDGE_WORD = 13;
+    constexpr float32 EDGE_ABSOLUTE_TOLERANCE_RADIANS = 2.0e-6F;
+    constexpr float32 COORDINATE_SCALES[] = {1.0e-30F, 1, 1.0e30F};
+    constexpr float32 BOUNDARY_ANGLES[] =
+        {0, 1.0e-7F, 1.0e-5F, math::kHalfPiF, math::kPiF - 1.0e-5F, math::kPiF - 1.0e-7F, math::kPiF};
+    constexpr uint32 BOUNDARY_COUNT = sizeof(BOUNDARY_ANGLES) / sizeof(BOUNDARY_ANGLES[0]);
+    constexpr uint32 SCALE_COUNT = sizeof(COORDINATE_SCALES) / sizeof(COORDINATE_SCALES[0]);
+    Array<float32> cases;
+    REQUIRE(cases.TryResize(usize{CASE_COUNT} * LUDUS_PROJECTED_SOLID_ANGLE_PARITY_WORDS_PER_CASE * FLOATS_PER_WORD,
+                            0) == true);
+    Array<float32> expected;
+    REQUIRE(expected.TryResize(CASE_COUNT, 0) == true);
+    for (uint32 i = 0; i < CASE_COUNT; ++i)
+    {
+        const float32 angle = i < BOUNDARY_COUNT
+                                  ? BOUNDARY_ANGLES[i]
+                                  : static_cast<float32>(i) / static_cast<float32>(CASE_COUNT - 1) * math::kPiF;
+        const float32 winding = i % 2 == 0 ? 1 : -1;
+        const float32 scale = COORDINATE_SCALES[i % SCALE_COUNT];
+        float32* words =
+            cases.GetData() + usize{i} * LUDUS_PROJECTED_SOLID_ANGLE_PARITY_WORDS_PER_CASE * FLOATS_PER_WORD;
+        words[0] = scale;
+        words[FLOATS_PER_WORD] = math::Cos(angle) * scale;
+        words[FLOATS_PER_WORD + 1] = math::Sin(angle) * scale * winding;
+        words[2 * FLOATS_PER_WORD + 2] = scale;
+        words[math::MAX_PROJECTED_POLYGON_INPUT_VERTICES * FLOATS_PER_WORD] = 3;
+        // atan2, rather than angle, accounts for float32 pi lying just beyond the true endpoint.
+        expected[i] = math::Atan2(math::Sin(angle) * winding, math::Cos(angle));
+    }
+    const usize resultBytes =
+        usize{CASE_COUNT} * LUDUS_PROJECTED_SOLID_ANGLE_PARITY_WORDS_PER_RESULT * FLOATS_PER_WORD * sizeof(float32);
+    Array<uint8> results;
+    if (RunParityKernel(ludus::shaders::projected_solid_angle_parity::Compute(),
+                        cases,
+                        CASE_COUNT / LUDUS_PROJECTED_SOLID_ANGLE_PARITY_GROUP_SIZE,
+                        resultBytes,
+                        results) == false)
+    {
+        SKIP("No native GPU adapter");
+    }
+    float32 maximumRasterError = 0;
+    float32 maximumTrigonometricError = 0;
+    for (uint32 i = 0; i < CASE_COUNT; ++i)
+    {
+        float32 words[LUDUS_PROJECTED_SOLID_ANGLE_PARITY_WORDS_PER_RESULT * FLOATS_PER_WORD];
+        std::memcpy(words, results.GetData() + usize{i} * sizeof(words), sizeof(words));
+        INFO("edge " << i);
+        maximumRasterError = math::Max(maximumRasterError, math::Abs(words[RASTER_EDGE_WORD] - expected[i]));
+        maximumTrigonometricError =
+            math::Max(maximumTrigonometricError, math::Abs(words[EXACT_EDGE_WORD] - expected[i]));
+        CHECK(math::Abs(words[RASTER_EDGE_WORD] - expected[i]) <= EDGE_ABSOLUTE_TOLERANCE_RADIANS);
+        CHECK(math::IsFinite(words[EXACT_EDGE_WORD]) == true);
+    }
+    // Vendor atan2 accuracy is diagnostic; the acceptance bound uses the independent CPU angle.
+    std::printf("Raster edge maximum error %.9g rad; GPU atan2 maximum error %.9g rad\n",
+                static_cast<float64>(maximumRasterError),
+                static_cast<float64>(maximumTrigonometricError));
 }
 
 namespace
@@ -557,6 +632,7 @@ TEST_CASE("GPU linearly transformed cosine sampling matches the C++ implementati
         REQUIRE(words[1] == 1.0F);
         REQUIRE(words[3] == static_cast<float32>(expected.TransformedPolygon.VertexCount));
         const float32 integral = math::GetLinearlyTransformedCosinePolygonIntegral(expected);
+        INFO("raster LTC integral " << words[11] << ", sampling integral " << integral);
         REQUIRE(math::Abs(words[11] - integral) <= 1.0e-6F + 1.0e-3F * integral);
         REQUIRE(math::Abs(words[2] - integral) <= 1.0e-6F + 1.0e-3F * integral);
         if (integral < NEGLIGIBLE_INTEGRAL)

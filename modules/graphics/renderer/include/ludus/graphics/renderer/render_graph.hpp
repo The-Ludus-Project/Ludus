@@ -8,6 +8,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/geometry.hpp>
+#include <ludus/graphics/renderer/light_transformer_encoder.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/scene_shader.hpp>
 #include <ludus/graphics/rhi/gpu_scope.h>
@@ -92,6 +93,10 @@ ResolveRenderGraphResource(const content::render_graph_format::Resource& resourc
 /// rather than as a stack temporary.
 struct RenderGraphPrograms final
 {
+    /// Discarded startup invocations before a frame capture collects its requested count; zero for IID graphs.
+    /// Indexed by Pass::RayProgram and cooked from each compute program's UInt32 capture_warmup_setting.
+    /// Interactive limits are unchanged.
+    foundation::StaticArray<foundation::uint32, content::render_graph_format::MAX_RAY_PROGRAMS> CaptureWarmupSamples{};
     rhi::RasterShaderDescription ColorVertex{};         ///< Authored ColorAndDepth geometry entry.
     rhi::RasterShaderDescription ColorFragment{};       ///< Authored color entry.
     rhi::RasterShaderDescription DepthVertex{};         ///< Authored DepthOnly geometry entry.
@@ -130,8 +135,15 @@ struct RenderGraphPrograms final
     bool HasVisibilityBuffer = false;
     /// Use the complete clustered material ABI and conservative spatial light lists.
     bool HasClusteredForward = false;
-    /// Opaque material fragment writing normal/roughness, base/metallic and emission/coverage in RGBA16F.
+    /// Opaque material fragment writing normal/roughness, base/metallic and emission/coverage in RGBA16F. It applies
+    /// alpha-masked coverage and draws masked materials when DeferredOpaqueGBufferFragment is present, every material
+    /// otherwise.
     rhi::RasterShaderDescription DeferredGBufferFragment{};
+    /// The same G-buffer fragment compiled without the coverage test, drawn for opaque materials before masked ones so
+    /// tile-based GPUs keep hidden-surface removal. Present with HasClusteredDeferred in packages from
+    /// format::OPAQUE_GBUFFER_PACKAGE_VERSION; empty in earlier packages, which draw every material through
+    /// DeferredGBufferFragment.
+    rhi::RasterShaderDescription DeferredOpaqueGBufferFragment{};
     /// Renderer fullscreen geometry for deferred lighting and optional prepass depth transfer.
     rhi::RasterShaderDescription DeferredLightingVertex{};
     /// Clustered lighting resolve; reads the G-buffer and writes linear color plus scene depth.
@@ -156,6 +168,8 @@ struct RenderGraphPrograms final
     /// and every generated header), so RenderGraph::SetRayTileCount may split a sample into row bands. Older
     /// kernels cover the whole image on every dispatch and therefore cannot be tiled.
     bool HasRayTiles = false;
+    bool HasLightTransformer =
+        false; ///< Requires a trained model description; prepares a view-independent GPU encoder.
 };
 /// Why a graph ray invocation failed: the scene interface's reasons, recorded by the shader function
 /// FailSceneQuery (scene_shader_layout.h, LUDUS_SCENE_FAILURE_*). Authored shaders may report their own reasons from
@@ -184,6 +198,11 @@ enum class RenderGraphFailureReason : foundation::uint8
     PhotonDispatch,             ///< Photon maps and spatial reuse require a whole-image dispatch.
     GeometrySamplingLights,     ///< A geometry-sampling template received analytic or environment lighting.
     GeometryStatisticsCapacity, ///< A geometry-sampling statistics buffer cannot hold the scene hierarchy.
+    WaveDirection,              ///< The wave aperture plane has no propagation direction.
+    WaveResolution,             ///< The aperture quadrature cannot resolve the Fresnel phase gradient.
+    WaveCapacity,               ///< A scalar optical connection exceeds the region or triangle workspace.
+    WaveConnection,             ///< The optical wavelength or finite connection is outside the paraxial profile.
+    WavePropagationCapacity,    ///< An optical connection exceeds the admitted number of successive regions.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;
@@ -467,6 +486,7 @@ struct RenderGraphReport final
     foundation::uint32 Excluded = 0;           ///< Explicit omissions.
     bool IsAccepted = false;                   ///< Candidate was accepted for asynchronous preparation.
     bool IsReady = false;                      ///< Accepted scene is drawable; producer completion is separate.
+    LightTransformerPreparationReport Model{}; ///< Latest model candidate diagnostics; independent of drawable output.
 };
 namespace internal
 {
@@ -575,12 +595,16 @@ public:
     /// created here and destroyed on Reset. Both paths encode identical commands. An uninitialized
     /// pool, or one bound to a destroyed device, rejects with InvalidDescription. The pool must
     /// be bound to this device and outlive this graph.
+    /// @param modelOrNull Required exactly for HasLightTransformer programs. Assets are copied;
+    /// encoder artifact storage survives Poll. The model uses diffuse mesh-emitter inputs
+    /// and fixed training scale; pending/failed scene encoding keeps the drawable generation.
     [[nodiscard]] rhi::RasterStatus Initialize(rhi::DeviceHandle device,
                                                const RenderGraphPlan& plan,
                                                const RenderGraphPrograms& programs,
                                                RenderGraphAttachmentPool* poolOrNull = nullptr,
                                                foundation::uint32 referenceWidth = 0,
-                                               foundation::uint32 referenceHeight = 0) noexcept;
+                                               foundation::uint32 referenceHeight = 0,
+                                               const LightTransformerModelDescription* modelOrNull = nullptr) noexcept;
     /// Request new per-view drawable dimensions between frames, without shader/pipeline preparation.
     /// Fixed targets ignore the reference. Zero dimensions return NotReady and preserve any pending request.
     /// A new request supersedes an unactivated resize. Ready means unchanged; Pending requires Update
@@ -603,6 +627,8 @@ public:
     /// returns NotReady so callers cannot mutate the last drawable view's storage.
     /// A subsequent authored scene-compute pass consumes GPU results through its wired
     /// GraphBuffer slot. No readback, upload or ownership transfer occurs here.
+    /// Model embedding buffers expose their actual prepared packet range, not the placeholder
+    /// allocation in the source graph. Their contents are valid after the first completed Render.
     /// @param resource Numeric Buffer resource index in this graph's cooked plan.
     /// @param outBuffer Borrowed allocation, written only on Ready.
     /// @param outBytes Usable byte capacity, written only on Ready.

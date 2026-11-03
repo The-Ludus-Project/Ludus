@@ -75,6 +75,18 @@ class ValidationTierTests(unittest.TestCase):
             self.assertEqual(ci_scope.validation_tier(event_name, {}), ci_scope.NIGHTLY_TIER)
             self.assertEqual(ci_scope.validation_tier(event_name, {}, is_batch=True), ci_scope.FULL_TIER)
 
+    def test_manual_full_qualification_matches_the_batch_without_weakening_other_events(self):
+        event = {"inputs": {"validation_tier": "full"}}
+        self.assertEqual(ci_scope.validation_tier("workflow_dispatch", event), ci_scope.FULL_TIER)
+        self.assertEqual(ci_scope.validation_tier("workflow_dispatch", event, is_batch=True), ci_scope.FULL_TIER)
+        self.assertEqual(ci_scope.validation_tier("schedule", event), ci_scope.NIGHTLY_TIER)
+        event["pull_request"] = {"base": {"ref": "develop"}}
+        self.assertEqual(ci_scope.validation_tier("pull_request", event), ci_scope.INTEGRATION_TIER)
+        for inputs in (None, [], "full", {"validation_tier": "integration"}, {"validation_tier": True}):
+            with self.subTest(inputs=inputs):
+                self.assertEqual(ci_scope.validation_tier("workflow_dispatch", {"inputs": inputs}),
+                                 ci_scope.NIGHTLY_TIER)
+
     def test_malformed_pull_request_metadata_runs_the_full_tier(self):
         for event in ({}, {"pull_request": None}, {"pull_request": {"base": None}},
                       {"pull_request": {"base": {"ref": None}}}):
@@ -167,6 +179,7 @@ class GitComparisonTests(unittest.TestCase):
             ("pull_request", self.pull_request(head), "", "false", ci_scope.INTEGRATION_TIER),
             ("pull_request", self.pull_request(head, base_ref="main"), "", "false", ci_scope.FULL_TIER),
             ("workflow_dispatch", {}, "", "true", ci_scope.NIGHTLY_TIER),
+            ("workflow_dispatch", {"inputs": {"validation_tier": "full"}}, "", "true", ci_scope.FULL_TIER),
             ("workflow_dispatch", {}, head, "true", ci_scope.FULL_TIER),
             ("schedule", {}, head, "true", ci_scope.FULL_TIER),
         )
@@ -205,9 +218,16 @@ class RequiredGateTests(unittest.TestCase):
         # source/tooling job to succeed before promotion.
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         dependencies = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    needs: (.*)$", workflow, re.MULTILINE))
+        # Capacity admission serializes long ARM jobs without depending on formatting
+        # or inheriting the previous lane's success requirement.
+        serial = {"macos-compile": "[changes, macos-sanitizers]",
+                  "macos-analysis": "[changes, macos-compile]"}
         for name in ci_scope.NATIVE_JOBS:
             with self.subTest(job=name):
-                self.assertEqual(dependencies.get(name), "changes")
+                self.assertEqual(dependencies.get(name), serial.get(name, "changes"))
+        conditions = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    if: (.*)$", workflow, re.MULTILINE))
+        for name in serial:
+            self.assertTrue(conditions[name].startswith("${{ !cancelled() && "), name)
         results = self.results(tier=ci_scope.FULL_TIER)
         results["formatting"]["result"] = "failure"
         self.assertIn("formatting: expected success, received failure.", ci_scope.gate_failures(results))
@@ -297,6 +317,27 @@ class RequiredGateTests(unittest.TestCase):
         batch = root.joinpath("batch-ci.yml").read_text()
         self.assertIn("cron: '13,43 * * * *'", batch)
         self.assertIn("  cancel-in-progress: false", batch)
+
+    def test_batch_admits_arm_workflows_without_hiding_failed_evidence(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/batch-ci.yml").read_text()
+        dependencies = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    needs: (.*)$",
+                                       workflow, re.MULTILINE))
+        conditions = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    if: (.*)$",
+                                     workflow, re.MULTILINE))
+        # These are all reusable workflows with ARM jobs. Follow the dependency
+        # chain once to ensure none can queue behind an active ARM predecessor.
+        self.assertEqual(dependencies["native"], "snapshot")
+        for previous, current in (("native", "threading"), ("threading", "sdk"), ("sdk", "wiki")):
+            with self.subTest(workflow=current):
+                self.assertEqual(dependencies[current], f"[snapshot, {previous}]")
+                self.assertEqual(conditions[current],
+                                 "${{ !cancelled() && needs.snapshot.outputs.should_run == 'true' }}")
+        # Other platforms retain parallel qualification, and promotion still
+        # requires every result, including a failed earlier ARM workflow.
+        for name in ("browser", "windows", "recovery"):
+            self.assertEqual(dependencies[name], "snapshot")
+        self.assertEqual(dependencies["promote"],
+                         "[snapshot, native, sdk, wiki, browser, threading, windows, recovery]")
 
     def test_integration_prs_run_only_the_source_and_tooling_native_job(self):
         event = {"pull_request": {"base": {"ref": "develop"}, "labels": [{"name": "ci:full"}]}}
@@ -529,10 +570,28 @@ class CancelledRunTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         gate = workflow.split("\n  linux:\n", 1)[1]
         header = gate.split("\n    steps:", 1)[0]
-        self.assertIn("    if: always()\n", header)
+        self.assertIn("    if: always() && (github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true)\n", header)
         self.assertIn("    permissions:\n      contents: read\n      actions: read", header)
         self.assertIn("          GITHUB_TOKEN: ${{ github.token }}\n        run: python3 scripts/python/ci_scope.py gate",
                       gate)
+
+    def test_focused_vulkan_mode_is_manual_and_cannot_replace_pull_request_or_batch_checks(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        changes = workflow.split("\n  changes:\n", 1)[1].split("\n  mcmc-vulkan-parity:\n", 1)[0]
+        self.assertIn("if: github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true", changes)
+        focused = workflow.split("\n  mcmc-vulkan-parity:\n", 1)[1].split("\n  macos-compile:\n", 1)[0]
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true", focused)
+        self.assertIn("ref: ${{ inputs.batch_sha || github.sha }}", focused)
+        self.assertIn("Acquire::Retries=3", focused)
+        self.assertIn('timeout --signal=TERM --kill-after=30s 5m sudo apt-get "${apt_options[@]}" update -qq', focused)
+        self.assertIn('timeout --signal=TERM --kill-after=30s 10m sudo apt-get "${apt_options[@]}" install', focused)
+        self.assertIn("VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation", focused)
+        self.assertIn("set -euo pipefail", focused)
+        self.assertIn("--target ludus_metropolis_tests ludus_renderer_render_tests ludus_metropolis_graph_tests", focused)
+        self.assertIn("assert 'skipped' not in text.lower()", focused)
+        self.assertIn("'VUID-' not in text", focused)
+        gate = workflow.split("\n  linux:\n", 1)[1].split("\n    steps:", 1)[0]
+        self.assertIn("&& 'Focused Vulkan dispatch (not integration)' || 'Ubuntu Clang'", gate)
 
     def test_only_pushes_cancel_required_pull_request_workflows(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"

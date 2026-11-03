@@ -221,6 +221,19 @@ public:
     {
         return mIsInspectingRayPaths;
     }
+    /// Draw this viewport's built-in raster scene in shading even while UseProjectGraph delegates
+    /// frame production, for the graph viewport's debug views (albedo, normals, depth, wireframe and
+    /// the other material and lighting quantities). Repeated calls only change the shading. Until
+    /// HideBuiltInView, Navigation keeps saving the shading from before the first call, so a debug
+    /// view is not persisted. Without a project graph this preview always draws. GUI thread only.
+    void ShowBuiltInView(PreviewShading shading);
+    /// Return frame production to the project graph and restore the shading from before
+    /// ShowBuiltInView; nothing happens while no built-in view is shown. GUI thread only.
+    void HideBuiltInView();
+    [[nodiscard]] LUDUS_INLINE bool IsBuiltInViewShown() const noexcept
+    {
+        return mIsBuiltInViewShown;
+    }
     /// World-space lines composed into built-in frames while inspecting, depth-tested against
     /// that frame's scene depth unless overlay.IsXRay. The lines are projected with the current
     /// camera every time it changes; an empty overlay draws nothing. Native GPU preview only.
@@ -299,6 +312,10 @@ Q_SIGNALS:
     void DeviceStopping();
     void Stopped();
     void Failed(const QString& error);
+    /// The built-in view shown over a project graph (ShowBuiltInView or ray path inspection) cannot be
+    /// prepared. The device, the project graph and its last image stay alive; this preview draws nothing
+    /// until the view is hidden or another shading is chosen. Unlike Failed, World edits are unaffected.
+    void BuiltInViewFailed(const QString& error);
     /// Rate-limited notification that GetStatistics changed while the overlay is visible.
     void StatisticsChanged();
     void GpuProfileSubmission();
@@ -388,6 +405,14 @@ private:
     [[nodiscard]] bool prepare();
     void restartResources() noexcept;
     bool mIsInspectingRayPaths = false;
+    bool mIsBuiltInViewShown = false;
+    /// Shading restored by HideBuiltInView and saved by Navigation while a built-in view is shown.
+    PreviewShading mShadingBeforeBuiltInView = PreviewShading::Solid;
+    /// Whether the project graph, not this preview, produces the presented frames.
+    [[nodiscard]] LUDUS_INLINE bool isDelegatingToProjectGraph() const noexcept
+    {
+        return mIsProjectGraphEnabled == true && mIsInspectingRayPaths == false && mIsBuiltInViewShown == false;
+    }
     RayPathOverlay mRayPathOverlay;
     foundation::uint64 mRayPathOverlayRevision = 0;
     /// Overlay renderer, list and prepared versions on the owned device; null until first used.
@@ -409,6 +434,11 @@ private:
     QString CameraId_;
     void resetFrames() noexcept;
     void fail(const QString& message);
+    /// Generation-scoped failure: over a project graph only the built-in view stops (BuiltInViewFailed);
+    /// otherwise this is fail().
+    void failGeneration(const QString& message);
+    /// Forget a built-in view failure once frame production returns to the project graph.
+    void clearBuiltInViewFailure() noexcept;
 
     graphics::rhi::DeviceHandle Device_{};
     graphics::rhi::SurfaceHandle Surface_{};

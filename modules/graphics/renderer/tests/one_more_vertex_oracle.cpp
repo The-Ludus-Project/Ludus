@@ -116,10 +116,12 @@ uint32 FindTriangle(const internal::ReferenceSceneData& scene, const rhi::RayRes
 }
 } // namespace
 
-OneMoreVertexOracle::Point OneMoreVertexOracle::loadPoint(const internal::ReferenceSceneData& scene,
-                                                          uint32 triangle,
-                                                          float32 u,
-                                                          float32 v) const noexcept
+OneMoreVertexOracle::Point
+OneMoreVertexOracle::loadPoint(const internal::ReferenceSceneData& scene,
+                               // Triangle identity precedes its traced barycentric coordinates.
+                               uint32 triangle, // NOLINT(bugprone-easily-swappable-parameters)
+                               float32 u,
+                               float32 v) const noexcept
 {
     const internal::ReferenceTriangle& geometry = scene.Triangles[triangle];
     const internal::ReferenceSurfaceData& surface = *scene.Instances[geometry.Instance].Surface;
@@ -455,8 +457,9 @@ math::Vector3 OneMoreVertexOracle::evaluateConnection(const internal::ReferenceS
 math::Vector3 OneMoreVertexOracle::Evaluate(const internal::ReferenceSceneData& scene,
                                             const rhi::RayInput& cameraRay,
                                             math::RandomKey key,
-                                            uint32 pixel,
-                                            uint32 sample,
+                                            // Address dimensions and estimator order match the raw GPU parity fixture.
+                                            uint32 pixel,  // NOLINT(bugprone-easily-swappable-parameters)
+                                            uint32 sample, // NOLINT(bugprone-easily-swappable-parameters)
                                             uint32 estimator,
                                             math::Vector3& outEmission,
                                             math::Vector3& outDirect,

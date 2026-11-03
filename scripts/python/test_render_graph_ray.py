@@ -89,6 +89,44 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
 
 
 class RayHelperStagingTests(unittest.TestCase):
+    def test_helper_admission_never_overfills_or_mutates_a_full_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            helper = root / 'helper'
+            helper.mkdir()
+            (helper / 'root.slang').write_text('// engine helper\n')
+            snapshot = build.Snapshot(root)
+            for index in range(build.MAX_FILES):
+                snapshot.capture(f'authored{index}.slang', b'// authored\n')
+            before = dict(snapshot.files), dict(snapshot.external), snapshot.total
+            with self.assertRaisesRegex(ToolingError, f'already reads {build.MAX_FILES} manifest and shader files') as caught:
+                ray.stage_helpers(snapshot, helper, ('root.slang',), build)
+            self.assertIn('Remove Unused Shaders', str(caught.exception))
+            self.assertEqual(before, (snapshot.files, snapshot.external, snapshot.total))
+
+    def test_helper_bytes_share_the_authored_source_budget(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'root.slang').write_text('// engine helper\n')
+            snapshot = build.Snapshot(root)
+            for index in range(build.MAX_BYTES // build.MAX_FILE):
+                snapshot.capture(f'authored{index}.slang', b'x' * build.MAX_FILE)
+            with self.assertRaisesRegex(ToolingError, 'source byte limit exceeded'):
+                ray.stage_helpers(snapshot, root, ('root.slang',), build)
+            self.assertEqual(build.MAX_BYTES, snapshot.total)
+            self.assertNotIn('_ludus_ray/root.slang', snapshot.files)
+            self.assertFalse(snapshot.external)
+
+    def test_forward_recipe_bytes_are_included_in_the_snapshot_total(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = graph.new_workspace(root / 'sources', output='offscreen', profiles=('metal',),
+                                         renderer_static=True, template='forward-lit')
+            helper = stage_helper(root / 'helpers')
+            snapshot, *_ = build.prepare_sources(source.with_suffix('').with_suffix('.lushader.json'), helper)
+            self.assertIn('_ludus_forward/recipes.json', snapshot.files)
+            self.assertEqual(sum(map(len, snapshot.files.values())), snapshot.total)
+
     def test_staged_helpers_carry_every_helper_file_they_include(self):
         with tempfile.TemporaryDirectory() as temporary:
             helper = Path(temporary) / 'helper'

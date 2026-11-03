@@ -16,9 +16,9 @@ const QString TRANSFER_KIND = QStringLiteral("ludus.render-graph.nodes");
 
 bool IsIdentifier(const QString& value)
 {
-    static const QRegularExpression expression(
+    static const QRegularExpression EXPRESSION(
         QStringLiteral("\\A[A-Za-z][A-Za-z0-9_-]{0,%1}\\z").arg(RenderGraphDocument::MAX_IDENTIFIER_LENGTH - 1));
-    return expression.match(value).hasMatch();
+    return EXPRESSION.match(value).hasMatch();
 }
 
 qsizetype FindConfiguration(const QJsonArray& configurations, const QString& identity)

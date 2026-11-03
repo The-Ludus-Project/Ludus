@@ -224,6 +224,9 @@ enum class MaterialDebugView : ludus::foundation::uint8
     /// Direct lights with a nonzero shadowed contribution at the pixel, as a viridis
     /// ramp saturating at MATERIAL_DEBUG_LIGHT_COUNT_SATURATION; dark purple means no direct light.
     LightCount = MATERIAL_DEBUG_VIEW_LIGHT_COUNT,
+    /// Light grey brightening as the surface faces the camera. Draws triangle edges only when the material's
+    /// program was prewarmed with rhi::RasterFillMode::Lines; a solid program fills triangles in that colour.
+    Wireframe = MATERIAL_DEBUG_VIEW_WIREFRAME,
 };
 /// Immutable unlit base schema plus the L4 metallic/roughness lighting terms.
 struct LitMaterialDescription final

@@ -1,0 +1,4 @@
+numpy==2.5.4
+OpenEXR==3.5.3
+pillow==13.0.0
+wgpu==0.32.0

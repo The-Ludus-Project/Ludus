@@ -215,7 +215,7 @@ bool LoadWorldDemoScene(const WorldDocument& document, RenderScene& outScene, QS
                                 registry.GetCreationSequence(world.FindAuthored(level.Entities[second].Id.View()));
                      });
     QString settingsKey;
-    for (const QJsonValue& value : document.Draft().value(QStringLiteral("entities")).toArray())
+    for (const QJsonValue value : document.Draft().value(QStringLiteral("entities")).toArray())
     {
         const QJsonObject entity = value.toObject();
         if (entity.value(QStringLiteral("components")).toObject().contains(QStringLiteral("settings")) == true)

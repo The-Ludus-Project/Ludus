@@ -18,6 +18,7 @@ from . import render_graph_ray as ray
 from . import render_graph_forward as forward
 from . import render_graph_buffers as buffers
 from . import render_graph_quality as quality
+from . import render_graph_settings as settings
 
 MAX_PASSES = 16
 MAX_RESOURCES = 32
@@ -326,16 +327,20 @@ PACKAGE_MAGIC = 0x4752554C
 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554C
 # Frame capture profile generation ("LURC"); same layout, admitted only by RenderGraphPackage::DecodeCaptureProfile.
 CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
+# Version 32 admits the Light Transformer scene resource and preserves the version 31 opaque G-buffer stage.
+# Version 31: clustered deferred packages add DeferredOpaqueGBufferFragment, the G-buffer without its coverage discard.
 # Version 30: the clustered deferred resolve reads a bounding-sphere header word in each mesh-light record.
 # Version 29 appends each pass's ToneMappingCurve and admits ToneMap on clustered deferred raster output.
 # Version 28: ray kernels dispatch the ray uniform's tile region (a 240-byte uniform), so captures may tile.
-PACKAGE_VERSION = 30
+# Version 33: per-callback capture warm-up counts follow the scene resource word.
+PACKAGE_VERSION = 33
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
 SCENE_RESOURCE_LTC_TABLE = 1
 # Scene resource bit: the linked ray kernels count latched pixels by failure reason (LUDUS_GRAPH_FAILURE_BINDING).
 SCENE_RESOURCE_FAILURE_SUMMARY = 2
+SCENE_RESOURCE_LIGHT_TRANSFORMER = 4
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -555,6 +560,15 @@ def _runtime_contents(path, configuration):
                  **_cpu_vertex_interface(vertex_schemas[0], stages), 'uniform_schemas': uniform_interface}
     scene_versions = {r.get('scene_interface_version', 0) for r in ray_recipes}
     build.require(all(type(version) is int for version in scene_versions) and scene_versions <= {0, 1} and len(scene_versions) <= 1, 'Package', 'ray interface', 'inconsistent scene callback profile')
+    warmup_profiles = [recipe.get('capture_warmup_samples', [0] * len(recipe.get('ray_programs', [None])))
+                       for recipe in ray_recipes]
+    build.require(all(type(counts) is list and len(counts) == len(recipe.get('ray_programs', [None])) and
+                      len(counts) <= ray.MAX_RAY_PROGRAMS and
+                      all(type(count) is int and 0 <= count <= settings.MAX_NUMERIC_VALUE for count in counts)
+                      for recipe, counts in zip(ray_recipes, warmup_profiles)) and
+                  all(counts == warmup_profiles[0] for counts in warmup_profiles),
+                  'Package', 'capture warm-up', 'linked ray recipes must agree on bounded per-program warm-up counts')
+    capture_warmup_samples = ((warmup_profiles[0] if warmup_profiles else []) + [0] * ray.MAX_RAY_PROGRAMS)[:ray.MAX_RAY_PROGRAMS]
     visibility_profiles = {r.get('visibility_buffer', False) for r in ray_recipes}
     ray_passes = [p for p in passes if p['Program'] == 'RayTracing']
     ray_pass_count = len(ray_passes)
@@ -575,7 +589,12 @@ def _runtime_contents(path, configuration):
                         for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
     build.require(len(failure_profiles) <= 1, 'ShaderInterface', 'failure_summary',
                   'targets of the linked ray kernel disagree whether they count failure reasons')
-    return {'ltc_table': ltc_profiles == {True}, 'failure_summary': failure_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    has_light_transformer = any(operation['RayProgram'] in recipe.get('light_transformer_programs', [])
+                                for operation in ray_passes for recipe in ray_recipes)
+    build.require(not has_light_transformer or (persistent and ray_pass_count == 1 and
+                  ray_passes[0]['Traversal'] == 'ComputeBvh' and ray_passes[0]['Buffer0'] != ABSENT),
+                  'Capability', 'light_transformer', 'use one ComputeBvh scene compute pass wired to an embedding Buffer')
+    return {'capture_warmup_samples': capture_warmup_samples, 'light_transformer': has_light_transformer, 'ltc_table': ltc_profiles == {True}, 'failure_summary': failure_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
@@ -708,10 +727,15 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
               '[[nodiscard]] LUDUS_INLINE renderer::RenderGraphPrograms MakePrograms(',
               '    const rhi::RasterShaderDescription& compositeVertex,',
               '    const rhi::RasterShaderDescription& compositeFragment) noexcept', '{', '    renderer::RenderGraphPrograms result;']
+    for index, count in enumerate(contents.get('capture_warmup_samples', [])):
+        if count:
+            lines.append(f'    result.CaptureWarmupSamples[{index}] = {count};')
     if contents.get('clustered_deferred', False):
         lines.append('    result.HasClusteredDeferred = true;')
     if contents.get('clustered_forward', False):
         lines.append('    result.HasClusteredForward = true;')
+    if contents.get('light_transformer', False):
+        lines.append('    result.HasLightTransformer = true;')
     if contents.get('persistent_buffers', False):
         lines.append('    result.HasPersistentRayBuffers = true;')
     if contents.get('scene_interface', False):
@@ -861,7 +885,9 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
     for buffer in storage:
         data += u32(buffer['Slot'], buffer['Stride'], buffer['Count'], buffer['IsReadOnly'])
     data += u32((SCENE_RESOURCE_LTC_TABLE if contents.get('ltc_table', False) else 0) |
-                (SCENE_RESOURCE_FAILURE_SUMMARY if contents.get('failure_summary', False) else 0))
+                (SCENE_RESOURCE_FAILURE_SUMMARY if contents.get('failure_summary', False) else 0) |
+                (SCENE_RESOURCE_LIGHT_TRANSFORMER if contents.get('light_transformer', False) else 0))
+    data += u32(*contents.get('capture_warmup_samples', [0] * ray.MAX_RAY_PROGRAMS))
     for operation in contents['plan']['passes']:
         if operation['kind'] not in ('Raster', 'RayTracing', 'Upscale'):
             continue

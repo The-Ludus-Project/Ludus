@@ -1,4 +1,12 @@
 {
+  "renderer_light_transformer_encoded_queries": {
+    "source": "renderer_light_transformer_encoded_queries.slang",
+    "compute": "ComputeMain"
+  },
+  "renderer_light_transformer_encoder": {
+    "source": "renderer_light_transformer_encoder.slang",
+    "compute": "ComputeMain"
+  },
   "renderer_light_transformer_decoder": {
     "source": "renderer_light_transformer_decoder.slang",
     "compute": "ComputeMain"
@@ -92,6 +100,11 @@
     "source": "renderer_gpu_preview.slang",
     "compute": "ComputeMain",
     "native_ray_queries": true
+  },
+  "renderer_gpu_preview_software": {
+    "source": "renderer_gpu_preview_software.slang",
+    "compute": "ComputeMain",
+    "software_ray_queries": true
   },
   "renderer_reference": {
     "source": "renderer_reference.slang",

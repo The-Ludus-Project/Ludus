@@ -15,6 +15,7 @@
 #include "internal/state_view.h"
 #include "internal/world_demo_adapter.h"
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -101,9 +102,18 @@ QString Display(const QJsonValue& value)
     return value.toString();
 }
 /// Editor preference holding the Play mode; project data never records it.
-const QString PLAY_MODE_KEY = QStringLiteral("play/mode");
-const QString PLAY_MODE_IN_VIEWPORT = QStringLiteral("viewport");
-const QString PLAY_MODE_SEPARATE_WINDOW = QStringLiteral("window");
+[[nodiscard]] LUDUS_INLINE QString GetPlayModeKey()
+{
+    return QStringLiteral("play/mode");
+}
+[[nodiscard]] LUDUS_INLINE QString GetViewportPlayModeValue()
+{
+    return QStringLiteral("viewport");
+}
+[[nodiscard]] LUDUS_INLINE QString GetSeparateWindowPlayModeValue()
+{
+    return QStringLiteral("window");
+}
 /// What the World document is for; the path label's tooltip, below the full path.
 QString GetWorldIntroduction()
 {
@@ -213,7 +223,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                             "preference and applies to the next Play."));
     mPlayModeBox->addItem(QStringLiteral("In viewport"), static_cast<int>(PlayMode::InViewport));
     mPlayModeBox->addItem(QStringLiteral("In separate window"), static_cast<int>(PlayMode::SeparateWindow));
-    const bool isSeparateWindowSaved = QSettings().value(PLAY_MODE_KEY).toString() == PLAY_MODE_SEPARATE_WINDOW;
+    const bool isSeparateWindowSaved =
+        QSettings().value(GetPlayModeKey()).toString() == GetSeparateWindowPlayModeValue();
     mPlayModeBox->setCurrentIndex(mPlayModeBox->findData(
         static_cast<int>(isSeparateWindowSaved == true ? PlayMode::SeparateWindow : PlayMode::InViewport)));
     files->addWidget(mPlayModeBox);
@@ -980,6 +991,8 @@ bool WorldWorkspace::StartSceneImport(const QString& source, bool isPreviewed)
     Changed(QStringLiteral("Importing scene assets into World…"));
     return true;
 }
+// Ordered scene and optional environment paths match the import request.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 bool WorldWorkspace::PreviewImportScene(const QString& source, const QString& environmentFile)
 {
     if (Document_.Loaded() == false)
@@ -2202,8 +2215,9 @@ PlayMode WorldWorkspace::GetPlayMode() const noexcept
 void WorldWorkspace::SetPlayMode(PlayMode mode)
 {
     mPlayModeBox->setCurrentIndex(mPlayModeBox->findData(static_cast<int>(mode)));
-    QSettings().setValue(PLAY_MODE_KEY,
-                         mode == PlayMode::SeparateWindow ? PLAY_MODE_SEPARATE_WINDOW : PLAY_MODE_IN_VIEWPORT);
+    QSettings().setValue(GetPlayModeKey(),
+                         mode == PlayMode::SeparateWindow ? GetSeparateWindowPlayModeValue()
+                                                          : GetViewportPlayModeValue());
     hidePlayUnavailable();
 }
 PlayWindow WorldWorkspace::PreparePlay(PlayMode mode, QString& outAddress)
@@ -2220,7 +2234,7 @@ PlayWindow WorldWorkspace::PreparePlay(PlayMode mode, QString& outAddress)
         showPlayUnavailable(reason);
         return PlayWindow::Unavailable;
     }
-    outAddress = address;
+    outAddress = foundation::Move(address);
     return PlayWindow::InViewport;
 }
 QString WorldWorkspace::GetPlayUnavailableText() const

@@ -798,6 +798,15 @@ TEST_CASE("Project Explorer opens documents and Error List navigates to graph no
     warnings->click();
     CHECK(errors->GetVisibleCount() == 2);
 
+    // The viewport's build-failure chip opens the list at the error without navigating away.
+    Dock(window, QStringLiteral("errorListDock"))->hide();
+    renderer->RequestErrorList();
+    CHECK(Dock(window, QStringLiteral("errorListDock"))->isVisible() == true);
+    const QTableWidget* table = errors->findChild<QTableWidget*>();
+    REQUIRE(table != nullptr);
+    REQUIRE(table->selectionModel()->selectedRows().size() == 1);
+    CHECK(table->selectionModel()->selectedRows().first().row() == 0);
+
     // Build diagnostics select their Output line; render-graph rows are kept.
     const QString output = QStringLiteral("[1/2] Building CXX object game.o\n"
                                           "src/game.cpp:12:5: error: use of undeclared identifier 'x'\n"

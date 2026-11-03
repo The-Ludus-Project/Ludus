@@ -25,6 +25,8 @@ public:
     [[nodiscard]] bool Load() noexcept;
     [[nodiscard]] bool Remember(RecentProject project) noexcept;
     [[nodiscard]] bool Clear() noexcept;
+    /// Forget one project's entry, leaving the project itself on disk. Removing an absent path succeeds.
+    [[nodiscard]] bool Remove(const QString& descriptorPath) noexcept;
     [[nodiscard]] const QList<RecentProject>& Entries() const noexcept
     {
         return Entries_;

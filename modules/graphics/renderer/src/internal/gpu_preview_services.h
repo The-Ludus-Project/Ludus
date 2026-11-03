@@ -1964,7 +1964,8 @@ Status Renderer::prepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
                                                 BorrowedView<const rhi::TextureHandle> targets,
                                                 uint32 tile,
                                                 rhi::OrderedGraph& outGraph,
-                                                const VisibilityRasterPass* visibilityOrNull) noexcept
+                                                const VisibilityRasterPass* visibilityOrNull,
+                                                const rhi::ComputeWorkload* prefixOrNull) noexcept
 {
     if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
@@ -2035,7 +2036,8 @@ Status Renderer::prepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
                                            {records.GetData(), jobs.GetSize()},
                                            targets,
                                            outGraph,
-                                           visibilityOrNull);
+                                           visibilityOrNull,
+                                           prefixOrNull);
 }
 Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
                                    rhi::SurfaceHandle surface,

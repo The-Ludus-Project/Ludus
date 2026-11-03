@@ -259,7 +259,7 @@ foundation::BorrowedView<const KeyType> CopyKeys(foundation::BorrowedView<const 
 
 math::Quaternion NormalizeRotation(math::Quaternion rotation) noexcept
 {
-    const math::MathStatus status = math::TryNormalize(rotation, rotation);
+    [[maybe_unused]] const math::MathStatus status = math::TryNormalize(rotation, rotation);
     LUDUS_ASSERT(status == math::MathStatus::Success);
     return rotation;
 }

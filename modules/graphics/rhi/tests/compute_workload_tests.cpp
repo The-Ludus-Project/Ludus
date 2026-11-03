@@ -50,7 +50,7 @@ struct Fixture final
 {
     StaticArray<uint8, BUFFER_BYTES> Weights{};
     StaticArray<ComputeWorkloadBuffer, BUFFER_COUNT> Buffers{};
-    StaticArray<RasterBinding, BINDING_COUNT> Reflection{};
+    StaticArray<RasterBinding, BINDING_COUNT> Reflection;
     StaticArray<ComputeWorkloadBinding, BINDING_COUNT> Bindings{};
     StaticArray<ComputeWorkloadKernel, KERNEL_COUNT> Kernels{};
     Fixture()
@@ -72,7 +72,7 @@ struct Fixture final
             kernel.Bindings = {Bindings.GetData(), Bindings.GetSize()};
         }
     }
-    ComputeWorkloadDescription Describe() const noexcept
+    [[nodiscard]] ComputeWorkloadDescription Describe() const noexcept
     {
         return {{Buffers.GetData(), Buffers.GetSize()},
                 {Kernels.GetData(), Kernels.GetSize()},
@@ -327,4 +327,48 @@ TEST_CASE("Compute cache rejects external candidate writes while permitting shar
     cache.CancelCandidate();
     CHECK(GetStatus(session.Device, external) == Status::Ready);
     REQUIRE(Destroy(session.Device, external) == Status::Ready);
+}
+
+TEST_CASE("Prepared compute shares one program while retaining separate dispatch ownership", "[rhi][compute-workload]")
+{
+    Session session;
+    Fixture fixture;
+    for (usize i = 1; i < KERNEL_COUNT; ++i)
+    {
+        fixture.Kernels[i].UseProgramFrom = 0;
+        fixture.Kernels[i].Shader = {};
+    }
+    ComputeWorkload workload;
+    REQUIRE(workload.Initialize(session.Device, fixture.Describe()) == Status::Ready);
+    CHECK(workload.GetBufferCount() == BUFFER_COUNT);
+    OrderedGraph graph;
+    REQUIRE(workload.BuildGraph(graph) == Status::Ready);
+    GraphReport report;
+    REQUIRE(CompileOrderedGraph(session.Device, graph, report) == Status::Ready);
+    CHECK(report.ComputePasses == KERNEL_COUNT);
+    workload.Reset();
+    REQUIRE(DiscardOrderedGraph(session.Device, graph) == Status::Ready);
+}
+
+TEST_CASE("Prepared compute rejects forward program references and reference chains", "[rhi][compute-workload]")
+{
+    Session session;
+    Fixture fixture;
+    SECTION("self reference")
+    {
+        fixture.Kernels[0].UseProgramFrom = 0;
+    }
+    SECTION("forward reference")
+    {
+        fixture.Kernels[0].UseProgramFrom = 1;
+    }
+    SECTION("chain")
+    {
+        fixture.Kernels[1].UseProgramFrom = 0;
+        fixture.Kernels[2].UseProgramFrom = 1;
+    }
+    ComputeWorkload workload;
+    CHECK(workload.Initialize(session.Device, fixture.Describe()) == Status::InvalidDescription);
+    CHECK(workload.GetBufferCount() == 0);
+    CHECK(workload.Poll() == Status::NotReady);
 }

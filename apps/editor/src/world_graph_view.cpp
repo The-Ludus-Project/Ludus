@@ -11,6 +11,7 @@
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
@@ -22,6 +23,8 @@ namespace
 constexpr foundation::int32 MINIMUM_TARGET_TEXT_CHARACTERS = 4;
 constexpr foundation::int32 STATISTICS_REFRESH_MILLISECONDS = 250;
 constexpr foundation::int32 STATISTICS_MARGIN_PIXEL = 8;
+/// Output-menu item role holding a built-in debug view's PreviewShading; graph targets leave it empty.
+constexpr foundation::int32 DEBUG_VIEW_ROLE = Qt::UserRole + 1;
 } // namespace
 WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* parent)
     : QWidget(parent), mWorkspace(inoutWorkspace), mPreview(*inoutWorkspace.GetPreviewOrNull()),
@@ -36,8 +39,12 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     mTargets->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     mTargets->setObjectName(QStringLiteral("worldGraphTargets"));
     mTargets->setAccessibleName(QStringLiteral("Render graph output"));
-    mTargets->setToolTip(QStringLiteral("Final output and every render-graph attachment. Special debug views use "
-                                        "configurations authored in the project's graph."));
+    mTargets->setToolTip(
+        QStringLiteral("Final output and every render-graph attachment, then built-in debug views. A debug view "
+                       "draws the World with the editor's raster renderer, regardless of what the project's graph "
+                       "draws, showing one material, geometry or lighting quantity per pixel (albedo, normals, "
+                       "depth, wireframe…). Other special views use configurations authored in the project's "
+                       "graph."));
     mStatistics->setObjectName(QStringLiteral("worldGraphStatisticsOverlay"));
     mStatistics->setTextFormat(Qt::PlainText);
     mStatistics->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -63,8 +70,10 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     connect(&mWorkspace, &RendererWorkspace::RenderProblemChanged, this, [this]() { refreshStatus(); });
     connect(&mWorkspace, &RendererWorkspace::CommandsChanged, this, [this]() { refreshStatus(); });
     connect(mTargets, &QComboBox::currentIndexChanged, this, [this]() {
+        mDebugViewProblem.clear();
         mPreview.SetOutputTarget(mTargets->currentData().toString());
         refreshFrame();
+        Q_EMIT DebugViewChanged();
     });
     refreshTargets();
     refreshFrame();
@@ -151,9 +160,34 @@ foundation::uint64 WorldGraphView::GetPresentedFrames() const noexcept
 {
     return mPresentedFrames;
 }
+bool WorldGraphView::TryGetDebugView(PreviewShading& outShading) const
+{
+    const QVariant shading = mTargets->currentData(DEBUG_VIEW_ROLE);
+    if (shading.isValid() == false)
+    {
+        return false;
+    }
+    outShading = static_cast<PreviewShading>(shading.toInt());
+    return true;
+}
+void WorldGraphView::RejectDebugView(const QString& reason)
+{
+    PreviewShading shading = PreviewShading::Lit;
+    if (TryGetDebugView(shading) == false)
+    {
+        return;
+    }
+    const QString problem = QStringLiteral("%1 view is unavailable for this World, so the final output is shown. %2")
+                                .arg(GetPreviewShadingName(shading), reason);
+    mTargets->setCurrentIndex(0);
+    // Selecting the final output clears the previous problem; this one explains that selection.
+    mDebugViewProblem = problem;
+    refreshStatus();
+}
 void WorldGraphView::refreshTargets()
 {
     const QString selected = mTargets->currentData().toString();
+    const QVariant selectedDebugView = mTargets->currentData(DEBUG_VIEW_ROLE);
     const QSignalBlocker blocker(mTargets);
     mTargets->clear();
     mTargets->addItem(QStringLiteral("Final output"), QString());
@@ -164,7 +198,22 @@ void WorldGraphView::refreshTargets()
             mTargets->addItem(target.Name, target.Name);
         }
     }
-    const foundation::int32 index = mTargets->findData(selected);
+    mTargets->insertSeparator(mTargets->count());
+    for (foundation::usize i = 0; i < PREVIEW_SHADING_COUNT; ++i)
+    {
+        const PreviewShading shading = static_cast<PreviewShading>(i);
+        if (IsPreviewGraphDebugView(shading) == false)
+        {
+            continue;
+        }
+        const foundation::int32 item = mTargets->count();
+        mTargets->addItem(QStringLiteral("Debug: %1").arg(GetPreviewShadingName(shading)));
+        mTargets->setItemData(item, static_cast<foundation::int32>(shading), DEBUG_VIEW_ROLE);
+        mTargets->setItemData(item, GetPreviewShadingLabel(shading), Qt::ToolTipRole);
+    }
+    const foundation::int32 index = selectedDebugView.isValid() == true
+                                        ? mTargets->findData(selectedDebugView, DEBUG_VIEW_ROLE)
+                                        : mTargets->findData(selected);
     mTargets->setCurrentIndex(index >= 0 ? index : 0);
     mPreview.SetOutputTarget(mTargets->currentData().toString());
 }
@@ -190,7 +239,23 @@ void WorldGraphView::refreshFrame()
 void WorldGraphView::refreshStatus()
 {
     QString text;
-    if (mWorkspace.GetRenderProblem().isEmpty() == false)
+    QString fullText;
+    mHasProblemChip = false;
+    const bool isBuildFailure = mWorkspace.GetLastResult().Request.Request != 0 &&
+                                mWorkspace.GetLastResult().IsSuccessful == false &&
+                                mWorkspace.GetLastResult().Request.Action == QStringLiteral("build");
+    if (mWorkspace.GetRenderProblem().isEmpty() == false && isBuildFailure == true && mWorkspace.IsJobActive() == false)
+    {
+        // The compiler's words are in the Error List and the tooltip; the picture only says what happened.
+        mHasProblemChip = true;
+        fullText = mWorkspace.GetRenderProblem();
+        text =
+            QStringLiteral("%1. %2").arg(mWorkspace.IsUsingDefaultRenderer() == true && mWorkspace.IsBuiltIn() == false
+                                             ? QStringLiteral("Shader build failed, using default renderer")
+                                             : QStringLiteral("Shader build failed, preview unchanged"),
+                                         GetProblemChipLink());
+    }
+    else if (mWorkspace.GetRenderProblem().isEmpty() == false)
     {
         text = mWorkspace.GetRenderProblem();
     }
@@ -210,6 +275,14 @@ void WorldGraphView::refreshStatus()
     {
         text = mPreview.GetDisplayStatus();
     }
+    if (mDebugViewProblem.isEmpty() == false)
+    {
+        if (text.isEmpty() == false)
+        {
+            text += QLatin1Char('\n');
+        }
+        text += mDebugViewProblem;
+    }
     if (mWorkspace.GetRenderProblem().isEmpty() == true && mWorkspace.GetRenderWarning().isEmpty() == false)
     {
         if (text.isEmpty() == false)
@@ -218,7 +291,7 @@ void WorldGraphView::refreshStatus()
         }
         text += mWorkspace.GetRenderWarning();
     }
-    if (mWorkspace.IsUsingDefaultRenderer() == true && mWorkspace.IsBuiltIn() == false)
+    if (mHasProblemChip == false && mWorkspace.IsUsingDefaultRenderer() == true && mWorkspace.IsBuiltIn() == false)
     {
         if (text.isEmpty() == false)
         {
@@ -226,9 +299,28 @@ void WorldGraphView::refreshStatus()
         }
         text += QStringLiteral("Engine default renderer fallback.");
     }
+    // The view lets pointer input through to the viewport that navigates; only while the chip is shown does it take
+    // presses, and a press outside the chip is ignored so it still reaches the viewport.
+    setAttribute(Qt::WA_TransparentForMouseEvents, mHasProblemChip == false);
     mStatus->setText(text);
+    mStatus->setToolTip(fullText);
     mStatus->setVisible(text.isEmpty() == false);
     Q_EMIT StatusChanged(text);
+}
+QString WorldGraphView::GetProblemChipLink()
+{
+    return QStringLiteral("Show in Error List");
+}
+void WorldGraphView::mousePressEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton && mHasProblemChip == true && mStatus->isVisible() == true &&
+        mStatus->geometry().contains(event->position().toPoint()) == true)
+    {
+        mWorkspace.RequestErrorList();
+        event->accept();
+        return;
+    }
+    event->ignore();
 }
 void WorldGraphView::SetObjectInteraction(ViewportObjectInteraction& inoutInteraction)
 {

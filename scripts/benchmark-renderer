@@ -4,6 +4,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -12,7 +13,7 @@ import subprocess
 
 def percentile(values, fraction):
     ordered = sorted(values)
-    return ordered[min(len(ordered)-1, int((len(ordered)-1)*fraction))]
+    return ordered[min(len(ordered)-1, max(0, math.ceil(len(ordered)*fraction)-1))]
 
 
 def main():

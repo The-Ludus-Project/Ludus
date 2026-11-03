@@ -18,6 +18,7 @@
 #include <ludus/graphics/rhi/raster.h>
 
 #include <ludus/graphics/renderer/environment.hpp>
+#include <ludus/graphics/renderer/light_selection.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/materials.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
@@ -147,6 +148,16 @@ PreviewPreparationStatus PreviewGpuGeneration::Prepare(rhi::SurfaceHandle surfac
     if (prepareResources(surface, outError) == false)
     {
         mHasFailed = true;
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+        rhi::RasterCapabilities capabilities;
+        if (outError.isEmpty() == true && IsPreviewLineShading(Shading) == true &&
+            rhi::GetRasterCapabilities(Device, capabilities) == rhi::RasterStatus::Ready &&
+            capabilities.HasLineFill == false)
+        {
+            outError = QStringLiteral("Wireframe needs line rasterization, which this GPU backend does not provide. "
+                                      "Choose another view.");
+        }
+#endif
         if (outError.isEmpty() == true)
         {
             switch (mStage)
@@ -284,7 +295,9 @@ bool PreviewGpuGeneration::prepareMaterials() noexcept
                     Shaders.Get(PreviewShaderProgram::ClusteredAuthoredDebug, PreviewShaderStage::Vertex),
                     Shaders.Get(PreviewShaderProgram::ClusteredAuthoredDebug, PreviewShaderStage::Fragment),
                     Shaders.Get(PreviewShaderProgram::ClusteredAuthoredDebugShadow, PreviewShaderStage::Fragment),
-                    mProgram),
+                    mProgram,
+                    nullptr,
+                    getDebugFillMode()),
                 PreparationStage::Assets);
         }
         if (shouldUseAuthoredLighting() == true)
@@ -303,7 +316,9 @@ bool PreviewGpuGeneration::prepareMaterials() noexcept
                                    Shaders.Get(PreviewShaderProgram::LitDebug, PreviewShaderStage::Vertex),
                                    Shaders.Get(PreviewShaderProgram::LitDebug, PreviewShaderStage::Fragment),
                                    Shaders.Get(PreviewShaderProgram::LitDebugShadow, PreviewShaderStage::Fragment),
-                                   mProgram),
+                                   mProgram,
+                                   nullptr,
+                                   getDebugFillMode()),
                                PreparationStage::Assets);
         }
         return acceptStage(
@@ -707,11 +722,42 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
     const usize count = resources.Source.Definition->Objects.GetSize();
     if (resources.LightingStage == PreviewLightingStage::Inputs)
     {
-        const rhi::RasterStatus status = preview_lighting::BuildInputs(
-            resources.Source,
-            resources.LightingKey,
-            resources.Lighting,
-            IsReference == true ? preview_lighting::InputsTarget::Reference : preview_lighting::InputsTarget::Raster);
+        // Only Lit and Light count, which counts shadowed contributions, read lights. The other debug views need
+        // no lighting budget, and neither they nor a reference prepare casters or a shadow atlas.
+        preview_lighting::InputsTarget target = preview_lighting::InputsTarget::Raster;
+        if (IsReference == true)
+        {
+            target = preview_lighting::InputsTarget::Reference;
+        }
+        else if (IsPreviewDebugShading(Shading) == true && Shading != PreviewShading::LightCount)
+        {
+            target = preview_lighting::InputsTarget::Surfaces;
+        }
+        preview_lighting::InputsLimit limit = preview_lighting::InputsLimit::Emitter;
+        const rhi::RasterStatus status =
+            preview_lighting::BuildInputs(resources.Source, resources.LightingKey, resources.Lighting, target, &limit);
+        if (status == rhi::RasterStatus::CapacityExceeded)
+        {
+            // Name the budget, so the reader knows what to reduce.
+            switch (limit)
+            {
+                case preview_lighting::InputsLimit::Lights:
+                    outError = QStringLiteral("The World's lights, counting one per planar emissive patch, exceed "
+                                              "the built-in raster preview's %1 lights; no lights were dropped.")
+                                   .arg(renderer::MAX_DIRECT_LIGHTS);
+                    break;
+                case preview_lighting::InputsLimit::ShadowFaces:
+                    outError = QStringLiteral("The World's lights need more than the built-in raster preview's %1 "
+                                              "shadow faces (six per point or area light); no lights were dropped.")
+                                   .arg(renderer::SHADOW_REGION_CAPACITY);
+                    break;
+                case preview_lighting::InputsLimit::Emitter:
+                    outError = QStringLiteral("An emissive surface has more triangles or more emitted power than the "
+                                              "built-in raster preview represents; no lights were dropped.");
+                    break;
+            }
+            return false;
+        }
         if (status != rhi::RasterStatus::Ready)
         {
             outError = QStringLiteral("Authored lighting admission failed (%1); no lights were dropped.")
@@ -746,8 +792,9 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
             }
             resources.HasEnvironment = true;
         }
-        // Reference transport traces its own visibility, so it needs no casters or shadow atlas.
-        resources.LightingStage = IsReference == true ? PreviewLightingStage::Materials : PreviewLightingStage::Casters;
+        // Reference transport traces its own visibility, and surface-only debug views show no lighting.
+        resources.LightingStage = target != preview_lighting::InputsTarget::Raster ? PreviewLightingStage::Materials
+                                                                                   : PreviewLightingStage::Casters;
     }
     if (resources.HasEnvironment == true)
     {

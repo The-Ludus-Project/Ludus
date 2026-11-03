@@ -41,6 +41,15 @@ constexpr int COMPACT_BUTTON_PADDING_VERTICAL = 2;
 constexpr int COMPACT_BUTTON_PADDING_HORIZONTAL = 8;
 constexpr int INPUT_PADDING = 4;
 constexpr int COMBO_ARROW_PADDING = 20;
+/// Drop-down and branch chevron: the width of its two strokes and the pen weight, in logical pixels. The platform
+/// style would size its own arrow, which comes out oversized on macOS, so every arrow is drawn from these.
+constexpr qreal CHEVRON_SPAN = 8.0;
+constexpr qreal CHEVRON_STROKE = 1.5;
+constexpr int CHEVRON_POINT_COUNT = 3;
+/// Quarter turns that rotate a downward chevron to each direction, in degrees.
+constexpr qreal CHEVRON_UP_DEGREES = 180.0;
+constexpr qreal CHEVRON_LEFT_DEGREES = 90.0;
+constexpr qreal CHEVRON_RIGHT_DEGREES = -90.0;
 constexpr int TAB_PADDING_VERTICAL = 7;
 constexpr int TAB_PADDING_HORIZONTAL = 12;
 constexpr int TAB_UNDERLINE_WIDTH = 2;
@@ -87,6 +96,36 @@ void DrawControlBody(QPainter* painter, const QRect& rect, const QColor& fill, c
     painter->drawRoundedRect(QRectF(rect).adjusted(inset, inset, -inset, -inset),
                              design::RADIUS_CONTROL,
                              design::RADIUS_CONTROL);
+    painter->restore();
+}
+
+/// A thin chevron pointing the given way, centred in rect and never larger than it.
+void DrawChevron(QPainter* painter, const QRect& rect, QStyle::PrimitiveElement element, const QColor& colour)
+{
+    const qreal span = std::min(CHEVRON_SPAN, static_cast<qreal>(std::min(rect.width(), rect.height())));
+    const qreal half = span * HALF;
+    const qreal quarter = half * HALF;
+    qreal degrees = 0.0;
+    if (element == QStyle::PE_IndicatorArrowUp)
+    {
+        degrees = CHEVRON_UP_DEGREES;
+    }
+    else if (element == QStyle::PE_IndicatorArrowLeft)
+    {
+        degrees = CHEVRON_LEFT_DEGREES;
+    }
+    else if (element == QStyle::PE_IndicatorArrowRight)
+    {
+        degrees = CHEVRON_RIGHT_DEGREES;
+    }
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing);
+    painter->setPen(QPen(colour, CHEVRON_STROKE, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter->setBrush(Qt::NoBrush);
+    painter->translate(QRectF(rect).center());
+    painter->rotate(degrees);
+    const QPointF points[CHEVRON_POINT_COUNT] = {{-half, -quarter}, {0.0, quarter}, {half, -quarter}};
+    painter->drawPolyline(points, CHEVRON_POINT_COUNT);
     painter->restore();
 }
 
@@ -385,6 +424,16 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
         case PE_IndicatorDockWidgetResizeHandle:
             painter->fillRect(option->rect, mColours.Border);
             return;
+        case PE_IndicatorArrowDown:
+        case PE_IndicatorArrowUp:
+        case PE_IndicatorArrowLeft:
+        case PE_IndicatorArrowRight:
+            DrawChevron(
+                painter,
+                option->rect,
+                element,
+                option->palette.color(isEnabled == true ? QPalette::Active : QPalette::Disabled, QPalette::ButtonText));
+            return;
         default:
             break;
     }
@@ -634,6 +683,37 @@ QRect EditorStyle::subElementRect(SubElement element, const QStyleOption* option
         }
     }
     return rect;
+}
+
+QRect EditorStyle::subControlRect(ComplexControl control,
+                                  const QStyleOptionComplex* option,
+                                  SubControl subControl,
+                                  const QWidget* widgetOrNull) const
+{
+    const QStyleOptionComboBox* combo =
+        control == CC_ComboBox ? qstyleoption_cast<const QStyleOptionComboBox*>(option) : nullptr;
+    if (combo == nullptr ||
+        (subControl != SC_ComboBoxArrow && subControl != SC_ComboBoxEditField && subControl != SC_ComboBoxFrame))
+    {
+        return QProxyStyle::subControlRect(control, option, subControl, widgetOrNull);
+    }
+    // The field and arrow split the box exactly as sizeFromContents budgets it, whatever the platform style
+    // would reserve, so a combo sized to its text always has room to show all of it.
+    const int edgeWidth = GetEdgeWidth();
+    const QRect inner = combo->rect.adjusted(edgeWidth, edgeWidth, -edgeWidth, -edgeWidth);
+    QRect result = combo->rect;
+    if (subControl == SC_ComboBoxArrow)
+    {
+        result = QRect(inner.right() + 1 - COMBO_ARROW_PADDING, inner.top(), COMBO_ARROW_PADDING, inner.height());
+    }
+    else if (subControl == SC_ComboBoxEditField)
+    {
+        result = QRect(inner.left() + INPUT_PADDING,
+                       inner.top() + edgeWidth,
+                       std::max(0, inner.width() - INPUT_PADDING - COMBO_ARROW_PADDING),
+                       std::max(0, inner.height() - 2 * edgeWidth));
+    }
+    return visualRect(combo->direction, combo->rect, result);
 }
 
 QSize EditorStyle::sizeFromContents(ContentsType type,

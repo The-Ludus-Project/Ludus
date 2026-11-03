@@ -360,6 +360,8 @@ Hit TraceScene(Ray ray, bool isVisibility)
     return result;
 }
 
+#include "wave_reference_scene.slang"
+
 // --- Camera (CameraRay/GenerateReferencePrimary) -----------------------------
 bool GenerateCameraRay(uint pixel, uint sample, out Ray outRay)
 {
@@ -811,7 +813,8 @@ struct LightProposal
 };
 void MarkInvalid(inout PathSample inoutPath, uint depth, uint failure)
 {
-    inoutPath.Failure = failure;
+    if (inoutPath.Failure == LUDUS_REFERENCE_FAILURE_NONE)
+        inoutPath.Failure = failure;
     inoutPath.Status |= LUDUS_REFERENCE_INVALID_FLAG | (depth << LUDUS_REFERENCE_DEPTH_SHIFT);
 }
 void CountQuery(inout PathSample inoutPath, bool isVisibility)
@@ -967,17 +970,17 @@ bool TraceProposal(inout PathSample inoutPath,
                    uint triangle,
                    float3 positionWorld,
                    uint depth,
-                   out bool outIsVisible)
+                   out float outTransmission)
 {
-    outIsVisible = false;
+    outTransmission = 0;
     Ray shadow;
     shadow.OriginWorld = OffsetOrigin(positionWorld, triangle, proposal.DirectionWorld);
     shadow.DirectionWorld = proposal.DirectionWorld;
     shadow.MinimumDistanceWorld = 0;
     shadow.MaximumDistanceWorld = proposal.DistanceWorld;
+    float3 endWorld = proposal.PositionWorld;
     if (proposal.HasFiniteEndpoint == true)
     {
-        float3 endWorld = proposal.PositionWorld;
         if (proposal.IsDelta == false && TryOffsetOrigin(proposal.PositionWorld,
                                                          proposal.ErrorWorld,
                                                          proposal.NormalWorld,
@@ -995,13 +998,38 @@ bool TraceProposal(inout PathSample inoutPath,
     if (IsWithinWorld(shadow.OriginWorld) == false)
         return false;
     CountQuery(inoutPath, true);
+    if (Options.y > 0 && proposal.HasFiniteEndpoint == true)
+    {
+        float2 field = float2(0);
+        uint status = EvaluateWaveConnectionToReceiver((SceneContext)0,
+                                                       endWorld,
+                                                       shadow.OriginWorld,
+                                                       -shadow.DirectionWorld,
+                                                       shadow.MaximumDistanceWorld,
+                                                       Options.y,
+                                                       field);
+        if (status != WAVE_QUERY_READY)
+        {
+            if (status != WAVE_QUERY_INVALID)
+            {
+                inoutPath.Status |= LUDUS_REFERENCE_CAPACITY_FLAG;
+                MarkInvalid(inoutPath,
+                            depth,
+                            status == WAVE_QUERY_CAPACITY ? LUDUS_REFERENCE_FAILURE_OPTICAL_REGION_CAPACITY
+                                                          : LUDUS_REFERENCE_FAILURE_OPTICAL_PROPAGATION_CAPACITY);
+            }
+            return false;
+        }
+        outTransmission = dot(field, field);
+        return isfinite(outTransmission) == true && outTransmission >= 0;
+    }
     Hit blocker = TraceScene(shadow, true);
     if (blocker.HasExceededStack == true)
     {
         inoutPath.Status |= LUDUS_REFERENCE_CAPACITY_FLAG;
         return false;
     }
-    outIsVisible = blocker.Triangle == NO_TRIANGLE;
+    outTransmission = blocker.Triangle == NO_TRIANGLE ? 1 : 0;
     return true;
 }
 // --- Resampled emitter light (reference_light_sampling.cpp) ----------------------
@@ -1095,7 +1123,8 @@ bool TryApproximateEmitterTarget(ReferenceReceiverFrame frame,
 // Thanks to the Slang authors, core module noinline attribute reference:
 // https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
 // One copy of the two unrolled polygon preparations serves every site.
-[noinline] bool TryEvaluateEmitterTarget(ReferenceReceiverFrame frame, uint triangle, out EmitterTarget outTarget) {
+[noinline] bool TryEvaluateEmitterTarget(ReferenceReceiverFrame frame, uint triangle, out EmitterTarget outTarget)
+{
     outTarget.Light = MakeEmptyReferenceTriangleLight(frame);
     outTarget.Coefficients = float2(0);
     outTarget.Target = 0;
@@ -1134,7 +1163,8 @@ TargetTotal MakeTargetTotal()
 
 // TryEvaluateResamplingTarget: p-hat alone for the reservoir's and Z-hat's candidates, without preparing polygons under
 // sampler version 3.
-[noinline] bool TryEvaluateResamplingTarget(ReferenceReceiverFrame frame, uint triangle, out float outTarget) {
+[noinline] bool TryEvaluateResamplingTarget(ReferenceReceiverFrame frame, uint triangle, out float outTarget)
+{
     outTarget = 0;
     if (HasFormFactorTarget() == false)
     {
@@ -1280,7 +1310,8 @@ struct ResampledLightSample
                                                 EmitterTarget target,
                                                 uint technique,
                                                 float2 randomNumbers,
-                                                float surrogateProbability) {
+                                                float surrogateProbability)
+{
     ResampledLightSample result;
     result.DirectionWorld = 0;
     result.PositionWorld = 0;
@@ -1431,8 +1462,8 @@ bool SampleResampledEmitter(inout PathSample inoutPath,
         proposal.IsDelta = false;
         proposal.HasFiniteEndpoint = true;
         proposal.IsEmissiveCategory = false;
-        bool isVisible;
-        if (TraceProposal(inoutPath, proposal, triangle, positionWorld, depth, isVisible) == false)
+        float transmission;
+        if (TraceProposal(inoutPath, proposal, triangle, positionWorld, depth, transmission) == false)
         {
             MarkInvalid(inoutPath,
                         depth,
@@ -1441,8 +1472,8 @@ bool SampleResampledEmitter(inout PathSample inoutPath,
                             : LUDUS_REFERENCE_FAILURE_INVALID_SHADOW_SEGMENT);
             return false;
         }
-        if (isVisible == true)
-            AddTransport(inoutPath, contribution, depth, false);
+        if (transmission > 0)
+            AddTransport(inoutPath, contribution * transmission, depth, false);
     }
     return true;
 }
@@ -1525,7 +1556,7 @@ PathSample TracePath(uint pixel, uint sample)
         {
             float4 environment = EvaluateEnvironmentWorld(ray.DirectionWorld);
             float lightPdf = lights == 0 ? 0 : environment.w / float(lights);
-            float weight = depth == 0 ? 1 : PowerWeight(previousPdf, lightPdf);
+            float weight = depth == 0 ? 1 : (Options.y > 0 ? 0 : PowerWeight(previousPdf, lightPdf));
             AddTransport(path, throughput * environment.xyz * weight, depth, true);
             if (HasValidTransport(path) == false)
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_RADIANCE);
@@ -1567,7 +1598,7 @@ PathSample TracePath(uint pixel, uint sample)
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_EMITTER_PDF);
                 return path;
             }
-            float weight = depth == 0 ? 1 : PowerWeight(previousPdf, pdf);
+            float weight = depth == 0 ? 1 : (Options.y > 0 ? 0 : PowerWeight(previousPdf, pdf));
             AddTransport(path, throughput * SampleEmission(instance, uv) * weight, depth, true);
         }
         // pbrt-v4's reflection models scatter on the viewer's side of the surface (reference_path.cpp cites the
@@ -1671,7 +1702,7 @@ PathSample TracePath(uint pixel, uint sample)
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
                 return path;
             }
-            float weight = proposal.IsDelta == true ? 1 : PowerWeight(proposal.Pdf, evaluation.w);
+            float weight = proposal.IsDelta == true || Options.y > 0 ? 1 : PowerWeight(proposal.Pdf, evaluation.w);
             pendingDirect = throughput * evaluation.xyz * proposal.Radiance * (cosine * weight / proposal.Pdf);
             if (IsValidContribution(pendingDirect) == false)
             {
@@ -1774,8 +1805,8 @@ PathSample TracePath(uint pixel, uint sample)
         }
         if (hasShadow == true)
         {
-            bool isVisible;
-            if (TraceProposal(path, proposal, triangle, positionWorld, depth, isVisible) == false)
+            float transmission;
+            if (TraceProposal(path, proposal, triangle, positionWorld, depth, transmission) == false)
             {
                 MarkInvalid(path,
                             depth,
@@ -1784,8 +1815,8 @@ PathSample TracePath(uint pixel, uint sample)
                                 : LUDUS_REFERENCE_FAILURE_INVALID_SHADOW_SEGMENT);
                 return path;
             }
-            if (isVisible == true)
-                AddTransport(path, pendingDirect, directDepth, false);
+            if (transmission > 0)
+                AddTransport(path, pendingDirect * transmission, directDepth, false);
         }
         if (hasNext == false)
             return path;

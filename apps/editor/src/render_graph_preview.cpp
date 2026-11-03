@@ -1,4 +1,9 @@
 #include "internal/render_graph_preview.h"
+#include "internal/light_transformer_preview_setup.h"
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "renderer_light_transformer_encoder.h"
+#endif
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/time/time.hpp>
 
@@ -30,6 +35,8 @@ namespace
 {
 /// Wall-clock producer deadline, independent of the completion polling cadence.
 constexpr int32 MAX_PRODUCER_MILLISECONDS = 10'000;
+/// First-use software shader execution can exceed an ordinary frame's deadline.
+constexpr int32 FIRST_SAMPLE_PRODUCER_MILLISECONDS = 120'000;
 /// Interval between failure summary read-backs; each reads 256 bytes of one ray pass.
 constexpr int64 FAILURE_POLL_MILLISECONDS = 500;
 constexpr float64 NANOSECONDS_PER_MILLISECOND = 1'000'000.0;
@@ -457,6 +464,8 @@ struct RenderGraphPreview::State final
     bool ShouldReselectRenderer = false;
     UniquePtr<renderer::RenderGraphPackage> WaitingOrNull;
     Target Waiting;
+    LightTransformerPreviewSetup WaitingModel;
+    bool HasWaitingModel = false;
     Target Candidate;
     Target Active;
     RenderGraphExtraction Extraction;
@@ -466,6 +475,7 @@ struct RenderGraphPreview::State final
     QString MaterialStatus;
     bool IsAwaitingProducer = false;
     QElapsedTimer ProducerTimer;
+    int32 ProducerTimeoutMilliseconds = MAX_PRODUCER_MILLISECONDS;
     uint64 RenderedGeneration = 0;
     uint64 RenderedRevision = 0;
     /// Camera the submitted frame was prepared with; HasRenderedView is false when its revision was not retained.
@@ -818,6 +828,30 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     {
         target.Source = source;
     }
+    LightTransformerPreviewSetup model;
+    const bool hasModel = package->HasLightTransformer();
+    if (hasModel == true)
+    {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        QString modelError;
+        const QString modelDirectory = source.ModelDirectory.isEmpty() == false
+                                           ? source.ModelDirectory
+                                           : QFileInfo(runtimePackagePath).absolutePath();
+        if (ReadLightTransformerPreviewSetup(modelDirectory, model, modelError) == false)
+        {
+            setStatus(modelError);
+            return RenderGraphPreviewLoad::Unreadable;
+        }
+        model.Description.EncoderShader = ludus::shaders::renderer_light_transformer_encoder::Compute();
+#else
+        setStatus(QStringLiteral(
+            "Light Transformer requires a native Metal or Vulkan preview. Select a raster template for this device."));
+        return RenderGraphPreviewLoad::Unsupported;
+#endif
+    }
+    state.WaitingModel = Move(model);
+    state.WaitingModel.BindAssets();
+    state.HasWaitingModel = hasModel;
     state.ResolveTarget(target);
     state.Waiting = target;
     state.WaitingOrNull.Swap(package);
@@ -838,7 +872,12 @@ RenderGraphPreviewLoad RenderGraphPreview::stage()
 {
     State& state = *mState;
     state.IsResizeRejected = false;
-    const rhi::RasterStatus staged = state.Activation.Stage(Move(state.WaitingOrNull));
+    const bool hasModel = state.HasWaitingModel;
+    const rhi::RasterStatus staged =
+        state.Activation.Stage(Move(state.WaitingOrNull),
+                               state.HasWaitingModel == true ? &state.WaitingModel.Description : nullptr);
+    state.WaitingModel = {};
+    state.HasWaitingModel = false;
     state.WaitingOrNull.Reset();
     const renderer::RenderGraphActivationReport report = state.Activation.GetReport();
     state.Candidate = state.Waiting;
@@ -851,6 +890,13 @@ RenderGraphPreviewLoad RenderGraphPreview::stage()
     }
     if (IsAccepted(staged) == false)
     {
+        if (hasModel == true)
+        {
+            setStatus(QStringLiteral("Trained-model setup was rejected (%1). Re-export encoder.llte and decoder.lltd "
+                                     "together, check the fixed training scale and maximum_buffer_bytes in "
+                                     "light_transformer/model.json, then preview again. The shown frame is kept.")
+                          .arg(DescribeRasterStatus(staged)));
+        }
         return RenderGraphPreviewLoad::Failed;
     }
     return RenderGraphPreviewLoad::Staged;
@@ -1108,7 +1154,8 @@ void RenderGraphPreview::tick()
         const rhi::RasterStatus exported = activeOrNull == nullptr
                                                ? rhi::RasterStatus::InvalidState
                                                : activeOrNull->GetResourceAllocation(resource, texture, aspect);
-        if (exported == rhi::RasterStatus::NotReady && state.ProducerTimer.elapsed() < MAX_PRODUCER_MILLISECONDS)
+        if (exported == rhi::RasterStatus::NotReady &&
+            state.ProducerTimer.elapsed() < state.ProducerTimeoutMilliseconds)
         {
             return;
         }
@@ -1366,9 +1413,22 @@ void RenderGraphPreview::advance()
             state.UpdatedRevision = state.Extraction.Revision;
             if (IsAccepted(updated) == false)
             {
-                setStatus(DescribeRenderGraphExtractionFailure(updated, graphReport.SceneDiagnostics));
+                const QString modelFailure = DescribeLightTransformerPreparationFailure(graphReport.Model);
+                setStatus(modelFailure.isEmpty() == false
+                              ? modelFailure +
+                                    QStringLiteral(" The shown frame is kept; repair the inputs and preview again.")
+                              : DescribeRenderGraphExtractionFailure(updated, graphReport.SceneDiagnostics));
             }
             Q_EMIT Changed();
+        }
+    }
+    const renderer::RenderGraphActivationReport modelReport = state.Activation.GetReport();
+    if (modelReport.Candidate == renderer::RenderGraphCandidateState::Failed)
+    {
+        const QString modelFailure = DescribeLightTransformerPreparationFailure(modelReport.CandidateReport.Model);
+        if (modelFailure.isEmpty() == false)
+        {
+            setStatus(modelFailure + QStringLiteral(" The shown frame is kept; repair the inputs and preview again."));
         }
     }
     renderer::RenderGraph* activeOrNull = state.Activation.GetActiveOrNull();
@@ -1411,6 +1471,10 @@ void RenderGraphPreview::advance()
     }
     state.Trace.BeginFrame();
     rhi::SubmissionToken completion;
+    state.ProducerTimeoutMilliseconds =
+        activeOrNull->HasPendingSamples() == true && activeOrNull->GetSubmittedRaySamples() == 0
+            ? FIRST_SAMPLE_PRODUCER_MILLISECONDS
+            : MAX_PRODUCER_MILLISECONDS;
     Q_EMIT PreparingSubmission();
     const rhi::RasterStatus rendered =
         activeOrNull->Render(state.Surface, state.Active.Width, state.Active.Height, completion);

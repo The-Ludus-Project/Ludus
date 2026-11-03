@@ -108,6 +108,9 @@ public:
     [[nodiscard]] foundation::int32 GetVisibleCount() const;
     /// Activate the n-th shown row, exactly like a double-click. False when out of range.
     bool ActivateVisibleRow(foundation::int32 row);
+    /// Select the first shown Error row without navigating to its source, or the first shown row when there is no
+    /// error. False when no row is shown.
+    bool SelectFirstProblem();
 
 Q_SIGNALS:
     /// The user activated a row; the shell navigates to its source.

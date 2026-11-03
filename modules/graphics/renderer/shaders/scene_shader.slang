@@ -1191,3 +1191,10 @@ float4 SampleMaterialTexture(SceneContext scene, SurfaceHit hit, float2 texcoord
 }
 
 #include "stochastic_reuse.slang"
+
+// Scalar optical connections share this immutable scene and its fixed-mip material coverage.
+bool IsWaveTriangleCovered(SceneContext scene, uint triangleIndex, float2 barycentric)
+{
+    return IsSurfaceCovered(scene, GetSurfaceHit(scene, triangleIndex, barycentric));
+}
+#include "wave_connection.slang"

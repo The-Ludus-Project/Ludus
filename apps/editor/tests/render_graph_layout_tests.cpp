@@ -11,9 +11,11 @@
 #include <QContextMenuEvent>
 #include <QDir>
 #include <QFile>
+#include <QGraphicsRectItem>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMenu>
+#include <QPen>
 #include <QPixmap>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -405,4 +407,43 @@ TEST_CASE("bounded arrangement handles a maximum-size cycle and rejects excess c
     nodes.append({QStringLiteral("excess"), QRectF(0, 0, 100, 100)});
     CHECK(ComputeRenderGraphLayout(nodes, edges, RenderGraphLayoutOperation::Arrange, positions) == false);
     CHECK(positions.size() == RenderGraphDocument::MAX_NODES);
+}
+
+TEST_CASE("display placement moves unplaced cards below placed and earlier cards", "[editor][render-graph][layout]")
+{
+    const QVector<QRectF> fixedCards{QRectF(0, 0, 100, 80)};
+    QVector<QRectF> movable{QRectF(10, 20, 100, 80), QRectF(0, 0, 100, 80), QRectF(400, 0, 100, 80)};
+    ResolveRenderGraphOverlaps(fixedCards, 20, movable);
+    CHECK(movable.at(0).top() == 100);
+    CHECK(movable.at(1).top() == 200);
+    // A card that already clears everything keeps its place, and nothing moves sideways.
+    CHECK(movable.at(2) == QRectF(400, 0, 100, 80));
+    CHECK(movable.at(0).left() == 10);
+    CHECK(movable.at(1).left() == 0);
+    QVector<QRectF> none;
+    ResolveRenderGraphOverlaps(fixedCards, 20, none);
+    CHECK(none.isEmpty() == true);
+}
+
+TEST_CASE("fractional card borders preserve whole-coordinate placement offsets", "[editor][render-graph][layout]")
+{
+    constexpr float64 CARD_WIDTH_SCENE = 100;
+    constexpr float64 CARD_HEIGHT_SCENE = 80;
+    constexpr float64 BORDER_WIDTH_SCENE = 3.5;
+    constexpr float64 GAP_SCENE = 20;
+    QGraphicsRectItem card(QRectF(0, 0, CARD_WIDTH_SCENE, CARD_HEIGHT_SCENE));
+    card.setPen(QPen(Qt::black, BORDER_WIDTH_SCENE));
+    const QRectF boundsScene = card.sceneBoundingRect();
+    const QVector<QRectF> fixedCards{boundsScene};
+    QVector<QRectF> movableCards{boundsScene};
+    ResolveRenderGraphOverlaps(fixedCards, GAP_SCENE, movableCards);
+    const QPointF offsetScene = movableCards.first().topLeft() - boundsScene.topLeft();
+    CAPTURE(offsetScene.x(), offsetScene.y());
+    CHECK(offsetScene == QPointF(offsetScene.toPoint()));
+    CHECK(offsetScene.x() == 0);
+    CHECK(movableCards.first().top() >= boundsScene.bottom() + GAP_SCENE);
+    CHECK(movableCards.first().top() < boundsScene.bottom() + GAP_SCENE + 1);
+    const QVector<QRectF> placedCards = movableCards;
+    ResolveRenderGraphOverlaps(fixedCards, GAP_SCENE, movableCards);
+    CHECK(movableCards == placedCards);
 }

@@ -39,6 +39,8 @@ using namespace foundation;
 namespace rhi = graphics::rhi;
 namespace rr = graphics::renderer;
 constexpr int32 NAVIGATION_STATE_VERSION = 2;
+/// Smallest orbit radius divisor, in World units, used by compatibility navigation fields.
+constexpr float32 MINIMUM_ORBIT_RADIUS_WORLD = 0.000001F;
 /// Minimum interval between statistics overlay refreshes, so the text stays readable.
 constexpr int64 STATISTICS_REFRESH_MILLISECONDS = 250;
 /// Nanoseconds per millisecond, for GPU timestamp durations.
@@ -148,6 +150,7 @@ void RenderPreview::SetRayPathInspection(bool isInspecting)
     {
         releaseRayPathOverlay(false);
         mRayPathOverlay = {};
+        clearBuiltInViewFailure();
     }
     if (OwnsDevice_ == true)
     {
@@ -160,6 +163,35 @@ void RenderPreview::SetRayPathInspection(bool isInspecting)
         mFramePump.Start();
         mFramePump.Wake();
     }
+    Q_EMIT Changed();
+}
+void RenderPreview::ShowBuiltInView(PreviewShading shading)
+{
+    if (mIsBuiltInViewShown == false)
+    {
+        mShadingBeforeBuiltInView = mShading;
+        mIsBuiltInViewShown = true;
+        if (OwnsDevice_ == true && mIsProjectGraphEnabled == true)
+        {
+            ViewDirty_ = true;
+            mFramePump.Start();
+            mFramePump.Wake();
+        }
+        Q_EMIT Changed();
+    }
+    SetShading(shading);
+}
+void RenderPreview::HideBuiltInView()
+{
+    if (mIsBuiltInViewShown == false)
+    {
+        return;
+    }
+    // Cleared first, so the restoring shading change saves the restored mode.
+    mIsBuiltInViewShown = false;
+    SetShading(mShadingBeforeBuiltInView);
+    // An unchanged shading restarts nothing; a failed built-in view must still be retried next time.
+    clearBuiltInViewFailure();
     Q_EMIT Changed();
 }
 void RenderPreview::SetRayPathOverlay(const RayPathOverlay& overlay)
@@ -943,7 +975,8 @@ void RenderPreview::serviceGpuTiming(bool shouldArm) noexcept
             mStatistics.GpuMilliseconds.Add(timing.DurationNanoseconds / NANOSECONDS_PER_MILLISECOND);
             mStatistics.GpuState = ViewportGpuTimeState::Available;
         }
-        const uint64 duration = isValid == true ? static_cast<uint64>(timing.DurationNanoseconds + 0.5) : 0;
+        const uint64 duration =
+            isValid == true ? static_cast<uint64>(math::Floor(timing.DurationNanoseconds + 0.5)) : 0;
         mHasTimingAssociation = false;
         Q_EMIT GpuProfileSample(mTimingFrameId, mTimingDeviceSession, mTimingSubmissionTicks, duration, isValid);
     }
@@ -1021,7 +1054,7 @@ void RenderPreview::navigationChanged()
                     static_cast<float32>(pivotWorld.Z)};
     Yaw_ = mCameraController.GetYawDegrees();
     Pitch_ = mCameraController.GetPitchDegrees();
-    Zoom_ = mCameraController.GetDistance() / math::Max(OrbitRadius_, 0.000001F);
+    Zoom_ = mCameraController.GetDistance() / math::Max(OrbitRadius_, MINIMUM_ORBIT_RADIUS_WORLD);
     RestoredOrbit_ = true;
     ViewDirty_ = true;
     // Thanks to The Qt Company, "QTimer Class", start() documentation:
@@ -1317,36 +1350,41 @@ void RenderPreview::SetFocusDistance(float32 distance)
 }
 QJsonObject RenderPreview::Navigation() const
 {
-    return {{QStringLiteral("yaw"), Yaw_},
-            {QStringLiteral("pitch"), Pitch_},
-            {QStringLiteral("zoom"), Zoom_},
-            {QStringLiteral("camera"), CameraId_},
-            {QStringLiteral("reference"), Reference_},
-            {QStringLiteral("shading"), GetPreviewShadingKey(mShading)},
-            {QStringLiteral("statistics"), mIsStatisticsVisible},
-            {QStringLiteral("forceRaster"), mShouldForceRaster},
-            {QStringLiteral("antialiasing"), GetViewportAntialiasingKey(mAntialiasing)},
-            {QStringLiteral("x"), OrbitCenter_.X},
-            {QStringLiteral("y"), OrbitCenter_.Y},
-            {QStringLiteral("z"), OrbitCenter_.Z},
-            {QStringLiteral("radius"), OrbitRadius_},
-            {QStringLiteral("navigationVersion"), NAVIGATION_STATE_VERSION},
-            {QStringLiteral("lookSensitivity"), mLookSensitivity},
-            {QStringLiteral("viewportSize"), GetViewportSizeKey(mViewportSizeIndex)},
-            {QStringLiteral("distance"), mCameraController.GetDistance()},
-            {QStringLiteral("eyeX"), mCameraController.GetSample().Pose.Position.X},
-            {QStringLiteral("eyeY"), mCameraController.GetSample().Pose.Position.Y},
-            {QStringLiteral("eyeZ"), mCameraController.GetSample().Pose.Position.Z},
-            {QStringLiteral("rotationX"), mCameraController.GetSample().Pose.Orientation.X},
-            {QStringLiteral("rotationY"), mCameraController.GetSample().Pose.Orientation.Y},
-            {QStringLiteral("rotationZ"), mCameraController.GetSample().Pose.Orientation.Z},
-            {QStringLiteral("rotationW"), mCameraController.GetSample().Pose.Orientation.W},
-            {QStringLiteral("projection"), static_cast<int32>(mCameraController.GetSample().Lens.Projection)},
-            {QStringLiteral("fov"), mCameraController.GetSample().Lens.VerticalFov},
-            {QStringLiteral("span"), mCameraController.GetSample().Lens.VerticalSpan},
-            {QStringLiteral("minimumWidth"), mCameraController.GetSample().Lens.MinimumVisibleWidth},
-            {QStringLiteral("near"), mCameraController.GetSample().Lens.NearPlane},
-            {QStringLiteral("far"), mCameraController.GetSample().Lens.FarPlane}};
+    // Derive compatibility fields from the authoritative pose even before the first navigation edit.
+    // Cached orbit defaults need not exactly equal the controller's trigonometric reconstruction.
+    const math::Vector3d pivotWorld = mCameraController.GetPivotWorld();
+    return {
+        {QStringLiteral("yaw"), mCameraController.GetYawDegrees()},
+        {QStringLiteral("pitch"), mCameraController.GetPitchDegrees()},
+        {QStringLiteral("zoom"), mCameraController.GetDistance() / math::Max(OrbitRadius_, MINIMUM_ORBIT_RADIUS_WORLD)},
+        {QStringLiteral("camera"), CameraId_},
+        {QStringLiteral("reference"), Reference_},
+        {QStringLiteral("shading"),
+         GetPreviewShadingKey(mIsBuiltInViewShown == true ? mShadingBeforeBuiltInView : mShading)},
+        {QStringLiteral("statistics"), mIsStatisticsVisible},
+        {QStringLiteral("forceRaster"), mShouldForceRaster},
+        {QStringLiteral("antialiasing"), GetViewportAntialiasingKey(mAntialiasing)},
+        {QStringLiteral("x"), static_cast<float32>(pivotWorld.X)},
+        {QStringLiteral("y"), static_cast<float32>(pivotWorld.Y)},
+        {QStringLiteral("z"), static_cast<float32>(pivotWorld.Z)},
+        {QStringLiteral("radius"), OrbitRadius_},
+        {QStringLiteral("navigationVersion"), NAVIGATION_STATE_VERSION},
+        {QStringLiteral("lookSensitivity"), mLookSensitivity},
+        {QStringLiteral("viewportSize"), GetViewportSizeKey(mViewportSizeIndex)},
+        {QStringLiteral("distance"), mCameraController.GetDistance()},
+        {QStringLiteral("eyeX"), mCameraController.GetSample().Pose.Position.X},
+        {QStringLiteral("eyeY"), mCameraController.GetSample().Pose.Position.Y},
+        {QStringLiteral("eyeZ"), mCameraController.GetSample().Pose.Position.Z},
+        {QStringLiteral("rotationX"), mCameraController.GetSample().Pose.Orientation.X},
+        {QStringLiteral("rotationY"), mCameraController.GetSample().Pose.Orientation.Y},
+        {QStringLiteral("rotationZ"), mCameraController.GetSample().Pose.Orientation.Z},
+        {QStringLiteral("rotationW"), mCameraController.GetSample().Pose.Orientation.W},
+        {QStringLiteral("projection"), static_cast<int32>(mCameraController.GetSample().Lens.Projection)},
+        {QStringLiteral("fov"), mCameraController.GetSample().Lens.VerticalFov},
+        {QStringLiteral("span"), mCameraController.GetSample().Lens.VerticalSpan},
+        {QStringLiteral("minimumWidth"), mCameraController.GetSample().Lens.MinimumVisibleWidth},
+        {QStringLiteral("near"), mCameraController.GetSample().Lens.NearPlane},
+        {QStringLiteral("far"), mCameraController.GetSample().Lens.FarPlane}};
 }
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — width then height matches ViewDescription.
 PreviewViewOptions RenderPreview::makeViewOptions(uint32 width, uint32 height) const noexcept
@@ -1551,6 +1589,29 @@ void RenderPreview::fail(const QString& message)
     Q_EMIT Changed();
     Q_EMIT Failed(message);
 }
+void RenderPreview::failGeneration(const QString& message)
+{
+    if (mIsProjectGraphEnabled == false || isDelegatingToProjectGraph() == true)
+    {
+        fail(message);
+        return;
+    }
+    // The built-in view is a secondary view: the project graph shares this device and keeps its last
+    // image, so stopping the device here would erase the graph's output as well.
+    mHasPreparationFailed = true;
+    mNeedsResourceRestart = false;
+    Status_ = message;
+    Q_EMIT Changed();
+    Q_EMIT BuiltInViewFailed(message);
+}
+void RenderPreview::clearBuiltInViewFailure() noexcept
+{
+    if (mHasPreparationFailed == true && mIsProjectGraphEnabled == true && OwnsDevice_ == true &&
+        isDelegatingToProjectGraph() == true)
+    {
+        restartResources();
+    }
+}
 bool RenderPreview::prepare()
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
@@ -1633,7 +1694,7 @@ void RenderPreview::SetProjectGraphProblem(const QString& problem)
 }
 void RenderPreview::NotifyProjectFrame()
 {
-    if (mIsProjectGraphEnabled == true && mIsInspectingRayPaths == false && OwnsDevice_ == true)
+    if (isDelegatingToProjectGraph() == true && OwnsDevice_ == true)
     {
         mHasFrame = true;
         ++Frames_;
@@ -1650,13 +1711,18 @@ void RenderPreview::Tick()
 {
     LUDUS_PROFILE_SCOPE(EditorViewportTick);
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
-    if (OwnsDevice_ == false || mHasPreparationFailed == true)
+    if (OwnsDevice_ == false)
     {
         return;
     }
-    if (mIsProjectGraphEnabled == true && mIsInspectingRayPaths == false)
+    // A failed built-in view leaves the device to the project graph, which still retires its resources.
+    if (isDelegatingToProjectGraph() == true || (mHasPreparationFailed == true && mIsProjectGraphEnabled == true))
     {
         static_cast<void>(rhi::PollLifetime(Device_));
+        return;
+    }
+    if (mHasPreparationFailed == true)
+    {
         return;
     }
     QElapsedTimer frameTimer;
@@ -1800,7 +1866,7 @@ void RenderPreview::Tick()
         mIsViewportStale = false;
         if (Accepted(created) == false)
         {
-            fail(QStringLiteral("GPU viewport allocation failed. World edits are preserved."));
+            failGeneration(QStringLiteral("GPU viewport allocation failed. World edits are preserved."));
             return;
         }
         mHasViewport = true;
@@ -1814,7 +1880,7 @@ void RenderPreview::Tick()
             return;
         }
         // Keep a stage's specific reason; the generic text covers unexplained failures.
-        fail(
+        failGeneration(
             mPreparationFailure.isEmpty() == false
                 ? mPreparationFailure + QStringLiteral(" World edits are preserved.")
                 : QStringLiteral("GPU renderer stopped or exceeded its supported profile. World edits are preserved."));
@@ -1831,7 +1897,7 @@ void RenderPreview::Tick()
     }
     if (configured != rhi::RasterStatus::Ready)
     {
-        fail(QStringLiteral("GPU viewport setup failed. World edits are preserved."));
+        failGeneration(QStringLiteral("GPU viewport setup failed. World edits are preserved."));
         return;
     }
     if (mIsPresentationVisible == false && Frames_ != 0)

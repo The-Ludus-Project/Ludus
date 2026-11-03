@@ -725,6 +725,64 @@ class BuildTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'not delimited'):
             isolate_metal_ray_queries(helper[:helper.rindex('}')])
 
+    def test_translated_metal_preserves_spirv_dontinline_controls(self):
+        import sys
+        import struct
+        sys.path.insert(0, str(ROOT / 'cmake/shaders'))
+        from compile_graph_stage import restore_spirv_metal_noinline
+        encoded = b'TraceWave\0'
+        encoded += b'\0' * ((-len(encoded)) % 4)
+        name_words = struct.unpack('<' + 'I' * (len(encoded) // 4), encoded)
+        words = [0x07230203, 0x00010300, 0, 5, 0,
+                 ((2 + len(name_words)) << 16) | 5, 2, *name_words,
+                 (5 << 16) | 54, 1, 2, 2, 3]
+        module = struct.pack('<' + 'I' * len(words), *words)
+        prefix = 'static inline __attribute__((always_inline))\n'
+        code = prefix + 'uint TraceWave(uint value)\n{\nreturn value;\n}\n'
+        unrelated = prefix + 'uint Shade(uint value)\n{\nreturn value;\n}\n'
+        result = restore_spirv_metal_noinline(code + unrelated, module)
+        self.assertIn('__attribute__((noinline))\nuint TraceWave(', result)
+        self.assertIn(prefix + 'uint Shade(', result)
+        with self.assertRaisesRegex(RuntimeError, 'missing or ambiguous'):
+            restore_spirv_metal_noinline(unrelated, module)
+        with self.assertRaisesRegex(RuntimeError, 'Malformed'):
+            restore_spirv_metal_noinline(code, b'bad')
+
+    def test_translated_metal_matches_module_qualified_dontinline_names(self):
+        import sys
+        import struct
+        sys.path.insert(0, str(ROOT / 'cmake/shaders'))
+        from compile_graph_stage import restore_spirv_metal_noinline, spirv_cross_identifier
+
+        def dont_inline_module(name):
+            encoded = name.encode() + b'\0'
+            encoded += b'\0' * ((-len(encoded)) % 4)
+            name_words = struct.unpack('<' + 'I' * (len(encoded) // 4), encoded)
+            words = [0x07230203, 0x00010300, 0, 5, 0,
+                     ((2 + len(name_words)) << 16) | 5, 2, *name_words,
+                     (5 << 16) | 54, 1, 2, 2, 3]
+            return struct.pack('<' + 'I' * len(words), *words)
+
+        # Slang qualifies functions with their module; SPIRV-Cross spells the dot as an underscore.
+        prefix = 'static inline __attribute__((always_inline))\n'
+        code = prefix + 'bool GraphSource0_TryLoadShadingPoint(uint value)\n{\nreturn true;\n}\n'
+        unrelated = prefix + 'bool TryLoadShadingPoint(uint value)\n{\nreturn false;\n}\n'
+        module = dont_inline_module('GraphSource0.TryLoadShadingPoint')
+        result = restore_spirv_metal_noinline(code + unrelated, module)
+        self.assertIn('__attribute__((noinline))\nbool GraphSource0_TryLoadShadingPoint(', result)
+        self.assertIn(prefix + 'bool TryLoadShadingPoint(', result)
+        with self.assertRaisesRegex(RuntimeError, 'GraphSource0_TryLoadShadingPoint is missing or ambiguous'):
+            restore_spirv_metal_noinline(unrelated, module)
+        with self.assertRaisesRegex(RuntimeError, 'missing or ambiguous'):
+            restore_spirv_metal_noinline(code + code, module)
+        with self.assertRaisesRegex(RuntimeError, 'no portable name'):
+            restore_spirv_metal_noinline(code, dont_inline_module(''))
+        self.assertEqual(spirv_cross_identifier('Shade'), 'Shade')
+        self.assertEqual(spirv_cross_identifier('a::b..c'), 'a_b_c')
+        self.assertEqual(spirv_cross_identifier('7Shade(f1;'), '_Shade')
+        self.assertEqual(spirv_cross_identifier('spvShade'), '_RESERVED_IDENTIFIER_FIXUP_spvShade')
+        self.assertEqual(spirv_cross_identifier('_12'), '_RESERVED_IDENTIFIER_FIXUP_12')
+
     def test_forward_metal_arrays_are_opt_in_and_independently_sized(self):
         import sys
         sys.path.insert(0, str(ROOT / 'cmake/shaders'))
@@ -815,6 +873,51 @@ class BuildTests(unittest.TestCase):
         self.assertTrue(all(len(call.args[2]) + 1 <= PREVIOUS_SNAPSHOT_FILE_LIMIT
                             for call in compile_program.call_args_list))
         self.assertEqual(6, len(self.calls))
+
+    def test_multilibrary_sized_build_crosses_former_source_and_artifact_limits(self):
+        # Reproduce both screenshot counts using real capture, compilation orchestration,
+        # publication and verification. The compiler fixture only replaces external tool IO.
+        value = self.value()
+        original = value['programs'][1]
+        for index in range(67 - len(value['programs'])):
+            program = {**original, 'id': f'LibraryColor{index}',
+                       'source': f'main_shaders/library_color{index}.slang'}
+            (self.manifest.parent / program['source']).write_text(
+                (self.manifest.parent / original['source']).read_text())
+            value['programs'].append(program)
+        value['budgets']['programs'] = len(value['programs'])
+        self.manifest.write_bytes(build.encoded(value))
+        for program in value['programs'][:2]:
+            self.add_shader_dependencies(program, 32)
+        (self.helper / 'visibility_buffer.slang').write_text('// SDK helper\n')
+        result = self.run_build()
+        package = build.verify_package(Path(result['package']))
+        self.assertEqual(134, package['counts']['artifacts'])
+        self.assertGreaterEqual(len(package['provenance']), 132)
+        self.assertEqual(len(package['provenance']), len(list((Path(result['package']) / 'sources').rglob('*.*'))))
+        self.assertEqual(0, self.run_build()['cache_misses'])
+
+    def test_large_inventory_verification_uses_its_own_bound(self):
+        # Integrity metadata has its own encoded bound; it is not an authored shader file.
+        stage = self.root / 'inventory'
+        stage.mkdir()
+        inventory = {}
+        for index in range(1200):
+            relative = f'programs/{index:04d}/' + 'a' * 64 + '.txt'
+            path = stage / relative
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b'artifact')
+            inventory[relative] = build.digest(b'artifact')
+        descriptor = build.encoded({'version': build.VERSION})
+        (stage / 'package.json').write_bytes(descriptor)
+        inventory['package.json'] = build.digest(descriptor)
+        encoded = build.encoded(inventory)
+        self.assertGreater(len(encoded), build.MAX_FILE)
+        self.assertLessEqual(len(encoded), build.MAX_PACKAGE_INDEX_BYTES)
+        (stage / 'integrity.json').write_bytes(encoded)
+        generation = self.root / build.identity(inventory)
+        stage.rename(generation)
+        self.assertEqual({'version': build.VERSION}, build.verify_package(generation))
 
     def test_aggregate_byte_limit_still_preserves_publication(self):
         self.run_build()

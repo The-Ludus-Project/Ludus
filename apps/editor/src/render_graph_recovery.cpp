@@ -1,5 +1,7 @@
 #include "internal/render_graph_recovery.h"
 
+#include <ludus/foundation/base/core.h>
+
 #include <QApplication>
 #include <QComboBox>
 #include <QCryptographicHash>
@@ -29,7 +31,7 @@ constexpr foundation::int32 REVIEW_HEIGHT = 650;
 
 QString GetRecoveryDirectory()
 {
-    const QString configured = qEnvironmentVariable("LUDUS_EDITOR_RECOVERY_DIRECTORY");
+    QString configured = qEnvironmentVariable("LUDUS_EDITOR_RECOVERY_DIRECTORY");
     if (configured.isEmpty() == false)
     {
         return configured;
@@ -138,7 +140,7 @@ void RenderGraphRecovery::removeOwned()
             errors += QLatin1Char(' ') + error;
         }
     }
-    mError = errors;
+    mError = foundation::Move(errors);
     mCheckpointRevision = 0;
 }
 
@@ -248,6 +250,16 @@ void RenderGraphRecovery::refreshStatus()
     }
     mStatus->setText(status.simplified());
     mStatus->setToolTip(status + QLatin1Char('\n') + mStore.GetPath(mDocument));
+#if defined(Q_OS_WASM)
+    mStatus->setVisible(true);
+    mReview->setVisible(true);
+#else
+    // Recovery speaks only when there is something to say: unsaved edits, checkpoints to review or a problem.
+    // Idle it takes no room, so the document header stays compact.
+    const bool isIdle = mError.isEmpty() == true && pending.isEmpty() == true && mDocument.IsDirty() == false;
+    mStatus->setVisible(isIdle == false);
+    mReview->setVisible(isIdle == false);
+#endif
 }
 
 bool RenderGraphRecovery::Restore(const QString& path, const QByteArray& expectedDigest)

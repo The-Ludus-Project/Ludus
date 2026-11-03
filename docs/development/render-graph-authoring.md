@@ -1437,7 +1437,9 @@ input; a program capacity error gives the required count and `budgets.programs` 
 Undo restores the previous budgets along with the graph and shader edits.
 Settings are shared by this package's ReSTIR
 configurations. A manifest holds up to 128 settings, enough for every built-in
-template together. If a template's settings would exceed that limit and removing
+template together. Float32 settings admit signed finite values within +/-1,000,000;
+UInt32 settings remain nonnegative. Spatial positions and directions can therefore
+be edited directly in Graph settings. If a template's settings would exceed that limit and removing
 authored settings that no `.slang` source names would make room, the picker lists
 those settings and offers **Remove and apply** or **Cancel**. Approval removes only
 the listed settings in the same undoable edit as the template; a template's own
@@ -2157,7 +2159,7 @@ for the tangent frame of the hemisphere samples.
 
 ### Use the conditional ReSTIR template
 
-Choose **Conditional ReSTIR — mesh light suffixes** in New Render Graph, canvas
+Choose **Conditional ReSTIR — suffix path tracing** in New Render Graph, canvas
 Quick Add, or Apply Configuration Template. The CLI and installed SDK expose the
 same editable package:
 
@@ -2169,72 +2171,121 @@ ludus render-graph new graphs/Conditional --template conditional-restir --output
 Use `spirv` for Vulkan. The `ConditionalRestir` configuration takes `scene`, `view`
 and `color`, and outputs `color`. Four scene compute passes generate fresh suffix
 proposals, merge temporal history, merge spatial neighbours, and shade. Each of
-the three render-sized buffers holds one 64-byte record per pixel; accumulation
-and tone mapping happen after shading. Native ray queries are required.
+the three render-sized buffers holds one 96-byte record per pixel; accumulation
+and tone mapping happen after shading. Native ray queries are required. At
+1920 × 1080 the three suffix buffers use about 597 MB, excluding scene and image storage.
 
-This is a bounded specialization of Markus Kettunen, Daqi Lin, Ravi Ramamoorthi,
-Thomas Bashford-Rogers and Chris Wyman's [*Conditional Resampled Importance
-Sampling and ReSTIR*, SIGGRAPH Asia 2023, sections 4–6, Equations 12–17 and
-22](https://doi.org/10.1145/3610548.3618245). Thanks to the authors for conditional
-unbiased contribution weights and independent final-gather prefixes. A suffix
-here is one emissive mesh endpoint; its domain is world-space surface area.
-The template estimates primary emission, direct mesh lighting and, optionally,
-one indirect scattering bounce. It evaluates both connection BSDFs for their
-actual directions, so suffix reuse does not assume Lambertian receivers.
+This implements variable-length Suffix ReSTIR PT using Markus Kettunen, Daqi Lin,
+Ravi Ramamoorthi, Thomas Bashford-Rogers and Chris Wyman's [*Conditional Resampled
+Importance Sampling and ReSTIR*, SIGGRAPH Asia 2023, sections 4–7, Equations 12–17
+and 22](https://doi.org/10.1145/3610548.3618245). Thanks to the authors for conditional
+unbiased contribution weights and independent final-gather prefixes. This version
+uses a common marked surface-area domain, rather than their prototype's
+view-conditioned BSDF proposal and hybrid shift. A suffix stores either an
+emissive mesh endpoint or a scattering point, its first outgoing direction, and
+a cached multi-bounce transport coefficient. The first suffix BSDF is deliberately
+excluded from that coefficient: both BSDFs on the gather connection must be
+evaluated for the new incoming direction. Glossy and coated receivers therefore
+do not reuse radiance evaluated for a different view.
 
-The initial pass draws a supporting camera prefix, ending at a BSDF-sampled
-secondary surface in indirect mode, independently of all suffix proposals.
-Uniform emitter and triangle choices followed by uniform triangle-area sampling
-give each light endpoint a known initial area density. The target is the
-supporting endpoint's unshadowed contribution luminance with a positive floor.
-For coated materials this target uses a base-lobe surrogate; final shading uses
-the layered BSDF and its separate addressed random context. Prefix transport keeps
-the coating walk's returned weight rather than reconstructing its path ratio.
-Even missed supporting prefixes retain that floor. Every prefix therefore has
-the same complete mesh-light area domain, and the identity suffix shift has
-Jacobian one. No visibility or hemisphere rejection removes proposal support.
+The declared integral is primary emission plus mesh-emitter reflection paths with
+one through `1 + CRIS_PREFIX_BOUNCES + CRIS_SUFFIX_BOUNCES` scattering vertices.
+This is a finite-depth path-tracing integral, not an infinite-series estimator.
+The default admits five scattering vertices. Set `CRIS_SUFFIX_BOUNCES` to zero
+for the former endpoint specialization; additionally set `CRIS_PREFIX_BOUNCES`
+to zero for direct mesh lighting alone. With a delayed prefix, primary direct
+lighting and secondary-prefix gathering own disjoint scattering orders.
 
-A source reservoir contributes `target_here × W_source × M_source` to conditional
-RIS. The output weight is `sum / (M_total × selected_target_here)`, finalized before
-capping confidence. Constant confidence shares partition unity in this common
-domain. This avoids reconstructing a conditional PDF from `W` and avoids a
-support-dependent MIS correction. Fresh canonical light proposals are still
-injected on every frame. The shade pass draws a new prefix from a different
-addressed random scope, traces visibility there, and multiplies the conditional
-area weight by the new prefix's `BSDF × cosine / PDF` throughput (Equation 22).
-Neither that throughput nor the gather prefix participates in suffix selection.
+The initial pass draws a supporting camera prefix, optionally ending at a
+BSDF-sampled secondary surface, independently of suffix generation. It then draws
+a suffix scattering count uniformly from zero through `CRIS_SUFFIX_BOUNCES`:
+
+- Zero selects an emissive endpoint using uniform emitter, triangle and area
+  proposals, with `CRIS_INITIAL_CANDIDATES` internal RIS candidates.
+- Positive counts select the first suffix point uniformly among all scene triangles
+  and in its area. A one-vertex scattering tail uses terminal next-event estimation
+  (NEE). Longer tails draw the first outgoing direction uniformly on the sphere,
+  trace later edges with the material's BSDF, and terminate with mesh-light NEE.
+  Each tail represents exactly its sampled length. Intermediate emitter hits do
+  not add emission, because the length's terminal NEE already owns that contribution.
+
+The cached coefficient contains the outgoing cosine, proposal reciprocals, later
+BSDF transport weights and terminal visibility. Coatings retain the walk's returned
+weight instead of reconstructing it from a new BSDF evaluation. Independent material
+random events are used at successive vertices and at both gather BSDFs. No tail
+is retraced in temporal reuse, spatial reuse or final gathering.
+
+The initial area weight is multiplied by the reciprocal length probability.
+Internal endpoint RIS produces **one** canonical mixture sample: its published
+confidence is one regardless of the sampled length. Giving shorter paths a larger
+confidence because they used more internal endpoint candidates would bias later
+confidence-weighted reuse.
+
+All prefixes share the complete marked suffix domain. The target combines a prefix-independent
+intrinsic coefficient luminance with unshadowed connection luminance:
+`intrinsic × (1 + connection / (intrinsic + connection))`, where `intrinsic` has
+a positive floor. Retargeting any fixed suffix between prefixes therefore changes
+its target by at most a factor of two, including missed supporting prefixes.
+This regularizes sample selection; final radiance and contribution weights are
+never clamped. Zero-radiance tails retain positive proposal support. Coatings use
+a base-lobe selection surrogate; final shading uses the layered BSDF. No source-side visibility or hemisphere
+rejection removes area support. The identity shift in this common domain has
+Jacobian one. A source reservoir contributes `target_here × W_source × M_source`;
+the final weight is `sum / (M_total × selected_target_here)`, finalized before
+confidence is capped. Constant confidence shares partition unity, so this proposal
+does not need the support-dependent canonical MIS correction required by the
+paper's BSDF-conditioned reconnection domains. Fresh canonical suffixes are still
+injected every frame. Tail occlusion and ordinary BSDF rejection are zero-valued
+marked outcomes, not discarded proposal domains.
+
+The shade pass draws a new integration prefix from a separate addressed random
+scope, tests the connection visibility, and multiplies the stored conditional area
+weight by the integration prefix's transport weight (Equation 22). Neither the
+integration prefix nor its throughput participates in suffix selection.
 
 Graph settings are available from the canvas's node Details as well as Properties:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `CRIS_PREFIX_BOUNCES` | 1 | 0 estimates direct lighting; 1 adds one indirect bounce. |
-| `CRIS_INITIAL_CANDIDATES` | 8 | Fresh mesh-light suffix proposals, 1–32. |
+| `CRIS_PREFIX_BOUNCES` | 1 | Delay the gather by one BSDF-sampled edge; zero gathers at the primary surface. |
+| `CRIS_SUFFIX_BOUNCES` | 3 | Maximum scattering vertices in a cached suffix, 0–7; zero stores emissive endpoints only. |
+| `CRIS_INITIAL_CANDIDATES` | 8 | Internal endpoint RIS candidates when the sampled suffix count is zero, 1–32. |
 | `IS_CRIS_TEMPORAL_ENABLED` | true | Merge the preceding frame's conditional reservoir. |
 | `IS_CRIS_SPATIAL_ENABLED` | true | Merge completed neighbours' temporal reservoirs. |
 | `CRIS_HISTORY_LIMIT` | 30 | Cap represented confidence after finalization, 1–1000. |
 | `CRIS_SPATIAL_NEIGHBORS` | 3 | Screen-space neighbour attempts, 0–7, within an eight-pixel radius. |
 
-History validates its layout, scene generation, extent and preceding frame.
-Spatial reads use the completed temporal buffer, with separate output storage.
-Failed records carry their original diagnostic to later passes; stale identities
-are not reused. The shade pass budgets two surface and two visibility queries.
+History validates its layout, both configured depths, scene generation, extent and
+preceding frame. Spatial reads use the completed temporal buffer with separate
+output storage. Failed records carry their original diagnostic to later passes.
+The initial pass budgets eight surface queries: camera, optional prefix edge and
+up to six cached-tail continuation queries. Shading needs at most two surface and
+two visibility queries. Arbitrary sampled lengths are supported within this native
+query bound; longer configured paths require a continuation-dispatch implementation.
 
-The template does not implement arbitrary-length Suffix ReSTIR PT, hybrid shifts,
-prefix resampling, motion reprojection or world-space nearest-neighbour gathers.
-Analytic lights and environment illumination are outside this mesh-light integral;
-the environment is displayed only when the primary camera ray misses. Use a
-renderer that supports those lights when they are needed. A positive target floor
-preserves support but can increase variance when supporting and gather prefixes
-see very different lighting. No speed or variance improvement is guaranteed.
+Hybrid shifts, prefix resampling, motion reprojection and world-space nearest-neighbour
+gathers are not implemented. Analytic lights and environment illumination remain
+outside this mesh-light integral; the environment is displayed only when the primary
+camera ray misses. External transmission and delta BSDFs are outside the scene material
+profile. Uniform area and sphere proposals preserve support but can have high variance,
+especially for narrow glossy lobes, nearby coplanar geometry and long paths. This
+implementation makes no performance or variance-improvement claim.
 
-The `[conditional-restir]` GPU regression compares raw linear RGB against the
-independent CPU path tracer at matched center rays and scattering depth, and
-against a variant with both reuse stages disabled. Its Cornell-box mean tolerance
-is 5% over 512 GPU frames and 128 CPU samples per pixel, without denoising.
-The direct-only setting has a separate depth-one CPU comparison. Template tests
-also cover installed SDK relocation, capability rejection, preserved destinations,
-editor creation, canvas configuration import, shader closure and settings.
+The `[conditional-restir]` GPU regressions compare raw linear RGB against the
+independent CPU path tracer using matched center rays and scattering counts of
+one, two, four, five and nine. The CPU uses emitter-power proposals and BSDF/light
+MIS; it shares neither reservoirs nor tail weights with the GPU. Both reuse-disabled
+and reused GPU configurations are exercised, with no denoising. Coated-material
+and scene-replacement cases are included. Validation uses Apple M5 Metal on
+macOS 26.6 with Clang 23.1.3. The CPU oracle uses 128 samples per pixel; GPU
+comparisons use 2,048 frames for the default/direct modes and 4,096 for depth and
+material cases. Per-channel image means must agree within 5%; subtracting the
+independent direct result isolates indirect energy with a 10% tolerance. An
+emission-only case agrees within 0.001% over two GPU frames. These statistical
+checks qualify this mesh-light profile on Metal; Vulkan execution and full batch
+qualification remain separate. Template tests cover installed SDK relocation,
+capability rejection, preserved destinations, editor creation, canvas configuration
+import, shader closure, settings and the maximum query-budget contract.
 
 <a id="use-the-compute-ray-tracing-template"></a>
 
@@ -3899,6 +3950,14 @@ vertex. A state-independent mixture chooses a uniform large step or a symmetric
 uniform small step wrapped around the unit cube. Symmetry gives acceptance
 `min(1, p(proposed) / p(current))`. Defaults are a 0.3 large-step probability,
 0.05 small-step radius, 128 discarded burn-in proposals and three scattering events.
+Frame captures run the requested collection count after burn-in: requesting 64
+samples with the default 128-step burn-in schedules 192 invocations. The capture
+shows warm-up progress separately. Each of the four compute programs binds
+`capture_warmup_setting` to the existing `MH_BURN_IN` graph setting, so editing it
+changes both the shader and its capture budget. Other programs in the same package
+keep their own budgets. See the [capture contract](../architecture/render-graph-frame-capture.md#estimator-warm-up)
+for raw counts, old imported templates and package compatibility.
+
 Depth is editable from one to three; initialization plus the first proposal use at
 most eight surface queries. Every subsequent invocation evaluates one proposal,
 keeping unfinished chains and RB state holding weights across frames.
@@ -4001,6 +4060,28 @@ comparing emission/direct/indirect path AOVs and
 raw linear RGB for all estimators with
 an absolute 0.001 tolerance after 512 iterations and 32 burn-in steps. These checks
 are evidence for this profile, not qualification of every backend or material.
+
+The [November 2, 2026 Vulkan check](https://github.com/The-Ludus-Project/Ludus/actions/runs/41469615159)
+on Ubuntu 24.04 / Mesa 25.2.8 llvmpipe (LLVM 20.1.2, Vulkan 1.4.318) did **not**
+meet that per-pixel tolerance. In the ordinary MH legacy metallic/roughness case,
+pixel 44 had red-channel errors of 0.00207 for waste recycling and 0.00121 for RB.
+The Jump Restore cases passed. The CPU suite and both cooked configurations'
+165 HDR-capture assertions passed; no Vulkan validation-layer errors were reported.
+This software-device result does not establish Vulkan reference parity or
+hardware-GPU qualification. The
+[focused validation mode](continuous-integration.md#run-focused-mcmc-vulkan-parity)
+preserves the exact source revision, adapter and shader artifacts for reproduction.
+
+The diagnostic kernel also records bit-exact primary-mutation probes and names
+the material/process on failure. Its completed mutation probes passed; primary
+mutation contraction has not been established as the cause of the image errors.
+CPU mutation arithmetic disables contraction.
+Source-level `precise` alone is not evidence that the pinned Slang 2026.1.2 emitted
+SPIR-V contraction controls; an inspected module contained no `NoContraction`
+decorations. Slang tracks the
+[per-variable qualifier limitation](https://github.com/shader-slang/slang/issues/12198).
+Precision control must be verified in emitted artifacts and both backend suites
+before claiming a correction. The transport tolerance remains unchanged.
 
 Thanks to Sascha Holl, Gurprit Singh and Hans-Peter Seidel,
 [Rao-Blackwellized Markov chain Monte Carlo Light Transport](https://arxiv.org/abs/2605.09117),
@@ -4206,9 +4287,10 @@ Imported emissive material slots remain actual geometry and do not become point-
 need no mesh. Raster area quadrature records are not accepted as exact sources:
 provide their emitting geometry instead, avoiding duplicate illumination.
 
-The current graph limits still apply, including 32 meshes and 128 draw items.
-The initial material/slot table is bounded by MAX_ITEMS; scene CPU/GPU setup
-shares the existing 256 MiB budgets. Unsupported masked/transmissive/deformed
+The current graph limits still apply, including 256 meshes and 1024 draw items.
+The material/slot table is bounded by MAX_ITEMS. Scene CPU/GPU setup also follows
+the independent [scene byte budgets](../architecture/renderer-systems.md#l51-budgeted-scene-capacity).
+Ray profiles use authored alpha masks; unsupported transmissive/deformed
 geometry rejects or uses the graph's explicit diagnostic coverage policy; it
 does not acquire transparent transport by connecting Scene. Material evaluation
 uses the supplied fixed mip and UV0; derivative mip selection is not inferred.
@@ -4395,8 +4477,10 @@ program limit is too small, the picker offers **Increase and apply**, showing th
 current and required counts. Approval raises `budgets.programs` to the required
 count together with the template; **Cancel** preserves the draft. Undo/Redo restores
 both changes, and **Save** publishes them together. Programs times target profiles
-beyond the supported 128 target artifacts cannot be approved; that error names the
-counts to reduce. Other capacity failures still report the required repair.
+beyond the supported 1024 target artifacts cannot be approved; that error names the
+counts and the canvas actions **Remove Unused Shaders** and **Delete Subgraph and Library**,
+or suggests reducing target profiles in the shader manifest. Other capacity failures
+still report the required repair.
 Secondary rays require a native profile. Existing ordinary ray configurations can
 share the package: their callbacks, payload source and query limits are retained.
 The shared `ScenePayload` needs a `float3 Radiance` field; comments, whitespace and
@@ -4939,7 +5023,11 @@ exposure and display conversion. The offline plan retains the Accumulate operati
 and its resource version; the GPU backend fuses it into its producing ray dispatch.
 It does not average quantized RGBA8 pixels or allocate an extra display pass.
 It accepts ray output, including the final ray output of a subgraph or a persistent
-sequence. Raster inputs and already accumulated images are rejected. The input
+sequence. Raster inputs and already accumulated images are rejected; a second
+running mean would overweight early frames. When a subgraph output already passes
+through its own Accumulate, the diagnostic names that node: clear **Enabled** on
+the outer Accumulate, or remove the inner one so its ray output reaches the outer
+node. The input
 version belongs to this operation: route its other consumers through its output.
 For simultaneous raw and averaged images, author separate ray targets.
 
@@ -5354,12 +5442,29 @@ error; the viewport explicitly labels its engine-default fallback until a usable
 generation is ready. Fallback rendering leaves the authored sources unchanged. Opening a library in an existing package keeps
 its `main.lurender.json` as the execution root while editing the library.
 
+### World viewport output selector
+
 The viewport's output selector lists **Final output** and every attachment of the active
 runtime generation, including intermediate colour and depth targets. It does not require
 an Export node for each diagnostic target. Selection follows expanded resource names across
 rebuilds; a removed target returns to Final output. Discarded/undefined attachments report
 that their contents cannot be shown. Depth is displayed with an automatic value range.
 The separate texture inspector has an independent selection.
+
+After the graph's own outputs, the selector offers the editor's built-in debug views:
+**Debug: Albedo**, **Normal**, **Depth**, **Roughness**, **Metallic**, **UV**, **Light count**
+and **Wireframe**. These work with every graph, including ones that write no G-buffer, because
+they do not read graph attachments. Choosing one makes the viewport present its built-in raster
+renderer's frames of the same World extraction and live camera in that quantity, as ray path
+inspection does; selection and navigation keep working. They show the authored inputs as the
+built-in renderer interprets them, not values computed by your graph's own shaders; inspect
+those through the graph's attachments above. The graph is not rebuilt. Choosing **Final output**
+or an attachment presents the graph again. If the built-in renderer cannot prepare the chosen
+view, for example Light count in a World with more emissive patches than its light budget, the
+selector returns to **Final output** and the status line says why; the graph's device and last
+image are kept, so the viewport never goes blank. The views and their colours are described under
+[the built-in viewport profile](editor-workspace.md#earlier-built-in-viewport-profile) in the editor
+workspace guide.
 
 The **Stats** toggle beside the viewport controls shows a live performance overlay.
 The preference is saved with World navigation. It refreshes four times a second;
@@ -5516,6 +5621,19 @@ second horizon clip feeds the specular edge sum. Each corner costs one edge term
 and no ellipse/sector state for importance sampling is built. The independent CPU
 check fans each record into clip-safe pieces of at most six corners and retains that
 sampling preparation; both integrals are additive over the fan.
+Raster edge integration uses a degree-nine polynomial for
+`acos(x) / sqrt(1 - x*x)` on `[0,1]`, with the finite limit one at the endpoint.
+Its coefficients are generated from ten Chebyshev interpolation nodes in
+FoundationMath's shader owner. Obtuse edges use `pi - angle` and the measured
+cross-product length, preserving the antipodal behavior without subtracting
+nearly equal squared lengths. This removes an `atan2` and, for acute edges, a
+square root and division per edge. The GPU regression checks signed edge terms
+against the independent exact CPU angle within 2e-6 radians across the full angle
+range, both windings, grazing endpoints and coordinate scales from 1e-30 to 1e30.
+This is a raster numerical approximation; reference transport and the CPU oracle
+retain exact trigonometric integration. In the measured 1600 x 1080 Staircase2
+saved view, 224 of 1,728,000 output pixels changed by at most one 8-bit step.
+
 Polygons entirely below the receiver horizon contribute zero; crossing polygons
 are clipped before the LTC transform. This preserves emitter geometry and the
 lighting integral without sampling lights.
@@ -5605,7 +5723,9 @@ the mesh-light record layout its resolve reads; older deferred packages must be
 cooked again. Version 29 appends each pass's ToneMap curve and admits ToneMap on
 this raster output; earlier packages read as Reinhard and keep clamped linear output.
 Version 30 adds the bounding-sphere header word to each mesh-light record, so earlier
-deferred packages are rejected and must be cooked again.
+deferred packages are rejected and must be cooked again. Version 31 appends the
+`DeferredOpaqueGBufferFragment` role described below; version 30 packages remain
+accepted and draw every material through the coverage-testing G-buffer fragment.
 
 Select **ZPrepass** in the preview configuration
 selector to enable a separate depth-only pass. That pass clears and stores depth;
@@ -5640,9 +5760,29 @@ depth and sixteen binding slots. Unsupported devices fail explicitly. The initia
 profile admits one clear/store opaque color node and its optional immediately
 preceding prepass with the same camera/depth.
 The profile retains the graph adapter's conventional-depth requirement. Transparent
-and masked deferred materials, MSAA, baked lighting, GPU cluster assignment, image
+deferred materials, MSAA, baked lighting, GPU cluster assignment, image
 upscale integration and arbitrary MRT graph authoring remain outside this initial
 offline profile.
+
+The package compiles the G-buffer stage twice from the same `MaterialMain`. The
+`DeferredGBufferFragment` applies an alpha-masked material's cutoff with a `discard`;
+`DeferredOpaqueGBufferFragment` is compiled with `LUDUS_OPAQUE_COVERAGE` and has no
+discard. The renderer draws every opaque material first through the second, then the
+masked materials through the first. On Apple GPUs a fragment function that merely
+contains a discard produces "feedback" fragments that weaken hidden-surface removal
+for the whole draw, even for materials that never take the branch (Apple, "Optimize
+Metal Performance for Apple silicon Macs", WWDC20 session 10632). Measured with the
+`[.raster-mesh-light-benchmark]` editor test on an Apple M5 at 1600 x 1080 (fastest of
+three interleaved runs; the version 30 package against the version 31 package on the
+same build). The images were bit-identical.
+
+| View | G-buffer pass before | After | Whole frame before | After |
+| --- | --- | --- | --- | --- |
+| Bistro, camera inside the square | 5.77 ms | 2.74 ms | 13.6 ms | 9.9 ms |
+| Bistro, default orbit | 3.60 ms | 2.36 ms | 7.5 ms | 6.2 ms |
+| Bistro, street | 3.24 ms | 2.02 ms | 5.0 ms | 3.3 ms |
+| Sponza, default orbit | 2.35 ms | 1.70 ms | 3.5 ms | 3.2 ms |
+| Bathroom, default orbit | 1.53 ms | 1.19 ms | 2.2 ms | 1.8 ms |
 
 Prepared scenes own immutable resolve bindings and private targets. Camera edits
 replace only the view bindings; resize/scene changes prepare a separate target set
@@ -5947,7 +6087,7 @@ The closed version-1 `.lushader.json` source has these fields:
 | `schemas` | At most 16 named `Uniform`, `Vertex` or `Varying` schemas; at most 16 fields each |
 | `programs` | Named stage/function/source records; input/output schemas and explicit uniform bindings |
 | `techniques` | Explicit `DefaultStaticOpaque.ColorAndDepth`/`.DepthOnly` and/or `DefaultStaticMasked.ColorAndDepth`/`.DepthOnly` mappings and legal pipeline recipes |
-| `budgets` | Author bounds for configurations, programs, emitted artifacts and pipeline recipes |
+| `budgets` | Author bounds for configurations and registered programs; legacy artifact/pipeline budgets are ignored |
 | `settings` (optional) | Up to 128 typed shader constants exposed in Properties and the canvas Graph Settings dialog |
 
 Each setting declares `id`, `label`, `type`, and `value`. Types are `UInt32`,
@@ -6011,7 +6151,7 @@ when that authored budget admits them; editor shader creation grows it as needed
 The configuration budget is at most 8. Target artifacts (registered programs
 multiplied by target profiles) and target pipelines (raster recipes multiplied by
 target profiles) follow from the manifest itself, so they have no authored budget:
-only the supported ceilings of 128 target artifacts and 64 target pipelines bound
+only the supported ceilings of 1024 target artifacts and 64 target pipelines bound
 them, and the error names the counts to reduce. Source and package byte/file limits
 also apply. Manifests written by older tools may still carry `budgets.artifacts` and
 `budgets.pipelines`; the builder accepts and ignores them, and the editor removes them
@@ -6033,13 +6173,21 @@ and rejects recursive shader calls or duplicate callbacks. Unguarded include cyc
 report the complete cycle, separately from the include-depth limit. Conditional
 includes are conservatively tracked; a conditional pragma is not treated as a guard.
 The compiler reads staged captured sources only, and its dependency file is
-checked against that closure. The combined build snapshot is bounded to 128
+checked against that closure. The combined build snapshot is bounded to 512
 files/4 MiB, including graph metadata, authored shaders and SDK helpers; each
 file is at most 128 KiB, with include depth 16. The native shader worker retains
 its separate 64-file request limit, including the generated wrapper. Each stage
 receives only its captured closure from the larger package snapshot. Source or
 compiler limit failures preserve the prior package. Generated artifacts are at most 2 MiB each
-and a generation is at most 64 MiB/1024 files. Use `--root` for a containing
+and a generation is at most 64 MiB/8192 files, with a separately bounded 2 MiB integrity
+index. These package-wide ceilings accommodate the shipped template catalog, which
+currently declares 144 programs and 235 files (about 1.2 MB before SDK helpers),
+without requiring deletion of built-in libraries. A catalog regression counts every
+template plus SDK helpers against the source bounds, and all four profiles against
+the artifact ceiling. This capacity check does not promise that every template can
+execute on every profile or that every library combination shares a compatible ABI.
+Authored files and SDK helpers use the same admission check before capture, so a helper
+cannot silently overfill the snapshot. Use `--root` for a containing
 package when the sibling root/manifest lives in a subdirectory; program source
 paths are relative to that package root, not the manifest directory.
 
@@ -6240,8 +6388,8 @@ allocation as well. Resize, foreign image import and history need another
 qualified profile/generation; they reject here instead of silently changing
 allocation identity. Reset before destroying the device.
 
-The profile is bounded to 16 passes, 32 logical resources, 8 cameras, 128 draw
-items and 32 meshes. It qualifies RGBA8/Depth32, single-sample static geometry,
+The profile is bounded to 16 passes, 32 logical resources, 8 cameras, 1024 draw
+items and 256 meshes. It qualifies RGBA8/Depth32, single-sample static geometry,
 TriangleList, no culling, counter-clockwise front and conventional
 Less/depth-write, for the opaque and explicitly authored masked families. A depth
 export does not establish pre-Z equivalence for later shading with another
@@ -8579,6 +8727,171 @@ no universal frame-time bound is claimed. The test reports service/pipeline timi
 separately from source compilation and refuses a skipped GPU case. Linux, browser
 and physical-device qualification remain distinct from any local macOS result.
 
+## Trace scene optical connections
+
+The **Wave tracing — scene optical transport** template (`wave-tracing`) uses the
+selected World's camera, geometry, lights, emissive meshes, textures and supported
+reflection materials. It samples truncated surface paths, with coherent scalar
+Gaussian-mode connections to finite lights. Its CPU oracle and GPU implementation
+estimate the same declared integral; transport, shading and accumulation execute
+on the GPU when GPU compute is selected.
+
+The design adopts scene interaction regions and coherent field sums from Shlomi
+Steinberg and Matt Pharr,
+[Wave Tracing: Generalizing The Path Integral To Wave Optics](https://doi.org/10.1111/cgf.70322),
+Computer Graphics Forum 45(2), e70322 (2026), Sections 3.1 and 4.2. Thank you to the
+authors, and to Umut Emre, Aryan Kanak and Shlomi Steinberg,
+[High-Performance Elliptical Cone Tracing](https://doi.org/10.1111/cgf.70230),
+Computer Graphics Forum 44(7), e70230 (2025), for the cone/triangle geometric
+formulation. These implementations are original; no noncommercial reference
+implementation code is incorporated.
+
+```sh
+ludus render-graph new graphs/Waves --template wave-tracing \
+  --renderer-static --output offscreen --profiles metal
+```
+
+Choose `spirv` for Vulkan. The Renderer canvas template picker and **Add
+configuration** menu create the same editable package; Graph settings are
+available on the canvas and in Properties. Hardware ray tracing is not required.
+The template uses the renderer's packed scene BVH, including geometry that a
+beam's centre ray misses. It does not require a manually positioned screen or a
+replacement light source.
+
+- **Optical** renders surface emission and next-event lighting through the optical
+  connection operator. `WT_WAVELENGTH_NANOMETERS` defaults to 550 nm. The scalar
+  transmission multiplies the authored RGB light; this is not spectral colour
+  integration or wavelength-dependent material scattering.
+- **Geometric** traces matching surface paths and light proposals with ordinary
+  binary visibility. Both paths use next-event estimation alone for light
+  endpoints. Secondary emitter/environment hits are omitted to avoid inconsistent
+  MIS weights when optical and geometric visibility differ.
+- **Transmission** shows the first receiver's sampled light-connection power,
+  relative to the unobstructed Gaussian mode, without tone mapping. It is zero
+  without a contributing light sample. Diffraction can redistribute power above
+  one locally. Linear capture data retains that range; RGBA8 presentation clips
+  values above one.
+
+`WT_PATH_VERTICES` defaults to three surface scattering vertices, with a maximum
+of eight. Every vertex uses the current material's reflection model, including
+normal maps, diffuse, rough conductor and coated diffuse inputs. Infinite lights
+and the environment use ordinary geometric visibility. Finite point, spot and
+mesh-light connections use the optical operator. A scene lit only by an infinite
+environment therefore does not gain free-space diffraction from this profile.
+
+### Declared scalar connection integral
+
+For a finite light-to-surface connection of length `L`, wavelength `lambda` and
+wavenumber `k = 2*pi/lambda`, the source mode is a circular Gaussian waist with
+`Sigma = L/k`. Its free-space field, with the common axial phase omitted, is
+
+```text
+psi(x,y,z) = Sigma/(Sigma + i*z/k)
+             * exp(-(x*x + y*y)/(2*(Sigma + i*z/k))).
+```
+
+The connection measures the field on the mean axis at `z=L`, divided by the
+unobstructed analytic field. Its power is the squared magnitude of this ratio.
+Distinct light/path samples add powers; open parts of one connection add complex
+fields before squaring, preserving cross-opening interference.
+
+A finite cylindrical envelope (a supported elliptical-cone special case)
+encloses the mode over the connection. BVH traversal finds the nearest axial
+intersection, then gathers every intersecting triangle in a frustum of depth
+twice the envelope's major radius. Distances have working-precision axial padding
+so a second gather cannot lose the triangle that established the nearest hit.
+Each region projects its triangle union along propagation onto its midpoint
+plane. Coverage is evaluated directly in transverse coordinates, avoiding
+reconstruction of tiny samples in large world coordinates; fixed-mip texture and vertex alpha determine coverage. Successive masks
+multiply the complex field, with propagation between them.
+
+The propagation lattice has 16 by 16 complex samples over a half-width of
+`3*sqrt(2*Sigma)`, with four coverage samples per cell. Separable FFTs apply the
+paraxial angular-spectrum transfer function
+`exp(-i*pi*lambda*dz*(fx*fx + fy*fy))`. The finite periodic window and spatial
+sampling are part of the declared approximation. More camera samples do not
+refine this lattice. Very fine apertures and near-grazing geometry need independent
+spatial convergence studies before making quantitative optical claims.
+
+Ballistic escape starts at the larger of two wavelengths and eight binary32
+epsilons times the connection's world-coordinate scale. It grows by four up to
+65536 wavelengths (or the initial rounding guard, if larger), checking the
+centre-ray segment while seeking a clear, finite-thickness beam probe. The probe
+thickness is the initial rounding guard, avoiding numerically degenerate
+zero-thickness intersections. Both offset endpoints are retained explicitly. Escape is applied at the source,
+receiver and after interactions to
+avoid repeated self-intersections. At the escape cap this scalar profile retains
+a ballistic connection through the remaining interval; it does not simulate
+near-wall guided modes. The optical kernel requires positive finite distances,
+unit directions and `lambda/L <= 1/32`. Invalid inputs and exhaustion of the
+256-triangle region or 64-region connection limit reject the contribution
+with an actionable diagnostic, preserving the last accepted image.
+
+This is a scene-capable **scalar paraxial connection profile**, with classical RGB
+surface scattering between connections. It is not the paper's full polarimetric
+bidirectional cone path tracer: Fraunhofer/UTD edge operators, interference-aware
+material-direction rejection sampling, coherent reflection/transmission between
+surface events and spectral material transport are not implemented here.
+
+### CPU oracle and validation
+
+Set `ReferenceCaptureDescription::OpticalWavelengthWorld` to a positive wavelength
+in metres to select the same connection profile in reference captures. Zero
+preserves the geometric reference profile. Select `CpuOracle` or `GpuCompute` and
+`UniformArea` light sampling; incompatible native-query or resampled requests
+reject explicitly. Changing wavelength resets progressive accumulation. Raw
+`LUHDR01` exports retain the wavelength at byte 92 and optical flag 256.
+
+The existing scene benchmark accepts an optional final wavelength in nanometres:
+
+```sh
+ludus_reference_benchmark COOKED_SCENE 64 32 16 3 cpu 1 550
+ludus_reference_benchmark COOKED_SCENE 64 32 16 3 gpu 1 550
+```
+
+`LUDUS_REFERENCE_BENCHMARK_OUTPUT` saves raw linear RGB for matched comparisons.
+The benchmark retains authored analytic lights and HDR environments. It does not
+add lights when the authored scene is dark.
+
+Primitive regressions cover off-axis geometry, clipped extrema and degenerate
+rays; BVH queries are compared with brute force. CPU/GPU tests compare region
+membership, complex fields and raw reference AOVs. Analytic fixtures test an
+unobstructed beam, an opaque screen, the quarter-power half-plane boundary,
+cross-opening interference and propagation through two separated regions. A
+cooked production-graph regression checks authored lighting and diffraction in
+geometric shadow. The Metal compiler boundary preserves emitted SPIR-V
+`DontInline` controls for the optical solver, traversal and FFT routines. Keeping
+these routines isolated prevents live-state corruption in a merged ray kernel;
+the translated helper gate and cooked staircase capture cover this path. The
+former manually authored Gaussian-aperture graph remains
+a test fixture, with its separate analytic Fresnel and double-slit checks.
+
+The macOS Metal validation uses the existing cooked scenes with their authored
+camera, geometry, reflection materials, alpha/normal/emission maps and lights.
+Raw linear RGB comparisons at 550 nm and three surface vertices give:
+
+| Scene | Triangles | Capture | RGB RMSE | Maximum component difference |
+| --- | ---: | --- | ---: | ---: |
+| staircase2 | 28,815 | 64 × 32, 16 spp | 0.000552 | 0.0324 |
+| Bistro | 2,838,960 | 32 × 16, 8 spp | 0.0000256 | 0.000788 |
+| Sponza | 3,747,018 | 32 × 16, 8 spp | 0.000000000813 | 0.0000000152 |
+
+The scene checks admit RMSE below 0.001 and relative mean radiance difference
+below 0.1%; these are numerical comparisons of matched inputs, without denoising
+or temporal reuse. Rare float32 surface-path branch differences prevent a uniform
+per-pixel bound as tight as the analytic field fixtures. Sponza's authored mean
+radiance is about 0.000000882, so that capture mainly establishes geometry and
+material compatibility, not a strong illuminated diffraction test. The small
+analytic and authored-point-light fixtures establish nonzero diffraction and
+cross-opening interference. The graph scene adapter also retains zero-area primitive diagnostics and shares
+camera-relative inversion with the deferred renderer, so a distant conventional
+camera is admitted without changing its authored view. Local Metal evidence does
+not qualify physical Vulkan, browser or editor interaction paths.
+
+`wave_tracing.hpp` also exposes allocation-free Gaussian moment propagation
+(Eqs. 20–21) and a float64 Fresnel aperture oracle. These retain independent
+numerical checks; an aperture-only result does not establish scene capability.
+
 ## Use the forward-lit template
 
 Choose **New Render Graph → Template → Forward lit**, or create an editable package:
@@ -8652,9 +8965,9 @@ checking mesh reuse. The template is owned by
 ## Prepare point features and neighborhoods
 
 The engine provides native SDK preparation APIs for point-based/neural rendering.
-A Light Transformer query decoder is available below; its trained scene encoder
-and an executable Light Transformer JSON template are not available yet. The existing authored
-scene-compute limits described above remain in force. General preprocessing uses
+The portable Light Transformer encoder, query decoder and executable template are
+available below. The existing authored scene-compute limits described above
+remain in force; encoder dispatches use a prepared compute prefix. General preprocessing uses
 [prepared RHI workloads](fullscreen-rendering.md#prepared-buffer-only-workloads-and-caches)
 and shares their device, dependency and completion ledger.
 
@@ -8742,22 +9055,20 @@ use original anchor index order, making the adapter's tie convention explicit.
 Preparation validates storage/dispatch limits before allocating query scratch,
 consumes source borrows synchronously and preserves an empty workload on failure.
 Run its ordered graph through the RHI. `LIGHT_TRANSFORMER_RESULT_BUFFER` contains
-query-major float4 predictions (network RGB, reserved W zero); do not apply albedo
-again. No GPU readback is required to consume that buffer through subsequent GPU
-work. This SDK helper currently uploads CPU-provided latents and query records;
-it does not yet connect visible-surface query generation to an authored graph.
+query-major float4 predictions (raw network RGB, reserved W zero). For the
+diffuse irradiance model, reconstruct outgoing radiance as
+`emission + albedo * prediction / PI`. No GPU readback is required to consume that buffer through subsequent GPU
+work. This standalone helper uploads CPU-provided latents and query records. The
+encoder and template below keep scene latents on the GPU.
 
 The regression fixture uses an independent PyTorch calculation, synthetic
 parameters and stable distance sorting, with absolute tolerance `1e-5` plus
 relative tolerance `1e-4` on raw RGB. A local checkpoint qualification uses the
 same fixture generator's `--checkpoint` option and supplies its output through
 `LUDUS_LIGHT_TRANSFORMER_TEST_FIXTURE`. No released weights or upstream scene data
-are stored in those fixtures. Decoder agreement on supplied latents does not
-establish trained **encoder** agreement, full-scene GI quality or interactive
-performance. The encoder still needs portable sparse convolutions, serialized
-attention and hierarchical pooling/unpooling before a usable paper template can
-be published. No CUDA, vendor-specific tensor API, training runtime or upstream
-weights are bundled.
+are stored in those fixtures. Decoder agreement on supplied latents does not establish full-scene GI quality
+or interactive performance. No CUDA, vendor-specific tensor API, training runtime
+or upstream weights are bundled.
 
 `RenderGraph::GetPersistentBuffer` borrows a stable graph-owned Buffer allocation
 and capacity for prepared compute producers/consumers. Use it as a workload
@@ -8773,6 +9084,97 @@ and never authorizes writes into a pending cache candidate's active generation.
 The point-feature motivation follows Bing Xu, Mukund Varma T, Cheng Wang,
 Tzu-Mao Li, Lifan Wu, Bartlomiej Wronski, Ravi Ramamoorthi and Marco Salvi,
 *A Generalizable Light Transport 3D Embedding for Global Illumination*, SIGGRAPH
-2026, section 3.2 ([paper](https://arxiv.org/abs/2510.18189)). The engine implements
-input/storage/search foundations and the trained query decoder; the full learned
-encoder and paper template remain unavailable.
+2026, section 3.2 ([paper](https://arxiv.org/abs/2510.18189)). The implementation follows the released inference architecture; the numerical
+and scene limitations below are explicit parts of this adapter.
+
+
+### Encode a trained scene and use the Light Transformer template
+
+Create an editable native template with the CLI or choose **Light Transformer**
+from the editor graph canvas template menu:
+
+```sh
+ludus render-graph new /path/to/graph --template light-transformer \
+  --output offscreen --profiles metal spirv
+python scripts/export-light-transformer /path/to/checkpoint.ckpt \
+  --model-directory /path/to/graph/light_transformer \
+  --world-units-per-model-unit <fixed-training-scale>
+```
+
+Use the same fixed scale as the checkpoint's training dataset, in World units per
+model unit. Paper appendix A.3 translates each scene by its minimum and divides
+by a **dataset-wide constant**. Ludus never fits each scene independently to a
+unit cube. The consulted release does not provide an authoritative numerical
+value for that constant; the template leaves it unset rather than inventing one.
+A scene extending beyond that fixed extent fails with a repair diagnostic.
+
+Export validates both networks before writing. It writes versioned little-endian
+`encoder.llte` and `decoder.lltd`, then `model.json` with asset SHA-256 identities,
+scale, seed, surface point count, GPU buffer budget, independent CPU surface
+preparation budget and sampling attempt limit. Keep all three files together.
+The editor verifies those identities before staging a candidate; a partial export
+cannot silently pair different models. These external assets are not authored
+shader sources and are not bundled with Ludus or downloaded at preview time.
+The editable template includes only a setup placeholder. Preserve the model
+subdirectory when moving the graph package. An installed SDK consumer supplies
+`LightTransformerModelDescription` to `RenderGraph::Initialize` or activation
+`Stage` when `RenderGraphPackage::HasLightTransformer()` is true.
+
+`<ludus/graphics/renderer/light_transformer_encoder.hpp>` exposes the standalone
+encoder. Cook the `renderer_light_transformer_encoder` recipe and call
+`PrepareLightTransformerEncoder` with finite model-space position, normal, albedo
+and emission records. The CPU prepares farthest-point samples, exact neighbors,
+sparse voxel pairs, serialization orders and pooling maps. Both scene MLPs,
+neighbor encoders, sparse convolutions, all 22 Point Transformer V3 blocks,
+hierarchical pooling/unpooling and final feature gathering execute on the GPU.
+Every kernel shares one prepared program; only descriptors and dispatch records
+vary. Weight chunks stay below Vulkan's minimum storage-buffer range guarantee.
+The algorithm uses binary32 compute, four storage bindings and bounded shared
+memory, with no subgroup-width or floating-point atomic requirement.
+
+`LightTransformerEncoding::Workload` buffer 3 contains a packet prefix with its
+World-to-model transform, point-search tree, positions and 128-channel GPU latents.
+`PacketBytes` excludes scratch. Optional decoder parameters make that packet
+self-contained for the template. Run the encoder before its consumers.
+`PrepareLightTransformerEncodedQueries` prepares cooperative batched decoding
+against that packet; `PrepareLightTransformerPacketQueries` accepts a packet
+borrowed from a completed graph frame. Neither helper reads latents back.
+
+The template samples the selected World's material-aware surfaces deterministically
+(20,000 points by default, twice reduced by FPS to 5,000 anchors), encodes them
+on its first accepted frame and after scene changes, and reuses the packet for
+camera-only updates. The encoder and visible-surface decoder share one ordered
+GPU graph and resource dependency ledger. The decoder traces the authored World,
+queries its visible surfaces and reconstructs diffuse outgoing radiance with
+mesh emission. Pending or failed candidates preserve the last drawable image.
+The template's declared 8 MiB embedding buffer admits its maximum packet; smaller
+authored capacities fail with the required byte count and a concrete repair.
+
+This first template admits typed diffuse materials with zero metallic response,
+complete material assignments, mesh emission, and no analytic lights or environment
+illumination. Unsupported inputs fail explicitly. It evaluates per-pixel queries
+at one eighth the viewport width and height by default; edit the graph's render
+size for other quality/cost tradeoffs. Serial surface decoding prioritizes the
+existing graph callback ABI and portability. Interactive performance and trained
+full-scene image quality have not been qualified.
+
+The numerical policy is deterministic fixed Morton/Hilbert and transposed orders,
+no inference dropout, stable original-index distance ties and binary32 attention.
+The upstream implementation shuffles orders and uses half-precision FlashAttention.
+Duplicate sparse voxels sum all indexed point contributions; upstream sparse
+runtime duplicate-index behavior is not a bitwise contract of this adapter.
+The released FPS near-origin exclusion is retained. These choices may change
+predictions relative to an upstream CUDA execution.
+
+The default CPU PyTorch oracle fixture has procedurally generated weights and
+exercises all encoder stages without shipping trained assets. A local released
+checkpoint comparison on Metal passed all 128 latent channels at 32 anchors with
+absolute tolerance `5e-4` plus relative tolerance `5e-4`; it compares an independent
+CPU inference calculation using the declared ordering/precision policy, not the
+vendor sparse/FlashAttention runtime. A larger 4,100-input/1,025-anchor trained
+comparison also passed every channel with the same tolerance, including a partial
+1,024-point attention patch. Hilbert codes were separately checked
+against the authors' serialization. End-to-end regressions compare template
+surface output against cooperative packet decoding and retain the old scene after
+failed replacements. Metal execution and SPIR-V compilation are distinct evidence;
+Vulkan device execution must be qualified on the corresponding native batch runner.

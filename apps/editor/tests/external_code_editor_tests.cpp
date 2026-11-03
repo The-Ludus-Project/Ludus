@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QProcess>
 #include <QTemporaryDir>
 
 using namespace ludus::editor;
@@ -20,6 +21,7 @@ TEST_CASE("External code editor paths remain individual arguments", "[editor][so
     REQUIRE(MakeExternalCodeEditorCommand(QStringLiteral("/usr/bin/true"), path, command) == true);
     CHECK(command.Program == QStringLiteral("/usr/bin/true"));
     CHECK(command.Arguments == QStringList{QFileInfo(path).canonicalFilePath()});
+    CHECK(QProcess::execute(command.Program, command.Arguments) == 0);
     const ExternalCodeEditorCommand original = command;
     CHECK(MakeExternalCodeEditorCommand(temporary.path(), path, command) == false);
     CHECK(command.Program == original.Program);

@@ -686,8 +686,10 @@ Snapshots cache conservative unions for contiguous groups of sixteen opaque
 objects. Rejected groups skip individual tests; fully inside groups admit their
 members without further AABB tests. Intersecting groups and overlays retain
 individual conservative classification. Input order and painter semantics remain
-unchanged. Homogeneous mesh/material runs preserve source order and skip pairwise
-overlap searches; other runs retain conservative ordering constraints. Reference
+unchanged. Opaque sequences already ordered by material, uniform set and mesh
+preserve source order and skip pairwise overlap searches. This includes
+heterogeneous batches: every stable subrange sort would leave that sequence
+unchanged. Unordered sequences retain conservative overlap constraints. Reference
 views bypass visibility and packet optimization.
 `ViewReport::CulledGroups` and `BoundsTests` expose the work saved. This fixed
 hierarchy benefits spatially coherent source order; it is not a spatial index.
@@ -1643,12 +1645,15 @@ magic `LUHDR01\0`, little-endian version/profile/sampler/header sizes at bytes
 8/12/16/20, width/height/target/depth/roulette/flags at 24–44, seed/revision and two
 64-bit scene digest words at 48–72, secondary range/mip/light count at 80–88,
 column-major world-to-clip floats at 96–159, eye at 160–171 and environment at
-172–183. Remaining header bytes are reserved zero. Flags encode CPU (1), center
+172–183. Optical wavelength in metres occupies byte 92 (zero for geometric transport);
+remaining header bytes are reserved zero. Flags encode CPU (1), center
 rays (2), orthographic (4), reverse-Z (8), infinite far (16), partial (32),
-GPU compute (64) and `ResampledProjectedSolidAngle` light sampling (128); neither
+GPU compute (64), resampled light sampling (128) and scalar optical connections (256); neither
 traversal bit marks native queries. The sampler field is 1 for `UniformArea` and 2
 with flag 128; `scripts/reference-hdr` rejects any other pairing and records
-`light_sampling` in its manifest.
+`light_sampling` in its manifest, with `center_rays` for flag 2.
+The scalar optical connection profile and its CPU/GPU contract are described in
+[render-graph authoring](../development/render-graph-authoring.md#trace-scene-optical-connections).
 Each top-left ordered pixel contains three FP32 mean RGB channels and a uint32
 committed count. The light count/digest identify the retained scene; applications
 must save original light/asset inputs for independent scene reconstruction.
@@ -2129,18 +2134,23 @@ those end-to-end checks are complete.
 
 ## GPU-resident progressive preview
 
-`Renderer::EnableGpuPreview` explicitly enables an optional native-ray-query GPU path before mesh
+`Renderer::EnableGpuPreview` explicitly enables optional GPU preview before mesh
 and material creation. It requires negotiated compute, storage buffers and
-StorageVertex support. Cook `renderer_gpu_preview.slang` as compute and
-`renderer_gpu_preview_image.slang` as raster with the installed shader helper;
-pass their independently reflected descriptors. Native Metal cooking requires the
-pinned SPIRV-Cross translator. WebGPU and WebGL2 reject this path with
-`Unsupported`. The first acceptance covers native Metal; other backends require
-their own pixel qualification. There is no CPU transport/readback fallback and
-these native-query artifacts require native BLAS/TLAS traversal. Triangle graph
-kernels may explicitly select the software compute ABI described in
-[render-graph authoring](render-graph-authoring.md); that path creates no native
-structures and does not use opacity ranges. No automatic traversal fallback is selected.
+StorageVertex support. Choose the installed `renderer_gpu_preview` recipe for
+native ray queries, or `renderer_gpu_preview_software` for explicit triangle
+traversal in the compute shader. The software recipe performs linear work per ray.
+Use `renderer_gpu_preview_image` for presentation and pass the independently
+reflected descriptors. Native Metal cooking requires the pinned SPIRV-Cross
+translator. WebGPU and WebGL2 reject this path with `Unsupported`.
+
+Native-query artifacts additionally require native BLAS/TLAS traversal. Their
+first acceptance covers native Metal; other backends require their own pixel
+qualification. The installed reference-scene sample checks exported authored-emission
+pixels with the software recipe on Vulkan; dense-scene accuracy and performance
+require separate qualification. Triangle graph kernels may also explicitly select
+the software compute ABI described in [render-graph authoring](../development/render-graph-authoring.md);
+that path creates no native structures and does not use opacity ranges. No automatic
+traversal or CPU transport/readback fallback is selected.
 
 CPU setup freezes the existing snapshot, retained normals/UVs/materials and one
 retained RGBA8 texture mip, builds the static binned-SAH BVH, and packs GPU buffers.
@@ -3292,14 +3302,20 @@ camera movement and exposure do not change these view-independent irradiance cha
 `LitMaterialDescription::DebugView` (`MaterialDebugView`) replaces a lit
 material's shaded output with one inspection quantity per pixel: world-space
 normal as RGB (`n * 0.5 + 0.5`), linear depth, perceptual roughness, metallic,
-UV0 as red/green, or the number of lights whose shadowed contribution is nonzero
-as a viridis ramp saturating at `MATERIAL_DEBUG_LIGHT_COUNT_SATURATION`.
+UV0 as red/green, the number of lights whose shadowed contribution is nonzero
+as a viridis ramp saturating at `MATERIAL_DEBUG_LIGHT_COUNT_SATURATION`, or a
+wireframe colour (`MATERIAL_DEBUG_WIREFRAME_RED`/`GREEN`/`BLUE`) dimmed toward
+`MATERIAL_DEBUG_WIREFRAME_EDGE_ON_PERCENT` as the surface turns edge-on.
+Wireframe draws edges only when the program was prewarmed with
+`PrewarmLitProgram(..., rhi::RasterFillMode::Lines)`, which applies line fill to
+its colour and depth-prepass pipelines while its shadow pipeline keeps filling
+triangles; a solid program fills triangles in the wireframe colour.
 Only the debug recipes honour it: `renderer_lit_debug` and
 `renderer_clustered_authored_debug`, with matching shadow recipes. They compile
 the production sources with `LUDUS_DEBUG_VIEW`, keep the production binding and
 parameter layout, and read the mode from the reserved `Options.w`; the
 production recipes are unchanged and ignore it (it stays zero). Creation rejects
-values above `MaterialDebugView::LightCount`.
+values above `MaterialDebugView::Wireframe`.
 
 `ViewDescription::DebugDepthRange` supplies the linear-depth `{near, far}` in
 world units: radial distance from the camera for perspective views and distance

@@ -20,13 +20,14 @@ StructuredBuffer<NativeRayFunctionTableToken> NativeRayFunctions;
 LUDUS_SHADER_BINDING(LUDUS_METAL_RAY_INTERSECTION_TABLE_BINDING)
 StructuredBuffer<NativeRayIntersectionTableToken> NativeRayIntersections;
 
-[noinline] uint LudusNativeResolveTriangle(uint primitive, uint geometry) {
+[noinline] uint LudusNativeResolveTriangle(uint primitive, uint geometry)
+{
     if ((Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0 && geometry != 0)
         primitive += asuint(SceneValue(Offsets.y).y);
     return asuint(SceneValue(Offsets.y + primitive).x);
 }
 
-    [noinline] bool LudusNativeAcceptTriangle(uint primitive, uint geometry, float2 barycentric)
+[noinline] bool LudusNativeAcceptTriangle(uint primitive, uint geometry, float2 barycentric)
 {
     if ((Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0 ||
         ((Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0 && geometry == 0))

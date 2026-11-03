@@ -512,6 +512,88 @@ compilation. `tests/sdk_consumer` showed no consistent difference (10 of 18
 pairs, differences from −1.7 to +0.9 s). Six pairs at `--parallel 2` pointed
 the same way for the two examples but are too few to quantify.
 
+## Build graph check
+
+Header parse budgets miss work that the build graph itself repeats: a source
+listed by several targets is compiled once per target. The editor application
+and its test executables listed the same sources, so render-graph sources were
+compiled five times, the application's sources twice, and the renderer shaders
+and Qt resources once per executable as well.
+
+`tools/check_build_graph.py` reads a configured tree's `compile_commands.json`,
+maps every compilation to the target that owns its object file, and fails when
+a source is compiled by more than one target:
+
+```bash
+python3 tools/check_build_graph.py out/build/macos-clang-development
+```
+
+It counts compilations instead of timing them, so its result does not depend on
+host load or runner speed. `config/build_graph.json` lists the exceptions:
+
+- A **variant** compiles differently for each target: fault-injection backends,
+  the renderer tests' reference backend and `-ffp-contract=off`, the editor's
+  configuration tests without the GPU preview. Each rule states its reason.
+- A **baseline** entry is identical duplication not yet migrated. The list may
+  only shrink: once a tree containing every target a rule names compiles each of
+  its sources once, the check fails until the rule is removed.
+
+The source/tooling job runs its unit tests. The build-time budget, Linux editor
+and macOS native jobs run the check on their configured trees and add a
+summary table to the job summary. A new duplicate fails the batch; share the
+source through a library instead (see AGENTS.md, Build-time hygiene).
+
+### Editor shared objects
+
+The editor now compiles each shared source once in an OBJECT library
+(`apps/editor/CMakeLists.txt`, Shared editor objects): the render-graph model,
+canvas and authoring panels, presentation, content, project explorer, document
+well, texture display, the application objects with their compiled shaders, the
+Qt resources, and the tests' Catch2 entry point. Every executable links the
+same objects it previously compiled itself, so the linked code is unchanged.
+The generated LTC table, 213,000 lines of constant data, is likewise compiled
+once and linked into the renderer and both renderer test executables.
+
+Equivalence was checked from the compile databases before and after, with the
+exception mode normalized (test executables compile with `-fexceptions`, the
+shared objects without, as engine libraries already are):
+
+- Every shared editor source preprocessed identically (`-E -P`) for all of its
+  former consumers, except the variants that now stay per target. Code
+  generation flags differed only in the exception mode.
+- Each object library's compilation of a source preprocessed identically to the
+  former `ludus_editor` or `ludus_editor_tests` compilation of that source
+  (158 sources). The one difference is `render_graph_defaults.cpp`'s path to its
+  default graph package, which now lives under the object library's build
+  directory.
+
+Measured on `macos-clang-development` with the editor, its preview and tests:
+
+| Clean build | Before | After |
+| --- | ---: | ---: |
+| Compilations (all targets) | 1734 | 1376 |
+| Compilations of an already compiled source | 468 | 109 |
+| Lines of main source files compiled | 1,866,091 | 1,049,515 |
+| Editor compilations | 769 | 413 |
+| Editor Qt resource compilations | 86 | 28 |
+| Editor shader artifacts compiled by slangc | 42 | 21 |
+| Editor host render-graph cooks | 4 | 2 |
+| LTC table compilations (213,000 lines) | 3 | 1 |
+
+The remaining 109 are the 94 variant and 15 baseline compilations above.
+
+A clean rebuild of every editor target (engine libraries already built, editor
+objects deleted, ccache disabled, `--parallel 8`) on a shared 10-core Apple M5
+compiled 747 → 381 translation units and used 1,045 → 626 s of CPU (user plus
+system, `/usr/bin/time`), 40% less. Wall time went from 184 to 154 s, but the
+host load differed (about 20 and 30), so no wall-time improvement is claimed.
+CPU time also rises with contention: a repeat of the after side at load 50–60
+used 1,113 s. The pair above ran the before side at the lower load, so its
+direction holds; the translation unit counts are the load-independent result.
+Generated shaders and graphs were not rebuilt in this pair; their halved counts
+are in the table. Compare the CI job summaries' build times across several
+batches before drawing conclusions about runner wall time.
+
 ## Fresh worktree setup cost
 
 A new agent worktree runs

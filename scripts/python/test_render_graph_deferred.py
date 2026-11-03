@@ -38,12 +38,15 @@ class DeferredTests(unittest.TestCase):
 
     def test_deferred_roles_append_after_clustered_depth_without_renumbering(self):
         first = execution.FORWARD_DEPTH_STAGE_ROLE + 1
+        # Version 31 appends the opaque G-buffer role after the original four.
         expected = [('DeferredGBuffer', 'fragment'), ('DeferredLighting', 'vertex'),
-                    ('DeferredLighting', 'fragment'), ('DeferredDepthCopy', 'fragment')]
+                    ('DeferredLighting', 'fragment'), ('DeferredDepthCopy', 'fragment'),
+                    ('DeferredOpaqueGBuffer', 'fragment')]
         self.assertEqual([first + index for index in range(len(expected))],
                          [execution.role(*key) for key in expected])
         self.assertEqual(execution.FORWARD_DEPTH_STAGE_ROLE, execution.role('ForwardDepth', 'fragment'))
         self.assertEqual('DeferredLightingFragment', execution.program_member('DeferredLighting', 'fragment'))
+        self.assertEqual('DeferredOpaqueGBufferFragment', execution.program_member('DeferredOpaqueGBuffer', 'fragment'))
 
 
 if __name__ == '__main__':

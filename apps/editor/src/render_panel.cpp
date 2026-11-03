@@ -194,13 +194,8 @@ RenderPanel::~RenderPanel()
     delete Job_;
     Job_ = nullptr;
 }
-namespace
-{
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-/// Short parent for the play session's private socket directory: sockaddr_un paths are at most 103 bytes.
-const QString PLAY_SOCKET_PARENT = QStringLiteral("/tmp");
-#endif
-} // namespace
+// The launch address precedes the failure reason, matching the Play viewport interface.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 bool RenderPanel::BeginPlay(QString& outAddress, QString& outReason)
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -252,11 +247,10 @@ bool RenderPanel::BeginPlay(QString& outAddress, QString& outReason)
         static_cast<foundation::uint32>(qMax(1, qRound(static_cast<foundation::float64>(Viewport_->width()) * ratio)));
     const foundation::uint32 height =
         static_cast<foundation::uint32>(qMax(1, qRound(static_cast<foundation::float64>(Viewport_->height()) * ratio)));
-    if (mPlayOrNull->Start(PLAY_SOCKET_PARENT,
-                           device.Identity,
-                           width,
-                           height,
-                           static_cast<foundation::float32>(ratio)) == false)
+    // sockaddr_un paths are at most 103 bytes; keep the session's private directory parent short.
+    const QString socketParent = QStringLiteral("/tmp");
+    if (mPlayOrNull->Start(socketParent, device.Identity, width, height, static_cast<foundation::float32>(ratio)) ==
+        false)
     {
         outReason = mPlayOrNull->GetUnavailableReason();
         return false;

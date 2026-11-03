@@ -171,8 +171,10 @@ void MainWindow::OnUndoRequested()
     if (getActiveWorkspaceOrNull() == ProjectSettings_ && mRenderingSettingsOrNull->ContainsFocus() == true)
     {
         Renderer_->Undo();
+        RenderDocumentActions();
+        return;
     }
-    else if (codeOrNull != nullptr)
+    if (codeOrNull != nullptr)
     {
         codeOrNull->Undo();
     }
@@ -215,8 +217,10 @@ void MainWindow::OnRedoRequested()
     if (getActiveWorkspaceOrNull() == ProjectSettings_ && mRenderingSettingsOrNull->ContainsFocus() == true)
     {
         Renderer_->Redo();
+        RenderDocumentActions();
+        return;
     }
-    else if (codeOrNull != nullptr)
+    if (codeOrNull != nullptr)
     {
         codeOrNull->Redo();
     }

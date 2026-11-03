@@ -1052,6 +1052,7 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         vkGetPhysicalDeviceFeatures(gPhysical, &supported);
         const VkPhysicalDeviceFeatures enabled
         {
+            .fillModeNonSolid = supported.fillModeNonSolid,
             .textureCompressionBC = supported.textureCompressionBC,
             .shaderSampledImageArrayDynamicIndexing = supported.shaderSampledImageArrayDynamicIndexing,
         };

@@ -62,11 +62,13 @@ command) before building. Configure and build do not download or repair tools.
   `init.sh`; tests need `--with-tests`. Custom builds can set the package's `_DIR`
   setting or `CMAKE_PREFIX_PATH` to an existing compatible installation.
 - Missing shader compiler/validator: run `./scripts/shader-probe bootstrap` from
-  the Ludus source repository. Browser GLSL ES also needs
+  the Ludus source repository. Browser GLSL ES and translated Metal compute also need
   `./scripts/bootstrap-spirv-cross`. If tools moved, update
   `LUDUS_SLANG_COMPILER`, `LUDUS_SPIRV_VALIDATOR`, or `LUDUS_SPIRV_CROSS`.
-  Metal raster shaders use Slang; native Metal ray queries also use the pinned
-  translator. Rendered native editor setup prepares both, and **Project → Repair
+  The macOS presets select the prepared repository-local translator for every
+  build flavor, including fresh Debug and Release build directories. A custom
+  `-DLUDUS_SPIRV_CROSS=...` overrides that default. Metal raster shaders use
+  Slang; native Metal ray queries also use the pinned translator. Rendered native editor setup prepares both, and **Project → Repair
   Project Setup** automatically prepares missing tools required by saved graphs.
   Installed SDK consumers use the same checks;
   bootstrap commands belong to the source repository, not the game directory.

@@ -3,6 +3,7 @@
 
 #include "../shaders/renderer_gpu_preview_layout.h"
 #include "internal/gpu_denoiser.h"
+#include "internal/light_transformer_graph.h"
 #include "internal/ltc_table_data.h"
 #include "internal/render_graph_deferred.h"
 #include "internal/render_graph_metalfx.h"
@@ -17,6 +18,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/queries.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/lifetime.h>
 
@@ -146,6 +148,13 @@ usize GetBindingBytes(const RenderGraphPlan& plan, usize binding) noexcept
         }
     }
     return bytes;
+}
+/// Whether a stage carries an artifact for any shader target.
+bool HasShaderArtifact(const rhi::RasterShaderDescription& description) noexcept
+{
+    const rhi::ShaderDescription& artifact = description.Artifact;
+    return artifact.Wgsl.empty() == false || artifact.Msl.empty() == false || artifact.Spirv.empty() == false ||
+           artifact.GlslEs.empty() == false;
 }
 bool IsReadByStage(format::Visibility stages, rhi::ShaderStage stage) noexcept
 {
@@ -809,6 +818,7 @@ struct RenderGraph::State final
     StaticArray<bool, format::MAX_RESOURCES> IsPooled{};
     RenderGraphAttachmentPool* PoolOrNull = nullptr;
     RenderGraphAllocationReport Allocation{};
+    core::UniquePtr<internal::LightTransformerGraph> Model;
     struct AttachmentReplacement final
     {
         rhi::DeviceHandle Device{};
@@ -928,6 +938,7 @@ struct RenderGraph::State final
         {
             return;
         }
+        Current->HasEncodedModel = true;
         Current->NextRayTile = Current->NextRayTile + 1 < RayTileCount ? Current->NextRayTile + 1 : 0;
         if (Current->NextRayTile == 0 && Current->SubmittedRaySamples < GetMaximumAccumulationSamples())
         {
@@ -949,6 +960,8 @@ struct RenderGraph::State final
     struct Scene final
     {
         State* OwnerOrNull = nullptr;
+        LightTransformerEncoding Model;
+        bool HasEncodedModel = false;
         core::UniquePtr<internal::ForwardSceneGeneration> ForwardGeneration;
         StaticArray<StaticArray<Mesh, format::MAX_MESHES>, format::TECHNIQUE_COUNT> Meshes{};
         StaticArray<bool, format::MAX_MESHES> HasMeshes{};
@@ -1067,6 +1080,7 @@ struct RenderGraph::State final
     }
     Status PrepareCameras(BorrowedView<const ViewDescription> cameras, uint64 revision) noexcept
     {
+        LUDUS_PROFILE_SCOPE(RenderGraphPrepareCameras);
         CameraUpdate* allocationOrNull = new (std::nothrow) CameraUpdate;
         core::UniquePtr<CameraUpdate> candidate{allocationOrNull};
         if (candidate.Get() == nullptr)
@@ -1911,7 +1925,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
                                const RenderGraphPrograms& programs,
                                RenderGraphAttachmentPool* poolOrNull,
                                uint32 referenceWidth,
-                               uint32 referenceHeight) noexcept
+                               uint32 referenceHeight,
+                               const LightTransformerModelDescription* modelOrNull) noexcept
 {
     if (mState.Get() != nullptr)
     {
@@ -2012,12 +2027,15 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
          &programs.DeferredDepthCopyFragment}};
     for (const rhi::RasterShaderDescription* stage : deferredStages)
     {
-        const bool hasArtifact = stage->Artifact.Wgsl.empty() == false || stage->Artifact.Msl.empty() == false ||
-                                 stage->Artifact.Spirv.empty() == false || stage->Artifact.GlslEs.empty() == false;
-        if (hasArtifact != programs.HasClusteredDeferred)
+        if (HasShaderArtifact(*stage) != programs.HasClusteredDeferred)
         {
             return Status::InvalidDescription;
         }
+    }
+    // The opaque G-buffer fragment is optional: packages before format::OPAQUE_GBUFFER_PACKAGE_VERSION omit it.
+    if (HasShaderArtifact(programs.DeferredOpaqueGBufferFragment) == true && programs.HasClusteredDeferred == false)
+    {
+        return Status::InvalidDescription;
     }
     for (usize index = 0; index < plan.Passes.GetSize(); ++index)
     {
@@ -2244,6 +2262,44 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     candidate->Device = device;
     candidate->Header = plan.Description;
     candidate->Target = target;
+    if (programs.HasLightTransformer != (modelOrNull != nullptr))
+    {
+        return Status::InvalidDescription;
+    }
+    if (modelOrNull != nullptr)
+    {
+        candidate->Model.Reset(new (std::nothrow) internal::LightTransformerGraph);
+        if (candidate->Model.Get() == nullptr)
+        {
+            return Status::OutOfMemory;
+        }
+        const Status modelStatus = candidate->Model->Initialize(*modelOrNull);
+        if (modelStatus != Status::Ready)
+        {
+            return modelStatus;
+        }
+    }
+    if (programs.HasLightTransformer == true)
+    {
+        usize modelPasses = 0;
+        for (usize pass = 0; pass < plan.Passes.GetSize(); ++pass)
+        {
+            if (plan.Passes[pass].Program == format::Technique::RayTracing)
+            {
+                if (plan.Passes[pass].Buffer0 == format::ABSENT ||
+                    plan.Passes[pass].Traversal != format::RayTraversal::ComputeBvh ||
+                    plan.Passes[pass].SceneData != format::SCENE_DATA_ALL)
+                {
+                    return Status::InvalidDescription;
+                }
+                ++modelPasses;
+            }
+        }
+        if (modelPasses != 1 || programs.HasPersistentRayBuffers == false)
+        {
+            return Status::InvalidDescription;
+        }
+    }
     candidate->Programs = programs;
     if (programs.HasRayPathCapture == true)
     {
@@ -2553,6 +2609,29 @@ Status RenderGraph::GetPersistentBuffer(uint32 resource, rhi::BufferHandle& outB
         return Status::NotReady;
     }
     const uint32 backing = state.Resources[resource].Backing;
+    if (state.Model.Get() != nullptr)
+    {
+        for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+        {
+            const uint32 modelResource = state.Passes[pass].Buffer0;
+            if (modelResource != format::ABSENT && state.Resources[modelResource].Backing == backing)
+            {
+                if (state.Current.Get() == nullptr)
+                {
+                    return Status::NotReady;
+                }
+                rhi::BufferHandle packet;
+                const Status ready = state.Current->Model.Workload.GetBuffer(LIGHT_TRANSFORMER_RESULT_BUFFER, packet);
+                if (ready != Status::Ready)
+                {
+                    return ready;
+                }
+                outBuffer = packet;
+                outBytes = state.Current->Model.PacketBytes;
+                return Status::Ready;
+            }
+        }
+    }
     const Status status = rhi::GetStatus(state.Device, state.Buffers[backing]);
     if (status != Status::Ready)
     {
@@ -2564,6 +2643,7 @@ Status RenderGraph::GetPersistentBuffer(uint32 resource, rhi::BufferHandle& outB
 }
 Status RenderGraph::Poll() noexcept
 {
+    LUDUS_PROFILE_SCOPE(RenderGraphPoll);
     if (mState.Get() == nullptr)
     {
         return Status::InvalidState;
@@ -2661,7 +2741,10 @@ Status RenderGraph::Poll() noexcept
                 &state.Programs.ForwardShadow,
                 state.ForwardProgram,
                 state.Programs.HasClusteredForward == true ? &state.Programs.ForwardDepth : nullptr,
-                state.Programs.HasClusteredDeferred == true ? &state.Programs.DeferredGBufferFragment : nullptr);
+                state.Programs.HasClusteredDeferred == true ? &state.Programs.DeferredGBufferFragment : nullptr,
+                HasShaderArtifact(state.Programs.DeferredOpaqueGBufferFragment) == true
+                    ? &state.Programs.DeferredOpaqueGBufferFragment
+                    : nullptr);
             if (IsAccepted(status) == false)
             {
                 return status;
@@ -2762,6 +2845,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                            uint64 contentRevision,
                            const RenderGraphSceneRevisions& revisions) noexcept
 {
+    LUDUS_PROFILE_SCOPE(RenderGraphUpdate);
     if (mState.Get() == nullptr)
     {
         return Status::InvalidState;
@@ -2826,6 +2910,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             return prepared;
         }
     }
+    LUDUS_PROFILE_SCOPE(RenderGraphBuildScene);
     for (usize itemIndex = 0; itemIndex < items.GetSize(); ++itemIndex)
     {
         const RenderGraphItem& item = items[itemIndex];
@@ -3188,6 +3273,27 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                                          policy == RenderGraphCoveragePolicy::DiagnosticColor,
                                          &state.Report.SceneDiagnostics,
                                          sceneRevision};
+    if (state.Model.Get() != nullptr)
+    {
+        for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+        {
+            if (state.Passes[pass].Program == format::Technique::RayTracing &&
+                state.Model->GetRequiredPacketBytes() > preparingResources[state.Passes[pass].Buffer0].Width)
+            {
+                state.Report.Model.Issue = LightTransformerPreparationIssue::EmbeddingCapacity;
+                state.Report.Model.RequiredPacketBytes = state.Model->GetRequiredPacketBytes();
+                state.Report.Model.EmbeddingBufferBytes = preparingResources[state.Passes[pass].Buffer0].Width;
+                outReport = state.Report;
+                return Status::CapacityExceeded;
+            }
+        }
+        const Status encoded = state.Model->Prepare(rayScene, state.Device, candidate->Model, state.Report.Model);
+        if (encoded != Status::Ready)
+        {
+            outReport = state.Report;
+            return encoded;
+        }
+    }
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         if (state.Passes[pass].Program != format::Technique::RayTracing)
@@ -3208,6 +3314,17 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                         ? state.Resizing->Buffers[index]
                         : state.Buffers[index];
                 buffers[slot] = {buffer, preparingResources[index].Width};
+                if (slot == 0 && state.Model.Get() != nullptr)
+                {
+                    rhi::BufferHandle packet;
+                    const Status modelBuffer =
+                        candidate->Model.Workload.GetBuffer(LIGHT_TRANSFORMER_RESULT_BUFFER, packet);
+                    if (modelBuffer != Status::Ready)
+                    {
+                        return modelBuffer;
+                    }
+                    buffers[slot] = {packet, candidate->Model.PacketBytes};
+                }
             }
         }
         // Ray passes reading the same scene data of this update share the first one's uploaded
@@ -3410,7 +3527,9 @@ Status RenderGraph::PrepareEncoding() noexcept
                 {targets.GetData(), count},
                 state.Current->NextRayTile,
                 state.Current->RayGraph,
-                visibilityOrNull);
+                visibilityOrNull,
+                state.Model.Get() != nullptr && state.Current->HasEncodedModel == false ? &state.Current->Model.Workload
+                                                                                        : nullptr);
         if (prepared != Status::Ready)
         {
             return prepared;
@@ -3424,6 +3543,7 @@ Status RenderGraph::Render(rhi::SurfaceHandle surface,
                            uint32 surfaceHeight,
                            rhi::SubmissionToken& outCompletion) noexcept
 {
+    LUDUS_PROFILE_SCOPE(RenderGraphRender);
     if (mState.Get() == nullptr || outCompletion.IsNull() == false)
     {
         return Status::InvalidState;

@@ -379,7 +379,7 @@ executable. Related stale IDE CMake-path overrides are removed; unrelated
 settings are preserved. Real CMake configure/build/test preset discovery must
 succeed, followed by a fresh configure, full build and native CTest. No-tests
 is an error. Web profiles configure and build; browser runtime acceptance is
-separate. The setup signature detects changed SDK contents and moved tools.
+separate. The setup signature detects a moved or retargeted SDK (its path and ABI identity), changed presets and moved tools. It does not hash SDK library contents, so a refreshed engine install from `./init.sh` keeps existing projects' setup valid; each build folder's own SDK stamp reconfigures it on the next build.
 
 The **Build and install the engine used by this editor** option explicitly
 initializes and builds the trusted tooling checkout, then installs the desktop
@@ -629,8 +629,14 @@ viewport between recordings; an active recording retains its original source
 while submitted timing results are collected.
 
 CPU records instrumented scopes in the editor process, including viewport and
-render-graph ticks; it is not a statistical sampler or a viewport-only CPU
-filter. GPU requires an admitted scene viewport with timing support. Both
+render-graph ticks. Renderer scopes separate `RenderGraphUpdate`,
+`RenderGraphBuildScene`, `RenderGraphPrepareCameras`, `RendererPrepareView`,
+`RendererSortOpaquePackets`, `RenderGraphPoll` and `RenderGraphRender`. A camera
+change should use camera preparation rather than rebuild scene content; inspect
+these scopes when navigation stalls. Texture inspection and readback conversion
+appear as `EditorTextureValueRange` and `EditorTextureDisplayConversion`.
+CPU recording is not a statistical sampler or a viewport-only CPU filter.
+GPU requires an admitted scene viewport with timing support. Both
 requires both sources and never silently falls back to CPU. The first delivery
 targets the local editor and its viewport; hosted-game recording and browser
 editor recording remain separate work. Release builds with profiling disabled
@@ -1465,8 +1471,11 @@ imported scene data retain their existing unlit preview adapter.
 The following records the built-in preview implementation and its platform qualification.
 Native World documents now delegate to the [project graph workflow](render-graph-authoring.md#start-customizing-the-renderer),
 which states its static input profile and asynchronous readback limits. They do not expose
-the separate engine shading and reload controls below. Browser preview and standalone
-renderer tests retain that built-in producer.
+the separate engine shading and reload controls below. Instead, the graph's output selector
+offers this producer's Albedo and debug views (Normal through Wireframe) after the graph's
+own outputs; see
+[the World viewport output selector](render-graph-authoring.md#world-viewport-output-selector).
+Browser preview and standalone renderer tests retain that built-in producer.
 
 Build the native Editor with
 [the rendered authoring option](#enable-the-rendered-authoring-surface).
@@ -1498,7 +1507,7 @@ Switching modes keeps the World, camera and layout; the shading choice
 is restored with the project's viewport preferences. Older preferences without a
 shading choice open in Solid mode. These visualization overrides do not change
 authored materials or add lights to the World. Solid lighting is a navigation
-aid, not the imported scene lighting. Wireframe is not yet available.
+aid, not the imported scene lighting.
 
 Debug views follow Lit in the selector. Each replaces shading with one quantity
 per pixel so you can inspect it directly:
@@ -1515,9 +1524,20 @@ per pixel so you can inspect it directly:
 - **Light count — lights reaching each pixel as a ramp**: counts lights
   whose shadowed contribution is nonzero: dark purple for none, then through
   teal and green to yellow (16 or more).
+- **Wireframe — triangle edges only**: every triangle's three edges as
+  one-pixel lines in light grey, dimmer where a surface turns edge-on to the
+  camera. Edges are depth-tested only against other edges, so hidden ones show
+  through as in other engines' wireframe views. The GPU draws them with line
+  rasterization (`rhi::RasterFillMode::Lines`), which Metal and Direct3D 12
+  always provide and Vulkan provides with the `fillModeNonSolid` feature.
+  WebGPU has none, so the browser editor's GPU viewport reports that Wireframe
+  is unavailable; its software viewport draws the same edges on the CPU.
 
-Scenes with authored lights use the same surface maps, clusters and shadows as
-Lit. Authored Worlds without lights get editor-derived vertex normals when the
+Scenes with authored lights use the same surface maps as Lit. Light count also
+uses Lit's clusters and shadows, so it is bounded by the same budget: 128 lights,
+counting one area proxy per planar emissive patch, and 80 shadow faces. The other
+debug views read no lighting, so they build no lights, area proxies or shadows and
+draw any World, however many emissive patches it has. Authored Worlds without lights get editor-derived vertex normals when the
 mesh has none. Light count is the ramp's dark purple end there because no lights exist. Overdraw is
 not offered, because the world pass has no additive blend state to count
 overlapping fragments. The debug view is saved like the other modes. Older
@@ -1530,11 +1550,17 @@ viewport's top-left corner:
 - **CPU**: time spent preparing and submitting the frame.
 - **Resolution** and **draw count**.
 
-Times are averaged over the last 30 frames (`VIEWPORT_STATISTICS_AVERAGE_FRAMES`)
-and refresh four times a second. GPU timestamps are read back with latency and
+CPU and GPU times show their mean, nearest-rank p95 and maximum over the last
+30 accepted samples (`VIEWPORT_STATISTICS_AVERAGE_FRAMES`). A low mean with a
+large maximum identifies intermittent stalls; these are separate CPU and GPU
+series, not synchronized frame pairs. The overlay refreshes four times a second.
+GPU timestamps are read back with latency and
 the editor never waits for them, so the GPU line shows `…` until the first
 sample arrives. It shows `GPU: n/a` when the device or browser provides no
 timestamp queries.
+
+For repeatable editor CPU/GPU workloads and nightly history, see
+[Runtime profiling](runtime-profiling.md#editor-workloads).
 
 On macOS and Linux the overlay is an item in the viewport's own Qt Quick scene,
 so it is drawn above the frame. A sibling widget would be hidden under the
@@ -1707,6 +1733,34 @@ documents schemas, identities, capacities and ownership; the
 [staircase2 prototype guide](../examples/reference-scene.md) retains its original
 conversion/visual limitations and higher-quality offline capture evidence.
 
+### Save a screenshot of the viewport
+
+**View → Save screenshot…** in a World viewport's toolbar saves the rendered
+image the viewport currently shows as a PNG file. It holds the frame as the
+current renderer produced it: the built-in preview, the project's render graph
+output (including a progressive graph's accumulation so far), a ray path
+inspection or a game playing in the viewport. It is written at the resolution
+the frame was rendered at, not the size it is drawn at: a project graph at a
+fixed **Viewport size** such as 1080p gives a 1920 × 1080 file however small the
+viewport is, while the built-in preview renders at most 1024 pixels on its long
+side. Editor overlays (statistics,
+debug-view legend, axis widget and object handles) and letterbox bars are left
+out, and the file is opaque: a translucent frame is composited over the viewport
+background, as it appears on screen.
+
+A save dialog proposes a name such as `Ludus 2026-11-02 at 14.03.07.png` in the
+folder used last (your Pictures folder the first time). If the file cannot be
+written, the message offers **Choose another location…**. Saving needs a
+rendered frame: an empty viewport, or one that only shows a message, explains
+that there is nothing to save yet.
+
+In the shared-device viewport the frame is read back from Qt Quick when the
+viewport next draws, so the viewport must be visible. The readback canvas
+(`LUDUS_EDITOR_VIEWPORT=offscreen` on Linux) saves its last copied frame at
+once. The browser editor cannot read its WebGPU canvas back and does not offer
+screenshots yet. For a converged, linear-radiance image of the same camera, use
+the [reference capture](#reference-capture-of-the-viewport) instead.
+
 ### Reference capture of the viewport
 
 **Reference…** in a World viewport's toolbar opens a window that captures the
@@ -1728,6 +1782,11 @@ sample counts. Convert the HDR file with
 [`scripts/reference-hdr`](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
 The PNG uses the viewport's display transform: exposure one, Khronos PBR Neutral, then sRGB.
 
+Right-click any image in the window for **Copy image** or **Save image as…**.
+Both use the displayed image at full capture resolution, not the scaled preview,
+including a capture that is still filling in. **Save image as…** writes a PNG
+only; use **Save…** for the linear capture.
+
 The capture builds its own renderer on the viewport's GPU device. It loads the
 same meshes, textures and Lit materials as the viewport, but no shadow atlas. The
 scene's authored analytic lights and its environment (map or constant) are
@@ -1745,6 +1804,15 @@ geometry. They have no area to hit or emit from.
 | CPU oracle | Default. Traces a CPU BVH on every platform and admits masked materials. |
 | GPU compute | Runs the same path tracer in compute shaders: BVH traversal, intersection, light and BSDF sampling, shading and accumulation. Needs only GPU compute support, not ray tracing hardware, and admits masked materials. Its image matches the CPU oracle's sample for sample within float32 rounding. |
 | Native ray queries | Uses the GPU's ray tracing hardware when the device and build support it, otherwise the option is disabled. Masked materials are rejected. Dense scenes have an open precision qualification item. |
+
+**Trace pixel centres** sends every camera ray through its pixel's centre instead
+of a random point in the pixel. A render graph's camera rays do the same, so turn
+it on when you compare a graph with the reference: edges then alias in both
+images, and the difference shows shading rather than antialiasing. The image
+estimates centre rays, not pixel footprints, so leave it off for ground truth. The
+choice applies to every traversal and is recorded in the `LUHDR01` flags, as
+`center_rays` in the `scripts/reference-hdr` manifest and as `centerRays` in a
+saved comparison.
 
 No traversal falls back to another. Work runs on the editor's GUI thread
 in short slices, so large images at high sample counts take minutes with the CPU

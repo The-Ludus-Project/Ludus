@@ -21,8 +21,8 @@
 #include "ray_query.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
-#include "renderer_gpu_preview.h"
 #include "renderer_gpu_preview_image.h"
+#include "renderer_gpu_preview_software.h"
 #include "renderer_lit.h"
 #include "renderer_lit_shadow.h"
 #include "renderer_output.h"
@@ -350,14 +350,14 @@ bool RasterEvidence(rr::Renderer& renderer,
     {
         return false;
     }
-    std::memcpy(bytes.GetData(), "LUSAC01\0", 8);
-    usize offset = 8;
+    std::memcpy(bytes.GetData(), "LUSAC01\0", ACCEPTANCE_MAGIC_BYTES);
+    usize offset = ACCEPTANCE_MAGIC_BYTES;
     const auto append = [&bytes, &offset](uint64 value) noexcept {
-        if (core::TryWriteLittleEndian<uint64>(value, {bytes.GetData() + offset, 8}) == false)
+        if (core::TryWriteLittleEndian<uint64>(value, {bytes.GetData() + offset, sizeof(uint64)}) == false)
         {
             return false;
         }
-        offset += 8;
+        offset += sizeof(uint64);
         return true;
     };
     for (const auto count : evidence.Counts)
@@ -601,7 +601,7 @@ int Run(int argc, char** argv) noexcept
     rhi::DeviceDescription request;
     request.Storage.ResourcesPerKind = REFERENCE_RESOURCES_PER_KIND;
     request.Required.PortableRaster = true;
-    request.Required.RayQueries = isNativeMode == true || isGpuMode == true;
+    request.Required.RayQueries = isNativeMode;
     request.Required.Compute = isGpuMode;
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
@@ -640,7 +640,7 @@ int Run(int argc, char** argv) noexcept
                                                 512};
     const Status enabled = isViewportMode ? Status::Ready
                            : isGpuMode
-                               ? renderer.EnableGpuPreview(ludus::shaders::renderer_gpu_preview::Compute(),
+                               ? renderer.EnableGpuPreview(ludus::shaders::renderer_gpu_preview_software::Compute(),
                                                            ludus::shaders::renderer_gpu_preview_image::Vertex(),
                                                            ludus::shaders::renderer_gpu_preview_image::Fragment(),
                                                            {usize{128} * 1024 * 1024, usize{128} * 1024 * 1024, 1})

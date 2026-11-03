@@ -6,12 +6,15 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <cmath>
+#include <cstdio>
+#include <initializer_list>
 #include <limits>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/overlays.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
@@ -42,12 +45,14 @@ struct Session
     explicit Session(bool hdrAvailable = true,
                      const rr::Limits& limits = {},
                      const rhi::StorageLimits& storage = {},
-                     bool computeAvailable = true)
+                     bool isComputeAvailable = true,
+                     bool hasLineFill = true)
     {
         rhi::Shutdown();
         rhi::reference::Reset();
         rhi::reference::HdrAvailable = hdrAvailable;
-        rhi::reference::ComputeAvailable = computeAvailable;
+        rhi::reference::ComputeAvailable = isComputeAvailable;
+        rhi::reference::HasLineFill = hasLineFill;
         rhi::backend::ImmediateError = rhi::StartupError::None;
         rhi::backend::NextFrame = rhi::FrameStatus::Ready;
         rhi::backend::ActiveKind = rhi::Backend::WebGPU;
@@ -318,6 +323,107 @@ TEST_CASE("Many objects instance within the portable limit and overlap sorting p
     CHECK(report.SourceIds[2] == 3);
     CHECK(report.Draws == 3);
 }
+namespace
+{
+constexpr uint32 ORDERED_VIEW_MAX_OBJECTS = 1024;
+constexpr uint32 ORDERED_VIEW_SMALL_OBJECTS = 128;
+constexpr uint32 ORDERED_VIEW_MEDIUM_OBJECTS = 512;
+constexpr usize ORDERED_TRIANGLE_VERTICES = 3;
+constexpr uint32 ORDERED_GRID_COLUMNS = 64;
+constexpr float32 ORDERED_GRID_SPACING = .025F;
+constexpr float32 ORDERED_MESH_SCALE = .01F;
+constexpr float32 ORDERED_GRID_ORIGIN = -.8F;
+constexpr uint32 ORDERED_VIEW_WARMUPS = 3;
+constexpr uint32 ORDERED_VIEW_SAMPLES = 20;
+
+void MakeOrderedSnapshot(Session& inoutSession, uint32 objectCount, rr::Snapshot& outSnapshot)
+{
+    StaticArray<math::Vector3, ORDERED_TRIANGLE_VERTICES> positionsMesh{
+        {{-.1F, -.1F, .5F}, {.1F, -.1F, .5F}, {0, .1F, .5F}}};
+    StaticArray<uint32, ORDERED_TRIANGLE_VERTICES> indices{{0, 1, 2}};
+    rr::Mesh second;
+    REQUIRE(inoutSession.Renderer.CreateMesh(
+                {positionsMesh.GetData(), positionsMesh.GetSize(), indices.GetData(), indices.GetSize()},
+                second) == rhi::RasterStatus::Ready);
+    Array<rr::SceneItem> items;
+    REQUIRE(items.TryResize(objectCount) == true);
+    for (usize index = 0; index < items.GetSize(); ++index)
+    {
+        rr::SceneItem& item = items[index];
+        item = inoutSession.Item(index + 1);
+        item.Geometry = index < items.GetSize() / 2 ? inoutSession.Mesh : second;
+        item.Transform.Columns[0].X = ORDERED_MESH_SCALE;
+        item.Transform.Columns[1].Y = ORDERED_MESH_SCALE;
+        item.Transform.Translation.X =
+            ORDERED_GRID_ORIGIN + static_cast<float32>(index % ORDERED_GRID_COLUMNS) * ORDERED_GRID_SPACING;
+        const usize gridRow = index / ORDERED_GRID_COLUMNS;
+        item.Transform.Translation.Y = ORDERED_GRID_ORIGIN + static_cast<float32>(gridRow) * ORDERED_GRID_SPACING;
+    }
+    REQUIRE(inoutSession.Renderer.CreateSnapshot(items.GetData(), items.GetSize(), outSnapshot) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(inoutSession.Renderer.Release(second) == rhi::RasterStatus::Ready);
+}
+} // namespace
+
+TEST_CASE("Already ordered heterogeneous opaque views preserve source order and batching",
+          "[renderer][view-preparation]")
+{
+    rr::Limits limits;
+    limits.Objects = ORDERED_VIEW_MAX_OBJECTS;
+    rhi::StorageLimits storage;
+    storage.DrawsPerFrame = ORDERED_VIEW_MAX_OBJECTS;
+    Session session(true, limits, storage);
+    rr::Snapshot snapshot;
+    MakeOrderedSnapshot(session, ORDERED_VIEW_MAX_OBJECTS, snapshot);
+    rr::PreparedView view;
+    rr::ViewReport report;
+    REQUIRE(session.Renderer.PrepareView(snapshot, {}, view, report) == rhi::RasterStatus::Ready);
+    CHECK(report.Visible == ORDERED_VIEW_MAX_OBJECTS);
+    CHECK(report.Draws == 2);
+    for (usize index = 0; index < report.Reported; ++index)
+    {
+        CHECK(report.SourceIds[index] == index + 1);
+    }
+}
+
+// Benchmark-only output uses the ADR 0003 harness exemption. The production
+// PrepareView is unchanged by the deterministic backend; GPU work is not measured.
+TEST_CASE("Editor renderer reports ordered view preparation scaling", "[.editor-view-benchmark]")
+{
+    rr::Limits limits;
+    limits.Objects = ORDERED_VIEW_MAX_OBJECTS;
+    rhi::StorageLimits storage;
+    storage.DrawsPerFrame = ORDERED_VIEW_MAX_OBJECTS;
+    Session session(true, limits, storage);
+    for (const uint32 count : {ORDERED_VIEW_SMALL_OBJECTS, ORDERED_VIEW_MEDIUM_OBJECTS, ORDERED_VIEW_MAX_OBJECTS})
+    {
+        rr::Snapshot snapshot;
+        MakeOrderedSnapshot(session, count, snapshot);
+        for (uint32 sample = 0; sample < ORDERED_VIEW_WARMUPS + ORDERED_VIEW_SAMPLES; ++sample)
+        {
+            rr::PreparedView view;
+            rr::ViewReport report;
+            const uint64 started = ludus::foundation::time::Now().Nanoseconds;
+            const rhi::RasterStatus prepared = session.Renderer.PrepareView(snapshot, {}, view, report);
+            const uint64 nanoseconds = ludus::foundation::time::Now().Nanoseconds - started;
+            REQUIRE(prepared == rhi::RasterStatus::Ready);
+            REQUIRE(report.Visible == count);
+            REQUIRE(report.Draws == 2);
+            REQUIRE(session.Renderer.Release(view) == rhi::RasterStatus::Ready);
+            REQUIRE(rhi::PollLifetime(session.Device) == rhi::RasterStatus::Ready);
+            if (sample >= ORDERED_VIEW_WARMUPS)
+            {
+                std::printf("EDPREPARE,%u,%u,%llu\n",
+                            count,
+                            sample - ORDERED_VIEW_WARMUPS,
+                            static_cast<unsigned long long>(nanoseconds));
+            }
+        }
+        REQUIRE(session.Renderer.Release(snapshot) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::PollLifetime(session.Device) == rhi::RasterStatus::Ready);
+    }
+}
+
 TEST_CASE("Pending geometry is not published as a snapshot and foreign meshes reject", "[renderer]")
 {
     Session session;
@@ -999,6 +1105,111 @@ TEST_CASE("lit depth prepass shares the retained color vertex and omits material
     REQUIRE(rhi::EndFrame(session.Device, completion) == rhi::RasterStatus::Ready);
     REQUIRE(session.Renderer.Release(view) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(session.Device, texture) == rhi::RasterStatus::Ready);
+}
+
+TEST_CASE("Wireframe lit programs draw triangle edges while shadows stay filled", "[renderer][l4][wireframe]")
+{
+    constexpr usize PREWARM_ATTEMPTS = 20;
+    {
+        Session session;
+        LitFixture fixture(false);
+        fixture.Enable(session);
+        rr::MaterialProgram rejected;
+        CHECK(session.Renderer.PrewarmLitProgram(fixture.Vertex,
+                                                 fixture.Fragment,
+                                                 fixture.Shadow,
+                                                 rejected,
+                                                 nullptr,
+                                                 static_cast<rhi::RasterFillMode>(255)) ==
+              rhi::RasterStatus::InvalidDescription);
+        rr::MaterialProgram program;
+        rhi::RasterStatus prewarm = session.Renderer.PrewarmLitProgram(fixture.Vertex,
+                                                                       fixture.Fragment,
+                                                                       fixture.Shadow,
+                                                                       program,
+                                                                       nullptr,
+                                                                       rhi::RasterFillMode::Lines);
+        for (usize attempt = 0; attempt < PREWARM_ATTEMPTS && prewarm == rhi::RasterStatus::Pending; ++attempt)
+        {
+            prewarm = session.Renderer.GetStatus(program);
+        }
+        REQUIRE(prewarm == rhi::RasterStatus::Ready);
+        rr::LitMaterialDescription description;
+        description.DebugView = static_cast<rr::MaterialDebugView>(rr::MATERIAL_DEBUG_VIEW_WIREFRAME + 1);
+        rr::MaterialVersion material;
+        rr::LightSelection selection;
+        CHECK(session.Renderer.CreateLitMaterial(program, description, material, selection) ==
+              rhi::RasterStatus::InvalidDescription);
+        description.DebugView = rr::MaterialDebugView::Wireframe;
+        REQUIRE(session.Renderer.CreateLitMaterial(program, description, material, selection) ==
+                rhi::RasterStatus::Ready);
+        constexpr usize CORNER_COUNT = 3;
+        const StaticArray<math::Vector3, CORNER_COUNT> positions{{{-.1F, -.1F, .5F}, {.1F, -.1F, .5F}, {0, .1F, .5F}}};
+        const StaticArray<math::Vector3, CORNER_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+        const StaticArray<uint32, CORNER_COUNT> indices{{0, 1, 2}};
+        rr::MeshDescription geometry;
+        geometry.Positions = positions.GetData();
+        geometry.VertexCount = positions.GetSize();
+        geometry.Indices = indices.GetData();
+        geometry.IndexCount = indices.GetSize();
+        geometry.Normals = normals.GetData();
+        rr::Mesh mesh;
+        REQUIRE(session.Renderer.CreateMesh(geometry, mesh) == rhi::RasterStatus::Ready);
+        rr::SceneItem item;
+        item.Geometry = mesh;
+        item.Surface = material;
+        item.SourceId = 1;
+        rr::Snapshot snapshot;
+        REQUIRE(session.Renderer.CreateSnapshot(&item, 1, snapshot) == rhi::RasterStatus::Ready);
+        rr::PreparedView view;
+        rr::ViewReport report;
+        REQUIRE(session.Renderer.PrepareView(snapshot, {}, view, report) == rhi::RasterStatus::Ready);
+        rhi::TextureDescription target;
+        target.Width = 64;
+        target.Height = 64;
+        target.Attachment = true;
+        rhi::TextureHandle texture;
+        REQUIRE(rhi::CreateTexture(session.Device, target, {}, texture) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::BeginFrame(session.Device, session.Surface) == rhi::DeviceStatus::Ready);
+        rhi::RasterPassDescription pass;
+        pass.Color = texture;
+        REQUIRE(session.Renderer.DrawView(view, pass) == rhi::RasterStatus::Ready);
+        CHECK(rhi::reference::Pipelines[rhi::reference::Packet.Pipeline].FillMode == rhi::RasterFillMode::Lines);
+        rhi::SubmissionToken completion;
+        REQUIRE(rhi::EndFrame(session.Device, completion) == rhi::RasterStatus::Ready);
+        // Every pipeline the program prewarmed draws edges except the one shadow pipeline, which fills.
+        usize solidCount = 0;
+        usize lineCount = 0;
+        for (usize slot = 0; slot < rhi::reference::Pipelines.GetSize(); ++slot)
+        {
+            const rhi::internal::RasterPipelineInfo& pipeline = rhi::reference::Pipelines[slot];
+            if (pipeline.Fragment == 0)
+            {
+                continue;
+            }
+            solidCount += pipeline.FillMode == rhi::RasterFillMode::Solid ? 1U : 0U;
+            lineCount += pipeline.FillMode == rhi::RasterFillMode::Lines ? 1U : 0U;
+        }
+        CHECK(lineCount > 0);
+        CHECK(solidCount >= 1);
+        REQUIRE(session.Renderer.Release(view) == rhi::RasterStatus::Ready);
+        REQUIRE(session.Renderer.Release(snapshot) == rhi::RasterStatus::Ready);
+        REQUIRE(session.Renderer.Release(material) == rhi::RasterStatus::Ready);
+        REQUIRE(session.Renderer.Release(program) == rhi::RasterStatus::Ready);
+        REQUIRE(session.Renderer.Release(mesh) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Destroy(session.Device, texture) == rhi::RasterStatus::Ready);
+    }
+    // Without the device capability the program is refused before any pipeline is requested.
+    Session session(true, {}, {}, true, false);
+    LitFixture fixture(false);
+    fixture.Enable(session);
+    rr::MaterialProgram program;
+    CHECK(session.Renderer.PrewarmLitProgram(fixture.Vertex,
+                                             fixture.Fragment,
+                                             fixture.Shadow,
+                                             program,
+                                             nullptr,
+                                             rhi::RasterFillMode::Lines) == rhi::RasterStatus::Unsupported);
 }
 
 TEST_CASE("L4 direct lists saturate stably and BRDF guards preserve reference outputs", "[renderer][l4]")

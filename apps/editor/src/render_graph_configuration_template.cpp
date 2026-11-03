@@ -318,8 +318,10 @@ bool EnsureTemplateProgramBudget(QJsonObject& inoutManifest,
     if (profileCount > 0 && requiredPrograms > MAX_SHADER_ARTIFACTS / profileCount)
     {
         outError = QStringLiteral("%1 needs %2 shader programs, which across %3 target profiles exceed the supported "
-                                  "limit of %4 target artifacts. Reuse existing programs, remove unused shaders or "
-                                  "reduce target profiles. The draft was preserved.")
+                                  "limit of %4 target artifacts. Right-click the canvas and choose Remove Unused "
+                                  "Shaders, or right-click an unneeded Subgraph and choose Delete Subgraph and "
+                                  "Library, then apply again. To keep all programs, reduce profiles in the shader "
+                                  "manifest. The draft was preserved.")
                        .arg(templateName)
                        .arg(requiredPrograms)
                        .arg(profileCount)
@@ -687,10 +689,12 @@ RenderGraphDocumentStatus PrepareTemplateContents(RenderGraphSnapshot& inoutSnap
         templateIdentity == QStringLiteral("slice-sampling-luminaire") ||
         templateIdentity == QStringLiteral("steinberg-plt") ||
         templateIdentity == QStringLiteral("steinberg-physical-optics") ||
+        templateIdentity == QStringLiteral("wave-tracing") ||
         templateIdentity == QStringLiteral("guided-restir-fg-plus") ||
         templateIdentity == QStringLiteral("restir-gi") || templateIdentity == QStringLiteral("rao-blackwell-mh") ||
         templateIdentity == QStringLiteral("conditional-restir") ||
-        templateIdentity == QStringLiteral("one-more-vertex-nee"))
+        templateIdentity == QStringLiteral("one-more-vertex-nee") ||
+        templateIdentity == QStringLiteral("light-transformer"))
     {
         return PrepareComputeRayTracingConfiguration(inoutSnapshot,
                                                      rootGraph,

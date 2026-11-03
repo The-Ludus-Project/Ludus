@@ -43,7 +43,7 @@ warmups and measured repetitions, and writes `out/runtime-profile/<preset>/`.
 | --- | --- |
 | `--list` | List scenarios, owners and required capabilities. |
 | `--scenario ID` | Run only this scenario (repeatable). It must be runnable on this host. |
-| `--capability NAME` | Declare a capability the runner cannot detect, such as `presentation` for a desktop session or a GPU class `gpu-<class>` (repeatable). |
+| `--capability NAME` | Declare a capability the runner cannot detect, such as `editor` for prepared Qt editor dependencies, `presentation` for a desktop session or a GPU class `gpu-<class>` (repeatable). |
 | `--device TEXT` | Declared adapter, OS and driver identity, recorded in the report. Required with a GPU class. |
 | `--repetitions N` | Override every scenario's measured repetitions (1–50). |
 | `--baseline FILE` | Compare medians against an earlier `report.json`. |
@@ -88,6 +88,11 @@ or `ns_per_operation` are nanoseconds. Every scenario also reports
 `LUDUS_PROFILE_FRAME()` markers. Percentiles use the nearest-rank convention
 shared with `scripts/benchmark-rhi`.
 
+Reports identify the percentile method as `nearest-rank`. Historical reports
+without that marker used a lower rank that understated p95 for some sample
+counts. The first comparison with such a baseline keeps median comparisons and
+omits p95 deltas; subsequent runs compare matching conventions.
+
 A metric is marked **notable** against its baseline when all of these hold:
 
 - the median moved by at least 10%;
@@ -125,8 +130,8 @@ change to the workflow takes effect after it lands.
 
 | Lane | Runner | Preset | Declared capabilities |
 | --- | --- | --- | --- |
-| `ubuntu` | `ubuntu-24.04` | `linux-clang-profile` | none (headless, no GPU) |
-| `macos` | `macos-15` | `macos-clang-profile` | `presentation` (hosted macOS already presents Metal frames in CI) and `gpu-apple-paravirtual`, with a `--device` identity naming the virtual GPU |
+| `ubuntu` | `ubuntu-24.04` | `linux-clang-profile` | `editor` (headless, no GPU) |
+| `macos` | `macos-15` | `macos-clang-profile` | `editor`, `presentation` (hosted macOS already presents Metal frames in CI) and `gpu-apple-paravirtual`, with a `--device` identity naming the virtual GPU |
 
 The hosted macOS lane runs the GPU scenarios every night on GitHub's paravirtual
 Metal GPU. That catches benchmark breakage (an image mismatch, a crash, an
@@ -136,9 +141,9 @@ runner image, so they are not evidence about any real adapter.
 
 Each lane:
 
-1. Prepares the locked Profile preset without the optional Editor, using the
-   shared native or macOS setup action and the pinned shader tools. The macOS
-   presentation scenario uses the native World demo.
+1. Prepares the locked Profile preset with the Editor, using the shared native
+   or macOS setup action and the pinned shader tools. Both lanes measure CPU
+   texture conversion; macOS also measures the native editor viewport.
 2. Downloads the `runtime-profile-<lane>` artifact from the most recent completed
    run on `main` as the baseline, if one exists.
 3. Runs `./scripts/profile-engine` and appends `summary.md` to the job summary.
@@ -193,7 +198,7 @@ Each lane is one entry in that variable, a JSON array:
 | `gpu_class` | The runner label and the declared `gpu-<class>` capability. |
 | `preset` | `macos-clang-profile` or `linux-clang-profile`, matching `os`. |
 | `device` | Adapter, OS and driver identity passed as `--device`. Update it, and expect a new baseline, after a driver or OS update. |
-| `capabilities` | Space-separated extra capabilities; `presentation` only when the runner has a desktop session. |
+| `capabilities` | Space-separated extra capabilities; `presentation` only when the runner has a desktop session. Add `editor` to prepare and measure editor workloads; Qt must already be installed on a device runner. |
 
 The job runs on runners labelled `[self-hosted, ludus-perf, <os>, <gpu_class>]`.
 It validates the entry, prepares the Profile preset with
@@ -320,6 +325,9 @@ it builds anything.
 | `strings-corpus` | FoundationStrings | String construction, sharing, hashing and lookup per operation | — |
 | `input-reducer` | Input | Keyboard reducer step and batch latency | — |
 | `containers-associative` | FoundationContainers | Sorted/hash/tree lookup and insertion by element count | — |
+| `editor-texture-display` | Editor | Production RGBA8, HDR and depth display conversion at 320×180 and 1280×720, with every output pixel checked | `editor` |
+| `editor-viewport-navigation` | Editor | Native raster viewport navigation with analytic and emissive mesh lights: active GUI work, GPU frame duration, interaction-to-presentation latency, CPU trace and idle retention | `editor`, `shader-tools`, `presentation`, `gpu` |
+| `renderer-view-preparation` | Renderer | Camera-view CPU preparation at 128/512/1024 ordered heterogeneous objects, with visibility and batching checks on the deterministic RHI backend | — |
 
 The world demo scenarios use the demo's `--trace-output <path>` option. With
 `--headless`, `--frames N` selects the number of simulation ticks (see the
@@ -345,6 +353,56 @@ runner. The [GPU Perfetto contract](../architecture/profiling-final.md#basic-gpu
 starts with duration counters and explicit sampling coverage; benchmark output
 does not establish calibrated GPU execution lanes or pass-level timing.
 
+### Editor workloads
+
+Prepare an optimized editor before comparing editor workloads:
+
+```bash
+./init.sh --cli linux-clang-profile --preset-only --with-tests --with-editor --locked
+./scripts/profile-engine --capability editor --scenario editor-texture-display
+```
+
+Use `macos-clang-profile` on macOS. `./scripts/editor --preset linux-clang-profile`
+also launches the prepared Profile editor for an interactive investigation.
+
+`editor-texture-display` invokes the same `MakeDisplayImage` implementation as
+the texture viewer and graph readback display. It measures 20 conversions per
+encoding/extent after three warmups, checking pixels outside the timed call.
+RGBA8/HDR use the ordinary manual [0, 1] range; depth also exercises automatic
+range detection. It reports conversion CPU median/p95, without GPU or window
+server requirements. It does not measure ordinary shared-texture presentation,
+which bypasses CPU pixel conversion.
+
+`renderer-view-preparation` tracks the renderer's CPU preparation used during
+editor navigation. It prepares already ordered heterogeneous opaque objects at
+three counts, requiring all objects to remain visible in two instance batches.
+The deterministic RHI backend isolates CPU work from driver/GPU variance; it does
+not measure native uploads or GPU execution. Its median/p95 by object count helps
+identify a return to quadratic packet-ordering work.
+
+On a desktop with a GPU class and identity, add the viewport scenario:
+
+```bash
+./scripts/profile-engine --capability editor --capability presentation --capability gpu-intel-uhd620 --device "Intel UHD 620, Vulkan, local driver identity" --scenario editor-viewport-navigation
+```
+
+The viewport workload runs the editor's actual Qt presentation, World extraction,
+graph service and default raster renderer on the live-edit fixture with extra
+casters and twelve authored lamps. Five warmup navigation steps precede 30
+measured steps at a 640×480 logical widget size. GPU output must remain on the
+shared-device path, output readback must remain zero, and an unchanged graph must
+retain its view without producing more timed GPU frames. Each row reports active
+GUI service CPU work, a completed device-clock GPU frame duration, and wall-clock
+orbit-to-present latency. The last includes event-loop/presentation scheduling;
+it must not be interpreted as CPU execution time. GPU timestamps are not
+calibrated to the CPU clock. The report records the engine-selected adapter and
+retains a CPU Perfetto trace for diagnosing preparation and scheduling delays.
+
+These workloads participate in the existing baseline comparison, notable-change
+summary and 90-day artifacts. Timing changes remain report-only on shared hosts;
+coverage failures (including lost frames, missing GPU timings and malformed
+traces) fail the workflow. Device runners opt in with the `editor` capability.
+
 ### Add a scenario
 
 Add an entry with every field:
@@ -359,7 +417,7 @@ Add an entry with every field:
 | `cmake_options` | `LUDUS_*` options (`ON`/`OFF`) the target needs; every runnable scenario must agree. |
 | `environment` | `LUDUS_*` variables set for this scenario's runs. A variable any scenario sets is removed from every other scenario's inherited environment. |
 | `requires` | Capabilities: `shader-tools` is detected from `out/shader-tools`; `gpu` comes from a declared GPU class; anything else is declared with `--capability`. |
-| `trace` | `true` appends `--trace-output <path>`; the executable must write a Perfetto trace there. |
+| `trace` | `true` appends `--trace-output <path>`; the executable must write a valid, nonempty Perfetto trace there. Numeric parsers may retain a diagnostic trace while deriving their stable metrics from sample rows. |
 | `parser` | How to read metrics (below). |
 | `warmup`, `repetitions`, `timeout_seconds` | Unmeasured runs, measured runs and the per-run deadline. |
 

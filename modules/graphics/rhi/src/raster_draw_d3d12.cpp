@@ -176,7 +176,8 @@ RasterStatus RasterCreatePipeline(usize slot, const RasterPipelineInfo& info, ui
     native.SampleMask = ~UINT{0};
     native.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     native.SampleDesc.Count = 1;
-    native.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    native.RasterizerState.FillMode =
+        info.FillMode == RasterFillMode::Lines ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
     native.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     // Match the public canonical counter-clockwise front-face contract.
     native.RasterizerState.FrontCounterClockwise = TRUE;

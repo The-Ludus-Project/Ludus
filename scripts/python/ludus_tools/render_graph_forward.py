@@ -14,12 +14,16 @@ SUPPORT = {
     'DeferredGBuffer': ('renderer_deferred_material', ('fragment',)),
     'DeferredLighting': ('renderer_deferred_lighting', ('vertex', 'fragment')),
     'DeferredDepthCopy': ('renderer_deferred_depth', ('fragment',)),
+    # Package version 31: the G-buffer fragment without the coverage discard, drawn for opaque materials.
+    'DeferredOpaqueGBuffer': ('renderer_deferred_material', ('fragment',)),
 }
+# Both G-buffer groups wrap the authored material; the opaque one compiles it with LUDUS_OPAQUE_COVERAGE.
+GBUFFER_GROUPS = ('DeferredGBuffer', 'DeferredOpaqueGBuffer')
 ROLE_KEYS = [('ForwardLit', 'vertex'), ('ForwardLit', 'fragment'), ('ForwardShadow', 'fragment'),
              ('ForwardOutput', 'vertex'), ('ForwardOutput', 'fragment'), ('ForwardFlatShadow', 'fragment'),
              ('ForwardDepth', 'fragment'), ('DeferredGBuffer', 'fragment'), ('DeferredLighting', 'vertex'),
-             ('DeferredLighting', 'fragment'), ('DeferredDepthCopy', 'fragment')]
-MEMBERS = ['ForwardVertex', 'ForwardFragment', 'ForwardShadow', 'LightingVertex', 'LightingFragment', 'LightingShadow', 'ForwardDepth', 'DeferredGBufferFragment', 'DeferredLightingVertex', 'DeferredLightingFragment', 'DeferredDepthCopyFragment']
+             ('DeferredLighting', 'fragment'), ('DeferredDepthCopy', 'fragment'), ('DeferredOpaqueGBuffer', 'fragment')]
+MEMBERS = ['ForwardVertex', 'ForwardFragment', 'ForwardShadow', 'LightingVertex', 'LightingFragment', 'LightingShadow', 'ForwardDepth', 'DeferredGBufferFragment', 'DeferredLightingVertex', 'DeferredLightingFragment', 'DeferredDepthCopyFragment', 'DeferredOpaqueGBufferFragment']
 INPUTS = [{'location': i, 'format': 'Float3' if i in (0, 7) else 'Float2' if i in (6, 13, 15) else 'Float4'} for i in range(16)]
 
 
@@ -83,8 +87,7 @@ def expand(programs, techniques, snapshot, helper, build):
     # Capture the renderer manifest and its literal shader closure; consumers never guess paths/entries.
     build.require('_ludus_forward/recipes.json' not in snapshot.files, 'Source', 'ForwardLit', 'reserved engine forward helper path')
     captured = set()
-    snapshot.files['_ludus_forward/recipes.json'] = build.read(helper / 'recipes.json')
-    snapshot.external['_ludus_forward/recipes.json'] = helper / 'recipes.json'
+    snapshot.capture('_ludus_forward/recipes.json', build.read(helper / 'recipes.json'), external=helper / 'recipes.json')
     def capture(filename):
         relative = '_ludus_forward/' + filename
         if relative in captured:
@@ -92,11 +95,7 @@ def expand(programs, techniques, snapshot, helper, build):
         build.require(relative not in snapshot.files, 'Source', relative, 'reserved engine forward helper path')
         captured.add(relative)
         data = build.read(helper / filename)
-        snapshot.files[relative] = data
-        snapshot.external[relative] = helper / filename
-        snapshot.total += len(data)
-        build.require(snapshot.total <= build.MAX_BYTES and len(snapshot.files) <= build.MAX_FILES,
-                      'Capacity', relative, 'forward helper closure exceeds package bounds')
+        snapshot.capture(relative, data, external=helper / filename)
         for child in re.findall(r'^\s*#\s*include\s+"([^"\n]+)"', data.decode(), re.M):
             capture(child)
     technique = selected[0]
@@ -117,17 +116,18 @@ def expand(programs, techniques, snapshot, helper, build):
         capture(recipe['source'])
         for stage in stages:
             identity = support_program(techniques, group, stage)
-            original = programs.get(technique['fragment'] if group == 'DeferredGBuffer' else identity)
-            source = '#include "_ludus_forward/' + recipe['source'] + '"\n'
+            original = programs.get(technique['fragment'] if group in GBUFFER_GROUPS else identity)
+            source = '#define LUDUS_OPAQUE_COVERAGE 1\n' if group == 'DeferredOpaqueGBuffer' else ''
+            source += '#include "_ludus_forward/' + recipe['source'] + '"\n'
             if original is not None:
                 source += '#include "' + original['source'] + '"\n'
             function = original['function'] if original is not None else recipe[stage]
             argument = ('DeferredInput' if stage == 'vertex' else 'DeferredVarying') if group in ('DeferredLighting', 'DeferredDepthCopy') else 'Input' if stage == 'vertex' else 'Varying'
-            output = ('DeferredVarying' if group == 'DeferredLighting' else 'Varying') if stage == 'vertex' else 'void' if group == 'ForwardDepth' else 'GBufferOutput' if group == 'DeferredGBuffer' else 'DeferredLightingOutput' if group == 'DeferredLighting' else 'DeferredDepthOutput' if group == 'DeferredDepthCopy' else 'float4'
+            output = ('DeferredVarying' if group == 'DeferredLighting' else 'Varying') if stage == 'vertex' else 'void' if group == 'ForwardDepth' else 'GBufferOutput' if group in GBUFFER_GROUPS else 'DeferredLightingOutput' if group == 'DeferredLighting' else 'DeferredDepthOutput' if group == 'DeferredDepthCopy' else 'float4'
             expression = function + '(value)'
             if is_deferred_profile and group == 'ForwardLit' and stage == 'fragment':
                 expression = 'ShadeMaterial(' + expression + ', value)'
-            elif group == 'DeferredGBuffer':
+            elif group in GBUFFER_GROUPS:
                 expression = 'PackDeferredMaterial(' + expression + ')'
             semantic = ' : SV_Target0' if stage == 'fragment' and output == 'float4' else ''
             source += '[shader("' + stage + '")]\n' + output + ' rgEntry(' + argument + ' value)' + semantic + '\n{\n    ' + ('' if group == 'ForwardDepth' else 'return ') + expression + ';\n}\n'
@@ -135,7 +135,7 @@ def expand(programs, techniques, snapshot, helper, build):
                                 'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [],
                                 'forward_wrapper': source, 'forward_group': group,
                                 'fragment_storage': group == 'DeferredLighting' and stage == 'fragment',
-                                'forward_layout': material_layout(snapshot, build, is_clustered_profile) if group in ('ForwardLit', 'ForwardShadow', 'DeferredGBuffer', 'DeferredLighting') else None}
+                                'forward_layout': material_layout(snapshot, build, is_clustered_profile) if group in ('ForwardLit', 'ForwardShadow', *GBUFFER_GROUPS, 'DeferredLighting') else None}
     # The existing flat pair initializes the renderer's shared mesh/view services.
     recipe = recipes['renderer_flat']
     capture(recipe['source'])
@@ -172,7 +172,7 @@ def check_interface(program, result, build):
         kinds = ('UniformBuffer', 'Texture2D', 'Sampler', 'Texture2D', 'Texture2D', 'Sampler', 'Texture2D', 'Texture2D', 'Texture2D', 'Sampler', 'Texture2D', 'Texture2D', 'Texture2D', 'Texture2D', 'TextureDepth2D', 'UniformBuffer')
         if group == 'DeferredLighting':
             kinds = kinds[:3] + ('StorageRead', 'StorageRead') + kinds[5:]
-        allowed = {0: 'TextureDepth2D'} if group == 'DeferredDepthCopy' else dict(enumerate(kinds[:11] if group == 'DeferredGBuffer' else kinds))
+        allowed = {0: 'TextureDepth2D'} if group == 'DeferredDepthCopy' else dict(enumerate(kinds[:11] if group in GBUFFER_GROUPS else kinds))
         build.require(all(allowed.get(entry['binding']) == entry['kind'] for entry in entries),
                       'Layout', program['id'], 'deferred resources differ from the owned ABI')
         if stage == 'fragment' and group != 'DeferredDepthCopy':

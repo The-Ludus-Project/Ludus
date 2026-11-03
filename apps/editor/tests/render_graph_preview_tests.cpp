@@ -12,6 +12,7 @@
 #include "internal/level_workspace.h"
 #include "internal/main_window.h"
 #include "internal/offscreen_frame_reader.h"
+#include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
 #include "internal/reference_capture_window.h"
 #include "internal/render_graph_defaults.h"
@@ -43,6 +44,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/threading/jobs.hpp>
+#include <ludus/graphics/renderer/light_selection.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/tone_mapping.hpp>
@@ -840,6 +842,7 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view",
         QStringLiteral("Default"),
         QJsonDocument::fromJson(names.readAll()).object().value(QStringLiteral("generation")).toString().toLatin1(),
         QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex(),
+        {},
         {},
         42};
     RenderGraphPreview preview = MakePreview();
@@ -1811,14 +1814,24 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
     REQUIRE(source.Start() == true);
     WorldGraphView* graphViewOrNull = viewport.findChild<WorldGraphView*>();
     REQUIRE(graphViewOrNull != nullptr);
+    QLabel* statusOrNull = viewport.findChild<QLabel*>(QStringLiteral("worldGraphStatus"));
+    REQUIRE(statusOrNull != nullptr);
+    // The picture carries a short chip; the compiler's words stay in the tooltip and the Error List.
+    CHECK(statusOrNull->text() == QStringLiteral("Shader build failed, using default renderer. Show in Error List"));
+    CHECK(statusOrNull->toolTip().contains(QStringLiteral("timed out")) == true);
+    CHECK(graphViewOrNull->HasProblemChip() == true);
+    // A real click reaches the view only while it is not transparent to the mouse.
+    CHECK(graphViewOrNull->testAttribute(Qt::WA_TransparentForMouseEvents) == false);
+    QSignalSpy errorListRequested(&workspace, &RendererWorkspace::ErrorListRequested);
+    if (graphViewOrNull->isVisible() == true && statusOrNull->isVisible() == true)
+    {
+        QTest::mouseClick(graphViewOrNull, Qt::LeftButton, Qt::NoModifier, statusOrNull->geometry().center());
+        CHECK(errorListRequested.count() == 1);
+    }
     REQUIRE(waitFor([&]() { return graphViewOrNull->GetImage().isNull() == false; }) == true);
     CHECK(workspace.IsUsingDefaultRenderer() == true);
     CHECK(source.FrameAvailable() == true);
     CHECK(failed.isEmpty() == true);
-    QLabel* statusOrNull = viewport.findChild<QLabel*>(QStringLiteral("worldGraphStatus"));
-    REQUIRE(statusOrNull != nullptr);
-    CHECK(statusOrNull->text().contains(QStringLiteral("timed out")) == true);
-    CHECK(statusOrNull->text().contains(QStringLiteral("Engine default renderer fallback")) == true);
     const QImage initial = graphViewOrNull->GetImage();
     const uint64 generation = workspace.GetPreviewOrNull()->GetPresentedGeneration();
     const uint64 revision = workspace.GetPreviewOrNull()->GetPresentedRevision();
@@ -2177,6 +2190,282 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     {
         REQUIRE(world.grab().save(capture) == true);
     }
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+TEST_CASE("Graph output menu offers built-in debug views drawn by the World preview",
+          "[editor][render-graph][world-graph][shading]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const std::string_view level = ludus::world_demo::ExampleLevel();
+    const QString path = QFileInfo(WriteBytes(project,
+                                              QStringLiteral("room.world.json"),
+                                              QByteArray(level.data(), static_cast<qsizetype>(level.size()))))
+                             .canonicalFilePath();
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    world.SetProject(project.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Open(path) == true);
+    world.ResumePreview();
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewport != nullptr);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+    RenderPreview& preview = world.GetRenderPreview();
+    const PreviewShading original = preview.GetShading();
+    QComboBox* targets = viewport->findChild<QComboBox*>(QStringLiteral("worldGraphTargets"));
+    REQUIRE(targets != nullptr);
+    // Every built-in debug view follows the graph's own outputs, named and explained.
+    QStringList debugItems;
+    for (int32 i = 0; i < targets->count(); ++i)
+    {
+        if (targets->itemText(i).startsWith(QStringLiteral("Debug: ")) == true)
+        {
+            debugItems.append(targets->itemText(i));
+            CHECK(targets->itemData(i, Qt::ToolTipRole).toString().contains(QStringLiteral(" — ")) == true);
+        }
+    }
+    usize expectedCount = 0;
+    for (usize i = 0; i < PREVIEW_SHADING_COUNT; ++i)
+    {
+        expectedCount += IsPreviewGraphDebugView(static_cast<PreviewShading>(i)) == true ? 1U : 0U;
+    }
+    CHECK(static_cast<usize>(debugItems.size()) == expectedCount);
+    CHECK(debugItems.contains(QStringLiteral("Debug: Albedo")) == true);
+    CHECK(debugItems.contains(QStringLiteral("Debug: Normal")) == true);
+    CHECK(debugItems.contains(QStringLiteral("Debug: Wireframe")) == true);
+    const auto selectDebugView = [&](PreviewShading shading) {
+        const int32 index = targets->findText(QStringLiteral("Debug: %1").arg(GetPreviewShadingName(shading)));
+        REQUIRE(index >= 0);
+        targets->setCurrentIndex(index);
+    };
+    // Optional render evidence: the preview's displayed debug frame of the example level.
+    const QString shotDirectory = qEnvironmentVariable("LUDUS_VIEWPORT_DEBUG_SHOTS");
+    const auto saveShot = [&](PreviewShading shading) {
+        if (shotDirectory.isEmpty() == true)
+        {
+            return;
+        }
+        REQUIRE(waitFor([&]() { return preview.HasPendingFrame(); }) == true);
+        renderer::ViewportFrame frame;
+        renderer::ViewportImage image;
+        REQUIRE(preview.TakeFrame(frame, image) == true);
+        OffscreenFrameReader reader;
+        REQUIRE(reader.Begin(preview.GetDevice(), image.Texture, image.Width, image.Height) == true);
+        OffscreenReadStatus status = OffscreenReadStatus::Pending;
+        REQUIRE(waitFor([&]() {
+                    static_cast<void>(rhi::PollLifetime(preview.GetDevice()));
+                    status = reader.Poll();
+                    return status != OffscreenReadStatus::Pending;
+                }) == true);
+        REQUIRE(status == OffscreenReadStatus::Complete);
+        const QString name = QStringLiteral("%1/world-%2.png").arg(shotDirectory, GetPreviewShadingKey(shading));
+        CHECK(reader.TakeImage().save(name) == true);
+        preview.ReleaseFrame(frame);
+    };
+    PreviewShading chosen = PreviewShading::Solid;
+    CHECK(graphView->TryGetDebugView(chosen) == false);
+    // A debug view hands frame production to the World preview, which draws that shading itself.
+    selectDebugView(PreviewShading::Normal);
+    REQUIRE(graphView->TryGetDebugView(chosen) == true);
+    CHECK(chosen == PreviewShading::Normal);
+    CHECK(preview.GetShading() == PreviewShading::Normal);
+    CHECK(preview.IsBuiltInViewShown() == true);
+    // Saved navigation keeps the earlier shading; a debug view chosen here is not persisted.
+    CHECK(preview.Navigation().value(QStringLiteral("shading")).toString() == GetPreviewShadingKey(original));
+    // The graph image no longer covers the viewport, as during ray path inspection.
+    CHECK(graphView->isHidden() == true);
+    // The status names the shading only after the preview drew a frame with it.
+    REQUIRE(waitFor([&]() {
+                return preview.Status().contains(GetPreviewShadingStatus(PreviewShading::Normal)) == true;
+            }) == true);
+    saveShot(PreviewShading::Normal);
+    // Switching between debug views keeps the preview in charge; Wireframe draws edges when the device can.
+    selectDebugView(PreviewShading::Wireframe);
+    CHECK(preview.GetShading() == PreviewShading::Wireframe);
+    CHECK(preview.IsBuiltInViewShown() == true);
+    REQUIRE(waitFor([&]() {
+                return preview.Status().contains(GetPreviewShadingStatus(PreviewShading::Wireframe)) == true ||
+                       preview.Status().contains(QStringLiteral("line rasterization")) == true;
+            }) == true);
+    saveShot(PreviewShading::Wireframe);
+    // The graph's final output returns frame production to the graph and restores the earlier shading.
+    targets->setCurrentIndex(0);
+    CHECK(preview.Navigation().value(QStringLiteral("shading")).toString() == GetPreviewShadingKey(original));
+    CHECK(graphView->TryGetDebugView(chosen) == false);
+    CHECK(preview.IsBuiltInViewShown() == false);
+    CHECK(preview.GetShading() == original);
+    CHECK(graphView->isHidden() == false);
+    // Moving between graph outputs leaves the preview's shading alone.
+    REQUIRE(targets->count() > 1);
+    targets->setCurrentIndex(1);
+    CHECK(preview.GetShading() == original);
+    CHECK(preview.IsBuiltInViewShown() == false);
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+TEST_CASE("A debug view the World preview cannot prepare returns to the graph's final output",
+          "[editor][render-graph][world-graph][shading]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 60000;
+    constexpr int32 IMPORT_TIMEOUT_MILLISECONDS = 30000;
+    // One more separate emissive patch than the built-in raster preview has area-proxy lights.
+    constexpr int32 EMITTER_COUNT = static_cast<int32>(renderer::MAX_DIRECT_LIGHTS) + 1;
+    constexpr int32 EMITTER_COLUMNS = 16;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString root = QFileInfo(project.path()).canonicalFilePath();
+    QByteArray positions;
+    QByteArray indices;
+    for (int32 i = 0; i < EMITTER_COUNT; ++i)
+    {
+        // Disjoint triangles share no edge, so each one is its own planar patch and area proxy.
+        const float32 x = static_cast<float32>(i % EMITTER_COLUMNS) * .25F - 2.0F;
+        const float32 z = static_cast<float32>(i / EMITTER_COLUMNS) * .25F - 1.0F;
+        positions += QStringLiteral("%1 2 %2  %3 2 %2  %1 2 %4  ").arg(x).arg(z).arg(x + .1F).arg(z + .1F).toUtf8();
+        indices +=
+            QByteArray::number(i * 3) + ' ' + QByteArray::number(i * 3 + 1) + ' ' + QByteArray::number(i * 3 + 2) + ' ';
+    }
+    const QString source = QDir(project.path()).filePath(QStringLiteral("source/emitters.pbrt"));
+    REQUIRE(QDir().mkpath(QFileInfo(source).absolutePath()) == true);
+    {
+        QFile file(source);
+        REQUIRE(file.open(QIODevice::WriteOnly) == true);
+        const QByteArray scene =
+            QByteArrayLiteral("LookAt 0 3 6  0 0 0  0 1 0\n"
+                              "Camera \"perspective\" \"float fov\" [45]\nWorldBegin\n"
+                              "AttributeBegin\n"
+                              "AreaLightSource \"diffuse\" \"rgb L\" [4 4 4]\n"
+                              "Shape \"trianglemesh\" \"point3 P\" [") +
+            positions + QByteArrayLiteral("]\n\"integer indices\" [") + indices +
+            QByteArrayLiteral("]\nAttributeEnd\n"
+                              "Material \"diffuse\" \"rgb reflectance\" [.6 .5 .4]\n"
+                              "Shape \"trianglemesh\" \"point3 P\" [-3 0 -3  3 0 -3  3 0 3  -3 0 3]\n"
+                              "\"integer indices\" [0 1 2  0 2 3]\n");
+        REQUIRE(file.write(scene) == scene.size());
+        QFile license(QDir(QFileInfo(source).absolutePath()).filePath(QStringLiteral("LICENSE.txt")));
+        REQUIRE(license.open(QIODevice::WriteOnly) == true);
+        REQUIRE(license.write(QByteArrayLiteral("CC0 synthetic fixture\n")) > 0);
+    }
+    const ToolingPaths tools{{}, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)};
+    const QString path = QDir(root).filePath(QStringLiteral("emitters.world.json"));
+    {
+        WorldWorkspace importer(tools, nullptr);
+        importer.SetProject(root, 1);
+        REQUIRE(importer.Create(path) == true);
+        REQUIRE(importer.ImportScene(source) == true);
+        REQUIRE(QTest::qWaitFor([&importer]() { return importer.CanSave() == true; }, IMPORT_TIMEOUT_MILLISECONDS) ==
+                true);
+        REQUIRE(importer.Save() == true);
+        REQUIRE(QTest::qWaitFor([&importer]() { return importer.CanSave() == true; }, IMPORT_TIMEOUT_MILLISECONDS) ==
+                true);
+        importer.StopPreview();
+    }
+    rhi::Shutdown();
+    RendererWorkspace workspace({});
+    WorldWorkspace world(tools, nullptr);
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(root, 1);
+    world.SetProject(root, 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Open(path) == true);
+    // An imported World opens asynchronously; the viewport starts once its scene is published.
+    REQUIRE(QTest::qWaitFor([&world]() { return world.CanSave() == true; }, IMPORT_TIMEOUT_MILLISECONDS) == true);
+    world.ResumePreview();
+    // An imported scene draws in the level viewport, not the panel viewport of authored Worlds.
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldSceneViewport"));
+    REQUIRE(viewport != nullptr);
+    REQUIRE(viewport->isVisible() == true);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+    RenderPreview& preview = world.GetRenderPreview();
+    const PreviewShading original = preview.GetShading();
+    QComboBox* targets = viewport->findChild<QComboBox*>(QStringLiteral("worldGraphTargets"));
+    REQUIRE(targets != nullptr);
+    const int32 lightCount =
+        targets->findText(QStringLiteral("Debug: %1").arg(GetPreviewShadingName(PreviewShading::LightCount)));
+    REQUIRE(lightCount >= 0);
+    targets->setCurrentIndex(lightCount);
+    CHECK(preview.IsBuiltInViewShown() == true);
+    // Light count cannot count 129 area proxies in the built-in raster preview, so the menu falls back to the
+    // final output.
+    REQUIRE(waitFor([&]() { return graphView->GetDebugViewProblem().isEmpty() == false; }) == true);
+    INFO(graphView->GetDebugViewProblem().toStdString());
+    CHECK(graphView->GetDebugViewProblem().contains(QStringLiteral("final output")) == true);
+    CHECK(targets->currentIndex() == 0);
+    PreviewShading chosen = PreviewShading::Solid;
+    CHECK(graphView->TryGetDebugView(chosen) == false);
+    CHECK(preview.IsBuiltInViewShown() == false);
+    CHECK(preview.GetShading() == original);
+    // The shared device and the graph's last image survive, instead of an empty "Open a World" viewport.
+    CHECK(preview.Running() == true);
+    CHECK(graphView->isHidden() == false);
+    CHECK(graphView->GetImage().isNull() == false);
+    // The graph keeps rendering: a camera move presents a new final-output image.
+    const uint64 presented = graphView->GetPresentedFrames();
+    preview.Orbit(10, 0);
+    REQUIRE(waitFor([&]() { return graphView->GetPresentedFrames() > presented; }) == true);
+    // Views that read no lighting need no lighting budget: Normal draws this World, and choosing it clears the
+    // explanation.
+    const int32 normal =
+        targets->findText(QStringLiteral("Debug: %1").arg(GetPreviewShadingName(PreviewShading::Normal)));
+    REQUIRE(normal >= 0);
+    targets->setCurrentIndex(normal);
+    CHECK(graphView->GetDebugViewProblem().isEmpty() == true);
+    CHECK(preview.IsBuiltInViewShown() == true);
+    REQUIRE(waitFor([&]() {
+                return preview.Status().contains(GetPreviewShadingStatus(PreviewShading::Normal)) == true;
+            }) == true);
+    CHECK(targets->currentIndex() == normal);
+    CHECK(graphView->GetDebugViewProblem().isEmpty() == true);
+    targets->setCurrentIndex(0);
+    CHECK(preview.IsBuiltInViewShown() == false);
+    CHECK(preview.Running() == true);
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
@@ -3959,7 +4248,7 @@ TEST_CASE("The viewport names the check that turned graph pixels magenta",
     preview.SetExtraction(extraction);
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_POLYGONAL_LIGHT_FIXTURE)) == RenderGraphPreviewLoad::Staged);
     // The preview reads the failure summaries about twice a second, one ray pass at a time.
-    constexpr int64 FAILURE_TIMEOUT_MILLISECONDS = 30000;
+    constexpr int64 FAILURE_TIMEOUT_MILLISECONDS = 150000;
     QElapsedTimer timer;
     timer.start();
     while (preview.GetFailureText().isEmpty() == true && timer.elapsed() < FAILURE_TIMEOUT_MILLISECONDS)

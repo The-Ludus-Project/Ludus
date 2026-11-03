@@ -33,6 +33,12 @@ public:
     [[nodiscard]] foundation::usize GetCount() const noexcept;
     /// Mean of the retained samples, or zero when empty.
     [[nodiscard]] foundation::float64 GetAverage() const noexcept;
+    /// Nearest-rank 95th percentile of retained samples, or zero when empty; never allocates.
+    [[nodiscard]] foundation::float64 GetPercentile95() const noexcept;
+    /// Largest retained sample, or zero when empty.
+    [[nodiscard]] foundation::float64 GetMaximum() const noexcept;
+    /// Most recently accepted sample, or zero when empty.
+    [[nodiscard]] foundation::float64 GetLatest() const noexcept;
 
 private:
     foundation::StaticArray<foundation::float64, VIEWPORT_STATISTICS_AVERAGE_FRAMES> mSamples{};
