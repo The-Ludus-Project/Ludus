@@ -2281,6 +2281,14 @@ void RendererWorkspace::refreshRenderWarning(const RenderScene& scene)
                       .Warning;
     }
     mIsLuminaireWarning = isLuminaireRoute == true && warning.isEmpty() == false;
+    // The luminaire route ignores the World's lights, so only other routes report a World without light.
+    mWorldLighting = isLuminaireRoute == true || scene.Identity.isEmpty() == true
+                         ? WorldLightingCoverage{}
+                         : DescribeWorldLighting(SummarizeWorldLighting(scene, scene.LightBinding.isEmpty() == false));
+    if (isLuminaireRoute == false)
+    {
+        warning = mWorldLighting.Warning;
+    }
     if (warning != mRenderWarning)
     {
         mRenderWarning = warning;
@@ -2289,6 +2297,10 @@ void RendererWorkspace::refreshRenderWarning(const RenderScene& scene)
 #else
     static_cast<void>(scene);
 #endif
+}
+WorldLightingCoverage RendererWorkspace::MakeWorldLightingRepair() const
+{
+    return mIsLuminaireWarning == true ? WorldLightingCoverage{} : mWorldLighting;
 }
 RenderGraphLuminaireCoverage RendererWorkspace::MakeRenderWarningRepair() const
 {
