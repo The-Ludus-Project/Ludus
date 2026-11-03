@@ -135,6 +135,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Game world architecture](architecture/game-world.md)
 - [Gameplay foundation architecture](architecture/gameplay-foundations.md)
 - [Gameplay languages and visual authoring architecture](architecture/scripting.md)
+- [Geometry content: authoring, cooking and loading](architecture/geometry-content.md)
 - [Graphics debugging architecture and implementation plan](architecture/graphics-debugging.md)
 - [High-resolution time](architecture/high-resolution-time.md)
 - [Level data and loading](architecture/level-data.md)

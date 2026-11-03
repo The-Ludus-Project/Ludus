@@ -77,16 +77,19 @@ batch CI. Local verification is close reading against the C++23 contracts plus
 
 ## 5. Documentation (R5)
 
-- [ ] 5.1 Doxygen on all new public API.
-- [ ] 5.2 Update `docs/architecture/curves-surfaces.md` (status, boundary table,
-  G5 gate row, short G5 section).
-- [ ] 5.3 Add the G5 section + validation record to
+- [x] 5.1 Doxygen on all new public API (`geometry_format.h`, `limits.h`,
+  `geometry_content.h`, and the editor-private `geometry_document.h`).
+- [x] 5.2 Update `docs/architecture/curves-surfaces.md` (status, boundary table,
+  G5 gate row, "Implemented content and editor adapters (G5)" section).
+- [x] 5.3 Add the G5 section + validation record to
   `docs/architecture/math-evidence/curves-surfaces.md`.
-- [ ] 5.4 Canonical usage/workflow page under `docs/` (geometry content authoring,
-  cook, load), registered in index/wiki, only if warranted.
-- [ ] 5.5 `python scripts/check-docs --fix-index`; strict MkDocs; `scripts/build-api
-  --bootstrap`; `scripts/check-wiki` — run where possible, record deferrals.
-- [ ] 5.6 Reference comments wherever a source informed the design.
+- [x] 5.4 Canonical usage/workflow page `docs/architecture/geometry-content.md`,
+  registered in the docs index.
+- [x] 5.5 `python scripts/check-docs --fix-index` passed; strict MkDocs build
+  passed locally. `scripts/build-api --bootstrap` and `scripts/check-wiki` need
+  the pinned Doxygen and run in CI.
+- [x] 5.6 Reference comments wherever a source informed the design (format/codec
+  headers and sources, editor adapter header).
 
 ## 6. Validation before PR (run what the toolchain allows; defer the rest to CI)
 

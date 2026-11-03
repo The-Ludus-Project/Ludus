@@ -8,6 +8,103 @@ meshes. See the
 [ADR 0024](../../decisions/0024-curves-surfaces-contracts.md) and the
 [consulted-source review](../curves-surfaces-gems-review.md).
 
+## G5 cooked geometry content and editor adapters
+
+Implementation date: 2026-11-03. Base: `f8763a8` (`develop`). Scope: the
+header-only `Ludus::GeometryFormat` target (`modules/content/geometry_format`),
+the `Ludus::GeometryContent` codecs/cooker/loader (`modules/geometry/content`), a
+`content::Kind::CookedGeometry` catalog extension at catalog schema version 2, and
+the editor-private authoring adapters (`apps/editor` `ludus_editor_geometry_model`:
+`CurveDocument`, `GeometryPrepareJob`, `GeometryPreview`, `GeometryLiveBuild` and
+`ReloadCursor`). No corpus reference changed. No renderer binding is added; GPU
+presentation of a prepared curve/surface remains G6.
+
+### Format and cache contract
+
+One LUGEO blob holds exactly one geometry kind. The header carries the magic, the
+format and cooker versions, the kind and precision tags, a flags word, the record
+counts, the owner revision, the chunk origin, asset scale, position floor and
+effective position error, the whole 12-field `ToleranceProfile`, a checked
+section directory of `{id, offset, count, element bytes}` entries, and three
+SHA-256 digests. Record widths are `static_assert`ed against constants derived
+from the field schema (`PATH_SPAN_RECORD_BYTES = 64`, `JOINT_RECORD_BYTES = 40`,
+`TRACK_KEY_RECORD_BYTES = 24`, `PATCH_RECORD_BYTES = 200`,
+`ADJACENCY_RECORD_BYTES = 20`, `SOURCE_IDENTITY_RECORD_BYTES = 16`,
+`SECTION_ENTRY_BYTES = 16`), so the directory's element width equals the bytes the
+field-by-field codec actually writes. The cooked header holds exactly the cache
+key the architecture lists (source digest, dependency digest, format and cooker
+versions, schema version, precision and every tolerance).
+
+### Gate evidence
+
+| Gate | Test evidence |
+| --- | --- |
+| Source round-trip | `WriteGeometrySource` then `ParseGeometrySource` reproduces the mode, closure, author IDs and span controls; re-writing the reparsed source yields byte-identical canonical JSON |
+| Blob round-trip and determinism | Every G0 corpus cubic fixture cooks to a LUGEO blob, loads back to a `PreparedPath`, and evaluates its start endpoint bitwise; re-cooking the same source is byte-identical |
+| Corrupt/overflowing blobs | Truncation below the header, a corrupt magic and an unsupported version each fail with a structured diagnostic. Flipping the high bits of every byte in a cooked blob (including the section directory and count fields) always either loads a valid owner or fails with a diagnostic; the loader never asserts, reads out of bounds or mutates `outLoad` on failure. `count x element bytes`, the section extent and the header size use checked `TryMultiply`/`TryAdd`/`TryIntegerCast`, so an overflowing count is `OutOfRange`, not a wrap |
+| Section validation | Each section is a known id with the matching element width, lies after the header, is four-byte aligned, in range and non-overlapping; a kind's required sections must be present. The payload digest is recompared on load for cache consistency |
+| Unknown fields/versions, duplicate IDs | An unknown schema version is `UnsupportedRepresentation`; non-JSON and an unknown mode are `Invalid`; duplicate span/key author IDs and non-monotone key times are rejected with diagnostics |
+| Catalog versioned extension | A version-2 catalog admits `cooked-geometry`; a version-1 catalog rejects it as `Invalid`; `Write` emits version 2 only when a geometry entry is present so geometry-free catalogs round-trip as version 1 |
+| Allocation failure | Every fallible allocation in `CookGeometry` and `LoadGeometry` is failed in turn: the call returns a transport failure and leaves the active owner (the blob or the load) unchanged. Evaluation after a successful load allocates nothing |
+| Undo/redo | Semantic edits are undoable and the document revision is monotonic; a drag coalesces into one undo step; a checked head rejects a mismatched current state; duplicate control IDs are rejected with a repair suggestion |
+| Failed and cancelled prepare | A failed replacement keeps the active view and raises `StaleFailed`; a cancelled job reports `Failed` with a `Cancelled` transport and keeps the active view |
+| Late completion | A completion whose generation/revision no longer match the expected identity is rejected and never publishes; the active view and its stale flag are unchanged |
+| Stale cursor | `ReloadCursor` under `RetainParameter` clamps an out-of-range span index and u into the new path and stamps the new revision; the distance and projection policies return `MissingCache` without an implicit fallback |
+| Active+candidate peak memory | The preview holds exactly one owner when idle and two while a candidate is pending, dropping back to one after the tick publication |
+
+### Departures and limits
+
+- The text source schema and cooker implement the cubic-path, scalar-track and
+  (parse/cook/load) bicubic-surface kinds directly. Hermite and centripetal
+  Catmull-Rom waypoint sources are authored through the editor adapter, which
+  converts them to cubic spans before cooking; the text schema reports
+  `UnsupportedRepresentation` for those modes until a waypoint schema is added.
+- `ReloadCursor` implements `RetainParameter` from the view alone. The distance
+  and projection policies require their caches (a `PreparedDistanceMap` or a
+  projection query), which sampling never builds; the adapter reports
+  `MissingCache` so the consumer supplies the cache explicitly.
+- The dependency digest is the canonical empty-input hash for a self-contained
+  asset; cross-asset dependency hashing is a follow-up when a geometry source
+  references another.
+- `GeometryPrepareJob` pumps one bounded stage on the owner thread, as the
+  current preview adapters do. Moving preparation onto the FoundationThreading
+  `JobGraph` is an available follow-up; the immutable-input/exclusive-output
+  contract already matches that graph's requirements.
+- No renderer upload or on-screen presentation of a prepared curve/surface is
+  added; that is G6.
+
+### G5 validation record
+
+Host: Amazon Linux 2023 on x86_64. The pinned reference toolchain is Clang/LLVM
+23.1.3 with CMake 3.29.6 (ADR 0025, `config/tool_versions.json`), which is not
+available in this implementation sandbox (only system Clang 15.0.7 and CMake
+3.22.2, which cannot parse `CMakePresets.json`). The warning-clean pinned-Clang-23
+build, `./scripts/check --format` (clang-format 23), `./scripts/check --tidy`
+(clang-tidy 23), the ASan/UBSan lanes, the strict MkDocs/Doxygen tooling and the
+installed SDK consumer therefore run in batch CI, as the prior phases' records
+also deferred ASan/Wasm/SDK.
+
+| Check | Result |
+| --- | --- |
+| Standalone `clang++-15 -std=c++2b -fno-exceptions -fsyntax-only` of every new translation unit | Passed (header-only format, the three GeometryContent sources, the edited `catalog.cpp`, the editor adapter, and all five test files against a Catch2 shim) |
+| Record-width `static_assert`s (`Ludus::GeometryFormat`) | Pass at compile time; covered again by `ludus_geometry_format_tests` |
+| Warning-clean pinned-Clang-23 build | Not run locally (toolchain unavailable); CI |
+| `ludus_geometry_format_tests`, `ludus_geometry_content_tests`, `ludus_geometry_content_alloc_tests`, `ludus_editor_geometry_tests` | Not run locally (Catch2 and the pinned toolchain unavailable); CI |
+| `./scripts/check --format` (clang-format 23) | Not run locally; CI |
+| `python3 scripts/python/source_policy.py --base origin/develop` | Attempted; recorded with the PR |
+| `./scripts/check <preset> --tidy-changed --base origin/develop` | Not run locally; CI |
+| check-docs, strict MkDocs, `scripts/build-api --bootstrap`, `scripts/check-wiki` | check-docs `--fix-index` run where Python deps resolve; MkDocs/Doxygen/wiki in CI |
+| ASan/UBSan, installed SDK consumer, Wasm probe | Not run locally; CI |
+
+The format acknowledges the two in-tree precedents it mirrors: `Ludus::SceneFormat`
+(`modules/content/scene_format`, the LUSCN field-by-field little-endian contract)
+and `Ludus::RenderGraphFormat` (`modules/content/render_graph_format`, the blob
+header with versions, SHA-256 identities and count-prefixed sections). The cook
+and digest flow follows `Ludus::SceneCook`; the loader validation follows
+`modules/runtime/resources` `SceneDefinition::Decode`; the editor adapters follow
+`DocumentHistory`, `RenderGraphLiveBuild`, `RenderGraphJob`, `PreviewGpuGeneration`
+and `RenderGraphPreview`. No source code from those modules is copied.
+
 ## G4 patch topology and CPU surface meshes
 
 Implementation date: 2026-10-17. Base: `c3de79d` (`develop` after G2; rebased onto `6615a2c` before review). Scope:
