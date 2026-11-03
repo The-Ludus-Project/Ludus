@@ -72,10 +72,10 @@ through FoundationContainers' CMake header file set.
 | Runtime size within a hard bound | `FixedArray<T, N>` | Implemented (M3); live prefix, no heap, full is a status |
 | FIFO with hard capacity | `RingBuffer<T, N>` | Implemented (M4); inline storage, single owner, two spans for wrapped storage |
 | Dense index membership/flags | `StaticBitSet<N>`; `BitSet` | `StaticBitSet` implemented (M5); dynamic `BitSet` deferred for lack of a consumer |
-| Larger mutable dictionary | `HashMap<K, V, Hash, Equal>` | Planned; flat storage, measurement gates below |
-| Uniqueness without mapped values | `SortedSet<K>` / `HashSet<K>` | Planned; share the corresponding lookup policy |
-| Dense traversal with durable identity | subsystem typed handle + `SlotMap<T>` | Planned; generation checking and swap removal |
-| Dense components keyed by sparse IDs | `SparseSet<T>` | Planned only with a concrete World extraction |
+| Larger mutable dictionary | `HashMap<K, V, Hash, Equal>` | Deferred (M8); no consumer and no measured workload yet |
+| Uniqueness without mapped values | `SortedSet<K>` / `HashSet<K>` | Deferred (M7/M8); no consumer; shares the corresponding lookup policy |
+| Dense traversal with durable identity | subsystem typed handle + `SlotMap<T>` | Deferred (M9); gated on object-handles/FoundationIdentity |
+| Dense components keyed by sparse IDs | `SparseSet<T>` | Deferred (M10); gated on object-handles/FoundationIdentity and a concrete World extraction |
 | Rare address-stable objects | subsystem owned pool | Conditional; handles normally preferred |
 | Tiny common sequence that occasionally grows | `SmallArray<T, N>` | Conditional; size/relocation cost must beat `Array` |
 
@@ -297,11 +297,18 @@ a concrete consumer and measurements before implementation.
 
 ### Milestone roadmap
 
-Planning baseline: **2026-10-06**. M0 records implemented functionality, not a
-fresh certification of every review gate. Later milestones are unfinished.
-"Gated" means a consumer or design decision must be established before committing
-to the public primitive. Numbers express the recommended order; the dependencies
-below determine which increments can proceed independently.
+Planning baseline: **2026-10-06**; deferral review **2026-11-03**. M0 records
+implemented functionality, not a fresh certification of every review gate. M0–M5
+are implemented (PRs [#271](https://github.com/The-Ludus-Project/Ludus/pull/271),
+[#299](https://github.com/The-Ludus-Project/Ludus/pull/299),
+[#303](https://github.com/The-Ludus-Project/Ludus/pull/303),
+[#319](https://github.com/The-Ludus-Project/Ludus/pull/319) and
+[#332](https://github.com/The-Ludus-Project/Ludus/pull/332)). **Deferred** means
+the milestone is not being implemented now: its row records the reason and the
+condition that reopens it. A deferral is deliberate, not a missing deliverable,
+so M11's baseline can be established with M6–M10 outstanding. Numbers express the
+recommended order; the dependencies below determine which increments can proceed
+independently once reopened.
 
 | ID | Milestone | Status | Deliverable and exit criterion |
 | --- | --- | --- | --- |
@@ -309,14 +316,14 @@ below determine which increments can proceed independently.
 | M1 | Restore migration and explicit allocation failure | Implemented | First-party `std::vector` uses were replaced with `Array`, including tests, tools and the exported Audio Gym API. Status-returning boundaries use fallible operations and preserve outputs on failure. `tools/check_container_policy.py` rejects new uses outside the benchmark/vendor exceptions; see [M1 consumer migration](#m1-consumer-migration). |
 | M2 | Complete existing container API documentation | Implemented | Every public `Array`, `StaticArray`, `SortedMap` and relocation-trait declaration has a Doxygen contract, and their 158 baseline entries were removed from `api-undocumented.json`. The [container guide](../wiki/guides/containers.md) covers selection, failure handling and borrow rules, and separates shipped types from planned ones. Strict wiki/API builds and coverage checks pass. |
 | M3 | `FixedArray<T, N>` and one Input migration | Implemented | `FixedArray` keeps a live prefix in inline raw storage, reports full explicitly and constructs only occupied slots ([contract](#fixedarray-contract)). The Input reducer's binding table and step-event buffer use it. Zero allocation, zero capacity, non-default/move-only values, aliasing, failure preservation and balanced lifetimes are tested, including against a seeded model. |
-| M4 | Single-owner `RingBuffer<T, N>` | Implemented | Inline storage with compile-time capacity was selected ([contract](#ringbuffer-contract)); a heap-backed run-time-capacity ring stays gated on a consumer. Wrapped leading/trailing spans and explicit full/empty behavior are implemented. The Input reducer's pending-transition queue uses it with its overflow/reset policy unchanged. Wraparound and lifetimes are model-tested. |
-| M5 | `StaticBitSet<N>`; dynamic `BitSet` | Implemented; dynamic `BitSet` deferred | `StaticBitSet` packs bits into `uint64` words with tail masking, single-bit and whole-set operations, `FindNextSet`, set operations and shifts ([contract](#staticbitset-contract)). The Input reducer's private key masks and the Resources manager's membership sets use it. 0/1/63/64/65/130-bit boundaries, tail masking, every shift amount and a seeded model are tested, with zero allocation. Dynamic `BitSet` with fallible growth is deferred until a consumer needs a run-time bit count. |
-| M6 | Array allocation-domain integration | Planned; Memory prerequisites | Reuse FoundationMemory through the Array byte seam, then introduce domain ownership as a separately measured layout change. Test original-domain frees, copy/move/swap rules, nested owners, over-alignment and OOM preservation; version the SDK owning-layout boundary. |
-| M7 | `SortedSet<K>` | Gated | Identify an ordered uniqueness consumer. Reuse the ordering/equivalence contract and contiguous lifetime helpers; verify duplicate insertion consumes nothing, keys remain immutable through public access, and ordered output matches an independent model. |
-| M8 | `HashMap` and consumer-required `HashSet` | Gated | Compare a scalar flat table with grouped-control alternatives on a named mutable-lookup workload. Select and implement one algorithm, reuse FoundationHash, and migrate the consumer. Collision/deletion/rehash models, bounded probing and allocation-failure rollback pass; record native/Wasm results. |
-| M9 | Typed handles and `SlotMap<T>` | Gated | Establish owner/cross-instance identity, generation exhaustion and subsystem ABI semantics first. Extract a reusable dense-value primitive with reverse indices; verify stale/foreign handles, removal, clear, move and multi-allocation rollback against a model. |
-| M10 | `SparseSet<T>` extraction | Gated | Demonstrate reusable storage logic in World or another bounded-ID consumer. Extract membership/dense storage while retaining ECS policy in World; verify ID bounds, back-links, swap removal, failure preservation and sparse-address-space memory costs. |
-| M11 | Research and measured improvements after the initial implementation | Planned; initial baseline required | Review the queued conference/journal sources below, record testable hypotheses, and trial promising alternatives against the validated initial implementation. Record adopt/defer/reject decisions with correctness, allocation, memory, performance and portability evidence. |
+| M4 | Single-owner `RingBuffer<T, N>`; heap-backed run-time-capacity ring | Implemented; heap-backed ring deferred (no consumer) | Inline storage with compile-time capacity was selected ([contract](#ringbuffer-contract)). Wrapped leading/trailing spans and explicit full/empty behavior are implemented. The Input reducer's pending-transition queue uses it with its overflow/reset policy unchanged. Wraparound and lifetimes are model-tested. A heap-backed, run-time-capacity ring is **deferred, reopened when a consumer needs run-time capacity**, consistent with the [RingBuffer contract](#ringbuffer-contract). |
+| M5 | `StaticBitSet<N>`; dynamic `BitSet` | Implemented; dynamic `BitSet` deferred (no consumer) | `StaticBitSet` packs bits into `uint64` words with tail masking, single-bit and whole-set operations, `FindNextSet`, set operations and shifts ([contract](#staticbitset-contract)). The Input reducer's private key masks and the Resources manager's membership sets use it. 0/1/63/64/65/130-bit boundaries, tail masking, every shift amount and a seeded model are tested, with zero allocation. Dynamic `BitSet` with fallible growth is **deferred, reopened when a consumer needs a run-time bit count**, consistent with the [StaticBitSet contract](#staticbitset-contract). |
+| M6 | Array allocation-domain integration | Deferred (2026-11-03); Memory Phase 2 not complete | **Reopen after a dedicated design review** of the owning-layout change. This milestone changes `Array`'s owning layout and the SDK ABI, and depends on [Memory phases 1 and 2](memory-management.md#17-implementation-phases). Phase 1 (the fallible byte boundary and the `Array` seam redirected to the `Containers` domain) is implemented; Phase 2 (explicit per-owner container attribution, `Array(domain)` and the versioned owning-layout seam) is not. Scope when reopened: reuse FoundationMemory through the Array byte seam, then introduce domain ownership as a separately measured layout change. Test original-domain frees, copy/move/swap rules, nested owners, over-alignment and OOM preservation; version the SDK owning-layout boundary. |
+| M7 | `SortedSet<K>` | Deferred (2026-11-03); no consumer | **Reopen when a named ordered-uniqueness consumer appears.** No first-party production code needs ordered uniqueness without mapped values; a repository search finds no production `std::set`/`std::map` outside tests and `tools/container-bench`. Scope when reopened: reuse the ordering/equivalence contract and contiguous lifetime helpers; verify duplicate insertion consumes nothing, keys remain immutable through public access, and ordered output matches an independent model. |
+| M8 | `HashMap` and consumer-required `HashSet` | Deferred (2026-11-03); no consumer and no measured workload | **Reopen when a named mutable-lookup consumer appears.** No first-party production code needs a large mutable dictionary; a repository search finds no production `std::unordered_map`/`std::unordered_set` outside tests and `tools/container-bench`. The algorithm cannot be selected before a measured mutable-lookup workload exists. Scope when reopened: compare a scalar flat table with grouped-control alternatives on that named workload. Select and implement one algorithm, reuse FoundationHash, and migrate the consumer. Collision/deletion/rehash models, bounded probing and allocation-failure rollback pass; record native/Wasm results. |
+| M9 | Typed handles and `SlotMap<T>` | Deferred (2026-11-03); gating decision owned by object-handles/FoundationIdentity | **Reopen after the owner and cross-instance identity decision settles** in the [object handles and persistent UUID architecture](object-handles-uuid.md) (object-handles stage 2, [#306](https://github.com/The-Ludus-Project/Ludus/pull/306), and any later identity docs under `docs/`). Establishing owner/cross-instance identity, generation exhaustion and subsystem ABI semantics is that workstream's responsibility, not this one. Scope when reopened: extract a reusable dense-value primitive with reverse indices; verify stale/foreign handles, removal, clear, move and multi-allocation rollback against a model. |
+| M10 | `SparseSet<T>` extraction | Deferred (2026-11-03); gating decision owned by object-handles/FoundationIdentity | **Reopen after the owner and cross-instance identity decision settles** in the [object handles and persistent UUID architecture](object-handles-uuid.md) (object-handles stage 2, [#306](https://github.com/The-Ludus-Project/Ludus/pull/306), and any later identity docs under `docs/`), then demonstrate reusable storage logic in World or another bounded-ID consumer. Scope when reopened: extract membership/dense storage while retaining ECS policy in World; verify ID bounds, back-links, swap removal, failure preservation and sparse-address-space memory costs. |
+| M11 | Research and measured improvements after the initial implementation | Baseline established (2026-11-03); ready to start | The M11 precondition is satisfied: M0–M5 are implemented and M6–M10 each carry an explicit deferral above with its reason and reopen condition. The [baseline](#research-after-the-initial-implementation) records the baseline revision, completed scope and deferred scope. Scope: review the queued conference/journal sources below, record testable hypotheses, and trial promising alternatives against the validated initial implementation. Record adopt/defer/reject decisions with correctness, allocation, memory, performance and portability evidence. |
 
 #### M1 consumer migration
 
@@ -371,15 +378,40 @@ audio/logging/profiling publication protocols.
 M6 follows the byte-boundary and attribution decisions in
 [Memory phases 1 and 2](memory-management.md#17-implementation-phases). Existing
 allocation domains do not by themselves establish that Array integration or
-accounting/ABI prerequisites are complete. Split backend redirection from the
-per-owner domain/layout change and retain the accepted ownership rules when
-later containers are added. M6 can proceed independently of bounded inline
-storage; a heap-owning milestone must state which allocation seam it uses.
+accounting/ABI prerequisites are complete. **M6 is deferred as of 2026-11-03**
+and reopens after a dedicated design review of the owning-layout change. Two
+facts drive the deferral: it changes `Array`'s owning layout and the SDK ABI,
+and it depends on Memory phases 1 and 2. Phase 1 is implemented — the existing
+`AllocationDomain` was extended into the fallible byte boundary and the `Array`
+seam now redirects to the `Containers` domain (see the Phase 1 implementation
+note). Phase 2, which makes per-owner container attribution explicit
+(`Array(domain)`, propagation rules and the versioned owning-layout seam), is
+not yet implemented, and its own risks row says to reopen the owner-size cost
+question before that attribution spreads. When M6 reopens, split backend
+redirection from the per-owner domain/layout change and retain the accepted
+ownership rules when later containers are added; M6 can proceed independently of
+bounded inline storage, and a heap-owning milestone must state which allocation
+seam it uses.
 
-M7 and M8 do not require each other. M8's benchmark/selection step precedes its
-public implementation; `HashSet` shares the chosen policy when a consumer needs
-it. M9's identity decision precedes any extraction. M10 can reuse existing World
-identity without waiting for a generic SlotMap if a separate extraction pays.
+M7 and M8 do not require each other, and **both are deferred as of 2026-11-03
+for lack of a production consumer**. A repository search finds no first-party
+production code that uses `std::map`, `std::set`, `std::unordered_map` or
+`std::unordered_set`; the only matches are in tests and `tools/container-bench`,
+which are permitted. M7 (ordered uniqueness) reopens when a named consumer needs
+it. M8 is deferred for two reasons: no consumer, and no measured mutable-lookup
+workload against which to select its algorithm; its benchmark/selection step
+still precedes any public implementation, and `HashSet` shares the chosen policy
+when a consumer needs it. Each reopens when a named consumer appears.
+
+M9 and M10 are **deferred as of 2026-11-03** because their gating decision —
+owner and cross-instance identity — belongs to the object-handles /
+FoundationIdentity workstream, not to container systems. That decision is owned
+by the [object handles and persistent UUID architecture](object-handles-uuid.md)
+(object-handles stage 2, [#306](https://github.com/The-Ludus-Project/Ludus/pull/306),
+and any later identity docs under `docs/`). M9's identity decision precedes any
+`SlotMap` extraction; M10 can reuse existing World identity without waiting for a
+generic SlotMap if a separate extraction pays, but it inherits the same identity
+gate. Both reopen once that workstream settles owner/cross-instance identity.
 Owning move-only String keys, heterogeneous lookup and stateful policies remain
 consumer-driven contract extensions; none is required to declare M0 implemented.
 
@@ -397,6 +429,43 @@ and completed deliverable or an explicit deferral with its reason; the
 conditional backlog does not need implementation to establish the baseline.
 Record the baseline revision, completed/deferred scope, consumer workloads and
 measurements before comparing research prototypes with it.
+
+#### M11 baseline
+
+Established **2026-11-03**. Every container milestone that is not implemented now
+carries an explicit deferral above, with its reason and the condition that
+reopens it, so the precondition for starting M11 is met.
+
+- **Baseline revision.** `develop` at `f8763a8e` (the revision this record was
+  written against). Later research prototypes compare against this baseline; use
+  the then-current revision and record it with each trial in the
+  [container evidence](../development/container-systems-evidence.md).
+- **Completed scope.** M0–M5 are implemented (PRs
+  [#271](https://github.com/The-Ludus-Project/Ludus/pull/271),
+  [#299](https://github.com/The-Ludus-Project/Ludus/pull/299),
+  [#303](https://github.com/The-Ludus-Project/Ludus/pull/303),
+  [#319](https://github.com/The-Ludus-Project/Ludus/pull/319) and
+  [#332](https://github.com/The-Ludus-Project/Ludus/pull/332)): `StaticArray`,
+  `Array` and `SortedMap` with fallible insertion/append and consumer migration
+  (M0–M1), the public container API documentation (M2), `FixedArray<T, N>` (M3),
+  the single-owner inline `RingBuffer<T, N>` (M4) and `StaticBitSet<N>` (M5),
+  each with its consumer, contract and measurement evidence recorded above.
+- **Deferred scope.** M6 (Array allocation-domain integration — reopens after a
+  dedicated design review, blocked on Memory Phase 2), M7 (`SortedSet<K>`) and
+  M8 (`HashMap`/`HashSet`) (reopen when a named production consumer appears, and
+  M8 additionally needs a measured mutable-lookup workload), and M9 (typed
+  handles/`SlotMap<T>`) and M10 (`SparseSet<T>`) (reopen once the object-handles
+  / FoundationIdentity workstream settles owner and cross-instance identity).
+  The deferred dynamic `BitSet` (M5) and heap-backed run-time-capacity
+  `RingBuffer` (M4) remain consumer-gated. The conditional backlog (`SmallArray`,
+  pools, trees, concurrent and virtual-memory storage) is unchanged.
+- **Consumer workloads and measurements.** The shipped consumers (GameHost
+  resource bindings, Text, Audio Gym, the Input reducer and the Resources
+  manager) and the first increment's measured lookup/rebuild/allocation results
+  are the baseline workloads; see the
+  [container evidence](../development/container-systems-evidence.md) and the
+  [completion and evidence](#completion-and-evidence) gates. A deferred milestone
+  has no consumer workload to measure until it reopens.
 
 The algorithm-selection measurements and source checks already required by the
 initial milestones remain part of their implementation. In particular, M8 still

@@ -43,17 +43,19 @@ no universal size at which a map wins; measure the actual consumer. The
 [architecture](../../architecture/container-systems.md#baseline-architecture-before-the-gems-review)
 explains the selection.
 
-These structures are **planned, not available**. Do not write code against them
-yet. The [milestone roadmap](../../architecture/container-systems.md#milestone-roadmap)
+These structures are **planned but deferred, not available**. Each milestone
+(M6–M10) has an explicit deferral with its reason and the condition that reopens
+it. Do not write code against these types yet. The
+[milestone roadmap](../../architecture/container-systems.md#milestone-roadmap)
 tracks their status and gating consumers.
 
-| Planned type | Intended use |
-| --- | --- |
-| `BitSet` | Packed bits with a run-time size; deferred until a consumer needs one |
-| `HashMap`, `HashSet` | Larger mutable dictionaries, after a measured algorithm selection |
-| `SortedSet<K>` | Ordered uniqueness without mapped values |
-| `SlotMap<T>` with typed handles | Dense traversal with generation-checked durable identity |
-| `SparseSet<T>` | Dense storage keyed by bounded sparse IDs |
+| Planned type | Intended use | Deferral and reopen condition |
+| --- | --- | --- |
+| `BitSet` | Packed bits with a run-time size | Deferred (M5): reopens when a consumer needs a run-time bit count |
+| `HashMap`, `HashSet` | Larger mutable dictionaries | Deferred (M8): reopens when a named consumer appears; needs a measured mutable-lookup workload before the algorithm is selected |
+| `SortedSet<K>` | Ordered uniqueness without mapped values | Deferred (M7): reopens when a named ordered-uniqueness consumer appears |
+| `SlotMap<T>` with typed handles | Dense traversal with generation-checked durable identity | Deferred (M9): reopens once the object-handles / FoundationIdentity workstream settles owner and cross-instance identity |
+| `SparseSet<T>` | Dense storage keyed by bounded sparse IDs | Deferred (M10): reopens once object-handles / FoundationIdentity settles, then with a concrete World extraction |
 
 ## Report allocation failure without partial output
 
