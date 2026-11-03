@@ -36,7 +36,7 @@ void OpenEditorDocument(QWidget* owner,
 // Copy a bundled sample to a new writable project; preserve the output on failure.
 [[nodiscard]] bool CopyEditorSample(const QString& id, QString& descriptor, const QString& destinationRoot = {});
 #if defined(Q_OS_WASM)
-/// Copy a selected scene into MEMFS and report its entry path (.pbrt, .gltf, .glb or .obj;
+/// Copy a selected scene into MEMFS and report its entry path (.pbrt, .gltf, .glb, .obj or .luscene.json;
 /// lifetime-guarded). isFolder picks a whole scene folder; otherwise one .zip, or an entry
 /// file with its companion files.
 /// The browser editor's 32 MiB session import budget applies; refused selections write nothing.

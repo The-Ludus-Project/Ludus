@@ -131,6 +131,10 @@ struct IrMaterial final
     float64 BaseColour[IR_RGB_CHANNEL_COUNT] = {.5, .5, .5};
     /// Index into SceneIr::Textures or IR_NONE.
     uint32 BaseColourTexture = IR_NONE;
+    /// Without a base texture, cook BaseColour as the exact linear reflectance factor over a
+    /// white swatch instead of quantizing it into an 8-bit sRGB swatch. Set by the Ludus scene
+    /// source front-end; the other front-ends keep their established cooked bytes.
+    bool IsUntexturedReflectanceExact = false;
     float64 Metallic = 0.0;
     float64 Roughness = 1.0;
     /// Texture whose MetallicChannel scales Metallic (glTF metallicRoughnessTexture

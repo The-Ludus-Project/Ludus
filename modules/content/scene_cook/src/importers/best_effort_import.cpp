@@ -15,6 +15,7 @@
 #include "gltf/gltf_reader.h"
 #include "image/image_filter.h"
 #include "image/image_reader.h"
+#include "ludus/ludus_scene_reader.h"
 #include "mesh_compaction.h"
 #include "obj/obj_reader.h"
 #include "parallel_tasks.h"
@@ -1124,6 +1125,14 @@ void HalveTextureTask(void* context, usize task) noexcept
             {
                 planned.BaseColour[k] = scene.Textures[planned.Texture].Scale[k];
             }
+        }
+        if (isDecoded == false && planned.Texture == IR_NONE && planned.Representative != IR_NONE &&
+            scene.Materials[planned.Representative].IsUntexturedReflectanceExact == true)
+        {
+            planned.Reflectance = {math::Clamp(planned.BaseColour[0], 0.0, 1.0),
+                                   math::Clamp(planned.BaseColour[1], 0.0, 1.0),
+                                   math::Clamp(planned.BaseColour[2], 0.0, 1.0)};
+            planned.BaseColour[0] = planned.BaseColour[1] = planned.BaseColour[2] = 1.0;
         }
         if (isDecoded == false)
         {
@@ -2342,7 +2351,8 @@ SceneSourceFormat DetectSceneSourceFormat(std::span<const uint8> prefix, std::st
         }
         if (value == '{')
         {
-            return SceneSourceFormat::Gltf;
+            return scene_source::IsSceneSourcePrefix(text.substr(at)) == true ? SceneSourceFormat::LudusScene
+                                                                              : SceneSourceFormat::Gltf;
         }
         usize end = at;
         while (end < text.size() && text[end] != ' ' && text[end] != '\t' && text[end] != '\r' && text[end] != '\n')
@@ -2378,6 +2388,10 @@ SceneSourceFormat DetectSceneSourceFormat(std::span<const uint8> prefix, std::st
     if (HasExtension(fileName, ".gltf") == true || HasExtension(fileName, ".glb") == true)
     {
         return SceneSourceFormat::Gltf;
+    }
+    if (HasExtension(fileName, scene_source::SCENE_SOURCE_EXTENSION) == true)
+    {
+        return SceneSourceFormat::LudusScene;
     }
     return SceneSourceFormat::Unknown;
 }
@@ -2519,6 +2533,51 @@ bool ImportGltfBestEffort(std::string_view entryFile,
                              cancelOrNull);
 }
 
+bool ImportLudusScene(std::string_view entryFile,
+                      const BestEffortOptions& options,
+                      BestEffortResult& outResult,
+                      CookError& outError,
+                      const Cancellation* cancelOrNull) noexcept
+{
+    ResetResult(outResult);
+    outResult.Format = SceneSourceFormat::LudusScene;
+    outResult.Profile = LUDUS_SCENE_PROFILE;
+    SceneIr scene;
+    DiagnosticLog log;
+    Array<uint8> bytes;
+    ResolvedEntry resolved;
+    Status status = ResolveEntry(entryFile, resolved);
+    const String& root = resolved.Root;
+    const std::string_view native = resolved.Native.GetView();
+    if (status == Status::Ok)
+    {
+        status = detail::ReadFileBounded(native, ludus_scene::MAX_ENTRY_BYTES, bytes);
+        if (status == Status::Limit)
+        {
+            (void)log.Add(DiagnosticSeverity::Error,
+                          codes::LIMIT_EXCEEDED,
+                          detail::GetBaseName(native),
+                          0,
+                          "scene source file exceeds the size limit");
+            status = Status::Invalid;
+        }
+    }
+    if (status == Status::Ok)
+    {
+        status = ludus_scene::ReadScene(bytes.AsSpan(), detail::GetBaseName(native), scene, log, cancelOrNull);
+    }
+    return CookImportedScene(LUDUS_SCENE_PROFILE,
+                             scene,
+                             log,
+                             root,
+                             status,
+                             entryFile,
+                             options,
+                             outResult,
+                             outError,
+                             cancelOrNull);
+}
+
 bool ImportSceneBestEffort(std::string_view entryFile,
                            const BestEffortOptions& options,
                            BestEffortResult& outResult,
@@ -2540,11 +2599,15 @@ bool ImportSceneBestEffort(std::string_view entryFile,
             return ImportGltfBestEffort(entryFile, options, outResult, outError, cancelOrNull);
         case SceneSourceFormat::Obj:
             return ImportObjBestEffort(entryFile, options, outResult, outError, cancelOrNull);
+        case SceneSourceFormat::LudusScene:
+            return ImportLudusScene(entryFile, options, outResult, outError, cancelOrNull);
         case SceneSourceFormat::Unknown:
             break;
     }
     ResetResult(outResult);
-    return FailWith(outError, Status::Unsupported, "the entry file is not a pbrt-v4, glTF 2.0/GLB or OBJ scene");
+    return FailWith(outError,
+                    Status::Unsupported,
+                    "the entry file is not a pbrt-v4, glTF 2.0/GLB, OBJ or Ludus scene source");
 }
 
 bool WriteBestEffortImport(std::string_view output, const BestEffortResult& result, CookError& outError) noexcept

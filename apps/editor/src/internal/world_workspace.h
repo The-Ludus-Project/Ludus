@@ -60,7 +60,7 @@ public:
     explicit WorldWorkspace(QWidget* parent = nullptr);
     WorldWorkspace(const ToolingPaths& tooling, QWidget* parent);
     [[nodiscard]] bool ImportScene(const QString& source);
-    /// Dry-run source (a .pbrt, .gltf, .glb or .obj file, or a reference directory) and show the
+    /// Dry-run source (a .pbrt, .gltf, .glb, .obj or .luscene.json file, or a reference directory) and show the
     /// preview panel; ConfirmImportPreview then imports the previewed source.
     /// environmentFile optionally selects a latitude/longitude image inside that source folder.
     [[nodiscard]] bool PreviewImportScene(const QString& source, const QString& environmentFile = {});

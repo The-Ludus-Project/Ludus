@@ -107,6 +107,7 @@ nav:
       - Benchmark scenes and suites: development/benchmark-scenes.md
       - Runtime profiling: development/runtime-profiling.md
       - Best-effort scene import: development/best-effort-scene-import.md
+      - Ludus scene source format and test scenes: architecture/scene-source-format.md
       - Release packages: development/game-packaging-publishing.md
       - Browser editor build: development/browser-editor.md
   - Samples:

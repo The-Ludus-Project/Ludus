@@ -495,7 +495,9 @@ report bytes. Paths in the report are relative to the entry directory.
 ## Importing in the Editor
 
 World **Import scene…** (and the Level surface's **Import**) accepts `.pbrt`,
-`.gltf`, `.glb` and `.obj` files (the browser editor also accepts a scene folder
+`.gltf`, `.glb` and `.obj` files, and Ludus's own
+[scene source files](../architecture/scene-source-format.md) (`.luscene.json`),
+including the engine's test scenes (the browser editor also accepts a scene folder
 or `.zip` containing one). glTF and OBJ entries are routed to their best-effort
 importers by content. For pbrt, Ludus::SceneCook picks the importer from the
 file name:

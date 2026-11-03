@@ -549,7 +549,9 @@ if(TARGET ludus_renderer_render_tests)
     add_executable(ludus_render_graph_ray_tests tests/render_graph_ray_tests.cpp tests/one_more_vertex_oracle.cpp
         tests/shadow_occlusion_oracle.cpp)
     target_link_libraries(ludus_render_graph_ray_tests PRIVATE Ludus::GraphicsRenderer
-        Ludus::FoundationFilesystem Ludus::FoundationTime Catch2::Catch2WithMain)
+        Ludus::FoundationFilesystem Ludus::FoundationTime Ludus::SceneSource Catch2::Catch2WithMain)
+    # The engine's test scene files, which the scene-source checks compare with the fixtures.
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE LUDUS_TEST_SCENES_DIR="${PROJECT_SOURCE_DIR}/tests/scenes")
     ludus_apply_project_defaults(ludus_render_graph_ray_tests)
     ludus_enable_test_exceptions(ludus_render_graph_ray_tests)
     ludus_compile_renderer_shaders(TARGET ludus_render_graph_ray_tests SHADERS renderer_composite)

@@ -2550,6 +2550,8 @@ highlights and BSDF sampling is noisy on the diffuse walls:
   this over its jitter footprint. `ludus_renderer_tests`
   (`[shadow-occlusion-oracle]`) checks the oracle against FoundationMath's
   projected solid angle and a 256² area quadrature of the visible emitter.
+  Both rooms are also [engine test scenes](../architecture/scene-source-format.md#engine-test-scenes)
+  that World **Import scene…** loads into a project.
   The GPU test (`[shadow-occlusion]`) renders 16 independently seeded 64-sample
   images of each louvre, with the native template and its triangle-loop variant,
   and checks all three outputs:
@@ -2969,7 +2971,8 @@ Evidence:
   to be below the last. A room with 32 emissive triangles shows the failure color.
 - **Occluded penumbra.** Like Peters' Fig. 10, a blue diffuse plane and a white
   glossy plane are lit by a rectangular emitter, and a wall casts a large penumbra
-  over their lower halves. The test renders the template and a test-only copy with
+  over their lower halves ([importable as a test scene](../architecture/scene-source-format.md#engine-test-scenes)).
+  The test renders the template and a test-only copy with
   `PROJECTED_SOLID_ANGLE_MIS_VISIBILITY = 1`, whose color output is the weighted
   balance heuristic (§4.2), at 16 samples with the same random numbers, and
   compares both with a 1024-sample clamped optimal MIS image of another seed. The

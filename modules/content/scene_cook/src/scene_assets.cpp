@@ -3973,6 +3973,8 @@ struct RoutedCook final
             return "glTF 2.0 (best effort)";
         case SceneSourceFormat::Obj:
             return "Wavefront OBJ (best effort)";
+        case SceneSourceFormat::LudusScene:
+            return "Ludus scene source";
         case SceneSourceFormat::Pbrt:
         case SceneSourceFormat::Unknown:
             break;

@@ -70,7 +70,7 @@ public:
     void SetProject(const QString& root, foundation::uint64 epoch);
     [[nodiscard]] bool Create(const QString& path);
     [[nodiscard]] bool Open(const QString& path);
-    /// Import a source directory (pbrt-reference-v1) or a .pbrt, .gltf, .glb or .obj
+    /// Import a source directory (pbrt-reference-v1) or a .pbrt, .gltf, .glb, .obj or .luscene.json
     /// file (routed by Ludus::SceneCook to its best-effort importer).
     [[nodiscard]] bool Import(const QString& source);
     /// Import source after the user approved its preview: fails with a conflict,
@@ -260,7 +260,7 @@ private:
     QJsonObject Level_, Candidate_, CandidateRevisions_;
     QJsonValue CatalogExpected_;
     QString Source_;
-    /// Scene entry file (.pbrt, .gltf, .glb or .obj) inside Source_; empty keeps the reference profile.
+    /// Scene entry file (.pbrt, .gltf, .glb, .obj or .luscene.json) inside Source_; empty keeps the reference profile.
     QString SourceEntry_;
     QString mImportEnvironmentFile;
     /// source_digest of the approved preview for the next import; empty skips the check.
