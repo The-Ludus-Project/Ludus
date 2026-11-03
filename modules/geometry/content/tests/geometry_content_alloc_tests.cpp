@@ -77,7 +77,8 @@ void MakeSource(gc::GeometrySource& outSource)
     outSource.Mode = gc::GeometrySourceMode::CubicPath;
     outSource.Revision = 1;
     outSource.AssetScale = 1.0;
-    outSource.Tolerance = geom::ToleranceProfile{
+    outSource.Tolerance = geom::ToleranceProfile
+    {
         .PositionError = 1e-3,
         .DistanceError = 1e-3,
         .TangentAngleError = 1e-2,
@@ -90,7 +91,8 @@ void MakeSource(gc::GeometrySource& outSource)
         .NormalAngleError = 1e-2,
         .CoincidenceDistance = 1e-4,
     };
-    outSource.Limits = geom::WorkLimits{
+    outSource.Limits = geom::WorkLimits
+    {
         .MaxSpans = 1024,
         .MaxLeaves = 1u << 16,
         .MaxDepth = 16,
@@ -177,8 +179,7 @@ TEST_CASE("Evaluation after load does not allocate", "[geometry_content][alloc]"
     {
         CountingScope scope(0);
         const usize before = gAllocationCount;
-        const geom::GeometryStatus status =
-            geom::TryEvaluatePath(view, geom::SegmentParameter{0, 0.5}, position);
+        const geom::GeometryStatus status = geom::TryEvaluatePath(view, geom::SegmentParameter{0, 0.5}, position);
         CHECK(status == geom::GeometryStatus::Success);
         CHECK(gAllocationCount == before);
     }

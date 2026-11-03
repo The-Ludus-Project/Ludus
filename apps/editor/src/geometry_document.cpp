@@ -54,12 +54,17 @@ const ControlHandle* CurveDocument::findHandleOrNull(uint64 authorId) const noex
     return nullptr;
 }
 
-bool CurveDocument::commit(const CurveState& candidate, bool shouldMerge, gc::GeometryDiagnosticReport& outDiagnostic) noexcept
+bool CurveDocument::commit(const CurveState& candidate,
+                           bool shouldMerge,
+                           gc::GeometryDiagnosticReport& outDiagnostic) noexcept
 {
     // Validate the whole candidate: unique author IDs and a representable count.
     if (candidate.Handles.GetSize() > CurveState::MAX_HANDLES)
     {
-        FailReport(outDiagnostic, content::Status::Limit, GeometryStatus::BudgetExceeded, "Handles",
+        FailReport(outDiagnostic,
+                   content::Status::Limit,
+                   GeometryStatus::BudgetExceeded,
+                   "Handles",
                    "Reduce the number of control handles.");
         return false;
     }
@@ -69,7 +74,10 @@ bool CurveDocument::commit(const CurveState& candidate, bool shouldMerge, gc::Ge
         {
             if (candidate.Handles[i].AuthorId == candidate.Handles[j].AuthorId)
             {
-                FailReport(outDiagnostic, content::Status::Invalid, GeometryStatus::InvalidArgument, "Handles.AuthorId",
+                FailReport(outDiagnostic,
+                           content::Status::Invalid,
+                           GeometryStatus::InvalidArgument,
+                           "Handles.AuthorId",
                            "Control handle IDs must be unique.");
                 return false;
             }
@@ -83,7 +91,10 @@ bool CurveDocument::commit(const CurveState& candidate, bool shouldMerge, gc::Ge
             SucceedReport(outDiagnostic);
             return true;
         }
-        FailReport(outDiagnostic, content::Status::Conflict, GeometryStatus::StaleRevision, "History",
+        FailReport(outDiagnostic,
+                   content::Status::Conflict,
+                   GeometryStatus::StaleRevision,
+                   "History",
                    "The edit could not be recorded; retry after refreshing the document.");
         return false;
     }
@@ -99,7 +110,10 @@ bool CurveDocument::MoveControl(uint64 authorId,
 {
     if (findHandleOrNull(authorId) == nullptr)
     {
-        FailReport(outDiagnostic, content::Status::NotFound, GeometryStatus::InvalidArgument, "AuthorId",
+        FailReport(outDiagnostic,
+                   content::Status::NotFound,
+                   GeometryStatus::InvalidArgument,
+                   "AuthorId",
                    "Add the control before moving it.");
         return false;
     }
@@ -123,7 +137,10 @@ bool CurveDocument::SetHandleManual(uint64 authorId, gc::GeometryDiagnosticRepor
 {
     if (findHandleOrNull(authorId) == nullptr)
     {
-        FailReport(outDiagnostic, content::Status::NotFound, GeometryStatus::InvalidArgument, "AuthorId",
+        FailReport(outDiagnostic,
+                   content::Status::NotFound,
+                   GeometryStatus::InvalidArgument,
+                   "AuthorId",
                    "Add the control before changing its mode.");
         return false;
     }
@@ -142,14 +159,20 @@ bool CurveDocument::AddControl(const ControlHandle& handle, gc::GeometryDiagnost
 {
     if (findHandleOrNull(handle.AuthorId) != nullptr)
     {
-        FailReport(outDiagnostic, content::Status::Conflict, GeometryStatus::InvalidArgument, "AuthorId",
+        FailReport(outDiagnostic,
+                   content::Status::Conflict,
+                   GeometryStatus::InvalidArgument,
+                   "AuthorId",
                    "Choose a unique control handle ID.");
         return false;
     }
     CurveState candidate = mDraft;
     if (candidate.Handles.TryAdd(handle) == false)
     {
-        FailReport(outDiagnostic, content::Status::OutOfMemory, GeometryStatus::OutOfMemory, "Handles",
+        FailReport(outDiagnostic,
+                   content::Status::OutOfMemory,
+                   GeometryStatus::OutOfMemory,
+                   "Handles",
                    "Reduce the number of control handles.");
         return false;
     }
@@ -195,7 +218,10 @@ bool CurveDocument::BuildSource(const geom::ToleranceProfile& tolerance,
     const usize handleCount = mDraft.Handles.GetSize();
     if (handleCount < CUBIC_MIN_HANDLES || ((handleCount - 1) % CUBIC_SPAN_STRIDE) != 0)
     {
-        FailReport(outDiagnostic, content::Status::Invalid, GeometryStatus::InvalidArgument, "Handles",
+        FailReport(outDiagnostic,
+                   content::Status::Invalid,
+                   GeometryStatus::InvalidArgument,
+                   "Handles",
                    "A cubic path needs 3n+1 control handles.");
         return false;
     }
@@ -220,7 +246,10 @@ bool CurveDocument::BuildSource(const geom::ToleranceProfile& tolerance,
         }
         if (source.Spans.TryAdd(span) == false)
         {
-            FailReport(outDiagnostic, content::Status::OutOfMemory, GeometryStatus::OutOfMemory, "Spans",
+            FailReport(outDiagnostic,
+                       content::Status::OutOfMemory,
+                       GeometryStatus::OutOfMemory,
+                       "Spans",
                        "Reduce the number of spans.");
             return false;
         }
@@ -232,7 +261,9 @@ bool CurveDocument::BuildSource(const geom::ToleranceProfile& tolerance,
 
 // --- GeometryPrepareJob -----------------------------------------------------
 
-bool GeometryPrepareJob::Begin(const GeometryPrepareRequest& request, std::span<const uint8> blob, const geom::WorkLimits& limits) noexcept
+bool GeometryPrepareJob::Begin(const GeometryPrepareRequest& request,
+                               std::span<const uint8> blob,
+                               const geom::WorkLimits& limits) noexcept
 {
     mRequest = request;
     mLimits = limits;
@@ -272,8 +303,7 @@ GeometryPrepareStatus GeometryPrepareJob::Prepare() noexcept
     }
     // One bounded stage: validate and load the immutable snapshot.
     gc::GeometryLoad load;
-    const content::Status status =
-        gc::LoadGeometry({mBlob.GetData(), mBlob.GetSize()}, mLimits, load, mDiagnostic);
+    const content::Status status = gc::LoadGeometry({mBlob.GetData(), mBlob.GetSize()}, mLimits, load, mDiagnostic);
     mStage = Stage::Done;
     if (status != content::Status::Ok)
     {
@@ -303,7 +333,9 @@ void GeometryPreview::SetExpected(uint64 documentId, uint64 revision, uint64 gen
     }
 }
 
-bool GeometryPreview::OfferCompletion(const GeometryPrepareRequest& request, GeometryPrepareStatus status, gc::GeometryLoad&& load) noexcept
+bool GeometryPreview::OfferCompletion(const GeometryPrepareRequest& request,
+                                      GeometryPrepareStatus status,
+                                      gc::GeometryLoad&& load) noexcept
 {
     // Reject a late completion: its identity no longer matches the expected one.
     const bool isIdentityMatch = request.DocumentId == mExpectedDocumentId && request.Revision == mExpectedRevision &&
@@ -390,7 +422,8 @@ content::Digest ComputeGeometryBuildIdentity(const CurveState& state, geom::Prec
         const ControlHandle& handle = state.Handles[i];
         const uint8* idBytes = reinterpret_cast<const uint8*>(&handle.AuthorId);
         (void)hasher.Add(std::span<const uint8>(idBytes, sizeof(handle.AuthorId)));
-        const foundation::float64 components[fg::CONTROL_COMPONENTS] = {handle.Position.X, handle.Position.Y,
+        const foundation::float64 components[fg::CONTROL_COMPONENTS] = {handle.Position.X,
+                                                                        handle.Position.Y,
                                                                         handle.Position.Z};
         (void)hasher.Add(std::span<const uint8>(reinterpret_cast<const uint8*>(components), sizeof(components)));
         const uint8 modeByte = static_cast<uint8>(handle.Mode);
@@ -412,40 +445,39 @@ geom::GeometryStatus ReloadCursor(const geom::PathView& newPath,
     }
     switch (policy)
     {
-    case CursorReloadPolicy::RetainParameter:
-    {
-        GeometryCursor result{};
-        result.Revision = newPath.Revision;
-        const usize lastSpan = newPath.Spans.GetSize() - 1;
-        const usize spanIndex = previous.Parameter.SpanIndex <= lastSpan ? previous.Parameter.SpanIndex : lastSpan;
-        float64 u = previous.Parameter.U;
-        if ((u >= 0.0) == false)
-        {
-            u = 0.0;
+        case CursorReloadPolicy::RetainParameter: {
+            GeometryCursor result{};
+            result.Revision = newPath.Revision;
+            const usize lastSpan = newPath.Spans.GetSize() - 1;
+            const usize spanIndex = previous.Parameter.SpanIndex <= lastSpan ? previous.Parameter.SpanIndex : lastSpan;
+            float64 u = previous.Parameter.U;
+            if ((u >= 0.0) == false)
+            {
+                u = 0.0;
+            }
+            else if (u > 1.0)
+            {
+                u = 1.0;
+            }
+            result.Parameter = geom::SegmentParameter{spanIndex, u};
+            foundation::math::Vector3 position{};
+            const geom::GeometryStatus status = geom::TryEvaluatePath(newPath, result.Parameter, position);
+            if (status != GeometryStatus::Success)
+            {
+                return status;
+            }
+            result.WorldPosition = position;
+            outCursor = result;
+            return GeometryStatus::Success;
         }
-        else if (u > 1.0)
-        {
-            u = 1.0;
-        }
-        result.Parameter = geom::SegmentParameter{spanIndex, u};
-        foundation::math::Vector3 position{};
-        const geom::GeometryStatus status = geom::TryEvaluatePath(newPath, result.Parameter, position);
-        if (status != GeometryStatus::Success)
-        {
-            return status;
-        }
-        result.WorldPosition = position;
-        outCursor = result;
-        return GeometryStatus::Success;
-    }
-    case CursorReloadPolicy::RetainAbsoluteDistance:
-    case CursorReloadPolicy::RetainNormalizedDistance:
-    case CursorReloadPolicy::ProjectWorldPosition:
-        // These policies need a distance map or a projection query that the caller
-        // must supply; this entry point does not build a cache on its own
-        // (sampling never builds a cache, per ADR 0024), so it reports MissingCache
-        // rather than silently falling back to another policy.
-        return GeometryStatus::MissingCache;
+        case CursorReloadPolicy::RetainAbsoluteDistance:
+        case CursorReloadPolicy::RetainNormalizedDistance:
+        case CursorReloadPolicy::ProjectWorldPosition:
+            // These policies need a distance map or a projection query that the caller
+            // must supply; this entry point does not build a cache on its own
+            // (sampling never builds a cache, per ADR 0024), so it reports MissingCache
+            // rather than silently falling back to another policy.
+            return GeometryStatus::MissingCache;
     }
     return GeometryStatus::InvalidArgument;
 }

@@ -64,16 +64,23 @@ struct BlobHeader final
 }
 
 /// Read and validate the header and its section directory.
-[[nodiscard]] Status ReadHeader(std::span<const uint8> blob, BlobHeader& outHeader, GeometryDiagnosticReport& outDiag) noexcept
+[[nodiscard]] Status
+ReadHeader(std::span<const uint8> blob, BlobHeader& outHeader, GeometryDiagnosticReport& outDiag) noexcept
 {
     if (blob.size() < fg::HEADER_MIN_BYTES)
     {
-        return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Header",
+        return Fail(outDiag,
+                    Status::Invalid,
+                    geom::GeometryStatus::InvalidArgument,
+                    "Header",
                     "Blob is shorter than the minimum header; re-cook the source.");
     }
     if (blob.size() > fg::MAX_BLOB_BYTES)
     {
-        return Fail(outDiag, Status::Limit, geom::GeometryStatus::BudgetExceeded, "Header",
+        return Fail(outDiag,
+                    Status::Limit,
+                    geom::GeometryStatus::BudgetExceeded,
+                    "Header",
                     "Blob exceeds the geometry admission ceiling; split the asset.");
     }
     ByteReader reader(blob);
@@ -86,25 +93,31 @@ struct BlobHeader final
     {
         if (magic[i] != static_cast<uint8>(fg::MAGIC[i]))
         {
-            return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Magic",
+            return Fail(outDiag,
+                        Status::Invalid,
+                        geom::GeometryStatus::InvalidArgument,
+                        "Magic",
                         "Not a LUGEO geometry blob; re-cook the source.");
         }
     }
     uint32 kindTag = 0;
     uint32 precisionTag = 0;
     bool isOk = reader.ReadUint32(outHeader.FormatVersion) && reader.ReadUint32(outHeader.CookerVersion) &&
-              reader.ReadUint32(kindTag) && reader.ReadUint32(precisionTag) && reader.ReadUint32(outHeader.Flags) &&
-              reader.ReadUint32(outHeader.SpanCount) && reader.ReadUint32(outHeader.JointCount) &&
-              reader.ReadUint32(outHeader.KeyCount) && reader.ReadUint32(outHeader.PatchCount) &&
-              reader.ReadUint32(outHeader.AdjacencyCount) && reader.ReadUint32(outHeader.SourceIdentityCount) &&
-              reader.ReadUint64(outHeader.Revision);
+                reader.ReadUint32(kindTag) && reader.ReadUint32(precisionTag) && reader.ReadUint32(outHeader.Flags) &&
+                reader.ReadUint32(outHeader.SpanCount) && reader.ReadUint32(outHeader.JointCount) &&
+                reader.ReadUint32(outHeader.KeyCount) && reader.ReadUint32(outHeader.PatchCount) &&
+                reader.ReadUint32(outHeader.AdjacencyCount) && reader.ReadUint32(outHeader.SourceIdentityCount) &&
+                reader.ReadUint64(outHeader.Revision);
     if (isOk == false)
     {
         return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Header", "Re-cook the source.");
     }
     if (fg::IsSupportedVersion(outHeader.FormatVersion) == false)
     {
-        return Fail(outDiag, Status::Unsupported, geom::GeometryStatus::UnsupportedRepresentation, "FormatVersion",
+        return Fail(outDiag,
+                    Status::Unsupported,
+                    geom::GeometryStatus::UnsupportedRepresentation,
+                    "FormatVersion",
                     "Re-cook the source with the current cooker.");
     }
     if (fg::IsKnownKind(kindTag) == false)
@@ -113,7 +126,10 @@ struct BlobHeader final
     }
     if (fg::IsKnownPrecision(precisionTag) == false)
     {
-        return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "PrecisionTag",
+        return Fail(outDiag,
+                    Status::Invalid,
+                    geom::GeometryStatus::InvalidArgument,
+                    "PrecisionTag",
                     "Re-cook the source.");
     }
     outHeader.Kind = static_cast<fg::GeometryKindTag>(kindTag);
@@ -124,11 +140,14 @@ struct BlobHeader final
     }
     float64 origin[fg::CONTROL_COMPONENTS]{};
     isOk = reader.ReadFloat64(origin[0]) && reader.ReadFloat64(origin[1]) && reader.ReadFloat64(origin[2]) &&
-         reader.ReadFloat64(outHeader.AssetScale) && reader.ReadFloat64(outHeader.PositionFloor) &&
-         reader.ReadFloat64(outHeader.EffectivePositionError);
+           reader.ReadFloat64(outHeader.AssetScale) && reader.ReadFloat64(outHeader.PositionFloor) &&
+           reader.ReadFloat64(outHeader.EffectivePositionError);
     if (isOk == false)
     {
-        return Fail(outDiag, Status::Invalid, geom::GeometryStatus::NonFiniteInput, "Origin",
+        return Fail(outDiag,
+                    Status::Invalid,
+                    geom::GeometryStatus::NonFiniteInput,
+                    "Origin",
                     "A header value is non-finite; re-cook the source.");
     }
     outHeader.Origin = math::Vector3d{origin[0], origin[1], origin[2]};
@@ -142,34 +161,46 @@ struct BlobHeader final
         reader.ReadFloat64(tolerance.NormalAngleError) && reader.ReadFloat64(tolerance.CoincidenceDistance);
     if (isToleranceOk == false)
     {
-        return Fail(outDiag, Status::Invalid, geom::GeometryStatus::NonFiniteInput, "Tolerance",
+        return Fail(outDiag,
+                    Status::Invalid,
+                    geom::GeometryStatus::NonFiniteInput,
+                    "Tolerance",
                     "A tolerance value is non-finite; re-cook the source.");
     }
     if (reader.ReadUint32(outHeader.SectionCount) == false || outHeader.SectionCount > fg::MAX_SECTIONS)
     {
-        return Fail(outDiag, Status::Limit, geom::GeometryStatus::BudgetExceeded, "SectionCount",
+        return Fail(outDiag,
+                    Status::Limit,
+                    geom::GeometryStatus::BudgetExceeded,
+                    "SectionCount",
                     "Too many sections; re-cook the source.");
     }
     outHeader.HeaderBytes = fg::GetHeaderBytes(outHeader.SectionCount);
     if (blob.size() < outHeader.HeaderBytes)
     {
-        return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Header",
+        return Fail(outDiag,
+                    Status::Invalid,
+                    geom::GeometryStatus::InvalidArgument,
+                    "Header",
                     "Blob is shorter than its declared header; re-cook the source.");
     }
     for (uint32 i = 0; i < outHeader.SectionCount; ++i)
     {
         fg::SectionEntry entry{};
         isOk = reader.ReadUint32(entry.Id) && reader.ReadUint32(entry.Offset) && reader.ReadUint32(entry.Count) &&
-             reader.ReadUint32(entry.ElementBytes);
+               reader.ReadUint32(entry.ElementBytes);
         if (isOk == false)
         {
-            return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Section",
+            return Fail(outDiag,
+                        Status::Invalid,
+                        geom::GeometryStatus::InvalidArgument,
+                        "Section",
                         "Re-cook the source.");
         }
         outHeader.Sections[i] = entry;
     }
     isOk = reader.ReadBytes(outHeader.SourceDigest.Data) && reader.ReadBytes(outHeader.DependencyDigest.Data) &&
-         reader.ReadBytes(outHeader.PayloadDigest.Data);
+           reader.ReadBytes(outHeader.PayloadDigest.Data);
     if (isOk == false)
     {
         return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Digest", "Re-cook the source.");
@@ -185,7 +216,8 @@ struct BlobHeader final
 
 /// Validate the section directory: byte products, alignment, in-range offsets,
 /// non-overlap, and that exactly the kind's required sections are present.
-[[nodiscard]] Status ValidateSections(std::span<const uint8> blob, const BlobHeader& header, GeometryDiagnosticReport& outDiag) noexcept
+[[nodiscard]] Status
+ValidateSections(std::span<const uint8> blob, const BlobHeader& header, GeometryDiagnosticReport& outDiag) noexcept
 {
     // Every section must be a known id with the matching element width and count,
     // sit after the header, be four-byte aligned, lie in range and not overlap.
@@ -197,25 +229,42 @@ struct BlobHeader final
         const usize expectedWidth = fg::GetSectionElementBytes(static_cast<fg::SectionId>(entry.Id));
         if (expectedWidth == 0 || entry.ElementBytes != expectedWidth)
         {
-            return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Section.ElementBytes",
-                        "Unknown or mismatched section; re-cook the source.", i);
+            return Fail(outDiag,
+                        Status::Invalid,
+                        geom::GeometryStatus::InvalidArgument,
+                        "Section.ElementBytes",
+                        "Unknown or mismatched section; re-cook the source.",
+                        i);
         }
         usize payloadBytes = 0;
         if (core::TryMultiply<usize>(static_cast<usize>(entry.Count), entry.ElementBytes, payloadBytes) == false)
         {
-            return Fail(outDiag, Status::Invalid, geom::GeometryStatus::OutOfRange, "Section.Count",
-                        "Section count times width overflows; the blob is corrupt.", i);
+            return Fail(outDiag,
+                        Status::Invalid,
+                        geom::GeometryStatus::OutOfRange,
+                        "Section.Count",
+                        "Section count times width overflows; the blob is corrupt.",
+                        i);
         }
         usize sectionEnd = 0;
         if (core::TryAdd<usize>(static_cast<usize>(entry.Offset), payloadBytes, sectionEnd) == false)
         {
-            return Fail(outDiag, Status::Invalid, geom::GeometryStatus::OutOfRange, "Section.Offset",
-                        "Section extent overflows; the blob is corrupt.", i);
+            return Fail(outDiag,
+                        Status::Invalid,
+                        geom::GeometryStatus::OutOfRange,
+                        "Section.Offset",
+                        "Section extent overflows; the blob is corrupt.",
+                        i);
         }
-        if (entry.Offset < header.HeaderBytes || sectionEnd > blob.size() || (entry.Offset % fg::SECTION_ALIGNMENT) != 0)
+        if (entry.Offset < header.HeaderBytes || sectionEnd > blob.size() ||
+            (entry.Offset % fg::SECTION_ALIGNMENT) != 0)
         {
-            return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Section.Offset",
-                        "Section is misaligned or out of range; the blob is corrupt.", i);
+            return Fail(outDiag,
+                        Status::Invalid,
+                        geom::GeometryStatus::InvalidArgument,
+                        "Section.Offset",
+                        "Section is misaligned or out of range; the blob is corrupt.",
+                        i);
         }
         starts[i] = entry.Offset;
         ends[i] = sectionEnd;
@@ -227,8 +276,12 @@ struct BlobHeader final
             const bool isDisjoint = ends[i] <= starts[j] || ends[j] <= starts[i];
             if (isDisjoint == false)
             {
-                return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Section.Offset",
-                            "Two sections overlap; the blob is corrupt.", i);
+                return Fail(outDiag,
+                            Status::Invalid,
+                            geom::GeometryStatus::InvalidArgument,
+                            "Section.Offset",
+                            "Two sections overlap; the blob is corrupt.",
+                            i);
             }
         }
     }
@@ -236,7 +289,10 @@ struct BlobHeader final
 }
 
 /// Confirm a required section exists with the expected record count.
-[[nodiscard]] bool RequireSection(const BlobHeader& header, fg::SectionId id, uint32 expectedCount, const fg::SectionEntry*& outEntry) noexcept
+[[nodiscard]] bool RequireSection(const BlobHeader& header,
+                                  fg::SectionId id,
+                                  uint32 expectedCount,
+                                  const fg::SectionEntry*& outEntry) noexcept
 {
     return FindSection(header, id, outEntry) && outEntry->Count == expectedCount;
 }
@@ -249,19 +305,28 @@ struct BlobHeader final
 {
     if (CheckCount(header.SpanCount, fg::MAX_SPANS) == false || CheckCount(header.JointCount, fg::MAX_JOINTS) == false)
     {
-        return Fail(outDiag, Status::Limit, geom::GeometryStatus::BudgetExceeded, "SpanCount",
+        return Fail(outDiag,
+                    Status::Limit,
+                    geom::GeometryStatus::BudgetExceeded,
+                    "SpanCount",
                     "Too many spans or joints; split the path.");
     }
     const fg::SectionEntry* spanSectionOrNull = nullptr;
     if (RequireSection(header, fg::SectionId::PathSpans, header.SpanCount, spanSectionOrNull) == false)
     {
-        return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "PathSpans",
+        return Fail(outDiag,
+                    Status::Invalid,
+                    geom::GeometryStatus::InvalidArgument,
+                    "PathSpans",
                     "Missing or inconsistent span section; re-cook the source.");
     }
     core::Array<geom::PathSpanSource> spans;
     if (spans.TryResize(header.SpanCount) == false)
     {
-        return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "PathSpans",
+        return Fail(outDiag,
+                    Status::OutOfMemory,
+                    geom::GeometryStatus::OutOfMemory,
+                    "PathSpans",
                     RepairForStatus(geom::GeometryStatus::OutOfMemory));
     }
     ByteReader reader(blob);
@@ -274,11 +339,16 @@ struct BlobHeader final
         if (reader.ReadUint32(kindTag) == false || reader.ReadUint32(sourceElement) == false ||
             reader.ReadFloat64(domainWidth) == false || fg::IsKnownSpanKind(kindTag) == false)
         {
-            return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "PathSpans.Kind",
-                        "Corrupt span record; re-cook the source.", i);
+            return Fail(outDiag,
+                        Status::Invalid,
+                        geom::GeometryStatus::InvalidArgument,
+                        "PathSpans.Kind",
+                        "Corrupt span record; re-cook the source.",
+                        i);
         }
         geom::PathSpanSource& span = spans[i];
-        span.Kind = kindTag == static_cast<uint32>(fg::SpanKindTag::Line) ? geom::SpanKind::Line : geom::SpanKind::Cubic;
+        span.Kind =
+            kindTag == static_cast<uint32>(fg::SpanKindTag::Line) ? geom::SpanKind::Line : geom::SpanKind::Cubic;
         span.DomainWidth = domainWidth;
         span.SourceElement = sourceElement;
         for (usize c = 0; c < fg::SPAN_CONTROL_COUNT; ++c)
@@ -287,10 +357,15 @@ struct BlobHeader final
             if (reader.ReadFloat32(component[0]) == false || reader.ReadFloat32(component[1]) == false ||
                 reader.ReadFloat32(component[2]) == false)
             {
-                return Fail(outDiag, Status::Invalid, geom::GeometryStatus::NonFiniteInput, "PathSpans.Control",
-                            "Non-finite control; re-cook the source.", i);
+                return Fail(outDiag,
+                            Status::Invalid,
+                            geom::GeometryStatus::NonFiniteInput,
+                            "PathSpans.Control",
+                            "Non-finite control; re-cook the source.",
+                            i);
             }
-            span.Control[c] = math::Vector3d{static_cast<float64>(component[0]), static_cast<float64>(component[1]),
+            span.Control[c] = math::Vector3d{static_cast<float64>(component[0]),
+                                             static_cast<float64>(component[1]),
                                              static_cast<float64>(component[2])} +
                               header.Origin;
         }
@@ -330,19 +405,28 @@ struct BlobHeader final
 {
     if (CheckCount(header.KeyCount, fg::MAX_KEYS) == false)
     {
-        return Fail(outDiag, Status::Limit, geom::GeometryStatus::BudgetExceeded, "KeyCount",
+        return Fail(outDiag,
+                    Status::Limit,
+                    geom::GeometryStatus::BudgetExceeded,
+                    "KeyCount",
                     "Too many keys; split the track.");
     }
     const fg::SectionEntry* keySectionOrNull = nullptr;
     if (RequireSection(header, fg::SectionId::TrackKeys, header.KeyCount, keySectionOrNull) == false)
     {
-        return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "TrackKeys",
+        return Fail(outDiag,
+                    Status::Invalid,
+                    geom::GeometryStatus::InvalidArgument,
+                    "TrackKeys",
                     "Missing or inconsistent key section; re-cook the source.");
     }
     core::Array<geom::TrackKey> keys;
     if (keys.TryResize(header.KeyCount) == false)
     {
-        return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "TrackKeys",
+        return Fail(outDiag,
+                    Status::OutOfMemory,
+                    geom::GeometryStatus::OutOfMemory,
+                    "TrackKeys",
                     RepairForStatus(geom::GeometryStatus::OutOfMemory));
     }
     ByteReader reader(blob);
@@ -359,13 +443,21 @@ struct BlobHeader final
             reader.ReadFloat32(inSlope) == false || reader.ReadFloat32(outSlope) == false ||
             reader.ReadUint32(interpolationTag) == false || fg::IsKnownTrackInterpolation(interpolationTag) == false)
         {
-            return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "TrackKeys",
-                        "Corrupt key record; re-cook the source.", i);
+            return Fail(outDiag,
+                        Status::Invalid,
+                        geom::GeometryStatus::InvalidArgument,
+                        "TrackKeys",
+                        "Corrupt key record; re-cook the source.",
+                        i);
         }
         if (i > 0 && (time > previousTime) == false)
         {
-            return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidDomain, "TrackKeys.Time",
-                        "Key times must be strictly increasing; re-cook the source.", i);
+            return Fail(outDiag,
+                        Status::Invalid,
+                        geom::GeometryStatus::InvalidDomain,
+                        "TrackKeys.Time",
+                        "Key times must be strictly increasing; re-cook the source.",
+                        i);
         }
         previousTime = time;
         geom::TrackKey& key = keys[i];
@@ -382,8 +474,11 @@ struct BlobHeader final
 
     geom::PreparedTrack prepared;
     geom::GeometryDiagnostic prepareDiag{};
-    const geom::GeometryStatus status = geom::TryPrepareTrack(
-        BorrowedView<const geom::TrackKey>(keys.GetData(), keys.GetSize()), limits, prepared, &prepareDiag);
+    const geom::GeometryStatus status =
+        geom::TryPrepareTrack(BorrowedView<const geom::TrackKey>(keys.GetData(), keys.GetSize()),
+                              limits,
+                              prepared,
+                              &prepareDiag);
     if (status != geom::GeometryStatus::Success)
     {
         outDiag.Transport = MapPrepareTransport(status);
@@ -406,7 +501,10 @@ struct BlobHeader final
     if (CheckCount(header.PatchCount, fg::MAX_PATCHES) == false ||
         CheckCount(header.AdjacencyCount, fg::MAX_ADJACENCY) == false)
     {
-        return Fail(outDiag, Status::Limit, geom::GeometryStatus::BudgetExceeded, "PatchCount",
+        return Fail(outDiag,
+                    Status::Limit,
+                    geom::GeometryStatus::BudgetExceeded,
+                    "PatchCount",
                     "Too many patches or joins; split the surface.");
     }
     const fg::SectionEntry* patchSectionOrNull = nullptr;
@@ -414,7 +512,10 @@ struct BlobHeader final
     if (RequireSection(header, fg::SectionId::SurfacePatches, header.PatchCount, patchSectionOrNull) == false ||
         RequireSection(header, fg::SectionId::SurfaceAdjacency, header.AdjacencyCount, adjacencySectionOrNull) == false)
     {
-        return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "SurfacePatches",
+        return Fail(outDiag,
+                    Status::Invalid,
+                    geom::GeometryStatus::InvalidArgument,
+                    "SurfacePatches",
                     "Missing or inconsistent surface sections; re-cook the source.");
     }
     core::Array<geom::SurfacePatchSource> patches;
@@ -422,7 +523,10 @@ struct BlobHeader final
     if (patches.TryResize(header.PatchCount) == false ||
         (header.AdjacencyCount > 0 && adjacency.TryResize(header.AdjacencyCount) == false))
     {
-        return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "SurfacePatches",
+        return Fail(outDiag,
+                    Status::OutOfMemory,
+                    geom::GeometryStatus::OutOfMemory,
+                    "SurfacePatches",
                     RepairForStatus(geom::GeometryStatus::OutOfMemory));
     }
     ByteReader reader(blob);
@@ -432,8 +536,12 @@ struct BlobHeader final
         geom::SurfacePatchSource& patch = patches[i];
         if (reader.ReadUint64(patch.Id) == false)
         {
-            return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidArgument, "SurfacePatches.Id",
-                        "Corrupt patch record; re-cook the source.", i);
+            return Fail(outDiag,
+                        Status::Invalid,
+                        geom::GeometryStatus::InvalidArgument,
+                        "SurfacePatches.Id",
+                        "Corrupt patch record; re-cook the source.",
+                        i);
         }
         for (usize u = 0; u < fg::PATCH_CONTROL_ORDER; ++u)
         {
@@ -443,8 +551,12 @@ struct BlobHeader final
                 if (reader.ReadFloat32(component[0]) == false || reader.ReadFloat32(component[1]) == false ||
                     reader.ReadFloat32(component[2]) == false)
                 {
-                    return Fail(outDiag, Status::Invalid, geom::GeometryStatus::NonFiniteInput,
-                                "SurfacePatches.Control", "Non-finite control; re-cook the source.", i);
+                    return Fail(outDiag,
+                                Status::Invalid,
+                                geom::GeometryStatus::NonFiniteInput,
+                                "SurfacePatches.Control",
+                                "Non-finite control; re-cook the source.",
+                                i);
                 }
                 patch.Control[u][v] = math::Vector3d{static_cast<float64>(component[0]),
                                                      static_cast<float64>(component[1]),
@@ -467,8 +579,12 @@ struct BlobHeader final
             fg::IsKnownPatchSide(secondSide) == false || firstPatch >= header.PatchCount ||
             secondPatch >= header.PatchCount || isReversed > 1)
         {
-            return Fail(outDiag, Status::Invalid, geom::GeometryStatus::InvalidTopology, "SurfaceAdjacency",
-                        "Corrupt or out-of-range adjacency; re-cook the source.", i);
+            return Fail(outDiag,
+                        Status::Invalid,
+                        geom::GeometryStatus::InvalidTopology,
+                        "SurfaceAdjacency",
+                        "Corrupt or out-of-range adjacency; re-cook the source.",
+                        i);
         }
         geom::SurfaceAdjacencySource& join = adjacency[i];
         join.FirstPatch = firstPatch;
@@ -524,7 +640,10 @@ Status LoadGeometry(std::span<const uint8> blob,
     }
     if (geom::TryValidateToleranceProfile(header.Tolerance) != geom::GeometryStatus::Success)
     {
-        return Fail(outDiagnostic, Status::Invalid, geom::GeometryStatus::InvalidArgument, "Tolerance",
+        return Fail(outDiagnostic,
+                    Status::Invalid,
+                    geom::GeometryStatus::InvalidArgument,
+                    "Tolerance",
                     "A tolerance field is out of range; re-cook the source.");
     }
 
@@ -534,28 +653,32 @@ Status LoadGeometry(std::span<const uint8> blob,
     const ludus::content::Digest payloadDigest = ludus::content::Hash(payload);
     if ((payloadDigest == header.PayloadDigest) == false)
     {
-        return Fail(outDiagnostic, Status::Invalid, geom::GeometryStatus::StaleRevision, "PayloadDigest",
+        return Fail(outDiagnostic,
+                    Status::Invalid,
+                    geom::GeometryStatus::StaleRevision,
+                    "PayloadDigest",
                     "Payload digest mismatch; the cache is inconsistent, re-cook the source.");
     }
 
     GeometryLoad load;
     switch (header.Kind)
     {
-    case fg::GeometryKindTag::Path:
-        status = BuildPath(blob, header, limits, load, outDiagnostic);
-        break;
-    case fg::GeometryKindTag::Track:
-        status = BuildTrack(blob, header, limits, load, outDiagnostic);
-        break;
-    case fg::GeometryKindTag::Surface:
-        status = BuildSurface(blob, header, limits, load, outDiagnostic);
-        break;
+        case fg::GeometryKindTag::Path:
+            status = BuildPath(blob, header, limits, load, outDiagnostic);
+            break;
+        case fg::GeometryKindTag::Track:
+            status = BuildTrack(blob, header, limits, load, outDiagnostic);
+            break;
+        case fg::GeometryKindTag::Surface:
+            status = BuildSurface(blob, header, limits, load, outDiagnostic);
+            break;
     }
     if (status != Status::Ok)
     {
         return status;
     }
-    load.Key = GeometryCacheKey{
+    load.Key = GeometryCacheKey
+    {
         .SourceDigest = header.SourceDigest,
         .DependencyDigest = header.DependencyDigest,
         .TopologyDigest = ludus::content::Digest{},

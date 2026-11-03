@@ -35,8 +35,8 @@ using foundation::usize;
 /// @brief One authored control point of a curve document with its handle mode.
 struct ControlHandle final
 {
-    uint64 AuthorId = 0;                        ///< Stable author ID, minted through the editor identity path.
-    foundation::math::Vector3d Position{};      ///< Asset-space position.
+    uint64 AuthorId = 0;                          ///< Stable author ID, minted through the editor identity path.
+    foundation::math::Vector3d Position{};        ///< Asset-space position.
     gc::HandleMode Mode = gc::HandleMode::Manual; ///< Automatic handles convert to Manual when moved directly.
 };
 
@@ -55,12 +55,15 @@ inline constexpr foundation::usize CURVE_HISTORY_DEPTH = 64;
 struct CurveState final
 {
     static constexpr usize MAX_HANDLES = 4096;
-    uint64 AssetId = 0;                                   ///< Stable document identity.
-    bool IsClosed = false;                                ///< Closed path boundary.
-    foundation::core::Array<ControlHandle> Handles;       ///< Author-ordered control handles.
+    uint64 AssetId = 0;                             ///< Stable document identity.
+    bool IsClosed = false;                          ///< Closed path boundary.
+    foundation::core::Array<ControlHandle> Handles; ///< Author-ordered control handles.
 
     CurveState() noexcept = default;
-    CurveState(const CurveState& other) { copyFrom(other); }
+    CurveState(const CurveState& other)
+    {
+        copyFrom(other);
+    }
     CurveState& operator=(const CurveState& other)
     {
         if (this != &other)
@@ -84,7 +87,7 @@ struct CurveState final
             const ControlHandle& a = Handles[i];
             const ControlHandle& b = other.Handles[i];
             const bool isSame = a.AuthorId == b.AuthorId && a.Mode == b.Mode && a.Position.X == b.Position.X &&
-                              a.Position.Y == b.Position.Y && a.Position.Z == b.Position.Z;
+                                a.Position.Y == b.Position.Y && a.Position.Z == b.Position.Z;
             if (isSame == false)
             {
                 return false;
@@ -155,7 +158,8 @@ public:
                                    gc::GeometryDiagnosticReport& outDiagnostic) const noexcept;
 
 private:
-    [[nodiscard]] bool commit(const CurveState& candidate, bool shouldMerge, gc::GeometryDiagnosticReport& outDiagnostic) noexcept;
+    [[nodiscard]] bool
+    commit(const CurveState& candidate, bool shouldMerge, gc::GeometryDiagnosticReport& outDiagnostic) noexcept;
     [[nodiscard]] const ControlHandle* findHandleOrNull(uint64 authorId) const noexcept;
 
     CurveState mDraft;
@@ -173,12 +177,12 @@ enum class GeometryPrepareStatus : uint8
 /// @brief Identity carried by an async prepare request so late completions can be rejected.
 struct GeometryPrepareRequest final
 {
-    uint64 Request = 0;    ///< Monotonic request serial.
-    uint64 DocumentId = 0; ///< Session/document identity.
-    uint64 Revision = 0;   ///< Document revision at dispatch.
-    uint64 Generation = 0; ///< Activation serial.
+    uint64 Request = 0;                                              ///< Monotonic request serial.
+    uint64 DocumentId = 0;                                           ///< Session/document identity.
+    uint64 Revision = 0;                                             ///< Document revision at dispatch.
+    uint64 Generation = 0;                                           ///< Activation serial.
     geom::PrecisionProfile Profile = geom::PrecisionProfile::Visual; ///< Preparation profile.
-    content::Digest InputIdentity{}; ///< Semantic source+profile digest.
+    content::Digest InputIdentity{};                                 ///< Semantic source+profile digest.
 };
 
 /// @brief Async geometry prepare over an immutable cooked snapshot.
@@ -197,7 +201,8 @@ public:
     /// @param blob Cooked LUGEO bytes; copied into the job as its immutable input.
     /// @param limits Preparation work limits.
     /// @return False only when the snapshot copy fails to allocate (then status is Failed).
-    [[nodiscard]] bool Begin(const GeometryPrepareRequest& request, std::span<const uint8> blob, const geom::WorkLimits& limits) noexcept;
+    [[nodiscard]] bool
+    Begin(const GeometryPrepareRequest& request, std::span<const uint8> blob, const geom::WorkLimits& limits) noexcept;
 
     /// @brief Request cooperative cancellation; the next Prepare reports Failed/Cancelled.
     void Cancel() noexcept;
@@ -271,7 +276,9 @@ public:
     /// matching result is held as the pending candidate; a Failed result raises
     /// the stale-failed flag without replacing the active load.
     /// @return True when the result was accepted as the pending candidate.
-    [[nodiscard]] bool OfferCompletion(const GeometryPrepareRequest& request, GeometryPrepareStatus status, gc::GeometryLoad&& load) noexcept;
+    [[nodiscard]] bool OfferCompletion(const GeometryPrepareRequest& request,
+                                       GeometryPrepareStatus status,
+                                       gc::GeometryLoad&& load) noexcept;
 
     /// @brief Publish the pending candidate at a frame/tick boundary, if any.
     /// @return True when a candidate was published this tick.
@@ -358,7 +365,8 @@ private:
 ///
 /// Excludes cosmetic/layout-only state, so a purely visual move does not trigger
 /// a rebuild. Returns the SHA-256 of the author-visible geometry and profile.
-[[nodiscard]] content::Digest ComputeGeometryBuildIdentity(const CurveState& state, geom::PrecisionProfile profile) noexcept;
+[[nodiscard]] content::Digest ComputeGeometryBuildIdentity(const CurveState& state,
+                                                           geom::PrecisionProfile profile) noexcept;
 
 /// @brief How a cursor is placed on a newly published path revision.
 ///
@@ -375,10 +383,10 @@ enum class CursorReloadPolicy : uint8
 /// @brief A traversal cursor carrying its snapshot revision.
 struct GeometryCursor final
 {
-    uint64 Revision = 0;                   ///< Revision of the path the cursor was placed on.
-    geom::SegmentParameter Parameter{};    ///< Current span index and u.
-    geom::PathDistance Distance{};         ///< Current absolute arc distance.
-    float64 NormalizedDistance = 0.0;      ///< Distance / total length, in [0,1].
+    uint64 Revision = 0;                       ///< Revision of the path the cursor was placed on.
+    geom::SegmentParameter Parameter{};        ///< Current span index and u.
+    geom::PathDistance Distance{};             ///< Current absolute arc distance.
+    float64 NormalizedDistance = 0.0;          ///< Distance / total length, in [0,1].
     foundation::math::Vector3 WorldPosition{}; ///< Last evaluated chunk-relative position.
 };
 

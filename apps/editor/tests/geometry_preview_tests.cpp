@@ -125,7 +125,8 @@ TEST_CASE("A failed prepare keeps the active view with a stale flag", "[editor][
 
     // A newer edit's prepare fails; the active view must remain.
     preview.SetExpected(1, 2, 2);
-    REQUIRE(preview.OfferCompletion(MakeRequest(2, 2, 2), ge::GeometryPrepareStatus::Failed, gc::GeometryLoad{}) == false);
+    REQUIRE(preview.OfferCompletion(MakeRequest(2, 2, 2), ge::GeometryPrepareStatus::Failed, gc::GeometryLoad{}) ==
+            false);
     REQUIRE(preview.HasActive() == true);
     REQUIRE(preview.PresentedRevision() == 1);
     REQUIRE(preview.DisplayStatus() == ge::GeometryDisplayStatus::StaleFailed);

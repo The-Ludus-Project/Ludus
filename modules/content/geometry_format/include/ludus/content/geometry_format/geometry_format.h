@@ -146,9 +146,9 @@ inline constexpr usize HEADER_DIGEST_COUNT = 3;
 /// overlap any other section.
 struct SectionEntry final
 {
-    uint32 Id = 0;          ///< SectionId value.
-    uint32 Offset = 0;      ///< Byte offset from the blob start.
-    uint32 Count = 0;       ///< Record count.
+    uint32 Id = 0;           ///< SectionId value.
+    uint32 Offset = 0;       ///< Byte offset from the blob start.
+    uint32 Count = 0;        ///< Record count.
     uint32 ElementBytes = 0; ///< Serialized width of one record, from its field schema.
 };
 /// Serialized width of one SectionEntry (four uint32 fields).
@@ -158,8 +158,8 @@ static_assert(sizeof(SectionEntry) == SECTION_ENTRY_BYTES);
 /// @brief One cooked path span with chunk-relative float32 controls.
 struct PathSpanRecord final
 {
-    uint32 KindTag = 0;      ///< SpanKindTag.
-    uint32 SourceElement = 0; ///< Source waypoint or span index for diagnostics.
+    uint32 KindTag = 0;        ///< SpanKindTag.
+    uint32 SourceElement = 0;  ///< Source waypoint or span index for diagnostics.
     float64 DomainWidth = 1.0; ///< Source domain width used for continuity scaling; > 0.
     float32 Control[SPAN_CONTROL_COUNT][CONTROL_COMPONENTS]{}; ///< Chunk-relative controls.
 };
@@ -171,12 +171,12 @@ static_assert(sizeof(PathSpanRecord) == PATH_SPAN_RECORD_BYTES);
 /// @brief One cooked joint: continuity measurements and threshold flags.
 struct JointRecord final
 {
-    float64 PositionGap = 0.0;                ///< Distance between the two stored endpoints, asset units.
-    float64 DirectionAngle = 0.0;             ///< Angle between first derivatives, radians.
-    float64 DerivativeDifference = 0.0;       ///< Relative difference of domain-scaled first derivatives.
-    float64 SecondDerivativeDifference = 0.0; ///< Relative difference of domain-scaled second derivatives.
+    float64 PositionGap = 0.0;                 ///< Distance between the two stored endpoints, asset units.
+    float64 DirectionAngle = 0.0;              ///< Angle between first derivatives, radians.
+    float64 DerivativeDifference = 0.0;        ///< Relative difference of domain-scaled first derivatives.
+    float64 SecondDerivativeDifference = 0.0;  ///< Relative difference of domain-scaled second derivatives.
     uint8 ContinuityFlags[JOINT_FLAG_COUNT]{}; ///< C0, G1, C1, C2 as 0 or 1.
-    uint8 Reserved[JOINT_RESERVED_BYTES]{}; ///< Zero; keeps the width a multiple of eight and reserved for growth.
+    uint8 Reserved[JOINT_RESERVED_BYTES]{};    ///< Zero; keeps the width a multiple of eight and reserved for growth.
 };
 /// Serialized width of one JointRecord. The reserved bytes make the width a
 /// multiple of eight so the record has no host tail padding.
@@ -187,10 +187,10 @@ static_assert(sizeof(JointRecord) == JOINT_RECORD_BYTES);
 /// @brief One cooked scalar-track key. Slopes are value units per second.
 struct TrackKeyRecord final
 {
-    float64 Time = 0.0;         ///< Seconds from the local epoch; strictly increasing across keys.
-    float32 Value = 0.0F;       ///< Value at Time.
-    float32 InSlope = 0.0F;     ///< Derivative arriving at the key.
-    float32 OutSlope = 0.0F;    ///< Derivative leaving the key.
+    float64 Time = 0.0;          ///< Seconds from the local epoch; strictly increasing across keys.
+    float32 Value = 0.0F;        ///< Value at Time.
+    float32 InSlope = 0.0F;      ///< Derivative arriving at the key.
+    float32 OutSlope = 0.0F;     ///< Derivative leaving the key.
     uint32 InterpolationTag = 0; ///< TrackInterpolationTag of the span starting here.
 };
 /// Serialized width of one TrackKeyRecord.
@@ -211,11 +211,11 @@ static_assert(sizeof(PatchRecord) == PATCH_RECORD_BYTES);
 /// @brief One cooked adjacency join of two whole patch sides.
 struct AdjacencyRecord final
 {
-    uint32 FirstPatch = 0;   ///< Index into the patch section.
-    uint32 FirstSideTag = 0; ///< PatchSideTag of the first patch.
-    uint32 SecondPatch = 0;  ///< Index into the patch section.
+    uint32 FirstPatch = 0;    ///< Index into the patch section.
+    uint32 FirstSideTag = 0;  ///< PatchSideTag of the first patch.
+    uint32 SecondPatch = 0;   ///< Index into the patch section.
     uint32 SecondSideTag = 0; ///< PatchSideTag of the second patch.
-    uint32 IsReversed = 0;   ///< 1 when the second side runs opposite to the first.
+    uint32 IsReversed = 0;    ///< 1 when the second side runs opposite to the first.
 };
 /// Serialized width of one AdjacencyRecord.
 inline constexpr usize ADJACENCY_RECORD_BYTES = 5 * sizeof(uint32);
@@ -308,18 +308,18 @@ inline constexpr usize HEADER_MIN_BYTES = HEADER_FIXED_BYTES + HEADER_DIGEST_BYT
 {
     switch (id)
     {
-    case SectionId::PathSpans:
-        return PATH_SPAN_RECORD_BYTES;
-    case SectionId::PathJoints:
-        return JOINT_RECORD_BYTES;
-    case SectionId::TrackKeys:
-        return TRACK_KEY_RECORD_BYTES;
-    case SectionId::SurfacePatches:
-        return PATCH_RECORD_BYTES;
-    case SectionId::SurfaceAdjacency:
-        return ADJACENCY_RECORD_BYTES;
-    case SectionId::SourceIdentities:
-        return SOURCE_IDENTITY_RECORD_BYTES;
+        case SectionId::PathSpans:
+            return PATH_SPAN_RECORD_BYTES;
+        case SectionId::PathJoints:
+            return JOINT_RECORD_BYTES;
+        case SectionId::TrackKeys:
+            return TRACK_KEY_RECORD_BYTES;
+        case SectionId::SurfacePatches:
+            return PATCH_RECORD_BYTES;
+        case SectionId::SurfaceAdjacency:
+            return ADJACENCY_RECORD_BYTES;
+        case SectionId::SourceIdentities:
+            return SOURCE_IDENTITY_RECORD_BYTES;
     }
     return 0;
 }

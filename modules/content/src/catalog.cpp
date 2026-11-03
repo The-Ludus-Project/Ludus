@@ -197,8 +197,7 @@ Status Catalog::Read(std::string_view json, Diagnostic& diagnostic) noexcept
 Status Catalog::Put(const Resource& resource) noexcept
 {
     if ((resource.Type != Kind::AudioSource && resource.Type != Kind::Sound && resource.Type != Kind::Music &&
-         resource.Type != Kind::Mesh && resource.Type != Kind::CookedScene &&
-         resource.Type != Kind::CookedGeometry) ||
+         resource.Type != Kind::Mesh && resource.Type != Kind::CookedScene && resource.Type != Kind::CookedGeometry) ||
         ValidId(resource.Id.View()) == false || ValidPath(resource.Path.View()) == false)
     {
         return Status::Invalid;
@@ -253,18 +252,17 @@ Status Catalog::Write(Bytes& output) const noexcept
             hasGeometry = true;
         }
     }
-    writer.Raw(hasGeometry ? "{\n  \"version\": 2,\n  \"resources\": ["
-                           : "{\n  \"version\": 1,\n  \"resources\": [");
+    writer.Raw(hasGeometry ? "{\n  \"version\": 2,\n  \"resources\": [" : "{\n  \"version\": 1,\n  \"resources\": [");
     for (usize i = 0; i < mCount; ++i)
     {
         const auto& r = mEntries[i];
         writer.Raw(i == 0 ? "\n    { \"id\": " : ",\n    { \"id\": ");
         writer.String(r.Id.View());
         writer.Raw(", \"kind\": ");
-        writer.String(r.Type == Kind::Sound           ? "sound"
-                      : r.Type == Kind::Music         ? "music"
-                      : r.Type == Kind::Mesh          ? "mesh"
-                      : r.Type == Kind::CookedScene   ? "cooked-scene"
+        writer.String(r.Type == Kind::Sound            ? "sound"
+                      : r.Type == Kind::Music          ? "music"
+                      : r.Type == Kind::Mesh           ? "mesh"
+                      : r.Type == Kind::CookedScene    ? "cooked-scene"
                       : r.Type == Kind::CookedGeometry ? "cooked-geometry"
                                                        : "audio-source");
         writer.Raw(", \"path\": ");

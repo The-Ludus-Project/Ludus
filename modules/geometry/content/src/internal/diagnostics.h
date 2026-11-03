@@ -50,19 +50,19 @@ inline void Succeed(GeometryDiagnosticReport& outReport) noexcept
 {
     switch (status)
     {
-    case geom::GeometryStatus::Success:
-        return ludus::content::Status::Ok;
-    case geom::GeometryStatus::OutOfMemory:
-        return ludus::content::Status::OutOfMemory;
-    case geom::GeometryStatus::BudgetExceeded:
-        return ludus::content::Status::Limit;
-    case geom::GeometryStatus::Cancelled:
-        return ludus::content::Status::Cancelled;
-    case geom::GeometryStatus::UnsupportedRepresentation:
-    case geom::GeometryStatus::UnsupportedPrecision:
-        return ludus::content::Status::Unsupported;
-    default:
-        return ludus::content::Status::Invalid;
+        case geom::GeometryStatus::Success:
+            return ludus::content::Status::Ok;
+        case geom::GeometryStatus::OutOfMemory:
+            return ludus::content::Status::OutOfMemory;
+        case geom::GeometryStatus::BudgetExceeded:
+            return ludus::content::Status::Limit;
+        case geom::GeometryStatus::Cancelled:
+            return ludus::content::Status::Cancelled;
+        case geom::GeometryStatus::UnsupportedRepresentation:
+        case geom::GeometryStatus::UnsupportedPrecision:
+            return ludus::content::Status::Unsupported;
+        default:
+            return ludus::content::Status::Invalid;
     }
 }
 
@@ -71,20 +71,20 @@ inline void Succeed(GeometryDiagnosticReport& outReport) noexcept
 {
     switch (status)
     {
-    case geom::GeometryStatus::InvalidDomain:
-        return "Merge coincident waypoints or make key times strictly increasing.";
-    case geom::GeometryStatus::InvalidTopology:
-        return "Fix the adjacency join, or remove the partial or disconnected edge.";
-    case geom::GeometryStatus::UnsupportedPrecision:
-        return "Split this chunk, or relax PositionError to its Certified floor.";
-    case geom::GeometryStatus::BudgetExceeded:
-        return "Raise MaxLeaves/MaxDepth/MaxSubdivisions, or relax DistanceError.";
-    case geom::GeometryStatus::OutOfRange:
-        return "Reduce control magnitudes or subtract a nearer chunk origin.";
-    case geom::GeometryStatus::OutOfMemory:
-        return "Reduce the asset size or raise the preparation memory budget.";
-    default:
-        return "Correct the reported source element and retry.";
+        case geom::GeometryStatus::InvalidDomain:
+            return "Merge coincident waypoints or make key times strictly increasing.";
+        case geom::GeometryStatus::InvalidTopology:
+            return "Fix the adjacency join, or remove the partial or disconnected edge.";
+        case geom::GeometryStatus::UnsupportedPrecision:
+            return "Split this chunk, or relax PositionError to its Certified floor.";
+        case geom::GeometryStatus::BudgetExceeded:
+            return "Raise MaxLeaves/MaxDepth/MaxSubdivisions, or relax DistanceError.";
+        case geom::GeometryStatus::OutOfRange:
+            return "Reduce control magnitudes or subtract a nearer chunk origin.";
+        case geom::GeometryStatus::OutOfMemory:
+            return "Reduce the asset size or raise the preparation memory budget.";
+        default:
+            return "Correct the reported source element and retry.";
     }
 }
 } // namespace ludus::geometry::content::internal

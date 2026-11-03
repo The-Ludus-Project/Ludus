@@ -27,19 +27,19 @@ namespace
 }
 
 /// Append one path span record (field by field).
-[[nodiscard]] bool WriteSpan(ByteWriter& inoutWriter, const geom::PreparedSpan& span, const math::Vector3d& origin) noexcept
+[[nodiscard]] bool
+WriteSpan(ByteWriter& inoutWriter, const geom::PreparedSpan& span, const math::Vector3d& origin) noexcept
 {
-    const uint32 kindTag =
-        span.Kind == geom::SpanKind::Line ? static_cast<uint32>(fg::SpanKindTag::Line)
-                                          : static_cast<uint32>(fg::SpanKindTag::Cubic);
+    const uint32 kindTag = span.Kind == geom::SpanKind::Line ? static_cast<uint32>(fg::SpanKindTag::Line)
+                                                             : static_cast<uint32>(fg::SpanKindTag::Cubic);
     (void)origin;
     bool isOk = inoutWriter.WriteUint32(kindTag) && inoutWriter.WriteUint32(static_cast<uint32>(span.SourceElement)) &&
-              inoutWriter.WriteFloat64(span.DomainWidth);
+                inoutWriter.WriteFloat64(span.DomainWidth);
     for (usize c = 0; c < fg::SPAN_CONTROL_COUNT && isOk; ++c)
     {
         // Prepared controls are already chunk-relative float32; store them directly.
         isOk = inoutWriter.WriteFloat32(span.Control[c].X) && inoutWriter.WriteFloat32(span.Control[c].Y) &&
-             inoutWriter.WriteFloat32(span.Control[c].Z);
+               inoutWriter.WriteFloat32(span.Control[c].Z);
     }
     return isOk;
 }
@@ -47,10 +47,11 @@ namespace
 [[nodiscard]] bool WriteJoint(ByteWriter& inoutWriter, const geom::JointContinuity& joint) noexcept
 {
     return inoutWriter.WriteFloat64(joint.PositionGap) && inoutWriter.WriteFloat64(joint.DirectionAngle) &&
-           inoutWriter.WriteFloat64(joint.DerivativeDifference) && inoutWriter.WriteFloat64(joint.SecondDerivativeDifference) &&
-           inoutWriter.WriteUint8(joint.IsC0 ? 1 : 0) && inoutWriter.WriteUint8(joint.IsG1 ? 1 : 0) &&
-           inoutWriter.WriteUint8(joint.IsC1 ? 1 : 0) && inoutWriter.WriteUint8(joint.IsC2 ? 1 : 0) && inoutWriter.WriteUint8(0) &&
-           inoutWriter.WriteUint8(0) && inoutWriter.WriteUint8(0) && inoutWriter.WriteUint8(0);
+           inoutWriter.WriteFloat64(joint.DerivativeDifference) &&
+           inoutWriter.WriteFloat64(joint.SecondDerivativeDifference) && inoutWriter.WriteUint8(joint.IsC0 ? 1 : 0) &&
+           inoutWriter.WriteUint8(joint.IsG1 ? 1 : 0) && inoutWriter.WriteUint8(joint.IsC1 ? 1 : 0) &&
+           inoutWriter.WriteUint8(joint.IsC2 ? 1 : 0) && inoutWriter.WriteUint8(0) && inoutWriter.WriteUint8(0) &&
+           inoutWriter.WriteUint8(0) && inoutWriter.WriteUint8(0);
 }
 
 /// One section directory entry assembled while writing.
@@ -98,23 +99,26 @@ struct HeaderPlan final
 /// Write the fixed header prefix (digests and section offsets are patched later).
 [[nodiscard]] bool WriteHeaderPrefix(ByteWriter& inoutWriter, const HeaderPlan& plan) noexcept
 {
-    bool isOk = inoutWriter.WriteBytes(std::span<const uint8>(reinterpret_cast<const uint8*>(fg::MAGIC.data()), fg::MAGIC.size()));
+    bool isOk = inoutWriter.WriteBytes(
+        std::span<const uint8>(reinterpret_cast<const uint8*>(fg::MAGIC.data()), fg::MAGIC.size()));
     isOk = isOk && inoutWriter.WriteUint32(fg::FORMAT_VERSION) && inoutWriter.WriteUint32(fg::COOKER_VERSION) &&
-         inoutWriter.WriteUint32(static_cast<uint32>(plan.Kind)) && inoutWriter.WriteUint32(static_cast<uint32>(plan.Precision)) &&
-         inoutWriter.WriteUint32(plan.Flags) && inoutWriter.WriteUint32(plan.SpanCount) && inoutWriter.WriteUint32(plan.JointCount) &&
-         inoutWriter.WriteUint32(plan.KeyCount) && inoutWriter.WriteUint32(plan.PatchCount) &&
-         inoutWriter.WriteUint32(plan.AdjacencyCount) && inoutWriter.WriteUint32(plan.SourceIdentityCount) &&
-         inoutWriter.WriteUint64(plan.Revision) && inoutWriter.WriteFloat64(plan.Origin.X) && inoutWriter.WriteFloat64(plan.Origin.Y) &&
-         inoutWriter.WriteFloat64(plan.Origin.Z) && inoutWriter.WriteFloat64(plan.AssetScale) &&
-         inoutWriter.WriteFloat64(plan.PositionFloor) && inoutWriter.WriteFloat64(plan.EffectivePositionError) &&
-         WriteToleranceFields(inoutWriter, plan.Tolerance) && inoutWriter.WriteUint32(plan.SectionCount);
+           inoutWriter.WriteUint32(static_cast<uint32>(plan.Kind)) &&
+           inoutWriter.WriteUint32(static_cast<uint32>(plan.Precision)) && inoutWriter.WriteUint32(plan.Flags) &&
+           inoutWriter.WriteUint32(plan.SpanCount) && inoutWriter.WriteUint32(plan.JointCount) &&
+           inoutWriter.WriteUint32(plan.KeyCount) && inoutWriter.WriteUint32(plan.PatchCount) &&
+           inoutWriter.WriteUint32(plan.AdjacencyCount) && inoutWriter.WriteUint32(plan.SourceIdentityCount) &&
+           inoutWriter.WriteUint64(plan.Revision) && inoutWriter.WriteFloat64(plan.Origin.X) &&
+           inoutWriter.WriteFloat64(plan.Origin.Y) && inoutWriter.WriteFloat64(plan.Origin.Z) &&
+           inoutWriter.WriteFloat64(plan.AssetScale) && inoutWriter.WriteFloat64(plan.PositionFloor) &&
+           inoutWriter.WriteFloat64(plan.EffectivePositionError) && WriteToleranceFields(inoutWriter, plan.Tolerance) &&
+           inoutWriter.WriteUint32(plan.SectionCount);
     // Directory entries: ids and widths are known now; offsets are patched after
     // the payload is written, so write placeholder zero offsets here.
     for (uint32 i = 0; i < plan.SectionCount && isOk; ++i)
     {
         const PendingSection& section = plan.Sections[i];
         isOk = inoutWriter.WriteUint32(static_cast<uint32>(section.Id)) && inoutWriter.WriteUint32(0) &&
-             inoutWriter.WriteUint32(section.Count) && inoutWriter.WriteUint32(section.ElementBytes);
+               inoutWriter.WriteUint32(section.Count) && inoutWriter.WriteUint32(section.ElementBytes);
     }
     return isOk;
 }
@@ -166,7 +170,10 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
     ByteWriter writer;
     if (WriteHeaderPrefix(writer, plan) == false)
     {
-        return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "Header",
+        return Fail(outDiag,
+                    Status::OutOfMemory,
+                    geom::GeometryStatus::OutOfMemory,
+                    "Header",
                     RepairForStatus(geom::GeometryStatus::OutOfMemory));
     }
     // Reserve the three trailing digests (written as zero now, patched later).
@@ -175,7 +182,10 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
     {
         if (writer.WriteUint8(0) == false)
         {
-            return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "Header",
+            return Fail(outDiag,
+                        Status::OutOfMemory,
+                        geom::GeometryStatus::OutOfMemory,
+                        "Header",
                         RepairForStatus(geom::GeometryStatus::OutOfMemory));
         }
     }
@@ -185,12 +195,18 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
     {
         if (IsCancelled(cancelOrNull))
         {
-            return Fail(outDiag, Status::Cancelled, geom::GeometryStatus::Cancelled, "PathSpans",
+            return Fail(outDiag,
+                        Status::Cancelled,
+                        geom::GeometryStatus::Cancelled,
+                        "PathSpans",
                         "Cancelled by the caller.");
         }
         if (WriteSpan(writer, view.Spans[i], view.Origin) == false)
         {
-            return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "PathSpans",
+            return Fail(outDiag,
+                        Status::OutOfMemory,
+                        geom::GeometryStatus::OutOfMemory,
+                        "PathSpans",
                         RepairForStatus(geom::GeometryStatus::OutOfMemory));
         }
     }
@@ -199,7 +215,10 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
     {
         if (WriteJoint(writer, view.Joints[i]) == false)
         {
-            return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "PathJoints",
+            return Fail(outDiag,
+                        Status::OutOfMemory,
+                        geom::GeometryStatus::OutOfMemory,
+                        "PathJoints",
                         RepairForStatus(geom::GeometryStatus::OutOfMemory));
         }
     }
@@ -227,7 +246,10 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
 
     if (writer.Release(outBlob) == false)
     {
-        return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "Blob",
+        return Fail(outDiag,
+                    Status::OutOfMemory,
+                    geom::GeometryStatus::OutOfMemory,
+                    "Blob",
                     RepairForStatus(geom::GeometryStatus::OutOfMemory));
     }
     Succeed(outDiag);
@@ -255,7 +277,10 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
     ByteWriter writer;
     if (WriteHeaderPrefix(writer, plan) == false)
     {
-        return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "Header",
+        return Fail(outDiag,
+                    Status::OutOfMemory,
+                    geom::GeometryStatus::OutOfMemory,
+                    "Header",
                     RepairForStatus(geom::GeometryStatus::OutOfMemory));
     }
     const usize digestsOffset = writer.GetSize();
@@ -263,7 +288,10 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
     {
         if (writer.WriteUint8(0) == false)
         {
-            return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "Header",
+            return Fail(outDiag,
+                        Status::OutOfMemory,
+                        geom::GeometryStatus::OutOfMemory,
+                        "Header",
                         RepairForStatus(geom::GeometryStatus::OutOfMemory));
         }
     }
@@ -272,24 +300,29 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
     {
         if (IsCancelled(cancelOrNull))
         {
-            return Fail(outDiag, Status::Cancelled, geom::GeometryStatus::Cancelled, "TrackKeys",
+            return Fail(outDiag,
+                        Status::Cancelled,
+                        geom::GeometryStatus::Cancelled,
+                        "TrackKeys",
                         "Cancelled by the caller.");
         }
         const AuthoredKey& key = source.Keys[i];
         const bool isOk = writer.WriteFloat64(key.Time) && writer.WriteFloat32(key.Value) &&
-                        writer.WriteFloat32(key.InSlope) && writer.WriteFloat32(key.OutSlope) &&
-                        writer.WriteUint32(static_cast<uint32>(key.Interpolation));
+                          writer.WriteFloat32(key.InSlope) && writer.WriteFloat32(key.OutSlope) &&
+                          writer.WriteUint32(static_cast<uint32>(key.Interpolation));
         if (isOk == false)
         {
-            return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "TrackKeys",
+            return Fail(outDiag,
+                        Status::OutOfMemory,
+                        geom::GeometryStatus::OutOfMemory,
+                        "TrackKeys",
                         RepairForStatus(geom::GeometryStatus::OutOfMemory));
         }
     }
     PatchSectionOffset(writer, 0, keyOffset);
 
     const usize headerBytes = fg::GetHeaderBytes(plan.SectionCount);
-    const ludus::content::Digest payloadDigest =
-        ludus::content::Hash(writer.GetMutableBytes().subspan(headerBytes));
+    const ludus::content::Digest payloadDigest = ludus::content::Hash(writer.GetMutableBytes().subspan(headerBytes));
     ludus::content::Bytes canonicalSource;
     GeometryDiagnosticReport sourceDiag{};
     const Status sourceStatus = WriteGeometrySource(source, canonicalSource, sourceDiag);
@@ -306,7 +339,10 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
 
     if (writer.Release(outBlob) == false)
     {
-        return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "Blob",
+        return Fail(outDiag,
+                    Status::OutOfMemory,
+                    geom::GeometryStatus::OutOfMemory,
+                    "Blob",
                     RepairForStatus(geom::GeometryStatus::OutOfMemory));
     }
     Succeed(outDiag);
@@ -332,13 +368,17 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
     plan.AssetScale = source.AssetScale;
     plan.Tolerance = source.Tolerance;
     plan.Sections[0] = PendingSection{fg::SectionId::SurfacePatches, 0, plan.PatchCount, fg::PATCH_RECORD_BYTES};
-    plan.Sections[1] = PendingSection{fg::SectionId::SurfaceAdjacency, 0, plan.AdjacencyCount, fg::ADJACENCY_RECORD_BYTES};
+    plan.Sections[1] =
+        PendingSection{fg::SectionId::SurfaceAdjacency, 0, plan.AdjacencyCount, fg::ADJACENCY_RECORD_BYTES};
     plan.SectionCount = 2;
 
     ByteWriter writer;
     if (WriteHeaderPrefix(writer, plan) == false)
     {
-        return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "Header",
+        return Fail(outDiag,
+                    Status::OutOfMemory,
+                    geom::GeometryStatus::OutOfMemory,
+                    "Header",
                     RepairForStatus(geom::GeometryStatus::OutOfMemory));
     }
     const usize digestsOffset = writer.GetSize();
@@ -346,7 +386,10 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
     {
         if (writer.WriteUint8(0) == false)
         {
-            return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "Header",
+            return Fail(outDiag,
+                        Status::OutOfMemory,
+                        geom::GeometryStatus::OutOfMemory,
+                        "Header",
                         RepairForStatus(geom::GeometryStatus::OutOfMemory));
         }
     }
@@ -355,7 +398,10 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
     {
         if (IsCancelled(cancelOrNull))
         {
-            return Fail(outDiag, Status::Cancelled, geom::GeometryStatus::Cancelled, "SurfacePatches",
+            return Fail(outDiag,
+                        Status::Cancelled,
+                        geom::GeometryStatus::Cancelled,
+                        "SurfacePatches",
                         "Cancelled by the caller.");
         }
         const AuthoredPatch& patch = source.Patches[i];
@@ -367,13 +413,16 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
                 // Store chunk-relative controls (subtract the origin as the owner does).
                 const math::Vector3d relative = patch.Control[u][v] - source.Origin;
                 isOk = writer.WriteFloat32(static_cast<float32>(relative.X)) &&
-                     writer.WriteFloat32(static_cast<float32>(relative.Y)) &&
-                     writer.WriteFloat32(static_cast<float32>(relative.Z));
+                       writer.WriteFloat32(static_cast<float32>(relative.Y)) &&
+                       writer.WriteFloat32(static_cast<float32>(relative.Z));
             }
         }
         if (isOk == false)
         {
-            return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "SurfacePatches",
+            return Fail(outDiag,
+                        Status::OutOfMemory,
+                        geom::GeometryStatus::OutOfMemory,
+                        "SurfacePatches",
                         RepairForStatus(geom::GeometryStatus::OutOfMemory));
         }
     }
@@ -382,13 +431,16 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
     {
         const geom::SurfaceAdjacencySource& join = source.Adjacency[i];
         const bool isOk = writer.WriteUint32(static_cast<uint32>(join.FirstPatch)) &&
-                        writer.WriteUint32(static_cast<uint32>(join.FirstSide)) &&
-                        writer.WriteUint32(static_cast<uint32>(join.SecondPatch)) &&
-                        writer.WriteUint32(static_cast<uint32>(join.SecondSide)) &&
-                        writer.WriteUint32(join.IsReversed ? 1U : 0U);
+                          writer.WriteUint32(static_cast<uint32>(join.FirstSide)) &&
+                          writer.WriteUint32(static_cast<uint32>(join.SecondPatch)) &&
+                          writer.WriteUint32(static_cast<uint32>(join.SecondSide)) &&
+                          writer.WriteUint32(join.IsReversed ? 1U : 0U);
         if (isOk == false)
         {
-            return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "SurfaceAdjacency",
+            return Fail(outDiag,
+                        Status::OutOfMemory,
+                        geom::GeometryStatus::OutOfMemory,
+                        "SurfaceAdjacency",
                         RepairForStatus(geom::GeometryStatus::OutOfMemory));
         }
     }
@@ -396,8 +448,7 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
     PatchSectionOffset(writer, 1, adjacencyOffset);
 
     const usize headerBytes = fg::GetHeaderBytes(plan.SectionCount);
-    const ludus::content::Digest payloadDigest =
-        ludus::content::Hash(writer.GetMutableBytes().subspan(headerBytes));
+    const ludus::content::Digest payloadDigest = ludus::content::Hash(writer.GetMutableBytes().subspan(headerBytes));
     ludus::content::Bytes canonicalSource;
     GeometryDiagnosticReport sourceDiag{};
     const Status sourceStatus = WriteGeometrySource(source, canonicalSource, sourceDiag);
@@ -414,7 +465,10 @@ void PatchDigest(ByteWriter& inoutWriter, usize offset, const ludus::content::Di
 
     if (writer.Release(outBlob) == false)
     {
-        return Fail(outDiag, Status::OutOfMemory, geom::GeometryStatus::OutOfMemory, "Blob",
+        return Fail(outDiag,
+                    Status::OutOfMemory,
+                    geom::GeometryStatus::OutOfMemory,
+                    "Blob",
                     RepairForStatus(geom::GeometryStatus::OutOfMemory));
     }
     Succeed(outDiag);
@@ -439,7 +493,10 @@ Status CookGeometry(const GeometrySource& source,
     Succeed(outDiagnostic);
     if (IsCancelled(cancelOrNull))
     {
-        return Fail(outDiagnostic, Status::Cancelled, geom::GeometryStatus::Cancelled, "Source",
+        return Fail(outDiagnostic,
+                    Status::Cancelled,
+                    geom::GeometryStatus::Cancelled,
+                    "Source",
                     "Cancelled by the caller.");
     }
     // Dry-run the preparation so a cook never emits a blob that cannot load.
@@ -458,15 +515,15 @@ Status CookGeometry(const GeometrySource& source,
     Status status = Status::Ok;
     switch (kind)
     {
-    case fg::GeometryKindTag::Path:
-        status = CookPath(source, preparedPath, blob, cancelOrNull, outDiagnostic);
-        break;
-    case fg::GeometryKindTag::Track:
-        status = CookTrack(source, preparedTrack, blob, cancelOrNull, outDiagnostic);
-        break;
-    case fg::GeometryKindTag::Surface:
-        status = CookSurface(source, preparedSurface, blob, cancelOrNull, outDiagnostic);
-        break;
+        case fg::GeometryKindTag::Path:
+            status = CookPath(source, preparedPath, blob, cancelOrNull, outDiagnostic);
+            break;
+        case fg::GeometryKindTag::Track:
+            status = CookTrack(source, preparedTrack, blob, cancelOrNull, outDiagnostic);
+            break;
+        case fg::GeometryKindTag::Surface:
+            status = CookSurface(source, preparedSurface, blob, cancelOrNull, outDiagnostic);
+            break;
     }
     if (status != Status::Ok)
     {

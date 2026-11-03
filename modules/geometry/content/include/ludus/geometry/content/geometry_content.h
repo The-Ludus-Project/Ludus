@@ -71,31 +71,31 @@ enum class HandleMode : uint8
 /// @brief One authored line or cubic span with a stable author ID.
 struct AuthoredSpan final
 {
-    uint64 AuthorId = 0;                                                     ///< Stable author ID.
-    fg::SpanKindTag Kind = fg::SpanKindTag::Cubic;                           ///< Line or cubic.
-    core::StaticArray<math::Vector3d, fg::SPAN_CONTROL_COUNT> Control{};     ///< Asset-space controls; 0 and 3 endpoints.
-    float64 DomainWidth = 1.0;                                               ///< Source domain width; finite and > 0.
+    uint64 AuthorId = 0;                                                 ///< Stable author ID.
+    fg::SpanKindTag Kind = fg::SpanKindTag::Cubic;                       ///< Line or cubic.
+    core::StaticArray<math::Vector3d, fg::SPAN_CONTROL_COUNT> Control{}; ///< Asset-space controls; 0 and 3 endpoints.
+    float64 DomainWidth = 1.0;                                           ///< Source domain width; finite and > 0.
 };
 
 /// @brief One authored waypoint with tangent handles and their modes.
 struct AuthoredWaypoint final
 {
-    uint64 AuthorId = 0;             ///< Stable author ID.
-    math::Vector3d Position{};       ///< Asset-space position.
-    math::Vector3d InTangent{};      ///< Incoming tangent (Hermite), per domain unit.
-    math::Vector3d OutTangent{};     ///< Outgoing tangent (Hermite), per domain unit.
-    float64 OutgoingWidth = 1.0;     ///< Domain width of the span leaving this waypoint; finite and > 0.
+    uint64 AuthorId = 0;                     ///< Stable author ID.
+    math::Vector3d Position{};               ///< Asset-space position.
+    math::Vector3d InTangent{};              ///< Incoming tangent (Hermite), per domain unit.
+    math::Vector3d OutTangent{};             ///< Outgoing tangent (Hermite), per domain unit.
+    float64 OutgoingWidth = 1.0;             ///< Domain width of the span leaving this waypoint; finite and > 0.
     HandleMode Mode = HandleMode::Automatic; ///< Handle mode.
 };
 
 /// @brief One authored scalar-track key.
 struct AuthoredKey final
 {
-    uint64 AuthorId = 0;                                               ///< Stable author ID.
-    float64 Time = 0.0;                                                ///< Seconds; strictly increasing across keys.
-    float32 Value = 0.0F;                                             ///< Value at Time.
-    float32 InSlope = 0.0F;                                          ///< Incoming slope, per second.
-    float32 OutSlope = 0.0F;                                         ///< Outgoing slope, per second.
+    uint64 AuthorId = 0;     ///< Stable author ID.
+    float64 Time = 0.0;      ///< Seconds; strictly increasing across keys.
+    float32 Value = 0.0F;    ///< Value at Time.
+    float32 InSlope = 0.0F;  ///< Incoming slope, per second.
+    float32 OutSlope = 0.0F; ///< Outgoing slope, per second.
     fg::TrackInterpolationTag Interpolation = fg::TrackInterpolationTag::Linear; ///< Span starting at this key.
 };
 
@@ -128,19 +128,19 @@ public:
     /// Release the owned source arrays.
     ~GeometrySource() = default;
 
-    GeometrySourceMode Mode = GeometrySourceMode::CubicPath; ///< Which arrays below are populated.
-    uint64 Revision = 0;                                     ///< Owner-assigned snapshot revision.
-    math::Vector3d Origin{};                                 ///< Float64 chunk origin.
-    float64 AssetScale = 0.0;                                ///< Declared asset scale; finite and >= 0.
-    bool IsClosed = false;                                   ///< Closed path or surface boundary.
-    geom::ToleranceProfile Tolerance{};                      ///< Validated as a whole.
-    geom::WorkLimits Limits{};                               ///< Preparation work limits.
+    GeometrySourceMode Mode = GeometrySourceMode::CubicPath;           ///< Which arrays below are populated.
+    uint64 Revision = 0;                                               ///< Owner-assigned snapshot revision.
+    math::Vector3d Origin{};                                           ///< Float64 chunk origin.
+    float64 AssetScale = 0.0;                                          ///< Declared asset scale; finite and >= 0.
+    bool IsClosed = false;                                             ///< Closed path or surface boundary.
+    geom::ToleranceProfile Tolerance{};                                ///< Validated as a whole.
+    geom::WorkLimits Limits{};                                         ///< Preparation work limits.
     geom::PrecisionProfile Precision = geom::PrecisionProfile::Visual; ///< Strict or Visual.
 
-    core::Array<AuthoredSpan> Spans;         ///< CubicPath.
-    core::Array<AuthoredWaypoint> Waypoints; ///< HermitePath / CatmullRomPath.
-    core::Array<AuthoredKey> Keys;           ///< ScalarTrack.
-    core::Array<AuthoredPatch> Patches;      ///< PatchSurface.
+    core::Array<AuthoredSpan> Spans;                     ///< CubicPath.
+    core::Array<AuthoredWaypoint> Waypoints;             ///< HermitePath / CatmullRomPath.
+    core::Array<AuthoredKey> Keys;                       ///< ScalarTrack.
+    core::Array<AuthoredPatch> Patches;                  ///< PatchSurface.
     core::Array<geom::SurfaceAdjacencySource> Adjacency; ///< PatchSurface joins.
 };
 
@@ -152,10 +152,11 @@ public:
 /// concrete fix ("Errors offer solutions", AGENTS.md). Bad content never asserts.
 struct GeometryDiagnosticReport final
 {
-    ludus::content::Status Transport = ludus::content::Status::Ok; ///< Ok, Invalid, Limit, OutOfMemory, Conflict, Cancelled, Unsupported.
-    geom::GeometryDiagnostic Detail{};                             ///< Geometry-level details.
-    const char* Repair = "";                                      ///< Static suggested repair, never null.
-    ludus::content::MessageText Message;                          ///< Bounded human-readable wording.
+    ludus::content::Status Transport =
+        ludus::content::Status::Ok;      ///< Ok, Invalid, Limit, OutOfMemory, Conflict, Cancelled, Unsupported.
+    geom::GeometryDiagnostic Detail{};   ///< Geometry-level details.
+    const char* Repair = "";             ///< Static suggested repair, never null.
+    ludus::content::MessageText Message; ///< Bounded human-readable wording.
 };
 
 /// @brief Cache key covering everything the architecture lists (ADR 0024, content-resources.md).
@@ -168,7 +169,7 @@ struct GeometryCacheKey final
     uint32 CookerVersion = 0;                  ///< Cooker version.
     uint64 SchemaVersion = 0;                  ///< Source schema version.
     geom::PrecisionProfile Precision = geom::PrecisionProfile::Visual; ///< Precision profile.
-    geom::ToleranceProfile Tolerance{};        ///< All tolerances.
+    geom::ToleranceProfile Tolerance{};                                ///< All tolerances.
 };
 
 /// @brief Immutable loaded geometry owner. Move-only; holds exactly one prepared owner.
@@ -189,10 +190,10 @@ public:
     ~GeometryLoad() = default;
 
     fg::GeometryKindTag Kind = fg::GeometryKindTag::Path; ///< Which prepared owner below is valid.
-    geom::PreparedPath Path;       ///< Valid iff Kind == Path.
-    geom::PreparedTrack Track;     ///< Valid iff Kind == Track.
-    geom::PreparedSurface Surface; ///< Valid iff Kind == Surface.
-    GeometryCacheKey Key{};        ///< Cache key recovered from the blob header.
+    geom::PreparedPath Path;                              ///< Valid iff Kind == Path.
+    geom::PreparedTrack Track;                            ///< Valid iff Kind == Track.
+    geom::PreparedSurface Surface;                        ///< Valid iff Kind == Surface.
+    GeometryCacheKey Key{};                               ///< Cache key recovered from the blob header.
 };
 
 /// @brief Parse a JSON geometry source into an owned, validated GeometrySource.
@@ -214,8 +215,9 @@ ParseGeometrySource(std::string_view json, GeometrySource& outSource, GeometryDi
 /// Fixed field order and reproducible numeric spelling, so Parse∘Write∘Parse is
 /// stable. @param source Validated source. @param outJson Replaced on success.
 /// @param outDiagnostic Set on failure. @return Ok, Invalid or OutOfMemory.
-[[nodiscard]] ludus::content::Status
-WriteGeometrySource(const GeometrySource& source, ludus::content::Bytes& outJson, GeometryDiagnosticReport& outDiagnostic) noexcept;
+[[nodiscard]] ludus::content::Status WriteGeometrySource(const GeometrySource& source,
+                                                         ludus::content::Bytes& outJson,
+                                                         GeometryDiagnosticReport& outDiagnostic) noexcept;
 
 /// @brief Cook a validated source into a LUGEO blob (Ludus::GeometryFormat layout).
 ///
