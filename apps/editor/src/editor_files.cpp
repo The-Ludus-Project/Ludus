@@ -59,8 +59,11 @@ bool IsGeneratedProjectPath(const QString& relative)
 /// itself is chosen from the file's content.
 [[maybe_unused]] bool IsSceneEntryName(const QString& name)
 {
-    for (const QString& extension :
-         {QStringLiteral(".pbrt"), QStringLiteral(".gltf"), QStringLiteral(".glb"), QStringLiteral(".obj")})
+    for (const QString& extension : {QStringLiteral(".pbrt"),
+                                     QStringLiteral(".gltf"),
+                                     QStringLiteral(".glb"),
+                                     QStringLiteral(".obj"),
+                                     QStringLiteral(".luscene.json")})
     {
         if (name.endsWith(extension, Qt::CaseInsensitive) == true)
         {
@@ -419,8 +422,8 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
     {
         // One .zip archive, or a scene entry plus its companion files picked together (flat).
         state->Input.set("accept",
-                         emscripten::val(".pbrt,.gltf,.glb,.bin,.obj,.mtl,.zip,application/zip,image/*,.ply,.spd,"
-                                         ".exr,.hdr"));
+                         emscripten::val(".pbrt,.gltf,.glb,.bin,.obj,.mtl,.json,.zip,application/zip,image/*,"
+                                         ".ply,.spd,.exr,.hdr"));
     }
     state->Input.set("hidden", true);
     auto finish = [weak]() {
@@ -459,7 +462,8 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
             if (count == 0 || count > 100000)
             {
                 Report(state->Owner,
-                       QStringLiteral("Choose a scene folder, one .pbrt/.gltf/.glb/.obj file, or a .zip archive."));
+                       QStringLiteral(
+                           "Choose a scene folder, one .pbrt/.gltf/.glb/.obj/.luscene.json file, or a .zip archive."));
                 finish();
                 return;
             }
@@ -490,8 +494,8 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
             {
                 // Fall back to a single-file picker if the directory selection had no scene entry.
                 Report(state->Owner,
-                       QStringLiteral("Choose a folder containing a .pbrt, .gltf, .glb or .obj entry (and its "
-                                      "textures/models), or a single entry / .zip file."));
+                       QStringLiteral("Choose a folder containing a .pbrt, .gltf, .glb, .obj or .luscene.json entry "
+                                      "(and its textures/models), or a single entry / .zip file."));
                 finish();
                 return;
             }
@@ -548,21 +552,24 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
                     ImportedBytes += static_cast<foundation::int64>(expanded) - state->ChargedBytes;
                     state->ChargedBytes = static_cast<foundation::int64>(expanded);
                     QString entry;
-                    // Prefer a .pbrt entry; otherwise the first glTF/OBJ entry.
+                    // Prefer a .pbrt entry; otherwise the first glTF, OBJ or Ludus scene source entry.
                     QDirIterator pbrtFiles(state->Directory,
                                            QStringList{QStringLiteral("*.pbrt")},
                                            QDir::Files,
                                            QDirIterator::Subdirectories);
-                    QDirIterator otherFiles(
-                        state->Directory,
-                        QStringList{QStringLiteral("*.gltf"), QStringLiteral("*.glb"), QStringLiteral("*.obj")},
-                        QDir::Files,
-                        QDirIterator::Subdirectories);
+                    QDirIterator otherFiles(state->Directory,
+                                            QStringList{QStringLiteral("*.gltf"),
+                                                        QStringLiteral("*.glb"),
+                                                        QStringLiteral("*.obj"),
+                                                        QStringLiteral("*.luscene.json")},
+                                            QDir::Files,
+                                            QDirIterator::Subdirectories);
                     QDirIterator& files = pbrtFiles.hasNext() == true ? pbrtFiles : otherFiles;
                     if (files.hasNext() == false)
                     {
                         Report(state->Owner,
-                               QStringLiteral("The .zip archive contains no .pbrt, .gltf, .glb or .obj entry."));
+                               QStringLiteral(
+                                   "The .zip archive contains no .pbrt, .gltf, .glb, .obj or .luscene.json entry."));
                         finish();
                         return;
                     }

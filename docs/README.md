@@ -153,6 +153,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Ludus product and art direction](architecture/editor-art-direction.md)
 - [Ludus Randomness Architecture](architecture/randomness.md)
 - [Ludus RHI and Graphics Device Interface Architecture](architecture/rhi-gdi.md)
+- [Ludus scene source format (`.luscene.json`)](architecture/scene-source-format.md)
 - [Ludus Strings Architecture](architecture/strings.md)
 - [macOS Platform backend](architecture/macos-platform.md)
 - [Module startup and shutdown architecture](architecture/module-lifecycle.md)

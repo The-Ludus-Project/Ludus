@@ -126,8 +126,9 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
             QFileDialog::getOpenFileName(this,
                                          QStringLiteral("Import scene"),
                                          {},
-                                         QStringLiteral("Scenes (*.pbrt *.gltf *.glb *.obj);;PBRT v4 (*.pbrt);;glTF "
-                                                        "2.0 (*.gltf *.glb);;Wavefront OBJ (*.obj)"));
+                                         QStringLiteral("Scenes (*.pbrt *.gltf *.glb *.obj *.luscene.json);;PBRT v4 "
+                                                        "(*.pbrt);;glTF 2.0 (*.gltf *.glb);;Wavefront OBJ "
+                                                        "(*.obj);;Ludus scene (*.luscene.json)"));
         if (file.isEmpty() == false)
         {
             PreviewSource_ = file;

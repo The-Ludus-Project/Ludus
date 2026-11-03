@@ -19,7 +19,7 @@ struct ImportSource final
 };
 
 /// Split a picked path: a directory keeps pbrt-reference-v1 (empty entry); a scene
-/// file (.pbrt, .gltf, .glb or .obj) selects its directory and file name, routed by
+/// file (.pbrt, .gltf, .glb, .obj or .luscene.json) selects its directory and file name, routed by
 /// AssetOptions::SourceEntry to the importer its content selects.
 [[nodiscard]] ImportSource SplitImportSource(const QString& path);
 

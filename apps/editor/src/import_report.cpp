@@ -153,8 +153,9 @@ ImportSource SplitImportSource(const QString& path)
 
 QString DescribeImportReport(const QJsonObject& report)
 {
-    // pbrt-best-effort-v1, gltf-best-effort-v1 and obj-best-effort-v1 share one report schema.
-    return report.value(QStringLiteral("importer")).toString().endsWith(QStringLiteral("-best-effort-v1"))
+    // pbrt-best-effort-v1, gltf-best-effort-v1, obj-best-effort-v1 and ludus-scene-v1 share one report schema.
+    const QString importer = report.value(QStringLiteral("importer")).toString();
+    return importer.endsWith(QStringLiteral("-best-effort-v1")) == true || importer == QStringLiteral("ludus-scene-v1")
                ? DescribeBestEffortReport(report)
                : DescribeReferenceReport(report);
 }

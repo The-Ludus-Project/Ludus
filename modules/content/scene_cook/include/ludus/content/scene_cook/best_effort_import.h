@@ -10,7 +10,9 @@
 
 /// @file
 /// Best-effort scene importers: pbrt-v4 (profile pbrt-best-effort-v1), glTF 2.0
-/// and GLB (gltf-best-effort-v1) and Wavefront OBJ with MTL (obj-best-effort-v1).
+/// and GLB (gltf-best-effort-v1) and Wavefront OBJ with MTL (obj-best-effort-v1),
+/// and the importer of Ludus's own scene source format (ludus-scene-v1), which
+/// shares their planner and report.
 ///
 /// Unlike the frozen pbrt-reference-v1 staircase2 cooker, these importers accept
 /// general scenes with reported approximations: unsupported features become
@@ -38,6 +40,8 @@ inline constexpr std::string_view BEST_EFFORT_PROFILE = "pbrt-best-effort-v1";
 inline constexpr std::string_view GLTF_BEST_EFFORT_PROFILE = "gltf-best-effort-v1";
 /// Profile identifier of the Wavefront OBJ/MTL importer.
 inline constexpr std::string_view OBJ_BEST_EFFORT_PROFILE = "obj-best-effort-v1";
+/// Profile identifier of the Ludus scene source (.luscene.json) importer.
+inline constexpr std::string_view LUDUS_SCENE_PROFILE = "ludus-scene-v1";
 
 /// @brief Scene source container recognised by DetectSceneSourceFormat.
 enum class SceneSourceFormat : uint8
@@ -50,6 +54,8 @@ enum class SceneSourceFormat : uint8
     Gltf,
     /// Wavefront OBJ text.
     Obj,
+    /// Ludus scene source JSON (.luscene.json); see Ludus::SceneSource.
+    LudusScene,
 };
 /// Version of the import report JSON schema.
 inline constexpr uint32 IMPORT_REPORT_SCHEMA = 1;
@@ -206,10 +212,31 @@ ImportObjBestEffort(std::string_view entryFile, // ludus-style: abbreviation OBJ
                     CookError& outError,
                     const Cancellation* cancelOrNull = nullptr) noexcept;
 
+/// Import a Ludus scene source (.luscene.json) entry file with the ludus-scene-v1 profile.
+/// The document is validated by Ludus::SceneSource; its convex polygons become flat-shaded
+/// triangle fans, its emitting materials become required area lights with their exact
+/// radiance, and its camera becomes the start view. Emitters reflect as white rough
+/// surfaces in LUSCN, which the report records as a warning.
+/// @param entryFile Native path of the entry file. Its directory is the import root; a
+/// LICENSE.txt or LICENSE.md beside it is recorded like the other importers'.
+/// @param options Dry-run selection, companion environment and decoder job system.
+/// @param outResult Replaced; on a failure with diagnostics the report is kept.
+/// @param outError Set on failure: Invalid (an invalid document, or a scene beyond the
+/// cooked profile), NotFound/IoError (entry file), Cancelled, OutOfMemory.
+/// @param cancelOrNull Optional cancellation hook polled per object.
+/// @return true on success.
+/// @note Same platform and determinism contract as ImportPbrtBestEffort.
+[[nodiscard]] bool ImportLudusScene(std::string_view entryFile,
+                                    const BestEffortOptions& options,
+                                    BestEffortResult& outResult,
+                                    CookError& outError,
+                                    const Cancellation* cancelOrNull = nullptr) noexcept;
+
 /// Classify a scene source from its first bytes, falling back to the file name extension
 /// only when the content is not decisive (for example a comment-only prefix).
-/// GLB magic or a leading '{' selects Gltf, an OBJ record keyword selects Obj and a
-/// capitalised pbrt directive selects Pbrt.
+/// GLB magic selects Gltf; a JSON object whose first member is `"format": "ludus.scene"`
+/// selects LudusScene and any other leading '{' selects Gltf; an OBJ record keyword
+/// selects Obj and a capitalised pbrt directive selects Pbrt.
 /// @param prefix Leading bytes of the file (4 KiB is plenty); may be empty.
 /// @param fileName Name used only for the extension fallback.
 /// @return The detected format, or Unknown.

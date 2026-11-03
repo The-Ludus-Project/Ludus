@@ -1,0 +1,72 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Occluded penumbra",
+  "description": "Occluded penumbra after Peters 2021, Fig. 10: a blue diffuse plane and a white glossy plane at z = -1, lit by a one-sided rectangular ceiling light (radiance 6). A horizontal wall below the light casts a large penumbra over the lower half of both planes. The polygonal-light-sampling GPU test compares clamped optimal MIS with the weighted balance heuristic here.",
+  "camera": {
+    "eye": [0, 0, 3.4],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 48.88790956083307
+  },
+  "materials": [
+    {"name": "Blue diffuse", "model": "metallic_roughness", "base_color": [0.1, 0.2, 0.8], "roughness": 1},
+    {"name": "White glossy", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 0.25},
+    {"name": "Grey", "model": "metallic_roughness", "base_color": [0.5, 0.5, 0.5], "roughness": 1},
+    {"name": "Light", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [6, 6, 6], "two_sided": false}}
+  ],
+  "objects": [
+    {
+      "name": "Diffuse plane",
+      "material": "Blue diffuse",
+      "positions": [
+        [-1.6, -1.2, -1],
+        [0, -1.2, -1],
+        [0, 1, -1],
+        [-1.6, 1, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Glossy plane",
+      "material": "White glossy",
+      "positions": [
+        [0, -1.2, -1],
+        [1.6, -1.2, -1],
+        [1.6, 1, -1],
+        [0, 1, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Occluding wall",
+      "material": "Grey",
+      "positions": [
+        [-1.6, 0.5, 0.6],
+        [1.6, 0.5, 0.6],
+        [1.6, 0.5, -0.55],
+        [-1.6, 0.5, -0.55]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Ceiling light",
+      "material": "Light",
+      "positions": [
+        [-0.8, 1.1, -0.8],
+        [0.8, 1.1, -0.8],
+        [0.8, 1.1, 0.2],
+        [-0.8, 1.1, 0.2]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    }
+  ]
+}

@@ -3,6 +3,7 @@
 # migrated; new modules should be added when they are created.
 modules/content/scene_cook
 modules/content/scene_format
+modules/content/scene_source
 modules/content/identity_records
 modules/content/procedural/environment
 modules/content/string_dictionary

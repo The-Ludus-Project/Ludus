@@ -5,7 +5,7 @@ add_library(ludus_scene_cook STATIC
     src/importers/pbrt/pbrt_parser.cpp src/importers/pbrt/shape_tessellation.cpp src/importers/pbrt/spectrum_tables.cpp
     src/importers/budget_planner.cpp src/importers/best_effort_import.cpp src/importers/authored_lighting.cpp
     src/importers/image/image_reader.cpp src/importers/image/image_filter.cpp src/importers/image/exr_reader.cpp src/importers/source_resolver.cpp
-    src/importers/front_end_support.cpp src/importers/obj/obj_reader.cpp src/importers/tangent_generation.cpp
+    src/importers/front_end_support.cpp src/importers/obj/obj_reader.cpp src/importers/ludus/ludus_scene_reader.cpp src/importers/tangent_generation.cpp
     src/importers/name_index.cpp src/importers/mesh_compaction.cpp src/importers/gltf/gltf_reader.cpp src/importers/texture_decode_queue.cpp
     src/importers/parallel_tasks.cpp src/file_digests.cpp)
 add_library(Ludus::SceneCook ALIAS ludus_scene_cook)
@@ -15,7 +15,7 @@ target_sources(ludus_scene_cook PUBLIC FILE_SET public_headers TYPE HEADERS BASE
     include/ludus/content/scene_cook/best_effort_import.h include/ludus/content/scene_cook/limits.h)
 target_link_libraries(ludus_scene_cook
     PUBLIC Ludus::Content Ludus::FoundationContainers Ludus::FoundationIdentity Ludus::FoundationStrings
-    PRIVATE Ludus::SceneFormat Ludus::FoundationMath Ludus::FoundationParsingJson Ludus::FoundationHash Ludus::FoundationThreading ludus_stb_image ludus_mikktspace)
+    PRIVATE Ludus::SceneFormat Ludus::SceneSource Ludus::FoundationMath Ludus::FoundationParsingJson Ludus::FoundationHash Ludus::FoundationThreading ludus_stb_image ludus_mikktspace)
 # Byte identity with the float64 reference requires unfused IEEE arithmetic.
 target_compile_options(ludus_scene_cook PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
 ludus_apply_project_defaults(ludus_scene_cook)
@@ -77,10 +77,11 @@ endif()
 if(LUDUS_BUILD_TESTS)
     add_executable(ludus_scene_import_tests
         tests/image_decoder_tests.cpp tests/obj_import_tests.cpp tests/gltf_import_tests.cpp tests/tangent_tests.cpp
-        tests/texture_decode_tests.cpp tests/file_digest_tests.cpp)
+        tests/texture_decode_tests.cpp tests/file_digest_tests.cpp tests/ludus_scene_import_tests.cpp)
     target_include_directories(ludus_scene_import_tests PRIVATE src)
     target_compile_definitions(ludus_scene_import_tests PRIVATE
-        LUDUS_SCENE_IMPORT_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+        LUDUS_SCENE_IMPORT_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+        LUDUS_TEST_SCENES_DIR="${PROJECT_SOURCE_DIR}/tests/scenes")
     target_link_libraries(ludus_scene_import_tests PRIVATE
         Ludus::SceneCook Ludus::SceneFormat Ludus::Resources Ludus::FoundationMath Ludus::FoundationStrings
         Ludus::FoundationThreading Catch2::Catch2WithMain)

@@ -122,6 +122,13 @@ TEST_CASE("import previews list source and cooked counts, budget and fallbacks",
     const QString gltfText = DescribeImportReport(gltf);
     CHECK(gltfText.contains(QStringLiteral("Importer: gltf-best-effort-v1 (scene.glb)")) == true);
     CHECK(gltfText.contains(QStringLiteral("2.0 MiB of 64.0 MiB")) == true);
+    // So do imports of the Ludus scene source format.
+    QJsonObject ludusScene = MakeBestEffortReport(false);
+    ludusScene.insert(QStringLiteral("importer"), QStringLiteral("ludus-scene-v1"));
+    ludusScene.insert(QStringLiteral("entry"), QStringLiteral("louvre-at-wall.luscene.json"));
+    const QString ludusSceneText = DescribeImportReport(ludusScene);
+    CHECK(ludusSceneText.contains(QStringLiteral("Importer: ludus-scene-v1 (louvre-at-wall.luscene.json)")) == true);
+    CHECK(ludusSceneText.contains(QStringLiteral("2.0 MiB of 64.0 MiB")) == true);
 
     // Version 5 reports show the import profile's limits.
     QJsonObject imported = MakeBestEffortReport(false);

@@ -43,6 +43,7 @@
 #include "shadow_occlusion_oracle.h"
 
 #include <ludus/content/scene_format/material.h>
+#include <ludus/content/scene_source/scene_source.h>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/pointer.hpp>
@@ -68,6 +69,8 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <new>
 #include <string>
 #include <string_view>
@@ -5632,6 +5635,142 @@ TEST_CASE("Triangle-loop shadow rays through a louvre match the exact partially 
 {
     GraphGpuFixture fixture(false, false);
     CheckVeachGuibasAgainstExactOcclusion(fixture, VEACH_GUIBAS_TRIANGLE_LOOP);
+}
+
+namespace
+{
+namespace scene_source = ludus::content::scene_source;
+
+// The engine's test scenes (tests/scenes) are Ludus scene source files that the Editor imports. These checks keep
+// each file identical to the fixture its GPU test renders: polygons exactly in float64 where an oracle reads them,
+// and every value the GPU sees after narrowing to float32.
+
+/// Parse one of the engine's test scenes.
+void ReadTestScene(std::string_view relative, scene_source::SceneSource& outScene)
+{
+    const std::string path = std::string(LUDUS_TEST_SCENES_DIR) + "/" + std::string(relative);
+    std::ifstream stream(path, std::ios::binary);
+    REQUIRE(stream.good() == true);
+    const std::string text{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    scene_source::SceneSourceError error;
+    const scene_source::SceneSourceStatus status = scene_source::ParseSceneSource(text, outScene, error);
+    INFO(path << ": " << error.Message.View());
+    REQUIRE(status == scene_source::SceneSourceStatus::Success);
+}
+
+/// A scene source value as the GPU fixtures store it.
+math::Vector3 NarrowToFloat32(math::Vector3d value)
+{
+    return {static_cast<float32>(value.X), static_cast<float32>(value.Y), static_cast<float32>(value.Z)};
+}
+
+/// The object's polygon equals the oracle's polygon corner for corner, in float64.
+void CheckPolygon(const scene_source::SourceObject& object, usize polygon, const testing::OcclusionPolygon& expected)
+{
+    usize first = 0;
+    for (usize p = 0; p < polygon; ++p)
+    {
+        first += object.PolygonVertexCounts[p];
+    }
+    REQUIRE(object.PolygonVertexCounts[polygon] == expected.VertexCount);
+    for (usize i = 0; i < expected.VertexCount; ++i)
+    {
+        CHECK(object.PositionsWorld[object.PolygonIndices[first + i]] == expected.VerticesWorld[i]);
+    }
+}
+
+/// The file's camera is the Cornell room's, which looks down -z with +y up.
+void CheckCornellCamera(const scene_source::SourceCamera& camera, const renderer::ViewDescription& view)
+{
+    REQUIRE(camera.IsPresent == true);
+    CHECK(NarrowToFloat32(camera.EyeWorld) == view.CameraPosition);
+    CHECK(camera.TargetWorld.X == 0);
+    CHECK(camera.TargetWorld.Y == 0);
+    CHECK(camera.TargetWorld.Z < camera.EyeWorld.Z);
+    CHECK(camera.UpWorld == math::Vector3d{0, 1, 0});
+    const float64 halfFov = camera.VerticalFovRadians / 2;
+    const float64 focalLength = math::Cos(halfFov) / math::Sin(halfFov);
+    // The fixture's focal length is a float32 constant.
+    constexpr float64 FOCAL_LENGTH_TOLERANCE = 1e-6;
+    CHECK(math::Abs(focalLength - static_cast<float64>(view.WorldToClip.Columns[1].Y)) < FOCAL_LENGTH_TOLERANCE);
+}
+
+/// The material's terms are the fixture material's after narrowing.
+void CheckMaterial(const scene_source::SourceMaterial& material, const renderer::SceneShaderMaterial& expected)
+{
+    CHECK((material.Model == scene_source::SourceMaterialModel::Diffuse) ==
+          (expected.Scattering.Model == ludus::content::scene_format::MaterialModel::Diffuse));
+    CHECK(NarrowToFloat32(material.BaseColor) == expected.BaseColor);
+    CHECK(static_cast<float32>(material.Metallic) == expected.Metallic);
+    CHECK(static_cast<float32>(material.Roughness) == expected.Roughness);
+    CHECK(NarrowToFloat32(material.EmittedRadiance) == expected.Emission);
+    CHECK(material.IsEmissionTwoSided == expected.IsEmissionTwoSided);
+}
+} // namespace
+
+TEST_CASE("The louvre test scene files match the partially occluded room",
+          "[render-graph][scene-source][shadow-occlusion]")
+{
+    struct LouvreFile final
+    {
+        std::string_view File;
+        testing::LouvreDescription Description{};
+    };
+    constexpr usize LOUVRE_FILE_COUNT = 2;
+    const StaticArray<LouvreFile, LOUVRE_FILE_COUNT> files{{
+        { .File = "light_occlusion/louvre-near-emitter.luscene.json", .Description = testing::NEAR_EMITTER_LOUVRE },
+        { .File = "light_occlusion/louvre-at-wall.luscene.json", .Description = testing::WALL_LOUVRE },
+    }};
+    for (const LouvreFile& file : files)
+    {
+        INFO(file.File);
+        const PartiallyOccludedRoom room(file.Description);
+        scene_source::SceneSource scene;
+        ReadTestScene(file.File, scene);
+        CheckCornellCamera(scene.Camera, room.Cameras[0]);
+        // The wall, the ceiling light and the slats, in the fixture's polygon order.
+        constexpr usize LOUVRE_OBJECT_COUNT = 3;
+        REQUIRE(scene.Objects.GetSize() == LOUVRE_OBJECT_COUNT);
+        const scene_source::SourceObject& wall = scene.Objects[0];
+        const scene_source::SourceObject& light = scene.Objects[1];
+        const scene_source::SourceObject& slats = scene.Objects[2];
+        REQUIRE(wall.PolygonVertexCounts.GetSize() == 1);
+        CheckPolygon(wall, 0, MakeOccludedRoomWall());
+        REQUIRE(light.PolygonVertexCounts.GetSize() == 1);
+        CheckPolygon(light, 0, room.Light.Emitter);
+        REQUIRE(slats.PolygonVertexCounts.GetSize() == room.Louvre.SlatCount);
+        for (usize slat = 0; slat < room.Louvre.SlatCount; ++slat)
+        {
+            INFO("slat " << slat);
+            CheckPolygon(slats, slat, room.Louvre.Slats[slat]);
+        }
+        CheckMaterial(scene.Materials[wall.Material], room.Materials[OCCLUDED_ROOM_WALL]);
+        CheckMaterial(scene.Materials[light.Material], room.Materials[OCCLUDED_ROOM_EMITTER]);
+        CheckMaterial(scene.Materials[slats.Material], room.Materials[OCCLUDED_ROOM_SLAT]);
+    }
+}
+
+TEST_CASE("The occluded-penumbra test scene file matches its room", "[render-graph][scene-source][polygonal-light]")
+{
+    const OccludedPenumbraRoom room;
+    scene_source::SceneSource scene;
+    ReadTestScene("light_occlusion/occluded-penumbra.luscene.json", scene);
+    CheckCornellCamera(scene.Camera, room.Cameras[0]);
+    // One quad per object, in the fixture's quad order.
+    REQUIRE(scene.Objects.GetSize() == PENUMBRA_QUAD_COUNT);
+    for (usize quad = 0; quad < PENUMBRA_QUAD_COUNT; ++quad)
+    {
+        INFO("quad " << quad);
+        const scene_source::SourceObject& object = scene.Objects[quad];
+        REQUIRE(object.PolygonVertexCounts.GetSize() == 1);
+        REQUIRE(object.PolygonVertexCounts[0] == MANY_EMITTER_QUAD_CORNERS);
+        for (usize corner = 0; corner < MANY_EMITTER_QUAD_CORNERS; ++corner)
+        {
+            CHECK(NarrowToFloat32(object.PositionsWorld[object.PolygonIndices[corner]]) ==
+                  PENUMBRA_CORNERS_WORLD[quad * MANY_EMITTER_QUAD_CORNERS + corner]);
+        }
+        CheckMaterial(scene.Materials[object.Material], room.Materials[PENUMBRA_QUAD_MATERIALS[quad]]);
+    }
 }
 
 namespace
