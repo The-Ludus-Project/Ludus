@@ -94,16 +94,20 @@ def export(model_path, room, destination):
     shutil.copyfile(Path(__file__).parent / 'NOTICE.txt', destination / 'PureLight-NOTICE.txt')
     shade_path = shader_root / 'shade.slang'
     shade = shade_path.read_text().replace('#include "slice_sampling.slang"', '#include "slice_sampling.slang"\n#include "portable_flow.slang"')
-    old = 'light = SampleLuminaireArea(profile, receiver, areaSample);'
+    old = 'light = SampleLuminaireArea(luminaire, receiver, areaSample);'
     if shade.count(old) != 1:
         raise ValueError('The source shading integration changed; update the exporter before using it.')
-    shade = shade.replace(old, 'light = SamplePortablePureLight(profile, receiver, seedSample);')
+    shade = shade.replace(old, 'light = SamplePortablePureLight(luminaire, receiver, seedSample);')
     shade = shade.replace('ShadeUniformArea', 'ShadePortablePureLight').replace('UNIFORM_AREA_ESTIMATOR', 'PORTABLE_PURELIGHT_ESTIMATOR')
     begin = shade.index('// Passes 1 to 3')
-    end = shade.index('LuminaireProfile MakeLuminaireProfile')
-    shade = shade[:begin] + '// Generated comparison: defensive slice, raw slice and portable PureLight receiver flow.\n// All three use the unchanged analytic luminaire radiance, BSDF and visibility implementation.\n// The emission profile is frozen to the trained model; retrain and re-export after edits.\n\n' + shade[end:]
-    for setting in ('RADIANCE_SCALE', 'BEAM_WIDTH', 'BEAM_STEERING', 'BEAM_SPREAD', 'BEAM_TWIST'):
-        shade = shade.replace('= LUMINAIRE_' + setting + ';', '= PURELIGHT_PROFILE_' + setting + ';')
+    end = shade.index("/// The template's view of a scene panel luminaire")
+    shade = shade[:begin] + '// Generated comparison: defensive slice, raw slice and portable PureLight receiver flow.\n// All three use the unchanged analytic luminaire radiance, BSDF and visibility implementation.\n// The World luminaire places the panel; author it as the room places it (benchmark.py CENTER).\n// The emission profile is frozen to the trained model; retrain and re-export after edits.\n\n' + shade[end:]
+    for field, setting in (('RadianceScale', 'RADIANCE_SCALE'), ('BeamWidth', 'BEAM_WIDTH'),
+                           ('BeamSteering', 'BEAM_STEERING'), ('BeamSpread', 'BEAM_SPREAD'), ('BeamTwist', 'BEAM_TWIST')):
+        assignment = f'luminaire.{field} = info.{field};'
+        if shade.count(assignment) != 1:
+            raise ValueError('The source luminaire integration changed; update the exporter before using it.')
+        shade = shade.replace(assignment, f'luminaire.{field} = PURELIGHT_PROFILE_{setting};')
     # This controlled room has unit Lambertian receivers. Specialize the
     # shared physical evaluator equally for every proposal; general material
     # transport is outside this benchmark's declared integral.

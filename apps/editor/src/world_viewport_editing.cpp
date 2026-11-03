@@ -102,17 +102,19 @@ void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObjec
             return;
         }
         QJsonObject values = components.value(component).toObject();
+        const QJsonObject properties = binding.value(QStringLiteral("properties")).toObject();
         const ViewportObjectInteraction::TransformPropertyNames prefixes{QString(),
                                                                          QStringLiteral("r"),
                                                                          QStringLiteral("s")};
         for (usize kind = 0; kind < keys.GetSize(); ++kind)
         {
             const QJsonArray axes = placement.value(keys[kind]).toArray();
-            const QJsonArray properties = binding.value(keys[kind]).toArray();
+            const QJsonArray sceneProperties = binding.value(keys[kind]).toArray();
             for (int32 axis = 0; axis < AXIS_COUNT; ++axis)
             {
-                const QString property = isScene == true ? properties[axis].toString()
-                                                         : binding.value(prefixes[kind] + QChar('x' + axis)).toString();
+                const QString property = isScene == true
+                                             ? sceneProperties[axis].toString()
+                                             : properties.value(prefixes[kind] + QChar('x' + axis)).toString();
                 if (property.isEmpty() == true)
                 {
                     return;

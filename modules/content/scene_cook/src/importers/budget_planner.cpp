@@ -55,7 +55,11 @@ struct MaterialTerms final
     uint32 Texture = IR_NONE;
     float64 Metallic = 0.0;
     float64 Roughness = 1.0;
+    format::MaterialModel Model = format::MaterialModel::MetallicRoughness;
 };
+/// Exceeds every surface-term distance, so a source joins a slot of another scattering
+/// model (opaque into glass, for instance) only when no slot shares its own.
+constexpr float64 MODEL_MISMATCH_DISTANCE = 8.0;
 
 [[nodiscard]] MaterialTerms GetTerms(const SceneIr& scene, uint32 material) noexcept
 {
@@ -72,6 +76,7 @@ struct MaterialTerms final
     terms.Texture = source.BaseColourTexture;
     terms.Metallic = source.Metallic;
     terms.Roughness = source.Roughness;
+    terms.Model = source.Scattering.Model;
     return terms;
 }
 
@@ -88,6 +93,10 @@ struct MaterialTerms final
     if (left.Texture != right.Texture)
     {
         distance += .1;
+    }
+    if (left.Model != right.Model)
+    {
+        distance += MODEL_MISMATCH_DISTANCE;
     }
     return distance;
 }
@@ -156,6 +165,7 @@ void ApplyMaterialTerms(const SceneIr& scene, uint32 material, PlannedMaterial& 
     inoutPlanned.IsTextureRepeated = terms.Texture == IR_NONE || scene.Textures[terms.Texture].IsRepeated == true;
     inoutPlanned.Metallic = math::Clamp(terms.Metallic, 0.0, 1.0);
     inoutPlanned.Roughness = math::Clamp(terms.Roughness, static_cast<float64>(format::MIN_ROUGHNESS), 1.0);
+    inoutPlanned.Scattering = material != IR_NONE ? scene.Materials[material].Scattering : format::MaterialScattering{};
     if (material != IR_NONE && scene.Materials[material].AlphaMode == IrAlphaMode::Mask)
     {
         inoutPlanned.IsAlphaMasked = true;

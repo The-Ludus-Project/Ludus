@@ -1742,7 +1742,7 @@ class SliceSamplingLuminaireTemplateTests(unittest.TestCase):
                 # The defensive mixture is the first export, which the editor viewport shows by default.
                 self.assertEqual(exports, ['output', 'sliceSamplingOutput', 'uniformAreaOutput'])
 
-    def test_manifest_declares_one_shadow_ray_and_the_luminaire_settings(self):
+    def test_manifest_declares_one_shadow_ray_and_only_the_mixture_setting(self):
         root = self.create()
         manifest = json.loads(root.with_name('main.lushader.json').read_text())
         build.validate_manifest(manifest)
@@ -1756,12 +1756,8 @@ class SliceSamplingLuminaireTemplateTests(unittest.TestCase):
                           ('ShadeSliceSampling', 'ShadeSliceSampling'), ('ShadeUniformArea', 'ShadeUniformArea')])
         values = {setting['id']: (setting['type'], setting['value'], setting['minimum'], setting['maximum'])
                   for setting in manifest['settings']}
-        self.assertEqual(values, {'SLICE_DEFENSIVE_FRACTION': ('Float32', 0.1, 0, 1),
-                                  'LUMINAIRE_RADIANCE_SCALE': ('Float32', 6, 0, 1000),
-                                  'LUMINAIRE_BEAM_WIDTH': ('Float32', 0.02, 0.001, 1),
-                                  'LUMINAIRE_BEAM_STEERING': ('Float32', 0.12, 0, 2),
-                                  'LUMINAIRE_BEAM_SPREAD': ('Float32', 0.08, 0, 2),
-                                  'LUMINAIRE_BEAM_TWIST': ('Float32', 0.04, 0, 2)})
+        # The luminaire's placement and beam profile are World data read from the scene, not settings.
+        self.assertEqual(values, {'SLICE_DEFENSIVE_FRACTION': ('Float32', 0.1, 0, 1)})
 
     def test_shaders_use_the_shared_primitives_and_credit_the_paper_by_section(self):
         root = self.create()
@@ -1770,8 +1766,10 @@ class SliceSamplingLuminaireTemplateTests(unittest.TestCase):
         sampling = shaders.joinpath('slice_sampling.slang').read_text()
         luminaire = shaders.joinpath('luminaire.slang').read_text()
         for call in ('GetSurfaceHit', 'EvaluateMaterial', 'EvaluateEmission', 'EvaluateStandardBsdf', 'TestVisibility',
-                     'TraceAndStoreHitRecord', 'TryLoadHitRecord'):
+                     'TraceAndStoreHitRecord', 'TryLoadHitRecord', 'GetLuminaireCount', 'GetLuminaireInfo'):
             self.assertIn(call, shade)
+        for constant in ('LUMINAIRE_CENTER_WORLD', 'LUMINAIRE_NORMAL_WORLD', 'LUMINAIRE_RADIANCE_SCALE'):
+            self.assertNotIn(constant, luminaire + sampling + shade)
         # The slice transport's quantile is FoundationMath's, staged with the wrapper, not a package copy.
         self.assertIn('ComputeStandardNormalQuantile', sampling)
         self.assertNotIn('float ComputeStandardNormalQuantile', sampling)
@@ -1802,8 +1800,9 @@ class SliceSamplingLuminaireTemplateTests(unittest.TestCase):
 
         self.assertEqual([evaluate(name) for name in ('PRIMARY_RANDOM_DIMENSION_FIRST', 'PRIMARY_RANDOM_DIMENSION_COUNT',
                                                       'MIXTURE_COMPONENT_DIMENSION', 'SLICE_SEED_DIMENSION_FIRST',
-                                                      'SLICE_BRANCH_DIMENSION', 'PANEL_AREA_DIMENSION_FIRST')],
-                         [0, 2, 2, 3, 5, 6])
+                                                      'SLICE_BRANCH_DIMENSION', 'PANEL_AREA_DIMENSION_FIRST',
+                                                      'LUMINAIRE_SELECTION_DIMENSION')],
+                         [0, 2, 2, 3, 5, 6, 8])
         # Every pass reads explicit addresses, never the automatic stream.
         for kernel in ('shade', 'hit_record', 'slice_sampling', 'luminaire'):
             source = shaders.joinpath(f'{kernel}.slang').read_text()

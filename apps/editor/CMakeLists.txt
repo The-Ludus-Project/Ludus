@@ -549,9 +549,8 @@ target_link_libraries(ludus_editor_render_graph_model PUBLIC Qt6::Core Qt6::Widg
 
 # The render-graph canvas, its view state, diagnostics and execution plan.
 ludus_editor_add_objects(ludus_editor_render_graph_canvas
-    src/internal/render_graph_canvas.h src/internal/render_graph_luminaire_coverage.h
+    src/internal/render_graph_canvas.h
     src/render_graph_canvas.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
-    src/render_graph_luminaire_coverage.cpp
     src/internal/theme_preferences.h src/theme_preferences.cpp
     src/internal/render_graph_navigation.h src/render_graph_navigation.cpp
     src/internal/render_graph_diagnostics.h src/render_graph_diagnostics.cpp
@@ -578,6 +577,7 @@ target_link_libraries(ludus_editor_presentation PUBLIC Qt6::Widgets Ludus::Found
 # configuration and is not part of this library.
 ludus_editor_add_objects(ludus_editor_render_graph_authoring
     src/renderer_workspace_selection.cpp src/renderer_workspace_node_details.cpp
+    src/internal/render_graph_luminaire_coverage.h src/render_graph_luminaire_coverage.cpp
     src/renderer_workspace_resolution.cpp
     src/internal/render_graph_creation.h src/render_graph_creation.cpp
     src/internal/render_graph_template_registry.h src/render_graph_template_registry.cpp
@@ -653,6 +653,7 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/preview_viewport.h
     ${editor_viewport_sources}
     src/render_scene.cpp
+    src/render_graph_luminaire_world.cpp
     src/render_preview.cpp
     src/preview_gpu_generation.cpp
     src/internal/preview_gpu_generation.h

@@ -1,4 +1,5 @@
 #include "internal/reference_coating.h"
+#include "internal/reference_dielectric.h"
 #include "internal/render_graph_ray_scene.h"
 #include "internal/scene_material_validation.h"
 #include "internal/scene_memory.h"
@@ -100,6 +101,7 @@ bool IsMaterialValid(const SceneShaderMaterial& material) noexcept
 {
     return content::scene_format::IsMaterialScatteringValid(material.Scattering) == true &&
            internal::IsReferenceCoatingSupported(material.Scattering) == true &&
+           internal::IsReferenceDielectricSupported(material.Scattering) == true &&
            (material.Scattering.Model != content::scene_format::MaterialModel::Conductor ||
             material.Scattering.AlphaU == material.Scattering.AlphaV) &&
            material.HasError == false && ReferenceColor(material.BaseColor, 1) &&
@@ -144,6 +146,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
     if (hasLights == false)
     {
         input.Inputs.Lights = {};
+        input.Inputs.Luminaires = {};
         input.Inputs.Environment = {};
         input.Inputs.EnvironmentPixels = {};
         input.Inputs.EnvironmentWidth = 0;
@@ -157,7 +160,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
     constexpr usize MAX_SLOTS = content::render_graph_format::MAX_ITEMS;
     if (outJob.Get() != nullptr || input.Meshes.IsValid() == false || input.Items.IsValid() == false ||
         input.Inputs.Materials.IsValid() == false || input.Inputs.Lights.IsValid() == false ||
-        input.Inputs.EnvironmentPixels.IsValid() == false ||
+        input.Inputs.Luminaires.IsValid() == false || input.Inputs.EnvironmentPixels.IsValid() == false ||
         uint64(input.Inputs.EnvironmentWidth) * input.Inputs.EnvironmentHeight !=
             input.Inputs.EnvironmentPixels.GetSize() ||
         ((input.Inputs.EnvironmentWidth == 0) != (input.Inputs.EnvironmentHeight == 0)) ||
@@ -287,6 +290,19 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
     }
     candidate->Description.LightCount = lights.Count;
     candidate->Description.Lights = candidate->Lights;
+    PanelLuminaireSelection luminaires;
+    status = NormalizePanelLuminaires(input.Inputs.Luminaires.GetDataOrNull(),
+                                      input.Inputs.Luminaires.GetSize(),
+                                      luminaires);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    for (usize i = 0; i < luminaires.Count; ++i)
+    {
+        candidate->Luminaires[i] = luminaires.Luminaires[i];
+    }
+    candidate->LuminaireCount = luminaires.Count;
     candidate->IsCpuOnly = true;
     if (input.Inputs.EnvironmentPixels.GetSize() != 0)
     {

@@ -142,6 +142,24 @@ void ConvertToConventionalDepth(rr::ViewDescription& inoutView) noexcept
     inoutView.Depth = rr::DepthConvention::Conventional;
     inoutView.InfiniteFar = false;
 }
+/// Carry the authored snapshot's bindings, cameras and luminaires into a composed scene, and fold the authored
+/// identities into its own so that an authored edit is a new scene.
+void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
+{
+    inoutScene.RenderableBinding = authored.RenderableBinding;
+    inoutScene.TransformBinding = authored.TransformBinding;
+    // Disabled authored lights stay listed, and switchable, beside the imported ones.
+    inoutScene.LightBinding = authored.LightBinding;
+    inoutScene.LuminaireBinding = authored.LuminaireBinding;
+    inoutScene.Luminaires = authored.Luminaires;
+    if (authored.Cameras.isEmpty() == false)
+    {
+        inoutScene.Cameras = authored.Cameras;
+    }
+    inoutScene.AssetsIdentity =
+        QCryptographicHash::hash(inoutScene.AssetsIdentity + authored.AssetsIdentity, QCryptographicHash::Sha256);
+    inoutScene.Identity = QCryptographicHash::hash(inoutScene.Identity + authored.Identity, QCryptographicHash::Sha256);
+}
 uint64 ComputeSourceId(const QString& id)
 {
     const QByteArray hash = QCryptographicHash::hash(id.toUtf8(), QCryptographicHash::Sha256);
@@ -575,6 +593,7 @@ bool RenderScene::Load(const QString& root,
     }
     QJsonObject requiredDescriptor = descriptor;
     requiredDescriptor.remove(QStringLiteral("light"));
+    requiredDescriptor.remove(QStringLiteral("luminaire"));
     if (Fields(requiredDescriptor,
                {QStringLiteral("version"),
                 QStringLiteral("schema"),
@@ -660,11 +679,37 @@ bool RenderScene::Load(const QString& root,
     {
         return false;
     }
+    QJsonObject luminaireBinding;
+    if (descriptor.contains(QStringLiteral("luminaire")) == true &&
+        descriptor.value(QStringLiteral("luminaire")).isNull() == false &&
+        Binding(world,
+                descriptor,
+                QStringLiteral("luminaire"),
+                {QStringLiteral("enabled"),
+                 QStringLiteral("halfExtent"),
+                 QStringLiteral("radianceScale"),
+                 QStringLiteral("beamWidth"),
+                 QStringLiteral("beamSteering"),
+                 QStringLiteral("beamSpread"),
+                 QStringLiteral("beamTwist")},
+                {QStringLiteral("boolean"), number, number, number, number, number, number},
+                luminaireBinding,
+                outError) == false)
+    {
+        return false;
+    }
     RenderScene candidate;
     candidate.RenderableBinding = renderable;
     candidate.TransformBinding = transform;
     candidate.LightBinding = lightBinding;
-    QByteArray identity = world.Encode() + bytes;
+    candidate.LuminaireBinding = luminaireBinding;
+    StaticArray<rr::PanelLuminaire, rr::MAX_PANEL_LUMINAIRES> luminaires{};
+    usize luminaireCount = 0;
+    // Light switches are not authored content: ApplyLightSwitches folds them into the presented identity,
+    // so a World presents the same identity whether its switches were published directly or assembled.
+    QJsonObject identityWorld = world.Draft();
+    identityWorld.remove(QStringLiteral("disabled_lights"));
+    QByteArray identity = QJsonDocument(identityWorld).toJson(QJsonDocument::Compact) + '\n' + bytes;
     QByteArray assetsIdentity;
     const auto meshes = descriptor.value(QStringLiteral("meshes")).toArray();
     const auto textures = descriptor.value(QStringLiteral("textures")).toArray();
@@ -747,7 +792,7 @@ bool RenderScene::Load(const QString& root,
             continue;
         }
         if (Attached(entity, renderable) == false && Attached(entity, cameraBinding) == false &&
-            Attached(entity, lightBinding) == false)
+            Attached(entity, lightBinding) == false && Attached(entity, luminaireBinding) == false)
         {
             continue;
         }
@@ -797,6 +842,41 @@ bool RenderScene::Load(const QString& root,
                 candidate.AuthoredLights.Lights[candidate.AuthoredLights.Count++] = light;
                 assetsIdentity += QJsonDocument(QJsonObject{{QStringLiteral("id"), id},
                                                             {QStringLiteral("light"), values},
+                                                            {QStringLiteral("transform"), Values(entity, transform)}})
+                                      .toJson(QJsonDocument::Compact);
+            }
+        }
+        if (Attached(entity, luminaireBinding) == true)
+        {
+            const QJsonObject values = Values(entity, luminaireBinding);
+            if (values.value(QStringLiteral("enabled")).toBool() == true)
+            {
+                rr::PanelLuminaire luminaire;
+                if (Number(values.value(QStringLiteral("halfExtent")), luminaire.HalfExtentWorld) == false ||
+                    Number(values.value(QStringLiteral("radianceScale")), luminaire.RadianceScale) == false ||
+                    Number(values.value(QStringLiteral("beamWidth")), luminaire.BeamWidth) == false ||
+                    Number(values.value(QStringLiteral("beamSteering")), luminaire.BeamSteering) == false ||
+                    Number(values.value(QStringLiteral("beamSpread")), luminaire.BeamSpread) == false ||
+                    Number(values.value(QStringLiteral("beamTwist")), luminaire.BeamTwist) == false ||
+                    trs.Scale != math::Vector3{1, 1, 1})
+                {
+                    return Fail(outError, name + QStringLiteral(": invalid luminaire terms or non-unit scale."));
+                }
+                if (luminaireCount >= rr::MAX_PANEL_LUMINAIRES)
+                {
+                    return Fail(outError,
+                                QStringLiteral("World exceeds the %1-luminaire capacity; disable or remove a "
+                                               "luminaire.")
+                                    .arg(rr::MAX_PANEL_LUMINAIRES));
+                }
+                // Like a light, the panel emits along the transform's -Z; +X runs along the tile columns.
+                luminaire.SourceId = ComputeSourceId(id);
+                luminaire.CenterWorld = trs.Translation;
+                luminaire.TangentWorld = math::Rotate(trs.Rotation, {1, 0, 0});
+                luminaire.BitangentWorld = math::Rotate(trs.Rotation, {0, -1, 0});
+                luminaires[luminaireCount++] = luminaire;
+                assetsIdentity += QJsonDocument(QJsonObject{{QStringLiteral("id"), id},
+                                                            {QStringLiteral("luminaire"), values},
                                                             {QStringLiteral("transform"), Values(entity, transform)}})
                                       .toJson(QJsonDocument::Compact);
             }
@@ -931,6 +1011,13 @@ bool RenderScene::Load(const QString& root,
         return Fail(outError, QStringLiteral("Invalid light color/intensity/range or conflicting source identity."));
     }
     candidate.AuthoredLights = normalized;
+    if (rr::NormalizePanelLuminaires(luminaires.GetData(), luminaireCount, candidate.Luminaires) !=
+        graphics::rhi::RasterStatus::Ready)
+    {
+        return Fail(outError,
+                    QStringLiteral("Invalid luminaire half extent, beam profile or position, or a conflicting source "
+                                   "identity."));
+    }
     candidate.Center = (low + high) * 0.5F;
     candidate.Radius = bounds ? math::Max(0.001F, math::Length(high - low) * 0.5F) : 1.0F;
     candidate.AssetsIdentity = QCryptographicHash::hash(assetsIdentity, QCryptographicHash::Sha256);
@@ -955,6 +1042,105 @@ bool RenderScene::Load(const QString& root,
     outScene = foundation::Move(candidate);
     outError.clear();
     return true;
+}
+BorrowedView<const math::Vector3> GetRenderSceneMeshPositions(const RenderScene& scene, int32 meshIndex) noexcept
+{
+    if (scene.Definition != nullptr)
+    {
+        const resources::SceneMesh& mesh = scene.Definition->Meshes[static_cast<usize>(meshIndex)];
+        return {mesh.Positions.GetData(), mesh.Positions.GetSize()};
+    }
+    const PreviewMesh& mesh = scene.Meshes[meshIndex];
+    return {mesh.Positions.constData(), static_cast<usize>(mesh.Positions.size())};
+}
+BorrowedView<const uint32> GetRenderSceneMeshIndices(const RenderScene& scene, int32 meshIndex) noexcept
+{
+    if (scene.Definition != nullptr)
+    {
+        const resources::SceneMesh& mesh = scene.Definition->Meshes[static_cast<usize>(meshIndex)];
+        return {mesh.Indices.GetData(), mesh.Indices.GetSize()};
+    }
+    const PreviewMesh& mesh = scene.Meshes[meshIndex];
+    return {mesh.Indices.constData(), static_cast<usize>(mesh.Indices.size())};
+}
+bool IntersectRenderSceneTriangle(const math::Ray3& rayMesh,
+                                  math::Vector3 positionMeshA,
+                                  math::Vector3 positionMeshB,
+                                  math::Vector3 positionMeshC,
+                                  float64& outDistance) noexcept
+{
+    // Mesh units need not match world metres. Double products avoid a fixed
+    // determinant threshold rejecting tiny meshes whose instance scales them up.
+    const auto widen = [](math::Vector3 value) noexcept -> math::Vector3d {
+        return {static_cast<float64>(value.X), static_cast<float64>(value.Y), static_cast<float64>(value.Z)};
+    };
+    const math::Vector3d edge1Mesh = widen(positionMeshB) - widen(positionMeshA);
+    const math::Vector3d edge2Mesh = widen(positionMeshC) - widen(positionMeshA);
+    const math::Vector3d crossMesh = math::Cross(widen(rayMesh.Direction), edge2Mesh);
+    const float64 determinant = math::Dot(edge1Mesh, crossMesh);
+    if (determinant == 0 || math::IsFinite(determinant) == false)
+    {
+        return false;
+    }
+    const math::Vector3d offsetMesh = widen(rayMesh.Origin) - widen(positionMeshA);
+    const float64 u = math::Dot(offsetMesh, crossMesh) / determinant;
+    const math::Vector3d secondCrossMesh = math::Cross(offsetMesh, edge1Mesh);
+    const float64 v = math::Dot(widen(rayMesh.Direction), secondCrossMesh) / determinant;
+    const float64 distance = math::Dot(edge2Mesh, secondCrossMesh) / determinant;
+    if (u < 0 || v < 0 || u + v > 1 || distance < 0 || math::IsFinite(distance) == false)
+    {
+        return false;
+    }
+    outDistance = distance;
+    return true;
+}
+uint64 ComputeRenderSceneSourceId(const QString& entityKey)
+{
+    return ComputeSourceId(entityKey);
+}
+bool TryTraceRenderSceneRay(const RenderScene& scene, const math::Ray3& rayWorld, float64& outDistanceWorld) noexcept
+{
+    constexpr usize TRIANGLE_CORNERS = 3;
+    bool hasHit = false;
+    float64 nearest = 0;
+    for (const PreviewObject& object : scene.Objects)
+    {
+        math::Affine3 worldToMesh;
+        if (object.Mesh < 0 || object.Mesh >= scene.Meshes.size() ||
+            math::TryInverse(object.Transform, worldToMesh) != math::MathStatus::Success)
+        {
+            continue;
+        }
+        // An affine map preserves the ray parameter, so mesh-space distances compare across objects.
+        const math::Ray3 rayMesh{math::TransformPoint(worldToMesh, rayWorld.Origin),
+                                 math::TransformVector(worldToMesh, rayWorld.Direction)};
+        const BorrowedView<const math::Vector3> positionsMesh = GetRenderSceneMeshPositions(scene, object.Mesh);
+        const BorrowedView<const uint32> indices = GetRenderSceneMeshIndices(scene, object.Mesh);
+        for (usize index = 0; index + TRIANGLE_CORNERS <= indices.GetSize(); index += TRIANGLE_CORNERS)
+        {
+            const uint32 first = indices[index];
+            const uint32 second = indices[index + 1];
+            const uint32 third = indices[index + 2];
+            float64 distance = 0;
+            if (first < positionsMesh.GetSize() && second < positionsMesh.GetSize() &&
+                third < positionsMesh.GetSize() &&
+                IntersectRenderSceneTriangle(rayMesh,
+                                             positionsMesh[first],
+                                             positionsMesh[second],
+                                             positionsMesh[third],
+                                             distance) == true &&
+                (hasHit == false || distance < nearest))
+            {
+                nearest = distance;
+                hasHit = true;
+            }
+        }
+    }
+    if (hasHit == true)
+    {
+        outDistanceWorld = nearest;
+    }
+    return hasHit;
 }
 bool RenderScene::TryGetBounds(const QString& id, math::Aabb3& outBoundsWorld) const noexcept
 {
@@ -1157,12 +1343,14 @@ bool RenderScene::Merge(const RenderScene& authored,
     {
         if (cooked.isEmpty() == false)
         {
-            if (LoadCooked(cooked, level, output, error, revisions) == false)
+            // No authored geometry or lights to compose, but the World's bindings, cameras and luminaires still apply.
+            RenderScene candidate;
+            if (LoadCooked(cooked, level, candidate, error, revisions) == false)
             {
                 return false;
             }
-            // Disabled authored lights stay listed, and switchable, beside the imported ones.
-            output.LightBinding = authored.LightBinding;
+            AdoptAuthoredScene(authored, candidate);
+            output = foundation::Move(candidate);
             return true;
         }
         output = {};
@@ -1378,16 +1566,7 @@ bool RenderScene::Merge(const RenderScene& authored,
     {
         return false;
     }
-    candidate.RenderableBinding = authored.RenderableBinding;
-    candidate.TransformBinding = authored.TransformBinding;
-    candidate.LightBinding = authored.LightBinding;
-    if (authored.Cameras.isEmpty() == false)
-    {
-        candidate.Cameras = authored.Cameras;
-    }
-    candidate.AssetsIdentity =
-        QCryptographicHash::hash(candidate.AssetsIdentity + authored.AssetsIdentity, QCryptographicHash::Sha256);
-    candidate.Identity = QCryptographicHash::hash(candidate.Identity + authored.Identity, QCryptographicHash::Sha256);
+    AdoptAuthoredScene(authored, candidate);
     output = foundation::Move(candidate);
     return true;
 }

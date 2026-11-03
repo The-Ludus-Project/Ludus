@@ -5,6 +5,7 @@
 #include <ludus/foundation/identity/uuid.hpp>
 #include <ludus/platform/entropy.h>
 
+#include "internal/render_graph_luminaire_coverage.h"
 #include "internal/world_document.h"
 
 #include <QMap>
@@ -141,6 +142,11 @@ public:
     void RestoreSession(const QJsonObject& state);
     void Undo();
     void Redo();
+    /// Apply a luminaire repair (RendererWorkspace::MakeRenderWarningRepair) to the open default-schema World as one
+    /// undoable edit: create the fitted luminaire, or move and resize the named one, and select it.
+    /// @return False, with the reason in the status, when the World cannot be edited, is not a default World or no
+    /// longer has that luminaire; the World is then unchanged.
+    [[nodiscard]] bool ApplyLuminaireRepair(const RenderGraphLuminaireCoverage& repair);
     [[nodiscard]] bool Apply();
     [[nodiscard]] bool Recover();
     [[nodiscard]] const WorldDocument& Document() const noexcept

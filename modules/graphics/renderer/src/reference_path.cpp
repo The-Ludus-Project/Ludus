@@ -1,4 +1,5 @@
 #include "internal/reference_data.h"
+#include "internal/reference_dielectric.h"
 #include "internal/wave_connection.h"
 
 #include <ludus/foundation/math/status.hpp>
@@ -10,7 +11,10 @@
 // emitter/environment hits and next-event estimation, and compensated roulette.
 // This RGB, fixed-mip, finite-range reference uses CPU transport with explicit
 // asynchronous native query batches; it has no denoising, wavefront scheduler,
-// path regularization, spectral/transmission model or hidden frame readback.
+// path regularization, spectral or rough-transmission model or hidden frame readback.
+// Smooth dielectrics follow pbrt-v4's specular bounces (section 13.4): they skip light
+// sampling, and emission found through them takes full weight. Shadow rays stay opaque
+// to them, as in pbrt-v4, so light reaches a surface through glass only by BSDF sampling.
 namespace ludus::graphics::renderer::internal
 {
 namespace
@@ -447,7 +451,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                 : 1 / (4 * math::kPiF);
         const float32 lightPdf = lights == 0 ? 0 : environmentPdf / static_cast<float32>(lights);
         const float32 weight =
-            path.Depth == 0
+            path.Depth == 0 || path.IsPreviousSpecular == true
                 ? 1
                 : (job.Description.OpticalWavelengthWorld > 0 ? 0 : ReferencePowerWeight(path.PreviousPdf, lightPdf));
         AddTransport(path,
@@ -484,7 +488,11 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         // An emitter missing from the proposal list cannot be light-sampled; BSDF sampling then owns it.
         const uint32 triangleIndex = static_cast<uint32>(instance.FirstTriangle + hit.Primitive);
         float32 pdf = 0;
-        if (IsResampled(job) == false)
+        if (path.IsPreviousSpecular == true)
+        {
+            // No light sample reaches a delta lobe's direction; the emission keeps full weight.
+        }
+        else if (IsResampled(job) == false)
         {
             usize emitter = 0;
             const float32 selection = FindReferenceEmitter(job.Scene, triangleIndex, emitter) == true
@@ -511,7 +519,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
             return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidEmitterPdf);
         }
         const float32 weight =
-            path.Depth == 0
+            path.Depth == 0 || path.IsPreviousSpecular == true
                 ? 1
                 : (job.Description.OpticalWavelengthWorld > 0 ? 0 : ReferencePowerWeight(path.PreviousPdf, pdf));
         AddTransport(path,
@@ -564,15 +572,19 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     {
         normal = -normal;
     }
+    // A dielectric's medium lies behind its oriented front side; viewed from the back, the ray is inside.
+    bsdf.IsViewerInside = isBackFace;
+    const bool isSpecular = IsReferenceDielectric(bsdf.Scattering.Model);
     // ResampledProjectedSolidAngle keeps the receiver for this vertex's light sample and its continuation's BSDF-hit
     // density; Z-hat is computed once, on first use.
     ReferenceReceiverFrame frame;
     ReferenceTargetTotal targetTotal;
-    if (IsResampled(job) == true)
+    if (IsResampled(job) == true && isSpecular == false)
     {
         frame = MakeReferenceReceiverFrame(point, normal, view, bsdf);
     }
-    const auto proposal = SampleLight(job, path, point);
+    // A delta lobe is zero in every light proposal's direction, so specular vertices skip next-event estimation.
+    const LightProposal proposal = isSpecular == true ? LightProposal{} : SampleLight(job, path, point);
     if (math::IsFinite(proposal.Pdf) == false || proposal.Pdf < 0 || ValidContribution(proposal.Radiance) == false)
     {
         return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidLightSample);
@@ -640,12 +652,15 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     {
         return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidBsdfSample);
     }
-    if (sample.Accepted == false || math::Dot(scatteringNormal, sample.Direction) <= 0)
+    // Transmission continues on the far side of the geometric surface; every other lobe stays on the viewer's.
+    const float32 side = math::Dot(scatteringNormal, sample.Direction);
+    const bool isTransmitted = sample.IsSpecular == true && math::Dot(normal, sample.Direction) < 0;
+    if (sample.Accepted == false || (isTransmitted == true ? side >= 0 : side <= 0))
     {
         ++inoutInfo.NullBsdfSamples;
         return rhi::RasterStatus::Ready;
     }
-    if (bsdf.Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse)
+    if (sample.IsSpecular == true || bsdf.Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse)
     {
         path.Throughput = math::Hadamard(path.Throughput, sample.Weight);
     }
@@ -664,6 +679,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     }
     path.PreviousPoint = point;
     path.PreviousPdf = sample.MisPdf;
+    path.IsPreviousSpecular = sample.IsSpecular;
     path.PreviousReceiver = frame;
     path.PreviousTargetTotal = targetTotal;
     ++path.Depth;

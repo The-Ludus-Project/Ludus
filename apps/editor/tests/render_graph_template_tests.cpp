@@ -2562,32 +2562,25 @@ TEST_CASE("Slice-sampling-luminaire template is created from the editor picker w
     CHECK(root.indexOf("\"output\"") < root.indexOf("\"sliceSamplingOutput\""));
     CHECK(root.count("\"Accumulate\"") == 3);
     CHECK(root.count("\"Export\"") == 3);
-    // The luminaire and its seed equation arrive as project-owned sources the author can edit.
-    CHECK(document.GetDraft(QStringLiteral("main_shaders/luminaire.slang")).contains("LUMINAIRE_CENTER_WORLD") == true);
+    // The luminaire's tile tables and seed equation arrive as project-owned sources the author can edit; the panel's
+    // placement and beam profile are World data, read from the scene.
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/luminaire.slang")).contains("LUMINAIRE_TILE_STEERING") ==
+          true);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/luminaire.slang")).contains("LUMINAIRE_CENTER_WORLD") ==
+          false);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/shade.slang")).contains("GetLuminaireInfo") == true);
     CHECK(document.GetDraft(QStringLiteral("main_shaders/slice_sampling.slang")).contains("TrySolveSeedEquation") ==
           true);
     const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
-    for (const char* setting : {"SLICE_DEFENSIVE_FRACTION",
-                                "LUMINAIRE_RADIANCE_SCALE",
-                                "LUMINAIRE_BEAM_WIDTH",
-                                "LUMINAIRE_BEAM_STEERING",
-                                "LUMINAIRE_BEAM_SPREAD",
-                                "LUMINAIRE_BEAM_TWIST"})
-    {
-        INFO(setting);
-        CHECK(manifest.contains(setting) == true);
-    }
+    CHECK(manifest.contains("SLICE_DEFENSIVE_FRACTION") == true);
+    CHECK(manifest.contains("LUMINAIRE_BEAM_WIDTH") == false);
     const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
     CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() >= 1);
     CHECK(interface.contains(QStringLiteral("polygonal_light_sampling")) == false);
-    // The created graph routes the luminaire to its output, so the viewport's panel check finds its placement.
-    RenderGraphLuminairePanel panel;
-    REQUIRE(FindRenderGraphLuminairePanel(
-                document,
-                QJsonDocument::fromJson(root).object().value(QStringLiteral("default")).toString(),
-                panel) == true);
-    CHECK(panel.Source == QStringLiteral("main_shaders/luminaire.slang"));
-    CHECK(panel.IsPlacementKnown == true);
+    // The created graph routes the luminaire to its output, so the viewport checks the World's luminaires.
+    CHECK(IsRenderGraphLuminaireRoute(
+              document,
+              QJsonDocument::fromJson(root).object().value(QStringLiteral("default")).toString()) == true);
     RequireValidation(workspace);
 }
 

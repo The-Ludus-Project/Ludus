@@ -357,9 +357,10 @@ This is an analytic-panel diagnostic, with no internal fixture optics.
 The generator emits the same receiver vertices as PBRT triangle meshes for
 Ludus import and OBJ meshes referenced by a Mitsuba XML scene. It copies the
 existing [slice-sampling graph](render-graph-authoring.md#sample-a-directional-luminaire-with-slice-sampling)
-without changing its shader implementation. The graph supplies the panel;
-the scene files contain receiver geometry only. The XML alone therefore renders
-black until a luminaire estimator is attached. The panel is not camera-visible.
+without changing its shader implementation. The scene files contain receiver
+geometry only; in Ludus the World's luminaire supplies the panel. The XML alone
+therefore renders black until a luminaire estimator is attached. The panel is not
+camera-visible.
 
 Requires Python 3.10 or newer and NumPy in a separate benchmark environment;
 this optional research tool adds no dependency to installed Ludus host tooling.
@@ -377,7 +378,10 @@ To inspect the room in an existing configured Ludus project, import
 `scene-v4.pbrt`, add the generated `graph` package, and route its
 `SliceSamplingLuminaire` configuration to the viewport. The configuration exposes
 `color` (defensive slice sampling), `sliceSampling`, and `uniformArea` outputs.
-The panel placement already fits this room. Follow the linked graph guide for
+Add the room's panel with **Add Geometry / Light → Luminaire** and set its
+Transform to position `(0, 0.97, 0)` and rotation `(-90, 0, 0)`, keeping the
+default half extent `0.35` and beam profile; the headless kernels in
+`tools/luminaire-benchmark/shaders` use the same panel. Follow the linked graph guide for
 native compilation, output selection and raw linear frame capture. Camera and
 visibility rays execute in the existing GPU compute-BVH implementation.
 
@@ -385,7 +389,7 @@ visibility rays execute in the existing GPU compute-BVH implementation.
 
 The CPU evaluator reads the GPU-owned steering, width, strength and tint tables
 from `luminaire.slang`; it implements that file's affine Gaussian radiance with
-the default graph profile. Both CPU proposal paths call this one evaluator.
+a new World luminaire's default profile. Both CPU proposal paths call this one evaluator.
 The fixture fingerprint covers the tables, profile, placement and radiance scale.
 A checkpoint from another profile is rejected rather than silently compared.
 

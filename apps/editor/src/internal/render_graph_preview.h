@@ -43,6 +43,8 @@ struct RenderGraphExtraction final
     QVector<graphics::renderer::RenderGraphItem> Items;
     QVector<graphics::renderer::SceneShaderMaterial> Materials;
     QVector<graphics::renderer::DirectLight> Lights;
+    /// Scene.Luminaires, which ShaderInputs.Luminaires borrows.
+    QVector<graphics::renderer::PanelLuminaire> Luminaires;
     QVector<QImage> MaterialImages;
     QVector<foundation::uint32> MaterialOverrides;
     graphics::renderer::SceneShaderInputs ShaderInputs;

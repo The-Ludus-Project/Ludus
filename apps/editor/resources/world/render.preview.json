@@ -55,5 +55,17 @@
       "innerAngle": "innerAngle",
       "outerAngle": "outerAngle"
     }
+  },
+  "luminaire": {
+    "component": "luminaire",
+    "properties": {
+      "enabled": "enabled",
+      "halfExtent": "halfExtent",
+      "radianceScale": "radianceScale",
+      "beamWidth": "beamWidth",
+      "beamSteering": "beamSteering",
+      "beamSpread": "beamSpread",
+      "beamTwist": "beamTwist"
+    }
   }
 }
