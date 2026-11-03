@@ -1,6 +1,7 @@
 #include "internal/code_navigation.h"
 
 #include "internal/code_editor.h"
+#include "internal/mouse_history_buttons.h"
 
 #include <QAction>
 #include <QDialog>
@@ -80,6 +81,7 @@ CodeNavigation::CodeNavigation(CodeEditor& inoutEditor)
     mForward = addAction(QStringLiteral("Navigate Forward"),
                          QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Right),
                          [this]() { Forward(); });
+    new MouseHistoryButtons(*this, mEditor, *mBack, *mForward);
     mFiles =
         addAction(QStringLiteral("Quick Open Source"), QKeySequence(Qt::CTRL | Qt::Key_P), [this]() { openFile(); });
     addAction(QStringLiteral("Go to Symbol"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O), [this]() {
