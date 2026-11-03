@@ -229,6 +229,8 @@ private:
     [[nodiscard]] bool ReadDraft(WorldDocument& document, QString& error, QWidget*& invalid);
     void PickTint(const QString& id, const QJsonObject& binding);
     void Snapshot();
+    /// Create sun as one undoable edit and select it; the status gives the reason when the World cannot be edited.
+    [[nodiscard]] bool addSun(const WorldSunPlacement& sun);
     [[nodiscard]] QByteArray RecoveryHeader() const;
     /// Record which viewport renderer the World shows and emit RenderPreviewChanged on change.
     void updateShownRenderPreview(bool isSceneShown);

@@ -66,9 +66,15 @@ struct WorldLightingCoverage final
 
 /// Describe why world renders almost black, or return an empty Warning when it is lit. It is dark when it presents
 /// no analytic light, environment or luminaire, and its emitters' flux spread over the surface of its bounds stays
-/// below MIN_WORLD_MEAN_ILLUMINANCE_LUX. A World without bounds is never dark. With CanRepair, the result offers a
-/// sun aimed like the first disabled imported directional light, or along DEFAULT_WORLD_SUN_ROTATION_DEGREES.
+/// below MIN_WORLD_MEAN_ILLUMINANCE_LUX. A World without bounds is never dark. With CanRepair, the result offers
+/// FitWorldSun's sun.
 [[nodiscard]] WorldLightingCoverage DescribeWorldLighting(const WorldLightingSummary& world);
+
+/// The sun the World's Add Geometry / Light menu and its lighting repair create: DEFAULT_WORLD_SUN_ILLUMINANCE_LUX,
+/// aimed like the first disabled imported directional light that shines down, or along
+/// DEFAULT_WORLD_SUN_ROTATION_DEGREES, and placed above the center of the bounds (two metres above the origin
+/// without them), where its gizmo is visible from a framing camera.
+[[nodiscard]] WorldSunPlacement FitWorldSun(const WorldLightingSummary& world);
 
 /// Euler rotation in degrees that aims a light's -Z along the unit directionWorld with no roll. The transform rotates
 /// by Z, then Y, then X (render_scene.cpp), so -Z becomes (-cos x sin y, sin x, -cos x cos y).

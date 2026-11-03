@@ -577,7 +577,7 @@ navigation controls, including after resize.
 
 In a default World (a project without `authoring/world.schema.json`), use
 **Add Geometry / Light** below the entity list to create a **Cube**, **Plane**,
-**Sphere**, **Point Light**, **Spot Light**, **Directional Light** or
+**Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun** or
 **Luminaire**. Each command
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.
@@ -585,6 +585,8 @@ Use **Properties** to edit Transform, visibility and colour, or a light's kind,
 colour, intensity, range and spot angles, then **Apply Changes**. Save the World
 to retain the objects; duplication and deletion use the regular entity commands.
 Lights start two metres above and in front of the origin, aimed down 45 degrees.
+**Sun** is a directional light of 10 lux, placed and aimed as described in
+[Lighting a World that renders black](#lighting-a-world-that-renders-black).
 They use -Z as their forward direction and require unit scale. Point and spot
 intensity is candela; directional intensity is lux. Switch the viewport to
 **Lit** and position lights to illuminate the geometry; creation adds no implicit
@@ -1486,10 +1488,12 @@ estimated illuminance. It appears in the viewport status and as a **Renderer
 preview** row in the Error List; render graphs that read only luminaires keep
 their own luminaire warning instead. An unlit viewport never shows it.
 
-In a default World, double-click the warning to repair it. A confirmation box
-offers **Add sun**; **Cancel** is the default. The sun is a directional light
-entity named *Sun* of 10 lux, aimed like the first disabled imported directional
-light that shines down, or from 60 degrees above the horizon when there is none.
+In a default World, choose **Add Geometry / Light → Sun**, or double-click the
+warning: a confirmation box then offers **Add sun**, with **Cancel** as the
+default. Both create the same directional light entity named *Sun* of 10 lux,
+aimed like the first disabled imported directional light that shines down, or
+from 60 degrees above the horizon when there is none. It is placed above the
+center of the World's bounds, where its gizmo is visible.
 Sponza's sun comes from 56 degrees above the horizon, along the nave. 10 lux is
 a display choice for exposure one, not daylight: a surface of albedo 0.5 facing
 the sun has a radiance of about 1.6 nits. Adding the sun is one undoable edit

@@ -388,6 +388,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                   QStringLiteral("Point Light"),
                                   QStringLiteral("Spot Light"),
                                   QStringLiteral("Directional Light"),
+                                  QStringLiteral("Sun"),
                                   QStringLiteral("Luminaire")})
     {
         QAction* action = objectMenu->addAction(preset);
@@ -402,6 +403,14 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
             QString error;
             if (Add_->isEnabled() == false)
             {
+                return;
+            }
+            if (preset == QStringLiteral("Sun"))
+            {
+                // Aimed like the imported scene's disabled sun when it has one (FitWorldSun).
+                const bool hasScene = Document_.Draft().contains(QStringLiteral("scene"));
+                const RenderScene& scene = hasScene == true ? Scene_->PreviewScene() : Render_->Preview().Scene();
+                static_cast<void>(addSun(FitWorldSun(SummarizeWorldLighting(scene, true))));
                 return;
             }
             if (CreateWorldObject(Document_, mEntropy, preset, id, error) == false)
@@ -2412,15 +2421,23 @@ bool WorldWorkspace::ApplyLuminaireRepair(const RenderGraphLuminaireCoverage& re
 }
 bool WorldWorkspace::ApplySunRepair(const WorldLightingCoverage& repair)
 {
-    if (repair.Repair != WorldLightingRepair::AddSun || Pending_ == true || SceneBusy() == true ||
-        Add_->isEnabled() == false)
+    if (repair.Repair != WorldLightingRepair::AddSun)
+    {
+        Changed(QStringLiteral("This World needs no sun."));
+        return false;
+    }
+    return addSun(repair.Sun);
+}
+bool WorldWorkspace::addSun(const WorldSunPlacement& sun)
+{
+    if (Pending_ == true || SceneBusy() == true || Add_->isEnabled() == false)
     {
         Changed(QStringLiteral("The World cannot be edited now; try adding the sun again when it is ready."));
         return false;
     }
     QString id;
     QString error;
-    if (CreateWorldSun(Document_, mEntropy, repair.Sun, id, error) == false)
+    if (CreateWorldSun(Document_, mEntropy, sun, id, error) == false)
     {
         Changed(error);
         return false;

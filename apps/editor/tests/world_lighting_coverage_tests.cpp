@@ -59,7 +59,7 @@ TEST_CASE("A World lit only by faint emitters offers a sun aimed like its disabl
     CHECK(dark.Warning.contains(QStringLiteral("renders almost black")) == true);
     CHECK(dark.Warning.contains(QStringLiteral("24 imported lights are disabled")) == true);
     CHECK(dark.Warning.contains(QStringLiteral("about 0.0013 lux on average (1 emissive object)")) == true);
-    CHECK(dark.Warning.contains(QStringLiteral("Add a sun")) == true);
+    CHECK(dark.Warning.contains(QStringLiteral("Add a sun from Add Geometry / Light")) == true);
     REQUIRE(dark.Repair == WorldLightingRepair::AddSun);
     CHECK(dark.Sun.IlluminanceLux == DEFAULT_WORLD_SUN_ILLUMINANCE_LUX);
     CHECK(IsNear(RotateForward(dark.Sun.RotationDegrees), sponza.SunDirectionWorld) == true);
@@ -100,6 +100,13 @@ TEST_CASE("A dark World's sun falls back to a default angle and needs the defaul
     REQUIRE(fallback.Repair == WorldLightingRepair::AddSun);
     CHECK(fallback.Sun.RotationDegrees == DEFAULT_WORLD_SUN_ROTATION_DEGREES);
     CHECK(RotateForward(fallback.Sun.RotationDegrees).Y < 0);
+
+    // Without bounds, the menu's sun hangs two metres above the origin.
+    WorldLightingSummary empty;
+    const WorldSunPlacement unbounded = FitWorldSun(empty);
+    CHECK(unbounded.PositionWorld == math::Vector3{0, 2, 0});
+    CHECK(unbounded.RotationDegrees == DEFAULT_WORLD_SUN_ROTATION_DEGREES);
+    CHECK(unbounded.IlluminanceLux == DEFAULT_WORLD_SUN_ILLUMINANCE_LUX);
 
     // A disabled light shining up cannot light the ground, so the sun ignores it.
     world.HasSunDirection = true;

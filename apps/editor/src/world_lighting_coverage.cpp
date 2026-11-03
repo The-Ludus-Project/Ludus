@@ -34,6 +34,21 @@ math::Vector3 ComputeWorldLightRotationDegrees(math::Vector3 directionWorld)
     return {math::RadiansToDegrees(pitch), math::RadiansToDegrees(yaw), 0};
 }
 
+WorldSunPlacement FitWorldSun(const WorldLightingSummary& world)
+{
+    WorldSunPlacement sun;
+    // Follow the source's sun only when it shines down; a light from below the horizon cannot light the ground.
+    sun.RotationDegrees = world.HasSunDirection == true && world.SunDirectionWorld.Y < 0
+                              ? ComputeWorldLightRotationDegrees(world.SunDirectionWorld)
+                              : DEFAULT_WORLD_SUN_ROTATION_DEGREES;
+    sun.IlluminanceLux = DEFAULT_WORLD_SUN_ILLUMINANCE_LUX;
+    sun.PositionWorld = world.HasBounds == true ? math::Vector3{(world.BoundsWorld.Min.X + world.BoundsWorld.Max.X) / 2,
+                                                                world.BoundsWorld.Max.Y,
+                                                                (world.BoundsWorld.Min.Z + world.BoundsWorld.Max.Z) / 2}
+                                                : math::Vector3{0, 2, 0};
+    return sun;
+}
+
 WorldLightingCoverage DescribeWorldLighting(const WorldLightingSummary& world)
 {
     WorldLightingCoverage coverage;
@@ -66,22 +81,14 @@ WorldLightingCoverage DescribeWorldLighting(const WorldLightingSummary& world)
     coverage.Warning =
         QStringLiteral("This World renders almost black: %1. ").arg(causes.join(QStringLiteral("; "))) +
         (world.CanRepair == true
-             ? QStringLiteral("Add a sun, or reimport the scene with Choose environment.")
+             ? QStringLiteral("Add a sun from Add Geometry / Light, or reimport the scene with Choose environment.")
              : QStringLiteral("Add a directional light entity, or reimport the scene with Choose environment."));
     if (world.CanRepair == false)
     {
         return coverage;
     }
     coverage.Repair = WorldLightingRepair::AddSun;
-    // Follow the source's sun only when it shines down; a light from below the horizon cannot light the ground.
-    coverage.Sun.RotationDegrees = world.HasSunDirection == true && world.SunDirectionWorld.Y < 0
-                                       ? ComputeWorldLightRotationDegrees(world.SunDirectionWorld)
-                                       : DEFAULT_WORLD_SUN_ROTATION_DEGREES;
-    coverage.Sun.IlluminanceLux = DEFAULT_WORLD_SUN_ILLUMINANCE_LUX;
-    // Above the bounds' center, where the viewport gizmo is visible from a framing camera.
-    coverage.Sun.PositionWorld = {(world.BoundsWorld.Min.X + world.BoundsWorld.Max.X) / 2,
-                                  world.BoundsWorld.Max.Y,
-                                  (world.BoundsWorld.Min.Z + world.BoundsWorld.Max.Z) / 2};
+    coverage.Sun = FitWorldSun(world);
     return coverage;
 }
 } // namespace ludus::editor

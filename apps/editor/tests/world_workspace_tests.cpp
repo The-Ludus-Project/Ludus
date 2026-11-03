@@ -2140,6 +2140,23 @@ TEST_CASE("A dark imported World offers a sun aimed like its disabled light, add
     // A repair that offers nothing changes nothing.
     CHECK(workspace.ApplySunRepair(WorldLightingCoverage{}) == false);
     CHECK(workspace.Document().Draft() == before);
+
+    // Add Geometry / Light offers the same sun. This World has no imported light to follow, so it takes the default
+    // angle, two metres above the origin.
+    QAction* createOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
+    REQUIRE(createOrNull != nullptr);
+    createOrNull->trigger();
+    const QJsonArray created = workspace.Document().Draft().value(QStringLiteral("entities")).toArray();
+    REQUIRE(created.size() == 1);
+    const QJsonObject components = created[0].toObject().value(QStringLiteral("components")).toObject();
+    CHECK(components.value(QStringLiteral("light")).toObject().value(QStringLiteral("kind")).toString() ==
+          QStringLiteral("directional"));
+    const QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
+    CHECK(transform.value(QStringLiteral("rx")).toDouble() == Catch::Approx(DEFAULT_WORLD_SUN_ROTATION_DEGREES.X));
+    CHECK(transform.value(QStringLiteral("ry")).toDouble() == Catch::Approx(DEFAULT_WORLD_SUN_ROTATION_DEGREES.Y));
+    CHECK(transform.value(QStringLiteral("y")).toDouble() == Catch::Approx(2));
+    workspace.Undo();
+    CHECK(workspace.Document().Draft() == before);
     workspace.StopPreview();
 }
 
