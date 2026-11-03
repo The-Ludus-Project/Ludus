@@ -94,6 +94,11 @@ Q_SIGNALS:
 
 private:
     void rowChanged(QTreeWidgetItem* item);
+    /// Refresh labels, tooltips and switches of an unchanged list without touching scroll or selection.
+    void updateItems();
+    /// Recreate the items for a changed list, reselecting `selectedOrNull` and scrolling the remembered
+    /// top light back to the top.
+    void rebuildItems(const WorldLightRow* selectedOrNull);
     void updateCommands();
     [[nodiscard]] qsizetype getSelectedRow() const;
     QVector<WorldLightRow> mRows;
@@ -102,6 +107,9 @@ private:
     QPushButton* mSoloOrNull = nullptr;
     QPushButton* mEnableAllOrNull = nullptr;
     QPushButton* mRemoveMissingOrNull = nullptr;
+    /// The light last shown at the top of the list, restored when the list is recreated.
+    WorldLightRow mTopRow;
+    bool mHasTopRow = false;
     bool mIsRendering = false;
 };
 } // namespace ludus::editor
