@@ -30,6 +30,8 @@ class RenderPanel;
 class RenderPreview;
 class RendererWorkspace;
 class LevelWorkspace;
+class WorldLightsPanel;
+struct WorldLightChange;
 enum class PlacementValidationResult : foundation::uint8;
 struct ToolingPaths;
 /// Where Play opens the game: a local editor preference, not project data.
@@ -197,6 +199,10 @@ private:
     void SceneVerified(bool accepted);
     void Render();
     void RenderInspector();
+    /// Refresh the light list from the World and the presented scene.
+    void renderLights();
+    /// Apply a light switch, Solo or Enable All from the light list as one undo step.
+    void applyLightChange(const WorldLightChange& change, const QString& message);
     /// Append the read-only Material group of the selected scene instance, read from the
     /// presented viewport scene; a placeholder until that scene has loaded.
     void addMaterialGroup();
@@ -221,6 +227,8 @@ private:
     QWidget* mHeader;
     /// Entity hierarchy column of the splitter; SetChromeVisible hides it.
     QWidget* mHierarchy;
+    /// Light switches under the entity list, in the hierarchy column.
+    WorldLightsPanel* mLightsPanel;
     /// Splitter sizes captured when the chrome was hidden, restored when it is shown.
     QByteArray mSplitterStateBeforeChromeHidden;
     bool mIsChromeVisible = true;

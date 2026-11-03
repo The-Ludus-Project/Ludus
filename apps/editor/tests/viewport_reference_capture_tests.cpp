@@ -1,3 +1,4 @@
+#include "internal/light_switches.h"
 #include "internal/reference_capture_window.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
@@ -604,7 +605,21 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
                 scene,
                 error,
                 {}) == true);
-    const QSize extent(512, 225);
+    // Present the World's switched-off lights, as the World viewport does.
+    LightSwitchReport switchReport;
+    REQUIRE(ApplyLightSwitches(world.GetLightSwitches(), scene, switchReport) == true);
+    CHECK(switchReport.MissingSources.isEmpty() == true);
+    // LUDUS_REFERENCE_TEST_EXTENT=<width>x<height> captures another size, for example a source film's 720x1280.
+    QSize extent(512, 225);
+    const QStringList requestedExtent = qEnvironmentVariable("LUDUS_REFERENCE_TEST_EXTENT").split(QLatin1Char('x'));
+    if (requestedExtent.size() == 2)
+    {
+        constexpr int32 MAX_SUPPLIED_EXTENT = 4096;
+        const int32 width = requestedExtent[0].toInt();
+        const int32 height = requestedExtent[1].toInt();
+        REQUIRE((width > 0 && height > 0 && width <= MAX_SUPPLIED_EXTENT && height <= MAX_SUPPLIED_EXTENT));
+        extent = QSize(width, height);
+    }
     RenderPreview preview;
     REQUIRE(preview.SetScene(scene) == true);
     const QString navigationPath = qEnvironmentVariable("LUDUS_REFERENCE_TEST_NAVIGATION");

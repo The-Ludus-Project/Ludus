@@ -680,9 +680,13 @@ ludus_editor_add_objects(ludus_editor_application
     src/level_workspace.cpp
     src/internal/scene_placement.h
     src/scene_placement.cpp
+    src/internal/light_switches.h
+    src/light_switches.cpp
     src/internal/import_report.h
     src/import_report.cpp
     src/internal/world_workspace.h
+    src/internal/world_lights_panel.h
+    src/world_lights_panel.cpp
     src/builtin_world.cpp
     src/world_document.cpp
     src/world_demo_adapter.cpp
@@ -1036,6 +1040,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp
         tests/world_lighting_switch_tests.cpp
+        tests/world_light_switch_tests.cpp
         tests/world_start_view_tests.cpp
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
