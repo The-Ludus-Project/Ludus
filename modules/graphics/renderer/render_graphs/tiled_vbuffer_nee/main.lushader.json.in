@@ -219,7 +219,7 @@
       "scene_interface": {
         "version": 1,
         "payload": "main_shaders/payload.slang",
-        "surface_queries": 1,
+        "surface_queries": 9,
         "visibility_queries": 1,
         "visibility_buffer": true
       }

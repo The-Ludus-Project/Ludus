@@ -180,7 +180,7 @@
       ],
       "scene_interface": {
         "version": 1,
-        "surface_queries": 1,
+        "surface_queries": 9,
         "visibility_queries": 2,
         "polygonal_light_sampling": true
       }

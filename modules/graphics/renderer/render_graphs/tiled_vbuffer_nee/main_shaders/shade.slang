@@ -243,8 +243,18 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext i
     {
         return float3(0);
     }
-    const float3 viewDirectionWorld = -normalize(launch.CameraRay.DirectionWorld);
-    const float3 surfaceEmission = EvaluateEmission(scene, hit, viewDirectionWorld);
+    // Smooth glass is followed to the first surface NEE can light (FollowSpecularChain, up to
+    // SCENE_SPECULAR_CHAIN_EVENTS surface queries). This shader draws from the automatic stream, so the
+    // chain takes the default dimensions at the top of the address range.
+    const SpecularChain chain =
+        FollowSpecularChain(scene, launch, inoutQueries, hit, SCENE_SPECULAR_CHAIN_DEFAULT_DIMENSION_FIRST);
+    if (chain.IsSurface == false)
+    {
+        return chain.Radiance;
+    }
+    hit = chain.Hit;
+    const float3 viewDirectionWorld = chain.ViewDirectionWorld;
+    const float3 surfaceEmission = chain.Radiance + chain.Throughput * EvaluateEmission(scene, hit, viewDirectionWorld);
     const MaterialSample material = EvaluateMaterial(scene, hit);
     const float normalLengthSquared = dot(material.ShadingNormalWorld, material.ShadingNormalWorld);
     if (GetEmitterCount(scene) == 0 || material.IsValid == false || normalLengthSquared <= 0.0f)
@@ -253,17 +263,17 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext i
     }
     const float3 shadingNormalWorld = material.ShadingNormalWorld * rsqrt(normalLengthSquared);
     const uint tileIndex = GetTileLocation(launch).Index;
-    float3 radiance = surfaceEmission;
-    radiance += SampleLightDirectLighting(scene,
-                                          hit,
-                                          material,
-                                          shadingNormalWorld,
-                                          viewDirectionWorld,
-                                          tileIndex,
-                                          inoutQueries);
+    float3 radiance = SampleLightDirectLighting(scene,
+                                                hit,
+                                                material,
+                                                shadingNormalWorld,
+                                                viewDirectionWorld,
+                                                tileIndex,
+                                                inoutQueries);
     // Runs regardless of the light sample's visibility or contribution.
     radiance +=
         SampleBsdfDirectLighting(scene, hit, material, shadingNormalWorld, viewDirectionWorld, tileIndex, inoutQueries);
+    radiance = surfaceEmission + chain.Throughput * radiance;
     if (all(isfinite(radiance)) == false || any(radiance < 0.0f) == true)
     {
         FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);

@@ -2109,7 +2109,8 @@ TEST_CASE("ReSTIR GI configuration imports its passes, shader closure and settin
     }
     // The shared ray technique's budgets rise to the template's: the sample path and the spatial reuse's rays.
     const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
-    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 5);
+    // Five path queries plus the eight smooth-glass chain events before the visible point.
+    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 13);
     CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 16);
     ReplaceRasterSubgraph(document, QStringLiteral("Indirect"));
     REQUIRE(workspace.Save() == true);
@@ -2190,7 +2191,8 @@ TEST_CASE("Conditional ReSTIR configuration imports its passes, shader closure a
     }
     // The shared ray technique's budgets rise to the template's: the sample path and the spatial reuse's rays.
     const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
-    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 8);
+    // Eight path queries plus the eight smooth-glass chain events before the primary.
+    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() == 16);
     CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 2);
     ReplaceRasterSubgraph(document, QStringLiteral("Indirect"));
     REQUIRE(workspace.Save() == true);

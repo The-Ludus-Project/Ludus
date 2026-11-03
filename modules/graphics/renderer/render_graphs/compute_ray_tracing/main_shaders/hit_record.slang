@@ -29,6 +29,8 @@ static const uint PRIMARY_RANDOM_DIMENSION_COUNT = 2;
 // Shade pass: light selection, then the three SampleIncidentLight shape coordinates.
 static const uint SHADE_RANDOM_DIMENSION_FIRST = PRIMARY_RANDOM_DIMENSION_FIRST + PRIMARY_RANDOM_DIMENSION_COUNT;
 static const uint SHADE_RANDOM_DIMENSION_COUNT = 4;
+// Shade pass: Fresnel choices of the smooth-glass chain followed from the recorded hit.
+static const uint SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST = SHADE_RANDOM_DIMENSION_FIRST + SHADE_RANDOM_DIMENSION_COUNT;
 
 struct HitRecord
 {

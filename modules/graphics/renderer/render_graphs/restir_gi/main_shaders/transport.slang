@@ -10,7 +10,8 @@
 // emission is excluded here, because the shade pass already estimates direct lighting at the visible point.
 // Thanks to Eric Veach and Leonidas J. Guibas, "Optimally Combining Sampling Techniques for Monte Carlo Rendering",
 // SIGGRAPH 1995, pp. 419-428, https://doi.org/10.1145/218380.218498 : light and BSDF sampling are combined with
-// their power heuristic (exponent 2), as in the veach-guibas-mis template.
+// their power heuristic (exponent 2), as in the veach-guibas-mis template. Glass is a delta interface: it takes no
+// light sample and only continues the path, so emission reached through it takes the full weight.
 
 static const float TRANSPORT_MAXIMUM_TRACE_DISTANCE_WORLD = 3.402823466e38f;
 static const float RESTIR_GI_MIS_POWER_EXPONENT = 2;
@@ -121,7 +122,8 @@ float3 SampleLightStrategy(SceneContext scene,
     float lightDensity = light.SelectionPmf * light.ConditionalPdf;
     if (light.HasSample == false || lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false)
         return float3(0);
-    float cosSurface = dot(shadingPoint.ShadingNormalWorld, light.DirectionWorld);
+    float cosSurface =
+        ComputeStandardBsdfCosine(shadingPoint.Material, shadingPoint.ViewDirectionWorld, light.DirectionWorld);
     float3 bsdfValue;
     float bsdfDensity;
     EvaluateStandardBsdf(shadingPoint.Material,
@@ -151,24 +153,41 @@ BsdfStep SampleBsdfStrategy(SceneContext scene,
     float3 directionSample = float3(SampleGiRandom(launch, dimensionFirst + VERTEX_BSDF_DIMENSION_FIRST),
                                     SampleGiRandom(launch, dimensionFirst + VERTEX_BSDF_DIMENSION_FIRST + 1),
                                     SampleGiRandom(launch, dimensionFirst + VERTEX_BSDF_DIMENSION_FIRST + 2));
-    float3 sampledDirectionWorld =
-        SampleStandardBsdf(shadingPoint.Material, shadingPoint.ViewDirectionWorld, directionSample);
-    float sampledLengthSquared = dot(sampledDirectionWorld, sampledDirectionWorld);
-    // A zero direction is the interface's ordinary rejection.
-    if (all(isfinite(sampledDirectionWorld)) == false || sampledLengthSquared <= 0)
-        return result;
-    float3 directionWorld = sampledDirectionWorld * rsqrt(sampledLengthSquared);
-    float cosSurface = dot(shadingPoint.ShadingNormalWorld, directionWorld);
-    float3 bsdfValue;
+    float3 directionWorld;
     float bsdfDensity;
-    EvaluateStandardBsdf(shadingPoint.Material,
-                         shadingPoint.ViewDirectionWorld,
-                         directionWorld,
-                         bsdfValue,
-                         bsdfDensity);
-    if (cosSurface <= 0 || any(bsdfValue > 0) == false || isfinite(bsdfDensity) == false || bsdfDensity <= 0)
-        return result;
-    result.Throughput = bsdfValue * (cosSurface / bsdfDensity);
+    bool isSpecular = false;
+    if (IsDielectricMaterial(shadingPoint.Material) == true)
+    {
+        // Glass returns its complete weight; a smooth interface's density is its Fresnel lobe probability.
+        StandardBsdfTransportSample sampled =
+            SampleDielectricTransport(shadingPoint.Material, shadingPoint.ViewDirectionWorld, directionSample);
+        if (sampled.HasSample == false)
+            return result;
+        directionWorld = sampled.DirectionWorld;
+        bsdfDensity = sampled.Pdf;
+        isSpecular = sampled.IsSpecular;
+        result.Throughput = sampled.Weight;
+    }
+    else
+    {
+        float3 sampledDirectionWorld =
+            SampleStandardBsdf(shadingPoint.Material, shadingPoint.ViewDirectionWorld, directionSample);
+        float sampledLengthSquared = dot(sampledDirectionWorld, sampledDirectionWorld);
+        // A zero direction is the interface's ordinary rejection.
+        if (all(isfinite(sampledDirectionWorld)) == false || sampledLengthSquared <= 0)
+            return result;
+        directionWorld = sampledDirectionWorld * rsqrt(sampledLengthSquared);
+        float cosSurface = dot(shadingPoint.ShadingNormalWorld, directionWorld);
+        float3 bsdfValue;
+        EvaluateStandardBsdf(shadingPoint.Material,
+                             shadingPoint.ViewDirectionWorld,
+                             directionWorld,
+                             bsdfValue,
+                             bsdfDensity);
+        if (cosSurface <= 0 || any(bsdfValue > 0) == false || isfinite(bsdfDensity) == false || bsdfDensity <= 0)
+            return result;
+        result.Throughput = bsdfValue * (cosSurface / bsdfDensity);
+    }
     SurfaceHit endpoint;
     uint status =
         TraceClosest(scene,
@@ -192,7 +211,8 @@ BsdfStep SampleBsdfStrategy(SceneContext scene,
     }
     // A failed query has latched queries.HasFailed; zero radiance adds nothing.
     if (any(incidentRadiance > 0) == true)
-        result.Radiance = result.Throughput * incidentRadiance * ComputePowerHeuristic(bsdfDensity, lightDensity);
+        result.Radiance = result.Throughput * incidentRadiance *
+                          (isSpecular == true ? 1 : ComputePowerHeuristic(bsdfDensity, lightDensity));
     return result;
 }
 
