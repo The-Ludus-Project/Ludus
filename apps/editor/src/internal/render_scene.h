@@ -207,6 +207,9 @@ struct RenderScene final
                                    RenderScene& outScene,
                                    QString& outError,
                                    bool shouldComposeLighting = true);
+    /// True for a loaded World snapshot (nonempty Identity) without objects, such as a new World.
+    /// A project graph has nothing to extract from it, so viewports show their built-in view instead.
+    [[nodiscard]] bool IsLoadedWithoutObjects() const noexcept;
     /// Bounds of the extracted visible objects, or one selected stable ID; failure preserves output.
     [[nodiscard]] bool TryGetBounds(const QString& id, foundation::math::Aabb3& outBoundsWorld) const noexcept;
     // camera=-1 selects the independent editor orbit. All failures preserve output.

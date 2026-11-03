@@ -255,10 +255,16 @@ private:
     bool mIsShowingGraphDebugView = false;
     /// Follow the graph output menu's debug view: preview shading and presentation.
     void updateGraphDebugView();
-    /// Whether the preview's raster frames, not the graph's, are presented (inspection or a debug view).
+    /// The preview's World is loaded but has no objects, so the graph has nothing to extract; the
+    /// preview's built-in view draws the empty World (its grid) instead of the previous World's image.
+    bool mIsShowingEmptyWorld = false;
+    /// Follow whether the preview's World is empty: preview built-in view and presentation.
+    void updateEmptyWorldView();
+    /// Whether the preview's raster frames, not the graph's, are presented (inspection, a debug view
+    /// or an empty World).
     [[nodiscard]] LUDUS_INLINE bool isShowingBuiltInView() const noexcept
     {
-        return mIsInspectingRayPaths == true || mIsShowingGraphDebugView == true;
+        return mIsInspectingRayPaths == true || mIsShowingGraphDebugView == true || mIsShowingEmptyWorld == true;
     }
     /// Present the preview's or the graph's frames after isShowingBuiltInView changed from wasShowing.
     void applyBuiltInPresentation(bool wasShowing);

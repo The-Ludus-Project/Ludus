@@ -5621,6 +5621,11 @@ image are kept, so the viewport never goes blank. The views and their colours ar
 [the built-in viewport profile](editor-workspace.md#earlier-built-in-viewport-profile) in the editor
 workspace guide.
 
+A World without objects, such as one just made with **New World**, gives the graph nothing to
+extract. The viewport then presents the built-in renderer's frames of that empty World (the
+editor grid and axes from the live camera) instead of the previous World's graph image, and no
+render problem is reported. Adding the first object hands frame production back to the graph.
+
 The **Stats** toggle beside the viewport controls shows a live performance overlay.
 The preference is saved with World navigation. It refreshes four times a second;
 time measurements average the last 30 completed samples:
