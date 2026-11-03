@@ -691,6 +691,65 @@ TEST_CASE("Texture decode queue matches inline decoding in and out of planned or
     CHECK(embedded.Decoded == ImageResult::Ok);
 }
 
+TEST_CASE("Texture decode queue read-ahead matches inline decoding across many batches",
+          "[scene_cook][threading]")
+{
+    // Forces several sequential batch boundaries (so the queue prefetches the next batch
+    // while the current one decodes) interleaved with skips past the batch end (so a
+    // prefetched batch is dropped and re-read from a new first). Outputs, file-read order
+    // and digests must stay identical to the inline decode for every worker count.
+    ScratchDirectory scratch;
+    SceneIr scene;
+    MakeQueueScene(scratch, scene);
+    const std::string root = scratch.Path.string();
+    const uint32 textureCount = static_cast<uint32>(scene.Textures.GetSize());
+    // Build a long take order that revisits textures so many batches are filled, with a
+    // forward skip (3 after 1, bypassing 2) that leaves the batch window and a backward
+    // revisit (0 after 3) that resyncs within the lookahead.
+    constexpr usize PLAN_REPEATS = 6;
+    constexpr usize TAKE_COUNT = 11;
+    const ludus::foundation::StaticArray<uint32, TAKE_COUNT> order{0, 1, 3, 0, 1, 3, 4, 0, 1, 3, 4};
+    for (const uint32 workers : WORKER_BUDGETS)
+    {
+        INFO("workers " << workers);
+        threading::JobSystem system;
+        REQUIRE(system.Initialize({ .WorkerCount = workers }) == threading::JobStatus::Ok);
+        TextureDecodeQueue queue(scene, root, &system, nullptr);
+        for (usize repeat = 0; repeat < PLAN_REPEATS; ++repeat)
+        {
+            for (uint32 texture = 0; texture < textureCount; ++texture)
+            {
+                REQUIRE(queue.TryPlan(texture) == true);
+            }
+        }
+        for (usize i = 0; i < TAKE_COUNT; ++i)
+        {
+            INFO("take " << i);
+            TextureDecode decode;
+            REQUIRE(queue.Take(order[i], decode) == Status::Ok);
+            RequireSameDecode(DecodeSerially(scene, root, order[i]), decode);
+        }
+        // Every readable, non-embedded image taken is recorded once per take, in order.
+        // Textures 0, 1 and 3 read files; 2 is missing, 4 is embedded (neither recorded).
+        const std::span<const TextureFileRead> fileReads = queue.GetFileReads();
+        ludus::foundation::Array<uint32> expected;
+        for (const uint32 texture : order)
+        {
+            if (texture == 0 || texture == 1 || texture == 3)
+            {
+                REQUIRE(expected.TryAdd(texture) == true);
+            }
+        }
+        REQUIRE(fileReads.size() == expected.GetSize());
+        for (usize i = 0; i < expected.GetSize(); ++i)
+        {
+            INFO("read " << i);
+            CHECK(fileReads[i].Texture == expected[i]);
+            CHECK(fileReads[i].FileDigest == DecodeSerially(scene, root, expected[i]).ReadDigest);
+        }
+    }
+}
+
 TEST_CASE("Texture decode queue decodes inline when the job system is busy", "[scene_cook][threading]")
 {
     ScratchDirectory scratch;
