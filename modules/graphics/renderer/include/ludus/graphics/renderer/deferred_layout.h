@@ -85,8 +85,9 @@ static const LightingLayoutValue MESH_LIGHT_SHADOW_HEADER_WORDS = 1;
 static const LightingLayoutValue MESH_LIGHT_SHADOW_CASTER_WORDS = 5;
 /// Cube faces of a caster, in +X, -X, +Y, -Y, +Z, -Z order.
 static const LightingLayoutValue MESH_LIGHT_SHADOW_FACE_COUNT = 6;
-/// Most casters per scene; further records stay unshadowed and are reported.
-static const LightingLayoutValue MAX_MESH_LIGHT_SHADOW_CASTERS = 64;
+/// Most casters per scene. Clustering coarsens until the records fit (render-graph-authoring.md, "Mesh-light
+/// shadows"); records beyond the coarsest clustering's limit stay unshadowed and are reported.
+static const LightingLayoutValue MAX_MESH_LIGHT_SHADOW_CASTERS = 256;
 /// Side of the square shadow atlas in texels.
 static const LightingLayoutValue MESH_LIGHT_SHADOW_ATLAS_TEXELS = 2048;
 /// Smallest face slot side in texels; slots are powers of two.

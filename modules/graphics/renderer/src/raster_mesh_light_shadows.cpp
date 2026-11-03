@@ -21,11 +21,31 @@ namespace
 using Status = rhi::RasterStatus;
 constexpr usize NORMAL_WORD = 0;
 constexpr usize EMISSION_WORD = 1;
-/// Members are merged into a caster while their enclosing sphere stays within this radius, in metres; a larger
-/// polygon forms a caster of its own.
-constexpr float32 CASTER_RADIUS_METERS = 0.5F;
-/// One-sided members share a caster only while their normals lie within 30 degrees of its first member's.
+/// A caster renders from in front of its one-sided members only while every member's normal lies within 30 degrees
+/// of their flux-weighted mean; otherwise it encloses them.
 constexpr float32 NORMAL_CONE_COSINE = 0.8660254F;
+/// A normal-cone cosine every pair of unit normals passes.
+constexpr float32 ANY_NORMAL_COSINE = -2;
+/// One clustering: members are merged into a caster while their enclosing sphere stays within RadiusMeters (a larger
+/// polygon forms a caster of its own) and, when NormalConeCosine is at least -1, while they share the sidedness of the
+/// caster's first member and, if one-sided, their normals lie within the cone about its normal.
+struct ClusterLevel final
+{
+    float32 RadiusMeters = 0;
+    float32 NormalConeCosine = 0;
+};
+constexpr usize CLUSTER_LEVEL_COUNT = 5;
+/// Ever coarser clusterings. The first that needs at most MAX_MESH_LIGHT_SHADOW_CASTERS casters is used; the last
+/// one is used up to the limit otherwise. Light fixtures are often closed shells of one-sided triangles (a bulb, a
+/// lantern) whose normals span every direction, so the normal cone is relaxed before the radius grows: such a
+/// fixture then forms one enclosing caster instead of one per facet direction.
+constexpr StaticArray<ClusterLevel, CLUSTER_LEVEL_COUNT> CLUSTER_LEVELS{{
+    {0.5F, NORMAL_CONE_COSINE},
+    {0.5F, 0},
+    {0.5F, ANY_NORMAL_COSINE},
+    {1, ANY_NORMAL_COSINE},
+    {2, ANY_NORMAL_COSINE},
+}};
 /// One-sided casters render from in front of their emitters: at least a centimetre, or this fraction of the radius.
 constexpr float32 ONE_SIDED_OFFSET_METERS = 0.01F;
 constexpr float32 ONE_SIDED_OFFSET_RELATIVE = 0.05F;
@@ -94,7 +114,10 @@ struct CasterBuild final
     float32 Radius = 0;
     math::Vector3 FirstNormalWorld;
     math::Vector3 NormalSumWorld;
+    /// The first member's sidedness, which a level with a normal cone requires of every member.
     bool IsTwoSided = false;
+    /// Whether the caster renders from its members' sphere centre, seeing past them, rather than from in front.
+    bool IsEnclosing = false;
     float32 Flux = 0;
 };
 math::Vector3 GetPosition(math::Vector4 word) noexcept
@@ -125,6 +148,73 @@ void MergeSpheres(math::Vector3 firstCenterWorld,
     const float32 radius = (distance + firstRadius + secondRadius) * 0.5F;
     outCenterWorld = firstCenterWorld + (secondCenterWorld - firstCenterWorld) * ((radius - firstRadius) / distance);
     outRadius = radius;
+}
+// Assign the brightest-first records to casters at one level: each joins the caster whose merged sphere stays
+// smallest within the level's radius, or starts a caster. Returns false, leaving the assignment incomplete, at the
+// first record that would need more than MAX_MESH_LIGHT_SHADOW_CASTERS casters, unless isFinal, which leaves every
+// such record unshadowed instead (Caster MAX_MESH_LIGHT_SHADOW_CASTERS).
+bool AssignCasters(const ClusterLevel& level,
+                   bool isFinal,
+                   Array<RecordInfo>& inoutRecords,
+                   Array<CasterBuild>& inoutBuilds) noexcept
+{
+    const bool hasNormalCone = level.NormalConeCosine >= -1;
+    inoutBuilds.Clear();
+    for (RecordInfo& record : inoutRecords)
+    {
+        record.Caster = MAX_MESH_LIGHT_SHADOW_CASTERS;
+        float32 bestRadius = level.RadiusMeters;
+        for (usize caster = 0; caster < inoutBuilds.GetSize(); ++caster)
+        {
+            const CasterBuild& build = inoutBuilds[caster];
+            if (hasNormalCone == true &&
+                (build.IsTwoSided != record.IsTwoSided ||
+                 (record.IsTwoSided == false &&
+                  math::Dot(build.FirstNormalWorld, record.NormalWorld) < level.NormalConeCosine)))
+            {
+                continue;
+            }
+            math::Vector3 mergedCenterWorld;
+            float32 mergedRadius = 0;
+            MergeSpheres(build.CenterWorld,
+                         build.Radius,
+                         record.CenterWorld,
+                         record.Radius,
+                         mergedCenterWorld,
+                         mergedRadius);
+            if (mergedRadius <= bestRadius)
+            {
+                bestRadius = mergedRadius;
+                record.Caster = static_cast<uint32>(caster);
+            }
+        }
+        if (record.Caster != MAX_MESH_LIGHT_SHADOW_CASTERS)
+        {
+            CasterBuild& build = inoutBuilds[record.Caster];
+            MergeSpheres(build.CenterWorld,
+                         build.Radius,
+                         record.CenterWorld,
+                         record.Radius,
+                         build.CenterWorld,
+                         build.Radius);
+        }
+        else if (inoutBuilds.GetSize() < MAX_MESH_LIGHT_SHADOW_CASTERS)
+        {
+            CasterBuild build;
+            build.CenterWorld = record.CenterWorld;
+            build.Radius = record.Radius;
+            build.FirstNormalWorld = record.NormalWorld;
+            build.IsTwoSided = record.IsTwoSided;
+            // Capacity for every caster is reserved by the caller.
+            static_cast<void>(inoutBuilds.TryAdd(build));
+            record.Caster = static_cast<uint32>(inoutBuilds.GetSize() - 1);
+        }
+        else if (isFinal == false)
+        {
+            return false;
+        }
+    }
+    return true;
 }
 uint32 GetBitCount(uint32 value) noexcept
 {
@@ -217,54 +307,16 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
     {
         return Status::OutOfMemory;
     }
-    MeshLightShadowReport report;
-    for (RecordInfo& record : records)
+    for (usize level = 0; level < CLUSTER_LEVEL_COUNT; ++level)
     {
-        record.Caster = MAX_MESH_LIGHT_SHADOW_CASTERS;
-        float32 bestRadius = CASTER_RADIUS_METERS;
-        for (usize caster = 0; caster < builds.GetSize(); ++caster)
+        if (AssignCasters(CLUSTER_LEVELS[level], level + 1 == CLUSTER_LEVEL_COUNT, records, builds) == true)
         {
-            const CasterBuild& build = builds[caster];
-            if (build.IsTwoSided != record.IsTwoSided ||
-                (record.IsTwoSided == false &&
-                 math::Dot(build.FirstNormalWorld, record.NormalWorld) < NORMAL_CONE_COSINE))
-            {
-                continue;
-            }
-            math::Vector3 mergedCenterWorld;
-            float32 mergedRadius = 0;
-            MergeSpheres(build.CenterWorld,
-                         build.Radius,
-                         record.CenterWorld,
-                         record.Radius,
-                         mergedCenterWorld,
-                         mergedRadius);
-            if (mergedRadius <= bestRadius)
-            {
-                bestRadius = mergedRadius;
-                record.Caster = static_cast<uint32>(caster);
-            }
+            break;
         }
-        if (record.Caster == MAX_MESH_LIGHT_SHADOW_CASTERS && builds.GetSize() < MAX_MESH_LIGHT_SHADOW_CASTERS)
-        {
-            CasterBuild build;
-            build.CenterWorld = record.CenterWorld;
-            build.Radius = record.Radius;
-            build.FirstNormalWorld = record.NormalWorld;
-            build.IsTwoSided = record.IsTwoSided;
-            static_cast<void>(builds.TryAdd(build));
-            record.Caster = static_cast<uint32>(builds.GetSize() - 1);
-        }
-        else if (record.Caster != MAX_MESH_LIGHT_SHADOW_CASTERS)
-        {
-            CasterBuild& build = builds[record.Caster];
-            MergeSpheres(build.CenterWorld,
-                         build.Radius,
-                         record.CenterWorld,
-                         record.Radius,
-                         build.CenterWorld,
-                         build.Radius);
-        }
+    }
+    MeshLightShadowReport report;
+    for (const RecordInfo& record : records)
+    {
         if (record.Caster == MAX_MESH_LIGHT_SHADOW_CASTERS)
         {
             ++report.UnshadowedRecords;
@@ -273,7 +325,22 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
         CasterBuild& build = builds[record.Caster];
         build.NormalSumWorld = build.NormalSumWorld + record.NormalWorld * record.Flux;
         build.Flux += record.Flux;
+        build.IsEnclosing = build.IsEnclosing == true || record.IsTwoSided == true;
         ++report.ShadowedRecords;
+    }
+    // One-sided members whose normals spread beyond the cone about their mean, such as the facets of a bulb, would
+    // block one another seen from in front of any of them; their caster encloses them instead.
+    for (const RecordInfo& record : records)
+    {
+        if (record.Caster == MAX_MESH_LIGHT_SHADOW_CASTERS)
+        {
+            continue;
+        }
+        CasterBuild& build = builds[record.Caster];
+        math::Vector3 meanNormalWorld;
+        build.IsEnclosing = build.IsEnclosing == true ||
+                            math::TryNormalize(build.NormalSumWorld, meanNormalWorld) != math::MathStatus::Success ||
+                            math::Dot(meanNormalWorld, record.NormalWorld) < NORMAL_CONE_COSINE;
     }
     Array<MeshLightShadowCaster> casters;
     if (casters.TryResize(builds.GetSize()) == false)
@@ -286,22 +353,20 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
         MeshLightShadowCaster& result = casters[caster];
         float32 offsetMeters = 0;
         math::Vector3 normalWorld = build.FirstNormalWorld;
-        if (build.IsTwoSided == false)
+        if (build.IsEnclosing == false)
         {
-            if (math::TryNormalize(build.NormalSumWorld, normalWorld) != math::MathStatus::Success)
-            {
-                normalWorld = build.FirstNormalWorld;
-            }
+            // Only a caster whose mean normal normalizes stays one-sided (above).
+            static_cast<void>(math::TryNormalize(build.NormalSumWorld, normalWorld));
             offsetMeters = math::Max(ONE_SIDED_OFFSET_METERS, ONE_SIDED_OFFSET_RELATIVE * build.Radius);
         }
         result.PositionWorld = build.CenterWorld + normalWorld * offsetMeters;
         result.LightRadiusMeters = build.Radius;
         // A one-sided caster sits in front of its emitters, which lie behind it and never block a receiver they
-        // light; a two-sided one sits inside its emitters and must see past them.
+        // light; an enclosing one sits inside its emitters and must see past them.
         result.NearMeters =
-            build.IsTwoSided == true ? math::Max(build.Radius, MINIMUM_NEAR_METERS) : offsetMeters * 0.5F;
+            build.IsEnclosing == true ? math::Max(build.Radius, MINIMUM_NEAR_METERS) : offsetMeters * 0.5F;
         result.Flux = build.Flux;
-        result.FaceMask = build.IsTwoSided == true ? ALL_FACES : 0;
+        result.FaceMask = build.IsEnclosing == true ? ALL_FACES : 0;
     }
     for (const RecordInfo& record : records)
     {
@@ -313,7 +378,7 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
         caster.RangeMeters =
             math::Max(caster.RangeMeters,
                       math::Length(record.ReachCenterWorld - caster.PositionWorld) + record.ReachRadius);
-        if (record.IsTwoSided == false)
+        if (builds[record.Caster].IsEnclosing == false)
         {
             // A face can receive this member's light unless its whole frustum lies behind the member's plane.
             for (uint32 face = 0; face < MESH_LIGHT_SHADOW_FACE_COUNT; ++face)

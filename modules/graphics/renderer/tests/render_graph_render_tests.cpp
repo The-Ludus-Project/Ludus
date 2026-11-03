@@ -2085,7 +2085,10 @@ TEST_CASE("default deferred mesh area lights cast shadows from cached cube faces
     const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
     // Without the wall the receiver is lit; the shadow lookup must not darken it.
     REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+    // Published faces wait for the first frame, which draws all five within its budgets.
+    CHECK(fixture.Graph.GetReport().PendingMeshLightShadowFaces == 5);
     render();
+    CHECK(fixture.Graph.GetReport().PendingMeshLightShadowFaces == 0);
     const uint8 litRed = fixture.Pixels[center];
     const uint8 litGreen = fixture.Pixels[center + 1];
     CHECK(litRed > 16);

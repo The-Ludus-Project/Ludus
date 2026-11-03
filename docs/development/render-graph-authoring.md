@@ -5913,14 +5913,33 @@ record widths or older role IDs; older packages remain readable.
 
 ### Mesh-light shadows
 
-Scene preparation groups the emitter records into at most 64 shadow casters, brightest
-first. A record joins a caster while their enclosing sphere stays within 0.5 m, their
-sidedness matches and, for one-sided emitters, their normals lie within 30 degrees;
-records beyond the 64th caster stay unshadowed and are counted in
-`RenderGraphSceneResourceReport::UnshadowedMeshLights`. A two-sided caster sits at the
-centre of its emitters; a one-sided caster sits a little in front of them, so its own
-emitters never occlude what it lights, and it renders no cube face that lies wholly
-behind them. Each caster's range is its members' culling reach, so every receiver the
+Scene preparation groups the emitter records into at most 256 shadow casters, brightest
+first. A record joins a caster while their enclosing sphere stays within a radius
+limit; at the finer levels their sidedness must also match and, for one-sided
+emitters, their normals must lie within a cone about the caster's first member.
+Preparation tries ever coarser levels and keeps the first that needs at most 256
+casters:
+
+| Level | Radius limit | Normals |
+| --- | --- | --- |
+| 1 | 0.5 m | within 30 degrees, same sidedness |
+| 2 | 0.5 m | within 90 degrees, same sidedness |
+| 3 | 0.5 m | any |
+| 4 | 1 m | any |
+| 5 | 2 m | any |
+
+When even the last level needs more, records beyond the 256th caster stay unshadowed
+and are counted in `RenderGraphSceneResourceReport::UnshadowedMeshLights`. Light
+fixtures are often closed shells of one-sided triangles, such as a bulb or a
+lantern, whose normals span every direction. Relaxing the normal cone before the
+radius lets such a fixture form one caster instead of one per facet direction.
+
+A caster whose one-sided members all lie within 30 degrees of their flux-weighted
+mean normal sits a little in front of them, so its own emitters never occlude what
+it lights, and it renders no cube face that lies wholly behind them. Any other caster
+encloses its members: two-sided emitters, or facets facing many ways. It sits at the
+centre of their enclosing sphere, renders all six faces and ignores occluders within
+its radius. Each caster's range is its members' culling reach, so every receiver the
 grid lists for a member is inside it.
 
 After the scene is published, each caster's cube faces are rendered once, with the
@@ -5928,13 +5947,17 @@ renderer's flat shadow pipeline, into one 2048 x 2048 RGBA8 atlas holding 16-bit
 conventional depth. Face slots are powers of two from 32 to 512 texels, sized by the
 square root of the caster's flux share and halved together until they fit, and each
 slot has a four-texel gutter rendered with a slightly wider field of view. The first
-frame clears the atlas to the far depth; faces are then drawn whole within the frame's
-draw budget, at most 64 per frame, so a large scene's shadows complete over a few
-frames and undrawn faces read as unoccluded. Camera-only updates reuse the atlas, and
-masked materials cast through their alpha-tested shadow pipeline. The atlas takes the
-resolve's material base-colour slot, which the resolve never samples; the caster table
-follows the culling grid, whose cull word records its position. A package whose resolve
-predates shadows ignores both, so no package version changes.
+frame clears the atlas to the far depth. Faces are then drawn whole, brightest caster
+first, within the frame's draw budget, at most 64 faces and about four million
+submitted triangles per frame; a single larger face is drawn alone. Undrawn faces read
+as unoccluded, and `RenderGraphReport::PendingMeshLightShadowFaces` counts the faces
+still to draw. A face draws every triangle of each mesh its frustum and its caster's
+range reach, so a scene of large meshes completes its faces over many frames.
+Camera-only updates reuse the atlas, and masked materials cast through their
+alpha-tested shadow pipeline. The atlas takes the resolve's material base-colour
+slot, which the resolve never samples; the caster table follows the culling grid,
+whose cull word records its position. A package whose resolve predates shadows
+ignores both, so no package version changes.
 
 The resolve multiplies each record's unshadowed integral by its caster's visibility at
 the receiver. It offsets the receiver by 1.5 shadow texels along its normal, searches
@@ -5945,26 +5968,37 @@ receiver's tangent plane has along that texel's ray, so a flat receiver never sh
 itself at grazing angles. The grid lists a caster's records together, so one lookup
 serves a run of them. The penumbra is an estimate from one point per caster: a large
 emitter's contact shadows are approximate, and occluders nearer than a caster's near
-distance (at least a hundredth of its range) are ignored.
+distance (at least a hundredth of its range, and its radius when it encloses its
+members) are ignored. Geometry such as window glass that the scene draws as opaque
+also blocks mesh light in the shadow faces.
 
 Measured with the `[.raster-mesh-light-benchmark]` editor test on an Apple M5 at
-1600 x 1080, with the editor viewport's device budgets (fastest of two interleaved runs
-on a loaded machine, whole GPU frame after the faces are drawn; the unshadowed runs cook
-the same resolve with visibility fixed at one):
+1600 x 1080, with the editor viewport's device budgets. Each build ran five times,
+interleaved, on a loaded machine. The test draws every pending face before it times
+the frames, and reports the face-drawing frames apart. The table compares the earlier
+single 0.5 m, 30-degree clustering with at most 64 casters against the levels above:
 
-| View | Unshadowed | Shadowed | Pixels darkened by more than 8 steps |
-| --- | --- | --- | --- |
-| Staircase2, outside the stair hall | 4.4 ms | 5.3 ms | 10.8% |
-| Staircase2, by the stairs | 4.9 ms | 5.8 ms | 6.4% |
-| Staircase2, in the corridor | 21.5 ms | 23.7 ms | 31.5% |
-| Bathroom, default orbit | 1.2 ms | 1.2 ms | 0.2% |
-| Bistro, camera inside the square | 10.7 ms | 11.0 ms | 0% |
+| Scene | Unshadowed records, 64 casters | Unshadowed records, levels | Casters | Faces | Face-drawing frames | Frame after faces, 64 casters | Frame after faces, levels |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Staircase2, outside the stair hall | 0 of 13 | 0 | 13 | 65 | 2 | 6.3 ms | 6.8 ms |
+| Staircase2, by the stairs | 0 of 13 | 0 | 13 | 65 | 2 | 7.2 ms | 7.0 ms |
+| Staircase2, in the corridor | 0 of 13 | 0 | 13 | 65 | 2 | 25.1 ms | 24.8 ms |
+| Bathroom, default orbit | 0 of 3,837 | 0 | 32 | 191 | 3, now 8 | 1.2 ms | 1.3 ms |
+| Bistro, camera inside the square | 17,474 of 17,571 | 0 | 237 | 1,399 | 6, now 203 | 11.4 ms | 12.3 ms |
+| Sponza, inside the atrium | 3,620 of 4,225 | 0 | 83 | 485 | 6, now 130 | 1.9 ms | 2.8 ms |
 
-Staircase2's 13 records form 13 casters, so every light is shadowed; its interior
-lights no longer show through the outer walls. Sixty-four casters shadow only the
-brightest 97 of Bistro's 17,571 records and 605 of Sponza's 4,225; the rest stay
-unshadowed, as `UnshadowedMeshLights` reports. Covering such scenes needs coarser or
-hierarchical casters, and drawing more faces over more frames.
+Staircase2 and Bathroom keep the first level's casters and render identical images, so
+their differences are measurement noise. Bistro's string lights and Sponza's
+chandeliers are bulbs of outward-facing triangles. The first level needs 2,148 and 538
+casters for them and the second 473 and 83, where Sponza stops; Bistro stops at the
+third, with 237. Shadowing every Bistro record costs its resolve about 1.9 ms, because each
+pixel now evaluates visibility for every caster that reaches it. Bistro's faces submit
+748 million triangles in all, about half a million each. Drawing 64 of them in one
+frame took up to 0.8 s, whereas the triangle budget spreads them over 203 frames that
+averaged 27 ms on the loaded machine. With the gain of the mesh-light resolve raised
+64 times so that the lights dominate, 2.2% of Bistro's pixels darken by more than
+eight steps against an unshadowed resolve (0.5% with 64 casters). Sponza's bulbs emit
+too little to change its eight-bit image.
 
 ## Create a saved graph and import it
 

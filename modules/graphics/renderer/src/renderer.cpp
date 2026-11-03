@@ -85,6 +85,11 @@ constexpr usize NO_MATERIAL = ~usize{0}, NO_SHADOW = ~usize{0};
 constexpr usize MESH_LIGHT_SHADOW_RESERVED_DRAWS = 16;
 /// Most shadow faces, each a raster pass, drawn in one frame.
 constexpr uint32 MAX_MESH_LIGHT_SHADOW_FACES_PER_FRAME = 64;
+/// Most triangles the shadow faces drawn in one frame submit; a face over the budget is drawn alone. A face submits
+/// every triangle of each mesh its frustum and caster range reach, so a scene of large meshes (Bistro: about half a
+/// million triangles per face) completes its faces over many frames instead of stalling a few.
+constexpr uint64 MAX_MESH_LIGHT_SHADOW_TRIANGLES_PER_FRAME = 4000000;
+constexpr uint64 TRIANGLE_INDEX_COUNT = 3;
 /// Rows of an instance's mesh-to-clip transform, and of its mesh-to-world affine rows.
 constexpr usize CLIP_ROW_COUNT = 4;
 constexpr usize WORLD_ROW_COUNT = 3;
@@ -5335,6 +5340,7 @@ Status Renderer::prepareMeshLightShadows(Snapshot snapshot,
                     {
                         return Status::OutOfMemory;
                     }
+                    draw.Triangles += uint64{s.MeshRecords[item.MeshSlot].IndexCount} / TRIANGLE_INDEX_COUNT;
                     if (packets.GetSize() > draw.FirstPacket &&
                         packets[packets.GetSize() - 1].MeshSlot == item.MeshSlot &&
                         packets[packets.GetSize() - 1].IsMasked == isMasked &&
@@ -5417,16 +5423,18 @@ Status Renderer::drawMeshLightShadows(PreparedView frameView, internal::MeshLigh
     const usize frameDraws = 2 * viewOrNull->DrawCount + MESH_LIGHT_SHADOW_RESERVED_DRAWS;
     const usize drawLimit = deviceInfo.Profile.Raster.DrawsPerFrame;
     usize budget = drawLimit > frameDraws ? drawLimit - frameDraws : 0;
+    uint64 triangleBudget = MAX_MESH_LIGHT_SHADOW_TRIANGLES_PER_FRAME;
     for (uint32 drawnFaces = 0;
          inoutAtlas.NextFace < inoutAtlas.Faces.GetSize() && drawnFaces < MAX_MESH_LIGHT_SHADOW_FACES_PER_FRAME;
          ++drawnFaces)
     {
         const internal::MeshLightShadowFaceDraw& draw = inoutAtlas.Faces[inoutAtlas.NextFace];
-        if (draw.PacketCount > budget)
+        if (draw.PacketCount > budget || (drawnFaces != 0 && draw.Triangles > triangleBudget))
         {
             break;
         }
         budget -= draw.PacketCount;
+        triangleBudget -= math::Min(draw.Triangles, triangleBudget);
         ++inoutAtlas.NextFace;
         if (draw.PacketCount == 0)
         {

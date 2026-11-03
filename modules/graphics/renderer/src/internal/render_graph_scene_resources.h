@@ -31,6 +31,8 @@ public:
     [[nodiscard]] rhi::TextureViewHandle GetMeshLightShadowView() const noexcept;
     /// The shadow atlas the frame encoder draws faces into; null without casters.
     [[nodiscard]] MeshLightShadowAtlas* GetMeshLightShadowAtlasOrNull() noexcept;
+    /// Shadow faces not yet drawn into the atlas; zero without casters.
+    [[nodiscard]] foundation::uint32 GetPendingMeshLightShadowFaces() const noexcept;
 
 private:
     struct State;

@@ -39,6 +39,8 @@ constexpr uint32 BENCHMARK_WIDTH = 1600;
 constexpr uint32 BENCHMARK_HEIGHT = 1080;
 constexpr uint32 WARMUP_FRAMES = 3;
 constexpr uint32 MEASURED_FRAMES = 20;
+/// Most frames spent drawing mesh-light shadow faces before the measured frames; they are timed separately.
+constexpr uint32 MAX_SHADOW_FILL_FRAMES = 4096;
 constexpr int32 PREPARATION_TIMEOUT_MILLISECONDS = 120000;
 constexpr float64 NANOSECONDS_PER_MILLISECOND = 1000000;
 
@@ -160,6 +162,31 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
         waitReady(status);
         const float64 preparationMilliseconds =
             static_cast<float64>(timer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND;
+        const auto renderFrame = [&]() {
+            REQUIRE(rhi::ArmGpuTiming(device) == rhi::RasterStatus::Ready);
+            rhi::SubmissionToken completion;
+            REQUIRE(graph.Render(surface, BENCHMARK_WIDTH, BENCHMARK_HEIGHT, completion) == rhi::RasterStatus::Ready);
+            timer.restart();
+            rhi::RasterStatus frameStatus = rhi::GetStatus(device, completion);
+            while (frameStatus == rhi::RasterStatus::Pending && timer.elapsed() < PREPARATION_TIMEOUT_MILLISECONDS)
+            {
+                QThread::msleep(1);
+                frameStatus = rhi::GetStatus(device, completion);
+            }
+            REQUIRE(frameStatus == rhi::RasterStatus::Ready);
+            rhi::GpuTiming timing;
+            REQUIRE(rhi::GetGpuTiming(device, timing) == rhi::RasterStatus::Ready);
+            REQUIRE(timing.State == rhi::GpuTimingState::Available);
+            return static_cast<float64>(timing.DurationNanoseconds) / NANOSECONDS_PER_MILLISECOND;
+        };
+        // Frames that draw cached mesh-light shadow faces are reported apart from the measured steady state.
+        QJsonArray fillFrames;
+        while (graph.GetReport().PendingMeshLightShadowFaces != 0 &&
+               static_cast<uint32>(fillFrames.size()) < MAX_SHADOW_FILL_FRAMES)
+        {
+            fillFrames.append(renderFrame());
+        }
+        REQUIRE(graph.GetReport().PendingMeshLightShadowFaces == 0);
         QJsonArray frames;
         QJsonArray passFrames;
         QJsonArray passNames;
@@ -249,6 +276,7 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
             {QStringLiteral("mesh_light_shadow_faces"),
              static_cast<qint64>(graph.GetReport().Resources.MeshLightShadowFaces)},
             {QStringLiteral("preparation_ms"), preparationMilliseconds},
+            {QStringLiteral("shadow_fill_gpu_frame_ms"), fillFrames},
             {QStringLiteral("gpu_frame_ms"), frames},
             {QStringLiteral("pass_names"), passNames},
             {QStringLiteral("pass_ms"), passFrames}};

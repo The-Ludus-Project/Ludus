@@ -139,6 +139,93 @@ TEST_CASE("two-sided emitters shadow every cube face and opposing normals stay a
     CHECK(GetCasterKey(words, 0) != GetCasterKey(words, 1));
 }
 
+TEST_CASE("bulbs of opposing one-sided facets merge into enclosing casters when finer casters exceed the limit",
+          "[mesh-area][mesh-light-shadows]")
+{
+    // Each bulb is an upper facet facing up and a lower one facing down. Clusterings with a normal cone need two
+    // casters per bulb, more than the limit, so the bulbs are clustered across normals: one caster each.
+    constexpr uint32 BULB_COUNT = renderer::MAX_MESH_LIGHT_SHADOW_CASTERS / 2 + 1;
+    constexpr float32 FACET_OFFSET_METERS = .02F;
+    Array<math::Vector4> words;
+    for (uint32 bulb = 0; bulb < BULB_COUNT; ++bulb)
+    {
+        const math::Vector3 centerWorld{SEPARATION_METERS * static_cast<float32>(bulb), 3, 0};
+        AddTriangle(words, centerWorld + math::Vector3{0, FACET_OFFSET_METERS, 0}, .03F, {0, 1, 0}, {2, 2, 2}, false);
+        AddTriangle(words, centerWorld - math::Vector3{0, FACET_OFFSET_METERS, 0}, .03F, {0, -1, 0}, {2, 2, 2}, false);
+    }
+    Array<internal::MeshLightShadowCaster> casters;
+    internal::MeshLightShadowReport report;
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, 2 * BULB_COUNT, casters, report) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(casters.GetSize() == BULB_COUNT);
+    CHECK(report.UnshadowedRecords == 0);
+    CHECK(report.ShadowedRecords == 2 * BULB_COUNT);
+    CHECK(report.Faces == BULB_COUNT * renderer::MESH_LIGHT_SHADOW_FACE_COUNT);
+    for (usize bulb = 0; bulb < BULB_COUNT; ++bulb)
+    {
+        const uint32 key = GetCasterKey(words, 2 * bulb);
+        REQUIRE(key != 0);
+        CHECK(GetCasterKey(words, 2 * bulb + 1) == key);
+        // The caster encloses both facets: it renders from between them, every face, past their sphere.
+        const internal::MeshLightShadowCaster& caster = casters[key - 1];
+        // Equal facets: the sphere enclosing both is centred between their bound spheres (deferred_layout.h).
+        const usize upperBound = 2 * bulb * (renderer::MESH_LIGHT_POLYGON_HEADER_WORDS + CORNER_COUNT) +
+                                 renderer::MESH_LIGHT_POLYGON_BOUND_WORD;
+        const usize lowerBound = upperBound + renderer::MESH_LIGHT_POLYGON_HEADER_WORDS + CORNER_COUNT;
+        const math::Vector3 centerWorld =
+            (math::Vector3{words[upperBound].X, words[upperBound].Y, words[upperBound].Z} +
+             math::Vector3{words[lowerBound].X, words[lowerBound].Y, words[lowerBound].Z}) *
+            .5F;
+        CHECK(math::Length(caster.PositionWorld - centerWorld) < 1e-4F);
+        CHECK(caster.FaceMask == (1U << renderer::MESH_LIGHT_SHADOW_FACE_COUNT) - 1);
+        CHECK(caster.NearMeters >= caster.LightRadiusMeters);
+        CHECK(caster.LightRadiusMeters > FACET_OFFSET_METERS);
+    }
+}
+
+TEST_CASE("one-sided facets spread beyond the cone about their mean normal share an enclosing caster",
+          "[mesh-area][mesh-light-shadows]")
+{
+    // Facets of a downward lamp tilted 29 degrees about z from the brightest one's normal: all lie in the cone
+    // about that first member, so they form one caster.
+    constexpr float32 TILT_SINE = .48480962F;
+    constexpr float32 TILT_COSINE = .87461971F;
+    // The brightest facet faces straight down, tiltedCount facets lean one way and one the other way.
+    const auto addLamp = [](Array<math::Vector4>& outWords, usize tiltedCount) {
+        AddTriangle(outWords, {0, 3, 0}, .05F, {0, -1, 0}, {5, 5, 5}, false);
+        for (usize facet = 0; facet < tiltedCount; ++facet)
+        {
+            AddTriangle(outWords,
+                        {.05F * static_cast<float32>(facet + 1), 3, 0},
+                        .05F,
+                        {TILT_SINE, -TILT_COSINE, 0},
+                        {4, 4, 4},
+                        false);
+        }
+        AddTriangle(outWords, {-.05F, 3, 0}, .05F, {-TILT_SINE, -TILT_COSINE, 0}, {4, 4, 4}, false);
+    };
+    // One facet each way: their mean points down, 29 degrees from each, so the caster renders from in front of
+    // them, without the face behind them.
+    Array<math::Vector4> balanced;
+    addLamp(balanced, 1);
+    Array<internal::MeshLightShadowCaster> casters;
+    internal::MeshLightShadowReport report;
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(balanced, 3, casters, report) == rhi::RasterStatus::Ready);
+    REQUIRE(casters.GetSize() == 1);
+    CHECK(casters[0].PositionWorld.Y < 3);
+    CHECK((casters[0].FaceMask & (1U << 2)) == 0);
+    // Five facets one way tilt the mean 17 degrees towards them, 46 degrees from the opposite facet: no point in
+    // front of every facet sees past the others, so the caster encloses them.
+    constexpr usize LOPSIDED_COUNT = 5;
+    Array<math::Vector4> lopsided;
+    addLamp(lopsided, LOPSIDED_COUNT);
+    REQUIRE(internal::BuildRasterMeshLightShadowCasters(lopsided, LOPSIDED_COUNT + 2, casters, report) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(casters.GetSize() == 1);
+    CHECK(casters[0].FaceMask == (1U << renderer::MESH_LIGHT_SHADOW_FACE_COUNT) - 1);
+    CHECK(casters[0].NearMeters >= casters[0].LightRadiusMeters);
+}
+
 TEST_CASE("mesh-light shadow casters stop at the limit and leave dimmer records unshadowed",
           "[mesh-area][mesh-light-shadows]")
 {
