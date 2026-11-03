@@ -2741,7 +2741,8 @@ required bytes and available bytes in `RenderGraphReport::SceneDiagnostics`.
 Native/RHI and raster cache failures can report only their status.
 
 The `[scene-capacity]` regression in `render_graph_ray_tests.cpp` prepares a
-generated 102,400-triangle scene through the three-pass `ComputeBvh`
+generated 102,400-triangle scene ([importable as a test scene](scene-source-format.md#engine-test-scenes))
+through the three-pass `ComputeBvh`
 line-sampling template. It checks that the graph's logical RHI bytes grow by
 less than two packed copies. The hidden `[.line-traversal-performance]`
 measurement selects an explicit device budget; full-scene viewport acceptance

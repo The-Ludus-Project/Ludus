@@ -1,0 +1,111 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Cornell box",
+  "description": "The Cornell room of the render-graph GPU tests: a white room spanning [-1, 1] on every axis, open towards the camera on +z, with a red left wall, a green right wall, a one-sided square ceiling light (radiance 12) and the floating top of a block that shadows the floor. Every surface is a rough dielectric (roughness 1). Most ray-template, MIS and denoiser GPU tests render it.",
+  "camera": {
+    "eye": [0, 0, 3.4],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 48.88790956083307
+  },
+  "materials": [
+    {"name": "White", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1},
+    {"name": "Red", "model": "metallic_roughness", "base_color": [0.8, 0.1, 0.1], "roughness": 1},
+    {"name": "Green", "model": "metallic_roughness", "base_color": [0.1, 0.8, 0.1], "roughness": 1},
+    {"name": "Light", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [12, 12, 12], "two_sided": false}}
+  ],
+  "objects": [
+    {
+      "name": "Floor",
+      "material": "White",
+      "positions": [
+        [-1, -1, 1],
+        [1, -1, 1],
+        [1, -1, -1],
+        [-1, -1, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Ceiling",
+      "material": "White",
+      "positions": [
+        [-1, 1, -1],
+        [1, 1, -1],
+        [1, 1, 1],
+        [-1, 1, 1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Back wall",
+      "material": "White",
+      "positions": [
+        [-1, -1, -1],
+        [1, -1, -1],
+        [1, 1, -1],
+        [-1, 1, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Left wall",
+      "material": "Red",
+      "positions": [
+        [-1, -1, 1],
+        [-1, -1, -1],
+        [-1, 1, -1],
+        [-1, 1, 1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Right wall",
+      "material": "Green",
+      "positions": [
+        [1, -1, -1],
+        [1, -1, 1],
+        [1, 1, 1],
+        [1, 1, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Ceiling light",
+      "material": "Light",
+      "positions": [
+        [-0.35, 0.98, -0.35],
+        [0.35, 0.98, -0.35],
+        [0.35, 0.98, 0.35],
+        [-0.35, 0.98, 0.35]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Block top",
+      "material": "White",
+      "positions": [
+        [-0.5, -0.3, 0],
+        [0, -0.3, 0],
+        [0, -0.3, -0.5],
+        [-0.5, -0.3, -0.5]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    }
+  ]
+}
