@@ -3412,7 +3412,9 @@ TEST_CASE("Compute ray-tracing import extends a shared ray technique and numbers
     QJsonObject interface = original.value(QStringLiteral("scene_interface")).toObject();
     SECTION("budgets rise and callbacks remain")
     {
-        constexpr int32 AUTHORED_SURFACE_QUERIES = 3;
+        // Above the template's own surface budget (9 glass-chain queries) and within the cap of 16, so the
+        // authored maximum is kept while the missing visibility budget rises.
+        constexpr int32 AUTHORED_SURFACE_QUERIES = 12;
         interface.insert(QStringLiteral("surface_queries"), AUTHORED_SURFACE_QUERIES);
         interface.insert(QStringLiteral("visibility_queries"), 0);
         setInterface(interface);
