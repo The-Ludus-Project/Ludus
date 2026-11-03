@@ -171,7 +171,7 @@
       ],
       "scene_interface": {
         "version": 1,
-        "surface_queries": 1,
+        "surface_queries": 9,
         "visibility_queries": 1
       }
     }
@@ -188,46 +188,6 @@
       "value": 0.1,
       "minimum": 0,
       "maximum": 1
-    },
-    {
-      "id": "LUMINAIRE_RADIANCE_SCALE",
-      "label": "Luminaire radiance scale",
-      "type": "Float32",
-      "value": 6,
-      "minimum": 0,
-      "maximum": 1000
-    },
-    {
-      "id": "LUMINAIRE_BEAM_WIDTH",
-      "label": "Luminaire beam width (slope units)",
-      "type": "Float32",
-      "value": 0.02,
-      "minimum": 0.001,
-      "maximum": 1
-    },
-    {
-      "id": "LUMINAIRE_BEAM_STEERING",
-      "label": "Luminaire beam steering (slope units)",
-      "type": "Float32",
-      "value": 0.12,
-      "minimum": 0,
-      "maximum": 2
-    },
-    {
-      "id": "LUMINAIRE_BEAM_SPREAD",
-      "label": "Luminaire beam spread (slope per panel half extent)",
-      "type": "Float32",
-      "value": 0.08,
-      "minimum": 0,
-      "maximum": 2
-    },
-    {
-      "id": "LUMINAIRE_BEAM_TWIST",
-      "label": "Luminaire beam twist (slope per panel half extent)",
-      "type": "Float32",
-      "value": 0.04,
-      "minimum": 0,
-      "maximum": 2
     }
   ]
 }

@@ -8305,16 +8305,50 @@ TEST_CASE("Latched graph pixels name the check that failed them",
 namespace
 {
 // slice-sampling-luminaire template tests. Thanks to Shlomi Steinberg, "Slice Sampling: Importance sampling with an
-// auxiliary map" (draft, University of Waterloo), section 6: the template lights the room with an analytic directional
-// LED panel and exports a defensive slice-sampling mixture (Eq. 15), slice sampling alone and uniform panel-area
-// sampling. Every pass is a shade pass; the first also records the primary hit. The proposals' unbiasedness on raw
-// linear irradiance is checked in slice_sampling_luminaire_estimator_tests.cpp.
+// auxiliary map" (draft, University of Waterloo), section 6: the template lights the room with the scene's analytic
+// directional LED panels (renderer::PanelLuminaire) and exports a defensive slice-sampling mixture (Eq. 15), slice
+// sampling alone and uniform panel-area sampling. Every pass is a shade pass; the first also records the primary hit.
+// The proposals' unbiasedness on raw linear irradiance is checked in slice_sampling_luminaire_estimator_tests.cpp.
 constexpr usize SLICE_SAMPLING_OUTPUT_COUNT = 3;
 constexpr usize SLICE_SAMPLING_DEFENSIVE = 0;
 constexpr usize SLICE_SAMPLING_ALONE = 1;
 constexpr usize SLICE_SAMPLING_UNIFORM_AREA = 2;
 const PackageLocation SLICE_SAMPLING_LUMINAIRE_TEMPLATE{LUDUS_RG3_SLICE_SAMPLING_LUMINAIRE_TEMPLATE_DIRECTORY,
                                                         "rg2_slice_sampling_luminaire_template.lurgrt"};
+
+/// The Cornell box's luminaire: a 0.7 x 0.7 panel facing down at y = 0.97, just below the ceiling light, with a new
+/// World luminaire's beam profile. slice_sampling_luminaire_estimators.slang tests the same panel.
+renderer::PanelLuminaire MakeCornellLuminaire()
+{
+    renderer::PanelLuminaire luminaire;
+    luminaire.SourceId = 1;
+    luminaire.CenterWorld = {0, .97F, 0};
+    luminaire.TangentWorld = {1, 0, 0};
+    luminaire.BitangentWorld = {0, 0, 1};
+    return luminaire;
+}
+
+/// Mean linear radiance of one tone-mapped RGBA8 image's left (isRight false) or right third of columns.
+math::Vector3 ComputeSideMeanRadiance(const Array<uint8>& pixels, uint32 width, bool isRight)
+{
+    constexpr uint32 SIDE_FRACTION = 3;
+    constexpr usize CHANNELS = 4;
+    const uint32 sideWidth = width / SIDE_FRACTION;
+    const uint32 firstColumn = isRight == true ? width - sideWidth : 0;
+    const usize rows = pixels.GetSize() / (usize{width} * CHANNELS);
+    math::Vector3 sum{};
+    for (usize row = 0; row < rows; ++row)
+    {
+        for (uint32 column = firstColumn; column < firstColumn + sideWidth; ++column)
+        {
+            const usize address = (row * width + column) * CHANNELS;
+            sum = sum + math::Vector3{DecodeToneMapped(pixels[address]),
+                                      DecodeToneMapped(pixels[address + 1]),
+                                      DecodeToneMapped(pixels[address + 2])};
+        }
+    }
+    return sum / static_cast<float32>(rows * sideWidth);
+}
 
 /// Render frameCount frames of the template and read each output's running mean after the last one. The template's
 /// three passes write its three outputs in output order.
@@ -8348,7 +8382,9 @@ TEST_CASE("The slice-sampling-luminaire template lights the room with its panel 
           "[render-graph][gpu][slice-sampling-luminaire][template]")
 {
     GraphGpuFixture fixture(false, false);
-    const CornellBox room;
+    CornellBox room;
+    const renderer::PanelLuminaire panel = MakeCornellLuminaire();
+    room.Inputs.Luminaires = {&panel, 1};
     PreparedGraph luminaire(fixture, SLICE_SAMPLING_LUMINAIRE_TEMPLATE, room, 1);
     CheckSameStage(
         luminaire.Programs.RayCompute,
@@ -8395,7 +8431,9 @@ TEST_CASE("Slice sampling the template's luminaire has far less error than unifo
     // that uniform area sampling rarely hits, while slice sampling proposes them directly. Compare low-sample images
     // of each output with an independent converged defensive image, whose scene revision reseeds sampling.
     GraphGpuFixture fixture(false, false);
-    const CornellBox room;
+    CornellBox room;
+    const renderer::PanelLuminaire panel = MakeCornellLuminaire();
+    room.Inputs.Luminaires = {&panel, 1};
     constexpr usize LOW_FRAME_COUNT = 16;
     StaticArray<Array<uint8>, SLICE_SAMPLING_OUTPUT_COUNT> pixels;
     {
@@ -8420,6 +8458,68 @@ TEST_CASE("Slice sampling the template's luminaire has far less error than unifo
     constexpr float64 ERROR_REDUCTION = 4;
     CHECK(defensive * ERROR_REDUCTION < area);
     CHECK(slice * ERROR_REDUCTION < area);
+}
+
+TEST_CASE("The slice-sampling-luminaire template lights the room from the scene's luminaires only",
+          "[render-graph][gpu][slice-sampling-luminaire][template]")
+{
+    // The panel is scene data, not a shader constant: without a luminaire only the ceiling light's own emission is
+    // seen, and a panel moved onto the red left wall, facing the green right wall, lights that wall instead of the
+    // floor. Two panels split one sample between them by uniform selection.
+    GraphGpuFixture fixture(false, false);
+    constexpr usize FRAME_COUNT = 64;
+    CornellBox room;
+    StaticArray<Array<uint8>, SLICE_SAMPLING_OUTPUT_COUNT> unlit;
+    {
+        PreparedGraph graph(fixture, SLICE_SAMPLING_LUMINAIRE_TEMPLATE, room, 1);
+        RenderSliceSamplingOutputs(graph, fixture, FRAME_COUNT, unlit);
+    }
+    const renderer::PanelLuminaire ceiling = MakeCornellLuminaire();
+    room.Inputs.Luminaires = {&ceiling, 1};
+    StaticArray<Array<uint8>, SLICE_SAMPLING_OUTPUT_COUNT> lit;
+    {
+        PreparedGraph graph(fixture, SLICE_SAMPLING_LUMINAIRE_TEMPLATE, room, 2);
+        RenderSliceSamplingOutputs(graph, fixture, FRAME_COUNT, lit);
+    }
+    renderer::PanelLuminaire wall = MakeCornellLuminaire();
+    wall.SourceId = 2;
+    wall.CenterWorld = {-.97F, 0, 0};
+    // cross(tangent, bitangent) = +X: the panel faces the green wall.
+    wall.TangentWorld = {0, 0, 1};
+    wall.BitangentWorld = {0, -1, 0};
+    room.Inputs.Luminaires = {&wall, 1};
+    StaticArray<Array<uint8>, SLICE_SAMPLING_OUTPUT_COUNT> moved;
+    {
+        PreparedGraph graph(fixture, SLICE_SAMPLING_LUMINAIRE_TEMPLATE, room, 3);
+        RenderSliceSamplingOutputs(graph, fixture, FRAME_COUNT, moved);
+    }
+    const StaticArray<renderer::PanelLuminaire, 2> both{{ceiling, wall}};
+    room.Inputs.Luminaires = {both.GetData(), both.GetSize()};
+    StaticArray<Array<uint8>, SLICE_SAMPLING_OUTPUT_COUNT> paired;
+    {
+        PreparedGraph graph(fixture, SLICE_SAMPLING_LUMINAIRE_TEMPLATE, room, 4);
+        RenderSliceSamplingOutputs(graph, fixture, FRAME_COUNT, paired);
+    }
+    const math::Vector3 unlitMean = ComputeMeanRadiance(unlit[SLICE_SAMPLING_DEFENSIVE]);
+    const math::Vector3 litMean = ComputeMeanRadiance(lit[SLICE_SAMPLING_DEFENSIVE]);
+    const math::Vector3 movedMean = ComputeMeanRadiance(moved[SLICE_SAMPLING_DEFENSIVE]);
+    const math::Vector3 pairedMean = ComputeMeanRadiance(paired[SLICE_SAMPLING_DEFENSIVE]);
+    const math::Vector3 unlitRight = ComputeSideMeanRadiance(unlit[SLICE_SAMPLING_DEFENSIVE], WIDTH, true);
+    const math::Vector3 litRight = ComputeSideMeanRadiance(lit[SLICE_SAMPLING_DEFENSIVE], WIDTH, true);
+    const math::Vector3 movedRight = ComputeSideMeanRadiance(moved[SLICE_SAMPLING_DEFENSIVE], WIDTH, true);
+    INFO("mean green: unlit=" << unlitMean.Y << ", ceiling panel=" << litMean.Y << ", wall panel=" << movedMean.Y
+                              << ", both=" << pairedMean.Y << "; right third green: unlit=" << unlitRight.Y
+                              << ", ceiling panel=" << litRight.Y << ", wall panel=" << movedRight.Y);
+    // Without a luminaire only the visible ceiling light remains; each panel adds its own light to the room.
+    constexpr float32 MINIMUM_PANEL_GAIN = .005F;
+    CHECK(litMean.Y - unlitMean.Y > MINIMUM_PANEL_GAIN);
+    CHECK(movedMean.Y - unlitMean.Y > MINIMUM_PANEL_GAIN);
+    // The wall panel lights the green wall on the image's right far more than the ceiling panel does.
+    constexpr float32 MOVED_GAIN = 4;
+    CHECK(movedRight.Y - unlitRight.Y > MOVED_GAIN * (litRight.Y - unlitRight.Y) + MINIMUM_PANEL_GAIN);
+    // Two panels light the room more than either alone: uniform selection keeps the estimate the sum of both.
+    CHECK(pairedMean.Y - unlitMean.Y > litMean.Y - unlitMean.Y);
+    CHECK(pairedMean.Y - unlitMean.Y > movedMean.Y - unlitMean.Y);
 }
 
 namespace

@@ -1983,3 +1983,126 @@ TEST_CASE("default deferred mesh area lights illuminate a receiver with CPU chec
         CHECK(fixture.Pixels == lastDrawable);
     }
 }
+
+TEST_CASE("default deferred mesh area lights cast shadows from cached cube faces",
+          "[mesh-area][mesh-light-shadows][gpu]")
+{
+    constexpr usize SCENE_COUNT = 3;
+    constexpr usize POLL_ATTEMPTS = 10000;
+    constexpr usize WALL_VERTEX_COUNT = 4;
+    constexpr usize WALL_INDEX_COUNT = 6;
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const auto poll = [&](rhi::RasterStatus status) {
+        for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            status = fixture.Graph.Poll();
+        }
+        return status;
+    };
+    REQUIRE(poll(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+    rhi::TextureHandle outputTexture;
+    rhi::TextureAspect outputAspect;
+    REQUIRE(fixture.Graph.GetExportAllocation(0, outputTexture, outputAspect) == rhi::RasterStatus::Ready);
+    renderer::Renderer compositor;
+    REQUIRE(compositor.Initialize(fixture.Device, programs.ColorVertex, programs.ColorFragment) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(compositor.InitializeViews(shaders::renderer_composite::Vertex(),
+                                       shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+    renderer::ViewMapping mapping;
+    REQUIRE(renderer::ResolveViewMapping({WIDTH, HEIGHT, renderer::ScreenFit::Stretch},
+                                         {0, 0, WIDTH, HEIGHT},
+                                         WIDTH,
+                                         HEIGHT,
+                                         mapping) == rhi::RasterStatus::Ready);
+    renderer::Presentation presentation;
+    REQUIRE(compositor.PreparePresentation(outputTexture, mapping, presentation) == rhi::RasterStatus::Ready);
+    const auto render = [&]() {
+        REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(fixture.Graph.Encode(fixture.Surface) == rhi::RasterStatus::Ready);
+        REQUIRE(compositor.DrawPresentation(presentation) == rhi::RasterStatus::Ready);
+        rhi::SubmissionToken completion;
+        REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
+        const rhi::RasterStatus status = fixture.Graph.ConfirmSubmission(completion);
+        REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
+        REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    };
+    // The receiver and the downward emitter of the CPU-checked test, plus a vertical wall at x = 0.15 between the
+    // receiver's centre and the whole emitter. The orthographic camera looks straight down, so it sees the wall
+    // edge-on and the centre pixel still shows the receiver.
+    const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+    const StaticArray<uint32, INDEX_COUNT> reversed{{0, 2, 1}};
+    const StaticArray<math::Vector3, WALL_VERTEX_COUNT> wallPositions{
+        {{.15F, -1, .45F}, {.15F, 1, .45F}, {.15F, 1, 1}, {.15F, -1, 1}}};
+    const StaticArray<math::Vector3, WALL_VERTEX_COUNT> wallNormals{{{-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}}};
+    const StaticArray<uint32, WALL_INDEX_COUNT> wallIndices{{0, 2, 1, 0, 3, 2}};
+    StaticArray<renderer::RenderGraphMesh, SCENE_COUNT> meshes{
+        {fixture.Meshes[0], fixture.Meshes[0], fixture.Meshes[0]}};
+    const uint32 receiverMaterial = 0;
+    const uint32 emitterMaterial = 1;
+    meshes[0].Geometry.Normals = normals.GetData();
+    meshes[1].Geometry.Normals = normals.GetData();
+    meshes[1].Geometry.Indices = reversed.GetData();
+    meshes[2].Geometry = {wallPositions.GetData(),
+                          wallPositions.GetSize(),
+                          wallIndices.GetData(),
+                          wallIndices.GetSize()};
+    meshes[2].Geometry.Normals = wallNormals.GetData();
+    meshes[0].MaterialBindings = {&receiverMaterial, 1};
+    meshes[1].MaterialBindings = {&emitterMaterial, 1};
+    meshes[2].MaterialBindings = {&receiverMaterial, 1};
+    StaticArray<renderer::RenderGraphItem, SCENE_COUNT> items{{fixture.Items[0], fixture.Items[0], fixture.Items[0]}};
+    items[1].SourceId = 2;
+    items[1].MeshIndex = 1;
+    items[1].MeshToWorld.Translation = {.8F, 0, .3F};
+    items[2].SourceId = 3;
+    items[2].MeshIndex = 2;
+    StaticArray<renderer::SceneShaderMaterial, 2> materials{};
+    materials[1].BaseColor = {};
+    // Bright enough that the lit receiver stands well clear of the shadowed one in eight bits.
+    materials[1].Emission = {5.6F, 1.6F, 0};
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    fixture.Cameras[0].OrthographicCamera = true;
+    uint64 revision = 0;
+    const auto update = [&](usize itemCount) {
+        renderer::RenderGraphReport report;
+        ++revision;
+        return poll(fixture.Graph.Update({meshes.GetData(), meshes.GetSize()},
+                                         {items.GetData(), itemCount},
+                                         {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                         revision,
+                                         renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                         report,
+                                         &inputs,
+                                         revision));
+    };
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    // Without the wall the receiver is lit; the shadow lookup must not darken it.
+    REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+    render();
+    const uint8 litRed = fixture.Pixels[center];
+    const uint8 litGreen = fixture.Pixels[center + 1];
+    CHECK(litRed > 16);
+    CHECK(fixture.Graph.GetReport().Resources.MeshLightShadowCasters == 1);
+    CHECK(fixture.Graph.GetReport().Resources.UnshadowedMeshLights == 0);
+    CHECK(fixture.Graph.GetReport().Resources.MeshLightShadowFaces == 5);
+    // A second frame changes nothing: every face was drawn in the first.
+    render();
+    CHECK(fixture.Pixels[center] == litRed);
+    // The wall hides the whole emitter from the centre.
+    REQUIRE(update(SCENE_COUNT) == rhi::RasterStatus::Ready);
+    render();
+    CHECK(fixture.Pixels[center] <= 1);
+    CHECK(fixture.Pixels[center + 1] <= 1);
+    // Removing it restores the lit value.
+    REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+    render();
+    CHECK(fixture.Pixels[center] == litRed);
+    CHECK(fixture.Pixels[center + 1] == litGreen);
+}

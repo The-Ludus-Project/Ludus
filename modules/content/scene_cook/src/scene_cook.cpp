@@ -519,11 +519,12 @@ struct AllowedParams final
 
 // Command names and parameter keys occupy distinct positions in the source grammar.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+/// typedMaterialType names the typed reference route's material type; empty outside that route.
 [[nodiscard]] bool
-IsParameterAllowed(std::string_view command, std::string_view key, bool shouldAdmitCoatingParameters) noexcept
+IsParameterAllowed(std::string_view command, std::string_view key, std::string_view typedMaterialType) noexcept
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
-    if (shouldAdmitCoatingParameters == true && command == "MakeNamedMaterial")
+    if (typedMaterialType == "coateddiffuse" && command == "MakeNamedMaterial")
     {
         for (const std::string_view allowed :
              {"float eta", "float thickness", "rgb albedo", "float g", "integer maxdepth", "integer nsamples"})
@@ -533,6 +534,11 @@ IsParameterAllowed(std::string_view command, std::string_view key, bool shouldAd
                 return true;
             }
         }
+    }
+    if ((typedMaterialType == "dielectric" || typedMaterialType == "thindielectric") &&
+        command == "MakeNamedMaterial" && (key == "float eta" || key == "float roughness"))
+    {
+        return true;
     }
     static const AllowedParams TABLE[] = {
         {"Integrator", {"integer maxdepth", "string lightsampler", "float trainingBudgetRatio"}},
@@ -691,13 +697,21 @@ IsParameterAllowed(std::string_view command, std::string_view key, bool shouldAd
                 return errors.FailOutOfMemory();
             }
         }
-        const bool canAdmitCoatingParameters =
-            shouldAdmitCoatingParameters == true &&
-            HasSingleValue(FindParameter(command, "string type"), "coateddiffuse") == true;
+        std::string_view typedMaterialType;
+        if (shouldAdmitCoatingParameters == true)
+        {
+            for (const std::string_view type : {"coateddiffuse", "dielectric", "thindielectric"})
+            {
+                if (HasSingleValue(FindParameter(command, "string type"), type) == true)
+                {
+                    typedMaterialType = type;
+                }
+            }
+        }
         for (const Parameter& parameter : command.Params)
         {
             if (parameter.IsAssigned == false ||
-                IsParameterAllowed(name, parameter.Key.GetView(), canAdmitCoatingParameters) == false)
+                IsParameterAllowed(name, parameter.Key.GetView(), typedMaterialType) == false)
             {
                 return errors.FailInvalid("unsupported or missing parameter for ", name);
             }
@@ -3056,6 +3070,52 @@ ResolveCoatingParameters(Cooker& inoutCooker, const MaterialReference& source, M
     inoutMaterial.Scattering.CoatingThickness = static_cast<float32>(thickness);
     return true;
 }
+/// pbrt-v4 smooth dielectric: scalar eta and an effectively smooth interface. Rough transmission is rejected.
+[[nodiscard]] bool
+ResolveDielectricParameters(Cooker& inoutCooker, const MaterialReference& source, Material& inoutMaterial) noexcept
+{
+    float64 eta = 0;
+    float64 roughness = 0;
+    float64 roughnessU = 0;
+    float64 roughnessV = 0;
+    if (ReadMaterialScalar(inoutCooker,
+                           source,
+                           "float eta",
+                           static_cast<float64>(format::DEFAULT_DIELECTRIC_ETA),
+                           eta) == false ||
+        ReadMaterialScalar(inoutCooker, source, "float roughness", 0, roughness) == false ||
+        ReadMaterialScalar(inoutCooker, source, "float uroughness", roughness, roughnessU) == false ||
+        ReadMaterialScalar(inoutCooker, source, "float vroughness", roughness, roughnessV) == false)
+    {
+        return false;
+    }
+    // pbrt-v4 remaps by default: TrowbridgeReitzDistribution::RoughnessToAlpha is the square root.
+    const Parameter* remapOrNull = inoutCooker.FindMaterialParameter(source, "bool remaproughness");
+    const bool isRemapped = remapOrNull == nullptr || HasSingleValue(remapOrNull, "false") == false;
+    const float64 alphaU = isRemapped == true ? math::Sqrt(math::Max(roughnessU, 0.0)) : roughnessU;
+    const float64 alphaV = isRemapped == true ? math::Sqrt(math::Max(roughnessV, 0.0)) : roughnessV;
+    if (eta <= 0 || eta > static_cast<float64>(format::MAX_MATERIAL_OPTICAL_CONSTANT) || roughnessU < 0 ||
+        roughnessV < 0)
+    {
+        return inoutCooker.Context.Errors.FailInvalid("invalid dielectric parameters");
+    }
+    if (math::Max(alphaU, alphaV) >= static_cast<float64>(format::LUDUS_SMOOTH_INTERFACE_ALPHA))
+    {
+        return inoutCooker.Context.Errors.FailInvalid("rough dielectric transmission is not supported");
+    }
+    for (usize channel = 0; channel < format::MATERIAL_RGB_CHANNELS; ++channel)
+    {
+        inoutMaterial.Scattering.Eta[channel] = static_cast<float32>(eta);
+        inoutMaterial.Scattering.K[channel] = 0;
+    }
+    inoutMaterial.Scattering.AlphaU = format::MIN_MATERIAL_ALPHA;
+    inoutMaterial.Scattering.AlphaV = format::MIN_MATERIAL_ALPHA;
+    // Evaluators without transmission shade the legacy fields: a smooth dark reflector.
+    const float64 fallback = static_cast<float64>(format::DIELECTRIC_FALLBACK_REFLECTANCE);
+    inoutMaterial.Reflectance = {fallback, fallback, fallback};
+    inoutMaterial.Roughness = static_cast<float64>(format::MIN_ROUGHNESS);
+    return true;
+}
 [[nodiscard]] bool PrepareTypedMaterials(Cooker& inoutCooker) noexcept
 {
     if (inoutCooker.Source.Materials.GetSize() > format::IMPORT_LIMITS.Materials)
@@ -3082,14 +3142,24 @@ ResolveCoatingParameters(Cooker& inoutCooker, const MaterialReference& source, M
         {
             return inoutCooker.Context.Errors.FailInvalid("material name exceeds the stored name capacity");
         }
-        material.Scattering.Model = type == "diffuse"     ? format::MaterialModel::Diffuse
-                                    : type == "conductor" ? format::MaterialModel::Conductor
-                                                          : format::MaterialModel::CoatedDiffuse;
-        if (type != "diffuse" && type != "conductor" && type != "coateddiffuse")
+        const bool isDielectric = type == "dielectric" || type == "thindielectric";
+        material.Scattering.Model = type == "diffuse"          ? format::MaterialModel::Diffuse
+                                    : type == "conductor"      ? format::MaterialModel::Conductor
+                                    : type == "dielectric"     ? format::MaterialModel::Dielectric
+                                    : type == "thindielectric" ? format::MaterialModel::ThinDielectric
+                                                               : format::MaterialModel::CoatedDiffuse;
+        if (type != "diffuse" && type != "conductor" && type != "coateddiffuse" && isDielectric == false)
         {
             return inoutCooker.Context.Errors.FailInvalid("unsupported material ", type);
         }
-        if (type != "diffuse")
+        if (isDielectric == true)
+        {
+            if (ResolveDielectricParameters(inoutCooker, source, material) == false)
+            {
+                return false;
+            }
+        }
+        else if (type != "diffuse")
         {
             const Parameter* remapOrNull = inoutCooker.FindMaterialParameter(source, "bool remaproughness");
             if (HasSingleValue(remapOrNull, "false") == false)
@@ -3119,10 +3189,11 @@ ResolveCoatingParameters(Cooker& inoutCooker, const MaterialReference& source, M
         const Parameter* textureOrNull = inoutCooker.FindMaterialParameter(source, "texture reflectance");
         const Parameter* reflectanceOrNull = inoutCooker.FindMaterialParameter(source, "rgb reflectance");
         if ((textureOrNull != nullptr && reflectanceOrNull != nullptr) ||
-            (type == "conductor" && (textureOrNull != nullptr || reflectanceOrNull != nullptr)))
+            ((type == "conductor" || isDielectric == true) &&
+             (textureOrNull != nullptr || reflectanceOrNull != nullptr)))
         {
             return inoutCooker.Context.Errors.FailInvalid(
-                "unsupported conflicting or conductor reflectance parameters");
+                "unsupported conflicting, conductor or dielectric reflectance parameters");
         }
         if (textureOrNull != nullptr)
         {
@@ -3142,7 +3213,7 @@ ResolveCoatingParameters(Cooker& inoutCooker, const MaterialReference& source, M
                 return inoutCooker.Context.Errors.FailInvalid("unknown reflectance texture");
             }
         }
-        else if (type != "conductor")
+        else if (type != "conductor" && isDielectric == false)
         {
             Array<float64> reflectance;
             if (reflectanceOrNull != nullptr)

@@ -18,10 +18,14 @@ struct ShadingPoint
     MaterialSample Material;
     float3 ShadingNormalWorld;
     float3 ViewDirectionWorld;
+    float3 Throughput; ///< Smooth-glass chain weight from the camera to Hit.
+    float3 Radiance;   ///< Environment of a camera miss, or what the smooth-glass chain collected.
 };
 
-/// Rebuild this pixel's recorded surface. Returns false when the pixel needs no strategy: a primary
-/// miss (outIsMiss is set) or a failure (queries.HasFailed is set).
+/// Rebuild this pixel's recorded surface, following smooth glass to the first surface a line sample can
+/// light (FollowSpecularChain, up to SCENE_SPECULAR_CHAIN_EVENTS surface queries). Returns false when the
+/// pixel needs no strategy: a miss (outIsMiss is set; outPoint.Radiance holds what the camera path
+/// reached) or a failure (queries.HasFailed is set).
 bool TryLoadShadingPoint(SceneContext scene,
                          RayLaunch launch,
                          inout RayQueryContext queries,
@@ -43,6 +47,7 @@ bool TryLoadShadingPoint(SceneContext scene,
     outPoint.ViewDirectionWorld = -cameraRay.DirectionWorld;
     if (record.IsHit == false)
     {
+        outPoint.Radiance = EvaluateEnvironment(scene, cameraRay.DirectionWorld);
         outIsMiss = true;
         return false;
     }
@@ -56,6 +61,17 @@ bool TryLoadShadingPoint(SceneContext scene,
     outPoint.Hit.IncomingRay = cameraRay;
     outPoint.Hit.DistanceWorld = record.DistanceWorld;
     outPoint.Hit.IsFrontFace = record.IsFrontFace;
+    SpecularChain chain =
+        FollowSpecularChain(scene, launch, queries, outPoint.Hit, SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST);
+    outPoint.Radiance = chain.Radiance;
+    if (chain.IsSurface == false)
+    {
+        outIsMiss = queries.HasFailed == false;
+        return false;
+    }
+    outPoint.Hit = chain.Hit;
+    outPoint.Throughput = chain.Throughput;
+    outPoint.ViewDirectionWorld = chain.ViewDirectionWorld;
     outPoint.Material = EvaluateMaterial(scene, outPoint.Hit);
     float normalLengthSquared = dot(outPoint.Material.ShadingNormalWorld, outPoint.Material.ShadingNormalWorld);
     if (outPoint.Material.IsValid == false || normalLengthSquared <= 0)
@@ -84,7 +100,7 @@ float3 ShadeLineSampling(SceneContext scene, RayLaunch launch, inout RayQueryCon
     ShadingPoint shadingPoint;
     bool isMiss;
     if (TryLoadShadingPoint(scene, launch, queries, shadingPoint, isMiss) == false)
-        return isMiss == true ? EvaluateEnvironment(scene, -shadingPoint.ViewDirectionWorld) : float3(0);
+        return isMiss == true ? shadingPoint.Radiance : float3(0);
     float3 radiance = EvaluateEmission(scene, shadingPoint.Hit, shadingPoint.ViewDirectionWorld);
     LineProposal proposal;
     if (ProposeLineU(scene,
@@ -104,7 +120,7 @@ float3 ShadeLineSampling(SceneContext scene, RayLaunch launch, inout RayQueryCon
                                          shadingPoint.ViewDirectionWorld,
                                          proposal,
                                          queries);
-    return FinishRadiance(radiance, queries);
+    return FinishRadiance(shadingPoint.Radiance + shadingPoint.Throughput * radiance, queries);
 }
 
 /// The visible fraction L_visible / c of the U chord that ShadeLineSampling builds, as gray.

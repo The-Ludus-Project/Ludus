@@ -22,8 +22,9 @@
 // Random dimensions: every pass draws from explicit addresses through the RayLaunch overloads, never from the automatic
 // stream, so the three outputs see the same random values. The table is docs/development/render-graph-authoring.md,
 // "Sample a directional luminaire with slice sampling": 0 and 1 jitter the camera ray, 2 chooses the defensive
-// mixture's component, 3 and 4 are the slice seed, 5 chooses its root and 6 and 7 are the panel-area sample. The
-// single-strategy outputs read only their strategy's dimensions, so they share their samples with the mixture.
+// mixture's component, 3 and 4 are the slice seed, 5 chooses its root, 6 and 7 are the panel-area sample and 8 chooses
+// one of several World luminaires. The single-strategy outputs read only their strategy's dimensions, so they share
+// their samples with the mixture.
 
 static const uint HIT_RECORD_WORDS = 2;
 static const uint HIT_RECORD_FLAG_FRONT_FACE = 1;
@@ -35,6 +36,11 @@ static const uint MIXTURE_COMPONENT_DIMENSION = PRIMARY_RANDOM_DIMENSION_FIRST +
 static const uint SLICE_SEED_DIMENSION_FIRST = MIXTURE_COMPONENT_DIMENSION + 1;
 static const uint SLICE_BRANCH_DIMENSION = SLICE_SEED_DIMENSION_FIRST + 2;
 static const uint PANEL_AREA_DIMENSION_FIRST = SLICE_BRANCH_DIMENSION + 1;
+// Appended last so that one luminaire keeps the earlier dimensions' samples.
+static const uint LUMINAIRE_SELECTION_DIMENSION = PANEL_AREA_DIMENSION_FIRST + 2;
+// Shade passes: Fresnel choices of the smooth-glass chain followed from the recorded hit, shared by
+// every pass so all of them shade the same final surface.
+static const uint SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST = LUMINAIRE_SELECTION_DIMENSION + 1;
 
 struct HitRecord
 {

@@ -1,4 +1,5 @@
 #include "coated_diffuse.slang"
+#include "dielectric.slang"
 #include "gaussian.slang"
 #include "geometry_sampling_layout.h"
 #include "metropolis.slang"
@@ -273,6 +274,57 @@ LightInfo GetLightInfo(SceneContext scene, uint lightIndex)
         result.Kind = SCENE_LIGHT_ENVIRONMENT;
         result.Intensity = Environment.xyz;
     }
+    return result;
+}
+/// One panel luminaire (graphics::renderer::PanelLuminaire): a square exit surface centred at CenterWorld with side
+/// 2 HalfExtentWorld along the orthonormal TangentWorld and BitangentWorld, emitting along NormalWorld =
+/// cross(TangentWorld, BitangentWorld), and the scalars of its beam profile. It is not geometry: no query hits it.
+/// The shader that reads it defines its emission; see the slice-sampling-luminaire template.
+struct LuminaireInfo
+{
+    float3 CenterWorld;
+    float HalfExtentWorld;
+    float3 TangentWorld;
+    float3 BitangentWorld;
+    float3 NormalWorld;
+    float RadianceScale;
+    float BeamWidth;
+    float BeamSteering;
+    float BeamSpread;
+    float BeamTwist;
+    /// False when luminaireIndex is not below GetLuminaireCount; every other field is then zero.
+    bool IsValid;
+};
+/// Panel luminaires of the scene, in source-identity order; zero without the lights scene data.
+uint GetLuminaireCount(SceneContext scene)
+{
+    return HasSceneData(scene, SCENE_DATA_LIGHTS) == true
+               ? asuint(SceneValue(SurfaceLayout.y + Counts.w * LUDUS_GPU_PREVIEW_LIGHT_WORDS).x)
+               : 0;
+}
+/// Read panel luminaire luminaireIndex; constant for one scene source generation.
+LuminaireInfo GetLuminaireInfo(SceneContext scene, uint luminaireIndex)
+{
+    LuminaireInfo result = (LuminaireInfo)0;
+    if (luminaireIndex >= GetLuminaireCount(scene))
+        return result;
+    uint offset = SurfaceLayout.y + Counts.w * LUDUS_GPU_PREVIEW_LIGHT_WORDS +
+                  LUDUS_GPU_PREVIEW_LUMINAIRE_HEADER_WORDS + luminaireIndex * LUDUS_GPU_PREVIEW_LUMINAIRE_WORDS;
+    float4 centerAndHalfExtentWorld = SceneValue(offset);
+    float4 tangentAndRadianceScale = SceneValue(offset + 1);
+    float4 bitangentAndBeamWidth = SceneValue(offset + 2);
+    float4 beamSlopes = SceneValue(offset + LUDUS_GPU_PREVIEW_LUMINAIRE_BEAM_WORD);
+    result.CenterWorld = centerAndHalfExtentWorld.xyz;
+    result.HalfExtentWorld = centerAndHalfExtentWorld.w;
+    result.TangentWorld = tangentAndRadianceScale.xyz;
+    result.RadianceScale = tangentAndRadianceScale.w;
+    result.BitangentWorld = bitangentAndBeamWidth.xyz;
+    result.BeamWidth = bitangentAndBeamWidth.w;
+    result.NormalWorld = cross(result.TangentWorld, result.BitangentWorld);
+    result.BeamSteering = beamSlopes.x;
+    result.BeamSpread = beamSlopes.y;
+    result.BeamTwist = beamSlopes.z;
+    result.IsValid = true;
     return result;
 }
 MaterialSample GetMaterial(SceneContext scene, uint materialIndex)
@@ -963,6 +1015,34 @@ uint SampleSceneRandom(inout RayQueryContext queries, uint minimumInclusive, uin
     }
     return minimumInclusive + offset;
 }
+/// True for dielectric (glass) materials, solid or thin. Both are smooth, delta interfaces that scatter on either side
+/// of their surface. SampleStandardBsdfTransport returns IsSpecular samples for them and ComputeStandardBsdfCosine
+/// returns zero, so no light sample reaches them; EvaluateStandardBsdf and the direction-only SampleStandardBsdf keep
+/// the record's legacy opaque fields for graphs without transmission.
+bool IsDielectricMaterial(MaterialSample material)
+{
+    return IsDielectricModel(material.Model);
+}
+/// Glass scatters only in delta directions; kept as its own question for callers that branch on delta events.
+bool IsSpecularMaterial(MaterialSample material)
+{
+    return IsDielectricMaterial(material);
+}
+/// Shading normal on the viewer's side. Without a hit, the shading normal also decides whether the viewer is inside
+/// a solid dielectric; FollowSpecularChain decides it from the geometric back face, as the reference tracers do.
+float3 OrientDielectricNormal(MaterialSample material, float3 viewDirectionWorld)
+{
+    return dot(material.ShadingNormalWorld, viewDirectionWorld) < 0 ? -material.ShadingNormalWorld
+                                                                    : material.ShadingNormalWorld;
+}
+/// Directional cosine factor of a light direction: the clamped cosine on the shading normal's side, or zero for
+/// glass, whose delta lobes no sampled light reaches.
+float ComputeStandardBsdfCosine(MaterialSample material, float3 viewDirectionWorld, float3 directionWorld)
+{
+    if (IsDielectricMaterial(material) == true)
+        return 0;
+    return max(0, dot(material.ShadingNormalWorld, directionWorld));
+}
 void EvaluateStandardBsdf(MaterialSample material,
                           float3 viewDirectionWorld,
                           float3 lightDirectionWorld,
@@ -993,13 +1073,45 @@ float3 SampleStandardBsdf(MaterialSample material, float3 viewDirectionWorld, fl
 
 /// Complete continuation proposal for the typed reference models. Weight already
 /// contains f*cos/pdf; Pdf is solely the external MIS density (estimated for coatings).
+/// A specular (glass) sample carries its complete weight with Pdf one: emission it finds takes the
+/// full MIS weight, because light sampling cannot reach a delta direction.
 struct StandardBsdfTransportSample
 {
     float3 DirectionWorld;
     float3 Weight;
     float Pdf;
     bool HasSample;
+    bool IsSpecular;     ///< Delta event; never combine Pdf with a light density.
+    bool IsTransmission; ///< Refracted to the other side of the surface.
 };
+/// Glass continuation (dielectric.slang): samples.x chooses reflection with the Fresnel probability, so each weight is
+/// one, or 1/eta^2 when refracted into a solid dielectric. isViewerInside selects the inverse index of a solid.
+StandardBsdfTransportSample
+SampleDielectricTransport(MaterialSample material, float3 viewDirectionWorld, float3 samples, bool isViewerInside)
+{
+    StandardBsdfTransportSample result = (StandardBsdfTransportSample)0;
+    float3 normalWorld = OrientDielectricNormal(material, viewDirectionWorld);
+    DielectricSample sampled =
+        SampleDielectric(material.Model, material.Eta.x, isViewerInside, normalWorld, viewDirectionWorld, samples.x);
+    result.HasSample = sampled.HasSample;
+    if (result.HasSample == false)
+        return result;
+    result.DirectionWorld = sampled.DirectionWorld;
+    result.Weight = sampled.Weight;
+    result.Pdf = 1;
+    result.IsSpecular = true;
+    result.IsTransmission = dot(normalWorld, sampled.DirectionWorld) < 0;
+    return result;
+}
+/// Glass continuation that decides the side from the shading normal, for callers without a hit.
+StandardBsdfTransportSample
+SampleDielectricTransport(MaterialSample material, float3 viewDirectionWorld, float3 samples)
+{
+    return SampleDielectricTransport(material,
+                                     viewDirectionWorld,
+                                     samples,
+                                     dot(material.ShadingNormalWorld, viewDirectionWorld) < 0);
+}
 CoatingMaterial MakeCoatingMaterial(MaterialSample material)
 {
     CoatingMaterial coating;
@@ -1041,6 +1153,8 @@ StandardBsdfTransportSample SampleStandardBsdfTransport(MaterialSample material,
                                                         CoatingRandomContext random)
 {
     StandardBsdfTransportSample result = (StandardBsdfTransportSample)0;
+    if (IsDielectricMaterial(material) == true)
+        return SampleDielectricTransport(material, viewDirectionWorld, samples);
     if (material.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE)
     {
         CoatingSample sampled = SampleCoatedDiffuse(MakeCoatingMaterial(material),
@@ -1063,6 +1177,85 @@ StandardBsdfTransportSample SampleStandardBsdfTransport(MaterialSample material,
     result.Weight =
         result.HasSample == true ? value * (dot(material.ShadingNormalWorld, result.DirectionWorld) / pdf) : float3(0);
     return result;
+}
+
+/// Glass events FollowSpecularChain follows at most; each one costs a surface query.
+static const uint SCENE_SPECULAR_CHAIN_EVENTS = 8;
+/// Explicit random dimensions FollowSpecularChain draws from its base: one Fresnel choice per event.
+static const uint SCENE_SPECULAR_CHAIN_DIMENSIONS = SCENE_SPECULAR_CHAIN_EVENTS;
+/// Base for graphs that draw from the automatic stream, which shares the explicit addresses from zero upward: the
+/// top of the address range, which that stream reaches only after RANDOM_MAX_DIMENSION draws.
+static const uint SCENE_SPECULAR_CHAIN_DEFAULT_DIMENSION_FIRST =
+    RANDOM_MAX_DIMENSION + 1 - SCENE_SPECULAR_CHAIN_DIMENSIONS;
+/// Camera path through glass, ending at the first surface an estimator can shade.
+struct SpecularChain
+{
+    SurfaceHit Hit;            ///< Final surface; its IncomingRay is the chain's last ray. Valid when IsSurface.
+    float3 ViewDirectionWorld; ///< Unit direction from Hit back along that ray.
+    float3 Throughput;         ///< Product of the delta-event weights followed before Hit.
+    float3 Radiance;           ///< Throughput-weighted emission of the glass passed and a miss's environment.
+    uint Events;               ///< Delta events followed.
+    bool IsSurface;            ///< False after a miss, a failure, a null sample or SCENE_SPECULAR_CHAIN_EVENTS events.
+};
+/// Follow glass reflection and refraction from a surface reached along hit.IncomingRay, choosing each lobe by its
+/// Fresnel probability so every event's weight is one, or 1/eta^2 across refraction into a solid dielectric. A path
+/// tracer handles delta bounces this way: emission found after one takes the full MIS weight. Thanks to Matt Pharr,
+/// Wenzel Jakob and Greg Humphreys, Physically Based Rendering, 4th edition, section 13.4 (A Better Path Tracer),
+/// https://pbr-book.org/4ed/Light_Transport_I_Surface_Reflection/A_Better_Path_Tracer.
+/// Draws event k at SampleSceneRandom(launch, firstDimension + k); reserve SCENE_SPECULAR_CHAIN_DIMENSIONS of them
+/// and SCENE_SPECULAR_CHAIN_EVENTS surface queries. Emission of the final Hit is left to the caller. A hit that is
+/// not glass returns itself with unit throughput and no queries.
+SpecularChain FollowSpecularChain(SceneContext scene,
+                                  RayLaunch launch,
+                                  inout RayQueryContext queries,
+                                  SurfaceHit hit,
+                                  uint firstDimension)
+{
+    SpecularChain chain;
+    chain.Hit = hit;
+    chain.ViewDirectionWorld = -hit.IncomingRay.DirectionWorld;
+    chain.Throughput = float3(1);
+    chain.Radiance = float3(0);
+    chain.Events = 0;
+    chain.IsSurface = hit.IsValid;
+    while (chain.IsSurface == true)
+    {
+        MaterialSample material = EvaluateMaterial(scene, chain.Hit);
+        if (material.IsValid == false || IsSpecularMaterial(material) == false)
+            return chain;
+        chain.Radiance += chain.Throughput * EvaluateEmission(scene, chain.Hit, chain.ViewDirectionWorld);
+        chain.IsSurface = false;
+        if (chain.Events >= SCENE_SPECULAR_CHAIN_EVENTS)
+            return chain;
+        // As in the reference tracers: a viewer behind the geometric front side is inside the glass, a reflection
+        // stays on the viewer's side and a refraction leaves through the other one, or the sample is null.
+        float3 geometricNormalWorld = chain.Hit.GeometricNormalWorld;
+        bool isViewerInside = dot(geometricNormalWorld, chain.ViewDirectionWorld) < 0;
+        StandardBsdfTransportSample sampled =
+            SampleDielectricTransport(material,
+                                      chain.ViewDirectionWorld,
+                                      float3(SampleSceneRandom(launch, firstDimension + chain.Events), 0, 0),
+                                      isViewerInside);
+        bool isOnViewerSide = (dot(geometricNormalWorld, sampled.DirectionWorld) > 0) == (isViewerInside == false);
+        if (sampled.HasSample == false || isOnViewerSide == sampled.IsTransmission)
+            return chain;
+        chain.Throughput *= sampled.Weight;
+        SurfaceHit next;
+        uint status =
+            TraceClosest(scene,
+                         queries,
+                         SpawnSurfaceRay(chain.Hit, sampled.DirectionWorld, launch.CameraRay.MaxDistanceWorld),
+                         next);
+        chain.Events += 1;
+        if (status == SCENE_QUERY_MISS)
+            chain.Radiance += chain.Throughput * EvaluateEnvironment(scene, sampled.DirectionWorld);
+        if (status != SCENE_QUERY_SURFACE)
+            return chain;
+        chain.Hit = next;
+        chain.ViewDirectionWorld = -sampled.DirectionWorld;
+        chain.IsSurface = true;
+    }
+    return chain;
 }
 
 // Construct a surface endpoint without issuing a ray. IncomingRay/Distance are zero.

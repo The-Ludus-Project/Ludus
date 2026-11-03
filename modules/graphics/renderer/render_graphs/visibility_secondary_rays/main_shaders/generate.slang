@@ -13,6 +13,23 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext i
         FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return float3(0);
     }
+    float3 emission = EvaluateEmission(scene, hit, -launch.CameraRay.DirectionWorld);
+    if (IsDielectricMaterial(material) == true)
+    {
+        // Glass reflects or refracts by its Fresnel probability; the weight carries 1/eta^2 across refraction.
+        float3 samples =
+            float3(SampleSceneRandom(inoutQueries), SampleSceneRandom(inoutQueries), SampleSceneRandom(inoutQueries));
+        StandardBsdfTransportSample sampled =
+            SampleDielectricTransport(material, -launch.CameraRay.DirectionWorld, samples);
+        if (sampled.HasSample == false)
+            return emission;
+        ScenePayload transmitted = (ScenePayload)0;
+        TraceAndShade(scene,
+                      inoutQueries,
+                      SpawnSurfaceRay(hit, sampled.DirectionWorld, launch.CameraRay.MaxDistanceWorld),
+                      transmitted);
+        return emission + sampled.Weight * transmitted.Radiance;
+    }
     // An editable, base-color-tinted ideal reflection; no roughness/metallic BRDF is evaluated.
     float3 geometricNormalWorld =
         faceforward(hit.GeometricNormalWorld, launch.CameraRay.DirectionWorld, hit.GeometricNormalWorld);
@@ -25,6 +42,5 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext i
     Ray secondary = SpawnSurfaceRay(hit, directionWorld, launch.CameraRay.MaxDistanceWorld);
     ScenePayload payload = (ScenePayload)0;
     TraceAndShade(scene, inoutQueries, secondary, payload);
-    float3 emission = EvaluateEmission(scene, hit, -launch.CameraRay.DirectionWorld);
     return emission + material.BaseColor * payload.Radiance;
 }

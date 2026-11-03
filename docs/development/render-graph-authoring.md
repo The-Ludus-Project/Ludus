@@ -156,7 +156,7 @@ the callbacks. Raygen traces the camera ray once; the template displays material
 color and adds no lighting estimator.
 
 For a scene-aware ray pipeline, **Properties → Scene query budgets** sets the
-maximum **Surface queries** (1–8) and **Visibility queries** (0–16) per camera
+maximum **Surface queries** (1–16) and **Visibility queries** (0–16) per camera
 sample. The same controls are available from the canvas node's **Edit Node**
 dialog with Properties hidden. Surface queries include the camera intersection;
 camera plus one BSDF ray for direct-light MIS needs at least two. Visibility
@@ -1938,8 +1938,8 @@ The following limits are deliberate and visible:
   a perspective camera or another graph.
 - Reflection only: diffuse, metallic/roughness and isotropic conductors use the
   existing scene BSDFs. Coated diffuse reports the material-profile repair.
-  External transmission and glass caustics are unavailable in the scene material
-  contract. Low-roughness conductors use random replay; other surfaces reconnect.
+  Dielectrics shade through their legacy opaque fields; external transmission and
+  glass caustics are unavailable to this graph. Low-roughness conductors use random replay; other surfaces reconnect.
 - Indirect photons originate from finite mesh, point and spot sources. Environment
   and directional sources contribute through direct lighting and terminal camera
   emission, not through indirect photon transport.
@@ -2266,8 +2266,11 @@ query bound; longer configured paths require a continuation-dispatch implementat
 Hybrid shifts, prefix resampling, motion reprojection and world-space nearest-neighbour
 gathers are not implemented. Analytic lights and environment illumination remain
 outside this mesh-light integral; the environment is displayed only when the primary
-camera ray misses. External transmission and delta BSDFs are outside the scene material
-profile. Uniform area and sphere proposals preserve support but can have high variance,
+camera ray misses. The primary surface lies past any smooth glass the camera sees
+through (`FollowSpecularChain`), and suffix continuations refract through glass,
+but a smooth-glass reconnection or terminal vertex contributes nothing, because
+reconnection and terminal next-event estimation cannot reach a delta lobe; glass
+caustics are therefore absent. Uniform area and sphere proposals preserve support but can have high variance,
 especially for narrow glossy lobes, nearby coplanar geometry and long paths. This
 implementation makes no performance or variance-improvement claim.
 
@@ -2953,8 +2956,9 @@ and `uniformArea` outputs. Every pass selects the `ComputeBvh` traversal, so the
 package needs Metal or Vulkan compute but no hardware ray tracing. Its registry
 requirement is `compute-ray-tracing`.
 
-**The luminaire.** `main_shaders/luminaire.slang` defines the analytic panel of the
-draft's section 6.2:
+**The luminaire.** The template lights the World with its **luminaires**: the
+analytic panel of the draft's section 6.2, authored as World data and read by the
+shaders from the scene. `main_shaders/luminaire.slang` defines its emission:
 
 - **Shape.** A square exit surface split into 3 × 3 tiles.
 - **Emission.** On tile *j* the radiance that leaves panel point *a* with
@@ -2964,38 +2968,70 @@ draft's section 6.2:
 - **Per-tile tables.** Each tile has its own steering direction, width factors
   (0.8 to 1.2 times the beam width), strength `c_j` and RGB tint. The tints make
   each tile's footprint, and so each inverse branch of the seed map, visible on the
-  receivers.
-- **Placement.** The panel is not scene geometry. Camera rays do not see it and it
-  does not occlude, but scene geometry between a receiver and the panel does.
-  Graph settings must be nonnegative, so the placement is a set of constants in
-  the project-owned `luminaire.slang`: `LUMINAIRE_CENTER_WORLD`,
-  `LUMINAIRE_HALF_EXTENT_WORLD` and the tangent, bitangent and emitting normal.
-  The default is a 0.7 × 0.7 panel facing down at `y = 0.97`, just below the
-  ceiling light of a 2 × 2 × 2 room. Edit these constants for another scene.
-- **Placement check.** While the template is on the viewport's output route, the
-  editor compares the panel with the World it renders. It warns when no World
-  geometry lies in front of the panel, when the panel's center lies outside the
-  World's bounds, or when the panel's side is under 5% of the bounds diagonal. The
-  default panel in a 20 m corridor is about 3%, so it lights only a small patch.
-  The warning appears in the viewport status and as a **Renderer preview** row in
-  the Error List. It names the placement, the World's size, how many emissive
-  objects and lights the template ignores, and the constants to edit. If the
-  constants are not plain literals, the editor cannot read them. It then warns only
-  when the World has emitters or lights of its own.
+  receivers. The tables are part of the project-owned `luminaire.slang`.
+- **Not geometry.** Camera rays do not see the panel and it does not occlude, but
+  scene geometry between a receiver and the panel does.
+
+**Add a luminaire to the World.** In a default World, choose
+**Add Geometry / Light → Luminaire**. It creates an entity with a `transform` and a
+`luminaire` component, a 0.7 m panel facing down 2 m above the origin. Select it
+in the entity list to outline the panel and its emission direction in the
+viewport, and move or rotate it with the transform tools. The panel emits along
+its Transform's −Z axis, like a light, and its tile columns run along +X. Its
+scale must be 1. The inspector edits the component's properties:
+
+| Property | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | on | — | A disabled luminaire keeps its values and lights nothing |
+| `halfExtent` | `0.35` m | `0.001`–`1000` | Half the side of the square panel |
+| `radianceScale` | `6` | `0`–`1000000` | Multiplies every tile's radiance. It does not change the sampling densities |
+| `beamWidth` | `0.02` | `0.001`–`1` | Gaussian width scale in slope units; the tiles' widths span 0.016–0.024 by default, as in section 6.4 |
+| `beamSteering` | `0.12` | `0`–`2` | Slope offset of each tile's beams along its steering direction, a pinwheel around the panel center |
+| `beamSpread` | `0.08` | `0`–`2` | Diagonal of `M`: the slope change per panel half extent |
+| `beamTwist` | `0.04` | `0`–`2` | Off-diagonal of `M`: a rotational slope change per panel half extent |
+
+A project-owned schema can declare its own luminaire component: bind it with a
+`luminaire` role in `authoring/render.preview.json`, as
+[the editor workspace guide](editor-workspace.md) describes for the other roles.
+A World holds at most 8 enabled luminaires. With several, each sample chooses one
+uniformly and divides by that probability.
+
+The renderer carries luminaires as `graphics::renderer::PanelLuminaire` records in
+`SceneShaderInputs::Luminaires`, beside the analytic lights. Scene shaders read
+them with `GetLuminaireCount` and `GetLuminaireInfo`. Only shaders that read them
+are lit by them: the raster, clustered and reference renderers, and the other
+templates, ignore luminaires, and this template ignores the World's lights,
+emitters and environment.
+
+**Luminaire check.** While the template is on the viewport's output route, the
+editor compares the World's luminaires with the World it renders. It warns when
+the World has no enabled luminaire, or when no luminaire can light it: no World
+geometry lies in front of the panel, the panel's center lies outside the World's
+bounds, or the panel's side is under 5% of the bounds diagonal. A 0.7 m panel in
+a 20 m corridor is about 3%, so it lights only a small patch. The warning appears
+in the viewport status and as a **Renderer preview** row in the Error List. It
+names the placement, the World's size, and how many emissive objects and lights
+the template ignores.
+
+In a default World, open the warning from the Error List to repair it. A
+confirmation box offers **Add luminaire** for a World without one, or
+**Fit luminaire** to move and resize the first one; **Cancel** is the default.
+The fitted panel faces down, so its footprint lands in view. The editor traces the
+viewport camera's view ray to the surface it looks at and anchors the panel 70% of
+the way there. The panel hangs just under the first surface above that anchor, or
+under the top of the World's bounds when nothing is above it. Its side is 30% of the World's smaller horizontal extent (at least 10%
+of the bounds diagonal). The repair is one undoable World edit; save the World to
+keep it.
 
 | Graph setting | Default | Range | Meaning |
 | --- | --- | --- | --- |
 | `SLICE_DEFENSIVE_FRACTION` | `0.1` | `0`–`1` | Probability ε of the uniform-area component in the color output's defensive mixture (Eq. 15). `0` gives slice sampling alone; `1` gives uniform area |
-| `LUMINAIRE_RADIANCE_SCALE` | `6` | `0`–`1000` | Multiplies every tile's radiance. It does not change the sampling densities |
-| `LUMINAIRE_BEAM_WIDTH` | `0.02` | `0.001`–`1` | Gaussian width scale in slope units; the tiles' widths span 0.016–0.024 by default, as in section 6.4 |
-| `LUMINAIRE_BEAM_STEERING` | `0.12` | `0`–`2` | Slope offset of each tile's beams along its steering direction, a pinwheel around the panel center |
-| `LUMINAIRE_BEAM_SPREAD` | `0.08` | `0`–`2` | Diagonal of `M`: the slope change per panel half extent |
-| `LUMINAIRE_BEAM_TWIST` | `0.04` | `0`–`2` | Off-diagonal of `M`: a rotational slope change per panel half extent |
 
 Nonnegative spread and twist keep `det(I + hM) ≥ 1` at every receiver height
-`h`, so no tile's beams focus into a caustic. An edit to these settings is the
-draft's "edit" of section 6.4: slice sampling adapts at once, because it reads the
-emission profile itself rather than a table fitted to it.
+`h`, so no tile's beams focus into a caustic; the renderer admits only
+nonnegative values. An edit to a luminaire's beam profile is the draft's "edit" of
+section 6.4: slice sampling adapts at once, without a shader rebuild, because it
+reads the emission profile itself rather than a table fitted to it.
 
 Three compute passes share a 32-byte hit record, each with its own
 **Accumulate → ToneMap → Export** chain. The first pass traces the camera ray and
@@ -3043,14 +3079,15 @@ The random layout is in `main_shaders/hit_record.slang`:
 - dimensions 0 and 1 jitter the camera ray;
 - 2 chooses the mixture component;
 - 3 and 4 are the slice seed, and 5 chooses its root;
-- 6 and 7 are the panel-area sample.
+- 6 and 7 are the panel-area sample;
+- 8 chooses one of several World luminaires.
 
 The single-strategy outputs read only their own dimensions, so they share samples
 with the mixture. The technique declares `surface_queries: 1` and
 `visibility_queries: 1`.
 
 New shader programs have `SliceSampling`-prefixed IDs and sources under
-`slice_sampling_luminaire/main_shaders/`. The settings join the manifest's Graph
+`slice_sampling_luminaire/main_shaders/`. The setting joins the manifest's Graph
 settings, and existing values are kept.
 
 Departures from the draft, also listed in `slice_sampling.slang`:
@@ -3067,7 +3104,8 @@ Evidence:
 
 - **Estimators.** `ludus_renderer_render_tests` (`[slice-sampling-luminaire]`)
   runs `slice_sampling.slang` in a test kernel at eight unoccluded receivers under
-  two emission profiles. One is the default; the other has no spread or twist,
+  two emission profiles of the Cornell room's luminaire. One is a new World
+  luminaire's default; the other has no spread or twist,
   which gives a piecewise-constant auxiliary map with jumps, as in the draft's
   running example. Each case draws 262,144 samples of every proposal.
   The checks:
@@ -3091,9 +3129,10 @@ Evidence:
   sampling's relative variance rises to 1.3 and 4.8, against 58 and 131. The
   test takes under a second.
 - **Template.** `ludus_render_graph_ray_tests` runs as its own CTest entry,
-  `ludus_render_graph_slice_sampling_luminaire_pixels`, in the Cornell room.
-  It checks that the template's three passes are compute-BVH ray passes with
-  their own accumulation, and that no pixel shows the failure color.
+  `ludus_render_graph_slice_sampling_luminaire_pixels`, in the Cornell room,
+  whose scene authors a 0.7 m luminaire facing down at `y = 0.97`, just below the
+  ceiling light. It checks that the template's three passes are compute-BVH ray
+  passes with their own accumulation, and that no pixel shows the failure color.
   - **Means.** At 256 samples per pixel, the slice-sampling output must agree
     with the defensive mixture within 2%. Uniform area must agree within 15%,
     because tone mapping its still-noisy running means is biased. On Apple M5
@@ -3102,6 +3141,15 @@ Evidence:
     seed, the tone-mapped mean squared error is 3.8·10⁻⁴ for the mixture,
     3.4·10⁻⁴ for slice sampling and 6.2·10⁻³ for uniform area. The test
     requires both slice-sampling outputs to be at least four times lower.
+  - **Scene data.** Without a luminaire only the ceiling light's own emission is
+    seen. A luminaire moved onto the red left wall, facing the green wall, lights
+    that wall instead of the floor, and two luminaires light the room more than
+    either alone.
+- **Editor.** `ludus_editor_tests` checks that the **Luminaire** preset reaches
+  the scene with its Transform's frame and the schema's beam profile, survives
+  imported-scene composition, outlines its panel, and moves with the viewport
+  gizmo as one undoable edit. The luminaire check's tests cover a missing,
+  misplaced and undersized panel and the fitted repairs.
 - **Not covered.** Vulkan has not been run; it first runs in batch CI. There is no
   equal-time comparison and no comparison with tabulated or learned
   receiver-conditioned samplers, the draft's section 6.5. The exact mixture of
@@ -3404,7 +3452,9 @@ New shader programs have `SteinbergPhysicalOptics`-prefixed IDs and sources unde
 Departures from the paper, also listed in the sources:
 
 - Camera paths with next-event estimation replace the paper's bidirectional
-  tracer. Birefringent slabs (§4.1.4) and transmission are not rendered. Four hero
+  tracer. Birefringent slabs (§4.1.4) and transmission are not rendered; glass
+  (dielectric) surfaces keep their own IOR over a black base, so only their
+  reflective interface appears. Four hero
   wavelengths replace the paper's 16 spectral samples.
 - The paper's D scales with `q²` and its pBSDF with `1/λ²`, which do not combine
   into a dimensionless BRDF. D is normalized to a unit-integral Gaussian in `h / k`,
@@ -4182,7 +4232,7 @@ is not an ABI size or allocation request. Editing the struct requires no matchin
 byte setting. Advanced authors can optionally set `local_payload_bytes` (16..4096)
 in `scene_interface` to impose a lower admission cap; exceeding the cap fails the
 build before package publication. This is ordinary shader-local storage,
-independent of the node's native `payload_bytes: 0`. Surface queries are bounded to 1..8, visibility queries
+independent of the node's native `payload_bytes: 0`. Surface queries are bounded to 1..16, visibility queries
 to 0..16. Budget exhaustion latches failure and does not commit a partial sample.
 
 For example, the author can start with this payload:
@@ -4258,10 +4308,52 @@ source semantics. `MaterialSample.CoatingEta` and `CoatingThickness` expose the
 layer parameters. For layered coatings use the `EvaluateStandardBsdf` overload
 with an explicit `CoatingRandomContext` and `SampleStandardBsdfTransport`; the
 sample contains a complete throughput weight and a separate external MIS density.
-The original direction-only helpers retain their coating approximation. See
+The original direction-only helpers retain their coating approximation.
+
+Glass materials report `LUDUS_MATERIAL_MODEL_DIELECTRIC` (a solid) or
+`LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC` (a thin slab) with their index of
+refraction in `Eta.x`; `IsDielectricMaterial` tests for either. Both are smooth
+interfaces that scatter on either side of the surface: the helpers orient the
+shading normal toward the viewer and treat a viewer behind it as inside a solid,
+so keep the material's own normal rather than flipping it. Glass scatters only
+in delta directions (`IsSpecularMaterial`): `ComputeStandardBsdfCosine` returns
+zero, so light sampling contributes nothing, and `SampleStandardBsdfTransport`
+returns an `IsSpecular` sample whose `Weight` is the complete throughput and
+whose `Pdf` is one. Give emission reached after a specular sample the full MIS
+weight, and never combine that `Pdf` with a light density. `IsTransmission`
+marks a sample that left through the other side. `EvaluateStandardBsdf` and the
+direction-only `SampleStandardBsdf` keep shading glass through the record's
+legacy opaque fields, for graphs without transmission.
+
+`FollowSpecularChain` walks a camera path through glass to the first
+surface an estimator can shade. It chooses reflection or refraction by Fresnel
+probability, collects the glass's emission and the environment of a miss in
+`Radiance`, and returns the final `Hit`, its `ViewDirectionWorld` and the chain
+`Throughput`. Multiply the shaded estimate by `Throughput` and add `Radiance`.
+Reserve `SCENE_SPECULAR_CHAIN_EVENTS` surface queries and
+`SCENE_SPECULAR_CHAIN_DIMENSIONS` explicit random dimensions; shaders that draw
+from the automatic stream use `SCENE_SPECULAR_CHAIN_DEFAULT_DIMENSION_FIRST`.
+Passes that must agree on a pixel's surface pass the same base, so they follow
+the same chain. See [the glass reference contract](../architecture/renderer-systems.md#smooth-dielectric-reference),
 [the layered reference contract](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference),
 [typed reference materials](../architecture/renderer-systems.md#typed-diffuse-and-conductor-reference-materials)
 and the [source-preserving importer](../examples/reference-scene.md#material-preserving-project-imports).
+
+#### How the built-in templates treat glass
+
+| Templates | Glass handling |
+| --- | --- |
+| Compute ray tracing, Veach & Guibas MIS, line sampling, RIS + projected solid angle, Salesin & Jarosz, Peters polygonal lights, slice sampling, Steinberg PLT, tiled vbuffer NEE | Follow glass to the first other surface, then run the estimator there, weighted by the chain |
+| ReSTIR DI, ReSTIR GI, conditional ReSTIR | Every pass finds the visible point past smooth glass with the same chain; ReSTIR GI paths refract through glass with full MIS weight after delta events |
+| Wave tracing | Paths reflect and refract through glass; glass vertices take no next-event estimate |
+| Visibility + secondary rays | Glass traces one Fresnel-chosen reflected or refracted ray instead of the tinted mirror |
+| Steinberg physical optics | Glass keeps its IOR over a black base; its reflection is rendered, its transmission is not |
+| Guided ReSTIR FG+, one-more-vertex NEE, Rao-Blackwellized MH | Shade glass through its legacy opaque fields; these estimators have no transmission |
+| Light Transformer | Glass fails the pixel with the material-profile reason, as any non-diffuse surface does |
+| Raster, forward lit, visibility buffer, simple triangle loop | Draw glass with its record's legacy opaque approximation |
+
+Each chain event costs one surface query, so these templates declare
+`SCENE_SPECULAR_CHAIN_EVENTS` more `surface_queries` than before.
 
 ### Read surfaces, sample sources and trace visibility
 
@@ -4274,6 +4366,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetMaterial / EvaluateMaterial | Bound constant factors / sampled base color, metallic, roughness, emission and mapped world normal |
 | EvaluateEmission | Emission at a hit or sampled surface, respecting geometric sidedness |
 | GetLightInfo | Checked typed record for directional, point, spot, mesh or aggregate environment source |
+| GetLuminaireCount / GetLuminaireInfo | The World's [panel luminaires](#sample-a-directional-luminaire-with-slice-sampling) in source-identity order: center, half extent, orthonormal tangent/bitangent/normal frame and beam profile. They are not lights, so SelectLight never chooses them and no query hits them; zero without the lights scene data |
 | GetEmitter / GetEmitterTriangle / GetTriangle | Emitter range/area and checked world geometry for custom proposals |
 | GetGeometryHierarchyNodeCount / GetGeometryHierarchyNode / GetGeometryHierarchyTriangle | Immutable preorder BVH topology, world bounds and checked leaf-order triangle indices; see [geometry sampling](#sample-one-more-vertex-with-a-geometry-hierarchy) |
 | GetEmitterBounds | Precomputed emitter bounding sphere, geometric-normal cone and emission sidedness, for one weight per emitter without a triangle loop |
@@ -4287,7 +4380,9 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
 | SampleSceneRandom / MakeCameraRay | Automatic invocation-stream draw or explicit random dimension / chosen subpixel camera ray |
-| EvaluateStandardBsdf / SampleStandardBsdf | Optional existing reflection-model primitives; no integrator or MIS |
+| EvaluateStandardBsdf / SampleStandardBsdf | Optional existing scattering-model primitives; no integrator or MIS |
+| SampleStandardBsdfTransport / ComputeStandardBsdfCosine | Continuation with complete weight and specular/transmission flags / matching light cosine, zero for glass |
+| IsDielectricMaterial / IsSpecularMaterial / FollowSpecularChain | Glass tests and the bounded glass camera-path walk to the first shadeable surface |
 
 ### Find the visible parts of a segment
 
@@ -5512,7 +5607,8 @@ also registers as mesh area lighting, which reflects from nothing because every 
 colour is black.
 They require static opaque triangles with normals. Masked/transparent materials
 and invalid inputs reject preparation and retain the last drawable generation.
-Emissive meshes also provide unshadowed direct area lighting. No proxy lights, ray tracing, shadow maps or indirect illumination are added.
+Emissive meshes also provide direct area lighting, shadowed by cached cube shadow maps
+([Mesh-light shadows](#mesh-light-shadows)). No proxy lights, ray tracing or indirect illumination are added.
 The graph's ToneMap node (PBR Neutral at unit exposure) is fused into the lighting
 resolve: exposure, the curve and sRGB encoding run before the RGBA8 write, so radiance
 above one compresses toward white instead of clipping, and the exported image holds
@@ -5658,8 +5754,8 @@ the exact integral of its nearby 64-corner disks. The benchmark takes
 A scene whose lists would exceed 1,048,576 entries uploads no grid and evaluates
 every record as before.
 
-There is no mesh-light visibility test yet: area lights can illuminate through
-walls. At most 32,768 nonzero-emission
+Records are shadowed by cached cube shadow maps of their caster; see
+[Mesh-light shadows](#mesh-light-shadows). At most 32,768 nonzero-emission
 polygon records are admitted per scene; excess geometry rejects preparation and
 retains the last drawable generation. Because the culling grid bounds the per-pixel
 cost by the records near each pixel, this limit bounds the upload instead: at most 67
@@ -5753,6 +5849,61 @@ Other raster technique families are rejected by this profile. Existing `ForwardL
 and `ClusteredForward` packages keep their existing lighting ABI and behavior.
 Runtime package version 24 appends four deferred support roles without changing
 record widths or older role IDs; older packages remain readable.
+
+### Mesh-light shadows
+
+Scene preparation groups the emitter records into at most 64 shadow casters, brightest
+first. A record joins a caster while their enclosing sphere stays within 0.5 m, their
+sidedness matches and, for one-sided emitters, their normals lie within 30 degrees;
+records beyond the 64th caster stay unshadowed and are counted in
+`RenderGraphSceneResourceReport::UnshadowedMeshLights`. A two-sided caster sits at the
+centre of its emitters; a one-sided caster sits a little in front of them, so its own
+emitters never occlude what it lights, and it renders no cube face that lies wholly
+behind them. Each caster's range is its members' culling reach, so every receiver the
+grid lists for a member is inside it.
+
+After the scene is published, each caster's cube faces are rendered once, with the
+renderer's flat shadow pipeline, into one 2048 x 2048 RGBA8 atlas holding 16-bit
+conventional depth. Face slots are powers of two from 32 to 512 texels, sized by the
+square root of the caster's flux share and halved together until they fit, and each
+slot has a four-texel gutter rendered with a slightly wider field of view. The first
+frame clears the atlas to the far depth; faces are then drawn whole within the frame's
+draw budget, at most 64 per frame, so a large scene's shadows complete over a few
+frames and undrawn faces read as unoccluded. Camera-only updates reuse the atlas, and
+masked materials cast through their alpha-tested shadow pipeline. The atlas takes the
+resolve's material base-colour slot, which the resolve never samples; the caster table
+follows the culling grid, whose cull word records its position. A package whose resolve
+predates shadows ignores both, so no package version changes.
+
+The resolve multiplies each record's unshadowed integral by its caster's visibility at
+the receiver. It offsets the receiver by 1.5 shadow texels along its normal, searches
+five taps for occluders and, when it finds any, filters nine taps over a penumbra of
+the caster radius times (receiver distance - blocker distance) / blocker distance,
+clamped to the gutter. Each tap compares the stored depth with the depth the
+receiver's tangent plane has along that texel's ray, so a flat receiver never shadows
+itself at grazing angles. The grid lists a caster's records together, so one lookup
+serves a run of them. The penumbra is an estimate from one point per caster: a large
+emitter's contact shadows are approximate, and occluders nearer than a caster's near
+distance (at least a hundredth of its range) are ignored.
+
+Measured with the `[.raster-mesh-light-benchmark]` editor test on an Apple M5 at
+1600 x 1080, with the editor viewport's device budgets (fastest of two interleaved runs
+on a loaded machine, whole GPU frame after the faces are drawn; the unshadowed runs cook
+the same resolve with visibility fixed at one):
+
+| View | Unshadowed | Shadowed | Pixels darkened by more than 8 steps |
+| --- | --- | --- | --- |
+| Staircase2, outside the stair hall | 4.4 ms | 5.3 ms | 10.8% |
+| Staircase2, by the stairs | 4.9 ms | 5.8 ms | 6.4% |
+| Staircase2, in the corridor | 21.5 ms | 23.7 ms | 31.5% |
+| Bathroom, default orbit | 1.2 ms | 1.2 ms | 0.2% |
+| Bistro, camera inside the square | 10.7 ms | 11.0 ms | 0% |
+
+Staircase2's 13 records form 13 casters, so every light is shadowed; its interior
+lights no longer show through the outer walls. Sixty-four casters shadow only the
+brightest 97 of Bistro's 17,571 records and 605 of Sponza's 4,225; the rest stay
+unshadowed, as `UnshadowedMeshLights` reports. Covering such scenes needs coarser or
+hierarchical casters, and drawing more faces over more frames.
 
 ## Create a saved graph and import it
 

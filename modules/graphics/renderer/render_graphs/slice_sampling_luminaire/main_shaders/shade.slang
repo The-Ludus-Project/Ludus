@@ -1,7 +1,7 @@
 #include "hit_record.slang"
 #include "slice_sampling.slang"
 
-// Passes 1 to 3 (scene compute): first-hit direct lighting from the directional luminaire of luminaire.slang, one
+// Passes 1 to 3 (scene compute): first-hit direct lighting from the World's panel luminaires (luminaire.slang), one
 // output per proposal of Shlomi Steinberg, "Slice Sampling: Importance sampling with an auxiliary map" (draft,
 // University of Waterloo), section 6 (slice_sampling.slang names the equations):
 // - ShadeDefensiveSliceSampling: the defensive mixture of Eq. (15), slice sampling with probability
@@ -11,19 +11,26 @@
 //   no light, which is the support failure that section 6.4 reports for far Gaussian tails.
 // - ShadeUniformArea: uniform panel-area sampling alone, the baseline of section 6.4.
 // Each pass returns the surface's own emission plus one luminaire sample with one shadow ray; a primary miss returns
-// the environment. Scene lights, mesh emitters and the environment do not light surfaces: the template evaluates the
-// direct-light estimator of Eq. (19) for its analytic luminaire only. There is no indirect bounce. At most one surface
-// and one visibility query per pass.
+// the environment. With several World luminaires each sample chooses one uniformly and divides by that probability.
+// A World without a luminaire leaves surfaces unlit; the editor reports it and offers to add one. Scene lights, mesh
+// emitters and the environment do not light surfaces: the template evaluates the direct-light estimator of Eq. (19)
+// for its analytic luminaires only. There is no indirect bounce. At most one surface and one visibility query per pass.
 
-LuminaireProfile MakeLuminaireProfile()
+/// The template's view of a scene panel luminaire (GetLuminaireInfo); the frame is orthonormal on admission.
+Luminaire MakeLuminaire(LuminaireInfo info)
 {
-    LuminaireProfile profile;
-    profile.RadianceScale = LUMINAIRE_RADIANCE_SCALE;
-    profile.BeamWidth = LUMINAIRE_BEAM_WIDTH;
-    profile.BeamSteering = LUMINAIRE_BEAM_STEERING;
-    profile.BeamSpread = LUMINAIRE_BEAM_SPREAD;
-    profile.BeamTwist = LUMINAIRE_BEAM_TWIST;
-    return profile;
+    Luminaire luminaire;
+    luminaire.CenterWorld = info.CenterWorld;
+    luminaire.HalfExtentWorld = info.HalfExtentWorld;
+    luminaire.TangentWorld = info.TangentWorld;
+    luminaire.BitangentWorld = info.BitangentWorld;
+    luminaire.NormalWorld = info.NormalWorld;
+    luminaire.RadianceScale = info.RadianceScale;
+    luminaire.BeamWidth = info.BeamWidth;
+    luminaire.BeamSteering = info.BeamSteering;
+    luminaire.BeamSpread = info.BeamSpread;
+    luminaire.BeamTwist = info.BeamTwist;
+    return luminaire;
 }
 
 /// True when no channel is infinite or NaN, tested on the bits: Metal compiles with fast math, which may fold isfinite.
@@ -43,6 +50,7 @@ struct ShadingPoint
     MaterialSample Material;
     float3 ShadingNormalWorld;
     float3 ViewDirectionWorld;
+    float3 Throughput; ///< Smooth-glass chain weight from the camera to Hit.
 };
 
 /// Rebuild this pixel's recorded surface, after tracing and recording it when isPrimary. Returns false when the pixel
@@ -87,7 +95,16 @@ bool TryLoadShadingPoint(SceneContext scene,
     outPoint.Hit.IncomingRay = cameraRay;
     outPoint.Hit.DistanceWorld = record.DistanceWorld;
     outPoint.Hit.IsFrontFace = record.IsFrontFace;
-    outPoint.ViewDirectionWorld = -cameraRay.DirectionWorld;
+    // Smooth glass is followed to the first surface the estimators can shade (FollowSpecularChain, up to
+    // SCENE_SPECULAR_CHAIN_EVENTS surface queries); every pass draws the same chain.
+    SpecularChain chain =
+        FollowSpecularChain(scene, launch, queries, outPoint.Hit, SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST);
+    outRadiance = chain.Radiance;
+    if (chain.IsSurface == false)
+        return false;
+    outPoint.Hit = chain.Hit;
+    outPoint.Throughput = chain.Throughput;
+    outPoint.ViewDirectionWorld = chain.ViewDirectionWorld;
     outPoint.Material = EvaluateMaterial(scene, outPoint.Hit);
     float normalLengthSquared = dot(outPoint.Material.ShadingNormalWorld, outPoint.Material.ShadingNormalWorld);
     if (outPoint.Material.IsValid == false || normalLengthSquared <= 0)
@@ -96,7 +113,7 @@ bool TryLoadShadingPoint(SceneContext scene,
         return false;
     }
     outPoint.ShadingNormalWorld = outPoint.Material.ShadingNormalWorld * rsqrt(normalLengthSquared);
-    outRadiance = EvaluateEmission(scene, outPoint.Hit, outPoint.ViewDirectionWorld);
+    outRadiance += outPoint.Throughput * EvaluateEmission(scene, outPoint.Hit, outPoint.ViewDirectionWorld);
     return true;
 }
 
@@ -108,8 +125,20 @@ float3 SampleLuminaire(SceneContext scene,
                        uint estimator,
                        inout RayQueryContext queries)
 {
-    LuminaireProfile profile = MakeLuminaireProfile();
-    LuminaireReceiver receiver = MakeLuminaireReceiver(shadingPoint.Hit.PositionWorld);
+    uint luminaireCount = GetLuminaireCount(scene);
+    if (luminaireCount == 0)
+        return float3(0);
+    uint luminaireIndex = 0;
+    if (luminaireCount > 1)
+    {
+        float selectionSample = SampleSceneRandom(launch, LUMINAIRE_SELECTION_DIMENSION);
+        luminaireIndex = min(uint(selectionSample * float(luminaireCount)), luminaireCount - 1);
+    }
+    LuminaireInfo info = GetLuminaireInfo(scene, luminaireIndex);
+    if (info.IsValid == false)
+        return float3(0);
+    Luminaire luminaire = MakeLuminaire(info);
+    LuminaireReceiver receiver = MakeLuminaireReceiver(luminaire, shadingPoint.Hit.PositionWorld);
     float2 seedSample = float2(SampleSceneRandom(launch, SLICE_SEED_DIMENSION_FIRST),
                                SampleSceneRandom(launch, SLICE_SEED_DIMENSION_FIRST + 1));
     float branchSample = SampleSceneRandom(launch, SLICE_BRANCH_DIMENSION);
@@ -118,7 +147,7 @@ float3 SampleLuminaire(SceneContext scene,
     LuminaireLightSample light;
     if (estimator == DEFENSIVE_SLICE_SAMPLING_ESTIMATOR)
     {
-        light = SampleLuminaireDefensive(profile,
+        light = SampleLuminaireDefensive(luminaire,
                                          receiver,
                                          SLICE_DEFENSIVE_FRACTION,
                                          SampleSceneRandom(launch, MIXTURE_COMPONENT_DIMENSION),
@@ -130,11 +159,11 @@ float3 SampleLuminaire(SceneContext scene,
     {
         float seedWeight;
         float guideDensity;
-        light = SampleLuminaireSlice(profile, receiver, seedSample, branchSample, seedWeight, guideDensity);
+        light = SampleLuminaireSlice(luminaire, receiver, seedSample, branchSample, seedWeight, guideDensity);
     }
     else
     {
-        light = SampleLuminaireArea(profile, receiver, areaSample);
+        light = SampleLuminaireArea(luminaire, receiver, areaSample);
     }
     if (light.HasSample == false || any(light.RadianceOverDensity > 0) == false)
         return float3(0);
@@ -159,7 +188,8 @@ float3 SampleLuminaire(SceneContext scene,
     // An occluded or failed query adds nothing; a failure has latched queries.HasFailed.
     if (TestVisibility(scene, queries, shadingPoint.Hit, shadowRay) != SCENE_QUERY_MISS)
         return float3(0);
-    return bsdfValue * light.RadianceOverDensity * cosSurface;
+    // Uniform luminaire selection: divide by its probability 1 / luminaireCount.
+    return bsdfValue * light.RadianceOverDensity * (cosSurface * float(luminaireCount));
 }
 
 /// Emission plus the estimator's luminaire sample; a nonfinite or negative estimate is a shader failure. Each pass
@@ -172,7 +202,7 @@ float3 ShadeEstimator(SceneContext scene, RayLaunch launch, uint estimator, inou
     bool isPrimary = estimator == DEFENSIVE_SLICE_SAMPLING_ESTIMATOR;
     if (TryLoadShadingPoint(scene, launch, isPrimary, passQueries, shadingPoint, radiance) == true)
     {
-        radiance += SampleLuminaire(scene, launch, shadingPoint, estimator, passQueries);
+        radiance += shadingPoint.Throughput * SampleLuminaire(scene, launch, shadingPoint, estimator, passQueries);
         if (IsRadianceFinite(radiance) == false || any(radiance < 0) == true)
         {
             FailSceneQuery(passQueries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);

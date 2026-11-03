@@ -72,6 +72,32 @@ static const LightingLayoutValue MESH_LIGHT_GRID_CELLS_PER_WORD = 2;
 static const LightingLayoutValue MESH_LIGHT_GRID_ENTRIES_PER_WORD = 4;
 /// Most list entries over all cells. A scene needing more uploads no grid and evaluates every record.
 static const LightingLayoutValue MAX_MESH_LIGHT_GRID_ASSIGNMENTS = 1048576;
+/// Mesh-light shadow casters (render-graph-authoring.md, "Mesh-light shadows"). Records are grouped into casters,
+/// each a point from which cube shadow faces are rendered once per prepared scene into one RGBA8 atlas. A record's
+/// caster is stored, plus one, in the w of its second corner (this corner index); zero leaves it unshadowed.
+static const LightingLayoutValue MESH_LIGHT_SHADOW_CASTER_CORNER = 1;
+/// The caster table follows the culling grid, and the grid cull word's y holds its first word; zero means no
+/// shadows. Its header word is (caster count, atlas side in texels, reciprocal atlas side, zero).
+static const LightingLayoutValue MESH_LIGHT_SHADOW_HEADER_WORDS = 1;
+/// Float4 words per caster: (position xyz in metres, range in metres), (light radius in metres, near distance over
+/// range, face slot side in texels, tangent of the slot's half field of view), then the atlas texel origins of the
+/// six faces, two per word. A face that receives no light has origin (-1, -1) and reads as unoccluded.
+static const LightingLayoutValue MESH_LIGHT_SHADOW_CASTER_WORDS = 5;
+/// Cube faces of a caster, in +X, -X, +Y, -Y, +Z, -Z order.
+static const LightingLayoutValue MESH_LIGHT_SHADOW_FACE_COUNT = 6;
+/// Most casters per scene; further records stay unshadowed and are reported.
+static const LightingLayoutValue MAX_MESH_LIGHT_SHADOW_CASTERS = 64;
+/// Side of the square shadow atlas in texels.
+static const LightingLayoutValue MESH_LIGHT_SHADOW_ATLAS_TEXELS = 2048;
+/// Smallest face slot side in texels; slots are powers of two.
+static const LightingLayoutValue MIN_MESH_LIGHT_SHADOW_FACE_TEXELS = 32;
+/// Largest face slot side in texels, given to the most powerful caster.
+static const LightingLayoutValue MAX_MESH_LIGHT_SHADOW_FACE_TEXELS = 512;
+/// Texels around each face's 90-degree interior, rendered with a wider field of view so filter taps near an edge
+/// stay inside the slot; also the largest filter radius.
+static const LightingLayoutValue MESH_LIGHT_SHADOW_GUTTER_TEXELS = 4;
+/// Resolve slot of the shadow atlas: the material base-colour texture, which the resolve never samples.
+static const LightingLayoutValue DEFERRED_MESH_LIGHT_SHADOW_BINDING = LUDUS_DEFERRED_MESH_LIGHT_SHADOW_BINDING;
 /// Largest finite half-float value; emission is nonnegative and saturates before G-buffer storage.
 static const LightingLayoutValue DEFERRED_MAX_HALF = 65504;
 #ifdef __cplusplus

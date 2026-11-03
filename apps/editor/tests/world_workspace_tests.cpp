@@ -6,6 +6,7 @@
 #include "internal/level_workspace.h"
 #include "internal/main_window.h"
 #include "internal/preview_viewport.h"
+#include "internal/render_panel.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "internal/renderer_workspace.h"
@@ -50,6 +51,7 @@
 #include <QTest>
 #include <QTimer>
 #include <QToolButton>
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <ludus/foundation/math/scalar.hpp>
@@ -2043,6 +2045,121 @@ TEST_CASE("Default World presets create renderable geometry and authored lights 
     CHECK(reopened.Document().Draft() == workspace.Document().Draft());
 }
 
+TEST_CASE("A default World luminaire is scene data with an outline and a working gizmo",
+          "[editor][world][creation][luminaire]")
+{
+    using namespace ludus::foundation;
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("luminaire.world.json"))) == true);
+    workspace.findChild<QAction*>(QStringLiteral("worldCreateCube"))->trigger();
+    QAction* createOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateLuminaire"));
+    REQUIRE(createOrNull != nullptr);
+    createOrNull->trigger();
+    const QJsonArray entities = workspace.Document().Draft().value(QStringLiteral("entities")).toArray();
+    REQUIRE(entities.size() == 2);
+    const QJsonObject entity = entities[1].toObject();
+    const QString id = workspace.Document().GetEntityKey(entity);
+    CHECK(entity.value(QStringLiteral("name")).toString() == QStringLiteral("Luminaire"));
+    const QJsonObject values =
+        entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("luminaire")).toObject();
+    CHECK(values.value(QStringLiteral("halfExtent")).toDouble() == Catch::Approx(0.35));
+
+    // The panel faces down from its Transform, with the schema's beam profile.
+    RenderScene scene;
+    QString error;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
+    REQUIRE(scene.Luminaires.Count == 1);
+    const ludus::graphics::renderer::PanelLuminaire& luminaire = scene.Luminaires.Luminaires[0];
+    constexpr float32 FRAME_TOLERANCE = 1e-5F;
+    CHECK(luminaire.SourceId == ComputeRenderSceneSourceId(id));
+    CHECK(luminaire.CenterWorld.Y == Catch::Approx(2));
+    CHECK(luminaire.TangentWorld.X == Catch::Approx(1).margin(FRAME_TOLERANCE));
+    CHECK(luminaire.BitangentWorld.Z == Catch::Approx(1).margin(FRAME_TOLERANCE));
+    const math::Vector3 normalWorld = math::Cross(luminaire.TangentWorld, luminaire.BitangentWorld);
+    CHECK(normalWorld.Y == Catch::Approx(-1).margin(FRAME_TOLERANCE));
+    CHECK(luminaire.HalfExtentWorld == Catch::Approx(0.35));
+    CHECK(luminaire.RadianceScale == Catch::Approx(6));
+    CHECK(luminaire.BeamWidth == Catch::Approx(0.02));
+    CHECK(luminaire.BeamSteering == Catch::Approx(0.12));
+    CHECK(luminaire.BeamSpread == Catch::Approx(0.08));
+    CHECK(luminaire.BeamTwist == Catch::Approx(0.04));
+    // Raster lighting is unchanged: the luminaire is not an analytic light.
+    CHECK(scene.AuthoredLights.Count == 0);
+    CHECK(scene.LuminaireBinding.isEmpty() == false);
+
+    // An imported-scene composition keeps the authored luminaire.
+    RenderScene authored;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), authored, error, false) == true);
+    QJsonObject level = ImportedLevel();
+    level.insert(QStringLiteral("objects"), QJsonArray{});
+    RenderScene composed;
+    REQUIRE(RenderScene::Merge(authored, {}, level, composed, error, {}) == true);
+    REQUIRE(composed.Luminaires.Count == 1);
+    CHECK(composed.Luminaires.Luminaires[0].SourceId == luminaire.SourceId);
+
+    // Selecting it outlines the panel and its emission direction, and the transform handles work.
+    PreviewCamera camera;
+    camera.Id = QStringLiteral("luminaire-camera");
+    camera.Sample.Pose.Position = {0, 4, 10};
+    camera.Sample.Lens.Projection = ludus::gameplay::camera::CameraProjection::PerspectiveInfinite;
+    camera.Sample.Lens.NearPlane = 0.01F;
+    scene.Cameras.append(camera);
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(workspace.Document(), id, true);
+    ViewportObjectOverlay overlay;
+    const QRectF framePixel{0, 0, 800, 600};
+    interaction.BuildOverlay(framePixel, overlay);
+    // Four edges, two diagonals and the emission direction; the cube is not selected.
+    CHECK(overlay.WireLinesPixel.GetSize() == 7);
+    REQUIRE(overlay.HandleStrokes.IsEmpty() == false);
+
+    // A committed viewport move writes the authored transform, which the preview descriptor binds, as one undo step.
+    QSignalSpy committed(&interaction, &ViewportObjectInteraction::PlacementCommitted);
+    const QPointF pivotPixel = overlay.HandleStrokes[0].LinePixel.p1();
+    const QPointF tipPixel = overlay.HandleStrokes[0].LinePixel.p2();
+    REQUIRE(interaction.Press(tipPixel, framePixel) == true);
+    REQUIRE(interaction.Move(tipPixel + (tipPixel - pivotPixel), false) == true);
+    REQUIRE(interaction.Release() == true);
+    REQUIRE(committed.size() == 1);
+    const QJsonObject placement = committed[0][1].toJsonObject();
+    const QJsonArray position = placement.value(QStringLiteral("position")).toArray();
+    REQUIRE(position.size() == 3);
+    CHECK(position[1].toDouble() == Catch::Approx(2));
+    CHECK(position[0].toDouble() != Catch::Approx(0));
+
+    // The workspace writes that placement into the bound transform properties.
+    RenderPanel* panelOrNull = workspace.findChild<RenderPanel*>();
+    REQUIRE(panelOrNull != nullptr);
+    constexpr int64 MAX_SCENE_WAIT_MILLISECONDS = 15000;
+    constexpr int32 POLL_MILLISECONDS = 10;
+    QElapsedTimer timer;
+    timer.start();
+    while (panelOrNull->Preview().Scene().Luminaires.Count == 0 && timer.elapsed() < MAX_SCENE_WAIT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    REQUIRE(panelOrNull->Preview().Scene().Luminaires.Count == 1);
+    REQUIRE(workspace.SelectEntity(id) == true);
+    const QJsonObject before = workspace.Document().Draft();
+    panelOrNull->GetViewport().GetObjectInteraction().PlacementCommitted(id, placement);
+    const QJsonObject transform = workspace.Document()
+                                      .Entity(id)
+                                      .value(QStringLiteral("components"))
+                                      .toObject()
+                                      .value(QStringLiteral("transform"))
+                                      .toObject();
+    CHECK(transform.value(QStringLiteral("x")).toDouble() == Catch::Approx(position[0].toDouble()));
+    CHECK(transform.value(QStringLiteral("rx")).toDouble() == Catch::Approx(WORLD_LUMINAIRE_DOWNWARD_DEGREES));
+    workspace.Undo();
+    CHECK(workspace.Document().Draft() == before);
+    workspace.StopPreview();
+}
+
 TEST_CASE("Default World creation preserves drafts on entropy and validation failures", "[editor][world][creation]")
 {
     QByteArray schema;
@@ -2123,6 +2240,54 @@ TEST_CASE("Default World objects and lights survive imported scene composition",
     CHECK(scene->PreviewScene().Objects.size() == 2);
     CHECK(scene->PreviewScene().AuthoredLights.Count == 1);
     CHECK(workspace.Document().Draft() == document.Draft());
+    workspace.StopPreview();
+}
+
+TEST_CASE("An imported World's only authored luminaire survives scene composition", "[editor][world][luminaire]")
+{
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString source = QDir(root).filePath(QStringLiteral("source"));
+    QString error;
+    REQUIRE(tests::CreateFixtureSource(source) == true);
+    REQUIRE(tests::PrepareImportedLevel(root, QStringLiteral("room.lulevel"), source, error) == true);
+    QByteArray schema;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    QString id;
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    // No authored geometry or light: composition used to keep only the imported scene and drop the luminaire.
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Luminaire"), id, error) == true);
+    const QJsonObject level =
+        QJsonDocument::fromJson(Read(QDir(root).filePath(QStringLiteral("room.lulevel")))).object();
+    REQUIRE(document.ImportScene(level, error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("luminaire.world.json"));
+    Write(path, document.Encode());
+    ToolingPaths tools;
+    tools.ToolingRoot = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
+    WorldWorkspace workspace(tools, nullptr);
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    constexpr ludus::foundation::int64 MAX_SCENE_WAIT_MILLISECONDS = 15000;
+    constexpr ludus::foundation::int32 POLL_MILLISECONDS = 10;
+    LevelWorkspace* scene = workspace.findChild<LevelWorkspace*>();
+    REQUIRE(scene != nullptr);
+    QElapsedTimer timer;
+    timer.start();
+    while ((workspace.CanSave() == false || scene->PreviewScene().Objects.isEmpty() == true) &&
+           timer.elapsed() < MAX_SCENE_WAIT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    REQUIRE(workspace.CanSave() == true);
+    CHECK(scene->PreviewScene().Objects.size() == 1);
+    REQUIRE(scene->PreviewScene().Luminaires.Count == 1);
+    CHECK(scene->PreviewScene().Luminaires.Luminaires[0].SourceId == ComputeRenderSceneSourceId(id));
+    // The bindings that the luminaire check and the viewport gizmo read come with it.
+    CHECK(scene->PreviewScene().LuminaireBinding.isEmpty() == false);
+    CHECK(scene->PreviewScene().TransformBinding.isEmpty() == false);
     workspace.StopPreview();
 }
 

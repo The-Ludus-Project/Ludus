@@ -6,6 +6,7 @@
 #include "internal/render_graph_defaults.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
+#include "internal/viewport_device_description.h"
 #include "internal/world_document.h"
 #include "renderer_composite.h"
 
@@ -39,7 +40,6 @@ constexpr uint32 BENCHMARK_HEIGHT = 1080;
 constexpr uint32 WARMUP_FRAMES = 3;
 constexpr uint32 MEASURED_FRAMES = 20;
 constexpr int32 PREPARATION_TIMEOUT_MILLISECONDS = 120000;
-constexpr uint32 MEBIBYTE = 1024 * 1024;
 constexpr float64 NANOSECONDS_PER_MILLISECOND = 1000000;
 
 QByteArray ReadBenchmarkFile(const QString& path)
@@ -114,13 +114,9 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
     REQUIRE(MakeRenderGraphExtraction(scene, view, 1, extraction, error) == true);
 
     rhi::Shutdown();
-    rhi::DeviceDescription description;
-    description.Required.PortableRaster = true;
+    // The editor viewport's budgets: its per-frame draw limit decides how fast mesh-light shadow faces complete.
+    rhi::DeviceDescription description = MakeViewportDeviceDescription();
     description.EnableGpuTiming = true;
-    description.Storage.ResourcesPerKind = 4096;
-    description.Storage.BindingDescriptors = 32768;
-    description.Storage.HostBytes = usize{256} * MEBIBYTE;
-    description.Storage.ResourceBytes = uint64{2048} * MEBIBYTE;
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
     REQUIRE(
@@ -246,6 +242,12 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
             {QStringLiteral("height"), static_cast<int32>(BENCHMARK_HEIGHT)},
             {QStringLiteral("mesh_light_polygons"), static_cast<qint64>(graph.GetReport().Resources.MeshLightPolygons)},
             {QStringLiteral("mesh_light_bytes"), static_cast<qint64>(graph.GetReport().Resources.MeshLightBytes)},
+            {QStringLiteral("mesh_light_shadow_casters"),
+             static_cast<qint64>(graph.GetReport().Resources.MeshLightShadowCasters)},
+            {QStringLiteral("unshadowed_mesh_lights"),
+             static_cast<qint64>(graph.GetReport().Resources.UnshadowedMeshLights)},
+            {QStringLiteral("mesh_light_shadow_faces"),
+             static_cast<qint64>(graph.GetReport().Resources.MeshLightShadowFaces)},
             {QStringLiteral("preparation_ms"), preparationMilliseconds},
             {QStringLiteral("gpu_frame_ms"), frames},
             {QStringLiteral("pass_names"), passNames},

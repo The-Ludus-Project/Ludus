@@ -3,15 +3,12 @@
 #include "internal/render_graph_document.h"
 
 #include <ludus/foundation/base/core.h>
-#include <ludus/foundation/base/parse_number.hpp>
 #include <ludus/foundation/math/scalar.hpp>
-#include <ludus/foundation/math/status.hpp>
 
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QRegularExpression>
 #include <QSet>
 #include <QStringList>
 
@@ -25,15 +22,17 @@ constexpr int32 MAX_IMPORT_DEPTH = 64;
 /// Shade functions of slice_sampling_luminaire/main_shaders/shade.slang. Both import paths keep the functions and
 /// the source file name; only program ids and source directories change.
 constexpr const char* SHADE_SOURCE_SUFFIX = "main_shaders/shade.slang";
-constexpr const char* PLACEMENT_SOURCE = "luminaire.slang";
 /// World bounds whose farthest corner lies less than this in front of the panel plane count as behind it.
 constexpr float32 FRONT_TOLERANCE_WORLD = 1e-4F;
 constexpr int32 AABB_CORNER_COUNT = 8;
-constexpr qsizetype VECTOR3_COMPONENT_COUNT = 3;
-/// Half extent below which the panel is degenerate; luminaire.slang divides by it.
-constexpr float32 MIN_HALF_EXTENT_WORLD = 1e-6F;
 constexpr int32 COORDINATE_DECIMALS = 2;
 constexpr float32 PERCENT = 100;
+/// A fitted panel hangs this fraction of its ceiling distance (or the bounds' height) below it, so the ceiling's own
+/// receivers stay behind the panel, and at least MIN_CEILING_GAP_WORLD below.
+constexpr float32 CEILING_GAP_FRACTION = 0.01F;
+constexpr float32 MIN_CEILING_GAP_WORLD = 0.01F;
+/// A fitted panel's side is at least this multiple of MIN_PANEL_WORLD_FRACTION of the bounds diagonal.
+constexpr float32 FITTED_PANEL_SIZE_MARGIN = 2;
 
 bool IsShadeFunction(const QString& function)
 {
@@ -139,77 +138,6 @@ bool FindShadeSource(const RenderGraphDocument& document,
     return false;
 }
 
-/// Parse one Slang float literal: JSON decimal syntax with an optional leading-zero-free fraction (`.5`, `1.`) and
-/// an optional `f` suffix.
-bool ParseLiteral(QString text, float32& outValue)
-{
-    text = text.trimmed();
-    if (text.endsWith(QLatin1Char('f')) == true || text.endsWith(QLatin1Char('F')) == true)
-    {
-        text.chop(1);
-    }
-    const bool isNegative = text.startsWith(QLatin1Char('-'));
-    QString magnitude = isNegative == true ? text.mid(1) : text;
-    if (magnitude.startsWith(QLatin1Char('.')) == true)
-    {
-        magnitude.prepend(QLatin1Char('0'));
-    }
-    if (magnitude.endsWith(QLatin1Char('.')) == true)
-    {
-        magnitude.append(QLatin1Char('0'));
-    }
-    const QByteArray bytes = (isNegative == true ? QStringLiteral("-") : QString{}).append(magnitude).toLatin1();
-    float32 value = 0;
-    if (ParseFloat32(bytes.constData(), static_cast<usize>(bytes.size()), value) != NumberParseStatus::Success)
-    {
-        return false;
-    }
-    outValue = value;
-    return true;
-}
-
-/// The literal arguments of the first uncommented `static const <type> <name> = <initializer>;` declaration.
-// Source text, type token and declaration name are distinct grammar inputs.
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-bool ReadConstant(const QString& source, const QString& type, const QString& name, QStringList& outValues)
-{
-    const QRegularExpression declaration(
-        QStringLiteral(R"(^[ \t]*static[ \t]+const[ \t]+%1[ \t]+%2[ \t]*=[ \t]*([^;\n]+);)")
-            .arg(QRegularExpression::escape(type), QRegularExpression::escape(name)),
-        QRegularExpression::MultilineOption);
-    const QRegularExpressionMatch match = declaration.match(source);
-    if (match.hasMatch() == false)
-    {
-        return false;
-    }
-    QString initializer = match.captured(1).trimmed();
-    if (type == QStringLiteral("float3"))
-    {
-        const QString constructor = QStringLiteral("float3(");
-        if (initializer.startsWith(constructor) == false || initializer.endsWith(QLatin1Char(')')) == false)
-        {
-            return false;
-        }
-        initializer = initializer.mid(constructor.size()).chopped(1);
-    }
-    outValues = initializer.split(QLatin1Char(','));
-    return true;
-}
-
-bool ReadVector(const QString& source, const QString& name, math::Vector3& outVector)
-{
-    QStringList values;
-    math::Vector3 vector{};
-    if (ReadConstant(source, QStringLiteral("float3"), name, values) == false ||
-        values.size() != VECTOR3_COMPONENT_COUNT || ParseLiteral(values[0], vector.X) == false ||
-        ParseLiteral(values[1], vector.Y) == false || ParseLiteral(values[2], vector.Z) == false)
-    {
-        return false;
-    }
-    outVector = vector;
-    return true;
-}
-
 QString FormatPoint(math::Vector3 pointWorld)
 {
     return QStringLiteral("(%1, %2, %3)")
@@ -230,23 +158,53 @@ bool IsInside(const math::Aabb3& bounds, math::Vector3 point)
 }
 
 /// Largest signed distance of a bounds corner in front of the panel plane.
-float32 GetFrontDistance(const RenderGraphLuminairePanel& panel, const math::Aabb3& bounds)
+float32 GetFrontDistance(const graphics::renderer::PanelLuminaire& luminaire, const math::Aabb3& bounds)
 {
-    float32 front = math::Dot(bounds.Min - panel.CenterWorld, panel.NormalWorld);
+    const math::Vector3 normalWorld = math::Cross(luminaire.TangentWorld, luminaire.BitangentWorld);
+    float32 front = math::Dot(bounds.Min - luminaire.CenterWorld, normalWorld);
     for (int32 corner = 1; corner < AABB_CORNER_COUNT; ++corner)
     {
         const math::Vector3 point{(corner & 1) != 0 ? bounds.Max.X : bounds.Min.X,
                                   (corner & 2) != 0 ? bounds.Max.Y : bounds.Min.Y,
                                   (corner & 4) != 0 ? bounds.Max.Z : bounds.Min.Z};
-        front = math::Max(front, math::Dot(point - panel.CenterWorld, panel.NormalWorld));
+        front = math::Max(front, math::Dot(point - luminaire.CenterWorld, normalWorld));
     }
     return front;
 }
+
+/// Why one luminaire cannot light the World, or an empty string when it can.
+QString DescribeLuminaire(const graphics::renderer::PanelLuminaire& luminaire, const RenderGraphLuminaireWorld& world)
+{
+    const math::Vector3 extent = world.BoundsWorld.Max - world.BoundsWorld.Min;
+    const float32 diagonal = math::Length(extent);
+    const float32 side = 2 * luminaire.HalfExtentWorld;
+    if (GetFrontDistance(luminaire, world.BoundsWorld) <= FRONT_TOLERANCE_WORLD)
+    {
+        return QStringLiteral("the luminaire at %1 emits towards %2, away from every World object")
+            .arg(FormatPoint(luminaire.CenterWorld),
+                 FormatPoint(math::Cross(luminaire.TangentWorld, luminaire.BitangentWorld)));
+    }
+    if (IsInside(world.BoundsWorld, luminaire.CenterWorld) == false)
+    {
+        return QStringLiteral("the luminaire at %1 lies outside the World's bounds %2 to %3")
+            .arg(FormatPoint(luminaire.CenterWorld),
+                 FormatPoint(world.BoundsWorld.Min),
+                 FormatPoint(world.BoundsWorld.Max));
+    }
+    if (side < MIN_PANEL_WORLD_FRACTION * diagonal)
+    {
+        return QStringLiteral("the %1 m luminaire at %2 spans %3% of the World's %4 m bounds diagonal, so it lights "
+                              "at most a small patch")
+            .arg(static_cast<float64>(side), 0, 'f', COORDINATE_DECIMALS)
+            .arg(FormatPoint(luminaire.CenterWorld))
+            .arg(static_cast<float64>(PERCENT * side / diagonal), 0, 'f', 1)
+            .arg(static_cast<float64>(diagonal), 0, 'f', 1);
+    }
+    return {};
+}
 } // namespace
 
-bool FindRenderGraphLuminairePanel(const RenderGraphDocument& document,
-                                   const QString& configuration,
-                                   RenderGraphLuminairePanel& outPanel)
+bool IsRenderGraphLuminaireRoute(const RenderGraphDocument& document, const QString& configuration)
 {
     if (document.IsLoaded() == false)
     {
@@ -259,85 +217,64 @@ bool FindRenderGraphLuminairePanel(const RenderGraphDocument& document,
     }
     QSet<QString> visited;
     QString shadeSource;
-    if (FindShadeSource(document, programs, document.GetRootGraph(), configuration, 0, visited, shadeSource) == false)
-    {
-        return false;
-    }
-    RenderGraphLuminairePanel panel;
-    panel.Source = shadeSource.chopped(QStringLiteral("shade.slang").size()) + QLatin1String(PLACEMENT_SOURCE);
-    panel.IsPlacementKnown = ReadRenderGraphLuminairePlacement(document.GetDraft(panel.Source), panel);
-    outPanel = Move(panel);
-    return true;
+    return FindShadeSource(document, programs, document.GetRootGraph(), configuration, 0, visited, shadeSource);
 }
 
-bool ReadRenderGraphLuminairePlacement(const QByteArray& source, RenderGraphLuminairePanel& outPanel)
+WorldLuminairePlacement FitRenderGraphLuminaire(const RenderGraphLuminaireWorld& world)
 {
-    const QString text = QString::fromUtf8(source);
-    math::Vector3 center{};
-    math::Vector3 normal{};
-    QStringList halfExtentValues;
-    float32 halfExtent = 0;
-    if (ReadVector(text, QStringLiteral("LUMINAIRE_CENTER_WORLD"), center) == false ||
-        ReadVector(text, QStringLiteral("LUMINAIRE_NORMAL_WORLD"), normal) == false ||
-        ReadConstant(text, QStringLiteral("float"), QStringLiteral("LUMINAIRE_HALF_EXTENT_WORLD"), halfExtentValues) ==
-            false ||
-        halfExtentValues.size() != 1 || ParseLiteral(halfExtentValues[0], halfExtent) == false ||
-        halfExtent < MIN_HALF_EXTENT_WORLD || math::TryNormalize(normal, normal) != math::MathStatus::Success)
+    const math::Aabb3& bounds = world.BoundsWorld;
+    const math::Vector3 extent = bounds.Max - bounds.Min;
+    const bool isAnchorInside = world.HasAnchor == true && IsInside(bounds, world.AnchorWorld) == true;
+    const math::Vector3 center = (bounds.Min + bounds.Max) * 0.5F;
+    WorldLuminairePlacement placement;
+    placement.RotationDegrees = {WORLD_LUMINAIRE_DOWNWARD_DEGREES, 0, 0};
+    placement.PositionWorld = isAnchorInside == true ? world.AnchorWorld : center;
+    if (isAnchorInside == true && world.HasCeiling == true)
     {
-        return false;
+        placement.PositionWorld.Y += world.CeilingHeightWorld -
+                                     math::Max(MIN_CEILING_GAP_WORLD, CEILING_GAP_FRACTION * world.CeilingHeightWorld);
     }
-    outPanel.CenterWorld = center;
-    outPanel.HalfExtentWorld = halfExtent;
-    outPanel.NormalWorld = normal;
-    return true;
+    else
+    {
+        placement.PositionWorld.Y = bounds.Max.Y - math::Max(MIN_CEILING_GAP_WORLD, CEILING_GAP_FRACTION * extent.Y);
+    }
+    const float32 side = math::Max(FITTED_PANEL_WORLD_FRACTION * math::Min(extent.X, extent.Z),
+                                   FITTED_PANEL_SIZE_MARGIN * MIN_PANEL_WORLD_FRACTION * math::Length(extent));
+    placement.HalfExtentWorld = math::Clamp(side * 0.5F,
+                                            graphics::renderer::MIN_PANEL_LUMINAIRE_HALF_EXTENT,
+                                            graphics::renderer::MAX_PANEL_LUMINAIRE_HALF_EXTENT);
+    return placement;
 }
 
-QString DescribeRenderGraphLuminaireCoverage(const RenderGraphLuminairePanel& panel,
-                                             const RenderGraphLuminaireWorld& world)
+RenderGraphLuminaireCoverage DescribeRenderGraphLuminaireCoverage(const RenderGraphLuminaireWorld& world)
 {
-    const bool hasWorldLighting = world.EmissiveObjectCount > 0 || world.LightCount > 0;
+    RenderGraphLuminaireCoverage result;
     QString reason;
-    if (panel.IsPlacementKnown == false)
+    if (world.Luminaires.Count == 0)
     {
-        if (hasWorldLighting == false)
-        {
-            return {};
-        }
-        reason = QStringLiteral("its placement in %1 is not a set of plain literals, so the editor cannot check it")
-                     .arg(panel.Source);
+        reason = QStringLiteral("this World has no enabled luminaire");
     }
     else if (world.HasBounds == true)
     {
-        const math::Vector3 extent = world.BoundsWorld.Max - world.BoundsWorld.Min;
-        const float32 diagonal = math::Length(extent);
-        const float32 side = 2 * panel.HalfExtentWorld;
-        if (GetFrontDistance(panel, world.BoundsWorld) <= FRONT_TOLERANCE_WORLD)
+        for (uint32 i = 0; i < world.Luminaires.Count; ++i)
         {
-            reason = QStringLiteral("the panel at %1 emits towards %2, away from every World object")
-                         .arg(FormatPoint(panel.CenterWorld), FormatPoint(panel.NormalWorld));
-        }
-        else if (IsInside(world.BoundsWorld, panel.CenterWorld) == false)
-        {
-            reason = QStringLiteral("the panel at %1 lies outside the World's bounds %2 to %3")
-                         .arg(FormatPoint(panel.CenterWorld),
-                              FormatPoint(world.BoundsWorld.Min),
-                              FormatPoint(world.BoundsWorld.Max));
-        }
-        else if (side < MIN_PANEL_WORLD_FRACTION * diagonal)
-        {
-            reason = QStringLiteral("the %1 m panel at %2 spans %3% of the World's %4 m bounds diagonal, so it lights "
-                                    "at most a small patch")
-                         .arg(static_cast<float64>(side), 0, 'f', COORDINATE_DECIMALS)
-                         .arg(FormatPoint(panel.CenterWorld))
-                         .arg(static_cast<float64>(PERCENT * side / diagonal), 0, 'f', 1)
-                         .arg(static_cast<float64>(diagonal), 0, 'f', 1);
+            const QString luminaireReason = DescribeLuminaire(world.Luminaires.Luminaires[i], world);
+            if (luminaireReason.isEmpty() == true)
+            {
+                return result;
+            }
+            if (i == 0)
+            {
+                reason = luminaireReason;
+            }
         }
     }
     if (reason.isEmpty() == true)
     {
-        return {};
+        return result;
     }
-    QString text = QStringLiteral("The slice-sampling luminaire panel cannot light this World: %1.").arg(reason);
+    const bool hasWorldLighting = world.EmissiveObjectCount > 0 || world.LightCount > 0;
+    result.Warning = QStringLiteral("The slice-sampling-luminaire template cannot light this World: %1.").arg(reason);
     if (hasWorldLighting == true)
     {
         QStringList ignored;
@@ -351,13 +288,29 @@ QString DescribeRenderGraphLuminaireCoverage(const RenderGraphLuminairePanel& pa
         {
             ignored.append(FormatCount(world.LightCount, QStringLiteral("light"), QStringLiteral("lights")));
         }
-        text += QStringLiteral(" Only the panel lights surfaces in this template, not the World's %1.")
-                    .arg(ignored.join(QStringLiteral(" or ")));
+        result.Warning += QStringLiteral(" Only luminaires light surfaces in this template, not the World's %1.")
+                              .arg(ignored.join(QStringLiteral(" or ")));
     }
-    text += QStringLiteral(" Move the panel with LUMINAIRE_CENTER_WORLD, LUMINAIRE_HALF_EXTENT_WORLD and its frame in "
-                           "%1, or route the output from a template that samples the World's emitters, such as "
-                           "ReSTIR DI.")
-                .arg(panel.Source);
-    return text;
+    if (world.CanRepair == true && world.HasBounds == true)
+    {
+        result.Placement = FitRenderGraphLuminaire(world);
+        result.Repair = world.Luminaires.Count == 0 ? RenderGraphLuminaireRepair::AddLuminaire
+                                                    : RenderGraphLuminaireRepair::MoveLuminaire;
+        result.LuminaireSourceId = world.Luminaires.Count == 0 ? 0 : world.Luminaires.Luminaires[0].SourceId;
+        result.Warning +=
+            QStringLiteral(" Open this warning from the Error List to %1 a %2 m luminaire at %3, or "
+                           "route the output from a template that samples the World's emitters, such "
+                           "as ReSTIR DI.")
+                .arg(world.Luminaires.Count == 0 ? QStringLiteral("add") : QStringLiteral("fit"))
+                .arg(static_cast<float64>(2 * result.Placement.HalfExtentWorld), 0, 'f', COORDINATE_DECIMALS)
+                .arg(FormatPoint(result.Placement.PositionWorld));
+    }
+    else
+    {
+        result.Warning += QStringLiteral(" Attach a luminaire component to an entity and place it with its Transform, "
+                                         "or route the output from a template that samples the World's emitters, "
+                                         "such as ReSTIR DI.");
+    }
+    return result;
 }
 } // namespace ludus::editor

@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -111,6 +112,9 @@ struct PreviewStartView final
     /// Vertical field of view in radians, in (0, pi).
     foundation::float32 VerticalFov = 1;
 };
+/// Light SourceId of an authored World light entity, and the object SourceId of an authored
+/// renderable, as World composition writes them: a nonzero digest of the entity key.
+[[nodiscard]] foundation::uint64 ComputeEntitySourceId(const QString& entityKey);
 /// Parse a level `camera` object ({eye, target, up, fov}, world units and radians). Failure,
 /// including a degenerate view or a field of view outside (0, pi), preserves outView.
 [[nodiscard]] bool TryParseStartView(const QJsonObject& camera, PreviewStartView& outView);
@@ -144,6 +148,12 @@ struct RenderScene final
     QString LogicalId;
     bool Lit = false;
     graphics::renderer::LightSelection AuthoredLights{};
+    /// Enabled World panel luminaires (the preview descriptor's `luminaire` binding), admitted by
+    /// NormalizePanelLuminaires; each SourceId is its entity key's source identity. They light only scene shaders
+    /// that read them, such as the slice-sampling-luminaire template, and Merge keeps the authored snapshot's.
+    graphics::renderer::PanelLuminaireSelection Luminaires{};
+    /// Project-owned luminaire property binding; empty when the preview descriptor declares none.
+    QJsonObject LuminaireBinding;
     // Worker decode; no source importer, engine code execution or device access.
     [[nodiscard]] static bool LoadCooked(const QByteArray& bytes,
                                          const QJsonObject& level,
@@ -157,6 +167,11 @@ struct RenderScene final
                                     RenderScene& output,
                                     QString& error,
                                     const QJsonObject& revisions);
+    /// The enabled analytic lights of a cooked definition, normalized as LoadCooked presents them.
+    /// Failure (more lights than the viewport admits) preserves outLights.
+    [[nodiscard]] static bool LoadCookedLights(const resources::SceneDefinition& scene,
+                                               graphics::renderer::LightSelection& outLights,
+                                               QString& outError);
     QVector<PreviewMesh> Meshes;
     QVector<PreviewTexture> Textures;
     QVector<PreviewObject> Objects;
@@ -167,9 +182,16 @@ struct RenderScene final
     QByteArray Identity;
     QByteArray PacketIdentity;
     QByteArray AssetsIdentity;
+    /// Identity before ApplyLightSwitches disabled any source; empty while nothing is disabled.
+    QByteArray UnswitchedIdentity;
+    /// Digest of the disabled light sources this scene presents; empty while nothing is disabled.
+    /// Lighting keys hash it because the switched emission is not part of the definition.
+    QByteArray LightSwitchIdentity;
     QJsonObject RenderableBinding;
     /// Project-owned position/Euler-degree/scale property binding for viewport manipulation.
     QJsonObject TransformBinding;
+    /// Project-owned light binding ({component, properties}); empty when the World binds no lights.
+    QJsonObject LightBinding;
     /// Camera the viewport looks through until the user picks another; -1 is the editor camera.
     foundation::int32 DefaultCamera = -1;
     /// Level start view of an imported scene; absent for Worlds without a scene level.
@@ -192,4 +214,27 @@ struct RenderScene final
     [[nodiscard]] bool
     View(const PreviewViewOptions& options, graphics::renderer::ViewDescription& outView, QString& outError) const;
 };
+/// The stable nonzero source identity RenderScene::Load gives the light, luminaire or object of World entity key
+/// entityKey (WorldDocument::GetEntityKey).
+[[nodiscard]] foundation::uint64 ComputeRenderSceneSourceId(const QString& entityKey);
+/// Mesh-local positions of scene mesh meshIndex, from the cooked Definition when the scene has one and from the
+/// authored PreviewMesh otherwise. meshIndex must index scene.Meshes; the view borrows the scene's storage.
+[[nodiscard]] foundation::BorrowedView<const foundation::math::Vector3>
+GetRenderSceneMeshPositions(const RenderScene& scene, foundation::int32 meshIndex) noexcept;
+/// Triangle-list indices of scene mesh meshIndex, from the same storage as GetRenderSceneMeshPositions.
+[[nodiscard]] foundation::BorrowedView<const foundation::uint32>
+GetRenderSceneMeshIndices(const RenderScene& scene, foundation::int32 meshIndex) noexcept;
+/// Intersect a mesh-space ray with one triangle in double precision, from either side.
+/// @return True with outDistance, the nonnegative ray parameter of the hit; false preserves outDistance.
+[[nodiscard]] bool IntersectRenderSceneTriangle(const foundation::math::Ray3& rayMesh,
+                                                foundation::math::Vector3 positionMeshA,
+                                                foundation::math::Vector3 positionMeshB,
+                                                foundation::math::Vector3 positionMeshC,
+                                                foundation::float64& outDistance) noexcept;
+/// Nearest hit of a world ray with the scene's visible objects, brute force over every triangle; for one-off editor
+/// queries, not per frame. outDistanceWorld is in units of the ray direction's length.
+/// @return False when nothing is hit; outDistanceWorld is then unchanged.
+[[nodiscard]] bool TryTraceRenderSceneRay(const RenderScene& scene,
+                                          const foundation::math::Ray3& rayWorld,
+                                          foundation::float64& outDistanceWorld) noexcept;
 } // namespace ludus::editor

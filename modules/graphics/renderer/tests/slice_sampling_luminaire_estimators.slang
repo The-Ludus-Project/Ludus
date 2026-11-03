@@ -13,7 +13,7 @@ LUDUS_SHADER_BINDING(LUDUS_SLICE_SAMPLING_ESTIMATORS_RESULTS_BINDING) RWStructur
 
 static const uint2 ESTIMATOR_TEST_RANDOM_KEY = uint2(0x534c4943u, 0x45535431u);
 static const uint RECEIVER_COUNT = LUDUS_SLICE_SAMPLING_ESTIMATORS_RECEIVER_COUNT;
-// Receivers below the default panel (luminaire.slang): on the floor of the 2 x 2 x 2 test room where two tile
+// Receivers below the test panel (MakeTestLuminaire): on the floor of the 2 x 2 x 2 test room where two tile
 // footprints overlap (two roots per seed), where one footprint lies, between footprints where only Gaussian tails
 // reach, on top of the room's block, on a tilted surface and on the left wall.
 static const float3 RECEIVER_POSITIONS_WORLD[RECEIVER_COUNT] = {
@@ -41,18 +41,25 @@ static const float DEFENSIVE_FRACTION = 0.1;
 // a tile edge; the relative tolerance only absorbs the quantile's and the solve's float rounding.
 static const float REPLAY_RELATIVE_TOLERANCE = 0.0001;
 
-/// Profile 0 is the template's default Graph settings. Profile 1 has no spread or twist: each tile's lobe is then
-/// constant over the tile, the auxiliary map is piecewise constant with jumps, as in the draft's running example, and
-/// the stronger steering makes the footprints of different tiles overlap more.
-LuminaireProfile MakeTestProfile(uint profileIndex)
+/// A 0.7 x 0.7 panel facing down at y = 0.97, just below the test room's ceiling light: the luminaire that
+/// render_graph_ray_tests.cpp's Cornell box authors. Profile 0 is a new World luminaire's default beam profile.
+/// Profile 1 has no spread or twist: each tile's lobe is then constant over the tile, the auxiliary map is piecewise
+/// constant with jumps, as in the draft's running example, and the stronger steering makes the footprints of
+/// different tiles overlap more.
+Luminaire MakeTestLuminaire(uint profileIndex)
 {
-    LuminaireProfile profile;
-    profile.RadianceScale = 6;
-    profile.BeamWidth = 0.02;
-    profile.BeamSteering = profileIndex == 0 ? 0.12 : 0.2;
-    profile.BeamSpread = profileIndex == 0 ? 0.08 : 0;
-    profile.BeamTwist = profileIndex == 0 ? 0.04 : 0;
-    return profile;
+    Luminaire luminaire;
+    luminaire.CenterWorld = float3(0, 0.97, 0);
+    luminaire.HalfExtentWorld = 0.35;
+    luminaire.TangentWorld = float3(1, 0, 0);
+    luminaire.BitangentWorld = float3(0, 0, 1);
+    luminaire.NormalWorld = float3(0, -1, 0);
+    luminaire.RadianceScale = 6;
+    luminaire.BeamWidth = 0.02;
+    luminaire.BeamSteering = profileIndex == 0 ? 0.12 : 0.2;
+    luminaire.BeamSpread = profileIndex == 0 ? 0.08 : 0;
+    luminaire.BeamTwist = profileIndex == 0 ? 0.04 : 0;
+    return luminaire;
 }
 
 float DrawUniform(uint invocation, uint sampleIndex, uint dimension)
@@ -75,8 +82,8 @@ SliceSamplingEstimatorsMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
     uint invocation = dispatchThreadId.x;
     uint caseIndex = invocation / LUDUS_SLICE_SAMPLING_ESTIMATORS_INVOCATIONS_PER_CASE;
     uint receiverIndex = caseIndex % RECEIVER_COUNT;
-    LuminaireProfile profile = MakeTestProfile(caseIndex / RECEIVER_COUNT);
-    LuminaireReceiver receiver = MakeLuminaireReceiver(RECEIVER_POSITIONS_WORLD[receiverIndex]);
+    Luminaire luminaire = MakeTestLuminaire(caseIndex / RECEIVER_COUNT);
+    LuminaireReceiver receiver = MakeLuminaireReceiver(luminaire, RECEIVER_POSITIONS_WORLD[receiverIndex]);
     float3 normalWorld = RECEIVER_NORMALS_WORLD[receiverIndex];
     float defensiveSum = 0;
     float defensiveSquares = 0;
@@ -104,7 +111,7 @@ SliceSamplingEstimatorsMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
         float2 mixtureAreaSample =
             float2(DrawUniform(invocation, sampleIndex, 9), DrawUniform(invocation, sampleIndex, 10));
 
-        float defensive = EstimateIrradiance(SampleLuminaireDefensive(profile,
+        float defensive = EstimateIrradiance(SampleLuminaireDefensive(luminaire,
                                                                       receiver,
                                                                       DEFENSIVE_FRACTION,
                                                                       componentSample,
@@ -118,7 +125,7 @@ SliceSamplingEstimatorsMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
         float seedWeight;
         float guideDensity;
         LuminaireLightSample slice =
-            SampleLuminaireSlice(profile, receiver, seedSample, branchSample, seedWeight, guideDensity);
+            SampleLuminaireSlice(luminaire, receiver, seedSample, branchSample, seedWeight, guideDensity);
         float sliceEstimate = EstimateIrradiance(slice, normalWorld);
         sliceSum += sliceEstimate;
         sliceSquares += sliceEstimate * sliceEstimate;
@@ -131,21 +138,21 @@ SliceSamplingEstimatorsMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
         else
         {
             // Replay (section 5): the slope's own seed must give back the seed weight it was sampled with.
-            LuminaireTile tile = GetLuminaireTile(profile, slice.Tile);
+            LuminaireTile tile = GetLuminaireTile(luminaire, slice.Tile);
             float2 standardSeed = ComputeStandardSeed(tile, slice.PositionPanelTangent, slice.SlopePanel);
-            float replayed = ComputeSeedWeight(profile, receiver, standardSeed, slice.Tile);
+            float replayed = ComputeSeedWeight(luminaire, receiver, standardSeed, slice.Tile);
             if (abs(replayed - seedWeight) > REPLAY_RELATIVE_TOLERANCE * seedWeight)
                 replayMismatchCount += 1;
         }
 
-        LuminaireLightSample area = SampleLuminaireArea(profile, receiver, areaSample);
+        LuminaireLightSample area = SampleLuminaireArea(luminaire, receiver, areaSample);
         float areaEstimate = EstimateIrradiance(area, normalWorld);
         areaSum += areaEstimate;
         areaSquares += areaEstimate * areaEstimate;
         float normalizer = 0;
         if (area.HasSample == true)
         {
-            LuminaireTile tile = GetLuminaireTile(profile, area.Tile);
+            LuminaireTile tile = GetLuminaireTile(luminaire, area.Tile);
             float2 standardSeed = ComputeStandardSeed(tile, area.PositionPanelTangent, area.SlopePanel);
             normalizer = tile.Strength * EvaluateEmissionDensity(tile, standardSeed) / uniformAreaDensity;
         }

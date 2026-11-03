@@ -634,7 +634,6 @@ TEST_CASE("pbrt reader builds the IR with fallbacks and file:line diagnostics", 
                                         codes::UNKNOWN_DIRECTIVE,
                                         codes::MEDIUM_SKIPPED,
                                         codes::ENVIRONMENT_FALLBACK,
-                                        codes::TRANSMISSION_DROPPED,
                                         codes::MATERIAL_DEFAULTED,
                                         codes::SHAPE_SKIPPED,
                                         codes::SUBDIV_SKIPPED,
@@ -663,6 +662,46 @@ TEST_CASE("pbrt reader builds the IR with fallbacks and file:line diagnostics", 
     CHECK_THAT(scene.Materials[0].Roughness, Catch::Matchers::WithinAbs(0.316227766, 1e-6));
     CHECK(scene.Materials[1].Metallic == 1.0);
     CHECK_THAT(scene.Materials[1].BaseColour[0], Catch::Matchers::WithinAbs(.955, 1e-9));
+    // Glass keeps its transmission as a typed smooth dielectric, over opaque fallback terms.
+    CHECK(HasCode(log, codes::TRANSMISSION_DROPPED) == false);
+    const IrMaterial& glass = scene.Materials[2];
+    CHECK(glass.Scattering.Model == ludus::content::scene_format::MaterialModel::Dielectric);
+    CHECK(glass.Scattering.Eta[0] == 1.5F);
+    CHECK(glass.Scattering.Eta[2] == 1.5F);
+    CHECK(glass.Scattering.AlphaU == ludus::content::scene_format::MIN_MATERIAL_ALPHA);
+    CHECK(glass.IsApproximated == false);
+    CHECK_THAT(glass.BaseColour[0], Catch::Matchers::WithinAbs(.04, 1e-6));
+    CHECK(scene.Materials[0].Scattering.Model == ludus::content::scene_format::MaterialModel::MetallicRoughness);
+}
+
+TEST_CASE("pbrt dielectrics import as typed smooth interfaces", "[scene_cook][pbrt]")
+{
+    namespace format = ludus::content::scene_format;
+    SceneIr scene;
+    DiagnosticLog log;
+    const std::string_view text =
+        "WorldBegin\n"
+        "MakeNamedMaterial \"Pane\" \"string type\" \"thindielectric\" \"float eta\" 1.33\n"
+        "MakeNamedMaterial \"Frosted\" \"string type\" \"dielectric\" \"float roughness\" 0.25\n"
+        "MakeNamedMaterial \"Crown\" \"string type\" \"dielectric\" \"spectrum eta\" \"glass-BK7\"\n";
+    REQUIRE(pbrt::ReadSceneFromMemory({AsBytes(text), {}, "memory.pbrt"}, scene, log) == ludus::content::Status::Ok);
+    REQUIRE(scene.Materials.GetSize() == 3);
+    const IrMaterial& pane = scene.Materials[0];
+    CHECK(pane.Scattering.Model == format::MaterialModel::ThinDielectric);
+    CHECK(pane.Scattering.Eta[1] == 1.33F);
+    CHECK(pane.IsApproximated == false);
+    // pbrt remaps by default: alpha = sqrt(0.25) is rough, imported smooth with a warning.
+    const IrMaterial& frosted = scene.Materials[1];
+    CHECK(frosted.Scattering.Model == format::MaterialModel::Dielectric);
+    CHECK(frosted.Scattering.Eta[0] == format::DEFAULT_DIELECTRIC_ETA);
+    CHECK(frosted.Scattering.AlphaV == format::MIN_MATERIAL_ALPHA);
+    CHECK(frosted.IsApproximated == true);
+    CHECK(log.CountOccurrences(codes::ROUGH_TRANSMISSION_APPROXIMATED) == 1);
+    // A named spectrum keeps the default index and reports it.
+    const IrMaterial& crown = scene.Materials[2];
+    CHECK(crown.Scattering.Eta[0] == format::DEFAULT_DIELECTRIC_ETA);
+    CHECK(crown.IsApproximated == true);
+    CHECK(HasCode(log, codes::SPECTRUM_APPROXIMATED) == true);
 }
 
 TEST_CASE("syntax errors fail with a located error; include errors stay local", "[scene_cook][pbrt]")
@@ -720,6 +759,17 @@ TEST_CASE("best-effort import cooks a decodable, deterministic bundle and report
         }
     }
     CHECK(emissiveSlots == 1);
+    usize dielectricSlots = 0;
+    for (const ludus::resources::SceneMaterial& material : decoded.Materials)
+    {
+        if (material.Scattering.Model == ludus::content::scene_format::MaterialModel::Dielectric)
+        {
+            ++dielectricSlots;
+            CHECK(material.Scattering.Eta[0] == 1.5F);
+            CHECK(material.Reflectance.X == 1.0F); // The 0.04 fallback is in the base swatch.
+        }
+    }
+    CHECK(dielectricSlots == 1);
     CHECK(ReportHasCode(first, codes::TEXTURE_UNREADABLE) == true);
     const std::string_view report(reinterpret_cast<const char*>(first.Report.GetData()), first.Report.GetSize());
     CHECK(report.find("\"importer\": \"pbrt-best-effort-v1\"") != std::string_view::npos);

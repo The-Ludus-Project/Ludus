@@ -807,6 +807,14 @@ void LevelWorkspace::decodeCandidate()
             Success_ = RenderScene::Load(Root_, authoredWorld, authored, Error_, false) &&
                        RenderScene::Merge(authored, bytes, Candidate_, Scene_, Error_, CandidateRevisions_);
         }
+        // The World's switched-off lights; missing sources are listed by the World's light panel.
+        LightSwitchReport lightSwitchReport;
+        if (Success_ == true && WorldSnapshot_.Loaded() == true &&
+            ApplyLightSwitches(WorldSnapshot_.GetLightSwitches(), Scene_, lightSwitchReport) == false)
+        {
+            Success_ = false;
+            Error_ = QStringLiteral("Cooked light table exceeds viewport capacity.");
+        }
         if (Success_ == true)
         {
             Scene_.HasStartView =
@@ -1167,6 +1175,39 @@ PlacementPublication LevelWorkspace::PublishPlacement(const QJsonObject& level, 
     mPlacementValidation = PlacementValidation::Pending;
     Status_->setText(QStringLiteral("Objects placed. Validating scene assets in the background…"));
     startPlacementValidation();
+    return PlacementPublication::Published;
+}
+PlacementPublication LevelWorkspace::PublishLightSwitches(const QJsonObject& level, const WorldDocument& world)
+{
+    if (Busy_ == true || WorldOwned_ == false || mPresentedScene.Definition == nullptr ||
+        mPlacementValidation != PlacementValidation::Ready || level != mPresentedLevel)
+    {
+        return PlacementPublication::RequiresAssembly;
+    }
+    const QJsonObject unplacedWorld = world.MakeDraftWithoutScenePlacements();
+    QJsonObject unswitchedWorld = unplacedWorld;
+    unswitchedWorld.remove(QStringLiteral("disabled_lights"));
+    QJsonObject presentedUnswitchedWorld = mPresentedWorld;
+    presentedUnswitchedWorld.remove(QStringLiteral("disabled_lights"));
+    if (unswitchedWorld != presentedUnswitchedWorld)
+    {
+        return PlacementPublication::RequiresAssembly;
+    }
+    if (unplacedWorld == mPresentedWorld)
+    {
+        return PlacementPublication::Unchanged;
+    }
+    RenderScene switched = mPresentedScene;
+    LightSwitchReport report;
+    if (ApplyLightSwitches(world.GetLightSwitches(), switched, report) == false || presentScene(switched) == false)
+    {
+        return PlacementPublication::RequiresAssembly;
+    }
+    // Ready means the presented scene is the validated one; switches need no cook to stay valid.
+    mPresentedWorld = unplacedWorld;
+    mValidatedScene = mPresentedScene;
+    mValidatedWorld = mPresentedWorld;
+    Status_->setText(QStringLiteral("Light switches applied."));
     return PlacementPublication::Published;
 }
 void LevelWorkspace::CancelPlacementValidation() noexcept

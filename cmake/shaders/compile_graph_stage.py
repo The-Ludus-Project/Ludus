@@ -157,102 +157,60 @@ def isolate_metal_ray_queries(code):
     return '\n'.join(lines)
 
 
-def spirv_cross_identifier(name):
-    """Spell an OpName as SPIRV-Cross 1.4.313 emits it (ParsedIR::sanitize_identifier).
+def name_spirv_dontinline_functions(module):
+    """Give every SPIR-V DontInline function a unique name before SPIRV-Cross translates it.
 
-    Slang qualifies functions with their module, as in GraphSource0.TryLoadShadingPoint; the
-    translator replaces every byte outside [A-Za-z0-9_] with an underscore, collapses repeated
-    underscores and renames identifiers it reserves for itself.
+    Slang emits some isolated routines more than once under one name (EvaluateSuffixBsdf,
+    StoreFgPhoton) and qualifies merged sources with their module (GraphSource0.TryLoadShadingPoint).
+    SPIRV-Cross 1.4.313 then spells copies with matching parameters as Name and Name_1, and keeps
+    one shared name for copies that differ, so a translated name cannot identify its function.
+    Renaming only the OpName debug strings to LudusNoinline<id>_<name> leaves the module's
+    semantics unchanged and lets restore_spirv_metal_noinline locate each function exactly once.
+    Returns the renamed module and the new names.
     """
-    spelled = name.encode()
-    if spelled and (re.fullmatch(rb'[A-Za-z_][A-Za-z0-9_]*', spelled) is None or b'__' in spelled):
-        spelled = spelled.split(b'(')[0]
-        if spelled[:1].isdigit():
-            spelled = b'_' + spelled[1:]
-        spelled = re.sub(rb'_+', b'_', re.sub(rb'[^A-Za-z0-9_]', b'_', spelled))
-    spelled = spelled.decode('ascii')
-    if spelled.startswith(('gl_', 'spv')):
-        return '_RESERVED_IDENTIFIER_FIXUP_' + spelled
-    if re.match(r'_[0-9]+(?:_|$)', spelled):
-        return '_RESERVED_IDENTIFIER_FIXUP' + spelled
-    return spelled
-
-
-def read_spirv_function_controls(module):
-    """Read function identities and debug names without interpreting shader instructions."""
     if len(module) % 4 != 0 or len(module) < 20:
         raise RuntimeError('Malformed SPIR-V function controls')
     words = struct.unpack('<' + 'I' * (len(module) // 4), module)
-    names, isolated = {}, set()
+    instructions, isolated = [], set()
     offset = 5
     while offset < len(words):
         count, opcode = words[offset] >> 16, words[offset] & 65535
         if count == 0 or offset + count > len(words):
             raise RuntimeError('Malformed SPIR-V function controls')
-        if opcode == 5:  # OpName
-            if count < 3:
-                raise RuntimeError('Malformed SPIR-V function controls')
-            try:
-                names[words[offset + 1]] = struct.pack('<' + 'I' * (count - 2), *words[offset + 2:offset + count]).split(b'\0')[0].decode()
-            except UnicodeDecodeError as error:
-                raise RuntimeError('Malformed SPIR-V function debug name') from error
-        if opcode == 54:  # OpFunction
-            if count != 5:
-                raise RuntimeError('Malformed SPIR-V function controls')
-            if words[offset + 3] & 2:  # DontInline
-                isolated.add(words[offset + 2])
+        instructions.append(words[offset:offset + count])
+        if opcode == 54 and count == 5 and words[offset + 3] & 2:  # OpFunction / DontInline
+            isolated.add(words[offset + 2])
         offset += count
-    return words, names, isolated
+    renamed, names = list(words[:5]), {}
+    for instruction in instructions:
+        if instruction[0] & 65535 == 5 and len(instruction) >= 3 and instruction[1] in isolated:  # OpName
+            identity = instruction[1]
+            if identity in names:
+                raise RuntimeError('SPIR-V DontInline function has several names')
+            name = struct.pack('<' + 'I' * (len(instruction) - 2), *instruction[2:]).split(b'\0')[0].decode()
+            # A valid identifier with no reserved double underscore, gl_/spv prefix or keyword spelling.
+            spelled = '_'.join(re.findall(r'[A-Za-z0-9]+', name))
+            names[identity] = f'LudusNoinline{identity}_{spelled}' if spelled else f'LudusNoinline{identity}'
+            encoded = names[identity].encode() + b'\0'
+            encoded += b'\0' * ((-len(encoded)) % 4)
+            operands = struct.unpack('<' + 'I' * (len(encoded) // 4), encoded)
+            instruction = ((2 + len(operands)) << 16 | 5, identity, *operands)
+        renamed.extend(instruction)
+    if len(names) != len(isolated):
+        raise RuntimeError('SPIR-V DontInline function has no name')
+    return struct.pack('<' + 'I' * len(renamed), *renamed), sorted(names.values())
 
 
-# Thanks to the Khronos Group, "SPIR-V Specification", Debug Instructions, OpName:
-# https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpName
-# Debug names have no semantic impact. Give isolated functions unique portable names
-# before translation, rather than guessing how SPIRV-Cross sanitizes Slang namespaces.
-def normalize_spirv_metal_noinline_names(module):
-    """Change only OpName strings, preserving all executable words and function controls."""
-    words, names, isolated = read_spirv_function_controls(module)
-    used = {name for identity, name in names.items() if identity not in isolated}
-    replacements = {}
-    for identity in sorted(isolated):
-        if identity not in names:
-            raise RuntimeError('SPIR-V DontInline function has no debug name; rebuild with the pinned Slang compiler')
-        base = f'KeepLudusFunctionOutOfLine_{identity}'
-        name = base
-        suffix = 0
-        while name in used:
-            suffix += 1
-            name = f'{base}_{suffix}'
-        used.add(name)
-        replacements[identity] = name
-    rewritten = list(words[:5])
-    offset = 5
-    while offset < len(words):
-        count, opcode = words[offset] >> 16, words[offset] & 65535
-        if opcode == 5 and words[offset + 1] in replacements:
-            encoded = replacements[words[offset + 1]].encode() + b'\0'
-            encoded += b'\0' * (-len(encoded) % 4)
-            payload = struct.unpack('<' + 'I' * (len(encoded) // 4), encoded)
-            rewritten.extend([((len(payload) + 2) << 16) | 5, words[offset + 1], *payload])
-        else:
-            rewritten.extend(words[offset:offset + count])
-        offset += count
-    return struct.pack('<' + 'I' * len(rewritten), *rewritten)
-
-
-def restore_spirv_metal_noinline(code, module):
+def restore_spirv_metal_noinline(code, names):
     """Preserve SPIR-V DontInline through SPIRV-Cross's always_inline helper spelling.
 
     Large optical kernels retain FFT arrays, BVH stacks and surface-path state. Letting Metal
     inline their explicitly isolated routines can corrupt live state on Apple GPUs, just as
-    inline native queries do above. Read the function control from the emitted module rather
-    than guessing from function names; unrelated helpers keep their original annotation.
+    inline native queries do above. The names come from name_spirv_dontinline_functions, which
+    reads the function control from the emitted module rather than guessing from function names;
+    unrelated helpers keep their original annotation. Every isolated function must be found once.
     """
-    _, names, isolated = read_spirv_function_controls(module)
-    for identity in sorted(isolated):
-        name = spirv_cross_identifier(names.get(identity, ''))
-        if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name) is None:
-            raise RuntimeError('SPIR-V DontInline function has no portable name')
+    for name in names:
         pattern = re.compile(re.escape(METAL_FORCE_INLINE) + r'\n([^\n]*\b' + re.escape(name) + r'\s*\()')
         code, count = pattern.subn(METAL_NOINLINE + r'\n\1', code)
         if count != 1:
@@ -316,8 +274,6 @@ def compile_graph_stage(args, lock):
         reflection.write_text(json.dumps(document))
     interface = raster_interface(document, stage, metal and not translated_compute and not native_pipeline, structured_records=translated_compute or native_pipeline)
     if translated_compute:
-        if metal:
-            intermediate.write_bytes(normalize_spirv_metal_noinline_names(intermediate.read_bytes()))
         from compile_raster import verify_storage_record_strides
         verify_storage_record_strides(intermediate.read_bytes(), interface)
     allowed = ('UniformBuffer', 'StorageRead') if stage == 'fragment' and getattr(args, 'fragment_storage', False) else ('UniformBuffer',)
@@ -338,9 +294,11 @@ def compile_graph_stage(args, lock):
         artifact.write_text(code)
         emitted = names[0]
     elif metal and translated_compute:
+        module, isolated = name_spirv_dontinline_functions(intermediate.read_bytes())
+        intermediate.write_bytes(module)
         run([args.spirv_cross, str(intermediate), '--msl', '--msl-version', '20400', '--msl-decoration-binding', '--output', str(artifact)])
         code = relative_line_directives(artifact.read_text(), [Path(args.source).parent])
-        code = restore_spirv_metal_noinline(code, intermediate.read_bytes())
+        code = restore_spirv_metal_noinline(code, isolated)
         if native_rays:
             code = isolate_metal_ray_queries(code)
         emitted = verify_ray_compute_metal(code, interface, native_rays)

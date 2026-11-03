@@ -577,7 +577,8 @@ navigation controls, including after resize.
 
 In a default World (a project without `authoring/world.schema.json`), use
 **Add Geometry / Light** below the entity list to create a **Cube**, **Plane**,
-**Sphere**, **Point Light**, **Spot Light**, or **Directional Light**. Each command
+**Sphere**, **Point Light**, **Spot Light**, **Directional Light** or
+**Luminaire**. Each command
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.
 Use **Properties** to edit Transform, visibility and colour, or a light's kind,
@@ -588,6 +589,11 @@ They use -Z as their forward direction and require unit scale. Point and spot
 intensity is candela; directional intensity is lux. Switch the viewport to
 **Lit** and position lights to illuminate the geometry; creation adds no implicit
 lighting. Renderer profiles retain their existing light support and limits.
+A **Luminaire** is a 0.7 m analytic LED panel two metres above the origin, facing
+down. Only render graphs that read luminaires, such as the
+[slice-sampling-luminaire template](render-graph-authoring.md#sample-a-directional-luminaire-with-slice-sampling),
+are lit by it; **Lit** and reference capture ignore it. Selecting it outlines the
+panel and its emission direction in the viewport.
 
 The geometry and default schema ship inside the editor, so this workflow needs
 no model import or project asset files. Imported scenes and these objects can
@@ -1293,8 +1299,9 @@ object containing `schema` equal to the World schema ID, `transform`, `renderabl
 `component` ID and `properties` map. Component and property IDs may be renamed:
 the map keys below are semantic names; the map values are project property IDs.
 The `camera` role may be `null` when the project uses editor orbit only.
-An optional `light` role maps an authored photometric component; absent or null
-keeps older descriptors valid.
+An optional `light` role maps an authored photometric component, and an optional
+`luminaire` role maps a panel luminaire; absent or null keeps older descriptors
+valid.
 Unknown fields, duplicate keys, missing/duplicate mappings and wrong property
 types reject. The shipped descriptor is a complete example.
 
@@ -1304,11 +1311,15 @@ types reject. The shipped descriptor is a complete example.
 | renderable | `mesh`, `texture`: asset; `visible`: boolean; `r`, `g`, `b`: number in [0,1], interpreted as linear tint. Empty texture selects flat color; visible renderables require a mapped mesh. |
 | camera | `projection`: enum with supported values `perspective`, `orthographic`, `infinite`; `fov`, `span`, `near`, `far`: number; `follow`: entity. Empty follow is fixed; nonempty follow resolves a transformed target through C0's immediate orthographic XY recipe with zero offset. |
 | light | `kind`: enum (`point`, `spot`, `directional`); `enabled`: boolean; `r`, `g`, `b`: number in [0,1] linear hue; `intensity`: number in [0,1000000], candela for point/spot or lux for directional; `range`: number in [0.01,1000000] metres; `innerAngle`, `outerAngle`: number in degrees, 0 ≤ inner < outer < 90. |
+| luminaire | `enabled`: boolean; `halfExtent`: number in [0.001,1000] metres; `radianceScale`: number in [0,1000000]; `beamWidth`: number in [0.001,1]; `beamSteering`, `beamSpread`, `beamTwist`: number in [0,2]. See the [slice-sampling-luminaire template](render-graph-authoring.md#sample-a-directional-luminaire-with-slice-sampling) for their meaning. |
 
-Renderable/camera/light entities must also have the mapped transform component.
+Renderable/camera/light/luminaire entities must also have the mapped transform
+component. A luminaire, like a light, requires unit scale and emits along -Z; its
+tile columns run along +X. At most 8 enabled luminaires are admitted.
 Lights require unit scale and use -Z forward; position and rigid rotation update
 authored lighting, with persistent World entity IDs identifying the source. Disabled
-lights are omitted without removing their authored component. The shipped schema
+lights are omitted without removing their authored component; the World's
+[Lights list](#switching-lights) switches them as well. The shipped schema
 includes an optional Light component, which users attach explicitly. Camera
 rotation is rigid, +Y up and -Z forward; XY follow requires identity rotation.
 Other entity components remain untouched. Camera selection uses the persistent
@@ -1411,7 +1422,8 @@ the scene than the source renderer's film. Thin-lens depth of field is not
 imported.
 
 The optional World root `scene` contains the level's `version`, persistent `id`,
-`name`, `profile`, `camera` and `imports`, with no second object list. An imported
+`name`, `profile`, `camera` and `imports`, with no second object list. A root
+`disabled_lights` list beside it records [switched-off lights](#switching-lights). An imported
 entity's optional `scene` stores `mesh`, `material`, `parent`, the nine-number
 imported affine `basis`, and, without a schema binding, three-number `position`, `rotation` and `scale`.
 The entity ID and name are the only authoritative object identity and label.
@@ -1455,6 +1467,44 @@ matte materials in this combined lit profile; their linear tints are baked into
 transient sRGB texture copies. Original assets are preserved. Worlds without
 imported scene data retain their existing unlit preview adapter.
 
+### Switching lights
+
+The **Lights** list under the World entity list switches individual lights off
+and on without editing or re-importing the source scene. Use it to compare a
+render against another renderer's image of the same scene when the source file
+adds lights the other scene never had, or to see what one light contributes.
+
+- **Imported emitters** lists the imported scene's emissive surfaces. The importer
+  merges area lights with equal radiance, sidedness, power and material into one
+  emitter group (see the [budget planner](best-effort-scene-import.md#budget-planner)),
+  so one row can switch several shapes. For example, the eight `L = 1000` candle
+  flames of the staircase scene are one row. The tooltip gives the radiance (or
+  luminous power) and object count.
+- **Imported lights** lists the scene's analytic lights.
+- **World lights** lists authored light entities. Their checkbox writes the bound
+  `enabled` property, as the inspector does.
+- **Solo** keeps only the selected light on. **Enable All** switches every light
+  back on. Each switch, Solo and Enable All is one World edit: Undo and Redo
+  restore the previous switches, and **Save World** keeps them.
+
+A switched-off light keeps its identity and authored values. The viewport,
+reference path tracer, render graphs and the Light Transformer see no emission
+and no light from it, and no light sampler picks it. Toggling an imported light
+re-presents the already decoded scene without a re-cook, and accumulation
+restarts. A running reference capture keeps the scene it started with; start a
+new capture after switching. The switches belong to the editor's World preview.
+They do not change cooked assets, so a static-lighting bake, which reads the
+cooked definition, and a packaged game still see every light.
+
+The World root stores the switched-off imported sources as `disabled_lights`, a
+list of `{ "kind": "emitter" | "light", "source": "<16 lowercase hex digits>" }`
+entries naming an emitter group's `AreaSourceId` or a light's `SourceId`. Only
+switched-off sources are recorded, and the list is removed when every light is
+on, so a World without switches keeps its earlier bytes. It is admitted only beside
+a root `scene`, with unique entries and at most one per import-profile material
+plus one per cooked light. A re-import can regroup emitters. Switches the new
+scene does not contain are listed under **Missing from the scene** instead of
+failing the World; **Remove Missing** forgets them.
 
 ### Earlier built-in viewport profile
 

@@ -1,4 +1,5 @@
 #include "internal/metropolis.h"
+#include "internal/reference_dielectric.h"
 
 #include <ludus/foundation/math/status.hpp>
 
@@ -288,7 +289,9 @@ rhi::RasterStatus EvaluateMetropolisPath(const ReferenceSceneData& scene,
         {
             break;
         }
-        if (surface.Bsdf.Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse)
+        // The chain's primary-space paths keep reflection-only, non-delta vertices.
+        if (surface.Bsdf.Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse ||
+            IsReferenceDielectric(surface.Bsdf.Scattering.Model) == true)
         {
             return rhi::RasterStatus::Unsupported;
         }

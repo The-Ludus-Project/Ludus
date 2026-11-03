@@ -1,4 +1,5 @@
 #include "coated_diffuse.slang"
+#include "dielectric.slang"
 #include "material_scattering.slang"
 #include "math.slang"
 #include "raster_bindings.slang"
@@ -656,6 +657,7 @@ struct Bsdf
     float Alpha;
     float CoatingEta;
     float CoatingThickness;
+    bool IsViewerInside;
 };
 CoatingMaterial MakeCoatingMaterial(Bsdf bsdf)
 {
@@ -695,7 +697,7 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
 
     float nv = dot(normalWorld, viewWorld);
     float nl = dot(normalWorld, lightWorld);
-    if (nv <= 0 || nl <= 0)
+    if (nv <= 0 || nl <= 0 || IsDielectricModel(bsdf.Model) == true)
         return 0;
     if (bsdf.Model == LUDUS_MATERIAL_MODEL_DIFFUSE)
         return float4(bsdf.BaseColor / PI, nl / PI);
@@ -1536,6 +1538,7 @@ PathSample TracePath(uint pixel, uint sample)
     float3 throughput = 1;
     float3 previousPositionWorld = 0;
     float previousPdf = 0;
+    bool isPreviousSpecular = false;
     uint lights = GetLightCount();
     // The resampled modes keep the previous vertex's receiver and Z-hat for the BSDF-hit density.
     bool isResampled = IsResampled();
@@ -1556,7 +1559,8 @@ PathSample TracePath(uint pixel, uint sample)
         {
             float4 environment = EvaluateEnvironmentWorld(ray.DirectionWorld);
             float lightPdf = lights == 0 ? 0 : environment.w / float(lights);
-            float weight = depth == 0 ? 1 : (Options.y > 0 ? 0 : PowerWeight(previousPdf, lightPdf));
+            float weight =
+                depth == 0 || isPreviousSpecular == true ? 1 : (Options.y > 0 ? 0 : PowerWeight(previousPdf, lightPdf));
             AddTransport(path, throughput * environment.xyz * weight, depth, true);
             if (HasValidTransport(path) == false)
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_RADIANCE);
@@ -1574,7 +1578,10 @@ PathSample TracePath(uint pixel, uint sample)
             (IsEmissionTwoSided(instance) == true || dot(geometricNormalWorld, viewWorld) > 0))
         {
             float pdf = 0;
-            if (isResampled == false)
+            // No light sample reaches a delta lobe's direction; the emission keeps full weight.
+            if (isPreviousSpecular == true)
+                pdf = 0;
+            else if (isResampled == false)
             {
                 uint emitter;
                 float selection = FindEmitter(triangle, emitter) == true ? GetEmitterSelection(emitter, lights) : 0;
@@ -1598,7 +1605,8 @@ PathSample TracePath(uint pixel, uint sample)
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_EMITTER_PDF);
                 return path;
             }
-            float weight = depth == 0 ? 1 : (Options.y > 0 ? 0 : PowerWeight(previousPdf, pdf));
+            float weight =
+                depth == 0 || isPreviousSpecular == true ? 1 : (Options.y > 0 ? 0 : PowerWeight(previousPdf, pdf));
             AddTransport(path, throughput * SampleEmission(instance, uv) * weight, depth, true);
         }
         // pbrt-v4's reflection models scatter on the viewer's side of the surface (reference_path.cpp cites the
@@ -1649,16 +1657,22 @@ PathSample TracePath(uint pixel, uint sample)
         }
         if (isBackFace == true)
             normalWorld = -normalWorld;
+        // A dielectric's medium lies behind its oriented front side; viewed from the back, the ray is inside.
+        bsdf.IsViewerInside = isBackFace;
+        bool isSpecular = IsDielectricModel(bsdf.Model);
         ReferenceReceiverFrame frame = previousFrame;
         TargetTotal targetTotal = MakeTargetTotal();
-        if (isResampled == true)
+        if (isResampled == true && isSpecular == false)
             frame = MakeReferenceReceiverFrame(positionWorld,
                                                normalWorld,
                                                viewWorld,
                                                bsdf.BaseColor,
                                                bsdf.Metallic,
                                                bsdf.Roughness);
-        LightProposal proposal = SampleLight(pixel, sample, depth, positionWorld);
+        // A delta lobe is zero in every light proposal's direction, so specular vertices skip next-event estimation.
+        LightProposal proposal = (LightProposal)0;
+        if (isSpecular == false)
+            proposal = SampleLight(pixel, sample, depth, positionWorld);
         if (isfinite(proposal.Pdf) == false || proposal.Pdf < 0 || IsValidContribution(proposal.Radiance) == false)
         {
             MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
@@ -1722,8 +1736,14 @@ PathSample TracePath(uint pixel, uint sample)
         }
         bool hasCoating = bsdf.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE;
         CoatingSample coating = (CoatingSample)0;
+        DielectricSample specular = (DielectricSample)0;
         float3 outgoingWorld;
-        if (hasCoating == true)
+        if (isSpecular == true)
+        {
+            specular = SampleDielectric(bsdf.Model, bsdf.Eta.x, bsdf.IsViewerInside, normalWorld, viewWorld, samples.x);
+            outgoingWorld = specular.HasSample == true ? specular.DirectionWorld : float3(0);
+        }
+        else if (hasCoating == true)
         {
             coating = SampleCoatedDiffuse(MakeCoatingMaterial(bsdf),
                                           normalWorld,
@@ -1736,7 +1756,15 @@ PathSample TracePath(uint pixel, uint sample)
             outgoingWorld = SampleBsdfDirection(bsdf, normalWorld, viewWorld, samples);
         bool isAccepted = all(outgoingWorld == 0) == false;
         float4 evaluation = 0;
-        if (isAccepted == true)
+        if (isAccepted == true && isSpecular == true)
+        {
+            if (IsUnit(outgoingWorld) == false || IsFiniteVector(specular.Weight) == false)
+            {
+                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_SAMPLE);
+                return path;
+            }
+        }
+        else if (isAccepted == true)
         {
             evaluation = hasCoating == true ? float4(coating.Weight, coating.MisPdf)
                                             : EvaluateBsdf(bsdf,
@@ -1751,12 +1779,18 @@ PathSample TracePath(uint pixel, uint sample)
             }
         }
         bool hasNext = false;
-        if (isAccepted == false || dot(scatteringNormalWorld, outgoingWorld) <= 0)
+        // Transmission continues on the far side of the geometric surface; every other lobe stays on the viewer's.
+        float side = dot(scatteringNormalWorld, outgoingWorld);
+        bool isTransmitted = isSpecular == true && dot(normalWorld, outgoingWorld) < 0;
+        if (isAccepted == false || (isTransmitted == true ? side >= 0 : side <= 0))
             path.Status |= LUDUS_REFERENCE_NULL_FLAG;
         else
         {
-            throughput *=
-                hasCoating == true ? coating.Weight : evaluation.xyz * (dot(normalWorld, outgoingWorld) / evaluation.w);
+            if (isSpecular == true)
+                throughput *= specular.Weight;
+            else
+                throughput *= hasCoating == true ? coating.Weight
+                                                 : evaluation.xyz * (dot(normalWorld, outgoingWorld) / evaluation.w);
             if (IsValidContribution(throughput) == false)
             {
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_THROUGHPUT);
@@ -1765,7 +1799,8 @@ PathSample TracePath(uint pixel, uint sample)
             if (HasPositiveComponent(throughput) == true)
             {
                 previousPositionWorld = positionWorld;
-                previousPdf = evaluation.w;
+                previousPdf = isSpecular == true ? 0 : evaluation.w;
+                isPreviousSpecular = isSpecular;
                 previousFrame = frame;
                 previousTotal = targetTotal;
                 ++depth;

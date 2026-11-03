@@ -122,11 +122,14 @@ struct Reservoir
 };
 
 /// A visible point: where a pixel's camera ray hits, with the interpolated normal around which it samples directions.
+/// A traced receiver behind smooth glass is the first surface past it; Hit.IncomingRay is then the chain's last ray.
 struct Receiver
 {
     SurfaceHit Hit;
     float3 NormalWorld;
     bool IsValid;
+    float3 Throughput; ///< Smooth-glass chain weight from the camera to Hit; zero for a stored receiver.
+    float3 Radiance;   ///< What the camera path reached before Hit: glass emission, or the environment of a miss.
 };
 
 /// The current visible point and what its target function needs.
@@ -283,7 +286,7 @@ bool IsWrittenThisFrame(Reservoir source, SceneContext scene, RayLaunch launch, 
 
 Receiver MakeReceiver(SurfaceHit hit)
 {
-    Receiver result;
+    Receiver result = (Receiver)0;
     result.Hit = hit;
     result.NormalWorld = NormalizeOrZero(hit.ShadingNormalWorld);
     result.IsValid = hit.IsValid == true && any(result.NormalWorld != 0) == true;
@@ -521,14 +524,28 @@ void FinalizeReservoir(SceneContext scene,
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
 }
 
-/// Trace this pixel's camera ray to its visible point. Returns false for a miss (no failure) or a failed query.
+/// Trace this pixel's camera ray to its visible point, following smooth glass to the first surface past it
+/// (FollowSpecularChain, up to SCENE_SPECULAR_CHAIN_EVENTS more surface queries). Every pass draws the same chain from
+/// the default dimensions, which SampleGiRandom's pass scopes never reach. Returns false for a miss (no failure;
+/// outReceiver.Radiance holds what the camera path reached) or a failed query.
 bool TryTraceReceiver(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, out Receiver outReceiver)
 {
     outReceiver = (Receiver)0;
     SurfaceHit hit;
-    if (TraceClosest(scene, queries, launch.CameraRay, hit) != SCENE_QUERY_SURFACE)
+    uint status = TraceClosest(scene, queries, launch.CameraRay, hit);
+    if (status == SCENE_QUERY_MISS)
+        outReceiver.Radiance = EvaluateEnvironment(scene, launch.CameraRay.DirectionWorld);
+    if (status != SCENE_QUERY_SURFACE)
         return false;
-    outReceiver = MakeReceiver(hit);
+    SpecularChain chain =
+        FollowSpecularChain(scene, launch, queries, hit, SCENE_SPECULAR_CHAIN_DEFAULT_DIMENSION_FIRST);
+    outReceiver.Radiance = chain.Radiance;
+    if (chain.IsSurface == false)
+        return false;
+    float3 radiance = outReceiver.Radiance;
+    outReceiver = MakeReceiver(chain.Hit);
+    outReceiver.Throughput = chain.Throughput;
+    outReceiver.Radiance = radiance;
     if (outReceiver.IsValid == false)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);

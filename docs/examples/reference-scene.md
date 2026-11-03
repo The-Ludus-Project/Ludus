@@ -23,8 +23,8 @@ project → scene → import → viewport → save/reopen product workflow.
 
 New native project imports of this PBRT subset use `pbrt-reference-materials-v2`.
 They retain named material identities and assignments, linear reflectance factors,
-original texture UVs and texture references, GGX alpha, conductor RGB `eta`/`k`, and
-coated-diffuse IOR/thickness defaults. Named material UUIDs derive from the import
+original texture UVs and texture references, GGX alpha, conductor RGB `eta`/`k`,
+coated-diffuse IOR/thickness defaults and smooth dielectric indices. Named material UUIDs derive from the import
 namespace and source name; reordering named definitions does not rename those
 material assets. Inline definitions retain their source command identity. Per-shape
 emission variants reference that source material and keep distinct emission values.

@@ -115,6 +115,8 @@ private:
     QPointF mAxisPixel;
     foundation::float64 mPixelsPerUnit = 1;
     foundation::float64 mRotationDirection = 1;
+    /// Half extent of the selected entity's luminaire panel, outlined in the overlay; zero when it has none.
+    foundation::float32 mLuminaireHalfExtentWorld = 0;
     static constexpr foundation::usize MAX_HANDLE_LINES =
         static_cast<foundation::usize>(AXIS_COUNT) * static_cast<foundation::usize>(RING_SEGMENTS);
     foundation::FixedArray<HandleLine, MAX_HANDLE_LINES> mHandles;

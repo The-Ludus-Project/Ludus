@@ -32,6 +32,8 @@ struct PlannedMaterial final
     bool IsTextureRepeated = true;
     float64 Metallic = 0.0;
     float64 Roughness = 1.0;
+    /// Typed scattering of the representative material (IrMaterial::Scattering).
+    scene_format::MaterialScattering Scattering{};
     /// Representative material is an alpha mask (glTF MASK, MTL map_d); see CookTextures.
     bool IsAlphaMasked = false;
     /// Mask threshold in [0, 1]; zero for opaque slots.
