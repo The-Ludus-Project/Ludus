@@ -700,11 +700,6 @@ jobs:
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: Development and SDK
     runs-on: ubuntu-24.04
-    env:
-      # Bound software-driver JIT work in correctness tests; see the CI guide.
-      # Thanks to Mesa's Gallivm authors, lp_bld_init.c, lp_bld_perf_flags/create_pass_manager:
-      # https://chromium.googlesource.com/chromiumos/third_party/mesa/+/refs/heads/stabilize-13982.70.B-chromeos-amd/src/gallium/auxiliary/gallivm/lp_bld_init.c
-      GALLIVM_PERF: nopt
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1030,9 +1025,6 @@ jobs:
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: ASan and UBSan
     runs-on: ubuntu-24.04
-    env:
-      # Use the same Mesa correctness profile as Development, including SDK captures.
-      GALLIVM_PERF: nopt
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1301,7 +1293,6 @@ jobs:
     name: Editor, shader worker and unit tests
     runs-on: ubuntu-24.04
     env:
-      GALLIVM_PERF: nopt
       LUDUS_TIDY_JOBS: "4"
       # Compile the editor without its precompiled headers from the first
       # configure (./init.sh in native-setup) onwards; see the configure step.

@@ -303,6 +303,39 @@ class ToolchainBootstrapTests(unittest.TestCase):
 class NativePrerequisiteTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parents[2]
 
+    def test_captured_native_action_selects_only_software_correctness_jobs(self):
+        action = (self.ROOT / ".github/actions/native-setup/action.yml").read_text()
+        step = action.split("    - name: Select software-driver correctness profile\n", 1)[1]
+        command = step.split("      run: |\n", 1)[1].split("    - name:", 1)[0]
+        cases = [
+            ("Linux", "development", "linux-clang-development", True),
+            ("Linux", "sanitizers", "linux-clang-asan-ubsan", True),
+            ("Linux", "editor", "linux-clang-development", True),
+            ("Linux", "build-budget", "linux-clang-development", False),
+            ("Linux", "performance", "linux-clang-development", False),
+            ("Linux", "development", "linux-clang-profile", False),
+            ("Linux", "development", "linux-clang-release", False),
+            ("Linux", "debug-runtime", "linux-clang-debug", False),
+            ("Linux", "sanitizers", "linux-clang-development", False),
+            ("Linux", "editor", "linux-clang-asan-ubsan", False),
+            ("macOS", "development", "linux-clang-development", False),
+            ("Windows", "development", "linux-clang-development", False),
+            ("", "development", "linux-clang-development", False),
+            ("Linux", "", "linux-clang-development", False),
+        ]
+        for operating_system, job, preset, should_select in cases:
+            with self.subTest(platform=operating_system, job=job, preset=preset), \
+                    tempfile.TemporaryDirectory() as temporary:
+                environment_file = Path(temporary) / "github.env"
+                environment_file.write_text("PRESERVED=value\n")
+                environment = {**os.environ, "RUNNER_OS": operating_system, "GITHUB_JOB": job,
+                               "PRESET": preset, "GITHUB_ENV": str(environment_file)}
+                result = subprocess.run(["/bin/bash", "-e", "-u", "-c", command], env=environment,
+                                        capture_output=True, text=True, check=True)
+                expected = "PRESERVED=value\n" + ("GALLIVM_PERF=nopt\n" if should_select else "")
+                self.assertEqual(environment_file.read_text(), expected)
+                self.assertEqual("Mesa correctness profile: nopt" in result.stdout, should_select)
+
     def test_rendered_editor_setup_installs_software_vulkan_before_initialization(self):
         action = (self.ROOT / ".github/actions/native-setup/action.yml").read_text()
         step = action.split("    - name: Install native prerequisites\n", 1)[1]

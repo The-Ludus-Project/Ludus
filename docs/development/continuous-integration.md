@@ -484,8 +484,13 @@ reports the operation, status, elapsed time and deadline, and retires the RHI
 even when a test assertion aborts the case. The numerical and
 image assertions are unchanged by this partition.
 
-The Linux Development/SDK, sanitizer and Editor jobs set `GALLIVM_PERF=nopt`
-for Mesa software-device correctness runs. Thanks to the Mesa authors,
+The captured `native-setup` action sets `GALLIVM_PERF=nopt` for the Linux
+Development/SDK, sanitizer and Editor job/preset pairs. This placement also
+repairs batches using older trusted workflow definitions on `main`: the action
+comes from the captured candidate and needs no new caller input. Other jobs and
+presets retain their driver environment. The action's real shell regression
+checks all admitted pairs and excludes profiling, release and other platforms.
+Thanks to the Mesa authors,
 [Gallivm's optimization flags and pass manager](https://chromium.googlesource.com/chromiumos/third_party/mesa/+/refs/heads/stabilize-13982.70.B-chromeos-amd/src/gallium/auxiliary/gallivm/lp_bld_init.c)
 provide this mode to reduce shader compilation time. The default LLVM
 SROA/memory-promotion work can consume the entire test deadline before the first
