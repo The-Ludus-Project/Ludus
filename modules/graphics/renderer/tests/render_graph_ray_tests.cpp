@@ -789,6 +789,15 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
     // Version 25 appends the scene resource word between the storage records and the pass names.
     const usize nameBytes = package.GetPlan().PassNames[0].GetSize();
     const usize paddedNameBytes = ((nameBytes + WORD_BYTES - 1) / WORD_BYTES) * WORD_BYTES;
+    // Version 33 inserts a warm-up count per ray program after the scene resource word.
+    // This fixture has no warm-up work, so dropping that table preserves its legacy behavior.
+    const usize warmupBytes = format::MAX_RAY_PROGRAMS * WORD_BYTES;
+    const usize warmupOffset = bytes.GetSize() - paddedNameBytes - WORD_BYTES - warmupBytes;
+    for (usize program = 0; program < format::MAX_RAY_PROGRAMS; ++program)
+    {
+        REQUIRE(readWord(warmupOffset + program * WORD_BYTES) == 0);
+    }
+    bytes.RemoveRange(warmupOffset, warmupOffset + warmupBytes);
     const usize sceneResourceOffset = bytes.GetSize() - paddedNameBytes - 2 * WORD_BYTES;
     bytes.RemoveRange(sceneResourceOffset, sceneResourceOffset + WORD_BYTES);
     REQUIRE(TryWriteLittleEndian(format::STORAGE_PACKAGE_VERSION, {bytes.GetData() + sizeof(uint32), sizeof(uint32)}) ==

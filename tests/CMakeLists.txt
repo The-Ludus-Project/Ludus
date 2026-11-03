@@ -14,6 +14,9 @@ if(LUDUS_BUILD_TESTS)
     add_test(NAME ludus_compile_policy
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_contract/verify_compile_policy.py"
             "${PROJECT_BINARY_DIR}/compile_commands.json")
+    add_test(NAME ludus_compile_policy_regressions
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_contract/verify_compile_policy_regressions.py"
+            "${CMAKE_CXX_COMPILER}" "${PROJECT_BINARY_DIR}")
     add_test(NAME ludus_setup_preflight
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_contract/verify_setup_preflight.py"
             "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" "${CMAKE_MAKE_PROGRAM}")
@@ -50,7 +53,7 @@ if(LUDUS_BUILD_TESTS)
         COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/goldens/scene_pipeline"
             -p test_texture_goldens.py -v)
     set_tests_properties(ludus_texture_goldens PROPERTIES LABELS "goldens" TIMEOUT 120)
-    set_tests_properties(ludus_build_contract_tests ludus_compile_policy ludus_setup_preflight ludus_editor_sample_resources ludus_dependency_diagnostics ludus_assert_policy ludus_assert_headers
+    set_tests_properties(ludus_build_contract_tests ludus_compile_policy ludus_compile_policy_regressions ludus_setup_preflight ludus_editor_sample_resources ludus_dependency_diagnostics ludus_assert_policy ludus_assert_headers
         ludus_header_self_sufficiency ludus_pointer_diagnostics ludus_foundational_includes ludus_target_detection
         PROPERTIES LABELS "build-contract" TIMEOUT 120)
     # One compiler process per public header (~180 on macOS): wall time follows

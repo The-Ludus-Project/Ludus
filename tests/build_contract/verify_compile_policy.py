@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -83,14 +84,39 @@ def is_pch_entry(entry) -> bool:
     return source.endswith((".hxx", ".pch", ".gch")) or "cmake_pch" in source
 
 
+def get_ludus_target(entry):
+    """Read the owning target from its object output, rather than include/definition text."""
+    arguments = entry.get("arguments") or shlex.split(entry["command"])
+    output = entry.get("output")
+    if output is None:
+        for index, argument in enumerate(arguments[:-1]):
+            if argument == "-o":
+                output = arguments[index + 1]
+                break
+    match = re.search(r"(?:^|/)CMakeFiles/(ludus_[^/]+)\.dir/", (output or "").replace("\\", "/"))
+    return match.group(1) if match is not None else None
+
+
+def should_enable_test_exceptions(target, source):
+    if target.endswith("_tests"):
+        return True
+    # Shared Catch2 entry objects are test-only too. Keep their permission tied
+    # to test source or their own generated MOC aggregator, never engine source.
+    path = Path(source)
+    return target.endswith("_test_main") and (
+        "tests" in path.parts or
+        (path.parent.name == target + "_autogen" and path.name == "mocs_compilation.cpp")
+    )
+
+
 def main():
     entries = json.loads(Path(sys.argv[1]).read_text())
     checked = 0
     for entry in entries:
-        # Catch2 executables follow the *_tests target convention. Native
+        # Catch2 executables and their shared test-main objects opt in. Native
         # assertion child executables intentionally do not opt into exceptions.
-        command = entry.get("command") or " ".join(entry["arguments"])
-        if "CMakeFiles/ludus_" not in command:
+        target = get_ludus_target(entry)
+        if target is None:
             continue
         # Skip the precompiled-header build entry (LUDUS_ENABLE_PCH=ON).
         if is_pch_entry(entry):
@@ -102,14 +128,16 @@ def main():
         # third-party C unit. Skip C sources.
         if entry.get("file", "").endswith((".c",)):
             continue
-        expected = "_tests.dir/" in command
+        expected = should_enable_test_exceptions(target, entry["file"])
         result = subprocess.run(
             compiler_options(entry) + ["-x", "objective-c++" if entry["file"].endswith(".mm") else "c++", "-dM", "-E", "-"],
             input="", text=True, capture_output=True, cwd=entry["directory"], check=True,
         )
         actual = "#define __cpp_exceptions " in result.stdout
         if actual != expected:
-            raise RuntimeError(f"Wrong exception policy: {entry['file']}: {actual}, expected {expected}")
+            repair = ("Apply ludus_enable_test_exceptions() to this Catch2 test target." if expected else
+                      "Remove exception-enabling flags; only Catch2 test targets may opt in.")
+            raise RuntimeError(f"Wrong exception policy: {entry['file']}: {actual}, expected {expected}. {repair}")
         checked += 1
     if not checked:
         raise RuntimeError("No Ludus compilation commands checked")
