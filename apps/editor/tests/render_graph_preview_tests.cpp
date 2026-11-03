@@ -2333,6 +2333,81 @@ TEST_CASE("Graph output menu offers built-in debug views drawn by the World prev
     rhi::Shutdown();
 }
 
+TEST_CASE("An empty World shows the World preview's own view instead of the previous World's graph image",
+          "[editor][render-graph][world-graph][empty-world]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const std::string_view level = ludus::world_demo::ExampleLevel();
+    const QString roomPath = QFileInfo(WriteBytes(project,
+                                                  QStringLiteral("room.world.json"),
+                                                  QByteArray(level.data(), static_cast<qsizetype>(level.size()))))
+                                 .canonicalFilePath();
+    // Exactly what New World writes: the default schema with no entities.
+    const QString emptyPath =
+        QFileInfo(WriteBytes(project,
+                             QStringLiteral("empty.world.json"),
+                             QByteArrayLiteral(R"({"entities":[],"schema":"ludus.world.default.v1","version":1})")))
+            .canonicalFilePath();
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    world.SetProject(project.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Open(roomPath) == true);
+    world.ResumePreview();
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewport != nullptr);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+    RenderPreview& preview = world.GetRenderPreview();
+    CHECK(preview.IsBuiltInViewShown() == false);
+    // Opening the empty World must neither report missing geometry bounds nor keep presenting the room.
+    REQUIRE(world.Open(emptyPath) == true);
+    world.ResumePreview();
+    REQUIRE(waitFor([&]() {
+                return preview.Scene().Identity.isEmpty() == false && preview.Scene().Objects.isEmpty() == true;
+            }) == true);
+    REQUIRE(waitFor([&]() { return preview.IsBuiltInViewShown() == true; }) == true);
+    CHECK(graphView->isHidden() == true);
+    // The built-in view draws the empty World (its grid) from the editor camera.
+    REQUIRE(waitFor([&]() {
+                return preview.Status().contains(GetPreviewShadingStatus(preview.GetShading())) == true;
+            }) == true);
+    INFO(workspace.GetScenePreparationProblem().toStdString());
+    CHECK(workspace.GetScenePreparationProblem().isEmpty() == true);
+    CHECK(workspace.GetRenderProblem().contains(QStringLiteral("finite geometry bounds")) == false);
+    // Returning to a World with geometry hands frame production back to the graph.
+    REQUIRE(world.Open(roomPath) == true);
+    world.ResumePreview();
+    REQUIRE(waitFor([&]() { return preview.IsBuiltInViewShown() == false; }) == true);
+    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+    CHECK(graphView->isHidden() == false);
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
 TEST_CASE("A debug view the World preview cannot prepare returns to the graph's final output",
           "[editor][render-graph][world-graph][shading]")
 {

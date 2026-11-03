@@ -5467,48 +5467,63 @@ void RendererWorkspace::ServicePreview()
         graphics::renderer::ViewDescription view;
         QString error;
         const RenderScene& scene = mPreviewSourceOrNull->Scene();
-        const bool hasView = mPreviewSourceOrNull->DescribeConventionalView(static_cast<uint32>(target.width()),
-                                                                            static_cast<uint32>(target.height()),
-                                                                            view,
-                                                                            error);
-        if (hasView == false && scene.Identity != mPreviewSceneIdentity)
+        if (scene.IsLoadedWithoutObjects() == true)
         {
-            mPreviewStatus->setText(error);
-            setProblem(mExtractionProblem, error);
-        }
-        mArePreviewInputsDirty = false;
-        if (hasView == true && (scene.Identity != mPreviewSceneIdentity ||
-                                AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false))
-        {
-            LUDUS_PROFILE_SCOPE(EditorGraphWorldExtraction);
-            bool hasUpdatedInputs = false;
-            if (scene.Identity == mPreviewSceneIdentity)
+            // Nothing to extract, and no geometry to bound a finite projection. This is not a
+            // problem: the World viewport draws the empty World with its built-in view meanwhile.
+            if (scene.Identity != mPreviewSceneIdentity)
             {
-                preview.SetCamera(view, ++mPreviewRevision);
-                hasUpdatedInputs = true;
+                setProblem(mExtractionProblem, {});
+                mPreviewStatus->setText(
+                    QStringLiteral("The World has no objects yet; the graph renders once it has some."));
+                mPreviewSceneIdentity = scene.Identity;
             }
-            else
+        }
+        else
+        {
+            const bool hasView = mPreviewSourceOrNull->DescribeConventionalView(static_cast<uint32>(target.width()),
+                                                                                static_cast<uint32>(target.height()),
+                                                                                view,
+                                                                                error);
+            if (hasView == false && scene.Identity != mPreviewSceneIdentity)
             {
-                RenderGraphExtraction extraction;
-                if (MakeRenderGraphExtraction(scene, view, ++mPreviewRevision, extraction, error) == true)
+                mPreviewStatus->setText(error);
+                setProblem(mExtractionProblem, error);
+            }
+            if (hasView == true && (scene.Identity != mPreviewSceneIdentity ||
+                                    AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false))
+            {
+                LUDUS_PROFILE_SCOPE(EditorGraphWorldExtraction);
+                bool hasUpdatedInputs = false;
+                if (scene.Identity == mPreviewSceneIdentity)
                 {
-                    setProblem(mExtractionProblem, {});
-                    extraction.ContentRevision = mPreviewRevision;
-                    preview.SetExtraction(extraction);
+                    preview.SetCamera(view, ++mPreviewRevision);
                     hasUpdatedInputs = true;
                 }
                 else
                 {
-                    setProblem(mExtractionProblem, error);
-                    mPreviewStatus->setText(error);
+                    RenderGraphExtraction extraction;
+                    if (MakeRenderGraphExtraction(scene, view, ++mPreviewRevision, extraction, error) == true)
+                    {
+                        setProblem(mExtractionProblem, {});
+                        extraction.ContentRevision = mPreviewRevision;
+                        preview.SetExtraction(extraction);
+                        hasUpdatedInputs = true;
+                    }
+                    else
+                    {
+                        setProblem(mExtractionProblem, error);
+                        mPreviewStatus->setText(error);
+                    }
+                }
+                if (hasUpdatedInputs == true)
+                {
+                    mPreviewSceneIdentity = scene.Identity;
+                    mPreviewWorldToClip = view.WorldToClip;
                 }
             }
-            if (hasUpdatedInputs == true)
-            {
-                mPreviewSceneIdentity = scene.Identity;
-                mPreviewWorldToClip = view.WorldToClip;
-            }
         }
+        mArePreviewInputsDirty = false;
     }
     if (mPreviewSourceOrNull != nullptr)
     {

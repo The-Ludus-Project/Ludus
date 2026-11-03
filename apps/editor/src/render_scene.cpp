@@ -1142,6 +1142,10 @@ bool TryTraceRenderSceneRay(const RenderScene& scene, const math::Ray3& rayWorld
     }
     return hasHit;
 }
+bool RenderScene::IsLoadedWithoutObjects() const noexcept
+{
+    return Identity.isEmpty() == false && Objects.isEmpty() == true;
+}
 bool RenderScene::TryGetBounds(const QString& id, math::Aabb3& outBoundsWorld) const noexcept
 {
     math::Aabb3 candidate = math::EmptyAabb3();

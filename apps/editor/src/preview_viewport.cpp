@@ -915,7 +915,8 @@ private:
             Widget->SetFrameSource(Preview.data());
             if (Preview->AdmitOffscreenDevice() == true)
             {
-                GraphViewOrNull->show();
+                // A built-in view (debug view, inspection or an empty World) keeps the graph image hidden.
+                GraphViewOrNull->setVisible(Widget->isShowingBuiltInView() == false);
                 MessageOrNull->hide();
             }
             else
@@ -1010,7 +1011,7 @@ private:
             else
             {
                 MessageOrNull->hide();
-                GraphViewOrNull->show();
+                GraphViewOrNull->setVisible(Widget->isShowingBuiltInView() == false);
             }
             return;
         }
@@ -1992,6 +1993,10 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
     mState->FrameLayoutOrNull->addWidget(mState->GraphViewOrNull);
     connect(mState->GraphViewOrNull, &WorldGraphView::DebugViewChanged, this, &PreviewViewport::updateGraphDebugView);
+    // A new World has no objects for the graph to extract; draw it with the built-in view instead of
+    // leaving the previous World's graph image on screen.
+    connect(Preview_, &RenderPreview::Changed, this, &PreviewViewport::updateEmptyWorldView);
+    updateEmptyWorldView();
     // The project graph keeps its device and last image; return to it rather than an empty viewport.
     connect(Preview_, &RenderPreview::BuiltInViewFailed, this, [this](const QString& error) {
         if (mIsShowingGraphDebugView == true)
@@ -2116,6 +2121,40 @@ void PreviewViewport::updateGraphDebugView()
     else
     {
         Preview_->HideBuiltInView();
+        if (mIsShowingEmptyWorld == true)
+        {
+            // An empty World stays on the built-in view, now in the restored shading.
+            Preview_->ShowBuiltInView(Preview_->GetShading());
+        }
+    }
+    applyBuiltInPresentation(wasShowingBuiltInView);
+#endif
+}
+void PreviewViewport::updateEmptyWorldView()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->GraphViewOrNull == nullptr)
+    {
+        return;
+    }
+    const bool isEmptyWorld = Preview_->Scene().IsLoadedWithoutObjects();
+    if (isEmptyWorld == mIsShowingEmptyWorld)
+    {
+        return;
+    }
+    const bool wasShowingBuiltInView = isShowingBuiltInView();
+    mIsShowingEmptyWorld = isEmptyWorld;
+    // A debug view already shows the built-in view in its own shading; leave it in charge.
+    if (mIsShowingGraphDebugView == false)
+    {
+        if (isEmptyWorld == true)
+        {
+            Preview_->ShowBuiltInView(Preview_->GetShading());
+        }
+        else
+        {
+            Preview_->HideBuiltInView();
+        }
     }
     applyBuiltInPresentation(wasShowingBuiltInView);
 #endif
