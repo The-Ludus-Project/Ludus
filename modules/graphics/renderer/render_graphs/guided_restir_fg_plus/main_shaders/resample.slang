@@ -81,7 +81,7 @@ FgPathReservoir MergeFgPathsBody(SceneContext scene,
     return result;
 }
 // Temporal and spatial passes share one merge implementation. A value/out query
-// boundary preserves Slang's noinline behavior; see TraceFgCameraOutOfLine.
+// boundary preserves Slang's noinline behavior; see EvaluateFgPathOutOfLine.
 [noinline] FgPathReservoir MergeFgPathsOutOfLine(SceneContext scene,
                                                  RayLaunch launch,
                                                  FgPathReservoir own,
