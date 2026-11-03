@@ -12,7 +12,7 @@ struct FgPoint
 };
 bool IsFgDiffuse(MaterialSample material)
 {
-    return (material.Model != LUDUS_MATERIAL_MODEL_CONDUCTOR && material.Metallic < 1) ||
+    return (material.Model != MaterialModel::Conductor && material.Metallic < 1) ||
            sqrt(ComputeMaterialAlpha(material.Model, material.Roughness, material.AlphaU)) >= FG_SPECULAR_ROUGHNESS;
 }
 [noinline] bool TryMakeFgPoint(SceneContext scene,
@@ -26,7 +26,7 @@ bool IsFgDiffuse(MaterialSample material)
     outPoint.Material = EvaluateMaterial(scene, hit);
     outPoint.ViewDirectionWorld = viewDirectionWorld;
     outPoint.Throughput = float3(1);
-    if (outPoint.Material.IsValid == false || outPoint.Material.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE)
+    if (outPoint.Material.IsValid == false || outPoint.Material.Model == MaterialModel::CoatedDiffuse)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_PRIMARY_MATERIAL);
         return false;
@@ -81,13 +81,13 @@ FgPoint TraceFgCamera(SceneContext scene,
     [loop] for (uint depth = 0; depth <= FG_CAMERA_BOUNCES; ++depth)
     {
         SurfaceHit hit;
-        uint status = TraceClosest(scene, queries, ray, hit);
-        if (status == SCENE_QUERY_MISS)
+        SceneQuery status = TraceClosest(scene, queries, ray, hit);
+        if (status == SceneQuery::Miss)
         {
             outEmission += throughput * EvaluateEnvironment(scene, ray.DirectionWorld);
             return result;
         }
-        if (status != SCENE_QUERY_SURFACE)
+        if (status != SceneQuery::Surface)
             return result;
         outEmission += throughput * EvaluateEmission(scene, hit, -ray.DirectionWorld);
         FgPoint point;
@@ -138,7 +138,7 @@ FgPoint TraceFgCamera(SceneContext scene,
         float lightDensity = light.SelectionPmf * light.ConditionalPdf;
         float cosine = dot(point.Material.ShadingNormalWorld, light.DirectionWorld);
         if (light.HasSample == true && lightDensity > 0 && cosine > 0 && any(value > 0) == true &&
-            TestVisibility(scene, queries, point.Hit, light) == SCENE_QUERY_MISS)
+            TestVisibility(scene, queries, point.Hit, light) == SceneQuery::Miss)
         {
             float weight = light.IsDiscrete == true ? 1 : ComputeFgPowerWeight(lightDensity, density);
             radiance += value * light.IncidentCoefficient * (cosine * weight / lightDensity);
@@ -155,16 +155,16 @@ FgPoint TraceFgCamera(SceneContext scene,
                         bsdfWeight) == true)
     {
         SurfaceHit hit;
-        uint status =
+        SceneQuery status =
             TraceClosest(scene, queries, SpawnSurfaceRay(point.Hit, directionWorld, FG_MAXIMUM_DISTANCE_WORLD), hit);
         float3 emission = float3(0);
         float lightDensity = 0;
-        if (status == SCENE_QUERY_MISS)
+        if (status == SceneQuery::Miss)
         {
             emission = EvaluateEnvironment(scene, directionWorld);
             lightDensity = EvaluateEnvironmentPdfSolidAngle(scene, directionWorld);
         }
-        else if (status == SCENE_QUERY_SURFACE)
+        else if (status == SceneQuery::Surface)
         {
             emission = EvaluateEmission(scene, hit, -directionWorld);
             lightDensity = EvaluateLightPdfSolidAngle(scene, point.Hit.PositionWorld, hit);

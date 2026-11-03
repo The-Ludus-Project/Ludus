@@ -64,28 +64,28 @@ uint FindVisibilityTriangle(SceneContext scene, uint instanceIndex, uint primiti
 /// Returns MISS for clear pixels, SURFACE for a valid hit, FAILURE for invalid identity/depth/geometry.
 /// Failure latches queries.HasFailed. The query budget is unchanged. Source textures, scene and
 /// launch must share generation, camera and extent; the graph runtime enforces the producer pairing.
-uint LoadVisibilitySurfaceWithoutCapture(SceneContext scene,
-                                         RayLaunch launch,
-                                         inout RayQueryContext inoutQueries,
-                                         out SurfaceHit outHit)
+SceneQuery LoadVisibilitySurfaceWithoutCapture(SceneContext scene,
+                                               RayLaunch launch,
+                                               inout RayQueryContext inoutQueries,
+                                               out SurfaceHit outHit)
 {
     outHit = (SurfaceHit)0;
     if (inoutQueries.HasFailed == true || any(launch.ExtentPixel == 0) ||
         any(launch.PositionPixel >= launch.ExtentPixel))
     {
         FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     uint4 bytes = uint4(round(saturate(GraphVisibility.Load(int3(launch.PositionPixel, 0))) * VISIBILITY_BYTE_SCALE));
     if (bytes.w == 0)
-        return SCENE_QUERY_MISS;
+        return SceneQuery::Miss;
     uint primitiveIndex = bytes.x | (bytes.y << VISIBILITY_BYTE_BITS) | (bytes.z << VISIBILITY_HALF_BITS);
     uint triangleIndex = FindVisibilityTriangle(scene, bytes.w - 1, primitiveIndex);
     float depth = GraphVisibilityDepth.Load(int3(launch.PositionPixel, 0));
     if (triangleIndex == SCENE_INVALID_INDEX || isfinite(depth) == false || depth < 0 || depth > 1)
     {
         FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_STORED_RECORD);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     float2 positionUv = (float2(launch.PositionPixel) + 0.5) / float2(launch.ExtentPixel);
     float4 positionHomogeneousWorld =
@@ -93,7 +93,7 @@ uint LoadVisibilitySurfaceWithoutCapture(SceneContext scene,
     if (any(isfinite(positionHomogeneousWorld) == false) || positionHomogeneousWorld.w == 0)
     {
         FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_STORED_RECORD);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     float3 positionWorld = positionHomogeneousWorld.xyz / positionHomogeneousWorld.w;
     TriangleData triangle = GetTriangle(scene, triangleIndex);
@@ -110,7 +110,7 @@ uint LoadVisibilitySurfaceWithoutCapture(SceneContext scene,
         barycentric.x + barycentric.y > 1 + VISIBILITY_BARYCENTRIC_TOLERANCE)
     {
         FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_STORED_RECORD);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     barycentric = max(barycentric, 0);
     barycentric /= max(1, barycentric.x + barycentric.y);
@@ -121,21 +121,19 @@ uint LoadVisibilitySurfaceWithoutCapture(SceneContext scene,
     if (outHit.IsValid == false || isfinite(outHit.DistanceWorld) == false || outHit.DistanceWorld < 0)
     {
         FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_STORED_RECORD);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
-    return SCENE_QUERY_SURFACE;
+    return SceneQuery::Surface;
 }
 /// Load the raster first hit; capture variants record it as a RasterFirstHit event so paths
 /// that start from the visibility buffer still begin at the camera.
-uint LoadVisibilitySurface(SceneContext scene,
-                           RayLaunch launch,
-                           inout RayQueryContext inoutQueries,
-                           out SurfaceHit outHit)
+SceneQuery
+LoadVisibilitySurface(SceneContext scene, RayLaunch launch, inout RayQueryContext inoutQueries, out SurfaceHit outHit)
 {
 #    ifdef LUDUS_RAY_PATH_CAPTURE
-    uint status = LoadVisibilitySurfaceWithoutCapture(scene, launch, inoutQueries, outHit);
-    uint outcome = status == SCENE_QUERY_SURFACE ? LUDUS_RAY_PATH_OUTCOME_HIT
-                   : status == SCENE_QUERY_MISS  ? LUDUS_RAY_PATH_OUTCOME_MISS
+    SceneQuery status = LoadVisibilitySurfaceWithoutCapture(scene, launch, inoutQueries, outHit);
+    uint outcome = status == SceneQuery::Surface ? LUDUS_RAY_PATH_OUTCOME_HIT
+                   : status == SceneQuery::Miss  ? LUDUS_RAY_PATH_OUTCOME_MISS
                                                  : LUDUS_RAY_PATH_OUTCOME_FAILURE;
     rayPathRejected = 0;
     AppendRayPathEvent(LUDUS_RAY_PATH_KIND_RASTER_FIRST_HIT,
@@ -144,8 +142,8 @@ uint LoadVisibilitySurface(SceneContext scene,
                        launch.CameraRay.MinDistanceWorld,
                        launch.CameraRay.MaxDistanceWorld,
                        outcome,
-                       status == SCENE_QUERY_SURFACE ? outHit.DistanceWorld : launch.CameraRay.MaxDistanceWorld,
-                       status == SCENE_QUERY_SURFACE ? outHit.TriangleIndex : LUDUS_GPU_PREVIEW_INVALID_TRIANGLE);
+                       status == SceneQuery::Surface ? outHit.DistanceWorld : launch.CameraRay.MaxDistanceWorld,
+                       status == SceneQuery::Surface ? outHit.TriangleIndex : LUDUS_GPU_PREVIEW_INVALID_TRIANGLE);
     return status;
 #    else
     return LoadVisibilitySurfaceWithoutCapture(scene, launch, inoutQueries, outHit);

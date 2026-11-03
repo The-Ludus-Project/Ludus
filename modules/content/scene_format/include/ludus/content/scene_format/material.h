@@ -117,4 +117,17 @@ inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHA
     return true;
 }
 } // namespace ludus::content::scene_format
+#else
+/// Slang spelling of MaterialModel, the type of MaterialSample.Model and of the scattering helpers' model
+/// parameters. A raw tag converts only explicitly: MaterialModel(tag).
+enum MaterialModel : MaterialModelTag
+{
+    MetallicRoughness =
+        LUDUS_MATERIAL_MODEL_METALLIC_ROUGHNESS,           ///< Legacy RGB GGX/Schlick and Fresnel-weighted diffuse.
+    Diffuse = LUDUS_MATERIAL_MODEL_DIFFUSE,                ///< Ideal Lambertian reflection.
+    Conductor = LUDUS_MATERIAL_MODEL_CONDUCTOR,            ///< Isotropic GGX with complex-IOR Fresnel.
+    CoatedDiffuse = LUDUS_MATERIAL_MODEL_COATED_DIFFUSE,   ///< Rough dielectric coating over a diffuse base.
+    Dielectric = LUDUS_MATERIAL_MODEL_DIELECTRIC,          ///< Smooth nonabsorbing dielectric interface.
+    ThinDielectric = LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC, ///< Thin dielectric slab.
+};
 #endif // __cplusplus

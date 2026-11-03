@@ -147,7 +147,8 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
         }
         return lines.join(QStringLiteral("\n\n"));
     }
-    const QRegularExpression structures(QStringLiteral("\\b(?:struct|interface)\\s+(\\w+)\\s*\\{[^}]*\\};"));
+    const QRegularExpression structures(
+        QStringLiteral("\\b(?:struct|interface|enum)\\s+(\\w+)(?:\\s*:\\s*\\w+)?\\s*\\{[^}]*\\};"));
     QRegularExpressionMatchIterator structureMatches = structures.globalMatch(api);
     while (structureMatches.hasNext() == true)
     {
@@ -198,14 +199,16 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
             QStringLiteral("// ScenePayload declaration unavailable: no scene_interface payload is assigned."));
     }
     QStringList functions{
-        QStringLiteral("uint TraceAndShade(\n    SceneContext scene,\n    inout RayQueryContext queries,\n"
+        QStringLiteral("SceneQuery TraceAndShade(\n    SceneContext scene,\n    inout RayQueryContext queries,\n"
                        "    Ray ray,\n    inout ScenePayload payload);")};
-    const QRegularExpression signatures(QStringLiteral("^\\w+ [A-Z]\\w*(?:<[^>]+>)?\\([^)]*\\)(?=\\s*\\{)"),
+    // The formatter moves a long return type onto its own line; list it beside the name.
+    const QRegularExpression signatures(QStringLiteral("^(\\w+)[ \\n]([A-Z]\\w*(?:<[^>]+>)?\\([^)]*\\))(?=\\s*\\{)"),
                                         QRegularExpression::MultilineOption);
     QRegularExpressionMatchIterator signatureMatches = signatures.globalMatch(api);
     while (signatureMatches.hasNext() == true)
     {
-        functions.append(signatureMatches.next().captured() + QLatin1Char(';'));
+        const QRegularExpressionMatch match = signatureMatches.next();
+        functions.append(match.captured(1) + QLatin1Char(' ') + match.captured(2) + QLatin1Char(';'));
     }
     lines.append(functions.join(QLatin1Char('\n')));
     const QRegularExpression constants(QStringLiteral("^static const [^;]+;"), QRegularExpression::MultilineOption);

@@ -83,7 +83,7 @@ void ShadeDirectLighting(SceneContext scene, SurfaceHit hit, inout RayQueryConte
             EvaluateStandardBsdf(material, viewDirectionWorld, light.DirectionWorld, reflectance, bsdfDensity);
             float weight = light.IsDiscrete == true ? 1 : WeighStrategy(lightDensity, bsdfDensity);
             if (cosine > 0 && weight > 0 && any(reflectance * light.IncidentCoefficient > 0) == true &&
-                TestVisibility(scene, queries, hit, light) == SCENE_QUERY_MISS)
+                TestVisibility(scene, queries, hit, light) == SceneQuery::Miss)
                 payload.Radiance += reflectance * light.IncidentCoefficient * (cosine * weight / lightDensity);
         }
     }
@@ -102,15 +102,15 @@ void ShadeDirectLighting(SceneContext scene, SurfaceHit hit, inout RayQueryConte
         return;
     SurfaceHit endpoint;
     Ray ray = SpawnSurfaceRay(hit, directionWorld, REFERENCE_MAXIMUM_TRACE_DISTANCE_WORLD);
-    uint status = TraceClosest(scene, queries, ray, endpoint);
+    SceneQuery status = TraceClosest(scene, queries, ray, endpoint);
     float3 incidentRadiance = float3(0);
     float otherDensity = 0;
-    if (status == SCENE_QUERY_MISS)
+    if (status == SceneQuery::Miss)
     {
         incidentRadiance = EvaluateEnvironment(scene, directionWorld);
         otherDensity = EvaluateEnvironmentPdfSolidAngle(scene, directionWorld);
     }
-    else if (status == SCENE_QUERY_SURFACE)
+    else if (status == SceneQuery::Surface)
     {
         incidentRadiance = EvaluateEmission(scene, endpoint, -directionWorld);
         otherDensity = EvaluateLightPdfSolidAngle(scene, hit.PositionWorld, endpoint);

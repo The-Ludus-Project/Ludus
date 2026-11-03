@@ -184,7 +184,7 @@ QByteArray MakeSceneRaySource(QJsonObject& inoutProgram)
                                  "{\n"
                                  "    // A compute pass has no hit or miss callbacks: TraceAndShade fails here.\n"
                                  "    SurfaceHit hit;\n"
-                                 "    if (TraceClosest(scene, queries, launch.CameraRay, hit) != SCENE_QUERY_SURFACE)\n"
+                                 "    if (TraceClosest(scene, queries, launch.CameraRay, hit) != SceneQuery::Surface)\n"
                                  "    {\n        return float3(0, 0, 0);\n    }\n"
                                  "    // MaterialSample exposes BaseColor, Metallic, Roughness and Emission.\n"
                                  "    MaterialSample material = EvaluateMaterial(scene, hit);\n"

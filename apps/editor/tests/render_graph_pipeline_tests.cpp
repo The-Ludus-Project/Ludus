@@ -2720,7 +2720,7 @@ TEST_CASE("scene compute shaders use the scene-aware stub, technique and interfa
     CHECK(description.contains(QStringLiteral("float3 ShaderMain(\n    SceneContext scene,\n    RayLaunch launch,\n"
                                               "    inout RayQueryContext queries);")) == true);
     CHECK(description.contains(QStringLiteral("struct RayLaunch")) == true);
-    CHECK(description.contains(QStringLiteral("uint TraceClosest(")) == true);
+    CHECK(description.contains(QStringLiteral("SceneQuery TraceClosest(")) == true);
     CHECK(description.contains(QStringLiteral("declaration unavailable")) == false);
     CHECK(description.contains(QStringLiteral("Legacy ray interface")) == false);
     REQUIRE(document.Undo() == true);

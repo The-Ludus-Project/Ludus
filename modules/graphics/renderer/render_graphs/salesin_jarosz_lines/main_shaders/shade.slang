@@ -165,7 +165,7 @@ SamplePointStrategy(SceneContext scene, RayLaunch launch, ShadingPoint shadingPo
         return float3(0);
     float weight = ComputeMisWeight(lightDensity, light.IsDiscrete == true ? 0 : bsdfDensity, 0);
     // Skip the shadow ray when the sample cannot contribute; an occluded or failed query adds nothing.
-    if (weight <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SCENE_QUERY_MISS)
+    if (weight <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
         return float3(0);
     return bsdfValue * light.IncidentCoefficient * (cosSurface * weight / lightDensity);
 }
@@ -200,21 +200,22 @@ float3 SampleBsdfStrategy(SceneContext scene,
     if (cosSurface <= 0 || any(bsdfValue > 0) == false || isfinite(bsdfDensity) == false || bsdfDensity <= 0)
         return float3(0);
     SurfaceHit endpoint;
-    uint status = TraceClosest(scene,
-                               queries,
-                               SpawnSurfaceRay(shadingPoint.Hit, directionWorld, SHADE_MAXIMUM_TRACE_DISTANCE_WORLD),
-                               endpoint);
+    SceneQuery status =
+        TraceClosest(scene,
+                     queries,
+                     SpawnSurfaceRay(shadingPoint.Hit, directionWorld, SHADE_MAXIMUM_TRACE_DISTANCE_WORLD),
+                     endpoint);
     float3 incidentRadiance = float3(0);
     float otherDensity0 = 0;
     float otherDensity1 = 0;
-    if (status == SCENE_QUERY_MISS)
+    if (status == SceneQuery::Miss)
     {
         incidentRadiance = EvaluateEnvironment(scene, directionWorld);
         // Each line strategy proposes the environment with the point proposal's density.
         otherDensity0 = EvaluateEnvironmentPdfSolidAngle(scene, directionWorld);
         otherDensity1 = isLineWeighted == true ? otherDensity0 : 0;
     }
-    else if (status == SCENE_QUERY_SURFACE)
+    else if (status == SceneQuery::Surface)
     {
         incidentRadiance = EvaluateEmission(scene, endpoint, -directionWorld);
         if (any(incidentRadiance > 0) == true && isLineWeighted == true)

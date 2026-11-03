@@ -43,7 +43,7 @@ float3 UpdateGuideLights(SceneContext scene, RayLaunch launch, inout RayQueryCon
     for (uint light = 0; light < lightCount; ++light)
     {
         uint kind = GetLightInfo(scene, light).Kind;
-        if (kind == SCENE_LIGHT_MESH || kind == SCENE_LIGHT_POINT || kind == SCENE_LIGHT_SPOT)
+        if (kind == SceneLightKind::Mesh || kind == SceneLightKind::Point || kind == SceneLightKind::Spot)
         {
             ++finiteCount;
             totalContribution += GraphBuffer0[GetFgLightAddress(light)].z;
@@ -61,7 +61,7 @@ float3 UpdateGuideLights(SceneContext scene, RayLaunch launch, inout RayQueryCon
         uint address = GetFgLightAddress(light);
         uint4 header = GraphBuffer0[address];
         uint kind = GetLightInfo(scene, light).Kind;
-        bool isFinite = kind == SCENE_LIGHT_MESH || kind == SCENE_LIGHT_POINT || kind == SCENE_LIGHT_SPOT;
+        bool isFinite = kind == SceneLightKind::Mesh || kind == SceneLightKind::Point || kind == SceneLightKind::Spot;
         float probability = isFinite == true ? 1 / float(finiteCount) : 0;
         if (header.w != 0 && IS_FG_GUIDING_ENABLED == true && isFinite == true)
         {

@@ -18,6 +18,8 @@ from naming_rules import (
 CPP = {".cpp", ".cc", ".cxx", ".h", ".hpp", ".mm"}
 ROOTS = {"modules", "apps", "examples", "tests", "tools", "cmake"}
 BINDING_BOUNDARY = "modules/graphics/rhi/shaders/raster_bindings.slang"
+SCENE_SHADER_INTERFACE = "modules/graphics/renderer/shaders/scene_shader.slang"
+LEGACY_SCENE_ALIASES = r"\bSCENE_QUERY_(?:MISS|SURFACE|FAILURE)\b|\bSCENE_LIGHT_(?:DIRECTIONAL|POINT|SPOT|MESH|ENVIRONMENT)\b"
 
 
 # Thanks to Kitware and CMake contributors, "cmake-language(7)", Syntax:
@@ -398,6 +400,19 @@ def violations(path: str, source: str, changed: set[int]) -> list[tuple[int, str
                 declaration.start(1),
                 "shader types and constant-buffer blocks use PascalCase",
             )
+    # Closed sets are scoped Slang enums with an explicit width; whether a given
+    # set of uint constants is closed remains a review decision.
+    for declaration in re.finditer(r"\benum\s+(?:class\s+)?(\w+)\s*(:\s*\w+)?\s*\{([^{}]*)\}", code):
+        if not re.fullmatch(r"[A-Z][A-Za-z0-9]*", declaration[1]):
+            report(declaration.start(1), "shader types and constant-buffer blocks use PascalCase")
+        if declaration[2] is None:
+            report(declaration.start(1), "give shader enums an explicit underlying type (enum Name : uint)")
+        for enumerator in re.finditer(r"(?:^|,)\s*(\w+)", declaration[3]):
+            if not re.fullmatch(r"[A-Z](?:[A-Za-z0-9]*[a-z][A-Za-z0-9]*)?", enumerator[1]):
+                report(declaration.start(3) + enumerator.start(1), "shader enumerators use PascalCase")
+    if path != SCENE_SHADER_INTERFACE:
+        for match in re.finditer(LEGACY_SCENE_ALIASES, code):
+            report(match.start(), "name the SceneQuery or SceneLightKind enumerator, not its interface v1 alias")
     for match in re.finditer(
         r"\b(?:struct|cbuffer)\s+\w+\s*\{([^{}]*)\}", code, re.DOTALL
     ):

@@ -96,8 +96,8 @@ GratingFrame MakeGratingFrame(float3 normalWorld, float4 tangentWorld)
 /// model with Metallic of at least one half. Roughness is compared through the material's GGX alpha.
 bool IsGratingMaterial(MaterialSample material)
 {
-    bool isMetal = material.Model == LUDUS_MATERIAL_MODEL_CONDUCTOR ||
-                   (material.Model == LUDUS_MATERIAL_MODEL_METALLIC_ROUGHNESS && material.Metallic >= 0.5);
+    bool isMetal = material.Model == MaterialModel::Conductor ||
+                   (material.Model == MaterialModel::MetallicRoughness && material.Metallic >= 0.5);
     float alpha = ComputeMaterialAlpha(material.Model, material.Roughness, max(material.AlphaU, material.AlphaV));
     return isMetal == true && alpha <= PLT_GRATING_ROUGHNESS_MAXIMUM * PLT_GRATING_ROUGHNESS_MAXIMUM;
 }
@@ -106,7 +106,7 @@ bool IsGratingMaterial(MaterialSample material)
 float3 EvaluateGratingFresnel(MaterialSample material, float cosine)
 {
     float clampedCosine = saturate(cosine);
-    if (material.Model == LUDUS_MATERIAL_MODEL_CONDUCTOR)
+    if (material.Model == MaterialModel::Conductor)
         return ComputeConductorFresnelRgb(clampedCosine, material.Eta, material.K);
     float3 normalReflectance =
         lerp(float3(GRATING_DIELECTRIC_SPECULAR_REFLECTANCE), material.BaseColor, material.Metallic);

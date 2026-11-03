@@ -15,15 +15,15 @@ float3 ShadeRecordedHit(SceneContext scene, RayLaunch launch, inout RayQueryCont
     uint4 sampleWord = GraphBuffer0[base + 1];
     bool isCurrent = sampleWord.z == launch.SampleIndex;
     SurfaceHit traced;
-    uint status = TraceClosest(scene, queries, MakeCameraRay(launch, asfloat(sampleWord.xy)), traced);
+    SceneQuery status = TraceClosest(scene, queries, MakeCameraRay(launch, asfloat(sampleWord.xy)), traced);
     bool isHit = surfaceWord.x != 0;
-    bool isSameIdentity = status == SCENE_QUERY_MISS;
+    bool isSameIdentity = status == SceneQuery::Miss;
     if (isHit == true)
     {
         uint triangleIndex = surfaceWord.x - 1;
         float2 barycentric = asfloat(surfaceWord.zw);
         SurfaceHit recorded = GetSurfaceHit(scene, triangleIndex, barycentric);
-        isSameIdentity = status == SCENE_QUERY_SURFACE && recorded.IsValid == true &&
+        isSameIdentity = status == SceneQuery::Surface && recorded.IsValid == true &&
                          traced.TriangleIndex == triangleIndex && traced.Primitive == recorded.Primitive &&
                          traced.InstanceIndex == recorded.InstanceIndex &&
                          all(abs(traced.Barycentric - barycentric) <= RETRACE_TOLERANCE_BARYCENTRIC) &&

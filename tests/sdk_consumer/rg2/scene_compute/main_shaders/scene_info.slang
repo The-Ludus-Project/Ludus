@@ -16,7 +16,7 @@ float3 ShadeSceneInfo(SceneContext scene, RayLaunch launch, inout RayQueryContex
         return payload.Radiance;
     }
     SurfaceHit hit;
-    uint status = TraceClosest(scene, queries, launch.CameraRay, hit);
+    SceneQuery status = TraceClosest(scene, queries, launch.CameraRay, hit);
     SceneInfo info = GetSceneInfo(scene);
-    return float3(float(launch.SampleIndex + 1), status == SCENE_QUERY_SURFACE ? 1 : 0, float(info.TriangleCount));
+    return float3(float(launch.SampleIndex + 1), status == SceneQuery::Surface ? 1 : 0, float(info.TriangleCount));
 }

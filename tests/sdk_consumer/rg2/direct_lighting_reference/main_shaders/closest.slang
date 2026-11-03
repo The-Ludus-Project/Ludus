@@ -25,6 +25,6 @@ void ShadeDirectLighting(SceneContext scene, SurfaceHit hit, inout RayQueryConte
     EvaluateStandardBsdf(material, viewDirectionWorld, light.DirectionWorld, reflectance, bsdfPdf);
     if (cosine <= 0 || any(reflectance * light.IncidentCoefficient > 0) == false)
         return;
-    if (TestVisibility(scene, queries, hit, light) == SCENE_QUERY_MISS)
+    if (TestVisibility(scene, queries, hit, light) == SceneQuery::Miss)
         payload.Radiance += reflectance * light.IncidentCoefficient * cosine / density;
 }

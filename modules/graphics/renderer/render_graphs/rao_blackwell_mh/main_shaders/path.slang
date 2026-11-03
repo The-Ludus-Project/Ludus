@@ -66,15 +66,15 @@ float3 EvaluateMetropolisPath(SceneContext scene,
     [loop] for (uint depth = 0; depth <= MH_SCATTERING_DEPTH; ++depth)
     {
         SurfaceHit hit;
-        uint status = TraceClosest(scene, queries, ray, hit);
-        if (status == SCENE_QUERY_MISS)
+        SceneQuery status = TraceClosest(scene, queries, ray, hit);
+        if (status == SceneQuery::Miss)
         {
             float3 contribution = throughput * EvaluateEnvironment(scene, ray.DirectionWorld);
             radiance += contribution;
             AddMetropolisPathAov(contribution, depth, outAovs);
             break;
         }
-        if (status != SCENE_QUERY_SURFACE)
+        if (status != SceneQuery::Surface)
             break;
         float3 viewDirectionWorld = -ray.DirectionWorld;
         float3 contribution = throughput * EvaluateEmission(scene, hit, viewDirectionWorld);
@@ -83,7 +83,7 @@ float3 EvaluateMetropolisPath(SceneContext scene,
         if (depth == MH_SCATTERING_DEPTH || dot(hit.GeometricNormalWorld, viewDirectionWorld) <= 0)
             break;
         MaterialSample material = EvaluateMaterial(scene, hit);
-        if (material.IsValid == false || material.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE)
+        if (material.IsValid == false || material.Model == MaterialModel::CoatedDiffuse)
         {
             FailSceneQuery(queries,
                            material.IsValid == false ? LUDUS_SCENE_FAILURE_SCENE_DATA

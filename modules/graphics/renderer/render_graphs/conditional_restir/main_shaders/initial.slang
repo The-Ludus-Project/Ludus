@@ -10,7 +10,7 @@ float3 GenerateConditionalSample(SceneContext scene, RayLaunch launch, inout Ray
     Reservoir result = MakeEmptyReservoir(scene, launch);
     SurfaceHit primary;
     Prefix support = (Prefix)0;
-    if (TraceClosest(scene, queries, launch.CameraRay, primary) == SCENE_QUERY_SURFACE)
+    if (TraceClosest(scene, queries, launch.CameraRay, primary) == SceneQuery::Surface)
     {
         // Smooth glass is followed to the first surface a prefix can scatter from; the shade pass draws the same
         // chain from the same default dimensions.

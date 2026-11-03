@@ -112,7 +112,7 @@ float3 GeneratePathSamples(SceneContext scene, RayLaunch launch, inout RayQueryC
             if (density > 0 && TraceClosest(scene,
                                             queries,
                                             SpawnSurfaceRay(receiver.Hit, directionWorld, FG_MAXIMUM_DISTANCE_WORLD),
-                                            hit) == SCENE_QUERY_SURFACE)
+                                            hit) == SceneQuery::Surface)
             {
                 FgPoint gather;
                 if (TryMakeFgPoint(scene, hit, -directionWorld, queries, gather) == true &&

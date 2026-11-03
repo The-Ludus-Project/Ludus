@@ -379,7 +379,7 @@ bool CanGenerateSample(SceneContext scene,
     connection.DistanceWorld = distanceWorld;
     connection.HasFiniteEndpoint = true;
     connection.HasSample = true;
-    return TestVisibility(scene, queries, receiver.Hit, connection) == SCENE_QUERY_MISS;
+    return TestVisibility(scene, queries, receiver.Hit, connection) == SceneQuery::Miss;
 }
 
 /// Equation 11, |J_{q->r}| = (|cos phi_2^r| / |cos phi_2^q|) * (|x_1^q - x_2^q|^2 / |x_1^r - x_2^q|^2): the ratio of
@@ -532,10 +532,10 @@ bool TryTraceReceiver(SceneContext scene, RayLaunch launch, inout RayQueryContex
 {
     outReceiver = (Receiver)0;
     SurfaceHit hit;
-    uint status = TraceClosest(scene, queries, launch.CameraRay, hit);
-    if (status == SCENE_QUERY_MISS)
+    SceneQuery status = TraceClosest(scene, queries, launch.CameraRay, hit);
+    if (status == SceneQuery::Miss)
         outReceiver.Radiance = EvaluateEnvironment(scene, launch.CameraRay.DirectionWorld);
-    if (status != SCENE_QUERY_SURFACE)
+    if (status != SceneQuery::Surface)
         return false;
     SpecularChain chain =
         FollowSpecularChain(scene, launch, queries, hit, SCENE_SPECULAR_CHAIN_DEFAULT_DIMENSION_FIRST);

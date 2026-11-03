@@ -42,7 +42,7 @@ float3 ResetPhotonMap(SceneContext scene, RayLaunch launch, inout RayQueryContex
     LightInfo light = GetLightInfo(scene, lightIndex);
     float3 shape = SampleFgRandomTriple(key.xy, key.w, key.z, FG_SOURCE_FIRST_DIMENSION);
     outRay.MaxDistanceWorld = FG_MAXIMUM_DISTANCE_WORLD;
-    if (light.Kind == SCENE_LIGHT_MESH)
+    if (light.Kind == SceneLightKind::Mesh)
     {
         float area = GetEmitter(scene, light.EmitterIndex).z;
         float target = shape.x * area;
@@ -73,7 +73,7 @@ float3 ResetPhotonMap(SceneContext scene, RayLaunch launch, inout RayQueryContex
         outRay = SpawnSurfaceRay(hit, directionWorld, FG_MAXIMUM_DISTANCE_WORLD);
         outFlux = EvaluateEmission(scene, hit, directionWorld) * (area * PI * faceScale * fluxScale);
     }
-    else if (light.Kind == SCENE_LIGHT_POINT || light.Kind == SCENE_LIGHT_SPOT)
+    else if (light.Kind == SceneLightKind::Point || light.Kind == SceneLightKind::Spot)
     {
         float cosine = 1 - 2 * directionUv.x;
         float radius = sqrt(max(0, 1 - cosine * cosine));
@@ -81,7 +81,7 @@ float3 ResetPhotonMap(SceneContext scene, RayLaunch launch, inout RayQueryContex
         outRay.OriginWorld = light.PositionWorld;
         outRay.DirectionWorld = float3(radius * cos(angle), cosine, radius * sin(angle));
         float cone = 1;
-        if (light.Kind == SCENE_LIGHT_SPOT)
+        if (light.Kind == SceneLightKind::Spot)
         {
             cone = saturate((dot(outRay.DirectionWorld, light.DirectionWorld) - light.OuterCos) /
                             (light.InnerCos - light.OuterCos));
@@ -149,13 +149,13 @@ float3 TracePhotons(SceneContext scene, RayLaunch launch, inout RayQueryContext 
         if (hasRay == true && depth < FG_PHOTON_BOUNCES)
         {
             SurfaceHit hit;
-            hasRay = TraceClosest(scene, queries, ray, hit) == SCENE_QUERY_SURFACE;
+            hasRay = TraceClosest(scene, queries, ray, hit) == SceneQuery::Surface;
             FgPoint point;
             if (hasRay == true)
                 hasRay = TryMakeFgPoint(scene, hit, -ray.DirectionWorld, queries, point);
             if (hasRay == true)
             {
-                if (depth == 0 && source.Kind != SCENE_LIGHT_MESH)
+                if (depth == 0 && source.Kind != SceneLightKind::Mesh)
                 {
                     float ratio = hit.DistanceWorld / source.RangeWorld;
                     float square = ratio * ratio;
@@ -193,7 +193,7 @@ float3 TracePhotons(SceneContext scene, RayLaunch launch, inout RayQueryContext 
                         camera.TriangleIndex = FG_INVALID;
                         camera.HasFiniteEndpoint = true;
                         camera.HasSample = true;
-                        if (TestVisibility(scene, queries, hit, camera) == SCENE_QUERY_MISS)
+                        if (TestVisibility(scene, queries, hit, camera) == SceneQuery::Miss)
                         {
                             photon.NextCaustic = ExchangeFgHead(FG_HEAD_OFFSET + pixel, true, index);
                         }

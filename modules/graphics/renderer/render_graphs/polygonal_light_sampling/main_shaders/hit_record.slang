@@ -123,16 +123,16 @@ bool TryLoadHitRecord(SceneContext scene, RayLaunch launch, out HitRecord outRec
 /// Trace this pixel's jittered camera ray and record what it hit, as the other templates' primary pass does. A failed
 /// query is recorded too, so every comparison pass shows the error color for this sample. One surface query.
 /// Returns the trace status.
-uint TraceAndStoreHitRecord(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
+SceneQuery TraceAndStoreHitRecord(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
     HitRecord record = (HitRecord)0;
     record.JitterPixel = float2(SampleSceneRandom(launch, PRIMARY_RANDOM_DIMENSION_FIRST),
                                 SampleSceneRandom(launch, PRIMARY_RANDOM_DIMENSION_FIRST + 1));
     record.SampleIndex = launch.SampleIndex;
     SurfaceHit hit;
-    uint status = TraceClosest(scene, queries, MakeCameraRay(launch, record.JitterPixel), hit);
-    record.HasFailed = status == SCENE_QUERY_FAILURE;
-    record.IsHit = status == SCENE_QUERY_SURFACE;
+    SceneQuery status = TraceClosest(scene, queries, MakeCameraRay(launch, record.JitterPixel), hit);
+    record.HasFailed = status == SceneQuery::Failure;
+    record.IsHit = status == SceneQuery::Surface;
     if (record.IsHit == true)
     {
         record.TriangleIndex = hit.TriangleIndex;

@@ -27,7 +27,7 @@ bool TryLoadOmvMaterial(SceneContext scene,
                         out MaterialSample outMaterial)
 {
     outMaterial = EvaluateMaterial(scene, hit);
-    if (outMaterial.IsValid == false || outMaterial.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE)
+    if (outMaterial.IsValid == false || outMaterial.Model == MaterialModel::CoatedDiffuse)
     {
         FailSceneQuery(queries,
                        outMaterial.IsValid == false ? LUDUS_SCENE_FAILURE_SCENE_DATA
@@ -87,7 +87,7 @@ float3 EvaluateOmvDirect(SceneContext scene, GeometrySamplingContext context, in
     float cosineReceiver = max(0, dot(context.Material.ShadingNormalWorld, light.DirectionWorld));
     float cosineEmitter = abs(dot(context.Emitter.GeometricNormalWorld, -light.DirectionWorld));
     float3 contribution = value * emission * cosineReceiver * cosineEmitter / light.DistanceWorld / light.DistanceWorld;
-    if (any(contribution > 0) == false || TestVisibility(scene, queries, context.Receiver, light) != SCENE_QUERY_MISS)
+    if (any(contribution > 0) == false || TestVisibility(scene, queries, context.Receiver, light) != SceneQuery::Miss)
         return float3(0);
     return contribution;
 }
@@ -129,9 +129,9 @@ float3 EvaluateOmvConnection(SceneContext scene,
     if (any(contribution > 0) == false)
         return float3(0);
     if (shouldTestFirstVisibility == true &&
-        TestVisibility(scene, queries, context.Receiver, first) != SCENE_QUERY_MISS)
+        TestVisibility(scene, queries, context.Receiver, first) != SceneQuery::Miss)
         return float3(0);
-    if (TestVisibility(scene, queries, middle, second) != SCENE_QUERY_MISS)
+    if (TestVisibility(scene, queries, middle, second) != SceneQuery::Miss)
         return float3(0);
     return contribution;
 }
@@ -167,8 +167,8 @@ OmvTransport EvaluateOmvTransport(SceneContext scene, RayLaunch launch, inout Ra
         float2(SampleSceneRandom(launch, OMV_CAMERA_DIMENSION), SampleSceneRandom(launch, OMV_CAMERA_DIMENSION + 1));
     Ray cameraRay = MakeCameraRay(launch, jitterPixel);
     GeometrySamplingContext context;
-    uint status = TraceClosest(scene, queries, cameraRay, context.Receiver);
-    if (status != SCENE_QUERY_SURFACE)
+    SceneQuery status = TraceClosest(scene, queries, cameraRay, context.Receiver);
+    if (status != SceneQuery::Surface)
         return result;
     context.ViewDirectionWorld = -cameraRay.DirectionWorld;
     if (TryLoadOmvMaterial(scene, context.Receiver, queries, context.Material) == false)
@@ -196,7 +196,7 @@ OmvTransport EvaluateOmvTransport(SceneContext scene, RayLaunch launch, inout Ra
     {
         SurfaceHit middle;
         Ray ray = SpawnSurfaceRay(context.Receiver, directionWorld, OMV_MAXIMUM_DISTANCE_WORLD);
-        if (TraceClosest(scene, queries, ray, middle) == SCENE_QUERY_SURFACE)
+        if (TraceClosest(scene, queries, ray, middle) == SceneQuery::Surface)
         {
             contribution = EvaluateOmvConnection(scene, context, middle, false, queries, bsdfPdfArea);
             if (bsdfPdfArea > 0)

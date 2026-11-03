@@ -80,7 +80,7 @@ float3 EvaluateFgPathBody(SceneContext scene,
         connection.TriangleIndex = gatherHit.TriangleIndex;
         connection.HasFiniteEndpoint = true;
         connection.HasSample = true;
-        if (TestVisibility(scene, queries, receiver.Hit, connection) != SCENE_QUERY_MISS)
+        if (TestVisibility(scene, queries, receiver.Hit, connection) != SceneQuery::Miss)
             return float3(0);
     }
     return receiver.Throughput * EvaluateFgBsdf(receiver, directionWorld) * cosine *

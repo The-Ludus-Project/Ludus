@@ -339,6 +339,23 @@ target_sources(example PRIVATE extra.cpp)
             )
         )
 
+    def test_shader_enums_are_scoped_pascal_case_with_a_width(self):
+        self.assertFalse(self.diagnose("enum SceneQuery : uint { Miss = 0, Surface = 1, Failure = 2, };", ".slang"))
+        self.assertTrue(self.diagnose("enum SceneQuery { Miss = 0, Surface = 1 };", ".slang"))
+        self.assertTrue(self.diagnose("enum sceneQuery : uint { Miss = 0 };", ".slang"))
+        self.assertTrue(self.diagnose("enum SceneQuery : uint { Miss = 0, SURFACE = 1 };", ".slang"))
+        self.assertTrue(self.diagnose("enum SceneQuery : uint\n{\n    Miss,\n    query_surface,\n};", ".slang"))
+
+    def test_shader_names_scene_enumerators_not_v1_aliases(self):
+        text = "bool IsHit(SceneQuery status) { return status == SCENE_QUERY_SURFACE; }"
+        self.assertTrue(self.diagnose(text, ".slang"))
+        self.assertTrue(self.diagnose("bool IsMesh(LightInfo light) { return light.Kind == SCENE_LIGHT_MESH; }",
+                                      ".slang"))
+        self.assertFalse(self.diagnose("bool IsHit(SceneQuery status) { return status == SceneQuery::Surface; }",
+                                       ".slang"))
+        alias = "static const SceneQuery SCENE_QUERY_SURFACE = SceneQuery::Surface;"
+        self.assertFalse(violations("modules/graphics/renderer/shaders/scene_shader.slang", alias, {1}))
+
     def test_annotations_are_owned_by_rhi(self):
         text = "[[vk::binding(0,0)]] StructuredBuffer<uint4> scene;"
         self.assertTrue(self.diagnose(text, ".slang"))

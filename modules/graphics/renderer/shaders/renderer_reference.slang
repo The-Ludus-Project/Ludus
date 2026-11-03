@@ -651,7 +651,7 @@ struct Bsdf
     float3 BaseColor;
     float Metallic;
     float Roughness;
-    uint Model;
+    MaterialModel Model;
     float3 Eta;
     float3 K;
     float Alpha;
@@ -688,7 +688,7 @@ float GetSpecularProbability(Bsdf bsdf)
 // Value and full mixture density, without the cosine.
 float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 lightWorld, CoatingRandomContext random)
 {
-    if (bsdf.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE)
+    if (bsdf.Model == MaterialModel::CoatedDiffuse)
     {
         CoatingEvaluation evaluated =
             EvaluateCoatedDiffuse(MakeCoatingMaterial(bsdf), normalWorld, viewWorld, lightWorld, random);
@@ -699,7 +699,7 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
     float nl = dot(normalWorld, lightWorld);
     if (nv <= 0 || nl <= 0 || IsDielectricModel(bsdf.Model) == true)
         return 0;
-    if (bsdf.Model == LUDUS_MATERIAL_MODEL_DIFFUSE)
+    if (bsdf.Model == MaterialModel::Diffuse)
         return float4(bsdf.BaseColor / PI, nl / PI);
     float3 halfWorld = NormalizeOrZero(viewWorld + lightWorld);
     float nh = clamp(dot(normalWorld, halfWorld), 0, 1);
@@ -716,7 +716,7 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
     float oneMinus = 1 - vh;
     float square = oneMinus * oneMinus;
     float3 fresnel = reflectance + (float3(1) - reflectance) * (square * square * oneMinus);
-    bool isConductor = bsdf.Model == LUDUS_MATERIAL_MODEL_CONDUCTOR;
+    bool isConductor = bsdf.Model == MaterialModel::Conductor;
     if (isConductor == true)
         fresnel = ComputeConductorFresnelRgb(vh, bsdf.Eta, bsdf.K);
     float diffuseFraction = isConductor == true ? 0 : 1 - bsdf.Metallic;
@@ -1633,7 +1633,7 @@ PathSample TracePath(uint pixel, uint sample)
         bsdf.Roughness = SurfaceValue(instance, 1).x;
         float4 etaAndModel = SurfaceValue(instance, LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD);
         float4 extinctionAndAlpha = SurfaceValue(instance, LUDUS_GPU_PREVIEW_SCATTERING_K_WORD);
-        bsdf.Model = asuint(etaAndModel.w);
+        bsdf.Model = MaterialModel(asuint(etaAndModel.w));
         bsdf.Eta = etaAndModel.xyz;
         bsdf.K = extinctionAndAlpha.xyz;
         bsdf.Alpha = extinctionAndAlpha.w;
@@ -1734,7 +1734,7 @@ PathSample TracePath(uint pixel, uint sample)
             MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_SAMPLE);
             return path;
         }
-        bool hasCoating = bsdf.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE;
+        bool hasCoating = bsdf.Model == MaterialModel::CoatedDiffuse;
         CoatingSample coating = (CoatingSample)0;
         DielectricSample specular = (DielectricSample)0;
         float3 outgoingWorld;
