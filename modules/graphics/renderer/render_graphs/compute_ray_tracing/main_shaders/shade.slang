@@ -4,8 +4,10 @@
 // Radiance = surface emission + one light sample: SelectLight chooses a light uniformly,
 // SampleIncidentLight proposes a point or direction on it, TestVisibility traces the shadow ray
 // and EvaluateStandardBsdf weights the result. A miss returns the environment. There is no
-// indirect bounce. One visibility query; no surface query, because the surface comes from the
-// record (GetSurfaceHit), not from tracing the camera ray again.
+// indirect bounce. One visibility query. The surface comes from the record (GetSurfaceHit), not
+// from tracing the camera ray again; when it is smooth glass, FollowSpecularChain continues
+// through it (up to SCENE_SPECULAR_CHAIN_EVENTS surface queries) and the first surface it can
+// shade is lit instead.
 
 /// One-sample direct lighting at a reconstructed receiver, with the light proposal's own PDF.
 float3 SampleDirectLighting(SceneContext scene,
@@ -31,7 +33,9 @@ float3 SampleDirectLighting(SceneContext scene,
     float probability = light.SelectionPmf * light.ConditionalPdf;
     if (light.HasSample == false || probability <= 0 || any(light.IncidentCoefficient > 0) == false)
         return float3(0);
-    float cosSurface = dot(material.ShadingNormalWorld * rsqrt(normalLengthSquared), light.DirectionWorld);
+    // Zero for glass, whose delta lobes no light sample reaches.
+    float cosSurface =
+        ComputeStandardBsdfCosine(material, viewDirectionWorld, light.DirectionWorld) * rsqrt(normalLengthSquared);
     float3 bsdfValue;
     float bsdfPdfSolidAngle;
     EvaluateStandardBsdf(material, viewDirectionWorld, light.DirectionWorld, bsdfValue, bsdfPdfSolidAngle);
@@ -67,9 +71,12 @@ float3 ShadeRecordedHit(SceneContext scene, RayLaunch launch, inout RayQueryCont
     hit.IncomingRay = cameraRay;
     hit.DistanceWorld = record.DistanceWorld;
     hit.IsFrontFace = record.IsFrontFace;
-    float3 viewDirectionWorld = -cameraRay.DirectionWorld;
-    float3 radiance = EvaluateEmission(scene, hit, viewDirectionWorld);
-    radiance += SampleDirectLighting(scene, launch, hit, viewDirectionWorld, queries);
+    SpecularChain chain = FollowSpecularChain(scene, launch, queries, hit, SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST);
+    float3 radiance = chain.Radiance;
+    if (chain.IsSurface == true)
+        radiance +=
+            chain.Throughput * (EvaluateEmission(scene, chain.Hit, chain.ViewDirectionWorld) +
+                                SampleDirectLighting(scene, launch, chain.Hit, chain.ViewDirectionWorld, queries));
     if (all(isfinite(radiance)) == false || any(radiance < 0) == true)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);

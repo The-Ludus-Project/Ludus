@@ -50,6 +50,7 @@ struct ShadingPoint
     MaterialSample Material;
     float3 ShadingNormalWorld;
     float3 ViewDirectionWorld;
+    float3 Throughput; ///< Smooth-glass chain weight from the camera to Hit.
 };
 
 /// Rebuild this pixel's recorded surface, after tracing and recording it when isPrimary. Returns false when the pixel
@@ -94,7 +95,16 @@ bool TryLoadShadingPoint(SceneContext scene,
     outPoint.Hit.IncomingRay = cameraRay;
     outPoint.Hit.DistanceWorld = record.DistanceWorld;
     outPoint.Hit.IsFrontFace = record.IsFrontFace;
-    outPoint.ViewDirectionWorld = -cameraRay.DirectionWorld;
+    // Smooth glass is followed to the first surface the estimators can shade (FollowSpecularChain, up to
+    // SCENE_SPECULAR_CHAIN_EVENTS surface queries); every pass draws the same chain.
+    SpecularChain chain =
+        FollowSpecularChain(scene, launch, queries, outPoint.Hit, SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST);
+    outRadiance = chain.Radiance;
+    if (chain.IsSurface == false)
+        return false;
+    outPoint.Hit = chain.Hit;
+    outPoint.Throughput = chain.Throughput;
+    outPoint.ViewDirectionWorld = chain.ViewDirectionWorld;
     outPoint.Material = EvaluateMaterial(scene, outPoint.Hit);
     float normalLengthSquared = dot(outPoint.Material.ShadingNormalWorld, outPoint.Material.ShadingNormalWorld);
     if (outPoint.Material.IsValid == false || normalLengthSquared <= 0)
@@ -103,7 +113,7 @@ bool TryLoadShadingPoint(SceneContext scene,
         return false;
     }
     outPoint.ShadingNormalWorld = outPoint.Material.ShadingNormalWorld * rsqrt(normalLengthSquared);
-    outRadiance = EvaluateEmission(scene, outPoint.Hit, outPoint.ViewDirectionWorld);
+    outRadiance += outPoint.Throughput * EvaluateEmission(scene, outPoint.Hit, outPoint.ViewDirectionWorld);
     return true;
 }
 
@@ -192,7 +202,7 @@ float3 ShadeEstimator(SceneContext scene, RayLaunch launch, uint estimator, inou
     bool isPrimary = estimator == DEFENSIVE_SLICE_SAMPLING_ESTIMATOR;
     if (TryLoadShadingPoint(scene, launch, isPrimary, passQueries, shadingPoint, radiance) == true)
     {
-        radiance += SampleLuminaire(scene, launch, shadingPoint, estimator, passQueries);
+        radiance += shadingPoint.Throughput * SampleLuminaire(scene, launch, shadingPoint, estimator, passQueries);
         if (IsRadianceFinite(radiance) == false || any(radiance < 0) == true)
         {
             FailSceneQuery(passQueries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);

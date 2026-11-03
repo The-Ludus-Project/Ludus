@@ -2,6 +2,7 @@
 
 #include "internal/raster_mesh_lights.h"
 
+#include <ludus/foundation/containers/stable_sort.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/deferred_layout.h>
 
@@ -36,6 +37,17 @@ struct Influence final
     math::Vector3 OriginWorld;
     bool IsTwoSided = false;
     uint32 Word = 0;
+    /// The record's shadow caster plus one, or zero (deferred_layout.h, MESH_LIGHT_SHADOW_CASTER_CORNER).
+    uint32 CasterKey = 0;
+};
+/// Orders influences by shadow caster so each cell lists a caster's records together; the resolve then reuses one
+/// visibility lookup across the run.
+struct CasterLess final
+{
+    bool operator()(const Influence& left, const Influence& right) const noexcept
+    {
+        return left.CasterKey < right.CasterKey;
+    }
 };
 struct Grid final
 {
@@ -81,6 +93,7 @@ TryMakeInfluence(BorrowedView<const math::Vector4> words, usize offset, Influenc
     influence.OriginWorld = originWorld;
     influence.IsTwoSided = words[offset + NORMAL_WORD].W != 0;
     influence.Word = static_cast<uint32>(offset);
+    influence.CasterKey = static_cast<uint32>(words[firstCorner + MESH_LIGHT_SHADOW_CASTER_CORNER].W);
     if (math::IsFinite(influence.CenterWorld) == false || math::IsFinite(influence.Radius) == false || area < 0 ||
         polygonRadius < 0)
     {
@@ -215,6 +228,12 @@ Status AppendRasterMeshLightGrid(Array<math::Vector4>& inoutWords,
         static_cast<void>(influences.TryAdd(influence));
         offset += GetRasterMeshLightRecordWords(words, offset);
     }
+    Array<Influence> scratch;
+    if (scratch.TryResize(influences.GetSize()) == false ||
+        StableSort(influences.GetData(), scratch.GetData(), influences.GetSize(), CasterLess{}) == false)
+    {
+        return Status::OutOfMemory;
+    }
     const Grid grid = MakeGrid(receiversWorld);
     const usize cellCount = usize{grid.Cells[0]} * grid.Cells[1] * grid.Cells[2];
     Array<uint32> firstEntries;
@@ -347,6 +366,20 @@ bool GetRasterMeshLightCell(BorrowedView<const math::Vector4> words,
             return false;
         }
     }
+    return true;
+}
+bool GetRasterMeshLightReach(BorrowedView<const math::Vector4> words,
+                             usize offset,
+                             math::Vector3& outCenterWorld,
+                             float32& outRadius) noexcept
+{
+    Influence influence;
+    if (TryMakeInfluence(words, offset, influence) == false)
+    {
+        return false;
+    }
+    outCenterWorld = influence.CenterWorld;
+    outRadius = influence.Radius;
     return true;
 }
 } // namespace ludus::graphics::renderer::internal

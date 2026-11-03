@@ -10,6 +10,14 @@ float3 InitializePairwiseReservoir(SceneContext scene, RayLaunch launch, inout R
     SurfaceHit hit;
     uint status = TraceClosest(scene, queries, launch.CameraRay, hit);
     if (status == SCENE_QUERY_SURFACE)
+    {
+        SpecularChain chain = FollowReceiverGlass(scene, launch, queries, hit);
+        hit = chain.Hit;
+        status = chain.IsSurface == true     ? SCENE_QUERY_SURFACE
+                 : queries.HasFailed == true ? SCENE_QUERY_FAILURE
+                                             : SCENE_QUERY_MISS;
+    }
+    if (status == SCENE_QUERY_SURFACE)
         GenerateInitialReservoir(scene, hit, launch, queries);
     else if (status == SCENE_QUERY_MISS)
     {

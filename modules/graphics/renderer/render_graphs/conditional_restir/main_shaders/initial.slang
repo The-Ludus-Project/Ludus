@@ -11,7 +11,14 @@ float3 GenerateConditionalSample(SceneContext scene, RayLaunch launch, inout Ray
     SurfaceHit primary;
     Prefix support = (Prefix)0;
     if (TraceClosest(scene, queries, launch.CameraRay, primary) == SCENE_QUERY_SURFACE)
-        support = TracePrefix(scene, launch, primary, queries);
+    {
+        // Smooth glass is followed to the first surface a prefix can scatter from; the shade pass draws the same
+        // chain from the same default dimensions.
+        SpecularChain chain =
+            FollowSpecularChain(scene, launch, queries, primary, SCENE_SPECULAR_CHAIN_DEFAULT_DIMENSION_FIRST);
+        if (chain.IsSurface == true)
+            support = TracePrefix(scene, launch, chain.Hit, queries);
+    }
     if (support.IsValid == true)
     {
         result.SupportTriangleIndex = support.Hit.TriangleIndex;

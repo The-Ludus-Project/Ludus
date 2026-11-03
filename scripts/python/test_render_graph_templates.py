@@ -13,6 +13,9 @@ from ludus_tools import render_graph_settings as settings
 from ludus_tools import render_graph_ray as ray
 from ludus_tools.errors import ToolingError
 
+# scene_shader.slang's SCENE_SPECULAR_CHAIN_EVENTS: templates that follow smooth glass budget one surface query each.
+SPECULAR_CHAIN_EVENTS = 8
+
 
 class RestirTemplateTests(unittest.TestCase):
     def test_shipped_catalog_fits_aggregate_source_and_target_artifact_policy(self):
@@ -472,7 +475,7 @@ class TiledVbufferNeeTemplateTests(unittest.TestCase):
                          if 'scene_interface' in technique)
         # One BSDF ray and one light occlusion query per shaded pixel.
         self.assertEqual((interface['visibility_buffer'], interface['surface_queries'], interface['visibility_queries']),
-                         (True, 1, 1))
+                         (True, 1 + SPECULAR_CHAIN_EVENTS, 1))
         self.assertFalse(any(program['bindings'] for program in manifest['programs']))
 
     def test_every_tile_record_fits_the_table_at_common_render_sizes(self):
@@ -568,7 +571,7 @@ class ComputeRayTracingTemplateTests(unittest.TestCase):
         technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
         # Node-owned compute passes only: no default callbacks; one primary and one shadow query.
         self.assertFalse(any(stage in technique for stage in ray.STAGES))
-        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1, 'visibility_queries': 1})
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1 + SPECULAR_CHAIN_EVENTS, 'visibility_queries': 1})
         compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
         self.assertEqual([(program['id'], program['input'], program['output'], program['bindings'])
                           for program in compute],
@@ -678,7 +681,7 @@ class VeachGuibasMisTemplateTests(unittest.TestCase):
         technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
         self.assertFalse(any(stage in technique for stage in ray.STAGES))
         # One BSDF ray and one shadow ray per pass fit the shared one-query budgets.
-        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1, 'visibility_queries': 1})
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1 + SPECULAR_CHAIN_EVENTS, 'visibility_queries': 1})
         compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
         self.assertEqual([(program['id'], program['function']) for program in compute],
                          [('Primary', 'TracePrimaryHit'), ('ShadeMultipleImportance', 'ShadeMultipleImportance'),
@@ -780,7 +783,7 @@ class SteinbergPltTemplateTests(unittest.TestCase):
         build.validate_manifest(manifest)
         technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
         # One traced ray and one shadow ray per invocation.
-        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1, 'visibility_queries': 1})
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1 + SPECULAR_CHAIN_EVENTS, 'visibility_queries': 1})
         compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
         self.assertEqual([(program['id'], program['function']) for program in compute],
                          [('Primary', 'TracePrimaryHit'), ('ShadeWave', 'ShadeWave'),
@@ -980,7 +983,7 @@ class RestirGiTemplateTests(unittest.TestCase):
         technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
         # Spatial reuse with seven neighbours traces 2 * 7 + 2 visibility rays at most; the initial pass traces the
         # camera ray, the sample ray and two path bounces.
-        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 5, 'visibility_queries': 16})
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 5 + SPECULAR_CHAIN_EVENTS, 'visibility_queries': 16})
         compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
         self.assertEqual([(program['id'], program['function']) for program in compute],
                          [('Initial', 'GenerateInitialSample'), ('Temporal', 'ResampleTemporal'),
@@ -1012,7 +1015,7 @@ class RestirGiTemplateTests(unittest.TestCase):
         self.assertLessEqual(technique['scene_interface']['visibility_queries'],
                              ray.SCENE_QUERY_LIMITS['MAX_VISIBILITY_QUERIES'])
         self.assertEqual(technique['scene_interface']['surface_queries'],
-                         3 + values['RESTIR_GI_PATH_BOUNCES']['maximum'])
+                         3 + values['RESTIR_GI_PATH_BOUNCES']['maximum'] + SPECULAR_CHAIN_EVENTS)
         self.assertIn('0.906307787f', reservoir)
         self.assertIn('SIMILARITY_DEPTH_FRACTION = 0.05f', reservoir)
         for source in ('reservoir.slang', 'transport.slang'):
@@ -1101,7 +1104,7 @@ class LineSamplingTemplateTests(unittest.TestCase):
         self.assertFalse(any(stage in technique for stage in ray.STAGES))
         # The primary hit's surface query, one masked confirmation or non-mesh shadow ray, one chord.
         self.assertEqual(technique['scene_interface'],
-                         {'version': 1, 'surface_queries': 1, 'visibility_queries': 1, 'line_queries': 1})
+                         {'version': 1, 'surface_queries': 1 + SPECULAR_CHAIN_EVENTS, 'visibility_queries': 1, 'line_queries': 1})
         self.assertNotIn('settings', manifest)
         compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
         self.assertEqual([(program['id'], program['function']) for program in compute],
@@ -1196,7 +1199,7 @@ class RisProjectedSolidAngleTemplateTests(unittest.TestCase):
         technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
         self.assertFalse(any(stage in technique for stage in ray.STAGES))
         # One BSDF ray; two shadow rays for the selected triangle's diffuse and LTC samples.
-        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1, 'visibility_queries': 2,
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1 + SPECULAR_CHAIN_EVENTS, 'visibility_queries': 2,
                                                         'polygonal_light_sampling': True})
         compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
         self.assertEqual([(program['id'], program['function']) for program in compute],
@@ -1447,7 +1450,7 @@ class SalesinJaroszLinesTemplateTests(unittest.TestCase):
         # The maximum over the passes (design D8b): shade needs one BSDF ray, two visibility queries
         # (one per line strategy) and six line queries.
         self.assertEqual(technique['scene_interface'],
-                         {'version': 1, 'surface_queries': 1, 'visibility_queries': 2, 'line_queries': 6})
+                         {'version': 1, 'surface_queries': 1 + SPECULAR_CHAIN_EVENTS, 'visibility_queries': 2, 'line_queries': 6})
         compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
         self.assertEqual([(program['id'], program['function']) for program in compute],
                          [('Primary', 'TracePrimaryHit'), ('ShadeMultipleImportance', 'ShadeMultipleImportance'),
@@ -1605,7 +1608,7 @@ class PolygonalLightSamplingTemplateTests(unittest.TestCase):
         self.assertFalse(any(stage in technique for stage in ray.STAGES))
         # One camera ray; two shadow rays for each of up to eight emissive triangles interactively, and up to 128
         # in a frame capture's capture profile.
-        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1, 'visibility_queries': 16,
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1 + SPECULAR_CHAIN_EVENTS, 'visibility_queries': 16,
                                                         'capture_visibility_queries': 256,
                                                         'polygonal_light_sampling': True})
         self.assertEqual(technique['scene_interface']['capture_visibility_queries'],
@@ -1749,7 +1752,7 @@ class SliceSamplingLuminaireTemplateTests(unittest.TestCase):
         technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
         self.assertFalse(any(stage in technique for stage in ray.STAGES))
         # One camera ray and one shadow ray per pass; no polygonal-light helpers.
-        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1, 'visibility_queries': 1})
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1 + SPECULAR_CHAIN_EVENTS, 'visibility_queries': 1})
         compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
         self.assertEqual([(program['id'], program['function']) for program in compute],
                          [('ShadeDefensiveSliceSampling', 'ShadeDefensiveSliceSampling'),

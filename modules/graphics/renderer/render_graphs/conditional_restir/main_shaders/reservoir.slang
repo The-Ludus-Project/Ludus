@@ -229,6 +229,9 @@ bool IsCurrentRecord(Reservoir source, SceneContext scene, RayLaunch launch, ino
                                      CoatingRandomContext random,
                                      bool shouldUseLayeredBsdf)
 {
+    // Glass is a delta interface: no reconnection or terminal connection reaches its lobes.
+    if (IsDielectricMaterial(material) == true)
+        return float3(0);
     float3 value;
     float density;
     if (shouldUseLayeredBsdf == true)
@@ -245,11 +248,12 @@ SampleSuffixBsdf(MaterialSample material, float3 viewWorld, float3 random, Coati
 }
 
 /// One BSDF-sampled segment. Its emission is handled by primary direct lighting, never counted twice.
+/// The primary is seen along its IncomingRay, the camera ray or the last ray of a smooth-glass chain.
 Prefix TracePrefix(SceneContext scene, RayLaunch launch, SurfaceHit primary, inout RayQueryContext queries)
 {
     Prefix result = (Prefix)0;
     result.Hit = primary;
-    result.ViewWorld = -launch.CameraRay.DirectionWorld;
+    result.ViewWorld = -primary.IncomingRay.DirectionWorld;
     result.Throughput = float3(1);
     result.MaterialRandom = MakeMaterialRandom(launch, GATHER_MATERIAL_EVENT);
     result.IsValid = primary.IsValid;

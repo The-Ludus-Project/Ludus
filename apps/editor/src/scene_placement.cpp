@@ -1,5 +1,7 @@
 #include "internal/scene_placement.h"
 
+#include "internal/light_switches.h"
+
 #include <ludus/content/scene_cook/scene_assets.h>
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/containers/array.hpp>
@@ -184,7 +186,17 @@ PlacedSceneStatus DerivePlacedScene(const RenderScene& presented,
     }
     candidate.Definition = Move(definition);
     candidate.PacketIdentity = DeriveIdentity(presented.PacketIdentity, transforms);
-    candidate.Identity = DeriveIdentity(presented.Identity, transforms);
+    if (presented.UnswitchedIdentity.isEmpty() == true)
+    {
+        candidate.Identity = DeriveIdentity(presented.Identity, transforms);
+    }
+    else
+    {
+        // Keep the switched-off light sources: the moved content gets a new unswitched identity,
+        // so a later ApplyLightSwitches composes from it rather than from the old placement.
+        candidate.UnswitchedIdentity = DeriveIdentity(presented.UnswitchedIdentity, transforms);
+        candidate.Identity = ComposeLightSwitchedIdentity(candidate.UnswitchedIdentity, presented.LightSwitchIdentity);
+    }
     outScene = Move(candidate);
     outError.clear();
     return PlacedSceneStatus::Derived;

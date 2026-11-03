@@ -25,6 +25,7 @@
 #include "internal/environment_data.h"
 #include "internal/gpu_preview_data.h"
 #include "internal/ltc_table_data.h"
+#include "internal/raster_mesh_light_shadows.h"
 #include "internal/reference_data.h"
 #include "internal/render_graph_deferred.h"
 #include "internal/render_graph_ray.h"
@@ -79,6 +80,14 @@ namespace
 {
 using internal::Access;
 constexpr usize NO_MATERIAL = ~usize{0}, NO_SHADOW = ~usize{0};
+/// Draws kept free for a frame's fullscreen lighting, tone-mapping and display passes when mesh-light shadow faces
+/// share its budget.
+constexpr usize MESH_LIGHT_SHADOW_RESERVED_DRAWS = 16;
+/// Most shadow faces, each a raster pass, drawn in one frame.
+constexpr uint32 MAX_MESH_LIGHT_SHADOW_FACES_PER_FRAME = 64;
+/// Rows of an instance's mesh-to-clip transform, and of its mesh-to-world affine rows.
+constexpr usize CLIP_ROW_COUNT = 4;
+constexpr usize WORLD_ROW_COUNT = 3;
 /// Packet/item marker for a flat draw using the bound program's zero-filled default uniforms.
 constexpr usize NO_UNIFORM = ~usize{0};
 constexpr usize LIT_SHADOW_OFFSET = FORWARD_SHADOW_OFFSET;
@@ -5235,6 +5244,230 @@ Status Renderer::DrawShadowAtlas(ShadowAtlas handle, uint32 reservedDraws) noexc
     }
     atlas.Failed = false;
     atlas.Rendered = true;
+    return Status::Ready;
+}
+Status Renderer::prepareMeshLightShadows(Snapshot snapshot,
+                                         BorrowedView<const internal::MeshLightShadowCaster> casters,
+                                         internal::MeshLightShadowAtlas& inoutAtlas) noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return Status::NotReady;
+    }
+    State& s = *mState;
+    const State::SnapshotRecord* snapshotOrNull = Resolve(s.SnapshotRecords, s.Owner, snapshot);
+    if (snapshotOrNull == nullptr)
+    {
+        return Status::InvalidHandle;
+    }
+    if (inoutAtlas.HasPackets == false)
+    {
+        // Each face lists the opaque items its frustum and its caster's range reach, with instance rows projecting
+        // them into the face, grouped by mesh and masked material as the view packets are.
+        Array<Instance> instances;
+        Array<internal::MeshLightShadowPacket> packets;
+        Array<internal::MeshLightShadowFaceDraw> faces;
+        for (usize index = 0; index < casters.GetSize(); ++index)
+        {
+            const internal::MeshLightShadowCaster& caster = casters[index];
+            for (uint32 face = 0; face < MESH_LIGHT_SHADOW_FACE_COUNT; ++face)
+            {
+                if ((caster.FaceMask & (1U << face)) == 0)
+                {
+                    continue;
+                }
+                math::Matrix4 worldToClip;
+                math::Frustum frustum;
+                if (internal::MakeRasterMeshLightShadowFaceToClip(caster, face, worldToClip) != Status::Ready ||
+                    math::TryExtractFrustum(worldToClip, math::FrustumMode::FinitePerspectiveOrOrthographic, frustum) !=
+                        math::MathStatus::Success)
+                {
+                    return Status::InvalidDescription;
+                }
+                internal::MeshLightShadowFaceDraw draw;
+                draw.Slot = {caster.FaceOrigins[face].X,
+                             caster.FaceOrigins[face].Y,
+                             caster.FaceTexels,
+                             caster.FaceTexels};
+                draw.FirstPacket = static_cast<uint32>(packets.GetSize());
+                for (usize i = 0; i < snapshotOrNull->Count; ++i)
+                {
+                    const State::Item& item = snapshotOrNull->Items[i];
+                    const bool isMasked = item.MaterialSlot != NO_MATERIAL &&
+                                          s.Materials[item.MaterialSlot].Alpha == MaterialAlpha::Masked;
+                    if (item.Input.Pass != Layer::Opaque ||
+                        (item.MaterialSlot != NO_MATERIAL && isMasked == false &&
+                         s.Materials[item.MaterialSlot].Alpha != MaterialAlpha::Opaque))
+                    {
+                        continue;
+                    }
+                    // Only items within the caster's range can occlude a receiver it lights.
+                    const math::Vector3 nearestWorld{
+                        math::Clamp(caster.PositionWorld.X, item.Bounds.Min.X, item.Bounds.Max.X),
+                        math::Clamp(caster.PositionWorld.Y, item.Bounds.Min.Y, item.Bounds.Max.Y),
+                        math::Clamp(caster.PositionWorld.Z, item.Bounds.Min.Z, item.Bounds.Max.Z)};
+                    math::FrustumRelation relation;
+                    if (math::Length(nearestWorld - caster.PositionWorld) > caster.RangeMeters ||
+                        math::TryClassifyAabb(frustum, item.Bounds, 0, relation) != math::MathStatus::Success ||
+                        relation == math::FrustumRelation::Outside)
+                    {
+                        continue;
+                    }
+                    const math::Matrix4 meshToClip = worldToClip * Matrix(item.Input.Transform);
+                    if (math::IsFinite(meshToClip) == false)
+                    {
+                        return Status::InvalidDescription;
+                    }
+                    Instance instance{};
+                    const math::Matrix4 rows = math::Transpose(meshToClip);
+                    const math::Matrix4 worldRows = math::Transpose(Matrix(item.Input.Transform));
+                    for (usize row = 0; row < CLIP_ROW_COUNT; ++row)
+                    {
+                        instance.Rows[row] = rows.Columns[row];
+                    }
+                    for (usize row = 0; row < WORLD_ROW_COUNT; ++row)
+                    {
+                        instance.WorldRows[row] = worldRows.Columns[row];
+                    }
+                    instance.Color = {1, 1, 1, 1};
+                    const uint32 first = static_cast<uint32>(instances.GetSize());
+                    if (instances.TryAdd(instance) == false)
+                    {
+                        return Status::OutOfMemory;
+                    }
+                    if (packets.GetSize() > draw.FirstPacket &&
+                        packets[packets.GetSize() - 1].MeshSlot == item.MeshSlot &&
+                        packets[packets.GetSize() - 1].IsMasked == isMasked &&
+                        (isMasked == false || packets[packets.GetSize() - 1].MaterialSlot == item.MaterialSlot))
+                    {
+                        ++packets[packets.GetSize() - 1].Count;
+                    }
+                    else if (packets.TryAdd(
+                                 {item.MeshSlot, isMasked == true ? item.MaterialSlot : 0, isMasked, first, 1}) ==
+                             false)
+                    {
+                        return Status::OutOfMemory;
+                    }
+                }
+                draw.PacketCount = static_cast<uint32>(packets.GetSize()) - draw.FirstPacket;
+                if (faces.TryAdd(draw) == false)
+                {
+                    return Status::OutOfMemory;
+                }
+            }
+        }
+        if (instances.IsEmpty() == false)
+        {
+            const usize bytes = instances.GetSize() * sizeof(Instance);
+            const Status created = rhi::CreateBuffer(s.Device,
+                                                     {rhi::BufferRole::Vertex, bytes},
+                                                     {reinterpret_cast<const uint8*>(instances.GetData()), bytes},
+                                                     inoutAtlas.Instances);
+            if (Accepted(created) == false)
+            {
+                return created;
+            }
+        }
+        inoutAtlas.Packets = Move(packets);
+        inoutAtlas.Faces = Move(faces);
+        inoutAtlas.HasPackets = true;
+    }
+    return inoutAtlas.Packets.IsEmpty() == true ? Status::Ready : rhi::GetStatus(s.Device, inoutAtlas.Instances);
+}
+Status Renderer::drawMeshLightShadows(PreparedView frameView, internal::MeshLightShadowAtlas& inoutAtlas) noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return Status::NotReady;
+    }
+    State& s = *mState;
+    const State::ViewRecord* viewOrNull = Resolve(s.ViewRecords, s.Owner, frameView);
+    if (viewOrNull == nullptr || rhi::IsNull(inoutAtlas.Texture) == true || inoutAtlas.HasPackets == false)
+    {
+        return Status::InvalidState;
+    }
+    if (inoutAtlas.IsCleared == false)
+    {
+        // The far depth everywhere: faces not yet drawn read as unoccluded rather than undefined.
+        rhi::RasterPassDescription clear;
+        clear.Color = inoutAtlas.Texture;
+        for (float32& channel : clear.Clear)
+        {
+            channel = 1;
+        }
+        clear.ClearDepth = 1;
+        clear.DepthStore = rhi::RasterStore::Store;
+        const Status cleared = rhi::BeginRasterPass(s.Device, clear);
+        if (cleared != Status::Ready)
+        {
+            return cleared;
+        }
+        inoutAtlas.IsCleared = true;
+    }
+    if (inoutAtlas.NextFace >= inoutAtlas.Faces.GetSize())
+    {
+        return Status::Ready;
+    }
+    rhi::DeviceInfo deviceInfo;
+    if (rhi::GetDeviceInfo(s.Device, deviceInfo) != rhi::DeviceStatus::Ready)
+    {
+        return Status::NotReady;
+    }
+    // The frame view's G-buffer and overlay passes each draw at most its packets, plus the fullscreen passes.
+    const usize frameDraws = 2 * viewOrNull->DrawCount + MESH_LIGHT_SHADOW_RESERVED_DRAWS;
+    const usize drawLimit = deviceInfo.Profile.Raster.DrawsPerFrame;
+    usize budget = drawLimit > frameDraws ? drawLimit - frameDraws : 0;
+    for (uint32 drawnFaces = 0;
+         inoutAtlas.NextFace < inoutAtlas.Faces.GetSize() && drawnFaces < MAX_MESH_LIGHT_SHADOW_FACES_PER_FRAME;
+         ++drawnFaces)
+    {
+        const internal::MeshLightShadowFaceDraw& draw = inoutAtlas.Faces[inoutAtlas.NextFace];
+        if (draw.PacketCount > budget)
+        {
+            break;
+        }
+        budget -= draw.PacketCount;
+        ++inoutAtlas.NextFace;
+        if (draw.PacketCount == 0)
+        {
+            continue;
+        }
+        rhi::RasterPassDescription pass;
+        pass.Color = inoutAtlas.Texture;
+        pass.ColorLoad = rhi::RasterLoad::Load;
+        pass.DepthLoad = rhi::RasterLoad::Load;
+        pass.DepthStore = rhi::RasterStore::Store;
+        pass.UseViewport = pass.UseScissor = true;
+        pass.Viewport = pass.Scissor = draw.Slot;
+        Status status = rhi::BeginRasterPass(s.Device, pass);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        for (uint32 index = 0; index < draw.PacketCount; ++index)
+        {
+            const internal::MeshLightShadowPacket& packet = inoutAtlas.Packets[draw.FirstPacket + index];
+            const State::MeshRecord& mesh = s.MeshRecords[packet.MeshSlot];
+            rhi::RasterPipelineHandle pipeline = s.FlatShadow;
+            rhi::BindingSetHandle bindings = s.Bindings;
+            if (packet.IsMasked == true)
+            {
+                const State::MaterialRecord& material = s.Materials[packet.MaterialSlot];
+                pipeline = s.Programs[material.ProgramSlot].ShadowPipeline;
+                bindings = material.Bindings;
+            }
+            const rhi::RasterVertexSlice slices[]{
+                {mesh.Vertices, 0, mesh.VertexCount * sizeof(Vertex)},
+                {inoutAtlas.Instances, packet.First * sizeof(Instance), packet.Count * sizeof(Instance)}};
+            status = rhi::DrawIndexed(
+                s.Device,
+                {pipeline, bindings, slices, mesh.Indices, 0, mesh.IndexCount, mesh.VertexCount, packet.Count});
+            if (status != Status::Ready)
+            {
+                return status;
+            }
+        }
+    }
     return Status::Ready;
 }
 Status Renderer::Release(ShadowAtlas& handle) noexcept
