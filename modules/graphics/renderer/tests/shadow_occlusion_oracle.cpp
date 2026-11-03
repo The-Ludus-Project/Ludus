@@ -104,8 +104,10 @@ OcclusionOracleStatus TryComputeVisibleProjectedSolidAngle(const OccludedPolygon
                                                            VisibleProjectedSolidAngle& outSolidAngle)
 {
     const OcclusionPolygon& emitter = light.Emitter;
+    // Heights from the emitter's plane enter only as ratios and signs, so any finite nonzero emitting normal works.
     if (emitter.VertexCount < 3 || math::IsFinite(receiverWorld) == false || math::IsFinite(normalWorld) == false ||
-        math::LengthSquared(normalWorld) <= 0 || math::LengthSquared(ComputeAreaVector(emitter)) <= 0)
+        math::LengthSquared(normalWorld) <= 0 || math::IsFinite(light.EmittingNormalWorld) == false ||
+        math::LengthSquared(light.EmittingNormalWorld) <= 0 || math::LengthSquared(ComputeAreaVector(emitter)) <= 0)
     {
         return OcclusionOracleStatus::InvalidInput;
     }

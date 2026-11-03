@@ -7,6 +7,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <limits>
+
 // The exact visible-emitter oracle of the analytic shadow-ray test (render_graph_ray_tests.cpp) against independent
 // evidence: FoundationMath's projected solid angle of the unoccluded emitter, and a midpoint quadrature of the
 // visible irradiance over the emitter's area whose visibility tests every quadrature point's segment against every
@@ -201,4 +203,11 @@ TEST_CASE("The occlusion oracle reports umbra, the emitter's back side and unsup
     // The receiver's horizon would cut the emitter.
     CHECK(testing::TryComputeVisibleProjectedSolidAngle(light, {0, 0, 0}, WALL_NORMAL_WORLD, solidAngle) ==
           testing::OcclusionOracleStatus::BelowHorizon);
+    // A zero or nonfinite emitting normal defines no emitting side.
+    light.EmittingNormalWorld = {};
+    CHECK(testing::TryComputeVisibleProjectedSolidAngle(light, receiverWorld, WALL_NORMAL_WORLD, solidAngle) ==
+          testing::OcclusionOracleStatus::InvalidInput);
+    light.EmittingNormalWorld = {0, std::numeric_limits<float64>::quiet_NaN(), 0};
+    CHECK(testing::TryComputeVisibleProjectedSolidAngle(light, receiverWorld, WALL_NORMAL_WORLD, solidAngle) ==
+          testing::OcclusionOracleStatus::InvalidInput);
 }

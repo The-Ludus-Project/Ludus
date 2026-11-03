@@ -35,7 +35,7 @@ struct OcclusionPolygon final
 struct OccludedPolygonLight final
 {
     OcclusionPolygon Emitter;
-    /// Unit normal of the emitter's plane on its emitting side.
+    /// Normal of the emitter's plane on its emitting side; finite and nonzero, of any length.
     foundation::math::Vector3d EmittingNormalWorld{0, 0, 1};
     /// Pairwise disjoint convex polygons in one plane, which must not cross the emitter's plane. Borrowed.
     foundation::BorrowedView<const OcclusionPolygon> Occluders;
