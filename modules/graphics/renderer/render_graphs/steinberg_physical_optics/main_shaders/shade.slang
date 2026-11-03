@@ -207,8 +207,8 @@ float2 ConvertReflectanceToIndex(float reflectance)
 /// model, or the metallic-roughness model with Metallic of at least one half.
 bool IsGratingMaterial(MaterialSample material, float alpha)
 {
-    bool isMetal = material.Model == LUDUS_MATERIAL_MODEL_CONDUCTOR ||
-                   (material.Model == LUDUS_MATERIAL_MODEL_METALLIC_ROUGHNESS && material.Metallic >= 0.5);
+    bool isMetal = material.Model == MaterialModel::Conductor ||
+                   (material.Model == MaterialModel::MetallicRoughness && material.Metallic >= 0.5);
     return isMetal == true && alpha <= PO_GRATING_ROUGHNESS_MAXIMUM * PO_GRATING_ROUGHNESS_MAXIMUM;
 }
 
@@ -229,17 +229,17 @@ OpticalMaterial MakeOpticalMaterial(MaterialSample material)
     result.DiffuseAlbedoRgb = material.BaseColor;
     result.DielectricEta = PO_DIELECTRIC_ETA;
     result.HasDielectricInterface = true;
-    if (material.Model == LUDUS_MATERIAL_MODEL_CONDUCTOR)
+    if (material.Model == MaterialModel::Conductor)
     {
         result.ConductorWeight = 1;
         result.ConductorEtaRgb = material.Eta;
         result.ConductorExtinctionRgb = material.K;
     }
-    else if (material.Model == LUDUS_MATERIAL_MODEL_DIFFUSE)
+    else if (material.Model == MaterialModel::Diffuse)
     {
         result.HasDielectricInterface = false;
     }
-    else if (material.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE)
+    else if (material.Model == MaterialModel::CoatedDiffuse)
     {
         if (material.CoatingEta > 1)
             result.DielectricEta = material.CoatingEta;
@@ -969,7 +969,7 @@ bool TryMakeConnection(SceneContext scene,
                                   EvaluateLobeDensity(vertex, light.DirectionWorld, samplingWavelength, settings));
     outEndpoint.Weight = weight;
     // Skip the shadow ray when the connection cannot contribute; an occluded or failed query adds nothing.
-    return weight > 0 && TestVisibility(scene, queries, receiver, light) == SCENE_QUERY_MISS;
+    return weight > 0 && TestVisibility(scene, queries, receiver, light) == SceneQuery::Miss;
 }
 
 /// The camera path from the recorded hit: emission seen directly, then for every vertex a connection and a
@@ -1066,16 +1066,17 @@ float3 TracePathBody(SceneContext scene, RayLaunch launch, bool isWave, inout Ra
                                                             : dot(incidentWorld, vertex.Frame.NormalWorld) /
                                                                   (vertex.LobeProbability * lobeDensity);
                 SetPathVertex(path, index, stored);
-                uint status = TraceClosest(scene,
-                                           queries,
-                                           SpawnSurfaceRay(hit, incidentWorld, SHADE_MAXIMUM_TRACE_DISTANCE_WORLD),
-                                           next);
-                if (status != SCENE_QUERY_FAILURE)
+                SceneQuery status =
+                    TraceClosest(scene,
+                                 queries,
+                                 SpawnSurfaceRay(hit, incidentWorld, SHADE_MAXIMUM_TRACE_DISTANCE_WORLD),
+                                 next);
+                if (status != SceneQuery::Failure)
                 {
                     continuation.PropagationWorld = -incidentWorld;
                     continuation.Weight = stored.ContinuationWeight;
                     float lightDensity = 0;
-                    if (status == SCENE_QUERY_MISS)
+                    if (status == SceneQuery::Miss)
                     {
                         continuation.Kind = ENDPOINT_ENVIRONMENT;
                         continuation.RadianceRgb = EvaluateEnvironment(scene, incidentWorld);
@@ -1091,7 +1092,7 @@ float3 TracePathBody(SceneContext scene, RayLaunch launch, bool isWave, inout Ra
                     if (isDelta == false)
                         continuation.Weight *= ComputePowerHeuristic(lobeDensity, lightDensity);
                     hasContinuation = any(continuation.RadianceRgb > 0);
-                    canContinue = status == SCENE_QUERY_SURFACE && index + 1 < vertexLimit;
+                    canContinue = status == SceneQuery::Surface && index + 1 < vertexLimit;
                 }
             }
         }
@@ -1178,7 +1179,7 @@ float3 MeasureCoherence(SceneContext scene, RayLaunch launch, inout RayQueryCont
     LightSample light = SampleIncidentLight(scene, selected, shadingPoint.Hit, shapeSample);
     if (light.HasSample == false || any(light.IncidentCoefficient > 0) == false ||
         dot(shadingPoint.ShadingNormalWorld, light.DirectionWorld) <= 0 ||
-        TestVisibility(scene, queries, shadingPoint.Hit, light) != SCENE_QUERY_MISS)
+        TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
         return float3(0);
     LightEndpoint endpoint = (LightEndpoint)0;
     endpoint.RadianceRgb = float3(1);

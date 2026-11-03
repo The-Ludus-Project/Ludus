@@ -29,13 +29,13 @@ float3 ComputeConductorFresnelRgb(float cosine, float3 eta, float3 extinction)
                   ComputeConductorFresnel(cosine, eta.y, extinction.y),
                   ComputeConductorFresnel(cosine, eta.z, extinction.z));
 }
-float ComputeMaterialSpecularProbability(uint model, float metallic)
+float ComputeMaterialSpecularProbability(MaterialModel model, float metallic)
 {
-    if (model == LUDUS_MATERIAL_MODEL_DIFFUSE)
+    if (model == MaterialModel::Diffuse)
         return 0;
-    return model == LUDUS_MATERIAL_MODEL_CONDUCTOR || metallic == 1 ? 1 : 0.5;
+    return model == MaterialModel::Conductor || metallic == 1 ? 1 : 0.5;
 }
-float ComputeMaterialAlpha(uint model, float roughness, float conductorAlpha)
+float ComputeMaterialAlpha(MaterialModel model, float roughness, float conductorAlpha)
 {
-    return model == LUDUS_MATERIAL_MODEL_CONDUCTOR ? conductorAlpha : roughness * roughness;
+    return model == MaterialModel::Conductor ? conductorAlpha : roughness * roughness;
 }

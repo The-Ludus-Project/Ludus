@@ -126,7 +126,7 @@ bool TestProductionVisibility(SceneContext scene,
     sample.DistanceWorld = distanceWorld;
     sample.HasFiniteEndpoint = true;
     sample.HasSample = true;
-    return TestVisibility(scene, queries, receiver, sample) == SCENE_QUERY_MISS;
+    return TestVisibility(scene, queries, receiver, sample) == SceneQuery::Miss;
 }
 
 float3 EvaluateProductionShading(SceneContext scene, SurfaceHit receiver, ProductionReservoir reservoir)

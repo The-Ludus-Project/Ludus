@@ -8,6 +8,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
 #include <ludus/graphics/renderer/environment.hpp>
+#include <ludus/graphics/renderer/scene_shader_layout.h>
 
 #include <new>
 
@@ -409,7 +410,8 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                 materialIndex = DEFAULT_SCENE_MATERIAL;
             }
             SceneShaderMaterial material;
-            uint32 materialKind = materialIndex == DEFAULT_SCENE_MATERIAL ? 1U : 0U;
+            uint32 materialKind = materialIndex == DEFAULT_SCENE_MATERIAL ? LUDUS_SCENE_MATERIAL_KIND_DEFAULT
+                                                                          : LUDUS_SCENE_MATERIAL_KIND_ASSIGNED;
             if (materialIndex != DEFAULT_SCENE_MATERIAL)
             {
                 if (materialIndex >= materials.GetSize() || materials[materialIndex].HasError == true)
@@ -425,7 +427,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                         return Status::InvalidDescription;
                     }
                     material.BaseColor = {1, 0, 1};
-                    materialKind = 2;
+                    materialKind = LUDUS_SCENE_MATERIAL_KIND_ERROR;
                 }
                 else
                 {
@@ -435,7 +437,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
             if (input.HasMaterialInterface == false && hasMaterials == true)
             {
                 material.BaseColor = {item.Material.Color.X, item.Material.Color.Y, item.Material.Color.Z};
-                materialKind = 0;
+                materialKind = LUDUS_SCENE_MATERIAL_KIND_ASSIGNED;
             }
             ReferenceSurfaceData& surface = candidate->FlatSurfaces[surfaceIndex];
             if (math::IsFinite(item.SurfaceTint) == false || item.SurfaceTint.X < 0 || item.SurfaceTint.Y < 0 ||
@@ -445,7 +447,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                 return Status::InvalidDescription;
             }
             surface.Bsdf = {
-                materialKind == 2
+                materialKind == LUDUS_SCENE_MATERIAL_KIND_ERROR
                     ? material.BaseColor
                     : math::Hadamard(material.BaseColor,
                                      math::Vector3{item.SurfaceTint.X, item.SurfaceTint.Y, item.SurfaceTint.Z}),
@@ -608,8 +610,8 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
             instance.TriangleCount = candidate->Scene.Triangles.GetSize() - instance.FirstTriangle;
             if (instance.TriangleCount != 0)
             {
-                diagnostics.DefaultBindings += materialKind == 1 ? 1U : 0U;
-                diagnostics.ErrorBindings += materialKind == 2 ? 1U : 0U;
+                diagnostics.DefaultBindings += materialKind == LUDUS_SCENE_MATERIAL_KIND_DEFAULT ? 1U : 0U;
+                diagnostics.ErrorBindings += materialKind == LUDUS_SCENE_MATERIAL_KIND_ERROR ? 1U : 0U;
             }
             if (isEmitter == true && totalArea > 0)
             {

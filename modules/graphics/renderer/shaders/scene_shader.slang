@@ -15,14 +15,41 @@
 #include "scene_shader_layout.h"
 static const uint SCENE_INTERFACE_VERSION = LUDUS_SCENE_SHADER_INTERFACE_VERSION;
 static const uint SCENE_INVALID_INDEX = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
-static const uint SCENE_QUERY_MISS = 0;
-static const uint SCENE_QUERY_SURFACE = 1;
-static const uint SCENE_QUERY_FAILURE = 2;
-static const uint SCENE_LIGHT_DIRECTIONAL = 0;
-static const uint SCENE_LIGHT_POINT = 1;
-static const uint SCENE_LIGHT_SPOT = 2;
-static const uint SCENE_LIGHT_MESH = 3;
-static const uint SCENE_LIGHT_ENVIRONMENT = 4;
+/// Outcome of TraceClosest, TestVisibility, FindVisibleLineIntervals and TraceAndShade. Scoped Slang enums
+/// keep a plain number or another enumeration from standing in for a result; values are 32-bit and stable.
+enum SceneQuery : uint
+{
+    Miss = 0,    ///< Nothing was hit, or a visibility test found no occluder.
+    Surface = 1, ///< A surface was hit, or an occluder removed visibility.
+    Failure = 2, ///< queries.HasFailed is latched; outputs are zero and the sample shows the error colour.
+};
+/// LightInfo.Kind. Directional, Point and Spot match the LUSCN light kinds; Mesh and Environment are
+/// shader-interface sources without an authored light record.
+enum SceneLightKind : uint
+{
+    Directional = 0, ///< Analytic directional light along DirectionWorld.
+    Point = 1,       ///< Analytic point light at PositionWorld.
+    Spot = 2,        ///< Analytic spot light with InnerCos/OuterCos cone falloff.
+    Mesh = 3,        ///< Emissive triangles; EmitterIndex names the emitter.
+    Environment = 4, ///< The aggregate scene environment source.
+};
+/// SurfaceHit.MaterialKind: how the hit's material was resolved.
+enum SceneMaterialKind : uint
+{
+    Assigned = LUDUS_SCENE_MATERIAL_KIND_ASSIGNED, ///< The triangle's own material slot.
+    Default = LUDUS_SCENE_MATERIAL_KIND_DEFAULT,   ///< No material was assigned; the default material stands in.
+    Error = LUDUS_SCENE_MATERIAL_KIND_ERROR,       ///< The assignment was invalid; the error material stands in.
+};
+/// Interface v1 spellings of SceneQuery and SceneLightKind, retained for existing graphs. New code names
+/// the enumerators (SceneQuery::Surface) instead.
+static const SceneQuery SCENE_QUERY_MISS = SceneQuery::Miss;
+static const SceneQuery SCENE_QUERY_SURFACE = SceneQuery::Surface;
+static const SceneQuery SCENE_QUERY_FAILURE = SceneQuery::Failure;
+static const SceneLightKind SCENE_LIGHT_DIRECTIONAL = SceneLightKind::Directional;
+static const SceneLightKind SCENE_LIGHT_POINT = SceneLightKind::Point;
+static const SceneLightKind SCENE_LIGHT_SPOT = SceneLightKind::Spot;
+static const SceneLightKind SCENE_LIGHT_MESH = SceneLightKind::Mesh;
+static const SceneLightKind SCENE_LIGHT_ENVIRONMENT = SceneLightKind::Environment;
 static const float SCENE_UNIT_TOLERANCE = 0.00001;
 /// Maximum visible intervals in one FindVisibleLineIntervals result (scene_shader_layout.h).
 static const uint SCENE_LINE_INTERVAL_CAPACITY = LUDUS_SCENE_LINE_INTERVAL_CAPACITY;
@@ -107,7 +134,7 @@ struct SurfaceHit
     uint MaterialIndex;
     uint SourceMaterialIndex;
     uint MaterialSlot;
-    uint MaterialKind; // assigned=0, default=1, error=2
+    SceneMaterialKind MaterialKind;
     uint EmitterIndex;
     uint2 SourceId;
     float2 Barycentric;
@@ -117,7 +144,7 @@ struct SurfaceHit
 };
 struct MaterialSample
 {
-    uint Model;
+    MaterialModel Model;
     float3 Eta;
     float3 K;
     float AlphaU;
@@ -141,7 +168,7 @@ struct LightInfo
 {
     /// GetEmitter/GetEmitterTriangle index for mesh sources; SCENE_INVALID_INDEX otherwise.
     uint EmitterIndex;
-    uint Kind;
+    SceneLightKind Kind;
     uint Index;
     uint MaterialSlot;
     uint2 SourceId;
@@ -251,7 +278,7 @@ LightInfo GetLightInfo(SceneContext scene, uint lightIndex)
         float4 intensityAndKind = SceneValue(offset);
         float4 positionAndRangeWorld = SceneValue(offset + 1);
         float4 directionAndConeWorld = SceneValue(offset + 2);
-        result.Kind = uint(intensityAndKind.w);
+        result.Kind = SceneLightKind(uint(intensityAndKind.w));
         result.Intensity = intensityAndKind.xyz;
         result.PositionWorld = positionAndRangeWorld.xyz;
         result.RangeWorld = positionAndRangeWorld.w;
@@ -262,7 +289,7 @@ LightInfo GetLightInfo(SceneContext scene, uint lightIndex)
     }
     else if (lightIndex - Counts.w < GetEmitterCount(scene))
     {
-        result.Kind = SCENE_LIGHT_MESH;
+        result.Kind = SceneLightKind::Mesh;
         result.EmitterIndex = lightIndex - Counts.w;
         float4 emitter = GetEmitter(scene, lightIndex - Counts.w);
         uint triangle = asuint(SceneValue(Offsets.z + uint(emitter.x)).x);
@@ -271,7 +298,7 @@ LightInfo GetLightInfo(SceneContext scene, uint lightIndex)
     }
     else
     {
-        result.Kind = SCENE_LIGHT_ENVIRONMENT;
+        result.Kind = SceneLightKind::Environment;
         result.Intensity = Environment.xyz;
     }
     return result;
@@ -336,7 +363,7 @@ MaterialSample GetMaterial(SceneContext scene, uint materialIndex)
     uint base = Offsets.w + materialIndex * SurfaceLayout.x;
     float4 etaAndModel = SceneValue(base + LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD);
     float4 extinctionAndAlpha = SceneValue(base + LUDUS_GPU_PREVIEW_SCATTERING_K_WORD);
-    result.Model = asuint(etaAndModel.w);
+    result.Model = MaterialModel(asuint(etaAndModel.w));
     result.Eta = etaAndModel.xyz;
     result.K = extinctionAndAlpha.xyz;
     result.AlphaU = extinctionAndAlpha.w;
@@ -363,7 +390,7 @@ MaterialSample EvaluateMaterial(SceneContext scene, SurfaceHit hit)
         result.IsValid = false;
         return result;
     }
-    if (hit.MaterialKind == 2)
+    if (hit.MaterialKind == SceneMaterialKind::Error)
     {
         result.ShadingNormalWorld = hit.GeometricNormalWorld;
         return result;
@@ -438,35 +465,35 @@ bool IsSceneRayValid(Ray ray)
            ray.MaxDistanceWorld >= ray.MinDistanceWorld &&
            abs(dot(ray.DirectionWorld, ray.DirectionWorld) - 1) <= SCENE_UNIT_TOLERANCE;
 }
-uint TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray ray, out SurfaceHit outHit)
+SceneQuery TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray ray, out SurfaceHit outHit)
 {
     outHit = (SurfaceHit)0;
     if (queries.HasFailed == true)
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     if (scene.Version != SCENE_INTERFACE_VERSION)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INTERFACE_VERSION);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     if (queries.SurfaceQueries >= queries.MaximumSurfaceQueries)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SURFACE_BUDGET);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     if (IsSceneRayValid(ray) == false)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RAY);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     queries.SurfaceQueries += 1;
     Hit hit = Trace(ray.OriginWorld, ray.DirectionWorld, ray.MinDistanceWorld, ray.MaxDistanceWorld);
     if (hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_TRAVERSAL);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     if (hit.Triangle == SCENE_INVALID_INDEX)
-        return SCENE_QUERY_MISS;
+        return SceneQuery::Miss;
     uint base = hit.Triangle * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS;
     outHit.IncomingRay = ray;
     outHit.TriangleIndex = hit.Triangle;
@@ -475,7 +502,7 @@ uint TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray ray, ou
     outHit.MaterialIndex = asuint(SceneValue(base).w);
     outHit.MaterialSlot = asuint(SceneValue(base + 8).w);
     outHit.SourceMaterialIndex = asuint(SceneValue(base + 4).w);
-    outHit.MaterialKind = asuint(SceneValue(base + 5).w);
+    outHit.MaterialKind = SceneMaterialKind(asuint(SceneValue(base + 5).w));
     outHit.SourceId = asuint(SceneValue(base + 7).zw);
     outHit.EmitterIndex = asuint(SceneValue(base + 9).w);
     outHit.PositionWorld = PositionWorld(hit.Triangle, hit.Barycentric);
@@ -490,7 +517,7 @@ uint TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray ray, ou
     outHit.TexcoordUv = TexcoordUv(hit.Triangle, hit.Barycentric);
     outHit.IsFrontFace = dot(outHit.GeometricNormalWorld, -ray.DirectionWorld) > 0;
     outHit.IsValid = true;
-    return SCENE_QUERY_SURFACE;
+    return SceneQuery::Surface;
 }
 Ray SpawnSurfaceRay(SurfaceHit hit, float3 directionWorld, float maximumDistanceWorld)
 {
@@ -628,7 +655,7 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
     result.SelectionPmf = EvaluateLightSelectionPmf(scene, selected.LightIndex);
     LightInfo light = GetLightInfo(scene, selected.LightIndex);
     result.ConditionalPdf = 1;
-    if (light.Kind == SCENE_LIGHT_MESH)
+    if (light.Kind == SceneLightKind::Mesh)
     {
         float4 emitter = GetEmitter(scene, selected.LightIndex - Counts.w);
         float targetArea = shapeSample.x * emitter.z;
@@ -662,7 +689,7 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
             result.IncidentCoefficient = 0;
         result.HasFiniteEndpoint = true;
     }
-    else if (light.Kind == SCENE_LIGHT_ENVIRONMENT)
+    else if (light.Kind == SceneLightKind::Environment)
     {
         float cosine = 1 - 2 * shapeSample.y;
         float radius = sqrt(max(0, 1 - cosine * cosine));
@@ -676,7 +703,7 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
         result.IsDiscrete = true;
         result.DirectionWorld = -light.DirectionWorld;
         result.IncidentCoefficient = light.Intensity;
-        if (light.Kind != SCENE_LIGHT_DIRECTIONAL)
+        if (light.Kind != SceneLightKind::Directional)
         {
             result.PositionWorld = light.PositionWorld;
             float3 offsetWorld = light.PositionWorld - receiver.PositionWorld;
@@ -689,7 +716,7 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
             float ratio = result.DistanceWorld / light.RangeWorld;
             float window = max(1 - ratio * ratio * ratio * ratio, 0);
             result.IncidentCoefficient *= window * window / max(distanceSquared, 0.0001);
-            if (light.Kind == SCENE_LIGHT_SPOT)
+            if (light.Kind == SceneLightKind::Spot)
             {
                 float cone = saturate((dot(-result.DirectionWorld, light.DirectionWorld) - light.OuterCos) /
                                       (light.InnerCos - light.OuterCos));
@@ -700,19 +727,19 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
     result.HasSample = true;
     return result;
 }
-uint TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit receiver, LightSample light)
+SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit receiver, LightSample light)
 {
     if (queries.HasFailed == true)
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     if (light.HasSample == false)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     if (queries.VisibilityQueries >= queries.MaximumVisibilityQueries)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     queries.VisibilityQueries += 1;
     Ray shadow = SpawnSurfaceRay(receiver, light.DirectionWorld, 0);
@@ -741,15 +768,15 @@ uint TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHi
     if (IsSceneRayValid(shadow) == false)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RAY);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     Hit hit = Trace(shadow.OriginWorld, shadow.DirectionWorld, 0, shadow.MaxDistanceWorld, true);
     if (hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_TRAVERSAL);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
-    return hit.Triangle == SCENE_INVALID_INDEX ? SCENE_QUERY_MISS : SCENE_QUERY_SURFACE;
+    return hit.Triangle == SCENE_INVALID_INDEX ? SceneQuery::Miss : SceneQuery::Surface;
 }
 /// A world-space segment whose visibility from a receiver is queried, usually a chord of an emitter
 /// triangle. TriangleIndex is the packed index of the triangle that carries the segment, which is
@@ -793,36 +820,36 @@ void ClearLineVisibility(out LineVisibility outVisibility)
 /// walks the packed BVH in software, whatever its traversal strategy, or scans every packed triangle
 /// when scene_interface.line_traversal is "TriangleLoop"; both give the same intervals. The query
 /// draws no random dimensions. HasMaskedOccluders is false when no length is visible.
-/// Returns SCENE_QUERY_MISS when no opaque occluder removes any length, SCENE_QUERY_SURFACE when one
-/// does (a fully occluded segment has zero intervals), and SCENE_QUERY_FAILURE for an exhausted line
+/// Returns SceneQuery::Miss when no opaque occluder removes any length, SceneQuery::Surface when one
+/// does (a fully occluded segment has zero intervals), and SceneQuery::Failure for an exhausted line
 /// budget, an earlier failure, an invalid receiver or segment triangle, nonfinite positions, a segment
 /// shorter than SCENE_UNIT_TOLERANCE, a receiver in the segment's line, a nonfinite interval, more
 /// than SCENE_LINE_INTERVAL_CAPACITY - 1 running occluded intervals or an exhausted BVH stack.
 /// Failure latches queries.HasFailed and zeroes outVisibility.
-uint FindVisibleLineIntervals(SceneContext scene,
-                              inout RayQueryContext queries,
-                              SurfaceHit receiver,
-                              LineSegment segment,
-                              out LineVisibility outVisibility)
+SceneQuery FindVisibleLineIntervals(SceneContext scene,
+                                    inout RayQueryContext queries,
+                                    SurfaceHit receiver,
+                                    LineSegment segment,
+                                    out LineVisibility outVisibility)
 {
     ClearLineVisibility(outVisibility);
     if (queries.HasFailed == true)
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     if (scene.Version != SCENE_INTERFACE_VERSION)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INTERFACE_VERSION);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     if (queries.LineQueries >= queries.MaximumLineQueries)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LINE_BUDGET);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     if (receiver.IsValid == false ||
         (segment.TriangleIndex != SCENE_INVALID_INDEX && segment.TriangleIndex >= Counts.x))
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     queries.LineQueries += 1;
     float3 segmentWorld = segment.EndWorld - segment.StartWorld;
@@ -832,7 +859,7 @@ uint FindVisibleLineIntervals(SceneContext scene,
         segmentLengthWorld < SCENE_UNIT_TOLERANCE)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     float3 middleWorld = (segment.StartWorld + segment.EndWorld) * 0.5;
     float3 apexWorld = SpawnSurfaceRay(receiver, NormalizeOrZero(middleWorld - receiver.PositionWorld), 0).OriginWorld;
@@ -856,7 +883,7 @@ uint FindVisibleLineIntervals(SceneContext scene,
         normalLength <= TRIANGLE_PARALLEL_COSINE_TOLERANCE * length(edgeAWorld) * length(edgeBWorld))
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     uint receiverTriangle = receiver.TriangleIndex < Counts.x ? receiver.TriangleIndex : SCENE_INVALID_INDEX;
     bool isOccluded;
@@ -871,14 +898,14 @@ uint FindVisibleLineIntervals(SceneContext scene,
         ClearLineVisibility(outVisibility);
         // The traversal's interval set or stack could not hold the segment's occluders.
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_TRAVERSAL);
-        return SCENE_QUERY_FAILURE;
+        return SceneQuery::Failure;
     }
     float visibleParameter = 0;
     for (uint i = 0; i < outVisibility.IntervalCount; ++i)
         visibleParameter += outVisibility.Intervals[i].y - outVisibility.Intervals[i].x;
     // Parameters address the caller's unoffset segment, so its length scales them.
     outVisibility.VisibleLengthWorld = visibleParameter * segmentLengthWorld;
-    return isOccluded == true ? SCENE_QUERY_SURFACE : SCENE_QUERY_MISS;
+    return isOccluded == true ? SceneQuery::Surface : SceneQuery::Miss;
 }
 // Raw geometry access for authors implementing a different light proposal.
 struct TriangleData
@@ -1131,7 +1158,7 @@ void EvaluateStandardBsdf(MaterialSample material,
                           out float3 outValue,
                           out float outPdf)
 {
-    if (material.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE)
+    if (material.Model == MaterialModel::CoatedDiffuse)
     {
         CoatingEvaluation evaluated = EvaluateCoatedDiffuse(MakeCoatingMaterial(material),
                                                             material.ShadingNormalWorld,
@@ -1155,7 +1182,7 @@ StandardBsdfTransportSample SampleStandardBsdfTransport(MaterialSample material,
     StandardBsdfTransportSample result = (StandardBsdfTransportSample)0;
     if (IsDielectricMaterial(material) == true)
         return SampleDielectricTransport(material, viewDirectionWorld, samples);
-    if (material.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE)
+    if (material.Model == MaterialModel::CoatedDiffuse)
     {
         CoatingSample sampled = SampleCoatedDiffuse(MakeCoatingMaterial(material),
                                                     material.ShadingNormalWorld,
@@ -1241,15 +1268,15 @@ SpecularChain FollowSpecularChain(SceneContext scene,
             return chain;
         chain.Throughput *= sampled.Weight;
         SurfaceHit next;
-        uint status =
+        SceneQuery status =
             TraceClosest(scene,
                          queries,
                          SpawnSurfaceRay(chain.Hit, sampled.DirectionWorld, launch.CameraRay.MaxDistanceWorld),
                          next);
         chain.Events += 1;
-        if (status == SCENE_QUERY_MISS)
+        if (status == SceneQuery::Miss)
             chain.Radiance += chain.Throughput * EvaluateEnvironment(scene, sampled.DirectionWorld);
-        if (status != SCENE_QUERY_SURFACE)
+        if (status != SceneQuery::Surface)
             return chain;
         chain.Hit = next;
         chain.ViewDirectionWorld = -sampled.DirectionWorld;
@@ -1272,7 +1299,7 @@ SurfaceHit GetSurfaceHit(SceneContext scene, uint triangleIndex, float2 barycent
     result.MaterialIndex = asuint(SceneValue(base).w);
     result.MaterialSlot = asuint(SceneValue(base + 8).w);
     result.SourceMaterialIndex = asuint(SceneValue(base + 4).w);
-    result.MaterialKind = asuint(SceneValue(base + 5).w);
+    result.MaterialKind = SceneMaterialKind(asuint(SceneValue(base + 5).w));
     result.SourceId = asuint(SceneValue(base + 7).zw);
     result.EmitterIndex = asuint(SceneValue(base + 9).w);
     result.PositionWorld = PositionWorld(triangleIndex, barycentric);

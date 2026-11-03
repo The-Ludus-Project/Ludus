@@ -30,7 +30,7 @@ float EvaluateOpticalVisibility(SceneContext scene,
                                 inout RayQueryContext queries)
 {
     if (light.HasFiniteEndpoint == false)
-        return TestVisibility(scene, queries, receiver, light) == SCENE_QUERY_MISS ? 1 : 0;
+        return TestVisibility(scene, queries, receiver, light) == SceneQuery::Miss ? 1 : 0;
     if (queries.VisibilityQueries >= queries.MaximumVisibilityQueries)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET);
@@ -124,7 +124,7 @@ float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQu
                                      value,
                                      pdf);
                 float transmission = mode == 1
-                                         ? (TestVisibility(scene, queries, hit, light) == SCENE_QUERY_MISS ? 1 : 0)
+                                         ? (TestVisibility(scene, queries, hit, light) == SceneQuery::Miss ? 1 : 0)
                                          : EvaluateOpticalVisibility(scene, hit, light, queries);
                 if (mode == 2)
                     return float3(transmission);
@@ -144,8 +144,8 @@ float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQu
             break;
         throughput *= continuation.Weight;
         ray = SpawnSurfaceRay(hit, continuation.DirectionWorld, WAVE_MAXIMUM_TRACE_DISTANCE_WORLD);
-        uint query = TraceClosest(scene, queries, ray, hit);
-        if (query != SCENE_QUERY_SURFACE)
+        SceneQuery query = TraceClosest(scene, queries, ray, hit);
+        if (query != SceneQuery::Surface)
             break;
     }
     if (all(isfinite(radiance)) == false || any(radiance < 0) == true)

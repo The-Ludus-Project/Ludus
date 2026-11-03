@@ -588,18 +588,18 @@ def check_interface(program, result, build):
 # The visibility counterpart of TraceAndShade: the raster first hit replaces the camera-ray query and
 # runs the same per-pass closest-hit or miss callback. The callback calls keep TraceAndShade's
 # spelling so persistent_wrapper's pass dispatch rewrites both functions.
-VISIBILITY_SHADE_DECLARATION = ('uint LoadVisibilityAndShade(SceneContext scene, inout RayQueryContext queries, '
+VISIBILITY_SHADE_DECLARATION = ('SceneQuery LoadVisibilityAndShade(SceneContext scene, inout RayQueryContext queries, '
                                 'RayLaunch launch, inout ScenePayload payload);\n')
-VISIBILITY_SHADE = '''uint LoadVisibilityAndShade(SceneContext scene, inout RayQueryContext queries, RayLaunch launch, inout ScenePayload payload)
+VISIBILITY_SHADE = '''SceneQuery LoadVisibilityAndShade(SceneContext scene, inout RayQueryContext queries, RayLaunch launch, inout ScenePayload payload)
 {
     SurfaceHit hit;
     Ray ray = launch.CameraRay;
-    uint status = LoadVisibilitySurface(scene, launch, queries, hit);
-    if (status == SCENE_QUERY_SURFACE)
+    SceneQuery status = LoadVisibilitySurface(scene, launch, queries, hit);
+    if (status == SceneQuery::Surface)
         RAY_CLOSEST_HIT(scene, hit, queries, payload);
-    else if (status == SCENE_QUERY_MISS)
+    else if (status == SceneQuery::Miss)
         RAY_MISS(scene, ray, queries, payload);
-    return queries.HasFailed ? SCENE_QUERY_FAILURE : status;
+    return queries.HasFailed ? SceneQuery::Failure : status;
 }
 '''
 
@@ -637,20 +637,20 @@ def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source='
     if interface.get('visibility_buffer', False):
         # Declared before the split point so persistent wrappers keep it ahead of namespaced sources.
         wrapper += VISIBILITY_SHADE_DECLARATION
-    wrapper += 'uint TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload);\n'
+    wrapper += 'SceneQuery TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload);\n'
     for source in sorted({program['source'] for program in selected.values()} | set(compatibility['callbacks'])):
         wrapper += '#include "' + source + '"\n'
     callbacks, adapters = adapt_legacy_callbacks(selected)
     wrapper += adapters
-    wrapper += '''uint TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload)
+    wrapper += '''SceneQuery TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload)
 {
     SurfaceHit hit;
-    uint status = TraceClosest(scene, queries, ray, hit);
-    if (status == SCENE_QUERY_SURFACE)
+    SceneQuery status = TraceClosest(scene, queries, ray, hit);
+    if (status == SceneQuery::Surface)
         RAY_CLOSEST_HIT(scene, hit, queries, payload);
-    else if (status == SCENE_QUERY_MISS)
+    else if (status == SceneQuery::Miss)
         RAY_MISS(scene, ray, queries, payload);
-    return queries.HasFailed ? SCENE_QUERY_FAILURE : status;
+    return queries.HasFailed ? SceneQuery::Failure : status;
 }
 float3 EvaluateGraphRay(uint pixel)
 {
@@ -798,7 +798,7 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
     selected = {stage: dict(program, function=f'GraphSource{sources.index(program["source"])}::' + program['function'])
                 for stage, program in select_callbacks(programs, template).items()}
     wrapper = scene_wrapper(selected, interface, snapshot, build, recipe, storage_source, compatibility=compatibility)
-    prefix, body = wrapper.split('uint TraceAndShade(', 1)
+    prefix, body = wrapper.split('SceneQuery TraceAndShade(', 1)
     first_callbacks, first_adapters = adapt_legacy_callbacks(selected)
     body = body.replace(first_adapters, '', 1) if first_adapters else body
     if any(programs[identity]['output'] in ('Ray', 'Color') for variant in variants for identity in callback_programs(variant)):
@@ -837,7 +837,7 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
                            'originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);\n')
         prefix += ('default: Hit hit = (Hit)0; hit.Triangle = LUDUS_GPU_PREVIEW_FAILED_TRIANGLE; '
                    'return hit; }\n}\n')
-    prefix += 'uint TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload);\n'
+    prefix += 'SceneQuery TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload);\n'
     # Shared type/helper includes are global and captured before entry-source namespaces.
     # Includes are compiler-resolved from the same immutable source snapshot.
     dependencies = {path for source in sources for path in snapshot.shader_closure(source)} - set(sources)
@@ -852,7 +852,7 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
         callbacks, adapters = adapt_legacy_callbacks(variant_selected, str(index))
         variant_callbacks.append(callbacks)
         prefix += adapters
-    body = 'uint TraceAndShade(' + body
+    body = 'SceneQuery TraceAndShade(' + body
     # scene_wrapper's include rows are replaced by the namespaced union above.
     body = re.sub(r'^#include "[^"\n]+"\n', '', body, flags=re.M)
     def dispatch(stage, arguments, returns=False):

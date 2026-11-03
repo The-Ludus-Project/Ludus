@@ -14,10 +14,10 @@ float3 TracePrimaryHit(SceneContext scene, RayLaunch launch, inout RayQueryConte
                                 SampleSceneRandom(launch, PRIMARY_RANDOM_DIMENSION_FIRST + 1));
     record.SampleIndex = launch.SampleIndex;
     SurfaceHit hit;
-    uint status = TraceClosest(scene, queries, MakeCameraRay(launch, record.JitterPixel), hit);
+    SceneQuery status = TraceClosest(scene, queries, MakeCameraRay(launch, record.JitterPixel), hit);
     // A failed query is recorded too, so every shade pass shows the error color for this sample.
-    record.HasFailed = status == SCENE_QUERY_FAILURE;
-    record.IsHit = status == SCENE_QUERY_SURFACE;
+    record.HasFailed = status == SceneQuery::Failure;
+    record.IsHit = status == SceneQuery::Surface;
     if (record.IsHit == true)
     {
         record.TriangleIndex = hit.TriangleIndex;

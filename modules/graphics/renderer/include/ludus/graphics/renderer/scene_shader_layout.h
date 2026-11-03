@@ -13,6 +13,12 @@
 // dropped, so the rule only removes visible length. PL0 dropped at most 2.1e-7 m (section 4.3).
 #define LUDUS_SCENE_LINE_INTERVAL_MERGE_TOLERANCE 0.000001
 
+// How a surface hit's material was resolved (SceneMaterialKind in scene_shader.slang): the triangle's own slot,
+// the default material for an unassigned slot, or the error material for an invalid assignment.
+#define LUDUS_SCENE_MATERIAL_KIND_ASSIGNED 0U
+#define LUDUS_SCENE_MATERIAL_KIND_DEFAULT 1U
+#define LUDUS_SCENE_MATERIAL_KIND_ERROR 2U
+
 // Why an invocation failed, recorded by FailSceneQuery with queries.HasFailed. The renderer counts the pixels
 // that latch each reason, so the editor can name the failing check; see
 // docs/development/render-graph-authoring.md, "Explain failed pixels". Reasons below

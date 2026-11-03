@@ -142,7 +142,7 @@ float3 ShadeProductionDi(SceneContext scene, RayLaunch launch, inout RayQueryCon
     float3 radiance = float3(0);
     SurfaceHit receiver;
     SpecularChain chain = (SpecularChain)0;
-    if (TraceClosest(scene, queries, launch.CameraRay, receiver) == SCENE_QUERY_SURFACE)
+    if (TraceClosest(scene, queries, launch.CameraRay, receiver) == SceneQuery::Surface)
         chain = FollowReceiverGlass(scene, launch, queries, receiver);
     if (chain.IsSurface == true)
     {

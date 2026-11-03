@@ -18,10 +18,10 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext q
     ray.DirectionWorld = DIRECTION_WORLD;
     ray.MaxDistanceWorld = MAXIMUM_DISTANCE_WORLD;
     SurfaceHit hit;
-    uint status = TraceClosest(scene, queries, ray, hit);
+    SceneQuery status = TraceClosest(scene, queries, ray, hit);
     SurfaceHit reloaded = GetSurfaceHit(scene, hit.TriangleIndex, hit.Barycentric);
-    return float3(status == SCENE_QUERY_SURFACE ? 1 : 0,
-                  status == SCENE_QUERY_SURFACE && reloaded.IsValid == true ? 1 : 0,
+    return float3(status == SceneQuery::Surface ? 1 : 0,
+                  status == SceneQuery::Surface && reloaded.IsValid == true ? 1 : 0,
                   0);
 }
 void ShadeMiss(SceneContext scene, Ray ray, inout RayQueryContext queries, inout ScenePayload payload)

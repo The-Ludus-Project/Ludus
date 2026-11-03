@@ -6,6 +6,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
 #include <ludus/graphics/renderer/environment.hpp>
+#include <ludus/graphics/renderer/scene_shader_layout.h>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -162,7 +163,7 @@ TEST_CASE("Missing materials use neutral default while broken bindings require e
     CHECK(job->FlatSurfaces[0].Bsdf.BaseColor.X == .5F);
     CHECK(job->FlatSurfaces[0].Bsdf.Roughness == 1);
     CHECK(job->FlatSurfaces[0].Emission.X == 0);
-    CHECK(job->Scene.Triangles[0].ShaderMaterialKind == 1);
+    CHECK(job->Scene.Triangles[0].ShaderMaterialKind == LUDUS_SCENE_MATERIAL_KIND_DEFAULT);
     job.Reset();
     fixture.Bindings[0] = 37;
     CHECK(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
@@ -178,7 +179,7 @@ TEST_CASE("Missing materials use neutral default while broken bindings require e
     CHECK(job->FlatSurfaces[0].Bsdf.BaseColor.Y == 0);
     CHECK(job->FlatSurfaces[0].Bsdf.BaseColor.Z == 1);
     CHECK(job->FlatSurfaces[0].Emission.X == 0);
-    CHECK(job->Scene.Triangles[0].ShaderMaterialKind == 2);
+    CHECK(job->Scene.Triangles[0].ShaderMaterialKind == LUDUS_SCENE_MATERIAL_KIND_ERROR);
     CHECK(diagnostics.ErrorBindings == 2);
     CHECK(diagnostics.ErrorMaterial == 37);
     CHECK(diagnostics.ErrorSourceId == fixture.Item.SourceId);
@@ -361,7 +362,7 @@ TEST_CASE("Unassigned higher mesh slots retain defaults and expose candidate dia
             rhi::RasterStatus::Ready);
     REQUIRE(job->Scene.Triangles.GetSize() == 2);
     CHECK(job->Scene.Triangles[1].ShaderSlot == 3);
-    CHECK(job->Scene.Triangles[1].ShaderMaterialKind == 1);
+    CHECK(job->Scene.Triangles[1].ShaderMaterialKind == LUDUS_SCENE_MATERIAL_KIND_DEFAULT);
     CHECK(diagnostics.DefaultBindings == 2);
     CHECK(diagnostics.ErrorBindings == 0);
     CHECK(job->ShaderEmitters.GetSize() == 0);

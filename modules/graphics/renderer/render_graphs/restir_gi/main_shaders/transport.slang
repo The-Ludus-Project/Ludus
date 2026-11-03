@@ -136,7 +136,7 @@ float3 SampleLightStrategy(SceneContext scene,
     float weight =
         isMisWeighted == true && light.IsDiscrete == false ? ComputePowerHeuristic(lightDensity, bsdfDensity) : 1;
     // Skip the shadow ray when the sample cannot contribute; an occluded or failed query adds nothing.
-    if (weight <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SCENE_QUERY_MISS)
+    if (weight <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
         return float3(0);
     return bsdfValue * light.IncidentCoefficient * (cosSurface * weight / lightDensity);
 }
@@ -189,19 +189,19 @@ BsdfStep SampleBsdfStrategy(SceneContext scene,
         result.Throughput = bsdfValue * (cosSurface / bsdfDensity);
     }
     SurfaceHit endpoint;
-    uint status =
+    SceneQuery status =
         TraceClosest(scene,
                      queries,
                      SpawnSurfaceRay(shadingPoint.Hit, directionWorld, TRANSPORT_MAXIMUM_TRACE_DISTANCE_WORLD),
                      endpoint);
     float3 incidentRadiance = float3(0);
     float lightDensity = 0;
-    if (status == SCENE_QUERY_MISS)
+    if (status == SceneQuery::Miss)
     {
         incidentRadiance = EvaluateEnvironment(scene, directionWorld);
         lightDensity = EvaluateEnvironmentPdfSolidAngle(scene, directionWorld);
     }
-    else if (status == SCENE_QUERY_SURFACE)
+    else if (status == SceneQuery::Surface)
     {
         incidentRadiance = EvaluateEmission(scene, endpoint, -directionWorld);
         // Measured from the receiver itself, as SampleIncidentLight measures its proposals.

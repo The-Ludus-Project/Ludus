@@ -27,7 +27,7 @@ ComputeInitialGiSample(SceneContext scene, RayLaunch launch, Receiver receiver, 
         TraceClosest(scene,
                      queries,
                      SpawnSurfaceRay(receiver.Hit, directionWorld, TRANSPORT_MAXIMUM_TRACE_DISTANCE_WORLD),
-                     samplePoint) == SCENE_QUERY_SURFACE)
+                     samplePoint) == SceneQuery::Surface)
     {
         record.Sample.TriangleIndex = samplePoint.TriangleIndex;
         record.Sample.Barycentric = samplePoint.Barycentric;

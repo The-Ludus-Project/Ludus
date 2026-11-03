@@ -25,7 +25,7 @@ float3 TraceMultiQueryPaths(SceneContext scene, RayLaunch launch, inout RayQuery
     [loop] for (uint vertex = 0; vertex < PATH_VERTICES; ++vertex)
     {
         SurfaceHit hit;
-        if (TraceClosest(scene, queries, ray, hit) != SCENE_QUERY_SURFACE)
+        if (TraceClosest(scene, queries, ray, hit) != SceneQuery::Surface)
             break;
         MaterialSample material = EvaluateMaterial(scene, hit);
         if (material.IsValid == false)
@@ -41,7 +41,7 @@ float3 TraceMultiQueryPaths(SceneContext scene, RayLaunch launch, inout RayQuery
         float density = light.SelectionPmf * light.ConditionalPdf;
         float cosine = dot(normalWorld, light.DirectionWorld);
         if (light.HasSample == true && density > 0 && cosine > 0 &&
-            TestVisibility(scene, queries, hit, light) == SCENE_QUERY_MISS)
+            TestVisibility(scene, queries, hit, light) == SceneQuery::Miss)
             radiance += throughput * material.BaseColor / PI * light.IncidentCoefficient * cosine / density;
         float2 directionSample = float2(SampleSceneRandom(queries), SampleSceneRandom(queries));
         throughput *= material.BaseColor;

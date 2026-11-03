@@ -70,7 +70,7 @@ bool TryLoadShadingPoint(SceneContext scene,
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_STORAGE_CAPACITY);
         return false;
     }
-    if (isPrimary == true && TraceAndStoreHitRecord(scene, launch, queries) == SCENE_QUERY_FAILURE)
+    if (isPrimary == true && TraceAndStoreHitRecord(scene, launch, queries) == SceneQuery::Failure)
         return false;
     HitRecord record;
     if (TryLoadHitRecord(scene, launch, record) == false)
@@ -186,7 +186,7 @@ float3 SampleLuminaire(SceneContext scene,
     shadowRay.HasFiniteEndpoint = true;
     shadowRay.HasSample = true;
     // An occluded or failed query adds nothing; a failure has latched queries.HasFailed.
-    if (TestVisibility(scene, queries, shadingPoint.Hit, shadowRay) != SCENE_QUERY_MISS)
+    if (TestVisibility(scene, queries, shadingPoint.Hit, shadowRay) != SceneQuery::Miss)
         return float3(0);
     // Uniform luminaire selection: divide by its probability 1 / luminaireCount.
     return bsdfValue * light.RadianceOverDensity * (cosSurface * float(luminaireCount));

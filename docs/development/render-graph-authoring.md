@@ -1250,8 +1250,8 @@ The function has the ray-generation signature and the whole
 float3 ShadeSceneInfo(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
     SurfaceHit hit;
-    uint status = TraceClosest(scene, queries, launch.CameraRay, hit);
-    return float3(status == SCENE_QUERY_SURFACE ? 1 : 0, 0, float(GetSceneInfo(scene).TriangleCount));
+    SceneQuery status = TraceClosest(scene, queries, launch.CameraRay, hit);
+    return float3(status == SceneQuery::Surface ? 1 : 0, 0, float(GetSceneInfo(scene).TriangleCount));
 }
 ```
 
@@ -4411,8 +4411,8 @@ with an explicit `CoatingRandomContext` and `SampleStandardBsdfTransport`; the
 sample contains a complete throughput weight and a separate external MIS density.
 The original direction-only helpers retain their coating approximation.
 
-Glass materials report `LUDUS_MATERIAL_MODEL_DIELECTRIC` (a solid) or
-`LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC` (a thin slab) with their index of
+Glass materials report `MaterialModel::Dielectric` (a solid) or
+`MaterialModel::ThinDielectric` (a thin slab) with their index of
 refraction in `Eta.x`; `IsDielectricMaterial` tests for either. Both are smooth
 interfaces that scatter on either side of the surface: the helpers orient the
 shading normal toward the viewer and treat a viewer behind it as inside a solid,
@@ -4485,6 +4485,44 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | SampleStandardBsdfTransport / ComputeStandardBsdfCosine | Continuation with complete weight and specular/transmission flags / matching light cosine, zero for glass |
 | IsDielectricMaterial / IsSpecularMaterial / FollowSpecularChain | Glass tests and the bounded glass camera-path walk to the first shadeable surface |
 
+#### Name results and kinds with the scene enumerations
+
+Closed sets of choices in the scene interface are scoped Slang enums, not
+numbers. A query result is a `SceneQuery`, so a light kind, a material model or
+a plain integer cannot be compared or stored where a result belongs:
+
+| Enum | Where it appears | Enumerators |
+| --- | --- | --- |
+| `SceneQuery` | `TraceClosest`, `TestVisibility`, `FindVisibleLineIntervals`, `TraceAndShade`, `LoadVisibilitySurface` | `Miss`, `Surface`, `Failure` |
+| `SceneLightKind` | `LightInfo.Kind` | `Directional`, `Point`, `Spot`, `Mesh`, `Environment` |
+| `SceneMaterialKind` | `SurfaceHit.MaterialKind` | `Assigned`, `Default`, `Error` |
+| `MaterialModel` | `MaterialSample.Model` | `MetallicRoughness`, `Diffuse`, `Conductor`, `CoatedDiffuse`, `Dielectric`, `ThinDielectric` |
+
+```slang
+SurfaceHit hit;
+SceneQuery status = TraceClosest(scene, queries, ray, hit);
+if (status == SceneQuery::Miss)
+    return EvaluateEnvironment(scene, ray.DirectionWorld);
+if (status != SceneQuery::Surface)
+    return float3(0); // Failure: queries.HasFailed is latched
+MaterialSample material = EvaluateMaterial(scene, hit);
+if (material.Model == MaterialModel::CoatedDiffuse)
+    ...
+```
+
+Write the enumerator with its type (`SceneQuery::Surface`); there are no
+unscoped names. Slang rejects an integer where an enum is expected; convert a
+stored word explicitly with `SceneQuery(word)`. The values are 32-bit and
+unchanged, so an enum packs into a `uint` with `uint(status)`. Slang still
+converts an enum to `uint` implicitly, so declare variables, fields and return
+types with the enum to keep the check.
+
+The interface v1 constants `SCENE_QUERY_MISS`, `SCENE_QUERY_SURFACE`,
+`SCENE_QUERY_FAILURE` and `SCENE_LIGHT_*` remain as enum-typed aliases, so
+existing graphs keep compiling; new code names the enumerators. The material
+wire tags `LUDUS_MATERIAL_MODEL_*` remain `uint` constants shared with C++:
+compare with them if needed, but assign `MaterialModel::` values.
+
 ### Find the visible parts of a segment
 
 `FindVisibleLineIntervals` answers a visibility question for a whole segment at
@@ -4501,15 +4539,15 @@ segment.StartWorld = chordStartWorld;
 segment.EndWorld = chordEndWorld;
 segment.TriangleIndex = emitterTriangle; // or SCENE_INVALID_INDEX
 LineVisibility visibility;
-uint status = FindVisibleLineIntervals(scene, queries, receiver, segment, visibility);
+SceneQuery status = FindVisibleLineIntervals(scene, queries, receiver, segment, visibility);
 // visibility.Intervals[0, IntervalCount): sorted, disjoint [start, end) parameters in [0, 1]
 ```
 
 | Result | Meaning |
 | --- | --- |
-| `SCENE_QUERY_MISS` | No opaque triangle removes any part of the segment: one interval, `[0, 1]` |
-| `SCENE_QUERY_SURFACE` | At least one opaque triangle removes length; a fully occluded segment has zero intervals |
-| `SCENE_QUERY_FAILURE` | `queries.HasFailed` is latched and `visibility` is zero; the sample shows the error color |
+| `SceneQuery::Miss` | No opaque triangle removes any part of the segment: one interval, `[0, 1]` |
+| `SceneQuery::Surface` | At least one opaque triangle removes length; a fully occluded segment has zero intervals |
+| `SceneQuery::Failure` | `queries.HasFailed` is latched and `visibility` is zero; the sample shows the error color |
 
 To reset a `LineVisibility` you keep across calls, use `ClearLineVisibility`
 rather than assigning `(LineVisibility)0`. On an Apple M5 under macOS 26.6 the
@@ -4750,10 +4788,10 @@ In raygen, reconstruct the surface before authoring secondary transport:
 float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext inoutQueries)
 {
     SurfaceHit hit;
-    uint status = LoadVisibilitySurface(scene, launch, inoutQueries, hit);
-    if (status == SCENE_QUERY_MISS)
+    SceneQuery status = LoadVisibilitySurface(scene, launch, inoutQueries, hit);
+    if (status == SceneQuery::Miss)
         return EvaluateEnvironment(scene, launch.CameraRay.DirectionWorld);
-    if (status != SCENE_QUERY_SURFACE)
+    if (status != SceneQuery::Surface)
         return float3(-1);
 
     MaterialSample material = EvaluateMaterial(scene, hit);
@@ -4761,8 +4799,8 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext i
     float3 directionWorld = reflect(launch.CameraRay.DirectionWorld, material.ShadingNormalWorld);
     Ray secondary = SpawnSurfaceRay(hit, directionWorld, launch.CameraRay.MaxDistanceWorld);
     SurfaceHit secondaryHit;
-    uint secondaryStatus = TraceClosest(scene, inoutQueries, secondary, secondaryHit);
-    return secondaryStatus == SCENE_QUERY_MISS ? EvaluateEnvironment(scene, directionWorld) : float3(0);
+    SceneQuery secondaryStatus = TraceClosest(scene, inoutQueries, secondary, secondaryHit);
+    return secondaryStatus == SceneQuery::Miss ? EvaluateEnvironment(scene, directionWorld) : float3(0);
 }
 ```
 
@@ -4806,11 +4844,11 @@ SurfaceHit includes InstanceIndex, original mesh-local Primitive, source identit
 MaterialIndex, SourceMaterialIndex, MaterialKind, MaterialSlot, EmitterIndex, barycentrics,
 UV, geometric/shading normals, tangent and position error. MaterialIndex addresses
 the resolved instance/slot table used by GetMaterial; SourceMaterialIndex is the
-original global assignment, or the default sentinel. MaterialKind is assigned=0,
-default=1, error=2. Checked data getters return IsValid=false for invalid indices;
+original global assignment, or the default sentinel. MaterialKind is a
+`SceneMaterialKind`: `Assigned`, `Default` or `Error`. Checked data getters return IsValid=false for invalid indices;
 authors must not use invalid results. Query/ray failures latch HasFailed and
-produce diagnostic pixels. Miss/clear is SCENE_QUERY_MISS, hit/occluded is
-SCENE_QUERY_SURFACE, and failure is SCENE_QUERY_FAILURE.
+produce diagnostic pixels. Miss/clear is SceneQuery::Miss, hit/occluded is
+SceneQuery::Surface, and failure is SceneQuery::Failure.
 
 Random sampling is available directly in ray generation, closest-hit and miss.
 The renderer initializes a deterministic stream from the seed, pixel and

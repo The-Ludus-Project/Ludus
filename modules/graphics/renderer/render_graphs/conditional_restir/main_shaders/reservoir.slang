@@ -287,7 +287,7 @@ Prefix TracePrefix(SceneContext scene, RayLaunch launch, SurfaceHit primary, ino
     result.IsValid = TraceClosest(scene,
                                   queries,
                                   SpawnSurfaceRay(primary, directionWorld, MAXIMUM_TRACE_DISTANCE_WORLD),
-                                  result.Hit) == SCENE_QUERY_SURFACE;
+                                  result.Hit) == SceneQuery::Surface;
     return result;
 }
 
@@ -496,7 +496,7 @@ float3 GatherSuffix(SceneContext scene, Prefix prefix, Reservoir reservoir, inou
     light.DirectionWorld = offsetWorld / light.DistanceWorld;
     light.HasFiniteEndpoint = true;
     light.HasSample = true;
-    return TestVisibility(scene, queries, prefix.Hit, light) == SCENE_QUERY_MISS
+    return TestVisibility(scene, queries, prefix.Hit, light) == SceneQuery::Miss
                ? prefix.Throughput * contribution * reservoir.Weight
                : float3(0);
 }

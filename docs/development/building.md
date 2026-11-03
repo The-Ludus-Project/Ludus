@@ -1042,8 +1042,11 @@ main changes in GitHub's synthetic merge to the PR (`--head <commit>`). Local
 checks without that option include uncommitted and untracked source changes.
 The gate rejects newly introduced inferred variable types
 except unspellable lambdas or explained iterator/dependent types, checks Slang
-function/member/out names and coordinate member labels, and keeps target
-annotations at the RHI shader interface boundary. Existing violations are
+function/member/out names and coordinate member labels, requires Slang enums to
+be PascalCase with an explicit underlying type, rejects new uses of the scene
+interface v1 aliases (`SCENE_QUERY_*`, `SCENE_LIGHT_*`) in favor of their
+[enumerators](render-graph-authoring.md#name-results-and-kinds-with-the-scene-enumerations),
+and keeps target annotations at the RHI shader interface boundary. Existing violations are
 migration debt and cannot excuse newly added violations; no debt manifest is
 regenerated. This is a lexical check: it does not resolve C++ types, prove a
 coordinate transform, judge an exception's reason, or validate a native binding.

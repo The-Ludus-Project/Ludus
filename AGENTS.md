@@ -260,6 +260,16 @@ rejects the explicit `== true`/`== false` style.
 - Slang is engine source: functions, entry points, types and struct/cbuffer
   members use PascalCase. Parameters and locals use lowerCamelCase; `out`
   parameters use `outName`. Slang's native scalar/vector spellings remain valid.
+- A closed set of choices in Slang (query results, kinds, models, modes) is a
+  scoped `enum Name : uint` with PascalCase enumerators (`SceneQuery::Surface`),
+  and the variables, fields, parameters and return types holding it use the enum.
+  Slang converts an enum to `uint` implicitly, so a `uint` holder loses the check.
+  Convert stored words explicitly (`SceneQuery(word)`). Keep `uint` constants for
+  counts, strides, bit widths, random dimensions and open sets such as authored
+  failure reasons. A tag shared with C++ keeps its fixed-width constant in the
+  owner, and each language's enum names it. The changed-source gate checks enum
+  spelling and width and rejects new uses of the scene interface v1 aliases;
+  choosing an enum over constants remains review-only.
 - Name coordinate-bearing values with their space: `PositionWorld`,
   `positionMesh`, `normalTangent`, `WorldToClip`, `positionPixel`, etc. Matrices
   name source and destination. For shader interfaces and local arithmetic use

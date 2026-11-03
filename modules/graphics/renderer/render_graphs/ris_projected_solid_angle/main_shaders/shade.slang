@@ -235,7 +235,7 @@ bool TryEvaluateSurrogateProbability(SceneContext scene,
     light.HasFiniteEndpoint = true;
     light.HasSample = true;
     // An occluded or failed query adds nothing; a failure has latched queries.HasFailed.
-    if (TestVisibility(scene, queries, shadingPoint.Hit, light) != SCENE_QUERY_MISS)
+    if (TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
         return float3(0);
     return bsdfValue * emission * (cosSurface * weight / techniqueDensity);
 }
@@ -297,7 +297,7 @@ float3 SampleResampledEmissiveLight(SceneContext scene,
     SelectedLight selected = SelectLight(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION);
     if (selected.HasSample == false)
         return float3(0);
-    if (GetLightInfo(scene, selected.LightIndex).Kind == SCENE_LIGHT_MESH)
+    if (GetLightInfo(scene, selected.LightIndex).Kind == SceneLightKind::Mesh)
         return SampleResampledEmissiveLight(scene, launch, shadingPoint, isMisWeighted, inoutContext, queries);
     float3 shapeSample = float3(SampleSceneRandom(launch, SHADE_LIGHT_SHAPE_DIMENSION_FIRST),
                                 SampleSceneRandom(launch, SHADE_LIGHT_SHAPE_DIMENSION_FIRST + 1),
@@ -320,7 +320,7 @@ float3 SampleResampledEmissiveLight(SceneContext scene,
     if (isMisWeighted == true && light.IsDiscrete == false)
         weight = ComputePowerHeuristicWeight(lightDensity, bsdfDensity);
     // Skip the shadow ray when the sample cannot contribute; an occluded or failed query adds nothing.
-    if (weight <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SCENE_QUERY_MISS)
+    if (weight <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
         return float3(0);
     return bsdfValue * light.IncidentCoefficient * (cosSurface * weight / lightDensity);
 }
@@ -383,19 +383,20 @@ float3 SampleBsdfStrategy(SceneContext scene,
     if (cosSurface <= 0 || any(bsdfValue > 0) == false || isfinite(bsdfDensity) == false || bsdfDensity <= 0)
         return float3(0);
     SurfaceHit endpoint;
-    uint status = TraceClosest(scene,
-                               queries,
-                               SpawnSurfaceRay(shadingPoint.Hit, directionWorld, SHADE_MAXIMUM_TRACE_DISTANCE_WORLD),
-                               endpoint);
+    SceneQuery status =
+        TraceClosest(scene,
+                     queries,
+                     SpawnSurfaceRay(shadingPoint.Hit, directionWorld, SHADE_MAXIMUM_TRACE_DISTANCE_WORLD),
+                     endpoint);
     float3 incidentRadiance = float3(0);
     float lightDensity = 0;
-    if (status == SCENE_QUERY_MISS)
+    if (status == SceneQuery::Miss)
     {
         incidentRadiance = EvaluateEnvironment(scene, directionWorld);
         if (isMisWeighted == true)
             lightDensity = EvaluateEnvironmentPdfSolidAngle(scene, directionWorld);
     }
-    else if (status == SCENE_QUERY_SURFACE)
+    else if (status == SceneQuery::Surface)
     {
         incidentRadiance = EvaluateEmission(scene, endpoint, -directionWorld);
         if (isMisWeighted == true && any(incidentRadiance > 0) == true &&

@@ -308,7 +308,7 @@ float3 ShadeReservoir(SceneContext scene, SurfaceHit receiver, Reservoir reservo
     {
         return float3(0);
     }
-    if (TestVisibility(scene, queries, receiver, lightSample) != SCENE_QUERY_MISS)
+    if (TestVisibility(scene, queries, receiver, lightSample) != SceneQuery::Miss)
     {
         return float3(0);
     }

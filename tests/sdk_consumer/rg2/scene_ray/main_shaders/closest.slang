@@ -23,7 +23,7 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
         {
             float evaluatedPdf;
             LightInfo source = GetLightInfo(scene, light.LightIndex);
-            if (source.Kind == SCENE_LIGHT_MESH)
+            if (source.Kind == SceneLightKind::Mesh)
             {
                 SurfaceHit endpoint = GetSurfaceHit(scene, light.TriangleIndex, light.Barycentric);
                 evaluatedPdf = EvaluateLightPdfSolidAngle(scene, hit.PositionWorld, endpoint);
@@ -37,8 +37,8 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
             if (abs(evaluatedPdf - samplePdf) > PDF_RELATIVE_TOLERANCE * max(evaluatedPdf, samplePdf))
                 FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
         }
-        uint visibility = TestVisibility(scene, queries, hit, light);
-        if (visibility == SCENE_QUERY_FAILURE || light.SelectionPmf <= 0 || light.ConditionalPdf <= 0)
+        SceneQuery visibility = TestVisibility(scene, queries, hit, light);
+        if (visibility == SceneQuery::Failure || light.SelectionPmf <= 0 || light.ConditionalPdf <= 0)
             FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     }
 }

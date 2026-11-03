@@ -296,12 +296,12 @@ class RayPipelineTests(unittest.TestCase):
             for has_visibility in (False, True):
                 technique = {'scene_interface': dict(interface, visibility_buffer=has_visibility)}
                 wrapper = ray.persistent_wrapper(programs, technique, variants, build.Snapshot(root), build, recipe)
-                self.assertEqual(has_visibility, 'uint LoadVisibilityAndShade(' in wrapper)
+                self.assertEqual(has_visibility, 'SceneQuery LoadVisibilityAndShade(' in wrapper)
                 if not has_visibility:
                     continue
                 # Declared ahead of the namespaced sources that call it.
-                self.assertLess(wrapper.index('uint LoadVisibilityAndShade('), wrapper.index('namespace GraphSource'))
-                body = wrapper.split('uint LoadVisibilityAndShade(SceneContext scene, inout RayQueryContext queries, '
+                self.assertLess(wrapper.index('SceneQuery LoadVisibilityAndShade('), wrapper.index('namespace GraphSource'))
+                body = wrapper.split('SceneQuery LoadVisibilityAndShade(SceneContext scene, inout RayQueryContext queries, '
                                      'RayLaunch launch, inout ScenePayload payload)\n{', 1)[1].split('\n}\n', 1)[0]
                 self.assertIn('LoadVisibilitySurface(scene, launch, queries, hit)', body)
                 self.assertEqual(2, body.count('switch (GetGraphPassIndex())'))

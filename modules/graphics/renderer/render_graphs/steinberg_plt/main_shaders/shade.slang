@@ -139,7 +139,7 @@ SampleClassicalLight(SceneContext scene, RayLaunch launch, ShadingPoint shadingP
                          bsdfDensity);
     // Skip the shadow ray when the sample cannot contribute; an occluded or failed query adds nothing.
     if (cosSurface <= 0 || any(bsdfValue > 0) == false ||
-        TestVisibility(scene, queries, shadingPoint.Hit, light) != SCENE_QUERY_MISS)
+        TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
         return float3(0);
     return bsdfValue * light.IncidentCoefficient * (cosSurface / lightDensity);
 }
@@ -171,13 +171,13 @@ float3
 TraceIncidentRadiance(SceneContext scene, SurfaceHit receiver, float3 incidentWorld, inout RayQueryContext queries)
 {
     SurfaceHit endpoint;
-    uint status = TraceClosest(scene,
-                               queries,
-                               SpawnSurfaceRay(receiver, incidentWorld, SHADE_MAXIMUM_TRACE_DISTANCE_WORLD),
-                               endpoint);
-    if (status == SCENE_QUERY_MISS)
+    SceneQuery status = TraceClosest(scene,
+                                     queries,
+                                     SpawnSurfaceRay(receiver, incidentWorld, SHADE_MAXIMUM_TRACE_DISTANCE_WORLD),
+                                     endpoint);
+    if (status == SceneQuery::Miss)
         return EvaluateEnvironment(scene, incidentWorld);
-    if (status == SCENE_QUERY_SURFACE)
+    if (status == SceneQuery::Surface)
         return EvaluateEmission(scene, endpoint, -incidentWorld);
     return float3(0);
 }
@@ -206,7 +206,7 @@ float3 FinishDeltaSourceEstimate(SceneContext scene,
                                  inout RayQueryContext queries)
 {
     // Skip the shadow ray for a zero estimate; an occluded or failed query adds nothing.
-    if (any(radiance > 0) == false || TestVisibility(scene, queries, receiver, source.Light) != SCENE_QUERY_MISS)
+    if (any(radiance > 0) == false || TestVisibility(scene, queries, receiver, source.Light) != SceneQuery::Miss)
         return float3(0);
     return radiance / source.Light.SelectionPmf;
 }
@@ -542,7 +542,7 @@ float3 MeasureCoherence(SceneContext scene, RayLaunch launch, inout RayQueryCont
                                                   length(bounds.CenterWorld - shadingPoint.Hit.PositionWorld));
     }
     // The environment, and a source without extent, have no finite coherence radius to report.
-    if (angularRadius <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SCENE_QUERY_MISS)
+    if (angularRadius <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
         return float3(0);
     float radiusMicrometers =
         ComputeCoherenceRadiusWorld(angularRadius, PLT_COHERENCE_WAVELENGTH_NANOMETERS) * MICROMETERS_PER_WORLD_UNIT;

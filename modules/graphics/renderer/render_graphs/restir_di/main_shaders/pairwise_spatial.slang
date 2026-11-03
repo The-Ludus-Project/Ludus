@@ -8,19 +8,19 @@ float3 ShadeStochasticReservoir(SceneContext scene, RayLaunch launch, inout RayQ
         return float3(0);
     }
     SurfaceHit hit;
-    uint status = TraceClosest(scene, queries, launch.CameraRay, hit);
+    SceneQuery status = TraceClosest(scene, queries, launch.CameraRay, hit);
     SpecularChain chain = (SpecularChain)0;
-    if (status == SCENE_QUERY_SURFACE)
+    if (status == SceneQuery::Surface)
     {
         chain = FollowReceiverGlass(scene, launch, queries, hit);
         hit = chain.Hit;
-        status = chain.IsSurface == true     ? SCENE_QUERY_SURFACE
-                 : queries.HasFailed == true ? SCENE_QUERY_FAILURE
-                                             : SCENE_QUERY_MISS;
+        status = chain.IsSurface == true     ? SceneQuery::Surface
+                 : queries.HasFailed == true ? SceneQuery::Failure
+                                             : SceneQuery::Miss;
     }
-    if (status != SCENE_QUERY_SURFACE)
+    if (status != SceneQuery::Surface)
     {
-        if (status == SCENE_QUERY_MISS)
+        if (status == SceneQuery::Miss)
         {
             Reservoir empty = (Reservoir)0;
             StoreReservoir(queries.RandomPixel, true, empty);

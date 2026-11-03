@@ -13,9 +13,9 @@ static const float CHANNEL_MAXIMUM = 255;
 static const float VISIBLE_LEVEL = 255;
 static const float OCCLUDED_LEVEL = 128;
 
-float EncodeIdentity(uint status, SurfaceHit hit)
+float EncodeIdentity(SceneQuery status, SurfaceHit hit)
 {
-    return status == SCENE_QUERY_SURFACE ? float((hit.TriangleIndex + 1) & IDENTITY_MASK) / CHANNEL_MAXIMUM : 0;
+    return status == SceneQuery::Surface ? float((hit.TriangleIndex + 1) & IDENTITY_MASK) / CHANNEL_MAXIMUM : 0;
 }
 float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
@@ -30,15 +30,15 @@ void ShadeMiss(SceneContext scene, Ray ray, inout RayQueryContext queries, inout
 void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, inout ScenePayload payload)
 {
     SurfaceHit secondary;
-    uint secondaryStatus = TraceClosest(scene,
-                                        queries,
-                                        SpawnSurfaceRay(hit, SECONDARY_DIRECTION_WORLD, SECONDARY_DISTANCE_WORLD),
-                                        secondary);
+    SceneQuery secondaryStatus = TraceClosest(scene,
+                                              queries,
+                                              SpawnSurfaceRay(hit, SECONDARY_DIRECTION_WORLD, SECONDARY_DISTANCE_WORLD),
+                                              secondary);
     LightSample light = (LightSample)0;
     light.HasSample = true;
     light.DirectionWorld = VISIBILITY_DIRECTION_WORLD;
-    uint visibility = TestVisibility(scene, queries, hit, light);
-    payload.Radiance = float3(EncodeIdentity(SCENE_QUERY_SURFACE, hit),
+    SceneQuery visibility = TestVisibility(scene, queries, hit, light);
+    payload.Radiance = float3(EncodeIdentity(SceneQuery::Surface, hit),
                               EncodeIdentity(secondaryStatus, secondary),
-                              (visibility == SCENE_QUERY_MISS ? VISIBLE_LEVEL : OCCLUDED_LEVEL) / CHANNEL_MAXIMUM);
+                              (visibility == SceneQuery::Miss ? VISIBLE_LEVEL : OCCLUDED_LEVEL) / CHANNEL_MAXIMUM);
 }

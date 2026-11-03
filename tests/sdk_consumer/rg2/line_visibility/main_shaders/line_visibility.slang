@@ -63,7 +63,7 @@ float3 ReadLineVisibility(SceneContext scene, RayLaunch launch, inout RayQueryCo
     else if (row == ROW_RECEIVER_IN_LINE)
         receiver.PositionWorld = float3(-2, 2, 0);
     LineVisibility visibility;
-    uint status = FindVisibleLineIntervals(scene, queries, receiver, segment, visibility);
+    SceneQuery status = FindVisibleLineIntervals(scene, queries, receiver, segment, visibility);
     if (row == ROW_BUDGET_EXHAUSTED)
         status = FindVisibleLineIntervals(scene, queries, receiver, segment, visibility);
     uint column = launch.PositionPixel.x;

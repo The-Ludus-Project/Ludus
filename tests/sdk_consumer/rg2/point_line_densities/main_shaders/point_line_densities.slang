@@ -68,7 +68,7 @@ float3 ReadVertexChord(SceneContext scene, RayLaunch launch, inout RayQueryConte
     receiverLaunch.PositionPixel = uint2(launch.ExtentPixel.x / 2, launch.ExtentPixel.y * 3 / 4);
     SurfaceHit receiver;
     if (TraceClosest(scene, queries, MakeCameraRay(receiverLaunch, RECEIVER_JITTER_PIXEL), receiver) !=
-            SCENE_QUERY_SURFACE ||
+            SceneQuery::Surface ||
         receiver.EmitterIndex < GetEmitterCount(scene))
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
@@ -131,7 +131,7 @@ float3 ReadPointLineDensities(SceneContext scene, RayLaunch launch, inout RayQue
     if (pixel.y < DENSITY_FIRST_ROW)
         return float3(0);
     SurfaceHit receiver;
-    if (TraceClosest(scene, queries, MakeCameraRay(launch, RECEIVER_JITTER_PIXEL), receiver) != SCENE_QUERY_SURFACE ||
+    if (TraceClosest(scene, queries, MakeCameraRay(launch, RECEIVER_JITTER_PIXEL), receiver) != SceneQuery::Surface ||
         receiver.EmitterIndex < GetEmitterCount(scene))
         return EncodeFixed24(SKIPPED);
     SelectedLight selected = SelectLight(scene, launch, POINT_DIMENSION_FIRST);

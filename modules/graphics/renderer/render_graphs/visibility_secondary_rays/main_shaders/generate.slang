@@ -1,10 +1,10 @@
 float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext inoutQueries)
 {
     SurfaceHit hit;
-    uint status = LoadVisibilitySurface(scene, launch, inoutQueries, hit);
-    if (status == SCENE_QUERY_MISS)
+    SceneQuery status = LoadVisibilitySurface(scene, launch, inoutQueries, hit);
+    if (status == SceneQuery::Miss)
         return EvaluateEnvironment(scene, launch.CameraRay.DirectionWorld);
-    if (status != SCENE_QUERY_SURFACE)
+    if (status != SceneQuery::Surface)
         return float3(0);
 
     MaterialSample material = EvaluateMaterial(scene, hit);

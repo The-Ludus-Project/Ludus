@@ -124,7 +124,7 @@ void LoadTileReceivers(SceneContext scene,
         RayQueryContext probeQueries = queries;
         probeQueries.HasFailed = false;
         SurfaceHit hit;
-        if (LoadVisibilitySurface(scene, probe, probeQueries, hit) != SCENE_QUERY_SURFACE)
+        if (LoadVisibilitySurface(scene, probe, probeQueries, hit) != SceneQuery::Surface)
         {
             continue;
         }

@@ -6,11 +6,11 @@ float3 DecodeIrradiance(SceneContext scene, RayLaunch launch, inout RayQueryCont
 {
     Ray ray = MakeCameraRay(launch, float2(0.5));
     SurfaceHit hit;
-    uint status = TraceClosest(scene, queries, ray, hit);
-    if (status != SCENE_QUERY_SURFACE)
+    SceneQuery status = TraceClosest(scene, queries, ray, hit);
+    if (status != SceneQuery::Surface)
         return float3(0);
     MaterialSample material = EvaluateMaterial(scene, hit);
-    if (material.IsValid == false || material.Model != LUDUS_MATERIAL_MODEL_DIFFUSE)
+    if (material.IsValid == false || material.Model != MaterialModel::Diffuse)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_PRIMARY_MATERIAL);
         return float3(0);

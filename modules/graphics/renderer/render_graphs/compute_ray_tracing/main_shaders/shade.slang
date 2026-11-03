@@ -42,7 +42,7 @@ float3 SampleDirectLighting(SceneContext scene,
     if (cosSurface <= 0 || any(bsdfValue > 0) == false)
         return float3(0);
     // Skip the shadow ray when the sample cannot contribute; an occluded or failed query adds nothing.
-    if (TestVisibility(scene, queries, receiver, light) != SCENE_QUERY_MISS)
+    if (TestVisibility(scene, queries, receiver, light) != SceneQuery::Miss)
         return float3(0);
     return bsdfValue * light.IncidentCoefficient * (cosSurface / probability);
 }

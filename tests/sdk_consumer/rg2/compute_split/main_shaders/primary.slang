@@ -7,9 +7,9 @@ float3 TracePrimary(SceneContext scene, RayLaunch launch, inout RayQueryContext 
     // Recorded only so the shade pass can measure cross-pass stream correlation.
     float automaticDraw = SampleSceneRandom(queries);
     SurfaceHit hit;
-    uint status = TraceClosest(scene, queries, MakeCameraRay(launch, jitterPixel), hit);
+    SceneQuery status = TraceClosest(scene, queries, MakeCameraRay(launch, jitterPixel), hit);
     uint base = GetHitRecordBase(launch);
-    GraphBuffer0[base] = uint4(status == SCENE_QUERY_SURFACE ? hit.TriangleIndex + 1 : 0,
+    GraphBuffer0[base] = uint4(status == SceneQuery::Surface ? hit.TriangleIndex + 1 : 0,
                                asuint(hit.DistanceWorld),
                                asuint(hit.Barycentric.x),
                                asuint(hit.Barycentric.y));

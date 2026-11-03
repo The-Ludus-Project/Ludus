@@ -67,13 +67,19 @@ TEST_CASE("Scene callback references include query functions and the current pay
     CHECK(closest.contains(QStringLiteral("uint BounceCount;")) == true);
     CHECK(closest.contains(QStringLiteral("MaterialSample EvaluateMaterial(SceneContext scene, SurfaceHit hit);")) ==
           true);
+    CHECK(closest.contains(QStringLiteral("SceneQuery TraceClosest(SceneContext scene, inout RayQueryContext queries, "
+                                          "Ray ray, out SurfaceHit outHit);")) == true);
     CHECK(
-        closest.contains(QStringLiteral(
-            "uint TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray ray, out SurfaceHit outHit);")) ==
-        true);
-    CHECK(closest.contains(QStringLiteral("uint TestVisibility(SceneContext scene, inout RayQueryContext queries, "
-                                          "SurfaceHit receiver, LightSample light);")) == true);
-    CHECK(closest.contains(QStringLiteral("static const uint SCENE_QUERY_SURFACE = 1;")) == true);
+        closest.contains(QStringLiteral("SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, "
+                                        "SurfaceHit receiver, LightSample light);")) == true);
+    // A return type the formatter placed on its own line is listed beside the function name.
+    CHECK(closest.contains(QStringLiteral("StandardBsdfTransportSample SampleDielectricTransport(")) == true);
+    CHECK(closest.contains(QStringLiteral("enum SceneQuery : uint")) == true);
+    CHECK(closest.contains(QStringLiteral("    Surface = 1,")) == true);
+    CHECK(closest.contains(QStringLiteral("enum SceneLightKind : uint")) == true);
+    CHECK(closest.contains(QStringLiteral("SceneLightKind Kind;")) == true);
+    CHECK(closest.contains(QStringLiteral("static const SceneQuery SCENE_QUERY_SURFACE = SceneQuery::Surface;")) ==
+          true);
     CHECK(closest.contains(QStringLiteral("return result")) == false);
     CHECK(closest.contains(QStringLiteral("struct RayHit")) == false);
     sources[QStringLiteral("main_shaders/payload.slang")] =
@@ -181,7 +187,7 @@ TEST_CASE("Visibility ray references expose depth reconstruction and the codec",
 {
     const QByteArray manifest = ReadFixture(QStringLiteral("visibility"));
     const QString generate = DescribeShaderInterface(manifest, QStringLiteral("main_shaders/generate.slang"));
-    CHECK(generate.contains(QStringLiteral("uint LoadVisibilitySurface(")) == true);
+    CHECK(generate.contains(QStringLiteral("SceneQuery LoadVisibilitySurface(")) == true);
     CHECK(generate.contains(QStringLiteral("float4 EncodeVisibility(")) == true);
     CHECK(generate.contains(QStringLiteral("float4x4 CameraClipToWorld;")) == true);
     CHECK(generate.contains(QStringLiteral("Ray SpawnSurfaceRay(")) == true);

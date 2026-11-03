@@ -16,12 +16,12 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
     payload.Radiance = material.BaseColor + EvaluateEmission(scene, hit, -hit.IncomingRay.DirectionWorld);
     // A bounded secondary query and visibility query both use the selected traversal.
     SurfaceHit secondary;
-    uint status = TraceClosest(scene, queries, hit.IncomingRay, secondary);
-    if (status != SCENE_QUERY_SURFACE || secondary.TriangleIndex != hit.TriangleIndex)
+    SceneQuery status = TraceClosest(scene, queries, hit.IncomingRay, secondary);
+    if (status != SceneQuery::Surface || secondary.TriangleIndex != hit.TriangleIndex)
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     LightSample light = (LightSample)0;
     light.HasSample = true;
     light.DirectionWorld = -hit.IncomingRay.DirectionWorld;
-    if (TestVisibility(scene, queries, hit, light) == SCENE_QUERY_FAILURE)
+    if (TestVisibility(scene, queries, hit, light) == SceneQuery::Failure)
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
 }

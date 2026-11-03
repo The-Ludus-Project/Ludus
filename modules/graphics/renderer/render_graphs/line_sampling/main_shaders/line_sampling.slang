@@ -177,7 +177,7 @@ bool ProposeLineU(SceneContext scene,
     }
     LineVisibility visibility;
     if (FindVisibleLineIntervals(scene, queries, receiver, outProposal.Chord.Segment, visibility) ==
-        SCENE_QUERY_FAILURE)
+        SceneQuery::Failure)
     {
         outProposal.HasProposal = false;
         return false;
@@ -237,7 +237,7 @@ float3 EstimateLineProposal(SceneContext scene,
         if (lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false || cosSurface <= 0)
             return float3(0);
         EvaluateStandardBsdf(material, viewDirectionWorld, light.DirectionWorld, bsdfValue, bsdfDensity);
-        if (any(bsdfValue > 0) == false || TestVisibility(scene, queries, receiver, light) != SCENE_QUERY_MISS)
+        if (any(bsdfValue > 0) == false || TestVisibility(scene, queries, receiver, light) != SceneQuery::Miss)
             return float3(0);
         return bsdfValue * light.IncidentCoefficient * (cosSurface / lightDensity);
     }
@@ -274,7 +274,7 @@ float3 EstimateLineProposal(SceneContext scene,
         confirmation.DistanceWorld = distanceWorld;
         confirmation.HasFiniteEndpoint = true;
         confirmation.HasSample = true;
-        if (TestVisibility(scene, queries, receiver, confirmation) != SCENE_QUERY_MISS)
+        if (TestVisibility(scene, queries, receiver, confirmation) != SceneQuery::Miss)
             return float3(0);
     }
     // Joint area density P(light) * c / (A_light * L_visible), in solid angle d^2 / |cos_light|.

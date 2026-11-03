@@ -11,10 +11,10 @@ float3 ShadeConditionalRestir(SceneContext scene, RayLaunch launch, inout RayQue
     if (IsCurrentRecord(reservoir, scene, launch, queries) == false)
         return float3(0);
     SurfaceHit primary;
-    uint status = TraceClosest(scene, queries, launch.CameraRay, primary);
-    if (status == SCENE_QUERY_MISS)
+    SceneQuery status = TraceClosest(scene, queries, launch.CameraRay, primary);
+    if (status == SceneQuery::Miss)
         return EvaluateEnvironment(scene, launch.CameraRay.DirectionWorld);
-    if (status != SCENE_QUERY_SURFACE)
+    if (status != SceneQuery::Surface)
         return float3(0);
     // The primary is the first surface past any smooth glass, as in the initial pass.
     SpecularChain chain =

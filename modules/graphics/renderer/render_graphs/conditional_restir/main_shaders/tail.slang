@@ -87,7 +87,7 @@ float3 SampleTerminalCoefficient(SceneContext scene,
     light.DirectionWorld = outDirectionWorld;
     light.HasFiniteEndpoint = true;
     light.HasSample = true;
-    return TestVisibility(scene, queries, receiver, light) == SCENE_QUERY_MISS ? coefficient : float3(0);
+    return TestVisibility(scene, queries, receiver, light) == SceneQuery::Miss ? coefficient : float3(0);
 }
 
 /// Generate a tail of exactly suffixBounces scattering vertices. The first vertex is sampled
@@ -140,7 +140,7 @@ Reservoir GenerateScatteringSuffix(SceneContext scene,
         if (any(throughput > 0) == false)
             return result;
         Ray ray = SpawnSurfaceRay(vertex, directionWorld, MAXIMUM_TRACE_DISTANCE_WORLD);
-        if (TraceClosest(scene, queries, ray, vertex) != SCENE_QUERY_SURFACE)
+        if (TraceClosest(scene, queries, ray, vertex) != SceneQuery::Surface)
             return result;
         MaterialSample material = EvaluateMaterial(scene, vertex);
         if (material.IsValid == false)

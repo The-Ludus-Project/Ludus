@@ -154,7 +154,7 @@ float3 SampleLightDirectLighting(SceneContext scene,
     lightSample.DistanceWorld = distanceWorld;
     lightSample.HasFiniteEndpoint = true;
     lightSample.HasSample = true;
-    if (TestVisibility(scene, queries, receiver, lightSample) != SCENE_QUERY_MISS)
+    if (TestVisibility(scene, queries, receiver, lightSample) != SceneQuery::Miss)
     {
         return float3(0);
     }
@@ -200,7 +200,7 @@ float3 SampleBsdfDirectLighting(SceneContext scene,
     }
     const Ray ray = SpawnSurfaceRay(receiver, directionWorld, TILED_NEE_MAXIMUM_TRACE_DISTANCE_WORLD);
     SurfaceHit endpoint;
-    if (TraceClosest(scene, queries, ray, endpoint) != SCENE_QUERY_SURFACE ||
+    if (TraceClosest(scene, queries, ray, endpoint) != SceneQuery::Surface ||
         endpoint.EmitterIndex >= GetEmitterCount(scene))
     {
         return float3(0);
@@ -234,12 +234,12 @@ float3 SampleBsdfDirectLighting(SceneContext scene,
 float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext inoutQueries)
 {
     SurfaceHit hit;
-    const uint status = LoadVisibilitySurface(scene, launch, inoutQueries, hit);
-    if (status == SCENE_QUERY_MISS)
+    const SceneQuery status = LoadVisibilitySurface(scene, launch, inoutQueries, hit);
+    if (status == SceneQuery::Miss)
     {
         return EvaluateEnvironment(scene, launch.CameraRay.DirectionWorld);
     }
-    if (status != SCENE_QUERY_SURFACE)
+    if (status != SceneQuery::Surface)
     {
         return float3(0);
     }

@@ -223,7 +223,7 @@ void Evaluate(float3 color,
     EvaluateScattering(color,
                        metallic,
                        roughness,
-                       LUDUS_MATERIAL_MODEL_METALLIC_ROUGHNESS,
+                       MaterialModel::MetallicRoughness,
                        float3(1),
                        float3(0),
                        1,
@@ -734,7 +734,7 @@ float HitEmitterSelection(uint t, uint lightCount)
 void EvaluateScattering(float3 color,
                         float metallic,
                         float roughness,
-                        uint model,
+                        MaterialModel model,
                         float3 eta,
                         float3 extinction,
                         float conductorAlpha,
@@ -750,7 +750,7 @@ void EvaluateScattering(float3 color,
     float nl = dot(normalWorld, l);
     if (nv <= 0 || nl <= 0)
         return;
-    if (model == LUDUS_MATERIAL_MODEL_DIFFUSE)
+    if (model == MaterialModel::Diffuse)
     {
         outValue = color / PI;
         outPdf = nl / PI;
@@ -769,7 +769,7 @@ void EvaluateScattering(float3 color,
     float3 f0 = .04 * (1 - metallic) + color * metallic;
     float term = 1 - vh;
     float3 fresnel = f0 + (1 - f0) * term * term * term * term * term;
-    bool isConductor = model == LUDUS_MATERIAL_MODEL_CONDUCTOR;
+    bool isConductor = model == MaterialModel::Conductor;
     if (isConductor == true)
         fresnel = ComputeConductorFresnelRgb(vh, eta, extinction);
     float diffuseFraction = isConductor == true ? 0 : 1 - metallic;
@@ -964,7 +964,7 @@ float3 Integrate(uint pixel, uint sample)
         float roughness = ReadHitSurface(material, LUDUS_GPU_PREVIEW_ROUGHNESS_WORD).x;
         float4 etaAndModel = ReadHitSurface(material, LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD);
         float4 extinctionAndAlpha = ReadHitSurface(material, LUDUS_GPU_PREVIEW_SCATTERING_K_WORD);
-        uint model = asuint(etaAndModel.w);
+        MaterialModel model = MaterialModel(asuint(etaAndModel.w));
         if (asuint(ReadHitSurface(material, LUDUS_GPU_PREVIEW_SURFACE_MAP_WORD).w) != 0)
         {
             SurfaceParameters parameters =

@@ -16,9 +16,9 @@ struct DielectricSample
     float3 Weight;
     bool HasSample;
 };
-bool IsDielectricModel(uint model)
+bool IsDielectricModel(MaterialModel model)
 {
-    return model == LUDUS_MATERIAL_MODEL_DIELECTRIC || model == LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC;
+    return model == MaterialModel::Dielectric || model == MaterialModel::ThinDielectric;
 }
 /// Unpolarized Fresnel reflectance of a dielectric interface with relative index eta; cosine is signed.
 float ComputeDielectricFresnel(float cosine, float eta)
@@ -39,14 +39,18 @@ float ComputeDielectricFresnel(float cosine, float eta)
 }
 /// Reflect with probability equal to the reflectance, otherwise refract (or pass a thin slab).
 /// normalWorld faces viewWorld; isViewerInside selects the inverse relative index of a solid dielectric.
-DielectricSample
-SampleDielectric(uint model, float eta, bool isViewerInside, float3 normalWorld, float3 viewWorld, float lobeSample)
+DielectricSample SampleDielectric(MaterialModel model,
+                                  float eta,
+                                  bool isViewerInside,
+                                  float3 normalWorld,
+                                  float3 viewWorld,
+                                  float lobeSample)
 {
     DielectricSample result = (DielectricSample)0;
     float cosine = dot(normalWorld, viewWorld);
     if (cosine <= 0)
         return result;
-    bool isThin = model == LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC;
+    bool isThin = model == MaterialModel::ThinDielectric;
     float relativeEta = isThin == false && isViewerInside == true ? 1 / eta : eta;
     float reflectance = ComputeDielectricFresnel(cosine, relativeEta);
     if (isThin == true && reflectance < 1)

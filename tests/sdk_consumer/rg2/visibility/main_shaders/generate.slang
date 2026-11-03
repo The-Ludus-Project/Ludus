@@ -13,10 +13,10 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext i
     SurfaceHit hit;
     uint surfaceQueries = inoutQueries.SurfaceQueries;
     uint visibilityQueries = inoutQueries.VisibilityQueries;
-    uint status = LoadVisibilitySurface(scene, launch, inoutQueries, hit);
-    if (status == SCENE_QUERY_MISS)
+    SceneQuery status = LoadVisibilitySurface(scene, launch, inoutQueries, hit);
+    if (status == SceneQuery::Miss)
         return float3(0, 0, 1);
-    if (status != SCENE_QUERY_SURFACE)
+    if (status != SceneQuery::Surface)
         return float3(-1);
     static const float RECONSTRUCTION_POSITION_TOLERANCE_WORLD = 0.0001;
     float3 cameraOffsetWorld = hit.PositionWorld - launch.CameraRay.OriginWorld;
@@ -27,7 +27,7 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext i
     // A secondary ray toward the viewer leaves this fixture's plane; any self-hit is a regression.
     Ray secondary = SpawnSurfaceRay(hit, -launch.CameraRay.DirectionWorld, launch.CameraRay.MaxDistanceWorld);
     SurfaceHit secondaryHit;
-    if (TraceClosest(scene, inoutQueries, secondary, secondaryHit) != SCENE_QUERY_MISS)
+    if (TraceClosest(scene, inoutQueries, secondary, secondaryHit) != SceneQuery::Miss)
         return float3(-1);
     return material.BaseColor;
 }

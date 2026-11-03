@@ -109,12 +109,11 @@ GeometryStatistics GetTriangleStatistics(SceneContext scene, uint triangleIndex,
         OMV_TRIANGLE_MOMENT_DIVISOR;
     result.NormalSumWorld = triangle.AreaWorld * triangle.GeometricNormalWorld;
     result.ColorSum = triangle.AreaWorld * material.BaseColor;
-    result.MetallicSum =
-        triangle.AreaWorld * (material.Model == LUDUS_MATERIAL_MODEL_CONDUCTOR ? 1 : material.Metallic);
+    result.MetallicSum = triangle.AreaWorld * (material.Model == MaterialModel::Conductor ? 1 : material.Metallic);
     float alpha = ComputeMaterialAlpha(material.Model, material.Roughness, material.AlphaU);
     result.AlphaSquaredSum = triangle.AreaWorld * alpha * alpha;
     result.SpecularitySum =
-        triangle.AreaWorld * (material.Model == LUDUS_MATERIAL_MODEL_DIFFUSE ? 0 : OMV_DIELECTRIC_REFLECTANCE);
+        triangle.AreaWorld * (material.Model == MaterialModel::Diffuse ? 0 : OMV_DIELECTRIC_REFLECTANCE);
     return result;
 }
 

@@ -245,7 +245,7 @@ bool FindLineProposal(SceneContext scene,
     }
     LineVisibility visibility;
     if (FindVisibleLineIntervals(scene, queries, receiver, outProposal.Chord.Segment, visibility) ==
-        SCENE_QUERY_FAILURE)
+        SceneQuery::Failure)
     {
         outProposal.HasProposal = false;
         return false;
@@ -355,7 +355,7 @@ bool EvaluateLineProposal(SceneContext scene,
         if (lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false || cosSurface <= 0)
             return false;
         EvaluateStandardBsdf(material, viewDirectionWorld, light.DirectionWorld, bsdfValue, bsdfDensity);
-        if (any(bsdfValue > 0) == false || TestVisibility(scene, queries, receiver, light) != SCENE_QUERY_MISS)
+        if (any(bsdfValue > 0) == false || TestVisibility(scene, queries, receiver, light) != SceneQuery::Miss)
             return false;
         outValue.IntegrandValue = bsdfValue * light.IncidentCoefficient * cosSurface;
         outValue.DirectionWorld = light.DirectionWorld;
@@ -395,7 +395,7 @@ bool EvaluateLineProposal(SceneContext scene,
         confirmation.DistanceWorld = distanceWorld;
         confirmation.HasFiniteEndpoint = true;
         confirmation.HasSample = true;
-        if (TestVisibility(scene, queries, receiver, confirmation) != SCENE_QUERY_MISS)
+        if (TestVisibility(scene, queries, receiver, confirmation) != SceneQuery::Miss)
             return false;
     }
     outValue.Density = ComputeLineDensitySolidAngle(light.SelectionPmf,
@@ -449,7 +449,7 @@ float FindLineDensity(SceneContext scene,
     float3 chordWorld = chord.Segment.EndWorld - chord.Segment.StartWorld;
     float parameter = dot(emitter.PositionWorld - chord.Segment.StartWorld, chordWorld) / dot(chordWorld, chordWorld);
     LineVisibility visibility;
-    if (FindVisibleLineIntervals(scene, queries, receiver, chord.Segment, visibility) == SCENE_QUERY_FAILURE)
+    if (FindVisibleLineIntervals(scene, queries, receiver, chord.Segment, visibility) == SceneQuery::Failure)
         return 0;
     bool isVisible = false;
     for (uint i = 0; i < visibility.IntervalCount; ++i)
