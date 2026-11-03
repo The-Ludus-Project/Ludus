@@ -2036,6 +2036,34 @@ void ResetResult(BestEffortResult& outResult) noexcept
     outResult.Profile = {};
 }
 
+/// Warn once per cooked light that is disabled for want of intensity, so an import such as the Intel Sponza glTF,
+/// whose 24 punctual lights all have zero intensity, explains a dark scene. Without any other light or environment
+/// the message names the remedies.
+void ReportDisabledLights(const SceneIr& scene, const CookedLighting& lighting, DiagnosticLog& inoutLog) noexcept
+{
+    bool hasEnabledLight = false;
+    for (const format::LightRecord& light : lighting.Lights)
+    {
+        hasEnabledLight = hasEnabledLight == true || (light.Flags & format::LIGHT_ENABLED) != 0;
+    }
+    const bool isUnlit = hasEnabledLight == false && scene.Environment.IsPresent == false;
+    for (const format::LightRecord& light : lighting.Lights)
+    {
+        if ((light.Flags & format::LIGHT_ENABLED) != 0)
+        {
+            continue;
+        }
+        (void)inoutLog.Add(DiagnosticSeverity::Warning,
+                           codes::LIGHT_DISABLED,
+                           {},
+                           0,
+                           isUnlit == true ? "authored light has zero intensity and is kept disabled; the scene has "
+                                             "no enabled light or environment, so choose an environment or add a "
+                                             "World light"
+                                           : "authored light has zero intensity and is kept disabled");
+    }
+}
+
 /// Plan, bake, pack and report a SceneIR produced by any front-end. status is the
 /// front-end's outcome; NotFound/IoError skip the report like an unreadable entry.
 [[nodiscard]] bool CookImportedScene(std::string_view profile,
@@ -2157,6 +2185,10 @@ void ResetResult(BestEffortResult& outResult) noexcept
                           0,
                           "authored lighting cannot be preserved within the bounded photometric scene profile");
         }
+    }
+    if (status == Status::Ok)
+    {
+        ReportDisabledLights(scene, lighting, log);
     }
     const usize lightingBytes = lightingRecords + lighting.Environment.Rgb.GetSize() * sizeof(float32);
     if (status == Status::Ok && options.IsDryRun == false)

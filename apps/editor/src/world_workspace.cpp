@@ -2410,6 +2410,29 @@ bool WorldWorkspace::ApplyLuminaireRepair(const RenderGraphLuminaireCoverage& re
                 : QStringLiteral("Luminaire fitted to the World. Undo is available."));
     return true;
 }
+bool WorldWorkspace::ApplySunRepair(const WorldLightingCoverage& repair)
+{
+    if (repair.Repair != WorldLightingRepair::AddSun || Pending_ == true || SceneBusy() == true ||
+        Add_->isEnabled() == false)
+    {
+        Changed(QStringLiteral("The World cannot be edited now; try adding the sun again when it is ready."));
+        return false;
+    }
+    QString id;
+    QString error;
+    if (CreateWorldSun(Document_, mEntropy, repair.Sun, id, error) == false)
+    {
+        Changed(error);
+        return false;
+    }
+    Selected_ = id;
+    mSelectedEntities = {id};
+    Render();
+    Snapshot();
+    Changed(QStringLiteral("Sun added. Turn it with the viewport gizmo or set its intensity in the inspector. Undo is "
+                           "available."));
+    return true;
+}
 void WorldWorkspace::Undo()
 {
     if (Pending_ == false && SceneBusy() == false && Document_.Undo())

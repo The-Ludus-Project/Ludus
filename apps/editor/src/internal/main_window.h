@@ -147,6 +147,9 @@ private:
     /// Offer the preview warning's luminaire repair in a confirmation box (Cancel is the default) and apply it to the
     /// World on acceptance. Returns false when the warning offers no repair.
     bool offerLuminaireRepair();
+    /// Offer the preview warning's sun in a confirmation box (Cancel is the default) when the World renders almost
+    /// black, and add it to the World on acceptance. Returns false when the warning offers no sun.
+    bool offerSunRepair();
     void renderActiveDocument();
     /// Show the context strip while a render graph is current in any group and Focus Viewport is off.
     void updateContextStrip();

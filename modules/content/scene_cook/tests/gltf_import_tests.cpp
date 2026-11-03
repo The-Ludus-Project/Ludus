@@ -125,6 +125,59 @@ TEST_CASE("Explicit glTF environment retains latitude longitude HDR energy and p
     CHECK(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), options, result, error) == false);
 }
 
+TEST_CASE("glTF lights of zero intensity are kept disabled and reported", "[scene_cook][gltf][lights]")
+{
+    // Like the Intel Sponza glTF: a sun whose exporter wrote intensity 0, pointing down its -Z.
+    std::string withLights =
+        MakeTriangle(R"(,"extensionsUsed":["KHR_lights_punctual"],"extensions":{"KHR_lights_punctual":{"lights":[)"
+                     R"({"type":"directional","intensity":0},{"type":"point","intensity":0}]}})");
+    const std::string nodes = R"("nodes":[{"mesh":0}],)";
+    const usize at = withLights.find(nodes);
+    REQUIRE(at != std::string::npos);
+    withLights.replace(at,
+                       nodes.size(),
+                       R"("nodes":[{"mesh":0},{"rotation":[-0.7071068,0,0,0.7071068],)"
+                       R"("extensions":{"KHR_lights_punctual":{"light":0}}},)"
+                       R"({"extensions":{"KHR_lights_punctual":{"light":1}}}],)");
+    const std::string roots = R"("nodes":[0])";
+    const usize rootsAt = withLights.find(roots);
+    REQUIRE(rootsAt != std::string::npos);
+    withLights.replace(rootsAt, roots.size(), R"("nodes":[0,1,2])");
+    ScratchDirectory scratch;
+    WriteFile(scratch.Path / "scene.gltf", withLights);
+    BestEffortOptions options;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), options, result, error) == true);
+    std::string_view report(reinterpret_cast<const char*>(result.Report.GetData()), result.Report.GetSize());
+    INFO(report);
+    // One folded warning counts both lights and names the remedies, since nothing else lights the scene.
+    CHECK(report.find("\"code\": \"LIGHT_DISABLED\"") != std::string_view::npos);
+    CHECK(report.find("no enabled light or environment, so choose an environment or add a World light") !=
+          std::string_view::npos);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Lights.GetSize() == 2);
+    // The disabled sun keeps its authored direction for an editor repair to follow.
+    const ludus::resources::SceneLight& sun = decoded.Lights[0];
+    CHECK(sun.Kind == ludus::resources::SceneLightKind::Directional);
+    CHECK(sun.IsEnabled == false);
+    CHECK(std::abs(sun.DirectionWorld.Y + 1) < 1e-5F);
+
+    // With a chosen environment the scene is lit, and the warning only reports the lights.
+    constexpr usize SAMPLE_COUNT = 12;
+    const ludus::foundation::StaticArray<float32, SAMPLE_COUNT> samples{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}};
+    std::string image = "PF\n2 2\n-1\n";
+    image.append(reinterpret_cast<const char*>(samples.GetData()), samples.GetSize() * sizeof(samples[0]));
+    WriteFile(scratch.Path / "sky.pfm", image);
+    options.EnvironmentFile = "sky.pfm";
+    REQUIRE(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), options, result, error) == true);
+    report = std::string_view(reinterpret_cast<const char*>(result.Report.GetData()), result.Report.GetSize());
+    CHECK(report.find("\"code\": \"LIGHT_DISABLED\"") != std::string_view::npos);
+    CHECK(report.find("choose an environment") == std::string_view::npos);
+}
+
 TEST_CASE("glTF base colour factors apply once to sampled and constant textures", "[scene_cook][gltf]")
 {
     ScratchDirectory scratch;

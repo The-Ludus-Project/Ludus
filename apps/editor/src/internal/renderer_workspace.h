@@ -20,6 +20,7 @@
 #include "internal/render_graph_source.h"
 #include "internal/render_graph_source_watch.h"
 #include "internal/viewport_frame_pump.h"
+#include "internal/world_lighting_coverage.h"
 
 #include <QByteArray>
 #include <QJsonObject>
@@ -354,6 +355,10 @@ public:
     /// when the warning offers none. The caller confirms it with the user and applies it to the World as one
     /// undoable edit (WorldWorkspace::ApplyLuminaireRepair). GUI thread only.
     [[nodiscard]] RenderGraphLuminaireCoverage MakeRenderWarningRepair() const;
+    /// The sun that resolves GetRenderWarning when the warning says the World renders almost black
+    /// (DescribeWorldLighting); Repair is None otherwise. The caller confirms it with the user and applies it to the
+    /// World as one undoable edit (WorldWorkspace::ApplySunRepair). GUI thread only.
+    [[nodiscard]] WorldLightingCoverage MakeWorldLightingRepair() const;
     /// True while the viewport requests the engine default, including its pending first frame.
     [[nodiscard]] LUDUS_INLINE bool IsUsingDefaultRenderer() const noexcept
     {
@@ -618,6 +623,8 @@ private:
     QString mRenderWarning;
     /// Whether mRenderWarning is the slice-sampling-luminaire coverage warning, which offers a repair.
     bool mIsLuminaireWarning = false;
+    /// The World lighting check mRenderWarning reports when it is not the luminaire warning.
+    WorldLightingCoverage mWorldLighting;
     /// World, document and configuration the warning was computed for.
     QByteArray mRenderWarningIdentity;
     QLabel* mStatus;

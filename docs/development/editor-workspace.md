@@ -1467,6 +1467,38 @@ matte materials in this combined lit profile; their linear tints are baked into
 transient sRGB texture copies. Original assets are preserved. Worlds without
 imported scene data retain their existing unlit preview adapter.
 
+### Lighting a World that renders black
+
+An imported scene can arrive without usable lighting. The Intel Sponza glTF
+declares 24 punctual lights, its sun among them, all with zero intensity; the
+importer keeps them disabled and reports `LIGHT_DISABLED` in the import report
+(see [Selecting a companion lighting environment](best-effort-scene-import.md#selecting-a-companion-lighting-environment)).
+Its only emitters are small light bulbs of radiance one.
+
+The editor checks the World it renders. When the World presents no enabled
+analytic light, environment or luminaire, and its emitters' luminous flux spread
+over the surface of the World's bounds gives under 0.01 lux, it warns that the
+World renders almost black. At exposure one, a surface of albedo 0.5 under
+0.01 lux encodes below 2% of sRGB white; Sponza's bulbs give about 0.001 lux.
+The estimate counts an emission map at its mean and ignores occlusion, so treat
+it as a guide. The warning names the disabled imported lights and the emitters'
+estimated illuminance. It appears in the viewport status and as a **Renderer
+preview** row in the Error List; render graphs that read only luminaires keep
+their own luminaire warning instead. An unlit viewport never shows it.
+
+In a default World, double-click the warning to repair it. A confirmation box
+offers **Add sun**; **Cancel** is the default. The sun is a directional light
+entity named *Sun* of 10 lux, aimed like the first disabled imported directional
+light that shines down, or from 60 degrees above the horizon when there is none.
+Sponza's sun comes from 56 degrees above the horizon, along the nave. 10 lux is
+a display choice for exposure one, not daylight: a surface of albedo 0.5 facing
+the sun has a radiance of about 1.6 nits. Adding the sun is one undoable edit
+that selects it; set its intensity, colour and Transform rotation in
+**Properties**, and save the World to keep it. The viewport's raster lighting
+has no indirect bounce, so areas the sun cannot reach stay dark. Reimporting with
+the scene's bundled sky through **Choose environment…** lights them too. A
+project-owned schema gets the instruction without the repair.
+
 ### Switching lights
 
 The **Lights** list under the World entity list switches individual lights off

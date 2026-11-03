@@ -35,6 +35,24 @@ struct WorldLuminairePlacement final
                                         const WorldLuminairePlacement& placement,
                                         QString& outId,
                                         QString& outError);
+/// Transform and illuminance of a new default-schema sun: a directional light entity.
+struct WorldSunPlacement final
+{
+    /// The transform's position in metres. A directional light ignores it; it only places the viewport gizmo.
+    foundation::math::Vector3 PositionWorld{};
+    /// The transform's Euler rotation in degrees; the light shines along its -Z.
+    foundation::math::Vector3 RotationDegrees{};
+    /// The light's intensity: illuminance in lux on a surface facing the sun.
+    foundation::float32 IlluminanceLux = 0;
+};
+/// Create a directional light entity named "Sun" (transform and light components, schema defaults otherwise) in a
+/// default World as one validated, undoable history transaction. Failure preserves the document and outId. Editor
+/// thread only.
+[[nodiscard]] bool CreateWorldSun(WorldDocument& inoutWorld,
+                                  const foundation::identity::EntropySource& entropy,
+                                  const WorldSunPlacement& placement,
+                                  QString& outId,
+                                  QString& outError);
 /// Create one bundled geometry, light or luminaire preset as one validated history transaction.
 /// Failure preserves the document and outId. Must run on the editor thread.
 [[nodiscard]] bool CreateWorldObject(WorldDocument& inoutWorld,

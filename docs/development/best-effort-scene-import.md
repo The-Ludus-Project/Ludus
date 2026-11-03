@@ -355,7 +355,12 @@ area-light, shadow and indirect-transport limits.
 A glTF can contain geometry and materials without usable lighting. The full Intel
 Sponza main glTF declares 24 punctual lights with zero intensity and does not
 reference its bundled `textures/kloppenheim_05_4k.hdr`. Importing that glTF alone
-therefore preserves a dark scene; the importer does not enable those lights.
+therefore preserves a dark scene; the importer does not enable those lights. Each
+disabled light adds a `LIGHT_DISABLED` warning to the import report; when no
+enabled light or environment remains, the message names the remedies. A disabled
+light keeps its authored position and direction. When a World renders almost
+black, the editor offers to add a sun aimed like the first disabled directional
+light (see [Lighting a World that renders black](editor-workspace.md#lighting-a-world-that-renders-black)).
 
 In the World's import preview, choose **Choose environment…**, then select the
 bundled HDR inside the scene source folder. Review the updated preview and choose

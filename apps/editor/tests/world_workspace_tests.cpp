@@ -12,6 +12,7 @@
 #include "internal/renderer_workspace.h"
 #include "internal/viewport_object_interaction.h"
 #include "internal/world_document.h"
+#include "internal/world_lighting_coverage.h"
 #include "internal/world_workspace.h"
 #include "scene_fixture.h"
 #include <QColor>
@@ -2043,6 +2044,103 @@ TEST_CASE("Default World presets create renderable geometry and authored lights 
     reopened.SetProject(root, 2);
     REQUIRE(reopened.Open(path) == true);
     CHECK(reopened.Document().Draft() == workspace.Document().Draft());
+}
+
+TEST_CASE("A dark imported World offers a sun aimed like its disabled light, added as one undoable edit",
+          "[editor][world][world-lighting]")
+{
+    using namespace ludus::foundation;
+    namespace math = ludus::foundation::math;
+    // An imported floor 20 m square lit only by a small emitter, with a sun authored at zero intensity like the Intel
+    // Sponza glTF's.
+    SharedPtr<ludus::resources::SceneDefinition> definition;
+    REQUIRE(TryMakeShared<ludus::resources::SceneDefinition>(GetSystemAllocationDomain(), definition) ==
+            OwnershipStatus::Ok);
+    REQUIRE(definition->Meshes.TryResize(2) == true);
+    for (const math::Vector3 corner :
+         {math::Vector3{-10, 0, -10}, math::Vector3{10, 0, -10}, math::Vector3{10, 0, 10}, math::Vector3{-10, 0, 10}})
+    {
+        REQUIRE(definition->Meshes[0].Positions.TryAdd(corner) == true);
+    }
+    for (const uint32 index : {0U, 1U, 2U, 0U, 2U, 3U})
+    {
+        REQUIRE(definition->Meshes[0].Indices.TryAdd(index) == true);
+    }
+    // A 0.1 m right triangle 2 m up, of area 0.005 m2.
+    for (const math::Vector3 corner : {math::Vector3{0, 2, 0}, math::Vector3{0.1F, 2, 0}, math::Vector3{0, 2, 0.1F}})
+    {
+        REQUIRE(definition->Meshes[1].Positions.TryAdd(corner) == true);
+    }
+    for (const uint32 index : {0U, 1U, 2U})
+    {
+        REQUIRE(definition->Meshes[1].Indices.TryAdd(index) == true);
+    }
+    ludus::resources::SceneLight sun;
+    sun.SourceId = 1;
+    sun.Kind = ludus::resources::SceneLightKind::Directional;
+    sun.IsEnabled = false;
+    sun.DirectionWorld = {1.1011403F, -1.6562406F, 0.2106133F};
+    REQUIRE(definition->Lights.TryAdd(sun) == true);
+    RenderScene scene;
+    scene.Definition = definition;
+    scene.Lit = true;
+    scene.Meshes.resize(2);
+    scene.Surfaces.resize(2);
+    scene.Surfaces[1].Emission = {1, 1, 1};
+    for (int32 index = 0; index < 2; ++index)
+    {
+        PreviewObject object;
+        object.Id = QStringLiteral("object-%1").arg(index);
+        object.Mesh = index;
+        object.Surface = index;
+        scene.Objects.append(object);
+    }
+    const WorldLightingSummary summary = SummarizeWorldLighting(scene, true);
+    REQUIRE(summary.HasBounds == true);
+    CHECK(summary.LightCount == 0);
+    CHECK(summary.DisabledLightCount == 1);
+    CHECK(summary.HasEnvironment == false);
+    CHECK(summary.EmissiveObjectCount == 1);
+    // One-sided radiance one over 0.005 m2.
+    CHECK(summary.EmittedLumens == Catch::Approx(math::kPi * 0.005).epsilon(1e-4));
+    REQUIRE(summary.HasSunDirection == true);
+    CHECK(math::Length(summary.SunDirectionWorld) == Catch::Approx(1).epsilon(1e-5));
+    const WorldLightingCoverage coverage = DescribeWorldLighting(summary);
+    INFO(coverage.Warning.toStdString());
+    REQUIRE(coverage.Repair == WorldLightingRepair::AddSun);
+    // An unlit preview never reports the World dark.
+    scene.Lit = false;
+    CHECK(DescribeWorldLighting(SummarizeWorldLighting(scene, true)).Warning.isEmpty() == true);
+
+    // The repair adds a sun that the World extraction presents along the disabled light's direction.
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("sun.world.json"))) == true);
+    const QJsonObject before = workspace.Document().Draft();
+    REQUIRE(workspace.ApplySunRepair(coverage) == true);
+    const QJsonArray entities = workspace.Document().Draft().value(QStringLiteral("entities")).toArray();
+    REQUIRE(entities.size() == 1);
+    CHECK(entities[0].toObject().value(QStringLiteral("name")).toString() == QStringLiteral("Sun"));
+    RenderScene authored;
+    QString error;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), authored, error) == true);
+    REQUIRE(authored.AuthoredLights.Count == 1);
+    const ludus::graphics::renderer::DirectLight& light = authored.AuthoredLights.Lights[0];
+    CHECK(light.Kind == ludus::graphics::renderer::LightKind::Directional);
+    CHECK(light.Intensity == Catch::Approx(DEFAULT_WORLD_SUN_ILLUMINANCE_LUX));
+    math::Vector3 direction;
+    REQUIRE(math::TryNormalize(light.Direction, direction) == math::MathStatus::Success);
+    CHECK(direction.X == Catch::Approx(summary.SunDirectionWorld.X).margin(1e-4));
+    CHECK(direction.Y == Catch::Approx(summary.SunDirectionWorld.Y).margin(1e-4));
+    CHECK(direction.Z == Catch::Approx(summary.SunDirectionWorld.Z).margin(1e-4));
+    workspace.Undo();
+    CHECK(workspace.Document().Draft() == before);
+    // A repair that offers nothing changes nothing.
+    CHECK(workspace.ApplySunRepair(WorldLightingCoverage{}) == false);
+    CHECK(workspace.Document().Draft() == before);
+    workspace.StopPreview();
 }
 
 TEST_CASE("A default World luminaire is scene data with an outline and a working gizmo",
