@@ -38,8 +38,8 @@ TEST_CASE("Every candidate allocation failure preserves the active world", "[wor
     const auto old = session.World().FindAuthored("player-start");
     const auto hash = session.World().GetReplayHash();
     // Two registry arrays, three arrays for each of eight component pools, then the scatter kernel's
-    // candidate scratch and the room's placement storage.
-    constexpr isize CANDIDATE_ALLOCATIONS = 28;
+    // candidate scratch, the room's placement storage and its per-placement harvest/regrow state.
+    constexpr isize CANDIDATE_ALLOCATIONS = 29;
     REQUIRE(session.World().GetPlacements().empty() == false);
     for (isize allocation = 0; allocation < CANDIDATE_ALLOCATIONS; ++allocation)
     {

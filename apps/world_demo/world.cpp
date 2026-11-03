@@ -120,7 +120,10 @@ TickInput InputBridge::Consume() noexcept
     mPending.Cancelled = false;
     return result;
 }
-Status GameWorld::Prepare(const Level& level, uint32 capacity, WorldSeed worldSeed) noexcept
+Status GameWorld::Prepare(const Level& level,
+                          uint32 capacity,
+                          WorldSeed worldSeed,
+                          foundation::BorrowedView<const Tombstone> tombstones) noexcept
 {
     if (ValidateLevel(level) != LevelError::None || capacity < level.EntityCount || capacity > MAX_WORLD_ENTITIES)
     {
@@ -175,16 +178,20 @@ Status GameWorld::Prepare(const Level& level, uint32 capacity, WorldSeed worldSe
     foundation::Sort(mLevel.Entities, mLevel.EntityCount, [](const Recipe& first, const Recipe& second) {
         return first.Id.View() < second.Id.View();
     });
-    return prepareScatter(worldSeed);
+    return prepareScatter(worldSeed, tombstones);
 }
-Status GameWorld::prepareScatter(WorldSeed worldSeed) noexcept
+Status GameWorld::prepareScatter(WorldSeed worldSeed, foundation::BorrowedView<const Tombstone> tombstones) noexcept
 {
     // Headless room scatter (docs/architecture/procedural-content-generation.md#p0-room-scoped-scatter): the
     // recipe borrows this frame's arrays, the kernel writes every layer into one scratch allocation, and only
     // the accepted placements are kept. Nothing here runs again on the tick or extraction path.
     mWorldSeed = worldSeed;
     mPlacements.Clear();
+    mPlacementStates.Clear();
     mPlacementDigest = 0;
+    mRegrowExhaustions = 0;
+    mHasHarvestableLayer = false;
+    mHarvestableLayer = 0;
     mRoom = 0;
     if (mLevel.HasScatter == false)
     {
@@ -198,6 +205,7 @@ Status GameWorld::prepareScatter(WorldSeed worldSeed) noexcept
     }
     procedural::ScatterKeys keys;
     RandomKey cosmeticKey;
+    RandomKey regrowKey;
     if (procedural::TryMakeScatterKeys(worldSeed.Value,
                                        {
                                            .Placement = RANDOM_DOMAIN_SCATTER_PLACEMENT,
@@ -206,6 +214,8 @@ Status GameWorld::prepareScatter(WorldSeed worldSeed) noexcept
                                        },
                                        keys) != procedural::ScatterStatus::Success ||
         foundation::math::TryMakeRandomKey(worldSeed.Value, RANDOM_DOMAIN_SCATTER_COSMETIC, cosmeticKey) !=
+            foundation::math::MathStatus::Success ||
+        foundation::math::TryMakeRandomKey(worldSeed.Value, RANDOM_DOMAIN_SCATTER_REGROW, regrowKey) !=
             foundation::math::MathStatus::Success)
     {
         return Status::InvalidConfiguration;
@@ -348,7 +358,54 @@ Status GameWorld::prepareScatter(WorldSeed worldSeed) noexcept
     }
     mPlacementDigest = digest;
     mCosmeticKey = cosmeticKey.Value;
+    mRegrowKey = regrowKey;
     mRoom = room;
+    // The harvestable layer (at most one, validated) owns the regrow variant bound prepared once here.
+    for (usize index = 0; index < scatter.LayerCount; ++index)
+    {
+        if (scatter.Layers[index].IsHarvestable == true)
+        {
+            mHasHarvestableLayer = true;
+            mHarvestableLayer = static_cast<uint8>(index);
+            if (foundation::math::TryPrepareBound32(static_cast<uint32>(scatter.Layers[index].VariantCount),
+                                                    mRegrowVariantBound) != foundation::math::MathStatus::Success)
+            {
+                return Status::InvalidConfiguration;
+            }
+            break;
+        }
+    }
+    // Per-placement harvest/regrow state: base variant, ordinal 1, not harvested. Capacity reserved so the
+    // appends below cannot allocate; this is the only placement-state allocation.
+    if (mPlacementStates.TryEnsureCapacity(mPlacements.GetSize()) == false)
+    {
+        return Status::AllocationFailure;
+    }
+    for (const Placement& placement : GetPlacements())
+    {
+        const PlacementState state{ .Variant = placement.Variant };
+        if (mPlacementStates.TryAdd(state) == false)
+        {
+            return Status::AllocationFailure;
+        }
+    }
+    // Reapply session tombstones by packed scope. A tombstone for another room never matches a placement here,
+    // because the room ordinal is part of the scope. Nothing is a random draw.
+    for (usize entry = 0; entry < tombstones.GetSize(); ++entry)
+    {
+        const Tombstone& tombstone = tombstones[entry];
+        for (usize index = 0; index < mPlacements.GetSize(); ++index)
+        {
+            if (mPlacements[index].Scope == tombstone.Scope)
+            {
+                mPlacementStates[index].Variant = tombstone.Variant;
+                mPlacementStates[index].RegrowOrdinal = tombstone.RegrowOrdinal;
+                mPlacementStates[index].IsHarvested = tombstone.IsHarvested;
+                mPlacementStates[index].RegrowAtTick = 0;
+                break;
+            }
+        }
+    }
     return Status::Success;
 }
 Status GameWorld::Spawn(const Recipe& recipe, EntityId& output) noexcept
@@ -851,7 +908,96 @@ Status GameWorld::Gameplay(TickInput input, Name& nextLevel) noexcept
             Stage(EventKind::Exit, mTransforms.Find(entity)->Current);
         }
     }
+    // Decide harvests and due regrows from authoritative state; Commit applies them.
+    harvestAndSchedule();
     return Status::Success;
+}
+void GameWorld::harvestAndSchedule() noexcept
+{
+    // Decide harvests and due regrows from authoritative state only; the mutation happens in Commit.
+    // Reads the player's committed position and each placement's lattice position and drawn extent. It never
+    // reads interpolation, a camera or a cosmetic sample, so rendering cannot harvest a placement.
+    mPendingHarvestCount = 0;
+    mPendingRegrowCount = 0;
+    if (mHasHarvestableLayer == false || mPlacements.GetSize() == 0)
+    {
+        return;
+    }
+    const bool isPlayerActive = mRegistry.IsActive(mPlayer);
+    const Vec2 playerPosition = isPlayerActive == true ? mTransforms.Find(mPlayer)->Current : Vec2{};
+    const Vec2 playerHalf = isPlayerActive == true ? mColliders.Find(mPlayer)->HalfExtent : Vec2{};
+    const float32 units = static_cast<float32>(mLevel.Scatter.UnitsPerMetre);
+    const uint64 committingTick = mTick + 1;
+    for (usize index = 0; index < mPlacements.GetSize(); ++index)
+    {
+        const Placement& placement = mPlacements[index];
+        PlacementState& state = mPlacementStates[index];
+        if (placement.Layer != mHarvestableLayer)
+        {
+            continue;
+        }
+        if (state.IsHarvested == true)
+        {
+            if (committingTick >= state.RegrowAtTick)
+            {
+                mPendingRegrows[mPendingRegrowCount++] = index;
+            }
+            continue;
+        }
+        if (isPlayerActive == false)
+        {
+            continue;
+        }
+        const ScatterVariantRecipe& variant = mLevel.Scatter.Layers[placement.Layer].Variants[state.Variant];
+        const float32 scale = static_cast<float32>(placement.Scale) / static_cast<float32>(SCATTER_SCALE_UNIT);
+        const Vec2 placementPosition{static_cast<float32>(placement.LatticeX) / units,
+                                     static_cast<float32>(placement.LatticeY) / units};
+        const Vec2 placementHalf{variant.HalfExtent.X * scale, variant.HalfExtent.Y * scale};
+        if (Overlap(playerPosition, playerHalf, placementPosition, placementHalf) == true)
+        {
+            mPendingHarvests[mPendingHarvestCount++] = index;
+        }
+    }
+}
+void GameWorld::commitHarvestAndRegrow() noexcept
+{
+    // Apply the harvests and regrows decided in Gameplay, in ascending placement index. This is the only place
+    // a regrow ordinal advances (docs/architecture/randomness.md#milestone-1-procedural-placement).
+    const uint64 committedTick = mTick + 1;
+    for (usize i = 0; i < mPendingHarvestCount; ++i)
+    {
+        PlacementState& state = mPlacementStates[mPendingHarvests[i]];
+        state.IsHarvested = true;
+        state.RegrowAtTick = committedTick + REGROW_DELAY_TICKS;
+    }
+    for (usize i = 0; i < mPendingRegrowCount; ++i)
+    {
+        PlacementState& state = mPlacementStates[mPendingRegrows[i]];
+        if (state.IsHarvested == false)
+        {
+            continue;
+        }
+        // An ordinal that would pass UINT32_MAX fails the regrow; the placement stays harvested, unchanged.
+        if (state.RegrowOrdinal == std::numeric_limits<uint32>::max())
+        {
+            ++mRegrowExhaustions;
+            continue;
+        }
+        const uint64 scope = mPlacements[mPendingRegrows[i]].Scope;
+        uint32 variant = 0;
+        if (foundation::math::TrySampleBounded(mRegrowKey,
+                                               RandomAddress{scope, state.RegrowOrdinal, REGROW_VARIANT_DIMENSION},
+                                               mRegrowVariantBound,
+                                               variant) != foundation::math::MathStatus::Success)
+        {
+            // Sampler exhaustion (65536 rejections) leaves the placement harvested and every output unchanged.
+            continue;
+        }
+        state.Variant = static_cast<uint8>(variant);
+        state.IsHarvested = false;
+        state.RegrowAtTick = 0;
+        ++state.RegrowOrdinal;
+    }
 }
 Status GameWorld::Commit() noexcept
 {
@@ -956,6 +1102,9 @@ Status GameWorld::Commit() noexcept
     }
     mRegistry.SetStructuralPhase(false);
     mCommandCount = 0;
+    // Harvest tombstones and regrow ordinals are world mutations applied in the Commit phase, after the
+    // structural commands and only when the tick commits.
+    commitHarvestAndRegrow();
     return Status::Success;
 }
 Status GameWorld::RunTick(TickInput input) noexcept
@@ -1158,9 +1307,16 @@ bool GameWorld::Extract(float32 alpha,
     // presentation-only cosmetic domain at event zero and never enters simulation state or the replay hash.
     const float32 units = static_cast<float32>(mLevel.Scatter.UnitsPerMetre);
     const RandomKey cosmeticKey{mCosmeticKey};
-    for (const Placement& placement : GetPlacements())
+    for (usize placementIndex = 0; placementIndex < mPlacements.GetSize(); ++placementIndex)
     {
-        const ScatterVariantRecipe& variant = mLevel.Scatter.Layers[placement.Layer].Variants[placement.Variant];
+        const Placement& placement = mPlacements[placementIndex];
+        const PlacementState& state = mPlacementStates[placementIndex];
+        // A harvested placement is suppressed until it regrows; a regrown one draws its current variant.
+        if (state.IsHarvested == true)
+        {
+            continue;
+        }
+        const ScatterVariantRecipe& variant = mLevel.Scatter.Layers[placement.Layer].Variants[state.Variant];
         const float32 scale = static_cast<float32>(placement.Scale) / static_cast<float32>(SCATTER_SCALE_UNIT);
         const float32 tint =
             COSMETIC_TINT_FLOOR +
@@ -1313,6 +1469,7 @@ uint64 GameWorld::GetReplayHash() const noexcept
             mix(layer.Candidates);
             mix(layer.MinimumScale);
             mix(layer.MaximumScale);
+            mix(layer.IsHarvestable == true ? uint64{1} : uint64{0});
             mix(layer.VariantCount);
             for (usize variant = 0; variant < layer.VariantCount; ++variant)
             {
@@ -1328,8 +1485,9 @@ uint64 GameWorld::GetReplayHash() const noexcept
         }
     }
     mix(mPlacements.GetSize());
-    for (const Placement& placement : GetPlacements())
+    for (usize placementIndex = 0; placementIndex < mPlacements.GetSize(); ++placementIndex)
     {
+        const Placement& placement = mPlacements[placementIndex];
         mix(placement.Scope);
         mix(static_cast<uint32>(placement.LatticeX));
         mix(static_cast<uint32>(placement.LatticeY));
@@ -1337,7 +1495,14 @@ uint64 GameWorld::GetReplayHash() const noexcept
         mix(placement.Scale);
         mix(placement.Layer);
         mix(placement.Variant);
+        // Harvest and regrow are simulation state and enter the replay hash; cosmetic tints do not.
+        const PlacementState& state = mPlacementStates[placementIndex];
+        mix(state.IsHarvested == true ? uint64{1} : uint64{0});
+        mix(state.RegrowOrdinal);
+        mix(state.Variant);
+        mix(state.RegrowAtTick);
     }
+    mix(mRegrowExhaustions);
     name(mNextLevel);
     EntityId entities[MAX_WORLD_ENTITIES] = {};
     usize count = 0;
@@ -1577,7 +1742,10 @@ Status Session::PollLoad() noexcept
     Status status = Status::Success;
     if (mStage == LoadStage::Preparing)
     {
-        status = mCandidate.Prepare(mDefinition, MAX_WORLD_ENTITIES, Seed);
+        status = mCandidate.Prepare(mDefinition,
+                                    MAX_WORLD_ENTITIES,
+                                    Seed,
+                                    foundation::BorrowedView<const Tombstone>(mTombstones, mTombstoneCount));
         if (status == Status::Success)
         {
             mStage = LoadStage::Building;
@@ -1598,12 +1766,54 @@ Status Session::PollLoad() noexcept
     }
     return status;
 }
+void Session::recordTombstones() noexcept
+{
+    // Snapshot the outgoing active world's harvested/regrown placements, so re-entering its room reapplies them.
+    // Each scope updates its entry in place; the store holds at most one tombstone per placement.
+    const std::span<const Placement> placements = mActive.GetPlacements();
+    const std::span<const PlacementState> states = mActive.GetPlacementStates();
+    for (usize index = 0; index < placements.size(); ++index)
+    {
+        const PlacementState& state = states[index];
+        // A placement at its base state (never harvested, ordinal 1, base variant) needs no record.
+        if (state.IsHarvested == false && state.RegrowOrdinal == 1 && state.Variant == placements[index].Variant)
+        {
+            continue;
+        }
+        const Tombstone tombstone
+        {
+            .Scope = placements[index].Scope,
+            .RegrowOrdinal = state.RegrowOrdinal,
+            .Variant = state.Variant,
+            .IsHarvested = state.IsHarvested,
+        };
+        usize slot = mTombstoneCount;
+        for (usize existing = 0; existing < mTombstoneCount; ++existing)
+        {
+            if (mTombstones[existing].Scope == tombstone.Scope)
+            {
+                slot = existing;
+                break;
+            }
+        }
+        if (slot == mTombstoneCount)
+        {
+            if (mTombstoneCount == sizeof(mTombstones) / sizeof(mTombstones[0]))
+            {
+                continue;
+            }
+            ++mTombstoneCount;
+        }
+        mTombstones[slot] = tombstone;
+    }
+}
 bool Session::Activate() noexcept
 {
     if (mStage != LoadStage::Ready)
     {
         return false;
     }
+    recordTombstones();
     mActive = Move(mCandidate);
     mStage = LoadStage::Empty;
     Driver.Reset();

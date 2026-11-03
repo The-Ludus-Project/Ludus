@@ -669,9 +669,18 @@ LevelError ValidateScatter(const Level& level) noexcept
         }
     }
     uint64 candidates = 0;
+    usize harvestableLayers = 0;
     for (usize index = 0; index < scatter.LayerCount; ++index)
     {
         const ScatterLayerRecipe& layer = scatter.Layers[index];
+        if (layer.IsHarvestable == true)
+        {
+            ++harvestableLayers;
+            if (harvestableLayers > MAX_HARVESTABLE_LAYERS)
+            {
+                return LevelError::InvalidValue;
+            }
+        }
         if (layer.VariantCount > MAX_ROOM_SCATTER_VARIANTS)
         {
             return LevelError::Capacity;

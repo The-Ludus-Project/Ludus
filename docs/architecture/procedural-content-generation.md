@@ -890,4 +890,17 @@ as `scatter`, `scatter_layer` and `scatter_variant` entities, its checked-in
 catalog assigns room ordinals, placements are generated when a room is prepared
 and drawn behind entities, and its tests cover the presentation, content and
 rejection rows of milestone 1 ([guide](../examples/world-demo.md#scatter-placements)).
-Harvesting and regrowth follow there.
+
+**Harvesting and regrowth (delivered).** P0 is delivered. One `scatter_layer`
+may be marked `harvestable` (at most one per room). Overlapping the player with
+one of its placements records a tombstone keyed by the placement's packed scatter
+scope — a world mutation that regeneration reapplies, so it survives leaving and
+re-entering the room. A harvested placement regrows a new variant drawn with
+`TrySampleBounded` at `(regrow domain, placement scope, ordinal, 0)`; the
+ordinal starts at 1 and advances exactly once in the committing tick's `Commit`
+phase, and an ordinal that would pass `UINT32_MAX` fails the regrow and leaves
+the placement harvested. Tombstones and ordinals enter the world replay hash;
+cosmetic samples do not. The randomness architecture owns these event rules
+([milestone 1](randomness.md#milestone-1-procedural-placement)). Deferred to P1
+and later: the recipe codec, provenance, caching, author overrides, cross-layer
+occupancy and checkpoint persistence of tombstones and ordinals.

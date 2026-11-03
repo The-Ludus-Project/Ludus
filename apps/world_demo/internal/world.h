@@ -2,6 +2,8 @@
 #include "level.h"
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/math/addressed_random.hpp>
 #include <ludus/foundation/time/timers.hpp>
 #include <ludus/gameplay/camera/evaluation.hpp>
 #include <ludus/gameplay/world/component_pool.hpp>
@@ -203,20 +205,62 @@ struct Placement final
     uint16 Scale = 0;
     /// Index into Level::Scatter.Layers.
     uint8 Layer = 0;
-    /// Index into that layer's Variants.
+    /// Index into that layer's Variants: the base generation variant (content folded into the golden digest).
     uint8 Variant = 0;
     [[nodiscard]] constexpr bool operator==(const Placement&) const noexcept = default;
+};
+/// Dimension of a regrow variant draw in the regrow domain; the ordinal is the address event.
+inline constexpr uint16 REGROW_VARIANT_DIMENSION = 0;
+/// Ticks after a committed harvest before a placement becomes eligible to regrow (one second at TICKS_PER_SECOND).
+inline constexpr uint64 REGROW_DELAY_TICKS = 60;
+/// Harvest and regrow state of one accepted placement, keyed positionally to the placement's packed scatter scope.
+///
+/// A tombstone is a world mutation, not a random event; only a committed regrow advances RegrowOrdinal and draws a
+/// variant (docs/architecture/randomness.md#milestone-1-procedural-placement).
+struct PlacementState final
+{
+    /// Current variant index to draw: the base variant until a regrow commits a new one.
+    uint8 Variant = 0;
+    /// Regrow ordinal, starting at 1; the next committed regrow draws (regrow domain, scope, RegrowOrdinal, 0),
+    /// then advances this once. It never wraps past UINT32_MAX.
+    uint32 RegrowOrdinal = 1;
+    /// Whether a tombstone suppresses the placement (harvested and not yet regrown).
+    bool IsHarvested = false;
+    /// Tick at which a harvested placement becomes eligible to regrow; meaningful only while IsHarvested.
+    uint64 RegrowAtTick = 0;
+    [[nodiscard]] constexpr bool operator==(const PlacementState&) const noexcept = default;
+};
+/// One session-persistent harvest record, keyed by a placement's packed scatter scope, so a harvested placement
+/// stays harvested across leaving and re-entering its room within a session.
+struct Tombstone final
+{
+    /// Packed scatter scope (persistent identity) of the placement.
+    uint64 Scope = 0;
+    /// Regrow ordinal carried across the room round-trip.
+    uint32 RegrowOrdinal = 1;
+    /// Current variant carried across the room round-trip.
+    uint8 Variant = 0;
+    /// Whether the placement is currently harvested.
+    bool IsHarvested = false;
 };
 class GameWorld final
 {
 public:
     /// Validate the level, reserve pool capacity and, when the level authors a scatter, generate the room's
-    /// placements from `worldSeed` and the checked-in room catalog. The only allocations happen here.
+    /// placements from `worldSeed` and the checked-in room catalog, then reapply any session tombstones. The
+    /// only allocations happen here.
+    /// @param level The validated level to prepare.
+    /// @param capacity Entity capacity, at least the level's entity count and at most MAX_WORLD_ENTITIES.
+    /// @param worldSeed The session root seed recorded with the world; drives every scatter draw.
+    /// @param tombstones Session harvest records for this room, reapplied by packed scope after generation;
+    ///        empty by default. Scopes with no placement are ignored.
     /// @return InvalidConfiguration for an invalid level, capacity, unknown room or unusable recipe;
     /// CapacityExceeded when the recipe enumerates more candidates or accepts more placements than the room
     /// limits; AllocationFailure when storage is unavailable. Nothing is published on failure.
-    [[nodiscard]] Status
-    Prepare(const Level& level, uint32 capacity = MAX_WORLD_ENTITIES, WorldSeed worldSeed = {}) noexcept;
+    [[nodiscard]] Status Prepare(const Level& level,
+                                 uint32 capacity = MAX_WORLD_ENTITIES,
+                                 WorldSeed worldSeed = {},
+                                 foundation::BorrowedView<const Tombstone> tombstones = {}) noexcept;
     [[nodiscard]] Status BuildNext() noexcept;
     [[nodiscard]] bool IsBuilt() const noexcept
     {
@@ -287,6 +331,16 @@ public:
     {
         return mPlacementDigest;
     }
+    /// Harvest and regrow state of each placement, positionally keyed to GetPlacements.
+    [[nodiscard]] std::span<const PlacementState> GetPlacementStates() const noexcept
+    {
+        return {mPlacementStates.GetData(), mPlacementStates.GetSize()};
+    }
+    /// Regrows that failed because the ordinal reached UINT32_MAX; the placements stayed harvested.
+    [[nodiscard]] uint64 GetRegrowExhaustions() const noexcept
+    {
+        return mRegrowExhaustions;
+    }
     /// The seed Prepare recorded.
     [[nodiscard]] WorldSeed GetWorldSeed() const noexcept
     {
@@ -325,7 +379,10 @@ private:
         uint64 Request = 0;
     };
     [[nodiscard]] Status Spawn(const Recipe& recipe, EntityId& output) noexcept;
-    [[nodiscard]] Status prepareScatter(WorldSeed worldSeed) noexcept;
+    [[nodiscard]] Status prepareScatter(WorldSeed worldSeed,
+                                        foundation::BorrowedView<const Tombstone> tombstones) noexcept;
+    void harvestAndSchedule() noexcept;
+    void commitHarvestAndRegrow() noexcept;
     [[nodiscard]] Status Commit() noexcept;
     void Intent(TickInput input) noexcept;
     void MoveAndCollide() noexcept;
@@ -376,8 +433,18 @@ private:
     Phase mPhase = Phase::Construction;
     Name mNextLevel;
     foundation::Array<Placement> mPlacements;
+    foundation::Array<PlacementState> mPlacementStates;
     uint64 mPlacementDigest = 0;
     uint64 mCosmeticKey = 0;
+    foundation::math::RandomKey mRegrowKey;
+    foundation::math::PreparedBound32 mRegrowVariantBound;
+    uint8 mHarvestableLayer = 0;
+    bool mHasHarvestableLayer = false;
+    uint64 mRegrowExhaustions = 0;
+    usize mPendingHarvests[MAX_ROOM_PLACEMENTS] = {};
+    usize mPendingHarvestCount = 0;
+    usize mPendingRegrows[MAX_ROOM_PLACEMENTS] = {};
+    usize mPendingRegrowCount = 0;
     WorldSeed mWorldSeed;
     uint16 mRoom = 0;
 };
@@ -536,12 +603,23 @@ public:
     TickDriver Driver;
     /// Root seed the next candidate world is prepared with; record it with the session.
     WorldSeed Seed;
+    /// Session harvest records across every visited room, so tombstones survive leaving and re-entering a room.
+    [[nodiscard]] std::span<const Tombstone> GetTombstones() const noexcept
+    {
+        return {mTombstones, mTombstoneCount};
+    }
 
 private:
+    /// Snapshot the active world's harvested/regrown placements into the session tombstone store, keyed by scope.
+    void recordTombstones() noexcept;
     GameWorld mActive;
     GameWorld mCandidate;
     Level mDefinition;
     LoadStage mStage = LoadStage::Empty;
     uint64 mTransition = 0;
+    /// Bounded tombstone store across visited rooms; a scope's entry is updated in place, so it is at most one
+    /// per placement of every catalog room.
+    Tombstone mTombstones[MAX_ROOM_PLACEMENTS * 2] = {};
+    usize mTombstoneCount = 0;
 };
 } // namespace ludus::world_demo

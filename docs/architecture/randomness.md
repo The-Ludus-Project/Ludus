@@ -2,8 +2,11 @@
 
 **Status:** Core primitives and the first game consumer implemented; broader
 integration remains proposed. `apps/world_demo` scatters static placements per
-room from a recorded session seed and the checked-in manifest ([milestone 1](#milestone-1-procedural-placement),
-pull requests 1 and 2); harvesting and regrowth (pull request 3) are pending.
+room from a recorded session seed and the checked-in manifest, harvests a
+placement of one authored layer, and regrows it with an advancing ordinal
+([milestone 1](#milestone-1-procedural-placement) is delivered across its three
+pull requests). Deferred to later milestones: the checkpoint state codec
+(milestone 2), weighted selection and automatic seed acquisition.
 FoundationMath ships `addressed_random.hpp`: checked domain-key derivation and
 address construction, Philox4x32-10 raw/block/float samples, and bounded sampling
 with a prepared-bound option. Existing PCG32 v1 behavior remains authoritative in
@@ -817,8 +820,20 @@ rejected before generation, with nothing published.
    describes authoring and limits; `apps/world_demo/tests/scatter_tests.cpp` and
    the browser harness check the isolation rows above, catalog/manifest
    rejection, load failures that publish nothing and one pinned placement digest.
-3. Harvesting and regrowth with the event rules above, and status updates here,
-   in the procedural document and in the world demo guide.
+3. Delivered: harvesting and regrowth with the event rules above. One
+   `scatter_layer` may be marked `harvestable` in the level data (at most one per
+   room); overlapping a placement records a tombstone keyed by its packed scatter
+   scope, which regeneration reapplies, so it survives leaving and re-entering the
+   room. A harvested placement regrows by drawing a new variant with
+   `TrySampleBounded` at `(RANDOM_DOMAIN_SCATTER_REGROW, placement scope, ordinal,
+   0)`; the per-placement ordinal starts at 1 and advances exactly once in the
+   `Commit` phase of the committing tick. Tombstones and ordinals enter the replay
+   hash; cosmetic samples do not. The storage is bounded and allocated when the
+   room is prepared, never on the tick path. `apps/world_demo/tests/harvest_tests.cpp`
+   checks that the ordinal advances exactly once per committed regrow, that the
+   `BuildNext` and fault paths leave it alone, that forced exhaustion fails and
+   preserves the outputs, that tombstones survive a room round-trip, and that the
+   replay hash tracks harvest and regrow but not rendering or cosmetic draws.
 
 ### Research after the initial implementation
 
@@ -864,10 +879,11 @@ test results are evidence about the authors' implementations, not Ludus results.
 | Global or automatic thread-local stream | Hidden coupling and schedule-dependent simulation results; excluded. |
 
 Core primitives, representative native/WebAssembly fixtures, Metal, Vulkan
-and software-adapter WebGPU parity, and the world demo's room scatter are
-implemented. Harvesting/regrowth, the state codec and seed acquisition, broader
-acceptance evidence, performance baselines, hardware WebGPU qualification and
-statistical qualification remain work for the milestones above.
+and software-adapter WebGPU parity, and the world demo's room scatter with
+harvesting and regrowth are implemented (milestone 1 is delivered). The
+checkpoint state codec and seed acquisition, broader acceptance evidence,
+performance baselines, hardware WebGPU qualification and statistical
+qualification remain work for the later milestones above.
 Complete the initial implementation before using the research backlog to propose
 measured improvements.
 
