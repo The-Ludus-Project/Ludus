@@ -157,14 +157,8 @@ def isolate_metal_ray_queries(code):
     return '\n'.join(lines)
 
 
-def restore_spirv_metal_noinline(code, module):
-    """Preserve SPIR-V DontInline through SPIRV-Cross's always_inline helper spelling.
-
-    Large optical kernels retain FFT arrays, BVH stacks and surface-path state. Letting Metal
-    inline their explicitly isolated routines can corrupt live state on Apple GPUs, just as
-    inline native queries do above. Read the function control from the emitted module rather
-    than guessing from function names; unrelated helpers keep their original annotation.
-    """
+def read_spirv_function_controls(module):
+    """Read function identities and debug names without interpreting shader instructions."""
     if len(module) % 4 != 0 or len(module) < 20:
         raise RuntimeError('Malformed SPIR-V function controls')
     words = struct.unpack('<' + 'I' * (len(module) // 4), module)
@@ -174,12 +168,67 @@ def restore_spirv_metal_noinline(code, module):
         count, opcode = words[offset] >> 16, words[offset] & 65535
         if count == 0 or offset + count > len(words):
             raise RuntimeError('Malformed SPIR-V function controls')
-        if opcode == 5 and count >= 3:  # OpName
-            names[words[offset + 1]] = struct.pack('<' + 'I' * (count - 2), *words[offset + 2:offset + count]).split(b'\0')[0].decode()
-        if opcode == 54 and count == 5 and words[offset + 3] & 2:  # OpFunction / DontInline
-            isolated.add(words[offset + 2])
+        if opcode == 5:  # OpName
+            if count < 3:
+                raise RuntimeError('Malformed SPIR-V function controls')
+            try:
+                names[words[offset + 1]] = struct.pack('<' + 'I' * (count - 2), *words[offset + 2:offset + count]).split(b'\0')[0].decode()
+            except UnicodeDecodeError as error:
+                raise RuntimeError('Malformed SPIR-V function debug name') from error
+        if opcode == 54:  # OpFunction
+            if count != 5:
+                raise RuntimeError('Malformed SPIR-V function controls')
+            if words[offset + 3] & 2:  # DontInline
+                isolated.add(words[offset + 2])
         offset += count
-    for identity in isolated:
+    return words, names, isolated
+
+
+# Thanks to the Khronos Group, "SPIR-V Specification", Debug Instructions, OpName:
+# https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpName
+# Debug names have no semantic impact. Give isolated functions unique portable names
+# before translation, rather than guessing how SPIRV-Cross sanitizes Slang namespaces.
+def normalize_spirv_metal_noinline_names(module):
+    """Change only OpName strings, preserving all executable words and function controls."""
+    words, names, isolated = read_spirv_function_controls(module)
+    used = {name for identity, name in names.items() if identity not in isolated}
+    replacements = {}
+    for identity in sorted(isolated):
+        if identity not in names:
+            raise RuntimeError('SPIR-V DontInline function has no debug name; rebuild with the pinned Slang compiler')
+        base = f'KeepLudusFunctionOutOfLine_{identity}'
+        name = base
+        suffix = 0
+        while name in used:
+            suffix += 1
+            name = f'{base}_{suffix}'
+        used.add(name)
+        replacements[identity] = name
+    rewritten = list(words[:5])
+    offset = 5
+    while offset < len(words):
+        count, opcode = words[offset] >> 16, words[offset] & 65535
+        if opcode == 5 and words[offset + 1] in replacements:
+            encoded = replacements[words[offset + 1]].encode() + b'\0'
+            encoded += b'\0' * (-len(encoded) % 4)
+            payload = struct.unpack('<' + 'I' * (len(encoded) // 4), encoded)
+            rewritten.extend([((len(payload) + 2) << 16) | 5, words[offset + 1], *payload])
+        else:
+            rewritten.extend(words[offset:offset + count])
+        offset += count
+    return struct.pack('<' + 'I' * len(rewritten), *rewritten)
+
+
+def restore_spirv_metal_noinline(code, module):
+    """Preserve SPIR-V DontInline through SPIRV-Cross's always_inline helper spelling.
+
+    Large optical kernels retain FFT arrays, BVH stacks and surface-path state. Letting Metal
+    inline their explicitly isolated routines can corrupt live state on Apple GPUs, just as
+    inline native queries do above. Read the function control from the emitted module rather
+    than guessing from function names; unrelated helpers keep their original annotation.
+    """
+    _, names, isolated = read_spirv_function_controls(module)
+    for identity in sorted(isolated):
         name = names.get(identity, '')
         if not re.fullmatch(r'[A-Za-z_]\w*', name):
             raise RuntimeError('SPIR-V DontInline function has no portable name')
@@ -246,6 +295,8 @@ def compile_graph_stage(args, lock):
         reflection.write_text(json.dumps(document))
     interface = raster_interface(document, stage, metal and not translated_compute and not native_pipeline, structured_records=translated_compute or native_pipeline)
     if translated_compute:
+        if metal:
+            intermediate.write_bytes(normalize_spirv_metal_noinline_names(intermediate.read_bytes()))
         from compile_raster import verify_storage_record_strides
         verify_storage_record_strides(intermediate.read_bytes(), interface)
     allowed = ('UniformBuffer', 'StorageRead') if stage == 'fragment' and getattr(args, 'fragment_storage', False) else ('UniformBuffer',)

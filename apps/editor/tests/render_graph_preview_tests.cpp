@@ -835,13 +835,16 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view",
     const QByteArray bytes = ReadFixture();
     QFile names(GetTargetNamesPath(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)));
     REQUIRE(names.open(QIODevice::ReadOnly) == true);
-    const RenderGraphPreviewSource provenance{
-        QByteArrayLiteral("verified-source"),
-        QStringLiteral("Default"),
-        QJsonDocument::fromJson(names.readAll()).object().value(QStringLiteral("generation")).toString().toLatin1(),
-        QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex(),
-        {},
-        42};
+    constexpr ludus::foundation::uint64 SOURCE_REVISION = 42;
+    const RenderGraphPreviewSource provenance =
+    {
+        .InputIdentity = QByteArrayLiteral("verified-source"),
+        .Configuration = QStringLiteral("Default"),
+        .Generation =
+            QJsonDocument::fromJson(names.readAll()).object().value(QStringLiteral("generation")).toString().toLatin1(),
+        .RuntimeIdentity = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex(),
+        .SourceRevision = SOURCE_REVISION,
+    };
     RenderGraphPreview preview = MakePreview();
     REQUIRE(preview.Attach(device.Device, device.Surface) == true);
     preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
@@ -2952,13 +2955,13 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
     constexpr int32 CHART_EYE_DISTANCE_WORLD = 7;
     for (int32 surface = 0; surface < chart.Surfaces.size(); ++surface)
     {
+        const int32 chartRow = surface / CHART_COLUMNS;
         PreviewObject object;
         object.Id = QString::number(surface);
         object.Surface = surface;
         object.Texture = chart.Surfaces[surface].Texture;
         object.Transform.Translation = {static_cast<float32>(surface % CHART_COLUMNS - 2) * TILE_SPACING,
-                                        (CHART_TOP_ROW_CENTER - static_cast<float32>(surface / CHART_COLUMNS)) *
-                                            TILE_SPACING,
+                                        (CHART_TOP_ROW_CENTER - static_cast<float32>(chartRow)) * TILE_SPACING,
                                         0};
         chart.Objects.append(object);
     }

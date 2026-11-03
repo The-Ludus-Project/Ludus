@@ -748,6 +748,70 @@ class BuildTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Malformed'):
             restore_spirv_metal_noinline(code, b'bad')
 
+    def test_translated_metal_normalizes_scoped_duplicate_and_reserved_function_names(self):
+        import sys
+        import struct
+        sys.path.insert(0, str(ROOT / 'cmake/shaders'))
+        from compile_graph_stage import (normalize_spirv_metal_noinline_names,
+                                         read_spirv_function_controls, restore_spirv_metal_noinline)
+
+        def make_name(identity, name):
+            encoded = name.encode() + b'\0'
+            encoded += b'\0' * (-len(encoded) % 4)
+            payload = struct.unpack('<' + 'I' * (len(encoded) // 4), encoded)
+            return [((len(payload) + 2) << 16) | 5, identity, *payload]
+
+        def without_names(module):
+            words = struct.unpack('<' + 'I' * (len(module) // 4), module)
+            retained = list(words[:5])
+            offset = 5
+            while offset < len(words):
+                count, opcode = words[offset] >> 16, words[offset] & 65535
+                if opcode != 5:
+                    retained.extend(words[offset:offset + count])
+                offset += count
+            return retained
+
+        for authored_names in [('GraphSource0.ShadePolygonalLights', 'GraphSource0.TryLoadShadingPoint'),
+                               ('TraceWave', 'TraceWave'), ('thread', 'kernel')]:
+            with self.subTest(names=authored_names):
+                words = [0x07230203, 0x00010300, 0, 8, 0]
+                for identity, name in [(2, authored_names[0]), (3, authored_names[1]),
+                                       (4, 'KeepLudusFunctionOutOfLine_2'), (5, 'Shade')]:
+                    words += make_name(identity, name)
+                for identity, controls in [(2, 2), (3, 2), (5, 0)]:
+                    words += [(5 << 16) | 54, 1, identity, controls, 6]
+                module = struct.pack('<' + 'I' * len(words), *words)
+                normalized = normalize_spirv_metal_noinline_names(module)
+                _, names, isolated = read_spirv_function_controls(normalized)
+                self.assertEqual(isolated, {2, 3})
+                self.assertEqual(names[2], 'KeepLudusFunctionOutOfLine_2_1')
+                self.assertEqual(names[3], 'KeepLudusFunctionOutOfLine_3')
+                self.assertEqual(names[4], 'KeepLudusFunctionOutOfLine_2')
+                self.assertEqual(names[5], 'Shade')
+                self.assertEqual(without_names(normalized), without_names(module))
+                self.assertEqual(normalize_spirv_metal_noinline_names(normalized), normalized)
+                prefix = 'static inline __attribute__((always_inline))\n'
+                code = ''.join(prefix + f'uint {names[identity]}(uint value)\n{{\nreturn value;\n}}\n'
+                               for identity in (2, 3, 5))
+                restored = restore_spirv_metal_noinline(code, normalized)
+                self.assertEqual(restored.count('__attribute__((noinline))\n'), 2)
+                self.assertIn(prefix + 'uint Shade(', restored)
+
+    def test_translated_metal_rejects_missing_or_malformed_function_debug_metadata(self):
+        import sys
+        import struct
+        sys.path.insert(0, str(ROOT / 'cmake/shaders'))
+        from compile_graph_stage import normalize_spirv_metal_noinline_names
+        header = [0x07230203, 0x00010300, 0, 5, 0]
+        words = header + [(5 << 16) | 54, 1, 2, 2, 3]
+        with self.assertRaisesRegex(RuntimeError, 'pinned Slang'):
+            normalize_spirv_metal_noinline_names(struct.pack('<' + 'I' * len(words), *words))
+        for instruction in [[(2 << 16) | 5, 2], [(4 << 16) | 54, 1, 2, 2], [(3 << 16) | 5, 2, 255]]:
+            words = header + instruction
+            with self.subTest(instruction=instruction), self.assertRaisesRegex(RuntimeError, 'Malformed'):
+                normalize_spirv_metal_noinline_names(struct.pack('<' + 'I' * len(words), *words))
+
     def test_forward_metal_arrays_are_opt_in_and_independently_sized(self):
         import sys
         sys.path.insert(0, str(ROOT / 'cmake/shaders'))
