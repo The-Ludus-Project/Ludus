@@ -183,6 +183,7 @@ enum class Kind : uint8
     Music,       ///< Immutable music definition; playback state has a separate owner.
     Mesh,        ///< Immutable CPU triangle geometry; renderer installation is separate.
     CookedScene, ///< Fully resident predecoded scene binding; project assets retain separate identities.
+    CookedGeometry, ///< Cooked curves/surfaces geometry (LUGEO; Ludus::GeometryFormat). Catalog schema version 2+.
 };
 struct Resource final
 {

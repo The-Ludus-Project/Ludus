@@ -345,6 +345,8 @@ add_subdirectory(modules/content/procedural/environment)
 add_subdirectory(third_party/stb)
 add_subdirectory(third_party/mikktspace)
 add_subdirectory(modules/content/scene_cook)
+# Cooked curves/surfaces geometry codecs, loading and publication (G5).
+add_subdirectory(modules/geometry/content)
 add_subdirectory(modules/audio/content)
 add_subdirectory(modules/runtime/resources)
 

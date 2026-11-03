@@ -25,23 +25,23 @@ batch CI. Local verification is close reading against the C++23 contracts plus
 
 ## 2. `Ludus::GeometryContent` (R2)
 
-- [ ] 2.1 Create `modules/geometry/content/` static-library target (public header
+- [x] 2.1 Create `modules/geometry/content/` static-library target (public header
   `geometry_content.h`, `src/` impl, `src/internal/` private helpers, tests).
   Add `add_subdirectory(modules/geometry/content)` in the root `CMakeLists.txt`.
-- [ ] 2.2 Source model: `GeometrySource` owner, authored element structs, handle
+- [x] 2.2 Source model: `GeometrySource` owner, authored element structs, handle
   modes, `GeometryDiagnosticReport` + `Fail*` helpers (no assertions).
-- [ ] 2.3 `ParseGeometrySource` (JSON → owned source; unknown fields/versions,
+- [x] 2.3 `ParseGeometrySource` (JSON → owned source; unknown fields/versions,
   duplicate IDs, invalid constraints → diagnostics) and `WriteGeometrySource`
   (deterministic canonical JSON); round-trip.
-- [ ] 2.4 `CookGeometry`: validate, dry-run prepare, serialize field by field via a
+- [x] 2.4 `CookGeometry`: validate, dry-run prepare, serialize field by field via a
   private `ByteWriter`, back-patch directory, compute digests, cancellation →
   `Cancelled` with no partial output, determinism.
-- [ ] 2.5 `LoadGeometry` + private `BlobReader`: full validation order (size,
+- [x] 2.5 `LoadGeometry` + private `ByteReader`: full validation order (size,
   magic, versions, enums, count products/byte accounting, offsets/alignment/
   overlap, tolerance profile, monotone domains, finiteness, payload digest), then
   build source views and call the FoundationGeometry `TryPrepare*`; structured
   diagnostics; outputs unchanged on failure. `GeometryCacheKey` assembled.
-- [ ] 2.6 Catalog versioned extension: `Kind::CookedGeometry` in `content.h`;
+- [x] 2.6 Catalog versioned extension: `Kind::CookedGeometry` in `content.h`;
   `catalog.cpp` accepts version 1 or 2, maps `"cooked-geometry"` for version ≥ 2,
   extends `Put`/`Write`; keep version-1 catalogs round-tripping.
 
@@ -66,11 +66,11 @@ batch CI. Local verification is close reading against the C++23 contracts plus
 
 ## 4. Tests (R4)
 
-- [ ] 4.1 Format/codec round-trip (source + blob + determinism) using the G0 corpus.
-- [ ] 4.2 Corrupt/overflowing-blob fuzz (sections + count arithmetic), unknown
+- [x] 4.1 Format/codec round-trip (source + blob + determinism) using the G0 corpus.
+- [x] 4.2 Corrupt/overflowing-blob fuzz (sections + count arithmetic), unknown
   fields/versions, duplicate IDs, invalid constraints.
-- [ ] 4.3 Injected allocation-failure suite (`*_alloc_tests`).
-- [ ] 4.4 Catalog version-2 admit / version-1 reject / round-trip.
+- [x] 4.3 Injected allocation-failure suite (`*_alloc_tests`).
+- [x] 4.4 Catalog version-2 admit / version-1 reject / round-trip.
 - [ ] 4.5 Editor tests: undo/redo, failed prepare, cancelled prepare, late
   completion, stale cursor, active+candidate peak memory (offscreen, headless).
 
