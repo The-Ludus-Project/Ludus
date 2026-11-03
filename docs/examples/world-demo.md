@@ -121,7 +121,7 @@ schema-driven fields as every other component:
 | Component | Entity count | Properties |
 | --- | --- | --- |
 | `scatter` | one per world | `units_per_metre` (1 to 1000 lattice units per metre), the region `min_x`/`min_y`/`max_x`/`max_y` in metres inside the level bounds, and `keep_out_margin` in metres |
-| `scatter_layer` | one to four | `layer` (stable ID 0 to 255, unique in the room), `cell_size` and `candidates` per cell (1 to 64) in lattice units, `min_scale`/`max_scale` in thousandths |
+| `scatter_layer` | one to four | `layer` (stable ID 0 to 255, unique in the room), `cell_size` and `candidates` per cell (1 to 64) in lattice units, `min_scale`/`max_scale` in thousandths, and an optional `harvestable` boolean (default false; at most one layer per room) |
 | `scatter_variant` | one to four per layer, in document order | `layer` it joins, `exclusion_radius` in lattice units (at most the cell size), drawn `half_x`/`half_y` in metres at scale 1000, and `red`/`green`/`blue` |
 
 The kernel works on an integer lattice; `units_per_metre` converts authored
@@ -158,12 +158,35 @@ Loading rejects an unusable recipe with nothing published: a repeated layer ID o
 name, a variant naming no layer, an empty region or one outside the level
 bounds, an exclusion radius above its cell size, an inverted scale range, more
 than 4096 candidates (`MAX_ROOM_SCATTER_CANDIDATES`) or more than 128 accepted
-placements (`MAX_ROOM_PLACEMENTS`). A level with a scatter whose room is not in
-the catalog fails preparation with `InvalidConfiguration`; the active world is
-preserved. Levels without a `scatter` component need no catalog entry and draw
-nothing extra. The legacy v1 writer has no scatter representation, so
-`WriteLevel` omits it. Harvesting and regrowth are the next milestone step and
-are not implemented yet.
+placements (`MAX_ROOM_PLACEMENTS`), or marks more than one layer `harvestable`.
+A level with a scatter whose room is not in the catalog fails preparation with
+`InvalidConfiguration`; the active world is preserved. Levels without a `scatter`
+component need no catalog entry and draw nothing extra. The legacy v1 writer has
+no scatter representation, so `WriteLevel` omits it.
+
+#### Harvesting and regrowth
+
+A `scatter_layer` marked `harvestable` lets the player harvest its placements.
+When the player overlaps one during a tick, the world records a tombstone keyed
+by the placement's packed scatter scope (its persistent identity) in the `Commit`
+phase. A tombstone is a world mutation, not a random draw. Because regeneration
+reapplies the session's tombstones when a room is prepared, a harvested placement
+stays harvested across leaving and re-entering the room within a session.
+
+A harvested placement regrows a new variant after `REGROW_DELAY_TICKS`. The new
+variant is drawn with `TrySampleBounded` at `(scatter.regrow domain, placement
+scope, ordinal, 0)`. The per-placement regrow ordinal starts at 1 and advances
+exactly once, in the `Commit` phase of the tick that commits the regrow;
+rebuilding, retrying `BuildNext` or faulting a tick neither advances nor publishes
+it. An ordinal that would pass `UINT32_MAX` fails the regrow with an explicit
+count (`GetRegrowExhaustions`) and leaves the placement harvested; it never wraps.
+
+Tombstones, regrow ordinals and the current harvested/regrown variant enter the
+replay hash; cosmetic tints do not. Harvest and regrow storage is bounded and
+allocated when the room is prepared, so the tick, commit and extraction paths
+allocate nothing. Checkpoint persistence of tombstones and ordinals, weighted
+variant selection and automatic seed acquisition stay deferred to later
+randomness milestones.
 
 `Level` is also directly constructible in code. `Prepare` and `BuildNext` use the
 same world semantics for compiled definitions and decoded JSON. `WriteLevel`

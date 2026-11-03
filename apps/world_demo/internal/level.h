@@ -69,6 +69,9 @@ inline constexpr usize MAX_ROOM_SCATTER_CANDIDATES_PER_CELL = 64;
 inline constexpr usize MAX_ROOM_SCATTER_CANDIDATES = 4096;
 /// Most accepted placements one room keeps; the render frame reserves this many draws for them.
 inline constexpr usize MAX_ROOM_PLACEMENTS = 128;
+/// Most harvestable scatter layers one room may author
+/// (docs/architecture/randomness.md#milestone-1-procedural-placement).
+inline constexpr usize MAX_HARVESTABLE_LAYERS = 1;
 /// Most lattice units per metre an author may choose.
 inline constexpr uint32 MAX_SCATTER_UNITS_PER_METRE = 1000;
 /// Largest lattice magnitude a scatter coordinate may reach (100000 metres at the finest lattice).
@@ -114,6 +117,8 @@ struct ScatterLayerRecipe final
     uint16 MinimumScale = SCATTER_SCALE_UNIT;
     /// Largest scale, at least MinimumScale.
     uint16 MaximumScale = SCATTER_SCALE_UNIT;
+    /// Whether the player can harvest this layer's placements; at most one layer per room may set it.
+    bool IsHarvestable = false;
     ScatterVariantRecipe Variants[MAX_ROOM_SCATTER_VARIANTS] = {};
     usize VariantCount = 0;
     /// Durable identity from a version-2 World record; nil for version-1 content.

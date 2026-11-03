@@ -119,12 +119,19 @@ bool ScatterLayer(JsonValue value, ScatterLayerRecipe& outLayer) noexcept
     uint64 candidates = 0;
     uint64 minimumScale = 0;
     uint64 maximumScale = 0;
-    if (value.Fields({"layer", "cell_size", "candidates", "min_scale", "max_scale"}) == false ||
-        BoundedInteger(value.Get("layer"), 0, MAX_SCATTER_LAYER_ID, id) == false ||
+    // `harvestable` is optional so existing rooms stay valid; when present it extends the strict field set.
+    bool isHarvestable = false;
+    const bool hasHarvestable = value.Get("harvestable").Valid();
+    const bool hasFields =
+        hasHarvestable == true
+            ? value.Fields({"layer", "cell_size", "candidates", "min_scale", "max_scale", "harvestable"})
+            : value.Fields({"layer", "cell_size", "candidates", "min_scale", "max_scale"});
+    if (hasFields == false || BoundedInteger(value.Get("layer"), 0, MAX_SCATTER_LAYER_ID, id) == false ||
         BoundedInteger(value.Get("cell_size"), 1, MAX_SCATTER_UINT16_FIELD, cellSize) == false ||
         BoundedInteger(value.Get("candidates"), 1, MAX_ROOM_SCATTER_CANDIDATES_PER_CELL, candidates) == false ||
         BoundedInteger(value.Get("min_scale"), 1, MAX_SCATTER_UINT16_FIELD, minimumScale) == false ||
-        BoundedInteger(value.Get("max_scale"), 1, MAX_SCATTER_UINT16_FIELD, maximumScale) == false)
+        BoundedInteger(value.Get("max_scale"), 1, MAX_SCATTER_UINT16_FIELD, maximumScale) == false ||
+        (hasHarvestable == true && value.Get("harvestable").Boolean(isHarvestable) == false))
     {
         return false;
     }
@@ -133,6 +140,7 @@ bool ScatterLayer(JsonValue value, ScatterLayerRecipe& outLayer) noexcept
     outLayer.Candidates = static_cast<uint16>(candidates);
     outLayer.MinimumScale = static_cast<uint16>(minimumScale);
     outLayer.MaximumScale = static_cast<uint16>(maximumScale);
+    outLayer.IsHarvestable = isHarvestable;
     return true;
 }
 /// A `scatter_variant` component; `outLayer` is the stable ID of the layer it joins.
