@@ -75,8 +75,9 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
 {
     RenderGraphTemplateRegistry registry;
     QString error;
-    REQUIRE(RenderGraphTemplateRegistry::Parse(ReadCatalog(), registry, error) == true);
+    const bool isCatalogValid = RenderGraphTemplateRegistry::Parse(ReadCatalog(), registry, error);
     CAPTURE(error.toStdString());
+    REQUIRE(isCatalogValid == true);
     CHECK(RenderGraphTemplateRegistry::GetBuiltIn().IsEmpty() == false);
 
     const QVector<RenderGraphTemplate> graphs = registry.GetTemplates(RenderGraphTemplateKind::Graph);
@@ -178,6 +179,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                   QStringLiteral("SliceSamplingLuminaire"),
                                   QStringLiteral("SteinbergPlt"),
                                   QStringLiteral("SteinbergPhysicalOptics"),
+                                  QStringLiteral("WaveTracing"),
                                   QStringLiteral("RaoBlackwellMh"),
                                   QStringLiteral("RestirGi"),
                                   QStringLiteral("GuidedRestirFgPlus"),

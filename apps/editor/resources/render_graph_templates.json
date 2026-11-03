@@ -184,7 +184,7 @@
         "irradiance",
         "neural",
         "point transformer",
-        "Bing Xu"
+        "bing xu"
       ],
       "description": "Encode the selected World once, then decode diffuse irradiance per visible surface. Requires externally exported trained model assets and their fixed training scale in light_transformer/model.json. Metal or Vulkan compute; diffuse materials and mesh emitters only."
     },
@@ -508,7 +508,7 @@
         "irradiance",
         "neural",
         "point transformer",
-        "Bing Xu"
+        "bing xu"
       ],
       "description": "Encode the selected World once, then decode diffuse irradiance per visible surface. Requires externally exported trained model assets and their fixed training scale in light_transformer/model.json. Metal or Vulkan compute; diffuse materials and mesh emitters only.",
       "defaultConfiguration": "LightTransformer"

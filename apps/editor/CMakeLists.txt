@@ -381,14 +381,17 @@ function(ludus_editor_add_default_render_graph target)
               ${restir_template_shaders})
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics wave_tracing restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee)
+            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics wave_tracing restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee light_transformer)
         string(REPLACE "_" "-" template_identity "${template_directory}")
         set(visibility_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/${template_directory}")
-        file(GLOB visibility_template_shaders CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")
+        file(GLOB template_sources CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")
+        if(template_directory STREQUAL "light_transformer")
+            list(APPEND template_sources "${visibility_template}/light_transformer/model.json")
+        endif()
         qt_add_resources(${target} "ludus_${template_directory}_configuration"
             PREFIX "/render-graph/templates/${template_identity}" BASE "${visibility_template}"
             FILES "${visibility_template}/library.lurender.json" "${visibility_template}/main.lushader.json.in"
-                  ${visibility_template_shaders})
+                  ${template_sources})
     endforeach()
     # One catalog lists the built-in graphs, snippets and node types every template picker offers.
     qt_add_resources(${target} ludus_render_graph_templates
