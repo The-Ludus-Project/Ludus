@@ -95,7 +95,7 @@
   ],
   "preset": "linux-clang-development",
   "default_header_avg_ms": 2000,
-  "total_frontend_seconds": 290,
+  "total_frontend_seconds": 320,
   "runner_speed_reference": {
     "$comment": [
       "Budgets are compared with measured times divided by this host's speed factor:",
@@ -185,6 +185,24 @@
     "measured LLVM 23 baseline. Keep header limits, overrides, tests and profile",
     "inputs unchanged. Do not substitute this calibration for include optimization.",
     "Evidence, limitations and next-run verification: docs/development/build-profiling.md."
+  ],
+  "$scene_source_note": [
+    "The hand-readable Ludus scene source module (modules/content/scene_source,",
+    "Ludus::SceneSource) and the scene work merged alongside it (ludus-scene-v1",
+    "importer, Slang scene enums, the shipped Cornell/many-light/large-line and",
+    "occlusion test scenes read through SceneSource) add a new production",
+    "translation unit plus its Catch2 test TU and the importer/renderer test TUs",
+    "to the aggregate graph. The ubuntu-24.04 batch CI profile (run 41717353423)",
+    "measured 290.3 s normalized frontend parsing, 0.3 s over the prior 290 s",
+    "aggregate -- genuine, permanent 'total scales with TU count' growth from the",
+    "new module and its tests, not a heavy include leaking into a public header",
+    "(every ranked project header stayed well under its 2000 ms limit: rhi/",
+    "renderer public headers 101-321 ms normalized). Raise the aggregate from",
+    "290 to 320 s, ~10% headroom over the observed normalized figure, following",
+    "the existing calibration policy. Per-header limits, overrides, exclusions,",
+    "profile inputs and tests are UNCHANGED. Re-measure on the next CI Build-time",
+    "budget job summary and tighten toward the observed figure; do NOT raise",
+    "further to mask a real regression (ADR 0005 / AGENTS.md)."
   ],
   "$runner_speed_note": [
     "Hosted ubuntu-24.04 runners parsed the unchanged graph between 0.94x and 2.10x",

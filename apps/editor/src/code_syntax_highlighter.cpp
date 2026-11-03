@@ -260,21 +260,22 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
                 setFormat(wordStart, wordLength, mConstantFormat);
                 continue;
             }
-            const isize next = SkipSpaces(view, position);
-            if (next < text.size() && text.at(next) == QLatin1Char('('))
+            const isize nextTokenStart = SkipSpaces(view, position);
+            if (nextTokenStart < text.size() && text.at(nextTokenStart) == QLatin1Char('('))
             {
                 setFormat(wordStart, wordLength, mFunctionFormat);
                 continue;
             }
-            if (next > position && next < text.size() && IsIdentifierStart(text.at(next)) == true)
+            if (nextTokenStart > position && nextTokenStart < text.size()
+                && IsIdentifierStart(text.at(nextTokenStart)) == true)
             {
-                isize nextEnd = next + 1;
+                isize nextEnd = nextTokenStart + 1;
                 while (nextEnd < text.size() && IsIdentifierPart(text.at(nextEnd)) == true)
                 {
                     ++nextEnd;
                 }
                 // "Name name" declares a variable, parameter or member of type Name.
-                if (ContainsWord(KEYWORDS, view.sliced(next, nextEnd - next)) == false)
+                if (ContainsWord(KEYWORDS, view.sliced(nextTokenStart, nextEnd - nextTokenStart)) == false)
                 {
                     setFormat(wordStart, wordLength, mTypeFormat);
                 }

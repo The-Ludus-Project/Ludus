@@ -27,6 +27,7 @@ constexpr float64 COVERED_FRACTION_TOLERANCE = 1e-9;
 }
 } // namespace
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): distinct receiver point and surface normal.
 float64 ComputeLambertProjectedSolidAngle(const OcclusionPolygon& polygon,
                                           math::Vector3d receiverWorld,
                                           math::Vector3d normalWorld) noexcept
@@ -49,6 +50,7 @@ float64 ComputeLambertProjectedSolidAngle(const OcclusionPolygon& polygon,
     return math::Abs(sum) / 2;
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): distinct subject and clip polygons.
 bool TryClipConvexPolygon(const OcclusionPolygon& subject,
                           const OcclusionPolygon& clip,
                           OcclusionPolygon& outPolygon) noexcept
