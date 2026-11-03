@@ -1038,6 +1038,8 @@ TEST_CASE("local smoke test: a licensed scene imports through the editor catalog
         CHECK(masked == 17);
         CHECK(indices == 8516880);
         CHECK(assembled.Scene.GetSize() <= MAX_ASSET_BYTES);
+        // About 527 records from 1,131 sources: one input map per record took about 59 MiB.
+        CHECK(imported.Catalog.GetSize() < MAX_METADATA_BYTES);
     }
     if (entry.filename() == "NewSponza_Main_glTF_003.gltf")
     {
@@ -1053,11 +1055,13 @@ TEST_CASE("local smoke test: a licensed scene imports through the editor catalog
     std::filesystem::remove_all(work, ignored);
 }
 
-TEST_CASE("Catalogs larger than the 1 MiB metadata limit still import", "[scene_assets]")
+TEST_CASE("Best-effort catalog records share one source digest and large catalogs still import",
+          "[scene_assets][limits]")
 {
-    // Every catalog record carries its import's full source_inputs map, so the catalog grows with
-    // resources x source files. Included parts with distinct materials each keep their own
-    // texture, material and mesh (LUSCN version 5), so a hundred parts exceed 1 MiB.
+    // Included parts with distinct materials each keep their own texture, material and mesh
+    // (LUSCN version 5), so this import has hundreds of records and over a hundred sources.
+    // Repeating the input map in every record grew the catalog with resources x source files:
+    // these records would need several MiB, and full Bistro passed MAX_CATALOG_BYTES.
     constexpr int PART_COUNT = 112;
     const std::filesystem::path work = MakeWorkDirectory();
     const std::filesystem::path project = work / "project";
@@ -1101,15 +1105,70 @@ TEST_CASE("Catalogs larger than the 1 MiB metadata limit still import", "[scene_
     const bool isImported = OperateEditorScene(request, options, imported, error);
     INFO(Describe(error));
     REQUIRE(isImported);
-    CHECK(imported.Catalog.GetSize() > MAX_METADATA_BYTES);
-    CHECK(imported.Catalog.GetSize() <= MAX_CATALOG_BYTES);
+    detail::JsonTree catalog;
+    detail::JsonIndex catalogRoot = detail::NO_JSON_NODE;
+    content::MessageText message;
+    REQUIRE(detail::ParsePythonJson(ToSpan(imported.Catalog), catalog, catalogRoot, message) == true);
+    // JsonTree::GetCount does not accept a missing node; require each shape before counting it.
+    const detail::JsonIndex resources = catalog.GetMember(catalogRoot, "resources");
+    REQUIRE(resources != detail::NO_JSON_NODE);
+    REQUIRE(catalog.GetKind(resources) == detail::JsonKind::Object);
+    std::string inputsDigest;
+    usize inputsBytes = 0;
+    for (usize index = 0; index < catalog.GetCount(resources); ++index)
+    {
+        const detail::JsonIndex record = catalog.GetValue(resources, index);
+        if (catalog.IsString(catalog.GetMember(record, "kind"), "scene") == true)
+        {
+            const std::string manifestBytes =
+                ReadWhole(project / std::string(catalog.GetText(catalog.GetMember(record, "path"))));
+            detail::JsonTree manifest;
+            detail::JsonIndex manifestRoot = detail::NO_JSON_NODE;
+            REQUIRE(detail::ParsePythonJson(ToSpan(manifestBytes), manifest, manifestRoot, message) == true);
+            const detail::JsonIndex inputs = manifest.GetMember(manifestRoot, "inputs");
+            REQUIRE(inputs != detail::NO_JSON_NODE);
+            REQUIRE(manifest.GetKind(inputs) == detail::JsonKind::Object);
+            REQUIRE(manifest.GetCount(inputs) > static_cast<usize>(PART_COUNT));
+            Array<uint8> canonicalInputs;
+            REQUIRE(detail::WriteCanonicalJson(manifest, inputs, canonicalInputs) == true);
+            inputsDigest = HexOf(ToText(canonicalInputs));
+            inputsBytes = canonicalInputs.GetSize();
+        }
+    }
+    REQUIRE(inputsDigest.empty() == false);
+    const usize recordCount = catalog.GetCount(resources);
+    CHECK(recordCount > 3 * static_cast<usize>(PART_COUNT));
+    for (usize index = 0; index < recordCount; ++index)
+    {
+        INFO(catalog.GetKey(resources, index));
+        const detail::JsonIndex build = catalog.GetMember(catalog.GetValue(resources, index), "build");
+        REQUIRE(build != detail::NO_JSON_NODE);
+        CHECK(catalog.GetMember(build, "source_inputs") == detail::NO_JSON_NODE);
+        CHECK(catalog.IsString(catalog.GetMember(build, "source_inputs_sha256"), inputsDigest) == true);
+        const detail::JsonIndex schemaNode = catalog.GetMember(build, "schema");
+        REQUIRE(schemaNode != detail::NO_JSON_NODE);
+        Array<uint8> schema;
+        REQUIRE(detail::WriteCanonicalJson(catalog, schemaNode, schema) == true);
+        CHECK(ToText(schema) == "2\n");
+    }
+    // The map repeated per record would pass the 1 MiB metadata limit; one digest each stays far below it.
+    CHECK(recordCount * inputsBytes > MAX_METADATA_BYTES);
+    CHECK(imported.Catalog.GetSize() < MAX_METADATA_BYTES);
     const std::string candidate = GetResponseMember(imported.Response, "level");
     request.Operation = EditorSceneOperation::CommitImport;
     request.Level = ToSpan(candidate);
     request.Catalog = ToSpan(imported.Catalog);
     EditorSceneResult committed;
     REQUIRE(OperateEditorScene(request, options, committed, error));
-    // The published catalog reads back for assembly.
+    // A catalog beyond the metadata limit (such as one written with per-record input maps)
+    // still reads back for assembly.
+    {
+        std::ofstream file(project / "assets" / "catalog.json", std::ios::binary | std::ios::app);
+        const std::string padding(MAX_METADATA_BYTES, ' ');
+        file.write(padding.data(), static_cast<std::streamsize>(padding.size()));
+        file.close();
+        REQUIRE(file.good() == true);
+    }
     request.Operation = EditorSceneOperation::Assemble;
     request.Catalog = {};
     EditorSceneResult assembled;

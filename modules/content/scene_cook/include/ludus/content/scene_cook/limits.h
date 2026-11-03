@@ -30,11 +30,12 @@ inline constexpr usize MAX_ASSET_BYTES = usize{384} * 1024 * 1024;
 inline constexpr usize MAX_RESIDENT_CLOSURE_BYTES = usize{512} * 1024 * 1024;
 /// Largest level or metadata document in bytes.
 inline constexpr usize MAX_METADATA_BYTES = usize{1024} * 1024;
-/// Largest project catalog (assets/catalog.json) in bytes. Every artifact's build
-/// record carries the full source_inputs digest map of its import (it feeds the
-/// frozen artifact key), so a catalog grows with resources x source files:
-/// two imports of ~800-file pbrt scenes already pass 1 MiB. Matches the
-/// artifact limit rather than the small-document limit.
+/// Largest project catalog (assets/catalog.json) in bytes. Imports record one digest
+/// of their source-input map per artifact, but records of the frozen
+/// reference profile and of earlier imports carry the full map (it feeds their
+/// artifact keys), so such catalogs grow with resources x source files: two imports
+/// of ~800-file pbrt scenes already pass 1 MiB. Matches the artifact limit rather
+/// than the small-document limit.
 inline constexpr usize MAX_CATALOG_BYTES = usize{64} * 1024 * 1024;
 
 } // namespace ludus::content::scene_cook
