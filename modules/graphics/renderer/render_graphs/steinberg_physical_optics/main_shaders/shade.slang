@@ -974,32 +974,11 @@ bool TryMakeConnection(SceneContext scene,
 
 /// The camera path from the recorded hit: emission seen directly, then for every vertex a connection and a
 /// continuation, whose light (emission or the environment) is weighted against the connection by the power heuristic.
-// Thanks to the Slang authors, core module noinline attribute reference:
-// https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
-// The wave and radiometric passes share one out-of-line path tracer, so the merged ray kernel holds one copy. Slang
-// ignores [noinline] on a function with an inout parameter, so the body takes the query context by value and returns
-// it through an out parameter behind TracePath, as the salesin-jarosz-lines template does.
-[noinline] float3 TracePathOutOfLine(SceneContext scene,
-                                     RayLaunch launch,
-                                     bool isWave,
-                                     RayQueryContext queriesIn,
-                                     out RayQueryContext outQueries)
-{
-    RayQueryContext queries = queriesIn;
-    float3 radiance = TracePathBody(scene, launch, isWave, queries);
-    outQueries = queries;
-    return radiance;
-}
-
+// Inlined into the wave and radiometric passes. Behind an out-of-line value/out query boundary in the merged Metal
+// kernel, its out-of-line EstimateEndpoint calls corrupted the tracer's live query context on an Apple M5: pixels
+// latched failures without a reason, in counts that varied between identical runs. Two copies keep the kernel far
+// below the 2 MiB artifact limit, and EstimateEndpoint's beam transport stays shared.
 float3 TracePath(SceneContext scene, RayLaunch launch, bool isWave, inout RayQueryContext queries)
-{
-    RayQueryContext updated;
-    float3 radiance = TracePathOutOfLine(scene, launch, isWave, queries, updated);
-    queries = updated;
-    return radiance;
-}
-
-float3 TracePathBody(SceneContext scene, RayLaunch launch, bool isWave, inout RayQueryContext queries)
 {
     ShadingPoint shadingPoint;
     float3 viewWorld;
