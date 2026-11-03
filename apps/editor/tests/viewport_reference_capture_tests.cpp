@@ -654,6 +654,10 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
         view.OrthographicCamera = false;
     }
     const int32 requestedSamples = qEnvironmentVariableIntValue("LUDUS_REFERENCE_TEST_SAMPLES");
+    // LUDUS_REFERENCE_TEST_MAX_DEPTH=<1..64> matches a source renderer's path depth, for example 64 for maxdepth 65.
+    const int32 requestedDepth = qEnvironmentVariableIntValue("LUDUS_REFERENCE_TEST_MAX_DEPTH");
+    REQUIRE((requestedDepth >= 0 && static_cast<uint32>(requestedDepth) <= MAXIMUM_REFERENCE_DEPTH));
+    constexpr uint32 DEFAULT_SUPPLIED_DEPTH = 8;
     constexpr uint32 DEFAULT_SUPPLIED_SAMPLES = 64;
     constexpr int64 SUPPLIED_CAPTURE_TIMEOUT_MILLISECONDS = 600000;
     REQUIRE(preview.Start() == true);
@@ -676,7 +680,7 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
         }
         ViewportReferenceSettings settings;
         settings.Samples = requestedSamples > 0 ? static_cast<uint32>(requestedSamples) : DEFAULT_SUPPLIED_SAMPLES;
-        settings.MaxDepth = 8;
+        settings.MaxDepth = requestedDepth > 0 ? static_cast<uint32>(requestedDepth) : DEFAULT_SUPPLIED_DEPTH;
         settings.Traversal = traversal;
         ViewportReferenceCapture capture;
         REQUIRE(capture.Start(preview.GetDevice(), preview.GetSurface(), scene, view, extent, settings, error) == true);

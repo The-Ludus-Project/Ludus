@@ -2952,7 +2952,11 @@ LUSCN v7 and its existing indexed GPU table already carry alpha, IOR and thickne
 no format extension is needed for this restricted medium. The cooker resolves
 explicit scalar `eta`/`thickness` and rejects scattering albedo, scattering textures,
 anisotropy, smooth interfaces, IOR below one, and nondefault `maxdepth`/`nsamples`.
-An explicit RGB zero albedo and default controls are admitted. Storage may retain
+An explicit RGB zero albedo and default controls are admitted. The best-effort pbrt
+importer types the same admitted coatings, accepting any `nsamples` because it only
+changes the estimator's variance, and leaves the others on legacy terms with
+`MATERIAL_APPROXIMATED` ([best-effort import](../development/best-effort-scene-import.md#how-it-is-approximated)).
+Storage may retain
 parameters outside the renderer's supported profile; reference material admission
 rejects those inputs. Shader packages must be rebuilt for scene-kernel ABI 11 and
 reference kernel ABI 5. Capture profile 6 separates these results from older

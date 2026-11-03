@@ -284,7 +284,8 @@ and per-texel roughness. The IR already holds, and the cook reports dropping:
 
 | pbrt | Ludus |
 | --- | --- |
-| `diffuse`, `coateddiffuse` | base colour, roughness from the coat |
+| `diffuse` | typed Lambertian `Diffuse` with the base colour; raster and render graphs shade it as roughness 1 |
+| `coateddiffuse` | base colour and roughness from the coat. A rough, isotropic, non-scattering coat (GGX alpha at least 0.001, scalar `eta` of at least 1, zero `albedo`, default `maxdepth` 10) keeps the typed `CoatedDiffuse` layer with its alpha, `eta` and `thickness`, which the [reference tracers](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference) evaluate; `nsamples` only changes their variance. Other coats, including pbrt's default smooth one, keep the legacy GGX/Lambert terms with `MATERIAL_APPROXIMATED`; those ignore the layer's internal reflection and shade brighter |
 | `conductor`, `coatedconductor` | metallic, colour from the named eta/k table |
 | `dielectric`, `thindielectric` | typed smooth `Dielectric`/`ThinDielectric` with scalar `eta` (default 1.5; a named spectrum keeps 1.5 with `SPECTRUM_APPROXIMATED`); a rough one imports smooth with `ROUGH_TRANSMISSION_APPROXIMATED`. The [reference tracers](../architecture/renderer-systems.md#smooth-dielectric-reference) render the transmission; raster and render graphs shade the legacy fallback, a smooth reflector with base colour 0.04 |
 | `mix` | the first material |
