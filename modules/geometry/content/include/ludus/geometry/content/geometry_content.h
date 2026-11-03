@@ -115,11 +115,17 @@ struct AuthoredPatch final
 class GeometrySource final
 {
 public:
+    /// Construct an empty source with no populated arrays.
     GeometrySource() noexcept = default;
+    /// Transfer the owned arrays; the source becomes empty.
     GeometrySource(GeometrySource&&) noexcept = default;
+    /// Release this document's arrays and take the other's; the source becomes empty.
     GeometrySource& operator=(GeometrySource&&) noexcept = default;
+    /// Copying is disabled: one owner holds the source arrays.
     GeometrySource(const GeometrySource&) = delete;
+    /// Copy assignment is disabled: one owner holds the source arrays.
     GeometrySource& operator=(const GeometrySource&) = delete;
+    /// Release the owned source arrays.
     ~GeometrySource() = default;
 
     GeometrySourceMode Mode = GeometrySourceMode::CubicPath; ///< Which arrays below are populated.
@@ -169,11 +175,17 @@ struct GeometryCacheKey final
 class GeometryLoad final
 {
 public:
+    /// Construct an empty load with no prepared owner.
     GeometryLoad() noexcept = default;
+    /// Transfer the prepared owner and cache key; the source becomes empty.
     GeometryLoad(GeometryLoad&&) noexcept = default;
+    /// Release this load's prepared owner and take the other's; the source becomes empty.
     GeometryLoad& operator=(GeometryLoad&&) noexcept = default;
+    /// Copying is disabled: one owner holds the prepared storage.
     GeometryLoad(const GeometryLoad&) = delete;
+    /// Copy assignment is disabled: one owner holds the prepared storage.
     GeometryLoad& operator=(const GeometryLoad&) = delete;
+    /// Release the prepared owner; borrowed views into it become invalid.
     ~GeometryLoad() = default;
 
     fg::GeometryKindTag Kind = fg::GeometryKindTag::Path; ///< Which prepared owner below is valid.
