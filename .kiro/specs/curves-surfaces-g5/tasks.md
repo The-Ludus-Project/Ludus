@@ -93,15 +93,17 @@ batch CI. Local verification is close reading against the C++23 contracts plus
 
 ## 6. Validation before PR (run what the toolchain allows; defer the rest to CI)
 
-- [ ] 6.1 Build, warning-clean (CI — pinned Clang 23).
-- [ ] 6.2 Unit tests (CI).
-- [ ] 6.3 `./scripts/check --format` (CI — clang-format-23).
-- [ ] 6.4 `python3 scripts/python/source_policy.py --base <merge-base>` (local if
-  Python deps resolve, else CI).
+- [ ] 6.1 Build, warning-clean (CI — pinned Clang 23; unavailable locally).
+- [ ] 6.2 Unit tests (CI — Catch2 and the pinned toolchain unavailable locally).
+- [ ] 6.3 `./scripts/check --format` (CI — clang-format-23 unavailable locally).
+- [x] 6.4 `python3 scripts/python/source_policy.py --base origin/develop` — passes
+  clean on the changed lines.
 - [ ] 6.5 `./scripts/check <preset> --tidy-changed --base origin/develop` (CI).
-- [ ] 6.6 check-docs, strict MkDocs, `scripts/build-api --bootstrap`,
-  `scripts/check-wiki` (CI/local as available).
-- [ ] 6.7 Local `clang++ -fsyntax-only -std=c++23` syntax check of new TUs where
-  includes resolve.
+- [x] 6.6 `check-docs --fix-index` and a strict MkDocs build pass locally;
+  `tools/check_naming.py` passes; docs and fixtures regression suites pass.
+  `scripts/build-api --bootstrap` and `scripts/check-wiki` need the pinned
+  Doxygen and run in CI.
+- [x] 6.7 Local `clang++-15 -fsyntax-only -std=c++2b` syntax check of every new
+  TU and the edited `catalog.cpp` passes (the format static_asserts compile).
 - [ ] 6.8 Open the PR against `develop`; list exactly what ran and what didn't;
   never add `ci:full`; never merge/enqueue; report branch and worktree path.

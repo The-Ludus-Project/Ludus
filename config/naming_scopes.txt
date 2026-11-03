@@ -106,7 +106,6 @@ modules/content/geometry_format
 modules/geometry/content
 apps/editor/src/internal/geometry_document.h
 apps/editor/src/geometry_document.cpp
-apps/editor/src/internal/geometry_preview.h
-apps/editor/src/geometry_preview.cpp
 apps/editor/tests/geometry_document_tests.cpp
 apps/editor/tests/geometry_preview_tests.cpp
+apps/editor/tests/geometry_test_main.cpp
