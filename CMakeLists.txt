@@ -325,6 +325,9 @@ add_subdirectory(modules/content)
 # LUSCN cooked scene format contract shared by SceneCook, the Editor and Resources.
 add_subdirectory(modules/content/scene_format)
 add_subdirectory(modules/content/render_graph_format)
+# LUGEO cooked geometry format contract shared by GeometryContent's cooker,
+# the Editor composer and GeometryContent's loader (curves and surfaces, G5).
+add_subdirectory(modules/content/geometry_format)
 # Hand-readable Ludus scene source (.luscene.json) and its validating reader.
 add_subdirectory(modules/content/scene_source)
 # LUSTR cooked string dictionary contract, validating reader and deterministic writer.
