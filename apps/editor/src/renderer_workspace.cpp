@@ -1303,6 +1303,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             &GraphDisplayFrames::CapacityAvailable,
             &mPreviewPump,
             &ViewportFramePump::Wake);
+    connect(&mPreviewOrNull->GetDisplayFrames(),
+            &GraphDisplayFrames::SelectionOutlineWorkRequested,
+            &mPreviewPump,
+            &ViewportFramePump::Wake);
 #endif
     connect(mLayoutX, &QSpinBox::editingFinished, this, [this]() {
         if (mSelectedNode.isEmpty() == false)

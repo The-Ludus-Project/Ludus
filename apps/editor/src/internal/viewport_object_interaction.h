@@ -10,6 +10,7 @@
 #include <ludus/foundation/math/transform.hpp>
 
 #include "mesh_silhouette.h"
+#include "selection_outline_request.h"
 #include "viewport_object_overlay.h"
 
 #include <QByteArray>
@@ -95,13 +96,27 @@ public:
     void Paint(QPainter& inoutPainter, const QRectF& framePixel);
     /// Project the bounded silhouette outline and handle strokes on the GUI thread. Failure clears output, retaining
     /// buffer capacity. The same geometry feeds the native scene graph and the readback painter.
+    /// While the GPU outline is enabled the silhouette is left out; the luminaire panel and handles remain.
     void BuildOverlay(const QRectF& framePixel, ViewportObjectOverlay& outOverlay);
+    /// Leave the selected mesh's silhouette to the GPU, which draws it into the shown image, instead of building it on
+    /// the CPU. Emits GpuOutlineChanged when the request that follows from the selection changes.
+    void SetGpuOutlineEnabled(bool isEnabled);
+    [[nodiscard]] LUDUS_INLINE bool IsGpuOutlineEnabled() const noexcept
+    {
+        return mIsGpuOutlineEnabled;
+    }
+    /// The outline the GPU should draw for the last overlay build: the selected object's mesh, its candidate placement
+    /// during a drag, and strokes scaled to the shown image.
+    /// @return False when no object with a mesh is selected and shown; outRequest is then unchanged.
+    [[nodiscard]] bool TryGetGpuOutlineRequest(SelectionOutlineRequest& outRequest) const;
     /// Closest triangle under a point; empty means background. Handles perspective and orthographic views.
     /// Objects whose cached mesh bounds the ray misses, or reaches only beyond the nearest hit so far,
     /// skip their triangles. The cache is rebuilt once after each scene identity change.
     [[nodiscard]] QString Pick(QPointF positionPixel, const QRectF& framePixel);
 Q_SIGNALS:
     void Changed();
+    /// The selection outline the GPU should draw changed, possibly to none; read it with TryGetGpuOutlineRequest.
+    void GpuOutlineChanged();
     void SelectionRequested(const QString& id);
     /// Original stable ID and absolute placement arrays (metres, Euler degrees, positive scale).
     void PlacementCommitted(const QString& id, const QJsonObject& placement);
@@ -114,6 +129,8 @@ private:
         /// Rotation ring segments farther from the camera than the pivot draw dimmer.
         bool IsBack = false;
     };
+    /// BuildOverlay without the GPU outline hand-off.
+    void buildOverlayGeometry(const QRectF& framePixel, ViewportObjectOverlay& outOverlay);
     [[nodiscard]] bool describe(const QRectF& framePixel, foundation::math::Matrix4& outWorldToClip) const;
     [[nodiscard]] bool project(foundation::math::Vector3 positionWorld, QPointF& outPositionPixel) const;
     [[nodiscard]] QRectF resolveFrame(const QRectF& framePixel) const;
@@ -167,11 +184,24 @@ private:
     /// Padded mesh-space bounds, one per scene mesh, of the scene whose Identity is mMeshBoundsIdentity.
     foundation::Array<foundation::math::Aabb3> mMeshBoundsMesh;
     QByteArray mMeshBoundsIdentity;
+    /// What the GPU outline draws, as of the last overlay build; Mesh is -1 when nothing is outlined.
+    struct GpuOutline final
+    {
+        QByteArray SceneIdentity;
+        foundation::int32 Mesh = -1;
+        foundation::math::Affine3 MeshToWorld{};
+        foundation::float32 StrokeScale = 1;
+        [[nodiscard]] friend bool operator==(const GpuOutline&, const GpuOutline&) = default;
+    };
+    GpuOutline mGpuOutline;
+    GpuOutline mGpuOutlineReported;
     Tool mTool = Tool::Move;
     foundation::int32 mDragAxis = -1;
     foundation::int32 mHoverAxis = -1;
     bool mCanEdit = false;
     bool mIsActive = true;
     bool mHasPresentedView = false;
+    bool mIsGpuOutlineEnabled = false;
+    bool mHasReportedGpuOutline = false;
 };
 } // namespace ludus::editor

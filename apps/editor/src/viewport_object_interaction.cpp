@@ -69,6 +69,7 @@ constexpr float64 MAXIMUM_GESTURE_PIXELS = 10000000;
 constexpr float32 PICK_BOUNDS_PADDING = 0.0001F;
 /// Ray parameter bound before any hit; finite because FoundationMath intervals reject NaN bounds.
 constexpr float64 UNBOUNDED_PICK_DISTANCE = 1.0e300;
+constexpr float32 COLOR_CHANNEL_MAXIMUM = 255;
 
 /// Axis colours from the design tokens ("always with the letter X/Y/Z", hence the glyph at each tip).
 constexpr StaticArray<QRgb, AXIS_COUNT> AXIS_COLORS{design::GetThemeArgb(design::ThemeColour::AxisX, true),
@@ -779,6 +780,59 @@ void ViewportObjectInteraction::Cancel()
 }
 void ViewportObjectInteraction::BuildOverlay(const QRectF& outerFramePixel, ViewportObjectOverlay& outOverlay)
 {
+    mGpuOutline = {};
+    buildOverlayGeometry(outerFramePixel, outOverlay);
+    if (mIsGpuOutlineEnabled == true && (mHasReportedGpuOutline == false || mGpuOutline != mGpuOutlineReported))
+    {
+        mHasReportedGpuOutline = true;
+        mGpuOutlineReported = mGpuOutline;
+        Q_EMIT GpuOutlineChanged();
+    }
+}
+void ViewportObjectInteraction::SetGpuOutlineEnabled(bool isEnabled)
+{
+    if (isEnabled == mIsGpuOutlineEnabled)
+    {
+        return;
+    }
+    mIsGpuOutlineEnabled = isEnabled;
+    // Report afresh on the next build, and redraw with or without the CPU silhouette.
+    mHasReportedGpuOutline = false;
+    Q_EMIT Changed();
+}
+bool ViewportObjectInteraction::TryGetGpuOutlineRequest(SelectionOutlineRequest& outRequest) const
+{
+    if (mIsGpuOutlineEnabled == false || mGpuOutline.Mesh < 0 || mPreviewOrNull.isNull() == true)
+    {
+        return false;
+    }
+    const RenderScene& scene = mPreviewOrNull->Scene();
+    if (scene.Identity != mGpuOutline.SceneIdentity || mGpuOutline.Mesh >= scene.Meshes.size())
+    {
+        return false;
+    }
+    outRequest.SceneIdentity = mGpuOutline.SceneIdentity;
+    outRequest.Mesh = mGpuOutline.Mesh;
+    outRequest.PositionsMesh = GetRenderSceneMeshPositions(scene, mGpuOutline.Mesh);
+    outRequest.Indices = GetRenderSceneMeshIndices(scene, mGpuOutline.Mesh);
+    outRequest.MeshToWorld = mGpuOutline.MeshToWorld;
+    outRequest.StrokeScale = mGpuOutline.StrokeScale;
+    const auto toVector = [](QRgb color, float32 alpha) {
+        return math::Vector4{static_cast<float32>(qRed(color)) / COLOR_CHANNEL_MAXIMUM,
+                             static_cast<float32>(qGreen(color)) / COLOR_CHANNEL_MAXIMUM,
+                             static_cast<float32>(qBlue(color)) / COLOR_CHANNEL_MAXIMUM,
+                             alpha};
+    };
+    outRequest.OutlineColor = toVector(ViewportObjectOverlay::SELECTION_COLOR, 1);
+    outRequest.CasingColor =
+        toVector(ViewportObjectOverlay::CASING_COLOR,
+                 static_cast<float32>(qAlpha(ViewportObjectOverlay::CASING_COLOR)) / COLOR_CHANNEL_MAXIMUM);
+    outRequest.OutlineWidth = ViewportObjectOverlay::OUTLINE_WIDTH_PIXELS;
+    outRequest.CasingWidth = ViewportObjectOverlay::CASING_WIDTH_PIXELS;
+    return true;
+}
+void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePixel, ViewportObjectOverlay& outOverlay)
+{
     LUDUS_PROFILE_SCOPE(EditorObjectOverlayBuild);
     outOverlay.OutlineLinesPixel.Clear();
     outOverlay.HandleStrokes.Clear();
@@ -802,6 +856,16 @@ void ViewportObjectInteraction::BuildOverlay(const QRectF& outerFramePixel, View
             continue;
         }
         const math::Affine3 meshToWorld = mDragAxis >= 0 ? makeTransform(mCandidate) : object.Transform;
+        if (mIsGpuOutlineEnabled == true)
+        {
+            mGpuOutline.SceneIdentity = scene.Identity;
+            mGpuOutline.Mesh = object.Mesh;
+            mGpuOutline.MeshToWorld = meshToWorld;
+            mGpuOutline.StrokeScale = mImageSize.isEmpty() == false && framePixel.width() > 0
+                                          ? static_cast<float32>(mImageSize.width() / framePixel.width())
+                                          : 1;
+            continue;
+        }
         appendObjectOutline(object, meshToWorld, outOverlay);
     }
     if (mLuminaireHalfExtentWorld > 0 && mPlacement.isEmpty() == false &&

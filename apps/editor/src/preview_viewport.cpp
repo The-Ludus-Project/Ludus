@@ -2079,6 +2079,15 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
             mState->applyStatistics();
         });
     }
+    connect(mObjectInteraction,
+            &ViewportObjectInteraction::GpuOutlineChanged,
+            this,
+            &PreviewViewport::updateGpuSelectionOutline,
+            Qt::QueuedConnection);
+    connect(&mState->ProjectGraph->GetDisplayFrames(),
+            &GraphDisplayFrames::SelectionOutlineAvailabilityChanged,
+            this,
+            &PreviewViewport::updateGpuSelectionOutline);
     connect(mState->ProjectGraph, &RenderGraphPreview::FramePresented, this, [this]() {
         if (isShowingBuiltInView() == false)
         {
@@ -2266,6 +2275,34 @@ void PreviewViewport::applyPresentedView()
     else
     {
         mObjectInteraction->ClearPresentedView();
+    }
+    updateGpuSelectionOutline();
+#endif
+}
+void PreviewViewport::updateGpuSelectionOutline()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->ProjectGraph.isNull() == true)
+    {
+        return;
+    }
+    GraphDisplayFrames& display = mState->ProjectGraph->GetDisplayFrames();
+    // The GPU outline needs the camera of the shown GPU frame and a frame source that is that graph's own images;
+    // the readback and built-in views keep the CPU silhouette.
+    graphics::renderer::ViewDescription presentedView;
+    const bool canUseGpu = isShowingBuiltInView() == false && mFrameSource == &display &&
+                           display.CanDrawSelectionOutline() == true && mState->ProjectGraph->HasGpuFrame() == true &&
+                           mState->ProjectGraph->TryGetPresentedView(presentedView) == true;
+    mObjectInteraction->SetGpuOutlineEnabled(canUseGpu);
+    SelectionOutlineRequest request;
+    if (canUseGpu == true && mObjectInteraction->TryGetGpuOutlineRequest(request) == true)
+    {
+        // A mesh the GPU rejects has no usable triangle, which the CPU silhouette would not mark either.
+        static_cast<void>(display.SetSelectionOutline(request));
+    }
+    else
+    {
+        display.ClearSelectionOutline();
     }
 #endif
 }
