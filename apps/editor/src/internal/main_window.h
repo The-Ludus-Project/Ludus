@@ -46,6 +46,7 @@ namespace ludus::editor
 
 class AudioWorkspace;
 class CodeEditorArea;
+class CodeStatusBar;
 class ConfigurationWorkspace;
 class ContentWorkspace;
 class DocumentWell;
@@ -283,6 +284,7 @@ private:
     bool mIsViewportFocused = false;
     QToolBar* GameToolbar_ = nullptr;
     StatusActivityBar* mActivityBarOrNull = nullptr;
+    CodeStatusBar* mCodeStatusBarOrNull = nullptr;
     QAction* mSessionSeparatorActionOrNull = nullptr;
     // Build output is parsed for the Error List after it stops changing briefly.
     QTimer mBuildErrorsTimer;
