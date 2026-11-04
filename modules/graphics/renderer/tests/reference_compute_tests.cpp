@@ -410,6 +410,7 @@ struct ReferenceRawAovCase final
     bool HasEnvironmentMap = false;
     float32 OpticalWavelengthWorld = 0;
     bool IsFarConventional = false;
+    rr::ReferenceLightSampling LightSampling = rr::ReferenceLightSampling::UniformArea;
 };
 
 void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
@@ -534,6 +535,7 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
     capture.OpticalWavelengthWorld = test.OpticalWavelengthWorld;
     capture.RouletteDepth = test.RouletteDepth;
     capture.Seed = test.Seed;
+    capture.LightSampling = test.LightSampling;
     capture.Environment = {.3F, .4F, .5F};
     capture.EnvironmentTextureOrNull = test.HasEnvironmentMap == true ? &environment : nullptr;
     capture.Lights = lights.GetData();
@@ -571,6 +573,8 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
     Capture(cpu, capture, surface, oracle, oracleInfo);
     Capture(gpu, capture, surface, compute, computeInfo);
     CHECK(computeInfo.Traversal == rr::ReferenceTraversal::GpuCompute);
+    CHECK(computeInfo.LightSampling == test.LightSampling);
+    CHECK(computeInfo.SamplerVersion == oracleInfo.SamplerVersion);
     CHECK(computeInfo.InvalidContributions == 0);
     CHECK(computeInfo.SkippedTriangles > 0);
     CHECK(computeInfo.SkippedTriangles == oracleInfo.SkippedTriangles);
@@ -714,6 +718,27 @@ TEST_CASE("GPU-compute raw AOVs match the CPU oracle: far conventional optical c
         .OpticalWavelengthWorld = 0.001F,
         .IsFarConventional = true,
     });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: resampled mixed lights and textured environment",
+          "[renderer][gpu][reference-compute][resampled-light]")
+{
+    for (const rr::ReferenceLightSampling mode :
+         {rr::ReferenceLightSampling::ResampledProjectedSolidAngle, rr::ReferenceLightSampling::ResampledFormFactor})
+    {
+        CAPTURE(static_cast<uint32>(mode));
+        CheckReferenceRawAovs(
+        {
+            .Name = "resampled mixed lights and textured environment",
+            .IsPerspective = true,
+            .MaxDepth = 4,
+            .RouletteDepth = 2,
+            .Seed = 314159,
+            .LightCount = 4,
+            .HasEnvironmentMap = true,
+            .LightSampling = mode,
+        });
+    }
 }
 
 TEST_CASE("GPU-compute reference matches the CPU oracle on a dense glossy sphere", "[renderer][gpu][reference-compute]")
