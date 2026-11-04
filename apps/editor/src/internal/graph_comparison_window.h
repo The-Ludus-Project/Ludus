@@ -5,6 +5,7 @@
 #include <QTimer>
 #include <QWidget>
 
+class QComboBox;
 class QLabel;
 class QPushButton;
 class QSpinBox;
@@ -21,6 +22,7 @@ public:
     GraphComparisonWindow(RenderPreview& inoutPreview,
                           RendererWorkspace& inoutWorkspace,
                           const ViewportReferenceSettings& reference,
+                          bool hasSelectedTraversal,
                           QWidget* parent);
     ~GraphComparisonWindow() override;
 
@@ -31,6 +33,7 @@ private:
     void refresh();
     void showSelection();
     void setRunning(bool isRunning);
+    void updateTraversalAvailability();
 
     QPointer<RenderPreview> mPreview;
     QPointer<RendererWorkspace> mWorkspace;
@@ -40,12 +43,14 @@ private:
     QTimer mTimer;
     QString mBaselinePath;
     qsizetype mDisplayedResults = 0;
+    bool mHasSelectedTraversal = false;
     QTableWidget* const mCandidates;
     QSpinBox* const mLongSide;
     QSpinBox* const mGraphSamples;
     QSpinBox* const mGraphBounces;
     QSpinBox* const mReferenceSamples;
     QSpinBox* const mReferenceDepth;
+    QComboBox* const mReferenceTraversal;
     QPushButton* const mAdd;
     QPushButton* const mRemove;
     QPushButton* const mChoose;

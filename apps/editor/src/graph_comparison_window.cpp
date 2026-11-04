@@ -1,6 +1,7 @@
 #include "internal/graph_comparison_window.h"
 
 #include "internal/captured_image_view.h"
+#include "internal/reference_capture_window.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
@@ -117,12 +118,13 @@ QImage ReadDisplayBaseline(const QString& path, QString& outError)
 GraphComparisonWindow::GraphComparisonWindow(RenderPreview& inoutPreview,
                                              RendererWorkspace& inoutWorkspace,
                                              const ViewportReferenceSettings& reference,
+                                             bool hasSelectedTraversal,
                                              QWidget* parent)
     : QWidget(parent, Qt::Window), mPreview(&inoutPreview), mWorkspace(&inoutWorkspace), mSettings(reference),
-      mTargets(GetComparisonTargets(inoutWorkspace)), mCandidates(new QTableWidget(this)),
-      mLongSide(new QSpinBox(this)), mGraphSamples(new QSpinBox(this)), mGraphBounces(new QSpinBox(this)),
-      mReferenceSamples(new QSpinBox(this)), mReferenceDepth(new QSpinBox(this)),
-      mAdd(new QPushButton(QStringLiteral("Add graph"), this)),
+      mTargets(GetComparisonTargets(inoutWorkspace)), mHasSelectedTraversal(hasSelectedTraversal),
+      mCandidates(new QTableWidget(this)), mLongSide(new QSpinBox(this)), mGraphSamples(new QSpinBox(this)),
+      mGraphBounces(new QSpinBox(this)), mReferenceSamples(new QSpinBox(this)), mReferenceDepth(new QSpinBox(this)),
+      mReferenceTraversal(new QComboBox(this)), mAdd(new QPushButton(QStringLiteral("Add graph"), this)),
       mRemove(new QPushButton(QStringLiteral("Remove selected"), this)),
       mChoose(new QPushButton(QStringLiteral("Choose display baseline…"), this)),
       mUseRt1(new QPushButton(QStringLiteral("Use RT1"), this)),
@@ -148,6 +150,9 @@ GraphComparisonWindow::GraphComparisonWindow(RenderPreview& inoutPreview,
     mGraphBounces->setSpecialValueText(QStringLiteral("Authored / unknown"));
     ConfigureBudget(*mReferenceSamples, MAXIMUM_REFERENCE_SAMPLES, reference.Samples);
     ConfigureBudget(*mReferenceDepth, MAXIMUM_REFERENCE_DEPTH, reference.MaxDepth);
+    mReferenceTraversal->setObjectName(QStringLiteral("graphComparisonReferenceTraversal"));
+    PopulateReferenceTraversalChoices(*mReferenceTraversal, reference.Traversal);
+    updateTraversalAvailability();
 
     QVBoxLayout* layout = new QVBoxLayout(this);
     QFormLayout* form = new QFormLayout;
@@ -156,11 +161,12 @@ GraphComparisonWindow::GraphComparisonWindow(RenderPreview& inoutPreview,
     form->addRow(QStringLiteral("Graph expected bounces"), mGraphBounces);
     form->addRow(QStringLiteral("RT1 samples/pixel"), mReferenceSamples);
     form->addRow(QStringLiteral("RT1 max depth"), mReferenceDepth);
+    form->addRow(QStringLiteral("RT1 traversal"), mReferenceTraversal);
     layout->addLayout(form);
     QLabel* explanation =
         new QLabel(QStringLiteral("Use compatible authored graph variants for bounce matching. "
                                   "Expected bounces are recorded; actual graph limits are shader-authored "
-                                  "and unknown to capture. RT1 uses the traversal and pixel sampling "
+                                  "and unknown to capture. RT1 uses the pixel sampling "
                                   "selected in Reference Capture."),
                    this);
     explanation->setWordWrap(true);
@@ -246,6 +252,9 @@ GraphComparisonWindow::GraphComparisonWindow(RenderPreview& inoutPreview,
         }
     });
     connect(mCandidates, &QTableWidget::itemSelectionChanged, this, &GraphComparisonWindow::showSelection);
+    connect(mReferenceTraversal, &QComboBox::activated, this, [this]() { mHasSelectedTraversal = true; });
+    connect(&inoutPreview, &RenderPreview::Changed, this, &GraphComparisonWindow::updateTraversalAvailability);
+    connect(&inoutPreview, &RenderPreview::Stopped, this, &GraphComparisonWindow::updateTraversalAvailability);
     connect(&inoutPreview, &RenderPreview::DeviceStopping, this, [this]() {
         mRun.Stop();
         refresh();
@@ -408,6 +417,8 @@ void GraphComparisonWindow::start()
     mSettings.LongSide = static_cast<uint32>(mLongSide->value());
     mSettings.Samples = static_cast<uint32>(mReferenceSamples->value());
     mSettings.MaxDepth = static_cast<uint32>(mReferenceDepth->value());
+    updateTraversalAvailability();
+    mSettings.Traversal = static_cast<graphics::renderer::ReferenceTraversal>(mReferenceTraversal->currentIndex());
     if (mRun.Start(*mPreview, *mWorkspace, mSettings, candidates, baseline, mBaselinePath, directory.path(), error) ==
         false)
     {
@@ -511,6 +522,14 @@ void GraphComparisonWindow::showSelection()
     mDetails->setText(detail.join(QLatin1Char('\n')));
 }
 
+void GraphComparisonWindow::updateTraversalAvailability()
+{
+    if (mRun.IsRunning() == false)
+    {
+        UpdateReferenceTraversalAvailability(*mReferenceTraversal, mPreview.data(), mHasSelectedTraversal == false);
+    }
+}
+
 void GraphComparisonWindow::setRunning(bool isRunning)
 {
     const bool hasFileBaseline = mBaselinePath.isEmpty() == false;
@@ -519,6 +538,7 @@ void GraphComparisonWindow::setRunning(bool isRunning)
     mGraphBounces->setEnabled(isRunning == false);
     mReferenceSamples->setEnabled(isRunning == false && hasFileBaseline == false);
     mReferenceDepth->setEnabled(isRunning == false && hasFileBaseline == false);
+    mReferenceTraversal->setEnabled(isRunning == false && hasFileBaseline == false);
     mCandidates->setEnabled(isRunning == false);
     mAdd->setEnabled(isRunning == false && mCandidates->rowCount() < MAXIMUM_CANDIDATES);
     mRemove->setEnabled(isRunning == false && mCandidates->rowCount() > 0);

@@ -1892,8 +1892,8 @@ geometry. They have no area to hit or emit from.
 
 | Traversal | Use |
 | --- | --- |
-| CPU oracle | Default. Traces a CPU BVH on every platform and admits masked materials. |
-| GPU compute | Runs the same path tracer in compute shaders: BVH traversal, intersection, light and BSDF sampling, shading and accumulation. Needs only GPU compute support, not ray tracing hardware, and admits masked materials. Its image matches the CPU oracle's sample for sample within float32 rounding. |
+| CPU oracle | Default when GPU compute is unavailable. Traces a CPU BVH on every platform and admits masked materials. |
+| GPU compute | Default when supported by the editor build and device. Runs the same path tracer in compute shaders: BVH traversal, intersection, light and BSDF sampling, shading and accumulation. Needs only GPU compute support, not ray tracing hardware, and admits masked materials. Its image matches the CPU oracle's sample for sample within float32 rounding. |
 | Native ray queries | Uses the GPU's ray tracing hardware when the device and build support it, otherwise the option is disabled. Masked materials are rejected. Dense scenes have an open precision qualification item. |
 
 **Trace pixel centres** sends every camera ray through its pixel's centre instead
@@ -2059,8 +2059,11 @@ Set the graph defaults and use a row override where needed. The capture applies
 the sample target to each accumulating graph and records any graph-authored
 warm-up separately. Expected bounces are recorded for matching authored variants.
 The shader controls the actual bounce limit, which is reported as unknown.
-RT1 uses its own sample and depth fields and the traversal and pixel-sampling
-options selected in Reference Capture.
+RT1 uses its own sample, depth and traversal fields. **RT1 traversal** starts
+with the choice from Reference Capture. The default is **GPU compute** when
+available and **CPU oracle** otherwise. You can select any supported traversal.
+The results manifest records the traversal, and the pixel-sampling option comes
+from Reference Capture.
 
 **Run and save…** freezes the current World and camera for the whole run,
 renders one baseline and then runs each candidate with a private producer. The

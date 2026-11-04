@@ -535,6 +535,7 @@ void GraphComparisonRun::writeManifest(const QString& state)
         baseline.insert(QStringLiteral("requestedSamples"), static_cast<qint64>(mSettings.Samples));
         baseline.insert(QStringLiteral("minimumSamples"), static_cast<qint64>(mReferenceInfo.MinimumSamples));
         baseline.insert(QStringLiteral("maxDepth"), static_cast<qint64>(mSettings.MaxDepth));
+        baseline.insert(QStringLiteral("traversal"), DescribeReferenceTraversal(mSettings.Traversal));
         baseline.insert(QStringLiteral("centerRays"), mSettings.ShouldCenterRays);
     }
     QJsonArray worldToClip;
