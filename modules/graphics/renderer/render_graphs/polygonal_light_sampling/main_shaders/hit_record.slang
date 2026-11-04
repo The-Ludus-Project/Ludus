@@ -25,7 +25,7 @@
 // docs/development/render-graph-authoring.md, "Compare BRDF importance sampling for polygonal lights":
 // 0 and 1 jitter the camera ray. Emissive triangle k, in GetEmitter/GetEmitterTriangle order, draws its projected
 // solid angle sample omega_0 at 2 + 4k and 3 + 4k and its LTC sample omega_1 at 4 + 4k and 5 + 4k, for k below
-// MAX_POLYGONAL_LIGHT_COUNT. The single-technique outputs read only their technique's pair, so they share their
+// MAX_LIGHT_SAMPLE_SLOTS. The single-technique outputs read only their technique's pair, so they share their
 // samples with both MIS outputs.
 
 static const uint HIT_RECORD_WORDS = 2;
@@ -34,19 +34,17 @@ static const uint HIT_RECORD_FLAG_FAILED = 2;
 // Camera ray: subpixel jitter x, y.
 static const uint PRIMARY_RANDOM_DIMENSION_FIRST = 0;
 static const uint PRIMARY_RANDOM_DIMENSION_COUNT = 2;
-// Every pass shades each emissive triangle of the scene. Both MIS outputs trace two shadow rays per triangle, so the
-// linked visibility budget bounds the scene to half that many emissive triangles: 8 with the interactive budget of
-// 16, and 128 with the capture profile's 256 (scene_interface.capture_visibility_queries). A larger scene fails
-// explicitly instead of dropping lights; ShadePolygonalLights checks the linked budget. This constant bounds the
-// random dimension layout below to the capture profile's maximum.
+// Other light kinds take one slot each after the emissive triangles, with incident dimensions owned by the shared
+// sampler. The comparison reserves two shadow rays per emissive triangle and one per other light. The linked visibility
+// budget and the fixed random layout are checked in ShadeSceneLights.
 static const uint SHADOW_QUERIES_PER_MIS_LIGHT = 2;
-static const uint MAX_POLYGONAL_LIGHT_COUNT = 128;
+static const uint MAX_LIGHT_SAMPLE_SLOTS = 128;
 static const uint POLYGONAL_LIGHT_DIMENSION_FIRST = PRIMARY_RANDOM_DIMENSION_FIRST + PRIMARY_RANDOM_DIMENSION_COUNT;
 static const uint POLYGONAL_LIGHT_DIMENSIONS_PER_LIGHT = 4;
 // Offsets within one light's four dimensions.
 static const uint PROJECTED_SOLID_ANGLE_SAMPLE_DIMENSION_OFFSET = 0;
 static const uint LTC_SAMPLE_DIMENSION_OFFSET = 2;
-static const uint SHADE_RANDOM_DIMENSION_COUNT = MAX_POLYGONAL_LIGHT_COUNT * POLYGONAL_LIGHT_DIMENSIONS_PER_LIGHT;
+static const uint SHADE_RANDOM_DIMENSION_COUNT = MAX_LIGHT_SAMPLE_SLOTS * POLYGONAL_LIGHT_DIMENSIONS_PER_LIGHT;
 // Shade passes: Fresnel choices of the smooth-glass chain followed from the recorded hit, shared by
 // every pass so all of them shade the same final surface.
 static const uint SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST =

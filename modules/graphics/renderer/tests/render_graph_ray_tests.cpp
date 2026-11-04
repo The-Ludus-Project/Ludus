@@ -4646,8 +4646,7 @@ void RenderPolygonalLightOutputs(PreparedGraph& inoutTemplate,
     }
 }
 
-/// The Cornell room with glossy metal on its white surfaces and no sky: the template lights surfaces only from
-/// polygons, so the comparison with the Veach and Guibas template must not include environment lighting.
+/// The Cornell room with glossy metal on its white surfaces, for comparisons of the mesh estimators alone.
 void MakeRoomGlossyWithoutSky(CornellBox& inoutRoom)
 {
     constexpr float32 GLOSSY_ROUGHNESS = .3F;
@@ -4772,6 +4771,62 @@ TEST_CASE("Polygonal-light clamped optimal MIS has less error than projected sol
                                   << ", balance heuristic=" << balanceLinear
                                   << ", projected solid angle=" << projectedSolidAngleLinear);
     CHECK(clamped < projectedSolidAngle);
+}
+
+TEST_CASE("Polygonal-light outputs illuminate the same receiver from different scene light kinds",
+          "[render-graph][gpu][polygonal-light-sampling][template]")
+{
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    constexpr float32 CEILING_RADIANCE = 12;
+    constexpr float32 SKY_RADIANCE = 2;
+    constexpr float32 SUN_ILLUMINANCE = 2;
+    constexpr usize FRAME_COUNT = 32;
+    room.Materials[CORNELL_LIGHT].Emission = {CEILING_RADIANCE, 0, 0};
+    room.Inputs.Environment = {0, 0, SKY_RADIANCE};
+    renderer::DirectLight sun;
+    sun.SourceId = 1;
+    sun.Kind = renderer::LightKind::Directional;
+    sun.Direction = {0, 0, -1};
+    sun.Color = {0, 1, 0};
+    sun.Intensity = SUN_ILLUMINANCE;
+    room.Inputs.Lights = {&sun, 1};
+
+    PreparedGraph polygonal(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, 1);
+    StaticArray<Array<uint8>, POLYGONAL_LIGHT_OUTPUT_COUNT> pixels;
+    RenderPolygonalLightOutputs(polygonal, fixture, FRAME_COUNT, pixels);
+
+    // The center patch sees the non-emissive back wall. Red is from the ceiling mesh,
+    // green from the directional light, and blue from the environment through the open front.
+    // Average across the patch so the test does not rely on a single pixel sampling that opening.
+    constexpr usize PATCH_RADIUS = 4;
+    for (usize output = 0; output < POLYGONAL_LIGHT_OUTPUT_COUNT; ++output)
+    {
+        INFO("output " << output);
+        REQUIRE(CountFailurePixels(pixels[output]) == 0);
+        uint32 meshTotal = 0;
+        uint32 sunTotal = 0;
+        uint32 skyTotal = 0;
+        uint32 expectedSunTotal = 0;
+        uint32 expectedSkyTotal = 0;
+        for (usize row = HEIGHT / 2 - PATCH_RADIUS; row < HEIGHT / 2 + PATCH_RADIUS; ++row)
+        {
+            for (usize column = WIDTH / 2 - PATCH_RADIUS; column < WIDTH / 2 + PATCH_RADIUS; ++column)
+            {
+                const usize address = GetPixel(column, row);
+                meshTotal += pixels[output][address];
+                sunTotal += pixels[output][address + 1];
+                skyTotal += pixels[output][address + 2];
+                expectedSunTotal += pixels[POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS][address + 1];
+                expectedSkyTotal += pixels[POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS][address + 2];
+            }
+        }
+        CHECK(meshTotal > 0);
+        CHECK(sunTotal > 0);
+        CHECK(skyTotal > 0);
+        CHECK(sunTotal == expectedSunTotal);
+        CHECK(skyTotal == expectedSkyTotal);
+    }
 }
 
 TEST_CASE("The polygonal-light-sampling template fails explicitly beyond its emissive triangle budget",

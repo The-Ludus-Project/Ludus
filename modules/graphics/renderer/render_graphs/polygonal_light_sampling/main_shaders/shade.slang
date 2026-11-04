@@ -1,7 +1,7 @@
 #include "hit_record.slang"
 #include "polygonal_light.slang"
 
-// Passes 1 to 4 (scene compute): first-hit direct lighting from every emissive triangle of the scene, one output per
+// Passes 1 to 4 (scene compute): first-hit direct lighting from every scene light, one output per
 // estimator of Christoph Peters, "BRDF Importance Sampling for Polygonal Lights", ACM Transactions on Graphics 40(4),
 // Article 140, 2021, https://doi.org/10.1145/3450626.3459672 (polygonal_light.slang names the sections):
 // - ShadeClampedOptimalMis: one projected solid angle and one LTC sample per triangle, combined with section 4.3's
@@ -13,16 +13,16 @@
 //   the shading only within the LTC's support; it is not an unbiased image of the scene.
 // As in Peters' renderer (section 6.1), every light is shaded, shadows come from one shadow ray per sample, the
 // estimate is direct lighting only, and the shading normal is clipped to the hemisphere of the view direction. Every
-// pass returns the surface's own emission plus the sum over triangles; a primary miss returns the environment.
-// Analytic lights and the environment do not light surfaces here: the paper's techniques sample polygons. The emission
+// pass returns the surface's own emission plus the sum over lights; a primary miss returns the environment.
+// Analytic lights and the environment use the default incident-light proposal in every output. The emission
 // at the sampled point (including emission maps and sidedness) and its occlusion come from the scene; light samples do
 // not apply the emitter's alpha cutoff, as in the other templates. Each triangle costs up to two visibility queries in
-// the MIS passes and one in the single-technique passes; a scene whose triangles need more shadow queries than the
-// linked budget fails explicitly (hit_record.slang).
+// the MIS passes and one in the single-technique passes. The linked budget reserves the MIS cost and one shadow
+// query per other source for every pass (hit_record.slang).
 
 // Thanks to the Slang authors, core module noinline attribute reference:
 // https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
-// TryLoadShadingPoint, ShadePolygonalLights and SamplePolygonalLightTechnique take the estimator as an argument and
+// TryLoadShadingPoint, ShadeSceneLights and SamplePolygonalLightTechnique take the estimator as an argument and
 // are not inlined, so the four passes share one copy of the per-triangle code; four specialized copies would exceed
 // the package's generated Metal source limit. ShadeEstimator passes them a local copy of queries: SPIR-V logical
 // addressing admits no forwarded pointer, so Slang may still inline a helper whose inout argument is forwarded.
@@ -159,33 +159,77 @@ struct ShadingPoint
     return throughput * emission;
 }
 
-/// The estimator's direct lighting from every emissive triangle. Triangle k of the GetEmitter/GetEmitterTriangle order
-/// reads its own random dimensions (hit_record.slang). Fails explicitly when the triangles need more shadow queries
-/// than the linked visibility budget grants both MIS outputs, or for an invalid triangle, material or polygon.
-[noinline] float3 ShadePolygonalLights(SceneContext scene,
-                                       RayLaunch launch,
-                                       ShadingPoint shadingPoint,
-                                       uint estimator,
-                                       inout RayQueryContext queries)
+/// One conditional sample for a non-mesh source. All four outputs share this estimate.
+float3 SampleNonMeshLight(SceneContext scene,
+                          RayLaunch launch,
+                          ShadingPoint shadingPoint,
+                          uint sourceIndex,
+                          uint dimension,
+                          inout RayQueryContext queries)
 {
-    uint emitterCount = GetEmitterCount(scene);
-    uint lightCount = 0;
-    for (uint emitter = 0; emitter < emitterCount; ++emitter)
-        lightCount += uint(GetEmitter(scene, emitter).y);
-    // Every output fails together: the MIS outputs bound the light count by the linked budget.
-    if (lightCount > MAX_POLYGONAL_LIGHT_COUNT ||
-        lightCount * SHADOW_QUERIES_PER_MIS_LIGHT > queries.MaximumVisibilityQueries)
+    IncidentLightSample light = SampleIncidentLight(scene, sourceIndex, shadingPoint.Hit, launch, dimension, queries);
+    if (light.HasSample == false || light.ConditionalProbability <= 0 || any(light.IncidentCoefficient > 0) == false)
+        return float3(0);
+    float cosine =
+        ComputeStandardBsdfCosine(shadingPoint.Material, shadingPoint.ViewDirectionWorld, light.DirectionWorld);
+    if (cosine <= 0)
+        return float3(0);
+    float3 value;
+    float density;
+    EvaluateStandardBsdf(shadingPoint.Material, shadingPoint.ViewDirectionWorld, light.DirectionWorld, value, density);
+    if (any(value > 0) == false || TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
+        return float3(0);
+    return value * light.IncidentCoefficient * (cosine / light.ConditionalProbability);
+}
+
+/// Sum one estimate per source. Mesh lights use the polygonal techniques on each triangle;
+/// other kinds use the scene's incident-light sampler. Reserve the worst-case budget for all outputs.
+[noinline] float3 ShadeSceneLights(SceneContext scene,
+                                   RayLaunch launch,
+                                   ShadingPoint shadingPoint,
+                                   uint estimator,
+                                   inout RayQueryContext queries)
+{
+    uint sourceCount = GetLightCount(scene);
+    // Each source needs at least one slot and one visibility query; bound the counting pass too.
+    if (sourceCount > MAX_LIGHT_SAMPLE_SLOTS || sourceCount > queries.MaximumVisibilityQueries)
     {
-        // Two shadow queries per emissive triangle: the editor reports the exhausted visibility budget.
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET);
+        return float3(0);
+    }
+    uint triangleCount = 0;
+    uint otherCount = 0;
+    for (uint sourceIndex = 0; sourceIndex < sourceCount; ++sourceIndex)
+    {
+        LightInfo source = GetLightInfo(scene, sourceIndex);
+        if (source.Kind == SceneLightKind::Mesh)
+            triangleCount += uint(GetEmitter(scene, source.EmitterIndex).y);
+        else
+            ++otherCount;
+    }
+    if (triangleCount + otherCount > MAX_LIGHT_SAMPLE_SLOTS ||
+        triangleCount * SHADOW_QUERIES_PER_MIS_LIGHT + otherCount > queries.MaximumVisibilityQueries)
+    {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET);
         return float3(0);
     }
     float3 radiance = float3(0);
-    uint light = 0;
-    for (uint emitter = 0; emitter < emitterCount; ++emitter)
+    uint triangleSlot = 0;
+    // Keep triangle dimensions stable when a non-mesh light is added.
+    uint otherSlot = triangleCount;
+    for (uint sourceIndex = 0; sourceIndex < sourceCount; ++sourceIndex)
     {
+        LightInfo source = GetLightInfo(scene, sourceIndex);
+        if (source.Kind != SceneLightKind::Mesh)
+        {
+            uint dimension = POLYGONAL_LIGHT_DIMENSION_FIRST + otherSlot * POLYGONAL_LIGHT_DIMENSIONS_PER_LIGHT;
+            radiance += SampleNonMeshLight(scene, launch, shadingPoint, sourceIndex, dimension, queries);
+            ++otherSlot;
+            continue;
+        }
+        uint emitter = source.EmitterIndex;
         uint primitiveCount = uint(GetEmitter(scene, emitter).y);
-        for (uint primitive = 0; primitive < primitiveCount; ++primitive, ++light)
+        for (uint primitive = 0; primitive < primitiveCount; ++primitive, ++triangleSlot)
         {
             TriangleData triangle = GetEmitterTriangle(scene, emitter, primitive);
             MaterialSample emitterMaterial = GetMaterial(scene, triangle.MaterialIndex);
@@ -206,7 +250,7 @@ struct ShadingPoint
             // A triangle below the horizon or a one-sided emitter seen from behind needs no shadow ray.
             if (any(polygonalLight.DiffuseCoefficient > 0) == false)
                 continue;
-            uint dimension = POLYGONAL_LIGHT_DIMENSION_FIRST + light * POLYGONAL_LIGHT_DIMENSIONS_PER_LIGHT;
+            uint dimension = POLYGONAL_LIGHT_DIMENSION_FIRST + triangleSlot * POLYGONAL_LIGHT_DIMENSIONS_PER_LIGHT;
             for (uint technique = 0; technique < POLYGONAL_LIGHT_TECHNIQUE_COUNT; ++technique)
             {
                 uint sampleDimension = dimension + (technique == PROJECTED_SOLID_ANGLE_TECHNIQUE
@@ -238,7 +282,7 @@ float3 ShadeEstimator(SceneContext scene, RayLaunch launch, uint estimator, inou
     bool isPrimary = estimator == CLAMPED_OPTIMAL_MIS_ESTIMATOR;
     if (TryLoadShadingPoint(scene, launch, isPrimary, passQueries, shadingPoint, radiance) == true)
     {
-        radiance += shadingPoint.Throughput * ShadePolygonalLights(scene, launch, shadingPoint, estimator, passQueries);
+        radiance += shadingPoint.Throughput * ShadeSceneLights(scene, launch, shadingPoint, estimator, passQueries);
         if (IsFiniteBits(radiance) == false || any(radiance < 0) == true)
         {
             FailSceneQuery(passQueries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);

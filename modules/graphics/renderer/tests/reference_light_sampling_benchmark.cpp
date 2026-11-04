@@ -43,7 +43,7 @@ namespace shaders = ludus::shaders;
 using S = rhi::RasterStatus;
 
 constexpr usize FIELD_GRID = 40;
-constexpr usize FIELD_TILE_COUNT = FIELD_GRID * FIELD_GRID;
+constexpr usize MIXED_LIGHT_FIELD_GRID = 5;
 constexpr usize FIELD_LEVEL_COUNT = 4;
 constexpr usize FIELD_TINT_COUNT = 3;
 constexpr usize FIELD_EMITTER_MATERIAL_COUNT = FIELD_LEVEL_COUNT * FIELD_TINT_COUNT;
@@ -162,29 +162,31 @@ struct QuadMesh final
     }
 };
 
-/// The emitter field's quads, grouped by material. Tiles face down like the Cornell light, with centers 0.05 apart
-/// and sides 0.03 long, as in the template's EmitterFieldRoom.
-void BuildFieldMeshes(StaticArray<QuadMesh, FIELD_MATERIAL_COUNT>& outMeshes)
+/// The emitter field's quads, grouped by material. Tiles face down like the Cornell light. The full grid matches
+/// EmitterFieldRoom, and the sparse grid keeps the same total emissive area.
+void BuildFieldMeshes(usize grid, StaticArray<QuadMesh, FIELD_MATERIAL_COUNT>& outMeshes)
 {
     for (usize quad = 0; quad < ROOM_QUAD_COUNT; ++quad)
     {
         outMeshes[ROOM_QUAD_MATERIALS[quad]].AddQuad(&ROOM_CORNERS_WORLD[quad * QUAD_CORNERS]);
     }
     constexpr float32 TILE_HEIGHT_WORLD = .98F;
-    constexpr float32 TILE_SPACING_WORLD = 2.F / static_cast<float32>(FIELD_GRID);
-    constexpr float32 TILE_FIRST_CENTER_WORLD = -1 + TILE_SPACING_WORLD / 2;
+    const float32 tileSpacingWorld = 2.F / static_cast<float32>(grid);
+    const float32 tileFirstCenterWorld = -1 + tileSpacingWorld / 2;
     constexpr float32 TILE_HALF_SIDE_WORLD = .015F;
-    for (usize tile = 0; tile < FIELD_TILE_COUNT; ++tile)
+    const float32 tileHalfSideWorld =
+        TILE_HALF_SIDE_WORLD * (static_cast<float32>(FIELD_GRID) / static_cast<float32>(grid));
+    for (usize tile = 0; tile < grid * grid; ++tile)
     {
-        const usize row = tile / FIELD_GRID;
-        const usize column = tile % FIELD_GRID;
-        const float32 centerX = TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(column);
-        const float32 centerZ = TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(row);
+        const usize row = tile / grid;
+        const usize column = tile % grid;
+        const float32 centerX = tileFirstCenterWorld + tileSpacingWorld * static_cast<float32>(column);
+        const float32 centerZ = tileFirstCenterWorld + tileSpacingWorld * static_cast<float32>(row);
         const StaticArray<math::Vector3, QUAD_CORNERS> cornersWorld{{
-            {centerX - TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ - TILE_HALF_SIDE_WORLD},
-            {centerX + TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ - TILE_HALF_SIDE_WORLD},
-            {centerX + TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ + TILE_HALF_SIDE_WORLD},
-            {centerX - TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ + TILE_HALF_SIDE_WORLD},
+            {centerX - tileHalfSideWorld, TILE_HEIGHT_WORLD, centerZ - tileHalfSideWorld},
+            {centerX + tileHalfSideWorld, TILE_HEIGHT_WORLD, centerZ - tileHalfSideWorld},
+            {centerX + tileHalfSideWorld, TILE_HEIGHT_WORLD, centerZ + tileHalfSideWorld},
+            {centerX - tileHalfSideWorld, TILE_HEIGHT_WORLD, centerZ + tileHalfSideWorld},
         }};
         // Levels and tints cycle with different periods along and across rows, so neighbors differ in both.
         const usize level = (tile * 5 + row) % FIELD_LEVEL_COUNT;
@@ -204,7 +206,8 @@ struct FieldSession final
 S PrepareFieldSession(rhi::DeviceHandle device,
                       rr::ReferenceTraversal traversal,
                       SurfaceFinish finish,
-                      FieldSession& outSession)
+                      FieldSession& outSession,
+                      usize grid = FIELD_GRID)
 {
     rr::Renderer& renderer = outSession.Renderer;
     rr::Limits limits;
@@ -293,7 +296,7 @@ S PrepareFieldSession(rhi::DeviceHandle device,
                 S::Ready);
     }
     StaticArray<QuadMesh, FIELD_MATERIAL_COUNT> quads;
-    BuildFieldMeshes(quads);
+    BuildFieldMeshes(grid, quads);
     StaticArray<rr::Mesh, FIELD_MATERIAL_COUNT> meshes{};
     StaticArray<rr::SceneItem, FIELD_MATERIAL_COUNT> items{};
     for (usize material = 0; material < FIELD_MATERIAL_COUNT; ++material)
@@ -557,13 +560,15 @@ TEST_CASE("Measure RT1 resampled and uniform-area light sampling error at equal 
         const char* Name = "";
         SurfaceFinish Finish = SurfaceFinish::Diffuse;
         uint32 MaxDepth = 1;
+        bool HasAnalyticAndEnvironment = false;
     };
-    constexpr usize CASE_COUNT = 4;
+    constexpr usize CASE_COUNT = 5;
     constexpr StaticArray<Case, CASE_COUNT> CASES{{
         {"diffuse room, direct lighting", SurfaceFinish::Diffuse, 1},
         {"specular room, direct lighting", SurfaceFinish::Specular, 1},
         {"diffuse room, depth 4", SurfaceFinish::Diffuse, 4},
         {"specular room, depth 4", SurfaceFinish::Specular, 4},
+        {"mixed-light diffuse room, depth 4", SurfaceFinish::Diffuse, 4, true},
     }};
     for (const Case& test : CASES)
     {
@@ -579,7 +584,9 @@ TEST_CASE("Measure RT1 resampled and uniform-area light sampling error at equal 
             rhi::MeasurementAdapter adapter;
             REQUIRE(rhi::GetMeasurementAdapter(device, adapter) == S::Ready);
             FieldSession session;
-            const S prepared = PrepareFieldSession(device, rr::ReferenceTraversal::GpuCompute, test.Finish, session);
+            const usize grid = test.HasAnalyticAndEnvironment == true ? MIXED_LIGHT_FIELD_GRID : FIELD_GRID;
+            const S prepared =
+                PrepareFieldSession(device, rr::ReferenceTraversal::GpuCompute, test.Finish, session, grid);
             if (prepared == S::Unsupported)
             {
                 SKIP("Compute storage is unavailable on this device");
@@ -587,6 +594,19 @@ TEST_CASE("Measure RT1 resampled and uniform-area light sampling error at equal 
             REQUIRE(prepared == S::Ready);
             rr::ReferenceCaptureDescription capture = MakeFieldCapture({GPU_WIDTH, GPU_HEIGHT}, test.MaxDepth);
             capture.Seed = MEASURED_SEED;
+            rr::DirectLight sun;
+            if (test.HasAnalyticAndEnvironment == true)
+            {
+                constexpr float32 SUN_ILLUMINANCE = .8F;
+                constexpr math::Vector3 SKY_RADIANCE{.2F, .25F, .3F};
+                sun.SourceId = 1;
+                sun.Kind = rr::LightKind::Directional;
+                sun.Direction = {0, 0, -1};
+                sun.Intensity = SUN_ILLUMINANCE;
+                capture.Lights = &sun;
+                capture.LightCount = 1;
+                capture.Environment = SKY_RADIANCE;
+            }
             // Timing rounds run UniformArea, each resampled mode, then the resampled modes in reverse and UniformArea
             // again, so drift in machine load or clocks affects every mode alike; each mode's cost is the mean of its
             // two rounds' median dispatch times.
@@ -619,9 +639,9 @@ TEST_CASE("Measure RT1 resampled and uniform-area light sampling error at equal 
             for (usize mode = 0; mode < MODE_COUNT; ++mode)
             {
                 REQUIRE(sampleMilliseconds[mode] > 0);
-                WARN(test.Name << ", " << FIELD_TILE_COUNT * 2 << " emissive triangles, " << GPU_WIDTH << 'x'
-                               << GPU_HEIGHT << ", " << adapter.Name << ": " << GetModeName(MODES[mode])
-                               << " transport kernel " << sampleMilliseconds[mode] << " ms per sample; shadow rays per "
+                WARN(test.Name << ", " << grid * grid * 2 << " emissive triangles, " << GPU_WIDTH << 'x' << GPU_HEIGHT
+                               << ", " << adapter.Name << ": " << GetModeName(MODES[mode]) << " transport kernel "
+                               << sampleMilliseconds[mode] << " ms per sample; shadow rays per "
                                << "pixel " << queries[mode].ShadowRaysPerPixel << ", closest rays per pixel "
                                << queries[mode].ClosestRaysPerPixel);
             }

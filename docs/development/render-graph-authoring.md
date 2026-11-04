@@ -2853,8 +2853,11 @@ The **Peters — BRDF importance sampling for polygonal lights** template
 Every emissive triangle of the scene is shaded with his two techniques, and each
 estimator that combines them is exported as its own image. Unlike the
 [RIS template](#resample-many-area-lights-with-projected-solid-angle-sampling), it
-selects no light: like Peters' renderer (section 6.1), it shades every light, traces
-one shadow ray per sample, and computes direct lighting only. Create it from
+enumerates the scene light list and shades every source. Mesh lights use Peters'
+techniques on their emissive triangles. Directional, point, spot and environment
+lights each use the scene's default incident-light proposal, shared across all
+four outputs. The graph traces one shadow ray per contributing sample and computes
+direct lighting only. Create it from
 **New Render Graph → Template**, or with the CLI:
 
 ```bash
@@ -2922,17 +2925,17 @@ imports both shares one value. The random layout is in
 `main_shaders/hit_record.slang`: dimensions 0–1 jitter the camera ray, and emissive
 triangle `k` draws its projected-solid-angle sample at `2 + 4k` and `3 + 4k` and its
 LTC sample at `4 + 4k` and `5 + 4k`. The single-technique outputs therefore reuse
-the MIS outputs' samples.
+the MIS outputs' samples. Non-mesh lights get slots after all triangles and
+reuse the same sample across the four outputs. The environment reads offsets 1
+and 2 in its slot. Directional, point and spot lights use no random draws.
 
-Each emissive triangle costs two shadow rays in the MIS passes and one in each
-single-technique pass. The technique declares `surface_queries: 1`,
-`visibility_queries: 16` and `capture_visibility_queries: 256`.
-- **Interactive limit:** the viewport may shade at most **eight emissive triangles**.
-- **Capture limit:** a frame capture with the template's capture profile may shade
-  up to **128**.
-- **Beyond the limit:** a larger scene fails explicitly with the failure color rather
-  than dropping lights. The shader checks the light count against whichever budget
-  was linked.
+All outputs reserve two shadow rays per emissive triangle and one per other light,
+so they admit the same scenes. The technique declares `surface_queries: 1`,
+`visibility_queries: 16` and `capture_visibility_queries: 256`. The random layout
+holds up to 128 slots, one per emissive triangle or other source. For an
+emissive-only scene this allows eight triangles in the viewport or 128 in a
+capture. A scene beyond either bound shows the failure color. Reduce the number
+of active light sources or emissive triangles to fit the linked budget.
 
 Cost is linear in the number of lights. Each emissive triangle adds about 15 ns
 per pixel per MIS sample on an Apple M5, so a capture near the 128-triangle limit
@@ -2960,14 +2963,15 @@ Departures from the paper, also listed in `polygonal_light.slang`:
   surface seen from behind stays black, as in the other templates. A normal clipped
   towards the viewer would light such a surface through itself.
 - A sampled direction that misses its triangle in float32 contributes zero.
-- Analytic lights and the environment do not light surfaces. A camera ray that
-  misses the scene shows the environment.
+- The non-mesh contribution uses the ordinary incident-light sampler. A camera
+  ray that misses the scene shows the environment directly.
 - Light samples do not apply the emitter's own alpha cutoff, as in the other
   templates.
 
-The LTC output is not an unbiased image of the scene: the LTC can be zero where the
-BRDF is not (§4.1), so it estimates the shading only within the LTC's support. The
-MIS outputs need the diffuse technique for exactly this reason (§4.2).
+The LTC output estimates mesh lighting only within the LTC's support: the LTC
+can be zero where the BRDF is not (§4.1). The MIS outputs need the diffuse
+technique for exactly this reason (§4.2). All four outputs estimate the same
+non-mesh contribution.
 
 Evidence:
 
@@ -5061,7 +5065,7 @@ sentence.
 
 | Reason | Recorded when |
 | --- | --- |
-| Visibility budget | A shadow ray exceeds `visibility_queries`, including the polygonal-light template's two queries per emissive triangle. |
+| Visibility budget | A shadow ray exceeds `visibility_queries`, including the polygonal-light template's reservation of two per emissive triangle and one per other light. |
 | Surface or line budget | A ray or line query exceeds `surface_queries` or `line_queries`. |
 | Invalid ray | A ray has a non-unit direction or an invalid distance range. |
 | Traversal | The traversal could not finish, such as a full BVH stack. |
