@@ -2135,8 +2135,14 @@ linear baseline, use the offline command below.
 
 The new results folder contains the baseline, individual PNGs and linear
 captures when available, and `comparison.json` with the frozen scene and camera,
-graph routes, actual sample evidence and metrics. A failed row leaves earlier
-results available. Incomplete results with available pixels are labelled as
+graph routes, actual sample evidence and metrics. Each render, difference and
+linear capture shares a filename stem with the row number, graph, configuration
+and output. For example, row 1 of SliceSampling's Default configuration can
+produce `01-SliceSampling--Default--color.png` and
+`01-SliceSampling--Default--color.difference.png`. The manifest keeps the full
+graph label and exact filenames. For older runs, open the manifest in the saved
+comparison viewer to see which graph produced each numbered candidate.
+A failed row leaves earlier results available. Incomplete results with available pixels are labelled as
 diagnostic. **Stop** keeps completed rows and the last readable partial capture.
 
 #### Reopen a saved graph comparison

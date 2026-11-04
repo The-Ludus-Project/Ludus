@@ -23,7 +23,6 @@ inline constexpr foundation::int32 MAXIMUM_GRAPH_COMPARISON_CANDIDATES = 16;
 /// One candidate route and its requested budget. Zero expected bounces means no target was specified.
 struct GraphComparisonCandidate final
 {
-    QString Label;
     RenderGraphCaptureTarget Target{};
     foundation::uint32 Samples = 0;
     foundation::uint32 ExpectedBounces = 0;

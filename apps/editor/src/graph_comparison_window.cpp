@@ -385,16 +385,6 @@ void GraphComparisonWindow::start()
         if (candidate.HasSavedTarget == true)
         {
             candidate.Target = mTargets.at(targetOrNull->currentIndex() - 1);
-            candidate.Label = candidate.Target.GetLabel();
-        }
-        else
-        {
-            const QString configuration = mWorkspace->GetConfiguration();
-            const QString output = graphOrNull->GetOutputTarget();
-            candidate.Label =
-                QStringLiteral("Viewport · %1 · %2")
-                    .arg(configuration.isEmpty() == true ? QStringLiteral("active configuration") : configuration,
-                         output.isEmpty() == true ? QStringLiteral("final output") : output);
         }
         if (candidate.IsDisplayFrame == false)
         {

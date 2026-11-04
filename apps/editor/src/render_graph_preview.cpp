@@ -919,6 +919,10 @@ const QString& RenderGraphPreview::GetRequestedPackagePath() const noexcept
 {
     return mState->RequestedPath;
 }
+const QString& RenderGraphPreview::GetActivePackagePath() const noexcept
+{
+    return mState->Active.PackagePath;
+}
 const QString& RenderGraphPreview::GetRasterFallbackPath() const noexcept
 {
     return mState->RasterFallbackPath;

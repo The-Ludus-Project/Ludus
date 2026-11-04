@@ -2751,10 +2751,9 @@ TEST_CASE("Reference capture window offers the render graph source once the view
     constexpr int32 TEST_EXTENT = 64;
     QImage baseline(TEST_EXTENT, TEST_EXTENT, QImage::Format_RGB32);
     baseline.fill(Qt::black);
-    const QVector<GraphComparisonCandidate> candidates{
-        GraphComparisonCandidate{ .Label = QStringLiteral("first"), .IsDisplayFrame = true },
-        GraphComparisonCandidate{ .Label = QStringLiteral("second"), .IsDisplayFrame = true },
-    };
+    GraphComparisonCandidate viewportCandidate;
+    viewportCandidate.IsDisplayFrame = true;
+    const QVector<GraphComparisonCandidate> candidates{viewportCandidate, viewportCandidate};
     QTemporaryDir results;
     REQUIRE(results.isValid() == true);
     GraphComparisonRun comparison;
@@ -2785,8 +2784,18 @@ TEST_CASE("Reference capture window offers the render graph source once the view
         CHECK(row.value(QStringLiteral("metrics")).toObject().value(QStringLiteral("space")).toString() ==
               QStringLiteral("display"));
     }
-    const QImage first(QDir(results.path()).filePath(QStringLiteral("candidate-1.png")));
-    const QImage second(QDir(results.path()).filePath(QStringLiteral("candidate-2.png")));
+    const QString graph = QFileInfo(GetDefaultRenderGraphRuntime()).completeBaseName();
+    const QString firstStem = QStringLiteral("01-%1--Default--final-output").arg(graph);
+    const QString secondStem = QStringLiteral("02-%1--Default--final-output").arg(graph);
+    const QString firstName = firstStem + QStringLiteral(".png");
+    const QString secondName = secondStem + QStringLiteral(".png");
+    const QString secondDifference = secondStem + QStringLiteral(".difference.png");
+    CHECK(comparison.GetResults().at(0).toObject().value(QStringLiteral("image")).toString() == firstName);
+    CHECK(comparison.GetResults().at(1).toObject().value(QStringLiteral("image")).toString() == secondName);
+    CHECK(comparison.GetResults().at(1).toObject().value(QStringLiteral("difference")).toString() == secondDifference);
+    CHECK(comparison.GetResults().at(1).toObject().value(QStringLiteral("label")).toString().contains(graph) == true);
+    const QImage first(QDir(results.path()).filePath(firstName));
+    const QImage second(QDir(results.path()).filePath(secondName));
     REQUIRE(first.isNull() == false);
     CHECK(first == second);
     world.StopPreview();
@@ -2816,7 +2825,7 @@ TEST_CASE("Reference capture window offers the render graph source once the view
     }
 
     // A missing artifact keeps the rest of the series and its metrics visible.
-    REQUIRE(QFile::remove(QDir(results.path()).filePath(QStringLiteral("candidate-2.difference.png"))) == true);
+    REQUIRE(QFile::remove(QDir(results.path()).filePath(secondDifference)) == true);
     QWidget* incompleteOrNull =
         CreateSavedGraphComparisonView(QDir(results.path()).filePath(QStringLiteral("comparison.json")),
                                        &window,
