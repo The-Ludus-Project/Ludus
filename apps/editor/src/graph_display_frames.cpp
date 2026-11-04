@@ -21,6 +21,7 @@ constexpr usize VERTEX_ATTRIBUTE_COUNT = 1;
 constexpr usize COPY_BINDING_COUNT = 2;
 constexpr usize COPY_RESOURCE_COUNT = 4;
 constexpr foundation::float32 MINIMUM_STROKE_PIXELS = 1;
+constexpr usize BYTES_PER_PIXEL = 4;
 bool IsAccepted(rhi::RasterStatus status) noexcept
 {
     return status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending;
@@ -196,9 +197,13 @@ rhi::RasterStatus GraphDisplayFrames::prepareSlotTexture(DisplaySlot& inoutSlot,
     inoutSlot.Height = height;
     return rhi::RasterStatus::Ready;
 }
+usize GraphDisplayFrames::getSlotLimit() const noexcept
+{
+    return mIsOutlineWanted == true || mClean != mLatest ? DISPLAY_SLOT_COUNT : PLAIN_SLOT_COUNT;
+}
 int32 GraphDisplayFrames::findFreeSlot() const noexcept
 {
-    for (usize i = 0; i < DISPLAY_SLOT_COUNT; ++i)
+    for (usize i = 0; i < getSlotLimit(); ++i)
     {
         const int32 index = static_cast<int32>(i);
         if (mSlots[i].Readers == 0 && index != mLatest && index != mClean && index != mCopying && index != mCompleted &&
@@ -237,7 +242,7 @@ rhi::RasterStatus GraphDisplayFrames::Copy(rhi::SurfaceHandle surface,
     {
         return prepared == rhi::RasterStatus::Pending ? rhi::RasterStatus::NotReady : prepared;
     }
-    for (usize i = 0; i < DISPLAY_SLOT_COUNT; ++i)
+    for (usize i = 0; i < getSlotLimit(); ++i)
     {
         DisplaySlot& slot = mSlots[i];
         if (slot.Readers != 0 || static_cast<int32>(i) == mLatest || static_cast<int32>(i) == mClean)
@@ -591,6 +596,28 @@ void GraphDisplayFrames::ClearSelectionOutline() noexcept
     mOutlineMesh = -1;
     ++mOutlineRevision;
     Q_EMIT SelectionOutlineWorkRequested();
+}
+rhi::RasterStatus GraphDisplayFrames::RequestShownReadback(rhi::ReadbackTicket& outTicket) noexcept
+{
+    if (mHasDevice == false || mLatest < 0)
+    {
+        return rhi::RasterStatus::NotReady;
+    }
+    const DisplaySlot& slot = mSlots[static_cast<usize>(mLatest)];
+    return rhi::RequestTextureReadback(mDevice,
+                                       slot.Texture,
+                                       {0, 0, 0, slot.Width, slot.Height},
+                                       static_cast<usize>(slot.Width) * BYTES_PER_PIXEL,
+                                       outTicket);
+}
+QSize GraphDisplayFrames::GetShownSize() const noexcept
+{
+    if (mHasDevice == false || mLatest < 0)
+    {
+        return {};
+    }
+    const DisplaySlot& slot = mSlots[static_cast<usize>(mLatest)];
+    return {static_cast<int>(slot.Width), static_cast<int>(slot.Height)};
 }
 bool GraphDisplayFrames::HasPendingSelectionOutline() const noexcept
 {

@@ -7,6 +7,9 @@
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/graphics/renderer/selection_outline.hpp>
 #include <ludus/graphics/rhi/graph.h>
+#include <ludus/graphics/rhi/lifetime.h>
+
+#include <QSize>
 
 namespace ludus::editor
 {
@@ -57,6 +60,12 @@ public:
     /// Advance recomposition of the shown image after a request change, between graph copies. Ready when nothing is
     /// outstanding, Pending while composition is in flight, NotReady while a graph copy or free capacity is awaited.
     [[nodiscard]] graphics::rhi::RasterStatus PollSelectionOutline() noexcept;
+    /// Schedule a readback of the shown image's texels, with any outline drawn into it, for inspection and tests.
+    /// Pending once accepted: poll rhi::GetStatus on the ticket, copy with rhi::CopyReadback (rows are
+    /// GetShownSize().width() * 4 bytes), and release the ticket. NotReady when no image is shown.
+    [[nodiscard]] graphics::rhi::RasterStatus RequestShownReadback(graphics::rhi::ReadbackTicket& outTicket) noexcept;
+    /// Pixel size of the shown image, or an empty size when none is shown.
+    [[nodiscard]] QSize GetShownSize() const noexcept;
     /// Whether PollSelectionOutline has work: a request the shown image does not yet reflect, or composition in flight.
     [[nodiscard]] bool HasPendingSelectionOutline() const noexcept;
     [[nodiscard]] bool HasPendingFrame() const noexcept override;
@@ -80,9 +89,10 @@ Q_SIGNALS:
     void SelectionOutlineAvailabilityChanged();
 
 private:
-    /// Three images in flight as before, plus the clean snapshot an outlined image is composed from and one spare while
-    /// the consumer still holds the previous images.
-    static constexpr foundation::usize DISPLAY_SLOT_COUNT = 5;
+    /// Images in flight without an outline; the consumer's backpressure applies at this many.
+    static constexpr foundation::usize PLAIN_SLOT_COUNT = 3;
+    /// With an outline, the clean snapshot it is composed from and one spare join the images in flight.
+    static constexpr foundation::usize DISPLAY_SLOT_COUNT = PLAIN_SLOT_COUNT + 2;
     struct DisplaySlot final
     {
         graphics::rhi::TextureHandle Texture{};
@@ -106,6 +116,8 @@ private:
     prepareSlotTexture(DisplaySlot& inoutSlot, foundation::uint32 width, foundation::uint32 height) noexcept;
     /// Index of a slot that is neither shown, read, copied, composed nor the clean snapshot, or -1.
     [[nodiscard]] foundation::int32 findFreeSlot() const noexcept;
+    /// Slots a new copy or composition may use: all of them only while an outline is wanted or shown.
+    [[nodiscard]] foundation::usize getSlotLimit() const noexcept;
     /// Submit one frame that copies the clean slot into the target slot and draws the outline over it. Pending once
     /// submitted; NotReady to retry; InvalidDescription when nothing can be drawn; another failure disables the
     /// outline.
