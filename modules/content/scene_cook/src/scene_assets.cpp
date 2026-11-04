@@ -706,6 +706,47 @@ private:
     return length >= 1 && length <= MAX_NAME_CODE_POINTS;
 }
 
+/// A zero alpha denotes the source material with no slot override.
+struct CoatingOverride final
+{
+    float32 Alpha = 0;
+    float32 Eta = 0;
+    float32 Thickness = 0;
+
+    [[nodiscard]] bool operator==(const CoatingOverride&) const noexcept = default;
+};
+
+[[nodiscard]] bool ReadCoatingOverride(const JsonTree& tree, JsonIndex node, CoatingOverride& outCoating) noexcept
+{
+    if (node == NO_JSON_NODE)
+    {
+        outCoating = {};
+        return true;
+    }
+    static constexpr std::string_view KEYS[] = {"alpha", "eta", "thickness"};
+    PythonNumber alpha;
+    PythonNumber eta;
+    PythonNumber thickness;
+    if (tree.HasExactKeys(node, KEYS) == false ||
+        IsAuthoredNumber(tree, tree.GetMember(node, "alpha"), alpha) == false ||
+        IsAuthoredNumber(tree, tree.GetMember(node, "eta"), eta) == false ||
+        IsAuthoredNumber(tree, tree.GetMember(node, "thickness"), thickness) == false)
+    {
+        return false;
+    }
+    const CoatingOverride coating{static_cast<float32>(alpha.ToFloat()),
+                                  static_cast<float32>(eta.ToFloat()),
+                                  static_cast<float32>(thickness.ToFloat())};
+    if (coating.Alpha < format::LUDUS_COATING_MIN_ALPHA || coating.Alpha > 1 || coating.Eta < 1 ||
+        coating.Eta > format::MAX_MATERIAL_OPTICAL_CONSTANT || coating.Thickness < 0 ||
+        coating.Thickness > format::MAX_MATERIAL_OPTICAL_CONSTANT)
+    {
+        return false;
+    }
+    outCoating = coating;
+    return true;
+}
+
 [[nodiscard]] std::string_view GetObjectId(const JsonTree& tree, JsonIndex objects, usize index) noexcept
 {
     return tree.GetText(tree.GetMember(tree.GetItem(objects, index), "id"));
@@ -736,13 +777,23 @@ private:
         return inoutFailure.FailInvalid("Level object limit");
     }
     static constexpr std::string_view OBJECT_KEYS[] = {"id", "name", "parent", "mesh", "material", "transform"};
+    static constexpr std::string_view COATED_OBJECT_KEYS[] =
+        {"id", "name", "parent", "mesh", "material", "transform", "coating"};
     const usize objectCount = tree.GetCount(objects);
     for (usize i = 0; i < objectCount; ++i)
     {
         const JsonIndex item = tree.GetItem(objects, i);
-        if (tree.HasExactKeys(item, OBJECT_KEYS) == false)
+        const JsonIndex coating = tree.GetMember(item, "coating");
+        if ((coating == NO_JSON_NODE ? tree.HasExactKeys(item, OBJECT_KEYS)
+                                     : tree.HasExactKeys(item, COATED_OBJECT_KEYS)) == false)
         {
             return inoutFailure.FailInvalid("Invalid level object fields");
+        }
+        CoatingOverride parameters;
+        if (ReadCoatingOverride(tree, coating, parameters) == false)
+        {
+            return inoutFailure.FailInvalid("Invalid coating override. Set GGX alpha, IOR and optical thickness within "
+                                            "the coated-diffuse profile.");
         }
         if (IsUuidString(tree, tree.GetMember(item, "id")) == false)
         {
@@ -2558,6 +2609,69 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     return writer.IsOk() == true ? true : inoutFailure.FailOutOfMemory();
 }
 
+struct MaterialVariant final
+{
+    usize SourceIndex = 0;
+    CoatingOverride Coating;
+};
+
+/// Preserve source material ordering and share records for identical slot overrides.
+[[nodiscard]] bool CollectMaterialVariants(const JsonTree& tree,
+                                           JsonIndex objects,
+                                           const Array<std::string_view>& materials,
+                                           Array<MaterialVariant>& outVariants,
+                                           Array<uint32>& outObjectMaterials,
+                                           Failure& inoutFailure) noexcept
+{
+    const usize objectCount = tree.GetCount(objects);
+    Array<uint32> sourceIndices;
+    if (sourceIndices.TryResize(objectCount) == false || outObjectMaterials.TryResize(objectCount) == false)
+    {
+        return inoutFailure.FailOutOfMemory();
+    }
+    for (usize objectIndex = 0; objectIndex < objectCount; ++objectIndex)
+    {
+        const JsonIndex object = tree.GetItem(objects, objectIndex);
+        sourceIndices[objectIndex] = FindIndex(materials, tree.GetText(tree.GetMember(object, "material")));
+    }
+    for (usize sourceIndex = 0; sourceIndex < materials.GetSize(); ++sourceIndex)
+    {
+        const usize firstVariant = outVariants.GetSize();
+        for (usize objectIndex = 0; objectIndex < objectCount; ++objectIndex)
+        {
+            if (sourceIndices[objectIndex] != sourceIndex)
+            {
+                continue;
+            }
+            const JsonIndex object = tree.GetItem(objects, objectIndex);
+            CoatingOverride coating;
+            if (ReadCoatingOverride(tree, tree.GetMember(object, "coating"), coating) == false)
+            {
+                return inoutFailure.FailInvalid("Invalid coating override");
+            }
+            usize variantIndex = firstVariant;
+            while (variantIndex < outVariants.GetSize() && outVariants[variantIndex].Coating != coating)
+            {
+                ++variantIndex;
+            }
+            if (variantIndex == outVariants.GetSize())
+            {
+                if (variantIndex == format::IMPORT_LIMITS.Materials)
+                {
+                    return inoutFailure.FailInvalid(
+                        "Scene material capacity exceeded. Undo a slot coating override or reuse an existing coating.");
+                }
+                if (outVariants.TryAdd(MaterialVariant{sourceIndex, coating}) == false)
+                {
+                    return inoutFailure.FailOutOfMemory();
+                }
+            }
+            outObjectMaterials[objectIndex] = static_cast<uint32>(variantIndex);
+        }
+    }
+    return true;
+}
+
 /// assemble(root, level, current) after its closure(root, level, current).
 /// @pre The caller holds a shared scene lock spanning ComputeClosure and this call, so both
 /// read one catalog and artifact snapshot. The closure has already verified every artifact.
@@ -2585,6 +2699,12 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     if (meshes.IsEmpty() == true)
     {
         return true;
+    }
+    Array<MaterialVariant> variants;
+    Array<uint32> objectMaterials;
+    if (CollectMaterialVariants(levelTree, objects, materials, variants, objectMaterials, inoutFailure) == false)
+    {
+        return false;
     }
     Array<Document> descriptions;
     if (descriptions.TryResize(materials.GetSize()) == false)
@@ -2643,7 +2763,7 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     // or more meshes, materials, textures or objects than the resident reference
     // profile admits. It implies the version 4 indexed meshes and lighting records.
     bool isVersion5 = isVersion6 == true || meshes.GetSize() > format::RESIDENT_REFERENCE_LIMITS.Meshes ||
-                      materials.GetSize() > format::RESIDENT_REFERENCE_LIMITS.Materials ||
+                      variants.GetSize() > format::RESIDENT_REFERENCE_LIMITS.Materials ||
                       textures.GetSize() > format::RESIDENT_REFERENCE_LIMITS.Textures ||
                       objectCount > format::RESIDENT_REFERENCE_LIMITS.Objects;
     for (const std::string_view identity : meshes)
@@ -2657,7 +2777,7 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     const format::BundleLimits& limits = format::GetBundleLimits(isVersion6 == true   ? format::VERSION_6
                                                                  : isVersion5 == true ? format::VERSION_5
                                                                                       : format::VERSION_4);
-    if (meshes.GetSize() > limits.Meshes || materials.GetSize() > limits.Materials ||
+    if (meshes.GetSize() > limits.Meshes || variants.GetSize() > limits.Materials ||
         textures.GetSize() > limits.Textures || objectCount > limits.Objects)
     {
         return inoutFailure.FailInvalid(
@@ -2685,12 +2805,12 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     }
     uint64 bundleBytes =
         sizeof(format::Header) +
-        materials.GetSize() * (isVersion7 == true
-                                   ? sizeof(format::MaterialRecordV6) + format::MATERIAL_EXTENSION_V7_BYTES
-                               : isVersion6 == true ? sizeof(format::MaterialRecordV6)
-                               : isVersion5 == true ? sizeof(format::MaterialRecordV5)
-                               : isVersion3 == true ? sizeof(format::MaterialRecordV3)
-                                                    : sizeof(format::MaterialRecordV2)) +
+        variants.GetSize() * (isVersion7 == true
+                                  ? sizeof(format::MaterialRecordV6) + format::MATERIAL_EXTENSION_V7_BYTES
+                              : isVersion6 == true ? sizeof(format::MaterialRecordV6)
+                              : isVersion5 == true ? sizeof(format::MaterialRecordV5)
+                              : isVersion3 == true ? sizeof(format::MaterialRecordV3)
+                                                   : sizeof(format::MaterialRecordV2)) +
         objectCount * (isVersion3 == true ? sizeof(format::ObjectRecordV3) : sizeof(format::ObjectRecord)) +
         lighting.GetSize();
     if (isVersion3 == true && lighting.IsEmpty() == true)
@@ -2758,7 +2878,7 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
                                                 : format::VERSION_2;
     writer.AppendUint32(version);
     writer.AppendUint32(static_cast<uint32>(meshes.GetSize()));
-    writer.AppendUint32(static_cast<uint32>(materials.GetSize()));
+    writer.AppendUint32(static_cast<uint32>(variants.GetSize()));
     writer.AppendUint32(static_cast<uint32>(textures.GetSize()));
     writer.AppendUint32(static_cast<uint32>(objectCount));
     const JsonIndex camera = levelTree.GetMember(level, "camera");
@@ -2780,16 +2900,49 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
         }
         writer.AppendBytes(GetSpan(data));
     }
-    for (usize materialIndex = 0; materialIndex < descriptions.GetSize(); ++materialIndex)
+    for (const MaterialVariant& variant : variants)
     {
+        const usize materialIndex = variant.SourceIndex;
         const Document& description = descriptions[materialIndex];
         const JsonTree& tree = description.Tree;
         const std::string_view texture = tree.GetText(tree.GetMember(description.Root, "texture"));
+        SourceMaterialRecord source;
+        const JsonIndex sourceNode = tree.GetMember(description.Root, "source_material");
+        if (sourceNode != NO_JSON_NODE)
+        {
+            if (ReadSourceMaterial(tree, sourceNode, source, inoutFailure) == false)
+            {
+                return false;
+            }
+        }
+        else if (texture.empty() == true)
+        {
+            source.Reflectance = {};
+        }
+        float64 roughness = GetNumberMember(tree, description.Root, "roughness").ToFloat();
+        const CoatingOverride& coating = variant.Coating;
+        if (coating.Alpha > 0)
+        {
+            if (source.Scattering.Model != format::MaterialModel::CoatedDiffuse)
+            {
+                return inoutFailure.FailInvalid("A coating override requires a coated-diffuse source material. Reset "
+                                                "the slot coating or restore its source material.");
+            }
+            if (coating.Alpha != source.Scattering.AlphaU || coating.Alpha != source.Scattering.AlphaV)
+            {
+                roughness = math::Max(math::Sqrt(static_cast<float64>(coating.Alpha)),
+                                      static_cast<float64>(format::MIN_ROUGHNESS));
+            }
+            source.Scattering.AlphaU = coating.Alpha;
+            source.Scattering.AlphaV = coating.Alpha;
+            source.Scattering.CoatingEta = coating.Eta;
+            source.Scattering.CoatingThickness = coating.Thickness;
+        }
         const bool isRepeat = tree.IsString(tree.GetMember(description.Root, "address"), "repeat");
         writer.AppendUint32(texture.empty() == true ? format::NO_TEXTURE : FindIndex(textures, texture));
         writer.AppendUint32(isRepeat == true ? format::ADDRESS_REPEAT : format::ADDRESS_CLAMP);
         writer.AppendFloat32(GetNumberMember(tree, description.Root, "metallic").ToFloat());
-        writer.AppendFloat32(GetNumberMember(tree, description.Root, "roughness").ToFloat());
+        writer.AppendFloat32(roughness);
         const JsonIndex emission = tree.GetMember(description.Root, "emission");
         for (usize channel = 0; channel < 3; ++channel)
         {
@@ -2854,19 +3007,6 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
         }
         if (isVersion7 == true)
         {
-            SourceMaterialRecord source;
-            const JsonIndex sourceNode = tree.GetMember(description.Root, "source_material");
-            if (sourceNode != NO_JSON_NODE)
-            {
-                if (ReadSourceMaterial(tree, sourceNode, source, inoutFailure) == false)
-                {
-                    return false;
-                }
-            }
-            else if (texture.empty() == true)
-            {
-                source.Reflectance = {};
-            }
             AppendSourceMaterial(writer, source);
         }
     }
@@ -2972,7 +3112,7 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
             }
         }
         writer.AppendUint32(FindIndex(meshes, levelTree.GetText(levelTree.GetMember(item, "mesh"))));
-        writer.AppendUint32(FindIndex(materials, levelTree.GetText(levelTree.GetMember(item, "material"))));
+        writer.AppendUint32(objectMaterials[i]);
         for (const PythonNumber& value : world.Values)
         {
             writer.AppendFloat32(value.ToFloat());

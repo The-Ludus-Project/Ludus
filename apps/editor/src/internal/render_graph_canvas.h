@@ -4,6 +4,7 @@
 
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_layout.h"
+#include "internal/render_graph_minimap.h"
 #include "internal/render_graph_node_ports.h"
 #include "internal/render_graph_view_state.h"
 
@@ -144,6 +145,21 @@ public:
     [[nodiscard]] bool ApplyLayout(RenderGraphLayoutOperation operation, bool shouldArrangeAll = false);
     /// Restore 100% magnification around the viewport centre, preserving selection and draft.
     void ResetZoom();
+    /// Overview pinned over the viewport corner; see RenderGraphMinimap. Owned by the canvas.
+    [[nodiscard]] RenderGraphMinimap& GetMinimap() noexcept;
+    /// Show or hide the minimap. View only; the choice is not saved with the graph.
+    void SetMinimapVisible(bool isVisible);
+    [[nodiscard]] bool IsMinimapVisible() const noexcept;
+    /// Cards the minimap draws, in paint order: stage frames first, then every shown card. Copies; no scene pointers.
+    [[nodiscard]] QVector<RenderGraphMinimapCard> GetMinimapCards() const;
+    /// The scene rectangle the viewport currently shows.
+    [[nodiscard]] QRectF GetVisibleSceneRectangle() const;
+    /// Move the view so a scene point is at the viewport centre, keeping zoom. View only: never edits the draft.
+    void CentreViewOn(QPointF scenePosition);
+    /// Lay the cards out left to right by dependency order with few crossings: the selection when two or more
+    /// cards are selected, otherwise every authored card. One undo step; the result is saved as layout positions.
+    /// Returns false when nothing could be laid out (see ApplyLayout).
+    [[nodiscard]] bool AutoLayout();
     /// Capture selection, bounded magnification, scene centre and trace mode without changing the view.
     [[nodiscard]] RenderGraphViewState CaptureViewState() const;
     /// Restore a GUI-thread snapshot in the currently displayed configuration. Returns false for
@@ -295,6 +311,8 @@ private:
     void refreshFeedback();
     void updateLinkFeedback(QPointF position);
     void fitBounds(const QRectF& bounds);
+    /// Pin the minimap to the viewport's bottom-right corner, above the scene.
+    void placeMinimap();
     void updateFramingControls();
     void applyViewTransform(const RenderGraphViewState& state);
     void rebuildNavigation();
@@ -314,6 +332,9 @@ private:
     RenderGraphExecutionPlan* mExecutionPlanOrNull = nullptr;
     QAction* mFitGraphAction;
     QAction* mFitSelectionAction;
+    QAction* mAutoLayoutAction;
+    QAction* mMinimapAction;
+    RenderGraphMinimap* mMinimapOrNull = nullptr;
     QLabel* mZoomLabel;
     foundation::float64 mPresentedScale = 0;
     QGraphicsRectItem* mDiagnosticMarkerOrNull = nullptr;

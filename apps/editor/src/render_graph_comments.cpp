@@ -63,6 +63,20 @@ constexpr float64 DEFAULT_WIDTH = 360;
 constexpr float64 DEFAULT_HEIGHT = 220;
 constexpr int32 DIALOG_WIDTH = 480;
 constexpr int32 DIALOG_HEIGHT = 320;
+/// Colour of a group made from a selection, until its author edits it.
+constexpr const char* GROUP_COLOUR = "#547FA3";
+
+/// The frame rectangle that surrounds member cards with the padding and header a stage needs.
+QRectF GetFrameBoundsAround(const QRectF& members)
+{
+    QRectF bounds = members.adjusted(-CONTENT_PADDING,
+                                     -HEADER_HEIGHT - NOTES_HEIGHT - CONTENT_PADDING,
+                                     CONTENT_PADDING,
+                                     CONTENT_PADDING);
+    bounds.setWidth(qMax(bounds.width(), static_cast<float64>(layout_policy::MIN_COMMENT_WIDTH)));
+    bounds.setHeight(qMax(bounds.height(), static_cast<float64>(layout_policy::MIN_COMMENT_HEIGHT)));
+    return bounds;
+}
 
 QRectF GetResizeHandle(const QRectF& bounds)
 {
@@ -238,6 +252,157 @@ void RenderGraphComments::refreshPresentation()
     }
     renderFrames();
     mCanvas.RefreshCommentPresentation();
+}
+
+QVector<QRectF> RenderGraphComments::GetFrameRectangles() const
+{
+    QVector<QRectF> rectangles;
+    for (const QGraphicsRectItem* item : std::as_const(mItems))
+    {
+        rectangles.append(item->rect().translated(item->pos()));
+    }
+    return rectangles;
+}
+
+bool RenderGraphComments::HasFrames() const
+{
+    return mFrames.isEmpty() == false;
+}
+
+bool RenderGraphComments::GroupSelection()
+{
+    if (isCurrent() == false || mFrames.size() >= layout_policy::MAX_COMMENT_FRAMES)
+    {
+        Q_EMIT Rejected(QStringLiteral("Open a valid configuration with room for another group."));
+        return false;
+    }
+    const QStringList selected = mCanvas.GetSelectedNodes();
+    const QVector<RenderGraphLayoutNode> nodes = mCanvas.GetAuthoredNodeBounds();
+    QRectF members;
+    for (const RenderGraphLayoutNode& node : nodes)
+    {
+        if (selected.contains(node.Identity) == true)
+        {
+            members = members.united(node.Bounds);
+        }
+    }
+    if (members.isEmpty() == true)
+    {
+        Q_EMIT Rejected(QStringLiteral("Select the cards to group first."));
+        return false;
+    }
+    const QRectF bounds = GetFrameBoundsAround(members);
+    // A group holds every card inside it, so cards that were not selected would be swept in.
+    for (const RenderGraphLayoutNode& node : nodes)
+    {
+        if (selected.contains(node.Identity) == false && bounds.intersects(node.Bounds) == true)
+        {
+            Q_EMIT Rejected(QStringLiteral("A group around the selection would also take in '%1'. Select cards that "
+                                           "sit together, or move '%1' away first.")
+                                .arg(node.Identity));
+            return false;
+        }
+    }
+    for (const QJsonValueConstRef value : mFrames)
+    {
+        if (bounds.intersects(GetRenderGraphCommentBounds(value.toObject())) == true)
+        {
+            Q_EMIT Rejected(QStringLiteral("The selection overlaps another group. Groups cannot overlap."));
+            return false;
+        }
+    }
+    int32 suffix = 1;
+    QString identity;
+    do
+    {
+        identity = QStringLiteral("group%1").arg(suffix++);
+    } while (findFrame(identity) >= 0);
+    QJsonObject frame{{QStringLiteral("id"), identity},
+                      {QStringLiteral("title"), QStringLiteral("Group %1").arg(mFrames.size() + 1)},
+                      {QStringLiteral("notes"), QString()},
+                      {QStringLiteral("colour"), QString::fromLatin1(GROUP_COLOUR)}};
+    frame = SetRenderGraphCommentBounds(frame, bounds);
+    QJsonArray frames = mFrames;
+    frames.append(frame);
+    publish(frames);
+    return true;
+}
+
+bool RenderGraphComments::SetAllCollapsed(bool isCollapsed)
+{
+    if (isCurrent() == false)
+    {
+        return false;
+    }
+    QJsonArray frames = mFrames;
+    bool hasChange = false;
+    bool hasBlocked = false;
+    for (qsizetype index = 0; index < frames.size(); ++index)
+    {
+        QJsonObject frame = frames.at(index).toObject();
+        const QString identity = frame.value(QStringLiteral("id")).toString();
+        if (isCollapsed == true && CanCollapse(identity) == false)
+        {
+            hasBlocked = true;
+            continue;
+        }
+        if (frame.value(QStringLiteral("collapsed")).toBool() != isCollapsed)
+        {
+            frame.insert(QStringLiteral("collapsed"), isCollapsed);
+            frames.replace(index, frame);
+            hasChange = true;
+        }
+        mRevealedFrames.removeAll(identity);
+    }
+    if (hasBlocked == true)
+    {
+        Q_EMIT Rejected(QStringLiteral("Some groups were left open: a group collapses only when it holds cards and "
+                                       "does not overlap another."));
+    }
+    if (hasChange == false)
+    {
+        return false;
+    }
+    publish(frames);
+    return true;
+}
+
+bool RenderGraphComments::PublishArrangement(const QVector<RenderGraphNodePosition>& positions)
+{
+    if (mFrames.isEmpty() == true || positions.isEmpty() == true || isCurrent() == false)
+    {
+        return false;
+    }
+    QHash<QString, QRectF> arranged;
+    for (const RenderGraphLayoutNode& node : mCanvas.GetAuthoredNodeBounds())
+    {
+        arranged.insert(node.Identity, node.Bounds);
+    }
+    for (const RenderGraphNodePosition& position : positions)
+    {
+        if (arranged.contains(position.Node) == true)
+        {
+            QRectF bounds = arranged.value(position.Node);
+            bounds.moveTo(position.X, position.Y);
+            arranged.insert(position.Node, bounds);
+        }
+    }
+    QJsonArray frames = mFrames;
+    for (qsizetype index = 0; index < frames.size(); ++index)
+    {
+        QJsonObject frame = frames.at(index).toObject();
+        QRectF members;
+        for (const QString& node : mMembers.value(frame.value(QStringLiteral("id")).toString()))
+        {
+            members = members.united(arranged.value(node));
+        }
+        if (members.isEmpty() == false)
+        {
+            frames.replace(index, SetRenderGraphCommentBounds(frame, GetFrameBoundsAround(members)));
+        }
+    }
+    publish(frames, positions);
+    return true;
 }
 
 void RenderGraphComments::SetCollapsed(const QString& identity, bool isCollapsed)
@@ -570,12 +735,7 @@ void RenderGraphComments::CreateFrame(QPointF position)
         }
     }
     bounds = bounds.isEmpty() == true ? QRectF(position, QSizeF(DEFAULT_WIDTH, DEFAULT_HEIGHT))
-                                      : bounds.adjusted(-CONTENT_PADDING,
-                                                        -HEADER_HEIGHT - NOTES_HEIGHT - CONTENT_PADDING,
-                                                        CONTENT_PADDING,
-                                                        CONTENT_PADDING);
-    bounds.setWidth(qMax(bounds.width(), static_cast<float64>(layout_policy::MIN_COMMENT_WIDTH)));
-    bounds.setHeight(qMax(bounds.height(), static_cast<float64>(layout_policy::MIN_COMMENT_HEIGHT)));
+                                      : GetFrameBoundsAround(bounds);
     int32 suffix = 1;
     QString identity;
     do

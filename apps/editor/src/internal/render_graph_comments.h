@@ -51,6 +51,19 @@ public:
     [[nodiscard]] bool CanCollapse(const QString& identity) const;
     /// Effective hidden owner for an authored node; empty for visible nodes.
     [[nodiscard]] QString GetCollapsedFrame(const QString& node) const;
+    /// Displayed rectangle of every frame (a collapsed stage shows its compact card), for overviews.
+    [[nodiscard]] QVector<QRectF> GetFrameRectangles() const;
+    /// Whether the configuration has any frame.
+    [[nodiscard]] bool HasFrames() const;
+    /// Frame the selected cards as a new group, with no dialog. Rejected, with a reason, when the selection is
+    /// empty or the frame would take in an unselected card or overlap another frame. True when requested.
+    [[nodiscard]] bool GroupSelection();
+    /// Collapse every frame that can collapse, or expand every frame, as one saved edit. Frames that cannot
+    /// collapse stay as they are and are reported. True when an edit was requested.
+    [[nodiscard]] bool SetAllCollapsed(bool isCollapsed);
+    /// Publish new card positions together with every frame refitted around its current members, as one edit,
+    /// so an arrangement keeps each group's cards inside it. False, with nothing requested, when there is no frame.
+    [[nodiscard]] bool PublishArrangement(const QVector<RenderGraphNodePosition>& positions);
     /// Save one collapse/expand edit without changing node coordinates, selection or trace.
     void SetCollapsed(const QString& identity, bool isCollapsed);
     /// Temporarily expand a node's stage for search/diagnostics, without a document edit.
