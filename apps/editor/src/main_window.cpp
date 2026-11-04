@@ -895,6 +895,12 @@ void MainWindow::OnSaveRequested()
         Configuration_->Save();
         return;
     }
+    if (areaOrNull == mCodeArea)
+    {
+        // A failure is explained in the tab's bar, where the user acted.
+        static_cast<void>(mCodeArea->SaveActiveTab());
+        return;
+    }
     if (areaOrNull != nullptr && areaOrNull->isAncestorOf(Audio_))
     {
         if (Audio_->CanSave())
@@ -1838,6 +1844,9 @@ void MainWindow::closeEvent(QCloseEvent* event)
             event->ignore();
             return;
         }
+        // Make the recovery journal current before quitting: saved buffers drop
+        // their entries and a pending debounced checkpoint is not lost.
+        mCodeArea->FlushRecovery();
         const bool isBusy = Controller_->Caps().CanCloseImmediately == false || Content_->Importing();
         if (isBusy && CloseConfirmed_ == false)
         {

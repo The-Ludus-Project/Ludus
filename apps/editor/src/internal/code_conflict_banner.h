@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
+
 #include <QFrame>
 #include <QString>
 
@@ -21,6 +23,16 @@ public:
 
     /// Show an external-change conflict with the three resolution actions.
     void ShowConflict(const QString& fileName);
+    /// Show the same three actions for a draft recovered after a crash whose
+    /// file changed on disk since the draft was journaled: Keep Mine keeps the
+    /// recovered draft, Reload discards it for the file's current content.
+    void ShowRecoveredConflict(const QString& fileName);
+    /// Whether the bar is offering Compare, Keep Mine and Reload, so callers and
+    /// tests can tell a pending conflict from an explanation or a hidden bar.
+    [[nodiscard]] LUDUS_INLINE bool IsShowingConflict() const noexcept
+    {
+        return mIsShowingConflict;
+    }
     /// Show a read-only or degraded-mode explanation with no resolution actions.
     void ShowExplanation(const QString& explanation);
     /// Hide the bar; called after a resolution or when the document is clean.
@@ -42,5 +54,6 @@ private:
     QPushButton* mCompare;
     QPushButton* mKeepMine;
     QPushButton* mReload;
+    bool mIsShowingConflict = false;
 };
 } // namespace ludus::editor

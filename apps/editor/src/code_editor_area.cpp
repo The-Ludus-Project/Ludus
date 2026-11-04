@@ -1,11 +1,18 @@
 #include "internal/code_editor_area.h"
 
+#include "internal/code_conflict_banner.h"
 #include "internal/code_document_tab.h"
+#include "internal/code_editor.h"
 #include "internal/code_file_document.h"
 
+#include <QApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileInfo>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QJsonArray>
+#include <QLabel>
 #include <QMessageBox>
 #include <QSplitter>
 #include <QStringList>
@@ -47,6 +54,21 @@ CodeEditorArea::CodeEditorArea(QWidget* parentOrNull) : QWidget(parentOrNull), m
     layout->addWidget(mSplitter);
     // One group always exists.
     static_cast<void>(createGroup());
+    // A file changed on disk: a clean buffer reloads, a dirty one shows the
+    // conflict bar (CE04). Returning to the editor re-checks every open file,
+    // which also covers late file-system events and the browser editor.
+    connect(&mExternalChanges, &CodeExternalChangeWatch::FileMayHaveChanged, this, [this](const QString& path) {
+        if (CodeFileDocument* host = mRegistry.FindHostOrNull(path); host != nullptr)
+        {
+            checkExternalChange(host);
+        }
+    });
+    connect(qApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+        if (state == Qt::ApplicationActive)
+        {
+            CheckExternalChanges();
+        }
+    });
 }
 
 CodeEditorArea::~CodeEditorArea() = default;
@@ -69,7 +91,7 @@ QTabWidget* CodeEditorArea::createGroup()
         {
             return;
         }
-        if (tab->IsDirty() == true)
+        if (isLastDirtyView(tab) == true)
         {
             Q_EMIT DirtyCloseRequested(tab);
             return;
@@ -120,6 +142,9 @@ void CodeEditorArea::SetProjectEpoch(uint64 epoch)
 
 void CodeEditorArea::SetProject(const QString& projectRoot, uint64 epoch)
 {
+    // Make the outgoing project's journal current (clean buffers removed, dirty
+    // drafts written) before its hosts are dropped.
+    mRegistry.FlushRecoveryNow();
     SetProjectEpoch(epoch);
     // Bind recovery after the epoch bump so the journal is read against the new
     // project, not the one whose hosts were just dropped.
@@ -152,24 +177,30 @@ void CodeEditorArea::RestoreRecoveredBuffers()
         {
             continue;
         }
-        if (host->RestoreRecoveredDraft(buffer.SavedHash, buffer.Draft) == true)
+        const CodeRecoveredDraftStatus status = host->RestoreRecoveredDraft(buffer.SavedHash, buffer.Draft);
+        if (status == CodeRecoveredDraftStatus::Unchanged)
         {
-            // Push the recovered bytes into every open view of the host and mark
-            // the tab dirty, matching an in-editor edit.
-            for (CodeDocumentTab* tab : GetTabs())
+            continue;
+        }
+        // Push the recovered bytes into every open view of the host and mark the
+        // tab dirty, matching an in-editor edit.
+        for (CodeDocumentTab* tab : viewsOf(host))
+        {
+            tab->MirrorFromHost();
+            tab->MakePermanent();
+            updateTabDecoration(tab);
+            if (status == CodeRecoveredDraftStatus::RestoredOverChangedFile)
             {
-                if (hostOf(tab) == host)
-                {
-                    tab->MirrorFromHost();
-                    tab->MakePermanent();
-                    updateTabDecoration(tab);
-                }
+                // The file changed after the draft was journaled: keep the draft
+                // and let the user choose between it and the file.
+                tab->GetBanner().ShowRecoveredConflict(titleFor(tab->GetPath()));
             }
         }
     }
-    // The restore pass is authoritative; drop the crashed session's journal so a
-    // later clean close does not resurrect it. New edits write a fresh journal.
-    mRegistry.ClearRecovery();
+    // Rewrite the restored drafts and drop the entries that were not restored,
+    // off the UI thread. Until that finishes the old journal files remain, so a
+    // second crash still recovers the drafts.
+    mRegistry.StartRecoveryCheckpoint();
     Q_EMIT TabsChanged();
     onCurrentChanged();
 }
@@ -214,6 +245,20 @@ void CodeEditorArea::addTabToGroup(int32 group, CodeDocumentTab* tab, bool isPre
         mRegistry.ScheduleRecoveryCheckpoint();
         Q_EMIT TabsChanged();
     });
+    CodeConflictBanner& banner = tab->GetBanner();
+    connect(&banner, &CodeConflictBanner::CompareRequested, this, [this, tab]() { showComparison(tab); });
+    connect(&banner, &CodeConflictBanner::KeepMineRequested, this, [this, tab]() {
+        if (CodeFileDocument* host = hostOf(tab); host != nullptr)
+        {
+            keepDraftOverDisk(host);
+        }
+    });
+    connect(&banner, &CodeConflictBanner::ReloadRequested, this, [this, tab]() {
+        if (CodeFileDocument* host = hostOf(tab); host != nullptr)
+        {
+            reloadFromDisk(host);
+        }
+    });
     connect(tab, &CodeDocumentTab::BecamePermanent, this, [this, group, tab]() {
         if (group < mGroups.size() && mGroups.at(group).PreviewOrNull == tab)
         {
@@ -253,6 +298,7 @@ void CodeEditorArea::removeTab(CodeDocumentTab* tab)
     tab->deleteLater();
     if (host != nullptr)
     {
+        mExternalChanges.Unwatch(host->GetCanonicalPath());
         mRegistry.ReleaseHost(host);
     }
     Q_EMIT TabsChanged();
@@ -309,7 +355,15 @@ void CodeEditorArea::updateTabDecoration(CodeDocumentTab* tab)
 
 void CodeEditorArea::onCurrentChanged()
 {
-    Q_EMIT ActiveTabChanged(GetActiveTabOrNull());
+    CodeDocumentTab* active = GetActiveTabOrNull();
+    if (active != nullptr)
+    {
+        if (CodeFileDocument* host = hostOf(active); host != nullptr)
+        {
+            checkExternalChange(host);
+        }
+    }
+    Q_EMIT ActiveTabChanged(active);
 }
 
 CodeDocumentTab* CodeEditorArea::openIn(int32 group, const QString& absolutePath, bool isPreview)
@@ -337,6 +391,7 @@ CodeDocumentTab* CodeEditorArea::openIn(int32 group, const QString& absolutePath
     }
     CodeDocumentTab* tab = new CodeDocumentTab(host, absolutePath, this);
     mTabHosts.insert(tab, host);
+    mExternalChanges.Watch(host->GetCanonicalPath());
     // A preview open replaces the group's current preview tab.
     if (isPreview == true && mGroups.at(group).PreviewOrNull != nullptr)
     {
@@ -370,7 +425,7 @@ void CodeEditorArea::CloseActiveTab()
     {
         return;
     }
-    if (tab->IsDirty() == true)
+    if (isLastDirtyView(tab) == true)
     {
         Q_EMIT DirtyCloseRequested(tab);
         return;
@@ -384,8 +439,9 @@ bool CodeEditorArea::PromptCloseDirtyTab(CodeDocumentTab* tab)
     {
         return false;
     }
-    if (tab->IsDirty() == false)
+    if (isLastDirtyView(tab) == false)
     {
+        // Clean, or another view keeps the draft open: close without asking.
         removeTab(tab);
         return true;
     }
@@ -405,30 +461,22 @@ bool CodeEditorArea::PromptCloseDirtyTab(CodeDocumentTab* tab)
     }
     if (answer == QMessageBox::Save)
     {
-        CodeFileDocument* host = hostOf(tab);
-        QString error;
-        if (host == nullptr || host->Save(error) == false)
+        // A failed save leaves the tab open with the cause and next step in its
+        // bar (including a pending external change, which needs a decision).
+        if (SaveTab(tab) == false)
         {
-            QMessageBox::warning(
-                this,
-                QStringLiteral("Save failed"),
-                error.isEmpty() == true ? QStringLiteral("The document could not be saved; it stays open.") : error);
             return false;
         }
-        updateTabDecoration(tab);
-        // The buffer is clean now; drop its journal file on the next checkpoint.
-        mRegistry.ScheduleRecoveryCheckpoint();
     }
-    // Save succeeded or Don't Save: close the tab. A discarded dirty draft must
-    // not linger in the registry for recovery, so clear it before releasing.
+    // Save succeeded or Don't Save: close the tab. A discarded draft must not
+    // linger in the registry or the journal, so drop it before releasing.
     if (answer == QMessageBox::Discard)
     {
         if (CodeFileDocument* host = hostOf(tab); host != nullptr)
         {
-            QString error;
-            static_cast<void>(host->ReloadFromDisk(error));
+            host->DiscardDraft();
         }
-        mRegistry.ScheduleRecoveryCheckpoint();
+        mRegistry.StartRecoveryCheckpoint();
     }
     removeTab(tab);
     return true;
@@ -488,18 +536,12 @@ bool CodeEditorArea::ConfirmDiscardAll()
         QStringList failed;
         for (CodeDocumentTab* tab : dirty)
         {
-            CodeFileDocument* host = hostOf(tab);
-            QString error;
-            if (host == nullptr || host->Save(error) == false)
+            // A mirrored view of a host saved earlier in this loop is clean now.
+            if (tab->IsDirty() == true && SaveTab(tab) == false)
             {
                 failed.append(QFileInfo(tab->GetPath()).fileName());
             }
-            else
-            {
-                updateTabDecoration(tab);
-            }
         }
-        mRegistry.ScheduleRecoveryCheckpoint();
         if (failed.isEmpty() == false)
         {
             QMessageBox::warning(this,
@@ -510,10 +552,211 @@ bool CodeEditorArea::ConfirmDiscardAll()
         }
         return true;
     }
-    // Don't Save: every dirty draft is discarded. Clear the journal so a clean
-    // close does not later offer the discarded buffers for recovery.
+    // Don't Save: every dirty draft is discarded, in memory as well as in the
+    // journal, so a later checkpoint (project close flushes one) cannot write the
+    // discarded drafts back for recovery.
+    mRegistry.DiscardDirtyDrafts();
+    for (CodeDocumentTab* tab : GetTabs())
+    {
+        tab->MirrorFromHost();
+        updateTabDecoration(tab);
+    }
     mRegistry.ClearRecovery();
+    Q_EMIT TabsChanged();
     return true;
+}
+
+bool CodeEditorArea::SaveTab(CodeDocumentTab* tab)
+{
+    CodeFileDocument* host = hostOf(tab);
+    if (host == nullptr)
+    {
+        return false;
+    }
+    const QString fileName = titleFor(tab->GetPath());
+    if (host->IsReadOnly() == true)
+    {
+        tab->GetBanner().ShowExplanation(
+            tr("%1 is open read-only and cannot be saved here. Use Open Externally to edit it.").arg(fileName));
+        return false;
+    }
+    // Never overwrite a change made on disk without asking (CE04): show the
+    // conflict, and Keep Mine followed by Save writes the draft over it. A file
+    // that was deleted has nothing to overwrite; saving writes it back.
+    if (QFileInfo::exists(host->GetCanonicalPath()) == true && host->HasExternalChange() == true)
+    {
+        showConflict(host);
+        return false;
+    }
+    QString error;
+    if (host->Save(error) == false)
+    {
+        tab->GetBanner().ShowExplanation(
+            tr("%1 was not saved (%2). Your changes are kept; fix the cause and save again.").arg(fileName, error));
+        return false;
+    }
+    for (CodeDocumentTab* view : viewsOf(host))
+    {
+        view->MakePermanent();
+        view->GetBanner().Dismiss();
+        updateTabDecoration(view);
+    }
+    // The buffer is clean: remove its journal file now rather than after the
+    // idle debounce, so a crash right after Save cannot offer stale text.
+    mRegistry.StartRecoveryCheckpoint();
+    Q_EMIT TabsChanged();
+    return true;
+}
+
+bool CodeEditorArea::SaveActiveTab()
+{
+    CodeDocumentTab* tab = GetActiveTabOrNull();
+    return tab != nullptr && SaveTab(tab) == true;
+}
+
+bool CodeEditorArea::CanSaveActiveTab() const
+{
+    CodeDocumentTab* tab = GetActiveTabOrNull();
+    return tab != nullptr && tab->IsReadOnly() == false;
+}
+
+void CodeEditorArea::CheckExternalChanges()
+{
+    QList<CodeFileDocument*> checked;
+    for (CodeDocumentTab* tab : GetTabs())
+    {
+        CodeFileDocument* host = hostOf(tab);
+        if (host != nullptr && checked.contains(host) == false)
+        {
+            checked.append(host);
+            checkExternalChange(host);
+        }
+    }
+}
+
+QList<CodeDocumentTab*> CodeEditorArea::viewsOf(CodeFileDocument* host) const
+{
+    QList<CodeDocumentTab*> views;
+    for (CodeDocumentTab* tab : GetTabs())
+    {
+        if (hostOf(tab) == host)
+        {
+            views.append(tab);
+        }
+    }
+    return views;
+}
+
+bool CodeEditorArea::isLastDirtyView(CodeDocumentTab* tab) const
+{
+    if (tab->IsDirty() == false)
+    {
+        return false;
+    }
+    CodeFileDocument* host = hostOf(tab);
+    return host == nullptr || viewsOf(host).size() == 1;
+}
+
+void CodeEditorArea::refreshViewsOf(CodeFileDocument* host)
+{
+    for (CodeDocumentTab* view : viewsOf(host))
+    {
+        view->RefreshFromHost();
+        updateTabDecoration(view);
+    }
+    Q_EMIT TabsChanged();
+}
+
+void CodeEditorArea::checkExternalChange(CodeFileDocument* host)
+{
+    if (host->HasExternalChange() == false)
+    {
+        return;
+    }
+    if (host->IsDirty() == true)
+    {
+        showConflict(host);
+        return;
+    }
+    // A clean buffer follows the file silently.
+    reloadFromDisk(host);
+}
+
+void CodeEditorArea::showConflict(CodeFileDocument* host)
+{
+    for (CodeDocumentTab* view : viewsOf(host))
+    {
+        view->GetBanner().ShowConflict(titleFor(view->GetPath()));
+    }
+}
+
+void CodeEditorArea::keepDraftOverDisk(CodeFileDocument* host)
+{
+    // The draft stays and the current file becomes the conflict baseline, so
+    // the next Save writes the draft over the external change.
+    host->AdoptAsBaseline();
+    for (CodeDocumentTab* view : viewsOf(host))
+    {
+        view->GetBanner().Dismiss();
+    }
+}
+
+void CodeEditorArea::reloadFromDisk(CodeFileDocument* host)
+{
+    QString error;
+    if (host->ReloadFromDisk(error) == false)
+    {
+        // Typically the file was deleted or became unreadable. The buffer stays
+        // open so its text can be saved back to the same path.
+        for (CodeDocumentTab* view : viewsOf(host))
+        {
+            view->GetBanner().ShowExplanation(
+                tr("%1 could not be read from disk (%2). Save writes this buffer back to it; close the tab "
+                   "to drop it.")
+                    .arg(titleFor(view->GetPath()), error));
+        }
+        return;
+    }
+    refreshViewsOf(host);
+    mRegistry.StartRecoveryCheckpoint();
+}
+
+void CodeEditorArea::showComparison(CodeDocumentTab* tab)
+{
+    CodeFileDocument* host = hostOf(tab);
+    if (host == nullptr)
+    {
+        return;
+    }
+    // Side-by-side, read-only: the unsaved buffer and the file as it is on disk.
+    // The bar stays up, so the decision is still Keep Mine or Reload.
+    const CodeFileLoadResult onDisk = LoadCodeFile(host->GetCanonicalPath());
+    const CodeDocumentSnapshot draft = host->GetSnapshot();
+    QDialog* dialog = new QDialog(this);
+    dialog->setObjectName(QStringLiteral("codeCompareDialog"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(tr("Compare %1").arg(titleFor(tab->GetPath())));
+    QGridLayout* layout = new QGridLayout(dialog);
+    layout->addWidget(new QLabel(tr("Your unsaved changes"), dialog), 0, 0);
+    layout->addWidget(new QLabel(tr("On disk"), dialog), 0, 1);
+    CodeEditor* mine = new CodeEditor(dialog);
+    mine->setObjectName(QStringLiteral("codeCompareMine"));
+    mine->SetLanguage(tab->GetEditor().GetLanguage());
+    mine->setPlainText(QString::fromUtf8(draft.Text.GetDataOrNull(), static_cast<qsizetype>(draft.Text.GetSize())));
+    mine->setReadOnly(true);
+    CodeEditor* theirs = new CodeEditor(dialog);
+    theirs->setObjectName(QStringLiteral("codeCompareDisk"));
+    theirs->SetLanguage(tab->GetEditor().GetLanguage());
+    theirs->setPlainText(onDisk.Status == CodeFileLoadStatus::Failed
+                             ? tr("The file could not be read: %1").arg(onDisk.Explanation)
+                             : QString::fromUtf8(onDisk.Bytes));
+    theirs->setReadOnly(true);
+    layout->addWidget(mine, 1, 0);
+    layout->addWidget(theirs, 1, 1);
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+    layout->addWidget(buttons, 2, 0, 1, 2);
+    dialog->show();
 }
 
 int32 CodeEditorArea::GetGroupCount() const

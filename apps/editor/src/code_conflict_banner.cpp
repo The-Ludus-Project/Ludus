@@ -51,6 +51,7 @@ CodeConflictBanner::CodeConflictBanner(QWidget* parentOrNull) : QFrame(parentOrN
 
 void CodeConflictBanner::setActionsVisible(bool isVisible)
 {
+    mIsShowingConflict = isVisible;
     mCompare->setVisible(isVisible);
     mKeepMine->setVisible(isVisible);
     mReload->setVisible(isVisible);
@@ -59,6 +60,15 @@ void CodeConflictBanner::setActionsVisible(bool isVisible)
 void CodeConflictBanner::ShowConflict(const QString& fileName)
 {
     mMessage->setText(tr("%1 changed on disk. Your unsaved edits are kept.").arg(fileName));
+    setActionsVisible(true);
+    setVisible(true);
+}
+
+void CodeConflictBanner::ShowRecoveredConflict(const QString& fileName)
+{
+    mMessage->setText(tr("Recovered unsaved changes to %1 were made before the file changed on disk. "
+                         "Compare them, keep them, or reload the file.")
+                          .arg(fileName));
     setActionsVisible(true);
     setVisible(true);
 }
@@ -77,6 +87,7 @@ void CodeConflictBanner::ShowExplanation(const QString& explanation)
 
 void CodeConflictBanner::Dismiss()
 {
+    mIsShowingConflict = false;
     setVisible(false);
 }
 } // namespace ludus::editor

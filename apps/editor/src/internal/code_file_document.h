@@ -4,6 +4,8 @@
 #include "internal/code_text_profile.h"
 #include "internal/document_history.h"
 
+#include <ludus/foundation/base/types.h>
+
 #include <QByteArray>
 #include <QString>
 
@@ -47,6 +49,17 @@ struct CodeFileLoadResult final
 /// classify the size mode. Never executes project code and never touches a
 /// widget. The host is constructed from the result on the UI thread.
 [[nodiscard]] CodeFileLoadResult LoadCodeFile(const QString& absolutePath) noexcept;
+
+/// The outcome of CodeFileDocument::RestoreRecoveredDraft.
+enum class CodeRecoveredDraftStatus : foundation::uint8
+{
+    /// Nothing changed: the host is read-only or already holds the draft.
+    Unchanged,
+    /// The draft was adopted over the same on-disk content it was edited from.
+    Restored,
+    /// The draft was adopted, but the file changed on disk after it was journaled.
+    RestoredOverChangedFile,
+};
 
 /// Authoritative host for one ordinary project text file. It owns the UTF-8
 /// draft, a bounded undo history, the saved baseline and the text profile, and
@@ -125,12 +138,19 @@ public:
     /// recovery journal records which on-disk content a draft was edited over.
     [[nodiscard]] QByteArray GetSavedHash() const;
 
-    /// Restore an unsaved draft recovered from the journal (CE03). The draft is
-    /// adopted only when the host is not read-only and `expectedSavedHash`
-    /// matches the current saved baseline, so a file that changed on disk since
-    /// the crash is left untouched. The restored draft clears history and makes
-    /// the host dirty. Returns true when the draft was restored.
-    [[nodiscard]] bool RestoreRecoveredDraft(const QByteArray& expectedSavedHash, const QByteArray& draftBytes);
+    /// Discard the unsaved draft: the draft returns to the saved baseline and
+    /// history is cleared, so Undo cannot bring the discarded text back. Used by
+    /// Don't Save; it touches no file and cannot fail. Views must re-synchronize.
+    void DiscardDraft() noexcept;
+
+    /// Restore an unsaved draft recovered from the journal (CE03). A read-only
+    /// host, or a draft identical to the current buffer, is left unchanged. The
+    /// draft is otherwise always adopted, so recovered work is never dropped: when
+    /// `expectedSavedHash` no longer matches the on-disk baseline the result is
+    /// RestoredOverChangedFile, and the caller offers Compare, Keep Mine and
+    /// Reload. A restored draft clears history and makes the host dirty.
+    [[nodiscard]] CodeRecoveredDraftStatus RestoreRecoveredDraft(const QByteArray& expectedSavedHash,
+                                                                 const QByteArray& draftBytes);
 
 private:
     /// Apply one validated byte edit to the draft, pushing an undo entry. The

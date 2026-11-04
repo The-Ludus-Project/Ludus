@@ -180,6 +180,10 @@ void CodeDocumentRegistry::BindRecoveryProject(const QString& projectRoot)
     mRecoveredBuffers.reserve(entries.size());
     for (const CodeRecoveryEntry& entry : entries)
     {
+        // Every entry on disk is journaled: the next checkpoint rewrites the
+        // drafts that were restored and removes the ones that were not, so the
+        // journal stays intact until restored drafts are durable again.
+        mJournaledPaths.insert(entry.CanonicalPath);
         CodeRecoveredBuffer buffer;
         buffer.CanonicalPath = entry.CanonicalPath;
         buffer.SavedHash = entry.SavedHash;
@@ -204,6 +208,24 @@ void CodeDocumentRegistry::ScheduleRecoveryCheckpoint()
     // Restart the idle debounce; a flush follows RECOVERY_DEBOUNCE_MILLISECONDS
     // after the last change, so typing never triggers a per-key write.
     mRecoveryTimer.start();
+}
+
+void CodeDocumentRegistry::StartRecoveryCheckpoint()
+{
+    mRecoveryTimer.stop();
+    flushRecovery(false);
+}
+
+void CodeDocumentRegistry::DiscardDirtyDrafts()
+{
+    for (QHash<QString, HostEntry>::iterator iterator = mHosts.begin(); iterator != mHosts.end(); ++iterator)
+    {
+        CodeFileDocument* host = iterator->Host.get();
+        if (host->IsDirty() == true)
+        {
+            host->DiscardDraft();
+        }
+    }
 }
 
 void CodeDocumentRegistry::onRecoveryDebounce()

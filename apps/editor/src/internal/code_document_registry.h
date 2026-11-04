@@ -90,8 +90,9 @@ public:
 
     /// The unsaved buffers found in the journal at the last BindRecoveryProject,
     /// cleared as they are returned. Each names a file and the draft to restore;
-    /// the area opens the file and calls RestoreRecoveredDraft, which drops the
-    /// draft when the on-disk baseline no longer matches.
+    /// the area opens the file and calls RestoreRecoveredDraft. The journal files
+    /// stay on disk until the next checkpoint rewrites the restored drafts, so a
+    /// second crash before then still recovers them.
     [[nodiscard]] QVector<CodeRecoveredBuffer> TakeRecoveredBuffers();
 
     /// Request a debounced journal checkpoint. Call after any edit or save that
@@ -100,6 +101,13 @@ public:
     /// blocks on disk. A clean host's journal file is removed on the next flush.
     void ScheduleRecoveryCheckpoint();
 
+    /// Start a journal checkpoint now, off the UI thread, instead of after the
+    /// idle debounce. Used after a save or a restore, so a clean buffer's journal
+    /// file is removed (or a restored draft rewritten) without waiting.
+    void StartRecoveryCheckpoint();
+    /// Return every dirty host's draft to its saved baseline (Don't Save for the
+    /// whole project). Views must re-synchronize; the journal is not touched.
+    void DiscardDirtyDrafts();
     /// Flush the journal synchronously on the calling thread, used on project
     /// close and app quit so a final checkpoint is durable before teardown. It
     /// waits for any in-flight background writer to finish first.
