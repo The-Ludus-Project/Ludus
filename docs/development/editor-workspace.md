@@ -105,6 +105,13 @@ selectable items in the focused view; Escape clears that view's selection. Arrow
 keys navigate and Shift+arrow extends selection. Text fields keep their own
 native selection, clipboard and undo shortcuts.
 
+Use **Search entities** above the World entity list to filter names, labels and
+stable IDs without changing the document. Matching ignores case and surrounding
+spaces; the count shows how many entities match. Clear the search to show all
+entities. Filtering deselects hidden entities, so Duplicate and Delete act only
+on visible selections. Picking a hidden entity in the viewport clears the search
+and reveals its selection. Search pauses while inspector edits need Apply or Reset.
+
 In the World entity list, Ctrl+D / Command+D duplicates the selected group;
 Delete (also Backspace on macOS) asks to delete the group. Each group operation
 is one World undo step and publishes only after the whole candidate validates.

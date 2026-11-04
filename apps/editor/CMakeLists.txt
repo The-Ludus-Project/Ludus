@@ -718,6 +718,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/world_demo_adapter.cpp
     src/internal/material_inspection.h
     src/material_inspection.cpp
+    src/internal/world_entity_search.h
+    src/world_entity_search.cpp
     src/world_workspace.cpp
     src/world_viewport_editing.cpp
     src/internal/controller.h
