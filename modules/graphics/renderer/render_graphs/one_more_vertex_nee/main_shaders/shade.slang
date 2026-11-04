@@ -4,9 +4,14 @@
 // The selected emitter is shared by both strategies, so its PDF cancels in the MIS weights.
 // The camera integral is bounded to emission, one-scattering direct and two-scattering indirect
 // mesh-emitter paths. No indirect term is counted again as a continuation's emission.
-static const uint OMV_EMISSION_COMPONENT = 1;
-static const uint OMV_DIRECT_COMPONENT = 2;
-static const uint OMV_INDIRECT_COMPONENT = 3;
+/// The OMV_OUTPUT_COMPONENT Graph setting's values: which terms the exports carry.
+enum OmvComponent : uint
+{
+    Total = 0,    ///< Emission, direct and indirect together.
+    Emission = 1, ///< Visible emission alone.
+    Direct = 2,   ///< One-scattering direct lighting alone.
+    Indirect = 3, ///< Two-scattering indirect lighting alone.
+};
 static const uint OMV_CAMERA_DIMENSION = 0;
 static const uint OMV_EMITTER_DIMENSION = 2;
 static const uint OMV_EMITTER_SHAPE_DIMENSION = 3;
@@ -137,11 +142,12 @@ float3 EvaluateOmvConnection(SceneContext scene,
 }
 float3 SelectOmvComponent(float3 emission, float3 direct, float3 indirect)
 {
-    if (OMV_OUTPUT_COMPONENT == OMV_EMISSION_COMPONENT)
+    OmvComponent component = OmvComponent(OMV_OUTPUT_COMPONENT);
+    if (component == OmvComponent::Emission)
         return emission;
-    if (OMV_OUTPUT_COMPONENT == OMV_DIRECT_COMPONENT)
+    if (component == OmvComponent::Direct)
         return direct;
-    if (OMV_OUTPUT_COMPONENT == OMV_INDIRECT_COMPONENT)
+    if (component == OmvComponent::Indirect)
         return indirect;
     return emission + direct + indirect;
 }

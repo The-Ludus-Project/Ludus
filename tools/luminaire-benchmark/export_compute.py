@@ -98,7 +98,7 @@ def export(model_path, room, destination):
     if shade.count(old) != 1:
         raise ValueError('The source shading integration changed; update the exporter before using it.')
     shade = shade.replace(old, 'light = SamplePortablePureLight(luminaire, receiver, seedSample);')
-    shade = shade.replace('ShadeUniformArea', 'ShadePortablePureLight').replace('UNIFORM_AREA_ESTIMATOR', 'PORTABLE_PURELIGHT_ESTIMATOR')
+    shade = shade.replace('ShadeUniformArea', 'ShadePortablePureLight').replace('UniformArea', 'PortablePureLight')
     begin = shade.index('// Passes 1 to 3')
     end = shade.index("/// The template's view of a scene panel luminaire")
     shade = shade[:begin] + '// Generated comparison: defensive slice, raw slice and portable PureLight receiver flow.\n// All three use the unchanged analytic luminaire radiance, BSDF and visibility implementation.\n// The World luminaire places the panel; author it as the room places it (benchmark.py CENTER).\n// The emission profile is frozen to the trained model; retrain and re-export after edits.\n\n' + shade[end:]

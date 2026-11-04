@@ -44,19 +44,19 @@ float EvaluateOpticalVisibility(SceneContext scene,
     float3 deltaWorld = shadow.OriginWorld - sourceWorld;
     float distanceWorld = length(deltaWorld);
     float2 field = float2(0);
-    uint status = EvaluateWaveConnectionToReceiver(scene,
-                                                   sourceWorld,
-                                                   shadow.OriginWorld,
-                                                   deltaWorld / distanceWorld,
-                                                   distanceWorld,
-                                                   WT_WAVELENGTH_NANOMETERS * WAVE_METRES_PER_NANOMETRE,
-                                                   field);
-    if (status != WAVE_QUERY_READY)
+    WaveQuery status = EvaluateWaveConnectionToReceiver(scene,
+                                                        sourceWorld,
+                                                        shadow.OriginWorld,
+                                                        deltaWorld / distanceWorld,
+                                                        distanceWorld,
+                                                        WT_WAVELENGTH_NANOMETERS * WAVE_METRES_PER_NANOMETRE,
+                                                        field);
+    if (status != WaveQuery::Ready)
     {
         FailSceneQuery(queries,
-                       status == WAVE_QUERY_CAPACITY
+                       status == WaveQuery::Capacity
                            ? LUDUS_SCENE_FAILURE_WAVE_CAPACITY
-                           : ((status == WAVE_QUERY_PROPAGATION_CAPACITY || status == WAVE_QUERY_ESCAPE_CAPACITY)
+                           : ((status == WaveQuery::PropagationCapacity || status == WaveQuery::EscapeCapacity)
                                   ? LUDUS_SCENE_FAILURE_WAVE_PROPAGATION_CAPACITY
                                   : LUDUS_SCENE_FAILURE_WAVE_CONNECTION));
         return 0;
