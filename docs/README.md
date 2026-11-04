@@ -101,6 +101,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Ludus::FoundationGeometry](modules/foundation/geometry.md)
 - [Ludus::FoundationMath](modules/foundation/math.md)
 - [Unicode: pinned ICU4C host service](modules/foundation/unicode.md)
+- [World restore (two-pass)](modules/content/world-restore.md)
 
 ## Examples and probes
 
