@@ -40,6 +40,9 @@ binding needed by the accepted workflow, not a general RPC/object proxy system.
 
 ## Source editing direction
 
+The [code editor architecture](code-editor.md) owns the target product built on
+this foundation; this section documents what is implemented.
+
 The accepted direction (2026-10-21) is a reusable code editor over Qt's
 maintained plain-text engine, with asynchronous language services. The Renderer
 Source pane is the first consumer; scripting reuses the editing commands and
@@ -277,6 +280,12 @@ these probes without concurrent build/analysis jobs before comparing changes.
 4. Slang context integration, unsaved overlays, hover, completion and live
    language-server diagnostics.
 5. Scripting workspace integration and its language provider.
+
+The [code editor architecture](code-editor.md) carries this plan forward: a
+document tab for every project text file, multiple cursors, tree-sitter syntax,
+a generic LSP client for Slang, Luau and C/C++, debugging through DAP, and the
+engine-specific features, in milestones M0-M9. This section remains the owner of
+the implemented foundation's contracts.
 
 ## Toolkit evaluation
 

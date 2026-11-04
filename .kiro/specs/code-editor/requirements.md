@@ -1,0 +1,45 @@
+# Code editor requirements
+
+Status: proposed implementation specification, 2026-11-03, against `develop`
+at `eebc2f20`. Read [design.md](design.md), [tasks.md](tasks.md) and the
+[architecture](../../../docs/architecture/code-editor.md), which owns the product
+rationale, UX and budgets. The implemented foundation is documented in
+[Source editing direction](../../../docs/architecture/editor-gui-systems.md#source-editing-direction).
+Repository standards in `AGENTS.md` remain authoritative. Nothing here is
+implemented unless the architecture's baseline says so.
+
+| ID | Required observable behavior |
+| --- | --- |
+| CE01 | Every project text file (Slang, Luau, C/C++, JSON, CMake, Markdown, plain text) opens as a document tab in the central well from Project Explorer, Quick Open, navigation and the Error List. Single-click opens a preview tab that the next preview replaces; editing, saving or double-clicking makes it permanent. Open Externally stays available on native hosts. |
+| CE02 | One authoritative host exists per canonical path and project epoch. Every view of the document, including split groups, shows the same text after every edit. Each view keeps its own scroll position, folds, wrap and cursors. |
+| CE03 | Saving uses atomic replace. An external change reloads a clean buffer and never overwrites a dirty one; the conflict offers Compare, Keep Mine and Reload. Closing a dirty tab, closing the project or quitting asks before discarding. After a forced quit, unsaved buffers are offered for recovery. |
+| CE04 | UTF-8 with or without a BOM, LF, CRLF and mixed line endings are preserved byte for byte in untouched text. Invalid UTF-8 opens read-only with an explanation. Indentation and line endings are detected and then overridden by `.editorconfig`. |
+| CE05 | Every edit, including multi-cursor typing, Replace All, formatting, completion with additional edits, and workspace edits, reaches the host as one ordered, non-overlapping edit set with an expected revision. It is applied whole or rejected whole, and creates at most one undo step per document. |
+| CE06 | Multiple cursors and column selections support typing, deletion, paste (distributed per cursor when the line counts match), completion, IME commit, line commands and undo/redo restoring the whole selection set. IME preedit creates no history. |
+| CE07 | In-document find supports case, whole word, regular expressions and in-selection scope, shows the match count, marks matches in the overview ruler and stays responsive on files at the normal size limit. Find/Replace in Files searches dirty buffers instead of disk, skips build outputs and binaries, streams bounded results, can be cancelled, and previews replacements. Nothing is written until Save. |
+| CE08 | Tree-sitter syntax highlighting, folding, outline, breadcrumbs, sticky scroll and expand/shrink selection work for the first languages. The edited line is colored immediately by the lexical fallback. Results from an older revision are moved by the edit deltas or discarded, never applied at the wrong offsets. |
+| CE09 | One generic LSP client serves every profiled server, with capability-gated commands, request priority, cancellation of older requests, incremental synchronization, negotiated position encoding and crash restart with backoff. Existing slangd features keep working with no regressions. |
+| CE10 | Hover, live analysis diagnostics, semantic tokens, inlay hints, document and workspace symbols, references, definition/declaration/type definition/implementation, rename with preview, code actions and completion with resolve and snippets work wherever the server advertises them. Analysis diagnostics are kept distinct from build diagnostics. |
+| CE11 | A workspace edit (rename or a multi-file code action) applies to every affected file as dirty buffers within one bounded transaction. Undo in any affected file offers to undo the transaction in all of them. Generated or read-only locations are rejected before anything is applied. |
+| CE12 | Luau files get `luau-lsp` assistance against the active behavior package's `contract.d.luau`, StyLua formatting, and the script cook's diagnostics. Asset and entity reference strings typed by the contract complete from the project catalog and are validated. |
+| CE13 | C and C++ files get clangd assistance from the active preset's compile database, with a banner to configure when it is missing or stale, plus clang-format. Engine SDK headers reached by navigation open read-only. |
+| CE14 | Shader files show a context picker when a file belongs to several programs. Live Preview recompiles an idle draft and updates the Render Preview only when the result is Ready, keeping the last drawable view on failure. A target code view maps source lines to generated lines and back. |
+| CE15 | Color swatches open a picker, and numeric scrubbing edits literals. Each gesture is one undo step and, with Live Preview on, updates the preview while it runs. |
+| CE16 | Debugging through DAP supports breakpoints (with conditions, hit counts and logpoints), stepping, call stack, variables, watches, inline values and run to cursor, for Luau through the GameHost debug capability and for native code through `lldb-dap`. A pause never blocks the UI thread, and the scope of a stop is shown. |
+| CE17 | Keymap profiles Ludus (default) and VS Code are available, with user overrides and conflict detection. Every editor command is in the existing command catalogue, the palette and the F1 shortcut list. The palette supports file, `>`, `@`, `#` and `:` modes. The F9 and Ctrl+K conflicts are resolved and enforced by shell tests. |
+| CE18 | Git change markers appear in the gutter and the overview ruler when Git is available, with a view of the original lines and a revert action. The feature is absent, with no error, otherwise. |
+| CE19 | Syntax roles exist in `config/design-tokens.json` with dark, light and high-contrast values that pass the existing contrast checks. Severity and change kind never rely on color alone. Overlays work from the keyboard alone, and diagnostics and stops are announced to assistive technology where the platform supports it. |
+| CE20 | Every tool or context failure (missing, wrong version, crash, timeout, malformed or stale reply) keeps editing, saving and undo usable and leaves the draft untouched. It shows the operation, the outcome and an applicable fix: Repair Tools, Choose Executable, Configure Project, Retry or Show Log. |
+| CE21 | The budgets in the architecture's performance table are measured on the named reference machines by the latency probe and the benchmark corpus, recorded in the task ledger, and met, or carry a documented and accepted exception. Idle editing performs no polling. |
+| CE22 | Large-file, very-large-file and long-line thresholds each have one owner constant and degrade features as specified, with a banner explaining the mode. |
+| CE23 | Opening a project or a file executes no project code. Servers and tools come from pinned or user-chosen executables only, never from project settings. clangd never receives `--query-driver`. Nothing is downloaded outside `init.sh` or explicit Repair. |
+| CE24 | The browser editor reuses the views, controller, hosts, registry and syntax service. Process-backed capabilities report themselves as unavailable rather than failing. |
+| CE25 | The implementation stays private to `apps/editor`. Seam values are Qt-free. Engine and installed SDK boundaries are unchanged. Builds are warning-clean and pass pinned format, tidy, source policy, sanitizer and build-budget checks. The user guide under `docs/development/` and the architecture status are updated with each milestone. |
+
+## Deferred scope
+
+Minimap, peek definition, inline blame, Markdown preview, an integrated
+terminal, a Vim or other modal layer, VS Code theme import, a plugin or
+extension API, remote development, encodings other than UTF-8, staging or
+committing from the editor, and a shared cross-document undo history are out of
+scope. Do not add them while implementing these requirements.
