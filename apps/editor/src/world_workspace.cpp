@@ -61,6 +61,10 @@ namespace
 {
 /// Room in a recovery envelope for its header line and SHA-256 hex digest line.
 constexpr foundation::int64 MAX_RECOVERY_HEADER_BYTES = 256;
+/// The entity list never shrinks below a few rows, and entities take more of the column than lights (parts of 5).
+constexpr foundation::int32 ENTITY_LIST_MINIMUM_HEIGHT = 96;
+constexpr foundation::int32 ENTITY_SECTION_STRETCH = 3;
+constexpr foundation::int32 LIGHT_SECTION_STRETCH = 2;
 bool Read(const QString& path, QByteArray& output, foundation::int64 limit)
 {
     const QFileInfo info(path);
@@ -356,28 +360,40 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     // the contents instead of compressing styled button text below its hint.
     hierarchy->setSizeConstraint(QLayout::SetMinimumSize);
     hierarchyScroll->setWidget(left);
-    Entities_ = new QListWidget(left);
+    // Entities and lights share the column's height in a splitter, so a short entity list does not leave a tall
+    // empty box above a cramped one, and the divider lets either grow.
+    QSplitter* sections = new QSplitter(Qt::Vertical, left);
+    sections->setObjectName(QStringLiteral("worldHierarchySections"));
+    sections->setChildrenCollapsible(false);
+    hierarchy->addWidget(sections, 1);
+    QWidget* entityColumn = new QWidget(sections);
+    QVBoxLayout* entityLayout = new QVBoxLayout(entityColumn);
+    entityLayout->setContentsMargins(0, 0, 0, 0);
+    Entities_ = new QListWidget(entityColumn);
     ConfigureItemSelection(*Entities_);
     Entities_->setObjectName(QStringLiteral("worldEntities"));
     Entities_->setAccessibleName(QStringLiteral("World entities"));
-    mEntitySearch = new WorldEntitySearch(*Entities_, left);
-    hierarchy->addWidget(mEntitySearch);
-    hierarchy->addWidget(Entities_, 1);
+    Entities_->setMinimumHeight(ENTITY_LIST_MINIMUM_HEIGHT);
+    mEntitySearch = new WorldEntitySearch(*Entities_, entityColumn);
+    entityLayout->addWidget(mEntitySearch);
+    entityLayout->addWidget(Entities_, 1);
     // Entity commands share one row under the list.
     QHBoxLayout* commands = new QHBoxLayout;
-    Add_ = new QPushButton(QStringLiteral("Add Entity"), left);
+    Add_ = new QPushButton(QStringLiteral("Add Entity"), entityColumn);
     Add_->setObjectName(QStringLiteral("worldAdd"));
-    Duplicate_ = new QPushButton(QStringLiteral("Duplicate"), left);
+    Duplicate_ = new QPushButton(QStringLiteral("Duplicate"), entityColumn);
     Duplicate_->setObjectName(QStringLiteral("worldDuplicate"));
-    Remove_ = new QPushButton(QStringLiteral("Delete"), left);
+    Remove_ = new QPushButton(QStringLiteral("Delete"), entityColumn);
     Remove_->setObjectName(QStringLiteral("worldDelete"));
     for (QPushButton* button : {Add_, Duplicate_, Remove_})
     {
         button->setProperty("density", QStringLiteral("compact"));
+        // A layout never squeezes a command below the height its own text needs.
+        button->setMinimumHeight(button->sizeHint().height());
         commands->addWidget(button);
     }
-    hierarchy->addLayout(commands);
-    QToolButton* addObject = new QToolButton(left);
+    entityLayout->addLayout(commands);
+    QToolButton* addObject = new QToolButton(entityColumn);
     addObject->setObjectName(QStringLiteral("worldAddObject"));
     addObject->setText(QStringLiteral("Add Geometry / Light"));
     addObject->setToolTip(QStringLiteral("Create geometry, lights or luminaires in a default World. Project-owned "
@@ -385,7 +401,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     addObject->setPopupMode(QToolButton::InstantPopup);
     QMenu* objectMenu = new QMenu(addObject);
     addObject->setMenu(objectMenu);
-    hierarchy->addWidget(addObject);
+    addObject->setMinimumHeight(addObject->sizeHint().height());
+    entityLayout->addWidget(addObject);
     for (const QString& preset : {QStringLiteral("Cube"),
                                   QStringLiteral("Plane"),
                                   QStringLiteral("Sphere"),
@@ -431,8 +448,9 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         });
     }
 
-    mLightsPanel = new WorldLightsPanel(left);
-    hierarchy->addWidget(mLightsPanel);
+    mLightsPanel = new WorldLightsPanel(sections);
+    sections->setStretchFactor(0, ENTITY_SECTION_STRETCH);
+    sections->setStretchFactor(1, LIGHT_SECTION_STRETCH);
     connect(mLightsPanel, &WorldLightsPanel::LightsChangeRequested, this, &WorldWorkspace::applyLightChange);
 
     BoundViewport_ = Render_->TakeViewport(split);
