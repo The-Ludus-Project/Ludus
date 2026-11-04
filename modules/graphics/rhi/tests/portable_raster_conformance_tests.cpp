@@ -255,7 +255,7 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
             rhi::DeviceStatus::Ready);
     rhi::RasterPassDescription pass;
     pass.ColorLoad = rhi::RasterLoad::Load;
-    pass.ClearDepth = hasReverseDepth == true ? 0 : 1;
+    pass.ClearDepth = hasReverseDepth == true ? 0.0f : 1.0f;
     if (hasRectangles == true)
     {
         pass.UseViewport = true;

@@ -84,11 +84,70 @@ bool ValidateSceneIntegerSampling(RayLaunch launch, RayQueryContext queries)
         return false;
     return true;
 }
+// The mixed-light fixture binds directional, point, spot, mesh and environment sources.
+bool ValidateAddressedIncidentSampling(SceneContext scene, RayLaunch launch, RayQueryContext queries)
+{
+    SurfaceHit receiver = (SurfaceHit)0;
+    // The fixture's geometry and punctual sources are below this virtual receiver.
+    receiver.PositionWorld = float3(0, 0, 2);
+    const uint lastValidStart = RANDOM_MAX_DIMENSION - (SCENE_INCIDENT_LIGHT_DIMENSION_COUNT - 1);
+    const uint exhaustedStart = RANDOM_MAX_DIMENSION + 1;
+    const float PDF_RELATIVE_TOLERANCE = 0.0001;
+    const uint lightCount = GetLightCount(scene);
+    for (uint lightIndex = 0; lightIndex < lightCount; ++lightIndex)
+    {
+        LightInfo source = GetLightInfo(scene, lightIndex);
+        const bool isContinuous = source.Kind == SceneLightKind::Mesh || source.Kind == SceneLightKind::Environment;
+        RayQueryContext sampleQueries = queries;
+        IncidentLightSample incident = SampleIncidentLight(scene,
+                                                           lightIndex,
+                                                           receiver,
+                                                           launch,
+                                                           isContinuous == true ? lastValidStart : exhaustedStart,
+                                                           sampleQueries);
+        if (incident.HasSample == false || sampleQueries.HasFailed == true ||
+            sampleQueries.NextRandomDimension != queries.NextRandomDimension)
+            return false;
+        if (isContinuous == false)
+        {
+            if (incident.Measure != IncidentLightMeasure::Discrete || incident.ConditionalProbability != 1)
+                return false;
+            continue;
+        }
+
+        float evaluatedPdf;
+        uint evaluatedIndex;
+        if (source.Kind == SceneLightKind::Mesh)
+        {
+            SurfaceHit endpoint = GetSurfaceHit(scene, incident.TriangleIndex, incident.Barycentric);
+            evaluatedPdf = EvaluateIncidentLightPdfSolidAngle(scene, receiver.PositionWorld, endpoint);
+            evaluatedIndex = GetSurfaceLightIndex(scene, endpoint);
+        }
+        else
+        {
+            evaluatedPdf = EvaluateIncidentEnvironmentPdfSolidAngle(scene);
+            evaluatedIndex = GetEnvironmentLightIndex(scene);
+        }
+        if (incident.Measure != IncidentLightMeasure::SolidAngle || evaluatedIndex != lightIndex || evaluatedPdf <= 0 ||
+            abs(evaluatedPdf - incident.ConditionalProbability) > PDF_RELATIVE_TOLERANCE * evaluatedPdf)
+            return false;
+
+        IncidentLightSample exhausted =
+            SampleIncidentLight(scene, lightIndex, receiver, launch, lastValidStart + 1, sampleQueries);
+        if (exhausted.HasSample == true || sampleQueries.HasFailed == false ||
+            sampleQueries.FailureReason != LUDUS_SCENE_FAILURE_RANDOM_EXHAUSTED ||
+            sampleQueries.NextRandomDimension != queries.NextRandomDimension)
+            return false;
+    }
+    IncidentLightSample absent = SampleIncidentLight(scene, lightCount, receiver, launch, exhaustedStart, queries);
+    return absent.HasSample == false && queries.HasFailed == false;
+}
 float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
     ScenePayload payload = (ScenePayload)0;
     if (ValidateSceneRandomLimits(scene, launch, queries) == false ||
-        ValidateSceneIntegerSampling(launch, queries) == false)
+        ValidateSceneIntegerSampling(launch, queries) == false ||
+        ValidateAddressedIncidentSampling(scene, launch, queries) == false)
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     // Check automatic initialization against the independently addressed public API.
     float first = SampleSceneRandom(queries);

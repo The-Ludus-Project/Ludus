@@ -15,7 +15,7 @@ set_target_properties(
 # a hard error (see cmake/profiling_config.hpp.in). Flavor ids: 1=Debug,
 # 2=Development, 3=Profile, 4=Release.
 if(NOT DEFINED LUDUS_PROFILING_ENABLED)
-    if(LUDUS_BUILD_FLAVOR_ID LESS 4)
+    if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG OR LUDUS_BUILD_FLAVOR_ID LESS 4)
         set(LUDUS_PROFILING_ENABLED 1)
     else()
         set(LUDUS_PROFILING_ENABLED 0)

@@ -28,7 +28,7 @@ float32 RayScalar(const void* data, usize index) noexcept
 }
 bool RayFinite(float32 value) noexcept
 {
-    return value == value && value < __builtin_huge_valf() && value > -__builtin_huge_valf();
+    return foundation::math::IsFinite(value);
 }
 bool RayPosition(float32 value) noexcept
 {
@@ -387,7 +387,8 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
         }
         opacity[base + 8] = input.Opacity;
         opacity[base + 9] = input.AlphaCutoff;
-        opacity[base + 10] = input.AlphaMasked ? 1 : 0;
+        constexpr usize INSTANCE_ALPHA_MASK_OFFSET = 10;
+        opacity[base + INSTANCE_ALPHA_MASK_OFFSET] = input.AlphaMasked == true ? 1.0f : 0.0f;
         opacity[base + 11] = static_cast<float32>((input.RepeatU ? 1U : 0U) | (input.RepeatV ? 2U : 0U) |
                                                   (input.LinearFilter ? 4U : 0U));
     }

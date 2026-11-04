@@ -108,6 +108,9 @@ option(LUDUS_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(LUDUS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 
 include(EngineBuildFlavor)
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    include(EngineWindowsMsvc)
+endif()
 ludus_configure_project_options(ludus_project_options)
 ludus_configure_project_warnings(ludus_project_warnings)
 ludus_configure_project_sanitizers(ludus_project_options)
@@ -209,11 +212,15 @@ if(Git_FOUND)
     endforeach()
 endif()
 
-set(LUDUS_GAME_COMPATIBILITY_IDENTITY
-    "${LUDUS_GIT_REVISION}|${LUDUS_SDK_VARIANT}|${LUDUS_CXX_RUNTIME_ABI}|${LUDUS_COMPILER_ID} ${LUDUS_COMPILER_VERSION}|${LUDUS_TARGET_TRIPLE}|abi-1.1")
+if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
+    install(CODE [[message(FATAL_ERROR "The Windows Visual Studio build is a source build. SDK installation is not available.")]] ALL_COMPONENTS)
+else()
+    set(LUDUS_GAME_COMPATIBILITY_IDENTITY
+        "${LUDUS_GIT_REVISION}|${LUDUS_SDK_VARIANT}|${LUDUS_CXX_RUNTIME_ABI}|${LUDUS_COMPILER_ID} ${LUDUS_COMPILER_VERSION}|${LUDUS_TARGET_TRIPLE}|abi-1.1")
 
-configure_file(cmake/CheckSdkVariant.cmake.in "${PROJECT_BINARY_DIR}/cmake/CheckSdkVariant.cmake" @ONLY)
-install(SCRIPT "${PROJECT_BINARY_DIR}/cmake/CheckSdkVariant.cmake" ALL_COMPONENTS)
+    configure_file(cmake/CheckSdkVariant.cmake.in "${PROJECT_BINARY_DIR}/cmake/CheckSdkVariant.cmake" @ONLY)
+    install(SCRIPT "${PROJECT_BINARY_DIR}/cmake/CheckSdkVariant.cmake" ALL_COMPONENTS)
+endif()
 
 include(EngineDependencyPreflight)
 
@@ -491,7 +498,7 @@ write_basic_package_version_file(
 # Public exported components (one per installed Ludus:: module target).
 foreach(_component
     FoundationBase FoundationMemory FoundationHash FoundationIdentity FoundationStrings FoundationContainers FoundationThreading FoundationFilesystem FoundationParsing FoundationParsingJson FoundationMath FoundationGeometry FoundationTime FoundationLogging ShaderCompilerClient
-    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content SceneFormat RenderGraphFormat SceneSource StringDictionaryFormat StringDictionary StringDictionaryWriter SceneCook AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer GameApi PhysicsFluid Ui Localization)
+    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource StringDictionaryFormat StringDictionary StringDictionaryWriter SceneCook AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer GameApi PhysicsFluid Ui Localization)
     ludus_sdk_register_component(${_component})
     ludus_sdk_register_feature(${_component})
 endforeach()

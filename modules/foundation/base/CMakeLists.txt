@@ -1,8 +1,9 @@
 add_library(ludus_foundation_base STATIC)
 add_library(Ludus::FoundationBase ALIAS ludus_foundation_base)
 
-if((NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin|Windows)$" AND NOT EMSCRIPTEN) OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    message(FATAL_ERROR "Ludus assertions currently require the Linux/macOS/Windows Clang or pinned Emscripten backend")
+if(NOT (WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+   AND ((NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin|Windows)$" AND NOT EMSCRIPTEN) OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
+    message(FATAL_ERROR "Ludus assertions require the native Clang, Windows MSVC, or pinned Emscripten backend")
 endif()
 
 set_target_properties(
@@ -37,17 +38,28 @@ configure_file(
     NEWLINE_STYLE UNIX
 )
 
-configure_file(
-    "${PROJECT_SOURCE_DIR}/cmake/assert_config.hpp.in"
-    "${LUDUS_FOUNDATION_BASE_GENERATED_INCLUDE_DIR}/ludus/foundation/base/assert_config.hpp"
-    @ONLY
-    NEWLINE_STYLE UNIX
-)
+set(ludus_generated_include_dirs "${LUDUS_FOUNDATION_BASE_GENERATED_INCLUDE_DIR}")
+set(ludus_policy_include_dir "${LUDUS_FOUNDATION_BASE_GENERATED_INCLUDE_DIR}")
+if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
+    set(ludus_policy_include_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/$<CONFIG>/include")
+    list(PREPEND ludus_generated_include_dirs "${ludus_policy_include_dir}")
+    set(ludus_policy_template "${CMAKE_CURRENT_BINARY_DIR}/generated/assert_config.hpp")
+    configure_file("${PROJECT_SOURCE_DIR}/cmake/assert_config.hpp.in" "${ludus_policy_template}" @ONLY NEWLINE_STYLE UNIX)
+    file(GENERATE OUTPUT "${ludus_policy_include_dir}/ludus/foundation/base/assert_config.hpp"
+        INPUT "${ludus_policy_template}")
+else()
+    configure_file(
+        "${PROJECT_SOURCE_DIR}/cmake/assert_config.hpp.in"
+        "${ludus_policy_include_dir}/ludus/foundation/base/assert_config.hpp"
+        @ONLY
+        NEWLINE_STYLE UNIX
+    )
+endif()
 
 # The real and fake-platform executables use the same runtime and compiler policy.
 # Share its objects while each final binary selects its own platform implementation.
 add_library(ludus_assert_runtime OBJECT src/assert.cpp src/diagnostic_format.cpp src/diagnostic_control_codec.cpp)
-target_include_directories(ludus_assert_runtime PRIVATE src include "${LUDUS_FOUNDATION_BASE_GENERATED_INCLUDE_DIR}")
+target_include_directories(ludus_assert_runtime PRIVATE src include ${ludus_generated_include_dirs})
 ludus_apply_project_defaults(ludus_assert_runtime)
 
 target_sources(
@@ -69,7 +81,7 @@ target_sources(
         TYPE HEADERS
         BASE_DIRS
             include
-            "${LUDUS_FOUNDATION_BASE_GENERATED_INCLUDE_DIR}"
+            ${ludus_generated_include_dirs}
         FILES
             include/ludus/foundation/base/core.h
             include/ludus/foundation/base/config.h
@@ -84,7 +96,7 @@ target_sources(
             include/ludus/foundation/base/byte_order.hpp
             include/ludus/foundation/base/version.hpp
             "${LUDUS_FOUNDATION_BASE_GENERATED_INCLUDE_DIR}/ludus/foundation/base/build_metadata.hpp"
-            "${LUDUS_FOUNDATION_BASE_GENERATED_INCLUDE_DIR}/ludus/foundation/base/assert_config.hpp"
+            "${ludus_policy_include_dir}/ludus/foundation/base/assert_config.hpp"
             include/ludus/foundation/base/pointer.hpp
             include/ludus/foundation/base/diagnostic.hpp
 )
@@ -100,7 +112,8 @@ if(EMSCRIPTEN)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     # Report-only stderr backend; the POSIX socket/helper transports do not exist here.
     target_sources(ludus_foundation_base PRIVATE src/diagnostic_output_windows.cpp src/diagnostics_windows.cpp)
-    set_source_files_properties(src/diagnostics_windows.cpp PROPERTIES COMPILE_OPTIONS "-fno-optimize-sibling-calls")
+    set_source_files_properties(src/diagnostics_windows.cpp
+        PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:Clang>:-fno-optimize-sibling-calls>")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     target_sources(ludus_assert_runtime PRIVATE src/diagnostic_output.cpp)
     target_sources(ludus_foundation_base PRIVATE src/diagnostics_macos.cpp)
@@ -114,7 +127,7 @@ endif()
 ludus_apply_project_defaults(ludus_foundation_base)
 ludus_configure_target_identity(ludus_foundation_base PUBLIC)
 set_source_files_properties(src/assert.cpp
-    PROPERTIES COMPILE_OPTIONS "-fno-optimize-sibling-calls")
+    PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:Clang>:-fno-optimize-sibling-calls>")
 
 install(
     TARGETS ludus_foundation_base
@@ -141,6 +154,10 @@ if(LUDUS_BUILD_TESTS)
     ludus_apply_project_defaults(ludus_foundation_base_tests)
     ludus_enable_test_exceptions(ludus_foundation_base_tests)
 
+    if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
+        target_compile_definitions(ludus_foundation_base_tests PRIVATE LUDUS_TEST_EXPECT_DEBUG=$<CONFIG:Debug>)
+    endif()
+
     add_test(NAME ludus_foundation_base_tests COMMAND ludus_foundation_base_tests)
     set_tests_properties(ludus_foundation_base_tests PROPERTIES LABELS "unit;foundation")
 
@@ -150,7 +167,7 @@ if(LUDUS_BUILD_TESTS)
     # concurrency-heavy includes once, but keep each runtime in its own binary.
     # Do not link Base here: the fake executable provides a separate runtime.
     add_library(ludus_assert_test_driver OBJECT tests/assert_child.cpp)
-    target_include_directories(ludus_assert_test_driver PRIVATE src include "${LUDUS_FOUNDATION_BASE_GENERATED_INCLUDE_DIR}")
+    target_include_directories(ludus_assert_test_driver PRIVATE src include ${ludus_generated_include_dirs})
     target_link_libraries(ludus_assert_test_driver PRIVATE Threads::Threads)
     ludus_apply_project_defaults(ludus_assert_test_driver)
 

@@ -18,24 +18,25 @@ static_assert(std::is_same_v<decltype(&JsonValue::Get), JsonValue (JsonValue::*)
 TEST_CASE("Catalog preserves identity and rejects malformed replacements")
 {
     Catalog catalog;
-    Diagnostic d;
-    const auto json =
+    Diagnostic diagnostic;
+    const char* json =
         R"({"version":1,"resources":[{"id":"sound/hit","kind":"sound","path":"hit.sound.json"},{"id":"audio/hit","kind":"audio-source","path":"hit.wav"}]})";
-    REQUIRE(catalog.Read(json, d) == Status::Ok);
+    REQUIRE(catalog.Read(json, diagnostic) == Status::Ok);
     REQUIRE(catalog.Entries()[0].Id.View() == "audio/hit");
     Bytes canonical;
     REQUIRE(catalog.Write(canonical) == Status::Ok);
     Catalog reopened;
-    REQUIRE(reopened.Read(canonical.String(), d) == Status::Ok);
+    REQUIRE(reopened.Read(canonical.String(), diagnostic) == Status::Ok);
     Bytes second;
     REQUIRE(reopened.Write(second) == Status::Ok);
     REQUIRE(canonical.String() == second.String());
-    for (const auto* invalid :
+    for (const char* invalid :
          {R"({"version":1,"version":1,"resources":[]})",
-          R"({"version":2,"resources":[]})",
+          R"({"version":3,"resources":[]})",
           R"({"version":1,"resources":[{"id":"audio/x","kind":"audio-source","path":"../x.wav"}]})"})
     {
-        REQUIRE(catalog.Read(invalid, d) != Status::Ok);
+        CAPTURE(invalid);
+        REQUIRE(catalog.Read(invalid, diagnostic) != Status::Ok);
         REQUIRE(catalog.Find("sound/hit") != nullptr);
     }
 }

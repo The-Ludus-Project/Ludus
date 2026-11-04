@@ -1138,7 +1138,7 @@ TEST_CASE("Ordered graph culls only unobservable work and reference mode retains
     REQUIRE(AddGraphRoot(session.Device, graph, history.Output, GraphRoot::History) == RasterStatus::Ready);
     GraphReport report;
     REQUIRE(CompileOrderedGraph(session.Device, graph, report, referenceMode) == RasterStatus::Ready);
-    CHECK(report.LivePasses == (referenceMode ? 2 : 1));
+    CHECK(report.LivePasses == (referenceMode == true ? 2U : 1U));
     CHECK(report.Culled[0] == (referenceMode == false));
     CHECK_FALSE(report.Culled[1]);
     CHECK(report.FirstUse[0] == (referenceMode ? 0U : GRAPH_EXTERNAL_INDEX));
@@ -1602,15 +1602,15 @@ TEST_CASE("R5 merges only compatible raster scopes and retains completion leases
     REQUIRE(CompileOrderedGraph(session.Device, graph.Graph, report, GraphCompileOptions{true, variant != 1}) ==
             RasterStatus::Ready);
     CHECK(report.LivePasses == 2);
-    CHECK(report.RasterPasses == (variant == 0 ? 1 : 2));
-    CHECK(report.MergedPasses == (variant == 0 ? 1 : 0));
+    CHECK(report.RasterPasses == (variant == 0 ? 1U : 2U));
+    CHECK(report.MergedPasses == (variant == 0 ? 1U : 0U));
     CHECK(report.DrawCount == 2);
     CHECK(report.ComputePasses == 0);
     CHECK(report.BufferBytes == 58);
     CHECK(report.TextureBytes == 0);
     CHECK(report.PlanStorageBytes > sizeof(GraphReport));
     CHECK(report.RasterGroup[0] == 0);
-    CHECK(report.RasterGroup[1] == (variant == 0 ? 0 : 1));
+    CHECK(report.RasterGroup[1] == (variant == 0 ? 0U : 1U));
     REQUIRE(Destroy(session.Device, scene.Vertices) == RasterStatus::Ready);
     REQUIRE(Destroy(session.Device, scene.Pipeline) == RasterStatus::Ready);
     SubmissionToken token;
@@ -1669,7 +1669,7 @@ TEST_CASE("R5 attachment chains keep versions, barriers and final depth validity
         return;
     }
     REQUIRE(status == RasterStatus::Ready);
-    CHECK(report.RasterPasses == (variant == 0 ? 1 : 2));
+    CHECK(report.RasterPasses == (variant == 0 ? 1U : 2U));
     CHECK(report.TextureBytes == uint64{16} * 8 * 8);
     CHECK(report.LastUse[0] == 2);
     CHECK(report.DependencyCount >= 3);

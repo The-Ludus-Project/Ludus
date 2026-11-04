@@ -154,12 +154,13 @@ template <typename ElementType, typename... ArgumentTypes>
     {
         return OwnershipStatus::InvalidState;
     }
-    const detail::ObjectLayoutCheck layoutCheck = detail::CheckObjectLayout(sizeof(ElementType), alignof(ElementType));
-    if (layoutCheck == detail::ObjectLayoutCheck::Malformed)
+    constexpr detail::ObjectLayoutCheck layoutCheck =
+        detail::CheckObjectLayout(sizeof(ElementType), alignof(ElementType));
+    if constexpr (layoutCheck == detail::ObjectLayoutCheck::Malformed)
     {
         return OwnershipStatus::InvalidState;
     }
-    if (layoutCheck == detail::ObjectLayoutCheck::TooLarge)
+    if constexpr (layoutCheck == detail::ObjectLayoutCheck::TooLarge)
     {
         return OwnershipStatus::TooLarge;
     }

@@ -100,6 +100,9 @@ function(ludus_compile_shader)
     get_filename_component(source "${SH_SOURCE}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
     ludus_require_file("${source}" "Shader compilation" "Restore the shader source or correct SOURCE in ludus_compile_shader.")
     set(output "${CMAKE_CURRENT_BINARY_DIR}/ludus-shaders/${SH_TARGET}/${SH_NAME}")
+    if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
+        string(APPEND output "/$<CONFIG>")
+    endif()
     # Raster and compute builds define over-long shader text in a compiled companion source
     # rather than a header string literal that C++ compilers need not accept. DXIL headers
     # (Windows) embed binary words only.

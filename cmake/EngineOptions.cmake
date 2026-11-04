@@ -68,7 +68,10 @@ function(ludus_configure_project_options target_name)
             $<$<NOT:$<BOOL:$<TARGET_PROPERTY:LUDUS_TEST_EXCEPTIONS>>>:-fno-exceptions>)
     elseif(MSVC)
         target_compile_options(${target_name} INTERFACE
+            /permissive- /Zc:__cplusplus /Zc:preprocessor /utf-8
             $<$<NOT:$<BOOL:$<TARGET_PROPERTY:LUDUS_TEST_EXCEPTIONS>>>:/EHs-c->)
+        target_compile_definitions(${target_name} INTERFACE
+            $<$<NOT:$<BOOL:$<TARGET_PROPERTY:LUDUS_TEST_EXCEPTIONS>>>:_HAS_EXCEPTIONS=0>)
     endif()
 
     if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
