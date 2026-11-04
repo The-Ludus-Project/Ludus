@@ -246,6 +246,7 @@ jobs:
           if ($LASTEXITCODE -eq 0 -or $collision -notmatch 'Incompatible Ludus SDK') {
             throw "The install did not reject a mixed SDK prefix: $collision"
           }
+          exit 0
       - name: Preserve candidate identities and test logs
         if: always()
         uses: actions/upload-artifact@v4

@@ -61,8 +61,6 @@ function(ludus_install_windows_sdk)
             INSTALL_DESTINATION "${package_directory}")
         install(FILES "${directory}/LudusConfig.cmake" "${directory}/LudusWindowsSdk.cmake"
             DESTINATION "${package_directory}" CONFIGURATIONS "${configuration}")
-        install(FILES "${directory}/LudusSdkManifest.json"
-            DESTINATION "${data_directory}" CONFIGURATIONS "${configuration}")
     endforeach()
 
     write_basic_package_version_file("${PROJECT_BINARY_DIR}/cmake/LudusConfigVersion.cmake"
@@ -83,4 +81,7 @@ function(ludus_install_windows_sdk)
         DESTINATION "${data_directory}/licenses")
     install(FILES "${PROJECT_SOURCE_DIR}/third_party/xxhash/LICENSE"
         DESTINATION "${data_directory}/licenses" RENAME xxhash-LICENSE)
+    # Publish the manifest after the libraries, exports and shader tools.
+    install(FILES "${PROJECT_BINARY_DIR}/cmake/windows-sdk/$<CONFIG>/LudusSdkManifest.json"
+        DESTINATION "${data_directory}")
 endfunction()

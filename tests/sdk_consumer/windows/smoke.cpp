@@ -1,4 +1,5 @@
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/measurement.h>
