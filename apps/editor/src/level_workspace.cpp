@@ -77,6 +77,9 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     Objects_->setObjectName(QStringLiteral("levelObjects"));
     body->addWidget(Objects_, 1);
     Viewport_ = new PreviewViewport(&Preview_, this, false);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    Preview_.SetPresentationVisible(false);
+#endif
 
     Viewport_->setObjectName(QStringLiteral("levelViewport"));
     body->addWidget(Viewport_, 2);
@@ -212,6 +215,7 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         if (AwaitingViewport_)
         {
             AwaitingViewport_ = false;
+            Preview_.SetNeedsValidationFrame(false);
             if (Operation_ == QStringLiteral("import"))
             {
                 CommitImport();
@@ -875,6 +879,7 @@ void LevelWorkspace::Rollback(const QString& error)
 {
     const bool hasPreviousFrame = Viewport_->HasRetainedGraphFrame();
     AwaitingViewport_ = false;
+    Preview_.SetNeedsValidationFrame(false);
     PublishingCatalog_ = false;
     // A retained native image leases this device and Qt window. Keep both alive while restoring
     // the accepted scene; stopping would erase the image before a replacement is drawable.
@@ -986,6 +991,7 @@ void LevelWorkspace::Publish()
         return;
     }
     AwaitingViewport_ = true;
+    Preview_.SetNeedsValidationFrame(true);
     if (Preview_.Start() == false)
     {
         Rollback(Preview_.Status());

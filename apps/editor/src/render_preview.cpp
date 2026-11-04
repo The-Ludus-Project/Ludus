@@ -520,6 +520,7 @@ bool RenderPreview::beginResourceRestart() noexcept
     mHasPreparedView = false;
     mProducer = {};
     mIsAwaitingProducer = false;
+    mIsRasterSubmissionOpen = false;
     mFramePump.SetProducerPending(false);
     mNeedsResourceRestart = false;
     mPreparationFailure.clear();
@@ -1208,7 +1209,56 @@ void RenderPreview::Navigate(int32 camera, math::Vector2 orbitDegrees, float32 z
 }
 void RenderPreview::SetPresentationVisible(bool isVisible) noexcept
 {
-    mIsPresentationVisible = isVisible;
+    if (mIsPresentationVisible != isVisible)
+    {
+        mIsPresentationVisible = isVisible;
+        mFramePump.Wake();
+        Q_EMIT RenderAdmissionChanged();
+    }
+}
+bool RenderPreview::ShouldRenderPresentation() const noexcept
+{
+    return mIsPresentationVisible == true || mIsValidationFrameNeeded == true;
+}
+void RenderPreview::SetNeedsValidationFrame(bool isNeeded) noexcept
+{
+    if (mIsValidationFrameNeeded != isNeeded)
+    {
+        mIsValidationFrameNeeded = isNeeded;
+        mFramePump.Wake();
+        Q_EMIT RenderAdmissionChanged();
+    }
+}
+void RenderPreview::BeginGpuCapture() noexcept
+{
+    ++mActiveGpuCaptures;
+    if (mActiveGpuCaptures == 1)
+    {
+        mFramePump.Wake();
+        Q_EMIT RenderAdmissionChanged();
+    }
+}
+void RenderPreview::EndGpuCapture() noexcept
+{
+    LUDUS_REQUIRE(mActiveGpuCaptures != 0);
+    --mActiveGpuCaptures;
+    if (HasActiveGpuCapture() == false)
+    {
+        mFramePump.Wake();
+        Q_EMIT RenderAdmissionChanged();
+    }
+}
+bool RenderPreview::HasActiveGpuCapture() const noexcept
+{
+    return mActiveGpuCaptures != 0;
+}
+bool RenderPreview::HasOpenViewportSubmission() const noexcept
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    return mIsRasterSubmissionOpen == true || (mResources.Get() != nullptr && mResources->IsShadowFrameOpen == true);
+#else
+    return false;
+#endif
 }
 void RenderPreview::Resize(int32 width, int32 height)
 {
@@ -1580,6 +1630,7 @@ void RenderPreview::resetFrames() noexcept
     mHasPreparedView = false;
     mProducer = {};
     mIsAwaitingProducer = false;
+    mIsRasterSubmissionOpen = false;
     mFramePump.SetProducerPending(false);
 }
 bool RenderPreview::TakeFrame(rr::ViewportFrame& outFrame, rr::ViewportImage& outImage) noexcept
@@ -1764,7 +1815,8 @@ void RenderPreview::Tick()
         return;
     }
     // A failed built-in view leaves the device to the project graph, which still retires its resources.
-    if (isDelegatingToProjectGraph() == true || (mHasPreparationFailed == true && mIsProjectGraphEnabled == true))
+    if ((isDelegatingToProjectGraph() == true || (mHasPreparationFailed == true && mIsProjectGraphEnabled == true)) &&
+        HasOpenViewportSubmission() == false)
     {
         static_cast<void>(rhi::PollLifetime(Device_));
         return;
@@ -1798,6 +1850,10 @@ void RenderPreview::Tick()
     }
     if (ready == rhi::DeviceStatus::Ready && device.FrameOpen == true)
     {
+        if (mIsRasterSubmissionOpen == false)
+        {
+            return;
+        }
         // RasterViewport retains recording when completion admission is full.
         // Retry that owned frame before lifetime service or new setup work.
         mProducer = {};
@@ -1807,6 +1863,7 @@ void RenderPreview::Tick()
         {
             return;
         }
+        mIsRasterSubmissionOpen = false;
         if (retried != rhi::RasterStatus::Ready)
         {
             fail(QStringLiteral("GPU viewport submission failed. World edits are preserved."));
@@ -1873,6 +1930,16 @@ void RenderPreview::Tick()
         // image to wake the next submission; an absent consumer stays on fallback cadence.
         return;
     }
+    if (HasActiveGpuCapture() == true)
+    {
+        return;
+    }
+#    if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (ShouldRenderPresentation() == false)
+    {
+        return;
+    }
+#    endif
 #    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     if (rhi::SetFrameTarget(Device_, Surface_, { .Width = RequestedWidth_, .Height = RequestedHeight_ }) !=
         rhi::DeviceStatus::Ready)
@@ -1948,11 +2015,11 @@ void RenderPreview::Tick()
         failGeneration(QStringLiteral("GPU viewport setup failed. World edits are preserved."));
         return;
     }
-    if (mIsPresentationVisible == false && Frames_ != 0)
+#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    if (ShouldRenderPresentation() == false && Frames_ != 0)
     {
         return;
     }
-#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     // Shadow preparation may have recorded an offscreen-only frame in this tick.
     if (rhi::SetFrameTarget(Device_, Surface_, { .Width = RequestedWidth_, .Height = RequestedHeight_ }) !=
         rhi::DeviceStatus::Ready)
@@ -1968,6 +2035,10 @@ void RenderPreview::Tick()
     const rhi::RasterStatus rendered = mResources->Viewport.Render(Surface_, mProducer);
     if (rendered == rhi::RasterStatus::NotReady || rendered == rhi::RasterStatus::Pending)
     {
+        rhi::DeviceInfo after;
+        mIsRasterSubmissionOpen =
+            rhi::GetDeviceInfo(Device_, after) == rhi::DeviceStatus::Ready && after.FrameOpen == true;
+        mFramePump.SetProducerPending(mIsRasterSubmissionOpen);
         return;
     }
     if (rendered != rhi::RasterStatus::Ready)

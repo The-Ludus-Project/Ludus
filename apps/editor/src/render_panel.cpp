@@ -32,6 +32,9 @@ RenderPanel::RenderPanel(QWidget* parent) : QWidget(parent), Preview_(this)
     Viewport_ = new PreviewViewport(&Preview_, this);
     Viewport_->setObjectName(QStringLiteral("worldViewport"));
     Viewport_->hide();
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    Preview_.SetPresentationVisible(false);
+#endif
     QHBoxLayout* actions = new QHBoxLayout;
     Open_ = new QPushButton(QStringLiteral("Resume viewport"), this);
     Open_->setObjectName(QStringLiteral("worldPreview3D"));

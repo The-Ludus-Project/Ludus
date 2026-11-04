@@ -293,9 +293,10 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
         connect(mPreview, &RenderPreview::Stopped, this, &ReferenceCaptureWindow::updateTraversalAvailability);
         // Both captures' renderers live on the preview's device and must go before it.
         connect(mPreview, &RenderPreview::DeviceStopping, this, [this]() {
-            if (mCapture.GetPhase() != ViewportReferencePhase::Idle || isRasterRendering() == true)
+            if (mServiceTimer.isActive() == true || mCapture.GetPhase() != ViewportReferencePhase::Idle ||
+                isRasterRendering() == true)
             {
-                mServiceTimer.stop();
+                stopService();
                 releaseCaptures();
                 mMessage = QStringLiteral("The viewport device stopped; the capture was cancelled.");
                 updateControls();
@@ -321,7 +322,7 @@ ReferenceCaptureWindow::~ReferenceCaptureWindow()
         delete mGraphComparison.data();
     }
 #endif
-    mServiceTimer.stop();
+    stopService();
     releaseCaptures();
 }
 
@@ -883,7 +884,7 @@ bool ReferenceCaptureWindow::startGraphSource()
     mProgress->setValue(0);
     mCaptureTimer.start();
     mRefreshTimer.start();
-    mServiceTimer.start();
+    startService();
     updateControls();
     updateStatus();
     return true;
@@ -897,7 +898,7 @@ bool ReferenceCaptureWindow::StartCapture()
         return false;
     }
 #endif
-    mServiceTimer.stop();
+    stopService();
     releaseCaptures();
     mImage = {};
     mRasterImage = {};
@@ -986,7 +987,7 @@ bool ReferenceCaptureWindow::StartCapture()
     mProgress->setValue(0);
     mCaptureTimer.start();
     mRefreshTimer.start();
-    mServiceTimer.start();
+    startService();
     updateControls();
     updateStatus();
     return true;
@@ -998,7 +999,7 @@ void ReferenceCaptureWindow::StopCapture()
     {
         return;
     }
-    mServiceTimer.stop();
+    stopService();
     releaseCaptures();
     mHasComparison = false;
     mMessage = QStringLiteral("Capture stopped.");
@@ -1086,8 +1087,36 @@ bool ReferenceCaptureWindow::saveComparison(const QString& hdrPath, QString& out
                            outError) == true;
 }
 
+void ReferenceCaptureWindow::startService()
+{
+    mPreview->BeginGpuCapture();
+    mServiceTimer.start();
+}
+
+void ReferenceCaptureWindow::stopService()
+{
+    if (mServiceTimer.isActive() == true)
+    {
+        mServiceTimer.stop();
+        if (mPreview.isNull() == false)
+        {
+            mPreview->EndGpuCapture();
+        }
+    }
+}
+
 void ReferenceCaptureWindow::service()
 {
+    if (mPreview.isNull() == true || mPreview->HasOpenViewportSubmission() == true)
+    {
+        return;
+    }
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mProjectGraph.isNull() == false && mProjectGraph->HasOpenSubmission() == true)
+    {
+        return;
+    }
+#endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     const bool wasRasterRendering = isRasterRendering();
     const ViewportRasterPhase rasterPhase = mRasterCapture.Service();
@@ -1120,7 +1149,7 @@ void ReferenceCaptureWindow::service()
     const bool isFinished = isReferenceFinished == true && isRasterRendering() == false;
     if (isFinished == true)
     {
-        mServiceTimer.stop();
+        stopService();
     }
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     const bool hasSideFinished = hasRasterFinished == true || hasGraphFinished == true;

@@ -32,10 +32,25 @@ public:
     [[nodiscard]] CodeTextCapture Capture() const;
     [[nodiscard]] CodeTextSelection CaptureSelection() const;
     void RestoreSelection(CodeTextSelection selection);
+    /// Restore a whole selection set recorded with an undo/redo step (CE05). For
+    /// now the view carries one Qt cursor, so this restores the primary (first)
+    /// selection; the secondary cursors are drawn by the multi-cursor layer that
+    /// a later batch adds. An empty set leaves the view's selection untouched.
+    void RestoreSelectionSet(foundation::BorrowedView<const CodeTextSelection> selections);
     /// Publish formatter/completion text with an exact identity. One history group;
     /// never writes a file. Invalid/stale text preserves the accepted draft.
     [[nodiscard]] CodeEditStatus
     ApplyServiceText(const CodeDocumentIdentity& expected, const QByteArray& text, CodeTextSelection selection);
+
+    /// Apply an ordered, non-overlapping edit set to the bound host as one undo
+    /// step (CE05): formatting, Replace All, completion with additional edits and
+    /// the per-file slice of a workspace edit all publish through here. The host
+    /// validates and applies the whole set or rejects it whole; on Ok the view
+    /// re-synchronizes, the recorded after-selection is restored and the scroll is
+    /// preserved. A stale identity or invalid set keeps the accepted draft.
+    /// `expected` is the identity the caller built the set against; it must match
+    /// the bound host, so a set computed against older text is rejected whole.
+    [[nodiscard]] CodeEditStatus ApplyEditSet(const CodeDocumentIdentity& expected, const CodeEditSet& edits);
 
 Q_SIGNALS:
     void TextAccepted();

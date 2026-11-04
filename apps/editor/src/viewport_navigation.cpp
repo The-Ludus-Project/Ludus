@@ -424,6 +424,7 @@ void PreviewViewport::focusOutEvent(QFocusEvent* event)
 }
 void PreviewViewport::hideEvent(QHideEvent* event)
 {
+    setRenderPresentationVisible(false);
     if (mPlayEndpointOrNull != nullptr)
     {
         // A hidden tab or dock is an occluded window: the game drops to its hidden pacing.
