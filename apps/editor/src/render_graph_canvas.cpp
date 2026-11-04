@@ -671,7 +671,9 @@ struct RenderGraphCanvas::EdgeView final
 RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidget* parentOrNull)
     : QGraphicsView(parentOrNull), mDocument(document), mScene(new QGraphicsScene(this)),
       mFramingToolbar(new QToolBar(this)), mFitGraphAction(new QAction(QStringLiteral("Fit Graph"), this)),
-      mFitSelectionAction(new QAction(QStringLiteral("Fit Selection"), this)), mZoomLabel(new QLabel(this)),
+      mFitSelectionAction(new QAction(QStringLiteral("Fit Selection"), this)),
+      mAutoLayoutAction(new QAction(QStringLiteral("Auto Layout"), this)),
+      mMinimapAction(new QAction(QStringLiteral("Minimap"), this)), mZoomLabel(new QLabel(this)),
       mSelectionBox(new QRubberBand(QRubberBand::Rectangle, viewport()))
 {
     setObjectName(QStringLiteral("renderGraphCanvas"));
@@ -699,7 +701,18 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     mFitSelectionAction->setToolTip(QStringLiteral("Frame selected nodes (F)"));
     resetZoom->setToolTip(
         QStringLiteral("Restore 100% zoom (%1)").arg(resetZoom->shortcut().toString(QKeySequence::NativeText)));
-    for (QAction* action : {mFitGraphAction, mFitSelectionAction, resetZoom})
+    mAutoLayoutAction->setObjectName(QStringLiteral("renderGraphAutoLayout"));
+    mAutoLayoutAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+L")));
+    mAutoLayoutAction->setToolTip(QStringLiteral("Lay the cards out left to right by dependency order, with few "
+                                                 "crossings: the selection if two or more are selected, otherwise "
+                                                 "every card (%1). One undo step.")
+                                      .arg(mAutoLayoutAction->shortcut().toString(QKeySequence::NativeText)));
+    mMinimapAction->setObjectName(QStringLiteral("renderGraphToggleMinimap"));
+    mMinimapAction->setCheckable(true);
+    mMinimapAction->setChecked(true);
+    mMinimapAction->setShortcut(QKeySequence(Qt::Key_M));
+    mMinimapAction->setToolTip(QStringLiteral("Show or hide the minimap, an overview of the whole graph (M)"));
+    for (QAction* action : {mFitGraphAction, mFitSelectionAction, resetZoom, mAutoLayoutAction, mMinimapAction})
     {
         action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
         addAction(action);
@@ -711,10 +724,16 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     mFramingToolbar->addWidget(mZoomLabel);
     connect(mFitGraphAction, &QAction::triggered, this, &RenderGraphCanvas::FitGraph);
     connect(mFitSelectionAction, &QAction::triggered, this, &RenderGraphCanvas::FitSelection);
+    connect(mAutoLayoutAction, &QAction::triggered, this, [this]() { static_cast<void>(AutoLayout()); });
+    connect(mMinimapAction, &QAction::toggled, this, &RenderGraphCanvas::SetMinimapVisible);
     connect(resetZoom, &QAction::triggered, this, &RenderGraphCanvas::ResetZoom);
     mNavigation = new RenderGraphNavigation(*mFramingToolbar, *this);
     mDiagnostics = new RenderGraphDiagnostics(mDocument, *mFramingToolbar, *this);
     mHistoryOrNull = new RenderGraphHistory(mDocument, *this);
+    mMinimapOrNull = new RenderGraphMinimap(*this, viewport());
+    connect(horizontalScrollBar(), &QScrollBar::valueChanged, mMinimapOrNull, qOverload<>(&QWidget::update));
+    connect(verticalScrollBar(), &QScrollBar::valueChanged, mMinimapOrNull, qOverload<>(&QWidget::update));
+    connect(mScene, &QGraphicsScene::changed, mMinimapOrNull, qOverload<>(&QWidget::update));
     mCommentsOrNull = new RenderGraphComments(*this, *mScene);
     mReroutesOrNull = new RenderGraphReroutes(*this);
     connect(mDiagnostics, &RenderGraphDiagnostics::Changed, mCommentsOrNull, &RenderGraphComments::RefreshCounts);
@@ -882,6 +901,84 @@ void RenderGraphCanvas::resizeEvent(QResizeEvent* event)
     const int32 toolbarWidth = width() - 2 * frameWidth();
     mHistoryOrNull->setGeometry(frameWidth(), frameWidth(), toolbarWidth, historyHeight);
     mFramingToolbar->setGeometry(frameWidth(), frameWidth() + historyHeight, toolbarWidth, framingHeight);
+    placeMinimap();
+}
+
+void RenderGraphCanvas::placeMinimap()
+{
+    if (mMinimapOrNull == nullptr)
+    {
+        return;
+    }
+    mMinimapOrNull->move(viewport()->width() - mMinimapOrNull->width() - design::SPACING_MEDIUM,
+                         viewport()->height() - mMinimapOrNull->height() - design::SPACING_MEDIUM);
+    mMinimapOrNull->raise();
+}
+
+RenderGraphMinimap& RenderGraphCanvas::GetMinimap() noexcept
+{
+    return *mMinimapOrNull;
+}
+
+void RenderGraphCanvas::SetMinimapVisible(bool isVisible)
+{
+    mMinimapAction->setChecked(isVisible);
+    mMinimapOrNull->setVisible(isVisible == true && mNodes.isEmpty() == false);
+    placeMinimap();
+}
+
+bool RenderGraphCanvas::IsMinimapVisible() const noexcept
+{
+    return mMinimapAction->isChecked();
+}
+
+QVector<RenderGraphMinimapCard> RenderGraphCanvas::GetMinimapCards() const
+{
+    QVector<RenderGraphMinimapCard> cards;
+    if (mCommentsOrNull != nullptr)
+    {
+        for (const QRectF& frame : mCommentsOrNull->GetFrameRectangles())
+        {
+            cards.append({ .Bounds = frame, .Colour = GetCanvasColour(design::ThemeColour::BorderControl) });
+        }
+    }
+    const QStringList selected = GetSelectedNodes();
+    for (const NodeView* view : std::as_const(mNodes))
+    {
+        if (view->Frame->isVisible() == true)
+        {
+            cards.append(
+            {
+                .Bounds = view->Frame->sceneBoundingRect(),
+                .Colour = GetDomainColor(view->Domain),
+                .IsSelected = selected.contains(view->Id),
+            });
+        }
+    }
+    return cards;
+}
+
+QRectF RenderGraphCanvas::GetVisibleSceneRectangle() const
+{
+    return mapToScene(viewport()->rect()).boundingRect();
+}
+
+void RenderGraphCanvas::CentreViewOn(QPointF scenePosition)
+{
+    if (math::IsFinite(scenePosition.x()) == false || math::IsFinite(scenePosition.y()) == false)
+    {
+        return;
+    }
+    // Qt clamps scrolling to the scene rectangle; include the view around the target so it can be centred.
+    const QSizeF half = GetVisibleSceneRectangle().size() * 0.5;
+    mScene->setSceneRect(mScene->sceneRect().united(
+        QRectF(scenePosition - QPointF(half.width(), half.height()), QSizeF(2 * half.width(), 2 * half.height()))));
+    centerOn(scenePosition);
+}
+
+bool RenderGraphCanvas::AutoLayout()
+{
+    return ApplyLayout(RenderGraphLayoutOperation::Arrange, GetSelectedNodes().size() < 2);
 }
 
 void RenderGraphCanvas::paintEvent(QPaintEvent* event)
@@ -889,6 +986,8 @@ void RenderGraphCanvas::paintEvent(QPaintEvent* event)
     // Also handles a transform applied by a host/test through QGraphicsView's API.
     updateSemanticZoom();
     QGraphicsView::paintEvent(event);
+    placeMinimap();
+    mMinimapOrNull->update();
 }
 
 void RenderGraphCanvas::FitGraph()
@@ -1017,6 +1116,9 @@ void RenderGraphCanvas::updateFramingControls()
 {
     mFitGraphAction->setEnabled(mNodes.isEmpty() == false);
     mFitSelectionAction->setEnabled(GetSelectedNodes().isEmpty() == false);
+    mAutoLayoutAction->setEnabled(mFile.isEmpty() == false && mNodes.isEmpty() == false);
+    mMinimapOrNull->setVisible(mMinimapAction->isChecked() == true && mNodes.isEmpty() == false);
+    placeMinimap();
 }
 
 void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
@@ -2180,6 +2282,12 @@ void RenderGraphCanvas::AddLayoutMenu(QMenu& inoutMenu)
             static_cast<void>(ApplyLayout(operation, shouldArrangeAll));
         });
     };
+    QAction* autoLayout = layout->addAction(QStringLiteral("Auto Layout"));
+    autoLayout->setObjectName(QStringLiteral("renderGraphAutoLayoutMenuAction"));
+    autoLayout->setShortcut(mAutoLayoutAction->shortcut());
+    autoLayout->setEnabled(canEdit == true && authoredCount > 0);
+    connect(autoLayout, &QAction::triggered, this, [this]() { static_cast<void>(AutoLayout()); });
+    layout->addSeparator();
     addAction(QStringLiteral("Auto-arrange Selection"),
               "renderGraphArrangeSelection",
               RenderGraphLayoutOperation::Arrange,
@@ -2223,6 +2331,25 @@ void RenderGraphCanvas::AddLayoutMenu(QMenu& inoutMenu)
               "renderGraphDistributeVertical",
               RenderGraphLayoutOperation::DistributeVertical,
               selectedCount >= MINIMUM_RENDER_GRAPH_DISTRIBUTION_COUNT);
+    QMenu* groups = inoutMenu.addMenu(QStringLiteral("Groups"));
+    groups->setObjectName(QStringLiteral("renderGraphGroupsMenu"));
+    QAction* group = groups->addAction(QStringLiteral("Group Selection"));
+    group->setObjectName(QStringLiteral("renderGraphGroupSelection"));
+    group->setShortcut(QKeySequence(QStringLiteral("Ctrl+G")));
+    group->setEnabled(canEdit == true && selectedCount > 0);
+    connect(group, &QAction::triggered, this, [this]() { static_cast<void>(mCommentsOrNull->GroupSelection()); });
+    QAction* collapseAll = groups->addAction(QStringLiteral("Collapse All Groups"));
+    collapseAll->setObjectName(QStringLiteral("renderGraphCollapseGroups"));
+    collapseAll->setEnabled(canEdit == true && mCommentsOrNull->HasFrames() == true);
+    connect(collapseAll, &QAction::triggered, this, [this]() {
+        static_cast<void>(mCommentsOrNull->SetAllCollapsed(true));
+    });
+    QAction* expandAll = groups->addAction(QStringLiteral("Expand All Groups"));
+    expandAll->setObjectName(QStringLiteral("renderGraphExpandGroups"));
+    expandAll->setEnabled(canEdit == true && mCommentsOrNull->HasFrames() == true);
+    connect(expandAll, &QAction::triggered, this, [this]() {
+        static_cast<void>(mCommentsOrNull->SetAllCollapsed(false));
+    });
 }
 
 bool RenderGraphCanvas::ApplyLayout(RenderGraphLayoutOperation operation, bool shouldArrangeAll)
@@ -2276,7 +2403,10 @@ bool RenderGraphCanvas::ApplyLayout(RenderGraphLayoutOperation operation, bool s
             changed.append(position);
         }
     }
-    if (changed.isEmpty() == false)
+    // With groups, they are refitted around their cards in the same edit; otherwise only the cards move.
+    const bool hasPublishedGroups = operation == RenderGraphLayoutOperation::Arrange && changed.isEmpty() == false &&
+                                    mCommentsOrNull->PublishArrangement(changed) == true;
+    if (hasPublishedGroups == false && changed.isEmpty() == false)
     {
         Q_EMIT MoveRequested(changed);
     }
@@ -3107,7 +3237,13 @@ bool RenderGraphCanvas::viewportEvent(QEvent* event)
             return true;
         }
     }
-    return QGraphicsView::viewportEvent(event);
+    const bool isHandled = QGraphicsView::viewportEvent(event);
+    if (event->type() == QEvent::Resize)
+    {
+        // Scroll bars appearing or disappearing resize the viewport without resizing the canvas.
+        placeMinimap();
+    }
+    return isHandled;
 }
 
 void RenderGraphCanvas::panBy(QPoint delta)

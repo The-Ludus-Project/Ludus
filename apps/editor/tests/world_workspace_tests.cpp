@@ -5,6 +5,7 @@
 #include "internal/editor_identity.h"
 #include "internal/level_workspace.h"
 #include "internal/main_window.h"
+#include "internal/material_inspection.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_panel.h"
 #include "internal/render_preview.h"
@@ -62,6 +63,7 @@
 #include <ludus/gameplay/camera/camera.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/platform/entropy.h>
+#include <ludus/runtime/resources/scene.h>
 
 using namespace ludus::editor;
 namespace
@@ -2559,6 +2561,142 @@ ludus::foundation::float32 GetPresentedX(const WorldWorkspace& workspace, const 
     return GetPresentedObject(workspace, id).Transform.Translation.X;
 }
 } // namespace
+
+TEST_CASE("Coated-diffuse World slot edits apply, undo, redo and reopen", "[editor][world][coating]")
+{
+    namespace format = ludus::content::scene_format;
+    QTemporaryDir directory;
+    const QString path = Fixture(directory);
+    const QString external = directory.filePath(QStringLiteral("external"));
+    REQUIRE(QDir().mkpath(external) == true);
+    Write(QDir(external).filePath(QStringLiteral("varnish.pbrt")), QByteArrayLiteral(R"(LookAt 0 0 3 0 0 0 0 1 0
+Camera "perspective" "float fov" 45
+WorldBegin
+MakeNamedMaterial "Varnish" "string type" "coateddiffuse" "rgb reflectance" [0.5 0.3 0.1]
+    "float roughness" 0.1 "bool remaproughness" false
+NamedMaterial "Varnish"
+Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "integer indices" [0 1 2]
+)"));
+    QString error;
+    const QString relativeLevel = QStringLiteral("scenes/varnish.lulevel");
+    REQUIRE(
+        ludus::editor::tests::PrepareImportedLevel(directory.path(), relativeLevel, external, error, "varnish.pbrt") ==
+        true);
+    const QByteArray importedLevel = Read(directory.filePath(relativeLevel));
+    const QString catalog = directory.filePath(QStringLiteral("assets/catalog.json"));
+    const QByteArray originalCatalog = Read(catalog);
+    const QJsonObject level = QJsonDocument::fromJson(importedLevel).object();
+    WorldDocument document = Document();
+    REQUIRE(document.ImportScene(level, error) == true);
+    const QString selected =
+        level.value(QStringLiteral("objects")).toArray().first().toObject().value(QStringLiteral("id")).toString();
+    QString sibling;
+    REQUIRE(document.DuplicateEntity(ludus::platform::GetSystemEntropySource(), error, selected, sibling) == true);
+    const QJsonValue originalBinding =
+        document.ScenePlacement(document.Entity(selected)).value(QStringLiteral("material"));
+    Write(path, document.Encode());
+
+    WorldWorkspace workspace;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        workspace.show();
+    }
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    WaitForValidatedScene(workspace);
+    REQUIRE(workspace.SelectEntity(selected) == true);
+    const auto getMaterial = [](const WorldWorkspace& source, const QString& id) {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(GetLevel(source).PreviewScene(), id);
+        REQUIRE(materialOrNull != nullptr);
+        return *materialOrNull;
+    };
+    const format::MaterialScattering original = getMaterial(workspace, selected).Scattering;
+    REQUIRE(original.Model == format::MaterialModel::CoatedDiffuse);
+    const QString alpha = QStringLiteral("scene/coating/alpha");
+    const QString eta = QStringLiteral("scene/coating/eta");
+    const QString thickness = QStringLiteral("scene/coating/thickness");
+    Type(Field(workspace, alpha), QStringLiteral("0"));
+    CHECK(workspace.Apply() == false);
+    CHECK(getMaterial(workspace, selected).Scattering.AlphaU == original.AlphaU);
+
+    Type(Field(workspace, alpha), QStringLiteral("0.25"));
+    Type(Field(workspace, eta), QStringLiteral("1.75"));
+    Type(Field(workspace, thickness), QStringLiteral("0.125"));
+    CHECK(getMaterial(workspace, selected).Scattering.AlphaU == original.AlphaU);
+    REQUIRE(workspace.Apply() == true);
+    CHECK(getMaterial(workspace, selected).Scattering.AlphaU == original.AlphaU);
+    WaitForValidatedScene(workspace);
+    const auto checkEdited = [&](const WorldWorkspace& source) {
+        const ludus::resources::SceneMaterial material = getMaterial(source, selected);
+        CHECK(material.Scattering.Model == format::MaterialModel::CoatedDiffuse);
+        CHECK(material.Scattering.AlphaU == 0.25F);
+        CHECK(material.Scattering.AlphaV == 0.25F);
+        CHECK(material.Scattering.CoatingEta == 1.75F);
+        CHECK(material.Scattering.CoatingThickness == 0.125F);
+        CHECK(material.Roughness == 0.5F);
+        CHECK(getMaterial(source, sibling).Scattering.AlphaU == original.AlphaU);
+        CHECK(source.Document().ScenePlacement(source.Document().Entity(selected)).value(QStringLiteral("material")) ==
+              originalBinding);
+    };
+    checkEdited(workspace);
+
+    REQUIRE(workspace.CanUndo() == true);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    CHECK(getMaterial(workspace, selected).Scattering.AlphaU == original.AlphaU);
+    CHECK(Field(workspace, eta)->text().toFloat() == original.CoatingEta);
+    REQUIRE(workspace.CanRedo() == true);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkEdited(workspace);
+    CHECK(Field(workspace, eta)->text() == QStringLiteral("1.75"));
+
+    REQUIRE(workspace.Save() == true);
+    WaitForValidatedScene(workspace);
+    REQUIRE(workspace.Dirty() == false);
+    CHECK(Read(directory.filePath(relativeLevel)) == importedLevel);
+    CHECK(Read(catalog) == originalCatalog);
+    workspace.StopPreview();
+    workspace.hide();
+
+    WorldWorkspace reopened;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        reopened.show();
+    }
+    reopened.SetProject(directory.path(), 2);
+    REQUIRE(reopened.Open(path) == true);
+    WaitForValidatedScene(reopened);
+    REQUIRE(reopened.SelectEntity(selected) == true);
+    checkEdited(reopened);
+    CHECK(Field(reopened, thickness)->text() == QStringLiteral("0.125"));
+
+    // Force the cook to fail after Apply. The draft and its history survive with the last accepted scene.
+    const QString hiddenCatalog = catalog + QStringLiteral(".hidden");
+    REQUIRE(QFile::rename(catalog, hiddenCatalog) == true);
+    Type(Field(reopened, alpha), QStringLiteral("0.5"));
+    REQUIRE(reopened.Apply() == true);
+    WaitForValidatedScene(reopened);
+    CHECK(getMaterial(reopened, selected).Scattering.AlphaU == 0.25F);
+    CHECK(Field(reopened, alpha)->text() == QStringLiteral("0.5"));
+    REQUIRE(QFile::rename(hiddenCatalog, catalog) == true);
+    REQUIRE(reopened.CanUndo() == true);
+    reopened.Undo();
+    WaitForValidatedScene(reopened);
+    checkEdited(reopened);
+
+    QPushButton* restoreOrNull = reopened.findChild<QPushButton*>(QStringLiteral("worldRestoreCoating"));
+    REQUIRE(restoreOrNull != nullptr);
+    restoreOrNull->click();
+    WaitForValidatedScene(reopened);
+    CHECK(getMaterial(reopened, selected).Scattering.AlphaU == original.AlphaU);
+    REQUIRE(reopened.CanUndo() == true);
+    reopened.Undo();
+    WaitForValidatedScene(reopened);
+    checkEdited(reopened);
+    reopened.StopPreview();
+}
 
 TEST_CASE("Placement-only World edits derive the presented scene and keep everything else assembled",
           "[editor][world][placement]")

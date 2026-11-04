@@ -20,6 +20,7 @@
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/runtime/resources/scene.h>
 
 #include <QCheckBox>
 #include <QColorDialog>
@@ -1413,18 +1414,26 @@ void WorldWorkspace::addMaterialGroup()
     QGroupBox* group = new QGroupBox(QStringLiteral("Material"));
     group->setObjectName(QStringLiteral("worldMaterial"));
     QFormLayout* rows = new QFormLayout(group);
+    const RenderScene& presented = Scene_->PreviewScene();
+    const resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(presented, Selected_);
+    const QJsonObject scene = Document_.Entity(Selected_).value(QStringLiteral("scene")).toObject();
+    const QJsonObject coating = scene.value(QStringLiteral("coating")).toObject();
+    const bool canEditCoating = materialOrNull != nullptr &&
+                                materialOrNull->Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse;
     QVector<MaterialPropertyRow> properties;
-    if (DescribeSceneObjectMaterial(Scene_->PreviewScene(), Selected_, properties) == false)
+    if (DescribeSceneObjectMaterial(presented, Selected_, properties) == false)
     {
         QLabel* pending =
             new QLabel(QStringLiteral("Material values appear once the viewport has loaded the scene."), group);
         pending->setWordWrap(true);
         rows->addRow(pending);
-        Inspector_->addWidget(group);
-        return;
     }
     for (const MaterialPropertyRow& property : properties)
     {
+        if (canEditCoating == true && property.IsCoatingParameter == true)
+        {
+            continue;
+        }
         QLabel* value = new QLabel(property.Value, group);
         value->setObjectName(QStringLiteral("worldMaterial:") + property.Label);
         value->setTextFormat(Qt::PlainText);
@@ -1432,8 +1441,70 @@ void WorldWorkspace::addMaterialGroup()
         value->setTextInteractionFlags(Qt::TextSelectableByMouse);
         rows->addRow(property.Label, value);
     }
+    if (canEditCoating == true)
+    {
+        QLabel* help = new QLabel(
+            QStringLiteral("Apply Changes edits this slot only. The raster preview approximates coat roughness. "
+                           "Use a compatible reference view to see the effect of IOR and optical thickness."),
+            group);
+        help->setWordWrap(true);
+        rows->addRow(help);
+        constexpr foundation::int32 FLOAT32_ROUND_TRIP_DIGITS = 9;
+        for (const CoatingField& property : COATING_FIELDS)
+        {
+            const QString key = QString::fromLatin1(property.Key);
+            const QJsonValue initial =
+                coating.contains(key) == true
+                    ? coating.value(key)
+                    : QJsonValue(static_cast<foundation::float64>(materialOrNull->Scattering.*property.Member));
+            QLineEdit* field =
+                new QLineEdit(QString::number(initial.toDouble(), 'g', FLOAT32_ROUND_TRIP_DIGITS), group);
+            const QString fieldKey = QStringLiteral("scene/coating/") + key;
+            field->setObjectName(QStringLiteral("worldField:") + fieldKey);
+            field->setProperty("initialCoatingValue", initial.toDouble());
+            field->setProperty("initialCoatingText", field->text());
+            Fields_.insert(fieldKey, field);
+            connect(field, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
+            rows->addRow(QString::fromLatin1(property.Label), field);
+        }
+    }
+    if (coating.isEmpty() == false)
+    {
+        QPushButton* restore = new QPushButton(QStringLiteral("Use Imported Coating"), group);
+        restore->setObjectName(QStringLiteral("worldRestoreCoating"));
+        connect(restore, &QPushButton::clicked, this, &WorldWorkspace::restoreImportedCoating);
+        rows->addRow(restore);
+    }
     Inspector_->addWidget(group);
 }
+
+void WorldWorkspace::restoreImportedCoating()
+{
+    if (Pending_ == true || SceneBusy() == true)
+    {
+        return;
+    }
+    const QJsonObject entity = Document_.Entity(Selected_);
+    QJsonObject scene = entity.value(QStringLiteral("scene")).toObject();
+    if (scene.contains(QStringLiteral("coating")) == false)
+    {
+        return;
+    }
+    scene.remove(QStringLiteral("coating"));
+    QString error;
+    if (Document_.Edit(Selected_,
+                       entity.value(QStringLiteral("components")).toObject(),
+                       entity.value(QStringLiteral("name")).toString(),
+                       error,
+                       &scene) == false)
+    {
+        Changed(error);
+        return;
+    }
+    Snapshot();
+    Changed(QStringLiteral("Imported coating restored to this slot. Undo is available."));
+}
+
 void WorldWorkspace::RenderInspector()
 {
     Scene_->SetSelection(Selected_);
@@ -1486,7 +1557,7 @@ void WorldWorkspace::RenderInspector()
     Name_->setAccessibleName(QStringLiteral("Entity name"));
     nameLayout->addRow(QStringLiteral("Name"), Name_);
     Inspector_->addWidget(form);
-    connect(Name_, &QLineEdit::textEdited, this, [this]() { Pending(); });
+    connect(Name_, &QLineEdit::textEdited, this, [this]() { markInspectorPending(); });
     QLabel* id = new QLabel(Document_.HasUuidRecords() == true
                                 ? QStringLiteral("Label: %1\nUUID: %2").arg(Document_.GetEntityLabel(entity), Selected_)
                                 : QStringLiteral("Stable ID: ") + Selected_);
@@ -1515,7 +1586,7 @@ void WorldWorkspace::RenderInspector()
                     auto* field = new QLineEdit(Display(values[axis]), group);
                     field->setObjectName(QStringLiteral("worldField:") + fieldKey);
                     Fields_.insert(fieldKey, field);
-                    connect(field, &QLineEdit::textEdited, this, [this]() { Pending(); });
+                    connect(field, &QLineEdit::textEdited, this, [this]() { markInspectorPending(); });
                     const auto unit = key == QStringLiteral("position")   ? QStringLiteral(" (m)")
                                       : key == QStringLiteral("rotation") ? QStringLiteral(" (°)")
                                                                           : QString();
@@ -1568,7 +1639,7 @@ void WorldWorkspace::RenderInspector()
             {
                 auto* check = new QCheckBox(group);
                 check->setChecked(current.toBool());
-                connect(check, &QCheckBox::toggled, this, [this]() { Pending(); });
+                connect(check, &QCheckBox::toggled, this, [this]() { markInspectorPending(); });
                 field = check;
             }
             else if (type == QStringLiteral("enum") || type == QStringLiteral("entity") ||
@@ -1611,13 +1682,13 @@ void WorldWorkspace::RenderInspector()
                     }
                 }
                 choices->setCurrentIndex(choices->findData(current.toString()));
-                connect(choices, &QComboBox::currentIndexChanged, this, [this]() { Pending(); });
+                connect(choices, &QComboBox::currentIndexChanged, this, [this]() { markInspectorPending(); });
                 field = choices;
             }
             else
             {
                 auto* text = new QLineEdit(Display(current), group);
-                connect(text, &QLineEdit::textEdited, this, [this]() { Pending(); });
+                connect(text, &QLineEdit::textEdited, this, [this]() { markInspectorPending(); });
                 field = text;
             }
             field->setObjectName(QStringLiteral("worldField:") + FieldKey(cid, pid));
@@ -1739,16 +1810,19 @@ void WorldWorkspace::PickTint(const QString& id, const QJsonObject& binding)
                 {
                     fields[i]->setText(QString::number(static_cast<foundation::float64>(channels[i]), 'g', 17));
                 }
-                Pending();
+                markInspectorPending();
                 Changed(QStringLiteral(
                     "Tint chosen. Apply Changes validates all fields together; Reset Fields cancels it."));
             });
     picker->open();
 }
-void WorldWorkspace::Pending()
+void WorldWorkspace::markInspectorPending(bool shouldPreview)
 {
     Pending_ = true;
-    DraftTimer_.start();
+    if (shouldPreview == true)
+    {
+        DraftTimer_.start();
+    }
     Changed(QStringLiteral(
         "Unapplied fields. Apply Changes validates them together; Reset Fields keeps the last applied edit."));
 }
@@ -1791,6 +1865,11 @@ void WorldWorkspace::Changed(const QString& message)
     Components_->setEnabled(Pending_ == false && isBusy == false);
     Apply_->setEnabled(Pending_ && isBusy == false);
     Reset_->setEnabled(Pending_ && isBusy == false);
+    QPushButton* restoreCoatingOrNull = findChild<QPushButton*>(QStringLiteral("worldRestoreCoating"));
+    if (restoreCoatingOrNull != nullptr)
+    {
+        restoreCoatingOrNull->setEnabled(Pending_ == false && isBusy == false);
+    }
     const bool hasRecovery = Document_.Loaded() && Dirty() == false && Unsaved_ == false &&
                              QFileInfo::exists(Path_ + QStringLiteral(".ludus-recovery"));
     Recovery_->setVisible(hasRecovery);
@@ -1804,7 +1883,44 @@ void WorldWorkspace::Changed(const QString& message)
     updateViewportInteraction();
     Q_EMIT DocumentChanged();
 }
-bool WorldWorkspace::ReadDraft(WorldDocument& document, QString& error, QWidget*& invalid)
+bool WorldWorkspace::readCoatingFields(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull)
+{
+    QJsonObject coating;
+    bool hasChanged = false;
+    for (const CoatingField& property : COATING_FIELDS)
+    {
+        const QString key = QString::fromLatin1(property.Key);
+        QLineEdit* fieldOrNull = qobject_cast<QLineEdit*>(Fields_.value(QStringLiteral("scene/coating/") + key));
+        if (fieldOrNull == nullptr)
+        {
+            return true;
+        }
+        const QJsonValue initial = fieldOrNull->property("initialCoatingValue").toDouble();
+        QJsonValue value = initial;
+        if (fieldOrNull->text() != fieldOrNull->property("initialCoatingText").toString() &&
+            WorldDocument::ParseValue(property.MakeNumberProperty(), fieldOrNull->text(), value, outError) == false)
+        {
+            outError = QStringLiteral("%1: enter a finite value from %2 to %3.")
+                           .arg(QString::fromLatin1(property.Label),
+                                QString::number(static_cast<foundation::float64>(property.Minimum)),
+                                QString::number(static_cast<foundation::float64>(property.Maximum)));
+            outInvalidOrNull = fieldOrNull;
+            return false;
+        }
+        hasChanged = hasChanged == true || value != initial;
+        coating.insert(key, value);
+    }
+    if (hasChanged == true)
+    {
+        inoutScene.insert(QStringLiteral("coating"), coating);
+    }
+    return true;
+}
+
+bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
+                               QString& outError,
+                               QWidget*& outInvalidOrNull,
+                               bool shouldReadCoating)
 {
     auto components = Document_.Entity(Selected_).value(QStringLiteral("components")).toObject();
     for (auto c = components.begin(); c != components.end(); ++c)
@@ -1832,15 +1948,15 @@ bool WorldWorkspace::ReadDraft(WorldDocument& document, QString& error, QWidget*
                 {
                     candidate = values.value(pid);
                 }
-                else if (WorldDocument::ParseValue(p, text->text(), candidate, error) == false)
+                else if (WorldDocument::ParseValue(p, text->text(), candidate, outError) == false)
                 {
-                    invalid = text;
+                    outInvalidOrNull = text;
                     return false;
                 }
             }
             else
             {
-                error = QStringLiteral("Inspector no longer matches the selected entity.");
+                outError = QStringLiteral("Inspector no longer matches the selected entity.");
                 return false;
             }
             values.insert(pid, candidate);
@@ -1859,7 +1975,7 @@ bool WorldWorkspace::ReadDraft(WorldDocument& document, QString& error, QWidget*
                     qobject_cast<QLineEdit*>(Fields_.value(QStringLiteral("scene/") + key + QString::number(axis)));
                 if (field == nullptr)
                 {
-                    error = QStringLiteral("Scene inspector is stale.");
+                    outError = QStringLiteral("Scene inspector is stale.");
                     return false;
                 }
                 if (field->text() == Display(values[axis]))
@@ -1874,9 +1990,9 @@ bool WorldWorkspace::ReadDraft(WorldDocument& document, QString& error, QWidget*
                                                                                 : -1000000},
                                            {QStringLiteral("max"), key == QStringLiteral("rotation") ? 360 : 1000000}};
                 QJsonValue value;
-                if (WorldDocument::ParseValue(property, field->text(), value, error) == false)
+                if (WorldDocument::ParseValue(property, field->text(), value, outError) == false)
                 {
-                    invalid = field;
+                    outInvalidOrNull = field;
                     return false;
                 }
                 values[axis] = value;
@@ -1884,7 +2000,12 @@ bool WorldWorkspace::ReadDraft(WorldDocument& document, QString& error, QWidget*
             scene.insert(key, values);
         }
     }
-    if (document.Edit(Selected_, components, Name_->text(), error, scene.isEmpty() ? nullptr : &scene) == false)
+    if (shouldReadCoating == true && readCoatingFields(scene, outError, outInvalidOrNull) == false)
+    {
+        return false;
+    }
+    if (inoutDocument
+            .Edit(Selected_, components, Name_->text(), outError, scene.isEmpty() == true ? nullptr : &scene) == false)
     {
         return false;
     }
@@ -1904,7 +2025,7 @@ void WorldWorkspace::PreviewDraft()
     auto draft = Document_;
     QString error;
     QWidget* invalid = nullptr;
-    if (Pending_ && ReadDraft(draft, error, invalid) == false)
+    if (Pending_ && readDraft(draft, error, invalid, false) == false)
     {
         return;
     }
@@ -2031,7 +2152,7 @@ bool WorldWorkspace::Apply()
     WorldDocument candidate = Document_;
     QString error;
     QWidget* invalid = nullptr;
-    if (ReadDraft(candidate, error, invalid) == false)
+    if (readDraft(candidate, error, invalid) == false)
     {
         if (invalid != nullptr)
         {
