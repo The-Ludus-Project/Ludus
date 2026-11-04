@@ -4,13 +4,16 @@
 #include "internal/reference_capture_window.h"
 #include "internal/reference_comparison.h"
 #include "internal/render_graph_capture_profile.h"
+#include "internal/render_graph_defaults.h"
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
 
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QSaveFile>
 
 namespace ludus::editor
@@ -25,9 +28,41 @@ QString DescribeExtent(const QSize& size)
     return QStringLiteral("%1 × %2").arg(size.width()).arg(size.height());
 }
 
-QString MakeCandidateStem(qsizetype index)
+QString MakeFilenameComponent(QString text, const QString& fallback)
 {
-    return QStringLiteral("candidate-%1").arg(index + 1);
+    // Bound each component so even three UTF-8 names and the difference suffix fit in a filename.
+    constexpr qsizetype MAXIMUM_COMPONENT_UNITS = 24;
+    const QRegularExpression unsafe(QStringLiteral("[^\\p{L}\\p{N}\\p{M}_-]+"));
+    text.replace(unsafe, QStringLiteral("-"));
+    text.truncate(MAXIMUM_COMPONENT_UNITS);
+    if (text.isEmpty() == false && text.back().isHighSurrogate() == true)
+    {
+        text.chop(1);
+    }
+    return text.isEmpty() == true ? fallback : text;
+}
+
+QString MakeCandidateStem(qsizetype index, const RenderGraphCaptureTarget& target)
+{
+    constexpr int32 DECIMAL_BASE = 10;
+    QString graph = QFileInfo(target.Library).fileName();
+    const QString sourceSuffix = QStringLiteral(".lurender.json");
+    if (graph.endsWith(sourceSuffix) == true)
+    {
+        graph.chop(sourceSuffix.size());
+    }
+    return QStringLiteral("%1-%2--%3--%4")
+        .arg(index + 1, 2, DECIMAL_BASE, QLatin1Char('0'))
+        .arg(MakeFilenameComponent(graph, QStringLiteral("graph")),
+             MakeFilenameComponent(target.Configuration, QStringLiteral("unknown-configuration")),
+             MakeFilenameComponent(target.Output, QStringLiteral("final-output")));
+}
+
+RenderGraphCaptureTarget DescribeRuntimeTarget(const QString& path, const QString& output)
+{
+    const QString configuration =
+        path == GetDefaultRenderGraphRuntime() ? QStringLiteral("Default") : QStringLiteral("Unknown configuration");
+    return {QFileInfo(path).completeBaseName(), configuration, output, true};
 }
 
 QByteArray ReadPackageIdentity(const QString& path)
@@ -129,6 +164,26 @@ bool GraphComparisonRun::Start(RenderPreview& inoutPreview,
     mGenerationIdentity = identity;
     mSettings = settings;
     mCandidates = candidates;
+    RenderGraphCaptureTarget viewportTarget = DescribeRuntimeTarget(source.PackagePath, source.OutputTarget);
+    const RenderGraphPreviewSource& active = graphOrNull->GetActiveSource();
+    if (active.RuntimeIdentity.isEmpty() == false && active.RuntimeIdentity == mViewportPackageIdentity.toHex())
+    {
+        if (active.RootFile.isEmpty() == false)
+        {
+            viewportTarget.Library = active.RootFile;
+        }
+        if (active.Configuration.isEmpty() == false)
+        {
+            viewportTarget.Configuration = active.Configuration;
+        }
+    }
+    for (GraphComparisonCandidate& candidate : mCandidates)
+    {
+        if (candidate.HasSavedTarget == false)
+        {
+            candidate.Target = viewportTarget;
+        }
+    }
     mDisplayBaseline = displayBaseline;
     mBaselineSource = baselineSource;
     mBaselineState = displayBaseline.isNull() == true ? QStringLiteral("rendering") : QStringLiteral("supplied");
@@ -185,7 +240,7 @@ void GraphComparisonRun::Service()
             }
             const renderer::RenderGraphCaptureInfo info = mGraph.GetInfo();
             mStatus = QStringLiteral("%1 · %2 / %3 invocations including warm-up.")
-                          .arg(mCandidates.at(mCandidateIndex).Label)
+                          .arg(mCandidates.at(mCandidateIndex).Target.GetLabel())
                           .arg(info.SubmittedSamples)
                           .arg(info.TargetSamples);
             return;
@@ -232,7 +287,7 @@ void GraphComparisonRun::finishReference()
 void GraphComparisonRun::prepareCandidate()
 {
     const GraphComparisonCandidate& candidate = mCandidates.at(mCandidateIndex);
-    mStatus = QStringLiteral("Preparing %1.").arg(candidate.Label);
+    mStatus = QStringLiteral("Preparing %1.").arg(candidate.Target.GetLabel());
     ViewportRasterSource source = mViewportSource;
     QString profile;
     QString error;
@@ -378,10 +433,17 @@ void GraphComparisonRun::finishCandidate(const QString& state, const QString& me
 {
     const GraphComparisonCandidate& candidate = mCandidates.at(mCandidateIndex);
     const QDir directory(mDirectory);
-    const QString stem = MakeCandidateStem(mCandidateIndex);
+    RenderGraphCaptureTarget target = candidate.Target;
+    if (mPhase == Phase::DisplayFrame && candidate.HasSavedTarget == false &&
+        mRaster.GetRenderedPackagePath().isEmpty() == false &&
+        mRaster.GetRenderedPackagePath() != mViewportSource.PackagePath)
+    {
+        target = DescribeRuntimeTarget(mRaster.GetRenderedPackagePath(), mViewportSource.OutputTarget);
+    }
+    const QString stem = MakeCandidateStem(mCandidateIndex, target);
     const QString imageName = stem + QStringLiteral(".png");
     QJsonObject result{
-        {QStringLiteral("label"), candidate.Label},
+        {QStringLiteral("label"), target.GetLabel()},
         {QStringLiteral("state"), state},
         {QStringLiteral("message"), message},
         {QStringLiteral("requestedSamples"), static_cast<qint64>(candidate.Samples)},
@@ -518,7 +580,7 @@ void GraphComparisonRun::writeManifest(const QString& state)
     for (const GraphComparisonCandidate& candidate : mCandidates)
     {
         candidates.append(QJsonObject{
-            {QStringLiteral("label"), candidate.Label},
+            {QStringLiteral("label"), candidate.Target.GetLabel()},
             {QStringLiteral("requestedSamples"), static_cast<qint64>(candidate.Samples)},
             {QStringLiteral("expectedBounces"), static_cast<qint64>(candidate.ExpectedBounces)},
             {QStringLiteral("mode"),

@@ -77,6 +77,7 @@ bool ViewportRasterCapture::Load(graphics::rhi::DeviceHandle device,
     Release();
     mPhase = ViewportRasterPhase::Idle;
     mImage = {};
+    mRenderedPackagePath.clear();
     mTexture = {};
     mError.clear();
     mFrameCount = 0;
@@ -181,6 +182,7 @@ ViewportRasterPhase ViewportRasterCapture::Service() noexcept
         }
         mWasStillAccumulating = isIdle == false;
         mImage = graph.GetImage();
+        mRenderedPackagePath = graph.GetActivePackagePath();
         mTexture = graph.GetOutputTexture();
         mPhase = ViewportRasterPhase::Complete;
         graph.Detach();

@@ -103,6 +103,11 @@ public:
     {
         return mImage;
     }
+    /// Cooked package that produced the saved frame, including a raster fallback when selected.
+    [[nodiscard]] LUDUS_INLINE const QString& GetRenderedPackagePath() const noexcept
+    {
+        return mRenderedPackagePath;
+    }
     /// Raw output texels; RGBA16F outputs keep linear radiance.
     [[nodiscard]] LUDUS_INLINE const InspectedTexture& GetTexture() const noexcept
     {
@@ -123,6 +128,7 @@ private:
     void fail(const QString& message) noexcept;
     foundation::UniquePtr<RenderGraphPreview> mGraph;
     QImage mImage;
+    QString mRenderedPackagePath;
     InspectedTexture mTexture;
     QString mError;
     foundation::uint64 mRevision = 0;

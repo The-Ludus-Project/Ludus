@@ -189,6 +189,8 @@ public:
     }
     /// Runtime package and raster fallback of the latest Load request; empty before one.
     [[nodiscard]] const QString& GetRequestedPackagePath() const noexcept;
+    /// Package of the active graph, including a raster fallback when selected.
+    [[nodiscard]] const QString& GetActivePackagePath() const noexcept;
     [[nodiscard]] const QString& GetRasterFallbackPath() const noexcept;
     /// Display attachment chosen by SetOutputTarget; empty selects the exported output.
     [[nodiscard]] const QString& GetOutputTarget() const noexcept;
