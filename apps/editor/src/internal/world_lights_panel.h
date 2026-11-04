@@ -55,6 +55,11 @@ struct WorldLightRow final
 /// Imported rows need the scene's cooked definition; without it only World light rows appear.
 [[nodiscard]] QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const RenderScene& scene);
 
+/// The list label of the `emitterNumber`th (one-based) imported emitter whose first object is `objectName`.
+/// A name the importer made up ("Imported object 3") or none says nothing about the light, so it reads
+/// "Area light 3" instead; a name from the source scene is kept.
+[[nodiscard]] QString GetEmitterLabel(const QString& objectName, qsizetype emitterNumber);
+
 /// A requested light edit: the complete new switch set and the authored lights to rewrite.
 struct WorldLightChange final
 {
