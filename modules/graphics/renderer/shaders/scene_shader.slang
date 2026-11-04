@@ -186,6 +186,31 @@ struct SelectedLight
     float SelectionPmf;
     bool HasSample;
 };
+// Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, Physically Based Rendering, 4th ed., sections 12.1 and
+// 12.6 (https://pbr-book.org/4ed/Light_Sources/Light_Interface), for separating source selection from incident
+// sampling and distinguishing delta mass from solid-angle density. Ludus uses packed scene indices and addressed
+// draws. See docs/architecture/renderer-systems.md#unified-light-discovery-and-incident-sampling.
+/// Probability measure of a sample conditioned on the selected light.
+enum IncidentLightMeasure : uint
+{
+    SolidAngle, ///< Probability density per steradian at the receiver.
+    Discrete,   ///< Probability mass of the deterministic incident event.
+};
+/// Incident proposal and shadow endpoint for one already chosen source in the current snapshot.
+struct IncidentLightSample
+{
+    uint TriangleIndex; ///< Sampled mesh primitive, or SCENE_INVALID_INDEX for non-mesh sources.
+    float2 Barycentric; ///< Coordinates on TriangleIndex when sampling a mesh light.
+    float3 DirectionWorld; ///< Unit direction from the receiver towards the light.
+    float3 IncidentCoefficient; ///< Scene-linear contribution before the BSDF, receiver cosine and visibility.
+    float ConditionalProbability; ///< Density or mass according to Measure, excluding the source PMF.
+    float3 PositionWorld; ///< Endpoint in world metres when HasFiniteEndpoint is true.
+    float DistanceWorld; ///< Distance to a finite endpoint in metres.
+    IncidentLightMeasure Measure; ///< Interpretation of ConditionalProbability.
+    bool HasFiniteEndpoint; ///< False for a connection towards an infinite source.
+    bool HasSample; ///< Other fields describe a proposal only when true.
+};
+/// Legacy sample with the default uniform selection PMF and a discrete flag.
 struct LightSample
 {
     uint LightIndex;
@@ -633,31 +658,60 @@ float EvaluateEmissiveTriangleSelectionPmf(SceneContext scene, uint triangleInde
         return 0;
     return EmitterProbability(emitter);
 }
-float EvaluateLightPdfSolidAngle(SceneContext scene, float3 receiverPositionWorld, SurfaceHit endpoint)
+/// Resolve an emissive hit's source index in this snapshot, or SCENE_INVALID_INDEX.
+uint GetSurfaceLightIndex(SceneContext scene, SurfaceHit endpoint)
 {
-    if (endpoint.EmitterIndex >= GetEmitterCount(scene))
+    return endpoint.IsValid == true && endpoint.EmitterIndex < GetEmitterCount(scene)
+               ? Counts.w + endpoint.EmitterIndex
+               : SCENE_INVALID_INDEX;
+}
+/// Resolve the aggregate environment source index in this snapshot, or SCENE_INVALID_INDEX.
+uint GetEnvironmentLightIndex(SceneContext scene)
+{
+    uint index = Counts.w + GetEmitterCount(scene);
+    return HasSceneData(scene, SCENE_DATA_LIGHTS) == true && index < GetLightCount(scene)
+               ? index
+               : SCENE_INVALID_INDEX;
+}
+static float ComputeMeshIncidentPdfSolidAngle(float distanceSquaredWorld, float areaWorld, float cosine)
+{
+    return cosine > 0 && areaWorld > 0 ? distanceSquaredWorld / (areaWorld * cosine) : 0;
+}
+/// Evaluate the area-uniform mesh proposal at an emitter hit, per steradian at the receiver.
+/// The source PMF is separate. Non-emitter hits have zero density.
+float EvaluateIncidentLightPdfSolidAngle(SceneContext scene, float3 receiverPositionWorld, SurfaceHit endpoint)
+{
+    if (GetSurfaceLightIndex(scene, endpoint) == SCENE_INVALID_INDEX)
         return 0;
     float4 emitter = GetEmitter(scene, endpoint.EmitterIndex);
     float3 offsetWorld = endpoint.PositionWorld - receiverPositionWorld;
     float cosine = abs(dot(endpoint.GeometricNormalWorld, -NormalizeOrZero(offsetWorld)));
-    return cosine > 0 && emitter.z > 0
-               ? dot(offsetWorld, offsetWorld) / (float(GetLightCount(scene)) * emitter.z * cosine)
-               : 0;
+    return ComputeMeshIncidentPdfSolidAngle(dot(offsetWorld, offsetWorld), emitter.z, cosine);
 }
-LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, SurfaceHit receiver, float3 shapeSample)
+/// Joint mesh-hit density for the legacy uniform source selection and area proposal.
+float EvaluateLightPdfSolidAngle(SceneContext scene, float3 receiverPositionWorld, SurfaceHit endpoint)
 {
-    LightSample result = (LightSample)0;
+    return EvaluateLightSelectionPmf(scene, GetSurfaceLightIndex(scene, endpoint)) *
+           EvaluateIncidentLightPdfSolidAngle(scene, receiverPositionWorld, endpoint);
+}
+static const float UNIFORM_ENVIRONMENT_PDF_SOLID_ANGLE = 1 / (4 * PI);
+/// Slots to reserve for an addressed default incident proposal, regardless of which kind is selected.
+static const uint SCENE_INCIDENT_LIGHT_DIMENSION_COUNT = 3;
+static const uint INCIDENT_LIGHT_SECOND_DIMENSION_OFFSET = 1;
+static const uint INCIDENT_LIGHT_LAST_DIMENSION_OFFSET = SCENE_INCIDENT_LIGHT_DIMENSION_COUNT - 1;
+
+static IncidentLightSample SampleIncidentLightAtCoordinates(SceneContext scene,
+                                                            LightInfo light,
+                                                            SurfaceHit receiver,
+                                                            float3 shapeSample)
+{
+    IncidentLightSample result = (IncidentLightSample)0;
     result.TriangleIndex = SCENE_INVALID_INDEX;
-    if (selected.HasSample == false || selected.LightIndex >= GetLightCount(scene) || any(shapeSample < 0) ||
-        any(shapeSample >= 1) || any(isfinite(shapeSample) == false))
-        return result;
-    result.LightIndex = selected.LightIndex;
-    result.SelectionPmf = EvaluateLightSelectionPmf(scene, selected.LightIndex);
-    LightInfo light = GetLightInfo(scene, selected.LightIndex);
-    result.ConditionalPdf = 1;
+    result.Measure = IncidentLightMeasure::SolidAngle;
+    result.ConditionalProbability = 1;
     if (light.Kind == SceneLightKind::Mesh)
     {
-        float4 emitter = GetEmitter(scene, selected.LightIndex - Counts.w);
+        float4 emitter = GetEmitter(scene, light.EmitterIndex);
         float targetArea = shapeSample.x * emitter.z;
         uint triangle = SCENE_INVALID_INDEX;
         for (uint i = 0; i < uint(emitter.y); ++i)
@@ -682,7 +736,8 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
         float cosine = abs(dot(normalWorld, -result.DirectionWorld));
         if (cosine <= 0)
             return result;
-        result.ConditionalPdf = dot(offsetWorld, offsetWorld) / (emitter.z * cosine);
+        result.ConditionalProbability =
+            ComputeMeshIncidentPdfSolidAngle(dot(offsetWorld, offsetWorld), emitter.z, cosine);
         result.IncidentCoefficient =
             Surface(triangle, 4).xyz * Texture(triangle, TexcoordUv(triangle, result.Barycentric), 2).xyz;
         if (asuint(Surface(triangle, 5).w) == 0 && dot(normalWorld, -result.DirectionWorld) <= 0)
@@ -696,11 +751,11 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
         float longitude = 2 * PI * shapeSample.z;
         result.DirectionWorld = float3(radius * cos(longitude), cosine, radius * sin(longitude));
         result.IncidentCoefficient = EvaluateEnvironmentWorld(result.DirectionWorld).xyz;
-        result.ConditionalPdf = 1 / (4 * PI);
+        result.ConditionalProbability = UNIFORM_ENVIRONMENT_PDF_SOLID_ANGLE;
     }
     else
     {
-        result.IsDiscrete = true;
+        result.Measure = IncidentLightMeasure::Discrete;
         result.DirectionWorld = -light.DirectionWorld;
         result.IncidentCoefficient = light.Intensity;
         if (light.Kind != SceneLightKind::Directional)
@@ -727,7 +782,35 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
     result.HasSample = true;
     return result;
 }
-SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit receiver, LightSample light)
+/// Legacy explicit-coordinate proposal with the default uniform selection PMF.
+LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, SurfaceHit receiver, float3 shapeSample)
+{
+    LightSample result = (LightSample)0;
+    result.TriangleIndex = SCENE_INVALID_INDEX;
+    if (selected.HasSample == false || selected.LightIndex >= GetLightCount(scene) || any(shapeSample < 0) ||
+        any(shapeSample >= 1) || any(isfinite(shapeSample) == false))
+        return result;
+    IncidentLightSample incident =
+        SampleIncidentLightAtCoordinates(scene, GetLightInfo(scene, selected.LightIndex), receiver, shapeSample);
+    result.LightIndex = selected.LightIndex;
+    result.TriangleIndex = incident.TriangleIndex;
+    result.Barycentric = incident.Barycentric;
+    result.DirectionWorld = incident.DirectionWorld;
+    result.IncidentCoefficient = incident.IncidentCoefficient;
+    result.SelectionPmf = EvaluateLightSelectionPmf(scene, selected.LightIndex);
+    result.ConditionalPdf = incident.ConditionalProbability;
+    result.PositionWorld = incident.PositionWorld;
+    result.DistanceWorld = incident.DistanceWorld;
+    result.IsDiscrete = incident.Measure == IncidentLightMeasure::Discrete;
+    result.HasFiniteEndpoint = incident.HasFiniteEndpoint;
+    result.HasSample = incident.HasSample;
+    return result;
+}
+/// Trace visibility to a conditional incident sample using the invocation's query budget.
+SceneQuery TestVisibility(SceneContext scene,
+                          inout RayQueryContext queries,
+                          SurfaceHit receiver,
+                          IncidentLightSample light)
 {
     if (queries.HasFailed == true)
         return SceneQuery::Failure;
@@ -777,6 +860,17 @@ SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, Sur
         return SceneQuery::Failure;
     }
     return hit.Triangle == SCENE_INVALID_INDEX ? SceneQuery::Miss : SceneQuery::Surface;
+}
+/// Trace visibility to a sample returned by the legacy explicit-coordinate overload.
+SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit receiver, LightSample light)
+{
+    IncidentLightSample incident = (IncidentLightSample)0;
+    incident.TriangleIndex = light.TriangleIndex;
+    incident.DirectionWorld = light.DirectionWorld;
+    incident.PositionWorld = light.PositionWorld;
+    incident.HasFiniteEndpoint = light.HasFiniteEndpoint;
+    incident.HasSample = light.HasSample;
+    return TestVisibility(scene, queries, receiver, incident);
 }
 /// A world-space segment whose visibility from a receiver is queried, usually a chord of an emitter
 /// triangle. TriangleIndex is the packed index of the triangle that carries the segment, which is
@@ -991,10 +1085,15 @@ TriangleData GetEmitterTriangle(SceneContext scene, uint emitterIndex, uint prim
     uint triangle = asuint(SceneValue(Offsets.z + uint(emitter.x) + primitiveInEmitter).x);
     return GetTriangle(scene, triangle);
 }
+/// Uniform environment density per steradian, excluding the source PMF. Zero when the source is absent.
+float EvaluateIncidentEnvironmentPdfSolidAngle(SceneContext scene)
+{
+    return GetEnvironmentLightIndex(scene) != SCENE_INVALID_INDEX ? UNIFORM_ENVIRONMENT_PDF_SOLID_ANGLE : 0;
+}
+/// Joint environment density for the legacy uniform source selection and sphere proposal.
 float EvaluateEnvironmentPdfSolidAngle(SceneContext scene, float3 directionWorld)
 {
-    uint index = Counts.w + GetEmitterCount(scene);
-    return EvaluateLightSelectionPmf(scene, index) / (4 * PI);
+    return EvaluateLightSelectionPmf(scene, GetEnvironmentLightIndex(scene)) * UNIFORM_ENVIRONMENT_PDF_SOLID_ANGLE;
 }
 /// Draw a pseudorandom float in [0,1) at an explicit address, without advancing queries.
 /// @pre dimension is no greater than FoundationMath's RANDOM_MAX_DIMENSION.
@@ -1002,6 +1101,38 @@ float SampleSceneRandom(RayLaunch launch, uint dimension)
 {
     uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
     return SampleRandomFloat01(launch.Seed, PixelRandomAddress(pixel, launch.SampleIndex, dimension));
+}
+/// Sample one catalog source using the kind's addressed incident proposal, without advancing the automatic stream.
+/// Mesh reads firstDimension through firstDimension + 2, environment reads only the last two, and analytic sources
+/// read no dimensions. An out-of-range source returns no sample. Exhausting a needed address fails the invocation.
+IncidentLightSample SampleIncidentLight(SceneContext scene,
+                                       uint lightIndex,
+                                       SurfaceHit receiver,
+                                       RayLaunch launch,
+                                       uint firstDimension,
+                                       inout RayQueryContext inoutQueries)
+{
+    IncidentLightSample empty = (IncidentLightSample)0;
+    empty.TriangleIndex = SCENE_INVALID_INDEX;
+    if (inoutQueries.HasFailed == true)
+        return empty;
+    LightInfo light = GetLightInfo(scene, lightIndex);
+    if (light.IsValid == false)
+        return empty;
+    float3 shapeSample = float3(0);
+    if (light.Kind == SceneLightKind::Mesh || light.Kind == SceneLightKind::Environment)
+    {
+        if (firstDimension > RANDOM_MAX_DIMENSION - INCIDENT_LIGHT_LAST_DIMENSION_OFFSET)
+        {
+            FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_RANDOM_EXHAUSTED);
+            return empty;
+        }
+        if (light.Kind == SceneLightKind::Mesh)
+            shapeSample.x = SampleSceneRandom(launch, firstDimension);
+        shapeSample.y = SampleSceneRandom(launch, firstDimension + INCIDENT_LIGHT_SECOND_DIMENSION_OFFSET);
+        shapeSample.z = SampleSceneRandom(launch, firstDimension + INCIDENT_LIGHT_LAST_DIMENSION_OFFSET);
+    }
+    return SampleIncidentLightAtCoordinates(scene, light, receiver, shapeSample);
 }
 /// Draw a pseudorandom float in [0,1), advancing the renderer-owned invocation stream.
 /// Available in ray generation, closest-hit and miss with no ScenePayload fields.
