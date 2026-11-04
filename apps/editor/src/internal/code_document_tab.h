@@ -25,6 +25,9 @@ public:
     /// @param hostOrNull The shared file host to bind, or null for an empty tab.
     /// @param absolutePath The file's path, used as the tab identity and title.
     CodeDocumentTab(CodeFileDocument* hostOrNull, const QString& absolutePath, QWidget* parentOrNull = nullptr);
+    /// Destroys the controller before its editor: the controller's destructor
+    /// restores the editor's history mode, and Qt deletes children in creation order.
+    ~CodeDocumentTab() override;
 
     [[nodiscard]] CodeEditor& GetEditor() const noexcept
     {

@@ -48,15 +48,22 @@ TEST_CASE("Script host re-baselines on save and reload", "[code-editor][scripts]
     REQUIRE(appendByte(host, '!') == CodeEditStatus::Ok);
     CHECK(host.IsDirty() == true);
 
-    // Saving makes the current draft the new clean baseline.
-    host.SetBaseline(host.GetDraft());
+    // Saving makes the current draft the new clean baseline and keeps history,
+    // like the S5 editor: Undo after Save returns to the unsaved text.
+    host.MarkSaved();
     CHECK(host.IsDirty() == false);
-    CHECK(host.CanUndo() == false);
+    REQUIRE(host.CanUndo() == true);
+    REQUIRE(host.Undo() == true);
+    CHECK(host.GetDraft() == QByteArray("alpha\n"));
+    CHECK(host.IsDirty() == true);
 
-    // Reloading replaces the draft and baseline together.
+    // Reloading (or opening another asset) replaces the draft and baseline and
+    // clears history, so Undo never restores a different asset's text.
     host.SetBaseline(QByteArray("reloaded\n"));
     CHECK(host.GetDraft() == QByteArray("reloaded\n"));
     CHECK(host.IsDirty() == false);
+    CHECK(host.CanUndo() == false);
+    CHECK(host.CanRedo() == false);
 }
 
 TEST_CASE("Script host rejects a stale identity without mutating", "[code-editor][scripts][script-host]")

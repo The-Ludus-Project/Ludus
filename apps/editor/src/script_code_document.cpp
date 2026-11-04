@@ -38,9 +38,16 @@ void ScriptCodeDocument::SetBaseline(const QByteArray& bytes)
 {
     mBaseline = bytes;
     mDraft = bytes;
-    mHistory.BreakGroup();
+    mHistory.Reset();
     mHasMergeableGroup = false;
     ++mBinding;
+}
+
+void ScriptCodeDocument::MarkSaved() noexcept
+{
+    mBaseline = mDraft;
+    mHistory.BreakGroup();
+    mHasMergeableGroup = false;
 }
 
 void ScriptCodeDocument::SetDraft(const QByteArray& bytes)
