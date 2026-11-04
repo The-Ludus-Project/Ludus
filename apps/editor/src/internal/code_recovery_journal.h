@@ -46,8 +46,7 @@ public:
     /// for a large dirty buffer plus base64 expansion and the small header. This
     /// is the journal's own owner constant for its per-entry limit (decision log,
     /// "Code-buffer recovery journal owner").
-    static constexpr foundation::isize MAX_RECOVERY_ENTRY_BYTES =
-        static_cast<foundation::isize>(48) * 1024 * 1024;
+    static constexpr foundation::isize MAX_RECOVERY_ENTRY_BYTES = static_cast<foundation::isize>(48) * 1024 * 1024;
     /// The most journal entries kept for one project; older files beyond this are
     /// pruned so a long crash history cannot grow without bound.
     static constexpr foundation::int32 MAX_RECOVERY_ENTRIES = 256;

@@ -409,11 +409,10 @@ bool CodeEditorArea::PromptCloseDirtyTab(CodeDocumentTab* tab)
         QString error;
         if (host == nullptr || host->Save(error) == false)
         {
-            QMessageBox::warning(this,
-                                 QStringLiteral("Save failed"),
-                                 error.isEmpty() == true
-                                     ? QStringLiteral("The document could not be saved; it stays open.")
-                                     : error);
+            QMessageBox::warning(
+                this,
+                QStringLiteral("Save failed"),
+                error.isEmpty() == true ? QStringLiteral("The document could not be saved; it stays open.") : error);
             return false;
         }
         updateTabDecoration(tab);
@@ -503,10 +502,10 @@ bool CodeEditorArea::ConfirmDiscardAll()
         mRegistry.ScheduleRecoveryCheckpoint();
         if (failed.isEmpty() == false)
         {
-            QMessageBox::warning(
-                this,
-                QStringLiteral("Save failed"),
-                QStringLiteral("These buffers could not be saved and stay open:\n%1").arg(failed.join(QLatin1Char('\n'))));
+            QMessageBox::warning(this,
+                                 QStringLiteral("Save failed"),
+                                 QStringLiteral("These buffers could not be saved and stay open:\n%1")
+                                     .arg(failed.join(QLatin1Char('\n'))));
             return false;
         }
         return true;

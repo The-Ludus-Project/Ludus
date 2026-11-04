@@ -166,8 +166,7 @@ TEST_CASE("Crash-style restore reopens the unsaved draft on reopen", "[code-edit
         REQUIRE(tab != nullptr);
         CHECK(tab->IsDirty() == true);
         CHECK(tab->GetHostOrNull() != nullptr);
-        CHECK(tab->GetHostOrNull()->GetSnapshot().Text.GetSize() >
-              static_cast<usize>(QByteArray("saved\n").size()));
+        CHECK(tab->GetHostOrNull()->GetSnapshot().Text.GetSize() > static_cast<usize>(QByteArray("saved\n").size()));
     }
 
     // The restore pass cleared the journal, so a third reopen restores nothing.

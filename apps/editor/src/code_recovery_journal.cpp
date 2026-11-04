@@ -42,9 +42,8 @@ constexpr int32 HASH_HEX_BYTES = 64;
 } // namespace
 
 CodeRecoveryJournal::CodeRecoveryJournal(const QString& stateDirectory, const QString& projectRoot)
-    : mStateDirectory(stateDirectory.isEmpty() == false
-                          ? QDir::cleanPath(QFileInfo(stateDirectory).absoluteFilePath())
-                          : QString{})
+    : mStateDirectory(stateDirectory.isEmpty() == false ? QDir::cleanPath(QFileInfo(stateDirectory).absoluteFilePath())
+                                                        : QString{})
 {
     SetProject(projectRoot);
 }
@@ -89,10 +88,8 @@ QStringList CodeRecoveryJournal::journalFiles() const
         return {};
     }
     QStringList paths;
-    const QFileInfoList files = QDir(mDirectory)
-                                    .entryInfoList({QStringLiteral("*.journal")},
-                                                   QDir::Files | QDir::NoSymLinks,
-                                                   QDir::Time);
+    const QFileInfoList files =
+        QDir(mDirectory).entryInfoList({QStringLiteral("*.journal")}, QDir::Files | QDir::NoSymLinks, QDir::Time);
     for (const QFileInfo& file : files)
     {
         paths.append(file.absoluteFilePath());
@@ -117,15 +114,14 @@ bool CodeRecoveryJournal::Write(const CodeRecoveryEntry& entry) const
     {
         return false;
     }
-    const QByteArray payload = QJsonDocument(QJsonObject{
-                                                 {QStringLiteral("version"), JOURNAL_VERSION},
-                                                 {QStringLiteral("path"), entry.CanonicalPath},
-                                                 {QStringLiteral("savedHash"),
-                                                  QString::fromLatin1(entry.SavedHash.toHex())},
-                                                 {QStringLiteral("draft"),
-                                                  QString::fromLatin1(entry.Draft.toBase64())},
-                                             })
-                                   .toJson(QJsonDocument::Compact);
+    const QByteArray payload =
+        QJsonDocument(QJsonObject{
+                          {QStringLiteral("version"), JOURNAL_VERSION},
+                          {QStringLiteral("path"), entry.CanonicalPath},
+                          {QStringLiteral("savedHash"), QString::fromLatin1(entry.SavedHash.toHex())},
+                          {QStringLiteral("draft"), QString::fromLatin1(entry.Draft.toBase64())},
+                      })
+            .toJson(QJsonDocument::Compact);
     const QByteArray envelope = HexDigest(payload) + '\n' + payload;
     if (static_cast<isize>(envelope.size()) > MAX_RECOVERY_ENTRY_BYTES)
     {

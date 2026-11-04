@@ -1698,8 +1698,7 @@ void MainWindow::OnCloseProject()
     if (Controller_->Caps().CanCloseProject == false || Content_->Importing() || AudioLaunchPending_ || AudioClosing_ ||
         (Audio_->ConfirmDiscard() == false || Scripts_->ConfirmDiscard() == false ||
          World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false) ||
-        mCodeArea->ConfirmDiscardAll() == false ||
-        ConfirmProjectChange(QStringLiteral("closing the project")) == false)
+        mCodeArea->ConfirmDiscardAll() == false || ConfirmProjectChange(QStringLiteral("closing the project")) == false)
     {
         return;
     }
