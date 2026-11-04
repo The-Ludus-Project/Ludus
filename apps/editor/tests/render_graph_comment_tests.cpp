@@ -5,6 +5,7 @@
 #include "internal/render_graph_navigation.h"
 #include "internal/render_graph_reroutes.h"
 #include "internal/renderer_workspace.h"
+#include "mouse_fixture.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -364,6 +365,9 @@ TEST_CASE("comment gestures cancel on Escape and configuration changes without c
     CHECK(canvas.GetNodePosition(QStringLiteral("first")) != QPointF(0, 0));
     QTest::keyClick(&canvas, Qt::Key_Escape);
     CHECK(canvas.GetNodePosition(QStringLiteral("first")) == QPointF(0, 0));
+    // The release that ends the cancelled drag neither resumes nor commits it.
+    QTest::mouseRelease(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, press + QPoint(40, 40));
+    CHECK(canvas.GetNodePosition(QStringLiteral("first")) == QPointF(0, 0));
     CHECK(workspace.GetDocument().GetRevision() == revision);
     CheckSelectionTrace(canvas, selected);
     REQUIRE(canvas.GetComments().BeginGesture(QPointF(-20, -95)) == true);
@@ -433,7 +437,7 @@ TEST_CASE("comment frame double-click, context removal and mouse release use can
     canvas.FitGraph();
     QPoint header = canvas.mapFromScene(QPointF(-20, -95));
     ScheduleDialog(true, QStringLiteral("Deferred lighting"));
-    QTest::mouseDClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, header);
+    tests::DoubleClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, header);
     CHECK(GetFrames(workspace.GetDocument()).first().toObject().value(QStringLiteral("title")).toString() ==
           QStringLiteral("Deferred lighting"));
     CheckSelectionTrace(canvas, selected);
@@ -894,7 +898,7 @@ TEST_CASE("stage context collapse and double-click expansion work with Propertie
     CHECK(FindCardOrNull(canvas, QStringLiteral("first"))->isVisible() == false);
     CheckSelectionTrace(canvas, view);
     point = canvas.mapFromScene(QPointF(-20, -95));
-    QTest::mouseDClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+    tests::DoubleClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, point);
     CHECK(FindCardOrNull(canvas, QStringLiteral("first"))->isVisible() == true);
     CheckSelectionTrace(canvas, view);
     workspace.Undo();
