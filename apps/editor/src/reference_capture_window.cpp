@@ -99,7 +99,9 @@ void PopulateReferenceTraversalChoices(QComboBox& inoutChoice, renderer::Referen
                                           "hardware. Neither GPU option falls back to the CPU."));
 }
 
-void UpdateReferenceTraversalAvailability(QComboBox& inoutChoice, const RenderPreview* previewOrNull)
+void UpdateReferenceTraversalAvailability(QComboBox& inoutChoice,
+                                          const RenderPreview* previewOrNull,
+                                          bool shouldSelectDefault)
 {
     bool isNativeAvailable = false;
     bool isComputeAvailable = false;
@@ -123,10 +125,9 @@ void UpdateReferenceTraversalAvailability(QComboBox& inoutChoice, const RenderPr
         modelOrNull->item(NATIVE_QUERIES_INDEX)->setEnabled(isNativeAvailable);
         modelOrNull->item(GPU_COMPUTE_INDEX)->setEnabled(isComputeAvailable);
     }
-    if ((isNativeAvailable == false && inoutChoice.currentIndex() == NATIVE_QUERIES_INDEX) ||
-        (isComputeAvailable == false && inoutChoice.currentIndex() == GPU_COMPUTE_INDEX))
+    if (shouldSelectDefault == true)
     {
-        inoutChoice.setCurrentIndex(CPU_ORACLE_INDEX);
+        inoutChoice.setCurrentIndex(isComputeAvailable == true ? GPU_COMPUTE_INDEX : CPU_ORACLE_INDEX);
     }
 }
 
@@ -285,8 +286,11 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
         updateControls();
         updateStatus();
     });
+    connect(mTraversal, &QComboBox::activated, this, [this]() { mHasSelectedTraversal = true; });
     if (mPreview.isNull() == false)
     {
+        connect(mPreview, &RenderPreview::Changed, this, &ReferenceCaptureWindow::updateTraversalAvailability);
+        connect(mPreview, &RenderPreview::Stopped, this, &ReferenceCaptureWindow::updateTraversalAvailability);
         // Both captures' renderers live on the preview's device and must go before it.
         connect(mPreview, &RenderPreview::DeviceStopping, this, [this]() {
             if (mCapture.GetPhase() != ViewportReferencePhase::Idle || isRasterRendering() == true)
@@ -512,6 +516,7 @@ void ReferenceCaptureWindow::updateGraphDescription()
 void ReferenceCaptureWindow::showEvent(QShowEvent* event)
 {
     QWidget::showEvent(event);
+    updateTraversalAvailability();
     requestCaptureProfile();
 }
 
@@ -535,7 +540,7 @@ void ReferenceCaptureWindow::openGraphComparison()
     settings.MaxDepth = static_cast<uint32>(mMaxDepth->value());
     settings.Traversal = static_cast<renderer::ReferenceTraversal>(mTraversal->currentIndex());
     settings.ShouldCenterRays = mCenterRays->isChecked();
-    mGraphComparison = new GraphComparisonWindow(*mPreview, *mProjectWorkspace, settings, this);
+    mGraphComparison = new GraphComparisonWindow(*mPreview, *mProjectWorkspace, settings, mHasSelectedTraversal, this);
     connect(mGraphComparison, &QObject::destroyed, this, [this]() {
         mGraphComparison.clear();
         updateControls();
@@ -684,7 +689,7 @@ bool ReferenceCaptureWindow::isGraphSource() const noexcept
 
 void ReferenceCaptureWindow::updateTraversalAvailability()
 {
-    UpdateReferenceTraversalAvailability(*mTraversal, mPreview.data());
+    UpdateReferenceTraversalAvailability(*mTraversal, mPreview.data(), mHasSelectedTraversal == false);
 }
 
 void ReferenceCaptureWindow::updateComparisonAvailability()

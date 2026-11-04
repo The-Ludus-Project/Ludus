@@ -42,9 +42,10 @@ class RendererWorkspace;
 /// Populate an empty chooser in ReferenceTraversal order and select the requested traversal.
 void PopulateReferenceTraversalChoices(QComboBox& inoutChoice, graphics::renderer::ReferenceTraversal traversal);
 
-/// Disable unsupported traversal choices for the preview device. Select the CPU oracle if the current
-/// choice is disabled, before starting any capture.
-void UpdateReferenceTraversalAvailability(QComboBox& inoutChoice, const RenderPreview* previewOrNull);
+/// Disable unsupported choices. When choosing a default, prefer GPU compute when available and otherwise CPU.
+void UpdateReferenceTraversalAvailability(QComboBox& inoutChoice,
+                                          const RenderPreview* previewOrNull,
+                                          bool shouldSelectDefault);
 
 /// Wall time one service tick may spend preparing or tracing before yielding to the event loop.
 inline constexpr foundation::uint64 REFERENCE_SERVICE_BUDGET_NANOSECONDS = 8'000'000;
@@ -221,6 +222,7 @@ private:
     QString mComparisonError;
     bool mHasComparison = false;
     bool mIsComparing = false;
+    bool mHasSelectedTraversal = false;
     bool mIsComparisonAvailable = false;
     // Child widgets, created in the constructor and owned by this window.
     QSpinBox* const mLongSide;

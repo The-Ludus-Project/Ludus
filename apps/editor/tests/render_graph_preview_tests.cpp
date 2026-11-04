@@ -2680,6 +2680,9 @@ TEST_CASE("Reference capture window offers the render graph source once the view
     REQUIRE(sources != nullptr);
     CHECK(sources->item(CAPTURE_SOURCE_GRAPH_INDEX)->isEnabled() == false);
     CHECK(window.GetGraphText().startsWith(QStringLiteral("None.")) == true);
+    QComboBox* referenceTraversalOrNull = window.findChild<QComboBox*>(QStringLiteral("referenceTraversal"));
+    REQUIRE(referenceTraversalOrNull != nullptr);
+    CHECK(referenceTraversalOrNull->currentText() == QStringLiteral("CPU oracle"));
     workspace.EnableWorldRendering();
     workspace.SetProject(project.path(), 1);
     world.SetProject(project.path(), 1);
@@ -2712,7 +2715,6 @@ TEST_CASE("Reference capture window offers the render graph source once the view
         comparisonWindowOrNull->findChild<QComboBox*>(QStringLiteral("graphComparisonReferenceTraversal"));
     REQUIRE(traversalOrNull != nullptr);
     CHECK(traversalOrNull->isEnabled() == true);
-    CHECK(traversalOrNull->currentText() == QStringLiteral("CPU oracle"));
     const QStandardItemModel* traversalsOrNull = qobject_cast<const QStandardItemModel*>(traversalOrNull->model());
     REQUIRE(traversalsOrNull != nullptr);
     constexpr int32 COMPUTE_INDEX = static_cast<int32>(renderer::ReferenceTraversal::GpuCompute);
@@ -2721,13 +2723,26 @@ TEST_CASE("Reference capture window offers the render graph source once the view
         rhi::GetComputeCapabilities(world.GetRenderPreview().GetDevice(), capabilities) == rhi::RasterStatus::Ready;
     REQUIRE(traversalsOrNull->item(COMPUTE_INDEX) != nullptr);
     CHECK(traversalsOrNull->item(COMPUTE_INDEX)->isEnabled() == hasCompute);
-    if (hasCompute == true)
-    {
-        traversalOrNull->setCurrentIndex(COMPUTE_INDEX);
-        CHECK(traversalOrNull->currentText() == QStringLiteral("GPU compute"));
-    }
+    const QString defaultTraversal = hasCompute == true ? QStringLiteral("GPU compute") : QStringLiteral("CPU oracle");
+    CHECK(traversalOrNull->currentText() == defaultTraversal);
+    CHECK(referenceTraversalOrNull->currentText() == defaultTraversal);
     comparisonWindowOrNull->close();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+    if (hasCompute == true)
+    {
+        QTest::keyClick(referenceTraversalOrNull, Qt::Key_Up);
+        REQUIRE(referenceTraversalOrNull->currentText() == QStringLiteral("CPU oracle"));
+        compareGraphsOrNull->click();
+        comparisonWindowOrNull = window.findChild<QWidget*>(QStringLiteral("graphComparisonWindow"));
+        REQUIRE(comparisonWindowOrNull != nullptr);
+        traversalOrNull =
+            comparisonWindowOrNull->findChild<QComboBox*>(QStringLiteral("graphComparisonReferenceTraversal"));
+        REQUIRE(traversalOrNull != nullptr);
+        CHECK(traversalOrNull->currentText() == QStringLiteral("CPU oracle"));
+        comparisonWindowOrNull->close();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    }
 
     // Two routes share one externally supplied baseline. Move the live camera after Start:
     // both private producers must still render the same frozen view.

@@ -22,6 +22,7 @@ public:
     GraphComparisonWindow(RenderPreview& inoutPreview,
                           RendererWorkspace& inoutWorkspace,
                           const ViewportReferenceSettings& reference,
+                          bool hasSelectedTraversal,
                           QWidget* parent);
     ~GraphComparisonWindow() override;
 
@@ -32,6 +33,7 @@ private:
     void refresh();
     void showSelection();
     void setRunning(bool isRunning);
+    void updateTraversalAvailability();
 
     QPointer<RenderPreview> mPreview;
     QPointer<RendererWorkspace> mWorkspace;
@@ -41,6 +43,7 @@ private:
     QTimer mTimer;
     QString mBaselinePath;
     qsizetype mDisplayedResults = 0;
+    bool mHasSelectedTraversal = false;
     QTableWidget* const mCandidates;
     QSpinBox* const mLongSide;
     QSpinBox* const mGraphSamples;
