@@ -3370,10 +3370,8 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             openNodeShader(shaderId, editor);
         });
         editor->AddOptionsEditor(createNodeOptionsEditor(inoutParent));
-        if (qobject_cast<QDialog*>(inoutParent.window()) != nullptr)
-        {
-            editor->ShowParts();
-        }
+        // The parts row wraps, so the narrow Properties dock shows every part like the Details dialog.
+        editor->ShowParts();
         outFields.addRow(editor);
     }
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"))
