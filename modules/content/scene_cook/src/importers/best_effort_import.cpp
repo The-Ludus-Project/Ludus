@@ -1464,6 +1464,18 @@ void ResolveCamera(const SceneIr& scene,
     return name;
 }
 
+[[nodiscard]] uint32 GetCookedSceneVersion(const CookPlan& plan) noexcept
+{
+    for (const PlannedMaterial& material : plan.Materials)
+    {
+        if (material.Scattering.Model == format::MaterialModel::DiffuseConductorMix)
+        {
+            return format::VERSION_8;
+        }
+    }
+    return format::VERSION_7;
+}
+
 void PackBundle(const SceneIr& scene,
                 const IrCamera& camera,
                 const CookPlan& plan,
@@ -1473,7 +1485,7 @@ void PackBundle(const SceneIr& scene,
                 detail::ByteWriter& inoutBlob) noexcept
 {
     inoutBlob.Append(format::MAGIC);
-    inoutBlob.AppendUint32(format::VERSION_7);
+    inoutBlob.AppendUint32(GetCookedSceneVersion(plan));
     const uint32 count = static_cast<uint32>(plan.Materials.GetSize());
     inoutBlob.AppendUint32(count); // Meshes.
     inoutBlob.AppendUint32(count); // Materials.
@@ -1693,7 +1705,7 @@ void WriteReport(const SceneIr& scene,
     writeCount("vertices", summary.CookedVertices);
     writeCount("indices", summary.CookedIndices);
     writeCount("bundle_bytes", summary.BundleBytes);
-    writeCount("scene_format_version", format::VERSION_7);
+    writeCount("scene_format_version", GetCookedSceneVersion(plan));
     writeCount("analytic_lights", facts.LightingOrNull != nullptr ? facts.LightingOrNull->Lights.GetSize() : 0);
     writeCount("dropped_placements", plan.DroppedPlacements);
     writeCount("dropped_vertices", plan.DroppedVertices);

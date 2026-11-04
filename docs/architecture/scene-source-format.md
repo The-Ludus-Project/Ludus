@@ -144,10 +144,12 @@ value.
 | Member | Required | Meaning |
 | --- | --- | --- |
 | `name` | yes | Unique name that objects refer to. |
-| `model` | yes | `"diffuse"`: ideal Lambertian reflection. `"metallic_roughness"`: the engine's metallic-roughness model. |
+| `model` | yes | `"diffuse"`: ideal Lambertian reflection. `"metallic_roughness"`: the engine's metallic-roughness model. `"mix"`: a weighted sum of Lambertian and rough conductor reflection. |
 | `base_color` | yes | Linear Rec. 709 reflectance, each channel in [0, 1]. |
 | `metallic` | no | `metallic_roughness` only; [0, 1], default 0. |
 | `roughness` | no | `metallic_roughness` only; perceptual roughness in [0, 1], default 1. |
+| `weight` | for Mix | Conductor fraction in [0, 1]. The Lambertian lobe uses the complementary weight and `base_color`. |
+| `conductor` | for Mix | Contains `alpha` (isotropic GGX width in [0.0001, 1]), `eta` (three positive real IOR channels), and `k` (three nonnegative extinction channels). Optical constants are at most 10000. |
 | `emission` | no | Makes every polygon of the material an area light. |
 | `emission.radiance` | yes | Constant emitted linear Rec. 709 radiance in W/(sr·m²) per channel; finite and nonnegative. |
 | `emission.two_sided` | no | `true` emits from both faces; default `false`, the front face only. |

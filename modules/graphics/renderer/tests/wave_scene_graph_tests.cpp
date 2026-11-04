@@ -59,7 +59,7 @@ void LoadPackage(renderer::RenderGraphPackage& outPackage)
     REQUIRE(file.ReadAt(0, bytes.AsSpan()).BytesRead == bytes.GetSize());
     REQUIRE(outPackage.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
 }
-void CheckSceneWaveGraph(uint32 screen)
+void CheckSceneWaveGraph(uint32 screen, bool shouldMix = false)
 {
     Session session;
     rhi::DeviceHandle device;
@@ -109,6 +109,19 @@ void CheckSceneWaveGraph(uint32 screen)
     source.Intensity = 10;
     renderer::SceneShaderInputs inputs;
     inputs.Lights = {&source, 1};
+    const uint32 materialIndex = 0;
+    renderer::SceneShaderMaterial material;
+    if (shouldMix == true)
+    {
+        material.BaseColor = {0.8F, 0.7F, 0.6F};
+        material.Metallic = 0.25F;
+        material.Scattering.Model = ludus::content::scene_format::MaterialModel::DiffuseConductorMix;
+        material.Scattering.AlphaU = 0.2F;
+        material.Scattering.AlphaV = material.Scattering.AlphaU;
+        material.Scattering.K = {{3, 4, 5}};
+        inputs.Materials = {&material, 1};
+        items[0].MaterialOverrides = {&materialIndex, 1};
+    }
     // Primary pass index zero only writes shared hits. The following passes export wave, geometric and aperture.
     for (uint32 pass = 1; pass < plan.Passes.GetSize(); ++pass)
     {
@@ -180,6 +193,12 @@ void CheckSceneWaveGraph(uint32 screen)
 TEST_CASE("Scene wave graph lights an unobstructed beam from the current World", "[renderer][gpu][wave-tracing][graph]")
 {
     CheckSceneWaveGraph(0);
+}
+
+TEST_CASE("Scene wave graph renders a diffuse conductor Mix through the transport interface",
+          "[renderer][gpu][wave-tracing][graph][mix]")
+{
+    CheckSceneWaveGraph(0, true);
 }
 
 TEST_CASE("Scene wave graph blocks an opaque screen from the current World", "[renderer][gpu][wave-tracing][graph]")

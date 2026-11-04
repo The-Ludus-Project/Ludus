@@ -228,8 +228,31 @@ struct LightSample
 };
 bool HasSceneData(SceneContext scene, uint groups)
 {
-    return scene.Version == SCENE_INTERFACE_VERSION && (asuint(Options.w) & groups) == groups;
+    return scene.Version == SCENE_INTERFACE_VERSION && (asuint(Options.w) & SCENE_DATA_ALL & groups) == groups;
 }
+/// Material operations used by a scene pass. The restricted sampler consumes three uniform values
+/// and a continuous directional density. The full interface also handles delta and layered events.
+enum SceneBsdfRequirement : uint
+{
+    Transport,
+    FixedDimensionReflection,
+};
+bool RequireSceneBsdf(SceneContext scene, SceneBsdfRequirement requirement, inout RayQueryContext queries)
+{
+    if (HasSceneData(scene, SCENE_DATA_MATERIALS) == false)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
+        return false;
+    }
+    if (requirement == SceneBsdfRequirement::FixedDimensionReflection &&
+        (asuint(Options.w) & LUDUS_GRAPH_REQUIRES_EXTENDED_BSDF) != 0)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_FIXED_DIMENSION_MATERIAL);
+        return false;
+    }
+    return true;
+}
+
 uint GetEmitterCount(SceneContext scene)
 {
     return scene.Version == SCENE_INTERFACE_VERSION && (asuint(Options.w) & SCENE_DATA_LIGHTS) != 0

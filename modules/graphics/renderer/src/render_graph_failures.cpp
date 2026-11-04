@@ -46,6 +46,7 @@ static_assert(ToCode(RenderGraphFailureReason::WaveConnection) == LUDUS_SCENE_FA
 static_assert(ToCode(RenderGraphFailureReason::GeometrySamplingLights) == LUDUS_SCENE_FAILURE_GEOMETRY_SAMPLING_LIGHTS);
 static_assert(ToCode(RenderGraphFailureReason::GeometryStatisticsCapacity) ==
               LUDUS_SCENE_FAILURE_GEOMETRY_STATISTICS_CAPACITY);
+static_assert(ToCode(RenderGraphFailureReason::FixedDimensionMaterial) == LUDUS_SCENE_FAILURE_FIXED_DIMENSION_MATERIAL);
 static_assert(RENDER_GRAPH_FAILURE_AUTHORED_FIRST == LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
 static_assert(ToCode(RenderGraphFailureReason::PhotonCamera) == LUDUS_SCENE_FAILURE_PHOTON_CAMERA);
 static_assert(ToCode(RenderGraphFailureReason::PhotonCapacity) == LUDUS_SCENE_FAILURE_PHOTON_CAPACITY);
@@ -106,6 +107,9 @@ const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
         case RenderGraphFailureReason::PrimaryMaterial:
             return "This transport template does not support coated-diffuse internal random walks. Select a "
                    "renderer supporting coatings, or explicitly author a diffuse or conductor material.";
+        case RenderGraphFailureReason::FixedDimensionMaterial:
+            return "This pass requires continuous reflection with a fixed three-value sampler. Select a graph "
+                   "that supports the assigned material, or assign diffuse, rough conductor or their Mix.";
         case RenderGraphFailureReason::Unspecified:
             return "A shader set queries.HasFailed without a reason. Building the graph lists each such line as a "
                    "RenderGraphBuildReasonlessFailure warning; call FailSceneQuery there with a reason to name the "

@@ -36,7 +36,8 @@ struct ReferenceBsdf final
 {
     /// Linear RGB reflectance, each channel in [0,1]; conductor evaluation uses Eta/K instead.
     ludus::foundation::math::Vector3 BaseColor{1, 1, 1};
-    /// Metallic fraction in [0,1]; dielectric normal-incidence reflectance is 0.04.
+    /// Metallic fraction in [0,1]. For DiffuseConductorMix, the weight and proposal probability of
+    /// the rough conductor lobe. The legacy dielectric normal-incidence reflectance is 0.04.
     ludus::foundation::float32 Metallic = 0;
     /// Legacy perceptual roughness in [0.045,1]; typed conductor/coating alpha comes from Scattering.
     ludus::foundation::float32 Roughness = 0.5F;
@@ -95,13 +96,13 @@ struct ReferenceBsdfSample final
 /// Sample the matching mixture with three independent values in [0,1): X selects
 /// the lobe, Y/Z sample it. Diffuse uses cosine sampling; conductors and legacy
 /// pure metals use visible-GGX reflection; legacy mixed surfaces mix cosine diffuse
-/// and GGX equally. Dielectrics reflect with probability equal to their Fresnel
-/// reflectance (a thin slab's includes its interreflections) and otherwise refract,
-/// or pass straight through a thin slab; transmitted radiance is scaled by the inverse
-/// squared relative index. Coatings sample an internal layered path using the supplied
-/// random context; Weight and MisPdf have distinct contracts. Internal depth and
-/// roulette termination are ordinary null samples. Failure preserves output.
-/// No allocation, retries, global RNG, energy clamp or hidden roughness change.
+/// and GGX equally. DiffuseConductorMix uses Metallic as the conductor proposal
+/// probability and returns the weighted sum of both lobe densities. Dielectrics reflect with probability equal to their
+/// Fresnel reflectance (a thin slab's includes its interreflections) and otherwise refract, or pass straight through a
+/// thin slab; transmitted radiance is scaled by the inverse squared relative index. Coatings sample an internal layered
+/// path using the supplied random context; Weight and MisPdf have distinct contracts. Internal depth and roulette
+/// termination are ordinary null samples. Failure preserves output. No allocation, retries, global RNG, energy clamp or
+/// hidden roughness change.
 [[nodiscard]] rhi::RasterStatus SampleReferenceBsdf(const ReferenceBsdf&,
                                                     ludus::foundation::math::Vector3 normal,
                                                     ludus::foundation::math::Vector3 view,

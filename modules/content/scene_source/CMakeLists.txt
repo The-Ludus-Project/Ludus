@@ -9,7 +9,7 @@ target_sources(ludus_scene_source PUBLIC FILE_SET public_headers TYPE HEADERS BA
     FILES include/ludus/content/scene_source/scene_source.h)
 target_link_libraries(ludus_scene_source
     PUBLIC Ludus::Content Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationStrings
-    PRIVATE Ludus::FoundationParsingJson)
+    PRIVATE Ludus::FoundationParsingJson Ludus::SceneFormat)
 ludus_apply_project_defaults(ludus_scene_source)
 install(TARGETS ludus_scene_source EXPORT LudusTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")

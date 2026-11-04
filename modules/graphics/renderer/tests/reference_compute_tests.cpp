@@ -104,6 +104,8 @@ enum class SphereSurfaces : uint8
 {
     /// The legacy or typed opaque reflectors only.
     Opaque,
+    /// Weighted diffuse and rough conductor with matched proposals.
+    Mix,
     /// Coated diffuse on the sphere, the wall and the masked quad.
     Coated,
     /// A smooth glass sphere (index 1.5) and a thin masked pane (index 1.33) in front of the wall.
@@ -227,6 +229,11 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
             material.Scattering.K[0] = 9.223869F;
             material.Scattering.K[1] = 6.269523F;
             material.Scattering.K[2] = 4.837001F;
+        }
+        if (surfaces == SphereSurfaces::Mix)
+        {
+            material.Scattering.Model = ludus::content::scene_format::MaterialModel::DiffuseConductorMix;
+            material.Metallic = i == 0 ? 0.25F : 0.65F;
         }
         if (surfaces == SphereSurfaces::Glass && (i == 0 || i == 3))
         {
@@ -1800,10 +1807,11 @@ TEST_CASE("GPU-compute light-sampling mode is part of the integral and the raw c
     REQUIRE(gpu.Renderer.Release(handle) == S::Ready);
 }
 
-TEST_CASE("Typed diffuse conductor coated diffuse and dielectrics match between CPU and GPU reference transport",
+TEST_CASE("Typed diffuse conductor mix coated diffuse and dielectrics match between CPU and GPU reference transport",
           "[renderer][gpu][reference-compute]")
 {
-    const SphereSurfaces surfaces = GENERATE(SphereSurfaces::Opaque, SphereSurfaces::Coated, SphereSurfaces::Glass);
+    const SphereSurfaces surfaces =
+        GENERATE(SphereSurfaces::Opaque, SphereSurfaces::Mix, SphereSurfaces::Coated, SphereSurfaces::Glass);
     CAPTURE(surfaces);
     rhi::Shutdown();
     struct Guard final

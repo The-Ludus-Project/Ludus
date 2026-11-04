@@ -14,6 +14,9 @@
 // https://jcgt.org/published/0007/04/01/paper.pdf: use the projected-hemisphere
 // construction and its matching reflection density, specialized to isotropic alpha.
 // The diffuse/specular mixture and explicit null-event contract are Ludus choices.
+// Thanks to Pharr, Jakob and Humphreys, Physically Based Rendering, 4th ed., section 2.2.3,
+// https://pbr-book.org/4ed/Monte_Carlo_Integration/Improving_Efficiency: evaluate the weighted
+// sum of both proposal densities after sampling one lobe of the authored Mix.
 namespace ludus::graphics::renderer
 {
 using namespace foundation;
@@ -71,6 +74,10 @@ float32 SpecularProbability(const ReferenceBsdf& b) noexcept
     {
         return 0;
     }
+    if (b.Scattering.Model == format::MaterialModel::DiffuseConductorMix)
+    {
+        return b.Metallic;
+    }
     return b.Scattering.Model == format::MaterialModel::Conductor || b.Metallic == 1 ? 1.0F : 0.5F;
 }
 // Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, Physically Based Rendering,
@@ -100,8 +107,8 @@ float32 ComputeConductorFresnel(float32 cosine, float32 eta, float32 extinction)
 }
 float32 GetMicrofacetAlpha(const ReferenceBsdf& bsdf) noexcept
 {
-    return bsdf.Scattering.Model == format::MaterialModel::Conductor ? bsdf.Scattering.AlphaU
-                                                                     : bsdf.Roughness * bsdf.Roughness;
+    return format::HasRoughConductorLobe(bsdf.Scattering.Model) == true ? bsdf.Scattering.AlphaU
+                                                                        : bsdf.Roughness * bsdf.Roughness;
 }
 ReferenceBsdfEvaluation Evaluate(const ReferenceBsdf& b, math::Vector3 n, math::Vector3 v, math::Vector3 l) noexcept
 {
@@ -111,7 +118,8 @@ ReferenceBsdfEvaluation Evaluate(const ReferenceBsdf& b, math::Vector3 n, math::
     {
         return {};
     }
-    if (b.Scattering.Model == format::MaterialModel::Diffuse)
+    const bool isMix = b.Scattering.Model == format::MaterialModel::DiffuseConductorMix;
+    if (b.Scattering.Model == format::MaterialModel::Diffuse || (isMix == true && b.Metallic == 0))
     {
         return {b.BaseColor / math::kPiF, nl / math::kPiF};
     }
@@ -130,20 +138,25 @@ ReferenceBsdfEvaluation Evaluate(const ReferenceBsdf& b, math::Vector3 n, math::
     const float32 oneMinus = 1 - vh;
     const float32 square = oneMinus * oneMinus;
     math::Vector3 fresnel = f0 + (math::Vector3{1, 1, 1} - f0) * (square * square * oneMinus);
-    const bool isConductor = b.Scattering.Model == format::MaterialModel::Conductor;
-    if (isConductor == true)
+    if (format::HasRoughConductorLobe(b.Scattering.Model) == true)
     {
         fresnel = {ComputeConductorFresnel(vh, b.Scattering.Eta[0], b.Scattering.K[0]),
                    ComputeConductorFresnel(vh, b.Scattering.Eta[1], b.Scattering.K[1]),
                    ComputeConductorFresnel(vh, b.Scattering.Eta[2], b.Scattering.K[2])};
     }
-    const float32 diffuseFraction = isConductor == true ? 0 : 1 - b.Metallic;
+    const float32 specularPdf = distribution / (2 * (nv + lambdaView));
+    const float32 probability = SpecularProbability(b);
+    const float32 pdf = probability * specularPdf + (1 - probability) * nl / math::kPiF;
+    if (isMix == true)
+    {
+        return {fresnel * (distribution * visibility * probability) + b.BaseColor * ((1 - probability) / math::kPiF),
+                pdf};
+    }
+    const float32 diffuseFraction = b.Scattering.Model == format::MaterialModel::Conductor ? 0 : 1 - b.Metallic;
     const math::Vector3 value =
         fresnel * (distribution * visibility) +
         math::Hadamard(b.BaseColor, math::Vector3{1, 1, 1} - fresnel) * (diffuseFraction / math::kPiF);
-    const float32 specularPdf = distribution / (2 * (nv + lambdaView));
-    const float32 probability = SpecularProbability(b);
-    return {value, probability * specularPdf + (1 - probability) * nl / math::kPiF};
+    return {value, pdf};
 }
 } // namespace
 rhi::RasterStatus EvaluateReferenceBsdf(const ReferenceBsdf& b,

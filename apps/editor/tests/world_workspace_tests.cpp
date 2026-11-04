@@ -2562,6 +2562,52 @@ ludus::foundation::float32 GetPresentedX(const WorldWorkspace& workspace, const 
 }
 } // namespace
 
+TEST_CASE("An open World publishes newly imported diffuse conductor Mix geometry", "[editor][world][mix]")
+{
+    namespace format = ludus::content::scene_format;
+    QTemporaryDir directory;
+    WorldWorkspace workspace;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        workspace.show();
+    }
+    const QString existing = OpenPlacementWorld(directory, workspace);
+    WaitForValidatedScene(workspace);
+    const QString worldPath = workspace.Path();
+    const QString source = directory.filePath(QStringLiteral("panel.luscene.json"));
+    Write(source, QByteArrayLiteral(R"({
+        "format":"ludus.scene","version":1,"name":"Mix scene",
+        "materials":[{"name":"Mixed panel","model":"mix","base_color":[0.2,0.4,0.6],
+                      "weight":0.375,"conductor":{"alpha":0.125,"eta":[0.5,0.75,1],"k":[2,3,4]}}],
+        "objects":[{"name":"Panel","material":"Mixed panel",
+                    "positions":[[2,0,0],[3,0,0],[2,1,0]],"polygons":[[0,1,2]]}]
+    })"));
+    REQUIRE(workspace.ImportScene(source) == true);
+    CHECK(GetLevel(workspace).PreviewScene().Objects.size() == 1);
+    WaitForValidatedScene(workspace);
+    CHECK(workspace.Path() == worldPath);
+    CHECK(workspace.Document().Entity(existing).isEmpty() == false);
+    const RenderScene& scene = GetLevel(workspace).PreviewScene();
+    REQUIRE(scene.Objects.size() == 2);
+    bool hasMix = false;
+    for (const PreviewObject& object : scene.Objects)
+    {
+        const ludus::resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(scene, object.Id);
+        REQUIRE(materialOrNull != nullptr);
+        if (materialOrNull->Scattering.Model == format::MaterialModel::DiffuseConductorMix)
+        {
+            hasMix = true;
+            CHECK(materialOrNull->Metallic == 0.375F);
+            CHECK(materialOrNull->Scattering.AlphaU == 0.125F);
+            CHECK(materialOrNull->Scattering.AlphaV == 0.125F);
+            CHECK(materialOrNull->Scattering.Eta[1] == 0.75F);
+            CHECK(materialOrNull->Scattering.K[2] == 4);
+        }
+    }
+    CHECK(hasMix == true);
+    workspace.StopPreview();
+}
+
 TEST_CASE("Coated-diffuse World slot edits apply, undo, redo and reopen", "[editor][world][coating]")
 {
     namespace format = ludus::content::scene_format;

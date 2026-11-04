@@ -33,9 +33,16 @@ float ComputeMaterialSpecularProbability(MaterialModel model, float metallic)
 {
     if (model == MaterialModel::Diffuse)
         return 0;
+    if (model == MaterialModel::DiffuseConductorMix)
+        return metallic;
     return model == MaterialModel::Conductor || metallic == 1 ? 1 : 0.5;
 }
+bool HasRoughConductorLobe(MaterialModel model)
+{
+    return model == MaterialModel::Conductor || model == MaterialModel::DiffuseConductorMix;
+}
+
 float ComputeMaterialAlpha(MaterialModel model, float roughness, float conductorAlpha)
 {
-    return model == MaterialModel::Conductor ? conductorAlpha : roughness * roughness;
+    return HasRoughConductorLobe(model) == true ? conductorAlpha : roughness * roughness;
 }

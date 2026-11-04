@@ -36,16 +36,16 @@ inline constexpr foundation::uint32 INHERIT_SCENE_MATERIAL = DEFAULT_SCENE_MATER
 struct SceneShaderMaterial final
 {
     foundation::math::Vector3 BaseColor{0.5F, 0.5F, 0.5F}; ///< Linear reflectance in [0,1].
-    foundation::float32 Metallic = 0;                      ///< Metallic fraction in [0,1].
-    foundation::float32 Roughness = 1;                     ///< Perceptual roughness in [0.045,1].
-    foundation::math::Vector3 Emission{};                  ///< Linear RGB emission in [0,10000].
-    bool IsEmissionTwoSided = false;                       ///< Geometric emission sidedness, independent of reflection.
-    foundation::math::Vector4 UvTransform{1, 1, 0, 0};     ///< UV scale XY and offset ZW.
-    foundation::float32 NormalScale = 1;                   ///< Tangent normal XY strength in [0,8].
-    rhi::SamplerDescription Sampler{};                     ///< Fixed-mip filter/address policy.
-    rhi::TextureCpuContent ColorTexture{};                 ///< Optional retained source mip, copied synchronously.
-    rhi::TextureCpuContent SurfaceTexture{};               ///< Optional linear data mip, copied synchronously.
-    rhi::TextureCpuContent EmissionTexture{};              ///< Optional linear/sRGB emission multiplier.
+    foundation::float32 Metallic = 0;  ///< Metallic fraction in [0,1], or the conductor weight for DiffuseConductorMix.
+    foundation::float32 Roughness = 1; ///< Perceptual roughness in [0.045,1].
+    foundation::math::Vector3 Emission{};              ///< Linear RGB emission in [0,10000].
+    bool IsEmissionTwoSided = false;                   ///< Geometric emission sidedness, independent of reflection.
+    foundation::math::Vector4 UvTransform{1, 1, 0, 0}; ///< UV scale XY and offset ZW.
+    foundation::float32 NormalScale = 1;               ///< Tangent normal XY strength in [0,8].
+    rhi::SamplerDescription Sampler{};                 ///< Fixed-mip filter/address policy.
+    rhi::TextureCpuContent ColorTexture{};             ///< Optional retained source mip, copied synchronously.
+    rhi::TextureCpuContent SurfaceTexture{};           ///< Optional linear data mip, copied synchronously.
+    rhi::TextureCpuContent EmissionTexture{};          ///< Optional linear/sRGB emission multiplier.
     bool HasError = false; ///< Import diagnostic: error material in preview; reject strict admission.
     /// Typed optical parameters; default preserves the legacy metallic/roughness model.
     content::scene_format::MaterialScattering Scattering{};
