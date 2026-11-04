@@ -57,7 +57,7 @@ void ReportSamples(const char* workload, int32 characters, int32 blocks, QVector
     INFO("Workload: " << workload);
     INFO("Offscreen synthetic baseline; includes Qt event processing, excludes native input/compositor latency.");
     INFO("System: " << QSysInfo::prettyProductName().toStdString() << " / "
-                     << QSysInfo::currentCpuArchitecture().toStdString() << "; Qt " << qVersion());
+                    << QSysInfo::currentCpuArchitecture().toStdString() << "; Qt " << qVersion());
     INFO("Characters=" << characters << ", blocks=" << blocks
                        << ", edit nanoseconds p50=" << inoutSamples.at(inoutSamples.size() / 2)
                        << ", p95=" << inoutSamples.at(inoutSamples.size() - 1));
@@ -94,12 +94,11 @@ TEST_CASE("corpus: real-shader typing baseline", "[.benchmark][editor][text][cod
     CodeEditor editor;
     editor.SetLanguage(CodeLanguage::Slang);
     QString source;
-    const QString line = QStringLiteral(
-        "float3 EvaluateSun(float3 normalWorld, float3 lightWorld, float3 sunColor)\n"
-        "{\n"
-        "    float3 radiance = sunColor * max(dot(normalWorld, lightWorld), 0.0);\n"
-        "    return radiance;\n"
-        "}\n");
+    const QString line = QStringLiteral("float3 EvaluateSun(float3 normalWorld, float3 lightWorld, float3 sunColor)\n"
+                                        "{\n"
+                                        "    float3 radiance = sunColor * max(dot(normalWorld, lightWorld), 0.0);\n"
+                                        "    return radiance;\n"
+                                        "}\n");
     for (int32 repeat = 0; repeat < 200; ++repeat)
     {
         source += line;

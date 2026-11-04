@@ -114,12 +114,6 @@
     },
     {
       "kind": "baseline",
-      "sources": ["apps/smoke/lifecycle.cpp", "apps/smoke/simulation.cpp"],
-      "targets": ["ludus_smoke", "ludus_smoke_lifecycle_tests", "ludus_smoke_simulation_tests"],
-      "reason": "The smoke app's lifecycle and simulation tests compile the app sources they test."
-    },
-    {
-      "kind": "baseline",
       "sources": ["examples/audio-content/resource_adapter.cpp"],
       "targets": ["ludus_audio_content_demo", "ludus_resources_audio_tests"],
       "reason": "The audio resource tests compile the example's resource adapter."

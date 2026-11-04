@@ -101,8 +101,7 @@ const CodeLanguageDescriptor TABLE[] = {
 };
 } // namespace
 
-CodeLanguageRegistry::CodeLanguageRegistry() noexcept
-    : mDescriptors(BorrowedView<const CodeLanguageDescriptor>(TABLE))
+CodeLanguageRegistry::CodeLanguageRegistry() noexcept : mDescriptors(BorrowedView<const CodeLanguageDescriptor>(TABLE))
 {
 }
 
