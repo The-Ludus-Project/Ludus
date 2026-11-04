@@ -108,4 +108,3 @@ apps/editor/src/internal/geometry_document.h
 apps/editor/src/geometry_document.cpp
 apps/editor/tests/geometry_document_tests.cpp
 apps/editor/tests/geometry_preview_tests.cpp
-apps/editor/tests/geometry_test_main.cpp
