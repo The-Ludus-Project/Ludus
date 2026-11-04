@@ -121,6 +121,17 @@ public:
     /// user's text. The baseline becomes the current on-disk content.
     void AdoptAsBaseline();
 
+    /// SHA-256 (raw bytes, not hex) of the current saved baseline, so the
+    /// recovery journal records which on-disk content a draft was edited over.
+    [[nodiscard]] QByteArray GetSavedHash() const;
+
+    /// Restore an unsaved draft recovered from the journal (CE03). The draft is
+    /// adopted only when the host is not read-only and `expectedSavedHash`
+    /// matches the current saved baseline, so a file that changed on disk since
+    /// the crash is left untouched. The restored draft clears history and makes
+    /// the host dirty. Returns true when the draft was restored.
+    [[nodiscard]] bool RestoreRecoveredDraft(const QByteArray& expectedSavedHash, const QByteArray& draftBytes);
+
 private:
     /// Apply one validated byte edit to the draft, pushing an undo entry. The
     /// validation mirrors the render-graph host: order, UTF-8 scalar boundaries

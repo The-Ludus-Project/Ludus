@@ -347,6 +347,26 @@ void CodeFileDocument::AdoptAsBaseline()
     captureDiskState();
 }
 
+QByteArray CodeFileDocument::GetSavedHash() const
+{
+    return hashBytes(mSaved);
+}
+
+bool CodeFileDocument::RestoreRecoveredDraft(const QByteArray& expectedSavedHash, const QByteArray& draftBytes)
+{
+    if (mIsReadOnly == true || hashBytes(mSaved) != expectedSavedHash || draftBytes == mDraft)
+    {
+        return false;
+    }
+    // Re-anchor the recovered draft on top of the current (clean) baseline. A
+    // recovered buffer carries no undo steps: history belongs to the crashed
+    // session and is intentionally dropped so Undo cannot reach stale text.
+    mDraft = draftBytes;
+    mHistory.Reset();
+    mHasMergeableGroup = false;
+    return true;
+}
+
 void CodeFileDocument::captureDiskState()
 {
     const QFileInfo info(mCanonicalPath);
