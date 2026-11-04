@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSet>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
@@ -88,6 +89,16 @@ WorldLightBinding ReadLightBinding(const RenderScene& scene)
 }
 } // namespace
 
+QString GetEmitterLabel(const QString& objectName, qsizetype emitterNumber)
+{
+    static const QRegularExpression generatedName(QStringLiteral("^Imported object \\d+$"));
+    if (objectName.isEmpty() == true || generatedName.match(objectName).hasMatch() == true)
+    {
+        return QStringLiteral("Area light %1").arg(emitterNumber);
+    }
+    return objectName;
+}
+
 QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const RenderScene& scene)
 {
     QVector<WorldLightRow> rows;
@@ -152,7 +163,7 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
                 row.Origin = WorldLightOrigin::ImportedEmitter;
                 row.Key = key;
                 row.IsEnabled = switches.IsDisabled(key) == false;
-                row.Label = names.value(0, QStringLiteral("Emitter"));
+                row.Label = GetEmitterLabel(names.value(0), objectCounts.size() + 1);
                 row.Detail = material.HasEmissionPower == true
                                  ? QStringLiteral("Emitter %1 · %2 lm")
                                        .arg(FormatLightSourceId(key.SourceId))

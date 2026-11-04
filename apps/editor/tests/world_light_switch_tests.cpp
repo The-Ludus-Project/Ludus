@@ -229,6 +229,15 @@ TEST_CASE("Light source names round-trip through their World spelling", "[editor
     CHECK(set.Disabled == expected);
 }
 
+TEST_CASE("Imported emitters with a generated or missing object name read as numbered area lights",
+          "[editor][world][lighting][light-switches]")
+{
+    CHECK(GetEmitterLabel(QStringLiteral("Imported object 3"), 2) == QStringLiteral("Area light 2"));
+    CHECK(GetEmitterLabel(QString(), 1) == QStringLiteral("Area light 1"));
+    CHECK(GetEmitterLabel(QStringLiteral("Ceiling panel"), 1) == QStringLiteral("Ceiling panel"));
+    CHECK(GetEmitterLabel(QStringLiteral("Imported object 3 north"), 4) == QStringLiteral("Imported object 3 north"));
+}
+
 TEST_CASE("World light switches turn imported emitters and lights off without a re-cook",
           "[editor][world][lighting][light-switches]")
 {
