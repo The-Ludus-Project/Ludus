@@ -1,3 +1,4 @@
+#include "design_tokens.h"
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_comments.h"
 #include "internal/render_graph_layout.h"
@@ -322,11 +323,15 @@ TEST_CASE("the minimap shows the whole graph, follows the view and moves it on c
     CHECK(minimap.isVisible() == true);
     CHECK(canvas.IsMinimapVisible() == true);
     CHECK(canvas.GetMinimapCards().size() == 48);
-    // Inside the canvas viewport, not clipped.
+    // Inside the canvas viewport, not clipped, and still in the corner after zooming adds scroll bars.
     CHECK(canvas.viewport()->rect().contains(minimap.geometry()) == true);
     // Zoom in so the view is a small part of the graph.
     canvas.SelectNodes({});
     REQUIRE(canvas.RestoreViewState({{}, QPointF(0, 0), 1.0, RenderGraphTraceDirection::None, {}}) == true);
+    QCoreApplication::processEvents();
+    CHECK(canvas.viewport()->rect().contains(minimap.geometry()) == true);
+    CHECK(minimap.geometry().bottomRight() ==
+          canvas.viewport()->rect().bottomRight() - QPoint(design::SPACING_MEDIUM, design::SPACING_MEDIUM));
     const QRectF viewBefore = canvas.GetVisibleSceneRectangle();
     const RenderGraphMinimapProjection projection = minimap.GetProjection();
     CHECK(projection.Content.contains(viewBefore) == true);

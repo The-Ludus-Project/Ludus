@@ -673,7 +673,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
       mFramingToolbar(new QToolBar(this)), mFitGraphAction(new QAction(QStringLiteral("Fit Graph"), this)),
       mFitSelectionAction(new QAction(QStringLiteral("Fit Selection"), this)),
       mAutoLayoutAction(new QAction(QStringLiteral("Auto Layout"), this)),
-      mMinimapAction(new QAction(QStringLiteral("Map"), this)), mZoomLabel(new QLabel(this)),
+      mMinimapAction(new QAction(QStringLiteral("Minimap"), this)), mZoomLabel(new QLabel(this)),
       mSelectionBox(new QRubberBand(QRubberBand::Rectangle, viewport()))
 {
     setObjectName(QStringLiteral("renderGraphCanvas"));
@@ -711,7 +711,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     mMinimapAction->setCheckable(true);
     mMinimapAction->setChecked(true);
     mMinimapAction->setShortcut(QKeySequence(Qt::Key_M));
-    mMinimapAction->setToolTip(QStringLiteral("Show or hide the overview map (M)"));
+    mMinimapAction->setToolTip(QStringLiteral("Show or hide the minimap, an overview of the whole graph (M)"));
     for (QAction* action : {mFitGraphAction, mFitSelectionAction, resetZoom, mAutoLayoutAction, mMinimapAction})
     {
         action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
@@ -986,6 +986,7 @@ void RenderGraphCanvas::paintEvent(QPaintEvent* event)
     // Also handles a transform applied by a host/test through QGraphicsView's API.
     updateSemanticZoom();
     QGraphicsView::paintEvent(event);
+    placeMinimap();
     mMinimapOrNull->update();
 }
 
@@ -3236,7 +3237,13 @@ bool RenderGraphCanvas::viewportEvent(QEvent* event)
             return true;
         }
     }
-    return QGraphicsView::viewportEvent(event);
+    const bool isHandled = QGraphicsView::viewportEvent(event);
+    if (event->type() == QEvent::Resize)
+    {
+        // Scroll bars appearing or disappearing resize the viewport without resizing the canvas.
+        placeMinimap();
+    }
+    return isHandled;
 }
 
 void RenderGraphCanvas::panBy(QPoint delta)
