@@ -184,15 +184,16 @@ Requirements: CE05-CE07, CE17. Prerequisite: M1.
   in the Ludus profile, and Ctrl+Shift+P palette with Ctrl+K chords in the VS
   Code profile. Update the documents that name F9 for profiling
   (`docs/development/editor-workspace.md`, `docs/architecture/graphics-debugging.md`)
-  in the same change. Add
-  shortcut-collision tests for both profiles.
+  in the same change. Reserve the folding bindings from the architecture in
+  both profiles, so the collision tests cover them before M3 adds the commands.
+  Add shortcut-collision tests for both profiles.
 - [ ] Measure 1-cursor and 100-cursor typing against the budgets.
 
 Gate: the CE05-CE07 and CE17 tests pass; the typing budgets are recorded.
 
 ## M3 - Syntax service
 
-Requirements: CE08, CE19 (syntax roles), CE22. Prerequisite: M0 ADR accepted, M1.
+Requirements: CE08, CE19 (syntax roles), CE22, CE26. Prerequisite: M0 ADR accepted, M1, M2 (folding bindings).
 
 - [ ] Add the tree-sitter recipes and the private C target; build them on every
   supported native and Wasm configuration.
@@ -202,12 +203,20 @@ Requirements: CE08, CE19 (syntax roles), CE22. Prerequisite: M0 ADR accepted, M1
   fallback and sliced reapplication.
 - [ ] Add queries and role mappings for Slang, Luau, C, C++, JSON, CMake and
   Markdown. Add the syntax roles and contrast pairs to the design tokens.
-- [ ] Add folding (syntax with indentation as the fallback), outline,
-  breadcrumbs, sticky scroll and expand/shrink selection.
+- [ ] Add folding (design section 6, "Folding"): syntax, region-marker,
+  indentation and manual ranges; placeholders and gutter controls; caret
+  skipping and `RevealRange` at every reveal site; selections, the clipboard
+  and line commands over hidden lines; reconciliation after edits; per-view
+  state restored with the tab; the fold commands with their bindings in both
+  profiles; announcements. Add the randomized invariant tests and measure Fold
+  All and Unfold All on the 100,000-line corpus.
+- [ ] Add outline, breadcrumbs, sticky scroll and expand/shrink selection.
 - [ ] Measure open, scroll and reparse budgets, and the large-file behavior.
 
 Gate: highlighting is correct on the corpus; a stale result never lands at a
-wrong offset under randomized edit tests; the budgets are recorded.
+wrong offset under randomized edit tests; the CE26 tests pass and no
+randomized edit leaves a hidden line without a visible control; the budgets
+are recorded.
 
 ## M4 - Generic language client
 
@@ -218,8 +227,8 @@ Requirements: CE09-CE11, CE20. Prerequisite: M2, M3.
 - [ ] Add capability dispatch, the request table, priorities, cancellation,
   incremental synchronization, position-encoding negotiation and the restart
   policy.
-- [ ] Add hover, Analysis diagnostics, semantic tokens, inlay hints, document
-  and workspace symbols, the remaining Go to commands, references window,
+- [ ] Add hover, Analysis diagnostics, semantic tokens, inlay hints, folding
+  ranges (merged by kind per CE26), document and workspace symbols, the remaining Go to commands, references window,
   completion resolve and snippets.
 - [ ] Add rename with preview, code actions with the light bulb, and workspace
   edits with transaction undo.
@@ -299,7 +308,7 @@ Requirements: CE18, CE19, CE21, CE24, CE25. Prerequisite: M1-M8.
   accepted exceptions.
 - [ ] Update the architecture status and baseline table, and the user guide.
 
-Gate: CE01-CE25 each have evidence or an accepted, recorded exception.
+Gate: CE01-CE26 each have evidence or an accepted, recorded exception.
 
 ## Standard gates
 
