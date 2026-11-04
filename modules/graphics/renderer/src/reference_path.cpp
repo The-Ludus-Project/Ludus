@@ -52,7 +52,7 @@ void AddTransport(ReferencePath& path, math::Vector3 contribution, uint32 depth,
         path.Indirect = path.Indirect + contribution;
     }
 }
-usize LightCount(const ReferenceJob& job) noexcept
+usize GetReferenceLightCount(const ReferenceJob& job) noexcept
 {
     return job.Description.LightCount + job.Scene.Emitters.GetSize() +
            ((job.EnvironmentOrNull != nullptr || Positive(job.Description.Environment)) ? 1U : 0U);
@@ -83,19 +83,21 @@ uint16 Dimension(const ReferenceJob& job, const ReferencePath& path, uint32 slot
 {
     return ReferenceBounceDimension(job.Description.LightSampling, path.Depth, slot);
 }
-// Solid-angle density of a point sampled uniformly on `triangle` after the light
-// proposal chose that triangle with probability `selection`.
-float32 AreaPdf(const ReferenceTriangle& triangle, math::Vector3 from, math::Vector3 point, float32 selection) noexcept
+// Combine the source PMF with the area-to-solid-angle conversion in the frozen operation order.
+float32 EvaluateTriangleLightPdf(const ReferenceTriangle& triangle,
+                                 math::Vector3 receiverWorld,
+                                 math::Vector3 endpointWorld,
+                                 float32 selectionPmf) noexcept
 {
-    const auto delta = point - from;
-    const auto distanceSquared = math::Dot(delta, delta);
-    const auto direction = ReferenceNormalize(delta);
-    const auto cosine = math::Abs(math::Dot(triangle.GeometricNormal, -direction));
-    if (selection <= 0 || triangle.Area <= 0 || cosine <= 0)
+    const math::Vector3 deltaWorld = endpointWorld - receiverWorld;
+    const float32 distanceSquared = math::Dot(deltaWorld, deltaWorld);
+    const math::Vector3 directionWorld = ReferenceNormalize(deltaWorld);
+    const float32 cosine = math::Abs(math::Dot(triangle.GeometricNormal, -directionWorld));
+    if (selectionPmf <= 0 || triangle.Area <= 0 || cosine <= 0)
     {
         return 0;
     }
-    return selection * distanceSquared / (triangle.Area * cosine);
+    return selectionPmf * distanceSquared / (triangle.Area * cosine);
 }
 // The uniform proposal picks the emitter category with probability emitters / lights;
 // the power-weighted CDF then picks one emitter triangle. The GPU kernels use this order.
@@ -110,8 +112,7 @@ float32 ComputeEmitterSelection(const ReferenceJob& job, usize emitter, usize li
     {
         return 0;
     }
-    return GetReferenceEmitterProbability(job.Scene, emitter) *
-           (float32(job.Scene.Emitters.GetSize()) / float32(lights));
+    return GetReferenceEmitterProbability(job.Scene, emitter) * ComputeEmissiveCategoryProbability(job, lights);
 }
 math::Vector3 Offset(math::Vector3 point, const ReferenceTriangle& triangle, math::Vector3 direction) noexcept
 {
@@ -123,152 +124,241 @@ math::Vector3 Offset(math::Vector3 point, const ReferenceTriangle& triangle, mat
     }
     return result;
 }
-struct LightProposal final
+// The reference selector keeps its historical category draw, including the
+// triangle count as the weight of the emissive category.
+enum class ReferenceLightChoiceKind : uint8
 {
-    math::Vector3 Direction{}, Radiance{}, Point{}, Error{}, Normal{};
-    float32 Distance = 0, Pdf = 0;
-    bool Delta = false, FiniteEndpoint = false;
-    /// ResampledProjectedSolidAngle drew the emissive category; the vertex resamples an emitter itself.
-    bool IsEmissiveCategory = false;
+    None,
+    Analytic,
+    Triangle,
+    ResampledTriangles,
+    Environment,
+    Invalid,
 };
-LightProposal SampleLight(const ReferenceJob& job, const ReferencePath& path, math::Vector3 point) noexcept
+struct ReferenceLightChoice final
 {
-    LightProposal result;
-    const auto count = LightCount(job);
-    if (count == 0)
+    ReferenceLightChoiceKind Kind = ReferenceLightChoiceKind::None;
+    usize Index = 0;
+    float32 SelectionPmf = 0;
+};
+
+ReferenceLightChoice SelectReferenceLight(const ReferenceJob& job, const ReferencePath& path, usize lightCount) noexcept
+{
+    if (lightCount == 0)
     {
-        return result;
+        return {};
     }
-    const uint16 dimension = Dimension(job, path, 0);
-    // Use the owning unbiased bounded mapper for discrete emitter selection;
-    // float multiplication/truncation would give unequal selector probabilities.
+    const uint16 dimension = Dimension(job, path, LUDUS_PATH_RANDOM_LIGHT_SELECTION_SLOT);
     uint32 selected = 0;
-    if (math::TrySampleBounded(job.Key, {path.Pixel, path.Sample, dimension}, static_cast<uint32>(count), selected) !=
-        math::MathStatus::Success)
+    if (math::TrySampleBounded(job.Key,
+                               {path.Pixel, path.Sample, dimension},
+                               static_cast<uint32>(lightCount),
+                               selected) != math::MathStatus::Success)
     {
-        result.Pdf = -1;
-        return result;
+        return {ReferenceLightChoiceKind::Invalid};
     }
+    const float32 uniformPmf = 1 / static_cast<float32>(lightCount);
     if (selected < job.Description.LightCount)
     {
-        const auto& light = job.Lights[selected];
-        result.Delta = true;
-        result.Pdf = 1 / float32(count);
-        result.Radiance = light.Color * light.Intensity;
-        if (light.Kind == LightKind::Directional)
-        {
-            result.Direction = -light.Direction;
-            result.Distance = job.Description.SecondaryDistance;
-        }
-        else
-        {
-            const auto delta = light.Position - point;
-            const auto square = math::Dot(delta, delta);
-            if (square <= 0)
-            {
-                result.Pdf = -1;
-                return result;
-            }
-            result.Distance = math::Sqrt(square);
-            result.Direction = delta / result.Distance;
-            result.Point = light.Position;
-            result.FiniteEndpoint = true;
-            if (result.Distance >= light.Range || result.Distance > job.Description.SecondaryDistance)
-            {
-                result.Radiance = {};
-                return result;
-            }
-            const auto ratio = result.Distance / light.Range;
-            const auto window = math::Max(0.0F, 1 - ratio * ratio * ratio * ratio);
-            float32 angular = 1;
-            if (light.Kind == LightKind::Spot)
-            {
-                const auto cosine = math::Dot(light.Direction, -result.Direction);
-                const auto t = math::Clamp((cosine - light.OuterCos) / (light.InnerCos - light.OuterCos), 0.0F, 1.0F);
-                angular = t * t;
-            }
-            if (light.Kind == LightKind::AreaOneSided || light.Kind == LightKind::AreaTwoSided)
-            {
-                const float32 emitterCosine = math::Dot(light.Direction, -result.Direction);
-                angular =
-                    light.Kind == LightKind::AreaTwoSided ? math::Abs(emitterCosine) : math::Max(emitterCosine, 0.F);
-            }
-            result.Radiance = result.Radiance * (window * window * angular / math::Max(square, 1e-4F));
-        }
-        return result;
+        return {ReferenceLightChoiceKind::Analytic, selected, uniformPmf};
     }
-    if (usize(selected) - job.Description.LightCount < job.Scene.Emitters.GetSize())
+    if (usize(selected) - job.Description.LightCount >= job.Scene.Emitters.GetSize())
     {
-        if (IsResampled(job) == true)
+        return {ReferenceLightChoiceKind::Environment, 0, uniformPmf};
+    }
+    if (IsResampled(job) == true)
+    {
+        return {ReferenceLightChoiceKind::ResampledTriangles, 0, ComputeEmissiveCategoryProbability(job, lightCount)};
+    }
+    if (job.Scene.EmitterCdf.GetSize() != job.Scene.Emitters.GetSize())
+    {
+        return {ReferenceLightChoiceKind::Invalid};
+    }
+    const uint32 total = job.Scene.EmitterCdf[job.Scene.EmitterCdf.GetSize() - 1];
+    if (total == 0)
+    {
+        return {}; // No emitter carries power.
+    }
+    uint32 value = 0;
+    if (math::TrySampleBounded(job.Key,
+                               {path.Pixel, path.Sample, Dimension(job, path, LUDUS_PATH_RANDOM_EMITTER_SLOT)},
+                               total,
+                               value) != math::MathStatus::Success)
+    {
+        return {ReferenceLightChoiceKind::Invalid};
+    }
+    const usize emitter = SelectReferenceEmitter(job.Scene, value);
+    return {ReferenceLightChoiceKind::Triangle, emitter, ComputeEmitterSelection(job, emitter, lightCount)};
+}
+
+struct ReferenceIncidentLight final
+{
+    math::Vector3 DirectionWorld{};
+    math::Vector3 Radiance{};
+    math::Vector3 PositionWorld{};
+    math::Vector3 ErrorWorld{};
+    math::Vector3 NormalWorld{};
+    float32 Distance = 0;
+    float32 EnvironmentPdfSolidAngle = 0;
+    bool IsDelta = false;
+    bool HasFiniteEndpoint = false;
+    bool HasFailed = false;
+};
+
+constexpr float32 NEAR_LIGHT_SQUARED_DISTANCE_FLOOR = 1e-4F;
+constexpr float32 SPHERE_SOLID_ANGLE_FACTOR = 4;
+
+ReferenceIncidentLight
+EvaluateAnalyticIncidentLight(const ReferenceJob& job, const DirectLight& light, math::Vector3 receiverWorld) noexcept
+{
+    ReferenceIncidentLight result;
+    result.IsDelta = true;
+    result.Radiance = light.Color * light.Intensity;
+    if (light.Kind == LightKind::Directional)
+    {
+        result.DirectionWorld = -light.Direction;
+        result.Distance = job.Description.SecondaryDistance;
+    }
+    else
+    {
+        const math::Vector3 deltaWorld = light.Position - receiverWorld;
+        const float32 distanceSquared = math::Dot(deltaWorld, deltaWorld);
+        if (distanceSquared <= 0)
         {
-            result.IsEmissiveCategory = true;
+            result.HasFailed = true;
             return result;
         }
-        if (job.Scene.EmitterCdf.GetSize() != job.Scene.Emitters.GetSize())
+        result.Distance = math::Sqrt(distanceSquared);
+        result.DirectionWorld = deltaWorld / result.Distance;
+        result.PositionWorld = light.Position;
+        result.HasFiniteEndpoint = true;
+        if (result.Distance >= light.Range || result.Distance > job.Description.SecondaryDistance)
         {
-            result.Pdf = -1;
+            result.Radiance = {};
             return result;
         }
-        const uint32 total = job.Scene.EmitterCdf[job.Scene.EmitterCdf.GetSize() - 1];
-        if (total == 0)
+        const float32 ratio = result.Distance / light.Range;
+        const float32 window = math::Max(0.0F, 1 - ratio * ratio * ratio * ratio);
+        float32 angular = 1;
+        if (light.Kind == LightKind::Spot)
         {
-            return result; // No emitter carries power; the proposal contributes nothing.
+            const float32 cosine = math::Dot(light.Direction, -result.DirectionWorld);
+            const float32 t = math::Clamp((cosine - light.OuterCos) / (light.InnerCos - light.OuterCos), 0.0F, 1.0F);
+            angular = t * t;
         }
-        uint32 value = 0;
-        if (math::TrySampleBounded(job.Key,
-                                   {path.Pixel, path.Sample, Dimension(job, path, LUDUS_PATH_RANDOM_EMITTER_SLOT)},
-                                   total,
-                                   value) != math::MathStatus::Success)
+        if (light.Kind == LightKind::AreaOneSided || light.Kind == LightKind::AreaTwoSided)
         {
-            result.Pdf = -1;
-            return result;
+            const float32 emitterCosine = math::Dot(light.Direction, -result.DirectionWorld);
+            angular = light.Kind == LightKind::AreaTwoSided ? math::Abs(emitterCosine) : math::Max(emitterCosine, 0.F);
         }
-        const usize emitter = SelectReferenceEmitter(job.Scene, value);
-        const auto& triangle = job.Scene.Triangles[job.Scene.Emitters[emitter]];
-        const float32 root = math::Sqrt(ReferenceRandom(job, path, Dimension(job, path, 1)));
-        const float32 u = root * (1 - ReferenceRandom(job, path, Dimension(job, path, 2)));
-        const auto v = root - u;
-        result.Point = Position(triangle, u, v);
-        const auto delta = result.Point - point;
-        result.Distance = math::Length(delta);
-        if (result.Distance <= 0)
-        {
-            result.Pdf = -1;
-            return result;
-        }
-        result.Direction = delta / result.Distance;
-        result.Error = triangle.Error;
-        result.Normal = OrientReferenceGeometricNormal(triangle, u, v);
-        result.FiniteEndpoint = true;
-        result.Pdf = AreaPdf(triangle, point, result.Point, ComputeEmitterSelection(job, emitter, count));
-        const auto& instance = job.Scene.Instances[triangle.Instance];
-        if ((instance.Surface->IsEmissionTwoSided == true || math::Dot(result.Normal, -result.Direction) > 0) &&
-            result.Distance <= job.Description.SecondaryDistance &&
-            ReferenceOpacity(instance, Uv(triangle, u, v), InterpolateReferenceColor(triangle, u, v).W))
-        {
-            result.Radiance = SampleReferenceEmission(instance, Uv(triangle, u, v));
-        }
+        result.Radiance = result.Radiance *
+                          (window * window * angular / math::Max(distanceSquared, NEAR_LIGHT_SQUARED_DISTANCE_FLOOR));
+    }
+    return result;
+}
+ReferenceIncidentLight SampleTriangleIncidentLight(const ReferenceJob& job,
+                                                   const ReferencePath& path,
+                                                   usize emitter,
+                                                   math::Vector3 receiverWorld) noexcept
+{
+    ReferenceIncidentLight result;
+    const ReferenceTriangle& triangle = job.Scene.Triangles[job.Scene.Emitters[emitter]];
+    const float32 root =
+        math::Sqrt(ReferenceRandom(job, path, Dimension(job, path, LUDUS_PATH_RANDOM_INCIDENT_FIRST_SLOT)));
+    const float32 u =
+        root * (1 - ReferenceRandom(job, path, Dimension(job, path, LUDUS_PATH_RANDOM_INCIDENT_SECOND_SLOT)));
+    const float32 v = root - u;
+    result.PositionWorld = Position(triangle, u, v);
+    const math::Vector3 deltaWorld = result.PositionWorld - receiverWorld;
+    result.Distance = math::Length(deltaWorld);
+    if (result.Distance <= 0)
+    {
+        result.HasFailed = true;
         return result;
     }
+    result.DirectionWorld = deltaWorld / result.Distance;
+    result.ErrorWorld = triangle.Error;
+    result.NormalWorld = OrientReferenceGeometricNormal(triangle, u, v);
+    result.HasFiniteEndpoint = true;
+    const ReferenceInstance& instance = job.Scene.Instances[triangle.Instance];
+    if ((instance.Surface->IsEmissionTwoSided == true || math::Dot(result.NormalWorld, -result.DirectionWorld) > 0) &&
+        result.Distance <= job.Description.SecondaryDistance &&
+        ReferenceOpacity(instance, Uv(triangle, u, v), InterpolateReferenceColor(triangle, u, v).W) == true)
+    {
+        result.Radiance = SampleReferenceEmission(instance, Uv(triangle, u, v));
+    }
+    return result;
+}
+ReferenceIncidentLight SampleEnvironmentIncidentLight(const ReferenceJob& job, const ReferencePath& path) noexcept
+{
+    ReferenceIncidentLight result;
+    result.Distance = job.Description.SecondaryDistance;
+    const float32 first = ReferenceRandom(job, path, Dimension(job, path, LUDUS_PATH_RANDOM_INCIDENT_FIRST_SLOT));
+    const float32 second = ReferenceRandom(job, path, Dimension(job, path, LUDUS_PATH_RANDOM_INCIDENT_SECOND_SLOT));
     if (job.EnvironmentOrNull != nullptr)
     {
-        const EnvironmentSample sample = SampleEnvironment(*job.EnvironmentOrNull,
-                                                           ReferenceRandom(job, path, Dimension(job, path, 1)),
-                                                           ReferenceRandom(job, path, Dimension(job, path, 2)));
-        result.Direction = sample.DirectionWorld;
+        const EnvironmentSample sample = SampleEnvironment(*job.EnvironmentOrNull, first, second);
+        result.DirectionWorld = sample.DirectionWorld;
         result.Radiance = sample.Radiance;
-        result.Pdf = sample.Pdf / static_cast<float32>(count);
-        result.Distance = job.Description.SecondaryDistance;
+        result.EnvironmentPdfSolidAngle = sample.Pdf;
         return result;
     }
-    const float32 z = 1 - 2 * ReferenceRandom(job, path, Dimension(job, path, 1));
-    const auto radius = math::Sqrt(math::Max(0.0F, 1 - z * z));
-    const float32 angle = math::kTauF * ReferenceRandom(job, path, Dimension(job, path, 2));
-    result.Direction = {radius * math::Cos(angle), radius * math::Sin(angle), z};
-    result.Distance = job.Description.SecondaryDistance;
+    const float32 z = 1 - 2 * first;
+    const float32 radius = math::Sqrt(math::Max(0.0F, 1 - z * z));
+    const float32 angle = math::kTauF * second;
+    result.DirectionWorld = {radius * math::Cos(angle), radius * math::Sin(angle), z};
     result.Radiance = job.Description.Environment;
-    result.Pdf = 1 / (float32(count) * 4 * math::kPiF);
+    result.EnvironmentPdfSolidAngle = 1 / (SPHERE_SOLID_ANGLE_FACTOR * math::kPiF);
     return result;
+}
+ReferenceIncidentLight SampleReferenceIncidentLight(const ReferenceJob& job,
+                                                    const ReferencePath& path,
+                                                    const ReferenceLightChoice& choice,
+                                                    math::Vector3 receiverWorld) noexcept
+{
+    switch (choice.Kind)
+    {
+        case ReferenceLightChoiceKind::Analytic:
+            return EvaluateAnalyticIncidentLight(job, job.Lights[choice.Index], receiverWorld);
+        case ReferenceLightChoiceKind::Triangle:
+            return SampleTriangleIncidentLight(job, path, choice.Index, receiverWorld);
+        case ReferenceLightChoiceKind::Environment:
+            return SampleEnvironmentIncidentLight(job, path);
+        default:
+            return {};
+    }
+}
+float32 ComputeEnvironmentLightPdf(float32 conditionalPdf, usize lightCount) noexcept
+{
+    return lightCount == 0 ? 0 : conditionalPdf / static_cast<float32>(lightCount);
+}
+float32 EvaluateSampledLightProbability(const ReferenceJob& job,
+                                        const ReferenceLightChoice& choice,
+                                        const ReferenceIncidentLight& incident,
+                                        math::Vector3 receiverWorld,
+                                        usize lightCount) noexcept
+{
+    if (choice.Kind == ReferenceLightChoiceKind::Invalid || incident.HasFailed == true)
+    {
+        return -1;
+    }
+    switch (choice.Kind)
+    {
+        case ReferenceLightChoiceKind::Analytic:
+            return choice.SelectionPmf; // Unit conditional mass for a deterministic incident event.
+        case ReferenceLightChoiceKind::Triangle:
+            return EvaluateTriangleLightPdf(job.Scene.Triangles[job.Scene.Emitters[choice.Index]],
+                                            receiverWorld,
+                                            incident.PositionWorld,
+                                            choice.SelectionPmf);
+        case ReferenceLightChoiceKind::Environment:
+            // Preserve the frozen CPU constant-sky evaluation order for sampled directions.
+            return job.EnvironmentOrNull == nullptr
+                       ? 1 / (static_cast<float32>(lightCount) * SPHERE_SOLID_ANGLE_FACTOR * math::kPiF)
+                       : ComputeEnvironmentLightPdf(incident.EnvironmentPdfSolidAngle, lightCount);
+        default:
+            return 0;
+    }
 }
 // Queue the visibility segment of one light contribution from `point` on `triangle`.
 rhi::RasterStatus QueueShadow(const ReferenceJob& job,
@@ -276,19 +366,19 @@ rhi::RasterStatus QueueShadow(const ReferenceJob& job,
                               ReferencePath& inoutPath,
                               const ReferenceTriangle& triangle,
                               math::Vector3 point,
-                              const LightProposal& proposal,
+                              const ReferenceIncidentLight& proposal,
                               math::Vector3 contribution) noexcept
 {
     ReferencePath& path = inoutPath;
-    const math::Vector3 start = Offset(point, triangle, proposal.Direction);
-    math::Vector3 direction = proposal.Direction;
-    math::Vector3 endWorld = proposal.Point;
+    const math::Vector3 start = Offset(point, triangle, proposal.DirectionWorld);
+    math::Vector3 direction = proposal.DirectionWorld;
+    math::Vector3 endWorld = proposal.PositionWorld;
     float32 distance = proposal.Distance;
-    if (proposal.FiniteEndpoint == true)
+    if (proposal.HasFiniteEndpoint == true)
     {
-        if (proposal.Delta == false &&
-            math::TryOffsetRayOrigin({proposal.Point, proposal.Error, proposal.Normal, -direction}, endWorld) !=
-                math::MathStatus::Success)
+        if (proposal.IsDelta == false &&
+            math::TryOffsetRayOrigin({proposal.PositionWorld, proposal.ErrorWorld, proposal.NormalWorld, -direction},
+                                     endWorld) != math::MathStatus::Success)
         {
             return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidShadowSegment);
         }
@@ -303,7 +393,7 @@ rhi::RasterStatus QueueShadow(const ReferenceJob& job,
         // Light geometry must not occlude its own sampled emission.
         distance = math::NextFloatDown(distance);
     }
-    if (job.Description.OpticalWavelengthWorld > 0 && proposal.FiniteEndpoint == true)
+    if (job.Description.OpticalWavelengthWorld > 0 && proposal.HasFiniteEndpoint == true)
     {
         // Retain the robustly offset light endpoint; reconstructing it from a rounded direction can land on the
         // emitter.
@@ -415,14 +505,14 @@ rhi::RasterStatus SampleResampledEmitter(const ReferenceJob& job,
         {
             continue;
         }
-        LightProposal proposal;
-        proposal.Direction = sample.DirectionWorld;
+        ReferenceIncidentLight proposal;
+        proposal.DirectionWorld = sample.DirectionWorld;
         proposal.Radiance = sample.Radiance;
-        proposal.Point = sample.PointWorld;
-        proposal.Error = emitter.Error;
-        proposal.Normal = emitter.GeometricNormal;
+        proposal.PositionWorld = sample.PointWorld;
+        proposal.ErrorWorld = emitter.Error;
+        proposal.NormalWorld = emitter.GeometricNormal;
         proposal.Distance = sample.DistanceWorld;
-        proposal.FiniteEndpoint = true;
+        proposal.HasFiniteEndpoint = true;
         const rhi::RasterStatus queued =
             QueueShadow(job, inoutInfo, path, triangle, frame.PositionWorld, proposal, contribution);
         if (queued != rhi::RasterStatus::Ready)
@@ -442,14 +532,14 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     path.ShadowCount = 0;
     path.HasNext = false;
     path.IsActive = false;
-    const auto lights = LightCount(job);
+    const usize lights = GetReferenceLightCount(job);
     if (hit.Hit == 0)
     {
         const float32 environmentPdf =
             job.EnvironmentOrNull != nullptr
                 ? EvaluateEnvironmentPdf(*job.EnvironmentOrNull, ReferenceDirection(path.Ray))
-                : 1 / (4 * math::kPiF);
-        const float32 lightPdf = lights == 0 ? 0 : environmentPdf / static_cast<float32>(lights);
+                : 1 / (SPHERE_SOLID_ANGLE_FACTOR * math::kPiF);
+        const float32 lightPdf = ComputeEnvironmentLightPdf(environmentPdf, lights);
         const float32 weight =
             path.Depth == 0 || path.IsPreviousSpecular == true
                 ? 1
@@ -498,7 +588,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
             const float32 selection = FindReferenceEmitter(job.Scene, triangleIndex, emitter) == true
                                           ? ComputeEmitterSelection(job, emitter, lights)
                                           : 0;
-            pdf = AreaPdf(triangle, path.PreviousPoint, point, selection);
+            pdf = EvaluateTriangleLightPdf(triangle, path.PreviousPoint, point, selection);
         }
         else if (path.Depth > 0 &&
                  EvaluateReferenceResampledLightDensity(job,
@@ -584,12 +674,16 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         frame = MakeReferenceReceiverFrame(point, normal, view, bsdf);
     }
     // A delta lobe is zero in every light proposal's direction, so specular vertices skip next-event estimation.
-    const LightProposal proposal = isSpecular == true ? LightProposal{} : SampleLight(job, path, point);
-    if (math::IsFinite(proposal.Pdf) == false || proposal.Pdf < 0 || ValidContribution(proposal.Radiance) == false)
+    const ReferenceLightChoice lightChoice =
+        isSpecular == true ? ReferenceLightChoice{} : SelectReferenceLight(job, path, lights);
+    const ReferenceIncidentLight proposal = SampleReferenceIncidentLight(job, path, lightChoice, point);
+    const float32 lightProbability = EvaluateSampledLightProbability(job, lightChoice, proposal, point, lights);
+    if (math::IsFinite(lightProbability) == false || lightProbability < 0 ||
+        ValidContribution(proposal.Radiance) == false)
     {
         return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidLightSample);
     }
-    if (proposal.IsEmissiveCategory == true)
+    if (lightChoice.Kind == ReferenceLightChoiceKind::ResampledTriangles)
     {
         const rhi::RasterStatus sampled = SampleResampledEmitter(job,
                                                                  inoutInfo,
@@ -600,33 +694,33 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                                                                  normal,
                                                                  view,
                                                                  frame,
-                                                                 ComputeEmissiveCategoryProbability(job, lights),
+                                                                 lightChoice.SelectionPmf,
                                                                  targetTotal);
         if (sampled != rhi::RasterStatus::Ready)
         {
             return sampled;
         }
     }
-    const auto cosine = math::Dot(normal, proposal.Direction);
-    if (proposal.Pdf > 0 && Positive(proposal.Radiance) && cosine > 0 &&
-        math::Dot(scatteringNormal, proposal.Direction) > 0)
+    const float32 cosine = math::Dot(normal, proposal.DirectionWorld);
+    if (lightProbability > 0 && Positive(proposal.Radiance) && cosine > 0 &&
+        math::Dot(scatteringNormal, proposal.DirectionWorld) > 0)
     {
         ReferenceBsdfEvaluation evaluation;
         if (EvaluateReferenceBsdf(bsdf,
                                   normal,
                                   view,
-                                  proposal.Direction,
+                                  proposal.DirectionWorld,
                                   evaluation,
                                   MakeMaterialRandomContext(job, path)) != rhi::RasterStatus::Ready)
         {
             return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidBsdfEvaluation);
         }
-        const float32 weight = proposal.Delta == true || job.Description.OpticalWavelengthWorld > 0
+        const float32 weight = proposal.IsDelta == true || job.Description.OpticalWavelengthWorld > 0
                                    ? 1
-                                   : ReferencePowerWeight(proposal.Pdf, evaluation.Pdf);
+                                   : ReferencePowerWeight(lightProbability, evaluation.Pdf);
         const math::Vector3 contribution =
             math::Hadamard(path.Throughput, math::Hadamard(evaluation.Value, proposal.Radiance)) *
-            (cosine * weight / proposal.Pdf);
+            (cosine * weight / lightProbability);
         if (ValidContribution(contribution) == false)
         {
             return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidDirectContribution);
@@ -727,19 +821,23 @@ rhi::RasterStatus EvaluateReferenceDiffuseProbe(const ReferenceJob& job,
     // At a virtual white diffuse receiver, cosine sampling turns the irradiance
     // integral into PI times incoming radiance. Reuse the reference MIS/BSDF
     // transport after this first event; analytic direct remains the raster term.
-    const LightProposal proposal = SampleLight(job, path, pointWorld);
+    const usize lights = GetReferenceLightCount(job);
+    const ReferenceLightChoice lightChoice = SelectReferenceLight(job, path, lights);
+    const ReferenceIncidentLight proposal = SampleReferenceIncidentLight(job, path, lightChoice, pointWorld);
+    const float32 lightProbability = EvaluateSampledLightProbability(job, lightChoice, proposal, pointWorld, lights);
     math::Vector3 directIrradiance;
-    const float32 cosine = math::Max(math::Dot(normalWorld, proposal.Direction), 0.F);
-    if (proposal.Delta == false && proposal.Pdf > 0 && cosine > 0)
+    const float32 cosine = math::Max(math::Dot(normalWorld, proposal.DirectionWorld), 0.F);
+    if (proposal.IsDelta == false && lightProbability > 0 && cosine > 0)
     {
-        math::Vector3 originWorld = Offset(pointWorld, triangle, proposal.Direction);
-        math::Vector3 directionWorld = proposal.Direction;
+        math::Vector3 originWorld = Offset(pointWorld, triangle, proposal.DirectionWorld);
+        math::Vector3 directionWorld = proposal.DirectionWorld;
         float32 distance = proposal.Distance;
-        if (proposal.FiniteEndpoint == true)
+        if (proposal.HasFiniteEndpoint == true)
         {
             math::Vector3 endpointWorld;
-            if (math::TryOffsetRayOrigin({proposal.Point, proposal.Error, proposal.Normal, -directionWorld},
-                                         endpointWorld) != math::MathStatus::Success)
+            if (math::TryOffsetRayOrigin(
+                    {proposal.PositionWorld, proposal.ErrorWorld, proposal.NormalWorld, -directionWorld},
+                    endpointWorld) != math::MathStatus::Success)
             {
                 return rhi::RasterStatus::Failed;
             }
@@ -761,8 +859,8 @@ rhi::RasterStatus EvaluateReferenceDiffuseProbe(const ReferenceJob& job,
         }
         if (visibility.Hit == 0)
         {
-            directIrradiance =
-                proposal.Radiance * (cosine / proposal.Pdf * ReferencePowerWeight(proposal.Pdf, cosine / math::kPiF));
+            directIrradiance = proposal.Radiance * (cosine / lightProbability *
+                                                    ReferencePowerWeight(lightProbability, cosine / math::kPiF));
         }
     }
     const float32 radius = math::Sqrt(ReferenceRandom(job, path, 0));

@@ -1698,6 +1698,16 @@ the integral key: changing it replaces the job and restarts accumulation.
 The resampled estimator, its random slots and its BSDF-hit MIS are the
 [many-area-light resampling review](many-area-light-sampling-reference-review.md).
 The category draw at slot 0, analytic lights and the environment are unchanged.
+
+The CPU oracle and GPU reference select a typed source and retain its selection
+mass before evaluating the incident sample. The category draw still uses slot
+0, and the power-CDF triangle draw still uses slot 7 in the uniform-area
+proposal. A triangle point or environment direction uses slots 1 and 2.
+Analytic lights evaluate deterministically with unit conditional mass. The
+resampled category keeps its existing candidate and technique addresses. The
+integrator combines the source mass and the matching incident probability in
+the existing evaluation order, so this separation does not change the proposal
+or require a new sampler version.
 - **Receiver.** Each vertex builds its shading frame and the renderer's
   [LTC table](../development/ltc-table.md) lookup at its roughness, view and
   `F0 = 0.04 (1 − metallic) + baseColor · metallic`. The diffuse technique's

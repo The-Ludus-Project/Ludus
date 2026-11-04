@@ -2,19 +2,31 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#if defined(LUDUS_TEST_EXPECT_DEBUG)
+#if defined(LUDUS_TEST_EXPECT_DEBUG) || defined(LUDUS_TEST_EXPECT_DEVELOPMENT) ||                                      \
+    defined(LUDUS_TEST_EXPECT_PROFILE) || defined(LUDUS_TEST_EXPECT_RELEASE)
+static_assert(LUDUS_ASSERT_DIALOGS_AVAILABLE == 0);
+#    if defined(LUDUS_TEST_EXPECT_DEBUG) || defined(LUDUS_TEST_EXPECT_DEVELOPMENT)
 static_assert(LUDUS_ENABLE_ASSERTS == 1);
 static_assert(LUDUS_BREAK_ON_CHECK == 1);
-static_assert(LUDUS_ASSERT_DIALOGS_AVAILABLE == 0);
-#    if LUDUS_TEST_EXPECT_DEBUG
-static_assert(LUDUS_BUILD_FLAVOR_ID == 1);
-#        if !defined(LUDUS_BUILD_DEBUG) || !defined(_DEBUG) || !defined(_DLL) || defined(NDEBUG)
-#            error "The Visual Studio Debug build must select Debug policy and the debug dynamic CRT"
+#    else
+static_assert(LUDUS_ENABLE_ASSERTS == 0);
+static_assert(LUDUS_BREAK_ON_CHECK == 0);
+#    endif
+#    if defined(LUDUS_TEST_EXPECT_DEBUG)
+static_assert(LUDUS_BUILD_DEBUG == 1 && LUDUS_BUILD_FLAVOR_ID == 1);
+#        if !defined(_DEBUG) || !defined(_DLL) || defined(NDEBUG)
+#            error "Visual Studio Debug must use the debug dynamic CRT and omit NDEBUG"
 #        endif
 #    else
-static_assert(LUDUS_BUILD_FLAVOR_ID == 2);
-#        if !defined(LUDUS_BUILD_DEVELOPMENT) || defined(_DEBUG) || !defined(_DLL) || !defined(NDEBUG)
-#            error "The Visual Studio Development build must select Development policy and the release dynamic CRT"
+#        if defined(_DEBUG) || !defined(_DLL) || !defined(NDEBUG)
+#            error "Visual Studio Development, Profile and Release must use the release dynamic CRT and define NDEBUG"
+#        endif
+#        if defined(LUDUS_TEST_EXPECT_DEVELOPMENT)
+static_assert(LUDUS_BUILD_DEVELOPMENT == 1 && LUDUS_BUILD_FLAVOR_ID == 2);
+#        elif defined(LUDUS_TEST_EXPECT_PROFILE)
+static_assert(LUDUS_BUILD_PROFILE == 1 && LUDUS_BUILD_FLAVOR_ID == 3);
+#        else
+static_assert(LUDUS_BUILD_RELEASE == 1 && LUDUS_BUILD_FLAVOR_ID == 4);
 #        endif
 #    endif
 #endif

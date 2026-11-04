@@ -20,6 +20,9 @@
 #include "internal/project_rendering_settings.h"
 #include "internal/project_setup_dialog.h"
 #include "internal/renderer_workspace.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/saved_graph_comparison_view.h"
+#endif
 #include "internal/script_workspace.h"
 #include "internal/state_view.h"
 #include "internal/timing_panel.h"
@@ -635,6 +638,11 @@ void MainWindow::BuildMenus()
     toolsMenu->addSeparator();
     toolsMenu->addAction(mRecordProfileAction);
     toolsMenu->addAction(QStringLiteral("Profiling..."), this, [this]() { showToolWindow(mProfilingDock); });
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    toolsMenu->addAction(QStringLiteral("Open saved comparison…"), this, [this]() {
+        OpenSavedGraphComparison(*this, {});
+    });
+#endif
     toolsMenu->setObjectName(QStringLiteral("toolsMenu"));
     // The Configuration document works without a project, so it stays reachable when the Explorer hides it.
     toolsMenu->addAction(QStringLiteral("&Configuration"), this, [this]() {
@@ -893,6 +901,12 @@ void MainWindow::OnSaveRequested()
     if (areaOrNull == Configuration_)
     {
         Configuration_->Save();
+        return;
+    }
+    if (areaOrNull == mCodeArea)
+    {
+        // A failure is explained in the tab's bar, where the user acted.
+        static_cast<void>(mCodeArea->SaveActiveTab());
         return;
     }
     if (areaOrNull != nullptr && areaOrNull->isAncestorOf(Audio_))
@@ -1838,6 +1852,9 @@ void MainWindow::closeEvent(QCloseEvent* event)
             event->ignore();
             return;
         }
+        // Make the recovery journal current before quitting: saved buffers drop
+        // their entries and a pending debounced checkpoint is not lost.
+        mCodeArea->FlushRecovery();
         const bool isBusy = Controller_->Caps().CanCloseImmediately == false || Content_->Importing();
         if (isBusy && CloseConfirmed_ == false)
         {

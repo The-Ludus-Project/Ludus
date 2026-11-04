@@ -30,7 +30,7 @@ TEST_CASE("Native object overlays batch bounded strokes into reusable clipped tr
     ViewportObjectOverlay overlay;
     CHECK(UpdateViewportObjectOverlayNode(overlay, nullptr) == nullptr);
     overlay.FramePixel = {10, 20, 300, 200};
-    REQUIRE(overlay.WireLinesPixel.TryAdd(QLineF(10, 20, 110, 20)) == true);
+    REQUIRE(overlay.OutlineLinesPixel.TryAdd(QLineF(10, 20, 110, 20)) == true);
     REQUIRE(overlay.HandleStrokes.TryAdd({QLineF(20, 30, 20, 110), qRgb(255, 0, 0), 4}) == true);
     QSGNode* rootOrNull = UpdateViewportObjectOverlayNode(overlay, nullptr);
     REQUIRE(rootOrNull != nullptr);
@@ -40,30 +40,40 @@ TEST_CASE("Native object overlays batch bounded strokes into reusable clipped tr
     QSGGeometryNode* node = static_cast<QSGGeometryNode*>(clip->firstChild());
     REQUIRE(node != nullptr);
     CHECK(node->geometry()->drawingMode() == QSGGeometry::DrawTriangles);
-    CHECK(node->geometry()->vertexCount() == 12);
+    // The outline segment is stroked twice, a casing under the amber, followed by the handle stroke.
+    CHECK(node->geometry()->vertexCount() == 18);
     const QSGGeometry::ColoredPoint2D* verticesPixel = node->geometry()->vertexDataAsColoredPoint2D();
-    CHECK(verticesPixel[0].x == 10);
-    CHECK(verticesPixel[0].y == 20.75F);
-    CHECK(verticesPixel[0].r == qRed(ViewportObjectOverlay::SELECTION_COLOR));
-    CHECK(verticesPixel[0].g == qGreen(ViewportObjectOverlay::SELECTION_COLOR));
-    CHECK(verticesPixel[0].b == qBlue(ViewportObjectOverlay::SELECTION_COLOR));
-    CHECK(verticesPixel[0].a == 255);
-    CHECK(verticesPixel[6].x == 18);
-    CHECK(verticesPixel[6].r == 255);
-    CHECK(verticesPixel[6].g == 0);
-    overlay.WireLinesPixel[0].translate(5, 0);
+    // The casing is premultiplied, wider than the outline, and drawn first.
+    constexpr float32 CASING_HALF_WIDTH = ViewportObjectOverlay::CASING_WIDTH_PIXELS * 0.5F;
+    constexpr float32 CASING_CAP = ViewportObjectOverlay::CASING_WIDTH_PIXELS * 0.5F;
+    CHECK(verticesPixel[0].x == 10 - CASING_CAP);
+    CHECK(verticesPixel[0].y == 20 + CASING_HALF_WIDTH);
+    CHECK(verticesPixel[0].a == ViewportObjectOverlay::CASING_ALPHA);
+    CHECK(verticesPixel[0].r <= qRed(ViewportObjectOverlay::CASING_COLOR));
+    // The amber outline follows with the token colour, fully opaque.
+    constexpr float32 OUTLINE_HALF_WIDTH = ViewportObjectOverlay::OUTLINE_WIDTH_PIXELS * 0.5F;
+    CHECK(verticesPixel[6].y == 20 + OUTLINE_HALF_WIDTH);
+    CHECK(verticesPixel[6].r == qRed(ViewportObjectOverlay::SELECTION_COLOR));
+    CHECK(verticesPixel[6].g == qGreen(ViewportObjectOverlay::SELECTION_COLOR));
+    CHECK(verticesPixel[6].b == qBlue(ViewportObjectOverlay::SELECTION_COLOR));
+    CHECK(verticesPixel[6].a == 255);
+    // The handle stroke keeps its own colour and has no cap.
+    CHECK(verticesPixel[12].x == 18);
+    CHECK(verticesPixel[12].r == 255);
+    CHECK(verticesPixel[12].g == 0);
+    overlay.OutlineLinesPixel[0].translate(5, 0);
     CHECK(UpdateViewportObjectOverlayNode(overlay, rootOrNull) == rootOrNull);
     CHECK(node->geometry()->vertexDataAsColoredPoint2D() == verticesPixel);
-    CHECK(verticesPixel[0].x == 15);
-    overlay.WireLinesPixel[0] = QLineF(1, 1, 1, 1);
+    CHECK(verticesPixel[6].x == 15 - OUTLINE_HALF_WIDTH);
+    overlay.OutlineLinesPixel[0] = QLineF(1, 1, 1, 1);
     REQUIRE(UpdateViewportObjectOverlayNode(overlay, rootOrNull) == rootOrNull);
-    CHECK(verticesPixel[0].x == 1);
-    REQUIRE(overlay.WireLinesPixel.TryResize(ViewportObjectOverlay::MAX_WIRE_LINES + 1) == true);
+    CHECK(verticesPixel[6].x == 1);
+    REQUIRE(overlay.OutlineLinesPixel.TryResize(ViewportObjectOverlay::MAX_OUTLINE_LINES + 1) == true);
     rootOrNull = UpdateViewportObjectOverlayNode(overlay, rootOrNull);
     CHECK(rootOrNull == nullptr);
-    overlay.WireLinesPixel.Clear();
+    overlay.OutlineLinesPixel.Clear();
     overlay.HandleStrokes.Clear();
-    REQUIRE(overlay.WireLinesPixel.TryAdd(QLineF(0, 0, 1, 1)) == true);
+    REQUIRE(overlay.OutlineLinesPixel.TryAdd(QLineF(0, 0, 1, 1)) == true);
     rootOrNull = UpdateViewportObjectOverlayNode(overlay, rootOrNull);
     REQUIRE(rootOrNull != nullptr);
     overlay.FramePixel = {};
@@ -111,7 +121,7 @@ TEST_CASE("Native object overlays upload solid handle fills after the strokes",
     CHECK(UpdateViewportObjectOverlayNode(overlay, rootOrNull) == nullptr);
 }
 
-TEST_CASE("Selection wire cages and picking follow the presented image camera, not the live one",
+TEST_CASE("Selection outlines and picking follow the presented image camera, not the live one",
           "[editor][object-interaction]")
 {
     RenderScene scene;
@@ -132,9 +142,13 @@ TEST_CASE("Selection wire cages and picking follow the presented image camera, n
     const QRectF framePixel{0, 0, 800, 600};
     ViewportObjectOverlay shown;
     interaction.BuildOverlay(framePixel, shown);
-    REQUIRE(shown.WireLinesPixel.GetSize() == 3);
+    REQUIRE(shown.OutlineLinesPixel.GetSize() == 3);
+    // The three open edges of the triangle share each corner twice.
+    constexpr float64 ENDPOINTS_PER_CORNER = 2;
     const QPointF centroidPixel =
-        (shown.WireLinesPixel[0].p1() + shown.WireLinesPixel[1].p1() + shown.WireLinesPixel[2].p1()) / 3.0;
+        (shown.OutlineLinesPixel[0].p1() + shown.OutlineLinesPixel[0].p2() + shown.OutlineLinesPixel[1].p1() +
+         shown.OutlineLinesPixel[1].p2() + shown.OutlineLinesPixel[2].p1() + shown.OutlineLinesPixel[2].p2()) /
+        (3.0 * ENDPOINTS_PER_CORNER);
     REQUIRE(interaction.Pick(centroidPixel, framePixel) == object.Id);
 
     // An asynchronously rendered image still shows the camera it was rendered with.
@@ -152,21 +166,21 @@ TEST_CASE("Selection wire cages and picking follow the presented image camera, n
     preview.Orbit(40, 15);
     ViewportObjectOverlay presented;
     interaction.BuildOverlay(framePixel, presented);
-    REQUIRE(presented.WireLinesPixel.GetSize() == shown.WireLinesPixel.GetSize());
+    REQUIRE(presented.OutlineLinesPixel.GetSize() == shown.OutlineLinesPixel.GetSize());
     constexpr float64 TOLERANCE_PIXELS = 0.01;
-    for (usize line = 0; line < shown.WireLinesPixel.GetSize(); ++line)
+    for (usize line = 0; line < shown.OutlineLinesPixel.GetSize(); ++line)
     {
-        const QPointF differencePixel = presented.WireLinesPixel[line].p1() - shown.WireLinesPixel[line].p1();
+        const QPointF differencePixel = presented.OutlineLinesPixel[line].p1() - shown.OutlineLinesPixel[line].p1();
         CHECK(differencePixel.manhattanLength() < TOLERANCE_PIXELS);
     }
     CHECK(interaction.Pick(centroidPixel, framePixel) == object.Id);
 
-    // Without a presented image the cage follows navigation again.
+    // Without a presented image the outline follows navigation again.
     interaction.ClearPresentedView();
     ViewportObjectOverlay live;
     interaction.BuildOverlay(framePixel, live);
-    REQUIRE(live.WireLinesPixel.GetSize() == shown.WireLinesPixel.GetSize());
-    const QPointF movedPixel = live.WireLinesPixel[0].p1() - shown.WireLinesPixel[0].p1();
+    REQUIRE(live.OutlineLinesPixel.GetSize() == shown.OutlineLinesPixel.GetSize());
+    const QPointF movedPixel = live.OutlineLinesPixel[0].p1() - shown.OutlineLinesPixel[0].p1();
     CHECK(movedPixel.manhattanLength() > 1);
 }
 

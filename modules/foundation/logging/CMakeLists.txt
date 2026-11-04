@@ -72,7 +72,9 @@ target_link_libraries(
 # defaulted per build type here.
 if(NOT DEFINED LUDUS_COMPILED_LOG_LEVEL)
     if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
-        set(LUDUS_COMPILED_LOG_LEVEL "$<IF:$<CONFIG:Debug>,0,1>") # Trace+ / Debug+
+        string(CONCAT LUDUS_COMPILED_LOG_LEVEL
+            "$<$<CONFIG:Debug>:0>" "$<$<CONFIG:Development>:1>"
+            "$<$<CONFIG:Profile>:2>" "$<$<CONFIG:Release>:3>")
     elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
         set(LUDUS_COMPILED_LOG_LEVEL 0) # Trace+
     elseif(CMAKE_BUILD_TYPE STREQUAL "Release")

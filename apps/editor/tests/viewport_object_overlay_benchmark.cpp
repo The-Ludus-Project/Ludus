@@ -34,7 +34,9 @@ namespace
 constexpr int32 WIDTH_PIXELS = 1280;
 constexpr int32 HEIGHT_PIXELS = 720;
 constexpr int32 GRID_COLUMNS = 100;
-constexpr int32 GRID_ROWS = static_cast<int32>(ViewportObjectOverlay::MAX_WIRE_TRIANGLES) / GRID_COLUMNS;
+constexpr int32 GRID_ROWS =
+    static_cast<int32>(ViewportObjectOverlay::MAX_OUTLINE_LINES / ViewportObjectOverlay::TRIANGLE_VERTICES) /
+    GRID_COLUMNS;
 constexpr int32 WARMUP_FRAMES = 5;
 constexpr int32 MEASURED_FRAMES = 30;
 constexpr int32 FRAME_TIMEOUT_MILLISECONDS = 10000;
@@ -55,8 +57,8 @@ public:
         painter.setClipRect(overlay.FramePixel);
         painter.setRenderHint(QPainter::Antialiasing);
         painter.setPen(QPen(QColor::fromRgb(ViewportObjectOverlay::SELECTION_COLOR),
-                            static_cast<float64>(ViewportObjectOverlay::WIRE_WIDTH_PIXELS)));
-        for (const QLineF& linePixel : overlay.WireLinesPixel)
+                            static_cast<float64>(ViewportObjectOverlay::OUTLINE_WIDTH_PIXELS)));
+        for (const QLineF& linePixel : overlay.OutlineLinesPixel)
         {
             painter.drawLine(linePixel);
         }
@@ -225,7 +227,7 @@ int main(int argumentCount, char** arguments)
 #endif
     ViewportObjectOverlay overlay;
     overlay.FramePixel = {0, 0, WIDTH_PIXELS, HEIGHT_PIXELS};
-    if (overlay.WireLinesPixel.TryEnsureCapacity(ViewportObjectOverlay::MAX_WIRE_LINES) == false)
+    if (overlay.OutlineLinesPixel.TryEnsureCapacity(ViewportObjectOverlay::MAX_OUTLINE_LINES) == false)
     {
         return 1;
     }
@@ -237,9 +239,9 @@ int main(int argumentCount, char** arguments)
                                      static_cast<float64>(row) * HEIGHT_PIXELS / GRID_ROWS);
             const QPointF secondPixel = firstPixel + QPointF(static_cast<float64>(WIDTH_PIXELS) / GRID_COLUMNS, 0);
             const QPointF thirdPixel = firstPixel + QPointF(0, static_cast<float64>(HEIGHT_PIXELS) / GRID_ROWS);
-            overlay.WireLinesPixel.Add(QLineF(firstPixel, secondPixel));
-            overlay.WireLinesPixel.Add(QLineF(secondPixel, thirdPixel));
-            overlay.WireLinesPixel.Add(QLineF(thirdPixel, firstPixel));
+            overlay.OutlineLinesPixel.Add(QLineF(firstPixel, secondPixel));
+            overlay.OutlineLinesPixel.Add(QLineF(secondPixel, thirdPixel));
+            overlay.OutlineLinesPixel.Add(QLineF(thirdPixel, firstPixel));
         }
     }
     QJsonObject painted;
@@ -259,7 +261,7 @@ int main(int argumentCount, char** arguments)
         geometry = MeasureOverlay(overlay, *item, window);
     }
     QJsonObject report;
-    report.insert(QStringLiteral("strokes"), static_cast<qint64>(overlay.WireLinesPixel.GetSize()));
+    report.insert(QStringLiteral("strokes"), static_cast<qint64>(overlay.OutlineLinesPixel.GetSize()));
     report.insert(QStringLiteral("logicalWidth"), WIDTH_PIXELS);
     report.insert(QStringLiteral("logicalHeight"), HEIGHT_PIXELS);
     report.insert(QStringLiteral("framesPerPath"), MEASURED_FRAMES);

@@ -1876,3 +1876,39 @@ TEST_CASE("Routing opens ordinary text files as code tabs and keeps package shad
     // The shader did not add a second code tab.
     CHECK(codeArea->GetTabCount() == 1);
 }
+
+TEST_CASE("Save saves the active code tab", "[editor][shell][code-editor]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.show();
+    const QString descriptor = WriteProject(directory);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString script = QDir(root).filePath(QStringLiteral("scripts/door.luau"));
+    WriteBytes(script, QByteArrayLiteral("return 1\n"));
+    controller.OpenProject(descriptor);
+    Settle();
+
+    ProjectExplorer* explorer = window.findChild<ProjectExplorer*>();
+    REQUIRE(explorer != nullptr);
+    REQUIRE(explorer->ActivateItem(ProjectItemKind::Scripts, script) == true);
+    Settle();
+    CodeEditorArea* codeArea = window.findChild<CodeEditorArea*>();
+    REQUIRE(codeArea != nullptr);
+    CodeDocumentTab* tab = codeArea->GetActiveTabOrNull();
+    REQUIRE(tab != nullptr);
+    tab->GetEditor().setFocus();
+    QTest::keyClick(&tab->GetEditor(), Qt::Key_X);
+    Settle();
+    REQUIRE(tab->IsDirty() == true);
+
+    QAction* save = Action(window, QStringLiteral("document.save"));
+    CHECK(save->text() == QStringLiteral("&Save File"));
+    REQUIRE(save->isEnabled() == true);
+    save->trigger();
+    Settle();
+    CHECK(tab->IsDirty() == false);
+    CHECK(ReadBytes(script) == QByteArrayLiteral("xreturn 1\n"));
+}

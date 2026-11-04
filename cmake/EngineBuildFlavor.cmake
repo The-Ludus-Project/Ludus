@@ -1,5 +1,6 @@
 # Build flavor is engine policy; CMake configuration controls optimization and
-# dependency ABI. In particular, Profile uses RelWithDebInfo, not CONFIG:Profile.
+# dependency ABI. The Visual Studio source build names all four flavors;
+# Development and Profile use RelWithDebInfo compiler and dependency settings.
 set(LUDUS_BUILD_FLAVOR "" CACHE STRING "Ludus flavor: Debug, Development, Profile, Release")
 set_property(CACHE LUDUS_BUILD_FLAVOR PROPERTY STRINGS Debug Development Profile Release)
 
@@ -11,7 +12,7 @@ if(CMAKE_CONFIGURATION_TYPES)
 
     if(LUDUS_BUILD_FLAVOR STREQUAL "")
         set(LUDUS_VISUAL_STUDIO_MULTI_CONFIG ON)
-        set(CMAKE_CONFIGURATION_TYPES Debug Development)
+        set(CMAKE_CONFIGURATION_TYPES Debug Development Profile Release)
     else()
         # Preserve existing solutions explicitly configured for a single flavor.
         if(LUDUS_BUILD_FLAVOR STREQUAL "Debug")
@@ -27,7 +28,9 @@ if(CMAKE_CONFIGURATION_TYPES)
 endif()
 
 if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
-    set(LUDUS_BUILD_FLAVOR_ID "$<IF:$<CONFIG:Debug>,1,2>")
+    string(CONCAT LUDUS_BUILD_FLAVOR_ID
+        "$<$<CONFIG:Debug>:1>" "$<$<CONFIG:Development>:2>"
+        "$<$<CONFIG:Profile>:3>" "$<$<CONFIG:Release>:4>")
 elseif(LUDUS_BUILD_FLAVOR STREQUAL "Debug" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(LUDUS_BUILD_FLAVOR_ID 1)
 elseif(LUDUS_BUILD_FLAVOR STREQUAL "Development" AND CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
@@ -56,7 +59,10 @@ endforeach()
 set(LUDUS_ASSERT_POLICY_VERSION 2)
 set(LUDUS_ENABLE_ASSERTS 0)
 set(LUDUS_BREAK_ON_CHECK 0)
-if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG OR LUDUS_BUILD_FLAVOR_ID LESS 3)
+if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
+    set(LUDUS_ENABLE_ASSERTS "$<CONFIG:Debug,Development>")
+    set(LUDUS_BREAK_ON_CHECK "${LUDUS_ENABLE_ASSERTS}")
+elseif(LUDUS_BUILD_FLAVOR_ID LESS 3)
     set(LUDUS_ENABLE_ASSERTS 1)
     set(LUDUS_BREAK_ON_CHECK 1)
 endif()
@@ -74,7 +80,7 @@ if(LUDUS_BUILD_FLAVOR_ID EQUAL 1 AND NOT LUDUS_CI_BUILD AND CMAKE_SYSTEM_NAME MA
 endif()
 
 if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
-    set(LUDUS_BUILD_FLAVOR_DEFINE "$<IF:$<CONFIG:Debug>,DEBUG,DEVELOPMENT>")
+    set(LUDUS_BUILD_FLAVOR_DEFINE "$<UPPER_CASE:$<CONFIG>>")
     # The Windows source build has no installed SDK variant.
     return()
 endif()

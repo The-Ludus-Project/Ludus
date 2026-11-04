@@ -2,6 +2,8 @@
 
 #include <ludus/content/scene_format/material.h>
 
+#include <QColor>
+#include <QImage>
 #include <QJsonObject>
 #include <QString>
 #include <QVector>
@@ -54,7 +56,17 @@ struct MaterialPropertyRow final
     QString Label;                   ///< Property name, with its unit or space where it has one.
     QString Value;                   ///< Displayed value; colours are comma-separated linear RGB.
     bool IsCoatingParameter = false; ///< Editable separately in an imported coated-diffuse slot.
+    /// Display colour of a colour row, shown as a swatch beside Value; invalid for other rows.
+    QColor Swatch{};
+    /// Small preview of a texture row, shown beside Value; null for other rows and for missing textures.
+    QImage Thumbnail{};
 };
+
+/// Edge of a texture thumbnail in pixels; the longer side of the texture is scaled to it.
+inline constexpr int MATERIAL_THUMBNAIL_EXTENT = 48;
+
+/// Name shown for a material the source scene does not name: "Material N", N counting from one in scene order.
+[[nodiscard]] QString GetFallbackMaterialName(int materialIndex);
 
 /// Describe the decoded material a scene object of a loaded render scene uses, as the renderer
 /// receives it: its source name, scattering model, the parameters common to every model, the
