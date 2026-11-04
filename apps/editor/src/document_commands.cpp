@@ -3,6 +3,7 @@
 #include "internal/project_rendering_settings.h"
 
 #include "internal/audio_workspace.h"
+#include "internal/code_editor_area.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
 #include "internal/document_well.h"
@@ -87,12 +88,14 @@ void MainWindow::RenderDocumentActions()
     const bool isScripts = areaOrNull == Scripts_;
     const bool isWorld = areaOrNull == World_;
     const bool isRenderer = areaOrNull == Renderer_;
+    const bool isCode = areaOrNull == mCodeArea;
     SaveAction_->setText(isProject         ? QStringLiteral("&Save Project Settings")
                          : isAudio         ? QStringLiteral("&Save Audio")
                          : isWorld         ? QStringLiteral("&Save World")
                          : isScripts       ? QStringLiteral("&Save Script Asset")
                          : isRenderer      ? QStringLiteral("&Save Render Graph")
                          : isConfiguration ? QStringLiteral("&Save Preferences")
+                         : isCode          ? QStringLiteral("&Save File")
                                            : QStringLiteral("&Save"));
     // Clean project saves are available too: the focused argument delegate may
     // contain pending text that has not yet made the document dirty.
@@ -105,6 +108,7 @@ void MainWindow::RenderDocumentActions()
                             : isWorld    ? World_->CanSave()
                             : isScripts  ? Scripts_->CanSave()
                             : isRenderer ? Renderer_->CanSave()
+                            : isCode     ? mCodeArea->CanSaveActiveTab()
                                          : isConfiguration && Configuration_->Preview() != nullptr);
 #if defined(Q_OS_WASM)
     if (Audio_->IsDirty() == true || World_->Dirty() == true || Scripts_->Dirty() == true ||

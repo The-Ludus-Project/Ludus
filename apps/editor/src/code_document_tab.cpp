@@ -121,6 +121,16 @@ void CodeDocumentTab::MirrorFromHost()
     RefreshHistoryAvailability();
 }
 
+void CodeDocumentTab::RefreshFromHost()
+{
+    if (mHostOrNull != nullptr)
+    {
+        mEditor->setReadOnly(mHostOrNull->IsReadOnly());
+        mBanner->ShowExplanation(mHostOrNull->GetExplanation());
+    }
+    MirrorFromHost();
+}
+
 void CodeDocumentTab::RefreshHistoryAvailability()
 {
     if (mHostOrNull != nullptr)

@@ -352,19 +352,30 @@ QByteArray CodeFileDocument::GetSavedHash() const
     return hashBytes(mSaved);
 }
 
-bool CodeFileDocument::RestoreRecoveredDraft(const QByteArray& expectedSavedHash, const QByteArray& draftBytes)
+void CodeFileDocument::DiscardDraft() noexcept
 {
-    if (mIsReadOnly == true || hashBytes(mSaved) != expectedSavedHash || draftBytes == mDraft)
+    mDraft = mSaved;
+    mHistory.Reset();
+    mHasMergeableGroup = false;
+}
+
+CodeRecoveredDraftStatus CodeFileDocument::RestoreRecoveredDraft(const QByteArray& expectedSavedHash,
+                                                                 const QByteArray& draftBytes)
+{
+    if (mIsReadOnly == true || draftBytes == mDraft)
     {
-        return false;
+        return CodeRecoveredDraftStatus::Unchanged;
     }
-    // Re-anchor the recovered draft on top of the current (clean) baseline. A
-    // recovered buffer carries no undo steps: history belongs to the crashed
-    // session and is intentionally dropped so Undo cannot reach stale text.
+    // Re-anchor the recovered draft on top of the current baseline. A recovered
+    // buffer carries no undo steps: history belongs to the crashed session and
+    // is intentionally dropped so Undo cannot reach stale text. A draft edited
+    // over different on-disk content is still adopted, never dropped; the caller
+    // shows the conflict so the user decides between the draft and the file.
     mDraft = draftBytes;
     mHistory.Reset();
     mHasMergeableGroup = false;
-    return true;
+    return hashBytes(mSaved) == expectedSavedHash ? CodeRecoveredDraftStatus::Restored
+                                                  : CodeRecoveredDraftStatus::RestoredOverChangedFile;
 }
 
 void CodeFileDocument::captureDiskState()

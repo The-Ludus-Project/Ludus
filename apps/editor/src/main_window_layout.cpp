@@ -310,6 +310,9 @@ void MainWindow::BuildUi()
     connect(mCodeArea, &CodeEditorArea::DirtyCloseRequested, this, [this](CodeDocumentTab* tab) {
         static_cast<void>(mCodeArea->PromptCloseDirtyTab(tab));
     });
+    // Save follows the active code tab, so its label and state track the tabs.
+    connect(mCodeArea, &CodeEditorArea::TabsChanged, this, &MainWindow::RenderDocumentActions);
+    connect(mCodeArea, &CodeEditorArea::ActiveTabChanged, this, &MainWindow::RenderDocumentActions);
     mRenderingSettingsOrNull = new ProjectRenderingSettings(*Renderer_, form);
     projectLayout->insertWidget(projectLayout->indexOf(advanced), mRenderingSettingsOrNull);
     // The render-graph preview borrows the device and extraction of whichever viewport the

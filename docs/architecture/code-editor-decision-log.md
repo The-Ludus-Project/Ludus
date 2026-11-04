@@ -244,3 +244,53 @@ types it uses, checks every `[[nodiscard]]` result, and makes Qt child
 destruction order explicit wherever one child's destructor uses another (the
 recovery writer is joined in `~CodeDocumentRegistry` before the base `QObject`
 deletes it; the controller-before-editor teardown from #938 is left intact).
+
+### M1 host verification (2026-11-04)
+
+The maintainer built develop `d8a3e050` (all seven M1 batches) with
+`macos-clang-development` on macOS. It compiled warning-clean, and the offscreen
+`ludus_code_editor_tests` passed. Reading the code against the gate found M1
+incomplete. These gaps are fixed in the follow-up pull request:
+
+- **Save.** File > Save (Ctrl+S) ignored code tabs, so a code tab could only be
+  saved by closing it. `CodeEditorArea::SaveTab`/`SaveActiveTab` now back the
+  command, which reads **Save File** while a code tab is active.
+- **External changes.** Nothing called `HasExternalChange`, and the conflict
+  bar's buttons were not connected. `CodeExternalChangeWatch` now watches each
+  open file and its directory. The area also re-checks on tab activation and
+  application activation, which covers late FSEvents and the browser editor.
+  A clean buffer reloads, and a dirty buffer shows Compare (read-only, side by
+  side), Keep Mine and Reload. Save refuses to write over an undecided change.
+- **Don't Save resurrected drafts.** Discarding on project close cleared the
+  journal but left the drafts in memory. The close-time flush then wrote them
+  back, and the next open recovered them. Don't Save now discards the drafts in
+  memory too (`DiscardDraft`, `DiscardDirtyDrafts`).
+- **Recovered drafts were dropped silently.** A draft whose file changed on disk
+  after the crash was skipped. It is now restored with the conflict bar.
+- **A second crash lost restored drafts.** The restore pass cleared the journal
+  and nothing rewrote it until the next edit. The registry now treats every
+  journal entry as journaled and starts a checkpoint right after the restore.
+  Saving also starts an immediate checkpoint, so a saved buffer's entry is
+  removed without waiting for the debounce. Switching projects and quitting both
+  flush.
+- **Split views.** Closing one of two views of a dirty file asked Save or Don't
+  Save, and Don't Save reloaded the shared host under the other view. Only the
+  last view of a dirty draft asks now.
+
+Remaining differences, recorded rather than fixed here:
+
+- The registry holds hosts through `std::shared_ptr`, which ADR 0003 does not
+  allow. Migrating it is a separate change.
+- The journal lives under the application's local data directory, scoped per
+  project, rather than the project's machine-local state directory. It writes
+  through a per-flush `QThread` rather than the shared background pool. Every
+  checkpoint rewrites every dirty draft.
+- A recovered draft whose file was deleted is not reopened.
+- `HasExternalChange` reads the file on the UI thread when size or time differ.
+- Compare shows both texts side by side without highlighting the differences.
+- The recorded native run of the gate (every file type opening, editing,
+  saving, conflicting and recovering, with a forced quit) is still pending.
+- The full `ludus_editor_tests` run fails one render-graph test, "mouse Back and
+  Forward buttons navigate graph history from the canvas and its toolbar". It
+  passes alone, and it failed before M1 tasks 5-7 too, so an earlier test
+  leaves state behind.

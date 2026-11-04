@@ -59,6 +59,9 @@ public:
     /// Re-synchronize the projection from the host after another view edited it.
     /// The controller's guard prevents the mirrored delta from being re-sent.
     void MirrorFromHost();
+    /// Re-read the host after it was replaced from disk (reload, discard): the
+    /// text, the read-only state and the explanation bar follow the host.
+    void RefreshFromHost();
 
     /// Refresh the editor's undo/redo availability from the host.
     void RefreshHistoryAvailability();

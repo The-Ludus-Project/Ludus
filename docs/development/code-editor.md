@@ -40,12 +40,13 @@ Externally. Only UTF-8 is editable; other encodings are an explicit non-goal.
 ## Editing and saving
 
 The code surface records its own undo history for a bound file. Undo and Redo,
-Save, and the editing commands shared with the rest of the editor all work on a
-code tab.
+Save (**File > Save File**, Ctrl+S or Cmd+S), and the editing commands shared
+with the rest of the editor all work on a code tab.
 
 Save uses an atomic replace: the new bytes are written to a temporary file and
 swapped in, so an interrupted save never leaves a half-written file. A save that
-fails keeps the buffer dirty and reports the cause; your text is never lost. The
+fails keeps the buffer dirty and explains the cause and the next step in the
+tab's bar; your text is never lost. The
 file's byte-order mark is re-emitted when the original had one, and a final
 newline is added when the file's `.editorconfig` asks for it.
 
@@ -57,12 +58,20 @@ only newly typed lines follow the file's dominant ending.
 
 ### External changes
 
-If a file changes on disk while it is open, the editor compares its size,
-modification time and a content hash before declaring a conflict, so the
-editor's own save never counts as one. A **clean** buffer is reloaded from disk.
-A **dirty** buffer is never overwritten: the conflict offers **Compare**, **Keep
-Mine** and **Reload**. Keep Mine re-anchors your draft against the new on-disk
-content so it stays dirty and can be saved over the external change.
+The editor watches the files behind open tabs, and checks them again when you
+switch tabs or return to the editor. Before declaring a change it compares the
+file's size, modification time and a content hash, so the editor's own save
+never counts as one. A **clean** buffer is reloaded from disk.
+
+A **dirty** buffer is never overwritten. The tab's bar offers:
+
+- **Compare** shows your unsaved text beside the file on disk, read-only.
+- **Keep Mine** keeps your draft; the next Save writes it over the change.
+- **Reload** discards your draft and loads the file.
+
+Save refuses to write over an undecided change and shows the bar instead. If the
+file was deleted, the buffer stays open and Save writes it back. The browser
+editor has no file watcher, so it checks only on tab and window activation.
 
 ## Crash recovery
 
@@ -75,10 +84,17 @@ writes into the project tree.
 
 When you reopen the project after a crash or forced quit, each unsaved buffer is
 reopened and its draft is restored on top of the file's current saved baseline,
-so the recovered tab is dirty and ready to save. A buffer whose file was deleted,
-or whose file changed on disk since the crash, is skipped rather than restored
-over different content. After a clean close there is nothing to recover: saving a
-buffer clears its journal entry, and discarding unsaved buffers clears them too.
+so the recovered tab is dirty and ready to save. The journal is rewritten right
+after the restore, so a second crash still recovers the same drafts.
+
+If the file changed on disk after the draft was journaled (for example a pull
+before you reopened), the draft is still restored and the bar offers **Compare**,
+**Keep Mine** and **Reload**, so you choose between your work and the file. A
+buffer whose file was deleted is not reopened.
+
+After a clean close there is nothing to recover: saving a buffer removes its
+journal entry, and **Don't Save** discards the drafts in memory and in the
+journal, so they never come back on the next open.
 
 The browser editor cannot write a machine-local journal; download or export your
 work before closing or reloading the tab.
@@ -88,7 +104,8 @@ work before closing or reloading the tab.
 Closing a tab with unsaved changes asks **Save**, **Don't Save** or **Cancel**,
 with **Cancel** as the default so a stray keypress keeps your draft. Save writes
 the buffer and closes the tab; Don't Save closes it and discards the draft;
-Cancel leaves the tab open.
+Cancel leaves the tab open. When the same file is also open in the other editor
+group, closing one of its views does not ask: the other view keeps the draft.
 
 Closing the project or quitting the editor lists every unsaved code buffer and
 asks **Save All**, **Don't Save** or **Cancel**, again defaulting to Cancel. A
