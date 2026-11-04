@@ -94,7 +94,11 @@ inline bool CreateFixtureSource(const QString& source)
 }
 
 /// Import a source into a new project level and save it, as the Editor would.
-inline bool PrepareImportedLevel(const QString& root, const QString& relative, const QString& source, QString& outError)
+inline bool PrepareImportedLevel(const QString& root,
+                                 const QString& relative,
+                                 const QString& source,
+                                 QString& outError,
+                                 std::string_view sourceEntry = {})
 {
     namespace cook = ludus::content::scene_cook;
     if (QDir().mkpath(root) == false)
@@ -113,7 +117,8 @@ inline bool PrepareImportedLevel(const QString& root, const QString& relative, c
     };
     const foundation::identity::EntropySource entropy = platform::GetSystemEntropySource();
     cook::AssetOptions options;
-    options.CookOrNull = &CookFixture;
+    options.CookOrNull = sourceEntry.empty() == true ? &CookFixture : nullptr;
+    options.SourceEntry = sourceEntry;
     options.EntropyOrNull = &entropy;
     cook::AssetError error;
     foundation::Array<foundation::uint8> level;

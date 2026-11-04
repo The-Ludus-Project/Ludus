@@ -26,11 +26,9 @@ float3 SampleDirectLighting(SceneContext scene,
     SelectedLight selected = SelectLight(scene, launch, SHADE_RANDOM_DIMENSION_FIRST);
     if (selected.HasSample == false)
         return float3(0);
-    float3 shapeSample = float3(SampleSceneRandom(launch, SHADE_RANDOM_DIMENSION_FIRST + 1),
-                                SampleSceneRandom(launch, SHADE_RANDOM_DIMENSION_FIRST + 2),
-                                SampleSceneRandom(launch, SHADE_RANDOM_DIMENSION_FIRST + 3));
-    LightSample light = SampleIncidentLight(scene, selected, receiver, shapeSample);
-    float probability = light.SelectionPmf * light.ConditionalPdf;
+    IncidentLightSample light =
+        SampleIncidentLight(scene, selected.LightIndex, receiver, launch, SHADE_INCIDENT_DIMENSION_FIRST, queries);
+    float probability = selected.SelectionPmf * light.ConditionalProbability;
     if (light.HasSample == false || probability <= 0 || any(light.IncidentCoefficient > 0) == false)
         return float3(0);
     // Zero for glass, whose delta lobes no light sample reaches.

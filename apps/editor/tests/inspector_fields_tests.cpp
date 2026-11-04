@@ -59,10 +59,10 @@ void Write(const QString& path, const QByteArray& bytes)
     REQUIRE(file.open(QIODevice::WriteOnly));
     REQUIRE(file.write(bytes) == bytes.size());
 }
-QString MakeStarterProject(QTemporaryDir& dir)
+QString MakeStarterProject(const QTemporaryDir& directory)
 {
-    REQUIRE(dir.isValid());
-    const QDir root(QFileInfo(dir.path()).canonicalFilePath());
+    REQUIRE(directory.isValid());
+    const QDir root(QFileInfo(directory.path()).canonicalFilePath());
     REQUIRE(root.mkdir(QStringLiteral("authoring")));
     Write(root.filePath(QStringLiteral("authoring/world.schema.json")),
           Read(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/examples/live-edit-game/authoring/world.schema.json")));
@@ -71,7 +71,7 @@ QString MakeStarterProject(QTemporaryDir& dir)
           Read(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/examples/live-edit-game/authoring/starter.world.json")));
     return path;
 }
-QRect GetRectangleIn(QWidget& ancestor, QWidget& widget)
+QRect GetRectangleIn(const QWidget& ancestor, const QWidget& widget)
 {
     return {widget.mapTo(&ancestor, QPoint(0, 0)), widget.size()};
 }
@@ -141,12 +141,12 @@ TEST_CASE("Dragging an axis letter scrubs its field and reports the edit", "[edi
     const QVector<VectorComponent> components{
     {
         .Name = QStringLiteral("X"),
-        .Field = &field,
+        .FieldOrNull = &field,
         .Settings = { .Minimum = -100.0, .Maximum = 100.0, .Step = 0.5 },
     },
                                               {
                                                   .Name = QStringLiteral("Y"),
-                                                  .Field = &other,
+                                                  .FieldOrNull = &other,
                                                   .Settings = { .Minimum = -100.0, .Maximum = 100.0, .Step = 0.5 },
                                               }};
     QWidget* row = MakeVectorRow(components, QStringLiteral("m"), &host, [&scrubbedCount]() { ++scrubbedCount; });
@@ -179,7 +179,11 @@ TEST_CASE("A click on an axis letter focuses the field without changing it", "[e
     QWidget host;
     QLineEdit field(QStringLiteral("2.5"), &host);
     const QVector<VectorComponent> components{
-        { .Name = QStringLiteral("Z"), .Field = &field, .Settings = { .Minimum = 0.0, .Maximum = 10.0, .Step = 0.1 } }};
+    {
+        .Name = QStringLiteral("Z"),
+        .FieldOrNull = &field,
+        .Settings = { .Minimum = 0.0, .Maximum = 10.0, .Step = 0.1 },
+    }};
     QWidget* row = MakeVectorRow(components, QString(), &host, []() {});
     host.resize(200, 40);
     row->resize(200, 40);
@@ -240,7 +244,7 @@ TEST_CASE("The world inspector shows compact transform rows and short identifier
     REQUIRE(view.Open(path));
     view.resize(WORKSPACE_WIDTH, WORKSPACE_HEIGHT);
     view.show();
-    auto* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    QListWidget* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
     REQUIRE(list != nullptr);
     list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
     QTest::qWait(SETTLE_MILLISECONDS);
@@ -248,7 +252,8 @@ TEST_CASE("The world inspector shows compact transform rows and short identifier
 
     // Position, rotation and scale each take one line of three fields instead of nine stacked rows.
     const auto find = [window](const char* key) {
-        auto* fieldOrNull = window->findChild<QLineEdit*>(QStringLiteral("worldField:") + QString::fromLatin1(key));
+        QLineEdit* fieldOrNull =
+            window->findChild<QLineEdit*>(QStringLiteral("worldField:") + QString::fromLatin1(key));
         REQUIRE(fieldOrNull != nullptr);
         return fieldOrNull;
     };
@@ -275,7 +280,7 @@ TEST_CASE("The world inspector shows compact transform rows and short identifier
     CHECK(view.Dirty() == true);
 
     // The stable identifier is short with a copy button, and the full text is what is copied.
-    auto* identifierOrNull = window->findChild<IdentifierRow*>(QStringLiteral("worldEntityIdentifier"));
+    IdentifierRow* identifierOrNull = window->findChild<IdentifierRow*>(QStringLiteral("worldEntityIdentifier"));
     REQUIRE(identifierOrNull != nullptr);
     CHECK(identifierOrNull->GetIdentifier().isEmpty() == false);
     identifierOrNull->Copy();
@@ -291,19 +296,19 @@ TEST_CASE("The world inspector shows a swatch beside colour channels", "[editor]
     REQUIRE(view.Open(path));
     view.resize(WORKSPACE_WIDTH, WORKSPACE_HEIGHT);
     view.show();
-    auto* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    QListWidget* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
     REQUIRE(list != nullptr);
     list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
-    auto* choices = view.window()->findChild<QComboBox*>(QStringLiteral("worldComponentChoice"));
+    QComboBox* choices = view.window()->findChild<QComboBox*>(QStringLiteral("worldComponentChoice"));
     REQUIRE(choices != nullptr);
     const int light = choices->findData(QStringLiteral("light"));
     REQUIRE(light >= 0);
     choices->setCurrentIndex(light);
     view.window()->findChild<QPushButton*>(QStringLiteral("worldAttach"))->click();
     QTest::qWait(SETTLE_MILLISECONDS);
-    auto* swatchOrNull = view.window()->findChild<ColourSwatch*>(QStringLiteral("inspectorColourSwatch"));
+    ColourSwatch* swatchOrNull = view.window()->findChild<ColourSwatch*>(QStringLiteral("inspectorColourSwatch"));
     REQUIRE(swatchOrNull != nullptr);
-    auto* redOrNull = view.window()->findChild<QLineEdit*>(QStringLiteral("worldField:light/r"));
+    QLineEdit* redOrNull = view.window()->findChild<QLineEdit*>(QStringLiteral("worldField:light/r"));
     REQUIRE(redOrNull != nullptr);
     const QString before = redOrNull->text();
     swatchOrNull->SetDisplayColour(QColor(0, 0, 0));

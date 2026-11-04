@@ -4514,10 +4514,14 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetEmitterBounds | Precomputed emitter bounding sphere, geometric-normal cone and emission sidedness, for one weight per emitter without a triangle loop |
 | IsSurfaceCovered | Fixed-mip sampled-endpoint alpha coverage, using the same inclusive cutoff as closest-hit traversal, with no ray query; keep uncovered area samples as zero events |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
-| SelectLight / SampleIncidentLight | Optional default source selection and incident-light proposal; SelectLight(scene, queries) uses the invocation stream; no radiance estimate is added |
-| EvaluateLightSelectionPmf / EvaluateLightPdfSolidAngle | Matching source PMF / emitter-endpoint joint solid-angle density |
+| SelectLight / EvaluateLightSelectionPmf | Default uniform source selection and its discrete probability. SelectLight(scene, queries) uses the invocation stream. |
+| SampleIncidentLight(scene, lightIndex, receiver, launch, firstDimension, queries) | Addressed conditional proposal for one source. Returns an IncidentLightSample with its probability and measure. |
+| GetSurfaceLightIndex / GetEnvironmentLightIndex | Resolve the catalog index of an emissive hit or the environment. Return SCENE_INVALID_INDEX when absent. |
+| EvaluateIncidentLightPdfSolidAngle / EvaluateIncidentEnvironmentPdfSolidAngle | Conditional solid-angle densities for a mesh endpoint or an environment direction, excluding source selection. |
+| SampleIncidentLight(scene, selected, receiver, shapeSample) | Explicit-coordinate compatibility overload returning a LightSample with the uniform source PMF. |
+| EvaluateLightPdfSolidAngle / EvaluateEnvironmentPdfSolidAngle | Compatibility helpers returning joint solid-angle densities under uniform source selection. |
 | SelectEmissiveTriangle / EvaluateEmissiveTriangleSelectionPmf | [Power-weighted emissive triangle](#select-emissive-triangles-by-power) at an explicit dimension / that selection's probability for a triangle |
-| EvaluateEnvironment / EvaluateEnvironmentPdfSolidAngle | Environment emission and joint density under the uniform-source proposal |
+| EvaluateEnvironment | Environment emission along a world direction |
 | TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
@@ -4943,6 +4947,37 @@ then sampled uniformly on the triangle. Splitting a triangle does not multiply
 its source selection probability. Emission maps are sampled at the actual UV;
 black texels and back-side one-sided samples remain zero-contribution events.
 The initial environment proposal is uniform sphere, including HDR maps.
+
+The Compute ray tracing template chooses a source at one explicit address, then
+passes the source index and an independent address range to the incident sampler.
+
+```slang
+SelectedLight selected = SelectLight(scene, launch, LIGHT_SELECTION_DIMENSION);
+if (selected.HasSample == false)
+    return float3(0);
+
+IncidentLightSample incident = SampleIncidentLight(
+    scene, selected.LightIndex, receiver, launch, INCIDENT_DIMENSION_FIRST, queries);
+if (incident.HasSample == false)
+    return float3(0);
+
+float probability = selected.SelectionPmf * incident.ConditionalProbability;
+```
+
+Reserve `SCENE_INCIDENT_LIGHT_DIMENSION_COUNT` slots for the default incident
+proposal. Mesh lights read all three slots and the environment reads the last
+two. Directional, point and spot lights read none. The addressed sampler never
+advances the invocation stream. If a needed address is exhausted, it latches the
+invocation failure. A source index outside the catalog returns no sample.
+
+Use the probability product after checking `incident.HasSample` and use
+`TestVisibility` with the incident result to trace its connection. The incident
+probability is a density per steradian for `IncidentLightMeasure::SolidAngle` and
+a mass for `IncidentLightMeasure::Discrete`. Analytic delta samples have
+conditional mass one and zero competing solid-angle density. For MIS after a
+BSDF sample, resolve the source index, evaluate the original selector's PMF at
+the original receiver, and multiply it by the matching conditional density.
+See the [light sampling architecture](../architecture/renderer-systems.md#unified-light-discovery-and-incident-sampling).
 
 ### Select emissive triangles by power
 

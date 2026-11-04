@@ -582,6 +582,7 @@ ludus_editor_add_objects(ludus_editor_render_graph_canvas
     src/render_graph_canvas.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
     src/internal/theme_preferences.h src/theme_preferences.cpp
     src/internal/render_graph_navigation.h src/render_graph_navigation.cpp
+    src/internal/render_graph_minimap.h src/render_graph_minimap.cpp
     src/internal/render_graph_diagnostics.h src/render_graph_diagnostics.cpp
     src/internal/render_graph_execution_plan.h src/render_graph_execution_plan.cpp
     src/internal/render_graph_layout.h src/render_graph_layout.cpp
@@ -1125,7 +1126,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/render_graph_node_menu_tests.cpp
         tests/render_graph_rename_tests.cpp
         tests/render_graph_default_tests.cpp
-        tests/render_graph_canvas_tests.cpp tests/render_graph_navigation_tests.cpp tests/render_graph_history_tests.cpp tests/render_graph_layout_tests.cpp tests/render_graph_execution_plan_tests.cpp tests/render_graph_comment_tests.cpp tests/render_graph_reroute_tests.cpp tests/render_graph_resource_inspection_tests.cpp
+        tests/render_graph_canvas_tests.cpp tests/render_graph_navigation_tests.cpp tests/render_graph_history_tests.cpp tests/render_graph_layout_tests.cpp tests/render_graph_minimap_tests.cpp tests/render_graph_execution_plan_tests.cpp tests/render_graph_comment_tests.cpp tests/render_graph_reroute_tests.cpp tests/render_graph_resource_inspection_tests.cpp
         tests/render_graph_canvas_feedback_tests.cpp
         tests/render_graph_diagnostic_tests.cpp tests/render_graph_diagnostic_navigation_tests.cpp
         tests/texture_inspection_tests.cpp
@@ -1434,7 +1435,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
 
     # Authoring uses the real workspace/document without requiring a viewport device.
     add_executable(ludus_render_graph_configuration_tests
-        tests/render_graph_upscale_tests.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_template_tests.cpp tests/render_graph_luminaire_coverage_tests.cpp tests/world_lighting_coverage_tests.cpp tests/render_graph_template_registry_tests.cpp tests/render_graph_quick_add_tests.cpp tests/render_graph_rename_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_navigation_tests.cpp tests/render_graph_history_tests.cpp tests/render_graph_layout_tests.cpp tests/render_graph_execution_plan_tests.cpp tests/render_graph_comment_tests.cpp tests/render_graph_reroute_tests.cpp tests/render_graph_resource_inspection_tests.cpp tests/render_graph_canvas_feedback_tests.cpp tests/render_graph_diagnostic_tests.cpp tests/render_graph_diagnostic_navigation_tests.cpp
+        tests/render_graph_upscale_tests.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_template_tests.cpp tests/render_graph_luminaire_coverage_tests.cpp tests/world_lighting_coverage_tests.cpp tests/render_graph_template_registry_tests.cpp tests/render_graph_quick_add_tests.cpp tests/render_graph_rename_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_navigation_tests.cpp tests/render_graph_history_tests.cpp tests/render_graph_layout_tests.cpp tests/render_graph_minimap_tests.cpp tests/render_graph_execution_plan_tests.cpp tests/render_graph_comment_tests.cpp tests/render_graph_reroute_tests.cpp tests/render_graph_resource_inspection_tests.cpp tests/render_graph_canvas_feedback_tests.cpp tests/render_graph_diagnostic_tests.cpp tests/render_graph_diagnostic_navigation_tests.cpp
         # The workspace class and default graph compile here without the GPU preview; the
         # shared render-graph objects below are the same objects the editor links.
         src/internal/renderer_workspace.h src/renderer_workspace.cpp

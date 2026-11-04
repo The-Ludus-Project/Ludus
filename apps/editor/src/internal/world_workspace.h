@@ -225,9 +225,14 @@ private:
     /// Store the scene viewport's current perspective view as the level start view (one undo step).
     void saveStartView();
     void Changed(const QString& message = {});
-    void Pending();
+    void markInspectorPending(bool shouldPreview = true);
     void PreviewDraft();
-    [[nodiscard]] bool ReadDraft(WorldDocument& document, QString& error, QWidget*& invalid);
+    [[nodiscard]] bool readDraft(WorldDocument& inoutDocument,
+                                 QString& outError,
+                                 QWidget*& outInvalidOrNull,
+                                 bool shouldReadCoating = true);
+    [[nodiscard]] bool readCoatingFields(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull);
+    void restoreImportedCoating();
     void PickTint(const QString& id, const QJsonObject& binding);
     void Snapshot();
     /// Create sun as one undoable edit and select it; the status gives the reason when the World cannot be edited.

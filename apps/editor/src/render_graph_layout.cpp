@@ -3,8 +3,11 @@
 #include <ludus/foundation/math/scalar.hpp>
 
 #include <QHash>
+#include <QPair>
 #include <QStringList>
 
+#include <algorithm>
+#include <limits>
 #include <utility>
 
 namespace ludus::editor
@@ -14,6 +17,11 @@ namespace
 {
 constexpr float64 COLUMN_GAP = 60;
 constexpr float64 ROW_GAP = 28;
+constexpr float64 BEND_HEIGHT = 0;
+/// Barycentre passes over every column pair; layered graphs of the maximum size settle well inside this.
+constexpr qsizetype CROSSING_SWEEPS = 12;
+/// Row-relaxation passes; each is linear in slots.
+constexpr qsizetype PLACEMENT_SWEEPS = 8;
 
 bool AreBoundsValid(const QRectF& bounds)
 {
@@ -23,6 +31,241 @@ bool AreBoundsValid(const QRectF& bounds)
            qAbs(bounds.y()) <= RenderGraphDocument::MAX_COORDINATE &&
            bounds.width() <= RenderGraphDocument::MAX_COORDINATE &&
            bounds.height() <= RenderGraphDocument::MAX_COORDINATE;
+}
+
+/// One slot in a layered column: an authored card, or a zero-width bend that carries a wire across a column.
+struct LayeredSlot final
+{
+    qsizetype Node = -1; ///< Index into the supplied nodes; -1 for a bend.
+    float64 Height = 0;
+    float64 Top = 0;
+    QVector<qsizetype> Before; ///< Slots in earlier columns that feed this one.
+    QVector<qsizetype> After;  ///< Slots in later columns this one feeds.
+};
+
+/// A slot's mean neighbour position and its rank before sorting, which breaks ties.
+struct RankedSlot final
+{
+    float64 Key = 0;
+    qsizetype Rank = 0;
+};
+
+void SortUnique(QVector<qsizetype>& inoutValues)
+{
+    std::sort(inoutValues.begin(), inoutValues.end());
+    inoutValues.erase(std::unique(inoutValues.begin(), inoutValues.end()), inoutValues.end());
+}
+
+/// Mean rank of the neighbours as a fraction of their column, so columns of different sizes compare.
+float64 GetBarycentre(const QVector<qsizetype>& neighbours, const QVector<float64>& fractions, float64 fallback)
+{
+    if (neighbours.isEmpty() == true)
+    {
+        return fallback;
+    }
+    float64 sum = 0;
+    for (const qsizetype neighbour : neighbours)
+    {
+        sum += fractions.at(neighbour);
+    }
+    return sum / static_cast<float64>(neighbours.size());
+}
+
+/// Layered placement (Sugiyama): columns follow dependency order, wires crossing a column get a bend slot,
+/// rows are reordered by neighbour barycentres to reduce crossings, then cards are pulled toward the
+/// middle of their neighbours without leaving their order. Deterministic: every tie falls back to index.
+void PlaceLayeredNodes(const QVector<RenderGraphLayoutNode>& nodes,
+                       const QVector<RenderGraphLayoutEdge>& edges,
+                       const QHash<QString, qsizetype>& indices,
+                       const QVector<qsizetype>& components,
+                       QVector<qsizetype>& inoutColumns,
+                       QVector<QPointF>& outPositions)
+{
+    const qsizetype count = nodes.size();
+    // Component representative -> column; edges inside one component (a cycle) carry no order.
+    QVector<QPair<qsizetype, qsizetype>> links;
+    for (const RenderGraphLayoutEdge& edge : edges)
+    {
+        if (indices.contains(edge.Source) == false || indices.contains(edge.Destination) == false)
+        {
+            continue;
+        }
+        const qsizetype source = indices.value(edge.Source);
+        const qsizetype destination = indices.value(edge.Destination);
+        if (components.at(source) != components.at(destination))
+        {
+            links.append({source, destination});
+        }
+    }
+    std::sort(links.begin(), links.end());
+    links.erase(std::unique(links.begin(), links.end()), links.end());
+    // A card nothing feeds sits just before its first consumer instead of at the far left, which
+    // shortens every wire it owns (a camera or scene hub then no longer spans the whole graph).
+    QVector<uint8> isFed(count, 0);
+    for (const QPair<qsizetype, qsizetype>& link : std::as_const(links))
+    {
+        isFed[components.at(link.second)] = 1;
+    }
+    QVector<qsizetype> nearest(count, count);
+    for (const QPair<qsizetype, qsizetype>& link : std::as_const(links))
+    {
+        nearest[components.at(link.first)] =
+            qMin(nearest.at(components.at(link.first)), inoutColumns.at(components.at(link.second)));
+    }
+    for (qsizetype index = 0; index < count; ++index)
+    {
+        const qsizetype representative = components.at(index);
+        if (representative == index && isFed.at(index) == 0 && nearest.at(index) < count)
+        {
+            inoutColumns[index] = nearest.at(index) - 1;
+        }
+    }
+    qsizetype firstColumn = count;
+    for (qsizetype index = 0; index < count; ++index)
+    {
+        firstColumn = qMin(firstColumn, inoutColumns.at(components.at(index)));
+    }
+    QVector<LayeredSlot> slots;
+    QVector<QVector<qsizetype>> columnSlots(count);
+    const auto columnOf = [&](qsizetype node) { return inoutColumns.at(components.at(node)) - firstColumn; };
+    for (qsizetype index = 0; index < count; ++index)
+    {
+        slots.append({ .Node = index, .Height = nodes.at(index).Bounds.height() });
+        columnSlots[columnOf(index)].append(index);
+    }
+    for (const QPair<qsizetype, qsizetype>& link : std::as_const(links))
+    {
+        qsizetype previous = link.first;
+        for (qsizetype column = columnOf(link.first) + 1; column < columnOf(link.second); ++column)
+        {
+            const qsizetype bend = slots.size();
+            slots.append({ .Node = -1, .Height = BEND_HEIGHT });
+            columnSlots[column].append(bend);
+            slots[previous].After.append(bend);
+            slots[bend].Before.append(previous);
+            previous = bend;
+        }
+        slots[previous].After.append(link.second);
+        slots[link.second].Before.append(previous);
+    }
+    for (LayeredSlot& slot : slots)
+    {
+        SortUnique(slot.Before);
+        SortUnique(slot.After);
+    }
+    QVector<float64> fractions(slots.size(), 0.5);
+    const auto refreshFractions = [&](qsizetype column) {
+        const QVector<qsizetype>& members = columnSlots.at(column);
+        for (qsizetype rank = 0; rank < members.size(); ++rank)
+        {
+            fractions[members.at(rank)] = (static_cast<float64>(rank) + 0.5) / static_cast<float64>(members.size());
+        }
+    };
+    for (qsizetype column = 0; column < count; ++column)
+    {
+        refreshFractions(column);
+    }
+    const auto sortColumn = [&](qsizetype column, bool isForward) {
+        QVector<qsizetype>& members = columnSlots[column];
+        QVector<RankedSlot> keyed;
+        for (qsizetype rank = 0; rank < members.size(); ++rank)
+        {
+            const LayeredSlot& slot = slots.at(members.at(rank));
+            const float64 own = fractions.at(members.at(rank));
+            keyed.append(
+            {
+                .Key = GetBarycentre(isForward == true ? slot.Before : slot.After, fractions, own),
+                .Rank = rank,
+            });
+        }
+        // Stable on the previous rank, so ties never reshuffle.
+        std::stable_sort(keyed.begin(), keyed.end(), [](const RankedSlot& left, const RankedSlot& right) {
+            return left.Key < right.Key;
+        });
+        QVector<qsizetype> reordered;
+        for (const RankedSlot& entry : std::as_const(keyed))
+        {
+            reordered.append(members.at(entry.Rank));
+        }
+        members = reordered;
+        refreshFractions(column);
+    };
+    for (qsizetype sweep = 0; sweep < CROSSING_SWEEPS; ++sweep)
+    {
+        for (qsizetype column = 1; column < count; ++column)
+        {
+            sortColumn(column, true);
+        }
+        for (qsizetype column = count - 2; column >= 0; --column)
+        {
+            sortColumn(column, false);
+        }
+    }
+    // Rows: stack each column, then pull cards toward their neighbours' middle while keeping order.
+    const auto stack = [&](qsizetype column, bool isForward) {
+        float64 minimumTop = std::numeric_limits<float64>::lowest();
+        for (const qsizetype slotIndex : std::as_const(columnSlots.at(column)))
+        {
+            LayeredSlot& slot = slots[slotIndex];
+            const QVector<qsizetype>& neighbours = isForward == true ? slot.Before : slot.After;
+            float64 wanted = slot.Top;
+            if (neighbours.isEmpty() == false)
+            {
+                float64 sum = 0;
+                for (const qsizetype neighbour : neighbours)
+                {
+                    sum += slots.at(neighbour).Top + slots.at(neighbour).Height * 0.5;
+                }
+                wanted = sum / static_cast<float64>(neighbours.size()) - slot.Height * 0.5;
+            }
+            slot.Top = qMax(wanted, minimumTop);
+            minimumTop = slot.Top + slot.Height + ROW_GAP;
+        }
+    };
+    for (qsizetype column = 0; column < count; ++column)
+    {
+        float64 top = 0;
+        for (const qsizetype slotIndex : std::as_const(columnSlots.at(column)))
+        {
+            slots[slotIndex].Top = top;
+            top += slots.at(slotIndex).Height + ROW_GAP;
+        }
+    }
+    for (qsizetype sweep = 0; sweep < PLACEMENT_SWEEPS; ++sweep)
+    {
+        for (qsizetype column = 1; column < count; ++column)
+        {
+            stack(column, true);
+        }
+        for (qsizetype column = count - 2; column >= 0; --column)
+        {
+            stack(column, false);
+        }
+    }
+    QVector<float64> widths(count, 0);
+    for (qsizetype index = 0; index < count; ++index)
+    {
+        widths[columnOf(index)] = qMax(widths.at(columnOf(index)), nodes.at(index).Bounds.width());
+    }
+    QVector<float64> offsets(count, 0);
+    for (qsizetype column = 1; column < count; ++column)
+    {
+        offsets[column] = offsets.at(column - 1) + widths.at(column - 1) + COLUMN_GAP;
+    }
+    float64 highest = std::numeric_limits<float64>::max();
+    for (qsizetype index = 0; index < count; ++index)
+    {
+        highest = qMin(highest, slots.at(index).Top);
+    }
+    QRectF bounds;
+    for (const RenderGraphLayoutNode& node : nodes)
+    {
+        bounds = bounds.united(node.Bounds);
+    }
+    for (qsizetype index = 0; index < count; ++index)
+    {
+        outPositions.append(bounds.topLeft() + QPointF(offsets.at(columnOf(index)), slots.at(index).Top - highest));
+    }
 }
 
 void ArrangeNodes(const QVector<RenderGraphLayoutNode>& nodes,
@@ -97,29 +340,7 @@ void ArrangeNodes(const QVector<RenderGraphLayoutNode>& nodes,
             break;
         }
     }
-    QVector<float64> widths(count, 0);
-    QVector<float64> nextRows(count, 0);
-    for (qsizetype index = 0; index < count; ++index)
-    {
-        const qsizetype column = columns.at(components.at(index));
-        widths[column] = qMax(widths.at(column), nodes.at(index).Bounds.width());
-    }
-    QVector<float64> offsets(count, 0);
-    for (qsizetype column = 1; column < count; ++column)
-    {
-        offsets[column] = offsets.at(column - 1) + widths.at(column - 1) + COLUMN_GAP;
-    }
-    QRectF bounds;
-    for (const RenderGraphLayoutNode& node : nodes)
-    {
-        bounds = bounds.united(node.Bounds);
-    }
-    for (qsizetype index = 0; index < count; ++index)
-    {
-        const qsizetype column = columns.at(components.at(index));
-        outPositions.append(bounds.topLeft() + QPointF(offsets.at(column), nextRows.at(column)));
-        nextRows[column] += nodes.at(index).Bounds.height() + ROW_GAP;
-    }
+    PlaceLayeredNodes(nodes, edges, indices, components, columns, outPositions);
 }
 } // namespace
 

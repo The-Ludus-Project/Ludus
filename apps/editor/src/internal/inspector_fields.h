@@ -79,7 +79,7 @@ private:
 struct VectorComponent final
 {
     QString Name;
-    QLineEdit* Field = nullptr; ///< Borrowed; reparented into the row.
+    QLineEdit* FieldOrNull = nullptr; ///< Borrowed; reparented into the row.
     ScrubSettings Settings;
 };
 

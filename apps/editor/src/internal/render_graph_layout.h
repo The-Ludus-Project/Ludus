@@ -17,7 +17,7 @@ inline constexpr foundation::int32 MINIMUM_RENDER_GRAPH_DISTRIBUTION_COUNT = 3;
 /// Authored-position operation; alignment uses the selection's outer bounds, distribution its centres.
 enum class RenderGraphLayoutOperation : foundation::uint8
 {
-    Arrange,               ///< Place dependency components in columns, with nonoverlapping cards.
+    Arrange,               ///< Place dependency components in columns, with nonoverlapping cards and few crossings.
     AlignLeft,             ///< Align left edges to the leftmost selected card.
     AlignHorizontalCentre, ///< Align horizontal centres to the selection bounds' centre.
     AlignRight,            ///< Align right edges to the rightmost selected card.
@@ -44,7 +44,9 @@ struct RenderGraphLayoutEdge final
 
 /// Compute integer saved positions without touching the document or scene. GUI thread only.
 /// At most MAX_NODES unique, finite positive cards are accepted. Arrangement anchors at the
-/// input bounds' top left, groups cycles in one column and uses identity order within columns.
+/// input bounds' top left, groups cycles in one column and lays out layers (Sugiyama style): columns by
+/// dependency order, a card nothing feeds just before its first consumer, rows reordered by neighbour
+/// barycentres to reduce wire crossings, then pulled toward their neighbours. Identity order breaks every tie.
 /// Arrangement uses a common translation to fit the document's coordinate bounds; oversized
 /// arrangements or out-of-range alignment/distribution fail. Alignment needs two cards; distribution needs three.
 /// Invalid input or insufficient selection returns false and preserves outPositions. Success includes every supplied

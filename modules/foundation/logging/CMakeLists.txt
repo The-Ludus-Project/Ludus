@@ -71,7 +71,9 @@ target_link_libraries(
 # are never evaluated (spec sections 7, 30). Configurable via cache variable and
 # defaulted per build type here.
 if(NOT DEFINED LUDUS_COMPILED_LOG_LEVEL)
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
+        set(LUDUS_COMPILED_LOG_LEVEL "$<IF:$<CONFIG:Debug>,0,1>") # Trace+ / Debug+
+    elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
         set(LUDUS_COMPILED_LOG_LEVEL 0) # Trace+
     elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
         set(LUDUS_COMPILED_LOG_LEVEL 3) # Warning+
@@ -85,8 +87,10 @@ if(NOT DEFINED LUDUS_COMPILED_LOG_LEVEL)
     endif()
 endif()
 
-set(LUDUS_COMPILED_LOG_LEVEL "${LUDUS_COMPILED_LOG_LEVEL}" CACHE STRING
-    "Lowest log level compiled in: 0=Trace 1=Debug 2=Info 3=Warning 4=Error 5=Fatal")
+if(NOT LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
+    set(LUDUS_COMPILED_LOG_LEVEL "${LUDUS_COMPILED_LOG_LEVEL}" CACHE STRING
+        "Lowest log level compiled in: 0=Trace 1=Debug 2=Info 3=Warning 4=Error 5=Fatal")
+endif()
 
 target_compile_definitions(
     ludus_foundation_logging

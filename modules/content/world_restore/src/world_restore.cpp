@@ -56,6 +56,7 @@ struct SourceObjectLess final
 /// Record a failure and return its status. `subject`, when present, names the
 /// offending input; it is appended to `what` within the bounded message.
 [[nodiscard]] RestoreStatus
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): diagnostic prefix and optional subject are distinct text roles.
 Fail(RestoreError& outError, RestoreStatus status, std::string_view what, std::string_view subject = {}) noexcept
 {
     outError.Status = status;
@@ -156,6 +157,7 @@ const char* GetRestoreStatusName(RestoreStatus status) noexcept
     return "Unknown";
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): API inputs are distinct World and schema JSON documents.
 RestoreStatus TryRestoreWorld(std::string_view recordJson,
                               std::string_view schemaJson,
                               const InstanceId& instance,

@@ -27,10 +27,11 @@ constexpr float64 COVERED_FRACTION_TOLERANCE = 1e-9;
 }
 } // namespace
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): distinct receiver point and surface normal.
-float64 ComputeLambertProjectedSolidAngle(const OcclusionPolygon& polygon,
-                                          math::Vector3d receiverWorld,
-                                          math::Vector3d normalWorld) noexcept
+float64 ComputeLambertProjectedSolidAngle(
+    const OcclusionPolygon& polygon,
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): distinct receiver point and surface normal.
+    math::Vector3d receiverWorld,
+    math::Vector3d normalWorld) noexcept
 {
     // Each edge contributes its angle seen from the receiver times the normal cosine of the plane it spans with the
     // receiver; the sum's sign follows the winding.

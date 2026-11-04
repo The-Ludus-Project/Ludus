@@ -20,12 +20,11 @@ namespace
 {
 namespace format = content::scene_format;
 using foundation::float32;
-using foundation::int32;
 using foundation::uint32;
 using foundation::usize;
 
 /// Significant digits shown for a material scalar; enough to round-trip typical source values.
-constexpr int32 DISPLAYED_DIGITS = 6;
+constexpr foundation::int32 DISPLAYED_DIGITS = 6;
 
 QString FormatScalar(float32 value)
 {
@@ -91,7 +90,13 @@ QImage MakeThumbnail(const resources::SceneDefinition& definition, uint32 textur
 /// A colour row: its text, and the display colour that stands for it.
 MaterialPropertyRow MakeColourRow(const QString& label, const foundation::math::Vector3& linear)
 {
-    return {label, FormatRgb(linear), ConvertLinearToDisplayColour(linear.X, linear.Y, linear.Z), {}};
+    return {label,
+            FormatRgb(linear),
+            false,
+            ConvertLinearToDisplayColour(static_cast<foundation::float64>(linear.X),
+                                         static_cast<foundation::float64>(linear.Y),
+                                         static_cast<foundation::float64>(linear.Z)),
+            {}};
 }
 
 /// "Texture 3 · 1024 × 512 · sRGB", or "None" for format::NO_TEXTURE.
@@ -119,29 +124,52 @@ QString GetFallbackMaterialName(int materialIndex)
     return QStringLiteral("Material %1").arg(materialIndex);
 }
 
+QJsonObject CoatingField::MakeNumberProperty() const
+{
+    return {{QStringLiteral("type"), QStringLiteral("number")},
+            {QStringLiteral("label"), QString::fromLatin1(Label)},
+            {QStringLiteral("min"), static_cast<foundation::float64>(Minimum)},
+            {QStringLiteral("max"), static_cast<foundation::float64>(Maximum)}};
+}
+
+const resources::SceneMaterial* GetSceneObjectMaterialOrNull(const RenderScene& scene, const QString& objectId)
+{
+    if (scene.Definition == nullptr)
+    {
+        return nullptr;
+    }
+    const resources::SceneDefinition& definition = *scene.Definition;
+    for (const PreviewObject& object : scene.Objects)
+    {
+        if (object.Id == objectId)
+        {
+            return object.Surface >= 0 && static_cast<usize>(object.Surface) < definition.Materials.GetSize()
+                       ? &definition.Materials[static_cast<usize>(object.Surface)]
+                       : nullptr;
+        }
+    }
+    return nullptr;
+}
+
 bool DescribeSceneObjectMaterial(const RenderScene& scene,
                                  const QString& objectId,
                                  QVector<MaterialPropertyRow>& outRows)
 {
-    if (scene.Definition == nullptr)
-    {
-        return false;
-    }
-    const resources::SceneDefinition& definition = *scene.Definition;
-    int32 surface = -1;
+    foundation::int32 surface = 0;
     for (const PreviewObject& object : scene.Objects)
     {
         if (object.Id == objectId)
         {
             surface = object.Surface;
-            break;
         }
     }
-    if (surface < 0 || static_cast<usize>(surface) >= definition.Materials.GetSize())
+    const resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(scene, objectId);
+    if (materialOrNull == nullptr)
     {
         return false;
     }
-    const resources::SceneMaterial& material = definition.Materials[static_cast<usize>(surface)];
+    const resources::SceneDefinition& definition = *scene.Definition;
+    const resources::SceneMaterial& material = *materialOrNull;
     QVector<MaterialPropertyRow> rows;
     const std::string_view name = material.Name.View();
     rows.append({QStringLiteral("Name"),
@@ -157,6 +185,7 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
     rows.append(MakeColourRow(QStringLiteral("Reflectance (linear RGB)"), reflectance));
     rows.append({QStringLiteral("Base color map"),
                  DescribeTexture(definition, material.Texture),
+                 false,
                  {},
                  MakeThumbnail(definition, material.Texture)});
     if (material.Texture != format::NO_TEXTURE)
@@ -176,10 +205,11 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
     }
     else if (scattering.Model == format::MaterialModel::CoatedDiffuse)
     {
-        rows.append({QStringLiteral("Coating IOR"), FormatScalar(scattering.CoatingEta)});
-        rows.append({QStringLiteral("Coating thickness"), FormatScalar(scattering.CoatingThickness)});
+        rows.append({QStringLiteral("Coating IOR"), FormatScalar(scattering.CoatingEta), true});
+        rows.append({QStringLiteral("Coating thickness"), FormatScalar(scattering.CoatingThickness), true});
         rows.append({QStringLiteral("Coating GGX α (U, V)"),
-                     QStringLiteral("%1, %2").arg(FormatScalar(scattering.AlphaU), FormatScalar(scattering.AlphaV))});
+                     QStringLiteral("%1, %2").arg(FormatScalar(scattering.AlphaU), FormatScalar(scattering.AlphaV)),
+                     true});
     }
     else if (scattering.Model == format::MaterialModel::Dielectric ||
              scattering.Model == format::MaterialModel::ThinDielectric)
@@ -188,6 +218,7 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
     }
     rows.append({QStringLiteral("Surface map"),
                  DescribeTexture(definition, material.SurfaceTexture),
+                 false,
                  {},
                  MakeThumbnail(definition, material.SurfaceTexture)});
     if (material.SurfaceTexture != format::NO_TEXTURE)
@@ -199,14 +230,15 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
                      ? QStringLiteral("Masked below %1").arg(FormatScalar(material.AlphaCutoff))
                      : QStringLiteral("Opaque")});
     const bool isEmissive = material.Emission.X > 0 || material.Emission.Y > 0 || material.Emission.Z > 0;
-    MaterialPropertyRow emission{QStringLiteral("Emission (linear RGB)"), FormatRgb(material.Emission), {}, {}};
+    MaterialPropertyRow emission{QStringLiteral("Emission (linear RGB)"), FormatRgb(material.Emission), false, {}, {}};
     if (isEmissive == true)
     {
         // Emission is in nits and can exceed one; the swatch shows its hue at full brightness.
         const float32 brightest = std::max({material.Emission.X, material.Emission.Y, material.Emission.Z});
-        emission.Swatch = ConvertLinearToDisplayColour(material.Emission.X / brightest,
-                                                       material.Emission.Y / brightest,
-                                                       material.Emission.Z / brightest);
+        emission.Swatch =
+            ConvertLinearToDisplayColour(static_cast<foundation::float64>(material.Emission.X / brightest),
+                                         static_cast<foundation::float64>(material.Emission.Y / brightest),
+                                         static_cast<foundation::float64>(material.Emission.Z / brightest));
     }
     rows.append(emission);
     if (isEmissive == true)
@@ -219,6 +251,7 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
         }
         rows.append({QStringLiteral("Emission map"),
                      DescribeTexture(definition, material.EmissionTexture),
+                     false,
                      {},
                      MakeThumbnail(definition, material.EmissionTexture)});
     }

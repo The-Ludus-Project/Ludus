@@ -180,14 +180,14 @@ QWidget* MakeVectorRow(const QVector<VectorComponent>& components,
     layout->setSpacing(design::SPACING_EXTRA_SMALL);
     for (const VectorComponent& component : components)
     {
-        ScrubLabel* label = new ScrubLabel(component.Name, *component.Field, component.Settings, row);
+        ScrubLabel* label = new ScrubLabel(component.Name, *component.FieldOrNull, component.Settings, row);
         QObject::connect(label, &ScrubLabel::Scrubbed, row, onScrubbed);
-        component.Field->setParent(row);
-        component.Field->setMinimumWidth(FIELD_MINIMUM_WIDTH);
-        component.Field->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        component.Field->setProperty("density", QStringLiteral("compact"));
+        component.FieldOrNull->setParent(row);
+        component.FieldOrNull->setMinimumWidth(FIELD_MINIMUM_WIDTH);
+        component.FieldOrNull->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        component.FieldOrNull->setProperty("density", QStringLiteral("compact"));
         layout->addWidget(label);
-        layout->addWidget(component.Field, 1);
+        layout->addWidget(component.FieldOrNull, 1);
     }
     if (unit.isEmpty() == false)
     {
@@ -213,9 +213,9 @@ void ConvertDisplayToLinearColour(const QColor& display, float64& outRed, float6
     const QColorTransform transform =
         QColorSpace(QColorSpace::SRgb).transformationToColorSpace(QColorSpace(QColorSpace::SRgbLinear));
     const QColor linear = transform.map(display);
-    outRed = linear.redF();
-    outGreen = linear.greenF();
-    outBlue = linear.blueF();
+    outRed = static_cast<float64>(linear.redF());
+    outGreen = static_cast<float64>(linear.greenF());
+    outBlue = static_cast<float64>(linear.blueF());
 }
 
 ColourSwatch::ColourSwatch(QLineEdit& inoutRed, QLineEdit& inoutGreen, QLineEdit& inoutBlue, QWidget* parentOrNull)
