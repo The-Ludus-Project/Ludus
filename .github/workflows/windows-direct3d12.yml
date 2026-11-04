@@ -19,6 +19,8 @@ on:
     paths:
       - '.github/workflows/windows-direct3d12.yml'
       - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'config/cmake/windows-msvc*'
       - 'cmake/EngineBuildFlavor.cmake'
       - 'cmake/EngineCompilerWarnings.cmake'
       - 'cmake/EngineOptions.cmake'
@@ -120,8 +122,7 @@ jobs:
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           conan export third_party/catch2
           if ($LASTEXITCODE -ne 0) { throw 'Catch2 recipe export failed' }
-          $dependencyConfigurations = @('Debug', 'RelWithDebInfo')
-          if ($env:LUDUS_WINDOWS_GENERATOR -eq 'MSBuild') { $dependencyConfigurations += 'Release' }
+          $dependencyConfigurations = @('Debug', 'RelWithDebInfo', 'Release')
           foreach ($configuration in $dependencyConfigurations) {
             conan install --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host "build_type=$configuration" --settings:build build_type=Release --build=missing -g CMakeDeps --output-folder out/windows-msvc-probe/dependencies
             if ($LASTEXITCODE -ne 0) { throw "Catch2 $configuration setup failed" }
@@ -162,33 +163,29 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Primitive probe Debug tests failed' }
           }
 
-          # CMakeDeps supplies the native Catch2 targets. The selected developer
-          # environment and generator supply the toolchain for the source build.
-          $toolchain = "$PWD/out/windows-msvc-probe/host.cmake"
-          '# Native toolchain selected by the developer environment and generator.' | Set-Content $toolchain
-          $engineOptions = @("-DCMAKE_TOOLCHAIN_FILE=$toolchain", "-DCMAKE_PREFIX_PATH=$dependencies", '-DLUDUS_BUILD_TESTS=ON', '-DLUDUS_WARNINGS_AS_ERRORS=ON', '-DLUDUS_ENABLE_CCACHE=OFF', "-DLUDUS_SLANG_COMPILER=$PWD/out/shader-tools/slang/bin/slangc.exe", "-DLUDUS_DXC_DIRECTORY=$PWD/out/shader-tools/dxc")
+          # CMakeDeps supplies the Catch2 targets for all solution configurations.
+          $env:LUDUS_WINDOWS_DEPENDENCIES = $dependencies
           $builds = [ordered]@{}
           if ($visualStudio) {
-            $solution = 'out/windows-msvc-probe/engine'
-            cmake -S . -B $solution @generator @engineOptions
+            cmake --preset windows-msvc-visual-studio
             if ($LASTEXITCODE -ne 0) { throw 'Engine solution configure failed' }
             foreach ($configuration in @('Debug', 'Development', 'Profile', 'Release')) {
-              $builds[$configuration] = $solution
+              $builds[$configuration] = 'windows-msvc-visual-studio'
             }
           } else {
-            foreach ($configuration in @('Debug', 'RelWithDebInfo')) {
-              $flavor = if ($configuration -eq 'Debug') { 'Debug' } else { 'Development' }
-              $build = "out/windows-msvc-probe/engine-$flavor"
-              cmake -S . -B $build @generator @engineOptions "-DCMAKE_BUILD_TYPE=$configuration" "-DLUDUS_BUILD_FLAVOR=$flavor"
+            foreach ($flavor in @('Debug', 'Development', 'Profile', 'Release')) {
+              $preset = "windows-msvc-$($flavor.ToLowerInvariant())"
+              cmake --preset $preset
               if ($LASTEXITCODE -ne 0) { throw "Engine $flavor configure failed" }
-              $builds[$configuration] = $build
+              $builds[$flavor] = $preset
             }
           }
           $targets = @('ludus_foundation_base_tests', 'ludus_platform_win32_tests', 'ludus_rhi_d3d12_tests', 'ludus_rhi_lifecycle_tests')
           if ($visualStudio) { $targets += 'ludus_windows_sdk' }
           foreach ($configuration in $builds.Keys) {
-            $build = $builds[$configuration]
-            cmake --build $build --config $configuration --target @targets @buildOptions
+            $preset = $builds[$configuration]
+            if ($visualStudio) { $preset += "-$($configuration.ToLowerInvariant())" }
+            cmake --build --preset $preset --target @targets @buildOptions
             if ($LASTEXITCODE -ne 0) { throw "Engine $configuration build failed" }
           }
 
@@ -196,15 +193,17 @@ jobs:
           # collision cannot silently substitute the most recently built binary.
           $suite = '^ludus_(foundation_base|platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
           foreach ($configuration in $builds.Keys) {
-            $build = $builds[$configuration]
-            ctest --test-dir $build -C $configuration --output-on-failure --no-tests=error --tests-regex $suite
+            $preset = $builds[$configuration]
+            $build = "out/build/$preset"
+            if ($visualStudio) { $preset += "-$($configuration.ToLowerInvariant())" }
+            ctest --preset $preset --tests-regex $suite
             $testStatus = $LASTEXITCODE
             $lastTest = "$build/Testing/Temporary/LastTest.log"
             if (Test-Path $lastTest) {
               Copy-Item $lastTest "$build/Testing/Temporary/$configuration.log"
             }
             if ($testStatus -ne 0) { throw "Engine $configuration tests failed" }
-            $tests = ctest --test-dir $build -C $configuration --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
+            $tests = ctest --preset $preset --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
             $d3d12 = ($tests.tests | Where-Object name -eq ludus_rhi_d3d12_tests).command[0]
             if ($visualStudio -and (Split-Path -Leaf (Split-Path -Parent $d3d12)) -ne $configuration) {
               throw "CTest selected the wrong D3D12 executable for $configuration ($d3d12)"
@@ -218,7 +217,7 @@ jobs:
         if: matrix.generator == 'MSBuild'
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
-          $solution = "$PWD/out/windows-msvc-probe/engine"
+          $solution = "$PWD/out/build/windows-msvc-visual-studio"
           $workspace = "$PWD/out/windows-msvc-probe"
           $source = "$workspace/external source"
           $relocated = "$workspace/relocated SDKs"
@@ -247,12 +246,22 @@ jobs:
             throw "The install did not reject a mixed SDK prefix: $collision"
           }
           exit 0
+      - name: Create and repair a Ninja project against all installed SDKs
+        if: matrix.generator == 'MSBuild'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/python
+          PYTHONUTF8: "1"
+        run: |
+          & out/host-tools/venv/Scripts/python.exe tests/sdk_consumer/windows/verify_project_setup.py "$PWD/out/windows-msvc-probe"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows MSVC project setup verification failed' }
       - name: Preserve candidate identities and test logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-msvc-${{ matrix.generator }}
           path: |
+            out/build/windows-msvc-*/CMakeCache.txt
+            out/build/windows-msvc-*/Testing/Temporary/
             out/windows-msvc-probe/**/compiler-identity.txt
             out/windows-msvc-probe/**/CMakeCache.txt
             out/windows-msvc-probe/**/Testing/Temporary/

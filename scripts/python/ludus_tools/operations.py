@@ -35,7 +35,7 @@ from .resolve import Resolution, assert_stamp_unchanged, needs_reconfigure, reso
 from .sdkstore import SdkStore
 
 # Map a descriptor preset to the native flavor and CMake build type.
-from .native import PRESET_FLAVOR, target_for_profile, validate_target
+from .native import PRESET_FLAVOR, WINDOWS_CONFIGURATIONS, target_for_profile, validate_target
 
 DESCRIPTOR_NAME = "ludus.project.json"
 LOCK_NAME = "ludus.lock.json"
@@ -197,7 +197,7 @@ def _target_triple_for_lock(lock, flavor, target: Optional[str] = None) -> Optio
 
 
 def _build_type(flavor: str) -> str:
-    return {"Debug": "Debug", "Development": "RelWithDebInfo", "Release": "Release"}[flavor]
+    return WINDOWS_CONFIGURATIONS[flavor]
 
 
 # --- CMake drivers (exact argv, no shell) ------------------------------------

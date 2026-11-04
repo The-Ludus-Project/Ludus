@@ -422,8 +422,38 @@ tools are used at build time only, never installed with an SDK.
 
 ## Build and test
 
-This section describes the existing Clang D1/D2 closure. D0 adds the MSVC
-commands and presets only after they work; these examples do not qualify MSVC.
+### MSVC source presets
+
+In an x64 Visual Studio 2022 developer shell with MSVC 14.44 and Windows SDK
+10.0.26100.0, put the pinned CMake and Ninja on `PATH`. Set
+`LUDUS_WINDOWS_DEPENDENCIES` to the directory containing the Conan CMakeDeps
+outputs for Catch2. Use the Windows MSVC Conan profile with Debug,
+RelWithDebInfo, and Release dependencies. Bootstrap Slang and DXC with
+`python scripts/shader-probe bootstrap`.
+
+The `windows-msvc-debug`, `windows-msvc-development`,
+`windows-msvc-profile`, and `windows-msvc-release` presets each configure a
+Ninja tree and have matching build and test presets.
+
+```powershell
+cmake --preset windows-msvc-development
+cmake --build --preset windows-msvc-development
+ctest --preset windows-msvc-development
+
+cmake --preset windows-msvc-visual-studio
+cmake --build --preset windows-msvc-visual-studio-profile
+ctest --preset windows-msvc-visual-studio-profile
+cmake --install out/build/windows-msvc-visual-studio --config Profile --prefix C:/SDKs/Ludus/Profile
+```
+
+The Visual Studio configure preset produces one solution with all four
+configurations. Its build and test preset suffixes are `debug`, `development`,
+`profile`, and `release`. For external projects, use the
+[Windows MSVC project setup and repair commands](../development/project-sdk-workflow.md#windows-msvc-projects).
+
+### Backend tests
+
+The following tests cover the existing Win32 and D3D12 closure.
 
 The Windows configure builds the threading closure plus Identity, Math, Logging,
 Input, Platform and the RHI (top-level `CMakeLists.txt`). The

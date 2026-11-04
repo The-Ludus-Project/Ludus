@@ -143,6 +143,7 @@ _STAMP_FILES = (
     "share/Ludus/LudusSdkManifest.json",
     "lib/cmake/Ludus/LudusConfig.cmake",
     "lib/cmake/Ludus/LudusTargets.cmake",
+    "lib/cmake/Ludus/LudusWindowsSdk.cmake",
 )
 
 
@@ -163,7 +164,9 @@ def compute_stamp(prefix: Path) -> str:
             h.update(p.read_bytes())
     lib_dir = prefix / "lib"
     if lib_dir.is_dir():
-        for lib in sorted(lib_dir.glob("*.a")):
+        windows_exports = (prefix / "lib/cmake/Ludus").glob("LudusTargets-*.cmake")
+        inputs = [*lib_dir.glob("*.a"), *lib_dir.glob("*.lib"), *windows_exports]
+        for lib in sorted(inputs):
             # Hash the library *content*, not just size+mtime: an in-place engine
             # rebuild that lands a same-size .a within the same clock second (or
             # with mtime restored by a packaging step) must still change the
