@@ -21,8 +21,9 @@ Requirements: CE21, CE25. Prerequisite: none.
 - [x] Add the keypress-to-paint latency probe through the existing editor
   profiling scopes, and the `[.benchmark]` corpus (real shaders, 100,000-line
   C++, 8 MiB JSON, a 1 MiB single line, typing during diagnostics, 100 cursors).
-  Record baseline numbers for the current editor. *(Probe and corpus authored;
-  baseline numbers deferred to a machine with the toolchain, see the gate note.)*
+  Record baseline numbers for the current editor. *(Probe and corpus authored in
+  the sandbox; baseline recorded on an Apple M5 on 2026-11-03, see
+  [M0 baseline](#m0-baseline-2026-11-03).)*
 - [x] Write the tree-sitter dependency ADR under `docs/decisions/`: library and
   grammar revisions, licenses, recipes, the Wasm build, warning handling and
   update policy. Verify each grammar's license and query set at the pinned
@@ -81,6 +82,63 @@ are **not yet recorded** and remain outstanding for M0's performance intent
 (CE21), to be captured on a toolchain-capable host. Behavior is unchanged: the
 registry reproduces the existing `.slang`-to-Slang mapping (with the documented
 `.slangh` micro-deviation), and the probe is inert unless explicitly started.
+
+### M0 baseline (2026-11-03)
+
+Measured against `origin/develop` `a7239cb9` (before any M1 change) on branch
+`codex/code-editor-m0-baseline`. This was also the first build of the M0 code.
+Host: Apple M5 (10 cores, 16 GiB), macOS 26.6, Homebrew Clang 23.1.3,
+Homebrew Qt 6.12.0, preset `macos-clang-development` (RelWithDebInfo),
+`QT_QPA_PLATFORM=offscreen`. Concurrent agent builds kept the load average at
+3.4-4.7, so this is not a quiet reference machine. The M9 qualification still
+uses the native probe on quiet reference machines.
+
+Commands:
+
+```bash
+./init.sh --cli --with-tests --with-editor --preset-only --skip-checks --skip-sanitizers --skip-sdk macos-clang-development
+cmake --build --preset macos-clang-development --target ludus_code_editor_tests
+QT_QPA_PLATFORM=offscreen out/build/macos-clang-development/apps/editor/ludus_code_editor_tests
+QT_QPA_PLATFORM=offscreen out/build/macos-clang-development/apps/editor/ludus_code_editor_tests "[.benchmark][code-editor]" -r compact
+```
+
+Results:
+
+- The M0 code compiled warning-clean.
+- `ludus_code_editor_tests`: 57 test cases passed, 2 skipped. The skipped cases
+  need `LUDUS_TEST_SLANGD`, which was not set.
+- The `[.benchmark][code-editor]` corpus ran three times.
+
+Each benchmark sample is one `x` key event sent through `keyPressEvent`, then
+an undo, with 100 samples per workload. The p95 is nearest-rank. The table gives
+the range of each figure across the three runs, in microseconds unless stated.
+"Handling" covers key press and release, the document change, relayout and the
+offscreen paint. "Key-to-paint" is the view's `CodeLatencyProbe`, measured from
+the key's arrival to the paint that shows the edit.
+
+| Workload | Handling p50 | Handling p95 | Key-to-paint p50 | Key-to-paint p95 | Budget check |
+| --- | --- | --- | --- | --- | --- |
+| Slang shader, 1,001 lines, lexical highlighter | 185-249 | 203-299 | 52-70 | 62-92 | Within 4 ms |
+| 100,000-line C++ as plain text (6.7 M chars) | 1,302-1,554 | 1,359-1,671 | 807-1,001 | 838-1,077 | Within 4 ms |
+| 8 MiB JSON as plain text (134,190 lines) | 133-154 | 148-175 | 117-135 | 129-153 | Within 4 ms |
+| Single 1 MiB line | 917-934 ms | 959-1,111 ms | 657-673 ms | 693-794 ms | Fails by about 250x |
+| Slang, 2,001 lines, 200 build markers | 1,428-1,597 | 1,484-1,977 | 1,015-1,129 | 1,055-1,366 | Within 4 ms |
+| 100 inserts in one edit block (pre-M2) | 793-901 | 855-2,475 | n/a | n/a | Within the 8 ms 100-cursor budget |
+
+Observations for later milestones:
+
+- The single long line is the known Qt whole-block layout cost. CE22's
+  20,000-unit long-line threshold (M1 file host, M3 formats) has to keep such
+  files out of this path. This measurement is the evidence the escape hatch in
+  the architecture's alternatives would be judged against.
+- 200 static build markers cost about 7x the plain shader per keystroke. Live
+  analysis diagnostics (M4) add more markers, so M4 should re-measure this case.
+- The 100,000-line plain-text file costs about 10x the 8 MiB JSON file, which
+  has more lines and more characters. Neither has a highlighter, so the cause is
+  unexplained. M3 should profile it before attributing any change to
+  tree-sitter.
+- The 100-position case showed one run with a 6 ms maximum under load. This is
+  the pre-M2 Qt path, not the edit-set path.
 
 ## M1 - Every text file is a document
 
