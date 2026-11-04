@@ -154,6 +154,8 @@ protected:
     void showEvent(QShowEvent* event) override;
 
 private:
+    void startService();
+    void stopService();
     void service();
     void refreshImage();
     void updateComparison();
