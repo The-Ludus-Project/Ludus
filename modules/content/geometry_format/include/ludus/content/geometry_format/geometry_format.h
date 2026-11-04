@@ -66,6 +66,7 @@ inline constexpr uint32 COOKER_VERSION = 1;
 inline constexpr usize DIGEST_BYTES = 32;
 
 /// @brief Which record sections a blob carries; one blob holds exactly one kind.
+// NOLINTNEXTLINE(performance-enum-size): LUGEO wire tags have a fixed uint32 representation.
 enum class GeometryKindTag : uint32
 {
     Path = 0,    ///< Path span and joint sections.
@@ -74,6 +75,7 @@ enum class GeometryKindTag : uint32
 };
 
 /// @brief Polynomial kind of a cooked path span; maps to geometry::SpanKind.
+// NOLINTNEXTLINE(performance-enum-size): LUGEO wire tags have a fixed uint32 representation.
 enum class SpanKindTag : uint32
 {
     Line = 0,  ///< Linear segment; only controls 0 and 3 are meaningful.
@@ -81,6 +83,7 @@ enum class SpanKindTag : uint32
 };
 
 /// @brief Interpolation of a cooked track span; maps to geometry::TrackInterpolation.
+// NOLINTNEXTLINE(performance-enum-size): LUGEO wire tags have a fixed uint32 representation.
 enum class TrackInterpolationTag : uint32
 {
     Step = 0,    ///< Hold the left key value until the next key.
@@ -89,6 +92,7 @@ enum class TrackInterpolationTag : uint32
 };
 
 /// @brief Patch boundary side; maps to geometry::PatchSide.
+// NOLINTNEXTLINE(performance-enum-size): LUGEO wire tags have a fixed uint32 representation.
 enum class PatchSideTag : uint32
 {
     U0 = 0, ///< u = 0, runs along v.
@@ -98,6 +102,7 @@ enum class PatchSideTag : uint32
 };
 
 /// @brief Precision profile the asset was cooked for; maps to geometry::PrecisionProfile.
+// NOLINTNEXTLINE(performance-enum-size): LUGEO wire tags have a fixed uint32 representation.
 enum class PrecisionProfileTag : uint32
 {
     Strict = 0, ///< Only Exact or Certified bounds.
@@ -105,12 +110,14 @@ enum class PrecisionProfileTag : uint32
 };
 
 /// @brief Header flag bits in the Flags field. Other bits must be zero.
+// NOLINTNEXTLINE(performance-enum-size): LUGEO wire tags have a fixed uint32 representation.
 enum class GeometryFlag : uint32
 {
     IsClosed = 1U << 0, ///< The path or surface boundary is closed; enables Wrap.
 };
 
 /// @brief Stable section identifier recorded in the directory and required per kind.
+// NOLINTNEXTLINE(performance-enum-size): LUGEO wire tags have a fixed uint32 representation.
 enum class SectionId : uint32
 {
     PathSpans = 0,        ///< PathSpanRecord array.

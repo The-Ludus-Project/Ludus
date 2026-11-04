@@ -22,6 +22,8 @@ namespace ludus::geometry::content::internal
 [[nodiscard]] inline ludus::content::Status Fail(GeometryDiagnosticReport& outReport,
                                                  ludus::content::Status transport,
                                                  geom::GeometryStatus code,
+                                                 // Property paths and repair suggestions have distinct diagnostic
+                                                 // roles. NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
                                                  const char* property,
                                                  const char* repair,
                                                  usize sourceElement = 0) noexcept

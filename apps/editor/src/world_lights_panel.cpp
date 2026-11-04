@@ -20,6 +20,7 @@ namespace ludus::editor
 {
 namespace
 {
+using foundation::float64;
 using foundation::int32;
 using foundation::uint64;
 using foundation::usize;
@@ -43,9 +44,9 @@ bool IsSameLight(const WorldLightRow& a, const WorldLightRow& b) noexcept
 QString FormatRgb(const foundation::math::Vector3& rgb)
 {
     return QStringLiteral("%1, %2, %3")
-        .arg(rgb.X, 0, 'g', DISPLAY_SIGNIFICANT_DIGITS)
-        .arg(rgb.Y, 0, 'g', DISPLAY_SIGNIFICANT_DIGITS)
-        .arg(rgb.Z, 0, 'g', DISPLAY_SIGNIFICANT_DIGITS);
+        .arg(static_cast<float64>(rgb.X), 0, 'g', DISPLAY_SIGNIFICANT_DIGITS)
+        .arg(static_cast<float64>(rgb.Y), 0, 'g', DISPLAY_SIGNIFICANT_DIGITS)
+        .arg(static_cast<float64>(rgb.Z), 0, 'g', DISPLAY_SIGNIFICANT_DIGITS);
 }
 QString GetLightKindLabel(resources::SceneLightKind kind)
 {
@@ -164,12 +165,13 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
                 row.Key = key;
                 row.IsEnabled = switches.IsDisabled(key) == false;
                 row.Label = GetEmitterLabel(names.value(0), objectCounts.size() + 1);
-                row.Detail = material.HasEmissionPower == true
-                                 ? QStringLiteral("Emitter %1 · %2 lm")
-                                       .arg(FormatLightSourceId(key.SourceId))
-                                       .arg(material.EmissionPower, 0, 'g', DISPLAY_SIGNIFICANT_DIGITS)
-                                 : QStringLiteral("Emitter %1 · radiance %2 nits")
-                                       .arg(FormatLightSourceId(key.SourceId), FormatRgb(material.Emission));
+                row.Detail =
+                    material.HasEmissionPower == true
+                        ? QStringLiteral("Emitter %1 · %2 lm")
+                              .arg(FormatLightSourceId(key.SourceId))
+                              .arg(static_cast<float64>(material.EmissionPower), 0, 'g', DISPLAY_SIGNIFICANT_DIGITS)
+                        : QStringLiteral("Emitter %1 · radiance %2 nits")
+                              .arg(FormatLightSourceId(key.SourceId), FormatRgb(material.Emission));
                 rows.append(row);
                 objectCounts.append(0);
                 index = rows.size() - 1;
