@@ -95,6 +95,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                QStringLiteral("salesin-jarosz-lines"),
                                                QStringLiteral("polygonal-light-sampling"),
                                                QStringLiteral("slice-sampling-luminaire"),
+                                               QStringLiteral("rough-pair-slice"),
                                                QStringLiteral("steinberg-plt"),
                                                QStringLiteral("steinberg-physical-optics"),
                                                QStringLiteral("wave-tracing"),
@@ -129,6 +130,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                graph.Identity == QStringLiteral("salesin-jarosz-lines") ||
                graph.Identity == QStringLiteral("polygonal-light-sampling") ||
                graph.Identity == QStringLiteral("slice-sampling-luminaire") ||
+               graph.Identity == QStringLiteral("rough-pair-slice") ||
                graph.Identity == QStringLiteral("rao-blackwell-mh") ||
                graph.Identity == QStringLiteral("wave-tracing") ||
                graph.Identity == QStringLiteral("guided-restir-fg-plus") ||
@@ -151,6 +153,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                  QStringLiteral("salesin-jarosz-lines"),
                                                  QStringLiteral("polygonal-light-sampling"),
                                                  QStringLiteral("slice-sampling-luminaire"),
+                                                 QStringLiteral("rough-pair-slice"),
                                                  QStringLiteral("steinberg-plt"),
                                                  QStringLiteral("steinberg-physical-optics"),
                                                  QStringLiteral("wave-tracing"),
@@ -177,6 +180,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                   QStringLiteral("PointLineMis"),
                                   QStringLiteral("PolygonalLightSampling"),
                                   QStringLiteral("SliceSamplingLuminaire"),
+                                  QStringLiteral("CachedNeighbors"),
                                   QStringLiteral("SteinbergPlt"),
                                   QStringLiteral("SteinbergPhysicalOptics"),
                                   QStringLiteral("WaveTracing"),

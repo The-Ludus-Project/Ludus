@@ -127,6 +127,15 @@
     },
     {
       "kind": "graph",
+      "identity": "rough-pair-slice",
+      "label": "Rough pair slice sampling — analytic fixture",
+      "category": "ray-traced",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["slice sampling", "glossy", "same-seed shift", "neighbor cache", "steinberg"],
+      "description": "Inspect the fixed analytic two-reflection fixture with fresh slicing or cached same-seed reuse. Requires Metal or Vulkan compute."
+    },
+    {
+      "kind": "graph",
       "identity": "steinberg-plt",
       "label": "Steinberg — partially coherent diffraction",
       "category": "ray-traced",
@@ -354,6 +363,16 @@
       "requirements": ["compute-ray-tracing"],
       "keywords": ["slice sampling", "steinberg", "directional luminaire", "led panel", "near field", "auxiliary map", "inverse branches", "defensive mixture", "light field", "direct lighting"],
       "description": "Three compute-BVH shading passes that share one automatically sized hit buffer and light the scene with an analytic directional LED panel: defensive slice sampling, slice sampling alone and uniform panel-area sampling, each with one shadow ray. Connect scene, view and color; outputs color plus optional sliceSampling and uniformArea images. Needs Metal or Vulkan compute."
+    },
+    {
+      "kind": "snippet",
+      "identity": "rough-pair-slice",
+      "label": "Rough pair slice sampling — analytic fixture",
+      "category": "lighting",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["slice sampling", "glossy", "same-seed shift", "neighbor cache", "steinberg"],
+      "description": "Add the analytic two-reflection fixture as a subgraph. An ordered pass caches source paths and a second pass reuses them across horizontal receiver pairs. Requires Metal or Vulkan compute.",
+      "defaultConfiguration": "CachedNeighbors"
     },
     {
       "kind": "snippet",

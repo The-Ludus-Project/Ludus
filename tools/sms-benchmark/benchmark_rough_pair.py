@@ -11,7 +11,7 @@ import time
 import numpy as np
 import wgpu
 
-from gpu import compile_entry
+from gpu import ROOT, compile_entry
 import rough_pair
 
 GROUP_SIZE = 32
@@ -21,7 +21,9 @@ WIDTH = float(np.float32(0.17))
 CURVATURE = float(np.float32(0.85))
 HALF_EXTENT = float(np.float32(0.68))
 SOURCE_OFFSET = np.array([rough_pair.SOURCE_RECEIVER_OFFSET, 0], dtype=np.float32).astype(np.float64)
-PARAMETER_LAYOUT = struct.Struct('<4I6f2I')
+PARAMETER_LAYOUT = struct.Struct('<4If3I')
+TRANSPORT_SOURCE = (ROOT / 'modules/graphics/renderer/render_graphs/rough_pair_slice'
+                    / 'main_shaders/rough_pair_transport.slang')
 MAX_SAMPLES_PER_LANE = 2**24
 ENTRIES = {
     'slice': 'RenderRoughPairSlice',
@@ -49,7 +51,7 @@ class Compute:
         self.hashes = {}
         for method, entry in ENTRIES.items():
             source = 'rough_pair_cache.slang' if method in ('cached-neighbors', 'probe-cache') else 'rough_pair.slang'
-            code = compile_entry(output / method, compiler, source, entry)
+            code = compile_entry(output / method, compiler, source, entry, includes=(TRANSPORT_SOURCE,))
             self.hashes[method] = hashlib.sha256(code.encode()).hexdigest()
             module = self.device.create_shader_module(code=code)
             self.pipelines[method] = self.device.create_compute_pipeline(
@@ -70,8 +72,7 @@ class Compute:
 
     def dispatch(self, method, bindings, count, batch, offset, seed, grid_width=0):
         self.queue.write_buffer(self.parameters, 0, PARAMETER_LAYOUT.pack(
-            count, batch, offset, seed, *LIGHT, WIDTH, CURVATURE, HALF_EXTENT, SOURCE_OFFSET[0],
-            REPLICAS_PER_RECEIVER, grid_width))
+            count, batch, offset, seed, SOURCE_OFFSET[0], REPLICAS_PER_RECEIVER, grid_width, 0))
         encoder = self.device.create_command_encoder()
         compute = encoder.begin_compute_pass(timestamp_writes=dict(query_set=self.query,
             beginning_of_pass_write_index=0, end_of_pass_write_index=1))

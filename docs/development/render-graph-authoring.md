@@ -3259,10 +3259,47 @@ Evidence:
   equal-time comparison and no comparison with tabulated or learned
   receiver-conditioned samplers, the draft's section 6.5. The exact mixture of
   tile-truncated Gaussians that section 6.4 prefers for this panel is not
-  implemented. The path-space application of section 7 is not implemented.
+  implemented. The path-space fixture from section 7 is a
+  [separate template](#preview-two-rough-reflections-with-slice-sampling).
 
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/slice_sampling_luminaire/main.lurender.json).
+
+### Preview two rough reflections with slice sampling
+
+In **Renderer → New Render Graph → Template**, choose **Rough pair slice
+sampling — analytic fixture**. The graph opens on **Default**, which reuses
+cached paths across horizontal receiver pairs. Use the configuration picker
+to select **FreshSlice** and compare with one fresh draw per receiver.
+The CLI equivalent is:
+
+```bash
+ludus render-graph new graphs/RoughPair --template rough-pair-slice --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. The template requires Metal or Vulkan compute.
+It runs on a built-in analytic fixture with a fixed light endpoint and two
+rough patches. The image is a grid of receiver integrals. World geometry,
+materials, lights and camera pose are outside this fixture. Each configuration
+accumulates up to 4096 samples before tone mapping, at one quarter of the
+drawable width and height by default.
+
+To reuse the cached configuration in another graph, find the same entry
+in **Quick Add** or **Apply Configuration Template**. Wire a **Scene**,
+**View**, and **ColorTexture** into the imported subgraph. Send its `color`
+output through **Accumulate → ToneMap** to an **Export**. The Scene and View
+ports are required by the scene compute profile. The first pass fills a
+target-sized path buffer, and the second uses its own path and one shifted
+neighbor path with balance MIS. The last column of an odd-width target
+uses fresh slicing. Edit the analytic fixture in
+`main_shaders/rough_pair_transport.slang` in the generated package.
+
+Use **Capture viewport** in the **Reference** window to read the linear estimate for either graph
+configuration. The [CPU/GPU benchmark](benchmark-scenes.md#coupled-two-rough-reflection-sampler)
+shares the transport code. Its equal-time measurements use a workgroup
+cache. The authored graph uses two ordered passes and a graph Buffer, so
+those timings do not measure this template's dispatch or buffer costs.
 
 ### Render partially coherent diffraction
 

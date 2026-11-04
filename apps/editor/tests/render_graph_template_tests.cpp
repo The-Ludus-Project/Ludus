@@ -2688,6 +2688,68 @@ TEST_CASE("Polygonal-light-sampling import prefixes its programs and raises the 
     CHECK(interface.value(QStringLiteral("polygonal_light_sampling")).toBool() == true);
 }
 
+TEST_CASE("Rough pair slicing is available as a graph and an importable cached configuration",
+          "[editor][render-graph][rough-pair-slice-template]")
+{
+    QTemporaryDir project;
+    QWidget properties;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    QWidget* inspector = workspace.TakeInspectorPanel(&properties);
+    inspector->hide();
+    properties.hide();
+    workspace.resize(TEMPLATE_WORKSPACE_WIDTH, TEMPLATE_WORKSPACE_HEIGHT);
+    workspace.show();
+    const QString identity = QStringLiteral("rough-pair-slice");
+    CreateGraphFromPicker(workspace, identity);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    CHECK(root.contains("CachedNeighbors") == true);
+    CHECK(root.contains("FreshSlice") == true);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/rough_pair_transport.slang")).isEmpty() == false);
+    RequireValidation(workspace);
+    RenderGraphQuickAdd* paletteOrNull =
+        workspace.findChild<RenderGraphQuickAdd*>(QStringLiteral("renderGraphQuickAdd"));
+    REQUIRE(paletteOrNull != nullptr);
+    paletteOrNull->SetRecent({});
+    paletteOrNull->SetPinned({});
+    QTimer::singleShot(0, &workspace, [&identity]() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        QComboBox* choiceOrNull =
+            dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphConfigurationTemplate"));
+        REQUIRE(choiceOrNull != nullptr);
+        CHECK(choiceOrNull->currentData().toString() == identity);
+        QDialogButtonBox* buttonsOrNull = dialogOrNull->findChild<QDialogButtonBox*>();
+        REQUIRE(buttonsOrNull != nullptr);
+        buttonsOrNull->button(QDialogButtonBox::Apply)->click();
+        CHECK(dialogOrNull->isVisible() == false);
+        dialogOrNull->reject();
+    });
+    REQUIRE(workspace.ShowQuickAdd(QPointF{}) == true);
+    QLineEdit* searchOrNull = paletteOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
+    REQUIRE(searchOrNull != nullptr);
+    searchOrNull->setText(QStringLiteral("rough pair slice sampling"));
+    paletteOrNull->SetKind(RenderGraphQuickAddKind::Snippets);
+    REQUIRE(paletteOrNull->GetHighlightedKey() == QStringLiteral("snippet:rough-pair-slice"));
+    REQUIRE(paletteOrNull->InsertHighlighted() == true);
+    CHECK(inspector->isVisible() == false);
+    const QString libraryPath = QStringLiteral("CachedNeighbors.lurender.json");
+    const QByteArray library = document.GetDraft(libraryPath);
+    CHECK(library.contains("RoughPairSliceStoreRoughPairSources") == true);
+    CHECK(library.contains("RoughPairSliceShadeRoughPairCached") == true);
+    CHECK(document.GetDraft(QStringLiteral("rough_pair_slice/main_shaders/rough_pair_transport.slang")).isEmpty() ==
+          false);
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == root);
+    CHECK(document.GetDraft(libraryPath).isEmpty() == true);
+    workspace.Redo();
+    CHECK(document.GetDraft(libraryPath) == library);
+    RequireValidation(workspace);
+}
+
 TEST_CASE("Slice-sampling-luminaire template is created from the editor picker with three compared outputs",
           "[editor][render-graph][slice-sampling-luminaire-template]")
 {

@@ -375,6 +375,10 @@ reduced median wall-time RMSE by about 49× relative to BDPT with MIS on this
 fixture. Generating source paths on demand gave the shift mixture slightly
 higher median RMSE than fresh slice in both budgets.
 
+The [rough pair render graph template](render-graph-authoring.md#preview-two-rough-reflections-with-slice-sampling)
+shares this sampler. The equal-time measurements below use the benchmark's
+workgroup cache, while the authored graph runs two passes through a graph Buffer.
+
 #### Reuse cached paths across neighboring receivers
 
 The optional `cached-neighbors` estimator pairs consecutive receivers
