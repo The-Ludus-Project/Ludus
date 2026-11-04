@@ -21,6 +21,9 @@ The CLI establishes the workflow before Ludus has an editor. Later, the editor
 should consume the same launch description and tool discovery rules. Avoid a
 RAD dependency in FoundationBase, automatic debugger launch on assertions,
 an embedded code editor, or a custom Debug Adapter Protocol implementation now.
+The editor decision of 2026-10-21 replaced the embedded-editor exclusion: see the
+[code editor architecture](code-editor.md), which uses existing DAP adapters as
+a client rather than implementing a general debugger.
 All eventual engine-side process APIs must follow AGENTS.md: explicit failure,
 no exceptions, private OS implementation, and no heavy public-header includes.
 
