@@ -18,6 +18,8 @@
 
 #include "internal/controller.h"
 
+#include <ludus/foundation/base/types.h>
+
 #include <QByteArray>
 #include <QMainWindow>
 #include <QMetaObject>
@@ -33,12 +35,14 @@ class QLineEdit;
 class QListWidget;
 class QMenu;
 class QPlainTextEdit;
+class QProgressBar;
 class QPushButton;
 class QAction;
 class QScrollArea;
 class QStackedWidget;
 class QTableWidget;
 class QToolBar;
+class QToolButton;
 QT_END_NAMESPACE
 
 namespace ludus::editor
@@ -193,6 +197,10 @@ private:
     [[nodiscard]] bool downloadBrowserProject();
 #endif
     void RenderStatus();
+    /// The setup notice for the current stage: what is wrong, progress while repairing, then confirmation.
+    void renderSetupNotice(bool hasSetupProblem);
+    /// Explain a project that failed to open on the Start Page.
+    void renderWelcomeProblem();
     void RenderProperties();
     void RenderRecentProjects();
 
@@ -292,10 +300,27 @@ private:
     // Set when no saved layout was restored, so the first show sizes the default docks.
     bool mShouldSizeDefaultDocks = true;
 
+    /// What the setup notice is showing. It walks Needs repair, Working, Ready as a repair runs and succeeds.
+    enum class SetupNoticeStage : foundation::uint8
+    {
+        Hidden,
+        NeedsRepair,
+        Working,
+        Ready,
+    };
     QToolBar* mSetupNoticeOrNull = nullptr;
+    QLabel* mSetupNoticeIconOrNull = nullptr;
     QLabel* mSetupNoticeTextOrNull = nullptr;
+    QLabel* mSetupNoticeDetailOrNull = nullptr;
+    QProgressBar* mSetupNoticeProgressOrNull = nullptr;
     QPushButton* mSetupNoticeRepairOrNull = nullptr;
     QPushButton* mSetupNoticeCheckOrNull = nullptr;
+    QToolButton* mSetupNoticeDismissOrNull = nullptr;
+    SetupNoticeStage mSetupNoticeStage = SetupNoticeStage::Hidden;
+    /// Hides the "ready" confirmation a few seconds after a repair succeeds.
+    QTimer* mSetupReadyTimerOrNull = nullptr;
+    /// The Start Page's explanation of a project that could not be opened.
+    StateView* mWelcomeProblemOrNull = nullptr;
     /// Setup problem whose notice the user dismissed; a different problem shows it again.
     QString mDismissedSetupProblem;
 

@@ -25,6 +25,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolBar>
+#include <QToolButton>
 
 using namespace ludus::editor;
 
@@ -293,7 +294,9 @@ print(json.dumps(dict(protocol=1, type='result', job=request['job'],
     CHECK(notice->isVisible());
     CHECK_FALSE(repair->isEnabled());
     CHECK_FALSE(check->isEnabled());
-    CHECK(message->text().contains(QStringLiteral("Save project settings")));
+    QLabel* detail = window.findChild<QLabel*>(QStringLiteral("projectSetupNoticeDetail"));
+    REQUIRE(detail != nullptr);
+    CHECK(detail->text().contains(QStringLiteral("Save project settings")));
     controller.UndoProjectEdit();
     CHECK(repair->isEnabled());
     repair->click();
@@ -337,7 +340,14 @@ print(json.dumps(dict(protocol=1, type='result', job=request['job'],
         [&controller, check]() { return controller.Caps().CanCloseImmediately && check->isEnabled() == true; },
         10000));
     CHECK(controller.State().SetupProblem.isEmpty());
-    CHECK_FALSE(notice->isVisible());
+    // A verified repair is acknowledged, in words, before the notice leaves on its own or is dismissed.
+    CHECK(notice->isVisible() == true);
+    CHECK(message->text() == QStringLiteral("Your project is ready."));
+    CHECK(repair->isVisible() == false);
+    QToolButton* dismiss = window.findChild<QToolButton*>(QStringLiteral("projectSetupNoticeDismiss"));
+    REQUIRE(dismiss != nullptr);
+    dismiss->click();
+    CHECK(notice->isVisible() == false);
 
     // A graph build can detect a new tool dependency while an older read-only setup
     // check is running. Preserve that newer problem until a fresh verification succeeds.
@@ -356,6 +366,8 @@ print(json.dumps(dict(protocol=1, type='result', job=request['job'],
         [&controller, check]() { return controller.Caps().CanCloseImmediately == true && check->isEnabled() == true; },
         SETUP_CHECK_TIMEOUT_MILLISECONDS));
     CHECK(controller.State().SetupProblem.isEmpty() == true);
+    CHECK(message->text() == QStringLiteral("Your project is ready."));
+    dismiss->click();
     CHECK(notice->isVisible() == false);
 
     REQUIRE(QFile::remove(directory.filePath(QStringLiteral("ready"))));

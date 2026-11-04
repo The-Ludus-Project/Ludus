@@ -434,6 +434,8 @@ add_library(ludus_editor_core STATIC
     src/internal/play_process.h
     src/internal/source_watch.h
     src/workspace.cpp
+    src/internal/setup_guidance.h
+    src/setup_guidance.cpp
     src/project_store.cpp
     src/recent_projects.cpp
     src/tool_operation.cpp
@@ -1089,6 +1091,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/editor_icons_tests.cpp
         tests/path_text_tests.cpp
         tests/state_view_tests.cpp
+        tests/setup_guidance_tests.cpp
         tests/activity_chip_tests.cpp
         tests/captured_image_view_tests.cpp
         tests/viewport_frame_pump_tests.cpp
