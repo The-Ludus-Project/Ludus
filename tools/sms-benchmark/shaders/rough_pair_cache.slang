@@ -12,18 +12,8 @@ struct ReceiverLane
     bool HasNeighbor;
 };
 
-struct CachedPairSample
-{
-    PairResult Fresh;
-    PairResult Shifted;
-    float FreshWeight;
-    float Radiance;
-    float HasFailed;
-};
-
 static const uint CACHE_SLOT_COUNT = 2;
 static const uint CACHE_RECORD_COUNT = CACHE_SLOT_COUNT * GROUP_SIZE;
-static const float SUPPORT_BOUNDARY_GUARD = 8 * SLOPE_TOLERANCE;
 
 groupshared float4 CachedPositionsWorld[CACHE_RECORD_COUNT];
 groupshared float4 CachedStatistics[CACHE_RECORD_COUNT];
@@ -47,40 +37,6 @@ ReceiverLane GetReceiverLane(uint invocation)
         lane.NeighborReceiver = row * Parameters.ReceiverGridWidth + neighborColumn;
     }
     return lane;
-}
-
-float2 EvaluateSeparationResidual(float4 seed, float2 warpedSeparation, float2 receiverWorld)
-{
-    float2 firstWorld = receiverWorld + UnwarpSlope(seed.xy - warpedSeparation);
-    float2 secondWorld = Parameters.LightPositionWorld + UnwarpSlope(seed.zw + warpedSeparation);
-    return UnwarpSlope(warpedSeparation) - (firstWorld - secondWorld);
-}
-
-float ComputeCachedFreshWeight(PairResult fresh, float2 targetWorld, float2 sourceWorld, out bool outHasFailed)
-{
-    outHasFailed = false;
-    if (fresh.HasFailed > 0 || fresh.Density == 0)
-    {
-        return 1;
-    }
-    float4 seed = ReplayPairSeed(fresh.FirstPositionWorld, fresh.SecondPositionWorld, targetWorld);
-    float2 extent = Parameters.HalfExtent;
-    // In the source chart, the first vertex decreases as separation grows and
-    // the second increases. The four patch edges bound warped separation.
-    float2 lower =
-        max(seed.xy - WarpSlope(extent - sourceWorld), WarpSlope(-extent - Parameters.LightPositionWorld) - seed.zw);
-    float2 upper =
-        min(seed.xy - WarpSlope(-extent - sourceWorld), WarpSlope(extent - Parameters.LightPositionWorld) - seed.zw);
-    float2 lowerResidual = EvaluateSeparationResidual(seed, lower, sourceWorld);
-    float2 upperResidual = EvaluateSeparationResidual(seed, upper, sourceWorld);
-    // Use the ordinary inverse near a boundary, where FP32 roundoff can
-    // otherwise disagree with the sampled position's patch membership.
-    if (any(abs(upper - lower) <= SUPPORT_BOUNDARY_GUARD) || any(abs(lowerResidual) <= SUPPORT_BOUNDARY_GUARD) ||
-        any(abs(upperResidual) <= SUPPORT_BOUNDARY_GUARD))
-    {
-        return ComputeFreshMisWeight(fresh, targetWorld, sourceWorld, outHasFailed);
-    }
-    return all(lower <= upper) && all(lowerResidual <= 0) && all(upperResidual >= 0) ? 0.5 : 1;
 }
 
 CachedPairSample SampleCachedPair(float4 uniforms, ReceiverLane lane, uint workgroupLane, uint slot)
@@ -110,12 +66,9 @@ CachedPairSample SampleCachedPair(float4 uniforms, ReceiverLane lane, uint workg
         source.Density = statistics.x;
         source.HasFailed = statistics.y;
         float2 sourceWorld = Receivers[lane.NeighborReceiver];
-        result.Shifted = ShiftPairSample(source, sourceWorld, lane.PositionWorld);
-        bool hasFailed;
-        result.FreshWeight = ComputeCachedFreshWeight(result.Fresh, lane.PositionWorld, sourceWorld, hasFailed);
-        result.HasFailed = max(result.HasFailed, max(result.Shifted.HasFailed, hasFailed ? 1 : 0));
+        return CombineCachedRoughPair(result.Fresh, source, lane.PositionWorld, sourceWorld);
     }
-    result.Radiance = result.Fresh.Radiance * result.FreshWeight + result.Shifted.Radiance * 0.5;
+    result.Radiance = result.Fresh.Radiance;
     return result;
 }
 

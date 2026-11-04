@@ -625,7 +625,7 @@ def build_parser() -> argparse.ArgumentParser:
                                                    "visibility-secondary-rays", "tiled-vbuffer-nee", "compute-ray-tracing",
                                                    "simple-compute-ray-tracing", "veach-guibas-mis", "line-sampling",
                                                    "ris-projected-solid-angle", "salesin-jarosz-lines",
-                                                   "polygonal-light-sampling", "slice-sampling-luminaire",
+                                                   "polygonal-light-sampling", "slice-sampling-luminaire", "rough-pair-slice",
                                                    "steinberg-plt", "steinberg-physical-optics", "wave-tracing",
                                                    "restir-gi", "rao-blackwell-mh", "guided-restir-fg-plus", "conditional-restir",
                                                    "one-more-vertex-nee", "light-transformer"),

@@ -1710,6 +1710,26 @@ class PolygonalLightSamplingTemplateTests(unittest.TestCase):
             self.assertEqual(arguments.template, 'polygonal-light-sampling')
 
 
+class RoughPairSliceTemplateTests(unittest.TestCase):
+    def test_cached_and_fresh_configurations_use_the_same_fixture_with_explicit_ordering(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = graph.new_workspace(Path(temporary) / 'RoughPair', output='offscreen', renderer_static=True,
+                                       profiles=('metal', 'wgsl'), template='rough-pair-slice')
+            for configuration, expected in [('Default', ['generate', 'reuse']), ('FreshSlice', ['fresh'])]:
+                with self.subTest(configuration=configuration):
+                    plan = graph.compile_graph(root, configuration=configuration)
+                    passes = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+                    self.assertEqual([operation['id'].rsplit('/', 1)[-1] for operation in passes], expected)
+                    self.assertFalse(ray.requires_native_queries(plan))
+                    self.assertEqual(passes[-1]['accumulation']['samples'], 4096)
+                    buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+                    self.assertEqual([resource['bytes_per_pixel'] for resource in buffers],
+                                     [32] if configuration == 'Default' else [])
+            self.assertTrue((root.parent / 'main_shaders/rough_pair_transport.slang').is_file())
+            manifest = json.loads(root.with_name('main.lushader.json').read_text())
+            build.validate_manifest(manifest)
+
+
 class SliceSamplingLuminaireTemplateTests(unittest.TestCase):
     """Steinberg's slice sampling of a directional luminaire beside slice sampling alone and uniform panel area."""
 

@@ -578,7 +578,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling slice_sampling_luminaire steinberg_plt steinberg_physical_optics wave_tracing restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee light_transformer)
+            polygonal_light_sampling slice_sampling_luminaire rough_pair_slice steinberg_plt steinberg_physical_optics wave_tracing restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee light_transformer)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         ludus_stage_render_graph_fixture("${template_source}" "${template_staged}")
@@ -590,6 +590,12 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_${template_definition}_TEMPLATE_DIRECTORY=\"${template_package_directory}\"")
     endforeach()
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_rough_pair_slice_fresh
+        MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/rough_pair_slice_template/main.lushader.json"
+        CONFIGURATION FreshSlice RUNTIME_PACKAGE)
+    cmake_path(GET rg2_rough_pair_slice_fresh_RUNTIME_PACKAGE PARENT_PATH rough_pair_fresh_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_ROUGH_PAIR_SLICE_FRESH_DIRECTORY=\"${rough_pair_fresh_directory}\")
     set(guided_fg_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/guided_fg_independent")
     ludus_stage_render_graph_fixture("${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/guided_restir_fg_plus" "${guided_fg_staged}")
     file(READ "${guided_fg_staged}/main.lushader.json" guided_fg_manifest)

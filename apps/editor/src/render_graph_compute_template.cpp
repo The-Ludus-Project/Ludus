@@ -422,6 +422,11 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
         selected.ProgramPrefix = QStringLiteral("SliceSampling");
         selected.Name = QStringLiteral("Slice sampling luminaire");
     }
+    else if (templateIdentity == QStringLiteral("rough-pair-slice"))
+    {
+        selected.ProgramPrefix = QStringLiteral("RoughPairSlice");
+        selected.Name = QStringLiteral("Rough pair slice sampling");
+    }
     else if (templateIdentity == QStringLiteral("steinberg-plt"))
     {
         selected.ProgramPrefix = QStringLiteral("SteinbergPlt");

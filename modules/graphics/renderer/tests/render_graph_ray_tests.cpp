@@ -10663,3 +10663,47 @@ TEST_CASE("Stochastic pairwise GI admits maximum draws, scattered targets and pa
     constexpr float32 MINIMUM_ROOM_RADIANCE = .05F;
     CHECK(ComputeImageMean(mean).Y > MINIMUM_ROOM_RADIANCE);
 }
+
+TEST_CASE("Rough pair graph captures fresh and cached analytic transport in linear radiance",
+          "[render-graph][gpu][rough-pair-slice][template][reference-compute]")
+{
+    const bool isCached = GENERATE(false, true);
+    const PackageLocation cached{LUDUS_RG3_ROUGH_PAIR_SLICE_TEMPLATE_DIRECTORY, "rg2_rough_pair_slice_template.lurgrt"};
+    const PackageLocation fresh{LUDUS_RG3_ROUGH_PAIR_SLICE_FRESH_DIRECTORY, "rg2_rough_pair_slice_fresh.lurgrt"};
+    const GraphGpuFixture fixture(false, false);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(isCached == true ? cached : fresh);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(plan.Passes.GetSize() == (isCached == true ? 2 : 1));
+    REQUIRE(renderer::RequiresHardwareRayTracing(plan) == false);
+
+    // A 9x9 capture exercises the unpaired last column and row-band dispatch.
+    constexpr uint32 REFERENCE_EXTENT = 36;
+    constexpr uint32 CAPTURE_EXTENT = 9;
+    constexpr uint32 SAMPLE_COUNT = 256;
+    renderer::RenderGraphCapture capture;
+    renderer::RenderGraphCaptureSettings settings;
+    settings.TargetSamples = SAMPLE_COUNT;
+    settings.TileCount = 2;
+    const rhi::RasterStatus started =
+        capture.Start(fixture.Device, fixture.Surface, plan, programs, REFERENCE_EXTENT, REFERENCE_EXTENT, settings);
+    REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+    const CornellBox room;
+    const renderer::RenderGraphCapturePhase phase = FinishCapture(capture, room, 1);
+    const renderer::RenderGraphCaptureInfo info = capture.GetInfo();
+    CAPTURE(isCached, phase, capture.GetStatus(), capture.GetProblem(), info.FailedPixels);
+    REQUIRE(phase == renderer::RenderGraphCapturePhase::Complete);
+    REQUIRE(info.Width == CAPTURE_EXTENT);
+    REQUIRE(info.Height == CAPTURE_EXTENT);
+    CHECK(info.MinimumSamples == SAMPLE_COUNT);
+    const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
+    REQUIRE(pixels.GetSize() == CAPTURE_EXTENT * CAPTURE_EXTENT);
+    // Independent 34-point per-segment Gauss–Legendre quadrature in tools/sms-benchmark/rough_pair.py.
+    // The bound allows Monte Carlo error at SAMPLE_COUNT and covers a pair and an unpaired receiver.
+    constexpr uint32 MIDDLE = CAPTURE_EXTENT / 2;
+    constexpr float32 ABSOLUTE_TOLERANCE = .002F;
+    CHECK(math::Abs(pixels[0].Mean.X - .00370181F) < ABSOLUTE_TOLERANCE);
+    CHECK(math::Abs(pixels[MIDDLE * CAPTURE_EXTENT + MIDDLE].Mean.X - .05130686F) < ABSOLUTE_TOLERANCE);
+    CHECK(math::Abs(pixels[(MIDDLE + 1) * CAPTURE_EXTENT - 1].Mean.X - .01486625F) < ABSOLUTE_TOLERANCE);
+}

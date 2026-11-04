@@ -730,7 +730,7 @@ RenderGraphDocumentStatus PrepareTemplateInstance(RenderGraphSnapshot& inoutSnap
         templateIdentity == QStringLiteral("ris-projected-solid-angle") ||
         templateIdentity == QStringLiteral("polygonal-light-sampling") ||
         templateIdentity == QStringLiteral("slice-sampling-luminaire") ||
-        templateIdentity == QStringLiteral("steinberg-plt") ||
+        templateIdentity == QStringLiteral("rough-pair-slice") || templateIdentity == QStringLiteral("steinberg-plt") ||
         templateIdentity == QStringLiteral("steinberg-physical-optics") ||
         templateIdentity == QStringLiteral("wave-tracing") ||
         templateIdentity == QStringLiteral("guided-restir-fg-plus") ||
