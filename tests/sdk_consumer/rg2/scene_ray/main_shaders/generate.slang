@@ -99,8 +99,12 @@ bool ValidateAddressedIncidentSampling(SceneContext scene, RayLaunch launch, Ray
         LightInfo source = GetLightInfo(scene, lightIndex);
         const bool isContinuous = source.Kind == SceneLightKind::Mesh || source.Kind == SceneLightKind::Environment;
         RayQueryContext sampleQueries = queries;
-        IncidentLightSample incident = SampleIncidentLight(
-            scene, lightIndex, receiver, launch, isContinuous == true ? lastValidStart : exhaustedStart, sampleQueries);
+        IncidentLightSample incident = SampleIncidentLight(scene,
+                                                           lightIndex,
+                                                           receiver,
+                                                           launch,
+                                                           isContinuous == true ? lastValidStart : exhaustedStart,
+                                                           sampleQueries);
         if (incident.HasSample == false || sampleQueries.HasFailed == true ||
             sampleQueries.NextRandomDimension != queries.NextRandomDimension)
             return false;
@@ -124,8 +128,7 @@ bool ValidateAddressedIncidentSampling(SceneContext scene, RayLaunch launch, Ray
             evaluatedPdf = EvaluateIncidentEnvironmentPdfSolidAngle(scene);
             evaluatedIndex = GetEnvironmentLightIndex(scene);
         }
-        if (incident.Measure != IncidentLightMeasure::SolidAngle || evaluatedIndex != lightIndex ||
-            evaluatedPdf <= 0 ||
+        if (incident.Measure != IncidentLightMeasure::SolidAngle || evaluatedIndex != lightIndex || evaluatedPdf <= 0 ||
             abs(evaluatedPdf - incident.ConditionalProbability) > PDF_RELATIVE_TOLERANCE * evaluatedPdf)
             return false;
 
