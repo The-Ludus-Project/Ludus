@@ -276,17 +276,18 @@ StringStatus StringTable::State::Intern(std::string_view value, NameId& outId) n
         return valid;
     }
     const uint64 hash = Hash(value);
+    const usize previousSlotCapacity = SlotCapacity;
+    usize slot = 0;
     if (SlotCapacity != 0)
     {
-        usize existing = 0;
-        const StringStatus probed = FindSlot(value, hash, existing);
+        const StringStatus probed = FindSlot(value, hash, slot);
         if (probed != StringStatus::Ok)
         {
             return probed;
         }
-        if (Slots[existing] != StringIndex::INVALID_VALUE)
+        if (Slots[slot] != StringIndex::INVALID_VALUE)
         {
-            outId = {Token, StringIndex{Slots[existing]}};
+            outId = {Token, StringIndex{Slots[slot]}};
             return StringStatus::Ok;
         }
     }
@@ -309,11 +310,15 @@ StringStatus StringTable::State::Intern(std::string_view value, NameId& outId) n
     {
         return status;
     }
-    usize slot = 0;
-    status = FindSlot(value, hash, slot);
-    if (status != StringStatus::Ok)
+    // Entry and page growth preserve slot indices; only rehashing invalidates
+    // the empty slot found during the duplicate check.
+    if (SlotCapacity != previousSlotCapacity)
     {
-        return status;
+        status = FindSlot(value, hash, slot);
+        if (status != StringStatus::Ok)
+        {
+            return status;
+        }
     }
     // All fallible work precedes this commit. Source may borrow an old page;
     // append-only storage keeps it valid across metadata growth and rehashing.
