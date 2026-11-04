@@ -32,6 +32,35 @@ entities deliberately retain their values until commit. Persist handles across
 phases and asynchronous work. Dense order changes after swap removal; use creation
 sequence or authored identity when gameplay priority depends on order.
 
-See [the architecture](../../architecture/game-world.md) and
-[the reference game](../../examples/world-demo.md) for composition,
+## Durable binding table
+
+`WorldBindingTable` (header `ludus/gameplay/world/binding_table.h`) is the
+World-boundary resolution layer for durable identity. It holds two derived
+mappings, published and removed together with object activation and destruction:
+a sorted contiguous `PersistentObjectKey -> EntityId` forward map, and a
+slot-indexed reverse mapping validated by the handle's owner and generation so a
+recycled slot never inherits a former object's UUID. The authored records and the
+registry stay authoritative; the table is rebuilt, never a second source of truth.
+
+Size the table once with `TryInitialize(registry.GetCapacity())`. Form each
+`PersistentObjectKey` from the activating instance scope's `InstanceId` and an
+authored `SourceObjectId`, then publish a batch with `TryActivate`: it validates
+every candidate against the registry and the existing bindings, reserves forward
+capacity through the allocation-failure seam, and publishes both mappings while
+advancing the binding revision once. A failed batch publishes nothing and leaves
+the active world unchanged. `DetachBinding` removes an entity's binding inside the
+registry destruction order, before the slot is released.
+
+`TryResolve(registry, key, outEntity)` performs no I/O and no implicit loading. It
+returns a `ResolveStatus` (`Resolved`, `NotResident`, `Missing`, `TypeMismatch`,
+`InvalidReference` or `Conflict`), validates the stored incarnation (owner and
+generation) on a hit, and drops a stale binding reporting `Missing` when the
+incarnation is gone — so unloading and recreating the same durable key yields a
+fresh handle while the key stays resolvable. A cached negative result is
+invalidated by comparing `GetBindingRevision()`, a monotonic counter advanced on
+every publish or removal.
+
+See [the architecture](../../architecture/game-world.md),
+[object handles and persistent UUIDs](../../architecture/object-handles-uuid.md#resolution-and-streaming)
+and [the reference game](../../examples/world-demo.md) for composition,
 transactional candidate loading and phased tick examples.
