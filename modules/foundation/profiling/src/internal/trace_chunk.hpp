@@ -22,6 +22,7 @@
 
 #include "internal/trace_event.hpp"
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 namespace ludus::foundation::profiling::internal
@@ -34,6 +35,11 @@ inline constexpr usize kEventsPerChunk = 4096;
 // A fixed-capacity block of events owned by one producer at a time, then handed
 // to the collector. Cache-line aligned so producer writes never false-share the
 // bookkeeping the collector reads.
+#if defined(LUDUS_COMPILER_MSVC)
+#    pragma warning(push)
+// The tail padding keeps adjacent chunks cache-line aligned in the trace slab.
+#    pragma warning(disable : 4324)
+#endif
 struct alignas(64) TraceChunk
 {
     // Producer identity stamped when the chunk is acquired, so the collector can
@@ -43,5 +49,8 @@ struct alignas(64) TraceChunk
     TraceChunk* PoolNextOrNull = nullptr; // free/full list linkage, guarded by the recorder mutex
     TraceEvent Events[kEventsPerChunk];
 };
+#if defined(LUDUS_COMPILER_MSVC)
+#    pragma warning(pop)
+#endif
 
 } // namespace ludus::foundation::profiling::internal
