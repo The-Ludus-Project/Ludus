@@ -10,6 +10,7 @@
 #include "internal/code_editor.h"
 #include "internal/code_editor_panel.h"
 #include "internal/code_formatter.h"
+#include "internal/code_language_registry.h"
 #include "internal/code_navigation.h"
 #include "internal/error_list.h"
 #include "internal/item_selection.h"
@@ -3899,8 +3900,9 @@ void RendererWorkspace::renderSource()
     {
         mSource->setPlainText({});
     }
-    mSource->SetLanguage(file.endsWith(QStringLiteral(".slang")) == true ? CodeLanguage::Slang
-                                                                         : CodeLanguage::PlainText);
+    const QByteArray fileUtf8 = file.toUtf8();
+    mSource->SetLanguage(CodeLanguageRegistry::Get().ClassifyFileName(
+        foundation::BorrowedView<const char>(fileUtf8.constData(), static_cast<foundation::usize>(fileUtf8.size()))));
     mSource->GetNavigation().EndSource();
     mSource->setEnabled(file.isEmpty() == false);
     mSource->SetCanFormat(CodeFormatter::IsAvailable() == true && mSourceFormatter->IsRunning() == false &&

@@ -3,6 +3,8 @@
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
+#include "internal/code_latency_probe.h"
+
 #include <QColor>
 #include <QList>
 #include <QPlainTextEdit>
@@ -145,6 +147,9 @@ public:
     /// Nestable input/command boundaries, including edits spanning many ranges.
     void BeginEditOperation(CodeEditKind kind = CodeEditKind::Command);
     void EndEditOperation();
+    /// The keypress-to-paint latency probe for this view. Idle until Start();
+    /// used by the native latency run and interactive qualification.
+    [[nodiscard]] CodeLatencyProbe& GetLatencyProbe() const noexcept;
 
 Q_SIGNALS:
     /// A font, wrapping or guide preference changed on the GUI thread.
@@ -231,5 +236,7 @@ private:
     QTextCursor mDefinitionLink;
     /// A definition click owns the press until release, so dragging never selects.
     bool mIsDefinitionClick = false;
+    /// Keypress-to-paint latency probe; idle unless explicitly started.
+    mutable CodeLatencyProbe mLatencyProbe;
 };
 } // namespace ludus::editor

@@ -122,6 +122,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Browser access to Ludus](architecture/editor-browser-strategy.md)
 - [Camera systems architecture](architecture/camera-systems.md)
 - [Code editor architecture: shaders, scripts and project text](architecture/code-editor.md)
+- [Code editor decision log](architecture/code-editor-decision-log.md)
 - [Container systems](architecture/container-systems.md)
 - [Content resources and loading](architecture/content-resources.md)
 - [CPU shallow-water field](architecture/fluid-field.md)

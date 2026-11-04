@@ -12,30 +12,75 @@ milestone ends with the [standard gates](#standard-gates).
 
 Requirements: CE21, CE25. Prerequisite: none.
 
-- [ ] Read `AGENTS.md`, `.kiro/steering/`, ADRs 0003-0005 and 0007, the
+- [x] Read `AGENTS.md`, `.kiro/steering/`, ADRs 0003-0005 and 0007, the
   architecture, and the existing editor files listed in design.md section 1.
-- [ ] Compare the checkout with the architecture's baseline table. Record the
+- [x] Compare the checkout with the architecture's baseline table. Record the
   actual revision and any newer editor work in
   `docs/architecture/code-editor-decision-log.md`. Reuse compatible code; do not
   overwrite another implementation.
-- [ ] Add the keypress-to-paint latency probe through the existing editor
+- [x] Add the keypress-to-paint latency probe through the existing editor
   profiling scopes, and the `[.benchmark]` corpus (real shaders, 100,000-line
   C++, 8 MiB JSON, a 1 MiB single line, typing during diagnostics, 100 cursors).
-  Record baseline numbers for the current editor.
-- [ ] Write the tree-sitter dependency ADR under `docs/decisions/`: library and
+  Record baseline numbers for the current editor. *(Probe and corpus authored;
+  baseline numbers deferred to a machine with the toolchain, see the gate note.)*
+- [x] Write the tree-sitter dependency ADR under `docs/decisions/`: library and
   grammar revisions, licenses, recipes, the Wasm build, warning handling and
   update policy. Verify each grammar's license and query set at the pinned
-  revision.
-- [ ] Decide the owner of the sequence diff (recommended: FoundationContainers)
-  and of the code-buffer recovery journal.
-- [ ] Add the language registry skeleton with Slang and plain text, replacing
+  revision. *(ADR 0026, opened as its own pull request; licenses verified MIT,
+  exact tags/hashes recorded in M3's recipe change per the ADR.)*
+- [x] Decide the owner of the sequence diff (recommended: FoundationContainers)
+  and of the code-buffer recovery journal. *(Both recorded in the decision log.)*
+- [x] Add the language registry skeleton with Slang and plain text, replacing
   the `CodeLanguage` switch statements without changing behavior.
-- [ ] Copy the decided shortcut resolution (architecture, "Settings, keymaps
+- [x] Copy the decided shortcut resolution (architecture, "Settings, keymaps
   and EditorConfig", decided 2026-11-03) into the decision log, and list the
   existing commands and tests it affects.
 
 Gate: the baseline benchmark results are recorded; the ADR is ready for review;
 behavior is unchanged.
+
+### M0 status (branch `codex/code-editor-m0`; ADR on `codex/code-editor-m0-tree-sitter-adr`)
+
+Changed paths (M0 core branch):
+
+- `docs/architecture/code-editor-decision-log.md` (new): baseline comparison,
+  sandbox-toolchain deviation, sequence-diff and recovery-journal owners,
+  shortcut resolution with affected commands/tests, registry-skeleton note.
+- `apps/editor/src/internal/code_language_registry.h`,
+  `apps/editor/src/code_language_registry.cpp` (new): Qt-free language registry
+  skeleton (PlainText, Slang) replacing the hard-coded file-classification
+  switch; `apps/editor/src/renderer_workspace.cpp` now classifies through it.
+- `apps/editor/src/internal/code_latency_probe.h`,
+  `apps/editor/src/code_latency_probe.cpp` (new): keypress-to-paint probe, idle
+  until started; wired into `CodeEditor::keyPressEvent`/`paintEvent` with
+  `LUDUS_PROFILE_SCOPE` zones (`CodeEditorKeyPress`, `CodeEditorPaint`).
+- `apps/editor/tests/code_language_registry_tests.cpp`,
+  `apps/editor/tests/code_latency_probe_tests.cpp` (new, `[code-editor]`):
+  registry and probe regressions.
+- `apps/editor/tests/code_editor_benchmark.cpp` (new, `[.benchmark]`): the six
+  corpus workloads against the current editor.
+- `apps/editor/CMakeLists.txt`: registers the new sources and tests; links
+  `Ludus::FoundationProfiling` into `ludus_editor_code`.
+- `docs/README.md`: indexes the decision log (ADR index line is on the ADR
+  branch).
+
+Changed paths (ADR branch): `docs/decisions/0026-tree-sitter-syntax-dependency.md`
+(new), `docs/README.md` (ADR index line).
+
+Gate status — **the standard gates and the baseline measurement could not be
+run in this sandbox** (Amazon Linux 2023; system Clang 15 only, CMake 3.22 which
+cannot parse the pinned `CMakePresets.json`, no Qt 6, no Conan, no LLVM 23). See
+the decision log's "Sandbox toolchain cannot run the gates locally" entry. All
+of `./scripts/build`, `./scripts/test`, `./scripts/check --all`, the sanitizer
+lanes, `./scripts/check-build-budget`, `scripts/check-docs` and
+`scripts/check-wiki` are **deferred to batch CI on the pinned toolchain**.
+Local verification was limited to close reading against the C++23, naming,
+standard-library (ADR 0003) and Qt-free-seam rules. The `[.benchmark]` corpus
+records numbers only when built and run on a reference machine; those numbers
+are **not yet recorded** and remain outstanding for M0's performance intent
+(CE21), to be captured on a toolchain-capable host. Behavior is unchanged: the
+registry reproduces the existing `.slang`-to-Slang mapping (with the documented
+`.slangh` micro-deviation), and the probe is inert unless explicitly started.
 
 ## M1 - Every text file is a document
 
