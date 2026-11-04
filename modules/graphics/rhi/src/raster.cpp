@@ -18,6 +18,7 @@
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/scalar.hpp>
 
 #include <new>
 

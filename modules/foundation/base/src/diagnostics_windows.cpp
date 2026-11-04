@@ -28,7 +28,7 @@ DebuggerState QueryDebugger() noexcept
 }
 void BreakForDebugger() noexcept
 {
-    __builtin_debugtrap();
+    LUDUS_DEBUG_BREAK();
 }
 [[noreturn]] void TerminateForAssertion() noexcept
 {

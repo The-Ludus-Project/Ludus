@@ -22,6 +22,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # when the codebase adopts modules.
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    include(cmake/EngineWindowsMsvc.cmake)
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
 include(CTest)

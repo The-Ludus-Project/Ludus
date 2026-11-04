@@ -1,8 +1,6 @@
 name: Windows Direct3D 12
-# Windows Direct3D 12 bring-up (docs/architecture/windows-direct3d12.md, D1 and D2):
-# the Win32 window backend, the Direct3D 12 RHI clear/present path and the DXIL
-# fullscreen draw, built with the pinned Clang against the Windows SDK, with DXIL
-# from the pinned Slang and DXC, and run on the runner's WARP adapter.
+# Win32 and Direct3D 12 conformance on WARP with Clang and MSVC.
+# Both compiler lanes build DXIL with the pinned Slang and DXC.
 on:
   workflow_call:
     inputs:
@@ -20,6 +18,11 @@ on:
   pull_request:
     paths:
       - '.github/workflows/windows-direct3d12.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/EngineBuildFlavor.cmake'
+      - 'cmake/EngineCompilerWarnings.cmake'
+      - 'cmake/EngineOptions.cmake'
+      - 'cmake/EngineWindowsMsvc.cmake'
       - 'cmake/LudusShaders.cmake'
       - 'cmake/shaders/compile_shader.py'
       - 'config/conan/profiles/windows-clang-x86_64'
@@ -67,15 +70,20 @@ env:
   LUDUS_CI_COMMIT_SHA: ${{ inputs.batch_sha || github.sha }}
 jobs:
   msvc-primitives:
-    name: D0 MSVC primitive probe
+    name: D0 MSVC / ${{ matrix.generator }}
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        generator: [Ninja, MSBuild]
     defaults:
       run:
         shell: pwsh
     env:
       CONAN_HOME: ${{ github.workspace }}/out/windows-msvc-probe/conan-home
       CONAN_NON_INTERACTIVE: "1"
+      LUDUS_WINDOWS_GENERATOR: ${{ matrix.generator }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -109,36 +117,55 @@ jobs:
             conan install --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host "build_type=$configuration" --settings:build build_type=Release --build=missing -g CMakeDeps --output-folder out/windows-msvc-probe/dependencies
             if ($LASTEXITCODE -ne 0) { throw "Catch2 $configuration setup failed" }
           }
-      - name: Build and test primitives with Ninja and MSBuild
+      - name: Bootstrap pinned shader tools
+        run: python scripts/shader-probe bootstrap
+      - name: Build and test primitives and the Win32/D3D12 closure
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
-          $source = "$PWD/tests/build_contract/primitive_portability"
           $dependencies = "$PWD/out/windows-msvc-probe/dependencies"
-          foreach ($configuration in @('Debug', 'RelWithDebInfo')) {
-            $build = "out/windows-msvc-probe/ninja-$configuration"
-            cmake -S $source -B $build -G Ninja -DCMAKE_CXX_COMPILER=cl "-DCMAKE_BUILD_TYPE=$configuration" "-DCMAKE_PREFIX_PATH=$dependencies"
-            if ($LASTEXITCODE -ne 0) { throw "Ninja $configuration configure failed" }
-            cmake --build $build --config $configuration
-            if ($LASTEXITCODE -ne 0) { throw "Ninja $configuration build failed" }
-            ctest --test-dir $build -C $configuration --output-on-failure --no-tests=error
-            if ($LASTEXITCODE -ne 0) { throw "Ninja $configuration tests failed" }
+          $visualStudio = $env:LUDUS_WINDOWS_GENERATOR -eq 'MSBuild'
+          if ($visualStudio) {
+            $generator = @('-G', 'Visual Studio 17 2022', '-A', 'x64', '-T', "v143,version=$($env:VCToolsVersion.TrimEnd('\')),host=x64", '-DCMAKE_SYSTEM_VERSION=10.0.26100.0')
+          } else {
+            $generator = @('-G', 'Ninja', '-DCMAKE_CXX_COMPILER=cl')
           }
-          $build = 'out/windows-msvc-probe/msbuild'
-          cmake -S $source -B $build -G 'Visual Studio 17 2022' -A x64 -T "v143,version=$($env:VCToolsVersion.TrimEnd('\')),host=x64" '-DCMAKE_SYSTEM_VERSION=10.0.26100.0' "-DCMAKE_PREFIX_PATH=$dependencies"
-          if ($LASTEXITCODE -ne 0) { throw 'MSBuild configure failed' }
+          $primitive = 'out/windows-msvc-probe/primitives'
+          cmake -S tests/build_contract/primitive_portability -B $primitive @generator "-DCMAKE_PREFIX_PATH=$dependencies" '-DCMAKE_BUILD_TYPE=RelWithDebInfo'
+          if ($LASTEXITCODE -ne 0) { throw 'Primitive probe configure failed' }
+          cmake --build $primitive --config RelWithDebInfo
+          if ($LASTEXITCODE -ne 0) { throw 'Primitive probe build failed' }
+          ctest --test-dir $primitive -C RelWithDebInfo --output-on-failure --no-tests=error
+          if ($LASTEXITCODE -ne 0) { throw 'Primitive probe tests failed' }
+
+          # CMakeDeps supplies the native Catch2 targets. The selected developer
+          # environment and generator supply the toolchain for the source build.
+          $toolchain = "$PWD/out/windows-msvc-probe/host.cmake"
+          '# Native toolchain selected by the developer environment and generator.' | Set-Content $toolchain
           foreach ($configuration in @('Debug', 'RelWithDebInfo')) {
-            cmake --build $build --config $configuration
-            if ($LASTEXITCODE -ne 0) { throw "MSBuild $configuration build failed" }
-            ctest --test-dir $build -C $configuration --output-on-failure --no-tests=error
-            if ($LASTEXITCODE -ne 0) { throw "MSBuild $configuration tests failed" }
+            $flavor = if ($configuration -eq 'Debug') { 'Debug' } else { 'Development' }
+            $build = "out/windows-msvc-probe/engine-$flavor"
+            cmake -S . -B $build @generator "-DCMAKE_TOOLCHAIN_FILE=$toolchain" "-DCMAKE_PREFIX_PATH=$dependencies" "-DCMAKE_BUILD_TYPE=$configuration" "-DLUDUS_BUILD_FLAVOR=$flavor" '-DLUDUS_BUILD_TESTS=ON' '-DLUDUS_WARNINGS_AS_ERRORS=ON' '-DLUDUS_ENABLE_CCACHE=OFF' "-DLUDUS_SLANG_COMPILER=$PWD/out/shader-tools/slang/bin/slangc.exe" "-DLUDUS_DXC_DIRECTORY=$PWD/out/shader-tools/dxc"
+            if ($LASTEXITCODE -ne 0) { throw "Engine $flavor configure failed" }
+            cmake --build $build --config $configuration --target ludus_foundation_base_tests ludus_platform_win32_tests ludus_rhi_d3d12_tests ludus_rhi_lifecycle_tests
+            if ($LASTEXITCODE -ne 0) { throw "Engine $flavor build failed" }
+            $suite = '^ludus_(foundation_base|platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
+            ctest --test-dir $build -C $configuration --output-on-failure --no-tests=error --tests-regex $suite
+            if ($LASTEXITCODE -ne 0) { throw "Engine $flavor tests failed" }
+            $tests = ctest --test-dir $build -C $configuration --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
+            $d3d12 = ($tests.tests | Where-Object name -eq ludus_rhi_d3d12_tests).command[0]
+            $cases = & $d3d12 --list-tests | Out-String
+            foreach ($required in @('Portable texture transfers initialize mips', 'draws the fullscreen pipeline across resizes')) {
+              if ($cases -notmatch [regex]::Escape($required)) { throw "Missing D3D12 test: $required" }
+            }
           }
       - name: Preserve candidate identities and test logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-msvc-primitive-probe
+          name: windows-msvc-${{ matrix.generator }}
           path: |
             out/windows-msvc-probe/**/compiler-identity.txt
+            out/windows-msvc-probe/**/CMakeCache.txt
             out/windows-msvc-probe/**/Testing/Temporary/
           if-no-files-found: warn
           retention-days: 14

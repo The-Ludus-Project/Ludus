@@ -23,7 +23,7 @@
 // translation unit that compiled this header under fast math or finite-only
 // math: those change NaN/Inf, signed-zero and reassociation assumptions the
 // module's contracts depend on. (See ADR 0010 §4.)
-#if defined(__FAST_MATH__)
+#if defined(__FAST_MATH__) || defined(_M_FP_FAST)
 #    error "FoundationMath requires IEEE floating point; do not compile consumers with -ffast-math."
 #endif
 #if defined(__FINITE_MATH_ONLY__) && (__FINITE_MATH_ONLY__ != 0)
@@ -114,12 +114,14 @@ template <typename ScalarType>
 /// True for a finite value; false for NaN and either infinity.
 [[nodiscard]] constexpr bool IsFinite(float32 value) noexcept
 {
-    return value == value && value < __builtin_huge_valf() && value > -__builtin_huge_valf();
+    constexpr float32 MAX_FINITE = 0x1.fffffep127f; // ludus-style: magic-number IEEE binary32 maximum
+    return value >= -MAX_FINITE && value <= MAX_FINITE;
 }
 /// @copydoc ludus::foundation::math::IsFinite(float32)
 [[nodiscard]] constexpr bool IsFinite(float64 value) noexcept
 {
-    return value == value && value < __builtin_huge_val() && value > -__builtin_huge_val();
+    constexpr float64 MAX_FINITE = 0x1.fffffffffffffp1023; // ludus-style: magic-number IEEE binary64 maximum
+    return value >= -MAX_FINITE && value <= MAX_FINITE;
 }
 [[nodiscard]] constexpr bool IsNaN(float32 value) noexcept
 {

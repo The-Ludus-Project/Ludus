@@ -28,7 +28,7 @@ float32 RayScalar(const void* data, usize index) noexcept
 }
 bool RayFinite(float32 value) noexcept
 {
-    return value == value && value < __builtin_huge_valf() && value > -__builtin_huge_valf();
+    return foundation::math::IsFinite(value);
 }
 bool RayPosition(float32 value) noexcept
 {
