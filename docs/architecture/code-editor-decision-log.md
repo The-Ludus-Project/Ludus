@@ -131,6 +131,32 @@ the same M2 change that applies it:
   Ctrl+Shift+P for VS Code), and the new shortcut-collision shell tests for both
   profiles.
 
+### Baseline corpus and latency probe corrections (2026-11-03)
+
+The corpus and probe that M0 authored in the sandbox were first built on an
+Apple M5 to record the baseline (see the
+[task ledger](../../.kiro/specs/code-editor/tasks.md#m0-baseline-2026-11-03)).
+Four defects were fixed before any numbers were recorded:
+
+- **No output.** Catch2's `INFO` messages were scoped to the reporting helper
+  and only printed on failure, so a passing run printed nothing. Each workload
+  now prints one `WARN` summary line.
+- **Wrong p95.** The reported p95 was the maximum of 20 samples. The corpus now
+  takes 100 samples and reports the nearest-rank p50 and p95 and the maximum
+  separately.
+- **Key handling skipped.** Edits were inserted programmatically, which bypassed
+  `CodeEditor::keyPressEvent`, where the probe and the editing behavior live.
+  Typing workloads now send real key events. The 100-position case stays
+  programmatic until M2 adds multiple cursors, and its output says so.
+- **Probe started after handling.** The architecture says the probe timestamps
+  the key "when it arrives", but `MarkKeyHandled()` started the timer only after
+  handling. `CodeLatencyProbe::MarkKeyArrived()` now records the arrival at the
+  top of `keyPressEvent`, and a sample includes handling. Regression tests cover
+  the arrival timing and keys that change no text.
+
+The probe also replaced `std::sort` (`<algorithm>`, disallowed in `apps/` by
+ADR 0003) with `foundation::Sort` from FoundationContainers.
+
 ### Language registry skeleton
 
 M0 introduces the language registry skeleton with Slang and plain text only,
