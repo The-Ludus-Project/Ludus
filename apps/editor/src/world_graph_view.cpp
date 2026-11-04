@@ -1,4 +1,5 @@
 #include "internal/world_graph_view.h"
+#include "design_tokens.h"
 #include "internal/overlay_widgets.h"
 #include "internal/viewport_object_interaction.h"
 
@@ -22,7 +23,7 @@ namespace
 {
 constexpr foundation::int32 MINIMUM_TARGET_TEXT_CHARACTERS = 4;
 constexpr foundation::int32 STATISTICS_REFRESH_MILLISECONDS = 250;
-constexpr foundation::int32 STATISTICS_MARGIN_PIXEL = 8;
+constexpr foundation::int32 STATISTICS_MARGIN_PIXEL = design::SPACING_SMALL;
 /// Output-menu item role holding a built-in debug view's PreviewShading; graph targets leave it empty.
 constexpr foundation::int32 DEBUG_VIEW_ROLE = Qt::UserRole + 1;
 } // namespace

@@ -25,12 +25,21 @@ const QRegularExpression& GetSpacingCall()
     return call;
 }
 
-/// A constant named like a distance: it must be built from design tokens, not typed in.
+/// A constant named like a layout distance: it must be built from design tokens, not typed in. Control padding
+/// belongs to the style's own metrics and is not matched.
 const QRegularExpression& GetSpacingConstant()
 {
-    static const QRegularExpression constant(QStringLiteral(
-        R"(constexpr\s+(?:int|int32|foundation::int32)\s+(\w*(?:SPACING|MARGIN|PADDING)\w*)\s*=\s*([^;]+);)"));
+    static const QRegularExpression constant(
+        QStringLiteral(R"(constexpr\s+(?:int|int32|foundation::int32)\s+(\w*(?:SPACING|MARGIN)\w*)\s*=\s*([^;]+);)"));
     return constant;
+}
+
+/// Distances that are not steps of the spacing scale: the code editor's gutter and callout metrics follow its glyph
+/// size, and the command palette's top offset places a floating surface rather than spacing anything.
+bool IsExemptConstant(const QString& relativePath, const QString& name)
+{
+    return relativePath == QStringLiteral("code_editor.cpp") ||
+           (relativePath == QStringLiteral("command_palette.cpp") && name == QStringLiteral("PALETTE_TOP_MARGIN"));
 }
 
 /// Source text without comments and string literals, so a number in either is not a finding.
@@ -88,7 +97,7 @@ QStringList FindSpacingViolations()
              constants.hasNext() == true;)
         {
             const QRegularExpressionMatch constant = constants.next();
-            if (IsTypedNumber(constant.captured(2)) == true)
+            if (IsExemptConstant(name, constant.captured(1)) == false && IsTypedNumber(constant.captured(2)) == true)
             {
                 violations
                     << QStringLiteral("%1: %2 = %3").arg(name, constant.captured(1), constant.captured(2).trimmed());

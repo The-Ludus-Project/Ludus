@@ -97,7 +97,7 @@ constexpr foundation::int32 MAX_PROPERTIES_DOCK_PIXELS = 380;
 constexpr foundation::int32 BOTTOM_DOCK_PERCENT = 27;
 constexpr foundation::int32 MIN_BOTTOM_DOCK_PIXELS = 160;
 constexpr foundation::int32 MAX_BOTTOM_DOCK_PIXELS = 300;
-constexpr foundation::int32 PROPERTIES_HINT_MARGIN_PIXELS = 8;
+constexpr foundation::int32 PROPERTIES_HINT_MARGIN_PIXELS = design::SPACING_SMALL;
 constexpr foundation::int64 MAX_SETTINGS_BYTES = foundation::int64{64} * 1024;
 constexpr foundation::int32 MAX_STATE_BYTES = 32 * 1024;
 LUDUS_DEFINE_LOG_CATEGORY(LOG_EDITOR_LAYOUT, "Editor.Layout");
