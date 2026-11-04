@@ -266,8 +266,8 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
                 setFormat(wordStart, wordLength, mFunctionFormat);
                 continue;
             }
-            if (nextTokenStart > position && nextTokenStart < text.size()
-                && IsIdentifierStart(text.at(nextTokenStart)) == true)
+            if (nextTokenStart > position && nextTokenStart < text.size() &&
+                IsIdentifierStart(text.at(nextTokenStart)) == true)
             {
                 isize nextEnd = nextTokenStart + 1;
                 while (nextEnd < text.size() && IsIdentifierPart(text.at(nextEnd)) == true)

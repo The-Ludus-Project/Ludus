@@ -1017,7 +1017,7 @@ class BuildBudgetRunnerSpeedTests(unittest.TestCase):
         result = self.check(330.0, (111, 40, 25, 26))
         self.assertTrue(result.startswith("FAILED"), result)
         self.assertIn("[OVER] total frontend parsing: 330.0 s", result)
-        self.assertIn("measured) exceeds budget 290 s", result)
+        self.assertIn("measured) exceeds budget 320 s", result)
 
     def test_a_heavy_header_fails_after_normalization(self):
         result = self.check(240.0, (111, 40, 25, 26), header_ms=2400)
