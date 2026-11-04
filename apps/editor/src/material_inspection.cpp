@@ -1,5 +1,6 @@
 #include "internal/material_inspection.h"
 
+#include "internal/inspector_fields.h"
 #include "internal/render_scene.h"
 
 #include <ludus/foundation/base/types.h>
@@ -10,6 +11,7 @@
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/runtime/resources/scene.h>
 
+#include <algorithm>
 #include <string_view>
 
 namespace ludus::editor
@@ -60,6 +62,38 @@ QString GetModelName(format::MaterialModel model)
     }
     return QStringLiteral("Unknown (%1)").arg(static_cast<uint32>(model));
 }
+/// A small copy of a texture's first mip for a row; null when the texture is missing or malformed.
+QImage MakeThumbnail(const resources::SceneDefinition& definition, uint32 texture)
+{
+    if (texture == format::NO_TEXTURE || static_cast<usize>(texture) >= definition.Textures.GetSize())
+    {
+        return {};
+    }
+    const resources::SceneTexture& source = definition.Textures[texture];
+    constexpr usize BYTES_PER_TEXEL = 4;
+    if (source.Width == 0 || source.Height == 0 ||
+        source.Pixels.GetSize() != static_cast<usize>(source.Width) * source.Height * BYTES_PER_TEXEL)
+    {
+        return {};
+    }
+    // A view over the decoded pixels; scaling copies, so the definition is never retained.
+    const QImage view(source.Pixels.GetData(),
+                      static_cast<int>(source.Width),
+                      static_cast<int>(source.Height),
+                      static_cast<qsizetype>(source.Width * BYTES_PER_TEXEL),
+                      QImage::Format_RGBA8888);
+    return view.scaled(MATERIAL_THUMBNAIL_EXTENT,
+                       MATERIAL_THUMBNAIL_EXTENT,
+                       Qt::KeepAspectRatio,
+                       Qt::SmoothTransformation);
+}
+
+/// A colour row: its text, and the display colour that stands for it.
+MaterialPropertyRow MakeColourRow(const QString& label, const foundation::math::Vector3& linear)
+{
+    return {label, FormatRgb(linear), ConvertLinearToDisplayColour(linear.X, linear.Y, linear.Z), {}};
+}
+
 /// "Texture 3 · 1024 × 512 · sRGB", or "None" for format::NO_TEXTURE.
 QString DescribeTexture(const resources::SceneDefinition& definition, uint32 texture)
 {
@@ -79,6 +113,11 @@ QString DescribeTexture(const resources::SceneDefinition& definition, uint32 tex
         .arg(source.IsLinear == true ? QStringLiteral("linear") : QStringLiteral("sRGB"));
 }
 } // namespace
+
+QString GetFallbackMaterialName(int materialIndex)
+{
+    return QStringLiteral("Material %1").arg(materialIndex);
+}
 
 bool DescribeSceneObjectMaterial(const RenderScene& scene,
                                  const QString& objectId,
@@ -106,7 +145,7 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
     QVector<MaterialPropertyRow> rows;
     const std::string_view name = material.Name.View();
     rows.append({QStringLiteral("Name"),
-                 name.empty() == true ? QStringLiteral("(unnamed)")
+                 name.empty() == true ? GetFallbackMaterialName(surface + 1)
                                       : QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size()))});
     rows.append({QStringLiteral("Model"), GetModelName(material.Scattering.Model)});
     // Legacy materials without source parameters reflect their texture unscaled, or black untextured;
@@ -115,8 +154,11 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
                                                   : material.Texture == format::NO_TEXTURE
                                                       ? foundation::math::Vector3{}
                                                       : foundation::math::Vector3{1, 1, 1};
-    rows.append({QStringLiteral("Reflectance (linear RGB)"), FormatRgb(reflectance)});
-    rows.append({QStringLiteral("Base color map"), DescribeTexture(definition, material.Texture)});
+    rows.append(MakeColourRow(QStringLiteral("Reflectance (linear RGB)"), reflectance));
+    rows.append({QStringLiteral("Base color map"),
+                 DescribeTexture(definition, material.Texture),
+                 {},
+                 MakeThumbnail(definition, material.Texture)});
     if (material.Texture != format::NO_TEXTURE)
     {
         rows.append({QStringLiteral("Addressing"),
@@ -144,7 +186,10 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
     {
         rows.append({QStringLiteral("IOR η"), FormatScalar(scattering.Eta[0])});
     }
-    rows.append({QStringLiteral("Surface map"), DescribeTexture(definition, material.SurfaceTexture)});
+    rows.append({QStringLiteral("Surface map"),
+                 DescribeTexture(definition, material.SurfaceTexture),
+                 {},
+                 MakeThumbnail(definition, material.SurfaceTexture)});
     if (material.SurfaceTexture != format::NO_TEXTURE)
     {
         rows.append({QStringLiteral("Normal scale"), FormatScalar(material.NormalScale)});
@@ -153,8 +198,17 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
                  material.IsAlphaMasked == true
                      ? QStringLiteral("Masked below %1").arg(FormatScalar(material.AlphaCutoff))
                      : QStringLiteral("Opaque")});
-    rows.append({QStringLiteral("Emission (linear RGB)"), FormatRgb(material.Emission)});
     const bool isEmissive = material.Emission.X > 0 || material.Emission.Y > 0 || material.Emission.Z > 0;
+    MaterialPropertyRow emission{QStringLiteral("Emission (linear RGB)"), FormatRgb(material.Emission), {}, {}};
+    if (isEmissive == true)
+    {
+        // Emission is in nits and can exceed one; the swatch shows its hue at full brightness.
+        const float32 brightest = std::max({material.Emission.X, material.Emission.Y, material.Emission.Z});
+        emission.Swatch = ConvertLinearToDisplayColour(material.Emission.X / brightest,
+                                                       material.Emission.Y / brightest,
+                                                       material.Emission.Z / brightest);
+    }
+    rows.append(emission);
     if (isEmissive == true)
     {
         rows.append({QStringLiteral("Emitting sides"),
@@ -163,7 +217,10 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
         {
             rows.append({QStringLiteral("Emission power (lm)"), FormatScalar(material.EmissionPower)});
         }
-        rows.append({QStringLiteral("Emission map"), DescribeTexture(definition, material.EmissionTexture)});
+        rows.append({QStringLiteral("Emission map"),
+                     DescribeTexture(definition, material.EmissionTexture),
+                     {},
+                     MakeThumbnail(definition, material.EmissionTexture)});
     }
     outRows = rows;
     return true;

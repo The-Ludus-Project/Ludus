@@ -724,6 +724,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/world_demo_adapter.cpp
     src/internal/material_inspection.h
     src/material_inspection.cpp
+    src/internal/inspector_fields.h
+    src/inspector_fields.cpp
     src/internal/world_entity_search.h
     src/world_entity_search.cpp
     src/world_workspace.cpp
@@ -1071,6 +1073,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/import_report_tests.cpp
         tests/world_workspace_tests.cpp
         tests/material_inspection_tests.cpp
+        tests/inspector_fields_tests.cpp
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp
         tests/world_lighting_switch_tests.cpp
