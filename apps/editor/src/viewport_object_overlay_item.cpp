@@ -6,6 +6,7 @@
 #include <QPainter>
 #include <QQuickItem>
 #include <QQuickPaintedItem>
+#include <QQuickWindow>
 
 namespace ludus::editor
 {
@@ -45,6 +46,17 @@ public:
     void paint(QPainter* painter) override
     {
         PaintGizmoReadout(*painter, mText, {0, 0});
+    }
+
+protected:
+    void itemChange(ItemChange change, const ItemChangeData& value) override
+    {
+        if (change == ItemSceneChange && value.window != nullptr)
+        {
+            // Paint the text at the screen's pixel density, so it is as sharp on a high-DPI display as the strokes.
+            setContentsScale(value.window->effectiveDevicePixelRatio());
+        }
+        QQuickPaintedItem::itemChange(change, value);
     }
 
 private:

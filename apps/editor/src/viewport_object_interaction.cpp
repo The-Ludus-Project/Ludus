@@ -56,7 +56,7 @@ constexpr float64 PLANE_HIT_MARGIN_PIXELS = 3;
 constexpr float64 MINIMUM_PLANE_SINE = 0.3;
 constexpr float32 MINIMUM_PLANE_FACING = 0.25F;
 /// Share, in percent, of the viewport colour mixed into a plane handle at rest, so the axes stay the louder cue.
-constexpr int32 PLANE_REST_PERCENT = 30;
+constexpr int32 PLANE_REST_PERCENT = 20;
 /// Half side of the scale tool's centre cube, and half side of the square around the pivot that hits it.
 constexpr float64 CENTRE_HALF_PIXELS = 7.5;
 constexpr float64 CENTRE_HIT_HALF_PIXELS = 10;
