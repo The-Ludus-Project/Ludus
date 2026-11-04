@@ -91,8 +91,8 @@ WorldLightBinding ReadLightBinding(const RenderScene& scene)
 
 QString GetEmitterLabel(const QString& objectName, qsizetype emitterNumber)
 {
-    static const QRegularExpression generatedName(QStringLiteral("^Imported object \\d+$"));
-    if (objectName.isEmpty() == true || generatedName.match(objectName).hasMatch() == true)
+    static const QRegularExpression GENERATED_NAME(QStringLiteral("^Imported object \\d+$"));
+    if (objectName.isEmpty() == true || GENERATED_NAME.match(objectName).hasMatch() == true)
     {
         return QStringLiteral("Area light %1").arg(emitterNumber);
     }
