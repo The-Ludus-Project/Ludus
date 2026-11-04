@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <QString>
@@ -21,6 +22,24 @@ enum class ViewportGpuTimeState : foundation::uint8
     /// The backend or device exposes no timestamp queries; shown as "GPU: n/a".
     Unavailable,
 };
+
+/// Availability of the per-pass GPU time series.
+enum class ViewportPassTimeState : foundation::uint8
+{
+    /// Nothing has been measured yet; the overlay shows no pass rows.
+    Waiting,
+    /// At least one completed batch of per-pass timings is in the rolling averages.
+    Available,
+    /// The backend exposes no per-pass timestamp queries; shown as "Passes: n/a".
+    Unavailable,
+};
+
+/// Most pass rows drawn in the overlay; the remainder is summed into one "+N more" row.
+inline constexpr foundation::usize MAX_VIEWPORT_PASS_ROWS = 6;
+/// Most distinct GPU scopes tracked at once (the RHI times at most 64 physical passes per frame).
+inline constexpr foundation::usize MAX_VIEWPORT_PASS_SERIES = 64;
+/// Completed batches a scope may be absent from before its series is dropped as no longer rendered.
+inline constexpr foundation::usize VIEWPORT_PASS_STALE_BATCHES = 30;
 
 /// Rolling average of the most recent VIEWPORT_STATISTICS_AVERAGE_FRAMES samples.
 /// Owner-thread value type; adding never allocates.
@@ -46,6 +65,53 @@ private:
     foundation::usize mNext = 0;
 };
 
+/// Rolling GPU time of one named scope, summed over its physical passes within a frame.
+struct ViewportPassSeries final
+{
+    /// Producer-local scope identity; paired with the name so a renamed scope starts a new series.
+    foundation::uint64 Identity = 0;
+    QString Name;
+    /// Milliseconds per completed batch.
+    RollingAverage Milliseconds;
+    /// Completed batches since this scope last appeared; zero while it is rendered.
+    foundation::usize StaleBatches = 0;
+    /// Accumulator for the batch being built; folded into Milliseconds by CommitBatch.
+    foundation::float64 BatchMilliseconds = 0;
+    bool IsInBatch = false;
+};
+
+/// Per-scope GPU time series in order of first appearance. Owner-thread value type; it allocates only
+/// when a scope is first seen and never while the same scopes repeat frame after frame.
+class ViewportPassStatistics final
+{
+public:
+    /// Drop every series, as on a device replacement or when the overlay is hidden.
+    void Reset() noexcept;
+    /// Add one physical pass of a scope to the batch being built. Samples that are negative or not
+    /// finite are ignored; several passes of one scope sum. Scopes beyond MAX_VIEWPORT_PASS_SERIES are ignored.
+    void AddSample(foundation::uint64 identity, const QString& name, foundation::float64 milliseconds);
+    /// Fold the batch into the rolling averages, age scopes absent from it and drop stale ones.
+    void CommitBatch();
+    [[nodiscard]] const foundation::Array<ViewportPassSeries>& GetSeries() const noexcept;
+
+private:
+    foundation::Array<ViewportPassSeries> mSeries;
+};
+
+/// Bars drawn behind the pass rows at the end of the overlay text. The barred rows are the last
+/// RowCount + TrailingLines lines of the text, in order, less the TrailingLines final ones.
+struct ViewportPassBars final
+{
+    /// Number of barred rows, at most MAX_VIEWPORT_PASS_ROWS; zero when there is nothing to draw.
+    foundation::usize RowCount = 0;
+    /// Unbarred lines after the last barred row (the "+N more" summary), zero or one.
+    foundation::usize TrailingLines = 0;
+    /// Bar length of each row, from zero to one, relative to the slowest pass.
+    foundation::StaticArray<foundation::float32, MAX_VIEWPORT_PASS_ROWS> Fractions{};
+    /// Row of the slowest pass; drawn in the warning token instead of the accent.
+    foundation::usize SlowestRow = 0;
+};
+
 /// Smoothed per-frame viewport measurements shown by the statistics overlay.
 struct ViewportStatistics final
 {
@@ -59,6 +125,9 @@ struct ViewportStatistics final
     foundation::uint32 Height = 0;
     /// Draw packets submitted for the current view.
     foundation::uint32 Draws = 0;
+    /// Per-scope GPU time, measured only while the overlay is visible.
+    ViewportPassStatistics Passes;
+    ViewportPassTimeState PassState = ViewportPassTimeState::Waiting;
 };
 
 /// Completed graph-output measurements, independent of the device timing owner.
@@ -118,7 +187,18 @@ private:
                                                     const ViewportStatistics& deviceStatistics,
                                                     foundation::uint64 nowNanoseconds);
 
+/// Pass block appended to the overlay text: a header with the summed time, then the slowest
+/// MAX_VIEWPORT_PASS_ROWS scopes by rolling average with one aligned millisecond column, then one
+/// "+N more" row. Empty while waiting for the first batch; "Passes: n/a" when per-pass timing is
+/// unsupported, even where frame GPU time is shown. Lines carry no leading or trailing newline.
+[[nodiscard]] QString FormatViewportPassLines(const ViewportStatistics& statistics);
+
+/// Bar lengths for the rows FormatViewportPassLines emits; RowCount is zero when it emits none or only
+/// a status line.
+[[nodiscard]] ViewportPassBars MakeViewportPassBars(const ViewportStatistics& statistics);
+
 /// Overlay text: GPU and CPU frame times (two decimals, milliseconds), then resolution and draws.
-/// Unavailable GPU timing reads "GPU: n/a"; a pending first sample reads "GPU: …".
+/// Unavailable GPU timing reads "GPU: n/a"; a pending first sample reads "GPU: …". Per-pass lines
+/// from FormatViewportPassLines follow once measured.
 [[nodiscard]] QString FormatViewportStatistics(const ViewportStatistics& statistics);
 } // namespace ludus::editor

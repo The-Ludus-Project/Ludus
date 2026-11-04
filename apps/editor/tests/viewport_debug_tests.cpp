@@ -388,6 +388,130 @@ TEST_CASE("Viewport statistics show GPU n/a when timestamps are unavailable", "[
           QStringLiteral("GPU: n/a\nCPU: 4.00 ms (p95 4.00, max 4.00 ms)\n64×32 · draws 1"));
 }
 
+TEST_CASE("Pass statistics sum a scope's passes and average completed batches",
+          "[editor][viewport][statistics][passes]")
+{
+    constexpr uint64 SCENE = 1;
+    constexpr uint64 COMPOSITE = 2;
+    ViewportPassStatistics passes;
+    // Two physical passes of one scope sum; invalid samples are ignored.
+    passes.AddSample(SCENE, QStringLiteral("Viewport/Scene"), 1.0);
+    passes.AddSample(SCENE, QStringLiteral("Viewport/Scene"), 2.0);
+    passes.AddSample(COMPOSITE, QStringLiteral("Viewport/Composite"), 0.5);
+    passes.AddSample(COMPOSITE, QStringLiteral("Viewport/Composite"), -1.0);
+    passes.AddSample(0, QStringLiteral("No identity"), 1.0);
+    passes.AddSample(3, QStringLiteral("Not finite"), std::numeric_limits<float64>::infinity());
+    passes.CommitBatch();
+    REQUIRE(passes.GetSeries().GetSize() == 2);
+    CHECK(passes.GetSeries()[0].Milliseconds.GetAverage() == Catch::Approx(3.0));
+    CHECK(passes.GetSeries()[1].Milliseconds.GetAverage() == Catch::Approx(0.5));
+    passes.AddSample(SCENE, QStringLiteral("Viewport/Scene"), 5.0);
+    passes.AddSample(COMPOSITE, QStringLiteral("Viewport/Composite"), 0.5);
+    passes.CommitBatch();
+    CHECK(passes.GetSeries()[0].Milliseconds.GetAverage() == Catch::Approx(4.0));
+    // The same identity under a new name is a different scope.
+    passes.AddSample(SCENE, QStringLiteral("Viewport/Renamed"), 1.0);
+    passes.CommitBatch();
+    CHECK(passes.GetSeries().GetSize() == 3);
+}
+
+TEST_CASE("Pass statistics drop scopes that stop rendering and cap the tracked scopes",
+          "[editor][viewport][statistics][passes]")
+{
+    ViewportPassStatistics passes;
+    passes.AddSample(1, QStringLiteral("Gone"), 1.0);
+    passes.AddSample(2, QStringLiteral("Stays"), 1.0);
+    passes.CommitBatch();
+    for (usize batch = 1; batch < VIEWPORT_PASS_STALE_BATCHES; ++batch)
+    {
+        passes.AddSample(2, QStringLiteral("Stays"), 1.0);
+        passes.CommitBatch();
+    }
+    CHECK(passes.GetSeries().GetSize() == 2);
+    passes.AddSample(2, QStringLiteral("Stays"), 1.0);
+    passes.CommitBatch();
+    REQUIRE(passes.GetSeries().GetSize() == 1);
+    CHECK(passes.GetSeries()[0].Name == QStringLiteral("Stays"));
+
+    passes.Reset();
+    for (usize index = 1; index <= MAX_VIEWPORT_PASS_SERIES + 5; ++index)
+    {
+        passes.AddSample(index, QStringLiteral("Pass %1").arg(index), 1.0);
+    }
+    passes.CommitBatch();
+    CHECK(passes.GetSeries().GetSize() == MAX_VIEWPORT_PASS_SERIES);
+}
+
+TEST_CASE("Pass lines list the slowest scopes with bars scaled to the slowest",
+          "[editor][viewport][statistics][passes]")
+{
+    ViewportStatistics statistics;
+    statistics.Width = 64;
+    statistics.Height = 32;
+    statistics.Draws = 1;
+    CHECK(FormatViewportPassLines(statistics).isEmpty() == true);
+    CHECK(MakeViewportPassBars(statistics).RowCount == 0);
+
+    statistics.PassState = ViewportPassTimeState::Available;
+    statistics.Passes.AddSample(1, QStringLiteral("Viewport/Overlay"), 0.5);
+    statistics.Passes.AddSample(2, QStringLiteral("Viewport/Scene"), 2.0);
+    statistics.Passes.AddSample(3, QStringLiteral("Viewport/Composite"), 1.0);
+    statistics.Passes.CommitBatch();
+    CHECK(FormatViewportPassLines(statistics) == QStringLiteral("Passes: 3.50 ms\n"
+                                                                "Viewport/Scene           2.00 ms\n"
+                                                                "Viewport/Composite       1.00 ms\n"
+                                                                "Viewport/Overlay         0.50 ms"));
+    const ViewportPassBars bars = MakeViewportPassBars(statistics);
+    REQUIRE(bars.RowCount == 3);
+    CHECK(bars.TrailingLines == 0);
+    CHECK(bars.SlowestRow == 0);
+    CHECK(bars.Fractions[0] == Catch::Approx(1.0F));
+    CHECK(bars.Fractions[1] == Catch::Approx(0.5F));
+    CHECK(bars.Fractions[2] == Catch::Approx(0.25F));
+    CHECK(FormatViewportStatistics(statistics).startsWith(QStringLiteral("GPU: …\nCPU: …\n64×32 · draws 1\nPasses: ")));
+}
+
+TEST_CASE("Pass lines keep the slowest rows, sum the rest and shorten long names",
+          "[editor][viewport][statistics][passes]")
+{
+    ViewportStatistics statistics;
+    statistics.PassState = ViewportPassTimeState::Available;
+    statistics.Passes.AddSample(1, QStringLiteral("Renderer/Very/Long/Pass/Name/Beyond/Columns"), 10.0);
+    for (usize index = 0; index < MAX_VIEWPORT_PASS_ROWS + 2; ++index)
+    {
+        statistics.Passes.AddSample(index + 2, QStringLiteral("Pass %1").arg(index), 1.0);
+    }
+    statistics.Passes.CommitBatch();
+    const QStringList lines = FormatViewportPassLines(statistics).split(QLatin1Char('\n'));
+    REQUIRE(lines.size() == 1 + MAX_VIEWPORT_PASS_ROWS + 1);
+    CHECK(lines[0] == QStringLiteral("Passes: 18.00 ms"));
+    CHECK(lines[1].startsWith(QStringLiteral("Renderer/V…ond/Columns")) == true);
+    CHECK(lines[1].endsWith(QStringLiteral("10.00 ms")) == true);
+    CHECK(lines.last().startsWith(QStringLiteral("+3 more")) == true);
+    CHECK(lines.last().endsWith(QStringLiteral(" 3.00 ms")) == true);
+    const ViewportPassBars bars = MakeViewportPassBars(statistics);
+    CHECK(bars.RowCount == MAX_VIEWPORT_PASS_ROWS);
+    CHECK(bars.TrailingLines == 1);
+    CHECK(bars.Fractions[1] == Catch::Approx(0.1F));
+}
+
+TEST_CASE("Pass timing reads n/a when the backend has no per-pass queries", "[editor][viewport][statistics][passes]")
+{
+    ViewportStatistics statistics;
+    statistics.Width = 64;
+    statistics.Height = 32;
+    statistics.Draws = 1;
+    statistics.GpuState = ViewportGpuTimeState::Available;
+    statistics.PassState = ViewportPassTimeState::Unavailable;
+    CHECK(FormatViewportPassLines(statistics) == QStringLiteral("Passes: n/a"));
+    CHECK(FormatViewportStatistics(statistics).endsWith(QStringLiteral("\nPasses: n/a")) == true);
+    CHECK(MakeViewportPassBars(statistics).RowCount == 0);
+    // Without timestamps at all, both lines say so.
+    statistics.GpuState = ViewportGpuTimeState::Unavailable;
+    CHECK(FormatViewportStatistics(statistics).startsWith(QStringLiteral("GPU: n/a\n")) == true);
+    CHECK(FormatViewportStatistics(statistics).endsWith(QStringLiteral("\nPasses: n/a")) == true);
+}
+
 TEST_CASE("Graph statistics measure delivered updates and separate active CPU from elapsed readback",
           "[editor][viewport][statistics][graph-statistics]")
 {

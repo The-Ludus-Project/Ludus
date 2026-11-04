@@ -1645,6 +1645,20 @@ viewport's top-left corner:
 - **GPU**: device timestamp time for the frame.
 - **CPU**: time spent preparing and submitting the frame.
 - **Resolution** and **draw count**.
+- **Passes**: the total GPU time of the named render scopes, then the six slowest
+  scopes ("Viewport/Scene", the render-graph passes, and so on) with their rolling
+  average in milliseconds. A bar behind each row shows its share of the slowest
+  pass, which is drawn in the warning colour; any further scopes collapse into one
+  `+N more` row. The same rows appear in the graph viewer's overlay.
+
+Per-pass timing uses the RHI's timestamp queries (`ArmGpuPassTimings`), which
+Vulkan and Metal implement. The queries are armed only while **Stats** is on (or
+a profiling recording runs), so the overlay costs nothing when it is hidden: no
+timestamp is written and nothing is polled. Where the backend has no per-pass
+queries (Direct3D 12, WebGPU, WebGL and the browser canvas) the line reads
+`Passes: n/a` while frame GPU time, if the backend provides it, keeps working.
+Passes are summed per scope, so a scope that issues several encoders shows one
+row, and a scope that stops rendering leaves the list after 30 batches.
 
 CPU and GPU times show their mean, nearest-rank p95 and maximum over the last
 30 accepted samples (`VIEWPORT_STATISTICS_AVERAGE_FRAMES`). A low mean with a
