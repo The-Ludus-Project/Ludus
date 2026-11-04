@@ -45,6 +45,7 @@ namespace ludus::editor
 {
 
 class AudioWorkspace;
+class CodeEditorArea;
 class ConfigurationWorkspace;
 class ContentWorkspace;
 class DocumentWell;
@@ -142,6 +143,12 @@ private:
     void buildWindowMenu(QMenu* menu);
     void renderWindowDocuments(QMenu* menu);
     void openProjectItem(ProjectItemKind kind, const QString& path);
+    /// Open an ordinary project text file as a code tab in the code editor area
+    /// (CE01). A single click (isPreview) opens a preview tab; a load failure is
+    /// reported in the status bar, where Open Externally stays available on
+    /// native hosts. Files owned by a render-graph package route to its Source
+    /// pane instead, in openProjectItem, before this is reached.
+    void openCodeFile(const QString& path, bool isPreview);
     void changeProjectItem(ProjectItemAction action, ProjectItemKind kind, const QString& path);
     void activateErrorEntry(const ErrorListEntry& entry);
     /// Offer the preview warning's luminaire repair in a confirmation box (Cancel is the default) and apply it to the
@@ -232,6 +239,8 @@ private:
     QDockWidget* TimingDock_;
     TimingPanel* Timing_;
     DocumentWell* mDocuments;
+    // Central per-file code-tab area; constructed in BuildUi, never null after.
+    CodeEditorArea* mCodeArea;
     QScrollArea* mAudioDocument;
     QDockWidget* mProjectExplorerDock;
     ProjectExplorer* mProjectExplorer;

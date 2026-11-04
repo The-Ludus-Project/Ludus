@@ -1,5 +1,6 @@
 #include "internal/activity_chip.h"
 #include "internal/audio_workspace.h"
+#include "internal/code_editor_area.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
 #include "internal/document_well.h"
@@ -292,6 +293,14 @@ void MainWindow::BuildUi()
     World_->setFocusPolicy(Qt::StrongFocus);
     Scripts_ = new ScriptWorkspace(Controller_, mDocuments);
     Renderer_ = new RendererWorkspace(Controller_->Tooling(), mDocuments);
+    mCodeArea = new CodeEditorArea(mDocuments);
+    mCodeArea->setObjectName(QStringLiteral("codeEditorArea"));
+    // A code tab's load failure is surfaced where Open Externally stays available.
+    connect(mCodeArea, &CodeEditorArea::OpenFailed, this, [this](const QString& file, const QString& explanation) {
+        const QString message =
+            explanation.isEmpty() == true ? QStringLiteral("Could not open %1.").arg(file) : explanation;
+        statusBar()->showMessage(message);
+    });
     mRenderingSettingsOrNull = new ProjectRenderingSettings(*Renderer_, form);
     projectLayout->insertWidget(projectLayout->indexOf(advanced), mRenderingSettingsOrNull);
     // The render-graph preview borrows the device and extraction of whichever viewport the
@@ -490,6 +499,7 @@ void MainWindow::BuildUi()
     mDocuments->AddDocument(World_, QStringLiteral("World"));
     mDocuments->AddDocument(Renderer_, QStringLiteral("Render Graph"));
     mDocuments->AddDocument(Scripts_, QStringLiteral("Scripts"));
+    mDocuments->AddDocument(mCodeArea, QStringLiteral("Code"));
     mDocuments->AddDocument(ProjectSettings_, QStringLiteral("Project Settings"));
     mDocuments->AddDocument(audioScroll, QStringLiteral("Audio"));
     mDocuments->AddDocument(Configuration_, QStringLiteral("Configuration"));
@@ -993,7 +1003,8 @@ void MainWindow::SaveProjectWorkspace() const
                        {QStringLiteral("state"), QString::fromLatin1(getPersistentLayoutState().toBase64())},
                        {QStringLiteral("documents"), mDocuments->SaveState()},
                        {QStringLiteral("world"), World_->Session()},
-                       {QStringLiteral("renderer"), Renderer_->GetSourceViewState()}};
+                       {QStringLiteral("renderer"), Renderer_->GetSourceViewState()},
+                       {QStringLiteral("codeTabs"), mCodeArea->SaveState()}};
     const auto bytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
@@ -1054,6 +1065,9 @@ void MainWindow::SetProjectWorkspace(const QString& root, bool restore)
     hideIdleRayPaths();
     World_->RestoreSession(object.value(QStringLiteral("world")).toObject());
     static_cast<void>(Renderer_->RestoreSourceViewState(object.value(QStringLiteral("renderer")).toObject()));
+    // Reopen the project's code tabs before the document arrangement, so the
+    // saved layout can show the Code document with its tabs already present.
+    mCodeArea->RestoreState(object.value(QStringLiteral("codeTabs")).toObject());
     // Malformed or stale arrangements leave the project's default World document open.
     static_cast<void>(mDocuments->RestoreState(object.value(QStringLiteral("documents")).toObject()));
     if (mDocuments->GetActiveDocumentOrNull() == nullptr)
