@@ -5,13 +5,11 @@ backend. This page owns that port: the decision, the contracts of the slices
 that exist, the [port record](../development/platform-porting.md#reusable-record-format)
 and the staged plan. The work is at the **buildable** admission gate for the
 D1/D2 and D3a/D3b raster closure described below (verified on Clang/WARP); it is not yet a runnable or qualified engine
-deployment. The remaining implementation adopts **MSVC as the Windows reference
-compiler**, with CMake generating Ninja builds for VS Code/CLI/the Ludus editor
-and Visual Studio solutions built by MSBuild. The migration has started with
-the isolated [D0 primitive probe](#d0-primitive-portability-probe); the engine's
-compiler gate remains unchanged and the recorded D1/D2 evidence still belongs
-to Clang. Linux, macOS
-and browser compiler profiles remain unchanged.
+deployment. D0 adds an MSVC source-build configuration for the existing Win32 and RHI
+targets, using CMake with Ninja or Visual Studio 2022/MSBuild. The
+[Windows lane](../development/continuous-integration.md#windows-direct3d-12-lane)
+runs both generators alongside the historical Clang/WARP lane.
+
 
 ## Decision
 
@@ -30,11 +28,11 @@ selects Vulkan on Linux and Metal on macOS. No COM, Win32 or D3D12 type appears
 in a public header; Win32 handles cross the Platform/RHI boundary as borrowed
 `void*` in `NativeWindowInfo`.
 
-The current build uses the toolchain that the
+The historical Clang build uses the toolchain that the
 [Windows threading lane](threading.md#milestones) qualifies: pinned Clang 23
 with the Microsoft STL, dynamic CRT and Windows SDK. Targeting the MSVC ABI
-is not evidence of compilation with Microsoft's `cl.exe`. FoundationBase still
-rejects non-Clang compilers; D0 below owns that migration.
+identifies the ABI used by the Clang build. The D0 source build uses Microsoft's
+`cl.exe`.
 
 The target Windows toolchain is a pinned **MSVC `cl.exe` toolset**, Microsoft
 linker, Microsoft STL, dynamic CRT and Windows SDK. D0 must choose and record
@@ -90,13 +88,12 @@ Development, Profile and Release flavors consistently to configurations,
 assertions, flags, dependency variants, PDBs, generated shaders, output paths
 and install/export metadata. Audit `CMAKE_BUILD_TYPE` assumptions and fixed
 artifact paths; build, CTest and install must select the intended configuration.
-The same checks apply to SDK project setup and repair. Today
-`cmake/EngineBuildFlavor.cmake` explicitly rejects multi-configuration generators
-and generates one flavor-specific SDK variant per build tree. D0 must replace
-that limitation with configuration-correct policy headers, generated outputs
-and exports. Development and Profile both currently use `RelWithDebInfo` but
-have different engine policies; a configuration mapping must preserve that
-distinction. Removing the guard alone is not Visual Studio support.
+The same checks apply to SDK project setup and repair. For the D0 source build, generate a separate Visual Studio solution for each
+Ludus flavor. Each solution exposes its selected CMake configuration only, so
+generated policy headers, Catch2 and the CRT agree. Debug maps to `Debug`,
+Development and Profile each map to `RelWithDebInfo` in separate trees, and
+Release maps to `Release`. Shared solutions with configuration-specific policy
+headers and SDK exports are future work.
 
 Embedded shader/script editing and external source editors share the owning
 compiler/runtime validation and publication operations. Cover includes, source
@@ -565,13 +562,32 @@ build trees for Ninja and Visual Studio; pass `-A x64`, the selected full
 toolset version with `-T`, and `-DCMAKE_SYSTEM_VERSION=10.0.26100.0` for Visual
 Studio. The workflow contains the complete commands.
 
-D0 remains in progress. The production FoundationBase compiler gate, flavor
-headers/SDK identity, Behavior admission, full engine MSVC warning policy,
-selectable engine presets, setup/repair, WARP runtime tests and physical GPU
-acceptance are unchanged. The candidate's actual patch versions must be reviewed
-and pinned after compatibility results; the 14.44 family selection is not that
-final pin. A successful primitive probe does not qualify the engine's
-multi-configuration build or complete the D0 acceptance criteria above.
+#### D0 Win32 and RHI source build
+
+The Windows source build accepts the x64 MSVC 14.44 toolset and uses the dynamic
+CRT, with the debug CRT in Debug. Production targets disable C++ exception
+handling and Catch2 test executables enable it. The Windows CI matrix tests
+Debug and Development under Ninja and generated Visual Studio/MSBuild projects,
+using Windows SDK 10.0.26100.0 and CMake 3.31.10. This source build is scoped
+to the existing Windows module list and tests. SDK installation and project
+setup, a solution with multiple flavors, and physical-GPU acceptance are
+separate D0 work.
+
+Use the x64 developer prompt and the same Catch2 preparation as the primitive
+probe above. Run `python scripts/shader-probe bootstrap` to install the pinned
+Slang and DXC. The Windows CI workflow contains the full configure commands,
+including the per-generator options, the native toolchain file, and shader
+paths. Select the same configuration for the build and test steps. For example,
+after configuring Development with either generator:
+
+```powershell
+cmake --build <build-dir> --config RelWithDebInfo --target ludus_foundation_base_tests ludus_platform_win32_tests ludus_rhi_d3d12_tests ludus_rhi_lifecycle_tests
+ctest --test-dir <build-dir> -C RelWithDebInfo --output-on-failure --no-tests=error --tests-regex '^ludus_(foundation_base|platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
+```
+
+Set `LUDUS_TEST_REQUIRE_WARP=1` when testing on a software-only Windows runner
+to check that the D3D12 suite selects the software adapter.
+
 
 ### D3 and D4: complete the portable graphics contract
 

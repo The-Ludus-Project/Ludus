@@ -400,15 +400,15 @@ configured. The `windows-2022` image has no GPU, so the
 Direct3D 12 tests run on WARP; they establish the backend's behavior, not
 hardware-adapter qualification.
 
-The workflow also contains the isolated
-[D0 MSVC primitive probe](../architecture/windows-direct3d12.md#d0-primitive-portability-probe).
-It builds the production representation checks and primitive tests with native
-MSVC, in Ninja and a generated Visual Studio solution, for Debug and
-RelWithDebInfo. Primitive header/test and probe changes also trigger this
-workflow. The separate `windows-msvc-primitive-probe` artifact records candidate
-compiler/toolset/SDK identities and test logs. This candidate lane does not
-admit MSVC for the engine, installed SDK, Behavior or editor; the existing
-Clang/WARP job remains required.
+The D0 matrix uses MSVC 14.44 and Windows SDK 10.0.26100.0. It runs the
+[primitive probe and the existing Win32/RHI source build](../architecture/windows-direct3d12.md#d0-win32-and-rhi-source-build)
+with Ninja and Visual Studio/MSBuild. Both generators build Debug and
+Development engine configurations with compiler-native locked Catch2 and
+signed DXIL. The D3D12 suite checks the reported software adapter, and the
+workflow checks that both the fullscreen and transfer cases were compiled.
+The `windows-msvc-Ninja` and `windows-msvc-MSBuild` artifacts record the build
+configuration and test logs. The historical Clang/WARP job still runs.
+
 
 ## Dependencies and caches
 

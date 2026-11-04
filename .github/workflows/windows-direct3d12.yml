@@ -67,9 +67,10 @@ env:
   CI: "true"
   LUDUS_DIAGNOSTIC_INTERACTIVE: "0"
   CMAKE_BUILD_PARALLEL_LEVEL: "4"
+  LUDUS_TEST_REQUIRE_WARP: "1"
   LUDUS_CI_COMMIT_SHA: ${{ inputs.batch_sha || github.sha }}
 jobs:
-  msvc-primitives:
+  msvc:
     name: D0 MSVC / ${{ matrix.generator }}
     runs-on: windows-2022
     timeout-minutes: 60
@@ -136,6 +137,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Primitive probe build failed' }
           ctest --test-dir $primitive -C RelWithDebInfo --output-on-failure --no-tests=error
           if ($LASTEXITCODE -ne 0) { throw 'Primitive probe tests failed' }
+          if ($visualStudio) {
+            cmake --build $primitive --config Debug
+            if ($LASTEXITCODE -ne 0) { throw 'Primitive probe Debug build failed' }
+            ctest --test-dir $primitive -C Debug --output-on-failure --no-tests=error
+            if ($LASTEXITCODE -ne 0) { throw 'Primitive probe Debug tests failed' }
+          } else {
+            $debugPrimitive = 'out/windows-msvc-probe/primitives-debug'
+            cmake -S tests/build_contract/primitive_portability -B $debugPrimitive @generator "-DCMAKE_PREFIX_PATH=$dependencies" '-DCMAKE_BUILD_TYPE=Debug'
+            if ($LASTEXITCODE -ne 0) { throw 'Primitive probe Debug configure failed' }
+            cmake --build $debugPrimitive --config Debug
+            if ($LASTEXITCODE -ne 0) { throw 'Primitive probe Debug build failed' }
+            ctest --test-dir $debugPrimitive -C Debug --output-on-failure --no-tests=error
+            if ($LASTEXITCODE -ne 0) { throw 'Primitive probe Debug tests failed' }
+          }
 
           # CMakeDeps supplies the native Catch2 targets. The selected developer
           # environment and generator supply the toolchain for the source build.
