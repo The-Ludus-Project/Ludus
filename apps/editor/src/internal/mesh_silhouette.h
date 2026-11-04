@@ -21,6 +21,10 @@ struct SilhouetteSegment final
 /// reads as the object's silhouette, so selecting an object marks its form instead of its
 /// tessellation, and its cost follows the edge count rather than a screen-sized mask.
 ///
+/// Silhouette edges inside the object's own projected area, such as the far wall of a torus seen
+/// through the front of its body, are removed with a coarse coverage mask of the object's
+/// front-facing triangles: an edge with the object on both sides of it is not part of its outline.
+///
 /// The edge adjacency is built once per mesh. Vertices at the same position are welded, so a mesh
 /// that splits vertices for normals or texture seams still reports its true silhouette. Extraction
 /// is a transform of every vertex, one orientation test per triangle and one comparison per edge.
@@ -32,6 +36,8 @@ struct SilhouetteSegment final
 class MeshSilhouette final
 {
 public:
+    /// Frame pixels per coverage pixel along each axis.
+    static constexpr foundation::uint32 COVERAGE_DOWNSCALE = 2;
     /// Largest mesh whose adjacency is built, bounding the one-off build and each extraction.
     static constexpr foundation::usize MAX_TRIANGLES = 200000;
     /// Vertices in one triangle of a triangle list.
@@ -62,13 +68,24 @@ public:
     /// @param meshToClip Mesh space to homogeneous clip space; the orientation test is valid for vertices behind the
     ///        camera, so no clipping is needed first.
     /// @param maximumSegments Bound on the total size of outSegments.
+    /// @param frameWidthPixels Width of the frame clip space maps onto. With a height, enables the coverage mask that
+    ///        removes inner silhouette edges; zero keeps every silhouette edge.
+    /// @param frameHeightPixels Height of that frame.
     /// @param outSegments Appended segments, in edge order.
     [[nodiscard]] bool Extract(foundation::BorrowedView<const foundation::math::Vector3> positionsMesh,
                                const foundation::math::Matrix4& meshToClip,
                                foundation::usize maximumSegments,
+                               foundation::uint32 frameWidthPixels,
+                               foundation::uint32 frameHeightPixels,
                                foundation::Array<SilhouetteSegment>& outSegments);
 
 private:
+    /// Fill mCoverage with the projection of every front-facing triangle fully in front of the camera.
+    [[nodiscard]] bool buildCoverage(foundation::uint32 frameWidthPixels, foundation::uint32 frameHeightPixels);
+    /// Whether the front-facing triangles of the mesh cover the coverage pixel containing position.
+    [[nodiscard]] bool isCovered(foundation::float32 xCoverage, foundation::float32 yCoverage) const noexcept;
+    /// Whether segment has covered pixels on both of its sides and so lies inside the projected mesh.
+    [[nodiscard]] bool isInside(const SilhouetteSegment& segment) const noexcept;
     struct Triangle
     {
         foundation::uint32 First = 0;
@@ -89,6 +106,10 @@ private:
     foundation::Array<foundation::uint32> mEdgeTriangles;
     foundation::Array<foundation::math::Vector4> mClip;
     foundation::Array<foundation::int8> mFacing;
+    /// One byte per coverage pixel, nonzero where a front-facing triangle of the mesh projects.
+    foundation::Array<foundation::uint8> mCoverage;
+    foundation::uint32 mCoverageWidth = 0;
+    foundation::uint32 mCoverageHeight = 0;
     foundation::usize mVertexCount = 0;
 };
 } // namespace ludus::editor

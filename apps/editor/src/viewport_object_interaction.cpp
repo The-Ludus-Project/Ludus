@@ -309,6 +309,8 @@ void ViewportObjectInteraction::appendObjectOutline(const PreviewObject& object,
                                mSilhouette.Extract(GetRenderSceneMeshPositions(scene, object.Mesh),
                                                    meshToClip,
                                                    MAX_OUTLINE_LINES - inoutOverlay.OutlineLinesPixel.GetSize(),
+                                                   static_cast<uint32>(mFramePixel.width()),
+                                                   static_cast<uint32>(mFramePixel.height()),
                                                    mOutlineSegments) == true;
     if (hasSilhouette == false)
     {
