@@ -2,8 +2,8 @@
 
 Both the installed CLI and the Editor adapter take the SAME lock file,
 ``<build_dir>/.cmake/.ludus-editor.lock``, with a non-blocking exclusive
-lock (``flock`` on Unix, a byte-range lock on Windows). This is why a CLI build and an Editor build of the same tree contend
-and the second one fails with ``Busy`` instead of corrupting the tree. Raw
+lock (``flock`` on Unix, a byte-range lock on Windows). A CLI build and an
+Editor build of the same tree contend, and the second fails with ``Busy``. Raw
 ``cmake`` invocations outside the tooling do not honor this lock; that is a
 documented unsupported case.
 

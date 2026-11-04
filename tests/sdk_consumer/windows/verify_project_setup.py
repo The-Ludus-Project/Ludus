@@ -1,6 +1,7 @@
 """Exercise the shipped project CLI with four real, relocated Windows SDKs."""
-from pathlib import Path
 import json
+import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -24,9 +25,9 @@ def run(*arguments, contains=None, fails=False):
     return result.stdout
 
 
-def check_read_only(project, profile, *, fails=False, contains=None):
+def check_read_only(project, profile, *, tools=ROOT, fails=False, contains=None):
     before = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in project.rglob("*") if p.is_file()}
-    run("check", project, "--tools", ROOT, "--profile", profile, contains=contains, fails=fails)
+    run("check", project, "--tools", tools, "--profile", profile, contains=contains, fails=fails)
     after = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in project.rglob("*") if p.is_file()}
     assert before == after, "Setup check wrote to the project"
 
@@ -97,10 +98,22 @@ def verify(workspace):
     managed["cacheVariables"]["CMAKE_MAKE_PROGRAM"] = "C:/removed-tools/ninja.exe"
     presets.write_text(json.dumps(local))
     check_read_only(project, profile, fails=True, contains="Stale local preset")
+    moved_tools = workspace / "moved tools"
+    scripts = moved_tools / "out/host-tools/venv/Scripts"
+    scripts.mkdir(parents=True)
+    for executable in ("cmake.exe", "ctest.exe", "ninja.exe"):
+        os.link(ROOT / "out/host-tools/venv/Scripts" / executable, scripts / executable)
+    shutil.copytree(ROOT / "out/shader-tools", moved_tools / "out/shader-tools", copy_function=os.link)
+    (moved_tools / "config").mkdir()
+    shutil.copyfile(ROOT / "config/tool_versions.json", moved_tools / "config/tool_versions.json")
+    check_read_only(project, profile, tools=moved_tools, fails=True, contains="SDK or tool inputs changed")
+    args = ("repair", project, "--tools", moved_tools, "--profile", profile, "--sdk", moved)
     run(*args, contains="100% tests passed")
     run(*args, contains="100% tests passed")
+    assert Path(cache_value(cache, "CMAKE_MAKE_PROGRAM")).is_relative_to(scripts)
     with BuildTreeLock(cache.parent):
         run(*args, fails=True, contains="concurrent operations")
+    run("run", project, "--profile", profile)
 
     local = json.loads(presets.read_bytes())
     assert [p["name"] for p in local["configurePresets"] if "vendor" not in p] == ["custom"]
@@ -109,7 +122,8 @@ def verify(workspace):
     assert json.loads(ide.read_bytes())["editor.tabSize"] == 4
     assert all(file.read_bytes() == before for file, before in portable.items())
     for flavor in WINDOWS_CONFIGURATIONS:
-        check_read_only(project, "windows-msvc-" + flavor.lower())
+        check_read_only(project, "windows-msvc-" + flavor.lower(),
+                        tools=moved_tools if flavor == "Profile" else ROOT)
 
 
 if __name__ == "__main__":

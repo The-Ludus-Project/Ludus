@@ -23,7 +23,7 @@ from .resolve import compute_stamp, write_stamp
 from .sdkstore import SdkStore
 from .descriptor import parse_descriptor_file
 from .engine_pin import validate_install_prefix
-from .native import WINDOWS_TARGET, validate_target
+from .native import WINDOWS_CONFIGURATIONS, WINDOWS_TARGET, validate_target
 from .toolchain import PINNED_LLVM_MAJOR
 from .shader_tools import REPAIR_MESSAGE, preparation_steps, project_shader_tools, verify_translator
 
@@ -260,7 +260,13 @@ def _inputs(root: Path, source: Path, sdk: Path, profile: str, web_sdk: Path | N
             cache[key] = shader_paths[name].as_posix()
     if "dxil.dll" in shader_paths:
         cache["LUDUS_DXC_DIRECTORY"] = shader_paths["dxil.dll"].parent.as_posix()
-    records = {profile: {"cacheVariables": cache}}
+    fields = {"cacheVariables": cache}
+    if native.target_triple == WINDOWS_TARGET:
+        fields["generator"] = "Ninja"
+        cache.update(CMAKE_BUILD_TYPE=WINDOWS_CONFIGURATIONS[native.flavor], BUILD_TESTING="ON",
+                     LUDUS_PROJECT_SDK_FLAVOR=native.flavor,
+                     Ludus_DIR=(sdk / "lib/cmake/Ludus").as_posix())
+    records = {profile: fields}
     stamps = {str(sdk): _identity_stamp(native)}
     if web_sdk:
         toolchain = _validate_web_sdk(root, web_sdk, native)
@@ -294,7 +300,7 @@ def verify_tool_versions(configured, root: Path, runner, env, identity=None):
     if is_msvc:
         expected["cmake"] = versions["windows_msvc_probe"]["cmake"]
         if (not detect_msvc_version(str(configured["compiler"]), env).startswith("19.44.")
-                or env.get("WindowsSDKVersion", "").rstrip("\\/") != "10.0.26100.0"):
+                or env.get("WINDOWSSDKVERSION", "").rstrip("\\/") != "10.0.26100.0"):
             raise ToolingError("MissingTools", "Open the x64 VS 2022 developer shell with MSVC 14.44 and Windows SDK 10.0.26100.0")
     for key, pattern in (("cmake", r"cmake version (\d+\.\d+\.\d+)"),
                          ("ninja", r"(\d+\.\d+\.\d+)"),
@@ -379,13 +385,17 @@ def check_project(path: Path, *, tooling_root: Path, profile: str | None = None,
             raise ToolingError(INVALID_PROJECT, f"Stale local preset for {profile}; run repair")
         cache_path = source / "out/build" / profile / "CMakeCache.txt"
         if cache_path.is_file():
-            for key in ("CMAKE_PREFIX_PATH", "CMAKE_MAKE_PROGRAM", "CMAKE_CXX_COMPILER",
-                        "CMAKE_CXX_FLAGS", "CMAKE_OSX_SYSROOT", "CMAKE_OSX_ARCHITECTURES",
-                        "CMAKE_OSX_DEPLOYMENT_TARGET"):
+            keys = ["CMAKE_PREFIX_PATH", "CMAKE_MAKE_PROGRAM", "CMAKE_CXX_COMPILER",
+                    "CMAKE_CXX_FLAGS", "CMAKE_OSX_SYSROOT", "CMAKE_OSX_ARCHITECTURES",
+                    "CMAKE_OSX_DEPLOYMENT_TARGET"]
+            if profile.startswith("windows-msvc-"):
+                keys.extend(("CMAKE_BUILD_TYPE", "Ludus_DIR"))
+            for key in keys:
                 expected = fields["cacheVariables"].get(key)
                 cached = cache_value(cache_path, key)
                 if expected and cached != expected and not (
-                    os.name == "nt" and cached is not None and Path(cached) == Path(expected)
+                    os.name == "nt" and key != "CMAKE_BUILD_TYPE"
+                    and cached is not None and Path(cached) == Path(expected)
                 ):
                     raise ToolingError(INVALID_PROJECT, f"Stale CMake cache for {profile}: {key}; run repair")
     ide = read_object(source / ".vscode/settings.json")
@@ -489,11 +499,13 @@ def _repair_project(path, paths, descriptor, source, tooling_root, sdk, web_sdk,
         if "ludus-local-" + profile in roots:
             raise ToolingError(INVALID_PROJECT, "Custom root preset occupies a managed name")
         inherited = profile + "-base" if profile + "-base" in roots else profile
-        if inherited not in roots:
+        if inherited in roots:
+            fields = dict(fields, inherits=inherited)
+        elif not profile.startswith("windows-msvc-"):
             raise ToolingError(INVALID_PROJECT, f"Missing supported base preset: {profile}")
         name = "ludus-local-" + profile
         marker = {OWNER: profile}
-        local["configurePresets"].append(dict(fields, name=name, inherits=inherited, hidden=False,
+        local["configurePresets"].append(dict(fields, name=name, hidden=False,
             binaryDir="${sourceDir}/out/build/" + profile, cmakeExecutable=str(configured["cmake"]), vendor=marker))
         local["buildPresets"].append(dict(name=name, configurePreset=name, vendor=marker))
         if not profile.startswith("web-"):
