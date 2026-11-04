@@ -158,18 +158,46 @@ jobs:
           # environment and generator supply the toolchain for the source build.
           $toolchain = "$PWD/out/windows-msvc-probe/host.cmake"
           '# Native toolchain selected by the developer environment and generator.' | Set-Content $toolchain
-          foreach ($configuration in @('Debug', 'RelWithDebInfo')) {
-            $flavor = if ($configuration -eq 'Debug') { 'Debug' } else { 'Development' }
-            $build = "out/windows-msvc-probe/engine-$flavor"
-            cmake -S . -B $build @generator "-DCMAKE_TOOLCHAIN_FILE=$toolchain" "-DCMAKE_PREFIX_PATH=$dependencies" "-DCMAKE_BUILD_TYPE=$configuration" "-DLUDUS_BUILD_FLAVOR=$flavor" '-DLUDUS_BUILD_TESTS=ON' '-DLUDUS_WARNINGS_AS_ERRORS=ON' '-DLUDUS_ENABLE_CCACHE=OFF' "-DLUDUS_SLANG_COMPILER=$PWD/out/shader-tools/slang/bin/slangc.exe" "-DLUDUS_DXC_DIRECTORY=$PWD/out/shader-tools/dxc"
-            if ($LASTEXITCODE -ne 0) { throw "Engine $flavor configure failed" }
+          $engineOptions = @("-DCMAKE_TOOLCHAIN_FILE=$toolchain", "-DCMAKE_PREFIX_PATH=$dependencies", '-DLUDUS_BUILD_TESTS=ON', '-DLUDUS_WARNINGS_AS_ERRORS=ON', '-DLUDUS_ENABLE_CCACHE=OFF', "-DLUDUS_SLANG_COMPILER=$PWD/out/shader-tools/slang/bin/slangc.exe", "-DLUDUS_DXC_DIRECTORY=$PWD/out/shader-tools/dxc")
+          $builds = [ordered]@{}
+          if ($visualStudio) {
+            $solution = 'out/windows-msvc-probe/engine'
+            cmake -S . -B $solution @generator @engineOptions
+            if ($LASTEXITCODE -ne 0) { throw 'Engine solution configure failed' }
+            $builds['Debug'] = $solution
+            $builds['Development'] = $solution
+          } else {
+            foreach ($configuration in @('Debug', 'RelWithDebInfo')) {
+              $flavor = if ($configuration -eq 'Debug') { 'Debug' } else { 'Development' }
+              $build = "out/windows-msvc-probe/engine-$flavor"
+              cmake -S . -B $build @generator @engineOptions "-DCMAKE_BUILD_TYPE=$configuration" "-DLUDUS_BUILD_FLAVOR=$flavor"
+              if ($LASTEXITCODE -ne 0) { throw "Engine $flavor configure failed" }
+              $builds[$configuration] = $build
+            }
+          }
+          foreach ($configuration in $builds.Keys) {
+            $build = $builds[$configuration]
             cmake --build $build --config $configuration --target ludus_foundation_base_tests ludus_platform_win32_tests ludus_rhi_d3d12_tests ludus_rhi_lifecycle_tests @buildOptions
-            if ($LASTEXITCODE -ne 0) { throw "Engine $flavor build failed" }
-            $suite = '^ludus_(foundation_base|platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
+            if ($LASTEXITCODE -ne 0) { throw "Engine $configuration build failed" }
+          }
+
+          # Exercise both configurations after building both, so an output
+          # collision cannot silently substitute the most recently built binary.
+          $suite = '^ludus_(foundation_base|platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
+          foreach ($configuration in $builds.Keys) {
+            $build = $builds[$configuration]
             ctest --test-dir $build -C $configuration --output-on-failure --no-tests=error --tests-regex $suite
-            if ($LASTEXITCODE -ne 0) { throw "Engine $flavor tests failed" }
+            $testStatus = $LASTEXITCODE
+            $lastTest = "$build/Testing/Temporary/LastTest.log"
+            if (Test-Path $lastTest) {
+              Copy-Item $lastTest "$build/Testing/Temporary/$configuration.log"
+            }
+            if ($testStatus -ne 0) { throw "Engine $configuration tests failed" }
             $tests = ctest --test-dir $build -C $configuration --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
             $d3d12 = ($tests.tests | Where-Object name -eq ludus_rhi_d3d12_tests).command[0]
+            if ($visualStudio -and (Split-Path -Leaf (Split-Path -Parent $d3d12)) -ne $configuration) {
+              throw "CTest selected the wrong D3D12 executable for $configuration ($d3d12)"
+            }
             $cases = & $d3d12 --list-tests | Out-String
             foreach ($required in @('Portable texture transfers initialize mips', 'draws the fullscreen pipeline across resizes')) {
               if ($cases -notmatch [regex]::Escape($required)) { throw "Missing D3D12 test: $required" }

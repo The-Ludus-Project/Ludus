@@ -13,3 +13,16 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 # level and exception handling once, so cl does not diagnose option overrides.
 string(REGEX REPLACE "(^| )[/-](EHsc|W[0-4])( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 string(REGEX REPLACE "(^| )[/-](EHsc|W[0-4])( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+
+if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
+    # Development uses RelWithDebInfo compiler/linker defaults and dependencies,
+    # with a separate solution configuration and output directories.
+    set(CMAKE_MAP_IMPORTED_CONFIG_DEVELOPMENT RelWithDebInfo)
+    foreach(flags IN ITEMS CXX EXE_LINKER SHARED_LINKER MODULE_LINKER STATIC_LINKER)
+        set(CMAKE_${flags}_FLAGS_DEVELOPMENT "${CMAKE_${flags}_FLAGS_RELWITHDEBINFO}"
+            CACHE STRING "MSVC ${flags} flags for Development")
+    endforeach()
+    if(NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
+        set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT ProgramDatabase)
+    endif()
+endif()

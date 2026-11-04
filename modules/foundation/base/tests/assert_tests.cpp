@@ -2,6 +2,23 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#if defined(LUDUS_TEST_EXPECT_DEBUG)
+static_assert(LUDUS_ENABLE_ASSERTS == 1);
+static_assert(LUDUS_BREAK_ON_CHECK == 1);
+static_assert(LUDUS_ASSERT_DIALOGS_AVAILABLE == 0);
+#    if LUDUS_TEST_EXPECT_DEBUG
+static_assert(LUDUS_BUILD_FLAVOR_ID == 1);
+#        if !defined(LUDUS_BUILD_DEBUG) || !defined(_DEBUG) || !defined(_DLL) || defined(NDEBUG)
+#            error "The Visual Studio Debug build must select Debug policy and the debug dynamic CRT"
+#        endif
+#    else
+static_assert(LUDUS_BUILD_FLAVOR_ID == 2);
+#        if !defined(LUDUS_BUILD_DEVELOPMENT) || defined(_DEBUG) || !defined(_DLL) || !defined(NDEBUG)
+#            error "The Visual Studio Development build must select Development policy and the release dynamic CRT"
+#        endif
+#    endif
+#endif
+
 namespace
 {
 struct ExplicitBool
