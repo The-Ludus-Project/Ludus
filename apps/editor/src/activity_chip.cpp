@@ -1,4 +1,5 @@
 #include "internal/activity_chip.h"
+#include "design_tokens.h"
 #include "internal/editor_icons.h"
 
 #include <QHBoxLayout>
@@ -18,8 +19,8 @@ constexpr int MARKER_HEIGHT = 12;
 constexpr int DOT_DIAMETER = 8;
 constexpr int BAR_WIDTH = 56;
 constexpr int BAR_HEIGHT = 4;
-constexpr int CHIP_SPACING = 6;
-constexpr int GROUP_SPACING = 12;
+constexpr int CHIP_SPACING = design::SPACING_SMALL;
+constexpr int GROUP_SPACING = design::SPACING_MEDIUM;
 constexpr int STATUS_ICON_SIZE = 14;
 constexpr qreal HALF = 0.5;
 

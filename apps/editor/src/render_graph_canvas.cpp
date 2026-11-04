@@ -1,4 +1,5 @@
 #include "internal/render_graph_canvas.h"
+#include "internal/editor_icons.h"
 #include "internal/render_graph_canvas_feedback.h"
 #include "internal/render_graph_comments.h"
 #include "internal/render_graph_diagnostics.h"
@@ -52,6 +53,7 @@
 #include <QShowEvent>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QWheelEvent>
 
 #include <cmath>
@@ -712,11 +714,22 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     mMinimapAction->setChecked(true);
     mMinimapAction->setShortcut(QKeySequence(Qt::Key_M));
     mMinimapAction->setToolTip(QStringLiteral("Show or hide the minimap, an overview of the whole graph (M)"));
+    mAutoLayoutAction->setIcon(GetEditorIcon(EditorIcon::AutoLayout));
+    mMinimapAction->setIcon(GetEditorIcon(EditorIcon::Minimap));
     for (QAction* action : {mFitGraphAction, mFitSelectionAction, resetZoom, mAutoLayoutAction, mMinimapAction})
     {
         action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
         addAction(action);
         mFramingToolbar->addAction(action);
+    }
+    // The two commands that change the graph's view of itself lead with an icon; the framing commands stay text.
+    for (QAction* action : {mAutoLayoutAction, mMinimapAction})
+    {
+        QToolButton* buttonOrNull = qobject_cast<QToolButton*>(mFramingToolbar->widgetForAction(action));
+        if (buttonOrNull != nullptr)
+        {
+            buttonOrNull->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        }
     }
     mFramingToolbar->addSeparator();
     mZoomLabel->setObjectName(QStringLiteral("renderGraphZoomLabel"));

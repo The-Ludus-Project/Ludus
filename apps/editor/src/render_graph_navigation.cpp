@@ -1,4 +1,5 @@
 #include "internal/render_graph_navigation.h"
+#include "design_tokens.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -30,7 +31,7 @@ namespace
 {
 constexpr int32 FIND_WIDTH = 480;
 constexpr int32 FIND_HEIGHT = 320;
-constexpr int32 SCREEN_MARGIN = 8;
+constexpr int32 SCREEN_MARGIN = design::SPACING_SMALL;
 } // namespace
 
 RenderGraphNavigation::RenderGraphNavigation(QToolBar& inoutToolbar, QWidget& inoutCanvas)

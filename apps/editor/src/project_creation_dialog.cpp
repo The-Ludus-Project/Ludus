@@ -1,4 +1,5 @@
 #include "internal/project_creation_dialog.h"
+#include "design_tokens.h"
 #include "internal/theme_fonts.h"
 #include "internal/workspace_style.h"
 
@@ -57,8 +58,11 @@ ProjectCreationDialog::ProjectCreationDialog(QWidget* parent) : QDialog(parent)
     setMinimumWidth(540);
     ApplyWorkspaceStyle(this);
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(20, 20, 20, 20);
-    layout->setSpacing(12);
+    layout->setContentsMargins(design::SPACING_LARGE,
+                               design::SPACING_LARGE,
+                               design::SPACING_LARGE,
+                               design::SPACING_LARGE);
+    layout->setSpacing(design::SPACING_MEDIUM);
     auto* heading = new QLabel(QStringLiteral("Create a project"), this);
     heading->setFont(MakeTypeFont(heading->font(), TypeRole::Title));
     layout->addWidget(heading);

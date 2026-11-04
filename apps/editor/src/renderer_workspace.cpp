@@ -1,3 +1,4 @@
+#include "design_tokens.h"
 #include "internal/render_graph_configuration_editor.h"
 #include "internal/render_graph_scene_bundle.h"
 #include "internal/render_graph_settings_editor.h"
@@ -109,8 +110,8 @@ constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
 // The source tree stays wide enough for nested node names.
 constexpr int32 MINIMUM_SOURCE_TREE_WIDTH = 200;
 constexpr int32 STATUS_VISIBLE_LINES = 1;
-constexpr int32 SOURCE_PAGE_MARGIN = 2;
-constexpr int32 SOURCE_PAGE_SPACING = 2;
+constexpr int32 SOURCE_PAGE_MARGIN = design::SPACING_EXTRA_SMALL;
+constexpr int32 SOURCE_PAGE_SPACING = design::SPACING_EXTRA_SMALL;
 constexpr int32 STATUS_PADDING_PIXELS = 4;
 constexpr int32 SOURCE_VIEW_STATE_VERSION = 1;
 

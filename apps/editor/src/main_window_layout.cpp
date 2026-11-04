@@ -98,7 +98,7 @@ constexpr foundation::int32 MAX_PROPERTIES_DOCK_PIXELS = 380;
 constexpr foundation::int32 BOTTOM_DOCK_PERCENT = 27;
 constexpr foundation::int32 MIN_BOTTOM_DOCK_PIXELS = 160;
 constexpr foundation::int32 MAX_BOTTOM_DOCK_PIXELS = 300;
-constexpr foundation::int32 PROPERTIES_HINT_MARGIN_PIXELS = 8;
+constexpr foundation::int32 PROPERTIES_HINT_MARGIN_PIXELS = design::SPACING_SMALL;
 constexpr foundation::int64 MAX_SETTINGS_BYTES = foundation::int64{64} * 1024;
 constexpr foundation::int32 MAX_STATE_BYTES = 32 * 1024;
 /// Width of the setup notice's progress bar, and how long its "ready" confirmation stays.
@@ -211,9 +211,7 @@ void MainWindow::BuildUi()
     auto* form = new QWidget(projectScroll);
     auto* projectLayout = new QVBoxLayout(form);
     auto* heading = new QLabel(QStringLiteral("Your project"), form);
-    auto headingFont = heading->font();
-    headingFont.setBold(true);
-    heading->setFont(headingFont);
+    heading->setFont(MakeTypeFont(heading->font(), TypeRole::Title));
     projectLayout->addWidget(heading);
     const auto label = [form, projectLayout](const QString& name) {
         auto* value = new QLabel(form);
@@ -556,8 +554,11 @@ void MainWindow::BuildUi()
     mRecentRemoveButtonOrNull->setObjectName(QStringLiteral("removeRecentProjectButton"));
     mRecentRemoveButtonOrNull->setToolTip(QStringLiteral("Forget the selected project. Its files are not deleted."));
     BrowseProjectButton_ = new QPushButton(QStringLiteral("Open Project..."), recentPanel);
-    recentLayout->setContentsMargins(24, 24, 24, 24);
-    recentLayout->setSpacing(12);
+    recentLayout->setContentsMargins(design::SPACING_EXTRA_LARGE,
+                                     design::SPACING_EXTRA_LARGE,
+                                     design::SPACING_EXTRA_LARGE,
+                                     design::SPACING_EXTRA_LARGE);
+    recentLayout->setSpacing(design::SPACING_MEDIUM);
     auto* title = new QLabel(QStringLiteral("Welcome to Ludus"), recentPanel);
     auto* brand = new QLabel(recentPanel);
     brand->setObjectName(QStringLiteral("welcomeLogo"));
@@ -593,7 +594,7 @@ void MainWindow::BuildUi()
     mWelcomeProblemOrNull->hide();
     recentLayout->addWidget(mWelcomeProblemOrNull);
     connect(mWelcomeProblemOrNull, &StateView::ActionTriggered, BrowseProjectButton_, &QPushButton::click);
-    recentLayout->addSpacing(12);
+    recentLayout->addSpacing(design::SPACING_MEDIUM);
     recentLayout->addWidget(new QLabel(QStringLiteral("Recent projects"), recentPanel));
     recentLayout->addWidget(mRecentEmptyStateOrNull, 0, Qt::AlignHCenter);
     recentLayout->addWidget(RecentList_, 1);

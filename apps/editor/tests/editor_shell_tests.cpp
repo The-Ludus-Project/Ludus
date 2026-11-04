@@ -1680,7 +1680,7 @@ TEST_CASE("graph focus restores the active document and panel choices and resolv
     CHECK(output->visibleRegion().isEmpty() == false);
 }
 
-TEST_CASE("Primary toolbar commands show an icon beside the label and every explorer row has an icon",
+TEST_CASE("Every toolbar command has an icon, primary ones beside the label, and every explorer row has an icon",
           "[editor][layout][shell][icons]")
 {
     QTemporaryDir directory;
@@ -1691,30 +1691,44 @@ TEST_CASE("Primary toolbar commands show an icon beside the label and every expl
     controller.OpenProject(WriteProject(directory));
     Settle();
     QToolBar* game = window.findChild<QToolBar*>(QStringLiteral("gameToolbar"));
+    QToolBar* standard = window.findChild<QToolBar*>(QStringLiteral("standardToolbar"));
     REQUIRE(game != nullptr);
-    const auto checkButton = [game](const QString& label, bool hasIcon) {
+    REQUIRE(standard != nullptr);
+    const auto checkButton = [](QToolBar* toolbar, const QString& label, Qt::ToolButtonStyle style) {
         QAction* foundOrNull = nullptr;
-        for (QAction* action : game->actions())
+        for (QAction* action : toolbar->actions())
         {
             if (action->iconText() == label)
             {
                 foundOrNull = action;
             }
         }
+        INFO(label.toStdString());
         REQUIRE(foundOrNull != nullptr);
-        QToolButton* button = qobject_cast<QToolButton*>(game->widgetForAction(foundOrNull));
+        QToolButton* button = qobject_cast<QToolButton*>(toolbar->widgetForAction(foundOrNull));
         REQUIRE(button != nullptr);
-        CHECK(foundOrNull->icon().isNull() == (hasIcon == false));
-        CHECK(button->toolButtonStyle() == (hasIcon ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonTextOnly));
+        CHECK(foundOrNull->icon().isNull() == false);
+        CHECK(button->toolButtonStyle() == style);
+        // An icon without a label still says what it is, and what key does it.
+        CHECK(foundOrNull->toolTip().isEmpty() == false);
     };
-    for (const char* label : {"Build", "Run", "Play", "Stop"})
+    // Commands that start something or choose a destination carry their label...
+    for (const char* label : {"Build", "Run", "Debug", "Play", "Stop", "Reload Code"})
     {
-        checkButton(QString::fromLatin1(label), true);
+        checkButton(game, QString::fromLatin1(label), Qt::ToolButtonTextBesideIcon);
     }
-    // Everything else keeps a text-only button.
-    for (const char* label : {"Debug", "Pause", "Step", "Resume", "Reload Code"})
+    for (const char* label : {"Open", "Save"})
     {
-        checkButton(QString::fromLatin1(label), false);
+        checkButton(standard, QString::fromLatin1(label), Qt::ToolButtonTextBesideIcon);
+    }
+    // ...and the peers in a run of symmetric commands are icon-only.
+    for (const char* label : {"Pause", "Step", "Resume"})
+    {
+        checkButton(game, QString::fromLatin1(label), Qt::ToolButtonIconOnly);
+    }
+    for (const char* label : {"Undo", "Redo"})
+    {
+        checkButton(standard, QString::fromLatin1(label), Qt::ToolButtonIconOnly);
     }
     QTreeWidget* tree = window.findChild<ProjectExplorer*>()->findChild<QTreeWidget*>();
     REQUIRE(tree != nullptr);

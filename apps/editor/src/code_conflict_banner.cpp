@@ -1,4 +1,5 @@
 #include "internal/code_conflict_banner.h"
+#include "design_tokens.h"
 
 #include <QHBoxLayout>
 #include <QLabel>
@@ -9,9 +10,9 @@ namespace ludus::editor
 namespace
 {
 /// Banner layout spacing in pixels, kept beside its sole use.
-constexpr int BANNER_MARGIN_HORIZONTAL = 8;
-constexpr int BANNER_MARGIN_VERTICAL = 4;
-constexpr int BANNER_SPACING = 8;
+constexpr int BANNER_MARGIN_HORIZONTAL = design::SPACING_SMALL;
+constexpr int BANNER_MARGIN_VERTICAL = design::SPACING_EXTRA_SMALL;
+constexpr int BANNER_SPACING = design::SPACING_SMALL;
 } // namespace
 
 CodeConflictBanner::CodeConflictBanner(QWidget* parentOrNull) : QFrame(parentOrNull)

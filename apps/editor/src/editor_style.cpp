@@ -65,7 +65,7 @@ constexpr int TOOL_BUTTON_PADDING = 4;
 /// what remains, so the chevron never lands on the last letters.
 constexpr int TOOL_BUTTON_MENU_INDICATOR_WIDTH = 16;
 constexpr int HEADER_PADDING = 4;
-constexpr int TOOL_BAR_SPACING = 4;
+constexpr int TOOL_BAR_SPACING = design::SPACING_EXTRA_SMALL;
 constexpr int SEPARATOR_EXTENT = 4;
 constexpr qreal HALF = 0.5;
 /// Window lightness (of 255) below which the application palette counts as dark.
