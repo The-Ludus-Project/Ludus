@@ -20,18 +20,18 @@ namespace
 /// Layout calls whose arguments are distances in pixels.
 const QRegularExpression& GetSpacingCall()
 {
-    static const QRegularExpression call(QStringLiteral(
+    static const QRegularExpression SPACING_CALL(QStringLiteral(
         R"(\b(setContentsMargins|setSpacing|addSpacing|setHorizontalSpacing|setVerticalSpacing)\s*\(([^;{}]*)\))"));
-    return call;
+    return SPACING_CALL;
 }
 
 /// A constant named like a layout distance: it must be built from design tokens, not typed in. Control padding
 /// belongs to the style's own metrics and is not matched.
 const QRegularExpression& GetSpacingConstant()
 {
-    static const QRegularExpression constant(
+    static const QRegularExpression SPACING_CONSTANT(
         QStringLiteral(R"(constexpr\s+(?:int|int32|foundation::int32)\s+(\w*(?:SPACING|MARGIN)\w*)\s*=\s*([^;]+);)"));
-    return constant;
+    return SPACING_CONSTANT;
 }
 
 /// Distances that are not steps of the spacing scale: the code editor's gutter and callout metrics follow its glyph
@@ -60,8 +60,8 @@ bool IsTypedNumber(const QString& argument)
     {
         return false;
     }
-    static const QRegularExpression number(QStringLiteral(R"((?<![\w:])\d+(?![\w:]))"));
-    return number.match(trimmed).hasMatch();
+    static const QRegularExpression TYPED_NUMBER(QStringLiteral(R"((?<![\w:])\d+(?![\w:]))"));
+    return TYPED_NUMBER.match(trimmed).hasMatch();
 }
 
 QStringList FindSpacingViolations()

@@ -1412,7 +1412,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     target_compile_definitions(ludus_render_graph_pipeline_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
         LUDUS_EDITOR_PROJECT_ROOT="${PROJECT_SOURCE_DIR}")
     target_link_libraries(ludus_render_graph_pipeline_tests PRIVATE
-        ludus_editor_render_graph_model ludus_editor_render_graph_canvas ludus_editor_presentation ludus_editor_shader_api_resources
+        ludus_editor_render_graph_model ludus_editor_render_graph_canvas ludus_editor_presentation
+        ludus_editor_shader_api_resources
         Ludus::RenderGraphFormat Qt6::Core Qt6::Widgets Qt6::Test
         Ludus::FoundationContainers Ludus::FoundationMath Catch2::Catch2)
     ludus_apply_project_defaults(ludus_render_graph_pipeline_tests)
