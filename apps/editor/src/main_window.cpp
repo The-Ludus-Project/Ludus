@@ -973,6 +973,10 @@ void MainWindow::OnCopyJobDetails()
 void MainWindow::OnStateChanged()
 {
     LUDUS_PROFILE_SCOPE(EditorStateChanged);
+    if (RenderedProjectEpoch_ != Controller_->State().ProjectEpoch)
+    {
+        mDocuments->ClearClosedDocumentHistory();
+    }
     mProfilingPanel->SetProjectRoot(QFileInfo(Controller_->State().DescriptorPath).absolutePath());
     RenderFields();
     RenderRecentProjects();

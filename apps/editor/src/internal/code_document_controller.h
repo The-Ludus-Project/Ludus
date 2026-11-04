@@ -17,8 +17,8 @@ struct CodeTextCapture final
     foundation::usize LimitBytes = 0;
 };
 
-/// Bridges committed Qt input to one authoritative document history. Editor and
-/// host outlive this object. GUI thread only; no file/process ownership.
+/// Bridges committed Qt input to one authoritative document history. The editor
+/// and any bound host must be alive during use. GUI thread only.
 class CodeDocumentController final : public QObject
 {
     Q_OBJECT
@@ -68,6 +68,7 @@ private:
     bool mHasTextGroup = false;
     bool mHasCrLf = false;
     bool mHasTrailingWhitespace = false;
+    bool mIsEditorAlive = true;
     QElapsedTimer mTypingClock;
 };
 } // namespace ludus::editor

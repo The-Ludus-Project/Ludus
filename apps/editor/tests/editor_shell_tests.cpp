@@ -1523,6 +1523,63 @@ TEST_CASE("Document shortcuts switch from text editors and tool windows", "[edit
     CHECK(well.GetActiveDocumentOrNull() == nullptr);
 }
 
+TEST_CASE("The reopen shortcut restores workspace tabs and their drafts in close order",
+          "[editor][shell][reopen-document]")
+{
+    QTemporaryDir directory;
+    EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    DocumentWell& well = Well(window);
+    QLineEdit* first = new QLineEdit;
+    first->setObjectName(QStringLiteral("reopenFirst"));
+    first->setText(QStringLiteral("unsaved draft"));
+    QWidget* second = new QWidget;
+    second->setObjectName(QStringLiteral("reopenSecond"));
+    well.AddDocument(first, QStringLiteral("First"));
+    well.AddDocument(second, QStringLiteral("Second"));
+    REQUIRE(well.OpenDocument(first) == true);
+    REQUIRE(well.OpenDocument(second) == true);
+    window.show();
+    window.activateWindow();
+    Settle();
+    QAction* reopen = Action(window, QStringLiteral("window.reopenClosedDocument"));
+    CHECK(reopen->isEnabled() == false);
+    QTabWidget* group = well.findChild<QTabWidget*>(QStringLiteral("documentGroup"));
+    REQUIRE(group != nullptr);
+    Q_EMIT group->tabCloseRequested(group->indexOf(first));
+    Action(window, QStringLiteral("window.closeDocument"))->trigger();
+    REQUIRE(reopen->isEnabled() == true);
+    QTest::keyClick(&window, Qt::Key_T, Qt::ControlModifier | Qt::ShiftModifier);
+    CHECK(well.GetActiveDocumentOrNull() == second);
+    QTest::keyClick(second, Qt::Key_T, Qt::ControlModifier | Qt::ShiftModifier);
+    CHECK(well.GetActiveDocumentOrNull() == first);
+    CHECK(QApplication::focusWidget() == first);
+    CHECK(first->text() == QStringLiteral("unsaved draft"));
+    CHECK(reopen->isEnabled() == false);
+}
+
+TEST_CASE("Reopening skips unavailable, removed and manually reopened workspace tabs",
+          "[editor][shell][reopen-document]")
+{
+    DocumentWell well;
+    QWidget* document = new QWidget;
+    document->setObjectName(QStringLiteral("reopenDocument"));
+    well.AddDocument(document, QStringLiteral("Document"));
+    REQUIRE(well.OpenDocument(document) == true);
+    well.CloseDocument(document);
+    REQUIRE(well.OpenDocument(document) == true);
+    CHECK(well.ReopenClosedDocument() == false);
+    well.CloseDocument(document);
+    well.SetDocumentAvailable(document, false);
+    well.SetDocumentAvailable(document, true);
+    CHECK(well.ReopenClosedDocument() == false);
+    REQUIRE(well.OpenDocument(document) == true);
+    well.CloseDocument(document);
+    REQUIRE(well.RemoveDocument(document) == true);
+    delete document;
+    CHECK(well.ReopenClosedDocument() == false);
+}
+
 TEST_CASE("graph focus restores the active document and panel choices and resolved diagnostics release canvas space",
           "[editor][layout][shell][render-graph][usability]")
 {

@@ -368,8 +368,16 @@ inline constexpr EditorCommand WINDOW_CLOSE_DOCUMENT_COMMAND
     .Text = "&Close Document",
     .ToolbarText = "",
     .Shortcut = "Ctrl+W",
-    .Help = "Close the active document's tab. Its draft stays open; reopen it from Project Explorer or the "
-            "Window menu.",
+    .Help = "Close the active document tab and keep its draft available to reopen.",
+    .IsCheckable = false,
+};
+inline constexpr EditorCommand WINDOW_REOPEN_DOCUMENT_COMMAND
+{
+    .Id = "window.reopenClosedDocument",
+    .Text = "&Reopen Closed Document",
+    .ToolbarText = "",
+    .Shortcut = "Ctrl+Shift+T",
+    .Help = "Reopen and focus the most recently closed workspace tab.",
     .IsCheckable = false,
 };
 inline constexpr EditorCommand WINDOW_RESET_LAYOUT_COMMAND

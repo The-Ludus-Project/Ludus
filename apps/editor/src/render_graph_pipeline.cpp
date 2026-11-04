@@ -3,10 +3,13 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <algorithm>
+
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QEvent>
+#include <QFontMetrics>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -14,7 +17,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
+#include <QList>
 #include <QMouseEvent>
 #include <QObject>
 #include <QPalette>
@@ -42,6 +47,104 @@ constexpr int32 DIMENSION_COUNT = 3;
 constexpr int32 MAX_RAY_RECURSION = 31;
 constexpr int32 MAX_RAY_INTERFACE_BYTES = 4096;
 constexpr int32 AUTOMATIC_RAY_LIMIT = -1;
+/// An assigned-shader chip shows at most this many characters' width; its tooltip carries the whole program name.
+constexpr int32 SHADER_CHIP_MAX_CHARACTERS = 30;
+
+/// Items left to right, wrapping onto a new row when the next one would not fit, so a narrow Properties dock shows
+/// every part button instead of truncating them to "Read... Writable R...".
+class FlowLayout final : public QLayout
+{
+public:
+    explicit FlowLayout(QWidget* parentOrNull, int32 spacingPixels) : QLayout(parentOrNull)
+    {
+        setContentsMargins(0, 0, 0, 0);
+        setSpacing(spacingPixels);
+    }
+    ~FlowLayout() override
+    {
+        for (QLayoutItem* item : mItems)
+        {
+            delete item;
+        }
+    }
+    void addItem(QLayoutItem* item) override
+    {
+        mItems.append(item);
+    }
+    int count() const override
+    {
+        return static_cast<int>(mItems.size());
+    }
+    QLayoutItem* itemAt(int index) const override
+    {
+        return mItems.value(index, nullptr);
+    }
+    QLayoutItem* takeAt(int index) override
+    {
+        return index >= 0 && index < mItems.size() ? mItems.takeAt(index) : nullptr;
+    }
+    Qt::Orientations expandingDirections() const override
+    {
+        return {};
+    }
+    bool hasHeightForWidth() const override
+    {
+        return true;
+    }
+    int heightForWidth(int width) const override
+    {
+        return arrange(QRect(0, 0, width, 0), true);
+    }
+    void setGeometry(const QRect& rect) override
+    {
+        QLayout::setGeometry(rect);
+        arrange(rect, false);
+    }
+    QSize sizeHint() const override
+    {
+        return minimumSize();
+    }
+    QSize minimumSize() const override
+    {
+        QSize size;
+        for (const QLayoutItem* item : mItems)
+        {
+            size = size.expandedTo(item->minimumSize());
+        }
+        const QMargins margins = contentsMargins();
+        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom());
+    }
+
+private:
+    /// Place every item, or only measure when isTestOnly, and return the height used.
+    int arrange(const QRect& rect, bool isTestOnly) const
+    {
+        const QMargins margins = contentsMargins();
+        const QRect inner = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom());
+        int x = inner.x();
+        int y = inner.y();
+        int rowHeight = 0;
+        for (QLayoutItem* item : mItems)
+        {
+            // An item wider than the row takes the row, and its widget clips or elides.
+            const QSize hint = item->sizeHint().boundedTo(QSize(inner.width(), item->sizeHint().height()));
+            if (x > inner.x() && x + hint.width() > inner.right() + 1)
+            {
+                x = inner.x();
+                y += rowHeight + spacing();
+                rowHeight = 0;
+            }
+            if (isTestOnly == false)
+            {
+                item->setGeometry(QRect(QPoint(x, y), hint));
+            }
+            x += hint.width() + spacing();
+            rowHeight = std::max(rowHeight, hint.height());
+        }
+        return y + rowHeight - rect.y() + margins.bottom();
+    }
+    QList<QLayoutItem*> mItems;
+};
 
 QJsonArray ReadRows(const QTableWidget& table, const QStringList& fields)
 {
@@ -338,8 +441,7 @@ void RenderGraphPipelineEditor::ShowParts()
     QVBoxLayout* parts = new QVBoxLayout(overview);
     parts->setContentsMargins(0, 0, 0, 0);
     parts->setSpacing(design::SPACING_SMALL);
-    QHBoxLayout* partRow = new QHBoxLayout;
-    partRow->setSpacing(design::SPACING_EXTRA_SMALL);
+    FlowLayout* partRow = new FlowLayout(nullptr, design::SPACING_EXTRA_SMALL);
     QButtonGroup* selection = new QButtonGroup(overview);
     selection->setExclusive(true);
     for (int32 index = 0; index < mTabs->count(); ++index)
@@ -354,13 +456,11 @@ void RenderGraphPipelineEditor::ShowParts()
         selection->addButton(part, index);
         partRow->addWidget(part);
     }
-    partRow->addStretch();
     parts->addLayout(partRow);
     const QJsonArray shaders = mNode.value(QStringLiteral("shaders")).toArray();
     if (shaders.isEmpty() == false)
     {
-        QHBoxLayout* shaderRow = new QHBoxLayout;
-        shaderRow->setSpacing(design::SPACING_EXTRA_SMALL);
+        FlowLayout* shaderRow = new FlowLayout(nullptr, design::SPACING_EXTRA_SMALL);
         QLabel* caption = new QLabel(QStringLiteral("Assigned shaders"), overview);
         caption->setForegroundRole(QPalette::PlaceholderText);
         shaderRow->addWidget(caption);
@@ -370,8 +470,11 @@ void RenderGraphPipelineEditor::ShowParts()
             QToolButton* part = new QToolButton(overview);
             part->setObjectName(QStringLiteral("renderGraphShaderPart_") +
                                 shader.value(QStringLiteral("id")).toString());
-            part->setText(QStringLiteral("%1 · %2").arg(shader.value(QStringLiteral("stage")).toString(),
-                                                        shader.value(QStringLiteral("program")).toString()));
+            part->setText(part->fontMetrics().elidedText(
+                QStringLiteral("%1 · %2").arg(shader.value(QStringLiteral("stage")).toString(),
+                                              shader.value(QStringLiteral("program")).toString()),
+                Qt::ElideMiddle,
+                part->fontMetrics().averageCharWidth() * SHADER_CHIP_MAX_CHARACTERS));
             part->setToolTip(
                 QStringLiteral("Program: %1\nClick to edit the assignment; double-click to open the shader source")
                     .arg(shader.value(QStringLiteral("program")).toString()));
@@ -386,7 +489,6 @@ void RenderGraphPipelineEditor::ShowParts()
                 mShaders->setFocus(Qt::OtherFocusReason);
             });
         }
-        shaderRow->addStretch();
         parts->addLayout(shaderRow);
     }
     connect(selection, &QButtonGroup::idClicked, mTabs, &QTabWidget::setCurrentIndex);
@@ -469,7 +571,12 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     table->setColumnCount(static_cast<int32>(fields.size()));
     table->setHorizontalHeaderLabels(fields);
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    // The table is as tall as its rows (at least a few), and the buttons sit right under it, instead of
+    // the table stretching into a large empty box.
     table->setMinimumHeight(TABLE_HEIGHT);
+    table->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+    table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    table->horizontalHeader()->setStretchLastSection(true);
     table->setProperty("fields", fields);
     if (name == QStringLiteral("outputs"))
     {
@@ -631,6 +738,7 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     buttons->addWidget(add);
     buttons->addWidget(remove);
     layout->addLayout(buttons);
+    layout->addStretch(1);
     return table;
 }
 

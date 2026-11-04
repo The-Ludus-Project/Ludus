@@ -14,6 +14,7 @@
 // See docs/development/editor-workspace.md#workspace-layout.
 
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/fixed_array.hpp>
 
 #include <QJsonObject>
 #include <QList>
@@ -83,6 +84,13 @@ public:
     /// first and empty groups are removed; then CloseRequested is emitted for each
     /// still-open OwnerCloses view in group and tab order.
     void CloseAllDocuments();
+    /// Reopen and focus the most recently closed available Hide view in the active group.
+    /// @return False when the history is empty.
+    bool ReopenClosedDocument();
+    /// True when a previously closed view can be reopened.
+    [[nodiscard]] bool HasClosedDocuments() const;
+    /// Forget closed tabs when the editor changes project sessions.
+    void ClearClosedDocumentHistory();
     /// Allow or forbid opening a view; making it unavailable closes its tab. Used for
     /// views that need a loaded project (or, for the start page, its absence).
     void SetDocumentAvailable(QWidget* document, bool isAvailable);
@@ -141,6 +149,8 @@ Q_SIGNALS:
     void ActiveDocumentChanged(QWidget* documentOrNull);
     /// Documents were opened, closed, moved or regrouped.
     void LayoutChanged();
+    /// The list of views eligible for reopening changed.
+    void ClosedDocumentHistoryChanged();
     /// The user asked to close an open OwnerCloses view (tab close button, tab menu,
     /// CloseDocument or CloseAllDocuments). The view stays open until its owner calls
     /// RemoveDocument; ignoring the request keeps it open.
@@ -150,6 +160,7 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    static constexpr foundation::usize MAX_CLOSED_DOCUMENTS = 32;
     struct Entry final
     {
         QWidget* Document;
@@ -165,6 +176,8 @@ private:
     void insertInto(QTabWidget* group, QWidget* document, foundation::int32 index);
     void detach(QWidget* document);
     void hideDocument(QWidget* document);
+    void rememberClosedDocument(QWidget* document);
+    void forgetClosedDocument(QWidget* document);
     void requestClose(const QList<QWidget*>& documents);
     void removeEmptyGroups();
     void setActiveGroup(QTabWidget* group);
@@ -174,6 +187,7 @@ private:
     QSplitter* mSplitter;
     QList<QTabWidget*> mGroups;
     QList<Entry> mEntries;
+    foundation::FixedArray<QWidget*, MAX_CLOSED_DOCUMENTS> mClosedDocuments;
     QTabWidget* mActiveGroupOrNull = nullptr;
     QWidget* mPublishedDocumentOrNull = nullptr;
     // Closed views are parented here, hidden, so they stay alive and keep their state.

@@ -22,12 +22,15 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMainWindow>
+#include <QMenu>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QStatusBar>
+#include <QStyle>
 #include <QStyleOptionComboBox>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTest>
@@ -248,4 +251,94 @@ TEST_CASE("Combo boxes keep room for their whole text and draw a small chevron",
         CHECK(inked.width() <= arrow.width() / 2 + 2);
         CHECK(inked.height() <= arrow.height() / 3);
     }
+}
+
+TEST_CASE("A menu button keeps its label and its chevron apart", "[editor][style]")
+{
+    constexpr int MIN_GAP_PIXELS = 2;
+    QWidget root;
+    ApplyWorkspaceStyle(&root);
+    QVBoxLayout* layout = new QVBoxLayout(&root);
+    QList<QToolButton*> buttons;
+    for (const QString& text : {QStringLiteral("Add Geometry / Light"), QStringLiteral("Add")})
+    {
+        QToolButton* button = new QToolButton(&root);
+        button->setText(text);
+        button->setPopupMode(QToolButton::InstantPopup);
+        button->setMenu(new QMenu(button));
+        button->setFocusPolicy(Qt::NoFocus);
+        layout->addWidget(button);
+        buttons.append(button);
+    }
+    root.show();
+    QApplication::processEvents();
+    for (QToolButton* button : buttons)
+    {
+        INFO(button->text().toStdString());
+        // The button is sized for its whole label and the chevron beside it.
+        CHECK(button->sizeHint().width() >=
+              button->fontMetrics().horizontalAdvance(button->text()) +
+                  button->style()->pixelMetric(QStyle::PM_MenuButtonIndicator, nullptr, button));
+        const QImage image = button->grab().toImage();
+        const QColor background = image.pixelColor(image.width() / 2, 1);
+        // The inked columns inside the edge form the label, then the chevron: two runs with blank columns between.
+        QList<bool> columns;
+        for (int x = 2; x < image.width() - 2; ++x)
+        {
+            bool hasInk = false;
+            for (int y = 2; y < image.height() - 2; ++y)
+            {
+                hasInk = hasInk == true || image.pixelColor(x, y) != background;
+            }
+            columns.append(hasInk);
+        }
+        int lastInk = -1;
+        int chevronStart = -1;
+        for (int x = static_cast<int>(columns.size()) - 1; x >= 0; --x)
+        {
+            if (columns[x] == true && lastInk < 0)
+            {
+                lastInk = x;
+            }
+            if (lastInk >= 0 && columns[x] == false)
+            {
+                chevronStart = x + 1;
+                break;
+            }
+        }
+        REQUIRE(lastInk >= 0);
+        REQUIRE(chevronStart >= 0);
+        int gap = 0;
+        for (int x = chevronStart - 1; x >= 0 && columns[x] == false; --x)
+        {
+            ++gap;
+        }
+        CHECK(gap >= MIN_GAP_PIXELS);
+        CHECK(chevronStart > static_cast<int>(columns.size()) / 2);
+    }
+}
+
+TEST_CASE("Tabs below their content draw the accent rule on the edge facing it", "[editor][style]")
+{
+    QWidget root;
+    ApplyWorkspaceStyle(&root);
+    QVBoxLayout* layout = new QVBoxLayout(&root);
+    QTabBar* bar = new QTabBar(&root);
+    bar->setShape(QTabBar::RoundedSouth);
+    bar->setFocusPolicy(Qt::NoFocus);
+    bar->addTab(QStringLiteral("Properties"));
+    bar->addTab(QStringLiteral("Live Inspector"));
+    bar->setCurrentIndex(0);
+    layout->addWidget(bar);
+    root.show();
+    QApplication::processEvents();
+    const QRect tab = bar->tabRect(0);
+    const QImage image = bar->grab().toImage();
+    const QColor accent = bar->palette().color(QPalette::Link);
+    const int centre = tab.center().x();
+    // The rule is on the top edge, toward the content above, and not on the outer edge.
+    CHECK(image.pixelColor(centre, tab.top()) == accent);
+    CHECK(image.pixelColor(centre, tab.bottom()) != accent);
+    // The unselected tab carries no rule.
+    CHECK(image.pixelColor(bar->tabRect(1).center().x(), bar->tabRect(1).top()) != accent);
 }
