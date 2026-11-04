@@ -307,3 +307,54 @@ TEST_CASE("Selection outline rejects invalid meshes, views and a fifth version",
         CHECK(scene.Outline.Release(version) == rhi::RasterStatus::Ready);
     }
 }
+
+TEST_CASE("Selection outline strokes an RGBA8 attachment texture the same way as the surface",
+          "[renderer][selection-outline][gpu]")
+{
+    ShutdownGuard guard;
+    Scene scene;
+    if (Start(scene) == false)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+    SetSquareMesh(scene.Outline);
+    rr::PreparedSelectionOutline prepared;
+    REQUIRE(PrepareReady(scene.Outline, MakeView(0), prepared) == rhi::RasterStatus::Ready);
+    rhi::TextureDescription description;
+    description.Width = TARGET_WIDTH;
+    description.Height = TARGET_HEIGHT;
+    description.Attachment = true;
+    rhi::TextureHandle texture;
+    const auto created = rhi::CreateTexture(scene.Device, description, {}, texture);
+    REQUIRE((created == rhi::RasterStatus::Ready || created == rhi::RasterStatus::Pending));
+    REQUIRE(rhi::BeginFrame(scene.Device, scene.Surface) == rhi::DeviceStatus::Ready);
+    rhi::RasterPassDescription pass;
+    pass.Color = texture;
+    pass.DepthLoad = rhi::RasterLoad::Discard;
+    REQUIRE(rhi::BeginRasterPass(scene.Device, pass) == rhi::RasterStatus::Ready);
+    REQUIRE(scene.Outline.Draw(prepared, pass) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::EndFrame(scene.Device) == rhi::DeviceStatus::Ready);
+    constexpr usize ROW_PITCH = TARGET_WIDTH * BYTES_PER_PIXEL;
+    rhi::ReadbackTicket ticket;
+    REQUIRE(
+        rhi::RequestTextureReadback(scene.Device, texture, {0, 0, 0, TARGET_WIDTH, TARGET_HEIGHT}, ROW_PITCH, ticket) ==
+        rhi::RasterStatus::Pending);
+    bool isReady = false;
+    for (usize i = 0; i < POLL_LIMIT && isReady == false; ++i)
+    {
+        isReady = rhi::GetStatus(scene.Device, ticket) == rhi::RasterStatus::Ready;
+    }
+    REQUIRE(isReady);
+    uint8 image[TARGET_WIDTH * TARGET_HEIGHT * BYTES_PER_PIXEL];
+    REQUIRE(rhi::CopyReadback(scene.Device, ticket, image, sizeof(image)) == rhi::RasterStatus::Ready);
+    constexpr uint32 MIDDLE_ROW = 32;
+    constexpr uint32 LEFT_EDGE = 24;
+    CHECK(IsNear(image, LEFT_EDGE - 1, MIDDLE_ROW, FULL, 0, 0));
+    CHECK(IsNear(image, LEFT_EDGE, MIDDLE_ROW, FULL, 0, 0));
+    CHECK(IsNear(image, LEFT_EDGE - 2, MIDDLE_ROW, 0, 0, HALF_CASING));
+    CHECK(IsNear(image, 48, MIDDLE_ROW, 0, 0, 0));
+    CHECK(IsNear(image, 2, 2, 0, 0, 0));
+    REQUIRE(rhi::Release(scene.Device, ticket) == rhi::RasterStatus::Ready);
+    REQUIRE(scene.Outline.Release(prepared) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(scene.Device, texture) == rhi::RasterStatus::Ready);
+}
