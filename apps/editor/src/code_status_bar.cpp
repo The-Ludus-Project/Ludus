@@ -67,6 +67,9 @@ using foundation::BorrowedView;
     return QStringLiteral("%1: %2").arg(unit).arg(indent.Width);
 }
 
+/// Horizontal gap between status-bar items, in pixels.
+constexpr int ITEM_SPACING_PIXELS = 8;
+
 /// A flat, clickable status-bar item with an accessible name. The click handler
 /// is wired by the caller; a non-interactive item simply has none.
 [[nodiscard]] QToolButton* MakeItem(QWidget* parent, const QString& objectName, const QString& accessibleName)
@@ -94,7 +97,7 @@ CodeStatusBar::CodeStatusBar(QWidget* parentOrNull)
     setObjectName(QStringLiteral("codeStatusBar"));
     QHBoxLayout* layout = new QHBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(8);
+    layout->setSpacing(ITEM_SPACING_PIXELS);
     for (QToolButton* item : {mPosition, mSelection, mIndent, mEncoding, mLineEnding, mLanguage, mToolState})
     {
         layout->addWidget(item);
@@ -230,8 +233,8 @@ void CodeStatusBar::updateFromHost()
     mEncoding->setText(DescribeEncoding(profile.Encoding));
     mLineEnding->setText(DescribeLineEnding(profile.LineEnding));
     // A read-only host cannot change its line endings or language usefully.
-    const bool editable = host->IsReadOnly() == false;
-    mLineEnding->setEnabled(editable);
+    const bool isEditable = host->IsReadOnly() == false;
+    mLineEnding->setEnabled(isEditable);
     mLanguage->setEnabled(true);
 }
 
@@ -295,7 +298,7 @@ void CodeStatusBar::showLineEndingMenu()
         {"LF", CodeLineEnding::Lf},
         {"CRLF", CodeLineEnding::CrLf},
     };
-    for (const auto& option : options)
+    for (const std::pair<const char*, CodeLineEnding>& option : options)
     {
         QAction* action = menu.addAction(QString::fromLatin1(option.first));
         action->setCheckable(true);

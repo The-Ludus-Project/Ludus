@@ -444,7 +444,8 @@ void MainWindow::BuildUi()
         {
             return;
         }
-        const auto descriptors = CodeLanguageRegistry::Get().GetDescriptors();
+        const foundation::BorrowedView<const CodeLanguageDescriptor> descriptors =
+            CodeLanguageRegistry::Get().GetDescriptors();
         for (foundation::usize index = 0; index < descriptors.GetSize(); ++index)
         {
             const CodeLanguageDescriptor& descriptor = descriptors.GetDataOrNull()[index];
