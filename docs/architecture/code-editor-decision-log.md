@@ -181,3 +181,66 @@ only ever shown files already in the render-graph package (all `.slang`), so no
 observable behavior changes there; the registry carries the correct contract for
 the ordinary-file host added in M1. This is recorded as evidence rather than
 left implicit.
+
+## M1 - Every text file is a document
+
+### M1 gate report (2026-11-04)
+
+M1 makes every project text file open as a code tab (CE01-CE04, CE20, CE22,
+CE23). It landed in batches, each as its own pull request into `develop`:
+
+- Tasks 1-4 - the file document host, the code document registry with preview
+  tabs, two editor groups, view mirroring and per-project tab restore, the
+  navigation routing (Project Explorer, Quick Open, Error List, render-graph
+  Source pane, Open Externally), and the Scripts work area moved onto
+  `CodeEditor` through a script host - merged as #927-#930. The maintainer's
+  macOS build of that merged stack found and fixed four issues, recorded here so
+  they are not reintroduced: a missing test include, four ignored
+  `[[nodiscard]]` results, a tab-teardown crash (the `CodeDocumentController`
+  must be destroyed before its `CodeEditor`, in `CodeDocumentTab` and
+  `ScriptWorkspace`), and `ScriptCodeDocument::SetBaseline` clearing history when
+  Save should keep it (Save now uses `MarkSaved`; the external-change test no
+  longer depends on the clock). Fixed by #936 and #938.
+- Task 5 - the code-buffer recovery journal and the dirty-close prompts. The
+  journal is owned by `CodeDocumentRegistry`, lives under the project's
+  machine-local state directory with its own per-entry owner constant
+  (`CodeRecoveryJournal::MAX_RECOVERY_ENTRY_BYTES`), and is written off the UI
+  thread on an idle debounce by a background `QThread`; unsaved buffers restore
+  on reopen, re-anchored against the current on-disk baseline. Closing a dirty
+  tab asks Save/Don't Save/Cancel (Cancel default); closing the project or
+  quitting lists every dirty code buffer.
+- Task 6 - the code status bar: cursor position, selection, indentation,
+  encoding, line endings, language and the language-server placeholder, with the
+  position, language and line-ending items clickable where M1 supports the
+  change. The language-server item is a placeholder until M4.
+- Task 7 - this report, the `development/code-editor.md` user guide (registered
+  in MkDocs and the documentation index), and the `editor-workspace.md` update.
+
+**Gate status - pending host verification.** Every native item below is
+**pending host verification**: the pull-request CI skips the editor build and
+tests, so a green PR check does not mean the editor code compiled, and this
+sandbox has no Qt6 and no pinned toolchain (see
+[Sandbox toolchain cannot run the gates locally](#sandbox-toolchain-cannot-run-the-gates-locally-deviation)).
+The M1 code for tasks 5-7 was authored and read closely against the C++23,
+naming, standard-library (ADR 0003) and Qt-free-seam rules, but was **not
+compiled or run** here; it is marked "authored, not run" in its pull requests
+for the maintainer to build and test on macOS. Specifically pending on a
+toolchain-capable host:
+
+- `./scripts/build` and `./scripts/test` for the debug preset, including the new
+  `ludus_code_editor_tests` cases (crash-style restore, a journal for a deleted
+  file, a journal over its limit, a regression per dirty-close answer, and the
+  status-bar items and change requests).
+- The ASan/UBSan lane, `./scripts/check --all` (clang-format and clang-tidy at
+  the pinned version), `./scripts/check-build-budget`, `python scripts/check-docs`
+  and `python scripts/check-wiki --documentation-only`.
+- The gate's recorded native run: every listed file type opening, editing,
+  saving, conflicting and recovering, with a forced-quit recovery pass, and the
+  existing render-graph and Scripts tests still passing.
+
+Each batch started from freshly fetched `origin/develop` rather than stacking on
+an already-merged branch, and each touched file includes the headers for the
+types it uses, checks every `[[nodiscard]]` result, and makes Qt child
+destruction order explicit wherever one child's destructor uses another (the
+recovery writer is joined in `~CodeDocumentRegistry` before the base `QObject`
+deletes it; the controller-before-editor teardown from #938 is left intact).
