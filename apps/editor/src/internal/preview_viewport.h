@@ -268,6 +268,9 @@ private:
     }
     /// Present the preview's or the graph's frames after isShowingBuiltInView changed from wasShowing.
     void applyBuiltInPresentation(bool wasShowing);
+    /// Select the edit frame source a newly created GPU window presents: the preview's frames while
+    /// isShowingBuiltInView, otherwise the project graph's. A play source keeps the window.
+    void applyEditFrameSource();
     /// Hand the inspection's current lines to the preview.
     void updateRayPathOverlay();
     /// Pick the clicked output pixel while the inspection waits for one.
