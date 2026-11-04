@@ -181,7 +181,7 @@ void PreviewViewport::leaveEvent(QEvent* event)
 void PreviewViewport::updateGizmoCursor()
 {
     const bool isDragging = mObjectInteraction->IsDragging();
-    if (isDragging == true || mObjectInteraction->GetHoveredAxis() >= 0)
+    if (isDragging == true || mObjectInteraction->HasHoveredHandle() == true)
     {
         setCursor(isDragging == true ? Qt::ClosedHandCursor : Qt::OpenHandCursor);
         mHasGizmoCursor = true;
