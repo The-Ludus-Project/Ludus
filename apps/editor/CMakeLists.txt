@@ -210,6 +210,8 @@ set(editor_viewport_sources
     src/ray_path_overlay.cpp
     src/preview_viewport.cpp
     src/internal/viewport_object_overlay.h
+    src/internal/mesh_silhouette.h
+    src/mesh_silhouette.cpp
     src/internal/viewport_object_interaction.h
     src/viewport_object_interaction.cpp
     src/viewport_navigation.cpp
@@ -1085,6 +1087,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
         tests/viewport_object_overlay_tests.cpp
+        tests/mesh_silhouette_tests.cpp
         tests/orientation_widget_tests.cpp
         tests/design_token_tests.cpp
         tests/editor_style_tests.cpp

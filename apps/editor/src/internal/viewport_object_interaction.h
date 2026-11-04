@@ -9,6 +9,7 @@
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/transform.hpp>
 
+#include "mesh_silhouette.h"
 #include "viewport_object_overlay.h"
 
 #include <QByteArray>
@@ -25,9 +26,11 @@ class QPainter;
 namespace ludus::editor
 {
 class RenderPreview;
+struct PreviewObject;
 class WorldDocument;
 /// GUI-thread object picking and a transactional transform gesture. Preview destruction disables queries and drawing.
-/// A drag previews a wire cage; release requests one validated World edit, Escape/focus loss discards it.
+/// The selection is marked by its silhouette, and a drag previews the silhouette of the candidate; release requests one
+/// validated World edit, Escape/focus loss discards it.
 class ViewportObjectInteraction final : public QObject
 {
     Q_OBJECT
@@ -75,8 +78,8 @@ public:
     void Cancel();
     /// Paint in the same logical coordinates used by Press. No device or image readback required.
     void Paint(QPainter& inoutPainter, const QRectF& framePixel);
-    /// Project bounded wire/handle strokes on the GUI thread. Failure clears output, retaining buffer capacity.
-    /// The same geometry feeds the native scene graph and the readback painter.
+    /// Project the bounded silhouette outline and handle strokes on the GUI thread. Failure clears output, retaining
+    /// buffer capacity. The same geometry feeds the native scene graph and the readback painter.
     void BuildOverlay(const QRectF& framePixel, ViewportObjectOverlay& outOverlay);
     /// Closest triangle under a point; empty means background. Handles perspective and orthographic views.
     /// Objects whose cached mesh bounds the ray misses, or reaches only beyond the nearest hit so far,
@@ -97,6 +100,18 @@ private:
     [[nodiscard]] bool describe(const QRectF& framePixel, foundation::math::Matrix4& outWorldToClip) const;
     [[nodiscard]] bool project(foundation::math::Vector3 positionWorld, QPointF& outPositionPixel) const;
     [[nodiscard]] QRectF resolveFrame(const QRectF& framePixel) const;
+    /// Pixel position of a clip-space point whose w is positive, in the frame of the last describe.
+    [[nodiscard]] QPointF convertClipToPixel(const foundation::math::Vector4& clip) const;
+    /// Clip a segment to the camera's near side and the frame's sides and convert it to pixels.
+    /// False for a segment that cannot be seen; outLinePixel is then unchanged.
+    [[nodiscard]] bool projectSegment(const SilhouetteSegment& segment, QLineF& outLinePixel) const;
+    /// Append the silhouette of object, or its bounding box when its mesh is too large for adjacency, to the overlay.
+    void appendObjectOutline(const PreviewObject& object,
+                             const foundation::math::Affine3& meshToWorld,
+                             ViewportObjectOverlay& inoutOverlay);
+    /// Make mSilhouette the adjacency of scene mesh meshIndex, rebuilding once per scene identity or mesh change.
+    /// False when that mesh has no usable adjacency.
+    [[nodiscard]] bool refreshSilhouette(foundation::int32 meshIndex);
     void buildHandles();
     [[nodiscard]] foundation::math::Affine3 makeTransform(const QJsonObject& placement) const;
     /// Recompute mMeshBoundsMesh for a changed scene identity; false leaves it empty (no rejection).
@@ -121,6 +136,13 @@ private:
         static_cast<foundation::usize>(AXIS_COUNT) * static_cast<foundation::usize>(RING_SEGMENTS);
     foundation::FixedArray<HandleLine, MAX_HANDLE_LINES> mHandles;
     ViewportObjectOverlay mPaintOverlay;
+    /// Welded edge adjacency of the selected object's mesh, cached with the scene identity and mesh it was built for.
+    MeshSilhouette mSilhouette;
+    QByteArray mSilhouetteIdentity;
+    foundation::int32 mSilhouetteMesh = -1;
+    bool mHasSilhouette = false;
+    /// Scratch for one object's outline, reused between builds.
+    foundation::Array<SilhouetteSegment> mOutlineSegments;
     /// Padded mesh-space bounds, one per scene mesh, of the scene whose Identity is mMeshBoundsIdentity.
     foundation::Array<foundation::math::Aabb3> mMeshBoundsMesh;
     QByteArray mMeshBoundsIdentity;

@@ -1607,7 +1607,7 @@ TEST_CASE("Viewport picking skips objects by mesh bounds and follows a replaced 
     ConfigureInteractionPreview(preview, scene);
     CHECK(interaction.Pick(frame.center(), frame).isEmpty() == true);
 }
-TEST_CASE("Viewport transform drags preview a highlighted wireframe and commit one undoable placement",
+TEST_CASE("Viewport transform drags preview a highlighted silhouette and commit one undoable placement",
           "[editor][world][object-interaction]")
 {
     WorldDocument document = UnboundDocument();
@@ -1968,12 +1968,20 @@ TEST_CASE("Viewport overlay projection reuses bounded buffers and follows gestur
     QString error;
     REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
     RenderScene scene = MakeInteractionScene();
-    // Exceed the sampled wire budget without changing the selectable triangle.
-    constexpr usize DENSE_TRIANGLES = ViewportObjectOverlay::MAX_WIRE_TRIANGLES + 1;
+    // Exceed the outline budget with disjoint triangles, each of which has three open edges.
+    constexpr usize TRIANGLE_EDGES = 3;
+    constexpr usize DENSE_TRIANGLES = ViewportObjectOverlay::MAX_OUTLINE_LINES / TRIANGLE_EDGES + 1;
+    const ludus::foundation::math::Vector3 firstCorner = scene.Meshes[0].Positions[scene.Meshes[0].Indices[0]];
+    scene.Meshes[0].Positions.clear();
     scene.Meshes[0].Indices.clear();
     for (usize triangle = 0; triangle < DENSE_TRIANGLES; ++triangle)
     {
-        scene.Meshes[0].Indices.append({0, 1, 2});
+        const ludus::foundation::float32 offset = static_cast<ludus::foundation::float32>(triangle) * 0.0001F;
+        const ludus::foundation::uint32 base = static_cast<ludus::foundation::uint32>(scene.Meshes[0].Positions.size());
+        scene.Meshes[0].Positions.append({firstCorner.X + offset, firstCorner.Y, firstCorner.Z});
+        scene.Meshes[0].Positions.append({firstCorner.X + offset + 0.5F, firstCorner.Y, firstCorner.Z});
+        scene.Meshes[0].Positions.append({firstCorner.X + offset, firstCorner.Y + 0.5F, firstCorner.Z});
+        scene.Meshes[0].Indices.append({base, base + 1, base + 2});
     }
     RenderPreview preview;
     ConfigureInteractionPreview(preview, scene);
@@ -1982,38 +1990,38 @@ TEST_CASE("Viewport overlay projection reuses bounded buffers and follows gestur
     ViewportObjectOverlay overlay;
     const QRectF framePixel{0, 0, 800, 600};
     interaction.BuildOverlay(framePixel, overlay);
-    REQUIRE(overlay.WireLinesPixel.IsEmpty() == false);
-    CHECK(overlay.WireLinesPixel.GetSize() <= ViewportObjectOverlay::MAX_WIRE_LINES);
+    REQUIRE(overlay.OutlineLinesPixel.IsEmpty() == false);
+    CHECK(overlay.OutlineLinesPixel.GetSize() <= ViewportObjectOverlay::MAX_OUTLINE_LINES);
     REQUIRE(overlay.HandleStrokes.IsEmpty() == false);
     CHECK(overlay.HandleStrokes.GetSize() <= ViewportObjectOverlay::MAX_HANDLE_STROKES);
-    const QLineF* wireStorage = overlay.WireLinesPixel.GetData();
+    const QLineF* wireStorage = overlay.OutlineLinesPixel.GetData();
     const ViewportHandleStroke* handleStorage = overlay.HandleStrokes.GetData();
-    const QLineF originalPixel = overlay.WireLinesPixel[0];
+    const QLineF originalPixel = overlay.OutlineLinesPixel[0];
     interaction.BuildOverlay(framePixel, overlay);
-    CHECK(overlay.WireLinesPixel.GetData() == wireStorage);
+    CHECK(overlay.OutlineLinesPixel.GetData() == wireStorage);
     CHECK(overlay.HandleStrokes.GetData() == handleStorage);
-    CHECK(overlay.WireLinesPixel[0] == originalPixel);
+    CHECK(overlay.OutlineLinesPixel[0] == originalPixel);
     REQUIRE(interaction.Press(framePixel.center() + QPointF(70, 0), framePixel) == true);
     REQUIRE(interaction.Move(framePixel.center() + QPointF(110, 0), false) == true);
     interaction.BuildOverlay(framePixel, overlay);
-    CHECK(overlay.WireLinesPixel[0] != originalPixel);
-    CHECK(overlay.WireLinesPixel.GetData() == wireStorage);
+    CHECK(overlay.OutlineLinesPixel[0] != originalPixel);
+    CHECK(overlay.OutlineLinesPixel.GetData() == wireStorage);
     interaction.Cancel();
     interaction.BuildOverlay(framePixel, overlay);
-    CHECK(overlay.WireLinesPixel[0] == originalPixel);
+    CHECK(overlay.OutlineLinesPixel[0] == originalPixel);
     interaction.SetImageSize({800, 800});
     interaction.BuildOverlay(framePixel, overlay);
     CHECK(overlay.FramePixel == QRectF(100, 0, 600, 600));
     interaction.SetActive(false);
     interaction.BuildOverlay(framePixel, overlay);
-    CHECK(overlay.WireLinesPixel.IsEmpty() == true);
+    CHECK(overlay.OutlineLinesPixel.IsEmpty() == true);
     CHECK(overlay.HandleStrokes.IsEmpty() == true);
     CHECK(overlay.FramePixel.isEmpty() == true);
-    CHECK(overlay.WireLinesPixel.GetData() == wireStorage);
+    CHECK(overlay.OutlineLinesPixel.GetData() == wireStorage);
     interaction.SetActive(true);
     interaction.SetWorld(document, scene.Objects[0].Id, false);
     interaction.BuildOverlay(framePixel, overlay);
-    CHECK(overlay.WireLinesPixel.IsEmpty() == false);
+    CHECK(overlay.OutlineLinesPixel.IsEmpty() == false);
     CHECK(overlay.HandleStrokes.IsEmpty() == true);
 }
 
@@ -2281,7 +2289,7 @@ TEST_CASE("A default World luminaire is scene data with an outline and a working
     const QRectF framePixel{0, 0, 800, 600};
     interaction.BuildOverlay(framePixel, overlay);
     // Four edges, two diagonals and the emission direction; the cube is not selected.
-    CHECK(overlay.WireLinesPixel.GetSize() == 7);
+    CHECK(overlay.OutlineLinesPixel.GetSize() == 7);
     REQUIRE(overlay.HandleStrokes.IsEmpty() == false);
 
     // A committed viewport move writes the authored transform, which the preview descriptor binds, as one undo step.
