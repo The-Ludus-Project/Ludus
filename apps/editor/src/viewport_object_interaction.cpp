@@ -26,7 +26,9 @@ namespace
 {
 constexpr int32 AXIS_COUNT = ViewportObjectInteraction::AXIS_COUNT;
 constexpr usize TRIANGLE_VERTICES = ViewportObjectOverlay::TRIANGLE_VERTICES;
-constexpr usize MAX_WIRE_LINES = ViewportObjectOverlay::MAX_WIRE_LINES;
+/// Corners of a mesh's bounding box, as the combinations of its three axis bits.
+constexpr usize BOX_CORNERS = 8;
+constexpr usize MAX_OUTLINE_LINES = ViewportObjectOverlay::MAX_OUTLINE_LINES;
 /// A luminaire's outline: the panel square, its two diagonals and the emission direction.
 constexpr usize LUMINAIRE_OUTLINE_CORNERS = 4;
 constexpr usize LUMINAIRE_OUTLINE_LINES = LUMINAIRE_OUTLINE_CORNERS + 3;
@@ -231,6 +233,11 @@ bool ViewportObjectInteraction::describe(const QRectF& framePixel, math::Matrix4
     outWorldToClip = mHasPresentedView == true ? mPresentedWorldToClip : view.WorldToClip;
     return true;
 }
+QPointF ViewportObjectInteraction::convertClipToPixel(const math::Vector4& clip) const
+{
+    return {mFramePixel.left() + (static_cast<float64>(clip.X / clip.W) + 1) * mFramePixel.width() * 0.5,
+            mFramePixel.top() + (1 - static_cast<float64>(clip.Y / clip.W)) * mFramePixel.height() * 0.5};
+}
 bool ViewportObjectInteraction::project(math::Vector3 positionWorld, QPointF& outPositionPixel) const
 {
     const math::Vector4 clip = mWorldToClip * math::Vector4{positionWorld.X, positionWorld.Y, positionWorld.Z, 1};
@@ -238,9 +245,110 @@ bool ViewportObjectInteraction::project(math::Vector3 positionWorld, QPointF& ou
     {
         return false;
     }
-    outPositionPixel = {mFramePixel.left() + (static_cast<float64>(clip.X / clip.W) + 1) * mFramePixel.width() * 0.5,
-                        mFramePixel.top() + (1 - static_cast<float64>(clip.Y / clip.W)) * mFramePixel.height() * 0.5};
+    outPositionPixel = convertClipToPixel(clip);
     return true;
+}
+bool ViewportObjectInteraction::projectSegment(const SilhouetteSegment& segment, QLineF& outLinePixel) const
+{
+    math::Vector4 first = segment.FirstClip;
+    math::Vector4 second = segment.SecondClip;
+    if (math::IsFinite(first) == false || math::IsFinite(second) == false)
+    {
+        return false;
+    }
+    const bool isFirstBehind = first.W <= PROJECTION_EPSILON;
+    const bool isSecondBehind = second.W <= PROJECTION_EPSILON;
+    if (isFirstBehind == true && isSecondBehind == true)
+    {
+        return false;
+    }
+    // Keep the part of a segment crossing the camera plane that lies in front of it.
+    if (isFirstBehind == true || isSecondBehind == true)
+    {
+        math::Vector4& behind = isFirstBehind == true ? first : second;
+        const math::Vector4& front = isFirstBehind == true ? second : first;
+        const float32 fraction = (PROJECTION_EPSILON - behind.W) / (front.W - behind.W);
+        behind = {behind.X + (front.X - behind.X) * fraction,
+                  behind.Y + (front.Y - behind.Y) * fraction,
+                  behind.Z + (front.Z - behind.Z) * fraction,
+                  PROJECTION_EPSILON};
+    }
+    // A segment wholly beyond one side of the frame has nothing to draw.
+    const bool isLeftOfFrame = first.X < -first.W && second.X < -second.W;
+    const bool isRightOfFrame = first.X > first.W && second.X > second.W;
+    const bool isBelowFrame = first.Y < -first.W && second.Y < -second.W;
+    const bool isAboveFrame = first.Y > first.W && second.Y > second.W;
+    if (isLeftOfFrame == true || isRightOfFrame == true || isBelowFrame == true || isAboveFrame == true)
+    {
+        return false;
+    }
+    outLinePixel = QLineF(convertClipToPixel(first), convertClipToPixel(second));
+    return true;
+}
+bool ViewportObjectInteraction::refreshSilhouette(int32 meshIndex)
+{
+    const RenderScene& scene = mPreviewOrNull->Scene();
+    if (scene.Identity == mSilhouetteIdentity && meshIndex == mSilhouetteMesh)
+    {
+        return mHasSilhouette;
+    }
+    mSilhouetteIdentity = scene.Identity;
+    mSilhouetteMesh = meshIndex;
+    mHasSilhouette =
+        mSilhouette.Build(GetRenderSceneMeshPositions(scene, meshIndex), GetRenderSceneMeshIndices(scene, meshIndex));
+    return mHasSilhouette;
+}
+void ViewportObjectInteraction::appendObjectOutline(const PreviewObject& object,
+                                                    const math::Affine3& meshToWorld,
+                                                    ViewportObjectOverlay& inoutOverlay)
+{
+    const RenderScene& scene = mPreviewOrNull->Scene();
+    const math::Matrix4 meshToClip = mWorldToClip * math::ToMatrix4(meshToWorld);
+    mOutlineSegments.Clear();
+    const bool hasSilhouette = refreshSilhouette(object.Mesh) == true &&
+                               mSilhouette.Extract(GetRenderSceneMeshPositions(scene, object.Mesh),
+                                                   meshToClip,
+                                                   MAX_OUTLINE_LINES - inoutOverlay.OutlineLinesPixel.GetSize(),
+                                                   mOutlineSegments) == true;
+    if (hasSilhouette == false)
+    {
+        // A mesh too large for adjacency, or without a usable triangle, is marked by its bounding box.
+        mOutlineSegments.Clear();
+        if (refreshMeshBounds() == false || math::IsEmpty(mMeshBoundsMesh[static_cast<usize>(object.Mesh)]) == true)
+        {
+            return;
+        }
+        const math::Aabb3& bounds = mMeshBoundsMesh[static_cast<usize>(object.Mesh)];
+        StaticArray<math::Vector4, BOX_CORNERS> cornersClip{};
+        for (usize corner = 0; corner < BOX_CORNERS; ++corner)
+        {
+            const math::Vector4 cornerMesh{(corner & 1U) != 0 ? bounds.Max.X : bounds.Min.X,
+                                           (corner & 2U) != 0 ? bounds.Max.Y : bounds.Min.Y,
+                                           (corner & 4U) != 0 ? bounds.Max.Z : bounds.Min.Z,
+                                           1};
+            cornersClip[corner] = meshToClip * cornerMesh;
+        }
+        // Each pair of corners that differ in exactly one axis bit is a box edge.
+        for (usize first = 0; first < BOX_CORNERS; ++first)
+        {
+            for (usize bit = 1; bit < BOX_CORNERS; bit <<= 1U)
+            {
+                if ((first & bit) == 0)
+                {
+                    mOutlineSegments.Add({cornersClip[first], cornersClip[first | bit]});
+                }
+            }
+        }
+    }
+    for (const SilhouetteSegment& segment : mOutlineSegments)
+    {
+        QLineF linePixel;
+        if (inoutOverlay.OutlineLinesPixel.GetSize() < MAX_OUTLINE_LINES && projectSegment(segment, linePixel) == true)
+        {
+            // Admission above reserves every possible segment; Add cannot allocate here.
+            inoutOverlay.OutlineLinesPixel.Add(linePixel);
+        }
+    }
 }
 bool ViewportObjectInteraction::refreshMeshBounds()
 {
@@ -598,12 +706,12 @@ void ViewportObjectInteraction::Cancel()
 void ViewportObjectInteraction::BuildOverlay(const QRectF& outerFramePixel, ViewportObjectOverlay& outOverlay)
 {
     LUDUS_PROFILE_SCOPE(EditorObjectOverlayBuild);
-    outOverlay.WireLinesPixel.Clear();
+    outOverlay.OutlineLinesPixel.Clear();
     outOverlay.HandleStrokes.Clear();
     outOverlay.FramePixel = {};
     const QRectF framePixel = resolveFrame(outerFramePixel);
     if (describe(framePixel, mWorldToClip) == false || mSelected.isEmpty() == true ||
-        outOverlay.WireLinesPixel.TryEnsureCapacity(MAX_WIRE_LINES) == false ||
+        outOverlay.OutlineLinesPixel.TryEnsureCapacity(MAX_OUTLINE_LINES) == false ||
         outOverlay.HandleStrokes.TryEnsureCapacity(MAX_HANDLE_STROKES) == false)
     {
         return;
@@ -618,36 +726,10 @@ void ViewportObjectInteraction::BuildOverlay(const QRectF& outerFramePixel, View
             continue;
         }
         const math::Affine3 meshToWorld = mDragAxis >= 0 ? makeTransform(mCandidate) : object.Transform;
-        const BorrowedView<const math::Vector3> positionsMesh = GetRenderSceneMeshPositions(scene, object.Mesh);
-        const BorrowedView<const uint32> indices = GetRenderSceneMeshIndices(scene, object.Mesh);
-        const usize triangleCount = indices.GetSize() / TRIANGLE_VERTICES;
-        const usize triangleStride =
-            math::Max(usize{1},
-                      triangleCount / ViewportObjectOverlay::MAX_WIRE_TRIANGLES +
-                          (triangleCount % ViewportObjectOverlay::MAX_WIRE_TRIANGLES > 0 ? usize{1} : usize{0}));
-        const usize stride = triangleStride * TRIANGLE_VERTICES;
-        for (usize index = 0; index + TRIANGLE_VERTICES <= indices.GetSize() &&
-                              outOverlay.WireLinesPixel.GetSize() + TRIANGLE_VERTICES <= MAX_WIRE_LINES;
-             index += stride)
-        {
-            for (usize edge = 0; edge < TRIANGLE_VERTICES; ++edge)
-            {
-                const uint32 first = indices[index + edge];
-                const uint32 second = indices[index + (edge + 1) % TRIANGLE_VERTICES];
-                QPointF firstPixel;
-                QPointF secondPixel;
-                if (first < positionsMesh.GetSize() && second < positionsMesh.GetSize() &&
-                    project(math::TransformPoint(meshToWorld, positionsMesh[first]), firstPixel) == true &&
-                    project(math::TransformPoint(meshToWorld, positionsMesh[second]), secondPixel) == true)
-                {
-                    // Admission above reserves every possible edge; Add cannot allocate here.
-                    outOverlay.WireLinesPixel.Add(QLineF(firstPixel, secondPixel));
-                }
-            }
-        }
+        appendObjectOutline(object, meshToWorld, outOverlay);
     }
     if (mLuminaireHalfExtentWorld > 0 && mPlacement.isEmpty() == false &&
-        outOverlay.WireLinesPixel.GetSize() + LUMINAIRE_OUTLINE_LINES <= MAX_WIRE_LINES)
+        outOverlay.OutlineLinesPixel.GetSize() + LUMINAIRE_OUTLINE_LINES <= MAX_OUTLINE_LINES)
     {
         // The panel square in the transform's XY plane and its emission along -Z, one half extent long.
         const math::Affine3 panelToWorld = makeTransform(mDragAxis >= 0 ? mCandidate : mPlacement);
@@ -670,16 +752,16 @@ void ViewportObjectInteraction::BuildOverlay(const QRectF& outerFramePixel, View
         {
             for (usize corner = 0; corner < LUMINAIRE_OUTLINE_CORNERS; ++corner)
             {
-                outOverlay.WireLinesPixel.Add(
+                outOverlay.OutlineLinesPixel.Add(
                     QLineF(cornersPixel[corner], cornersPixel[(corner + 1) % LUMINAIRE_OUTLINE_CORNERS]));
             }
             // The two diagonals join opposite corners.
             for (usize corner = 0; corner < LUMINAIRE_OUTLINE_CORNERS / 2; ++corner)
             {
-                outOverlay.WireLinesPixel.Add(
+                outOverlay.OutlineLinesPixel.Add(
                     QLineF(cornersPixel[corner], cornersPixel[corner + LUMINAIRE_OUTLINE_CORNERS / 2]));
             }
-            outOverlay.WireLinesPixel.Add(QLineF(centerPixel, emissionPixel));
+            outOverlay.OutlineLinesPixel.Add(QLineF(centerPixel, emissionPixel));
         }
     }
     buildHandles();
@@ -736,10 +818,19 @@ void ViewportObjectInteraction::Paint(QPainter& inoutPainter, const QRectF& oute
     inoutPainter.save();
     inoutPainter.setClipRect(mPaintOverlay.FramePixel);
     inoutPainter.setRenderHint(QPainter::Antialiasing);
-    inoutPainter.setPen(QPen(QColor::fromRgb(ViewportObjectOverlay::SELECTION_COLOR),
-                             static_cast<float64>(ViewportObjectOverlay::WIRE_WIDTH_PIXELS)));
-    inoutPainter.drawLines(mPaintOverlay.WireLinesPixel.GetData(),
-                           static_cast<int32>(mPaintOverlay.WireLinesPixel.GetSize()));
+    // The same casing and amber strokes as the native overlay, with round joins and caps.
+    QPen casingPen(QColor::fromRgba(ViewportObjectOverlay::CASING_COLOR),
+                   static_cast<float64>(ViewportObjectOverlay::CASING_WIDTH_PIXELS));
+    casingPen.setCapStyle(Qt::RoundCap);
+    inoutPainter.setPen(casingPen);
+    inoutPainter.drawLines(mPaintOverlay.OutlineLinesPixel.GetData(),
+                           static_cast<int32>(mPaintOverlay.OutlineLinesPixel.GetSize()));
+    QPen outlinePen(QColor::fromRgb(ViewportObjectOverlay::SELECTION_COLOR),
+                    static_cast<float64>(ViewportObjectOverlay::OUTLINE_WIDTH_PIXELS));
+    outlinePen.setCapStyle(Qt::RoundCap);
+    inoutPainter.setPen(outlinePen);
+    inoutPainter.drawLines(mPaintOverlay.OutlineLinesPixel.GetData(),
+                           static_cast<int32>(mPaintOverlay.OutlineLinesPixel.GetSize()));
     for (const ViewportHandleStroke& stroke : mPaintOverlay.HandleStrokes)
     {
         inoutPainter.setPen(QPen(QColor::fromRgb(stroke.Color), static_cast<float64>(stroke.WidthPixels)));
