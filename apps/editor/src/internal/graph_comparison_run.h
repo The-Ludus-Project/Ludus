@@ -17,6 +17,9 @@ namespace ludus::editor
 class RendererWorkspace;
 class RenderPreview;
 
+/// Maximum rows authored by Compare graphs and admitted by its saved run viewer.
+inline constexpr foundation::int32 MAXIMUM_GRAPH_COMPARISON_CANDIDATES = 16;
+
 /// One candidate route and its requested budget. Zero expected bounces means no target was specified.
 struct GraphComparisonCandidate final
 {
