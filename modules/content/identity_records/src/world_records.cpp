@@ -485,13 +485,13 @@ struct DuplicationClone final
 
 /// Emit the version-2 record with the original entities followed by the clones.
 [[nodiscard]] IdentityRecordStatus EmitDuplicated(JsonValue root,
-                                                  JsonValue entities,
                                                   std::span<const DuplicationClone> clones,
                                                   std::span<const EntityReferenceProperty> references,
                                                   usize capacity,
                                                   Bytes& outJson,
                                                   IdentityRecordError& outError) noexcept
 {
+    const JsonValue entities = root.Get("entities");
     internal::IndentedWriter writer(capacity);
     writer.Open('{');
     writer.BeginMember("version");
@@ -528,6 +528,7 @@ struct DuplicationClone final
 }
 } // namespace
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): API inputs are distinct World and schema JSON documents.
 IdentityRecordStatus DuplicateEntities(std::string_view recordJson,
                                        std::string_view schemaJson,
                                        std::span<const std::string_view> selected,
@@ -657,7 +658,6 @@ IdentityRecordStatus DuplicateEntities(std::string_view recordJson,
         IdentityRecordError attemptError;
         const IdentityRecordStatus status =
             EmitDuplicated(root,
-                           entities,
                            std::span<const DuplicationClone>(clones.GetData(), clones.GetSize()),
                            references,
                            capacity,

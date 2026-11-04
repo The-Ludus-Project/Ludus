@@ -124,6 +124,7 @@ struct HeaderPlan final
 }
 
 /// Patch a section's offset in the already-written header directory.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): directory index and byte offset have distinct wire roles.
 void PatchSectionOffset(ByteWriter& inoutWriter, uint32 sectionIndex, uint32 offset) noexcept
 {
     // Directory starts right after SectionCount in the fixed prefix.
