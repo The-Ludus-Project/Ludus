@@ -2102,6 +2102,20 @@ graph routes, actual sample evidence and metrics. A failed row leaves earlier
 results available. Incomplete results with available pixels are labelled as
 diagnostic. **Stop** keeps completed rows and the last readable partial capture.
 
+#### Reopen a saved graph comparison
+
+Choose **Tools → Open saved comparison…** or use the **Open saved
+comparison…** button in **Compare graphs…**. Select the `comparison.json` from
+a Compare graphs results folder. Keep the manifest and its PNGs together.
+The viewer keeps the shared baseline beside the scrollable series, with every
+candidate's render, saved difference, error metrics and status in run order.
+Failed and skipped rows remain visible. Choose **Open full image** to inspect an
+original PNG at full resolution.
+
+The viewer uses the metrics and difference images saved by the run. It can open
+results from earlier versions of Compare graphs and needs no live render graph
+or GPU device.
+
 #### Compare saved captures or image files
 
 Use `scripts/compare-render` to reopen a comparison or measure two images

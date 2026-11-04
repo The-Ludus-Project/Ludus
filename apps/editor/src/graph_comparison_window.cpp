@@ -5,6 +5,7 @@
 #include "internal/render_graph_document.h"
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
+#include "internal/saved_graph_comparison_view.h"
 
 #include <QColorSpace>
 #include <QComboBox>
@@ -37,7 +38,6 @@ constexpr int32 MODE_COLUMN = 3;
 constexpr int32 RESULT_COLUMN = 4;
 constexpr int32 METRICS_COLUMN = 5;
 constexpr int32 DISPLAY_FRAME_INDEX = 1;
-constexpr int32 MAXIMUM_CANDIDATES = 16;
 constexpr int32 DEFAULT_GRAPH_COMPARISON_SAMPLES = 16;
 constexpr int32 SERVICE_INTERVAL_MILLISECONDS = 16;
 constexpr int32 COMPARISON_WINDOW_WIDTH = 1100;
@@ -199,6 +199,9 @@ GraphComparisonWindow::GraphComparisonWindow(RenderPreview& inoutPreview,
     actions->addWidget(mStart);
     actions->addWidget(mStop);
     actions->addWidget(mOpenResults);
+    QPushButton* openSaved = new QPushButton(QStringLiteral("Open saved comparison…"), this);
+    actions->addWidget(openSaved);
+    connect(openSaved, &QPushButton::clicked, this, [this]() { OpenSavedGraphComparison(*this, mRun.GetDirectory()); });
     layout->addLayout(actions);
     for (QLabel* label : {mStatus, mDetails})
     {
@@ -271,7 +274,7 @@ GraphComparisonWindow::~GraphComparisonWindow()
 void GraphComparisonWindow::addCandidate()
 {
     const int32 row = mCandidates->rowCount();
-    if (row >= MAXIMUM_CANDIDATES)
+    if (row >= MAXIMUM_GRAPH_COMPARISON_CANDIDATES)
     {
         return;
     }
@@ -540,7 +543,7 @@ void GraphComparisonWindow::setRunning(bool isRunning)
     mReferenceDepth->setEnabled(isRunning == false && hasFileBaseline == false);
     mReferenceTraversal->setEnabled(isRunning == false && hasFileBaseline == false);
     mCandidates->setEnabled(isRunning == false);
-    mAdd->setEnabled(isRunning == false && mCandidates->rowCount() < MAXIMUM_CANDIDATES);
+    mAdd->setEnabled(isRunning == false && mCandidates->rowCount() < MAXIMUM_GRAPH_COMPARISON_CANDIDATES);
     mRemove->setEnabled(isRunning == false && mCandidates->rowCount() > 0);
     mChoose->setEnabled(isRunning == false);
     mUseRt1->setEnabled(isRunning == false && hasFileBaseline == true);

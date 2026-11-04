@@ -20,6 +20,9 @@
 #include "internal/project_rendering_settings.h"
 #include "internal/project_setup_dialog.h"
 #include "internal/renderer_workspace.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/saved_graph_comparison_view.h"
+#endif
 #include "internal/script_workspace.h"
 #include "internal/state_view.h"
 #include "internal/timing_panel.h"
@@ -635,6 +638,11 @@ void MainWindow::BuildMenus()
     toolsMenu->addSeparator();
     toolsMenu->addAction(mRecordProfileAction);
     toolsMenu->addAction(QStringLiteral("Profiling..."), this, [this]() { showToolWindow(mProfilingDock); });
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    toolsMenu->addAction(QStringLiteral("Open saved comparison…"), this, [this]() {
+        OpenSavedGraphComparison(*this, {});
+    });
+#endif
     toolsMenu->setObjectName(QStringLiteral("toolsMenu"));
     // The Configuration document works without a project, so it stays reachable when the Explorer hides it.
     toolsMenu->addAction(QStringLiteral("&Configuration"), this, [this]() {
