@@ -72,6 +72,21 @@ public:
     void SetPresentedView(const foundation::math::Matrix4& worldToClip);
     /// Follow the live navigation camera again, for images rendered synchronously with it.
     void ClearPresentedView();
+    /// Track the pointer without a button: the handle within reach of positionPixel is highlighted.
+    /// Returns whether a handle is under the pointer. Ignored while dragging; emits Changed on a new target.
+    [[nodiscard]] bool Hover(QPointF positionPixel, const QRectF& framePixel);
+    /// Drop the hover highlight, as when the pointer leaves the viewport.
+    void ClearHover();
+    /// Axis, from 0 for X, of the handle under the pointer, or -1 when none.
+    [[nodiscard]] LUDUS_INLINE foundation::int32 GetHoveredAxis() const noexcept
+    {
+        return mHoverAxis;
+    }
+    /// Whether a handle drag is in progress.
+    [[nodiscard]] LUDUS_INLINE bool IsDragging() const noexcept
+    {
+        return mDragAxis >= 0;
+    }
     [[nodiscard]] bool Press(QPointF positionPixel, const QRectF& framePixel);
     [[nodiscard]] bool Move(QPointF positionPixel, bool shouldSnap);
     [[nodiscard]] bool Release();
@@ -96,6 +111,8 @@ private:
     {
         QLineF Line;
         foundation::int32 Axis = 0;
+        /// Rotation ring segments farther from the camera than the pivot draw dimmer.
+        bool IsBack = false;
     };
     [[nodiscard]] bool describe(const QRectF& framePixel, foundation::math::Matrix4& outWorldToClip) const;
     [[nodiscard]] bool project(foundation::math::Vector3 positionWorld, QPointF& outPositionPixel) const;
@@ -113,6 +130,10 @@ private:
     /// False when that mesh has no usable adjacency.
     [[nodiscard]] bool refreshSilhouette(foundation::int32 meshIndex);
     void buildHandles();
+    /// Axis of the built handle nearest positionPixel within reach, or -1; records that handle's screen direction.
+    [[nodiscard]] foundation::int32 pickHandle(QPointF positionPixel);
+    /// Append one handle's strokes and fills with hover and drag emphasis applied.
+    void appendHandleGeometry(const HandleLine& handle, ViewportObjectOverlay& inoutOverlay) const;
     [[nodiscard]] foundation::math::Affine3 makeTransform(const QJsonObject& placement) const;
     /// Recompute mMeshBoundsMesh for a changed scene identity; false leaves it empty (no rejection).
     [[nodiscard]] bool refreshMeshBounds();
@@ -148,6 +169,7 @@ private:
     QByteArray mMeshBoundsIdentity;
     Tool mTool = Tool::Move;
     foundation::int32 mDragAxis = -1;
+    foundation::int32 mHoverAxis = -1;
     bool mCanEdit = false;
     bool mIsActive = true;
     bool mHasPresentedView = false;

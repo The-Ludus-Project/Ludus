@@ -123,7 +123,12 @@ void PreviewViewport::mouseReleaseEvent(QMouseEvent* event)
     }
     if (event->button() == Qt::LeftButton)
     {
-        static_cast<void>(mObjectInteraction->Release());
+        if (mObjectInteraction->Release() == true)
+        {
+            // The pointer is still over the handle just released; show it highlighted again.
+            static_cast<void>(
+                mObjectInteraction->Hover(getInteractionPosition(event->globalPosition()), getInteractionFrame()));
+        }
     }
     if (event->button() == Qt::RightButton)
     {
@@ -144,6 +149,11 @@ void PreviewViewport::mouseMoveEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    if (event->buttons() == Qt::NoButton && mIsFlying == false)
+    {
+        static_cast<void>(
+            mObjectInteraction->Hover(getInteractionPosition(event->globalPosition()), getInteractionFrame()));
+    }
 #if defined(Q_OS_MACOS)
     if (mRelativeMouse.IsActive() == true)
     {
@@ -162,6 +172,25 @@ void PreviewViewport::mouseMoveEvent(QMouseEvent* event)
         return;
     }
     event->accept();
+}
+void PreviewViewport::leaveEvent(QEvent* event)
+{
+    mObjectInteraction->ClearHover();
+    QWidget::leaveEvent(event);
+}
+void PreviewViewport::updateGizmoCursor()
+{
+    const bool isDragging = mObjectInteraction->IsDragging();
+    if (isDragging == true || mObjectInteraction->GetHoveredAxis() >= 0)
+    {
+        setCursor(isDragging == true ? Qt::ClosedHandCursor : Qt::OpenHandCursor);
+        mHasGizmoCursor = true;
+    }
+    else if (mHasGizmoCursor == true)
+    {
+        unsetCursor();
+        mHasGizmoCursor = false;
+    }
 }
 bool PreviewViewport::navigateMouse(float32 deltaX,
                                     float32 deltaY,

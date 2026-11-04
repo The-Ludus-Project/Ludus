@@ -171,6 +171,7 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
+    void leaveEvent(QEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
@@ -186,6 +187,9 @@ private:
     foundation::UniquePtr<State> mState;
     ViewportObjectInteraction* mObjectInteraction;
     void updateObjectInteractionAvailability();
+    /// Open hand over a transform handle, closed hand while dragging one; the default cursor otherwise.
+    void updateGizmoCursor();
+    bool mHasGizmoCursor = false;
     /// Write a read screenshot to the requested path, or ask for one; reports failures as SaveScreenshot says.
     void finishScreenshot(const QImage& image);
     void failScreenshot(const QString& error);

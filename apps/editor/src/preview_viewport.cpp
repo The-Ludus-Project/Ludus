@@ -1455,6 +1455,9 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     LUDUS_REQUIRE(preview != nullptr);
     LUDUS_REQUIRE(frameSource != nullptr);
     mObjectInteraction = new ViewportObjectInteraction(*preview, this);
+    // Without a pressed button Qt delivers no move events, and the transform handles highlight on hover.
+    setMouseTracking(true);
+    connect(mObjectInteraction, &ViewportObjectInteraction::Changed, this, &PreviewViewport::updateGizmoCursor);
     mState.Reset(new State);
     updateObjectInteractionAvailability();
     setMinimumSize(160, 160);
@@ -2725,6 +2728,9 @@ bool PreviewViewport::eventFilter(QObject* watched, QEvent* event)
             case QEvent::MouseMove:
                 mouseMoveEvent(static_cast<QMouseEvent*>(event));
                 return true;
+            case QEvent::Leave:
+                leaveEvent(event);
+                break;
             case QEvent::MouseButtonDblClick:
                 event->ignore();
                 return false;

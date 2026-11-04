@@ -2,11 +2,13 @@
 
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 
 #include "design_tokens.h"
 
 #include <QColor>
 #include <QLineF>
+#include <QPointF>
 #include <QRectF>
 
 namespace ludus::editor
@@ -17,6 +19,16 @@ struct ViewportHandleStroke final
     QLineF LinePixel;
     QRgb Color = 0;
     foundation::float32 WidthPixels = 1;
+};
+/// A filled, convex handle polygon in logical viewport pixels: a triangle (arrowhead) or a quad (cube
+/// face, pivot marker). Corners are unused beyond CornerCount.
+struct ViewportHandleFill final
+{
+    static constexpr foundation::usize TRIANGLE_CORNERS = 3;
+    static constexpr foundation::usize MAX_CORNERS = 4;
+    foundation::StaticArray<QPointF, MAX_CORNERS> CornersPixel{};
+    foundation::usize CornerCount = TRIANGLE_CORNERS;
+    QRgb Color = 0;
 };
 /// GUI-owned projected selection data (the object's silhouette and its transform handles), independent of a renderer
 /// device or painter. Buffers retain their capacity across camera/gesture updates; consumers borrow until the next
@@ -29,10 +41,10 @@ struct ViewportObjectOverlay final
     static constexpr foundation::usize TRIANGLE_VERTICES = 3;
     static constexpr foundation::int32 AXIS_COUNT = 3;
     static constexpr foundation::int32 RING_SEGMENTS = 64;
-    static constexpr foundation::int32 TIP_SEGMENTS = 16;
     static constexpr foundation::usize MAX_GLYPH_STROKES = 3;
-    static constexpr foundation::usize MAX_HANDLE_STROKES =
-        AXIS_COUNT * (RING_SEGMENTS + TIP_SEGMENTS + MAX_GLYPH_STROKES);
+    static constexpr foundation::usize MAX_HANDLE_STROKES = AXIS_COUNT * (RING_SEGMENTS + MAX_GLYPH_STROKES);
+    /// Arrowheads and cubes of the three axes plus the pivot marker.
+    static constexpr foundation::usize MAX_HANDLE_FILLS = AXIS_COUNT + 1;
     /// The selection amber of the design tokens, shared with the graph canvas.
     static constexpr QRgb SELECTION_COLOR = design::GetThemeArgb(design::ThemeColour::SelectionAmber, true);
     /// Opacity, of 255, of the casing under the outline.
@@ -47,6 +59,8 @@ struct ViewportObjectOverlay final
     static constexpr foundation::float32 CASING_WIDTH_PIXELS = OUTLINE_WIDTH_PIXELS + 2.0F;
     foundation::Array<QLineF> OutlineLinesPixel;
     foundation::Array<ViewportHandleStroke> HandleStrokes;
+    /// Solid handle shapes drawn over the strokes.
+    foundation::Array<ViewportHandleFill> HandleFills;
     QRectF FramePixel;
 };
 } // namespace ludus::editor

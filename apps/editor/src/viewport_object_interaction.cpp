@@ -1,4 +1,5 @@
 #include "internal/viewport_object_interaction.h"
+#include "design_tokens.h"
 #include "internal/render_preview.h"
 #include "internal/world_document.h"
 
@@ -36,7 +37,12 @@ constexpr float32 PROJECTION_EPSILON = 0.000001F;
 constexpr float64 HANDLE_PIXELS = 80;
 constexpr float64 HANDLE_HIT_PIXELS = 9;
 constexpr float64 MINIMUM_AXIS_PIXELS = 8;
-constexpr float64 HANDLE_TIP_PIXELS = 5;
+/// Arrowhead length and half width of a move handle, in logical pixels.
+constexpr float64 ARROW_LENGTH_PIXELS = 15;
+constexpr float64 ARROW_HALF_WIDTH_PIXELS = 6;
+/// Half side of a scale handle's cube and of the pivot marker, in logical pixels.
+constexpr float64 CUBE_HALF_PIXELS = 5.5;
+constexpr float64 PIVOT_HALF_PIXELS = 3.5;
 constexpr float64 MOVE_SNAP_METRES = 0.1;
 constexpr float64 ROTATE_SNAP_DEGREES = 15;
 constexpr float64 SCALE_SNAP = 0.1;
@@ -45,9 +51,16 @@ constexpr float64 MINIMUM_SCALE_FACTOR = 0.01;
 constexpr float64 DEGREES_PER_TURN = math::RadiansToDegrees(math::kTau);
 constexpr float64 PIXELS_PER_DEGREE = HANDLE_PIXELS * math::DegreesToRadians(1.0);
 constexpr float64 HANDLE_WIDTH = 3;
-constexpr float64 ACTIVE_HANDLE_WIDTH = 4;
+/// Width of the handle under the pointer or being dragged.
+constexpr float64 EMPHASIZED_HANDLE_WIDTH = 4.5;
+/// Share, in percent, of white mixed into the emphasized handle's axis colour.
+constexpr int32 EMPHASIS_PERCENT = 45;
+/// Share, in percent, of the viewport colour mixed into a handle that recedes: the other axes while one
+/// is dragged, and the half of a rotation ring behind the pivot.
+constexpr int32 RECEDE_AXES_PERCENT = 65;
+constexpr int32 RECEDE_BACK_PERCENT = 45;
+constexpr int32 PERCENT_DENOMINATOR = 100;
 constexpr float64 LABEL_OFFSET = 12;
-constexpr int32 TIP_SEGMENTS = ViewportObjectOverlay::TIP_SEGMENTS;
 constexpr float64 GLYPH_WIDTH_PIXELS = 6;
 constexpr float64 GLYPH_HEIGHT_PIXELS = 8;
 constexpr usize MAX_HANDLE_STROKES = ViewportObjectOverlay::MAX_HANDLE_STROKES;
@@ -57,7 +70,25 @@ constexpr float32 PICK_BOUNDS_PADDING = 0.0001F;
 /// Ray parameter bound before any hit; finite because FoundationMath intervals reject NaN bounds.
 constexpr float64 UNBOUNDED_PICK_DISTANCE = 1.0e300;
 
-constexpr StaticArray<QRgb, AXIS_COUNT> AXIS_COLORS{0xffff6060, 0xff68df85, 0xff639fff};
+/// Axis colours from the design tokens ("always with the letter X/Y/Z", hence the glyph at each tip).
+constexpr StaticArray<QRgb, AXIS_COUNT> AXIS_COLORS{design::GetThemeArgb(design::ThemeColour::AxisX, true),
+                                                    design::GetThemeArgb(design::ThemeColour::AxisY, true),
+                                                    design::GetThemeArgb(design::ThemeColour::AxisZ, true)};
+/// Colour that receding handles fade towards, so they never turn translucent over the frame.
+constexpr QRgb RECEDE_COLOR = design::GetThemeArgb(design::ThemeColour::SurfaceViewport, true);
+constexpr QRgb EMPHASIS_COLOR = design::GetThemeArgb(design::ThemeColour::TextHud, true);
+constexpr QRgb PIVOT_COLOR = design::GetThemeArgb(design::ThemeColour::TextHud, true);
+constexpr int32 MixChannel(int32 from, int32 to, int32 percent) noexcept
+{
+    return from + (to - from) * percent / PERCENT_DENOMINATOR;
+}
+/// The opaque colour percent of the way from one colour to another.
+constexpr QRgb MixColour(QRgb from, QRgb to, int32 percent) noexcept
+{
+    return qRgb(MixChannel(qRed(from), qRed(to), percent),
+                MixChannel(qGreen(from), qGreen(to), percent),
+                MixChannel(qBlue(from), qBlue(to), percent));
+}
 float64 ComputeSnap(float64 value, float64 interval) noexcept
 {
     const float64 scaled = value / interval;
@@ -497,6 +528,8 @@ void ViewportObjectInteraction::buildHandles()
         return;
     }
     const float32 radiusWorld = static_cast<float32>(HANDLE_PIXELS / pixelsPerMetre);
+    const math::Vector3 forwardWorld =
+        math::Rotate(mPreviewOrNull->GetVisibleCameraSample().Pose.Orientation, {0, 0, -1});
     for (int32 axis = 0; axis < AXIS_COUNT; ++axis)
     {
         math::Affine3 axisFrameToWorld = meshToWorld;
@@ -532,7 +565,8 @@ void ViewportObjectInteraction::buildHandles()
             if (length >= MINIMUM_AXIS_PIXELS)
             {
                 if (mHandles.TryAdd(
-                        {QLineF(mPivotPixel, mPivotPixel + directionPixel * (HANDLE_PIXELS / length)), axis}) == false)
+                        {QLineF(mPivotPixel, mPivotPixel + directionPixel * (HANDLE_PIXELS / length)), axis, false}) ==
+                    false)
                 {
                     mHandles.Clear();
                     return;
@@ -555,14 +589,16 @@ void ViewportObjectInteraction::buildHandles()
                 const float32 angle2 = static_cast<float32>(segment + 1) * 2 * math::kPiF / RING_SEGMENTS;
                 QPointF firstPixel;
                 QPointF secondPixel;
-                if (project(meshToWorld.Translation +
-                                (ringXWorld * math::Cos(angle1) + ringYWorld * math::Sin(angle1)) * radiusWorld,
-                            firstPixel) == true &&
-                    project(meshToWorld.Translation +
-                                (ringXWorld * math::Cos(angle2) + ringYWorld * math::Sin(angle2)) * radiusWorld,
-                            secondPixel) == true)
+                const math::Vector3 firstOffsetWorld =
+                    (ringXWorld * math::Cos(angle1) + ringYWorld * math::Sin(angle1)) * radiusWorld;
+                const math::Vector3 secondOffsetWorld =
+                    (ringXWorld * math::Cos(angle2) + ringYWorld * math::Sin(angle2)) * radiusWorld;
+                if (project(meshToWorld.Translation + firstOffsetWorld, firstPixel) == true &&
+                    project(meshToWorld.Translation + secondOffsetWorld, secondPixel) == true)
                 {
-                    if (mHandles.TryAdd({QLineF(firstPixel, secondPixel), axis}) == false)
+                    // The half of the ring farther along the view direction than the pivot is behind the object.
+                    const bool isBack = math::Dot(firstOffsetWorld + secondOffsetWorld, forwardWorld) > 0;
+                    if (mHandles.TryAdd({QLineF(firstPixel, secondPixel), axis, isBack}) == false)
                     {
                         mHandles.Clear();
                         return;
@@ -570,6 +606,51 @@ void ViewportObjectInteraction::buildHandles()
                 }
             }
         }
+    }
+}
+int32 ViewportObjectInteraction::pickHandle(QPointF positionPixel)
+{
+    float64 nearest = HANDLE_HIT_PIXELS * HANDLE_HIT_PIXELS;
+    int32 axis = -1;
+    for (const HandleLine& handle : mHandles)
+    {
+        const float64 distance = ComputeDistanceSquared(positionPixel, handle.Line);
+        if (distance < nearest)
+        {
+            nearest = distance;
+            axis = handle.Axis;
+            mAxisPixel = handle.Line.p2() - handle.Line.p1();
+        }
+    }
+    return axis;
+}
+bool ViewportObjectInteraction::Hover(QPointF positionPixel, const QRectF& outerFramePixel)
+{
+    int32 axis = -1;
+    const QRectF framePixel = resolveFrame(outerFramePixel);
+    if (mDragAxis < 0 && mIsActive == true && framePixel.contains(positionPixel) == true)
+    {
+        mFramePixel = framePixel;
+        if (describe(framePixel, mWorldToClip) == true)
+        {
+            buildHandles();
+            axis = pickHandle(positionPixel);
+        }
+    }
+    if (mDragAxis >= 0 || axis == mHoverAxis)
+    {
+        return mHoverAxis >= 0;
+    }
+    mHoverAxis = axis;
+    Q_EMIT Changed();
+    return axis >= 0;
+}
+void ViewportObjectInteraction::ClearHover()
+{
+    if (mHoverAxis >= 0)
+    {
+        mHoverAxis = -1;
+        Q_EMIT Changed();
     }
 }
 bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outerFramePixel)
@@ -585,21 +666,11 @@ bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outer
         return false;
     }
     buildHandles();
-    float64 nearest = HANDLE_HIT_PIXELS * HANDLE_HIT_PIXELS;
-    int32 axis = -1;
-    for (const HandleLine& handle : mHandles)
-    {
-        const float64 distance = ComputeDistanceSquared(positionPixel, handle.Line);
-        if (distance < nearest)
-        {
-            nearest = distance;
-            axis = handle.Axis;
-            mAxisPixel = handle.Line.p2() - handle.Line.p1();
-        }
-    }
+    const int32 axis = pickHandle(positionPixel);
     if (axis >= 0)
     {
         mDragAxis = axis;
+        mHoverAxis = -1;
         mCandidate = mPlacement;
         mPressPixel = positionPixel;
         mPixelsPerUnit = 0;
@@ -698,6 +769,7 @@ bool ViewportObjectInteraction::Release()
 }
 void ViewportObjectInteraction::Cancel()
 {
+    ClearHover();
     if (mDragAxis >= 0)
     {
         mDragAxis = -1;
@@ -710,11 +782,13 @@ void ViewportObjectInteraction::BuildOverlay(const QRectF& outerFramePixel, View
     LUDUS_PROFILE_SCOPE(EditorObjectOverlayBuild);
     outOverlay.OutlineLinesPixel.Clear();
     outOverlay.HandleStrokes.Clear();
+    outOverlay.HandleFills.Clear();
     outOverlay.FramePixel = {};
     const QRectF framePixel = resolveFrame(outerFramePixel);
     if (describe(framePixel, mWorldToClip) == false || mSelected.isEmpty() == true ||
         outOverlay.OutlineLinesPixel.TryEnsureCapacity(MAX_OUTLINE_LINES) == false ||
-        outOverlay.HandleStrokes.TryEnsureCapacity(MAX_HANDLE_STROKES) == false)
+        outOverlay.HandleStrokes.TryEnsureCapacity(MAX_HANDLE_STROKES) == false ||
+        outOverlay.HandleFills.TryEnsureCapacity(ViewportObjectOverlay::MAX_HANDLE_FILLS) == false)
     {
         return;
     }
@@ -767,50 +841,103 @@ void ViewportObjectInteraction::BuildOverlay(const QRectF& outerFramePixel, View
         }
     }
     buildHandles();
-    const auto appendStroke = [&outOverlay](QPointF firstPixel, QPointF secondPixel, QRgb color, float64 widthPixels) {
-        outOverlay.HandleStrokes.Add({QLineF(firstPixel, secondPixel), color, static_cast<float32>(widthPixels)});
-    };
     for (const HandleLine& handle : mHandles)
     {
-        const QRgb color = AXIS_COLORS[static_cast<usize>(handle.Axis)];
-        const float64 widthPixels = handle.Axis == mDragAxis ? ACTIVE_HANDLE_WIDTH : HANDLE_WIDTH;
-        appendStroke(handle.Line.p1(), handle.Line.p2(), color, widthPixels);
-        if (mTool != Tool::Rotate)
+        appendHandleGeometry(handle, outOverlay);
+    }
+    if (mHandles.IsEmpty() == false)
+    {
+        // The pivot marker shows where the transform acts; it stays above every shaft.
+        ViewportHandleFill pivot;
+        pivot.CornerCount = ViewportHandleFill::MAX_CORNERS;
+        pivot.Color = PIVOT_COLOR;
+        pivot.CornersPixel = {mPivotPixel + QPointF(-PIVOT_HALF_PIXELS, -PIVOT_HALF_PIXELS),
+                              mPivotPixel + QPointF(PIVOT_HALF_PIXELS, -PIVOT_HALF_PIXELS),
+                              mPivotPixel + QPointF(PIVOT_HALF_PIXELS, PIVOT_HALF_PIXELS),
+                              mPivotPixel + QPointF(-PIVOT_HALF_PIXELS, PIVOT_HALF_PIXELS)};
+        outOverlay.HandleFills.Add(pivot);
+    }
+}
+void ViewportObjectInteraction::appendHandleGeometry(const HandleLine& handle,
+                                                     ViewportObjectOverlay& inoutOverlay) const
+{
+    const bool isEmphasized = handle.Axis == mDragAxis || (mDragAxis < 0 && handle.Axis == mHoverAxis);
+    const bool isReceding = mDragAxis >= 0 && handle.Axis != mDragAxis;
+    QRgb color = AXIS_COLORS[static_cast<usize>(handle.Axis)];
+    if (isEmphasized == true)
+    {
+        color = MixColour(color, EMPHASIS_COLOR, EMPHASIS_PERCENT);
+    }
+    else if (isReceding == true)
+    {
+        color = MixColour(color, RECEDE_COLOR, RECEDE_AXES_PERCENT);
+    }
+    else if (handle.IsBack == true)
+    {
+        color = MixColour(color, RECEDE_COLOR, RECEDE_BACK_PERCENT);
+    }
+    const float32 widthPixels = static_cast<float32>(isEmphasized == true ? EMPHASIZED_HANDLE_WIDTH : HANDLE_WIDTH);
+    inoutOverlay.HandleStrokes.Add({handle.Line, color, widthPixels});
+    if (mTool == Tool::Rotate)
+    {
+        return;
+    }
+    const auto appendStroke = [&inoutOverlay, color](QPointF firstPixel, QPointF secondPixel) {
+        inoutOverlay.HandleStrokes.Add({QLineF(firstPixel, secondPixel), color, 1});
+    };
+    // A move handle ends in an arrowhead and a scale handle in a cube, both solid so they read at 80 px.
+    const QPointF tipPixel = handle.Line.p2();
+    const QPointF directionPixel = tipPixel - handle.Line.p1();
+    const float64 lengthPixels = math::Sqrt(QPointF::dotProduct(directionPixel, directionPixel));
+    if (lengthPixels > 0)
+    {
+        const QPointF unitPixel = directionPixel / lengthPixels;
+        const QPointF normalPixel(-unitPixel.y(), unitPixel.x());
+        ViewportHandleFill head;
+        head.Color = color;
+        if (mTool == Tool::Move)
         {
-            for (int32 segment = 0; segment < TIP_SEGMENTS; ++segment)
-            {
-                const float64 firstAngle = math::kTau * segment / TIP_SEGMENTS;
-                const float64 secondAngle = math::kTau * (segment + 1) / TIP_SEGMENTS;
-                appendStroke(
-                    handle.Line.p2() + QPointF(math::Cos(firstAngle), math::Sin(firstAngle)) * HANDLE_TIP_PIXELS,
-                    handle.Line.p2() + QPointF(math::Cos(secondAngle), math::Sin(secondAngle)) * HANDLE_TIP_PIXELS,
-                    color,
-                    widthPixels);
-            }
-            // Small stroke glyphs stay geometry in the native overlay, avoiding a full-frame text texture.
-            const QPointF topLeftPixel = handle.Line.p2() + QPointF(LABEL_OFFSET, -GLYPH_HEIGHT_PIXELS);
-            const QPointF topRightPixel = topLeftPixel + QPointF(GLYPH_WIDTH_PIXELS, 0);
-            const QPointF bottomLeftPixel = topLeftPixel + QPointF(0, GLYPH_HEIGHT_PIXELS);
-            const QPointF bottomRightPixel = topLeftPixel + QPointF(GLYPH_WIDTH_PIXELS, GLYPH_HEIGHT_PIXELS);
-            if (handle.Axis == 0)
-            {
-                appendStroke(topLeftPixel, bottomRightPixel, color, 1);
-                appendStroke(topRightPixel, bottomLeftPixel, color, 1);
-            }
-            else if (handle.Axis == 1)
-            {
-                const QPointF middlePixel = (topLeftPixel + bottomRightPixel) * 0.5;
-                appendStroke(topLeftPixel, middlePixel, color, 1);
-                appendStroke(topRightPixel, middlePixel, color, 1);
-                appendStroke(middlePixel, (bottomLeftPixel + bottomRightPixel) * 0.5, color, 1);
-            }
-            else
-            {
-                appendStroke(topLeftPixel, topRightPixel, color, 1);
-                appendStroke(topRightPixel, bottomLeftPixel, color, 1);
-                appendStroke(bottomLeftPixel, bottomRightPixel, color, 1);
-            }
+            const QPointF basePixel = tipPixel - unitPixel * ARROW_LENGTH_PIXELS;
+            head.CornerCount = ViewportHandleFill::TRIANGLE_CORNERS;
+            head.CornersPixel = {tipPixel,
+                                 basePixel + normalPixel * ARROW_HALF_WIDTH_PIXELS,
+                                 basePixel - normalPixel * ARROW_HALF_WIDTH_PIXELS,
+                                 tipPixel};
         }
+        else
+        {
+            const QPointF alongPixel = unitPixel * CUBE_HALF_PIXELS;
+            const QPointF acrossPixel = normalPixel * CUBE_HALF_PIXELS;
+            head.CornerCount = ViewportHandleFill::MAX_CORNERS;
+            head.CornersPixel = {tipPixel - alongPixel - acrossPixel,
+                                 tipPixel + alongPixel - acrossPixel,
+                                 tipPixel + alongPixel + acrossPixel,
+                                 tipPixel - alongPixel + acrossPixel};
+        }
+        inoutOverlay.HandleFills.Add(head);
+    }
+    // Small stroke glyphs stay geometry in the native overlay, avoiding a full-frame text texture.
+    const QPointF topLeftPixel = tipPixel + QPointF(LABEL_OFFSET, -GLYPH_HEIGHT_PIXELS);
+    const QPointF topRightPixel = topLeftPixel + QPointF(GLYPH_WIDTH_PIXELS, 0);
+    const QPointF bottomLeftPixel = topLeftPixel + QPointF(0, GLYPH_HEIGHT_PIXELS);
+    const QPointF bottomRightPixel = topLeftPixel + QPointF(GLYPH_WIDTH_PIXELS, GLYPH_HEIGHT_PIXELS);
+    if (handle.Axis == 0)
+    {
+        appendStroke(topLeftPixel, bottomRightPixel);
+        appendStroke(topRightPixel, bottomLeftPixel);
+    }
+    else if (handle.Axis == 1)
+    {
+        const QPointF middlePixel = (topLeftPixel + bottomRightPixel) * 0.5;
+        appendStroke(topLeftPixel, middlePixel);
+        appendStroke(topRightPixel, middlePixel);
+        appendStroke(middlePixel, (bottomLeftPixel + bottomRightPixel) * 0.5);
+    }
+    else
+    {
+        appendStroke(topLeftPixel, topRightPixel);
+        appendStroke(topRightPixel, bottomLeftPixel);
+        appendStroke(bottomLeftPixel, bottomRightPixel);
     }
 }
 void ViewportObjectInteraction::Paint(QPainter& inoutPainter, const QRectF& outerFramePixel)
@@ -837,6 +964,12 @@ void ViewportObjectInteraction::Paint(QPainter& inoutPainter, const QRectF& oute
     {
         inoutPainter.setPen(QPen(QColor::fromRgb(stroke.Color), static_cast<float64>(stroke.WidthPixels)));
         inoutPainter.drawLine(stroke.LinePixel);
+    }
+    inoutPainter.setPen(Qt::NoPen);
+    for (const ViewportHandleFill& fill : mPaintOverlay.HandleFills)
+    {
+        inoutPainter.setBrush(QColor::fromRgb(fill.Color));
+        inoutPainter.drawPolygon(fill.CornersPixel.GetData(), static_cast<int32>(fill.CornerCount));
     }
     inoutPainter.restore();
 }
