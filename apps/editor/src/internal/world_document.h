@@ -139,6 +139,12 @@ public:
     [[nodiscard]] QJsonObject SceneLevel() const;
     /// Map all current and future slots of a logical source material in one World history entry.
     [[nodiscard]] bool MapSceneMaterial(const QString& source, const QString& replacement, QString& outError);
+    /// Resolve an imported slot's inherited material through the World repair mapping.
+    [[nodiscard]] QString GetInheritedMaterialId(const QJsonObject& placement) const;
+    /// Shared parameters of this resolved material, or an empty object for imported defaults.
+    [[nodiscard]] QJsonObject GetSharedCoating(const QString& material) const;
+    /// Set the World-owned instance shared by inherited slots of this material as one undo step.
+    [[nodiscard]] bool SetSharedCoating(const QString& material, const QJsonObject& coating, QString& outError);
     /// Replace the scene level's start view (`scene.camera`: eye, target, up, fov) as one undo
     /// step. Fails without a scene level or when the World's validation rejects the camera;
     /// failure preserves the draft and history, and an unchanged camera adds no history.

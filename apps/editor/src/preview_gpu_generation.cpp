@@ -816,6 +816,11 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
             }
             resources.HasEnvironment = true;
         }
+        if (preview_lighting::BuildMaterialOwners(resources.Source, mLightingMaterialOwners) == false)
+        {
+            outError = QStringLiteral("Could not prepare viewport material bindings. Previous view retained.");
+            return false;
+        }
         // Reference transport traces its own visibility, and surface-only debug views show no lighting.
         resources.LightingStage = target != preview_lighting::InputsTarget::Raster ? PreviewLightingStage::Materials
                                                                                    : PreviewLightingStage::Casters;
@@ -832,9 +837,9 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
     {
         while (resources.MaterialCursor < count)
         {
-            if (IsAccepted(CreateLightingMaterial(resources.MaterialCursor,
-                                                  false,
-                                                  resources.CasterMaterials[resources.MaterialCursor])) == false)
+            const usize index = resources.MaterialCursor;
+            if (mLightingMaterialOwners[index] == index &&
+                IsAccepted(CreateLightingMaterial(index, false, resources.CasterMaterials[index])) == false)
             {
                 return false;
             }
@@ -847,7 +852,8 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
         }
         for (usize i = 0; i < count; ++i)
         {
-            const rhi::RasterStatus ready = resources.Renderer.GetStatus(resources.CasterMaterials[i]);
+            const renderer::MaterialVersion material = resources.CasterMaterials[mLightingMaterialOwners[i]];
+            const rhi::RasterStatus ready = resources.Renderer.GetStatus(material);
             if (ready != rhi::RasterStatus::Ready)
             {
                 return ready == rhi::RasterStatus::Pending;
@@ -856,7 +862,7 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
             items[i].Geometry = mMeshes[source.Mesh];
             items[i].Transform = source.Transform;
             items[i].SourceId = source.SourceId;
-            items[i].Surface = resources.CasterMaterials[i];
+            items[i].Surface = material;
             items[i].Material.Color = {1, 1, 1, 1};
         }
         if (IsAccepted(resources.Renderer.CreateSnapshot(items.GetData(), count, resources.Casters)) == false)
@@ -940,9 +946,9 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
         }
         while (resources.MaterialCursor < count)
         {
-            if (IsAccepted(
-                    CreateLightingMaterial(resources.MaterialCursor, true, mMaterials[resources.MaterialCursor])) ==
-                false)
+            const usize index = resources.MaterialCursor;
+            if (mLightingMaterialOwners[index] == index &&
+                IsAccepted(CreateLightingMaterial(index, true, mMaterials[index])) == false)
             {
                 return false;
             }
@@ -955,7 +961,8 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
         }
         for (usize i = 0; i < count; ++i)
         {
-            const rhi::RasterStatus ready = resources.Renderer.GetStatus(mMaterials[i]);
+            const renderer::MaterialVersion material = mMaterials[mLightingMaterialOwners[i]];
+            const rhi::RasterStatus ready = resources.Renderer.GetStatus(material);
             if (ready != rhi::RasterStatus::Ready)
             {
                 return ready == rhi::RasterStatus::Pending;
@@ -964,7 +971,7 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
             items[i].Geometry = mMeshes[source.Mesh];
             items[i].Transform = source.Transform;
             items[i].SourceId = source.SourceId;
-            items[i].Surface = mMaterials[i];
+            items[i].Surface = material;
             items[i].Material.Color = {1, 1, 1, 1};
         }
         if (IsAccepted(resources.Renderer.CreateSnapshot(items.GetData(), count, mSnapshot)) == false)

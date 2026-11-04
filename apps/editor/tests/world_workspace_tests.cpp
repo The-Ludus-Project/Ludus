@@ -7,6 +7,7 @@
 #include "internal/level_workspace.h"
 #include "internal/main_window.h"
 #include "internal/material_inspection.h"
+#include "internal/preview_lighting.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_panel.h"
 #include "internal/render_preview.h"
@@ -2946,6 +2947,236 @@ Shape "trianglemesh" "point3 P" [-0.4 -0.7 0 0.4 -0.7 0 0 0.7 0] "integer indice
     CHECK(sharedSlots == 3);
     checkMaterial(reopened, first, format::MaterialModel::Diffuse);
     checkMaterial(reopened, second, format::MaterialModel::Diffuse);
+    reopened.StopPreview();
+}
+
+TEST_CASE("World coating instances share storage and retain slot and shared edits on reimport",
+          "[editor][world][coating][instancing]")
+{
+    using namespace ludus::foundation;
+    namespace format = ludus::content::scene_format;
+    QTemporaryDir directory;
+    const QString path = Fixture(directory);
+    const QString external = directory.filePath(QStringLiteral("external"));
+    REQUIRE(QDir().mkpath(external) == true);
+    const QString source = QDir(external).filePath(QStringLiteral("coat.pbrt"));
+    Write(source, QByteArrayLiteral(R"(LookAt 0 0 3 0 0 0 0 1 0
+Camera "perspective" "float fov" 45
+WorldBegin
+MakeNamedMaterial "Varnish" "string type" "coateddiffuse" "rgb reflectance" [0.5 0.3 0.1]
+    "float roughness" 0.125 "bool remaproughness" false
+MakeNamedMaterial "Imported" "string type" "hair"
+NamedMaterial "Imported"
+Shape "trianglemesh" "point3 P" [-1 -1 0 1 -1 0 0 1 0] "integer indices" [0 1 2]
+NamedMaterial "Varnish"
+Shape "trianglemesh" "point3 P" [2 -1 0 3 -1 0 2 1 0] "integer indices" [0 1 2]
+)"));
+    QString error;
+    const QString relativeLevel = QStringLiteral("scenes/coat.lulevel");
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(directory.path(), relativeLevel, external, error, "coat.pbrt"));
+    const QJsonObject level = QJsonDocument::fromJson(Read(directory.filePath(relativeLevel))).object();
+    WorldDocument document = Document();
+    REQUIRE(document.ImportScene(level, error) == true);
+    QString first;
+    QString donor;
+    for (const QJsonValue value : level.value(QStringLiteral("objects")).toArray())
+    {
+        const QJsonObject object = value.toObject();
+        const QString name = object.value(QStringLiteral("name")).toString();
+        if (name == QStringLiteral("Imported"))
+        {
+            first = object.value(QStringLiteral("id")).toString();
+        }
+        else if (name == QStringLiteral("Varnish"))
+        {
+            donor = object.value(QStringLiteral("id")).toString();
+        }
+    }
+    REQUIRE(first.isEmpty() == false);
+    REQUIRE(donor.isEmpty() == false);
+    const QString material =
+        document.ScenePlacement(document.Entity(first)).value(QStringLiteral("material")).toString();
+    const QString replacement =
+        document.ScenePlacement(document.Entity(donor)).value(QStringLiteral("material")).toString();
+    REQUIRE(document.MapSceneMaterial(material, replacement, error) == true);
+    REQUIRE(document.RemoveEntity(donor, error) == true);
+    QString second;
+    REQUIRE(document.DuplicateEntity(ludus::platform::GetSystemEntropySource(), error, first, second) == true);
+    Write(path, document.Encode());
+
+    WorldWorkspace workspace;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        workspace.show();
+    }
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    WaitForValidatedScene(workspace);
+
+    const auto checkAlpha = [](const WorldWorkspace& view, const QString& id, float32 alpha) {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(GetLevel(view).PreviewScene(), id);
+        REQUIRE(materialOrNull != nullptr);
+        CHECK(materialOrNull->Scattering.Model == format::MaterialModel::CoatedDiffuse);
+        CHECK(materialOrNull->Scattering.AlphaU == alpha);
+    };
+    const auto checkSharing = [](const WorldWorkspace& view, usize count) {
+        const RenderScene& scene = GetLevel(view).PreviewScene();
+        REQUIRE(scene.Definition != nullptr);
+        CHECK(scene.Definition->Materials.GetSize() == count);
+        Array<usize> owners;
+        REQUIRE(preview_lighting::BuildMaterialOwners(scene, owners) == true);
+        usize unique = 0;
+        for (usize index = 0; index < owners.GetSize(); ++index)
+        {
+            if (owners[index] == index)
+            {
+                ++unique;
+            }
+        }
+        CHECK(unique == count);
+    };
+    const QString alphaField = QStringLiteral("scene/coating/alpha");
+    const auto applyShared = [](WorldWorkspace& inoutView, const QString& included, const QString& excluded) {
+        QPushButton* sharedOrNull = inoutView.findChild<QPushButton*>(QStringLiteral("worldApplySharedCoating"));
+        REQUIRE(sharedOrNull != nullptr);
+        REQUIRE(sharedOrNull->isEnabled() == true);
+        QTimer::singleShot(0, [&included, &excluded]() {
+            QMessageBox* dialogOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            REQUIRE(dialogOrNull != nullptr);
+            CHECK(dialogOrNull->defaultButton() == dialogOrNull->button(QMessageBox::Cancel));
+            CHECK(dialogOrNull->informativeText().contains(included) == true);
+            if (excluded.isEmpty() == false)
+            {
+                CHECK(dialogOrNull->informativeText().contains(excluded) == false);
+            }
+            QPushButton* applyOrNull =
+                dialogOrNull->findChild<QPushButton*>(QStringLiteral("worldConfirmSharedCoating"));
+            REQUIRE(applyOrNull != nullptr);
+            applyOrNull->click();
+        });
+        sharedOrNull->click();
+        WaitForValidatedScene(inoutView);
+    };
+
+    checkSharing(workspace, 1);
+    RenderPreview& preview = GetLevel(workspace).GetRenderPreview();
+    const bool canVerifyDraws =
+        PreviewViewport::CanPresent() == true && QApplication::platformName() == QStringLiteral("cocoa");
+    uint32 sharedDraws = 0;
+    if (canVerifyDraws == true)
+    {
+        preview.SetShading(PreviewShading::Lit);
+        REQUIRE(QTest::qWaitFor([&preview]() { return preview.Report().Visible == 2 && preview.Frames() > 0; },
+                                MAX_SCENE_WAIT_MILLISECONDS) == true);
+        sharedDraws = preview.Report().Draws;
+        CHECK(sharedDraws > 0);
+    }
+    const auto checkDraws = [&](uint32 draws) {
+        if (canVerifyDraws == true)
+        {
+            REQUIRE(QTest::qWaitFor([&preview, draws]() { return preview.Report().Draws == draws; },
+                                    MAX_SCENE_WAIT_MILLISECONDS) == true);
+        }
+    };
+    REQUIRE(workspace.SelectEntity(first) == true);
+    Type(Field(workspace, alphaField), QStringLiteral("0.1250000001"));
+    REQUIRE(workspace.Apply() == true);
+    CHECK(workspace.Document().ScenePlacement(workspace.Document().Entity(first)).contains(QStringLiteral("coating")) ==
+          false);
+    CHECK(workspace.Document().GetSharedCoating(replacement).isEmpty() == true);
+    checkSharing(workspace, 1);
+
+    Type(Field(workspace, alphaField), QStringLiteral("0.25"));
+    applyShared(workspace, second, {});
+    checkAlpha(workspace, first, 0.25F);
+    checkAlpha(workspace, second, 0.25F);
+    CHECK(workspace.Document().GetSharedCoating(replacement).value(QStringLiteral("alpha")).toDouble() == 0.25);
+    checkSharing(workspace, 1);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    checkAlpha(workspace, first, 0.125F);
+    checkAlpha(workspace, second, 0.125F);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkAlpha(workspace, second, 0.25F);
+
+    REQUIRE(workspace.SelectEntity(first) == true);
+    Type(Field(workspace, alphaField), QStringLiteral("0.5"));
+    REQUIRE(workspace.Apply() == true);
+    WaitForValidatedScene(workspace);
+    checkAlpha(workspace, first, 0.5F);
+    checkAlpha(workspace, second, 0.25F);
+    checkSharing(workspace, 2);
+    checkDraws(sharedDraws + 1);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    checkAlpha(workspace, first, 0.25F);
+    checkSharing(workspace, 1);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkAlpha(workspace, first, 0.5F);
+    checkSharing(workspace, 2);
+
+    REQUIRE(workspace.SelectEntity(second) == true);
+    Type(Field(workspace, alphaField), QStringLiteral("0.5"));
+    applyShared(workspace, second, first);
+    checkAlpha(workspace, first, 0.5F);
+    checkAlpha(workspace, second, 0.5F);
+    checkSharing(workspace, 1);
+    checkDraws(sharedDraws);
+    Type(Field(workspace, alphaField), QStringLiteral("0.375"));
+    applyShared(workspace, second, first);
+    checkAlpha(workspace, first, 0.5F);
+    checkAlpha(workspace, second, 0.375F);
+    checkSharing(workspace, 2);
+    REQUIRE(workspace.Save() == true);
+    WaitForValidatedScene(workspace);
+    CHECK(workspace.Dirty() == false);
+    workspace.StopPreview();
+    workspace.hide();
+
+    WorldWorkspace reopened;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        reopened.show();
+    }
+    reopened.SetProject(directory.path(), 2);
+    REQUIRE(reopened.Open(path) == true);
+    WaitForValidatedScene(reopened);
+    checkAlpha(reopened, first, 0.5F);
+    checkAlpha(reopened, second, 0.375F);
+    REQUIRE(reopened.ImportScene(source) == true);
+    WaitForValidatedScene(reopened);
+    const RenderScene& imported = GetLevel(reopened).PreviewScene();
+    REQUIRE(imported.Objects.size() == 4);
+    usize inheritedSlots = 0;
+    for (const PreviewObject& object : imported.Objects)
+    {
+        const QString binding = reopened.Document()
+                                    .ScenePlacement(reopened.Document().Entity(object.Id))
+                                    .value(QStringLiteral("material"))
+                                    .toString();
+        if (binding == material)
+        {
+            ++inheritedSlots;
+            checkAlpha(reopened, object.Id, object.Id == first ? 0.5F : 0.375F);
+        }
+        else
+        {
+            CHECK(binding == replacement);
+            checkAlpha(reopened, object.Id, 0.375F);
+        }
+    }
+    CHECK(inheritedSlots == 3);
+    checkSharing(reopened, 2);
+    REQUIRE(reopened.SelectEntity(first) == true);
+    QPushButton* inheritOrNull = reopened.findChild<QPushButton*>(QStringLiteral("worldRestoreCoating"));
+    REQUIRE(inheritOrNull != nullptr);
+    inheritOrNull->click();
+    WaitForValidatedScene(reopened);
+    checkAlpha(reopened, first, 0.375F);
+    checkSharing(reopened, 1);
     reopened.StopPreview();
 }
 

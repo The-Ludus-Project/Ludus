@@ -1444,18 +1444,30 @@ the active World. Save publishes only the converted World document. Existing
 
 Select an imported object whose Material model is **Coated diffuse**. In its
 **Material** group, enter the isotropic GGX alpha, coating index of refraction
-(IOR), and optical thickness. **Apply Changes** applies the fields to the
-selected slot in one World edit. Other instances of the imported material
-keep their own values. Use Undo/Redo to move between revisions and **Save World**
-to keep the override on reopening the World. **Use Imported Coating** removes
-the override from this slot as an undoable edit.
+(IOR), and optical thickness.
 
-The viewport retains the previous drawable scene while the new scene is
-prepared. Invalid fields keep their edit buffers available for correction.
-If assembly fails, use the reported repair or undo the edit. The default
-raster view approximates changes in coat roughness. A compatible reference
-capture uses the authored alpha, IOR and optical thickness together. See
-[the coated-diffuse profile](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference).
+- **Apply Changes** gives the selected slot its own coating when the values
+  change. **Use Inherited Coating** rejoins the shared instance or imported
+  defaults.
+- **Apply to Shared Coating** edits the World instance for every slot inheriting
+  that imported material. Review the affected slots before confirming. Slots
+  with their own coating keep their values. Apply or reset other inspector
+  edits before changing the shared coating.
+
+Both actions are undoable. **Save World** preserves the shared and slot
+coatings across reopening. Reimport resolves newly placed slots through the
+same source material identity, so they inherit its shared World coating.
+
+The viewport retains the previous drawable scene while the next version
+prepares. Invalid fields keep their edit buffers available for correction.
+If assembly fails, use the reported repair or undo the edit. Matching coatings
+for the same source material share one cooked record, including values that
+match the imported defaults. The built-in viewport reuses draw materials for
+matching nonemissive surfaces with the same tint.
+
+The raster view approximates changes in coat roughness. A compatible reference
+capture uses the authored alpha, IOR and optical thickness together.
+[Coated-diffuse reference profile](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference)
 
 ### Repair an unsupported imported material
 
