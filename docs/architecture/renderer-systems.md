@@ -1078,16 +1078,8 @@ RHI contracts, not a claim that the current material graph editor is implemented
 Users can consume selected graph outputs; this never synthesizes shader variants.
 Depth-only rendering requires an authored technique preserving geometry/coverage.
 
-A material template declares a small shading family, parameter schema, legal
-texture semantics, render domain and an explicit finite set of legal static
-configuration tuples. Nested graph/function extensions contribute to the same
-shader and pipeline count/budget report. A material instance
-holds immutable values and exact texture versions. Instance edits create a new
-candidate and publish transactionally; old packets retain the old bindings.
-Begin with unlit, metallic/roughness lit, masked and premultiplied transparent
-families. Limit two-sided and specialized effects to justified variants.
-Runtime shader generation and arbitrary per-object specialization remain deferred;
-the proposed editor compiles authored graphs offline to immutable packages.
+The [material system design](#material-system-design) defines World assignments,
+material interfaces and execution requirements.
 
 Retain Ludus's pinned Slang/tool chain and SPIR-V, MSL, WGSL and GLSL ES artifacts.
 Cook explicit reflection with numeric bindings, stage interfaces, parameter
@@ -1115,6 +1107,184 @@ Persist native caches only with validated device/driver compatibility; cache
 failure is recoverable. Never claim offline shader compilation eliminates all
 driver pipeline work. Reload swaps package, layouts, bindings and pipelines as
 one validated version set; failed reload leaves the prior set usable.
+
+## Material system design
+
+**Status** Proposed. The current scene path resolves material IDs into an
+indexed table of built-in models. This design extends that boundary to
+project-defined materials and pass requirements. The
+[shared scene shader contract](shared-scene-shader-contract.md#surface-and-material-values)
+describes the current shader inputs.
+
+### Definitions, instances and World bindings
+
+A **material definition** is versioned project content. It describes typed
+parameter expressions, scattering and layer composition, output interfaces and
+dependencies. Its parameter schema records stable field identities, defaults,
+units, valid ranges and texture semantics. Engine-provided definitions use the
+same asset model as project definitions.
+
+A **material instance** references a definition and supplies parameter and
+texture overrides. Changing those values produces an immutable instance
+revision. Editing composition produces a definition revision. A prepared
+instance pins the exact revisions of its definition and dependencies.
+
+A **material binding** assigns a logical instance ID to a durable mesh slot.
+World owns assignments and overrides. A mesh supplies slot identities and
+default assignments. An object can override a slot without changing other
+users of the mesh. The renderer resolves each draw and surface hit to a compact
+material handle valid for its prepared scene generation. Persist logical IDs
+and slot identities according to the
+[content contract](content-resources.md#typed-source-materials-luscn-v7).
+
+Resources owns content revisions and leases. Renderer owns preparation, GPU
+bindings, pipeline compatibility and retirement. World and material assets
+carry neither backend bindings nor graph pass identities. The editor owns
+drafts and undo through the existing document history.
+
+### Composition and programmable operations
+
+Parameter expressions compute values such as color, roughness and texture
+coordinates. A **Mix** combines scattering responses with a declared
+weighting rule. A **Layer** models ordered interfaces and any intervening
+medium, including attenuation and internal reflection. Each composition
+operation owns matching evaluation and sampling semantics. Begin with the
+existing [coated-diffuse model](#non-scattering-coated-diffuse-reference) as
+the first layer operation.
+
+The baseline to prototype is a bounded typed program for parameter expressions
+and closure records for scattering. Validate types, graph cycles, operation
+versions and resource requirements before execution. The format owns admission
+limits for instruction count, closure storage, nesting and scratch. Measure
+those limits and execution cost on representative targets before freezing the
+representation. CPU and GPU reference evaluators consume the same declared
+semantics. Optimized lowering can use a different physical representation
+with parity evidence.
+
+A new instance or a supported composition can enter a live World as data.
+The shader package supplies the set of executable operations. A new custom
+operation requires a compatible implementation package before use. Material
+programmers can supply namespaced, versioned operations with typed inputs,
+resources, supported interfaces and sampling contracts. Technical artists can
+compose those operations and expose instance controls. Operations used for
+reference transport follow the [CPU and GPU acceptance
+contract](#cpu-and-gpu-reference-implementation-requirement).
+
+Use the existing shader cooker to validate target artifacts and include
+operation implementations in a finite package. Runtime dispatch belongs to
+Renderer. An explicit specialized technique can bind an implementation during
+cooking. Parameter values, instance counts and ordinary compositions expressed
+in the data representation do not create shader variants. Any authored static
+specializations count toward the existing shader and pipeline budgets.
+
+### Interfaces and pass requirements
+
+Material authors own surface behavior. Render graph authors own passes,
+traversal, lighting, sampling strategy, MIS, reuse and outputs. A general pass
+declares the material interfaces and guarantees it needs. A specialized pass
+can declare a named extension interface or an exact implementation when the
+technique or experiment requires it.
+
+| Interface | Contract |
+| --- | --- |
+| Coverage | Evaluate surface presence consistently for color, depth, closest-hit and shadow queries under the profile's declared sampling policy. |
+| Emission | Evaluate emitted radiance at a point and direction. Expose conservative emissive participation for emitter discovery. A light-sampling strategy declares any additional sampling or power-estimation requirements. |
+| Local surface scattering | Evaluate and sample reflection and transmission at the hit, with declared density and random-address semantics. |
+| Subsurface scattering | Sample transport to another surface point, with explicit geometry queries, distance units and density measures. |
+| Medium boundary | Describe any supported interior and exterior transitions. |
+
+Absence has defined semantics where appropriate. For example, a missing emission
+output emits zero radiance. A missing required scattering interface is a
+coverage failure.
+
+A local scattering sample reports its outcome, direction, event kind, measure
+and complete continuation weight. The contract distinguishes continuous
+directional density, delta probability mass and any estimated density for MIS.
+A null event retains its probability mass. An integrator uses the returned
+weight directly. Address material randomness from the caller's path event so
+internal work cannot shift later transport dimensions.
+
+Declare guarantees at the level an estimator actually consumes. A reuse pass
+can require replayable sampling or a particular directional density contract.
+Renderer checks those requirements against the assigned material before
+activation. For example, a graph that cannot consume an internal-walk weight
+can report its sampling requirement for any incompatible closure. It needs
+no test for the coated-diffuse model by name.
+
+Raster techniques declare their own representation. Deferred routes require a
+compatible G-buffer output. A forward route can evaluate a richer surface
+interface or bind a declared technique. A ray-compatible closure may need a
+separate raster approximation. Select it through authored policy and report
+it as an approximation. The raster baseline continues to admit unlit,
+metallic/roughness, masked and premultiplied transparent families where the
+profile supports them. Limit two-sided and specialized effects to justified
+variants. Depth and shadow techniques preserve the same geometry and
+coverage requirements. The
+[scene coverage contract](render-graph-authoring.md#cameras-reusable-raster-graphs-and-scene-coverage)
+owns reporting per slot, role and view.
+
+### Preparation and publication
+
+Validate the candidate definition and overrides, resolve its exact dependencies,
+prepare renderer bindings and techniques, and evaluate coverage for the
+affected views. Publish the complete generation once it is ready. Keep the
+last drawable generation visible while preparation is pending or fails.
+Diagnostics identify the candidate separately from the presented revision.
+
+A request carries project and revision identity so stale completions cannot
+publish. A generation updates material bindings and dependent emitter or
+coverage data together. Invalidate affected reference accumulation when the
+integral or sampling state changes. Retain the old resources until their
+accepted uses complete. Unchanged geometry can retain its prepared resources.
+
+### Import and repair
+
+Keep supported geometry usable when a material cannot be resolved. Preserve
+source identity, slot assignments, recoverable parameters and texture
+references in bounded import data. Distinguish missing definitions or
+operations, invalid inputs, failed preparation and unavailable techniques.
+
+Use a conspicuous purple diagnostic technique where the role can draw the
+geometry. Otherwise show a selectable marker or bounds proxy. The diagnostic
+leads to the affected slot and a repair. Required unresolved coverage makes
+reference output incomplete. Shipping follows the graph coverage contract
+for rejection or a named authored fallback.
+
+- **Map to existing material** replaces the selected assignments with a
+  compatible project material.
+- **Create material from import** opens a typed draft carrying supported
+  values and texture references. Show unsupported inputs and their source
+  identity so the author can supply a mapping or implementation.
+- **Locate dependency** or **Choose compatible profile** addresses missing
+  implementations or unavailable techniques at their respective boundaries.
+
+Show the affected slots before a shared replacement and apply it as one
+undoable edit. Keep source identity for reimport. Clear the diagnostic after
+a compatible revision publishes.
+
+The Material document opens from the World slot and shows instance parameters,
+shared uses, layer composition and active-profile compatibility. Parameters
+and canvas actions share validation and history. A later Scattering Lab can
+inspect lobes, sampled directions, energy, and raw CPU/GPU reference results.
+
+### Implementation gates
+
+1. Preserve existing material IDs and rendering behavior through adapters for
+   legacy scene records. Open a coated-diffuse instance from World, edit it,
+   apply, undo, save and reopen it. Exercise pending, failed and successful
+   publication.
+2. Prototype data-driven parameter and closure evaluation with measured CPU
+   and GPU costs. Migrate one general transport graph and one restricted
+   estimator to declared material requirements. Load a supported new
+   composition on newly loaded geometry without editing either graph.
+3. Import an unsupported material shared across several slots. Select its
+   diagnostic surface, create or map a replacement, then verify undo,
+   save/reopen and reimport.
+4. Register a project-defined BRDF with paired reference implementations.
+   Verify that the general graph accepts it with unchanged source and the
+   restricted graph either admits it or identifies a missing guarantee.
+   Expand physical layering and subsurface transport with raw linear CPU/GPU
+   parity and explicit profile coverage.
 
 ## Lighting and the default pass sequence
 
