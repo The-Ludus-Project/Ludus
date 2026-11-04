@@ -557,6 +557,14 @@ then gain absent tangents, version 3 parts dropping their stored bake UVs.
 
 ### Typed source materials (LUSCN v7)
 
+LUSCN v9 admits a storage-only unresolved marker for named PBRT materials
+without a supported model. It retains the v7 layout and the original material
+identity. World level `material_mappings` optionally maps original material
+resource IDs to replacement material resource IDs. Assembly resolves a single
+mapping per slot and retains the original IDs and import provenance for
+reimport. Renderers require resolved scattering. World draws the unresolved
+surface with an editor diagnostic and asks the author to choose a replacement.
+
 Version 7 keeps all version 6 records and appends a `MaterialExtensionV7` after
 **each** material. Its width is derived from the explicit wire fields in
 `ludus/content/scene_format/luscn.h`; never serialize host padding. The extension

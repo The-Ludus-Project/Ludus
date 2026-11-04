@@ -330,8 +330,7 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
             }
             const uint8* nameOrNull = reader.Take(format::MAX_MATERIAL_NAME_BYTES);
             if (nameOrNull == nullptr || reader.Read(model) == false ||
-                model > static_cast<uint32>(format::MaterialModel::DiffuseConductorMix) ||
-                (version < format::VERSION_8 && model == format::LUDUS_MATERIAL_MODEL_DIFFUSE_CONDUCTOR_MIX) ||
+                version < format::GetMaterialModelBundleVersion(static_cast<format::MaterialModel>(model)) ||
                 material.Name.Set({reinterpret_cast<const char*>(nameOrNull), nameBytes}) == false ||
                 reader.Read(material.Reflectance) == false || IsNonnegative(material.Reflectance, 1) == false)
             {
@@ -367,7 +366,7 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
             if (reader.Read(material.Scattering.AlphaU) == false || reader.Read(material.Scattering.AlphaV) == false ||
                 reader.Read(material.Scattering.CoatingEta) == false ||
                 reader.Read(material.Scattering.CoatingThickness) == false ||
-                format::IsMaterialScatteringValid(material.Scattering) == false)
+                format::IsStoredMaterialScatteringValid(material.Scattering) == false)
             {
                 return Status::Failed;
             }

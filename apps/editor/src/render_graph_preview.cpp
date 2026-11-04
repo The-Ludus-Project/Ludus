@@ -250,7 +250,8 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
         material.ColorTexture = getTexture(source.Texture);
         material.SurfaceTexture = getTexture(source.SurfaceTexture);
         material.EmissionTexture = getTexture(source.EmissionTexture);
-        material.HasError = source.Tint.W != 1 || source.Texture >= extraction.Scene.Textures.size() ||
+        material.HasError = source.HasUnresolvedMaterial == true || source.Tint.W != 1 ||
+                            source.Texture >= extraction.Scene.Textures.size() ||
                             source.SurfaceTexture >= extraction.Scene.Textures.size() ||
                             source.EmissionTexture >= extraction.Scene.Textures.size();
         extraction.Materials.append(material);
@@ -265,10 +266,13 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
             return false;
         }
         math::Vector4 color = object.Tint;
+        bool hasUnresolvedMaterial = false;
         if (object.Surface >= 0 && object.Surface < extraction.Scene.Surfaces.size())
         {
             // The static profile samples no textures; the surface's flat approximation stands in.
-            const math::Vector4& tint = extraction.Scene.Surfaces.at(object.Surface).FlatTint;
+            const PreviewSurface& surface = extraction.Scene.Surfaces.at(object.Surface);
+            hasUnresolvedMaterial = surface.HasUnresolvedMaterial;
+            const math::Vector4& tint = surface.FlatTint;
             color = {color.X * tint.X, color.Y * tint.Y, color.Z * tint.Z, color.W * tint.W};
         }
         renderer::RenderGraphItem item;
@@ -276,8 +280,9 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
         item.MeshIndex = static_cast<uint32>(object.Mesh);
         item.MeshToWorld = object.Transform;
         item.Material.Color = color;
-        item.Coverage =
-            color.W < OPAQUE_ALPHA ? renderer::RenderGraphMaterial::Transparent : renderer::RenderGraphMaterial::Opaque;
+        item.Coverage = hasUnresolvedMaterial == true ? renderer::RenderGraphMaterial::Unsupported
+                        : color.W < OPAQUE_ALPHA      ? renderer::RenderGraphMaterial::Transparent
+                                                      : renderer::RenderGraphMaterial::Opaque;
         item.SurfaceTint = object.Tint;
         uint32 resolvedMaterial =
             object.Surface < 0 ? renderer::DEFAULT_SCENE_MATERIAL : static_cast<uint32>(object.Surface);

@@ -242,6 +242,10 @@ inline rhi::RasterStatus BuildInputs(const RenderScene& scene,
         const resources::SceneObject& source = scene.Definition->Objects[objectIndex];
         const resources::SceneMaterial& material = scene.Definition->Materials[source.Material];
         const resources::SceneMesh& mesh = scene.Definition->Meshes[source.Mesh];
+        if (surface.HasUnresolvedMaterial == true && target == InputsTarget::Reference)
+        {
+            return rhi::RasterStatus::Unsupported;
+        }
         rr::StaticLightingSurfaceDescription& overrideSurface = result.Surfaces[objectIndex];
         overrideSurface.Texture = surface.Texture >= 0 ? static_cast<uint32>(surface.Texture) : format::NO_TEXTURE;
         overrideSurface.Tint = {surface.Tint.X * object.Tint.X,

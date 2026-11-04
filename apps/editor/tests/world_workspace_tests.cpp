@@ -46,6 +46,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
+#include <QQuickWindow>
 #include <QRect>
 #include <QSettings>
 #include <QSignalSpy>
@@ -2750,6 +2751,202 @@ TEST_CASE("An open World publishes newly imported diffuse conductor Mix geometry
     }
     CHECK(hasMix == true);
     workspace.StopPreview();
+}
+
+TEST_CASE("World maps a shared unsupported PBRT material and retains the repair on reimport",
+          "[editor][world][material-repair]")
+{
+    namespace format = ludus::content::scene_format;
+    QTemporaryDir directory;
+    const QString path = Fixture(directory);
+    const QString source = directory.filePath(QStringLiteral("fibers.pbrt"));
+    Write(source, QByteArrayLiteral(R"(LookAt 0 0 4 0 0 0 0 1 0
+Camera "perspective" "float fov" 55
+WorldBegin
+MakeNamedMaterial "Fiber" "string type" "hair" "float eta" 1.55
+MakeNamedMaterial "Matte" "string type" "diffuse" "rgb reflectance" [0.2 0.5 0.2]
+NamedMaterial "Fiber"
+Shape "trianglemesh" "point3 P" [-1.7 -0.7 0 -0.5 -0.7 0 -1.1 0.7 0] "integer indices" [0 1 2]
+NamedMaterial "Matte"
+Shape "trianglemesh" "point3 P" [-0.4 -0.7 0 0.4 -0.7 0 0 0.7 0] "integer indices" [0 1 2]
+)"));
+
+    WorldWorkspace workspace;
+    const bool canPresent =
+        PreviewViewport::CanPresent() == true && QApplication::platformName() == QStringLiteral("cocoa");
+    if (canPresent == true)
+    {
+        workspace.resize(1024, 720);
+        workspace.show();
+    }
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.ImportScene(source) == true);
+    WaitForValidatedScene(workspace);
+    REQUIRE(GetLevel(workspace).PreviewScene().Objects.size() == 2);
+    // The cooker groups PBRT geometry by source material. Import it again to place
+    // the same named material on a second distinct World slot.
+    REQUIRE(workspace.ImportScene(source) == true);
+    WaitForValidatedScene(workspace);
+    const RenderScene& imported = GetLevel(workspace).PreviewScene();
+    REQUIRE(imported.Objects.size() == 4);
+    const auto getBinding = [](const WorldWorkspace& view, const QString& id) {
+        return view.Document().ScenePlacement(view.Document().Entity(id)).value(QStringLiteral("material")).toString();
+    };
+    QStringList unsupported;
+    QString replacement;
+    for (const PreviewObject& object : imported.Objects)
+    {
+        if (object.Name == QStringLiteral("Fiber"))
+        {
+            unsupported.append(object.Id);
+        }
+        else if (object.Name == QStringLiteral("Matte"))
+        {
+            replacement = getBinding(workspace, object.Id);
+        }
+    }
+    REQUIRE(unsupported.size() == 2);
+    REQUIRE(replacement.isEmpty() == false);
+    const QString first = unsupported[0];
+    const QString second = unsupported[1];
+    const QString original = getBinding(workspace, first);
+    CHECK(getBinding(workspace, second) == original);
+    REQUIRE(original != replacement);
+
+    const auto checkMaterial = [](const WorldWorkspace& view, const QString& id, format::MaterialModel model) {
+        const RenderScene& scene = GetLevel(view).PreviewScene();
+        const ludus::resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(scene, id);
+        REQUIRE(materialOrNull != nullptr);
+        CHECK(materialOrNull->Scattering.Model == model);
+        const PreviewSurface& surface = scene.Surfaces[GetPresentedObject(view, id).Surface];
+        CHECK(surface.HasUnresolvedMaterial == (model == format::MaterialModel::Unresolved));
+        if (model == format::MaterialModel::Unresolved)
+        {
+            CHECK(surface.FlatTint == UNRESOLVED_MATERIAL_TINT);
+            CHECK(surface.Emission == ludus::foundation::math::Vector3{});
+            CHECK(materialOrNull->Name.View() == "Fiber");
+        }
+    };
+    checkMaterial(workspace, first, format::MaterialModel::Unresolved);
+    checkMaterial(workspace, second, format::MaterialModel::Unresolved);
+
+    PreviewViewport& viewport = GetLevel(workspace).GetViewport();
+    if (canPresent == true)
+    {
+        GetLevel(workspace).GetRenderPreview().SetShading(PreviewShading::Lit);
+        REQUIRE(QTest::qWaitFor([&viewport]() { return viewport.PresentedFrames() > 0; },
+                                MAX_SCENE_WAIT_MILLISECONDS) == true);
+        QQuickWindow* frameWindowOrNull = nullptr;
+        for (QWindow* window : QGuiApplication::allWindows())
+        {
+            if (window->objectName() == QStringLiteral("LudusGpuViewport") && window->isVisible() == true)
+            {
+                frameWindowOrNull = qobject_cast<QQuickWindow*>(window);
+                break;
+            }
+        }
+        REQUIRE(frameWindowOrNull != nullptr);
+        REQUIRE(QTest::qWaitForWindowExposed(frameWindowOrNull, MAX_SCENE_WAIT_MILLISECONDS) == true);
+        const QImage pixels = frameWindowOrNull->grabWindow();
+        REQUIRE(pixels.isNull() == false);
+        ludus::foundation::usize purplePixels = 0;
+        for (ludus::foundation::int32 y = 0; y < pixels.height(); ++y)
+        {
+            for (ludus::foundation::int32 x = 0; x < pixels.width(); ++x)
+            {
+                const QRgb pixel = pixels.pixel(x, y);
+                if (qRed(pixel) > 100 && qBlue(pixel) > 100 && qGreen(pixel) < 40)
+                {
+                    ++purplePixels;
+                }
+            }
+        }
+        CHECK(purplePixels > 100);
+    }
+
+    viewport.GetObjectInteraction().SelectionRequested(first);
+    const QLabel* nameOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldMaterial:Name"));
+    REQUIRE(nameOrNull != nullptr);
+    CHECK(nameOrNull->text() == QStringLiteral("Fiber"));
+    const QLabel* modelOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldMaterial:Model"));
+    REQUIRE(modelOrNull != nullptr);
+    CHECK(modelOrNull->text() == QStringLiteral("Unsupported imported material"));
+    const QString catalogPath = directory.filePath(QStringLiteral("assets/catalog.json"));
+    const QByteArray catalog = Read(catalogPath);
+    QPushButton* mapOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldMapMaterial"));
+    REQUIRE(mapOrNull != nullptr);
+    REQUIRE(mapOrNull->isEnabled() == true);
+    const QJsonObject before = workspace.Document().Draft();
+    QTimer::singleShot(0, []() {
+        QMessageBox* dialogOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        CHECK(dialogOrNull->defaultButton() == dialogOrNull->button(QMessageBox::Cancel));
+        dialogOrNull->button(QMessageBox::Cancel)->click();
+    });
+    mapOrNull->click();
+    CHECK(workspace.Document().Draft() == before);
+
+    QTimer::singleShot(0, [&first, &second]() {
+        QMessageBox* dialogOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        CHECK(dialogOrNull->informativeText().contains(first) == true);
+        CHECK(dialogOrNull->informativeText().contains(second) == true);
+        QPushButton* applyOrNull = dialogOrNull->findChild<QPushButton*>(QStringLiteral("worldConfirmMaterialMapping"));
+        REQUIRE(applyOrNull != nullptr);
+        applyOrNull->click();
+    });
+    mapOrNull->click();
+    WaitForValidatedScene(workspace);
+    checkMaterial(workspace, first, format::MaterialModel::Diffuse);
+    checkMaterial(workspace, second, format::MaterialModel::Diffuse);
+    CHECK(getBinding(workspace, first) == original);
+    CHECK(getBinding(workspace, second) == original);
+
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    CHECK(workspace.Document().Draft() == before);
+    checkMaterial(workspace, first, format::MaterialModel::Unresolved);
+    checkMaterial(workspace, second, format::MaterialModel::Unresolved);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkMaterial(workspace, first, format::MaterialModel::Diffuse);
+    checkMaterial(workspace, second, format::MaterialModel::Diffuse);
+    REQUIRE(workspace.Save() == true);
+    WaitForValidatedScene(workspace);
+    CHECK(workspace.Dirty() == false);
+    CHECK(Read(catalogPath) == catalog);
+    workspace.StopPreview();
+    workspace.hide();
+
+    WorldWorkspace reopened;
+    if (canPresent == true)
+    {
+        reopened.resize(1024, 720);
+        reopened.show();
+    }
+    reopened.SetProject(directory.path(), 2);
+    REQUIRE(reopened.Open(path) == true);
+    WaitForValidatedScene(reopened);
+    checkMaterial(reopened, first, format::MaterialModel::Diffuse);
+    checkMaterial(reopened, second, format::MaterialModel::Diffuse);
+    REQUIRE(reopened.ImportScene(source) == true);
+    WaitForValidatedScene(reopened);
+    const RenderScene& reimported = GetLevel(reopened).PreviewScene();
+    REQUIRE(reimported.Objects.size() == 6);
+    ludus::foundation::usize sharedSlots = 0;
+    for (const PreviewObject& object : reimported.Objects)
+    {
+        if (getBinding(reopened, object.Id) == original)
+        {
+            ++sharedSlots;
+            checkMaterial(reopened, object.Id, format::MaterialModel::Diffuse);
+        }
+    }
+    CHECK(sharedSlots == 3);
+    checkMaterial(reopened, first, format::MaterialModel::Diffuse);
+    checkMaterial(reopened, second, format::MaterialModel::Diffuse);
+    reopened.StopPreview();
 }
 
 TEST_CASE("Coated-diffuse World slot edits apply, undo, redo and reopen", "[editor][world][coating]")

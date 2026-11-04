@@ -1457,6 +1457,24 @@ raster view approximates changes in coat roughness. A compatible reference
 capture uses the authored alpha, IOR and optical thickness together. See
 [the coated-diffuse profile](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference).
 
+### Repair an unsupported imported material
+
+When a PBRT scene assigns an unsupported named material, World keeps the geometry
+and marks those surfaces purple in its built-in viewport. Select one of the surfaces to see its imported
+name and the unsupported material diagnostic in **Material**. Choose a
+replacement already used on a supported imported slot in this World, then select
+**Map to existing material**. Review the affected slots and choose **Map and
+apply**.
+
+One World edit maps all slots that share the imported material identity. The
+previous view stays visible while the repaired scene prepares. Undo restores
+the diagnostic and redo reapplies the mapping. **Save World** keeps the mapping
+on reopen. Importing the same source again adds its geometry with the mapping
+already applied. The PBRT file and original slot assignments are preserved.
+
+A reference capture requires resolved materials. The purple color is a viewport
+diagnostic, separate from the World's lighting.
+
 ### Scene start view
 
 A World with an imported scene has a **start view**: the level `camera` (`eye`,

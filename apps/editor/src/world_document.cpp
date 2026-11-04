@@ -5,6 +5,7 @@
 
 #include <ludus/content/identity_records/migration_manifest.h>
 #include <ludus/content/identity_records/world_records.h>
+#include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/parse_number.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -746,7 +747,9 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
     }
     if (candidate.contains(QStringLiteral("scene")))
     {
-        const auto scene = candidate.value(QStringLiteral("scene")).toObject();
+        const QJsonObject scene = candidate.value(QStringLiteral("scene")).toObject();
+        const QJsonValue mappings = scene.value(QStringLiteral("material_mappings"));
+        constexpr qsizetype SCENE_FIELDS = 6;
         if (candidate.value(QStringLiteral("scene")).isObject() == false ||
             Fields(scene,
                    {QStringLiteral("version"),
@@ -754,8 +757,10 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     QStringLiteral("name"),
                     QStringLiteral("profile"),
                     QStringLiteral("camera"),
-                    QStringLiteral("imports")}) == false ||
-            scene.size() != 6 || scene.value(QStringLiteral("version")) != QJsonValue(1) ||
+                    QStringLiteral("imports"),
+                    QStringLiteral("material_mappings")}) == false ||
+            scene.size() != SCENE_FIELDS + (mappings.isUndefined() == true ? 0 : 1) ||
+            scene.value(QStringLiteral("version")) != QJsonValue(1) ||
             QUuid(scene.value(QStringLiteral("id")).toString()).isNull() ||
             scene.value(QStringLiteral("profile")) != QJsonValue(QStringLiteral("resident-reference-v1")) ||
             Text(scene.value(QStringLiteral("name")), MAX_LABEL_BYTES) == false ||
@@ -763,6 +768,24 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             scene.value(QStringLiteral("imports")).isArray() == false)
         {
             return Fail(error, QStringLiteral("Invalid cooked-scene metadata."));
+        }
+        if (mappings.isUndefined() == false)
+        {
+            const QJsonObject table = mappings.toObject();
+            if (mappings.isObject() == false ||
+                table.size() > static_cast<qsizetype>(content::scene_format::IMPORT_LIMITS.Materials))
+            {
+                return Fail(error, QStringLiteral("Invalid material mapping table."));
+            }
+            for (QJsonObject::const_iterator entry = table.constBegin(); entry != table.constEnd(); ++entry)
+            {
+                if (ResourceId(QJsonValue(entry.key()), QStringLiteral("material")) == false ||
+                    ResourceId(entry.value(), QStringLiteral("material")) == false ||
+                    table.contains(entry.value().toString()) == true)
+                {
+                    return Fail(error, QStringLiteral("Use distinct material IDs and remove chained mappings."));
+                }
+            }
         }
         const auto camera = scene.value(QStringLiteral("camera")).toObject();
         if (camera.size() != 4 ||
@@ -1351,6 +1374,21 @@ bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
     candidate.insert(QStringLiteral("entities"), entities);
     return Commit(candidate, error);
 }
+bool WorldDocument::MapSceneMaterial(const QString& source, const QString& replacement, QString& outError)
+{
+    QJsonObject scene = Draft_.value(QStringLiteral("scene")).toObject();
+    if (scene.isEmpty() == true)
+    {
+        return Fail(outError, QStringLiteral("Import a scene before mapping a material."));
+    }
+    QJsonObject mappings = scene.value(QStringLiteral("material_mappings")).toObject();
+    mappings.insert(source, replacement);
+    scene.insert(QStringLiteral("material_mappings"), mappings);
+    QJsonObject candidate = Draft_;
+    candidate.insert(QStringLiteral("scene"), scene);
+    return Commit(candidate, outError);
+}
+
 bool WorldDocument::SetSceneStartView(const QJsonObject& camera, QString& outError)
 {
     QJsonObject scene = Draft_.value(QStringLiteral("scene")).toObject();

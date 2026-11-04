@@ -1391,11 +1391,7 @@ bool RenderScene::Merge(const RenderScene& authored,
     uint32 version = format::VERSION_7;
     for (const resources::SceneMaterial& material : imported.Materials)
     {
-        if (material.Scattering.Model == format::MaterialModel::DiffuseConductorMix)
-        {
-            version = format::VERSION_8;
-            break;
-        }
+        version = math::Max(version, format::GetMaterialModelBundleVersion(material.Scattering.Model));
     }
     stream << version << static_cast<uint32>(meshCount) << static_cast<uint32>(materialCount)
            << static_cast<uint32>(textureCount) << static_cast<uint32>(objectCount);
@@ -1701,6 +1697,13 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         if (surface.EmissionTexture >= 0)
         {
             surface.EmissionMapMean = textureMeans[surface.EmissionTexture];
+        }
+        if (source.Scattering.Model == format::MaterialModel::Unresolved)
+        {
+            surface = {};
+            surface.HasUnresolvedMaterial = true;
+            surface.Tint = UNRESOLVED_MATERIAL_TINT;
+            surface.FlatTint = surface.Tint;
         }
         candidate.Surfaces.append(surface);
     }

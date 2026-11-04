@@ -16,6 +16,7 @@
 
 QT_BEGIN_NAMESPACE
 class QComboBox;
+class QFormLayout;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -219,6 +220,8 @@ private:
     /// Append the read-only Material group of the selected scene instance, read from the
     /// presented viewport scene; a placeholder until that scene has loaded.
     void addMaterialGroup();
+    void addMaterialRepair(QFormLayout& inoutRows);
+    void mapImportedMaterial(const QString& source, const QString& replacement, const QString& label);
     void bindViewportInteraction();
     void updateViewportInteraction();
     void commitViewportPlacement(const QString& id, const QJsonObject& placement);
