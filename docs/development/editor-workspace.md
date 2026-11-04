@@ -770,6 +770,7 @@ keeps the window and its draft open.
 | Ctrl+S | Save the active document (World, Render Graph, Scripts, Project Settings, Audio or Configuration) |
 | Ctrl+Z / platform Redo | Undo / Redo in focused text, or the active document's history |
 | Ctrl+W | Close the active document tab (its draft stays open) |
+| Ctrl+Shift+T (Cmd+Shift+T on macOS) | Reopen the most recently closed workspace tab |
 | Ctrl+Shift+W | Close Project |
 | Ctrl+Shift+B | Build |
 | Ctrl+F5 / F5 | Build and Run / Build and Debug in RAD |
@@ -782,6 +783,10 @@ keeps the window and its draft open.
 | Shift+Alt+Enter | Focus Viewport on or off |
 | Ctrl+K (Cmd+K on macOS) / F3 | Command Palette / Run Command in Context |
 | F1 | Keyboard Shortcuts help |
+
+**Window → Reopen Closed Document** opens the tab in the active group with its
+draft intact. Repeat the command to step back through recent closes in the
+current project session.
 
 The **Command Palette** (Ctrl/Cmd+K) searches every menu command by name with fuzzy
 matching: letters must appear in order, and consecutive letters, word starts and
