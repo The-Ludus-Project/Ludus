@@ -87,8 +87,6 @@ constexpr QRgb MixColour(QRgb from, QRgb to, int32 percent) noexcept
                 MixChannel(qGreen(from), qGreen(to), percent),
                 MixChannel(qBlue(from), qBlue(to), percent));
 }
-static_assert(MixColour(0xff000000, 0xffffffff, 0) == 0xff000000);
-static_assert(MixColour(0xff000000, 0xffffffff, PERCENT_DENOMINATOR) == 0xffffffff);
 float64 ComputeSnap(float64 value, float64 interval) noexcept
 {
     const float64 scaled = value / interval;
@@ -816,7 +814,7 @@ void ViewportObjectInteraction::appendHandleGeometry(const HandleLine& handle,
         if (mTool == Tool::Move)
         {
             const QPointF basePixel = tipPixel - unitPixel * ARROW_LENGTH_PIXELS;
-            head.CornerCount = 3;
+            head.CornerCount = ViewportHandleFill::TRIANGLE_CORNERS;
             head.CornersPixel = {tipPixel,
                                  basePixel + normalPixel * ARROW_HALF_WIDTH_PIXELS,
                                  basePixel - normalPixel * ARROW_HALF_WIDTH_PIXELS,

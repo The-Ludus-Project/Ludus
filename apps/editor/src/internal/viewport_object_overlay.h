@@ -22,9 +22,10 @@ struct ViewportHandleStroke final
 /// face, pivot marker). Corners are unused beyond CornerCount.
 struct ViewportHandleFill final
 {
+    static constexpr foundation::usize TRIANGLE_CORNERS = 3;
     static constexpr foundation::usize MAX_CORNERS = 4;
     foundation::StaticArray<QPointF, MAX_CORNERS> CornersPixel{};
-    foundation::usize CornerCount = 3;
+    foundation::usize CornerCount = TRIANGLE_CORNERS;
     QRgb Color = 0;
 };
 /// GUI-owned projected selection data, independent of a renderer device or painter.
