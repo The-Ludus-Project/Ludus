@@ -233,7 +233,7 @@ data beside the editor. A record holds:
 - the grammar name and its query files: `highlights`, `folds`, `indents`,
   `locals`, `injections` and `textobjects`;
 - line and block comment tokens, bracket pairs, auto-closing and surrounding
-  pairs, word pattern and indentation rules;
+  pairs, word pattern, indentation rules and region markers;
 - a language server profile: the pinned executable resolver, arguments,
   initialization options, workspace configuration and the context provider;
 - a formatter profile, a debug adapter profile and a snippet set.
@@ -292,8 +292,9 @@ visible. Measure both paths ([performance](#threading-and-performance)).
 **Structure.** The same worker produces fold ranges, the document outline,
 breadcrumb scopes, sticky-scroll headers, bracket pairs that understand strings
 and comments, and expand/shrink selection ranges, all from the same tree and all
-revision-tagged. Indentation-based folding is the fallback for languages without
-a grammar.
+revision-tagged. Region markers from the language record add named fold ranges,
+and indentation-based folding is the fallback for languages without a grammar
+([Folding](#folding)).
 
 **Semantic tokens** from a language server are layered over syntax tokens when
 the server provides them. Syntax tokens stay the base layer, so the colors don't
@@ -470,6 +471,20 @@ committing or branch UI.
     for chords such as Ctrl+K Ctrl+C.
   - The shell's shortcut-collision tests enforce these bindings in both
     profiles.
+- **Folding shortcuts (proposed 2026-11-04).** Both profiles bind Fold and
+  Unfold to Ctrl+Shift+[ and Ctrl+Shift+] (Cmd+Option+[ and Cmd+Option+] on
+  macOS, as in VS Code). Shortcuts are matched by key, not by the produced
+  character, so they also work on keyboard layouts where [ needs a modifier.
+  - **Ludus** adds Visual Studio's outlining chords: Ctrl+M Ctrl+M Toggle Fold,
+    Ctrl+M Ctrl+L Unfold All when anything is collapsed and Fold All otherwise,
+    Ctrl+M Ctrl+O Fold Level 1 and Ctrl+M Ctrl+H Fold Selection. On macOS these
+    chords use the Control key, because Command+M is the system's Minimize.
+  - **VS Code** uses VS Code's defaults: Ctrl+K Ctrl+L Toggle Fold, Ctrl+K
+    Ctrl+[ and Ctrl+K Ctrl+] Fold and Unfold Recursively, Ctrl+K Ctrl+0 Fold
+    All, Ctrl+K Ctrl+J Unfold All, Ctrl+K Ctrl+1 to Ctrl+K Ctrl+7 Fold Level N,
+    Ctrl+K Ctrl+/ Fold All Comments, Ctrl+K Ctrl+8 Fold All Regions, and
+    Ctrl+K Ctrl+, and Ctrl+K Ctrl+. Fold Selection and Remove Manual Fold.
+  - Commands without a binding in a profile remain available from the palette.
 
 ### Threading and performance
 
@@ -493,6 +508,7 @@ without replacing them.
 | The same with 100 cursors | ≤ 8 ms p95 |
 | Keypress to painted glyph | ≤ 16 ms p95 at 60 Hz, ≤ 8 ms on 120 Hz displays |
 | Scrolling a 100,000-line file | Every frame within the display interval; paint ≤ 8 ms p95 |
+| Toggle one fold; Fold All or Unfold All on a 100,000-line file | Within one frame; ≤ 50 ms on the UI thread |
 | Open a 1 MiB file to first paint | ≤ 100 ms, with the visible lines colored ≤ 50 ms later |
 | Open an 8 MiB file to first paint | ≤ 500 ms |
 | Reparse plus queries after an edit, 1 MiB | ≤ 30 ms on the worker |
@@ -576,13 +592,108 @@ more than throughput.
   (one line per cursor when the counts match), completion and IME commits
   apply to every cursor as one `EditSet`. IME preedit is shown only at the
   primary cursor.
-- **Folding**: folds from syntax, with indentation as the fallback. Fold and
-  Unfold, Fold All, Fold Level N, and folding by selection. A collapsed range
-  shows a placeholder that unfolds when clicked. Folds are view state, kept per
-  view and restored with the tab.
+- **Folding**: collapsing and expanding ranges from syntax, region markers,
+  servers or indentation. See [Folding](#folding).
 - **Font**: the system monospace by default (SF Mono or Menlo, Consolas,
   DejaVu Sans Mono), with font, size, line height and optional ligatures
   through `QFont::setFeature` (Qt 6.7 and later). No downloaded fonts.
+
+### Folding
+
+Folding collapses a range of lines to its first line, as in VS Code and Visual
+Studio. The rules below exist so that hidden text never surprises the author:
+it is never silently edited, lost from the clipboard or left without a control
+that reveals it.
+
+**Where fold ranges come from.** For each language, in this order:
+
+1. The tree-sitter `folds` query: blocks, functions, structs, parameter and
+   initializer lists, multi-line comments, JSON objects and arrays, CMake
+   blocks, and Markdown sections and fenced blocks.
+2. Region markers declared in the language record. `// #region` and
+   `// #endregion` work in Slang, C and C++, and `#pragma region` and
+   `#pragma endregion` also work in C and C++. Luau uses `--#region` and
+   `--#endregion`. The text after the opening marker names the region in the
+   placeholder and the outline.
+3. A language server's `textDocument/foldingRange` result (M4). Only kinds that
+   the grammar does not produce are added. Server ranges never replace syntax
+   ranges, so folds do not move while a server starts, restarts or stops.
+4. Indentation, for languages without a grammar and in large-file mode.
+
+**Manual folds.** Fold Selection collapses the selected whole lines as a manual
+fold, whatever the syntax says. A manual fold stays until it is unfolded, Remove
+Manual Fold is run on it, or an edit removes its first line.
+
+**Collapsed ranges.**
+
+- The first line stays visible. It is followed by a placeholder: `{ … }` when the
+  range is a bracket pair, the region name for a region, and `…` otherwise. A
+  tooltip gives the number of hidden lines.
+- Clicking the placeholder or the gutter control expands the range.
+- Fold controls appear on hover over the gutter, and always on a collapsed
+  range and on the line with the caret.
+
+**Caret and navigation.**
+
+- The caret never rests on a hidden line. Up and Down skip a collapsed range.
+- Right at the end of a collapsed line moves to the line after the range, and
+  Left at the start of that line moves back to the end of the collapsed line.
+- Any operation that puts a caret, a selection or a highlight inside hidden text
+  first expands the smallest collapsed ranges that contain it. That covers Go to
+  Line, Go to Definition and Go to Symbol, choosing an outline, breadcrumb or
+  sticky-scroll entry, Find Next and Find Previous, Error List and F8 navigation,
+  debugger stops and Run to Cursor, Add Next Occurrence, and an undo or redo
+  that restores a selection inside.
+- Replace All, Replace in Files, formatting and workspace edits change hidden
+  text without expanding it. Their previews show the change.
+
+**Editing.**
+
+- A selection that spans a collapsed range includes the hidden lines. Copy, Cut,
+  Delete and drag-and-drop act on the whole text, and the clipboard never
+  contains the placeholder.
+- Line commands on a collapsed first line act on that line and all its hidden
+  lines: Delete Lines, Move Lines Up and Down, Duplicate Lines and Toggle Line
+  Comment. Duplicate Lines leaves the copy collapsed too.
+- Typing on the first line keeps the range collapsed.
+- Between structure results, collapsed ranges are moved by the edit deltas, as
+  tokens are. When a new result arrives, a range stays collapsed only if a range
+  of the same kind still starts on the same line. Otherwise it is expanded, so
+  an edit that deletes the first line or breaks a bracket pair reveals the text
+  rather than leaving it hidden.
+- Formatting maps collapsed first lines through its diff, so folds survive a
+  whole-document format.
+- Invariant: every hidden line belongs to a collapsed range whose first line is
+  visible and shows a placeholder and control. Unfold All always reveals
+  everything.
+
+**Markers inside a collapsed range.** The first line's gutter shows the most
+severe diagnostic inside the range, by shape and color, and a marker when a
+breakpoint, a change marker or the current statement is hidden. The overview
+ruler keeps showing hidden markers at their true positions.
+
+**State.** Collapsed ranges are view state. Split views fold independently. A
+tab saves its collapsed ranges with the project as a first line, a kind and a
+hash of that line's text. They are restored only where the line still matches,
+and the rest are dropped. A reload after an external change keeps folds the same
+way.
+
+**Commands.** Toggle Fold, Fold, Unfold, Fold Recursively, Unfold Recursively,
+Fold All, Unfold All, Fold Level 1 to 7, Fold All Comments, Fold All Regions,
+Fold Selection, Remove Manual Fold, Go to Parent Fold, and Go to Next Fold and
+Go to Previous Fold. All of them are in the command catalogue and the palette.
+Default shortcuts are in
+[Settings, keymaps and EditorConfig](#settings-keymaps-and-editorconfig).
+
+**Limits.** At most `CODE_MAX_FOLDS` ranges per document. When a document has
+more, the outermost ranges are kept and the status bar says that folding is
+partial. In large-file mode, folds come from indentation, computed on the
+background pool. Folding never changes the document, its revision or its undo
+history.
+
+**Accessibility.** Collapsing or expanding announces the range and its line
+count. The placeholder has an accessible name. Toggle Fold at the caret makes
+every fold reachable from the keyboard.
 
 ### Status bar
 
