@@ -16,6 +16,7 @@
 #include <QGraphicsScene>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -448,4 +449,63 @@ TEST_CASE("dependency traces recompute from current draft connections and undo",
     CHECK(navigation->GetTrace().Nodes.size() == 3);
     CHECK(document.GetRevision() == undoneRevision);
     CHECK(document.CanUndo() == false);
+}
+
+TEST_CASE("wires of a hub card rest dimmed until it is focused", "[editor][render-graph][navigation][hub]")
+{
+    constexpr int HUB_WIRES = 6;
+    QJsonArray nodes;
+    QJsonArray edges;
+    const auto addTarget = [&nodes](const QString& identity) {
+        nodes.append(QJsonObject{{QStringLiteral("id"), identity},
+                                 {QStringLiteral("kind"), QStringLiteral("Target")},
+                                 {QStringLiteral("type"), QStringLiteral("ColorTexture")},
+                                 {QStringLiteral("format"), QStringLiteral("RGBA8Unorm")},
+                                 {QStringLiteral("extent"), QJsonArray{96, 64}},
+                                 {QStringLiteral("samples"), 1},
+                                 {QStringLiteral("imported"), false},
+                                 {QStringLiteral("initialized"), false},
+                                 {QStringLiteral("presentation"), false}});
+    };
+    addTarget(QStringLiteral("hub"));
+    addTarget(QStringLiteral("plain"));
+    for (int index = 0; index < HUB_WIRES; ++index)
+    {
+        const QString exportName = QStringLiteral("export%1").arg(index);
+        nodes.append(QJsonObject{{QStringLiteral("id"), exportName},
+                                 {QStringLiteral("kind"), QStringLiteral("Export")},
+                                 {QStringLiteral("type"), QStringLiteral("ColorTexture")}});
+        edges.append(QJsonObject{{QStringLiteral("from"), QStringLiteral("hub.texture")},
+                                 {QStringLiteral("to"), exportName + QStringLiteral(".texture")}});
+    }
+    nodes.append(QJsonObject{{QStringLiteral("id"), QStringLiteral("lone")},
+                             {QStringLiteral("kind"), QStringLiteral("Export")},
+                             {QStringLiteral("type"), QStringLiteral("ColorTexture")}});
+    edges.append(QJsonObject{{QStringLiteral("from"), QStringLiteral("plain.texture")},
+                             {QStringLiteral("to"), QStringLiteral("lone.texture")}});
+    const QJsonObject graph{{QStringLiteral("version"), 2},
+                            {QStringLiteral("id"), QStringLiteral("Main")},
+                            {QStringLiteral("default"), QStringLiteral("Default")},
+                            {QStringLiteral("configurations"),
+                             QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("Default")},
+                                                    {QStringLiteral("inputs"), QJsonArray{}},
+                                                    {QStringLiteral("outputs"), QJsonArray{}},
+                                                    {QStringLiteral("nodes"), nodes},
+                                                    {QStringLiteral("edges"), edges}}}}};
+    QTemporaryDir project;
+    QFile file(QDir(project.path()).filePath(GetRootFile()));
+    REQUIRE(file.open(QIODevice::WriteOnly) == true);
+    const QByteArray bytes = EncodeCanonicalJson(graph);
+    REQUIRE(file.write(bytes) == bytes.size());
+    file.close();
+    RenderGraphDocument document;
+    REQUIRE(document.Load(project.path(), GetRootFile()) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    ShowCanvas(canvas);
+    const float64 hubOpacity = FindEdge(canvas, QStringLiteral("hub.texture → export0.texture")).opacity();
+    CHECK(hubOpacity < 1);
+    CHECK(FindEdge(canvas, QStringLiteral("plain.texture → lone.texture")).opacity() == 1);
+    // Selecting the hub brings its wires back to full strength.
+    canvas.SelectNode(QStringLiteral("hub"));
+    CHECK(FindEdge(canvas, QStringLiteral("hub.texture → export0.texture")).opacity() == 1);
 }
