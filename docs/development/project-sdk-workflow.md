@@ -16,8 +16,9 @@ continues to honor an explicit shell `SDKROOT` override.
 > **macOS** with pinned upstream Clang 23, single-config Ninja, and
 > Debug/Development/Release SDK identities. The installed macOS CLI has native
 > Apple silicon acceptance; Intel identity/architecture selection is covered by
-> unit tests and still needs native Intel acceptance. Windows tooling and general
-> scene authoring require separate acceptance. [Browser releases](editor-game-releases.md) and
+> unit tests and still needs native Intel acceptance. [Windows MSVC project setup](#windows-msvc-projects)
+> covers the installed Foundation, Input, Platform, and RHI SDK. General scene authoring
+> requires separate acceptance. [Browser releases](editor-game-releases.md) and
 > [native live editing](project-live-reload.md) have their own implemented scope;
 > an embedded viewport remains future work.
 > Do not assume unsupported combinations work.

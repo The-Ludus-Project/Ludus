@@ -436,13 +436,17 @@ The `windows-msvc-debug`, `windows-msvc-development`,
 Ninja tree and have matching build and test presets.
 
 ```powershell
+$targets = @('ludus_foundation_base_tests', 'ludus_platform_win32_tests', 'ludus_rhi_d3d12_tests', 'ludus_rhi_lifecycle_tests')
+$suite = '^ludus_(foundation_base|platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
+$env:LUDUS_TEST_REQUIRE_WARP = '1'
+
 cmake --preset windows-msvc-development
-cmake --build --preset windows-msvc-development
-ctest --preset windows-msvc-development
+cmake --build --preset windows-msvc-development --target @targets
+ctest --preset windows-msvc-development --tests-regex $suite
 
 cmake --preset windows-msvc-visual-studio
-cmake --build --preset windows-msvc-visual-studio-profile
-ctest --preset windows-msvc-visual-studio-profile
+cmake --build --preset windows-msvc-visual-studio-profile --target @targets ludus_windows_sdk
+ctest --preset windows-msvc-visual-studio-profile --tests-regex $suite
 cmake --install out/build/windows-msvc-visual-studio --config Profile --prefix C:/SDKs/Ludus/Profile
 ```
 
@@ -600,36 +604,11 @@ Studio. The workflow contains the complete commands.
 
 The Windows source build accepts the x64 MSVC 14.44 toolset and uses the dynamic
 CRT, with the debug CRT in Debug. Production targets disable C++ exception
-handling and Catch2 test executables enable it. Windows CI tests Debug and
-Development under Ninja and all four flavors in one Visual Studio solution,
-using Windows SDK 10.0.26100.0 and CMake 3.31.10. This source build covers
-the existing Windows module list and tests. It also produces an SDK for each
-Visual Studio configuration.
-
-Use the x64 developer prompt and prepare Debug, RelWithDebInfo and Release
-Catch2 packages as in the Windows CI workflow. Run
-`python scripts/shader-probe bootstrap` to install the pinned Slang and DXC.
-Follow the Visual Studio configure command in the workflow and leave
-`LUDUS_BUILD_FLAVOR` empty. Run the following from the repository root after
-configuring the solution in `out/build/windows-msvc`.
-
-```powershell
-$build = 'out/build/windows-msvc'
-$configurations = @('Debug', 'Development', 'Profile', 'Release')
-foreach ($configuration in $configurations) {
-    cmake --build $build --config $configuration --target ludus_foundation_base_tests ludus_platform_win32_tests ludus_rhi_d3d12_tests ludus_rhi_lifecycle_tests
-    if ($LASTEXITCODE -ne 0) { throw "Build failed for $configuration" }
-}
-$env:LUDUS_TEST_REQUIRE_WARP = '1'
-foreach ($configuration in $configurations) {
-    ctest --test-dir $build -C $configuration --output-on-failure --no-tests=error --tests-regex '^ludus_(foundation_base|platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
-    if ($LASTEXITCODE -ne 0) { throw "Tests failed for $configuration" }
-}
-```
-
-Set `LUDUS_TEST_REQUIRE_WARP=1` when testing on a software-only Windows runner
-to check that the D3D12 suite selects the software adapter.
-
+handling and Catch2 test executables enable it. Windows CI uses the
+[MSVC source presets](#msvc-source-presets) to test Debug, Development, Profile,
+and Release under Ninja and in one Visual Studio solution. This source build
+covers the existing Windows module list and produces an SDK for each Visual
+Studio configuration.
 
 #### Install and use a Windows SDK from the solution
 
@@ -641,7 +620,7 @@ helper. Debug, Development and Profile embed debug information in the static
 libraries by default so consumers can link from a relocated prefix.
 
 ```powershell
-$build = 'out/build/windows-msvc'
+$build = 'out/build/windows-msvc-visual-studio'
 foreach ($configuration in @('Debug', 'Development', 'Profile', 'Release')) {
     cmake --build $build --config $configuration --target ludus_windows_sdk
     if ($LASTEXITCODE -ne 0) { throw "SDK build failed for $configuration" }
@@ -658,8 +637,9 @@ accept `RelWithDebInfo` as the consumer configuration. Use the matching x64
 MSVC toolset and dynamic CRT, with the debug CRT for Debug. The Windows CI
 consumer relocates each prefix, builds signed DXIL with the installed helper
 and draws a frame in a Win32 window on WARP. This acceptance uses the
-test-enabled build so the WARP selection switch is available. Project setup
-and physical-GPU qualification are separate D0 work.
+test-enabled build so the WARP selection switch is available. The Windows lane
+also runs the smoke test during [project setup and repair](../development/project-sdk-workflow.md#windows-msvc-projects)
+against each installed SDK. Physical-GPU qualification remains pending.
 
 ### D3 and D4: complete the portable graphics contract
 
