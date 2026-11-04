@@ -130,7 +130,7 @@ void PlaceLayeredNodes(const QVector<RenderGraphLayoutNode>& nodes,
     const auto columnOf = [&](qsizetype node) { return inoutColumns.at(components.at(node)) - firstColumn; };
     for (qsizetype index = 0; index < count; ++index)
     {
-        slots.append({ .Node = index, .Height = nodes.at(index).Bounds.height() });
+        slots.append({ .Node = index, .Height = nodes.at(index).Bounds.height(), .Top = 0, .Before = {}, .After = {} });
         columnSlots[columnOf(index)].append(index);
     }
     for (const QPair<qsizetype, qsizetype>& link : std::as_const(links))
@@ -139,7 +139,7 @@ void PlaceLayeredNodes(const QVector<RenderGraphLayoutNode>& nodes,
         for (qsizetype column = columnOf(link.first) + 1; column < columnOf(link.second); ++column)
         {
             const qsizetype bend = slots.size();
-            slots.append({ .Node = -1, .Height = BEND_HEIGHT });
+            slots.append({ .Node = -1, .Height = BEND_HEIGHT, .Top = 0, .Before = {}, .After = {} });
             columnSlots[column].append(bend);
             slots[previous].After.append(bend);
             slots[bend].Before.append(previous);
