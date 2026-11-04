@@ -31,11 +31,10 @@ using identity_records::EntityReferenceProperty;
 
 namespace
 {
-/// The maximum version-2 World record and schema sizes mirror the authoring
+/// The maximum version-2 World record size mirrors the authoring
 /// records' owner (content::identity_records), so restore accepts exactly what
 /// the cooker can emit. Named here to avoid a magic size.
 inline constexpr usize MAX_RECORD_BYTES = usize{512} * 1024;
-inline constexpr usize MAX_SCHEMA_BYTES = usize{64} * 1024;
 inline constexpr uint64 WORLD_RECORD_VERSION_2 = 2;
 
 /// Ordering over SourceObjectId by its canonical UUID bytes, for the pass-1 index.
