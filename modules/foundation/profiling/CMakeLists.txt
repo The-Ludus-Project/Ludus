@@ -14,23 +14,29 @@ set_target_properties(
 # profiling_config.hpp so a consumer cannot silently disagree; predefining it is
 # a hard error (see cmake/profiling_config.hpp.in). Flavor ids: 1=Debug,
 # 2=Development, 3=Profile, 4=Release.
-if(NOT DEFINED LUDUS_PROFILING_ENABLED)
-    if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG OR LUDUS_BUILD_FLAVOR_ID LESS 4)
+set(LUDUS_FOUNDATION_PROFILING_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
+if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
+    # The solution owns this policy per configuration, including when upgrading
+    # an existing build tree with a cached single value from a previous configure.
+    set(LUDUS_PROFILING_ENABLED "$<NOT:$<CONFIG:Release>>")
+    set(LUDUS_FOUNDATION_PROFILING_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/$<CONFIG>/include")
+elseif(NOT DEFINED LUDUS_PROFILING_ENABLED)
+    if(LUDUS_BUILD_FLAVOR_ID LESS 4)
         set(LUDUS_PROFILING_ENABLED 1)
     else()
         set(LUDUS_PROFILING_ENABLED 0)
     endif()
 endif()
-set(LUDUS_PROFILING_ENABLED "${LUDUS_PROFILING_ENABLED}" CACHE STRING
-    "Compile CPU-trace instrumentation in (1) or out (0)")
-
-set(LUDUS_FOUNDATION_PROFILING_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
-configure_file(
-    "${PROJECT_SOURCE_DIR}/cmake/profiling_config.hpp.in"
-    "${LUDUS_FOUNDATION_PROFILING_GENERATED_INCLUDE_DIR}/ludus/foundation/profiling/profiling_config.hpp"
-    @ONLY
-    NEWLINE_STYLE UNIX
-)
+set(profiling_config "${LUDUS_FOUNDATION_PROFILING_GENERATED_INCLUDE_DIR}/ludus/foundation/profiling/profiling_config.hpp")
+if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
+    set(profiling_template "${CMAKE_CURRENT_BINARY_DIR}/generated/profiling_config.hpp")
+    configure_file("${PROJECT_SOURCE_DIR}/cmake/profiling_config.hpp.in" "${profiling_template}" @ONLY NEWLINE_STYLE UNIX)
+    file(GENERATE OUTPUT "${profiling_config}" INPUT "${profiling_template}")
+else()
+    set(LUDUS_PROFILING_ENABLED "${LUDUS_PROFILING_ENABLED}" CACHE STRING
+        "Compile CPU-trace instrumentation in (1) or out (0)")
+    configure_file("${PROJECT_SOURCE_DIR}/cmake/profiling_config.hpp.in" "${profiling_config}" @ONLY NEWLINE_STYLE UNIX)
+endif()
 
 target_sources(ludus_foundation_profiling PRIVATE src/clock.cpp)
 

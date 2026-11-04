@@ -13,6 +13,8 @@ from ludus_tools.errors import ToolingError
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT / 'modules/graphics/renderer/render_graphs/rao_blackwell_mh'
+# Keep these historical bytes independent of the editable template.
+LEGACY_CHAIN = Path(__file__).with_name('fixtures') / 'metropolis_chain_legacy.slang'
 
 
 class CaptureWarmupTests(unittest.TestCase):
@@ -41,8 +43,10 @@ class CaptureWarmupTests(unittest.TestCase):
         manifest = self.load_manifest()
         program = next(item for item in manifest['programs'] if 'capture_warmup_setting' in item)
         del program['capture_warmup_setting']
-        source = (TEMPLATE / program['source']).read_bytes()
-        sources = {program['source']: source}
+        source = LEGACY_CHAIN.read_bytes()
+        sources = {program['source']: (TEMPLATE / program['source']).read_bytes()}
+        self.assertEqual(settings.capture_warmup_samples(program, manifest['settings'], sources), 0)
+        sources[program['source']] = source
         self.assertEqual(settings.capture_warmup_samples(program, manifest['settings'], sources), 128)
         sources[program['source']] = source + b'\n// Custom shader.\n'
         self.assertEqual(settings.capture_warmup_samples(program, manifest['settings'], sources), 0)
@@ -64,7 +68,8 @@ class CaptureWarmupTests(unittest.TestCase):
                         setting['value'] = 7
                 if is_legacy:
                     for program in value['programs']:
-                        program.pop('capture_warmup_setting', None)
+                        if program.pop('capture_warmup_setting', None) is not None:
+                            (manifest.parent / program['source']).write_bytes(LEGACY_CHAIN.read_bytes())
                 manifest.write_text(json.dumps(value))
                 helper = stage_helper(root / 'helper')
                 tool = root / 'tool'

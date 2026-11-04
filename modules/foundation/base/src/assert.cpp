@@ -296,9 +296,12 @@ static bool FinishCheckImpl(const char* message, const DiagnosticText* rendered)
     // CHECK stays boolean and keeps its budget; the inspection break is suppressed
     // under CI (no intentional debugger stop in CI), matching the ASSERT/dialog
     // policy. CHECK never opens a dialog and never waits.
-    if (LUDUS_BREAK_ON_CHECK != 0 && (IsContinuousIntegration() == false))
+    if constexpr (LUDUS_BREAK_ON_CHECK != 0)
     {
-        InspectIfAttached();
+        if (IsContinuousIntegration() == false)
+        {
+            InspectIfAttached();
+        }
     }
     gEntry = {};
     gOwner.clear(std::memory_order_release);

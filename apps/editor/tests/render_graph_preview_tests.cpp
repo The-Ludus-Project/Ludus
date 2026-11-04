@@ -25,6 +25,7 @@
 #include "internal/render_preview.h"
 #include "internal/render_target_reader.h"
 #include "internal/renderer_workspace.h"
+#include "internal/saved_graph_comparison_view.h"
 #include "internal/texture_inspection.h"
 #include "internal/texture_viewer.h"
 #include "internal/viewport_device_description.h"
@@ -76,6 +77,7 @@
 #include <QEvent>
 #include <QFile>
 #include <QFileInfo>
+#include <QGroupBox>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -2790,6 +2792,40 @@ TEST_CASE("Reference capture window offers the render graph source once the view
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
+
+    // Reopen the exported run after releasing the live graph and device.
+    QWidget* savedOrNull =
+        CreateSavedGraphComparisonView(QDir(results.path()).filePath(QStringLiteral("comparison.json")),
+                                       &window,
+                                       error);
+    INFO(error.toStdString());
+    REQUIRE(savedOrNull != nullptr);
+    const QList<QGroupBox*> cards = savedOrNull->findChildren<QGroupBox*>(QStringLiteral("savedComparisonCandidate"));
+    REQUIRE(cards.size() == candidates.size());
+    constexpr qsizetype EXPECTED_THUMBNAILS = 5;
+    CHECK(savedOrNull->findChildren<QLabel*>(QStringLiteral("savedComparisonThumbnail")).size() == EXPECTED_THUMBNAILS);
+    for (const QGroupBox* card : cards)
+    {
+        const QList<QLabel*> labels = card->findChildren<QLabel*>();
+        bool hasRmse = false;
+        for (const QLabel* label : labels)
+        {
+            hasRmse = hasRmse || label->text().startsWith(QStringLiteral("RMSE"));
+        }
+        CHECK(hasRmse == true);
+    }
+
+    // A missing artifact keeps the rest of the series and its metrics visible.
+    REQUIRE(QFile::remove(QDir(results.path()).filePath(QStringLiteral("candidate-2.difference.png"))) == true);
+    QWidget* incompleteOrNull =
+        CreateSavedGraphComparisonView(QDir(results.path()).filePath(QStringLiteral("comparison.json")),
+                                       &window,
+                                       error);
+    REQUIRE(incompleteOrNull != nullptr);
+    CHECK(incompleteOrNull->findChildren<QGroupBox*>(QStringLiteral("savedComparisonCandidate")).size() ==
+          candidates.size());
+    CHECK(incompleteOrNull->findChildren<QLabel*>(QStringLiteral("savedComparisonThumbnail")).size() ==
+          EXPECTED_THUMBNAILS - 1);
 }
 
 namespace

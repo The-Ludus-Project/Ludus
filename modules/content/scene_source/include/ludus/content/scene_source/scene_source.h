@@ -85,6 +85,19 @@ enum class SourceMaterialModel : uint8
     Diffuse,
     /// The engine's metallic-roughness model (`"model": "metallic_roughness"`).
     MetallicRoughness,
+    /// Weighted Lambertian and rough conductor reflection (`"model": "mix"`).
+    Mix,
+};
+
+/// Constant rough conductor lobe of a source Mix. RGB channels use the engine's optical proxy.
+struct SourceRoughConductor final
+{
+    /// Isotropic GGX alpha, in the scene material alpha range.
+    float64 Alpha = 1.0;
+    /// Positive, bounded real part of the index of refraction.
+    foundation::math::Vector3d Eta{1, 1, 1};
+    /// Nonnegative, bounded imaginary part of the index of refraction.
+    foundation::math::Vector3d Extinction{};
 };
 
 /// @brief A named material. Emission makes every polygon that uses it a light.
@@ -100,6 +113,10 @@ struct SourceMaterial final
     float64 Metallic = 0.0;
     /// Perceptual roughness in [0, 1]; one for Diffuse.
     float64 Roughness = 1.0;
+    /// Conductor weight in [0, 1]. The Lambertian lobe uses the complementary weight and BaseColor.
+    float64 MixWeight = 0.0;
+    /// Conductor inputs for Mix materials.
+    SourceRoughConductor Conductor;
     /// Constant emitted linear Rec. 709 radiance in W/(sr m^2) per channel, finite and
     /// nonnegative; all zero for a material that does not emit.
     foundation::math::Vector3d EmittedRadiance{};

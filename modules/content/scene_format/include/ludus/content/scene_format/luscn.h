@@ -67,6 +67,8 @@ inline constexpr uint32 VERSION_6 = 6;
 /// Version 7: version 6 plus counted source names, source identities, reflectance
 /// factors and typed optical parameters (MaterialExtensionV7 after each v6 material).
 inline constexpr uint32 VERSION_7 = 7;
+/// Version 8 admits the diffuse/conductor Mix tag in the unchanged version-7 record layout.
+inline constexpr uint32 VERSION_8 = 8;
 /// Exact serialized material extension width, derived from its field schema.
 inline constexpr usize MATERIAL_EXTENSION_V7_BYTES =
     3 * sizeof(uint32) + MAX_MATERIAL_NAME_BYTES +
@@ -133,7 +135,7 @@ inline constexpr float32 MAX_EMISSION = 10000.0F;
 struct Header final
 {
     char Magic[8];        ///< MAGIC.
-    uint32 Version;       ///< VERSION_1 through VERSION_7.
+    uint32 Version;       ///< VERSION_1 through VERSION_8.
     uint32 MeshCount;     ///< 1..BundleLimits::Meshes of the version.
     uint32 MaterialCount; ///< 1..BundleLimits::Materials of the version.
     uint32 TextureCount;  ///< 0..BundleLimits::Textures of the version.
@@ -428,7 +430,7 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
 /// True for a version this header describes.
 [[nodiscard]] constexpr bool IsSupportedVersion(uint32 version) noexcept
 {
-    return version >= VERSION_1 && version <= VERSION_7;
+    return version >= VERSION_1 && version <= VERSION_8;
 }
 /// True when the version carries version 3 material emission terms, object source
 /// IDs and the lighting trailer (versions 3 through 7).

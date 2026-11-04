@@ -42,6 +42,18 @@ QString FindValue(const QVector<MaterialPropertyRow>& rows, const QString& label
     }
     return {};
 }
+/// The row labelled label, or null when rows has none.
+const MaterialPropertyRow* FindRowOrNull(const QVector<MaterialPropertyRow>& rows, const QString& label)
+{
+    for (const MaterialPropertyRow& row : rows)
+    {
+        if (row.Label == label)
+        {
+            return &row;
+        }
+    }
+    return nullptr;
+}
 /// A cooked scene of three objects: a named textured conductor, an emissive masked coated diffuse
 /// with a surface map, and an untextured third material of thirdModel (legacy by default).
 RenderScene MakeScene(format::MaterialModel thirdModel = format::MaterialModel::MetallicRoughness)
@@ -53,6 +65,14 @@ RenderScene MakeScene(format::MaterialModel thirdModel = format::MaterialModel::
     REQUIRE(definition->Textures.TryResize(2) == true);
     definition->Textures[0].Width = 2;
     definition->Textures[0].Height = 1;
+    // Two RGBA8 texels, red then blue, so the base colour map has something to show as a thumbnail.
+    constexpr usize BASE_TEXTURE_BYTES = 8;
+    REQUIRE(definition->Textures[0].Pixels.TryResize(BASE_TEXTURE_BYTES) == true);
+    const StaticArray<ludus::foundation::uint8, BASE_TEXTURE_BYTES> texels{{255, 0, 0, 255, 0, 0, 255, 255}};
+    for (usize index = 0; index < BASE_TEXTURE_BYTES; ++index)
+    {
+        definition->Textures[0].Pixels[index] = texels[index];
+    }
     definition->Textures[1].Width = 4;
     definition->Textures[1].Height = 4;
     definition->Textures[1].IsLinear = true;
@@ -134,7 +154,9 @@ TEST_CASE("Material inspection follows the scattering model of the selected obje
     CHECK(FindValue(rows, QStringLiteral("Emitting sides")).isNull() == true);
 
     REQUIRE(DescribeSceneObjectMaterial(scene, QString(COATED_ID), rows) == true);
-    CHECK(FindValue(rows, QStringLiteral("Name")) == QStringLiteral("(unnamed)"));
+    // An unnamed material is called by its position instead of "(unnamed)".
+    CHECK(FindValue(rows, QStringLiteral("Name")) == QStringLiteral("Material 2"));
+    CHECK(FindValue(rows, QStringLiteral("Name")) == GetFallbackMaterialName(2));
     CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Coated diffuse"));
     CHECK(FindValue(rows, QStringLiteral("Base color map")) == QStringLiteral("None"));
     CHECK(FindValue(rows, QStringLiteral("Addressing")).isNull() == true);
@@ -154,6 +176,35 @@ TEST_CASE("Material inspection follows the scattering model of the selected obje
     REQUIRE(DescribeSceneObjectMaterial(scene, QString(LEGACY_ID), rows) == true);
     CHECK(FindValue(rows, QStringLiteral("Model")) == QStringLiteral("Metallic-roughness"));
     CHECK(FindValue(rows, QStringLiteral("Reflectance (linear RGB)")) == QStringLiteral("0, 0, 0"));
+}
+
+TEST_CASE("Material inspection offers swatches and thumbnails beside the numbers", "[editor][world][material]")
+{
+    const RenderScene scene = MakeScene();
+    QVector<MaterialPropertyRow> rows;
+    REQUIRE(DescribeSceneObjectMaterial(scene, QString(CONDUCTOR_ID), rows) == true);
+    const MaterialPropertyRow* reflectanceOrNull = FindRowOrNull(rows, QStringLiteral("Reflectance (linear RGB)"));
+    REQUIRE(reflectanceOrNull != nullptr);
+    CHECK(reflectanceOrNull->Swatch.isValid() == true);
+    // 0.5 linear is about 188 as displayed, so the swatch is not the raw number scaled to 255.
+    CHECK(reflectanceOrNull->Swatch.red() > 180);
+    CHECK(reflectanceOrNull->Swatch.red() < 195);
+    const MaterialPropertyRow* baseOrNull = FindRowOrNull(rows, QStringLiteral("Base color map"));
+    REQUIRE(baseOrNull != nullptr);
+    CHECK(baseOrNull->Thumbnail.isNull() == false);
+    CHECK(baseOrNull->Thumbnail.width() <= MATERIAL_THUMBNAIL_EXTENT);
+    CHECK(baseOrNull->Thumbnail.height() <= MATERIAL_THUMBNAIL_EXTENT);
+    const MaterialPropertyRow* surfaceOrNull = FindRowOrNull(rows, QStringLiteral("Surface map"));
+    REQUIRE(surfaceOrNull != nullptr);
+    CHECK(surfaceOrNull->Thumbnail.isNull() == true);
+    // A material that emits nothing shows no emission swatch; an emitter does.
+    const MaterialPropertyRow* dormantOrNull = FindRowOrNull(rows, QStringLiteral("Emission (linear RGB)"));
+    REQUIRE(dormantOrNull != nullptr);
+    CHECK(dormantOrNull->Swatch.isValid() == false);
+    REQUIRE(DescribeSceneObjectMaterial(scene, QString(COATED_ID), rows) == true);
+    const MaterialPropertyRow* emitterOrNull = FindRowOrNull(rows, QStringLiteral("Emission (linear RGB)"));
+    REQUIRE(emitterOrNull != nullptr);
+    CHECK(emitterOrNull->Swatch.isValid() == true);
 }
 
 TEST_CASE("Material inspection names dielectrics and their index", "[editor][world][material]")

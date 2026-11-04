@@ -1223,6 +1223,35 @@ coverage requirements. The
 [scene coverage contract](render-graph-authoring.md#cameras-reusable-raster-graphs-and-scene-coverage)
 owns reporting per slot, role and view.
 
+### Diffuse and rough conductor Mix
+
+The [scene source format](scene-source-format.md#material) exposes a single
+weighted composition of Lambertian and isotropic rough conductor. Import it
+into an open World through the scene importer. The cooker retains the
+Lambertian color, the conductor's optical constants and GGX alpha, and the
+conductor weight as material data. LUSCN v8 admits the Mix tag in the v7
+record layout. Its metallic field stores the conductor weight and supplies
+the metallic fraction for the raster approximation. Earlier cooked versions
+keep their existing model set.
+
+If the conductor weight is $w$, the surface value is $(1-w) f_d + w f_c$.
+One uniform selects a lobe with those weights and two more sample its
+direction. The evaluator returns $(1-w) p_d + w p_c$ in solid angle for
+direct lighting and MIS. Continuation uses that full density with the
+weighted value and cosine. Null GGX proposals retain their probability.
+Thanks to Pharr, Jakob and Humphreys, [Physically Based Rendering, fourth
+edition, section 2.2.3](https://pbr-book.org/4ed/Monte_Carlo_Integration/Improving_Efficiency),
+for the one-sample mixture-density construction.
+
+The Wave Tracing graph requests the full surface transport interface.
+Rao-Blackwellized Metropolis requests continuous reflection with a
+fixed three-value sampler. The scene packer records whether the assigned
+materials satisfy that restriction. The graph checks it before tracing and
+reports an incompatible material requirement for internal walks and delta
+transmission. Both graphs admit the Mix through their common BSDF calls.
+Rebuild existing ray graph shader packages for scene kernel ABI 13 to use
+the new material model and requirement flag.
+
 ### Preparation and publication
 
 Validate the candidate definition and overrides, resolve its exact dependencies,
@@ -1698,6 +1727,16 @@ the integral key: changing it replaces the job and restarts accumulation.
 The resampled estimator, its random slots and its BSDF-hit MIS are the
 [many-area-light resampling review](many-area-light-sampling-reference-review.md).
 The category draw at slot 0, analytic lights and the environment are unchanged.
+
+The CPU oracle and GPU reference select a typed source and retain its selection
+mass before evaluating the incident sample. The category draw still uses slot
+0, and the power-CDF triangle draw still uses slot 7 in the uniform-area
+proposal. A triangle point or environment direction uses slots 1 and 2.
+Analytic lights evaluate deterministically with unit conditional mass. The
+resampled category keeps its existing candidate and technique addresses. The
+integrator combines the source mass and the matching incident probability in
+the existing evaluation order, so this separation does not change the proposal
+or require a new sampler version.
 - **Receiver.** Each vertex builds its shading frame and the renderer's
   [LTC table](../development/ltc-table.md) lookup at its roughness, view and
   `F0 = 0.04 (1 − metallic) + baseColor · metallic`. The diffuse technique's

@@ -116,6 +116,22 @@ TEST_CASE("Scene source reads materials, objects and the camera", "[scene-source
     CHECK(scene.Camera.VerticalFovRadians == math::DegreesToRadians(45.0));
 }
 
+TEST_CASE("Scene source Mix requires a weight and valid rough conductor parameters", "[scene-source][mix]")
+{
+    constexpr std::string_view MODEL = R"("model": "diffuse")";
+    RequireFailure(ReplaceInValid(MODEL, R"("model":"mix","conductor":{"alpha":0.1,"eta":[1,1,1],"k":[2,2,2]})"),
+                   SceneSourceStatus::Malformed,
+                   "weight");
+    RequireFailure(
+        ReplaceInValid(MODEL, R"("model":"mix","weight":1.1,"conductor":{"alpha":0.1,"eta":[1,1,1],"k":[2,2,2]})"),
+        SceneSourceStatus::InvalidValue,
+        "weight");
+    RequireFailure(
+        ReplaceInValid(MODEL, R"("model":"mix","weight":0.5,"conductor":{"alpha":0.1,"eta":[0,1,1],"k":[2,2,2]})"),
+        SceneSourceStatus::InvalidValue,
+        "conductor.eta");
+}
+
 TEST_CASE("Scene source camera, description and emission are optional", "[scene-source]")
 {
     const std::string text = R"({"format": "ludus.scene", "version": 1, "name": "Bare",

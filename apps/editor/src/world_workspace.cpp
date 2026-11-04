@@ -1,6 +1,8 @@
 #include "internal/world_workspace.h"
+#include "design_tokens.h"
 #include "internal/builtin_world.h"
 #include "internal/import_report.h"
+#include "internal/inspector_fields.h"
 #include "internal/item_selection.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_scene.h"
@@ -22,6 +24,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/runtime/resources/scene.h>
 
+#include "internal/inspector_fields.h"
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QColorSpace>
@@ -30,6 +33,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -63,6 +67,12 @@ namespace
 /// Room in a recovery envelope for its header line and SHA-256 hex digest line.
 constexpr foundation::int64 MAX_RECOVERY_HEADER_BYTES = 256;
 /// The entity list never shrinks below a few rows, and entities take more of the column than lights (parts of 5).
+/// Inclusive limits of a scene instance's saved position (metres), rotation (degrees) and scale.
+/// Axes in a transform or colour row: X, Y and Z, or red, green and blue.
+constexpr qsizetype VECTOR_COMPONENT_COUNT = 3;
+constexpr foundation::float64 SCENE_POSITION_LIMIT = 1000000;
+constexpr foundation::float64 SCENE_ROTATION_LIMIT = 360;
+constexpr foundation::float64 SCENE_SCALE_MINIMUM = 0.000001;
 constexpr foundation::int32 ENTITY_LIST_MINIMUM_HEIGHT = 96;
 constexpr foundation::int32 ENTITY_SECTION_STRETCH = 3;
 constexpr foundation::int32 LIGHT_SECTION_STRETCH = 2;
@@ -1439,7 +1449,29 @@ void WorldWorkspace::addMaterialGroup()
         value->setTextFormat(Qt::PlainText);
         value->setWordWrap(true);
         value->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        rows->addRow(property.Label, value);
+        if (property.Swatch.isValid() == false && property.Thumbnail.isNull() == true)
+        {
+            rows->addRow(property.Label, value);
+            continue;
+        }
+        // A colour or texture row leads with what it looks like, then its numbers.
+        QWidget* row = new QWidget(group);
+        QHBoxLayout* rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        if (property.Swatch.isValid() == true)
+        {
+            rowLayout->addWidget(new ColourChip(property.Swatch, row));
+        }
+        if (property.Thumbnail.isNull() == false)
+        {
+            QLabel* thumbnail = new QLabel(row);
+            thumbnail->setObjectName(QStringLiteral("worldMaterialThumbnail:") + property.Label);
+            thumbnail->setPixmap(QPixmap::fromImage(property.Thumbnail));
+            thumbnail->setAccessibleName(property.Label + QStringLiteral(" preview"));
+            rowLayout->addWidget(thumbnail);
+        }
+        rowLayout->addWidget(value, 1);
+        rows->addRow(property.Label, row);
     }
     if (canEditCoating == true)
     {
@@ -1558,12 +1590,23 @@ void WorldWorkspace::RenderInspector()
     nameLayout->addRow(QStringLiteral("Name"), Name_);
     Inspector_->addWidget(form);
     connect(Name_, &QLineEdit::textEdited, this, [this]() { markInspectorPending(); });
-    QLabel* id = new QLabel(Document_.HasUuidRecords() == true
-                                ? QStringLiteral("Label: %1\nUUID: %2").arg(Document_.GetEntityLabel(entity), Selected_)
-                                : QStringLiteral("Stable ID: ") + Selected_);
-    id->setWordWrap(true);
-    id->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    Inspector_->addWidget(id);
+    if (Document_.HasUuidRecords() == true)
+    {
+        QLabel* label = new QLabel(QStringLiteral("Label: %1").arg(Document_.GetEntityLabel(entity)));
+        label->setObjectName(QStringLiteral("worldEntityLabel"));
+        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        label->setWordWrap(true);
+        Inspector_->addWidget(label);
+    }
+    // A widget, not a bare layout, so RenderInspector's clean-up deletes the rows with it.
+    QWidget* identifierBlock = new QWidget;
+    QFormLayout* identifierForm = new QFormLayout(identifierBlock);
+    identifierForm->setContentsMargins(0, 0, 0, 0);
+    IdentifierRow* identifier = new IdentifierRow(Selected_, nullptr);
+    identifier->setObjectName(QStringLiteral("worldEntityIdentifier"));
+    identifierForm->addRow(Document_.HasUuidRecords() == true ? QStringLiteral("UUID") : QStringLiteral("Stable ID"),
+                           identifier);
+    Inspector_->addWidget(identifierBlock);
     if (entity.value(QStringLiteral("scene")).isObject())
     {
         auto* group = new QGroupBox(QStringLiteral("Scene instance"));
@@ -1577,30 +1620,64 @@ void WorldWorkspace::RenderInspector()
         rows->addRow(help);
         if (Document_.Schema().contains(QStringLiteral("scene_transform")) == false)
         {
-            for (const auto& key : {QStringLiteral("position"), QStringLiteral("rotation"), QStringLiteral("scale")})
+            struct SceneVector final
             {
-                const auto values = scene.value(key).toArray();
+                QString Key;
+                QString Title;
+                QString Unit;
+                QString StepUnit;
+                foundation::float64 Minimum;
+                foundation::float64 Maximum;
+            };
+            const QVector<SceneVector> vectors{{QStringLiteral("position"),
+                                                QStringLiteral("Position"),
+                                                QStringLiteral("m"),
+                                                QStringLiteral("m"),
+                                                -SCENE_POSITION_LIMIT,
+                                                SCENE_POSITION_LIMIT},
+                                               {QStringLiteral("rotation"),
+                                                QStringLiteral("Rotation"),
+                                                QStringLiteral("°"),
+                                                QStringLiteral("°"),
+                                                -SCENE_ROTATION_LIMIT,
+                                                SCENE_ROTATION_LIMIT},
+                                               {QStringLiteral("scale"),
+                                                QStringLiteral("Scale"),
+                                                QString(),
+                                                QStringLiteral("×"),
+                                                SCENE_SCALE_MINIMUM,
+                                                SCENE_POSITION_LIMIT}};
+            for (const SceneVector& vector : vectors)
+            {
+                const QJsonArray values = scene.value(vector.Key).toArray();
+                QVector<VectorComponent> components;
                 for (foundation::int32 axis = 0; axis < 3; ++axis)
                 {
-                    const auto fieldKey = QStringLiteral("scene/") + key + QString::number(axis);
+                    const QString fieldKey = QStringLiteral("scene/") + vector.Key + QString::number(axis);
                     auto* field = new QLineEdit(Display(values[axis]), group);
                     field->setObjectName(QStringLiteral("worldField:") + fieldKey);
+                    field->setAccessibleName(vector.Title + QStringLiteral(" ") + QString(QChar('X' + axis)));
                     Fields_.insert(fieldKey, field);
                     connect(field, &QLineEdit::textEdited, this, [this]() { markInspectorPending(); });
-                    const auto unit = key == QStringLiteral("position")   ? QStringLiteral(" (m)")
-                                      : key == QStringLiteral("rotation") ? QStringLiteral(" (°)")
-                                                                          : QString();
-                    rows->addRow(key + QStringLiteral(" ") + QString(QChar('X' + axis)) + unit, field);
+                    components.append(
+                    {
+                        .Name = QString(QChar('X' + axis)),
+                        .FieldOrNull = field,
+                        .Settings =
+                        {
+                            .Minimum = vector.Minimum,
+                            .Maximum = vector.Maximum,
+                            .Step = GetScrubStep(vector.StepUnit, vector.Minimum, vector.Maximum),
+                        },
+                    });
                 }
+                rows->addRow(vector.Title,
+                             MakeVectorRow(components, vector.Unit, group, [this]() { markInspectorPending(); }));
             }
         }
-        auto* assets = new QLabel(QStringLiteral("Mesh: %1\nMaterial: %2")
-                                      .arg(scene.value(QStringLiteral("mesh")).toString(),
-                                           scene.value(QStringLiteral("material")).toString()),
-                                  group);
-        assets->setWordWrap(true);
-        assets->setTextFormat(Qt::PlainText);
-        rows->addRow(assets);
+        rows->addRow(QStringLiteral("Mesh"), new IdentifierRow(scene.value(QStringLiteral("mesh")).toString(), group));
+        rows->addRow(QStringLiteral("Material"),
+                     new IdentifierRow(scene.value(QStringLiteral("material")).toString(), group));
         Inspector_->addWidget(group);
         addMaterialGroup();
     }
@@ -1628,6 +1705,70 @@ void WorldWorkspace::RenderInspector()
         }
         rows->addRow(hint);
         const auto values = attached.value(cid).toObject();
+        // Three numbers that belong together (a transform's position, rotation or scale, or a colour's red,
+        // green and blue) share one compact row; their fields keep the names and signals they always had.
+        struct VectorGroup final
+        {
+            QString Title;
+            QString Unit;
+            QString StepUnit;
+            QStringList Members;
+            QVector<VectorComponent> Components;
+            QVector<QString> AxisNames;
+            bool IsColour = false;
+        };
+        QVector<VectorGroup> vectorGroups;
+        const QJsonObject binding = Document_.Schema().value(QStringLiteral("scene_transform")).toObject();
+        if (binding.value(QStringLiteral("component")).toString() == cid)
+        {
+            const QVector<QPair<QString, QPair<QString, QString>>> kinds{
+                {QStringLiteral("position"), {QStringLiteral("Position"), QStringLiteral("m")}},
+                {QStringLiteral("rotation"), {QStringLiteral("Rotation"), QStringLiteral("°")}},
+                {QStringLiteral("scale"), {QStringLiteral("Scale"), QStringLiteral("×")}}};
+            for (const QPair<QString, QPair<QString, QString>>& kind : kinds)
+            {
+                const QJsonArray ids = binding.value(kind.first).toArray();
+                if (ids.size() != VECTOR_COMPONENT_COUNT)
+                {
+                    continue;
+                }
+                vectorGroups.append(
+                {
+                    .Title = kind.second.first,
+                    .Unit = kind.first == QStringLiteral("scale") ? QString() : kind.second.second,
+                    .StepUnit = kind.second.second,
+                    .Members = {ids[0].toString(), ids[1].toString(), ids[2].toString()},
+                    .Components = {},
+                    .AxisNames = {QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Z")},
+                });
+            }
+        }
+        const QStringList colourMembers{QStringLiteral("r"), QStringLiteral("g"), QStringLiteral("b")};
+        bool hasColour = true;
+        for (const QString& member : colourMembers)
+        {
+            bool hasMember = false;
+            for (const QJsonValue candidate : component.value(QStringLiteral("properties")).toArray())
+            {
+                hasMember = hasMember == true ||
+                            (candidate.toObject().value(QStringLiteral("id")).toString() == member &&
+                             candidate.toObject().value(QStringLiteral("type")).toString() == QStringLiteral("number"));
+            }
+            hasColour = hasColour == true && hasMember == true;
+        }
+        if (hasColour == true)
+        {
+            vectorGroups.append(
+            {
+                .Title = QStringLiteral("Colour"),
+                .Unit = QString(),
+                .StepUnit = QString(),
+                .Members = colourMembers,
+                .Components = {},
+                .AxisNames = {QStringLiteral("R"), QStringLiteral("G"), QStringLiteral("B")},
+                .IsColour = true,
+            });
+        }
         for (const auto value : component.value(QStringLiteral("properties")).toArray())
         {
             const auto p = value.toObject();
@@ -1707,8 +1848,70 @@ void WorldWorkspace::RenderInspector()
             {
                 title += QStringLiteral(" (%1)").arg(unit);
             }
-            rows->addRow(title, field);
             Fields_.insert(FieldKey(cid, pid), field);
+            QLineEdit* textFieldOrNull = qobject_cast<QLineEdit*>(field);
+            VectorGroup* groupOrNull = nullptr;
+            for (VectorGroup& candidate : vectorGroups)
+            {
+                if (textFieldOrNull != nullptr && candidate.Members.contains(pid) == true)
+                {
+                    groupOrNull = &candidate;
+                }
+            }
+            if (groupOrNull == nullptr)
+            {
+                rows->addRow(title, field);
+                continue;
+            }
+            const foundation::float64 minimum = p.value(QStringLiteral("min")).toDouble();
+            const foundation::float64 maximum = p.value(QStringLiteral("max")).toDouble();
+            const qsizetype axis = groupOrNull->Members.indexOf(pid);
+            groupOrNull->Components.append(
+            {
+                .Name = groupOrNull->AxisNames.at(axis),
+                .FieldOrNull = textFieldOrNull,
+                .Settings =
+                {
+                    .Minimum = minimum,
+                    .Maximum = maximum,
+                    .Step = GetScrubStep(groupOrNull->StepUnit, minimum, maximum),
+                },
+            });
+            if (groupOrNull->Components.size() < groupOrNull->Members.size())
+            {
+                continue;
+            }
+            QWidget* vectorRow =
+                MakeVectorRow(groupOrNull->Components, QString(), group, [this]() { markInspectorPending(); });
+            if (groupOrNull->IsColour == true)
+            {
+                QWidget* colourRow = new QWidget(group);
+                QHBoxLayout* colourLayout = new QHBoxLayout(colourRow);
+                colourLayout->setContentsMargins(0, 0, 0, 0);
+                ColourSwatch* swatch = new ColourSwatch(*groupOrNull->Components.at(0).FieldOrNull,
+                                                        *groupOrNull->Components.at(1).FieldOrNull,
+                                                        *groupOrNull->Components.at(2).FieldOrNull,
+                                                        colourRow);
+                connect(swatch, &ColourSwatch::Picked, this, [this]() { markInspectorPending(); });
+                colourLayout->addWidget(swatch);
+                colourLayout->addWidget(vectorRow, 1);
+                vectorRow = colourRow;
+            }
+            // The caption sits above the fields, with its unit, so the three fields share the panel's full
+            // width instead of what is left beside a label column.
+            QWidget* block = new QWidget(group);
+            block->setObjectName(QStringLiteral("inspectorVectorBlock"));
+            QVBoxLayout* blockLayout = new QVBoxLayout(block);
+            blockLayout->setContentsMargins(0, 0, 0, 0);
+            blockLayout->setSpacing(design::SPACING_EXTRA_SMALL);
+            QLabel* caption = new QLabel(groupOrNull->Unit.isEmpty() == true
+                                             ? groupOrNull->Title
+                                             : QStringLiteral("%1 (%2)").arg(groupOrNull->Title, groupOrNull->Unit),
+                                         block);
+            caption->setForegroundRole(QPalette::PlaceholderText);
+            blockLayout->addWidget(caption);
+            blockLayout->addWidget(vectorRow);
+            rows->addRow(block);
         }
         if (component.value(QStringLiteral("required")).toBool())
         {
@@ -1982,13 +2185,15 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
                 {
                     continue;
                 }
-                const QJsonObject property{{QStringLiteral("type"), QStringLiteral("number")},
-                                           {QStringLiteral("label"), key},
-                                           {QStringLiteral("min"),
-                                            key == QStringLiteral("scale")      ? 0.000001
-                                            : key == QStringLiteral("rotation") ? -360
-                                                                                : -1000000},
-                                           {QStringLiteral("max"), key == QStringLiteral("rotation") ? 360 : 1000000}};
+                const QJsonObject property{
+                    {QStringLiteral("type"), QStringLiteral("number")},
+                    {QStringLiteral("label"), key},
+                    {QStringLiteral("min"),
+                     key == QStringLiteral("scale")      ? SCENE_SCALE_MINIMUM
+                     : key == QStringLiteral("rotation") ? -SCENE_ROTATION_LIMIT
+                                                         : -SCENE_POSITION_LIMIT},
+                    {QStringLiteral("max"),
+                     key == QStringLiteral("rotation") ? SCENE_ROTATION_LIMIT : SCENE_POSITION_LIMIT}};
                 QJsonValue value;
                 if (WorldDocument::ParseValue(property, field->text(), value, outError) == false)
                 {

@@ -5,6 +5,7 @@
 // buffer bookkeeping - plus a regression for each dirty-close answer (Save,
 // Don't Save, Cancel) driven through the modal dialog. Offscreen only.
 
+#include "internal/code_conflict_banner.h"
 #include "internal/code_document_registry.h"
 #include "internal/code_document_tab.h"
 #include "internal/code_editor.h"
@@ -19,6 +20,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QList>
 #include <QMessageBox>
 #include <QString>
 #include <QTemporaryDir>
@@ -70,6 +72,22 @@ void answerNextDialog(QMessageBox::StandardButton answer)
         }
         else
         {
+            box->reject();
+        }
+    });
+}
+
+// Answer a modal dialog only if one appears during the next event-loop turn, and
+// record that it did. Unlike answerNextDialog this never retries, so a test that
+// expects no prompt neither hangs nor leaves a pending answer behind.
+void RejectAnyDialog(bool& outWasPrompted)
+{
+    outWasPrompted = false;
+    QTimer::singleShot(0, [&outWasPrompted]() {
+        QMessageBox* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (box != nullptr)
+        {
+            outWasPrompted = true;
             box->reject();
         }
     });
@@ -169,13 +187,27 @@ TEST_CASE("Crash-style restore reopens the unsaved draft on reopen", "[code-edit
         CHECK(tab->GetHostOrNull()->GetSnapshot().Text.GetSize() > static_cast<usize>(QByteArray("saved\n").size()));
     }
 
-    // The restore pass cleared the journal, so a third reopen restores nothing.
+    // Session two ended without a clean close too. The restore pass rewrote the
+    // journal instead of clearing it, so a second crash still recovers the draft.
     CodeRecoveryJournal after(state.path(), root);
-    CHECK(after.Read().isEmpty() == true);
+    REQUIRE(after.Read().size() == 1);
+    {
+        CodeEditorArea area;
+        area.SetProject(root, 3);
+        area.RestoreRecoveredBuffers();
+        CodeDocumentTab* tab = area.GetActiveTabOrNull();
+        REQUIRE(tab != nullptr);
+        CHECK(tab->IsDirty() == true);
+        // A clean close: Don't Save discards the draft and its journal entry.
+        answerNextDialog(QMessageBox::Discard);
+        CHECK(area.ConfirmDiscardAll() == true);
+        area.FlushRecovery();
+    }
+    CHECK(CodeRecoveryJournal(state.path(), root).Read().isEmpty() == true);
     qunsetenv("LUDUS_EDITOR_RECOVERY_DIRECTORY");
 }
 
-TEST_CASE("A journal for a deleted file is skipped on restore", "[code-editor][recovery]")
+TEST_CASE("A journal for a deleted file is skipped; a changed file keeps the draft", "[code-editor][recovery]")
 {
     QTemporaryDir state;
     REQUIRE(state.isValid() == true);
@@ -204,8 +236,9 @@ TEST_CASE("A journal for a deleted file is skipped on restore", "[code-editor][r
     area.RestoreRecoveredBuffers();
     CHECK(area.GetTabCount() == 0);
 
-    // A changed-on-disk file is likewise skipped: the recovered draft is dropped
-    // because the baseline hash no longer matches.
+    // A file that changed on disk after the draft was journaled keeps the
+    // recovered draft and asks: the conflict bar offers Compare, Keep Mine and
+    // Reload instead of silently dropping the user's work.
     const QString changedPath = writeFile(project, QStringLiteral("changed.cpp"), QByteArray("original\n"));
     {
         CodeRecoveryJournal journal(state.path(), root);
@@ -218,12 +251,15 @@ TEST_CASE("A journal for a deleted file is skipped on restore", "[code-editor][r
     CodeEditorArea second;
     second.SetProject(root, 1);
     second.RestoreRecoveredBuffers();
-    // The file opens (it exists) but the draft is not applied, so it is clean.
     CodeDocumentTab* tab = second.GetActiveTabOrNull();
-    if (tab != nullptr)
-    {
-        CHECK(tab->IsDirty() == false);
-    }
+    REQUIRE(tab != nullptr);
+    CHECK(tab->IsDirty() == true);
+    CHECK(tab->GetBanner().IsShowingConflict() == true);
+    // Reload chooses the file: the draft is discarded and the bar closes.
+    tab->GetBanner().findChild<QAbstractButton*>(QStringLiteral("codeConflictReload"))->click();
+    CHECK(tab->IsDirty() == false);
+    CHECK(tab->GetBanner().IsShowingConflict() == false);
+    CHECK(tab->GetEditor().toPlainText() == QStringLiteral("original\n"));
     qunsetenv("LUDUS_EDITOR_RECOVERY_DIRECTORY");
 }
 
@@ -301,5 +337,81 @@ TEST_CASE("Dirty-close Don't Save closes the tab and discards the draft", "[code
     CHECK(area.GetTabCount() == 0);
     // The draft was discarded: the file on disk is unchanged.
     CHECK(readBytes(path) == QByteArray("saved\n"));
+    qunsetenv("LUDUS_EDITOR_RECOVERY_DIRECTORY");
+}
+
+TEST_CASE("Don't Save on project close never resurrects the discarded drafts", "[code-editor][recovery][dirty-close]")
+{
+    QTemporaryDir state;
+    REQUIRE(state.isValid() == true);
+    qputenv("LUDUS_EDITOR_RECOVERY_DIRECTORY", state.path().toUtf8());
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString root = project.path();
+    const QString path = writeFile(project, QStringLiteral("discarded.cpp"), QByteArray("saved\n"));
+    {
+        CodeEditorArea area;
+        area.SetProject(root, 1);
+        REQUIRE(area.OpenFile(path, false) == true);
+        CodeDocumentTab* tab = area.GetActiveTabOrNull();
+        REQUIRE(tab != nullptr);
+        typeInto(*tab);
+        area.FlushRecovery();
+        REQUIRE(CodeRecoveryJournal(state.path(), root).Read().size() == 1);
+
+        // Close the project as MainWindow does: confirm, flush, then unbind.
+        answerNextDialog(QMessageBox::Discard);
+        REQUIRE(area.ConfirmDiscardAll() == true);
+        CHECK(tab->IsDirty() == false);
+        CHECK(tab->GetEditor().toPlainText() == QStringLiteral("saved\n"));
+        area.FlushRecovery();
+        area.SetProject({}, 2);
+    }
+    CHECK(CodeRecoveryJournal(state.path(), root).Read().isEmpty() == true);
+    CodeEditorArea reopened;
+    reopened.SetProject(root, 3);
+    reopened.RestoreRecoveredBuffers();
+    CHECK(reopened.GetTabCount() == 0);
+    CHECK(readBytes(path) == QByteArray("saved\n"));
+    qunsetenv("LUDUS_EDITOR_RECOVERY_DIRECTORY");
+}
+
+TEST_CASE("Closing one of two views of a dirty file keeps the draft without asking",
+          "[code-editor][recovery][dirty-close]")
+{
+    QTemporaryDir state;
+    REQUIRE(state.isValid() == true);
+    qputenv("LUDUS_EDITOR_RECOVERY_DIRECTORY", state.path().toUtf8());
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString path = writeFile(project, QStringLiteral("split.cpp"), QByteArray("saved\n"));
+
+    CodeEditorArea area;
+    area.SetProject(project.path(), 1);
+    area.show();
+    REQUIRE(area.OpenFile(path, false) == true);
+    REQUIRE(area.OpenFileInSecondGroup(path) == true);
+    const QList<CodeDocumentTab*> tabs = area.GetTabs();
+    REQUIRE(tabs.size() == 2);
+    CodeDocumentTab* first = tabs.at(0);
+    CodeDocumentTab* second = tabs.at(1);
+    typeInto(*second);
+    REQUIRE(first->IsDirty() == true);
+
+    bool wasPrompted = true;
+    RejectAnyDialog(wasPrompted);
+    CHECK(area.PromptCloseDirtyTab(second) == true);
+    QCoreApplication::processEvents();
+    CHECK(wasPrompted == false);
+    // The remaining view still holds the unsaved draft.
+    CHECK(area.GetTabCount() == 1);
+    CHECK(first->IsDirty() == true);
+    CHECK(first->GetEditor().toPlainText() != QStringLiteral("saved\n"));
+    CHECK(readBytes(path) == QByteArray("saved\n"));
+
+    // Closing the last view of the draft asks again.
+    answerNextDialog(QMessageBox::Cancel);
+    CHECK(area.PromptCloseDirtyTab(first) == false);
+    CHECK(area.GetTabCount() == 1);
     qunsetenv("LUDUS_EDITOR_RECOVERY_DIRECTORY");
 }

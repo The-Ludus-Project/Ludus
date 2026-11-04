@@ -25,6 +25,8 @@ static const MaterialModelTag LUDUS_MATERIAL_MODEL_COATED_DIFFUSE = 3;
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_DIELECTRIC = 4;
 /// Thin dielectric slab (reflection and straight transmission) wire tag, shared with shader code.
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC = 5;
+/// Weighted Lambertian and rough conductor wire tag.
+static const MaterialModelTag LUDUS_MATERIAL_MODEL_DIFFUSE_CONDUCTOR_MIX = 6;
 /// PBRT default bounded internal layer events; independent of scene path depth.
 static const MaterialModelTag LUDUS_COATING_MAX_DEPTH = 10;
 /// PBRT default number of independent layered evaluation/PDF estimates.
@@ -53,7 +55,20 @@ enum class MaterialModel : foundation::uint32
     /// Infinitesimally thin nonabsorbing dielectric slab with real index Eta:
     /// Fresnel reflection including internal interreflection, and undeviated transmission.
     ThinDielectric = LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC,
+    /// Weighted Lambertian and isotropic rough conductor. The material metallic field is the conductor weight.
+    DiffuseConductorMix = LUDUS_MATERIAL_MODEL_DIFFUSE_CONDUCTOR_MIX,
 };
+/// Report whether the model uses the complex-IOR GGX lobe and its authored alpha.
+[[nodiscard]] constexpr bool HasRoughConductorLobe(MaterialModel model) noexcept
+{
+    return model == MaterialModel::Conductor || model == MaterialModel::DiffuseConductorMix;
+}
+/// Report whether the model supplies continuous reflection and a fixed three-value sampler.
+[[nodiscard]] constexpr bool SupportsFixedDimensionReflection(MaterialModel model) noexcept
+{
+    return model == MaterialModel::MetallicRoughness || model == MaterialModel::Diffuse ||
+           model == MaterialModel::Conductor || model == MaterialModel::DiffuseConductorMix;
+}
 /// RGB channels in serialized optical constants.
 inline constexpr foundation::usize MATERIAL_RGB_CHANNELS = 3;
 /// Maximum bytes of a source material name; names are counted UTF-8, never truncated.
@@ -98,7 +113,8 @@ inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHA
 /// This validates storage; an evaluator separately admits the supported anisotropy.
 [[nodiscard]] constexpr bool IsMaterialScatteringValid(const MaterialScattering& scattering) noexcept
 {
-    if (scattering.Model > MaterialModel::ThinDielectric ||
+    if (scattering.Model > MaterialModel::DiffuseConductorMix ||
+        (scattering.Model == MaterialModel::DiffuseConductorMix && scattering.AlphaU != scattering.AlphaV) ||
         (scattering.AlphaU >= MIN_MATERIAL_ALPHA && scattering.AlphaU <= 1) == false ||
         (scattering.AlphaV >= MIN_MATERIAL_ALPHA && scattering.AlphaV <= 1) == false ||
         (scattering.CoatingEta > 0 && scattering.CoatingEta <= MAX_MATERIAL_OPTICAL_CONSTANT) == false ||
@@ -129,5 +145,6 @@ enum MaterialModel : MaterialModelTag
     CoatedDiffuse = LUDUS_MATERIAL_MODEL_COATED_DIFFUSE,   ///< Rough dielectric coating over a diffuse base.
     Dielectric = LUDUS_MATERIAL_MODEL_DIELECTRIC,          ///< Smooth nonabsorbing dielectric interface.
     ThinDielectric = LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC, ///< Thin dielectric slab.
+    DiffuseConductorMix = LUDUS_MATERIAL_MODEL_DIFFUSE_CONDUCTOR_MIX, ///< Weighted Lambertian and conductor.
 };
 #endif // __cplusplus

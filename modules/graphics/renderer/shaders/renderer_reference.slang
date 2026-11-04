@@ -96,9 +96,6 @@ static const float MINIMUM_NORMAL_FLOAT = 1.17549435e-38;
 static const uint MINIMUM_NORMAL_FLOAT_BITS = 0x00800000;
 static const uint SIGN_BIT = 0x80000000;
 static const uint QUIET_NAN_BITS = 0x7fc00000;
-static const uint PROPOSAL_SELECTION_SLOT = 0;
-static const uint PROPOSAL_FIRST_SLOT = 1;
-static const uint PROPOSAL_SECOND_SLOT = 2;
 static const uint BSDF_LOBE_SLOT = 3;
 static const uint BSDF_FIRST_SLOT = 4;
 static const uint BSDF_SECOND_SLOT = 5;
@@ -471,16 +468,16 @@ uint GetLightCount()
 {
     return Counts.w + Counts.z + ((SurfaceLayout.w != 0 || HasPositiveComponent(Environment.xyz)) ? 1u : 0u);
 }
-// AreaPdf: solid-angle density after selecting the triangle with probability `selection`.
-float GetAreaPdf(uint triangle, float3 fromPositionWorld, float3 toPositionWorld, float selection)
+// EvaluateTriangleLightPdf (CPU oracle): combine the PMF and area conversion in the frozen operation order.
+float EvaluateTriangleLightPdf(uint triangle, float3 fromPositionWorld, float3 toPositionWorld, float selectionPmf)
 {
     float3 deltaWorld = toPositionWorld - fromPositionWorld;
     float distanceSquared = dot(deltaWorld, deltaWorld);
     float cosine = abs(dot(GetGeometricNormalWorld(triangle), -NormalizeOrZero(deltaWorld)));
     float area = GetArea(triangle);
-    if (selection <= 0 || area <= 0 || cosine <= 0)
+    if (selectionPmf <= 0 || area <= 0 || cosine <= 0)
         return 0;
-    return selection * distanceSquared / (area * cosine);
+    return selectionPmf * distanceSquared / (area * cosine);
 }
 // Emitter words hold the ascending triangle index in X and the inclusive integer
 // power CDF in Y (BuildReferenceEmitterSelection).
@@ -526,14 +523,24 @@ bool FindEmitter(uint triangle, out uint outEmitter)
     outEmitter = low;
     return true;
 }
+// P_E: the uniform category draw's share of mesh emitters.
+float GetEmissiveCategoryProbability(uint lightCount)
+{
+    return lightCount == 0 ? 0 : float(Counts.z) / float(lightCount);
+}
+// GetReferenceEmitterProbability: the power CDF's probability of emitter `emitter`.
+float GetEmitterProbability(uint emitter)
+{
+    uint total = Counts.z == 0 ? 0 : GetEmitterCumulative(Counts.z - 1);
+    if (emitter >= Counts.z || total == 0)
+        return 0;
+    uint previous = emitter == 0 ? 0 : GetEmitterCumulative(emitter - 1);
+    return float(GetEmitterCumulative(emitter) - previous) / float(total);
+}
 // ComputeEmitterSelection: the uniform category share times the CDF probability.
 float GetEmitterSelection(uint emitter, uint lightCount)
 {
-    uint total = Counts.z == 0 ? 0 : GetEmitterCumulative(Counts.z - 1);
-    if (lightCount == 0 || emitter >= Counts.z || total == 0)
-        return 0;
-    uint previous = emitter == 0 ? 0 : GetEmitterCumulative(emitter - 1);
-    return float(GetEmitterCumulative(emitter) - previous) / float(total) * (float(Counts.z) / float(lightCount));
+    return GetEmitterProbability(emitter) * GetEmissiveCategoryProbability(lightCount);
 }
 // TryOffsetRayOrigin: project the reconstruction error onto the oriented geometric
 // normal, then step each nonzero component one representable value outward.
@@ -699,7 +706,8 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
     float nl = dot(normalWorld, lightWorld);
     if (nv <= 0 || nl <= 0 || IsDielectricModel(bsdf.Model) == true)
         return 0;
-    if (bsdf.Model == MaterialModel::Diffuse)
+    bool isMix = bsdf.Model == MaterialModel::DiffuseConductorMix;
+    if (bsdf.Model == MaterialModel::Diffuse || (isMix == true && bsdf.Metallic == 0))
         return float4(bsdf.BaseColor / PI, nl / PI);
     float3 halfWorld = NormalizeOrZero(viewWorld + lightWorld);
     float nh = clamp(dot(normalWorld, halfWorld), 0, 1);
@@ -717,13 +725,15 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
     float square = oneMinus * oneMinus;
     float3 fresnel = reflectance + (float3(1) - reflectance) * (square * square * oneMinus);
     bool isConductor = bsdf.Model == MaterialModel::Conductor;
-    if (isConductor == true)
+    if (HasRoughConductorLobe(bsdf.Model) == true)
         fresnel = ComputeConductorFresnelRgb(vh, bsdf.Eta, bsdf.K);
     float diffuseFraction = isConductor == true ? 0 : 1 - bsdf.Metallic;
     float3 value =
         fresnel * (distribution * visibility) + bsdf.BaseColor * (float3(1) - fresnel) * (diffuseFraction / PI);
     float specularPdf = distribution / (2 * (nv + lambdaView));
     float probability = GetSpecularProbability(bsdf);
+    if (isMix == true)
+        value = fresnel * (distribution * visibility * probability) + bsdf.BaseColor * ((1 - probability) / PI);
     return float4(value, probability * specularPdf + (1 - probability) * nl / PI);
 }
 // SampleReferenceBsdf; returns zero for an ordinary null proposal.
@@ -799,6 +809,35 @@ struct PathSample
     uint Status;
     uint Failure;
 };
+// SelectReferenceLight in reference_path.cpp owns the same category and CDF draws.
+enum ReferenceLightChoiceKind : uint
+{
+    None,
+    Analytic,
+    Triangle,
+    ResampledTriangles,
+    Environment,
+    Invalid,
+};
+struct ReferenceLightChoice
+{
+    ReferenceLightChoiceKind Kind;
+    uint Index;
+    float SelectionPmf;
+};
+struct ReferenceIncidentLight
+{
+    float3 DirectionWorld;
+    float3 Radiance;
+    float3 PositionWorld;
+    float3 ErrorWorld;
+    float3 NormalWorld;
+    float DistanceWorld;
+    float EnvironmentPdfSolidAngle;
+    bool IsDelta;
+    bool HasFiniteEndpoint;
+    bool HasFailed;
+};
 struct LightProposal
 {
     float3 DirectionWorld;
@@ -837,133 +876,197 @@ bool HasValidTransport(PathSample path)
 {
     return IsValidContribution(path.Emission) && IsValidContribution(path.Direct) && IsValidContribution(path.Indirect);
 }
-LightProposal SampleLight(uint pixel, uint sample, uint depth, float3 positionWorld)
+ReferenceLightChoice MakeReferenceLightChoice(ReferenceLightChoiceKind kind, uint index, float selectionPmf)
 {
-    LightProposal result;
-    result.DirectionWorld = 0;
-    result.Radiance = 0;
-    result.PositionWorld = 0;
-    result.ErrorWorld = 0;
-    result.NormalWorld = 0;
-    result.DistanceWorld = 0;
-    result.Pdf = 0;
-    result.IsDelta = false;
-    result.HasFiniteEndpoint = false;
-    result.IsEmissiveCategory = false;
-    uint count = GetLightCount();
-    if (count == 0)
-        return result;
+    ReferenceLightChoice result;
+    result.Kind = kind;
+    result.Index = index;
+    result.SelectionPmf = selectionPmf;
+    return result;
+}
+ReferenceLightChoice SelectReferenceLight(uint pixel, uint sample, uint depth, uint lightCount)
+{
+    if (lightCount == 0)
+        return (ReferenceLightChoice)0;
     uint selected;
-    if (TrySampleRandomBounded(Sampling.xy,
-                               PixelRandomAddress(pixel, sample, GetBounceDimension(depth, PROPOSAL_SELECTION_SLOT)),
-                               count,
-                               selected) == false)
-    {
-        result.Pdf = -1;
-        return result;
-    }
-    float first = RandomValue(pixel, sample, GetBounceDimension(depth, PROPOSAL_FIRST_SLOT));
-    float second = RandomValue(pixel, sample, GetBounceDimension(depth, PROPOSAL_SECOND_SLOT));
+    if (TrySampleRandomBounded(
+            Sampling.xy,
+            PixelRandomAddress(pixel, sample, GetBounceDimension(depth, LUDUS_PATH_RANDOM_LIGHT_SELECTION_SLOT)),
+            lightCount,
+            selected) == false)
+        return MakeReferenceLightChoice(ReferenceLightChoiceKind::Invalid, 0, 0);
+    float uniformPmf = 1 / float(lightCount);
     if (selected < Counts.w)
+        return MakeReferenceLightChoice(ReferenceLightChoiceKind::Analytic, selected, uniformPmf);
+    if (selected - Counts.w >= Counts.z)
+        return MakeReferenceLightChoice(ReferenceLightChoiceKind::Environment, 0, uniformPmf);
+    if (IsResampled() == true)
+        return MakeReferenceLightChoice(ReferenceLightChoiceKind::ResampledTriangles,
+                                        0,
+                                        GetEmissiveCategoryProbability(lightCount));
+
+    uint total = GetEmitterCumulative(Counts.z - 1);
+    if (total == 0)
+        return (ReferenceLightChoice)0; // No emitter carries power.
+    uint value;
+    if (TrySampleRandomBounded(Sampling.xy,
+                               PixelRandomAddress(pixel, sample, GetBounceDimension(depth, EMITTER_SLOT)),
+                               total,
+                               value) == false)
+        return MakeReferenceLightChoice(ReferenceLightChoiceKind::Invalid, 0, 0);
+    uint emitter = SelectEmitter(value);
+    return MakeReferenceLightChoice(ReferenceLightChoiceKind::Triangle,
+                                    emitter,
+                                    GetEmitterSelection(emitter, lightCount));
+}
+ReferenceIncidentLight EvaluateAnalyticIncidentLight(uint lightIndex, float3 positionWorld)
+{
+    ReferenceIncidentLight result = (ReferenceIncidentLight)0;
+    uint light = SurfaceLayout.y + lightIndex * LUDUS_GPU_PREVIEW_LIGHT_WORDS;
+    float4 colorAndKind = SceneValue(light);
+    float4 positionAndRangeWorld = SceneValue(light + 1);
+    float4 directionAndOuterWorld = SceneValue(light + 2);
+    uint kind = uint(colorAndKind.w);
+    result.IsDelta = true;
+    result.Radiance = colorAndKind.xyz;
+    if (kind == DIRECTIONAL_LIGHT)
     {
-        uint light = SurfaceLayout.y + selected * LUDUS_GPU_PREVIEW_LIGHT_WORDS;
-        float4 colorAndKind = SceneValue(light);
-        float4 positionAndRangeWorld = SceneValue(light + 1);
-        float4 directionAndOuterWorld = SceneValue(light + 2);
-        uint kind = uint(colorAndKind.w);
-        result.IsDelta = true;
-        result.Pdf = 1 / float(count);
-        result.Radiance = colorAndKind.xyz;
-        if (kind == DIRECTIONAL_LIGHT)
-        {
-            result.DirectionWorld = -directionAndOuterWorld.xyz;
-            result.DistanceWorld = Options.x;
-            return result;
-        }
-        float3 deltaWorld = positionAndRangeWorld.xyz - positionWorld;
-        float square = dot(deltaWorld, deltaWorld);
-        if (square <= 0)
-        {
-            result.Pdf = -1;
-            return result;
-        }
-        result.DistanceWorld = sqrt(square);
-        result.DirectionWorld = deltaWorld / result.DistanceWorld;
-        result.PositionWorld = positionAndRangeWorld.xyz;
-        result.HasFiniteEndpoint = true;
-        if (result.DistanceWorld >= positionAndRangeWorld.w || result.DistanceWorld > Options.x)
-        {
-            result.Radiance = 0;
-            return result;
-        }
-        float ratio = result.DistanceWorld / positionAndRangeWorld.w;
-        float window = max(0, 1 - ratio * ratio * ratio * ratio);
-        float angular = 1;
-        if (kind == SPOT_LIGHT)
-        {
-            float cosine = dot(directionAndOuterWorld.xyz, -result.DirectionWorld);
-            float t = clamp((cosine - directionAndOuterWorld.w) /
-                                (SceneValue(light + LUDUS_GRAPH_LIGHT_SOURCE_WORD).x - directionAndOuterWorld.w),
-                            0,
-                            1);
-            angular = t * t;
-        }
-        if (kind == AREA_ONE_SIDED_LIGHT || kind == AREA_TWO_SIDED_LIGHT)
-        {
-            float emitterCosine = dot(directionAndOuterWorld.xyz, -result.DirectionWorld);
-            angular = kind == AREA_TWO_SIDED_LIGHT ? abs(emitterCosine) : max(emitterCosine, 0);
-        }
-        result.Radiance *= window * window * angular / max(square, NEAR_LIGHT_SQUARED_DISTANCE_FLOOR);
+        result.DirectionWorld = -directionAndOuterWorld.xyz;
+        result.DistanceWorld = Options.x;
         return result;
     }
-    if (selected - Counts.w < Counts.z)
+    float3 deltaWorld = positionAndRangeWorld.xyz - positionWorld;
+    float square = dot(deltaWorld, deltaWorld);
+    if (square <= 0)
     {
-        if (IsResampled() == true)
-        {
-            result.IsEmissiveCategory = true;
-            return result;
-        }
-        uint total = GetEmitterCumulative(Counts.z - 1);
-        if (total == 0)
-            return result; // No emitter carries power; the proposal contributes nothing.
-        uint value;
-        if (TrySampleRandomBounded(Sampling.xy,
-                                   PixelRandomAddress(pixel, sample, GetBounceDimension(depth, EMITTER_SLOT)),
-                                   total,
-                                   value) == false)
-        {
-            result.Pdf = -1;
-            return result;
-        }
-        uint emitter = SelectEmitter(value);
-        uint triangle = GetEmitterTriangle(emitter);
-        float root = sqrt(first);
-        float u = root * (1 - second);
-        float v = root - u;
-        result.PositionWorld = GetPositionWorld(triangle, u, v);
-        float3 deltaWorld = result.PositionWorld - positionWorld;
-        result.DistanceWorld = length(deltaWorld);
-        if (result.DistanceWorld <= 0)
-        {
-            result.Pdf = -1;
-            return result;
-        }
-        result.DirectionWorld = deltaWorld / result.DistanceWorld;
-        result.ErrorWorld = GetPositionErrorWorld(triangle);
-        result.NormalWorld = GetOrientedGeometricNormalWorld(triangle, u, v);
-        result.HasFiniteEndpoint = true;
-        result.Pdf = GetAreaPdf(triangle, positionWorld, result.PositionWorld, GetEmitterSelection(emitter, count));
-        uint instance = GetInstance(triangle);
-        float2 uv = GetTexcoordUv(triangle, u, v);
-        if ((IsEmissionTwoSided(instance) == true || dot(result.NormalWorld, -result.DirectionWorld) > 0) &&
-            result.DistanceWorld <= Options.x && IsOpaque(instance, uv, GetVertexAlpha(triangle, u, v)) == true)
-            result.Radiance = SampleEmission(instance, uv);
+        result.HasFailed = true;
         return result;
     }
-    float environmentPdf;
-    SampleEnvironmentWorld(first, second, result.DirectionWorld, result.Radiance, environmentPdf);
-    result.Pdf = environmentPdf / float(count);
+    result.DistanceWorld = sqrt(square);
+    result.DirectionWorld = deltaWorld / result.DistanceWorld;
+    result.PositionWorld = positionAndRangeWorld.xyz;
+    result.HasFiniteEndpoint = true;
+    if (result.DistanceWorld >= positionAndRangeWorld.w || result.DistanceWorld > Options.x)
+    {
+        result.Radiance = 0;
+        return result;
+    }
+    float ratio = result.DistanceWorld / positionAndRangeWorld.w;
+    float window = max(0, 1 - ratio * ratio * ratio * ratio);
+    float angular = 1;
+    if (kind == SPOT_LIGHT)
+    {
+        float cosine = dot(directionAndOuterWorld.xyz, -result.DirectionWorld);
+        float t = clamp((cosine - directionAndOuterWorld.w) /
+                            (SceneValue(light + LUDUS_GRAPH_LIGHT_SOURCE_WORD).x - directionAndOuterWorld.w),
+                        0,
+                        1);
+        angular = t * t;
+    }
+    if (kind == AREA_ONE_SIDED_LIGHT || kind == AREA_TWO_SIDED_LIGHT)
+    {
+        float emitterCosine = dot(directionAndOuterWorld.xyz, -result.DirectionWorld);
+        angular = kind == AREA_TWO_SIDED_LIGHT ? abs(emitterCosine) : max(emitterCosine, 0);
+    }
+    result.Radiance *= window * window * angular / max(square, NEAR_LIGHT_SQUARED_DISTANCE_FLOOR);
+    return result;
+}
+ReferenceIncidentLight
+SampleTriangleIncidentLight(uint pixel, uint sample, uint depth, uint emitter, float3 positionWorld)
+{
+    ReferenceIncidentLight result = (ReferenceIncidentLight)0;
+    uint triangle = GetEmitterTriangle(emitter);
+    float root = sqrt(RandomValue(pixel, sample, GetBounceDimension(depth, LUDUS_PATH_RANDOM_INCIDENT_FIRST_SLOT)));
+    float u =
+        root * (1 - RandomValue(pixel, sample, GetBounceDimension(depth, LUDUS_PATH_RANDOM_INCIDENT_SECOND_SLOT)));
+    float v = root - u;
+    result.PositionWorld = GetPositionWorld(triangle, u, v);
+    float3 deltaWorld = result.PositionWorld - positionWorld;
+    result.DistanceWorld = length(deltaWorld);
+    if (result.DistanceWorld <= 0)
+    {
+        result.HasFailed = true;
+        return result;
+    }
+    result.DirectionWorld = deltaWorld / result.DistanceWorld;
+    result.ErrorWorld = GetPositionErrorWorld(triangle);
+    result.NormalWorld = GetOrientedGeometricNormalWorld(triangle, u, v);
+    result.HasFiniteEndpoint = true;
+    uint instance = GetInstance(triangle);
+    float2 uv = GetTexcoordUv(triangle, u, v);
+    if ((IsEmissionTwoSided(instance) == true || dot(result.NormalWorld, -result.DirectionWorld) > 0) &&
+        result.DistanceWorld <= Options.x && IsOpaque(instance, uv, GetVertexAlpha(triangle, u, v)) == true)
+        result.Radiance = SampleEmission(instance, uv);
+    return result;
+}
+ReferenceIncidentLight SampleEnvironmentIncidentLight(uint pixel, uint sample, uint depth)
+{
+    ReferenceIncidentLight result = (ReferenceIncidentLight)0;
+    float first = RandomValue(pixel, sample, GetBounceDimension(depth, LUDUS_PATH_RANDOM_INCIDENT_FIRST_SLOT));
+    float second = RandomValue(pixel, sample, GetBounceDimension(depth, LUDUS_PATH_RANDOM_INCIDENT_SECOND_SLOT));
+    SampleEnvironmentWorld(first, second, result.DirectionWorld, result.Radiance, result.EnvironmentPdfSolidAngle);
     result.DistanceWorld = Options.x;
+    return result;
+}
+ReferenceIncidentLight
+SampleReferenceIncidentLight(uint pixel, uint sample, uint depth, ReferenceLightChoice choice, float3 positionWorld)
+{
+    switch (choice.Kind)
+    {
+        case ReferenceLightChoiceKind::Analytic:
+            return EvaluateAnalyticIncidentLight(choice.Index, positionWorld);
+        case ReferenceLightChoiceKind::Triangle:
+            return SampleTriangleIncidentLight(pixel, sample, depth, choice.Index, positionWorld);
+        case ReferenceLightChoiceKind::Environment:
+            return SampleEnvironmentIncidentLight(pixel, sample, depth);
+        default:
+            return (ReferenceIncidentLight)0;
+    }
+}
+float ComputeEnvironmentLightPdf(float conditionalPdf, uint lightCount)
+{
+    return lightCount == 0 ? 0 : conditionalPdf / float(lightCount);
+}
+float EvaluateSampledLightProbability(ReferenceLightChoice choice,
+                                      ReferenceIncidentLight incident,
+                                      float3 positionWorld,
+                                      uint lightCount)
+{
+    if (choice.Kind == ReferenceLightChoiceKind::Invalid || incident.HasFailed == true)
+        return -1;
+    switch (choice.Kind)
+    {
+        case ReferenceLightChoiceKind::Analytic:
+            return choice.SelectionPmf; // Unit conditional mass for a deterministic incident event.
+        case ReferenceLightChoiceKind::Triangle:
+            return EvaluateTriangleLightPdf(GetEmitterTriangle(choice.Index),
+                                            positionWorld,
+                                            incident.PositionWorld,
+                                            choice.SelectionPmf);
+        case ReferenceLightChoiceKind::Environment:
+            return ComputeEnvironmentLightPdf(incident.EnvironmentPdfSolidAngle, lightCount);
+        default:
+            return 0;
+    }
+}
+// Keep source choice and incident evaluation local to the direct-light proposal.
+// Inlining the split proposal into TracePath regressed the resampled L6 parity fixture on Metal.
+[noinline] LightProposal SampleLight(uint pixel, uint sample, uint depth, float3 positionWorld)
+{
+    uint lightCount = GetLightCount();
+    ReferenceLightChoice choice = SelectReferenceLight(pixel, sample, depth, lightCount);
+    ReferenceIncidentLight incident = SampleReferenceIncidentLight(pixel, sample, depth, choice, positionWorld);
+    LightProposal result;
+    result.DirectionWorld = incident.DirectionWorld;
+    result.Radiance = incident.Radiance;
+    result.PositionWorld = incident.PositionWorld;
+    result.ErrorWorld = incident.ErrorWorld;
+    result.NormalWorld = incident.NormalWorld;
+    result.DistanceWorld = incident.DistanceWorld;
+    result.Pdf = EvaluateSampledLightProbability(choice, incident, positionWorld, lightCount);
+    result.IsDelta = incident.IsDelta;
+    result.HasFiniteEndpoint = incident.HasFiniteEndpoint;
+    result.IsEmissiveCategory = choice.Kind == ReferenceLightChoiceKind::ResampledTriangles;
     return result;
 }
 // Trace one shadow segment for an accepted proposal; false reports an invalid ray.
@@ -1040,20 +1143,6 @@ bool TraceProposal(inout PathSample inoutPath,
 // one LTC sample of the selected triangle under clamped optimal MIS, each with its own shadow ray. The
 // scene-independent pieces are in reference_light_sampling.slang.
 
-// P_E: the uniform category draw's share of mesh emitters.
-float GetEmissiveCategoryProbability(uint lightCount)
-{
-    return lightCount == 0 ? 0 : float(Counts.z) / float(lightCount);
-}
-// GetReferenceEmitterProbability: the power CDF's probability of emitter `emitter`.
-float GetEmitterProbability(uint emitter)
-{
-    uint total = Counts.z == 0 ? 0 : GetEmitterCumulative(Counts.z - 1);
-    if (emitter >= Counts.z || total == 0)
-        return 0;
-    uint previous = emitter == 0 ? 0 : GetEmitterCumulative(emitter - 1);
-    return float(GetEmitterCumulative(emitter) - previous) / float(total);
-}
 // SelectReferenceEmissiveTriangle: one bounded draw over the CDF total; false without emitted power or for an
 // exhausted bounded draw.
 bool TrySelectEmissiveTriangle(uint pixel, uint sample, uint dimension, out uint outTriangle, out float outPmf)
@@ -1369,20 +1458,20 @@ struct ResampledLightSample
 // sample that the BSDF and the receiver's geometric side admit traces its shadow ray at once; nothing else adds
 // transport between this vertex's emission and its continuation, so the sums follow the CPU oracle's order. False
 // after MarkInvalid.
-bool SampleResampledEmitter(inout PathSample inoutPath,
-                            uint pixel,
-                            uint sample,
-                            uint depth,
-                            uint triangle,
-                            float3 positionWorld,
-                            float3 geometricNormalWorld,
-                            float3 normalWorld,
-                            float3 viewWorld,
-                            Bsdf bsdf,
-                            float3 throughput,
-                            ReferenceReceiverFrame frame,
-                            float emissiveCategoryProbability,
-                            inout TargetTotal inoutTotal)
+[noinline] bool SampleResampledEmitter(inout PathSample inoutPath,
+                                       uint pixel,
+                                       uint sample,
+                                       uint depth,
+                                       uint triangle,
+                                       float3 positionWorld,
+                                       float3 geometricNormalWorld,
+                                       float3 normalWorld,
+                                       float3 viewWorld,
+                                       Bsdf bsdf,
+                                       float3 throughput,
+                                       ReferenceReceiverFrame frame,
+                                       float emissiveCategoryProbability,
+                                       inout TargetTotal inoutTotal)
 {
     uint emitter;
     float contributionWeight;
@@ -1413,7 +1502,8 @@ bool SampleResampledEmitter(inout PathSample inoutPath,
     float contributionScale = contributionWeight / emissiveCategoryProbability;
     for (uint technique = REFERENCE_DIFFUSE_TECHNIQUE; technique <= REFERENCE_SPECULAR_TECHNIQUE; ++technique)
     {
-        uint firstSlot = technique == REFERENCE_DIFFUSE_TECHNIQUE ? PROPOSAL_FIRST_SLOT : LTC_FIRST_SLOT;
+        uint firstSlot =
+            technique == REFERENCE_DIFFUSE_TECHNIQUE ? LUDUS_PATH_RANDOM_INCIDENT_FIRST_SLOT : LTC_FIRST_SLOT;
         float2 randomNumbers = float2(RandomValue(pixel, sample, GetBounceDimension(depth, firstSlot)),
                                       RandomValue(pixel, sample, GetBounceDimension(depth, firstSlot + 1)));
         ResampledLightSample light =
@@ -1558,7 +1648,7 @@ PathSample TracePath(uint pixel, uint sample)
         if (hit.Triangle == NO_TRIANGLE)
         {
             float4 environment = EvaluateEnvironmentWorld(ray.DirectionWorld);
-            float lightPdf = lights == 0 ? 0 : environment.w / float(lights);
+            float lightPdf = ComputeEnvironmentLightPdf(environment.w, lights);
             float weight =
                 depth == 0 || isPreviousSpecular == true ? 1 : (Options.y > 0 ? 0 : PowerWeight(previousPdf, lightPdf));
             AddTransport(path, throughput * environment.xyz * weight, depth, true);
@@ -1585,7 +1675,7 @@ PathSample TracePath(uint pixel, uint sample)
             {
                 uint emitter;
                 float selection = FindEmitter(triangle, emitter) == true ? GetEmitterSelection(emitter, lights) : 0;
-                pdf = GetAreaPdf(triangle, previousPositionWorld, positionWorld, selection);
+                pdf = EvaluateTriangleLightPdf(triangle, previousPositionWorld, positionWorld, selection);
             }
             else if (depth > 0 && TryEvaluateResampledLightDensity(pixel,
                                                                    sample,

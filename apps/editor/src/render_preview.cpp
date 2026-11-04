@@ -820,6 +820,8 @@ void RenderPreview::resetStatistics() noexcept
     mStatistics.GpuMilliseconds.Reset();
     mStatistics.CpuMilliseconds.Reset();
     mStatistics.GpuState = ViewportGpuTimeState::Waiting;
+    mStatistics.Passes.Reset();
+    mStatistics.PassState = ViewportPassTimeState::Waiting;
     mStatisticsRefresh.invalidate();
 }
 bool RenderPreview::CanProfileGpu() const noexcept
@@ -913,8 +915,11 @@ bool RenderPreview::HasGpuPassProfilingPending(uint64 throughTicks) const noexce
 void RenderPreview::serviceGpuPassTimings(bool shouldArm) noexcept
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    // Per-pass queries cost a few timestamp writes per frame, so they run only while something reads
+    // them: the statistics overlay or a profiling recording. Hidden and idle, nothing is armed or polled.
+    const bool isMeasuring = mIsGpuProfilingEnabled == true || mIsStatisticsVisible == true;
     if (OwnsDevice_ == false ||
-        (mIsGpuProfilingEnabled == false && mHasPassTimingAssociation == false && mIsPassTimingArmed == false))
+        (isMeasuring == false && mHasPassTimingAssociation == false && mIsPassTimingArmed == false))
     {
         return;
     }
@@ -927,16 +932,58 @@ void RenderPreview::serviceGpuPassTimings(bool shouldArm) noexcept
     if (mHasPassTimingAssociation == true)
     {
         mHasPassTimingAssociation = false;
+        if (mIsStatisticsVisible == true)
+        {
+            recordPassStatistics(batch);
+        }
         Q_EMIT GpuPassProfileBatch(mPassTimingFrameId, mPassTimingDeviceSession, mPassTimingSubmissionTicks, batch);
     }
-    if (shouldArm == true && mIsGpuProfilingEnabled == true)
+    if (shouldArm == true && isMeasuring == true)
     {
         const rhi::RasterStatus status = rhi::ArmGpuPassTimings(Device_);
         mIsPassTimingArmed = status == rhi::RasterStatus::Ready;
         mIsPassTimingSupported = mIsPassTimingArmed;
+        if (status == rhi::RasterStatus::Unsupported)
+        {
+            mStatistics.PassState = ViewportPassTimeState::Unavailable;
+        }
     }
 #else
     static_cast<void>(shouldArm);
+#endif
+}
+void RenderPreview::recordPassStatistics(const rhi::GpuPassTimings& batch)
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    if (batch.State == rhi::GpuTimingState::Unavailable)
+    {
+        mStatistics.Passes.Reset();
+        mStatistics.PassState = ViewportPassTimeState::Unavailable;
+        return;
+    }
+    constexpr float64 MAX_DURATION_NANOSECONDS = 60'000'000'000;
+    bool hasSample = false;
+    for (usize index = 0; index < batch.Count; ++index)
+    {
+        const rhi::GpuPassTiming& pass = batch.Passes[index];
+        const float64 duration = pass.Timing.DurationNanoseconds;
+        if (pass.Timing.State != rhi::GpuTimingState::Available ||
+            (duration >= 0 && duration < MAX_DURATION_NANOSECONDS) == false)
+        {
+            continue;
+        }
+        mStatistics.Passes.AddSample(pass.Scope.Identity,
+                                     QString::fromUtf8(pass.Scope.Name.GetData()),
+                                     duration / NANOSECONDS_PER_MILLISECOND);
+        hasSample = true;
+    }
+    if (hasSample == true)
+    {
+        mStatistics.Passes.CommitBatch();
+        mStatistics.PassState = ViewportPassTimeState::Available;
+    }
+#else
+    static_cast<void>(batch);
 #endif
 }
 void RenderPreview::serviceGpuTiming(bool shouldArm) noexcept
@@ -997,6 +1044,7 @@ void RenderPreview::serviceGpuTiming(bool shouldArm) noexcept
 #else
     static_cast<void>(shouldArm);
     mStatistics.GpuState = ViewportGpuTimeState::Unavailable;
+    mStatistics.PassState = ViewportPassTimeState::Unavailable;
 #endif
 }
 void RenderPreview::recordFrameStatistics(const QElapsedTimer& frameTimer)

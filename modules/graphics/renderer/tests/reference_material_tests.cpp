@@ -534,3 +534,50 @@ TEST_CASE("Reference dielectrics admit one real index and a smooth interface onl
     CHECK(sampled.Direction.X == Catch::Approx(-0.6F));
     CHECK(sampled.Direction.Z == Catch::Approx(-0.8F));
 }
+
+TEST_CASE("Diffuse conductor Mix samples the full weighted directional density", "[renderer][rt1][materials][mix]")
+{
+    namespace format = ludus::content::scene_format;
+    const math::Vector3 normalWorld{0, 0, 1};
+    rr::ReferenceBsdf conductor;
+    conductor.Scattering.Model = format::MaterialModel::Conductor;
+    conductor.Scattering.AlphaU = 0.3F;
+    conductor.Scattering.AlphaV = conductor.Scattering.AlphaU;
+    conductor.Scattering.Eta = {{0.7F, 0.8F, 0.9F}};
+    conductor.Scattering.K = {{3, 4, 5}};
+    rr::ReferenceBsdf diffuse = conductor;
+    diffuse.BaseColor = {0.2F, 0.4F, 0.8F};
+    diffuse.Scattering.Model = format::MaterialModel::Diffuse;
+    rr::ReferenceBsdf mixed = conductor;
+    mixed.BaseColor = diffuse.BaseColor;
+    mixed.Scattering.Model = format::MaterialModel::DiffuseConductorMix;
+    for (const float32 weight : {0.0F, 0.25F, 1.0F})
+    {
+        mixed.Metallic = weight;
+        for (const float32 selector : {0.125F, 0.625F})
+        {
+            const math::Vector3 random{selector, 0.2F, 0.7F};
+            const rr::ReferenceBsdf& selected = selector < weight ? conductor : diffuse;
+            rr::ReferenceBsdfSample lobe;
+            rr::ReferenceBsdfSample sample;
+            REQUIRE(rr::SampleReferenceBsdf(selected, normalWorld, normalWorld, random, lobe) ==
+                    rhi::RasterStatus::Ready);
+            REQUIRE(rr::SampleReferenceBsdf(mixed, normalWorld, normalWorld, random, sample) ==
+                    rhi::RasterStatus::Ready);
+            REQUIRE(lobe.Accepted == true);
+            REQUIRE(sample.Accepted == true);
+            CHECK(sample.Direction == lobe.Direction);
+            rr::ReferenceBsdfEvaluation matte;
+            rr::ReferenceBsdfEvaluation metal;
+            REQUIRE(rr::EvaluateReferenceBsdf(diffuse, normalWorld, normalWorld, sample.Direction, matte) ==
+                    rhi::RasterStatus::Ready);
+            REQUIRE(rr::EvaluateReferenceBsdf(conductor, normalWorld, normalWorld, sample.Direction, metal) ==
+                    rhi::RasterStatus::Ready);
+            const float32 density = (1 - weight) * matte.Pdf + weight * metal.Pdf;
+            const math::Vector3 value = matte.Value * (1 - weight) + metal.Value * weight;
+            CHECK(sample.MisPdf == Catch::Approx(density));
+            CHECK(math::Distance(sample.Evaluation.Value, value) < 1e-6F);
+            CHECK(math::Distance(sample.Weight, value * (sample.Direction.Z / density)) < 1e-6F);
+        }
+    }
+}

@@ -55,11 +55,23 @@ void LoadPackage(bool isJumpRestoreOnly, renderer::RenderGraphPackage& outPackag
 
 TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in", "[renderer][gpu][metropolis-graph]")
 {
+    namespace format = ludus::content::scene_format;
     bool isJumpRestoreOnly = false;
+    bool hasSurface = false;
+    bool hasIncompatibleSampler = false;
     SECTION("MH and Jump Restore RB alongside") {}
     SECTION("Jump Restore estimator comparison")
     {
         isJumpRestoreOnly = true;
+    }
+    SECTION("Fixed-dimension reflection accepts a Mix")
+    {
+        hasSurface = true;
+    }
+    SECTION("An internal walk fails the material requirement")
+    {
+        hasSurface = true;
+        hasIncompatibleSampler = true;
     }
     Session session;
     rhi::DeviceHandle device;
@@ -83,6 +95,25 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
     inputs.Environment = ENVIRONMENT;
     StaticArray<renderer::ViewDescription, CAMERA_COUNT> cameras;
     cameras[0].OrthographicCamera = true;
+    constexpr usize VERTEX_COUNT = 4;
+    constexpr usize INDEX_COUNT = 6;
+    const StaticArray<math::Vector3, VERTEX_COUNT> positionsWorld{
+        {{-2, -2, 0.5F}, {2, -2, 0.5F}, {-2, 2, 0.5F}, {2, 2, 0.5F}}};
+    const StaticArray<uint32, INDEX_COUNT> indices{{0, 2, 1, 1, 2, 3}};
+    const uint32 materialIndex = 0;
+    renderer::SceneShaderMaterial material;
+    material.BaseColor = {0.5F, 0.5F, 0.5F};
+    material.Metallic = 0.25F;
+    material.Scattering.Model = hasIncompatibleSampler == true ? format::MaterialModel::CoatedDiffuse
+                                                               : format::MaterialModel::DiffuseConductorMix;
+    renderer::RenderGraphMesh mesh;
+    mesh.Geometry = {positionsWorld.GetData(), positionsWorld.GetSize(), indices.GetData(), indices.GetSize()};
+    renderer::RenderGraphItem item;
+    item.SourceId = 1;
+    item.Material.Color = {1, 1, 1, 1};
+    item.MaterialOverrides = {&materialIndex, 1};
+    if (hasSurface == true)
+        inputs.Materials = {&material, 1};
     for (uint32 pass = 0; pass < plan.Passes.GetSize(); ++pass)
     {
         const uint32 warmup = programs.CaptureWarmupSamples[plan.Passes[pass].RayProgram];
@@ -98,13 +129,33 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
                time::NowTicks() - beginning < TIMEOUT)
             capture.Service();
         REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::AwaitingScene);
-        const RasterStatus submitted = capture.SubmitScene({}, {}, {cameras.GetData(), cameras.GetSize()}, 1, &inputs);
+        const usize surfaceCount = hasSurface == true ? 1 : 0;
+        const RasterStatus submitted = capture.SubmitScene({&mesh, surfaceCount},
+                                                           {&item, surfaceCount},
+                                                           {cameras.GetData(), cameras.GetSize()},
+                                                           1,
+                                                           &inputs);
+        CAPTURE(submitted, capture.GetProblem());
         REQUIRE((submitted == RasterStatus::Ready || submitted == RasterStatus::Pending));
         while (capture.GetPhase() != renderer::RenderGraphCapturePhase::Complete &&
                capture.GetPhase() != renderer::RenderGraphCapturePhase::Failed &&
                time::NowTicks() - beginning < TIMEOUT)
             capture.Service();
         CAPTURE(pass, capture.GetStatus(), capture.GetProblem());
+        if (hasIncompatibleSampler == true)
+        {
+            REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::Failed);
+            renderer::RenderGraphRayFailures failures;
+            RasterStatus status = capture.PollRayFailures(pass, failures);
+            while (status == RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+            {
+                status = capture.PollRayFailures(pass, failures);
+            }
+            REQUIRE(status == RasterStatus::Ready);
+            CHECK(failures.MainReason ==
+                  static_cast<uint32>(renderer::RenderGraphFailureReason::FixedDimensionMaterial));
+            return;
+        }
         REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::Complete);
         REQUIRE(capture.GetPixels().GetSize() == (EXTENT / 2) * (EXTENT / 2));
         const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
@@ -114,6 +165,12 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
             CHECK(pixel.Samples == ITERATIONS + warmup);
             // A short requested capture must run past the declared warm-up. Its
             // latest ratio must not average black warm-up outputs into the environment.
+            if (hasSurface == true)
+            {
+                CHECK(pixel.Mean.X > 0);
+                CHECK(pixel.Mean.X < ENVIRONMENT.X);
+                continue;
+            }
             CHECK(math::Abs(pixel.Mean.X - ENVIRONMENT.X) < 0.0001F);
             CHECK(math::Abs(pixel.Mean.Y - ENVIRONMENT.Y) < 0.0001F);
             CHECK(math::Abs(pixel.Mean.Z - ENVIRONMENT.Z) < 0.0001F);

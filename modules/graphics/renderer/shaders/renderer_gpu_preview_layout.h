@@ -21,7 +21,7 @@
 #define LUDUS_GPU_PREVIEW_LUMINAIRE_BEAM_WORD 3
 // 12: panel luminaires after the lights; 9: emitter bounds after the emitter records; 8: BVH leaf order in order
 // word Z, beside native opacity ranges in X.
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 12
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 13
 // Words per mesh emitter in the bounds records that follow the emitter records:
 // sphere centre/radius, normal-cone axis/cosine, then flag bits in word 2 X.
 #define LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS 3
@@ -36,6 +36,10 @@
 // PER_BOUNCE dimensions starting at FIRST_BOUNCE + d * PER_BOUNCE.
 #define LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION 2
 #define LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE 8
+// Existing slots shared by the CPU and GPU reference light proposals.
+#define LUDUS_PATH_RANDOM_LIGHT_SELECTION_SLOT 0
+#define LUDUS_PATH_RANDOM_INCIDENT_FIRST_SLOT 1
+#define LUDUS_PATH_RANDOM_INCIDENT_SECOND_SLOT 2
 // Reference sampler version 2 (ReferenceLightSampling::ResampledProjectedSolidAngle) keeps slots 0-7 and widens each
 // bounce to 128 dimensions; renderer_reference_layout.h assigns the new slots.
 #define LUDUS_PATH_RANDOM_VERSION2_DIMENSIONS_PER_BOUNCE 128
@@ -64,6 +68,9 @@
 #    define LUDUS_GPU_PREVIEW_TRANSPORT_GROUP_HEIGHT 8
 #endif
 #define LUDUS_GPU_PREVIEW_PARAMETERS_BYTES 240
+
+// Options.w packs scene-data groups in bits 0–2 and scene-wide material restrictions above them.
+#define LUDUS_GRAPH_REQUIRES_EXTENDED_BSDF 8u
 
 // Scene interface metadata in otherwise unused packed triangle components.
 #define LUDUS_GRAPH_INSTANCE_WORD 3

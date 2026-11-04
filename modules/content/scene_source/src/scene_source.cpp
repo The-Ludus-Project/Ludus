@@ -1,5 +1,7 @@
 #include <ludus/content/scene_source/scene_source.h>
 
+#include <ludus/content/scene_format/material.h>
+
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/parsing/json.hpp>
@@ -354,10 +356,68 @@ ReadEmission(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
 }
 
 [[nodiscard]] SceneSourceStatus
+ReadMix(JsonValue value, const JsonPath& path, Failure& inoutFailure, SourceMaterial& inoutMaterial) noexcept
+{
+    const JsonPath conductorPath(path, "conductor");
+    const JsonValue conductor = value.Get("conductor");
+    SceneSourceStatus status = CheckMembers(conductor, {"alpha", "eta", "k"}, {}, conductorPath, inoutFailure);
+    if (status != SceneSourceStatus::Success)
+    {
+        return status;
+    }
+    status = ReadBoundedNumber(value.Get("weight"),
+                               0.0,
+                               1.0,
+                               JsonPath(path, "weight"),
+                               inoutFailure,
+                               inoutMaterial.MixWeight);
+    if (status == SceneSourceStatus::Success)
+    {
+        status = ReadBoundedNumber(conductor.Get("alpha"),
+                                   static_cast<float64>(scene_format::MIN_MATERIAL_ALPHA),
+                                   1.0,
+                                   JsonPath(conductorPath, "alpha"),
+                                   inoutFailure,
+                                   inoutMaterial.Conductor.Alpha);
+    }
+    constexpr float64 MAXIMUM = static_cast<float64>(scene_format::MAX_MATERIAL_OPTICAL_CONSTANT);
+    if (status == SceneSourceStatus::Success)
+    {
+        status = ReadVector(conductor.Get("eta"),
+                            0.0,
+                            MAXIMUM,
+                            JsonPath(conductorPath, "eta"),
+                            inoutFailure,
+                            inoutMaterial.Conductor.Eta);
+    }
+    if (status == SceneSourceStatus::Success && (static_cast<float32>(inoutMaterial.Conductor.Eta.X) <= 0 ||
+                                                 static_cast<float32>(inoutMaterial.Conductor.Eta.Y) <= 0 ||
+                                                 static_cast<float32>(inoutMaterial.Conductor.Eta.Z) <= 0))
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "requires positive RGB indices",
+                                 JsonPath(conductorPath, "eta"));
+    }
+    if (status == SceneSourceStatus::Success)
+    {
+        status = ReadVector(conductor.Get("k"),
+                            0.0,
+                            MAXIMUM,
+                            JsonPath(conductorPath, "k"),
+                            inoutFailure,
+                            inoutMaterial.Conductor.Extinction);
+    }
+    return status;
+}
+
+[[nodiscard]] SceneSourceStatus
 ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, SourceMaterial& outMaterial) noexcept
 {
-    SceneSourceStatus status =
-        CheckMembers(value, {"name", "model", "base_color"}, {"metallic", "roughness", "emission"}, path, inoutFailure);
+    SceneSourceStatus status = CheckMembers(value,
+                                            {"name", "model", "base_color"},
+                                            {"metallic", "roughness", "emission", "weight", "conductor"},
+                                            path,
+                                            inoutFailure);
     if (status == SceneSourceStatus::Success)
     {
         status = ReadText(value.Get("name"), false, JsonPath(path, "name"), inoutFailure, outMaterial.Name);
@@ -371,9 +431,14 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     {
         return status;
     }
-    if (model == DIFFUSE_MODEL)
+    const bool isMix = model == "mix";
+    if (isMix == false && (value.Get("weight").Valid() == true || value.Get("conductor").Valid() == true))
     {
-        outMaterial.Model = SourceMaterialModel::Diffuse;
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue, "weight and conductor require the mix model", path);
+    }
+    if (model == DIFFUSE_MODEL || isMix == true)
+    {
+        outMaterial.Model = isMix == true ? SourceMaterialModel::Mix : SourceMaterialModel::Diffuse;
         for (const std::string_view member : {std::string_view("metallic"), std::string_view("roughness")})
         {
             if (value.Get(member).Valid() == true)
@@ -391,7 +456,7 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     else
     {
         return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
-                                 "must be diffuse or metallic_roughness",
+                                 "must be diffuse, metallic_roughness or mix",
                                  JsonPath(path, "model"));
     }
     status = ReadVector(value.Get("base_color"),
@@ -410,6 +475,10 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     {
         status =
             ReadBoundedNumber(roughness, 0.0, 1.0, JsonPath(path, "roughness"), inoutFailure, outMaterial.Roughness);
+    }
+    if (status == SceneSourceStatus::Success && isMix == true)
+    {
+        status = ReadMix(value, path, inoutFailure, outMaterial);
     }
     const JsonValue emission = value.Get("emission");
     if (status == SceneSourceStatus::Success && emission.Valid() == true)

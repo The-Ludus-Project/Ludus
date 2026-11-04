@@ -209,7 +209,11 @@ set(editor_viewport_sources
     src/internal/ray_path_overlay.h
     src/ray_path_overlay.cpp
     src/preview_viewport.cpp
+    src/internal/viewport_pass_bars.h
+    src/viewport_pass_bars.cpp
     src/internal/viewport_object_overlay.h
+    src/internal/mesh_silhouette.h
+    src/mesh_silhouette.cpp
     src/internal/viewport_object_interaction.h
     src/viewport_object_interaction.cpp
     src/viewport_navigation.cpp
@@ -233,6 +237,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         src/internal/viewport_graph_capture.h src/viewport_graph_capture.cpp
         src/internal/graph_comparison_run.h src/graph_comparison_run.cpp
         src/internal/graph_comparison_window.h src/graph_comparison_window.cpp
+        src/internal/saved_graph_comparison_view.h src/saved_graph_comparison_view.cpp
         src/internal/render_graph_capture_profile.h src/render_graph_capture_profile.cpp
         src/internal/render_graph_library_capture.h src/render_graph_library_capture.cpp
         src/internal/graph_display_frames.h src/graph_display_frames.cpp
@@ -434,6 +439,8 @@ add_library(ludus_editor_core STATIC
     src/internal/play_process.h
     src/internal/source_watch.h
     src/workspace.cpp
+    src/internal/setup_guidance.h
+    src/setup_guidance.cpp
     src/project_store.cpp
     src/recent_projects.cpp
     src/tool_operation.cpp
@@ -478,6 +485,7 @@ add_library(ludus_editor_code STATIC
     src/internal/code_editor_config.h src/code_editor_config.cpp
     src/internal/code_file_document.h src/code_file_document.cpp
     src/internal/code_conflict_banner.h src/code_conflict_banner.cpp
+    src/internal/code_external_change_watch.h src/code_external_change_watch.cpp
     src/internal/code_recovery_journal.h src/code_recovery_journal.cpp
     src/internal/code_recovery_writer.h src/code_recovery_writer.cpp
     src/internal/code_document_registry.h src/code_document_registry.cpp
@@ -726,6 +734,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/world_demo_adapter.cpp
     src/internal/material_inspection.h
     src/material_inspection.cpp
+    src/internal/inspector_fields.h
+    src/inspector_fields.cpp
     src/internal/world_entity_search.h
     src/world_entity_search.cpp
     src/world_workspace.cpp
@@ -1013,7 +1023,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set_tests_properties(ludus_editor_accessibility_tests PROPERTIES LABELS "unit;editor;native;accessibility"
             TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=cocoa")
     endif()
-    add_executable(ludus_code_editor_tests tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp tests/code_language_registry_tests.cpp tests/code_latency_probe_tests.cpp tests/code_file_document_tests.cpp tests/code_document_registry_tests.cpp tests/code_recovery_journal_tests.cpp tests/code_status_bar_tests.cpp tests/script_code_document_tests.cpp tests/code_editor_benchmark.cpp)
+    add_executable(ludus_code_editor_tests tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp tests/code_language_registry_tests.cpp tests/code_latency_probe_tests.cpp tests/code_file_document_tests.cpp tests/code_document_registry_tests.cpp tests/code_recovery_journal_tests.cpp tests/code_editor_area_tests.cpp tests/code_status_bar_tests.cpp tests/script_code_document_tests.cpp tests/code_editor_benchmark.cpp)
     target_include_directories(ludus_code_editor_tests PRIVATE src)
     target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
     configure_file(tests/formatter_fixture.py generated/formatter_fixture.py COPYONLY)
@@ -1073,6 +1083,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/import_report_tests.cpp
         tests/world_workspace_tests.cpp
         tests/material_inspection_tests.cpp
+        tests/inspector_fields_tests.cpp
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp
         tests/world_lighting_switch_tests.cpp
@@ -1082,6 +1093,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
         tests/viewport_object_overlay_tests.cpp
+        tests/mesh_silhouette_tests.cpp
         tests/orientation_widget_tests.cpp
         tests/design_token_tests.cpp
         tests/editor_style_tests.cpp
@@ -1091,6 +1103,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/editor_visual_consistency_tests.cpp
         tests/path_text_tests.cpp
         tests/state_view_tests.cpp
+        tests/setup_guidance_tests.cpp
         tests/activity_chip_tests.cpp
         tests/captured_image_view_tests.cpp
         tests/viewport_frame_pump_tests.cpp

@@ -1094,9 +1094,12 @@ reasons and how a shader names its own.
 
 Click a visible object's triangles to select it. The hierarchy and Properties
 follow the same stable entity ID; clicking empty space clears the selection.
-The selected object has an amber wireframe, drawn over the rendered image so its
-shape stays visible against dark surfaces. Selection works with the inspector
-hidden. Picking chooses the nearest geometric triangle, including back faces;
+The selected object is marked by its silhouette: a two-pixel line in the selection
+amber of the design tokens with a dark casing, drawn over the rendered image so it
+stays legible against both bright and dark surfaces. The outline follows the object's
+form, not its triangles; it traces the outer rim and the openings through the object,
+and leaves out edges that lie inside its own projected area. Selection works with the
+inspector hidden. Picking chooses the nearest geometric triangle, including back faces;
 texture alpha masks and shader displacement do not alter this editor query.
 A click tests triangles only for objects whose mesh bounds its ray enters before
 the nearest hit found so far. Those bounds are computed once per published scene.
@@ -1106,7 +1109,7 @@ tool menu. Drag a red X, green Y or blue Z handle; rotation uses rings. Move
 changes the parent-local position, rotation changes the stored Euler degree
 component, and scale changes one positive local scale component. Hold **Shift**
 for 0.1 metre movement, 15 degree rotation or 0.1 scale-factor increments.
-The wireframe previews the candidate throughout a drag. Release applies one
+The silhouette previews the candidate throughout a drag. Release applies one
 validated World edit and refreshes the shaded scene; **Undo** restores the entire
 gesture. **Delete** and **Ctrl+D** use the hierarchy’s delete and duplicate
 commands while the viewport has focus. **Escape**, a tool change, hiding the view
@@ -1148,14 +1151,24 @@ handles. Other extractors can still select and highlight their objects; they nee
 an explicit authoring transform binding before the editor can manipulate them.
 A multiple selection, unapplied inspector fields or a running scene operation
 other than a background placement validation disables transform handles. Axis handles viewed directly end-on are hidden;
-orbit to expose them. Wireframes sample very dense meshes to bound overlay cost.
+orbit to expose them.
+
+The outline is found on the CPU from a cached edge adjacency of the selected mesh,
+built once per scene and mesh, with vertices at one position welded. Each update
+transforms the vertices, keeps the edges between a front-facing and a back-facing
+triangle plus open edges, and drops those with the object on both sides in a
+half-resolution coverage mask of its front-facing triangles. Meshes above 200,000
+triangles are marked by their bounding box instead. Triangle winding must be
+consistent, and another object in front of the selection does not hide any of the
+outline.
 The native shared-device viewport and native readback fallback show the same
 selection overlay. The shared-device presentation uploads batched stroke geometry
 directly to the Qt scene graph; highlighting does not rasterize or upload a
 viewport-sized overlay texture. Camera and gesture changes are projected once
-per Qt frame, and the readback presentation draws the same strokes in one wire
-batch. CPU profiling includes `EditorObjectOverlayBuild`, `EditorObjectOverlayUpload`
-and `EditorObjectOverlayPaint` to distinguish these costs. The browser's separate
+per Qt frame, and the readback presentation draws the same strokes in one batch.
+CPU profiling includes `EditorObjectOverlayBuild`, `EditorObjectOverlayUpload`
+and `EditorObjectOverlayPaint` to distinguish these costs, and `EditorSilhouetteBuild`,
+`EditorSilhouetteExtract` and `EditorSilhouetteCoverage` for the outline itself. The browser's separate
 GPU canvas does not yet composite the overlay.
 
 To compare the old painted texture with the batched geometry, build the optional
@@ -1662,6 +1675,20 @@ viewport's top-left corner:
 - **GPU**: device timestamp time for the frame.
 - **CPU**: time spent preparing and submitting the frame.
 - **Resolution** and **draw count**.
+- **Passes**: the total GPU time of the named render scopes, then the six slowest
+  scopes ("Viewport/Scene", the render-graph passes, and so on) with their rolling
+  average in milliseconds. A bar behind each row shows its share of the slowest
+  pass, which is drawn in the warning colour; any further scopes collapse into one
+  `+N more` row. The same rows appear in the graph viewer's overlay.
+
+Per-pass timing uses the RHI's timestamp queries (`ArmGpuPassTimings`), which
+Vulkan and Metal implement. The queries are armed only while **Stats** is on (or
+a profiling recording runs), so the overlay costs nothing when it is hidden: no
+timestamp is written and nothing is polled. Where the backend has no per-pass
+queries (Direct3D 12, WebGPU, WebGL and the browser canvas) the line reads
+`Passes: n/a` while frame GPU time, if the backend provides it, keeps working.
+Passes are summed per scope, so a scope that issues several encoders shows one
+row, and a scope that stops rendering leaves the list after 30 batches.
 
 CPU and GPU times show their mean, nearest-rank p95 and maximum over the last
 30 accepted samples (`VIEWPORT_STATISTICS_AVERAGE_FRAMES`). A low mean with a
@@ -2101,6 +2128,20 @@ captures when available, and `comparison.json` with the frozen scene and camera,
 graph routes, actual sample evidence and metrics. A failed row leaves earlier
 results available. Incomplete results with available pixels are labelled as
 diagnostic. **Stop** keeps completed rows and the last readable partial capture.
+
+#### Reopen a saved graph comparison
+
+Choose **Tools → Open saved comparison…** or use the **Open saved
+comparison…** button in **Compare graphs…**. Select the `comparison.json` from
+a Compare graphs results folder. Keep the manifest and its PNGs together.
+The viewer keeps the shared baseline beside the scrollable series, with every
+candidate's render, saved difference, error metrics and status in run order.
+Failed and skipped rows remain visible. Choose **Open full image** to inspect an
+original PNG at full resolution.
+
+The viewer uses the metrics and difference images saved by the run. It can open
+results from earlier versions of Compare graphs and needs no live render graph
+or GPU device.
 
 #### Compare saved captures or image files
 

@@ -17,6 +17,10 @@ using scene_source::SourceObject;
 
 [[nodiscard]] std::string_view GetModelName(SourceMaterialModel model) noexcept
 {
+    if (model == SourceMaterialModel::Mix)
+    {
+        return "mix";
+    }
     return model == SourceMaterialModel::Diffuse ? "diffuse" : "metallic_roughness";
 }
 
@@ -47,6 +51,20 @@ void CopyRgb(math::Vector3d value, float64 (&outRgb)[IR_RGB_CHANNEL_COUNT]) noex
     material.Scattering.Model = source.Model == SourceMaterialModel::Diffuse
                                     ? scene_format::MaterialModel::Diffuse
                                     : scene_format::MaterialModel::MetallicRoughness;
+    if (source.Model == SourceMaterialModel::Mix)
+    {
+        material.Metallic = source.MixWeight;
+        material.Roughness = math::Sqrt(source.Conductor.Alpha);
+        material.Scattering.Model = scene_format::MaterialModel::DiffuseConductorMix;
+        material.Scattering.AlphaU = static_cast<float32>(source.Conductor.Alpha);
+        material.Scattering.AlphaV = material.Scattering.AlphaU;
+        material.Scattering.Eta = {{static_cast<float32>(source.Conductor.Eta.X),
+                                    static_cast<float32>(source.Conductor.Eta.Y),
+                                    static_cast<float32>(source.Conductor.Eta.Z)}};
+        material.Scattering.K = {{static_cast<float32>(source.Conductor.Extinction.X),
+                                  static_cast<float32>(source.Conductor.Extinction.Y),
+                                  static_cast<float32>(source.Conductor.Extinction.Z)}};
+    }
     material.SourceFile = 0;
     return inoutScene.Materials.TryAdd(static_cast<IrMaterial&&>(material)) == true ? Status::Ok : Status::OutOfMemory;
 }
