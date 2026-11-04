@@ -186,6 +186,12 @@ ScriptWorkspace::ScriptWorkspace(EditorController* controller, QWidget* parent)
     connect(Nodes_, &QTableWidget::cellChanged, this, &ScriptWorkspace::ChangeNode);
     connect(Controller_, &EditorController::StateChanged, this, &ScriptWorkspace::Refresh);
 }
+ScriptWorkspace::~ScriptWorkspace()
+{
+    delete SourceController_;
+    SourceController_ = nullptr;
+}
+
 void ScriptWorkspace::SetProject(const QString& root, const QString& source, const QString& preset)
 {
     if (Root_ == root && Source_ == source)
@@ -473,7 +479,7 @@ bool ScriptWorkspace::Save()
     // Re-baseline the source host so the saved draft becomes clean (S5).
     if (Graph_ == false)
     {
-        SourceDocument_.SetBaseline(bytes);
+        SourceDocument_.MarkSaved();
         Rendering_ = true;
         SourceController_->Synchronize(true);
         Rendering_ = false;

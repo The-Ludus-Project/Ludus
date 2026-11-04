@@ -30,6 +30,8 @@ class ScriptWorkspace final : public QWidget
     Q_OBJECT
 public:
     explicit ScriptWorkspace(EditorController* controller, QWidget* parent = nullptr);
+    /// Destroys the source controller before its editor (see RendererWorkspace).
+    ~ScriptWorkspace() override;
     void SetProject(const QString& root, const QString& source, const QString& preset);
     void Refresh();
     /// Absolute source path of the loaded draft; empty when no program is selected.

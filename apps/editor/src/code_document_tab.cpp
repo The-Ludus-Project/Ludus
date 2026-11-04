@@ -73,6 +73,12 @@ CodeDocumentTab::CodeDocumentTab(CodeFileDocument* hostOrNull, const QString& ab
     bindHost();
 }
 
+CodeDocumentTab::~CodeDocumentTab()
+{
+    delete mController;
+    mController = nullptr;
+}
+
 void CodeDocumentTab::bindHost()
 {
     mEditor->SetDocumentHistory(mHostOrNull != nullptr);

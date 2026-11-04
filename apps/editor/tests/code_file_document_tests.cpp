@@ -8,8 +8,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <QByteArray>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QSignalSpy>
 #include <QString>
 #include <QTemporaryDir>
@@ -30,6 +32,20 @@ namespace
     REQUIRE(file.write(bytes) == bytes.size());
     file.close();
     return path;
+}
+
+// Move a file's modification time forward, so an external rewrite is visible
+// even when it lands in the same millisecond as the original write.
+[[nodiscard]] bool AdvanceModifiedTime(const QString& path)
+{
+    constexpr int64 ADVANCE_SECONDS = 2;
+    QFile file(path);
+    if (file.open(QIODevice::ReadWrite) == false)
+    {
+        return false;
+    }
+    const QDateTime later = QFileInfo(path).lastModified().addSecs(ADVANCE_SECONDS);
+    return file.setFileTime(later, QFileDevice::FileModificationTime);
 }
 
 [[nodiscard]] QByteArray readFile(const QString& path)
@@ -183,7 +199,8 @@ TEST_CASE("External change: a clean buffer reloads, a dirty one is kept", "[code
         CHECK(host.HasExternalChange() == false);
         // Rewrite the file externally with different content and a later mtime.
         QFile::remove(path);
-        writeFile(directory, QStringLiteral("watch.txt"), QByteArray("changed on disk\n"));
+        CHECK(writeFile(directory, QStringLiteral("watch.txt"), QByteArray("changed on disk\n")) == path);
+        REQUIRE(AdvanceModifiedTime(path) == true);
         CHECK(host.HasExternalChange() == true);
         QString error;
         REQUIRE(host.ReloadFromDisk(error) == true);
@@ -199,7 +216,8 @@ TEST_CASE("External change: a clean buffer reloads, a dirty one is kept", "[code
         REQUIRE(appendByte(host, '!') == CodeEditStatus::Ok);
         CHECK(host.IsDirty() == true);
         QFile::remove(path);
-        writeFile(directory, QStringLiteral("watch.txt"), QByteArray("external\n"));
+        CHECK(writeFile(directory, QStringLiteral("watch.txt"), QByteArray("external\n")) == path);
+        REQUIRE(AdvanceModifiedTime(path) == true);
         CHECK(host.HasExternalChange() == true);
         // Keep Mine re-baselines without touching the draft; it stays dirty.
         host.AdoptAsBaseline();
@@ -217,10 +235,12 @@ TEST_CASE("EditorConfig overrides detected indentation and line endings", "[code
     QTemporaryDir directory;
     REQUIRE(directory.isValid() == true);
     // The file is detected as 2-space, LF; EditorConfig forces tabs and CRLF.
-    writeFile(directory,
-              QStringLiteral(".editorconfig"),
-              QByteArray("root = true\n[*.txt]\nindent_style = tab\nindent_size = tab\ntab_width = 8\n"
-                         "end_of_line = crlf\n"));
+    const QString configPath =
+        writeFile(directory,
+                  QStringLiteral(".editorconfig"),
+                  QByteArray("root = true\n[*.txt]\nindent_style = tab\nindent_size = tab\ntab_width = 8\n"
+                             "end_of_line = crlf\n"));
+    REQUIRE(configPath.isEmpty() == false);
     const QString path = writeFile(directory, QStringLiteral("conf.txt"), QByteArray("  spaced\n  spaced\n"));
 
     const CodeFileLoadResult result = LoadCodeFile(path);
@@ -247,7 +267,11 @@ TEST_CASE("EditorConfig glob matching selects the right section", "[code-editor]
     CHECK(settings.IndentSize == 2);
 
     CodeEditorConfigSettings other;
-    MergeEditorConfigFile(config.constData(), static_cast<usize>(config.size()), QStringLiteral("notes.txt"), other);
+    const bool isOtherRoot = MergeEditorConfigFile(config.constData(),
+                                                   static_cast<usize>(config.size()),
+                                                   QStringLiteral("notes.txt"),
+                                                   other);
+    CHECK(isOtherRoot == true);
     CHECK(other.IndentSize == 4);
 }
 

@@ -24,6 +24,9 @@ public:
     /// Load bytes as the draft and the saved baseline, clearing history. Used on
     /// open and reload; the new content is the clean baseline.
     void SetBaseline(const QByteArray& bytes);
+    /// Make the current draft the clean baseline after a successful save. History
+    /// is kept, so Undo after Save returns to the unsaved text and marks it dirty.
+    void MarkSaved() noexcept;
     /// Replace the draft without creating history, used when the work area has
     /// already recorded the change (for example a graph-cell edit) and only needs
     /// the shared text projection to follow. Dirty is recomputed against baseline.

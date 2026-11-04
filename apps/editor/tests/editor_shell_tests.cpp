@@ -1,6 +1,7 @@
 // Visual Studio-style editor shell: document well, tool windows, commands and layout
 // persistence (docs/development/editor-workspace.md#workspace-layout).
 
+#include "internal/code_document_tab.h"
 #include "internal/code_editor.h"
 #include "internal/code_editor_area.h"
 #include "internal/controller.h"
