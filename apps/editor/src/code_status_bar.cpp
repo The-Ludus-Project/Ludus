@@ -63,8 +63,7 @@ using foundation::BorrowedView;
 
 [[nodiscard]] QString DescribeIndent(const CodeIndentProfile& indent)
 {
-    const QString unit =
-        indent.Style == CodeIndentStyle::Tabs ? QStringLiteral("Tab Size") : QStringLiteral("Spaces");
+    const QString unit = indent.Style == CodeIndentStyle::Tabs ? QStringLiteral("Tab Size") : QStringLiteral("Spaces");
     return QStringLiteral("%1: %2").arg(unit).arg(indent.Width);
 }
 
@@ -184,8 +183,7 @@ void CodeStatusBar::updatePosition()
     }
     const QTextCursor cursor = editor->textCursor();
     // One-based line and column, like the Go to Line target and other editors.
-    mPosition->setText(
-        QStringLiteral("Ln %1, Col %2").arg(cursor.blockNumber() + 1).arg(cursor.columnNumber() + 1));
+    mPosition->setText(QStringLiteral("Ln %1, Col %2").arg(cursor.blockNumber() + 1).arg(cursor.columnNumber() + 1));
 }
 
 void CodeStatusBar::updateSelection()

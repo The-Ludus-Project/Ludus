@@ -438,45 +438,37 @@ void MainWindow::BuildUi()
         mCodeStatusBarOrNull->Refresh();
     });
     // Language change applies a manual language override to the active view.
-    connect(mCodeStatusBarOrNull,
-            &CodeStatusBar::LanguageChangeRequested,
-            this,
-            [this](const QString& identifier) {
-                CodeDocumentTab* tab = mCodeArea->GetActiveTabOrNull();
-                if (tab == nullptr)
-                {
-                    return;
-                }
-                const auto descriptors = CodeLanguageRegistry::Get().GetDescriptors();
-                for (foundation::usize index = 0; index < descriptors.GetSize(); ++index)
-                {
-                    const CodeLanguageDescriptor& descriptor = descriptors.GetDataOrNull()[index];
-                    const QString candidate =
-                        QString::fromUtf8(descriptor.Identifier.GetDataOrNull(),
-                                          static_cast<qsizetype>(descriptor.Identifier.GetSize()));
-                    if (candidate == identifier)
-                    {
-                        tab->GetEditor().SetLanguage(descriptor.Language);
-                        mCodeStatusBarOrNull->Refresh();
-                        return;
-                    }
-                }
-            });
-    // Line-ending change rewrites the host profile; the dirty save path emits it.
-    connect(mCodeStatusBarOrNull,
-            &CodeStatusBar::LineEndingChangeRequested,
-            this,
-            [this](const QString& ending) {
-                CodeDocumentTab* tab = mCodeArea->GetActiveTabOrNull();
-                CodeFileDocument* host = tab == nullptr ? nullptr : tab->GetHostOrNull();
-                if (host == nullptr || host->IsReadOnly() == true)
-                {
-                    return;
-                }
-                host->SetProfileLineEnding(ending == QStringLiteral("crlf") ? CodeLineEnding::CrLf
-                                                                            : CodeLineEnding::Lf);
+    connect(mCodeStatusBarOrNull, &CodeStatusBar::LanguageChangeRequested, this, [this](const QString& identifier) {
+        CodeDocumentTab* tab = mCodeArea->GetActiveTabOrNull();
+        if (tab == nullptr)
+        {
+            return;
+        }
+        const auto descriptors = CodeLanguageRegistry::Get().GetDescriptors();
+        for (foundation::usize index = 0; index < descriptors.GetSize(); ++index)
+        {
+            const CodeLanguageDescriptor& descriptor = descriptors.GetDataOrNull()[index];
+            const QString candidate = QString::fromUtf8(descriptor.Identifier.GetDataOrNull(),
+                                                        static_cast<qsizetype>(descriptor.Identifier.GetSize()));
+            if (candidate == identifier)
+            {
+                tab->GetEditor().SetLanguage(descriptor.Language);
                 mCodeStatusBarOrNull->Refresh();
-            });
+                return;
+            }
+        }
+    });
+    // Line-ending change rewrites the host profile; the dirty save path emits it.
+    connect(mCodeStatusBarOrNull, &CodeStatusBar::LineEndingChangeRequested, this, [this](const QString& ending) {
+        CodeDocumentTab* tab = mCodeArea->GetActiveTabOrNull();
+        CodeFileDocument* host = tab == nullptr ? nullptr : tab->GetHostOrNull();
+        if (host == nullptr || host->IsReadOnly() == true)
+        {
+            return;
+        }
+        host->SetProfileLineEnding(ending == QStringLiteral("crlf") ? CodeLineEnding::CrLf : CodeLineEnding::Lf);
+        mCodeStatusBarOrNull->Refresh();
+    });
     // Right side: the running job and the problem counts, which open the Error List.
     mActivityBarOrNull = new StatusActivityBar(this);
     statusBar()->addPermanentWidget(mActivityBarOrNull);
