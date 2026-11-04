@@ -166,42 +166,90 @@ void TextureDecodeQueue::decodeInline(uint32 texture, TextureDecode& outDecode) 
 
 Status TextureDecodeQueue::fillBatch(usize first) noexcept
 {
-    const usize count = math::Min(mBatchCapacity, mPlan.GetSize() - first);
-    if (mSlots.GetSize() < mBatchCapacity && mSlots.TryResize(mBatchCapacity) == false)
+    usize count = 0;
+    // A sequential batch (the common case) is read ahead while the previous batch decodes;
+    // reuse that read instead of reading its files a second time. A skip past mBatchEnd
+    // takes a different first, so its prefetch (if any) is dropped and the files are read now.
+    if (mPrefetchCount != 0 && mPrefetchFirst == first)
     {
-        return Status::OutOfMemory;
+        mSlots.Swap(mPrefetchSlots);
+        count = mPrefetchCount;
+        mPrefetchCount = 0;
+        if (mSlots.GetSize() < mBatchCapacity && mSlots.TryResize(mBatchCapacity) == false)
+        {
+            return Status::OutOfMemory;
+        }
+    }
+    else
+    {
+        mPrefetchCount = 0;
+        const Status read = readBatch(first, mSlots, count);
+        if (read != Status::Ok)
+        {
+            return read;
+        }
     }
     mBatchBegin = first;
     mBatchEnd = first;
-    // Every file is read here, on the calling thread: job callbacks do no I/O.
-    for (usize i = 0; i < mSlots.GetSize(); ++i)
-    {
-        if (i < count)
-        {
-            readSlot(mPlan[first + i], mSlots[i]);
-        }
-        else
-        {
-            mSlots[i] = Slot{};
-        }
-    }
-    decodeBatchInJobs(count);
-    for (usize i = 0; i < count; ++i)
-    {
-        // Decodes any image the job system did not run, then drops the encoded bytes.
-        decodeSlot(mSlots[i]);
-        mSlots[i].Bytes = {};
-        mSlots[i].Storage = Array<uint8>{};
-    }
+    // Decode this batch in jobs; while they run, read the next sequential batch's files on
+    // the calling thread so the owner is not idle in Wait and the next batch skips its reads.
+    const bool wasSubmitted = submitBatchJobs(mSlots, count);
     mBatchEnd = first + count;
+    if (wasSubmitted == true)
+    {
+        prefetchNextBatch();
+    }
+    waitBatchJobs(wasSubmitted);
+    finishBatch(mSlots, count);
     return Status::Ok;
 }
 
-void TextureDecodeQueue::decodeBatchInJobs(usize count) noexcept
+Status TextureDecodeQueue::readBatch(usize first, Array<Slot>& outSlots, usize& outCount) const noexcept
+{
+    const usize count = math::Min(mBatchCapacity, mPlan.GetSize() - first);
+    if (outSlots.GetSize() < mBatchCapacity && outSlots.TryResize(mBatchCapacity) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    // Every file is read here, on the calling thread: job callbacks do no I/O.
+    for (usize i = 0; i < outSlots.GetSize(); ++i)
+    {
+        if (i < count)
+        {
+            readSlot(mPlan[first + i], outSlots[i]);
+        }
+        else
+        {
+            outSlots[i] = Slot{};
+        }
+    }
+    outCount = count;
+    return Status::Ok;
+}
+
+void TextureDecodeQueue::prefetchNextBatch() noexcept
+{
+    const usize next = mBatchEnd;
+    if (mJobsOrNull == nullptr || next >= mPlan.GetSize())
+    {
+        return;
+    }
+    usize count = 0;
+    // A failed read-ahead is not fatal: the next fillBatch simply reads the files itself.
+    if (readBatch(next, mPrefetchSlots, count) != Status::Ok)
+    {
+        mPrefetchCount = 0;
+        return;
+    }
+    mPrefetchFirst = next;
+    mPrefetchCount = count;
+}
+
+bool TextureDecodeQueue::submitBatchJobs(Array<Slot>& inoutSlots, usize count) noexcept
 {
     if (mJobsOrNull == nullptr || count == 0)
     {
-        return;
+        return false;
     }
     if (mIsGraphInitialized == false)
     {
@@ -211,27 +259,32 @@ void TextureDecodeQueue::decodeBatchInJobs(usize count) noexcept
             .MaxDependencies = 0,
         }) != threading::JobStatus::Ok)
         {
-            return;
+            return false;
         }
         mIsGraphInitialized = true;
     }
     if (mGraph.Reset() != threading::JobStatus::Ok)
     {
-        return;
+        return false;
     }
     // A job system that refuses the graph (busy with another graph, or called from a
-    // job) leaves the batch to the inline decode in fillBatch.
+    // job) leaves the batch to the inline decode in finishBatch.
     for (usize i = 0; i < count; ++i)
     {
         threading::JobHandle handle;
-        if (mSlots[i].IsDecoded == false &&
-            mGraph.Add(runDecodeJob, &mSlots[i], handle, { .NameOrNull = "SceneCook.DecodeTexture" }) !=
+        if (inoutSlots[i].IsDecoded == false &&
+            mGraph.Add(runDecodeJob, &inoutSlots[i], handle, { .NameOrNull = "SceneCook.DecodeTexture" }) !=
                 threading::JobStatus::Ok)
         {
             break;
         }
     }
-    if (mGraph.Seal() != threading::JobStatus::Ok || mJobsOrNull->Submit(mGraph) != threading::JobStatus::Ok)
+    return mGraph.Seal() == threading::JobStatus::Ok && mJobsOrNull->Submit(mGraph) == threading::JobStatus::Ok;
+}
+
+void TextureDecodeQueue::waitBatchJobs(bool wasSubmitted) noexcept
+{
+    if (wasSubmitted == false)
     {
         return;
     }
@@ -240,5 +293,16 @@ void TextureDecodeQueue::decodeBatchInJobs(usize count) noexcept
     // Submit already refused a call from a job. NotInitialized or InvalidArgument means an
     // owner Shutdown drained the graph; either way every callback write is now visible.
     LUDUS_REQUIRE(waited != threading::JobStatus::InsideJob);
+}
+
+void TextureDecodeQueue::finishBatch(Array<Slot>& inoutSlots, usize count) noexcept
+{
+    for (usize i = 0; i < count; ++i)
+    {
+        // Decodes any image the job system did not run, then drops the encoded bytes.
+        decodeSlot(inoutSlots[i]);
+        inoutSlots[i].Bytes = {};
+        inoutSlots[i].Storage = Array<uint8>{};
+    }
 }
 } // namespace ludus::content::scene_cook::importers

@@ -7,11 +7,14 @@
 // The cook plans its decodes in the order it will consume them. With a job system
 // the queue reads a bounded batch of image files on the calling thread, decodes the
 // batch in jobs that each write only their own slot, and hands results back in the
-// planned order. Decoding is a pure function of the texture, so every worker count
-// (and the inline path without a job system) yields the same images, messages and
-// digests; a request that leaves the plan's order is decoded inline instead. Each
-// job also hashes the file bytes it decodes, so the cook's input digests need no
-// second read of those files.
+// planned order. While a batch decodes, the calling thread reads the next sequential
+// batch's files ahead so it is not idle in Wait; a plan skip past the batch end drops
+// that read-ahead and reads the new batch itself. The read-ahead changes only when the
+// files are read, never which decode is taken or recorded: decoding is a pure function
+// of the texture, so every worker count (and the inline path without a job system)
+// yields the same images, messages and digests; a request that leaves the plan's order
+// is decoded inline instead. Each job also hashes the file bytes it decodes, so the
+// cook's input digests need no second read of those files.
 
 #include "image/image_reader.h"
 #include "scene_ir.h"
@@ -30,6 +33,8 @@ namespace ludus::content::scene_cook::importers
 {
 /// Most images decoded together. Bounds the decoded images held beyond the serial
 /// cook (a 4096 x 4096 RGBA8 image is 64 MiB, plus the decoder's working buffers).
+/// The read-ahead holds at most one more batch of *encoded* source bytes (bounded by
+/// MAX_SOURCE_IMAGE_BYTES per slot), not decoded images.
 inline constexpr uint32 MAX_TEXTURE_DECODE_BATCH = 8;
 
 /// Everything one read and decode of a texture's image produced.
@@ -112,7 +117,11 @@ private:
     void readSlot(uint32 texture, Slot& outSlot) const noexcept;
     void decodeInline(uint32 texture, TextureDecode& outDecode) const noexcept;
     [[nodiscard]] Status fillBatch(usize first) noexcept;
-    void decodeBatchInJobs(usize count) noexcept;
+    [[nodiscard]] Status readBatch(usize first, Array<Slot>& outSlots, usize& outCount) const noexcept;
+    bool submitBatchJobs(Array<Slot>& inoutSlots, usize count) noexcept;
+    void waitBatchJobs(bool wasSubmitted) noexcept;
+    void finishBatch(Array<Slot>& inoutSlots, usize count) noexcept;
+    void prefetchNextBatch() noexcept;
 
     const SceneIr& mScene;
     std::string_view mRoot;
@@ -130,6 +139,13 @@ private:
     usize mBatchCapacity = 1;
     /// Declared before mGraph, whose destructor drains a submission that still references them.
     Array<Slot> mSlots;
+    /// Reads of the batch that sequentially follows mSlots, filled on the calling thread
+    /// while mSlots decodes in jobs. Empty (mPrefetchCount == 0) when there is no prefetch.
+    Array<Slot> mPrefetchSlots;
+    /// Plan index of mPrefetchSlots[0]; valid only when mPrefetchCount != 0.
+    usize mPrefetchFirst = 0;
+    /// Reads held in mPrefetchSlots; 0 when no batch is prefetched.
+    usize mPrefetchCount = 0;
     foundation::threading::JobGraph mGraph;
     bool mIsGraphInitialized = false;
 };
