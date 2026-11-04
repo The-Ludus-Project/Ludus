@@ -57,6 +57,8 @@ QVariant ContentCatalogModel::data(const QModelIndex& index, int role) const
                 return QStringLiteral("Cooked scene");
             case content::Kind::Mesh:
                 return QStringLiteral("Mesh");
+            case content::Kind::CookedGeometry:
+                return QStringLiteral("Cooked geometry");
         }
         return QStringLiteral("Unknown");
     }

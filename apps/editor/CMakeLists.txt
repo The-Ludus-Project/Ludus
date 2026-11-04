@@ -1459,11 +1459,11 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # Editor-private curve/surface adapter tests (curves and surfaces G5). The
     # adapters are Qt-free logic, so these run headless without a GPU/compositor.
     add_executable(ludus_editor_geometry_tests
-        tests/geometry_document_tests.cpp tests/geometry_preview_tests.cpp tests/geometry_test_main.cpp)
+        tests/geometry_document_tests.cpp tests/geometry_preview_tests.cpp)
     target_include_directories(ludus_editor_geometry_tests PRIVATE src)
     target_link_libraries(ludus_editor_geometry_tests PRIVATE
         ludus_editor_geometry_model Ludus::GeometryContent Ludus::GeometryFormat Ludus::FoundationGeometry
-        Ludus::Content Ludus::FoundationContainers Ludus::FoundationMath Catch2::Catch2)
+        Ludus::Content Ludus::FoundationContainers Ludus::FoundationMath Catch2::Catch2WithMain)
     target_compile_options(ludus_editor_geometry_tests PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
     ludus_apply_project_defaults(ludus_editor_geometry_tests)
     ludus_enable_test_exceptions(ludus_editor_geometry_tests)
@@ -1486,11 +1486,15 @@ if(TARGET ludus_render_graph_configuration_tests)
 endif()
 
 # Precompiled Qt Core and standard headers; see cmake/EditorPrecompiledHeaders.cmake.
+# The Qt-free geometry model has no Qt include directories, so it compiles
+# without the Qt Core precompiled header.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EditorPrecompiledHeaders.cmake")
+set(editor_precompiled_header_objects ${editor_application_objects})
+list(REMOVE_ITEM editor_precompiled_header_objects ludus_editor_geometry_model)
 ludus_editor_apply_precompiled_headers(
     ludus_editor_core
     ludus_editor_code
-    ${editor_application_objects}
+    ${editor_precompiled_header_objects}
     ludus_editor_texture_display
     ludus_editor_crash_reporting
     ludus_editor_test_main
