@@ -1,3 +1,4 @@
+#include "design_tokens.h"
 #include "internal/activity_chip.h"
 #include "internal/audio_workspace.h"
 #include "internal/code_document_tab.h"
@@ -163,9 +164,7 @@ void MainWindow::BuildUi()
     auto* form = new QWidget(projectScroll);
     auto* projectLayout = new QVBoxLayout(form);
     auto* heading = new QLabel(QStringLiteral("Your project"), form);
-    auto headingFont = heading->font();
-    headingFont.setBold(true);
-    heading->setFont(headingFont);
+    heading->setFont(MakeTypeFont(heading->font(), TypeRole::Title));
     projectLayout->addWidget(heading);
     const auto label = [form, projectLayout](const QString& name) {
         auto* value = new QLabel(form);
@@ -505,8 +504,11 @@ void MainWindow::BuildUi()
     mRecentRemoveButtonOrNull->setObjectName(QStringLiteral("removeRecentProjectButton"));
     mRecentRemoveButtonOrNull->setToolTip(QStringLiteral("Forget the selected project. Its files are not deleted."));
     BrowseProjectButton_ = new QPushButton(QStringLiteral("Open Project..."), recentPanel);
-    recentLayout->setContentsMargins(24, 24, 24, 24);
-    recentLayout->setSpacing(12);
+    recentLayout->setContentsMargins(design::SPACING_EXTRA_LARGE,
+                                     design::SPACING_EXTRA_LARGE,
+                                     design::SPACING_EXTRA_LARGE,
+                                     design::SPACING_EXTRA_LARGE);
+    recentLayout->setSpacing(design::SPACING_MEDIUM);
     auto* title = new QLabel(QStringLiteral("Welcome to Ludus"), recentPanel);
     auto* brand = new QLabel(recentPanel);
     brand->setObjectName(QStringLiteral("welcomeLogo"));
@@ -536,7 +538,7 @@ void MainWindow::BuildUi()
     mWelcomeNewReasonOrNull->setProperty("visualRole", QStringLiteral("secondary"));
     mWelcomeNewReasonOrNull->hide();
     recentLayout->addWidget(mWelcomeNewReasonOrNull);
-    recentLayout->addSpacing(12);
+    recentLayout->addSpacing(design::SPACING_MEDIUM);
     recentLayout->addWidget(new QLabel(QStringLiteral("Recent projects"), recentPanel));
     recentLayout->addWidget(mRecentEmptyStateOrNull, 0, Qt::AlignHCenter);
     recentLayout->addWidget(RecentList_, 1);

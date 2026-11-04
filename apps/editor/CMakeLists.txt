@@ -1087,6 +1087,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
         tests/editor_icons_tests.cpp
+        tests/editor_visual_consistency_tests.cpp
         tests/path_text_tests.cpp
         tests/state_view_tests.cpp
         tests/activity_chip_tests.cpp

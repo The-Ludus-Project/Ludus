@@ -48,7 +48,7 @@ class HudLabel final : public QLabel
 {
 public:
     static constexpr int BACKGROUND_OPACITY = 190;
-    static constexpr int PADDING = design::SPACING_SMALL - design::SPACING_EXTRA_SMALL / 2;
+    static constexpr int PADDING = design::SPACING_SMALL;
 
     explicit HudLabel(QWidget* parent) : QLabel(parent)
     {

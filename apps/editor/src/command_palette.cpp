@@ -1,4 +1,5 @@
 #include "internal/command_palette.h"
+#include "design_tokens.h"
 
 #include "internal/theme_preferences.h"
 
@@ -33,7 +34,7 @@ constexpr int PREFIX_BONUS = 20;
 constexpr int PALETTE_WIDTH = 560;
 constexpr int PALETTE_VISIBLE_ROWS = 10;
 constexpr int PALETTE_TOP_MARGIN = 80;
-constexpr int PALETTE_PADDING = 8;
+constexpr int PALETTE_PADDING = design::SPACING_SMALL;
 constexpr int ROW_PADDING = 6;
 constexpr int SHORTCUT_DIALOG_WIDTH = 520;
 constexpr int SHORTCUT_DIALOG_HEIGHT = 480;

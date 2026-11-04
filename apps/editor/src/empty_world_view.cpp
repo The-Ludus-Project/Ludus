@@ -1,4 +1,5 @@
 #include "internal/empty_world_view.h"
+#include "design_tokens.h"
 #include "internal/render_preview.h"
 #include "internal/state_view.h"
 #include "internal/theme_colour.h"
@@ -23,7 +24,7 @@ using namespace foundation;
 namespace math = foundation::math;
 namespace
 {
-constexpr int32 TEXT_MARGIN = 12;
+constexpr int32 TEXT_MARGIN = design::SPACING_MEDIUM;
 constexpr usize CLIP_PLANE_COUNT = 6;
 constexpr QRgb BACKGROUND = GetViewportArgb(design::ThemeColour::SurfaceViewport);
 constexpr QRgb CAPTION = GetViewportArgb(design::ThemeColour::TextHud);

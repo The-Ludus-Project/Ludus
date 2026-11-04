@@ -1,4 +1,5 @@
 #include "internal/state_view.h"
+#include "design_tokens.h"
 
 #include "internal/theme_fonts.h"
 
@@ -17,8 +18,8 @@ namespace
 {
 constexpr int STATE_ICON_SIZE = 32;
 constexpr int STATE_COLUMN_WIDTH = 440;
-constexpr int STATE_SPACING = 8;
-constexpr int STATE_ACTION_SPACING = 12;
+constexpr int STATE_SPACING = design::SPACING_SMALL;
+constexpr int STATE_ACTION_SPACING = design::SPACING_MEDIUM;
 } // namespace
 
 /// Draws the state's icon in the widget's own text colour, so it also reads on a fixed-colour surface.

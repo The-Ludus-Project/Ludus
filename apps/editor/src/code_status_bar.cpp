@@ -1,4 +1,5 @@
 #include "internal/code_status_bar.h"
+#include "design_tokens.h"
 
 #include "internal/code_document_tab.h"
 #include "internal/code_editor.h"
@@ -68,7 +69,7 @@ using foundation::BorrowedView;
 }
 
 /// Horizontal gap between status-bar items, in pixels.
-constexpr int ITEM_SPACING_PIXELS = 8;
+constexpr int ITEM_SPACING_PIXELS = design::SPACING_SMALL;
 
 /// A flat, clickable status-bar item with an accessible name. The click handler
 /// is wired by the caller; a non-interactive item simply has none.

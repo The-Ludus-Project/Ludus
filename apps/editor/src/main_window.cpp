@@ -568,26 +568,37 @@ void MainWindow::BuildMenus()
     mRenderGraphToolbar->addAction(mLivePreviewGraphAction);
     mRenderGraphToolbar->addAction(mCancelGraphAction);
 
-    // Icons plus labels for the primary actions, labels only elsewhere (docs/architecture/editor-art-direction.md).
-    // The action keeps its icon for menus; only its toolbar button changes style.
-    const auto usePrimaryIcon = [](QToolBar* toolbar, QAction* action, EditorIcon icon) {
+    // One icon set for every toolbar command (docs/architecture/editor-art-direction.md, Iconography). Primary
+    // commands show their icon beside the label; secondary commands that sit in a run of peers (Undo, Redo, Pause,
+    // Step, Resume) are icon-only and keep their name and shortcut in the tooltip. The action keeps its icon
+    // for menus; only its toolbar button changes style.
+    const auto useIcon = [](QToolBar* toolbar, QAction* action, EditorIcon icon, Qt::ToolButtonStyle style) {
         action->setIcon(GetEditorIcon(icon));
         QToolButton* button = qobject_cast<QToolButton*>(toolbar->widgetForAction(action));
         if (button != nullptr)
         {
-            button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+            button->setToolButtonStyle(style);
         }
     };
     for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_})
     {
         toolbar->setIconSize(QSize(EDITOR_ICON_SIZE, EDITOR_ICON_SIZE));
     }
-    usePrimaryIcon(mStandardToolbar, OpenAction_, EditorIcon::OpenProject);
-    usePrimaryIcon(mStandardToolbar, SaveAction_, EditorIcon::Save);
-    usePrimaryIcon(GameToolbar_, BuildAction_, EditorIcon::Build);
-    usePrimaryIcon(GameToolbar_, BuildRunAction_, EditorIcon::Run);
-    usePrimaryIcon(GameToolbar_, PlayAction_, EditorIcon::Play);
-    usePrimaryIcon(GameToolbar_, StopAction_, EditorIcon::Stop);
+    const Qt::ToolButtonStyle labelled = Qt::ToolButtonTextBesideIcon;
+    const Qt::ToolButtonStyle iconOnly = Qt::ToolButtonIconOnly;
+    useIcon(mStandardToolbar, OpenAction_, EditorIcon::OpenProject, labelled);
+    useIcon(mStandardToolbar, SaveAction_, EditorIcon::Save, labelled);
+    useIcon(mStandardToolbar, UndoAction_, EditorIcon::Undo, iconOnly);
+    useIcon(mStandardToolbar, RedoAction_, EditorIcon::Redo, iconOnly);
+    useIcon(GameToolbar_, BuildAction_, EditorIcon::Build, labelled);
+    useIcon(GameToolbar_, BuildRunAction_, EditorIcon::Run, labelled);
+    useIcon(GameToolbar_, BuildDebugAction_, EditorIcon::Debug, labelled);
+    useIcon(GameToolbar_, PlayAction_, EditorIcon::Play, labelled);
+    useIcon(GameToolbar_, StopAction_, EditorIcon::Stop, labelled);
+    useIcon(GameToolbar_, PauseAction_, EditorIcon::Pause, iconOnly);
+    useIcon(GameToolbar_, StepAction_, EditorIcon::Step, iconOnly);
+    useIcon(GameToolbar_, ResumeAction_, EditorIcon::Play, iconOnly);
+    useIcon(GameToolbar_, BuildReloadAction_, EditorIcon::ReloadCode, labelled);
 
     // Output commands live on the Output tool window's own toolbar.
     ClearAction_ = new QAction(QStringLiteral("&Clear Output"), this);
@@ -597,6 +608,10 @@ void MainWindow::BuildMenus()
     CopyAction_->setObjectName(QStringLiteral("output.copyJobDetails"));
     QToolBar* outputTools = OutputDock_->findChild<QToolBar*>(QStringLiteral("outputToolbar"));
     LUDUS_REQUIRE(outputTools != nullptr);
+    ClearAction_->setIcon(GetEditorIcon(EditorIcon::Clear));
+    CopyAction_->setIcon(GetEditorIcon(EditorIcon::Copy));
+    outputTools->setIconSize(QSize(EDITOR_ICON_SIZE, EDITOR_ICON_SIZE));
+    outputTools->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     outputTools->addAction(ClearAction_);
     outputTools->addAction(CopyAction_);
 

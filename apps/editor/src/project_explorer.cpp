@@ -1,4 +1,5 @@
 #include "internal/project_explorer.h"
+#include "design_tokens.h"
 #include "internal/editor_icons.h"
 #include "internal/item_selection.h"
 #include "internal/path_text.h"
@@ -74,7 +75,10 @@ ProjectExplorer::ProjectExplorer(QWidget* parentOrNull)
 {
     setObjectName(QStringLiteral("projectExplorer"));
     QVBoxLayout* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(2, 2, 2, 2);
+    layout->setContentsMargins(design::SPACING_EXTRA_SMALL,
+                               design::SPACING_EXTRA_SMALL,
+                               design::SPACING_EXTRA_SMALL,
+                               design::SPACING_EXTRA_SMALL);
     QHBoxLayout* top = new QHBoxLayout;
     mFilter->setObjectName(QStringLiteral("projectExplorerFilter"));
     mFilter->setPlaceholderText(QStringLiteral("Search Project Explorer"));

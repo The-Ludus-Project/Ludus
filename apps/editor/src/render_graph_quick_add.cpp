@@ -1,5 +1,7 @@
 #include "internal/render_graph_quick_add.h"
+#include "design_tokens.h"
 #include "internal/overlay_widgets.h"
+#include "internal/theme_fonts.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/stable_sort.hpp>
@@ -38,8 +40,8 @@ constexpr int32 CATEGORY_WIDTH = 176;
 constexpr int32 SIGNATURE_WIDTH = 168;
 constexpr int32 PIN_WIDTH = 28;
 constexpr int32 PALETTE_WIDTH = 720;
-constexpr int32 PALETTE_MARGIN = 10;
-constexpr int32 SECTION_SPACING = 8;
+constexpr int32 PALETTE_MARGIN = design::SPACING_MEDIUM;
+constexpr int32 SECTION_SPACING = design::SPACING_SMALL;
 constexpr int32 RESULT_COLUMN_COUNT = 3;
 // Section headings are smaller, slightly spaced capitals (percent of normal letter spacing).
 constexpr float64 HEADING_FONT_SCALE = 0.85;
@@ -401,7 +403,7 @@ RenderGraphQuickAdd::RenderGraphQuickAdd(const RenderGraphTemplateRegistry& regi
     body->addWidget(mCategories);
 
     QVBoxLayout* resultColumn = new QVBoxLayout;
-    resultColumn->setSpacing(2);
+    resultColumn->setSpacing(design::SPACING_EXTRA_SMALL);
     mResults->setObjectName(QStringLiteral("renderGraphQuickAddResults"));
     mResults->setAccessibleName(QStringLiteral("Templates"));
     mResults->setColumnCount(RESULT_COLUMN_COUNT);
@@ -468,9 +470,7 @@ RenderGraphQuickAdd::RenderGraphQuickAdd(const RenderGraphTemplateRegistry& regi
     layout->addWidget(detail);
     mTitle->setObjectName(QStringLiteral("renderGraphQuickAddTitle"));
     mTitle->setTextFormat(Qt::PlainText);
-    QFont titleFont = mTitle->font();
-    titleFont.setBold(true);
-    mTitle->setFont(titleFont);
+    mTitle->setFont(MakeTypeFont(mTitle->font(), TypeRole::Title));
     layout->addWidget(mTitle);
     mDescription->setObjectName(QStringLiteral("renderGraphQuickAddDescription"));
     mDescription->setTextFormat(Qt::PlainText);
