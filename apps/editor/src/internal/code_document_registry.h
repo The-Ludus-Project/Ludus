@@ -1,17 +1,34 @@
 #pragma once
 
 #include "internal/code_file_document.h"
+#include "internal/code_recovery_journal.h"
 
 #include <ludus/foundation/base/types.h>
 
+#include <QByteArray>
 #include <QHash>
 #include <QObject>
+#include <QSet>
 #include <QString>
+#include <QTimer>
+#include <QVector>
 
 #include <memory>
 
 namespace ludus::editor
 {
+class CodeRecoveryWriter;
+
+/// A buffer recovered from the journal on reopen: the file to open and the
+/// draft bytes to re-anchor against its current baseline. Returned by
+/// CodeDocumentRegistry::TakeRecoveredBuffers so the area can reopen each tab.
+struct CodeRecoveredBuffer final
+{
+    QString CanonicalPath;
+    QByteArray SavedHash;
+    QByteArray Draft;
+};
+
 /// One authoritative file host per canonical path within a project epoch (CE02).
 /// The registry creates a host on first open, hands the same host to every view
 /// of that path (so split groups and mirrored views share one draft and one
@@ -64,6 +81,34 @@ public:
     /// The host already open for `absolutePath` in the current epoch, or null.
     [[nodiscard]] CodeFileDocument* FindHostOrNull(const QString& absolutePath) const;
 
+    /// Bind the recovery journal to `projectRoot`. Call on project open, before
+    /// restoring tabs, so journal files from a crashed session of the same
+    /// project are read and later entries are scoped to it. An empty root (no
+    /// project) disables journaling. Reading the journal here does not touch any
+    /// host; the caller drains TakeRecoveredBuffers to reopen the buffers.
+    void BindRecoveryProject(const QString& projectRoot);
+
+    /// The unsaved buffers found in the journal at the last BindRecoveryProject,
+    /// cleared as they are returned. Each names a file and the draft to restore;
+    /// the area opens the file and calls RestoreRecoveredDraft, which drops the
+    /// draft when the on-disk baseline no longer matches.
+    [[nodiscard]] QVector<CodeRecoveredBuffer> TakeRecoveredBuffers();
+
+    /// Request a debounced journal checkpoint. Call after any edit or save that
+    /// may have changed a host's dirty state. The snapshot is captured on the UI
+    /// thread and the file I/O runs on the background pool; the UI thread never
+    /// blocks on disk. A clean host's journal file is removed on the next flush.
+    void ScheduleRecoveryCheckpoint();
+
+    /// Flush the journal synchronously on the calling thread, used on project
+    /// close and app quit so a final checkpoint is durable before teardown. It
+    /// waits for any in-flight background writer to finish first.
+    void FlushRecoveryNow();
+
+    /// Delete every journal file for the current project. Used after the restore
+    /// pass completes and when recovery is explicitly discarded.
+    void ClearRecovery();
+
 Q_SIGNALS:
     /// A host's dirty state may have changed, so owners can refresh Save All and
     /// tab decorations. Emitted after an edit is mirrored.
@@ -80,9 +125,25 @@ private:
         foundation::int32 ReferenceCount = 0;
     };
     [[nodiscard]] static QString canonicalKey(const QString& absolutePath);
+    [[nodiscard]] static QString recoveryStateDirectory();
+    void flushRecovery(bool synchronous);
+    void onRecoveryDebounce();
 
     foundation::uint64 mEpoch = 0;
     // Keyed by canonical path within the current epoch.
     QHash<QString, HostEntry> mHosts;
+
+    // The code-buffer recovery journal (CE03): a bounded, machine-local store of
+    // unsaved drafts, written off the UI thread on an idle debounce.
+    CodeRecoveryJournal mJournal;
+    QTimer mRecoveryTimer;
+    // The current background flush, or null; retired with deleteLater on finish.
+    CodeRecoveryWriter* mWriterOrNull = nullptr;
+    // Canonical paths whose draft was journaled and is not yet known clean, so a
+    // host that becomes clean or closes can have its journal file removed.
+    QSet<QString> mJournaledPaths;
+    // Buffers read from the journal at the last BindRecoveryProject, drained by
+    // TakeRecoveredBuffers.
+    QVector<CodeRecoveredBuffer> mRecoveredBuffers;
 };
 } // namespace ludus::editor

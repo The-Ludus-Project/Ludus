@@ -49,6 +49,22 @@ public:
     /// epoch (a reload reopens them fresh). Called on project open/reload.
     void SetProjectEpoch(foundation::uint64 epoch);
 
+    /// Set the active project: bump the epoch (closing stale tabs) and bind the
+    /// recovery journal to `projectRoot` so a crashed session's unsaved buffers
+    /// can be restored. An empty root disables journaling (no project). Call
+    /// before RestoreState on project open; follow with RestoreRecoveredBuffers.
+    void SetProject(const QString& projectRoot, foundation::uint64 epoch);
+
+    /// Reopen every unsaved buffer the recovery journal held for this project and
+    /// re-anchor its draft against the file's current on-disk baseline (CE03). A
+    /// buffer whose file is gone or changed on disk is skipped. Safe to call once
+    /// after SetProject and RestoreState; the journal is cleared afterwards.
+    void RestoreRecoveredBuffers();
+
+    /// Flush a final recovery checkpoint synchronously, for project close and app
+    /// quit, so the latest unsaved drafts are journaled before teardown.
+    void FlushRecovery();
+
     /// Open `absolutePath` in the active group. A preview open replaces the
     /// group's current preview tab; a permanent open (double-click, or isPreview
     /// false) opens or focuses a permanent tab. Returns false and reports through
@@ -60,8 +76,26 @@ public:
     [[nodiscard]] bool OpenFileInSecondGroup(const QString& absolutePath);
 
     /// Close the active tab, prompting through DirtyCloseRequested when its host
-    /// is dirty (the dirty-close prompt itself lands later in M1).
+    /// is dirty.
     void CloseActiveTab();
+
+    /// Run the dirty-close prompt for one tab and act on the answer (CE03): Save
+    /// writes the buffer and closes the tab, Don't Save closes it discarding the
+    /// draft, and Cancel (the default) leaves it open. The last host reference is
+    /// released on close so a discarded draft is not kept for recovery. Returns
+    /// true when the tab was closed.
+    [[nodiscard]] bool PromptCloseDirtyTab(CodeDocumentTab* tab);
+
+    /// Whether any open buffer has unsaved edits, for the project/app close chain.
+    [[nodiscard]] bool HasDirtyBuffers() const;
+
+    /// The dirty-close prompt for closing the project or quitting: list every
+    /// unsaved code buffer and ask Save All, Don't Save or Cancel (the default).
+    /// Returns true when the caller may proceed (nothing dirty, Save All
+    /// succeeded, or Don't Save). A save failure or Cancel returns false. On
+    /// Don't Save the drafts are discarded; the recovery journal is cleared so a
+    /// clean close does not resurrect them.
+    [[nodiscard]] bool ConfirmDiscardAll();
 
     [[nodiscard]] foundation::int32 GetGroupCount() const;
     [[nodiscard]] foundation::int32 GetTabCount() const;
