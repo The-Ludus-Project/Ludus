@@ -30,8 +30,9 @@ Requirements: CE21, CE25. Prerequisite: none.
   and of the code-buffer recovery journal.
 - [ ] Add the language registry skeleton with Slang and plain text, replacing
   the `CodeLanguage` switch statements without changing behavior.
-- [ ] Record the maintainer's choice for the F9 and Ctrl+K conflicts, or the
-  recommended default if none is given, as a decision-log entry.
+- [ ] Copy the decided shortcut resolution (architecture, "Settings, keymaps
+  and EditorConfig", decided 2026-11-03) into the decision log, and list the
+  existing commands and tests it affects.
 
 Gate: the baseline benchmark results are recorded; the ADR is ready for review;
 behavior is unchanged.
@@ -75,7 +76,12 @@ Requirements: CE05-CE07, CE17. Prerequisite: M1.
 - [ ] Add auto-closing and surrounding pairs and indentation rules from the
   registry.
 - [ ] Add the Ludus and VS Code keymap profiles, user overrides, conflict
-  detection and the first-use choice. Resolve F9 and Ctrl+K. Add
+  detection and the first-use choice. Apply the decided bindings: Record
+  Profiling to Ctrl+Alt+F9, F9 Toggle Breakpoint in code editors, Ctrl+K palette
+  in the Ludus profile, and Ctrl+Shift+P palette with Ctrl+K chords in the VS
+  Code profile. Update the documents that name F9 for profiling
+  (`docs/development/editor-workspace.md`, `docs/architecture/graphics-debugging.md`)
+  in the same change. Add
   shortcut-collision tests for both profiles.
 - [ ] Measure 1-cursor and 100-cursor typing against the budgets.
 

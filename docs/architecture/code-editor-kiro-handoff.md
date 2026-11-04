@@ -31,10 +31,11 @@ and .kiro/steering/ first, then:
 
 Execute M0 through M9 in dependency order and keep the task ledger in tasks.md
 current. This authorizes implementation; do not stop after drafting another
-plan or wait for approval between ordinary milestones. M0's tree-sitter ADR and
-the F9/Ctrl+K keymap decision are the only points that need maintainer review:
-open them as their own pull requests and carry on with M1 and M2, which do not
-depend on them. Make each batch small and reviewable. Revalidate the checkout
+plan or wait for approval between ordinary milestones. M0's tree-sitter ADR is
+the only point that needs maintainer review: open it as its own pull request
+and carry on with M1 and M2, which do not depend on it. The F9/Ctrl+K shortcut
+resolution is already decided in the architecture; apply it in M2. Make each
+batch small and reviewable. Revalidate the checkout
 instead of assuming the baseline still matches. Reuse the existing CodeEditor,
 CodeDocumentHost, CodeDocumentController, SlangLanguageService, CodeAssistance,
 CodeFormatter and CodeNavigation code; refactor them in structural moves with

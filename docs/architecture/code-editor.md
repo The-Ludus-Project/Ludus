@@ -458,13 +458,18 @@ committing or branch UI.
   **VS Code** is the second profile. User overrides go in a JSON file, with
   conflict detection in the shortcut list. Opening the first code document
   shows a one-time choice of profile.
-- **Known conflicts to resolve in M2.** F9 records profiling today, but it is
-  Toggle Breakpoint in both Visual Studio and VS Code. Ctrl+K opens the command
-  palette today, but it is VS Code's chord prefix. The recommended resolution
-  is: in a code editor, F9 toggles a breakpoint, and Record Profiling moves to
-  Ctrl+Alt+F9 everywhere. The VS Code profile maps the palette to Ctrl+Shift+P
-  and frees Ctrl+K for chords. The maintainer decides; the shell's
-  shortcut-collision tests must enforce whatever is chosen.
+- **Shortcut conflicts (decided 2026-11-03, implemented in M2).** F9 recorded
+  profiling, but it is Toggle Breakpoint in both Visual Studio and VS Code.
+  Ctrl+K opened the command palette, but it is VS Code's chord prefix. The
+  maintainer accepted this resolution:
+  - Record Profiling moves to Ctrl+Alt+F9 in every profile and focus.
+  - F9 toggles a breakpoint when focus is in a code editor. Elsewhere it is
+    unassigned.
+  - The Ludus profile keeps Ctrl+K for the command palette.
+  - The VS Code profile opens the palette with Ctrl+Shift+P and frees Ctrl+K
+    for chords such as Ctrl+K Ctrl+C.
+  - The shell's shortcut-collision tests enforce these bindings in both
+    profiles.
 
 ### Threading and performance
 
