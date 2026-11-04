@@ -165,6 +165,7 @@ void PreviewViewport::focusInEvent(QFocusEvent* event)
 
 void PreviewViewport::showEvent(QShowEvent* event)
 {
+    setRenderPresentationVisible(true);
     if (mPlayEndpointOrNull != nullptr)
     {
         static_cast<void>(mPlayEndpointOrNull->SendVisibility(platform::WindowVisibility::Visible));

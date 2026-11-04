@@ -2135,6 +2135,7 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
 TEST_CASE("Selected project World edits reach the delegated graph viewport", "[editor][render-graph][world-graph]")
 {
     constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    constexpr int32 PAUSE_OBSERVATION_MILLISECONDS = 100;
     rhi::Shutdown();
     QTemporaryDir project;
     REQUIRE(project.isValid() == true);
@@ -2193,6 +2194,32 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     REQUIRE(waitFor([&]() {
                 return world.GetRenderPreview().Scene().Identity != identity && graphView->GetImage() != initial;
             }) == true);
+    RenderGraphPreview* preview = workspace.GetPreviewOrNull();
+    REQUIRE(preview != nullptr);
+    const QImage lastImage = graphView->GetImage();
+    const uint64 lastRevision = preview->GetPresentedRevision();
+    QSignalSpy submitted(preview, &RenderGraphPreview::SubmissionRecorded);
+    viewport->hide();
+    world.GetRenderPreview().Orbit(1, 0);
+    workspace.ServicePreview();
+    QTest::qWait(PAUSE_OBSERVATION_MILLISECONDS);
+    CHECK(submitted.count() == 0);
+    CHECK(graphView->GetImage() == lastImage);
+    viewport->show();
+    REQUIRE(waitFor([&]() { return preview->GetPresentedRevision() > lastRevision; }) == true);
+
+    const uint64 visibleRevision = preview->GetPresentedRevision();
+    submitted.clear();
+    RenderPreview& source = world.GetRenderPreview();
+    source.BeginGpuCapture();
+    source.Orbit(1, 0);
+    workspace.ServicePreview();
+    QTest::qWait(PAUSE_OBSERVATION_MILLISECONDS);
+    CHECK(submitted.count() == 0);
+    CHECK(preview->GetPresentedRevision() == visibleRevision);
+    source.EndGpuCapture();
+    REQUIRE(waitFor([&]() { return preview->GetPresentedRevision() > visibleRevision; }) == true);
+
     const QString capture = qEnvironmentVariable("LUDUS_EDITOR_WORLD_CAPTURE");
     if (capture.isEmpty() == false)
     {

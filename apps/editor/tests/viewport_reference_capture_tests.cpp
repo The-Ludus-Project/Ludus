@@ -35,6 +35,7 @@
 #include <QImage>
 #include <QJsonDocument>
 #include <QPushButton>
+#include <QSignalSpy>
 #include <QSize>
 #include <QSpinBox>
 #include <QStandardItemModel>
@@ -542,6 +543,43 @@ TEST_CASE("Reference capture window explains a missing viewport device without s
     QPushButton* stop = window.findChild<QPushButton*>(QStringLiteral("referenceStop"));
     REQUIRE(stop != nullptr);
     CHECK(stop->isEnabled() == false);
+}
+
+TEST_CASE("Reference capture releases viewport GPU admission on stop and completion", "[editor][reference-capture]")
+{
+    rhi::Shutdown();
+    QTemporaryDir root;
+    REQUIRE(root.isValid() == true);
+    RenderScene scene;
+    tests::MakeLitScene(root.path(), scene);
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(scene) == true);
+    preview.Resize(TEST_LONG_SIDE, TEST_LONG_SIDE);
+    REQUIRE(preview.Start() == true);
+    if (preview.AdmitOffscreenDevice() == false)
+    {
+        SKIP("no offscreen viewport GPU adapter");
+    }
+
+    ReferenceCaptureWindow window(&preview);
+    QSpinBox* longSide = window.findChild<QSpinBox*>(QStringLiteral("referenceLongSide"));
+    QSpinBox* samples = window.findChild<QSpinBox*>(QStringLiteral("referenceSamples"));
+    REQUIRE(longSide != nullptr);
+    REQUIRE(samples != nullptr);
+    longSide->setValue(TEST_LONG_SIDE);
+    samples->setValue(TEST_SAMPLES);
+    REQUIRE(window.StartCapture() == true);
+    CHECK(preview.HasActiveGpuCapture() == true);
+    window.StopCapture();
+    CHECK(preview.HasActiveGpuCapture() == false);
+
+    QSignalSpy finished(&window, &ReferenceCaptureWindow::CaptureFinished);
+    REQUIRE(window.StartCapture() == true);
+    CHECK(preview.HasActiveGpuCapture() == true);
+    REQUIRE(finished.wait(static_cast<int32>(CAPTURE_TIMEOUT_MILLISECONDS)) == true);
+    INFO(window.GetStatusText().toStdString());
+    CHECK(window.GetCapture().GetPhase() == ViewportReferencePhase::Complete);
+    CHECK(preview.HasActiveGpuCapture() == false);
 }
 
 TEST_CASE("Reference capture window offers the render graph source only with a project graph",

@@ -35,6 +35,7 @@ struct GraphComparisonCandidate final
 class GraphComparisonRun final
 {
 public:
+    ~GraphComparisonRun();
     [[nodiscard]] bool Start(RenderPreview& inoutPreview,
                              RendererWorkspace& inoutWorkspace,
                              const ViewportReferenceSettings& settings,
@@ -70,6 +71,7 @@ private:
     void writeManifest(const QString& state);
 
     QPointer<RendererWorkspace> mWorkspace;
+    QPointer<RenderPreview> mPreview;
     graphics::rhi::DeviceHandle mDevice{};
     graphics::rhi::SurfaceHandle mSurface{};
     RenderScene mScene;

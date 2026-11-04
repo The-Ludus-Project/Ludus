@@ -27,6 +27,14 @@
 
 namespace ludus::editor
 {
+/// Work admitted by a graph preview tick. In-flight frames are always serviced.
+enum class RenderGraphPreviewWork : foundation::uint8
+{
+    Render,
+    Prepare,
+    FinishPending,
+};
+
 /// Name of an RHI raster status as diagnostics show it, for example "CapacityExceeded".
 [[nodiscard]] QString DescribeRasterStatus(graphics::rhi::RasterStatus status);
 /// Describe a rejected extraction, including measured memory admission and preservation of the last frame.
@@ -158,7 +166,10 @@ public:
     [[nodiscard]] QSize GetTargetSize() const noexcept;
     /// Advance activation, preparation, rendering and the asynchronous copy without waiting.
     /// @param preparationMilliseconds Active caller work converting the current World/camera, in ms.
-    void Tick(foundation::float64 preparationMilliseconds = 0);
+    /// @param work Prepare without drawing when hidden, or finish pending work while a capture uses the device.
+    void Tick(foundation::float64 preparationMilliseconds = 0,
+              RenderGraphPreviewWork work = RenderGraphPreviewWork::Render);
+    [[nodiscard]] bool HasOpenSubmission() const noexcept;
     /// GUI-thread observer for frame stages and image-to-paint correlation.
     [[nodiscard]] ViewportFrameTrace& GetFrameTrace() noexcept;
     /// Completed output statistics; retained while preparation is pending or fails, reset on Detach.
@@ -335,10 +346,13 @@ Q_SIGNALS:
 private:
     struct State;
     [[nodiscard]] RenderGraphPreviewLoad stage();
-    void tick();
+    void tick(RenderGraphPreviewWork work);
     /// Read the failure summaries of the active generation's ray passes in turn and name the main reason.
     void pollFailures();
-    void advance();
+    void advance(bool shouldSubmitFrame);
+    void submitFrame(graphics::renderer::RenderGraph& inoutGraph,
+                     foundation::uint64 generation,
+                     foundation::uint64 drawableRevision);
     void finishCopy();
     void finishDisplayCopy();
     void publishFrame(bool isGpuFrame = false);
