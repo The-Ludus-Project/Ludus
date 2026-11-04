@@ -573,8 +573,8 @@ CRT, with the debug CRT in Debug. Production targets disable C++ exception
 handling and Catch2 test executables enable it. Windows CI tests Debug and
 Development under Ninja and all four flavors in one Visual Studio solution,
 using Windows SDK 10.0.26100.0 and CMake 3.31.10. This source build covers
-the existing Windows module list and tests. SDK installation, project setup
-and physical-GPU acceptance are separate D0 work.
+the existing Windows module list and tests. It also produces an SDK for each
+Visual Studio configuration.
 
 Use the x64 developer prompt and prepare Debug, RelWithDebInfo and Release
 Catch2 packages as in the Windows CI workflow. Run
@@ -600,6 +600,36 @@ foreach ($configuration in $configurations) {
 Set `LUDUS_TEST_REQUIRE_WARP=1` when testing on a software-only Windows runner
 to check that the D3D12 suite selects the software adapter.
 
+
+#### Install and use a Windows SDK from the solution
+
+Build the `ludus_windows_sdk` target and install to a separate prefix for
+each configuration. The install checks the prefix before writing files and
+rejects an SDK from another flavor. The SDK contains the Windows Foundation,
+Input, Platform and Direct3D 12 RHI libraries and the offline DXIL shader
+helper. Debug, Development and Profile embed debug information in the static
+libraries by default so consumers can link from a relocated prefix.
+
+```powershell
+$build = 'out/build/windows-msvc'
+foreach ($configuration in @('Debug', 'Development', 'Profile', 'Release')) {
+    cmake --build $build --config $configuration --target ludus_windows_sdk
+    if ($LASTEXITCODE -ne 0) { throw "SDK build failed for $configuration" }
+    cmake --install $build --config $configuration --prefix "out/install/windows-msvc/$configuration"
+    if ($LASTEXITCODE -ne 0) { throw "SDK install failed for $configuration" }
+}
+```
+
+In an external CMake project, point `CMAKE_PREFIX_PATH` at the selected SDK
+prefix and use `find_package(Ludus CONFIG REQUIRED COMPONENTS Platform GraphicsRhi)`.
+Select the SDK's configuration with `CMAKE_BUILD_TYPE` for Ninja or
+`CMAKE_CONFIGURATION_TYPES` for Visual Studio. Development and Profile also
+accept `RelWithDebInfo` as the consumer configuration. Use the matching x64
+MSVC toolset and dynamic CRT, with the debug CRT for Debug. The Windows CI
+consumer relocates each prefix, builds signed DXIL with the installed helper
+and draws a frame in a Win32 window on WARP. This acceptance uses the
+test-enabled build so the WARP selection switch is available. Project setup
+and physical-GPU qualification are separate D0 work.
 
 ### D3 and D4: complete the portable graphics contract
 

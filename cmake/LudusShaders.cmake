@@ -264,4 +264,7 @@ function(ludus_cook_texture)
     target_include_directories("${TEX_TARGET}" PRIVATE "${output}")
 endfunction()
 
-include("${CMAKE_CURRENT_LIST_DIR}/LudusRendererShaders.cmake")
+# The Windows RHI-only SDK ships the general DXIL helper without renderer recipes.
+if(NOT WIN32 OR EXISTS "${CMAKE_CURRENT_LIST_DIR}/LudusRendererShaders.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/LudusRendererShaders.cmake")
+endif()

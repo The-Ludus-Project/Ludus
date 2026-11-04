@@ -33,7 +33,7 @@ if(EXISTS "${_ludus_dep_search}")
     list(PREPEND CMAKE_PREFIX_PATH "${_ludus_dep_search}")
 endif()
 
-if(NOT "@CMAKE_SYSTEM_NAME@" MATCHES "^(Emscripten|Darwin)$")
+if(NOT "@CMAKE_SYSTEM_NAME@" MATCHES "^(Emscripten|Darwin|Windows)$")
     find_dependency(volk CONFIG)
 endif()
 
@@ -41,7 +41,7 @@ endif()
 # relieve the final consumer of the static link dependency). Resolve their
 # imported targets from bundled metadata or the producer dependency prefix so
 # Text/GraphicsText links cleanly from both installed and relocated SDKs.
-if(NOT "@CMAKE_SYSTEM_NAME@" STREQUAL "Emscripten")
+if(NOT "@CMAKE_SYSTEM_NAME@" MATCHES "^(Emscripten|Windows)$")
     find_dependency(freetype CONFIG)
     find_dependency(harfbuzz CONFIG)
 endif()
@@ -155,15 +155,23 @@ if(@LUDUS_BUILD_UNICODE@ AND NOT TARGET LudusUnicodeIcu)
     unset(identity)
     unset(archive)
 endif()
+if("@CMAKE_SYSTEM_NAME@" STREQUAL "Windows")
+    include("${CMAKE_CURRENT_LIST_DIR}/LudusWindowsSdk.cmake")
+endif()
 include("${CMAKE_CURRENT_LIST_DIR}/LudusTargets.cmake")
+if("@CMAKE_SYSTEM_NAME@" STREQUAL "Windows")
+    ludus_configure_windows_sdk_targets()
+endif()
 if(@LUDUS_BUILD_BEHAVIOR@)
     include("${CMAKE_CURRENT_LIST_DIR}/LudusBehavior.cmake")
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/LudusShaders.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/LudusRendererShaders.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/LudusRenderGraph.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/LudusReflection.cmake")
+if(NOT "@CMAKE_SYSTEM_NAME@" STREQUAL "Windows")
+    include("${CMAKE_CURRENT_LIST_DIR}/LudusRendererShaders.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/LudusRenderGraph.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/LudusReflection.cmake")
+endif()
 
 # Gameplay project helper (project-live-reload). Only present when the installed
 # SDK ships the GameHost/GameApi targets.

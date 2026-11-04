@@ -23,6 +23,12 @@ on:
       - 'cmake/EngineCompilerWarnings.cmake'
       - 'cmake/EngineOptions.cmake'
       - 'cmake/EngineWindowsMsvc.cmake'
+      - 'cmake/EngineWindowsSdk.cmake'
+      - 'cmake/LudusWindowsSdk.cmake.in'
+      - 'cmake/LudusConfig.cmake.in'
+      - 'cmake/LudusSdkManifest.json.in'
+      - 'cmake/CheckSdkVariant.cmake.in'
+      - 'tests/sdk_consumer/windows/**'
       - 'cmake/LudusShaders.cmake'
       - 'cmake/shaders/compile_shader.py'
       - 'config/conan/profiles/windows-clang-x86_64'
@@ -179,7 +185,7 @@ jobs:
             }
           }
           $targets = @('ludus_foundation_base_tests', 'ludus_platform_win32_tests', 'ludus_rhi_d3d12_tests', 'ludus_rhi_lifecycle_tests')
-          if ($visualStudio) { $targets += 'ludus_foundation_profiling' }
+          if ($visualStudio) { $targets += 'ludus_windows_sdk' }
           foreach ($configuration in $builds.Keys) {
             $build = $builds[$configuration]
             cmake --build $build --config $configuration --target @targets @buildOptions
@@ -208,6 +214,39 @@ jobs:
               if ($cases -notmatch [regex]::Escape($required)) { throw "Missing D3D12 test: $required" }
             }
           }
+      - name: Install and exercise each SDK with an external WARP consumer
+        if: matrix.generator == 'MSBuild'
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          $solution = "$PWD/out/windows-msvc-probe/engine"
+          $workspace = "$PWD/out/windows-msvc-probe"
+          $source = "$workspace/external source"
+          $relocated = "$workspace/relocated SDKs"
+          New-Item -ItemType Directory -Force $source, "$source/shaders", $relocated | Out-Null
+          Copy-Item tests/sdk_consumer/windows/CMakeLists.txt, tests/sdk_consumer/windows/smoke.cpp $source
+          Copy-Item tests/sdk_consumer/shaders/diagnostic.slang, tests/sdk_consumer/shaders/uniforms.slang "$source/shaders"
+          $generator = @('-G', 'Visual Studio 17 2022', '-A', 'x64', '-T', "v143,version=$($env:VCToolsVersion.TrimEnd('\')),host=x64", '-DCMAKE_SYSTEM_VERSION=10.0.26100.0')
+          foreach ($configuration in @('Debug', 'Development', 'Profile', 'Release')) {
+            $prefix = "$workspace/install/$configuration"
+            cmake --install $solution --config $configuration --prefix $prefix
+            if ($LASTEXITCODE -ne 0) { throw "Install failed for $configuration" }
+            $sdk = "$relocated/$configuration"
+            Move-Item $prefix $sdk
+            $consumer = "$workspace/consumer-$configuration"
+            $consumerConfiguration = if ($configuration -in @('Development', 'Profile')) { 'RelWithDebInfo' } else { $configuration }
+            cmake -S $source -B $consumer @generator "-DCMAKE_CONFIGURATION_TYPES=$consumerConfiguration" "-DCMAKE_PREFIX_PATH=$sdk" "-DEXPECTED_FLAVOR=$configuration" "-DLUDUS_SLANG_COMPILER=$PWD/out/shader-tools/slang/bin/slangc.exe" "-DLUDUS_DXC_DIRECTORY=$PWD/out/shader-tools/dxc"
+            if ($LASTEXITCODE -ne 0) { throw "External $configuration SDK configure failed" }
+            cmake --build $consumer --config $consumerConfiguration
+            if ($LASTEXITCODE -ne 0) { throw "External $configuration SDK build failed" }
+            ctest --test-dir $consumer -C $consumerConfiguration --output-on-failure --no-tests=error
+            if ($LASTEXITCODE -ne 0) { throw "External $configuration WARP smoke failed" }
+          }
+
+          $collision = cmake --install $solution --config Release --prefix "$relocated/Debug" 2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0 -or $collision -notmatch 'Incompatible Ludus SDK') {
+            throw "The install did not reject a mixed SDK prefix: $collision"
+          }
+          exit 0
       - name: Preserve candidate identities and test logs
         if: always()
         uses: actions/upload-artifact@v4

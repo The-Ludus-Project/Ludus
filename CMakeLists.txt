@@ -213,7 +213,8 @@ if(Git_FOUND)
 endif()
 
 if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
-    install(CODE [[message(FATAL_ERROR "The Windows Visual Studio build is a source build. SDK installation is not available.")]] ALL_COMPONENTS)
+    include(EngineWindowsSdk)
+    ludus_install_windows_sdk_guard()
 else()
     set(LUDUS_GAME_COMPATIBILITY_IDENTITY
         "${LUDUS_GIT_REVISION}|${LUDUS_SDK_VARIANT}|${LUDUS_CXX_RUNTIME_ABI}|${LUDUS_COMPILER_ID} ${LUDUS_COMPILER_VERSION}|${LUDUS_TARGET_TRIPLE}|abi-1.1")
@@ -252,9 +253,9 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     # Windows builds the FoundationThreading closure (threading.md, T3) and the
     # Direct3D 12 bring-up closure: Platform's Win32 window and the RHI
-    # (docs/architecture/windows-direct3d12.md). Other modules have no Windows
-    # backend yet and the SDK is not installed there. Keep the list in dependency
-    # order and closed over its Ludus::* links: FoundationProfiling links
+    # (docs/architecture/windows-direct3d12.md). Keep the installed Windows
+    # module list in dependency order and closed over its Ludus::* links.
+    # FoundationProfiling links
     # FoundationStrings, which links FoundationHash; Platform links Input, Logging
     # and Identity (through PlatformEntropy); the RHI links Math and Threading.
     # scripts/python/test_ci.py checks this list against the modules' links.
@@ -264,6 +265,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     add_subdirectory(modules/input)
     add_subdirectory(modules/platform)
     add_subdirectory(modules/graphics/rhi)
+    if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
+        ludus_install_windows_sdk()
+    endif()
     return()
 endif()
 # Portable bounded networking primitives are shared by native and web targets.
