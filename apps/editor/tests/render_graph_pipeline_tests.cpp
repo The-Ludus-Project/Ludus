@@ -11,6 +11,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QApplication>
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
@@ -21,9 +22,11 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSet>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QToolButton>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -3199,4 +3202,49 @@ TEST_CASE("scene technique budget failure gives the exact manifest setting and r
     manifest.insert(QStringLiteral("budgets"), budgets);
     REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
     CHECK(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, &error) == RenderGraphDocumentStatus::Ok);
+}
+
+TEST_CASE("pipeline parts wrap in a narrow panel instead of truncating", "[editor][render-graph][pipeline][layout]")
+{
+    constexpr int NARROW_WIDTH = 260;
+    constexpr int PART_COUNT = 5;
+    QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
+    QJsonArray shaders;
+    for (const QString& stage :
+         {QStringLiteral("ray_generation"), QStringLiteral("miss"), QStringLiteral("closest_hit")})
+    {
+        shaders.append(QJsonObject{{QStringLiteral("id"), stage},
+                                   {QStringLiteral("stage"), stage},
+                                   {QStringLiteral("program"), QStringLiteral("Shader_raytracingpipeline_") + stage}});
+    }
+    node.insert(QStringLiteral("shaders"), shaders);
+    RenderGraphPipelineEditor editor(node);
+    editor.ShowParts();
+    editor.resize(NARROW_WIDTH, editor.heightForWidth(NARROW_WIDTH) > 0 ? editor.heightForWidth(NARROW_WIDTH) : 600);
+    editor.show();
+    QApplication::processEvents();
+    QWidget* overview = editor.findChild<QWidget*>(QStringLiteral("renderGraphNodeParts"));
+    REQUIRE(overview != nullptr);
+    QSet<int> rows;
+    for (int index = 0; index < PART_COUNT; ++index)
+    {
+        QToolButton* part = editor.findChild<QToolButton*>(QStringLiteral("renderGraphPart_") + QString::number(index));
+        REQUIRE(part != nullptr);
+        INFO(part->text().toStdString());
+        // Each part keeps its whole label and stays inside the panel.
+        CHECK(part->width() >= part->sizeHint().width());
+        CHECK(part->mapTo(&editor, part->rect().bottomRight()).x() < NARROW_WIDTH);
+        rows.insert(part->mapTo(&editor, QPoint(0, 0)).y());
+    }
+    // Six parts cannot share one 260 px row, so they wrap.
+    CHECK(rows.size() > 1);
+    for (const QString& stage :
+         {QStringLiteral("ray_generation"), QStringLiteral("miss"), QStringLiteral("closest_hit")})
+    {
+        QToolButton* chip = editor.findChild<QToolButton*>(QStringLiteral("renderGraphShaderPart_") + stage);
+        REQUIRE(chip != nullptr);
+        INFO(stage.toStdString());
+        CHECK(chip->mapTo(&editor, chip->rect().bottomRight()).x() < NARROW_WIDTH);
+        CHECK(chip->toolTip().contains(QStringLiteral("Shader_raytracingpipeline_") + stage) == true);
+    }
 }
