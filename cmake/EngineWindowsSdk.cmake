@@ -75,6 +75,7 @@ function(ludus_install_windows_sdk)
         "${PROJECT_SOURCE_DIR}/cmake/shaders/compile_raster.py"
         "${PROJECT_SOURCE_DIR}/cmake/shaders/compile_graph_stage.py"
         "${PROJECT_SOURCE_DIR}/cmake/shaders/native_worker.py"
+        "${PROJECT_SOURCE_DIR}/cmake/shaders/cook_texture.py"
         "${PROJECT_SOURCE_DIR}/config/shader_toolchain.json"
         DESTINATION "${package_directory}/shaders")
     install(FILES "${PROJECT_SOURCE_DIR}/LICENSE" "${PROJECT_SOURCE_DIR}/cmake/sdk/THIRD_PARTY_NOTICES.md"
