@@ -2,6 +2,8 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/foundation/profiling/profiling.hpp>
+
 #include "internal/code_edit_scope.h"
 #include "internal/code_navigation.h"
 #include "internal/code_syntax_highlighter.h"
@@ -348,12 +350,14 @@ void CodeEditor::GoToDiagnostic(bool shouldGoBackward)
 
 void CodeEditor::paintEvent(QPaintEvent* event)
 {
+    LUDUS_PROFILE_SCOPE(CodeEditorPaint);
     QPlainTextEdit::paintEvent(event);
     if (mShouldShowIndentGuides == true)
     {
         paintIndentGuides(event);
     }
     paintDiagnosticCallout();
+    mLatencyProbe.MarkPainted();
 }
 
 void CodeEditor::paintIndentGuides(const QPaintEvent* event)
@@ -497,6 +501,11 @@ void CodeEditor::SetLanguage(CodeLanguage language)
     mHighlighter->SetLanguage(language);
     mNavigation->RefreshActions();
     mSelectionUpdate.start(0);
+}
+
+CodeLatencyProbe& CodeEditor::GetLatencyProbe() const noexcept
+{
+    return mLatencyProbe;
 }
 
 void CodeEditor::SetDocumentHistory(bool shouldUseDocumentHistory)
@@ -1428,9 +1437,16 @@ void CodeEditor::keyPressEvent(QKeyEvent* event)
     {
         updateDefinitionLink(viewport()->mapFromGlobal(QCursor::pos()), event->modifiers());
     }
+    LUDUS_PROFILE_SCOPE(CodeEditorKeyPress);
     const int32 revision = document()->revision();
     handleKeyPress(event);
-    if (document()->revision() != revision && mLanguage == CodeLanguage::Slang && event->text().size() == 1 &&
+    const bool didChange = document()->revision() != revision;
+    if (didChange == true)
+    {
+        // Measure keypress-to-paint only for edits that will repaint the view.
+        mLatencyProbe.MarkKeyHandled();
+    }
+    if (didChange == true && mLanguage == CodeLanguage::Slang && event->text().size() == 1 &&
         (event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) == Qt::NoModifier)
     {
         const QChar typed = event->text().at(0);

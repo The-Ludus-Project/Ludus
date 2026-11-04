@@ -289,6 +289,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Assertion startup / report-delivery — validation record](architecture/assertions-startup-validation.md)
 - [Assertion subsystem: M0 + M1 implementation evidence](architecture/assertions-m0-m1.md)
 - [Audio content implementation evidence](development/audio-content-evidence.md)
+- [Code editor decision log](architecture/code-editor-decision-log.md)
 - [Curves and surfaces evidence (G0-G4)](architecture/math-evidence/curves-surfaces.md)
 - [Evidence for the September 23, 2026 logging review](architecture/logging-review-evidence/README.md)
 - [First container-system increment: evidence](development/container-systems-evidence.md)
