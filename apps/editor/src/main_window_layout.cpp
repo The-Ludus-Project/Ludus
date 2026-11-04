@@ -1,3 +1,4 @@
+#include "design_tokens.h"
 #include "internal/activity_chip.h"
 #include "internal/audio_workspace.h"
 #include "internal/code_document_tab.h"
@@ -51,6 +52,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QRect>
 #include <QSaveFile>
@@ -99,6 +101,10 @@ constexpr foundation::int32 MAX_BOTTOM_DOCK_PIXELS = 300;
 constexpr foundation::int32 PROPERTIES_HINT_MARGIN_PIXELS = 8;
 constexpr foundation::int64 MAX_SETTINGS_BYTES = foundation::int64{64} * 1024;
 constexpr foundation::int32 MAX_STATE_BYTES = 32 * 1024;
+/// Width of the setup notice's progress bar, and how long its "ready" confirmation stays.
+constexpr foundation::int32 NOTICE_PROGRESS_WIDTH = 160;
+constexpr foundation::int32 NOTICE_PROGRESS_HEIGHT = design::SPACING_SMALL;
+constexpr foundation::int32 NOTICE_READY_MILLISECONDS = 6000;
 LUDUS_DEFINE_LOG_CATEGORY(LOG_EDITOR_LAYOUT, "Editor.Layout");
 } // namespace
 
@@ -110,23 +116,47 @@ void MainWindow::BuildUi()
     mSetupNoticeOrNull->setFloatable(false);
     QWidget* notice = new QWidget(mSetupNoticeOrNull);
     notice->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    // One compact line: the problem, its two commands and a dismiss button. The full
-    // explanation is the text's tooltip; the status bar keeps reporting setup state.
+    // One compact line that walks a repair through its states: what is wrong and one primary action
+    // (Repair project), then progress while it runs, then a short confirmation. The full explanation is the
+    // text's tooltip; the status bar keeps reporting setup state. Nothing here names an internal result code.
     QHBoxLayout* noticeLayout = new QHBoxLayout(notice);
     noticeLayout->setContentsMargins(0, 0, 0, 0);
+    noticeLayout->setSpacing(design::SPACING_SMALL);
+    mSetupNoticeIconOrNull = new QLabel(notice);
+    mSetupNoticeIconOrNull->setObjectName(QStringLiteral("projectSetupNoticeIcon"));
+    mSetupNoticeIconOrNull->setFixedSize(EDITOR_ICON_SIZE, EDITOR_ICON_SIZE);
+    noticeLayout->addWidget(mSetupNoticeIconOrNull);
     mSetupNoticeTextOrNull = new QLabel(notice);
     mSetupNoticeTextOrNull->setObjectName(QStringLiteral("projectSetupNoticeText"));
     mSetupNoticeTextOrNull->setTextFormat(Qt::PlainText);
     mSetupNoticeTextOrNull->setWordWrap(false);
-    mSetupNoticeTextOrNull->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    noticeLayout->addWidget(mSetupNoticeTextOrNull, 1);
-    mSetupNoticeRepairOrNull = new QPushButton(QStringLiteral("Repair setup…"), notice);
+    QFont headlineFont = mSetupNoticeTextOrNull->font();
+    headlineFont.setBold(true);
+    mSetupNoticeTextOrNull->setFont(headlineFont);
+    mSetupNoticeTextOrNull->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
+    noticeLayout->addWidget(mSetupNoticeTextOrNull);
+    mSetupNoticeDetailOrNull = new QLabel(notice);
+    mSetupNoticeDetailOrNull->setObjectName(QStringLiteral("projectSetupNoticeDetail"));
+    mSetupNoticeDetailOrNull->setTextFormat(Qt::PlainText);
+    mSetupNoticeDetailOrNull->setWordWrap(false);
+    mSetupNoticeDetailOrNull->setProperty("visualRole", QStringLiteral("secondary"));
+    mSetupNoticeDetailOrNull->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    noticeLayout->addWidget(mSetupNoticeDetailOrNull, 1);
+    mSetupNoticeProgressOrNull = new QProgressBar(notice);
+    mSetupNoticeProgressOrNull->setObjectName(QStringLiteral("projectSetupNoticeProgress"));
+    mSetupNoticeProgressOrNull->setTextVisible(false);
+    mSetupNoticeProgressOrNull->setFixedSize(NOTICE_PROGRESS_WIDTH, NOTICE_PROGRESS_HEIGHT);
+    mSetupNoticeProgressOrNull->hide();
+    noticeLayout->addWidget(mSetupNoticeProgressOrNull);
+    mSetupNoticeRepairOrNull = new QPushButton(QStringLiteral("Repair project"), notice);
     mSetupNoticeRepairOrNull->setObjectName(QStringLiteral("projectSetupNoticeRepair"));
+    mSetupNoticeRepairOrNull->setProperty("visualRole", QStringLiteral("primary"));
     noticeLayout->addWidget(mSetupNoticeRepairOrNull);
     mSetupNoticeCheckOrNull = new QPushButton(QStringLiteral("Check again"), notice);
     mSetupNoticeCheckOrNull->setObjectName(QStringLiteral("projectSetupNoticeCheck"));
     noticeLayout->addWidget(mSetupNoticeCheckOrNull);
-    QToolButton* dismiss = new QToolButton(notice);
+    mSetupNoticeDismissOrNull = new QToolButton(notice);
+    QToolButton* dismiss = mSetupNoticeDismissOrNull;
     dismiss->setObjectName(QStringLiteral("projectSetupNoticeDismiss"));
     dismiss->setText(QStringLiteral("✕"));
     dismiss->setAutoRaise(true);
@@ -134,14 +164,32 @@ void MainWindow::BuildUi()
     dismiss->setToolTip(QStringLiteral("Hide this notice until the setup problem changes. Project > Repair Project "
                                        "Setup… stays available."));
     noticeLayout->addWidget(dismiss);
+    mSetupReadyTimerOrNull = new QTimer(this);
+    mSetupReadyTimerOrNull->setSingleShot(true);
+    mSetupReadyTimerOrNull->setInterval(NOTICE_READY_MILLISECONDS);
+    connect(mSetupReadyTimerOrNull, &QTimer::timeout, this, [this]() {
+        mSetupNoticeStage = SetupNoticeStage::Hidden;
+        RenderStatus();
+    });
     mSetupNoticeOrNull->addWidget(notice);
     addToolBar(mSetupNoticeOrNull);
     addToolBarBreak();
     mSetupNoticeOrNull->hide();
-    connect(mSetupNoticeRepairOrNull, &QPushButton::clicked, this, [this]() { SetupProjectAction_->trigger(); });
+    connect(mSetupNoticeRepairOrNull, &QPushButton::clicked, this, [this]() {
+        if (mSetupNoticeRepairOrNull->property("opensSettings").toBool() == true)
+        {
+            static_cast<void>(mDocuments->OpenDocument(ProjectSettings_));
+            return;
+        }
+        SetupProjectAction_->trigger();
+    });
     connect(mSetupNoticeCheckOrNull, &QPushButton::clicked, this, [this]() { CheckSetupAction_->trigger(); });
     connect(dismiss, &QToolButton::clicked, this, [this]() {
         mDismissedSetupProblem = Controller_->State().SetupProblem;
+        if (mSetupNoticeStage == SetupNoticeStage::Ready)
+        {
+            mSetupNoticeStage = SetupNoticeStage::Hidden;
+        }
         RenderStatus();
     });
 
@@ -539,6 +587,12 @@ void MainWindow::BuildUi()
     mWelcomeNewReasonOrNull->setProperty("visualRole", QStringLiteral("secondary"));
     mWelcomeNewReasonOrNull->hide();
     recentLayout->addWidget(mWelcomeNewReasonOrNull);
+    // A project that could not be opened is explained here, in the Start Page's own words, with one action.
+    mWelcomeProblemOrNull = new StateView(recentPanel);
+    mWelcomeProblemOrNull->setObjectName(QStringLiteral("welcomeProblem"));
+    mWelcomeProblemOrNull->hide();
+    recentLayout->addWidget(mWelcomeProblemOrNull);
+    connect(mWelcomeProblemOrNull, &StateView::ActionTriggered, BrowseProjectButton_, &QPushButton::click);
     recentLayout->addSpacing(12);
     recentLayout->addWidget(new QLabel(QStringLiteral("Recent projects"), recentPanel));
     recentLayout->addWidget(mRecentEmptyStateOrNull, 0, Qt::AlignHCenter);

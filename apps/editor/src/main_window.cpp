@@ -24,6 +24,7 @@
 #    include "internal/saved_graph_comparison_view.h"
 #endif
 #include "internal/script_workspace.h"
+#include "internal/setup_guidance.h"
 #include "internal/state_view.h"
 #include "internal/timing_panel.h"
 #include "internal/workspace_style.h"
@@ -55,6 +56,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QShowEvent>
@@ -71,6 +73,7 @@
 #include <ludus/foundation/base/core.h>
 
 #include <cstring>
+#include <optional>
 
 namespace ludus::editor
 {
@@ -1427,6 +1430,193 @@ void MainWindow::RenderCapabilities()
     RemoveArgButton_->setEnabled(editable);
 }
 
+namespace
+{
+/// How far along a repair is shown, by the phase the controller reports. Phases it does not map show a busy bar.
+constexpr foundation::int32 PROGRESS_STARTING = 10;
+constexpr foundation::int32 PROGRESS_CONFIGURING = 35;
+constexpr foundation::int32 PROGRESS_BUILDING = 70;
+constexpr foundation::int32 PROGRESS_PUBLISHING = 90;
+constexpr foundation::int32 PROGRESS_COMPLETE = 100;
+
+/// The step a running setup job is on, in the person's words.
+[[nodiscard]] QString GetSetupStepText(Phase phase)
+{
+    switch (phase)
+    {
+        case Phase::Starting:
+            return QStringLiteral("Getting ready");
+        case Phase::Configuring:
+            return QStringLiteral("Preparing build settings");
+        case Phase::Building:
+            return QStringLiteral("Building and testing");
+        case Phase::Publishing:
+            return QStringLiteral("Finishing up");
+        case Phase::Idle:
+        case Phase::Launching:
+        case Phase::Running:
+        case Phase::Debugging:
+        case Phase::Stopping:
+        case Phase::CleanupUnknown:
+            break;
+    }
+    return QStringLiteral("Working");
+}
+
+/// Share of a repair done in phase, or none when the phase has no fixed place in the sequence.
+[[nodiscard]] std::optional<foundation::int32> GetSetupProgress(Phase phase)
+{
+    switch (phase)
+    {
+        case Phase::Starting:
+            return PROGRESS_STARTING;
+        case Phase::Configuring:
+            return PROGRESS_CONFIGURING;
+        case Phase::Building:
+            return PROGRESS_BUILDING;
+        case Phase::Publishing:
+            return PROGRESS_PUBLISHING;
+        case Phase::Idle:
+        case Phase::Launching:
+        case Phase::Running:
+        case Phase::Debugging:
+        case Phase::Stopping:
+        case Phase::CleanupUnknown:
+            break;
+    }
+    return std::nullopt;
+}
+} // namespace
+
+void MainWindow::renderSetupNotice(bool hasSetupProblem)
+{
+    const WorkspaceState& state = Controller_->State();
+    const bool isRepairing = state.Busy() == true && state.ActiveAction == ActionKind::ProjectSetup;
+    const bool isChecking = state.Busy() == true && state.ActiveAction == ActionKind::ProjectCheck &&
+                            mSetupNoticeStage != SetupNoticeStage::Hidden;
+    const SetupNoticeStage previous = mSetupNoticeStage;
+    SetupNoticeStage stage = SetupNoticeStage::Hidden;
+    if (isRepairing == true || isChecking == true)
+    {
+        stage = SetupNoticeStage::Working;
+    }
+    else if (hasSetupProblem == true)
+    {
+        stage = SetupNoticeStage::NeedsRepair;
+    }
+    else if ((previous == SetupNoticeStage::Working && state.Result.Kind == Outcome::Success) ||
+             previous == SetupNoticeStage::Ready)
+    {
+        stage = SetupNoticeStage::Ready;
+    }
+    mSetupNoticeStage = stage;
+    if (stage == SetupNoticeStage::Ready && previous != SetupNoticeStage::Ready)
+    {
+        mSetupReadyTimerOrNull->start();
+    }
+    else if (stage != SetupNoticeStage::Ready)
+    {
+        mSetupReadyTimerOrNull->stop();
+    }
+
+    bool isShown = false;
+    EditorIcon icon = EditorIcon::Warning;
+    QString headline;
+    QString detail;
+    QString tooltip;
+    bool isRepairShown = false;
+    bool isProgressShown = false;
+    SetupGuidance guidance;
+    switch (stage)
+    {
+        case SetupNoticeStage::Hidden:
+            break;
+        case SetupNoticeStage::NeedsRepair: {
+            guidance = DescribeSetupProblem(state.SetupProblem);
+            isShown = state.SetupProblem != mDismissedSetupProblem && mIsViewportFocused == false;
+            headline = guidance.Headline;
+            detail = guidance.Detail.section(QLatin1Char('\n'), 0, 0);
+            if (state.Dirty() == true)
+            {
+                detail += QStringLiteral(" Save project settings to enable repair.");
+            }
+            tooltip = QStringLiteral("%1\n\n%2\n\nRepair now, or keep editing and repair later. Repair updates local "
+                                     "build settings and verifies a build and tests.")
+                          .arg(guidance.Fix, ReplaceResultCodeNames(state.SetupProblem));
+            isRepairShown = true;
+            break;
+        }
+        case SetupNoticeStage::Working:
+            isShown = true;
+            icon = EditorIcon::Information;
+            headline = isRepairing == true ? QStringLiteral("Repairing your project…")
+                                           : QStringLiteral("Checking your project…");
+            detail = GetSetupStepText(state.OperationPhase);
+            tooltip = QStringLiteral("This can take a few minutes the first time. You can keep working.");
+            isProgressShown = true;
+            break;
+        case SetupNoticeStage::Ready:
+            isShown = mIsViewportFocused == false;
+            icon = EditorIcon::Validate;
+            headline = QStringLiteral("Your project is ready.");
+            detail = QStringLiteral("Setup finished and the project builds.");
+            break;
+    }
+    mSetupNoticeIconOrNull->setPixmap(GetEditorIcon(icon).pixmap(QSize(EDITOR_ICON_SIZE, EDITOR_ICON_SIZE)));
+    mSetupNoticeTextOrNull->setText(headline);
+    mSetupNoticeTextOrNull->setToolTip(tooltip);
+    mSetupNoticeDetailOrNull->setText(detail);
+    mSetupNoticeDetailOrNull->setToolTip(tooltip);
+    mSetupNoticeProgressOrNull->setVisible(isProgressShown);
+    if (isProgressShown == true)
+    {
+        const std::optional<foundation::int32> progress = GetSetupProgress(state.OperationPhase);
+        mSetupNoticeProgressOrNull->setRange(0, progress.has_value() == true ? PROGRESS_COMPLETE : 0);
+        mSetupNoticeProgressOrNull->setValue(progress.value_or(0));
+    }
+    if (isRepairShown == true && guidance.IsRepairable == false)
+    {
+        mSetupNoticeRepairOrNull->setText(QStringLiteral("Open Project Settings"));
+        mSetupNoticeRepairOrNull->setProperty("opensSettings", true);
+        mSetupNoticeRepairOrNull->setEnabled(true);
+    }
+    else
+    {
+        mSetupNoticeRepairOrNull->setText(QStringLiteral("Repair project"));
+        mSetupNoticeRepairOrNull->setProperty("opensSettings", false);
+        mSetupNoticeRepairOrNull->setEnabled(SetupProjectAction_->isEnabled());
+    }
+    mSetupNoticeRepairOrNull->setVisible(isRepairShown);
+    mSetupNoticeCheckOrNull->setVisible(isRepairShown);
+    mSetupNoticeCheckOrNull->setEnabled(CheckSetupAction_->isEnabled());
+    mSetupNoticeDismissOrNull->setVisible(stage == SetupNoticeStage::NeedsRepair || stage == SetupNoticeStage::Ready);
+    mSetupNoticeOrNull->setVisible(isShown);
+}
+
+void MainWindow::renderWelcomeProblem()
+{
+    const WorkspaceState& state = Controller_->State();
+    const bool isOpenFailure = state.Document != DocumentState::ProjectLoaded && state.Result.Kind == Outcome::Failed;
+    mWelcomeProblemOrNull->setVisible(isOpenFailure);
+    if (isOpenFailure == false)
+    {
+        return;
+    }
+    const SetupGuidance guidance = DescribeSetupProblem(DescribeResultCode(state.Result.Code) + QStringLiteral(".\n") +
+                                                        ReplaceResultCodeNames(state.Result.Message));
+    StateViewContent content;
+    content.Icon = EditorIcon::Warning;
+    content.Message = QStringLiteral("That project couldn't be opened.");
+    content.Cause = guidance.Headline + (state.Result.Message.isEmpty() == true
+                                             ? QString()
+                                             : QStringLiteral(" ") + ReplaceResultCodeNames(state.Result.Message));
+    content.Fix = QStringLiteral("Choose another project, or correct the project's settings file and open it again.");
+    content.ActionLabel = QStringLiteral("Choose Another Project…");
+    content.Details =
+        QStringLiteral("%1\n%2").arg(QString::fromLatin1(ResultCodeName(state.Result.Code)), state.Result.Message);
+    mWelcomeProblemOrNull->SetContent(content);
+}
+
 void MainWindow::RenderStatus()
 {
     const WorkspaceState& state = Controller_->State();
@@ -1439,7 +1629,7 @@ void MainWindow::RenderStatus()
         QStringLiteral("Project folder: %1\n%2\nSaved build profile: %3")
             .arg(QDir::toNativeSeparators(QFileInfo(state.DescriptorPath).absolutePath()), engine, project.Preset));
     QString setupStatus = state.SetupStatus.isEmpty() ? QStringLiteral("Setup has not been checked for this project.")
-                                                      : state.SetupStatus;
+                                                      : ReplaceResultCodeNames(state.SetupStatus);
     if (state.EnginePin.State != EnginePinState::None && state.EnginePin.State != EnginePinState::Current)
     {
         setupStatus += QStringLiteral("\nEngine: %1").arg(state.EnginePin.Message);
@@ -1451,18 +1641,9 @@ void MainWindow::RenderStatus()
     {
         mDismissedSetupProblem.clear();
     }
-    // Dismissed and Focus Viewport keep the notice hidden; the status bar still reports setup state.
-    const bool isSetupNoticeShown =
-        hasSetupProblem == true && state.SetupProblem != mDismissedSetupProblem && mIsViewportFocused == false;
-    mSetupNoticeOrNull->setVisible(isSetupNoticeShown);
-    mSetupNoticeTextOrNull->setToolTip(
-        QStringLiteral("%1\n\nRepair now, or keep editing and repair later. Repair updates local build settings "
-                       "and verifies a build and tests.")
-            .arg(state.SetupProblem));
-    mSetupNoticeTextOrNull->setText(
-        QStringLiteral("Setup needs attention: %1%2")
-            .arg(state.SetupProblem.section(QLatin1Char('\n'), 0, 0),
-                 state.Dirty() == true ? QStringLiteral(" Save project settings to enable repair.") : QString()));
+    renderSetupNotice(hasSetupProblem);
+    const bool isSetupNoticeShown = mSetupNoticeOrNull->isVisible();
+    renderWelcomeProblem();
 
     QString next;
 #if defined(Q_OS_WASM)
@@ -1541,27 +1722,33 @@ void MainWindow::RenderStatus()
     // Each problem is said once: the banner and Error List carry the full text, so this line keeps
     // the short reason (the result code and a pointer to the repair) and nothing that repeats it.
     QString status = phase;
-    if (state.Result.Kind != Outcome::None)
+    // A failed setup check is described by the setup problem below, in its own words; a generic code
+    // description beside it would say something different about the same event.
+    const bool isResultExplainedBySetup = hasSetupProblem == true && state.Result.Kind == Outcome::Failed;
+    if (state.Result.Kind != Outcome::None && isResultExplainedBySetup == false)
     {
-        status += QStringLiteral("  —  last result: %1").arg(QString::fromLatin1(ResultCodeName(state.Result.Code)));
+        status += QStringLiteral("  —  last result: %1").arg(DescribeResultCode(state.Result.Code));
         if (hasSetupProblem == false && state.Result.Message.isEmpty() == false)
         {
-            status += QStringLiteral(" (%1)").arg(state.Result.Message.section(QLatin1Char('\n'), 0, 0));
+            status += QStringLiteral(" (%1)").arg(
+                ReplaceResultCodeNames(state.Result.Message.section(QLatin1Char('\n'), 0, 0)));
         }
     }
     if (state.OperationPhase == Phase::CleanupUnknown)
     {
         status += QStringLiteral("  —  operator recovery required; see Copy Job Details");
     }
-    const QString setupSummary = state.SetupStatus.section(QLatin1Char('\n'), 0, 0);
-    const QString resultSummary = state.Result.Message.section(QLatin1Char('\n'), 0, 0);
+    const QString setupSummary = ReplaceResultCodeNames(state.SetupStatus.section(QLatin1Char('\n'), 0, 0));
+    const QString resultSummary = ReplaceResultCodeNames(state.Result.Message.section(QLatin1Char('\n'), 0, 0));
     if (hasSetupProblem == true)
     {
         // The banner already shows the problem with its Repair button; only a hidden banner
         // leaves this line to say what is wrong.
-        status += QStringLiteral("  —  ") + (isSetupNoticeShown == true
-                                                 ? QStringLiteral("Setup needs repair")
-                                                 : state.SetupProblem.section(QLatin1Char('\n'), 0, 0));
+        status += QStringLiteral("  —  ") +
+                  (isSetupNoticeShown == true
+                       ? (mSetupNoticeStage == SetupNoticeStage::Working ? QStringLiteral("Setup in progress")
+                                                                         : QStringLiteral("Setup needs repair"))
+                       : DescribeSetupProblem(state.SetupProblem).Headline);
     }
     else if (setupSummary.isEmpty() == false &&
              (resultSummary.isEmpty() == true || setupSummary.contains(resultSummary) == false))
@@ -1570,8 +1757,8 @@ void MainWindow::RenderStatus()
     }
     StatusLabel_->setText(status);
     renderActivity();
-    StatusLabel_->setToolTip(status + QStringLiteral("\n") + state.Result.Message + QStringLiteral("\n") +
-                             state.SetupStatus);
+    StatusLabel_->setToolTip(status + QStringLiteral("\n") + ReplaceResultCodeNames(state.Result.Message) +
+                             QStringLiteral("\n") + ReplaceResultCodeNames(state.SetupStatus));
 
     if (state.OperationPhase == Phase::Debugging)
     {
