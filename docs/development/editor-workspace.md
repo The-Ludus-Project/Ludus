@@ -1106,7 +1106,17 @@ tool menu. Drag a red X, green Y or blue Z handle; rotation uses rings. Move
 changes the parent-local position, rotation changes the stored Euler degree
 component, and scale changes one positive local scale component. Hold **Shift**
 for 0.1 metre movement, 15 degree rotation or 0.1 scale-factor increments.
-The wireframe previews the candidate throughout a drag. Release applies one
+The handles stay 80 logical pixels long at any distance and take their colours
+from the `axis.x`, `axis.y` and `axis.z` design tokens, with an X, Y or Z letter
+at each tip so colour is never the only cue. Move ends each shaft in a solid
+arrowhead and scale in a cube; a small square marks the pivot. With a tool
+active, the handle under the pointer thickens and lightens and the cursor becomes
+an open hand; while a handle is dragged the cursor is a closed hand, that handle
+stays highlighted and the other axes fade towards the viewport colour. The half of
+a rotation ring behind the pivot is dimmer, so the ring reads as a loop around the
+object. Hover is tracked only while no mouse button is down, costs one handle
+projection per mouse move, and is cleared when the pointer leaves the viewport. The
+wireframe previews the candidate throughout a drag. Release applies one
 validated World edit and refreshes the shaded scene; **Undo** restores the entire
 gesture. **Delete** and **Ctrl+D** use the hierarchy’s delete and duplicate
 commands while the viewport has focus. **Escape**, a tool change, hiding the view

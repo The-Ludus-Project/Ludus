@@ -1,3 +1,4 @@
+#include "design_tokens.h"
 #include "entropy_fixture.h"
 #include "internal/builtin_world.h"
 #include "internal/controller.h"
@@ -1727,6 +1728,141 @@ TEST_CASE("Viewport scale and rotation tools edit only their selected placement 
     CHECK(rotated.value(QStringLiteral("rotation")).toArray()[0].toDouble() == 0);
     CHECK(rotated.value(QStringLiteral("rotation")).toArray()[1].toDouble() == 0);
     CHECK(rotated.value(QStringLiteral("scale")) == QJsonArray{1, 1, 1});
+}
+namespace
+{
+/// Opaque axis colour of a design token, as the overlay draws it at rest.
+QRgb GetAxisToken(int axis)
+{
+    constexpr ludus::editor::design::ThemeColour AXES[] = {ludus::editor::design::ThemeColour::AxisX,
+                                                           ludus::editor::design::ThemeColour::AxisY,
+                                                           ludus::editor::design::ThemeColour::AxisZ};
+    return ludus::editor::design::GetThemeArgb(AXES[axis], true);
+}
+} // namespace
+TEST_CASE("Transform handles use the design tokens, solid heads and highlight the handle under the pointer",
+          "[editor][world][object-interaction][gizmo]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    const RenderScene scene = MakeInteractionScene();
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    const QRectF frame{0, 0, 800, 600};
+    ViewportObjectOverlay overlay;
+    interaction.BuildOverlay(frame, overlay);
+
+    // At rest the X handle is its token colour at the normal width, ending in a triangle and a pivot marker.
+    REQUIRE(overlay.HandleStrokes.IsEmpty() == false);
+    const ViewportHandleStroke rest = overlay.HandleStrokes[0];
+    CHECK(rest.Color == GetAxisToken(0));
+    CHECK(rest.LinePixel.length() == Catch::Approx(80));
+    REQUIRE(overlay.HandleFills.GetSize() >= 2);
+    const ViewportHandleFill& arrow = overlay.HandleFills[0];
+    CHECK(arrow.CornerCount == 3);
+    CHECK(arrow.Color == GetAxisToken(0));
+    CHECK(arrow.CornersPixel[0] == rest.LinePixel.p2());
+    const ViewportHandleFill& pivot = overlay.HandleFills[overlay.HandleFills.GetSize() - 1];
+    CHECK(pivot.CornerCount == 4);
+    const QPointF pivotCenter = QRectF(pivot.CornersPixel[0], pivot.CornersPixel[2]).center();
+    CHECK(pivotCenter.x() == Catch::Approx(rest.LinePixel.p1().x()));
+    CHECK(pivotCenter.y() == Catch::Approx(rest.LinePixel.p1().y()));
+    CHECK(overlay.HandleFills.GetSize() <= ViewportObjectOverlay::MAX_HANDLE_FILLS);
+
+    // Hovering announces itself once, emphasizes only that handle and clears when the pointer moves away.
+    QSignalSpy changed(&interaction, &ViewportObjectInteraction::Changed);
+    CHECK(interaction.GetHoveredAxis() == -1);
+    CHECK(interaction.Hover(frame.center() + QPointF(70, 0), frame) == true);
+    CHECK(interaction.GetHoveredAxis() == 0);
+    CHECK(changed.count() == 1);
+    CHECK(interaction.Hover(frame.center() + QPointF(72, 2), frame) == true);
+    CHECK(changed.count() == 1);
+    interaction.BuildOverlay(frame, overlay);
+    CHECK(overlay.HandleStrokes[0].Color != rest.Color);
+    CHECK(overlay.HandleStrokes[0].WidthPixels > rest.WidthPixels);
+    CHECK(interaction.Hover(frame.center() + QPointF(0, 250), frame) == false);
+    CHECK(interaction.GetHoveredAxis() == -1);
+    CHECK(changed.count() == 2);
+    interaction.BuildOverlay(frame, overlay);
+    CHECK(overlay.HandleStrokes[0].Color == rest.Color);
+    CHECK(overlay.HandleStrokes[0].WidthPixels == rest.WidthPixels);
+
+    // Leaving the viewport drops the highlight.
+    static_cast<void>(interaction.Hover(frame.center() + QPointF(70, 0), frame));
+    interaction.ClearHover();
+    CHECK(interaction.GetHoveredAxis() == -1);
+
+    // A drag keeps its handle emphasized and ignores hover.
+    REQUIRE(interaction.Press(frame.center() + QPointF(70, 0), frame) == true);
+    CHECK(interaction.IsDragging() == true);
+    CHECK(interaction.Hover(frame.center() + QPointF(70, 0), frame) == false);
+    interaction.BuildOverlay(frame, overlay);
+    CHECK(overlay.HandleStrokes[0].Color != rest.Color);
+    CHECK(overlay.HandleStrokes[0].WidthPixels > rest.WidthPixels);
+    for (usize index = 1; index < overlay.HandleStrokes.GetSize(); ++index)
+    {
+        // Every other handle recedes towards the viewport while one axis is dragged.
+        for (int axis = 0; axis < ViewportObjectInteraction::AXIS_COUNT; ++axis)
+        {
+            if (overlay.HandleStrokes[index].WidthPixels > 1)
+            {
+                CHECK(overlay.HandleStrokes[index].Color != GetAxisToken(axis));
+            }
+        }
+    }
+    interaction.Cancel();
+    CHECK(interaction.IsDragging() == false);
+
+    // Without edit permission or while inactive nothing can be hovered.
+    interaction.SetWorld(document, scene.Objects[0].Id, false);
+    CHECK(interaction.Hover(frame.center() + QPointF(70, 0), frame) == false);
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    interaction.SetActive(false);
+    CHECK(interaction.Hover(frame.center() + QPointF(70, 0), frame) == false);
+}
+TEST_CASE("Scale handles end in a cube and rotation rings dim their far half",
+          "[editor][world][object-interaction][gizmo]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    const RenderScene scene = MakeInteractionScene();
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    const QRectF frame{0, 0, 800, 600};
+    ViewportObjectOverlay overlay;
+
+    interaction.SetTool(ViewportObjectInteraction::Tool::Scale);
+    interaction.BuildOverlay(frame, overlay);
+    REQUIRE(overlay.HandleFills.GetSize() >= 2);
+    CHECK(overlay.HandleFills[0].CornerCount == 4);
+    CHECK(overlay.HandleFills[0].Color == GetAxisToken(0));
+    const QRectF cube(overlay.HandleFills[0].CornersPixel[0], overlay.HandleFills[0].CornersPixel[2]);
+    CHECK(cube.center().x() == Catch::Approx(frame.center().x() + 80));
+
+    interaction.SetTool(ViewportObjectInteraction::Tool::Rotate);
+    interaction.BuildOverlay(frame, overlay);
+    // Rings are strokes only, plus the pivot marker.
+    CHECK(overlay.HandleFills.GetSize() == 1);
+    usize frontCount = 0;
+    usize backCount = 0;
+    for (const ViewportHandleStroke& stroke : overlay.HandleStrokes)
+    {
+        bool isToken = false;
+        for (int axis = 0; axis < ViewportObjectInteraction::AXIS_COUNT; ++axis)
+        {
+            isToken = isToken == true || stroke.Color == GetAxisToken(axis);
+        }
+        (isToken == true ? frontCount : backCount) += 1;
+    }
+    CHECK(frontCount > 0);
+    CHECK(backCount > 0);
+    CHECK(overlay.HandleStrokes.GetSize() <= ViewportObjectOverlay::MAX_HANDLE_STROKES);
 }
 TEST_CASE("Viewport move axes follow a rotated scaled parent and preserve parent-local placement",
           "[editor][world][object-interaction]")

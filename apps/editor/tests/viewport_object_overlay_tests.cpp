@@ -70,6 +70,47 @@ TEST_CASE("Native object overlays batch bounded strokes into reusable clipped tr
     CHECK(UpdateViewportObjectOverlayNode(overlay, rootOrNull) == nullptr);
 }
 
+TEST_CASE("Native object overlays upload solid handle fills after the strokes",
+          "[editor][object-interaction][native-overlay]")
+{
+    ViewportObjectOverlay overlay;
+    overlay.FramePixel = {0, 0, 300, 200};
+    REQUIRE(overlay.HandleStrokes.TryAdd({QLineF(20, 30, 20, 110), qRgb(255, 0, 0), 4}) == true);
+    ViewportHandleFill arrow;
+    arrow.CornerCount = 3;
+    arrow.Color = qRgb(0, 255, 0);
+    arrow.CornersPixel = {QPointF(20, 120), QPointF(14, 105), QPointF(26, 105), QPointF(20, 120)};
+    ViewportHandleFill cube;
+    cube.CornerCount = 4;
+    cube.Color = qRgb(0, 0, 255);
+    cube.CornersPixel = {QPointF(50, 50), QPointF(60, 50), QPointF(60, 60), QPointF(50, 60)};
+    REQUIRE(overlay.HandleFills.TryAdd(arrow) == true);
+    REQUIRE(overlay.HandleFills.TryAdd(cube) == true);
+    QSGNode* rootOrNull = UpdateViewportObjectOverlayNode(overlay, nullptr);
+    REQUIRE(rootOrNull != nullptr);
+    QSGGeometryNode* node = static_cast<QSGGeometryNode*>(rootOrNull->firstChild());
+    // One stroke and two fills, six vertices each.
+    REQUIRE(node->geometry()->vertexCount() == 18);
+    const QSGGeometry::ColoredPoint2D* verticesPixel = node->geometry()->vertexDataAsColoredPoint2D();
+    // A triangle's fourth vertex repeats its third, so the sixth vertex adds no area.
+    CHECK(verticesPixel[6].x == 20);
+    CHECK(verticesPixel[6].y == 120);
+    CHECK(verticesPixel[6].g == 255);
+    CHECK(verticesPixel[9].x == 20);
+    CHECK(verticesPixel[10].x == 26);
+    CHECK(verticesPixel[11].x == 26);
+    CHECK(verticesPixel[11].y == 105);
+    // A quad is two triangles sharing a diagonal.
+    CHECK(verticesPixel[12].x == 50);
+    CHECK(verticesPixel[13].x == 60);
+    CHECK(verticesPixel[14].y == 60);
+    CHECK(verticesPixel[16].y == 60);
+    CHECK(verticesPixel[17].x == 50);
+    CHECK(verticesPixel[17].b == 255);
+    REQUIRE(overlay.HandleFills.TryResize(ViewportObjectOverlay::MAX_HANDLE_FILLS + 1) == true);
+    CHECK(UpdateViewportObjectOverlayNode(overlay, rootOrNull) == nullptr);
+}
+
 TEST_CASE("Selection wire cages and picking follow the presented image camera, not the live one",
           "[editor][object-interaction]")
 {

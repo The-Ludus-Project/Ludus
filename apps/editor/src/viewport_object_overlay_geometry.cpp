@@ -19,6 +19,8 @@ constexpr int32 VERTICES_PER_STROKE = 6;
 constexpr usize STROKE_CORNERS = 4;
 constexpr StaticArray<usize, VERTICES_PER_STROKE> STROKE_TRIANGLES{0, 1, 2, 2, 1, 3};
 constexpr float64 MINIMUM_STROKE_LENGTH_PIXELS = 0.000001;
+/// A quad is two triangles; a triangle repeats its last corner, which rasterizes nothing.
+constexpr StaticArray<usize, VERTICES_PER_STROKE> FILL_TRIANGLES{0, 1, 2, 0, 2, 3};
 
 void WriteStroke(const QLineF& linePixel,
                  QRgb color,
@@ -47,18 +49,36 @@ void WriteStroke(const QLineF& linePixel,
     }
 }
 
+void WriteFill(const ViewportHandleFill& fill, QSGGeometry::ColoredPoint2D* outVerticesPixel) noexcept
+{
+    for (usize index = 0; index < FILL_TRIANGLES.GetSize(); ++index)
+    {
+        // A triangle's missing fourth corner repeats its third.
+        const usize corner = math::Min(FILL_TRIANGLES[index], fill.CornerCount - 1);
+        const QPointF positionPixel = fill.CornersPixel[corner];
+        outVerticesPixel[index].set(static_cast<float32>(positionPixel.x()),
+                                    static_cast<float32>(positionPixel.y()),
+                                    static_cast<uint8>(qRed(fill.Color)),
+                                    static_cast<uint8>(qGreen(fill.Color)),
+                                    static_cast<uint8>(qBlue(fill.Color)),
+                                    static_cast<uint8>(qAlpha(fill.Color)));
+    }
+}
+
 } // namespace
 
 QSGNode* UpdateViewportObjectOverlayNode(const ViewportObjectOverlay& overlay, QSGNode* oldNodeOrNull)
 {
     LUDUS_PROFILE_SCOPE(EditorObjectOverlayUpload);
     if (overlay.WireLinesPixel.GetSize() > ViewportObjectOverlay::MAX_WIRE_LINES ||
-        overlay.HandleStrokes.GetSize() > ViewportObjectOverlay::MAX_HANDLE_STROKES)
+        overlay.HandleStrokes.GetSize() > ViewportObjectOverlay::MAX_HANDLE_STROKES ||
+        overlay.HandleFills.GetSize() > ViewportObjectOverlay::MAX_HANDLE_FILLS)
     {
         delete oldNodeOrNull;
         return nullptr;
     }
-    const usize strokeCount = overlay.WireLinesPixel.GetSize() + overlay.HandleStrokes.GetSize();
+    const usize strokeCount =
+        overlay.WireLinesPixel.GetSize() + overlay.HandleStrokes.GetSize() + overlay.HandleFills.GetSize();
     if (strokeCount == 0 || overlay.FramePixel.isEmpty() == true)
     {
         delete oldNodeOrNull;
@@ -100,6 +120,12 @@ QSGNode* UpdateViewportObjectOverlayNode(const ViewportObjectOverlay& overlay, Q
     for (const ViewportHandleStroke& stroke : overlay.HandleStrokes)
     {
         WriteStroke(stroke.LinePixel, stroke.Color, stroke.WidthPixels, verticesPixel + offset);
+        offset += VERTICES_PER_STROKE;
+    }
+    // Solid shapes come last so an arrowhead or cube covers the end of its shaft.
+    for (const ViewportHandleFill& fill : overlay.HandleFills)
+    {
+        WriteFill(fill, verticesPixel + offset);
         offset += VERTICES_PER_STROKE;
     }
     geometry->markVertexDataDirty();
