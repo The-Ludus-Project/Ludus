@@ -217,7 +217,7 @@ void CodeDocumentRegistry::FlushRecoveryNow()
     flushRecovery(true);
 }
 
-void CodeDocumentRegistry::flushRecovery(bool synchronous)
+void CodeDocumentRegistry::flushRecovery(bool shouldBlock)
 {
     if (mJournal.GetDirectory().isEmpty() == true)
     {
@@ -229,7 +229,7 @@ void CodeDocumentRegistry::flushRecovery(bool synchronous)
     {
         if (mWriterOrNull->isFinished() == false)
         {
-            if (synchronous == false)
+            if (shouldBlock == false)
             {
                 // Retry once the current flush finishes rather than racing it.
                 mRecoveryTimer.start();
@@ -271,7 +271,7 @@ void CodeDocumentRegistry::flushRecovery(bool synchronous)
     {
         return;
     }
-    if (synchronous == true)
+    if (shouldBlock == true)
     {
         for (const QString& path : removals)
         {

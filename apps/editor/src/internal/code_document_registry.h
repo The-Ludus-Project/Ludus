@@ -126,7 +126,7 @@ private:
     };
     [[nodiscard]] static QString canonicalKey(const QString& absolutePath);
     [[nodiscard]] static QString recoveryStateDirectory();
-    void flushRecovery(bool synchronous);
+    void flushRecovery(bool shouldBlock);
     void onRecoveryDebounce();
 
     foundation::uint64 mEpoch = 0;
