@@ -21,6 +21,7 @@ TEMPLATES = {
     'salesin-jarosz-lines': ('salesin_jarosz_lines', 'Salesin and Jarosz point and line MIS', 'compute-ray-tracing'),
     'polygonal-light-sampling': ('polygonal_light_sampling', 'Polygonal light sampling', 'compute-ray-tracing'),
     'slice-sampling-luminaire': ('slice_sampling_luminaire', 'Slice sampling luminaire', 'compute-ray-tracing'),
+    'rough-pair-slice': ('rough_pair_slice', 'Rough pair slice sampling', 'compute-ray-tracing'),
     'steinberg-plt': ('steinberg_plt', 'Steinberg physical light transport', 'native-ray-tracing'),
     'steinberg-physical-optics': ('steinberg_physical_optics', 'Steinberg practical physical optics',
                                   'native-ray-tracing'),

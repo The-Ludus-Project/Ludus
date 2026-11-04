@@ -3,10 +3,13 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/rhi/lifetime.h>
+#include <ludus/graphics/rhi/measurement.h>
 #include <ludus/graphics/rhi/raster.h>
 #if defined(LUDUS_TEST_DXIL)
 #    include "raster.h"
 #endif
+
+#include <cstdlib>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -42,6 +45,14 @@ void RequireReady(rhi::DeviceHandle device, rhi::TextureHandle texture)
 TEST_CASE("D3b admits required raster while compute remains unavailable", "[rhi][windows][d3a]")
 {
     ResourceDevice owner;
+    if (std::getenv("LUDUS_TEST_REQUIRE_WARP") != nullptr)
+    {
+        rhi::MeasurementAdapter adapter;
+        REQUIRE(rhi::GetMeasurementAdapter(owner.Device, adapter) == rhi::RasterStatus::Ready);
+        INFO(adapter.Name);
+        REQUIRE(adapter.SoftwareKnown == true);
+        REQUIRE(adapter.Software == true);
+    }
     rhi::DeviceInfo information;
     REQUIRE(rhi::GetDeviceInfo(owner.Device, information) == rhi::DeviceStatus::Ready);
     CHECK(information.Enabled.PortableRaster == true);

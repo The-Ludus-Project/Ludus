@@ -10,7 +10,7 @@ uint32 RandomStream::NextUInt32() noexcept
 {
     // Compute the output from the OLD state, then advance (PCG order).
     const uint64 oldState = mState;
-    StepState();
+    stepState();
     // XSH-RR: xorshift ((old>>18)^old)>>27 narrowed to uint32, rotate right by
     // old>>59. Shift counts are chosen so there is never a shift by 32.
     const uint32 xorShifted = static_cast<uint32>(((oldState >> 18u) ^ oldState) >> 27u);

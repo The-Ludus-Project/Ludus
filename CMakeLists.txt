@@ -22,6 +22,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # when the codebase adopts modules.
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    include(cmake/EngineWindowsMsvc.cmake)
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
 include(CTest)
@@ -633,7 +637,7 @@ install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph/ludus_tools")
 foreach(template_directory IN ITEMS default forward_lit restir_di visibility_buffer visibility_secondary_rays tiled_vbuffer_nee
         compute_ray_tracing simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle
-        salesin_jarosz_lines polygonal_light_sampling slice_sampling_luminaire steinberg_plt
+        salesin_jarosz_lines polygonal_light_sampling slice_sampling_luminaire rough_pair_slice steinberg_plt
         steinberg_physical_optics wave_tracing restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee light_transformer)
     install(DIRECTORY "modules/graphics/renderer/render_graphs/${template_directory}/"
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph/templates/${template_directory}")

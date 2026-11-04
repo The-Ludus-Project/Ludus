@@ -581,15 +581,26 @@ class ComputeRayTracingTemplateTests(unittest.TestCase):
         import re
         root = self.create()
         header = root.with_name('main_shaders').joinpath('hit_record.slang').read_text()
-        constant = lambda name: int(re.search(rf'static const uint {name} = (\d+);', header).group(1))
+        repository = Path(__file__).resolve().parents[2]
+        scene_shader = (repository / 'modules/graphics/renderer/shaders/scene_shader.slang').read_text()
+
+        def constant(name, shader_source):
+            match = re.search(rf'static const uint {name} = (\d+);', shader_source)
+            self.assertIsNotNone(match, f'Missing numeric shader constant {name}')
+            return int(match.group(1))
+
         library = json.loads(root.with_name('library.lurender.json').read_text())
         hits = next(node for node in library['configurations'][0]['nodes'] if node['kind'] == 'Buffer')
-        self.assertEqual(constant('HIT_RECORD_WORDS') * ray.BUFFER_WORD_BYTES, hits['bytes_per_pixel'])
-        self.assertEqual(constant('PRIMARY_RANDOM_DIMENSION_FIRST'), 0)
-        self.assertEqual(constant('PRIMARY_RANDOM_DIMENSION_COUNT'), 2)
-        self.assertEqual(constant('SHADE_RANDOM_DIMENSION_COUNT'), 4)
+        self.assertEqual(constant('HIT_RECORD_WORDS', header) * ray.BUFFER_WORD_BYTES, hits['bytes_per_pixel'])
+        self.assertEqual(constant('PRIMARY_RANDOM_DIMENSION_FIRST', header), 0)
+        self.assertEqual(constant('PRIMARY_RANDOM_DIMENSION_COUNT', header), 2)
         self.assertIn('SHADE_RANDOM_DIMENSION_FIRST = PRIMARY_RANDOM_DIMENSION_FIRST + PRIMARY_RANDOM_DIMENSION_COUNT',
                       header)
+        self.assertIn('SHADE_INCIDENT_DIMENSION_FIRST = SHADE_RANDOM_DIMENSION_FIRST + 1;', header)
+        self.assertEqual(constant('SCENE_INCIDENT_LIGHT_DIMENSION_COUNT', scene_shader), 3)
+        self.assertRegex(
+            header, r'SPECULAR_CHAIN_RANDOM_DIMENSION_FIRST =\s+'
+                    r'SHADE_INCIDENT_DIMENSION_FIRST \+ SCENE_INCIDENT_LIGHT_DIMENSION_COUNT;')
         # Zeroed memory must never decode as triangle 0.
         self.assertIn('record.TriangleIndex + 1', header)
         for name in ('Laine', 'Karras', 'Aila', 'HPG 2013', 'Burns', 'Hunt', 'JCGT 2(2), 2013'):
@@ -1708,6 +1719,26 @@ class PolygonalLightSamplingTemplateTests(unittest.TestCase):
                                                    'polygonal-light-sampling', '--output', 'offscreen',
                                                    '--renderer-static', '--profiles', profile])
             self.assertEqual(arguments.template, 'polygonal-light-sampling')
+
+
+class RoughPairSliceTemplateTests(unittest.TestCase):
+    def test_cached_and_fresh_configurations_use_the_same_fixture_with_explicit_ordering(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = graph.new_workspace(Path(temporary) / 'RoughPair', output='offscreen', renderer_static=True,
+                                       profiles=('metal', 'wgsl'), template='rough-pair-slice')
+            for configuration, expected in [('Default', ['generate', 'reuse']), ('FreshSlice', ['fresh'])]:
+                with self.subTest(configuration=configuration):
+                    plan = graph.compile_graph(root, configuration=configuration)
+                    passes = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+                    self.assertEqual([operation['id'].rsplit('/', 1)[-1] for operation in passes], expected)
+                    self.assertFalse(ray.requires_native_queries(plan))
+                    self.assertEqual(passes[-1]['accumulation']['samples'], 4096)
+                    buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+                    self.assertEqual([resource['bytes_per_pixel'] for resource in buffers],
+                                     [32] if configuration == 'Default' else [])
+            self.assertTrue((root.parent / 'main_shaders/rough_pair_transport.slang').is_file())
+            manifest = json.loads(root.with_name('main.lushader.json').read_text())
+            build.validate_manifest(manifest)
 
 
 class SliceSamplingLuminaireTemplateTests(unittest.TestCase):

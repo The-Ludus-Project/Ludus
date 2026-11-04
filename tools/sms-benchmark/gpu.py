@@ -36,12 +36,12 @@ def pack_scene(scene, upstream):
     return records, slopes
 
 
-def compile_entry(output, compiler, source_name, entry):
+def compile_entry(output, compiler, source_name, entry, includes=()):
     source_directory = output / 'source'
     source_directory.mkdir(parents=True)
     for source in [ROOT / 'modules/foundation/math/shaders/math.slang',
                    ROOT / 'modules/graphics/rhi/shaders/raster_bindings.slang',
-                   *sorted((OWNER / 'shaders').glob('*.slang'))]:
+                   *sorted((OWNER / 'shaders').glob('*.slang')), *includes]:
         shutil.copyfile(source, source_directory / source.name)
     layout.write_shader_layout(source_directory)
     subprocess.run([sys.executable, str(ROOT / 'cmake/shaders/compile_shader.py'),

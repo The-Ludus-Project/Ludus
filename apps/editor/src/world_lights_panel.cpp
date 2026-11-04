@@ -349,6 +349,8 @@ WorldLightsPanel::WorldLightsPanel(QWidget* parentOrNull) : QWidget(parentOrNull
     for (QPushButton* button : {mSoloOrNull, mEnableAllOrNull, mRemoveMissingOrNull})
     {
         button->setProperty("density", QStringLiteral("compact"));
+        // A layout never squeezes a command below the height its own text needs.
+        button->setMinimumHeight(button->sizeHint().height());
         commands->addWidget(button);
     }
     layout->addLayout(commands);

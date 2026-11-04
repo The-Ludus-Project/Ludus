@@ -3259,10 +3259,47 @@ Evidence:
   equal-time comparison and no comparison with tabulated or learned
   receiver-conditioned samplers, the draft's section 6.5. The exact mixture of
   tile-truncated Gaussians that section 6.4 prefers for this panel is not
-  implemented. The path-space application of section 7 is not implemented.
+  implemented. The path-space fixture from section 7 is a
+  [separate template](#preview-two-rough-reflections-with-slice-sampling).
 
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/slice_sampling_luminaire/main.lurender.json).
+
+### Preview two rough reflections with slice sampling
+
+In **Renderer → New Render Graph → Template**, choose **Rough pair slice
+sampling — analytic fixture**. The graph opens on **Default**, which reuses
+cached paths across horizontal receiver pairs. Use the configuration picker
+to select **FreshSlice** and compare with one fresh draw per receiver.
+The CLI equivalent is:
+
+```bash
+ludus render-graph new graphs/RoughPair --template rough-pair-slice --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. The template requires Metal or Vulkan compute.
+It runs on a built-in analytic fixture with a fixed light endpoint and two
+rough patches. The image is a grid of receiver integrals. World geometry,
+materials, lights and camera pose are outside this fixture. Each configuration
+accumulates up to 4096 samples before tone mapping, at one quarter of the
+drawable width and height by default.
+
+To reuse the cached configuration in another graph, find the same entry
+in **Quick Add** or **Apply Configuration Template**. Wire a **Scene**,
+**View**, and **ColorTexture** into the imported subgraph. Send its `color`
+output through **Accumulate → ToneMap** to an **Export**. The Scene and View
+ports are required by the scene compute profile. The first pass fills a
+target-sized path buffer, and the second uses its own path and one shifted
+neighbor path with balance MIS. The last column of an odd-width target
+uses fresh slicing. Edit the analytic fixture in
+`main_shaders/rough_pair_transport.slang` in the generated package.
+
+Use **Capture viewport** in the **Reference** window to read the linear estimate for either graph
+configuration. The [CPU/GPU benchmark](benchmark-scenes.md#coupled-two-rough-reflection-sampler)
+shares the transport code. Its equal-time measurements use a workgroup
+cache. The authored graph uses two ordered passes and a graph Buffer, so
+those timings do not measure this template's dispatch or buffer costs.
 
 ### Render partially coherent diffraction
 
@@ -4477,10 +4514,14 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetEmitterBounds | Precomputed emitter bounding sphere, geometric-normal cone and emission sidedness, for one weight per emitter without a triangle loop |
 | IsSurfaceCovered | Fixed-mip sampled-endpoint alpha coverage, using the same inclusive cutoff as closest-hit traversal, with no ray query; keep uncovered area samples as zero events |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
-| SelectLight / SampleIncidentLight | Optional default source selection and incident-light proposal; SelectLight(scene, queries) uses the invocation stream; no radiance estimate is added |
-| EvaluateLightSelectionPmf / EvaluateLightPdfSolidAngle | Matching source PMF / emitter-endpoint joint solid-angle density |
+| SelectLight / EvaluateLightSelectionPmf | Default uniform source selection and its discrete probability. SelectLight(scene, queries) uses the invocation stream. |
+| SampleIncidentLight(scene, lightIndex, receiver, launch, firstDimension, queries) | Addressed conditional proposal for one source. Returns an IncidentLightSample with its probability and measure. |
+| GetSurfaceLightIndex / GetEnvironmentLightIndex | Resolve the catalog index of an emissive hit or the environment. Return SCENE_INVALID_INDEX when absent. |
+| EvaluateIncidentLightPdfSolidAngle / EvaluateIncidentEnvironmentPdfSolidAngle | Conditional solid-angle densities for a mesh endpoint or an environment direction, excluding source selection. |
+| SampleIncidentLight(scene, selected, receiver, shapeSample) | Explicit-coordinate compatibility overload returning a LightSample with the uniform source PMF. |
+| EvaluateLightPdfSolidAngle / EvaluateEnvironmentPdfSolidAngle | Compatibility helpers returning joint solid-angle densities under uniform source selection. |
 | SelectEmissiveTriangle / EvaluateEmissiveTriangleSelectionPmf | [Power-weighted emissive triangle](#select-emissive-triangles-by-power) at an explicit dimension / that selection's probability for a triangle |
-| EvaluateEnvironment / EvaluateEnvironmentPdfSolidAngle | Environment emission and joint density under the uniform-source proposal |
+| EvaluateEnvironment | Environment emission along a world direction |
 | TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
@@ -4906,6 +4947,37 @@ then sampled uniformly on the triangle. Splitting a triangle does not multiply
 its source selection probability. Emission maps are sampled at the actual UV;
 black texels and back-side one-sided samples remain zero-contribution events.
 The initial environment proposal is uniform sphere, including HDR maps.
+
+The Compute ray tracing template chooses a source at one explicit address, then
+passes the source index and an independent address range to the incident sampler.
+
+```slang
+SelectedLight selected = SelectLight(scene, launch, LIGHT_SELECTION_DIMENSION);
+if (selected.HasSample == false)
+    return float3(0);
+
+IncidentLightSample incident = SampleIncidentLight(
+    scene, selected.LightIndex, receiver, launch, INCIDENT_DIMENSION_FIRST, queries);
+if (incident.HasSample == false)
+    return float3(0);
+
+float probability = selected.SelectionPmf * incident.ConditionalProbability;
+```
+
+Reserve `SCENE_INCIDENT_LIGHT_DIMENSION_COUNT` slots for the default incident
+proposal. Mesh lights read all three slots and the environment reads the last
+two. Directional, point and spot lights read none. The addressed sampler never
+advances the invocation stream. If a needed address is exhausted, it latches the
+invocation failure. A source index outside the catalog returns no sample.
+
+Use the probability product after checking `incident.HasSample` and use
+`TestVisibility` with the incident result to trace its connection. The incident
+probability is a density per steradian for `IncidentLightMeasure::SolidAngle` and
+a mass for `IncidentLightMeasure::Discrete`. Analytic delta samples have
+conditional mass one and zero competing solid-angle density. For MIS after a
+BSDF sample, resolve the source index, evaluate the original selector's PMF at
+the original receiver, and multiply it by the matching conditional density.
+See the [light sampling architecture](../architecture/renderer-systems.md#unified-light-discovery-and-incident-sampling).
 
 ### Select emissive triangles by power
 

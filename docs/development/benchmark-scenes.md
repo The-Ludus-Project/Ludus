@@ -279,9 +279,170 @@ samplers. No denoising, outlier clamping or temporal reuse enters these measurem
 
 This experiment does not establish superiority over present-day SOTA. The
 released [PSMS-ReSTIR](https://graphics.cs.utah.edu/research/projects/psms-restir/)
-ReflectivePlane uses zero roughness; a finite-roughness port needs its own
-matching-integral validation. A coupled **two-rough-reflection** benchmark is
-also a separate extension; the one-reflection result does not validate it.
+ReflectivePlane uses zero roughness and a finite-roughness port needs its own
+matching-integral validation.
+
+### Coupled two-rough-reflection sampler
+
+Run this asset-free analytic fixture with the benchmark dependencies above.
+Select a new output directory for each run.
+
+```bash
+python tools/sms-benchmark/benchmark_rough_pair.py \
+  --compiler out/shader-tools/slang/bin/slangc --output out/rough-pair-gpu \
+  --budget gpu --seconds 0.25 --runs 3
+python tools/sms-benchmark/benchmark_rough_pair.py \
+  --compiler out/shader-tools/slang/bin/slangc --output out/rough-pair-wall \
+  --budget wall --seconds 0.50 --runs 3
+```
+
+The fixture isolates the transport from a fixed receiver through two rough
+reflections to a fixed emitter. Two square patches face each other at a unit
+separation. The endpoint-to-patch normal distances are also one unit. Every
+estimator uses the same scalar, scene-linear path integral over the two
+patches, including all three geometry factors and both BSDFs. The endpoint
+positions index separate receiver integrals. All three segments are
+unobstructed and both lobes have finite roughness.
+
+Thanks to Shlomi Steinberg, *Slice Sampling: Importance sampling with an
+auxiliary map* (University of Waterloo draft), sections 4, 6.5 and 7, for the
+fresh proposal and same-seed shift. The benchmark uses a reciprocal rough
+lobe: a Gaussian of the sum of the two warped slopes, with componentwise
+warp `w(t) = t (1 + k |t|)`. The frozen conditional samples by subtracting the
+known warped slope from a Gaussian residual and applying the inverse warp.
+The conditional PDF includes the sampled slope's warp derivative. The BSDF
+itself uses the symmetric Gaussian factor. Its hemispherical reflectance is
+bounded by one because the warp derivative is at least one and the
+projected-solid-angle measure per unit slope area is at most one.
+
+- **Fresh slice.** Each axis couples the two patch coordinates through
+  their shared segment. Eliminating the coordinates leaves a strictly
+  increasing scalar equation bracketed by zero and the uncoupled separation.
+  Each full-plane seed therefore has exactly one root. The finite patches
+  restrict the chart, and roots outside either patch count as zero-valued
+  draws. The Gaussian seed density times the full path-to-seed determinant is
+  the proposal subdensity in product area measure. An unresolved numerical
+  solve fails the benchmark.
+- **BDPT with MIS.** The fixed-endpoint baseline uses the three ways to split
+  the two internal vertices between the subpaths. It samples the two
+  endpoint directions independently, or extends one cosine-sampled endpoint
+  direction by one BSDF sample from either side before connecting to the
+  opposite endpoint. It chooses one split uniformly per draw and evaluates
+  all three PDFs in the same area measure for one-sample balance MIS. See
+  [Veach, Chapters 9 and 10](https://graphics.stanford.edu/papers/veach_thesis/).
+- **Same-seed shift.** Draw a source path at a receiver offset by 0.4 units
+  and replay its two Gaussian residuals at the target receiver. The matched
+  chart is unique. The forward area Jacobian is the ratio of source to
+  target path-to-seed determinants. The shifted PDF is the source PDF
+  divided by that Jacobian. Mix shifted and fresh target draws equally.
+  Reverse mapping determines where the shifted proposal contributes to the
+  mixture PDF. The fresh half covers paths whose reverse root lies off the
+  source patch. The experiment generates source paths on demand and times
+  that work. See [Lin et al., GRIS](https://research.nvidia.com/labs/rtr/publication/lin2022generalized/)
+  for the support contract for shift mappings.
+
+The float64 CPU oracle uses bracketed bisection, and the Slang GPU kernel
+uses safeguarded Newton iteration. The parity probe compares 4,096 matched
+draws per method, including patch membership, positions, proposal densities
+and raw contributions. It checks GPU shift round trips against the original
+source positions and checks the Jacobian against a CPU finite difference.
+The benchmark integrates the physical contribution directly by Gauss–Legendre
+quadrature at orders 30 and 34, splitting at slope sign changes. Each
+receiver estimate must agree with the refined integral within six estimated standard errors plus an absolute
+tolerance of `1e-5`. `--probe-only` runs the paired checks without timing or
+quadrature. The timed comparison uses physical GPU timestamps or completed
+wall time, with independent seeds and rotated estimator order. Cold shader
+compilation, warm-up and final output readback are outside both budgets.
+Read `report.json` for actual budgets, counts, null rates and RMSE, and
+`linear.npz` for raw per-receiver values and errors.
+
+On Apple M5 Metal with Slang 2026.1.2 and wgpu 0.32.0, the two quadrature
+orders differed by at most `3.22e-10` over the 8 × 8 receiver grid. The paired
+probe checked 1,382 accepted shifts, with a maximum round-trip coordinate
+error of `4.72e-6` world units and a maximum absolute Jacobian discrepancy of
+`6.99e-6` against the CPU oracle. The probe also exercised 282 fresh draws
+outside the shifted support.
+
+| Estimator | Median RMSE at 0.25 s GPU | Median RMSE at 0.50 s wall | Approximate null rate |
+| --- | ---: | ---: | ---: |
+| Fresh slice | 6.93e-6 | 7.53e-6 | 13.2% |
+| Fixed-endpoint BDPT with MIS | 3.78e-4 | 3.67e-4 | 90.5% |
+| Same-seed shift and fresh mixture | 7.75e-6 | 7.74e-6 | 19.5% |
+
+The medians are over three trials with seeds 1000–1002. Actual timed budgets
+were 0.2501–0.2508 GPU seconds and 0.5000–0.5027 wall seconds. Fresh slice
+reduced median wall-time RMSE by about 49× relative to BDPT with MIS on this
+fixture. Generating source paths on demand gave the shift mixture slightly
+higher median RMSE than fresh slice in both budgets.
+
+The [rough pair render graph template](render-graph-authoring.md#preview-two-rough-reflections-with-slice-sampling)
+shares this sampler. The equal-time measurements below use the benchmark's
+workgroup cache, while the authored graph runs two passes through a graph Buffer.
+
+#### Reuse cached paths across neighboring receivers
+
+The optional `cached-neighbors` estimator pairs consecutive receivers
+horizontally, keeping the last receiver of an odd-width row fresh. Each
+receiver draws one fresh path per round. A GPU workgroup stores the solved
+positions, source density and failure status in shared memory so the paired
+receiver can replay that path's seed. Alternating cache slots let each round
+publish with one workgroup barrier. The cache is rebuilt from independent
+draws every round. The two receivers in a pair have correlated estimates.
+
+For a target path, the shifted proposal has the fresh target density wherever
+the reverse root belongs to the source patches. The same seed has the same
+Gaussian density on either chart, and the area Jacobian converts between the
+two. Each round sums the fresh and shifted contributions with multi-sample
+balance MIS. The fresh draw gets half weight where both proposals cover it
+and full weight elsewhere. An accepted shifted draw gets half weight after
+division by its shifted PDF. A null source or off-patch shift contributes
+zero. The GPU checks reverse support by bounding the monotone separation
+equation with the four patch edges. Near a boundary it uses the ordinary
+inverse solve. See [Veach, Chapter 9](https://graphics.stanford.edu/papers/veach_thesis/)
+for the multi-sample balance heuristic.
+
+```bash
+python tools/sms-benchmark/benchmark_rough_pair.py \
+  --compiler out/shader-tools/slang/bin/slangc --output out/rough-cache-gpu \
+  --methods slice cached-neighbors --budget gpu --seconds 0.25 --runs 7
+python tools/sms-benchmark/benchmark_rough_pair.py \
+  --compiler out/shader-tools/slang/bin/slangc --output out/rough-cache-wall \
+  --methods slice cached-neighbors --budget wall --seconds 1.00 --runs 7
+```
+
+Both budgets include fresh path generation, cache publication, shifting,
+MIS and accumulation. The wall budget also includes dispatch and timestamp
+readback. The report's sample counts, null rates and variance refer to whole
+rounds, each of which includes one fresh draw and, where paired, one shifted
+draw. The CPU cache oracle uses bisection for reverse support. The GPU parity
+probe uses four consecutive rounds per lane on an odd-width grid to check
+cache slot turnover, singleton receivers, null source paths, off-target
+shifts, fresh-only coverage, PDFs, Jacobians and weighted contributions.
+
+On the same Apple M5 Metal setup, the cache passed 10,368 paired CPU/GPU
+rounds, including 8,470 accepted shifts and 110 draws whose support came
+only from the fresh proposal. The largest absolute discrepancy was
+`2.54e-6` in weighted linear radiance and `7.22e-6` in the Jacobian.
+Both timed estimators agreed with independent quadrature across the 8 × 8 grid.
+
+| Estimator | Median RMSE at 0.25 s GPU | Median RMSE at 1.00 s wall | Mean variance per round |
+| --- | ---: | ---: | ---: |
+| Fresh slice | 9.72e-6 | 4.97e-6 | 6.26e-5 |
+| Cached neighbors | 1.13e-5 | 4.74e-6 | 4.99e-5 |
+
+Each budget used seeds 1000–1006, rotating estimator order. Completed times
+were 0.2500–0.2519 GPU seconds and 1.0001–1.0031 wall seconds. A shorter
+wall-time pilot had a host scheduling overrun, so the table uses the
+one-second rerun. The cache cut mean variance per round by about 20%, but
+completed about 22% fewer rounds at equal GPU time. Its median RMSE was
+about 17% higher at equal GPU time and 5% lower at equal wall time, where
+it had lower error in five of the seven trials. These measurements give
+mixed evidence for an equal-time advantage.
+
+The benchmark covers one regular chart with a reciprocal analytic lobe.
+Curved geometry and real materials still require root enumeration and a
+comparison against a full scene BDPT integrator. Spatial and temporal
+reservoirs would require their own reuse estimator and validation.
 
 ## Ludus integration suites
 

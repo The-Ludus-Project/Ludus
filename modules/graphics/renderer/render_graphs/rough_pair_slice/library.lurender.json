@@ -1,0 +1,283 @@
+{
+  "version": 2,
+  "id": "RoughPairSliceLibrary",
+  "default": "CachedNeighbors",
+  "configurations": [
+    {
+      "id": "CachedNeighbors",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "color",
+          "type": "ColorTexture",
+          "source": "reuse.color",
+          "required": true
+        }
+      ],
+      "nodes": [
+        {
+          "id": "paths",
+          "kind": "Buffer",
+          "bytes_per_pixel": 32,
+          "extent": "RenderSize"
+        },
+        {
+          "id": "generate",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "paths",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "paths",
+              "type": "Buffer",
+              "target": "paths",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "StoreRoughPairSources"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "TriangleLoop"
+          }
+        },
+        {
+          "id": "reuse",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "paths",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "paths",
+              "type": "Buffer",
+              "target": "paths",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "ShadeRoughPairCached"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "TriangleLoop"
+          }
+        },
+        {
+          "id": "cacheSize",
+          "kind": "RenderSize",
+          "extent": "Texture"
+        }
+      ],
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "generate.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "generate.view"
+        },
+        {
+          "from": "input.color",
+          "to": "generate.color"
+        },
+        {
+          "from": "input.scene",
+          "to": "reuse.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "reuse.view"
+        },
+        {
+          "from": "paths.buffer",
+          "to": "generate.paths"
+        },
+        {
+          "from": "generate.paths",
+          "to": "reuse.paths"
+        },
+        {
+          "from": "generate.color",
+          "to": "reuse.color"
+        },
+        {
+          "from": "input.color",
+          "to": "cacheSize.texture"
+        },
+        {
+          "from": "cacheSize.size",
+          "to": "paths.size"
+        }
+      ]
+    },
+    {
+      "id": "FreshSlice",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "color",
+          "type": "ColorTexture",
+          "source": "fresh.color",
+          "required": true
+        }
+      ],
+      "nodes": [
+        {
+          "id": "fresh",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "ShadeRoughPairFresh"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "TriangleLoop"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "fresh.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "fresh.view"
+        },
+        {
+          "from": "input.color",
+          "to": "fresh.color"
+        }
+      ]
+    }
+  ]
+}
