@@ -1708,7 +1708,10 @@ void MainWindow::RenderStatus()
     // Each problem is said once: the banner and Error List carry the full text, so this line keeps
     // the short reason (the result code and a pointer to the repair) and nothing that repeats it.
     QString status = phase;
-    if (state.Result.Kind != Outcome::None)
+    // A failed setup check is described by the setup problem below, in its own words; a generic code
+    // description beside it would say something different about the same event.
+    const bool isResultExplainedBySetup = hasSetupProblem == true && state.Result.Kind == Outcome::Failed;
+    if (state.Result.Kind != Outcome::None && isResultExplainedBySetup == false)
     {
         status += QStringLiteral("  —  last result: %1").arg(DescribeResultCode(state.Result.Code));
         if (hasSetupProblem == false && state.Result.Message.isEmpty() == false)
@@ -1727,9 +1730,11 @@ void MainWindow::RenderStatus()
     {
         // The banner already shows the problem with its Repair button; only a hidden banner
         // leaves this line to say what is wrong.
-        status +=
-            QStringLiteral("  —  ") + (isSetupNoticeShown == true ? QStringLiteral("Setup needs repair")
-                                                                  : DescribeSetupProblem(state.SetupProblem).Headline);
+        status += QStringLiteral("  —  ") +
+                  (isSetupNoticeShown == true
+                       ? (mSetupNoticeStage == SetupNoticeStage::Working ? QStringLiteral("Setup in progress")
+                                                                         : QStringLiteral("Setup needs repair"))
+                       : DescribeSetupProblem(state.SetupProblem).Headline);
     }
     else if (setupSummary.isEmpty() == false &&
              (resultSummary.isEmpty() == true || setupSummary.contains(resultSummary) == false))
