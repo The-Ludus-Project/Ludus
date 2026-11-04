@@ -1641,8 +1641,8 @@ class PolygonalLightSamplingTemplateTests(unittest.TestCase):
         shaders = root.with_name('main_shaders')
         shade = shaders.joinpath('shade.slang').read_text()
         light = shaders.joinpath('polygonal_light.slang').read_text()
-        for call in ('GetEmitterCount', 'GetEmitterTriangle', 'GetMaterial', 'GetSurfaceHit', 'EvaluateEmission',
-                     'TestVisibility', 'TraceAndStoreHitRecord', 'TryLoadHitRecord'):
+        for call in ('GetLightCount', 'GetLightInfo', 'SampleIncidentLight', 'GetEmitterTriangle', 'GetMaterial',
+                     'GetSurfaceHit', 'EvaluateEmission', 'TestVisibility', 'TraceAndStoreHitRecord', 'TryLoadHitRecord'):
             self.assertIn(call, shade)
         for call in ('LookupSpecularLtc', 'ComputeSpecularLtcAlbedo', 'TryMakeLinearlyTransformedCosine',
                      'TryPrepareProjectedSolidAnglePolygon', 'TryPrepareLinearlyTransformedCosinePolygon',
@@ -1679,16 +1679,18 @@ class PolygonalLightSamplingTemplateTests(unittest.TestCase):
                                                       'POLYGONAL_LIGHT_DIMENSION_FIRST',
                                                       'POLYGONAL_LIGHT_DIMENSIONS_PER_LIGHT',
                                                       'PROJECTED_SOLID_ANGLE_SAMPLE_DIMENSION_OFFSET',
-                                                      'LTC_SAMPLE_DIMENSION_OFFSET', 'MAX_POLYGONAL_LIGHT_COUNT')],
+                                                      'LTC_SAMPLE_DIMENSION_OFFSET', 'MAX_LIGHT_SAMPLE_SLOTS')],
                          [0, 2, 2, 4, 0, 2, 128])
         # Both MIS passes trace two shadow rays per triangle: the random layout covers the capture budget, and the
         # shader checks the count against whichever budget was linked.
         manifest = json.loads(root.with_name('main.lushader.json').read_text())
         technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
-        self.assertEqual(evaluate('SHADOW_QUERIES_PER_MIS_LIGHT') * evaluate('MAX_POLYGONAL_LIGHT_COUNT'),
+        self.assertEqual(evaluate('SHADOW_QUERIES_PER_MIS_LIGHT') * evaluate('MAX_LIGHT_SAMPLE_SLOTS'),
                          technique['scene_interface']['capture_visibility_queries'])
-        self.assertIn('lightCount * SHADOW_QUERIES_PER_MIS_LIGHT > queries.MaximumVisibilityQueries',
-                      shaders.joinpath('shade.slang').read_text())
+        shade = shaders.joinpath('shade.slang').read_text()
+        self.assertIn('triangleCount + otherCount > MAX_LIGHT_SAMPLE_SLOTS', shade)
+        self.assertIn('triangleCount * SHADOW_QUERIES_PER_MIS_LIGHT + otherCount > queries.MaximumVisibilityQueries',
+                      shade)
         # Every pass reads explicit addresses, never the automatic stream.
         for kernel in ('shade', 'hit_record', 'polygonal_light'):
             source = shaders.joinpath(f'{kernel}.slang').read_text()

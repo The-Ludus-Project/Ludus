@@ -624,6 +624,9 @@ renders RT1 in both modes. Its usage is under
     factor, which bounds the textured emission from above.
   - The surface finishes match the template's diffuse and specular variants. Each
     finish runs with direct lighting only (`MaxDepth` 1) and at depth 4.
+  - The mixed-light diffuse case runs at depth 4 with a 5 × 5 grid (50 emissive
+    triangles), one directional light through the open front, and a constant
+    sky. The grid preserves the total emissive area of the 40 × 40 field.
 - **Timing.**
   - Each mode renders 32 samples per pixel of the 288 × 192 image twice, in the
     order `UniformArea`, resampled, resampled, `UniformArea`.
@@ -960,7 +963,29 @@ What the RT1 results show:
   time `M = 8` saves. Version 3 therefore freezes `M = 32` and `K = 8`, version 2's
   counts. `K = 4` at `M = 32` was not measured in RT1.
 
+#### Mixed-light and many-emitter measurements
 
+Both diffuse rooms ran at depth 4 on Apple M5 (Metal, macOS 26.6) with
+`macos-clang-development` (Clang 23.1.3, Slang 2026.1.2), November 4, 2026.
+Run the GPU benchmark with Catch2's `-c 'diffuse room, depth 4'` or
+`-c 'mixed-light diffuse room, depth 4'` to select the scene. Both use the timing
+and independent 8192-sample reference described above. Each error cell gives
+guarded MAPE / linear RMSE for direct plus indirect lighting. The matched-time
+sample counts and kernel timings are from one run per scene on a shared machine.
+
+| Scene | Resampled mode | Kernel ms/sample, resampled / `UniformArea` | Resampled at 64 spp | `UniformArea` at 64 spp | `UniformArea` at equal time |
+| --- | --- | --- | --- | --- | --- |
+| 3200 emissive triangles | Projected solid angle | 159.39 / 2.00 | 0.0504 / 0.0248 | 0.0782 / 0.0448 | 0.0122 / 0.0064 (5096 spp) |
+| 3200 emissive triangles | Form factor | 19.65 / 2.00 | 0.0505 / 0.0248 | 0.0782 / 0.0448 | 0.0274 / 0.0147 (628 spp) |
+| 50 emissive triangles, Sun and sky | Projected solid angle | 185.87 / 1.99 | 0.1061 / 0.0848 | 0.1129 / 0.0904 | 0.0160 / 0.0122 (5977 spp) |
+| 50 emissive triangles, Sun and sky | Form factor | 20.82 / 1.99 | 0.1061 / 0.0848 | 0.1129 / 0.0904 | 0.0383 / 0.0291 (669 spp) |
+
+Both resampled modes lower 64-sample RMSE by about 45% in the many-emitter
+room and 6% in the mixed-light room. `UniformArea` has lower error at all three
+matched-time budgets (4, 16 and 64 resampled spp) in both rooms. These are
+comparisons of complete RT1 sampling modes. To measure the effect of source
+selection on its own, keep the incident proposal fixed and vary the source
+selection PMF.
 
 ## Ownership
 
