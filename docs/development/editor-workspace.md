@@ -37,6 +37,7 @@ central document well, and **tool windows** dock around it (see
 | Start Page | New/Open and recent projects while no project is open |
 | World | 2D/3D placement, game-owned entities/components, typed fields, references, shared history/save/recovery and trusted preview |
 | Render Graph | The open render-graph package: its source tree beside the node **Canvas**, the **Source** text editor and the validated **Plan** ([render-graph authoring](render-graph-authoring.md)) |
+| Code | Any project text file as a code tab: shared buffer, atomic save, external-change conflicts, crash recovery and the code status bar ([code editor](code-editor.md)) |
 | Project Settings | Setup/engine overview, lifecycle actions, rendering resolution/scale, name/profile and expandable build/launch details |
 | Scripts | Project-owned script and sequence drafts |
 | Audio | Content selection, definitions, save and preview |
@@ -554,6 +555,10 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   and **Warnings** counts from the Error List open that tool window when
   clicked. The chip applies at most ten changes a second, so a fast job cannot
   flicker the status bar.
+- When a **code** view is active, the status bar also shows that view's cursor
+  position, selection, indentation, encoding, line endings, language and
+  language-server state; position, language and line endings are clickable to
+  change where the current milestone supports it ([code editor](code-editor.md#status-bar)).
 - **Tools → Options...** edits editor preferences. Its **Render Graph** page
   holds the advanced shader-tool overrides and the native shader worker socket
   ([build settings](render-graph-authoring.md#build-settings)).

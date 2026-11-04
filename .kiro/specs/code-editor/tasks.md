@@ -144,25 +144,27 @@ Observations for later milestones:
 
 Requirements: CE01-CE04, CE20, CE22, CE23. Prerequisite: M0.
 
-- [ ] Implement the file document host (design section 3), including
+- [x] Implement the file document host (design section 3), including
   thresholds, read-only invalid UTF-8, atomic save, external-change conflicts
   and EditorConfig.
-- [ ] Implement the code document registry, preview tabs, two editor groups,
+- [x] Implement the code document registry, preview tabs, two editor groups,
   view mirroring and restoring tabs per project.
-- [ ] Route Project Explorer, Quick Open, Error List and navigation to code
+- [x] Route Project Explorer, Quick Open, Error List and navigation to code
   tabs. Files owned by a render-graph package open its Source pane. Keep Open
   Externally.
-- [ ] Move the Scripts work area's text onto `CodeEditor` through a script host,
+- [x] Move the Scripts work area's text onto `CodeEditor` through a script host,
   keeping S5 draft, Save, reload and source-stop behavior.
-- [ ] Add code-buffer recovery and the dirty-close prompts.
-- [ ] Add the status bar items: position, selection count, indentation,
+- [x] Add code-buffer recovery and the dirty-close prompts.
+- [x] Add the status bar items: position, selection count, indentation,
   encoding, line endings, language and tool state.
-- [ ] Update the user guide: create `docs/development/code-editor.md`, register
+- [x] Update the user guide: create `docs/development/code-editor.md`, register
   it, and update `editor-workspace.md`.
 
 Gate: every listed file type opens, edits, saves, conflicts and recovers in
 offscreen tests and a recorded native run; existing render-graph and Scripts
-tests pass.
+tests pass. See the [M1 gate report](../../../docs/architecture/code-editor-decision-log.md#m1-gate-report-2026-11-04);
+every native item is **pending host verification** because the PR CI skips the
+editor build and tests and this sandbox has no Qt6/pinned toolchain.
 
 ## M2 - Editing parity
 

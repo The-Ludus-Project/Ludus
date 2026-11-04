@@ -72,6 +72,7 @@ nav:
       - Current capabilities: wiki/getting-started/status.md
   - Guides:
       - Editor workspace: development/editor-workspace.md
+      - Code editor: development/code-editor.md
       - Browser editor: wiki/guides/browser-editor.md
       - Build, run and debug: wiki/guides/build-and-debug.md
       - Projects and setup repair: development/project-sdk-workflow.md
