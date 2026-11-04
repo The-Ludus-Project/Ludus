@@ -358,6 +358,8 @@ private:
     void serviceGpuTiming(bool shouldArm) noexcept;
     bool mIsGpuProfilingEnabled = false;
     void serviceGpuPassTimings(bool shouldArm) noexcept;
+    /// Fold one completed per-pass batch into the overlay's per-scope averages.
+    void recordPassStatistics(const graphics::rhi::GpuPassTimings& batch);
     bool mIsPassTimingSupported = false;
     bool mIsPassTimingArmed = false;
     bool mHasPassTimingAssociation = false;

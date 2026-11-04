@@ -4,6 +4,7 @@
 #include "internal/preview_shading.h"
 #include "internal/reference_capture_window.h"
 #include "internal/theme_colour.h"
+#include "internal/viewport_pass_bars.h"
 #include "internal/viewport_screenshot.h"
 #include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
@@ -240,11 +241,28 @@ QSizeF MeasureStatistics(const QString& text)
     const QRectF bounds = QFontMetricsF(GetStatisticsFont()).boundingRect(QRectF(), Qt::AlignLeft, text);
     return {bounds.width() + 2 * STATISTICS_PADDING, bounds.height() + 2 * STATISTICS_PADDING};
 }
+/// Draw the pass bars behind the last lines of the text, which are the pass rows.
+void PaintPassBars(QPainter& inoutPainter, const QString& text, const QRectF& panel, const ViewportPassBars& bars)
+{
+    if (bars.RowCount == 0)
+    {
+        return;
+    }
+    const qsizetype lineCount = text.count(QLatin1Char('\n')) + 1;
+    const qsizetype firstRow = lineCount - static_cast<qsizetype>(bars.RowCount + bars.TrailingLines);
+    PaintViewportPassBars(
+        inoutPainter,
+        panel.adjusted(STATISTICS_PADDING, STATISTICS_PADDING, -STATISTICS_PADDING, -STATISTICS_PADDING),
+        QFontMetricsF(GetStatisticsFont()).lineSpacing(),
+        firstRow,
+        bars);
+}
 /// Paint an overlay panel (statistics or live shader status) with its top-left corner at origin.
 void PaintStatistics(QPainter& inoutPainter,
                      const QString& text,
                      QPointF origin,
-                     QRgb background = STATISTICS_BACKGROUND)
+                     QRgb background = STATISTICS_BACKGROUND,
+                     const ViewportPassBars& bars = {})
 {
     if (text.isEmpty() == true)
     {
@@ -256,6 +274,7 @@ void PaintStatistics(QPainter& inoutPainter,
     inoutPainter.setPen(Qt::NoPen);
     inoutPainter.setBrush(QColor::fromRgba(background));
     inoutPainter.drawRoundedRect(panel, STATISTICS_CORNER_RADIUS, STATISTICS_CORNER_RADIUS);
+    PaintPassBars(inoutPainter, text, panel, bars);
     inoutPainter.setFont(GetStatisticsFont());
     inoutPainter.setPen(QColor::fromRgb(STATISTICS_TEXT));
     inoutPainter.drawText(
@@ -383,10 +402,16 @@ public:
         setAntialiasing(true);
         setVisible(false);
     }
-    void SetText(const QString& text, QRgb background = STATISTICS_BACKGROUND)
+    void SetText(const QString& text, QRgb background = STATISTICS_BACKGROUND, const ViewportPassBars& bars = {})
     {
+        const bool hasSameBars = bars.RowCount == mBars.RowCount;
+        mBars = bars;
         if (text == mText && background == mBackground)
         {
+            if (hasSameBars == false)
+            {
+                update();
+            }
             return;
         }
         mText = text;
@@ -397,12 +422,13 @@ public:
     }
     void paint(QPainter* painter) override
     {
-        PaintStatistics(*painter, mText, {0, 0}, mBackground);
+        PaintStatistics(*painter, mText, {0, 0}, mBackground, mBars);
     }
 
 private:
     QString mText;
     QRgb mBackground = STATISTICS_BACKGROUND;
+    ViewportPassBars mBars;
 };
 /// Legend key of the current debug view, anchored to the bottom-left corner of the viewport window.
 class LegendItem final : public QQuickPaintedItem
@@ -506,11 +532,13 @@ public:
         update();
     }
     /// Overlay text painted over the frame; empty hides the statistics panel.
-    void SetStatisticsText(const QString& text)
+    void SetStatisticsText(const QString& text, const ViewportPassBars& bars)
     {
-        if (text != mStatisticsText)
+        const bool isChanged = text != mStatisticsText || bars.RowCount != mStatisticsBars.RowCount;
+        mStatisticsBars = bars;
+        mStatisticsText = text;
+        if (isChanged == true)
         {
-            mStatisticsText = text;
             update();
         }
     }
@@ -564,7 +592,11 @@ protected:
         {
             mInteractionOrNull->Paint(painter, rect());
         }
-        PaintStatistics(painter, mStatisticsText, {STATISTICS_MARGIN, STATISTICS_MARGIN});
+        PaintStatistics(painter,
+                        mStatisticsText,
+                        {STATISTICS_MARGIN, STATISTICS_MARGIN},
+                        STATISTICS_BACKGROUND,
+                        mStatisticsBars);
         PaintStatistics(painter,
                         FitOverlayText(mShaderStatusText, width()),
                         GetShaderStatusOrigin(mStatisticsText),
@@ -591,6 +623,7 @@ private:
     bool mIsOrientationShown = false;
     QImage mImage;
     QString mStatisticsText;
+    ViewportPassBars mStatisticsBars;
     QString mShaderStatusText;
     bool mHasShaderError = false;
 };
@@ -635,6 +668,8 @@ struct PreviewViewport::State final
     uint64 Presented = 0;
     /// Statistics overlay text currently shown; empty while the overlay is off.
     QString StatisticsText;
+    /// Bars behind the pass rows that end StatisticsText; empty when it has none.
+    ViewportPassBars StatisticsBars;
     /// Browser fallback: the engine's DOM canvas covers Qt widgets, so text goes in the toolbar.
     QLabel* StatisticsLabelOrNull = nullptr;
     /// Live shader status shown below the statistics; empty while there is nothing to report.
@@ -849,11 +884,11 @@ private:
     {
         if (StatisticsOrNull != nullptr)
         {
-            StatisticsOrNull->SetText(StatisticsText);
+            StatisticsOrNull->SetText(StatisticsText, STATISTICS_BACKGROUND, StatisticsBars);
         }
         if (CanvasOrNull != nullptr)
         {
-            CanvasOrNull->SetStatisticsText(StatisticsText);
+            CanvasOrNull->SetStatisticsText(StatisticsText, StatisticsBars);
         }
         applyShaderStatus();
     }
@@ -928,7 +963,7 @@ private:
         }
         CanvasOrNull = new FrameCanvas(Widget, QStringLiteral("LudusOffscreenViewport"));
         CanvasOrNull->SetInteraction(Widget->GetObjectInteraction());
-        CanvasOrNull->SetStatisticsText(StatisticsText);
+        CanvasOrNull->SetStatisticsText(StatisticsText, StatisticsBars);
         CanvasOrNull->SetShaderStatusText(ShaderStatusText, HasShaderError);
         applyLegend(Preview->GetShading());
         FrameLayoutOrNull->addWidget(CanvasOrNull);
@@ -1142,7 +1177,7 @@ private:
         ObjectOverlayOrNull = CreateViewportObjectOverlayItem(Widget->GetObjectInteraction(), *Window->contentItem());
         ObjectOverlayOrNull->setSize(Window->size());
         StatisticsOrNull = new StatisticsItem(Window->contentItem(), QStringLiteral("viewportStatisticsOverlay"));
-        StatisticsOrNull->SetText(StatisticsText);
+        StatisticsOrNull->SetText(StatisticsText, STATISTICS_BACKGROUND, StatisticsBars);
         ShaderStatusOrNull = new StatisticsItem(Window->contentItem(), QStringLiteral("viewportShaderStatusOverlay"));
         applyShaderStatus();
         LegendOrNull = new LegendItem(Window->contentItem());
@@ -2035,6 +2070,9 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
         });
         connect(mState->GraphViewOrNull, &WorldGraphView::StatisticsChanged, this, [this]() {
             mState->StatisticsText = mState->GraphViewOrNull->GetStatisticsText();
+            mState->StatisticsBars = Preview_->IsStatisticsVisible() == true
+                                         ? MakeViewportPassBars(Preview_->GetStatistics())
+                                         : ViewportPassBars{};
             mState->applyStatistics();
         });
     }
@@ -2627,6 +2665,9 @@ void PreviewViewport::updateStatistics()
                                                                          Preview_->GetStatistics(),
                                                                          foundation::time::Now().Nanoseconds)
                                          : QString{};
+            mState->StatisticsBars = Preview_->IsStatisticsVisible() == true
+                                         ? MakeViewportPassBars(Preview_->GetStatistics())
+                                         : ViewportPassBars{};
             mState->applyStatistics();
         }
         return;
@@ -2639,6 +2680,8 @@ void PreviewViewport::updateStatistics()
         return;
     }
     mState->StatisticsText = text;
+    mState->StatisticsBars =
+        Preview_->IsStatisticsVisible() == true ? MakeViewportPassBars(Preview_->GetStatistics()) : ViewportPassBars{};
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->StatisticsLabelOrNull->setText(text);
     mState->StatisticsLabelOrNull->setVisible(text.isEmpty() == false);

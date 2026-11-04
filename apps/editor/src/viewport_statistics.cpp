@@ -14,6 +14,51 @@ constexpr int32 MILLISECOND_DECIMALS = 2;
 constexpr int32 FPS_DECIMALS = 1;
 constexpr usize PERCENTILE_NUMERATOR = 95;
 constexpr usize PERCENTILE_DENOMINATOR = 100;
+/// Characters of a pass name shown; longer names keep both ends so "Viewport/Scene" stays readable.
+constexpr int32 PASS_NAME_COLUMNS = 22;
+/// Characters of the right-aligned millisecond value.
+constexpr int32 PASS_VALUE_COLUMNS = 6;
+constexpr int32 PASS_NAME_HEAD_COLUMNS = (PASS_NAME_COLUMNS - 1) / 2;
+constexpr int32 PASS_NAME_TAIL_COLUMNS = PASS_NAME_COLUMNS - 1 - PASS_NAME_HEAD_COLUMNS;
+struct PassRow final
+{
+    usize Index = 0;
+    float64 Milliseconds = 0;
+};
+/// Series with samples, slowest rolling average first; equal times keep first-appearance order.
+usize RankPasses(const ViewportPassStatistics& passes, StaticArray<PassRow, MAX_VIEWPORT_PASS_SERIES>& outRows)
+{
+    usize count = 0;
+    const Array<ViewportPassSeries>& series = passes.GetSeries();
+    for (usize index = 0; index < series.GetSize() && count < outRows.GetSize(); ++index)
+    {
+        if (series[index].Milliseconds.GetCount() == 0)
+        {
+            continue;
+        }
+        outRows[count].Index = index;
+        outRows[count].Milliseconds = series[index].Milliseconds.GetAverage();
+        ++count;
+    }
+    Sort(outRows.GetData(), count, [](const PassRow& left, const PassRow& right) {
+        return left.Milliseconds > right.Milliseconds ||
+               (left.Milliseconds == right.Milliseconds && left.Index < right.Index);
+    });
+    return count;
+}
+QString FormatPassName(const QString& name)
+{
+    if (name.size() <= PASS_NAME_COLUMNS)
+    {
+        return name.leftJustified(PASS_NAME_COLUMNS);
+    }
+    return name.left(PASS_NAME_HEAD_COLUMNS) + QStringLiteral("…") + name.right(PASS_NAME_TAIL_COLUMNS);
+}
+QString FormatPassRow(const QString& label, float64 milliseconds)
+{
+    return QStringLiteral("%1 %2 ms")
+        .arg(label, QString::number(milliseconds, 'f', MILLISECOND_DECIMALS).rightJustified(PASS_VALUE_COLUMNS));
+}
 QString FormatMilliseconds(const RollingAverage& average)
 {
     return average.GetCount() == 0 ? QStringLiteral("…")
@@ -31,6 +76,72 @@ QString FormatTimingSummary(const RollingAverage& average)
         .arg(average.GetMaximum(), 0, 'f', MILLISECOND_DECIMALS);
 }
 } // namespace
+void ViewportPassStatistics::Reset() noexcept
+{
+    mSeries.Clear();
+}
+void ViewportPassStatistics::AddSample(uint64 identity, const QString& name, float64 milliseconds)
+{
+    if (identity == 0 || math::IsFinite(milliseconds) == false || milliseconds < 0)
+    {
+        return;
+    }
+    for (ViewportPassSeries& series : mSeries)
+    {
+        if (series.Identity == identity && series.Name == name)
+        {
+            series.BatchMilliseconds += milliseconds;
+            series.IsInBatch = true;
+            return;
+        }
+    }
+    if (mSeries.GetSize() >= MAX_VIEWPORT_PASS_SERIES)
+    {
+        return;
+    }
+    ViewportPassSeries added;
+    added.Identity = identity;
+    added.Name = name;
+    added.BatchMilliseconds = milliseconds;
+    added.IsInBatch = true;
+    mSeries.Add(Move(added));
+}
+void ViewportPassStatistics::CommitBatch()
+{
+    usize kept = 0;
+    for (usize index = 0; index < mSeries.GetSize(); ++index)
+    {
+        ViewportPassSeries& series = mSeries[index];
+        if (series.IsInBatch == true)
+        {
+            series.Milliseconds.Add(series.BatchMilliseconds);
+            series.StaleBatches = 0;
+        }
+        else
+        {
+            ++series.StaleBatches;
+        }
+        series.BatchMilliseconds = 0;
+        series.IsInBatch = false;
+        if (series.StaleBatches >= VIEWPORT_PASS_STALE_BATCHES)
+        {
+            continue;
+        }
+        if (kept != index)
+        {
+            mSeries[kept] = Move(series);
+        }
+        ++kept;
+    }
+    while (mSeries.GetSize() > kept)
+    {
+        mSeries.RemoveAt(mSeries.GetSize() - 1);
+    }
+}
+const Array<ViewportPassSeries>& ViewportPassStatistics::GetSeries() const noexcept
+{
+    return mSeries;
+}
 void RollingAverage::Add(float64 value) noexcept
 {
     if (math::IsFinite(value) == false || value < 0)
@@ -190,9 +301,11 @@ QString FormatGraphViewportStatistics(const GraphViewportStatistics& statistics,
                                   .arg(FormatTimingSummary(statistics.GetCpuMilliseconds()),
                                        gpu,
                                        FormatMilliseconds(statistics.GetReadbackMilliseconds()));
+    const QString passes = FormatViewportPassLines(deviceStatistics);
+    const QString passText = passes.isEmpty() == true ? QString() : QLatin1Char('\n') + passes;
     if (statistics.IsInspectionEnabled() == false)
     {
-        return frameText + QStringLiteral("\nInspection: paused");
+        return frameText + QStringLiteral("\nInspection: paused") + passText;
     }
     return frameText +
            QStringLiteral(
@@ -200,17 +313,76 @@ QString FormatGraphViewportStatistics(const GraphViewportStatistics& statistics,
                .arg(FormatMilliseconds(statistics.GetInspectionCpuMilliseconds()),
                     FormatMilliseconds(statistics.GetInspectionReadbackMilliseconds()),
                     FormatMilliseconds(statistics.GetConversionWorkMilliseconds()),
-                    FormatMilliseconds(statistics.GetConversionElapsedMilliseconds()));
+                    FormatMilliseconds(statistics.GetConversionElapsedMilliseconds())) +
+           passText;
+}
+QString FormatViewportPassLines(const ViewportStatistics& statistics)
+{
+    if (statistics.PassState == ViewportPassTimeState::Unavailable)
+    {
+        return QStringLiteral("Passes: n/a");
+    }
+    StaticArray<PassRow, MAX_VIEWPORT_PASS_SERIES> rows;
+    const usize count = RankPasses(statistics.Passes, rows);
+    if (statistics.PassState != ViewportPassTimeState::Available || count == 0)
+    {
+        return QString();
+    }
+    float64 total = 0;
+    for (usize index = 0; index < count; ++index)
+    {
+        total += rows[index].Milliseconds;
+    }
+    QString text = QStringLiteral("Passes: %1 ms").arg(total, 0, 'f', MILLISECOND_DECIMALS);
+    const usize shown = math::Min(count, MAX_VIEWPORT_PASS_ROWS);
+    for (usize index = 0; index < shown; ++index)
+    {
+        const QString& name = statistics.Passes.GetSeries()[rows[index].Index].Name;
+        text += QLatin1Char('\n') + FormatPassRow(FormatPassName(name), rows[index].Milliseconds);
+    }
+    if (count > shown)
+    {
+        float64 remainder = 0;
+        for (usize index = shown; index < count; ++index)
+        {
+            remainder += rows[index].Milliseconds;
+        }
+        text +=
+            QLatin1Char('\n') +
+            FormatPassRow(QStringLiteral("+%1 more").arg(count - shown).leftJustified(PASS_NAME_COLUMNS), remainder);
+    }
+    return text;
+}
+ViewportPassBars MakeViewportPassBars(const ViewportStatistics& statistics)
+{
+    ViewportPassBars bars;
+    StaticArray<PassRow, MAX_VIEWPORT_PASS_SERIES> rows;
+    const usize count = RankPasses(statistics.Passes, rows);
+    if (statistics.PassState != ViewportPassTimeState::Available || count == 0)
+    {
+        return bars;
+    }
+    bars.RowCount = math::Min(count, MAX_VIEWPORT_PASS_ROWS);
+    bars.TrailingLines = count > bars.RowCount ? 1 : 0;
+    const float64 slowest = rows[0].Milliseconds;
+    for (usize index = 0; index < bars.RowCount; ++index)
+    {
+        bars.Fractions[index] = slowest > 0 ? static_cast<float32>(rows[index].Milliseconds / slowest) : 0.0F;
+    }
+    bars.SlowestRow = 0;
+    return bars;
 }
 QString FormatViewportStatistics(const ViewportStatistics& statistics)
 {
     const QString gpu = statistics.GpuState == ViewportGpuTimeState::Unavailable
                             ? QStringLiteral("n/a")
                             : FormatTimingSummary(statistics.GpuMilliseconds);
-    return QStringLiteral("GPU: %1\nCPU: %2\n%3×%4 · draws %5")
-        .arg(gpu, FormatTimingSummary(statistics.CpuMilliseconds))
-        .arg(statistics.Width)
-        .arg(statistics.Height)
-        .arg(statistics.Draws);
+    const QString text = QStringLiteral("GPU: %1\nCPU: %2\n%3×%4 · draws %5")
+                             .arg(gpu, FormatTimingSummary(statistics.CpuMilliseconds))
+                             .arg(statistics.Width)
+                             .arg(statistics.Height)
+                             .arg(statistics.Draws);
+    const QString passes = FormatViewportPassLines(statistics);
+    return passes.isEmpty() == true ? text : text + QLatin1Char('\n') + passes;
 }
 } // namespace ludus::editor
