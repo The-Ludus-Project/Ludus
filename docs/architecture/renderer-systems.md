@@ -1231,6 +1231,116 @@ Full path tracing evaluates supported emitters and scattering directly; it does
 not also add baked lighting, ambient occlusion or prefiltered IBL approximations.
 Record any intentionally mixed approximation in the capture's rendering profile.
 
+### Unified light discovery and incident sampling
+
+**Status: proposed.** Scene shaders already enumerate analytic lights, mesh
+emitters and the environment through `GetLightCount` and `GetLightInfo`.
+Today the default incident sampler recomputes the uniform source probability,
+and the mesh-hit and environment PDF helpers assume that same uniform selection.
+A graph that changes how it chooses a light must also replace the PDF used when
+a BSDF ray reaches it. Callers also supply a `float3` even when the selected light
+requires no random coordinates. The proposed contract separates these decisions.
+
+#### Scene ownership and source identity
+
+Publish one logical catalog of light sources with each ready ray scene
+snapshot. Each entry has a kind, a stable source ID and a compact index local to
+that snapshot. Start with the existing packed scene data and typed light lookup.
+Analytic lights use their authored identity, an emissive mesh light is an
+instance and emitting material slot, and the environment is the aggregate
+background source. Triangles are primitives of a mesh light. Tessellation alone
+does not change the number of sources. A mesh hit can resolve its catalog entry
+and primitive directly so a BSDF sample can evaluate the light proposal.
+
+Keep catalog data, geometry, emission and proposal data in the same snapshot
+lifetime. An index may be reused in a later generation. Passes that reuse
+samples validate the generation and resolve stable IDs when reuse across
+generations is supported. A rejected scene replacement keeps the previous
+ready snapshot drawable. A source kind whose emission or sampling contract is
+unavailable is handled by the profile's explicit capability and admission
+rules. This includes specialized panel luminaires, whose beam proposal needs
+its own integration before they can participate in the default selector.
+
+#### Selection, sampling and weighting
+
+| Operation | Contract |
+| --- | --- |
+| Enumerate sources | Return the source count and checked typed records from the scene snapshot. Graphs can enumerate sources for deterministic summation, diagnostics or custom proposals. |
+| Select a source | Given a receiver and a selection random address, return a catalog index and the discrete probability mass (PMF) of choosing it. The selector also evaluates that PMF for a specified source at the original receiver. An empty supported set returns no sample. |
+| Sample incident light | Given a source, a receiver and an incident random address, dispatch by light kind. Return the world-space incident direction, incident coefficient before BSDF and visibility, an endpoint or an infinite connection, and the conditional probability and its measure. The sampler never selects a source or tests visibility. |
+| Evaluate the incident PDF | Given the original receiver and an emitter hit or environment direction, evaluate the same conditional proposal as incident sampling. The evaluator uses the same proposal parameters and support. |
+| Integrate | Evaluate the BSDF and receiver cosine, trace visibility, and weight the result. Integrators can substitute a proposal for a source kind if they supply the corresponding probability evaluation wherever MIS requires it. |
+
+For a continuous incident sample, the probability used by the direct estimator
+is the source PMF times the conditional solid-angle density at the receiver.
+Convert an area proposal to solid angle using the sampled endpoint geometry.
+For a delta source, use a conditional mass of one for its sampled event and
+a continuous directional density of zero when comparing with a BSDF proposal.
+The measure tag controls which probabilities can be compared in MIS. On a BSDF
+hit or environment miss, evaluate the same selector and incident proposal from
+the previous receiver. An integrator that explicitly sums all sources uses only
+the per-source conditional weights. Zero emission, a masked endpoint under a
+profile that samples it, and occlusion give zero contribution with no retry.
+Invalid inputs and exhausted budgets use the existing explicit failure channel.
+
+The ray renderer owns both selection and incident sampling. Keep the uniform
+catalog selector as the general baseline. Reference capture keeps its existing
+distributions as named proposals, including the category draw and conditional
+emitter selection. A hierarchical proposal must include the probability of each
+decision in its evaluated density. A power table or receiver-dependent light
+tree can replace the uniform selector once a representative workload shows a
+benefit and matching PMF evaluation is available. The catalog API does not
+require a light list scan for every shaded point.
+
+#### Random addresses and implementation order
+
+Use independently addressed slots for source selection, incident sampling and
+BSDF continuation. Address ownership belongs to the integrator's sampler
+layout, including its pass, bounce and candidate indexing where applicable.
+The incident sampler owns the draws within its assigned address range.
+
+| Chosen kind | Draws within the incident proposal |
+| --- | --- |
+| Directional, point or spot | Zero. Direction and falloff follow from the source and receiver. |
+| Environment | Two for the baseline sphere-direction proposal. |
+| Emissive mesh | Three for the baseline proposal: one for triangle selection and two for the surface point. |
+
+Use only the coordinates required by the selected proposal. Skipping a draw
+leaves addresses for subsequent BSDF or roulette decisions intact. Existing
+explicit-coordinate and sequential-stream shader calls retain their contracts
+during migration. Changes to reference sample addressing or proposal semantics
+require the owning sampler version and accumulation identity to reflect the
+change.
+
+1. Add kind-owned draws and separate source PMF from conditional incident
+   sampling and PDF evaluation over the existing scene layout. Migrate a
+   built-in direct-light graph through its ordinary entry point. Use the
+   polygonal graph to exercise a custom mesh proposal alongside the default
+   proposals for analytic lights and the environment.
+2. Migrate the CPU oracle and GPU reference together under the
+   [reference acceptance contract](#cpu-and-gpu-reference-implementation-requirement).
+   Keep the renderer profiles' documented integrals and coverage explicit.
+3. Before adopting a different storage layout or selector, measure variance
+   and device time on mixed-light and many-emitter scenes. Keep the uniform
+   selector available as a baseline.
+
+Acceptance covers sampled versus evaluated probabilities for mesh endpoints
+and environment directions, delta mass versus solid-angle density, zero
+incident draws for analytic sources, stable later random addresses, and
+mixed scenes where each source can contribute. Exercise empty catalogs,
+disabled sources, scene replacement and the applicable ray budgets. Compare
+raw linear CPU and GPU results under the same reference proposal and documented
+tolerances. Include an authored graph using the existing sampling API in the
+compatibility check.
+
+Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, *Physically Based
+Rendering: From Theory to Implementation*, fourth edition, sections
+[12.1](https://pbr-book.org/4ed/Light_Sources/Light_Interface) and
+[12.6](https://pbr-book.org/4ed/Light_Sources/Light_Sampling), for the
+separation between source selection and per-light sampling and the treatment of
+delta distributions. Ludus uses indexed scene snapshots and explicitly
+addressed randomness for its CPU and shader paths.
+
 ### CPU and GPU reference implementation requirement
 
 Building or extending a reference path tracer requires both a CPU oracle and a
