@@ -29,6 +29,7 @@ class QTabWidget;
 namespace ludus::editor
 {
 class CapturedImageView;
+class GraphComparisonWindow;
 class RenderGraphCaptureProfile;
 class RenderGraphLibraryCapture;
 class RenderGraphPreview;
@@ -171,6 +172,9 @@ private:
     QPointer<RenderPreview> mPreview;
     ViewportReferenceCapture mCapture;
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    void openGraphComparison();
+    QPointer<GraphComparisonWindow> mGraphComparison;
+    QPushButton* mCompareGraphsOrNull = nullptr;
     QPointer<RendererWorkspace> mProjectWorkspace;
     QPointer<RenderGraphPreview> mProjectGraph;
     QPointer<RenderGraphCaptureProfile> mCaptureProfile;

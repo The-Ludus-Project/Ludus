@@ -4,6 +4,7 @@
 #include "internal/reference_comparison.h"
 #include "internal/render_preview.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/graph_comparison_window.h"
 #    include "internal/render_graph_capture_profile.h"
 #    include "internal/render_graph_preview.h"
 #endif
@@ -181,6 +182,12 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     QHBoxLayout* buttons = new QHBoxLayout;
     buttons->addWidget(mCaptureButton);
     buttons->addWidget(mStopButton);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mCompareGraphsOrNull = new QPushButton(QStringLiteral("Compare graphs…"), this);
+    mCompareGraphsOrNull->setObjectName(QStringLiteral("referenceCompareGraphs"));
+    buttons->addWidget(mCompareGraphsOrNull);
+    connect(mCompareGraphsOrNull, &QPushButton::clicked, this, &ReferenceCaptureWindow::openGraphComparison);
+#endif
     buttons->addStretch(1);
     buttons->addWidget(mSaveButton);
 
@@ -267,6 +274,13 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
 
 ReferenceCaptureWindow::~ReferenceCaptureWindow()
 {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mGraphComparison.isNull() == false)
+    {
+        disconnect(mGraphComparison, nullptr, this, nullptr);
+        delete mGraphComparison.data();
+    }
+#endif
     mServiceTimer.stop();
     releaseCaptures();
 }
@@ -465,9 +479,43 @@ void ReferenceCaptureWindow::showEvent(QShowEvent* event)
     requestCaptureProfile();
 }
 
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+void ReferenceCaptureWindow::openGraphComparison()
+{
+    if (mGraphComparison.isNull() == false)
+    {
+        mGraphComparison->raise();
+        mGraphComparison->activateWindow();
+        return;
+    }
+    if (mProjectWorkspace.isNull() == true || mPreview.isNull() == true || mServiceTimer.isActive() == true)
+    {
+        return;
+    }
+    ViewportReferenceSettings settings;
+    settings.LongSide = static_cast<uint32>(mLongSide->value());
+    settings.Samples = static_cast<uint32>(mSamples->value());
+    settings.MaxDepth = static_cast<uint32>(mMaxDepth->value());
+    settings.Traversal = static_cast<renderer::ReferenceTraversal>(mTraversal->currentIndex());
+    settings.ShouldCenterRays = mCenterRays->isChecked();
+    mGraphComparison = new GraphComparisonWindow(*mPreview, *mProjectWorkspace, settings, this);
+    connect(mGraphComparison, &QObject::destroyed, this, [this]() {
+        mGraphComparison.clear();
+        updateControls();
+        requestCaptureProfile();
+    });
+    mGraphComparison->show();
+    updateControls();
+}
+#endif
+
 void ReferenceCaptureWindow::requestCaptureProfile()
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mGraphComparison.isNull() == false)
+    {
+        return;
+    }
     const bool isGraphSelected =
         isGraphSource() == true || (mIsComparisonAvailable == true && mCompare->isChecked() == true);
     if (isVisible() == false || isGraphSelected == false || mCaptureProfile.isNull() == true ||
@@ -830,6 +878,12 @@ bool ReferenceCaptureWindow::startGraphSource()
 
 bool ReferenceCaptureWindow::StartCapture()
 {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mGraphComparison.isNull() == false)
+    {
+        return false;
+    }
+#endif
     mServiceTimer.stop();
     releaseCaptures();
     mImage = {};
@@ -1202,6 +1256,13 @@ void ReferenceCaptureWindow::updateControls()
     mTraversal->setEnabled(isRunning == false && isReference == true);
     mCenterRays->setEnabled(isRunning == false && isReference == true);
     mCompare->setEnabled(isRunning == false && isReference == true && mIsComparisonAvailable == true);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mCompareGraphsOrNull->setEnabled(isRunning == false && mIsComparisonAvailable == true);
+    if (mGraphComparison.isNull() == false)
+    {
+        mCaptureButton->setEnabled(false);
+    }
+#endif
 }
 
 QString ReferenceCaptureWindow::describeRaster() const

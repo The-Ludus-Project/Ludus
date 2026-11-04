@@ -2045,6 +2045,80 @@ failure, coverage and sample-count information; a failed export also records the
 capture error. Completion describes reaching the requested sample count, not a
 claim that Monte Carlo noise has converged.
 
+#### Compare several render graphs
+
+In the native **Reference capture** window, choose **Compare graphs…**.
+Add candidate rows for the viewport output, saved root configurations and
+their colour exports, or saved library configuration outputs. Build and preview
+the saved graph first so its published generation contains those variants.
+The active viewport row uses its current output and renderer choice at the start
+of the run. For an ordinary raster output, choose **Display frame**. Accumulating
+ray outputs use **Accumulate**, which records the linear mean and exact counts.
+
+Set the graph defaults and use a row override where needed. The capture applies
+the sample target to each accumulating graph and records any graph-authored
+warm-up separately. Expected bounces are recorded for matching authored variants.
+The shader controls the actual bounce limit, which is reported as unknown.
+RT1 uses its own sample and depth fields and the traversal and pixel-sampling
+options selected in Reference Capture.
+
+**Run and save…** freezes the current World and camera for the whole run,
+renders one baseline and then runs each candidate with a private producer. The
+selected row shows the baseline, candidate, signed difference and metrics side
+by side. A graph whose output extent differs from the frozen extent fails its
+row. Choose an export with view scale one to compare it at the same resolution.
+For a pre-rendered baseline, choose **Choose display baseline…**. Its dimensions
+set the capture extent and the comparison uses sRGB display values. For a saved
+linear baseline, use the offline command below.
+
+The new results folder contains the baseline, individual PNGs and linear
+captures when available, and `comparison.json` with the frozen scene and camera,
+graph routes, actual sample evidence and metrics. A failed row leaves earlier
+results available. Incomplete results with available pixels are labelled as
+diagnostic. **Stop** keeps completed rows and the last readable partial capture.
+
+#### Compare saved captures or image files
+
+Use `scripts/compare-render` to reopen a comparison or measure two images
+outside the editor. For a graph against RT1, choose the **Graph** in
+**Reference…**, select **RT1 reference** as the source, enable the comparison
+and use **Save…**. A graph with linear accumulation saves both
+`<base>.luhdr` and `<base>.graph.lurgcap` from the same frozen camera.
+For display-only output, compare the saved reference PNG and
+`<base>.raster.png`, or use any two supported image files.
+
+Install NumPy and Pillow in a Python 3.10 or newer environment, then run from
+the Ludus checkout with the expected image first.
+
+```bash
+python -m pip install numpy Pillow
+python scripts/compare-render scene.luhdr graph-a.lurgcap graph-b.lurgcap -o linear-report.html
+python scripts/compare-render expected.png actual.png -o display-report.html
+```
+
+Open the HTML report in a browser for side-by-side, wipe and error heatmap
+views. Use the candidate menu to switch between several inputs against the same
+baseline. The file embeds its images and data for offline use. The command also
+writes JSON to standard output with the full metrics and input metadata. The
+heatmap shows the largest absolute RGB channel error per pixel, from black at
+zero to orange at `--diff-scale` (0.25 by default). Grey marks pixels missing
+a sample on either side. Changing this scale leaves the metrics unchanged.
+
+Both inputs need the same pixel dimensions and comparison space. HDR captures
+use their raw scene-linear RGB values. Preview images compress each channel with
+`x / (1 + x)` before sRGB encoding. For display comparisons the tool reads still
+8-bit PNG, JPEG and WebP, applies EXIF orientation, converts embedded ICC profiles
+to sRGB, assumes sRGB for untagged images and composites alpha over black.
+
+The report includes MAE, RMSE, largest channel error and its pixel coordinates,
+and signed Rec. 709 luminance bias. Linear comparisons also report relative MSE
+with the baseline in the denominator (`error² / (baseline² + 0.01)`).
+Display comparisons report PSNR with peak one and a cap of 100 dB.
+For HDR captures, metrics cover only pixels with a committed sample on both sides.
+The report flags partial or failed captures and differences in recorded cameras.
+For comparisons across capture formats, verify that both captures used the same
+World. The formats record different kinds of scene identity.
+
 ## S4 scene authoring
 
 World owns the world-demo adapter as well as 3D scene placement. Its sample

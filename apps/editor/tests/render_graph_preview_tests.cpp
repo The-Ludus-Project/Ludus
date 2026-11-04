@@ -8,6 +8,7 @@
 #include "editor_renderer_static.h"
 #include "internal/controller.h"
 #include "internal/error_list.h"
+#include "internal/graph_comparison_run.h"
 #include "internal/graph_display_frames.h"
 #include "internal/level_workspace.h"
 #include "internal/main_window.h"
@@ -67,9 +68,11 @@
 #include <QApplication>
 #include <QColor>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
@@ -2698,6 +2701,58 @@ TEST_CASE("Reference capture window offers the render graph source once the view
     // The open window followed the viewport without SetProjectGraph being called again.
     CHECK(sources->item(CAPTURE_SOURCE_GRAPH_INDEX)->isEnabled() == true);
     CHECK(window.GetGraphText() == QStringLiteral("Engine default renderer · Final output"));
+    QPushButton* compareGraphsOrNull = window.findChild<QPushButton*>(QStringLiteral("referenceCompareGraphs"));
+    REQUIRE(compareGraphsOrNull != nullptr);
+    CHECK(compareGraphsOrNull->isEnabled() == true);
+    compareGraphsOrNull->click();
+    QWidget* comparisonWindowOrNull = window.findChild<QWidget*>(QStringLiteral("graphComparisonWindow"));
+    REQUIRE(comparisonWindowOrNull != nullptr);
+    comparisonWindowOrNull->close();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+    // Two routes share one externally supplied baseline. Move the live camera after Start:
+    // both private producers must still render the same frozen view.
+    constexpr int32 TEST_EXTENT = 64;
+    QImage baseline(TEST_EXTENT, TEST_EXTENT, QImage::Format_RGB32);
+    baseline.fill(Qt::black);
+    const QVector<GraphComparisonCandidate> candidates{
+        GraphComparisonCandidate{ .Label = QStringLiteral("first"), .IsDisplayFrame = true },
+        GraphComparisonCandidate{ .Label = QStringLiteral("second"), .IsDisplayFrame = true },
+    };
+    QTemporaryDir results;
+    REQUIRE(results.isValid() == true);
+    GraphComparisonRun comparison;
+    QString error;
+    REQUIRE(comparison.Start(world.GetRenderPreview(),
+                             workspace,
+                             {},
+                             candidates,
+                             baseline,
+                             QStringLiteral("external.png"),
+                             results.path(),
+                             error) == true);
+    world.GetRenderPreview().RestoreNavigation(QJsonObject{{QStringLiteral("yaw"), 90}});
+    timer.restart();
+    while (comparison.IsRunning() == true && timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        comparison.Service();
+        QTest::qWait(1);
+    }
+    INFO(comparison.GetStatus().toStdString());
+    REQUIRE(comparison.IsRunning() == false);
+    REQUIRE(comparison.GetResults().size() == candidates.size());
+    for (const QJsonValueConstRef result : comparison.GetResults())
+    {
+        const QJsonObject row = result.toObject();
+        INFO(QJsonDocument(row).toJson().toStdString());
+        CHECK(row.value(QStringLiteral("state")).toString() == QStringLiteral("complete"));
+        CHECK(row.value(QStringLiteral("metrics")).toObject().value(QStringLiteral("space")).toString() ==
+              QStringLiteral("display"));
+    }
+    const QImage first(QDir(results.path()).filePath(QStringLiteral("candidate-1.png")));
+    const QImage second(QDir(results.path()).filePath(QStringLiteral("candidate-2.png")));
+    REQUIRE(first.isNull() == false);
+    CHECK(first == second);
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();

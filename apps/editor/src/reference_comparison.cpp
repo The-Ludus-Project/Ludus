@@ -59,11 +59,12 @@ namespace
 /// Compare reference means with another image of the same extent. readColor(x, y, outColor) supplies the other
 /// image's stored colour: display values in [0, 1] for ReferenceComparisonSpace::Display, linear radiance for
 /// Linear. It returns false for a pixel that has no value to compare.
-template <typename ReadColor>
-bool CompareWithReference(BorrowedView<const renderer::ReferencePixel> reference,
+template <typename ReadReference, typename ReadColor>
+bool CompareWithReference(const ReadReference& readReference,
                           const renderer::ReferenceCaptureInfo& information,
                           bool hasReferenceFailed,
                           ReferenceComparisonSpace space,
+                          bool isReferenceDisplayEncoded,
                           const ReadColor& readColor,
                           ReferenceComparison& outComparison,
                           QImage& outDifference,
@@ -95,7 +96,7 @@ bool CompareWithReference(BorrowedView<const renderer::ReferencePixel> reference
         QRgb* row = reinterpret_cast<QRgb*>(difference.scanLine(static_cast<int32>(y)));
         for (uint32 x = 0; x < width; ++x)
         {
-            const renderer::ReferencePixel& pixel = reference[static_cast<usize>(y) * width + x];
+            const renderer::ReferencePixel& pixel = readReference(x, y);
             math::Vector3 storedColor{};
             if (pixel.Samples == 0 || readColor(x, y, storedColor) == false)
             {
@@ -107,7 +108,8 @@ bool CompareWithReference(BorrowedView<const renderer::ReferencePixel> reference
             RgbValue referenceValue{};
             RgbValue rasterDisplay{};
             RgbValue referenceDisplay{};
-            const math::Vector3 referenceEncoded = EncodeReferenceDisplayColor(pixel.Radiance);
+            const math::Vector3 referenceEncoded =
+                isReferenceDisplayEncoded == true ? pixel.Radiance : EncodeReferenceDisplayColor(pixel.Radiance);
             const math::Vector3 rasterEncoded = EncodeReferenceDisplayColor(storedColor);
             for (usize channel = 0; channel < RGB_CHANNELS; ++channel)
             {
@@ -154,7 +156,7 @@ bool CompareWithReference(BorrowedView<const renderer::ReferencePixel> reference
     }
     if (comparison.ComparedPixels == 0)
     {
-        outError = QStringLiteral("No reference pixel has a committed sample yet.");
+        outError = QStringLiteral("No reference pixel has a committed sample on both sides yet.");
         return false;
     }
     const float64 pixels = static_cast<float64>(comparison.ComparedPixels);
@@ -220,11 +222,15 @@ bool CompareRasterWithReference(BorrowedView<const renderer::ReferencePixel> ref
         outColor = {texel.Channels[0], texel.Channels[1], texel.Channels[2]};
         return true;
     };
-    return CompareWithReference(reference,
+    const auto readReference = [&reference, width](uint32 x, uint32 y) -> const renderer::ReferencePixel& {
+        return reference[static_cast<usize>(y) * width + x];
+    };
+    return CompareWithReference(readReference,
                                 information,
                                 hasReferenceFailed,
                                 raster.Encoding == TexelEncoding::Rgba16Float ? ReferenceComparisonSpace::Linear
                                                                               : ReferenceComparisonSpace::Display,
+                                false,
                                 readTexel,
                                 outComparison,
                                 outDifference,
@@ -260,11 +266,61 @@ bool CompareGraphCaptureWithReference(BorrowedView<const renderer::ReferencePixe
         outColor = pixel.Mean;
         return pixel.Samples != 0;
     };
-    return CompareWithReference(reference,
+    const auto readReference = [&reference, width](uint32 x, uint32 y) -> const renderer::ReferencePixel& {
+        return reference[static_cast<usize>(y) * width + x];
+    };
+    return CompareWithReference(readReference,
                                 information,
                                 hasReferenceFailed,
                                 ReferenceComparisonSpace::Linear,
+                                false,
                                 readMean,
+                                outComparison,
+                                outDifference,
+                                outError);
+}
+
+bool CompareDisplayImages(const QImage& reference,
+                          const QImage& candidate,
+                          BorrowedView<const renderer::RenderGraphCapturePixel> samples,
+                          ReferenceComparison& outComparison,
+                          QImage& outDifference,
+                          QString& outError)
+{
+    if (reference.isNull() == true || reference.size() != candidate.size())
+    {
+        outError = QStringLiteral("Export both display images at the same resolution.");
+        return false;
+    }
+    renderer::ReferenceCaptureInfo information;
+    information.Width = static_cast<uint32>(reference.width());
+    information.Height = static_cast<uint32>(reference.height());
+    information.TargetSamples = 1;
+    if (samples.IsEmpty() == false && samples.GetSize() != usize{information.Width} * information.Height)
+    {
+        outError = QStringLiteral("The candidate sample counts do not match the display image.");
+        return false;
+    }
+    const auto readReference = [&reference](uint32 x, uint32 y) {
+        const QColor color = reference.pixelColor(static_cast<int32>(x), static_cast<int32>(y));
+        return renderer::ReferencePixel{ .Radiance = {color.redF(), color.greenF(), color.blueF()}, .Samples = 1 };
+    };
+    const auto readCandidate =
+        [&candidate, samples, width = information.Width](uint32 x, uint32 y, math::Vector3& outColor) {
+            if (samples.IsEmpty() == false && samples[usize{y} * width + x].Samples == 0)
+            {
+                return false;
+            }
+            const QColor color = candidate.pixelColor(static_cast<int32>(x), static_cast<int32>(y));
+            outColor = {color.redF(), color.greenF(), color.blueF()};
+            return true;
+        };
+    return CompareWithReference(readReference,
+                                information,
+                                false,
+                                ReferenceComparisonSpace::Display,
+                                true,
+                                readCandidate,
                                 outComparison,
                                 outDifference,
                                 outError);
