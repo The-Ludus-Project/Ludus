@@ -36,6 +36,10 @@
 // PER_BOUNCE dimensions starting at FIRST_BOUNCE + d * PER_BOUNCE.
 #define LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION 2
 #define LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE 8
+// Existing slots shared by the CPU and GPU reference light proposals.
+#define LUDUS_PATH_RANDOM_LIGHT_SELECTION_SLOT 0
+#define LUDUS_PATH_RANDOM_INCIDENT_FIRST_SLOT 1
+#define LUDUS_PATH_RANDOM_INCIDENT_SECOND_SLOT 2
 // Reference sampler version 2 (ReferenceLightSampling::ResampledProjectedSolidAngle) keeps slots 0-7 and widens each
 // bounce to 128 dimensions; renderer_reference_layout.h assigns the new slots.
 #define LUDUS_PATH_RANDOM_VERSION2_DIMENSIONS_PER_BOUNCE 128
