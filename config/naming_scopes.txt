@@ -102,3 +102,10 @@ apps/editor/tests/render_graph_template_registry_tests.cpp
 apps/editor/src/internal/render_graph_quick_add.h
 apps/editor/src/render_graph_quick_add.cpp
 apps/editor/tests/render_graph_quick_add_tests.cpp
+modules/content/geometry_format
+modules/geometry/content
+apps/editor/src/internal/geometry_document.h
+apps/editor/src/geometry_document.cpp
+apps/editor/tests/geometry_document_tests.cpp
+apps/editor/tests/geometry_preview_tests.cpp
+apps/editor/tests/geometry_test_main.cpp

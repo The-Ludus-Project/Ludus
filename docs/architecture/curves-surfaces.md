@@ -2,8 +2,9 @@
 
 Status: G0 contracts frozen in [ADR 0024](../decisions/0024-curves-surfaces-contracts.md),
 the G1 fixed-size math kernel, the G2 prepared paths, tracks and distance maps,
-the G3 frames, projection and sweep meshes, and the G4 patch topology and CPU
-surface meshes implemented; G5 and G6 remain proposed.
+the G3 frames, projection and sweep meshes, the G4 patch topology and CPU
+surface meshes, and the G5 cooked geometry format, GeometryContent codecs and
+editor authoring adapters implemented; G6 remains proposed.
 Design baseline: `52e29ce`, inspected on 2026-10-04. Implementation baselines:
 `95683aa` (G1, 2026-10-05), `5117c8c` (G0, 2026-10-15), `cb6f02a` (G2,
 2026-10-16) and `c3de79d` (G3 and G4, 2026-10-17). Validation is
@@ -145,8 +146,58 @@ Visual profiles may explicitly keep the coarser grid and report its bound.
 Departures and workload observations are recorded in the evidence ledger.
 
 No editor binding is needed for these math values. A useful editable curve
-document needs the G2 prepared owners and G5 authoring/undo/publication contracts;
-those features and their editor adapters remain explicit follow-up phases.
+document needs the G2 prepared owners and the G5 authoring/undo/publication
+contracts implemented below.
+
+## Implemented content and editor adapters (G5)
+
+The header-only `Ludus::GeometryFormat` target (`modules/content/geometry_format`)
+holds the versioned LUGEO cooked layout: a header with the magic, the format and
+cooker versions, the kind and precision tags, the chunk origin, asset scale and
+whole `ToleranceProfile`, a checked section directory of `{id, offset, count,
+element bytes}` entries, and three SHA-256 digests (source, dependency, payload).
+Records are fixed-width little-endian: `uint32` indices and counts, `float32`
+controls, `float64` origins, domains and tolerances. Every record width is a
+`static_assert`ed constant derived from its field schema, never host padding, and
+one blob holds exactly one geometry kind (path, scalar track or bicubic surface).
+It depends only on FoundationBase, so a cooker never links the renderer and a
+runtime loader never links a cooker.
+
+`Ludus::GeometryContent` (`modules/geometry/content`) parses a versioned JSON
+source schema through the checked Content JSON facade, writes it back
+deterministically, cooks it field by field (dry-running the FoundationGeometry
+preparation first, so a cook never emits a blob that cannot load) and loads it.
+`LoadGeometry` validates the magic, both versions, the enum tags, every count
+against the `GeometryFormat` limits, each section's `count x element bytes` byte
+product with checked arithmetic, its four-byte alignment, in-range offset and
+non-overlap, the tolerance profile, strictly increasing track-key times, control
+finiteness and the recomputed payload digest before it builds any
+`PathSource`/`TrackKey`/`SurfaceSource` input and calls the matching
+`TryPrepare*`. Unknown fields or versions, duplicate IDs and invalid constraints
+return structured diagnostics with a concrete repair suggestion; bad content is
+never an assertion. The `content::Catalog` gains a `CookedGeometry` kind through a
+versioned extension (schema version 2); version-1 catalogs still parse and reject
+the new kind. The cooked header carries exactly the cache-key fields the
+architecture lists (source digest, converter/cooker version, schema, precision
+and all tolerances).
+
+The editor-private adapters (`apps/editor`, Qt-free and headless-testable) build
+on the existing owners rather than a parallel system. `CurveDocument` embeds the
+generic `DocumentHistory<T>` undo owner (ADR 0023): every edit is one validated
+transaction, moving an automatic handle visibly converts it to manual, a drag
+coalesces into one undo step, and the monotonic document revision keys the
+preview. `GeometryLiveBuild` debounces and supersedes stale requests by a
+semantic build identity that excludes cosmetic state. `GeometryPrepareJob` is a
+staged `{Pending, Ready, Failed}` pump over an immutable cooked snapshot carrying
+the document, revision, generation and profile identity, with cooperative
+cancellation; `GeometryPreview` publishes a Ready candidate at a declared frame
+or tick boundary, keeps the last valid load active with a stale indicator while an
+edit is invalid or preparing, never erases the active view on a failed
+replacement, rejects a late completion whose identity no longer matches, and holds
+at most the active load plus one candidate. `ReloadCursor` recomputes placement
+under a consumer-chosen `CursorReloadPolicy`; the distance and projection policies
+report `MissingCache` rather than silently falling back, so a policy is never
+chosen implicitly.
 
 ## Decisions
 
@@ -208,9 +259,9 @@ capabilities.
 | --- | --- | --- |
 | Implemented G1/G2 additions to `modules/foundation/math`, `Ludus::FoundationMath` | Fixed-size scalar/vector cubic and bicubic values; evaluate, differentiate, split, Hermite conversion; outward-rounded enclosures (G2) | Base only |
 | `modules/foundation/geometry`, `Ludus::FoundationGeometry` (G2-G4 implemented) | Prepared path owners and views, scalar tracks and distance caches (G2); frame caches, point projection and sweep meshes (G3); prepared patch surfaces, topology and CPU surface meshes (G4); bounds caches (proposed) | Base, Math, Containers |
-| Proposed `modules/content/geometry_format`, `Ludus::GeometryFormat` | Header-only versioned cooked record layouts, limits and constants shared by cooker and loader | Base only |
-| Proposed `modules/geometry/content`, `Ludus::GeometryContent` | Authoring codecs, source IDs, import/cook validation, loading and publication | Content, FoundationGeometry, GeometryFormat |
-| Editor-private adapters | Document edits, undo, handles, preview, inspection | GeometryContent, editor UI |
+| `modules/content/geometry_format`, `Ludus::GeometryFormat` (G5 implemented) | Header-only versioned LUGEO cooked record layouts, limits and constants shared by cooker and loader | Base only |
+| `modules/geometry/content`, `Ludus::GeometryContent` (G5 implemented) | Authoring codecs, source IDs, import/cook validation, loading and publication | Content, FoundationGeometry, GeometryFormat |
+| Editor-private adapters (G5 implemented) | Document edits, undo, handles, debounced preview, async prepare, transactional publication, cursor reload | GeometryContent, editor UI |
 | Consumer-private adapters | Path follower, animation clock, render upload, collision cook | FoundationGeometry and the consumer's own subsystem |
 
 Do not add Geometry to `core.h` or the foundational PCH. Math never imports
@@ -876,7 +927,7 @@ or services.
 | G2 | Prepared path and scalar track owners, source conversion and distance map | Uneven Catmull-Rom knots, duplicate/closed endpoints, holds, prefix uncertainty, zero speed, inversion residual and budget exhaustion |
 | G3 | Frames, projections and sweep mesh | Straight/inflected/vertical/cusped paths, opposite tangents, random-access order independence, closed residual twist, multi-minimum projection |
 | G4 | Patch topology and CPU mesh output | Reversed shared edges, corner identity, UV/normal seams, twisted bilinear interiors, matching boundary samples, singular patches and strict/visual failure |
-| G5 | GeometryContent, editor commands and publication | Corrupt/overflowing blobs, source round-trip, failed/cancelled prepare, undo/redo, late completion, stale cursor, active/candidate peak memory |
+| G5 (implemented) | GeometryContent, editor commands and publication | Corrupt/overflowing blobs, source round-trip, failed/cancelled prepare, undo/redo, late completion, stale cursor, active/candidate peak memory (see the [evidence ledger](math-evidence/curves-surfaces.md#g5-cooked-geometry-content-and-editor-adapters)) |
 | G6 | Optional acceleration/render integration | Numerical parity, measured end-to-end gain, renderer capability/overflow/retirement tests and continued CPU/browser fallback |
 
 Use independently generated high-precision reference values in offline tests

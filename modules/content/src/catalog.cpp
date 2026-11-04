@@ -106,7 +106,11 @@ Status Catalog::Read(std::string_view json, Diagnostic& diagnostic) noexcept
     }
     const auto root = document.Root();
     uint64 version = 0;
-    if (root.Fields({"version", "resources"}) == false || root.Get("version").Integer(version) == false || version != 1)
+    // Versioned extension: version 1 is the original catalog; version 2 adds the
+    // cooked-geometry kind. A version-1 document still parses and rejects that
+    // kind string, so older catalogs round-trip unchanged.
+    if (root.Fields({"version", "resources"}) == false || root.Get("version").Integer(version) == false ||
+        (version != 1 && version != 2))
     {
         return diagnostic.Result = Status::Invalid;
     }
@@ -149,6 +153,10 @@ Status Catalog::Read(std::string_view json, Diagnostic& diagnostic) noexcept
             {
                 next[i].Type = Kind::CookedScene;
             }
+            else if (kind == "cooked-geometry" && version >= 2)
+            {
+                next[i].Type = Kind::CookedGeometry;
+            }
             else
             {
                 valid = false;
@@ -189,7 +197,7 @@ Status Catalog::Read(std::string_view json, Diagnostic& diagnostic) noexcept
 Status Catalog::Put(const Resource& resource) noexcept
 {
     if ((resource.Type != Kind::AudioSource && resource.Type != Kind::Sound && resource.Type != Kind::Music &&
-         resource.Type != Kind::Mesh && resource.Type != Kind::CookedScene) ||
+         resource.Type != Kind::Mesh && resource.Type != Kind::CookedScene && resource.Type != Kind::CookedGeometry) ||
         ValidId(resource.Id.View()) == false || ValidPath(resource.Path.View()) == false)
     {
         return Status::Invalid;
@@ -234,18 +242,29 @@ Status Catalog::Write(Bytes& output) const noexcept
         return Status::OutOfMemory;
     }
     JsonWriter writer(buffer.Data());
-    writer.Raw("{\n  \"version\": 1,\n  \"resources\": [");
+    // Emit schema version 2 only when a cooked-geometry entry is present, so a
+    // catalog without geometry keeps round-tripping as version 1.
+    bool hasGeometry = false;
+    for (usize i = 0; i < mCount; ++i)
+    {
+        if (mEntries[i].Type == Kind::CookedGeometry)
+        {
+            hasGeometry = true;
+        }
+    }
+    writer.Raw(hasGeometry ? "{\n  \"version\": 2,\n  \"resources\": [" : "{\n  \"version\": 1,\n  \"resources\": [");
     for (usize i = 0; i < mCount; ++i)
     {
         const auto& r = mEntries[i];
         writer.Raw(i == 0 ? "\n    { \"id\": " : ",\n    { \"id\": ");
         writer.String(r.Id.View());
         writer.Raw(", \"kind\": ");
-        writer.String(r.Type == Kind::Sound         ? "sound"
-                      : r.Type == Kind::Music       ? "music"
-                      : r.Type == Kind::Mesh        ? "mesh"
-                      : r.Type == Kind::CookedScene ? "cooked-scene"
-                                                    : "audio-source");
+        writer.String(r.Type == Kind::Sound            ? "sound"
+                      : r.Type == Kind::Music          ? "music"
+                      : r.Type == Kind::Mesh           ? "mesh"
+                      : r.Type == Kind::CookedScene    ? "cooked-scene"
+                      : r.Type == Kind::CookedGeometry ? "cooked-geometry"
+                                                       : "audio-source");
         writer.Raw(", \"path\": ");
         writer.String(r.Path.View());
         writer.Raw(" }");
