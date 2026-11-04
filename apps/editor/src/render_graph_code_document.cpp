@@ -36,9 +36,8 @@ CodeDocumentSnapshot RenderGraphCodeDocument::GetSnapshot() const noexcept
             mDocument.IsDirty()};
 }
 
-CodeEditStatus RenderGraphCodeDocument::ApplyEdits(const CodeDocumentIdentity& expected,
-                                                   const CodeEditSet& edits,
-                                                   bool shouldMerge)
+CodeEditStatus
+RenderGraphCodeDocument::ApplyEdits(const CodeDocumentIdentity& expected, const CodeEditSet& edits, bool shouldMerge)
 {
     if (expected != GetSnapshot().Identity)
     {

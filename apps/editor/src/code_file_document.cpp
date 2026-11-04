@@ -135,9 +135,8 @@ CodeDocumentSnapshot CodeFileDocument::GetSnapshot() const noexcept
             IsDirty()};
 }
 
-CodeEditStatus CodeFileDocument::ApplyEdits(const CodeDocumentIdentity& expected,
-                                            const CodeEditSet& edits,
-                                            bool shouldMerge)
+CodeEditStatus
+CodeFileDocument::ApplyEdits(const CodeDocumentIdentity& expected, const CodeEditSet& edits, bool shouldMerge)
 {
     if (mIsReadOnly == true)
     {
@@ -165,8 +164,8 @@ CodeEditStatus CodeFileDocument::applyByteEdits(const CodeEditSet& edits, bool s
         // single-edit path. Selections are left for the caller to restore.
         return CodeEditStatus::Ok;
     }
-    const CodeHistoryState previous = {.Text = mDraft, .Selections = CopyCodeSelectionSet(edits.Before)};
-    const CodeHistoryState next = {.Text = candidate, .Selections = CopyCodeSelectionSet(edits.After)};
+    const CodeHistoryState previous = { .Text = mDraft, .Selections = CopyCodeSelectionSet(edits.Before) };
+    const CodeHistoryState next = { .Text = candidate, .Selections = CopyCodeSelectionSet(edits.After) };
     const bool canMerge = shouldMerge == true && mHasMergeableGroup == true;
     if (mHistory.Commit(previous, next, canMerge) == false)
     {
@@ -202,7 +201,7 @@ bool CodeFileDocument::CanRedo() const noexcept
 bool CodeFileDocument::Undo(QList<CodeTextSelection>& outSelections)
 {
     BreakUndoGroup();
-    CodeHistoryState state = {.Text = mDraft, .Selections = mDraftSelections};
+    CodeHistoryState state = { .Text = mDraft, .Selections = mDraftSelections };
     if (mHistory.Undo(state) == false)
     {
         return false;
@@ -216,7 +215,7 @@ bool CodeFileDocument::Undo(QList<CodeTextSelection>& outSelections)
 bool CodeFileDocument::Redo(QList<CodeTextSelection>& outSelections)
 {
     BreakUndoGroup();
-    CodeHistoryState state = {.Text = mDraft, .Selections = mDraftSelections};
+    CodeHistoryState state = { .Text = mDraft, .Selections = mDraftSelections };
     if (mHistory.Redo(state) == false)
     {
         return false;

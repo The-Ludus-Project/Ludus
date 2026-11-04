@@ -48,9 +48,8 @@ namespace
 
 // Build an edit set borrowing the caller-owned arrays. The caller keeps edits,
 // insertedBytes, before and after alive for the duration of the call.
-[[nodiscard]] CodeEditSet MakeSet(const QList<CodeTextEdit>& edits,
-                                  const QList<CodeTextSelection>& before,
-                                  const QList<CodeTextSelection>& after)
+[[nodiscard]] CodeEditSet
+MakeSet(const QList<CodeTextEdit>& edits, const QList<CodeTextSelection>& before, const QList<CodeTextSelection>& after)
 {
     const CodeEditSet set =
     {
@@ -74,8 +73,8 @@ TEST_CASE("An overlapping edit set is rejected and the buffer is unchanged", "[c
     const char firstInsert[] = {'X'};
     const char secondInsert[] = {'Y'};
     QList<CodeTextEdit> edits;
-    edits.append(CodeTextEdit{.StartBytes = 1, .RemovedBytes = 3, .Inserted = {firstInsert, 1}});
-    edits.append(CodeTextEdit{.StartBytes = 3, .RemovedBytes = 2, .Inserted = {secondInsert, 1}});
+    edits.append(CodeTextEdit{ .StartBytes = 1, .RemovedBytes = 3, .Inserted = {firstInsert, 1} });
+    edits.append(CodeTextEdit{ .StartBytes = 3, .RemovedBytes = 2, .Inserted = {secondInsert, 1} });
     const QList<CodeTextSelection> before = {CodeTextSelection{0, 0}};
     const QList<CodeTextSelection> after = {CodeTextSelection{0, 0}};
 
@@ -96,8 +95,8 @@ TEST_CASE("An unordered edit set is rejected and the buffer is unchanged", "[cod
     const char firstInsert[] = {'X'};
     const char secondInsert[] = {'Y'};
     QList<CodeTextEdit> edits;
-    edits.append(CodeTextEdit{.StartBytes = 4, .RemovedBytes = 0, .Inserted = {firstInsert, 1}});
-    edits.append(CodeTextEdit{.StartBytes = 1, .RemovedBytes = 0, .Inserted = {secondInsert, 1}});
+    edits.append(CodeTextEdit{ .StartBytes = 4, .RemovedBytes = 0, .Inserted = {firstInsert, 1} });
+    edits.append(CodeTextEdit{ .StartBytes = 1, .RemovedBytes = 0, .Inserted = {secondInsert, 1} });
     const QList<CodeTextSelection> before = {CodeTextSelection{0, 0}};
     const QList<CodeTextSelection> after = {CodeTextSelection{0, 0}};
 
@@ -117,7 +116,7 @@ TEST_CASE("A stale edit set is rejected and the buffer is unchanged", "[code-edi
     // Advance the document so `stale` no longer matches.
     const char insert[] = {'Z'};
     QList<CodeTextEdit> firstEdits;
-    firstEdits.append(CodeTextEdit{.StartBytes = 0, .RemovedBytes = 0, .Inserted = {insert, 1}});
+    firstEdits.append(CodeTextEdit{ .StartBytes = 0, .RemovedBytes = 0, .Inserted = {insert, 1} });
     const QList<CodeTextSelection> before = {CodeTextSelection{0, 0}};
     const QList<CodeTextSelection> after = {CodeTextSelection{1, 1}};
     REQUIRE(host.ApplyEdits(host.GetSnapshot().Identity, MakeSet(firstEdits, before, after), false) ==
@@ -127,7 +126,7 @@ TEST_CASE("A stale edit set is rejected and the buffer is unchanged", "[code-edi
     // The second set carries the pre-edit (stale) identity and must be rejected.
     const char second[] = {'Q'};
     QList<CodeTextEdit> secondEdits;
-    secondEdits.append(CodeTextEdit{.StartBytes = 0, .RemovedBytes = 0, .Inserted = {second, 1}});
+    secondEdits.append(CodeTextEdit{ .StartBytes = 0, .RemovedBytes = 0, .Inserted = {second, 1} });
     const CodeEditStatus status = host.ApplyEdits(stale, MakeSet(secondEdits, before, after), false);
     CHECK(status == CodeEditStatus::Conflict);
     CHECK(DraftOf(host) == afterFirst);
@@ -143,8 +142,8 @@ TEST_CASE("One undo step restores both the text and the selection set", "[code-e
     // Replace both occurrences of "one" with "1" as one set: [0,3) and [8,11).
     const char replacement[] = {'1'};
     QList<CodeTextEdit> edits;
-    edits.append(CodeTextEdit{.StartBytes = 0, .RemovedBytes = 3, .Inserted = {replacement, 1}});
-    edits.append(CodeTextEdit{.StartBytes = 8, .RemovedBytes = 3, .Inserted = {replacement, 1}});
+    edits.append(CodeTextEdit{ .StartBytes = 0, .RemovedBytes = 3, .Inserted = {replacement, 1} });
+    edits.append(CodeTextEdit{ .StartBytes = 8, .RemovedBytes = 3, .Inserted = {replacement, 1} });
     // Before: two cursors on each "one"; After: two collapsed cursors after each "1".
     const QList<CodeTextSelection> before = {CodeTextSelection{0, 3}, CodeTextSelection{8, 11}};
     const QList<CodeTextSelection> after = {CodeTextSelection{1, 1}, CodeTextSelection{6, 6}};
@@ -184,7 +183,7 @@ TEST_CASE("The validator rejects an out-of-range or boundary-splitting set", "[c
     {
         const char insert[] = {'X'};
         QList<CodeTextEdit> edits;
-        edits.append(CodeTextEdit{.StartBytes = 99, .RemovedBytes = 0, .Inserted = {insert, 1}});
+        edits.append(CodeTextEdit{ .StartBytes = 99, .RemovedBytes = 0, .Inserted = {insert, 1} });
         const CodeEditSet set =
         {
             .Edits = {edits.constData(), static_cast<usize>(edits.size())},
@@ -193,8 +192,9 @@ TEST_CASE("The validator rejects an out-of-range or boundary-splitting set", "[c
             .Transaction = {},
         };
         QByteArray result = QByteArray("sentinel");
-        CHECK(ValidateAndApplyEditSet({original.constData(), static_cast<usize>(original.size())}, limit, set,
-                                      result) == CodeEditStatus::InvalidText);
+        CHECK(
+            ValidateAndApplyEditSet({original.constData(), static_cast<usize>(original.size())}, limit, set, result) ==
+            CodeEditStatus::InvalidText);
         CHECK(result == QByteArray("sentinel"));
     }
 
@@ -203,7 +203,7 @@ TEST_CASE("The validator rejects an out-of-range or boundary-splitting set", "[c
         const char insert[] = {'X'};
         QList<CodeTextEdit> edits;
         // Offset 2 is inside the two-byte U+00E9.
-        edits.append(CodeTextEdit{.StartBytes = 2, .RemovedBytes = 0, .Inserted = {insert, 1}});
+        edits.append(CodeTextEdit{ .StartBytes = 2, .RemovedBytes = 0, .Inserted = {insert, 1} });
         const CodeEditSet set =
         {
             .Edits = {edits.constData(), static_cast<usize>(edits.size())},
@@ -212,8 +212,9 @@ TEST_CASE("The validator rejects an out-of-range or boundary-splitting set", "[c
             .Transaction = {},
         };
         QByteArray result = QByteArray("sentinel");
-        CHECK(ValidateAndApplyEditSet({original.constData(), static_cast<usize>(original.size())}, limit, set,
-                                      result) == CodeEditStatus::InvalidText);
+        CHECK(
+            ValidateAndApplyEditSet({original.constData(), static_cast<usize>(original.size())}, limit, set, result) ==
+            CodeEditStatus::InvalidText);
         CHECK(result == QByteArray("sentinel"));
     }
 }

@@ -65,9 +65,7 @@ public:
                 LimitBytes,
                 true};
     }
-    CodeEditStatus ApplyEdits(const CodeDocumentIdentity& expected,
-                              const CodeEditSet& edits,
-                              bool shouldMerge) override
+    CodeEditStatus ApplyEdits(const CodeDocumentIdentity& expected, const CodeEditSet& edits, bool shouldMerge) override
     {
         if (expected != GetSnapshot().Identity)
         {

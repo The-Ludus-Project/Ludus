@@ -52,9 +52,8 @@ CodeDocumentSnapshot ScriptCodeDocument::GetSnapshot() const noexcept
             IsDirty()};
 }
 
-CodeEditStatus ScriptCodeDocument::ApplyEdits(const CodeDocumentIdentity& expected,
-                                              const CodeEditSet& edits,
-                                              bool shouldMerge)
+CodeEditStatus
+ScriptCodeDocument::ApplyEdits(const CodeDocumentIdentity& expected, const CodeEditSet& edits, bool shouldMerge)
 {
     if (expected != GetSnapshot().Identity)
     {

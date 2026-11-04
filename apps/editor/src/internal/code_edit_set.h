@@ -42,9 +42,8 @@ struct CodeHistoryState final
 ///     building an oversized buffer),
 /// and either the whole set applies or none of it does. outResult is only
 /// written when the status is Ok; on any failure it is left unchanged.
-[[nodiscard]] CodeEditStatus
-ValidateAndApplyEditSet(foundation::BorrowedView<const char> original,
-                        foundation::usize limitBytes,
-                        const CodeEditSet& edits,
-                        QByteArray& outResult);
+[[nodiscard]] CodeEditStatus ValidateAndApplyEditSet(foundation::BorrowedView<const char> original,
+                                                     foundation::usize limitBytes,
+                                                     const CodeEditSet& edits,
+                                                     QByteArray& outResult);
 } // namespace ludus::editor

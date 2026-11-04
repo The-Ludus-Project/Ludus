@@ -47,8 +47,7 @@ namespace
     {
         const CodeTextSelection selection = view[index];
         if (selection.AnchorBytes > size || selection.CaretBytes > size ||
-            isValidPrefix(bytes, selection.AnchorBytes) == false ||
-            isValidPrefix(bytes, selection.CaretBytes) == false)
+            isValidPrefix(bytes, selection.AnchorBytes) == false || isValidPrefix(bytes, selection.CaretBytes) == false)
         {
             return false;
         }

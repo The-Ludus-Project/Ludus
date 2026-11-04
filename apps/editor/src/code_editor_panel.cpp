@@ -33,8 +33,7 @@ using namespace foundation;
 
 CodeEditorPanel::CodeEditorPanel(CodeEditor* editor, CodeDocumentController* controllerOrNull, QWidget* parentOrNull)
     : QWidget(parentOrNull), mEditor(editor), mControllerOrNull(controllerOrNull), mSearch(new QWidget(this)),
-      mReplaceRow(new QWidget(mSearch)),
-      mFindText(new QLineEdit(mSearch)), mReplacement(new QLineEdit(mReplaceRow)),
+      mReplaceRow(new QWidget(mSearch)), mFindText(new QLineEdit(mSearch)), mReplacement(new QLineEdit(mReplaceRow)),
       mIsCaseSensitive(new QCheckBox(QStringLiteral("Match case"), mSearch)), mStatus(new QLabel(mSearch))
 {
     LUDUS_ASSERT(editor != nullptr);
@@ -339,9 +338,8 @@ void CodeEditorPanel::replaceAll()
     {
         return;
     }
-    if (mControllerOrNull != nullptr && replaceAllThroughEditSet(mFindText->text(),
-                                                                 mReplacement->text(),
-                                                                 mIsCaseSensitive->isChecked()) == true)
+    if (mControllerOrNull != nullptr &&
+        replaceAllThroughEditSet(mFindText->text(), mReplacement->text(), mIsCaseSensitive->isChecked()) == true)
     {
         return;
     }
