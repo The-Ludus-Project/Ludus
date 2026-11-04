@@ -2059,8 +2059,11 @@ Set the graph defaults and use a row override where needed. The capture applies
 the sample target to each accumulating graph and records any graph-authored
 warm-up separately. Expected bounces are recorded for matching authored variants.
 The shader controls the actual bounce limit, which is reported as unknown.
-RT1 uses its own sample and depth fields and the traversal and pixel-sampling
-options selected in Reference Capture.
+RT1 uses its own sample, depth and traversal fields. **RT1 traversal** starts
+with the choice from Reference Capture, which defaults to **CPU oracle**. Choose
+**GPU compute** or **Native ray queries** when the editor build and device support
+them. The results manifest records the traversal, and the pixel-sampling option
+comes from Reference Capture.
 
 **Run and save…** freezes the current World and camera for the whole run,
 renders one baseline and then runs each candidate with a private producer. The

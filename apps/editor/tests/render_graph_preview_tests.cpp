@@ -49,6 +49,7 @@
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/tone_mapping.hpp>
+#include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
@@ -2707,6 +2708,24 @@ TEST_CASE("Reference capture window offers the render graph source once the view
     compareGraphsOrNull->click();
     QWidget* comparisonWindowOrNull = window.findChild<QWidget*>(QStringLiteral("graphComparisonWindow"));
     REQUIRE(comparisonWindowOrNull != nullptr);
+    QComboBox* traversalOrNull =
+        comparisonWindowOrNull->findChild<QComboBox*>(QStringLiteral("graphComparisonReferenceTraversal"));
+    REQUIRE(traversalOrNull != nullptr);
+    CHECK(traversalOrNull->isEnabled() == true);
+    CHECK(traversalOrNull->currentText() == QStringLiteral("CPU oracle"));
+    const QStandardItemModel* traversalsOrNull = qobject_cast<const QStandardItemModel*>(traversalOrNull->model());
+    REQUIRE(traversalsOrNull != nullptr);
+    constexpr int32 COMPUTE_INDEX = static_cast<int32>(renderer::ReferenceTraversal::GpuCompute);
+    rhi::ComputeCapabilities capabilities;
+    const bool hasCompute =
+        rhi::GetComputeCapabilities(world.GetRenderPreview().GetDevice(), capabilities) == rhi::RasterStatus::Ready;
+    REQUIRE(traversalsOrNull->item(COMPUTE_INDEX) != nullptr);
+    CHECK(traversalsOrNull->item(COMPUTE_INDEX)->isEnabled() == hasCompute);
+    if (hasCompute == true)
+    {
+        traversalOrNull->setCurrentIndex(COMPUTE_INDEX);
+        CHECK(traversalOrNull->currentText() == QStringLiteral("GPU compute"));
+    }
     comparisonWindowOrNull->close();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 

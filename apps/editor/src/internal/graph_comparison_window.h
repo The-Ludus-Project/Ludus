@@ -5,6 +5,7 @@
 #include <QTimer>
 #include <QWidget>
 
+class QComboBox;
 class QLabel;
 class QPushButton;
 class QSpinBox;
@@ -46,6 +47,7 @@ private:
     QSpinBox* const mGraphBounces;
     QSpinBox* const mReferenceSamples;
     QSpinBox* const mReferenceDepth;
+    QComboBox* const mReferenceTraversal;
     QPushButton* const mAdd;
     QPushButton* const mRemove;
     QPushButton* const mChoose;
