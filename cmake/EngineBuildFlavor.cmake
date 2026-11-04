@@ -1,7 +1,22 @@
 # Build flavor is engine policy; CMake configuration controls optimization and
 # dependency ABI. In particular, Profile uses RelWithDebInfo, not CONFIG:Profile.
 if(CMAKE_CONFIGURATION_TYPES)
-    message(FATAL_ERROR "Ludus SDK variants currently require a single-config generator (Ninja)")
+    if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND CMAKE_GENERATOR MATCHES "^Visual Studio")
+        # This source-build closure generates one flavor's policy headers per
+        # tree. Expose only the matching configuration in the generated solution.
+        if(LUDUS_BUILD_FLAVOR STREQUAL "Debug")
+            set(CMAKE_BUILD_TYPE Debug)
+        elseif(LUDUS_BUILD_FLAVOR MATCHES "^(Development|Profile)$")
+            set(CMAKE_BUILD_TYPE RelWithDebInfo)
+        elseif(LUDUS_BUILD_FLAVOR STREQUAL "Release")
+            set(CMAKE_BUILD_TYPE Release)
+        else()
+            message(FATAL_ERROR "Select a Ludus flavor for this Visual Studio solution with -DLUDUS_BUILD_FLAVOR=Debug, Development, Profile or Release.")
+        endif()
+        set(CMAKE_CONFIGURATION_TYPES "${CMAKE_BUILD_TYPE}" CACHE STRING "Configuration for the selected Ludus flavor" FORCE)
+    else()
+        message(FATAL_ERROR "Ludus SDK variants currently require a single-config generator (Ninja)")
+    endif()
 endif()
 
 set(LUDUS_BUILD_FLAVOR "" CACHE STRING "Ludus flavor: Debug, Development, Profile, Release")

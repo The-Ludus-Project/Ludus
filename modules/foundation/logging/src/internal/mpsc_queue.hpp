@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/logging/level.hpp>
 
@@ -90,6 +91,11 @@ struct QueuedRecord
     }
 };
 
+#if defined(LUDUS_COMPILER_MSVC)
+#    pragma warning(push)
+// The queue cursors deliberately occupy separate cache lines.
+#    pragma warning(disable : 4324)
+#endif
 template <usize Capacity>
 class MpscQueue
 {
@@ -201,5 +207,8 @@ private:
     alignas(64) std::atomic<uint64> mDropped{0};
     Cell mCells[Capacity];
 };
+#if defined(LUDUS_COMPILER_MSVC)
+#    pragma warning(pop)
+#endif
 
 } // namespace ludus::foundation::logging::internal

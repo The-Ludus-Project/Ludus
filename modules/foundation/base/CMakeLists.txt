@@ -1,8 +1,9 @@
 add_library(ludus_foundation_base STATIC)
 add_library(Ludus::FoundationBase ALIAS ludus_foundation_base)
 
-if((NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin|Windows)$" AND NOT EMSCRIPTEN) OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    message(FATAL_ERROR "Ludus assertions currently require the Linux/macOS/Windows Clang or pinned Emscripten backend")
+if(NOT (WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+   AND ((NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin|Windows)$" AND NOT EMSCRIPTEN) OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
+    message(FATAL_ERROR "Ludus assertions require the native Clang, Windows MSVC, or pinned Emscripten backend")
 endif()
 
 set_target_properties(
@@ -100,7 +101,8 @@ if(EMSCRIPTEN)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     # Report-only stderr backend; the POSIX socket/helper transports do not exist here.
     target_sources(ludus_foundation_base PRIVATE src/diagnostic_output_windows.cpp src/diagnostics_windows.cpp)
-    set_source_files_properties(src/diagnostics_windows.cpp PROPERTIES COMPILE_OPTIONS "-fno-optimize-sibling-calls")
+    set_source_files_properties(src/diagnostics_windows.cpp
+        PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:Clang>:-fno-optimize-sibling-calls>")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     target_sources(ludus_assert_runtime PRIVATE src/diagnostic_output.cpp)
     target_sources(ludus_foundation_base PRIVATE src/diagnostics_macos.cpp)
@@ -114,7 +116,7 @@ endif()
 ludus_apply_project_defaults(ludus_foundation_base)
 ludus_configure_target_identity(ludus_foundation_base PUBLIC)
 set_source_files_properties(src/assert.cpp
-    PROPERTIES COMPILE_OPTIONS "-fno-optimize-sibling-calls")
+    PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:Clang>:-fno-optimize-sibling-calls>")
 
 install(
     TARGETS ludus_foundation_base
