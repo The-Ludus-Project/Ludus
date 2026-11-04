@@ -88,12 +88,13 @@ Development, Profile and Release flavors consistently to configurations,
 assertions, flags, dependency variants, PDBs, generated shaders, output paths
 and install/export metadata. Audit `CMAKE_BUILD_TYPE` assumptions and fixed
 artifact paths; build, CTest and install must select the intended configuration.
-The same checks apply to SDK project setup and repair. For the D0 source build, generate a separate Visual Studio solution for each
-Ludus flavor. Each solution exposes its selected CMake configuration only, so
-generated policy headers, Catch2 and the CRT agree. Debug maps to `Debug`,
-Development and Profile each map to `RelWithDebInfo` in separate trees, and
-Release maps to `Release`. Shared solutions with configuration-specific policy
-headers and SDK exports are future work.
+The same checks apply to SDK project setup and repair. The D0 source build
+exposes Debug and Development in one Visual Studio solution. Development
+uses the optimization, debug information and dependency ABI of
+`RelWithDebInfo` while retaining Development's assertions and logging policy.
+Each solution configuration has separate policy headers, shader outputs,
+executables and PDBs. Existing solutions explicitly configured for one
+Ludus flavor still use that flavor's CMake configuration.
 
 Embedded shader/script editing and external source editors share the owning
 compiler/runtime validation and publication operations. Cover includes, source
@@ -567,22 +568,26 @@ Studio. The workflow contains the complete commands.
 The Windows source build accepts the x64 MSVC 14.44 toolset and uses the dynamic
 CRT, with the debug CRT in Debug. Production targets disable C++ exception
 handling and Catch2 test executables enable it. The Windows CI matrix tests
-Debug and Development under Ninja and generated Visual Studio/MSBuild projects,
-using Windows SDK 10.0.26100.0 and CMake 3.31.10. This source build is scoped
-to the existing Windows module list and tests. SDK installation and project
-setup, a solution with multiple flavors, and physical-GPU acceptance are
-separate D0 work.
+Debug and Development under Ninja and one generated Visual Studio solution,
+using Windows SDK 10.0.26100.0 and CMake 3.31.10. This source build covers
+the existing Windows module list and tests. SDK installation, project setup
+and physical-GPU acceptance are separate D0 work.
 
-Use the x64 developer prompt and the same Catch2 preparation as the primitive
-probe above. Run `python scripts/shader-probe bootstrap` to install the pinned
-Slang and DXC. The Windows CI workflow contains the full configure commands,
-including the per-generator options, the native toolchain file, and shader
-paths. Select the same configuration for the build and test steps. For example,
-after configuring Development with either generator:
+Use the x64 developer prompt and prepare both Debug and RelWithDebInfo
+Catch2 packages as in the primitive probe above. Run
+`python scripts/shader-probe bootstrap` to install the pinned Slang and DXC.
+Follow the Visual Studio configure command in the Windows CI workflow,
+leaving `LUDUS_BUILD_FLAVOR` empty. Build and test both configurations from
+that build directory with WARP selected.
 
 ```powershell
-cmake --build <build-dir> --config RelWithDebInfo --target ludus_foundation_base_tests ludus_platform_win32_tests ludus_rhi_d3d12_tests ludus_rhi_lifecycle_tests
-ctest --test-dir <build-dir> -C RelWithDebInfo --output-on-failure --no-tests=error --tests-regex '^ludus_(foundation_base|platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
+$env:LUDUS_TEST_REQUIRE_WARP = '1'
+foreach ($configuration in @('Debug', 'Development')) {
+    cmake --build <build-dir> --config $configuration --target ludus_foundation_base_tests ludus_platform_win32_tests ludus_rhi_d3d12_tests ludus_rhi_lifecycle_tests
+    if ($LASTEXITCODE -ne 0) { break }
+    ctest --test-dir <build-dir> -C $configuration --output-on-failure --no-tests=error --tests-regex '^ludus_(foundation_base|platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
+    if ($LASTEXITCODE -ne 0) { break }
+}
 ```
 
 Set `LUDUS_TEST_REQUIRE_WARP=1` when testing on a software-only Windows runner
