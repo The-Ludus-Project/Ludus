@@ -857,7 +857,14 @@ void MainWindow::buildWindowMenu(QMenu* menu)
     QAction* merge = addCommand(WINDOW_MERGE_GROUPS_COMMAND);
     menu->addSeparator();
     QAction* close = addCommand(WINDOW_CLOSE_DOCUMENT_COMMAND);
+    QAction* reopen = addCommand(WINDOW_REOPEN_DOCUMENT_COMMAND);
     QAction* closeAll = addCommand(WINDOW_CLOSE_ALL_DOCUMENTS_COMMAND);
+    reopen->setAutoRepeat(false);
+    reopen->setEnabled(mDocuments->HasClosedDocuments());
+    connect(reopen, &QAction::triggered, mDocuments, &DocumentWell::ReopenClosedDocument);
+    connect(mDocuments, &DocumentWell::ClosedDocumentHistoryChanged, reopen, [this, reopen]() {
+        reopen->setEnabled(mDocuments->HasClosedDocuments());
+    });
     connect(vertical, &QAction::triggered, this, [this]() {
         static_cast<void>(mDocuments->SplitActiveDocument(Qt::Horizontal));
     });

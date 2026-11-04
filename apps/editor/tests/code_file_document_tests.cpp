@@ -183,7 +183,7 @@ TEST_CASE("External change: a clean buffer reloads, a dirty one is kept", "[code
         CHECK(host.HasExternalChange() == false);
         // Rewrite the file externally with different content and a later mtime.
         QFile::remove(path);
-        writeFile(directory, QStringLiteral("watch.txt"), QByteArray("changed on disk\n"));
+        static_cast<void>(writeFile(directory, QStringLiteral("watch.txt"), QByteArray("changed on disk\n")));
         CHECK(host.HasExternalChange() == true);
         QString error;
         REQUIRE(host.ReloadFromDisk(error) == true);
@@ -199,7 +199,7 @@ TEST_CASE("External change: a clean buffer reloads, a dirty one is kept", "[code
         REQUIRE(appendByte(host, '!') == CodeEditStatus::Ok);
         CHECK(host.IsDirty() == true);
         QFile::remove(path);
-        writeFile(directory, QStringLiteral("watch.txt"), QByteArray("external\n"));
+        static_cast<void>(writeFile(directory, QStringLiteral("watch.txt"), QByteArray("external\n")));
         CHECK(host.HasExternalChange() == true);
         // Keep Mine re-baselines without touching the draft; it stays dirty.
         host.AdoptAsBaseline();
@@ -217,10 +217,11 @@ TEST_CASE("EditorConfig overrides detected indentation and line endings", "[code
     QTemporaryDir directory;
     REQUIRE(directory.isValid() == true);
     // The file is detected as 2-space, LF; EditorConfig forces tabs and CRLF.
-    writeFile(directory,
-              QStringLiteral(".editorconfig"),
-              QByteArray("root = true\n[*.txt]\nindent_style = tab\nindent_size = tab\ntab_width = 8\n"
-                         "end_of_line = crlf\n"));
+    static_cast<void>(
+        writeFile(directory,
+                  QStringLiteral(".editorconfig"),
+                  QByteArray("root = true\n[*.txt]\nindent_style = tab\nindent_size = tab\ntab_width = 8\n"
+                             "end_of_line = crlf\n")));
     const QString path = writeFile(directory, QStringLiteral("conf.txt"), QByteArray("  spaced\n  spaced\n"));
 
     const CodeFileLoadResult result = LoadCodeFile(path);
@@ -247,7 +248,10 @@ TEST_CASE("EditorConfig glob matching selects the right section", "[code-editor]
     CHECK(settings.IndentSize == 2);
 
     CodeEditorConfigSettings other;
-    MergeEditorConfigFile(config.constData(), static_cast<usize>(config.size()), QStringLiteral("notes.txt"), other);
+    CHECK(MergeEditorConfigFile(config.constData(),
+                                static_cast<usize>(config.size()),
+                                QStringLiteral("notes.txt"),
+                                other) == true);
     CHECK(other.IndentSize == 4);
 }
 

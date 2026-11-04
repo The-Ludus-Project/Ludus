@@ -9,6 +9,7 @@
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QSignalSpy>
 #include <QString>

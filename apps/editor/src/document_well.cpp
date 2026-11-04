@@ -168,6 +168,7 @@ bool DocumentWell::RemoveDocument(QWidget* document)
     }
     const bool wasOpen = groupOfOrNull(document) != nullptr;
     detach(document);
+    forgetClosedDocument(document);
     mEntries.removeAt(index);
     document->hide();
     document->setParent(nullptr);
@@ -227,6 +228,7 @@ void DocumentWell::insertInto(QTabWidget* group, QWidget* document, foundation::
     LUDUS_REQUIRE(entryOrNull != nullptr);
     const foundation::int32 tab = group->insertTab(index, document, entryOrNull->Title);
     group->setTabToolTip(tab, entryOrNull->Title);
+    forgetClosedDocument(document);
 }
 
 void DocumentWell::detach(QWidget* document)
@@ -293,6 +295,53 @@ void DocumentWell::CloseDocument(QWidget* document)
         return;
     }
     hideDocument(document);
+    rememberClosedDocument(document);
+}
+
+bool DocumentWell::ReopenClosedDocument()
+{
+    if (HasClosedDocuments() == false)
+    {
+        return false;
+    }
+    return OpenDocument(mClosedDocuments.GetLast());
+}
+
+bool DocumentWell::HasClosedDocuments() const
+{
+    return mClosedDocuments.IsEmpty() == false;
+}
+
+void DocumentWell::ClearClosedDocumentHistory()
+{
+    if (HasClosedDocuments() == true)
+    {
+        mClosedDocuments.Clear();
+        Q_EMIT ClosedDocumentHistoryChanged();
+    }
+}
+
+void DocumentWell::rememberClosedDocument(QWidget* document)
+{
+    if (mClosedDocuments.IsFull() == true)
+    {
+        mClosedDocuments.RemoveAt(0);
+    }
+    LUDUS_REQUIRE(mClosedDocuments.TryAdd(document) == true);
+    Q_EMIT ClosedDocumentHistoryChanged();
+}
+
+void DocumentWell::forgetClosedDocument(QWidget* document)
+{
+    for (foundation::usize index = 0; index < mClosedDocuments.GetSize(); ++index)
+    {
+        if (mClosedDocuments[index] == document)
+        {
+            mClosedDocuments.RemoveAt(index);
+            Q_EMIT ClosedDocumentHistoryChanged();
+            return;
+        }
+    }
 }
 
 void DocumentWell::hideDocument(QWidget* document)
@@ -341,9 +390,10 @@ void DocumentWell::CloseAllDocuments()
     }
     for (const Entry& entry : mEntries)
     {
-        if (entry.CloseMode == DocumentCloseMode::Hide)
+        if (entry.CloseMode == DocumentCloseMode::Hide && groupOfOrNull(entry.Document) != nullptr)
         {
             detach(entry.Document);
+            rememberClosedDocument(entry.Document);
         }
     }
     removeEmptyGroups();
@@ -362,6 +412,7 @@ void DocumentWell::SetDocumentAvailable(QWidget* document, bool isAvailable)
     entryOrNull->IsAvailable = isAvailable;
     if (isAvailable == false)
     {
+        forgetClosedDocument(document);
         // Unavailability is not a user close, so an owner-closed view is hidden as well.
         hideDocument(document);
     }
@@ -647,6 +698,7 @@ void DocumentWell::showTabMenu(QTabWidget* group, foundation::int32 index, const
             else
             {
                 detach(entry.Document);
+                rememberClosedDocument(entry.Document);
             }
         }
         removeEmptyGroups();
