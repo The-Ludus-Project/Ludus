@@ -4,6 +4,7 @@
 #include "internal/preview_shading.h"
 #include "internal/reference_capture_window.h"
 #include "internal/theme_colour.h"
+#include "internal/viewport_pass_bars.h"
 #include "internal/viewport_screenshot.h"
 #include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
@@ -204,21 +205,12 @@ constexpr qreal STATISTICS_MARGIN = 8;
 constexpr qreal STATISTICS_PADDING = 6;
 /// Corner radius of the statistics panel, in logical pixels.
 constexpr qreal STATISTICS_CORNER_RADIUS = 4;
-/// Corner radius of a pass bar, in logical pixels.
-constexpr qreal STATISTICS_BAR_RADIUS = 2;
 /// Opacity, of 255, of the statistics panel and of the shader error panel.
 constexpr int STATISTICS_BACKGROUND_OPACITY = 190;
 constexpr int SHADER_ERROR_OPACITY = 215;
 /// Translucent dark panel behind the statistics text, kept readable over any debug view.
 constexpr QRgb STATISTICS_BACKGROUND =
     WithAlpha(GetViewportArgb(design::ThemeColour::SurfaceViewport), STATISTICS_BACKGROUND_OPACITY);
-/// Opacity, of 255, of a pass bar behind its row text; low enough to keep the text readable.
-constexpr int PASS_BAR_OPACITY = 120;
-/// Pass bar of every scope but the slowest.
-constexpr QRgb PASS_BAR_COLOUR = WithAlpha(GetViewportArgb(design::ThemeColour::AccentPrimary), PASS_BAR_OPACITY);
-/// Pass bar of the slowest scope, so the frame's bottleneck stands out at a glance.
-constexpr QRgb SLOWEST_PASS_BAR_COLOUR =
-    WithAlpha(GetViewportArgb(design::ThemeColour::StatusWarning), PASS_BAR_OPACITY);
 /// Statistics text colour.
 constexpr QRgb STATISTICS_TEXT = GetViewportArgb(design::ThemeColour::TextHud);
 /// Translucent red panel behind live shader errors and restart notices.
@@ -249,8 +241,7 @@ QSizeF MeasureStatistics(const QString& text)
     const QRectF bounds = QFontMetricsF(GetStatisticsFont()).boundingRect(QRectF(), Qt::AlignLeft, text);
     return {bounds.width() + 2 * STATISTICS_PADDING, bounds.height() + 2 * STATISTICS_PADDING};
 }
-/// Draw one bar behind each pass row, which are the last lines of the text: a bar spans the panel's
-/// text width in proportion to its pass's share of the slowest pass, and the slowest takes the warning token.
+/// Draw the pass bars behind the last lines of the text, which are the pass rows.
 void PaintPassBars(QPainter& inoutPainter, const QString& text, const QRectF& panel, const ViewportPassBars& bars)
 {
     if (bars.RowCount == 0)
@@ -259,21 +250,12 @@ void PaintPassBars(QPainter& inoutPainter, const QString& text, const QRectF& pa
     }
     const qsizetype lineCount = text.count(QLatin1Char('\n')) + 1;
     const qsizetype firstRow = lineCount - static_cast<qsizetype>(bars.RowCount + bars.TrailingLines);
-    if (firstRow < 0)
-    {
-        return;
-    }
-    const qreal lineHeight = QFontMetricsF(GetStatisticsFont()).lineSpacing();
-    const qreal fullWidth = panel.width() - 2 * STATISTICS_PADDING;
-    for (foundation::usize row = 0; row < bars.RowCount; ++row)
-    {
-        const QRectF bar(panel.left() + STATISTICS_PADDING,
-                         panel.top() + STATISTICS_PADDING + (firstRow + static_cast<qsizetype>(row)) * lineHeight,
-                         fullWidth * static_cast<qreal>(bars.Fractions[row]),
-                         lineHeight);
-        inoutPainter.setBrush(QColor::fromRgba(row == bars.SlowestRow ? SLOWEST_PASS_BAR_COLOUR : PASS_BAR_COLOUR));
-        inoutPainter.drawRoundedRect(bar, STATISTICS_BAR_RADIUS, STATISTICS_BAR_RADIUS);
-    }
+    PaintViewportPassBars(
+        inoutPainter,
+        panel.adjusted(STATISTICS_PADDING, STATISTICS_PADDING, -STATISTICS_PADDING, -STATISTICS_PADDING),
+        QFontMetricsF(GetStatisticsFont()).lineSpacing(),
+        firstRow,
+        bars);
 }
 /// Paint an overlay panel (statistics or live shader status) with its top-left corner at origin.
 void PaintStatistics(QPainter& inoutPainter,

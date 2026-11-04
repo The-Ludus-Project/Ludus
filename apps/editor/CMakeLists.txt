@@ -209,6 +209,8 @@ set(editor_viewport_sources
     src/internal/ray_path_overlay.h
     src/ray_path_overlay.cpp
     src/preview_viewport.cpp
+    src/internal/viewport_pass_bars.h
+    src/viewport_pass_bars.cpp
     src/internal/viewport_object_overlay.h
     src/internal/viewport_object_interaction.h
     src/viewport_object_interaction.cpp
