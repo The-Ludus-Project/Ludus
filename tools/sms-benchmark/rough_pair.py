@@ -189,3 +189,42 @@ def sample_shift(draws, receiver, light, width, curvature, half_extent):
     # density ratio checks the shader's derivative-only Jacobian.
     jacobian = np.divide(draw_density, target_density, out=np.zeros_like(density), where=is_moved)
     return first, second, density, estimate, jacobian
+
+
+def sample_cached_grid(draws, receivers, grid_width, light, width, curvature, half_extent):
+    """Return fresh, neighbor, and balance-weighted estimates for each lane.
+
+    Draws have receiver-major order with one column group per independent
+    replica. The CPU generates all source paths once and uses its own bisection
+    to evaluate forward and reverse maps.
+    """
+    receiver_count = len(receivers)
+    if receiver_count != grid_width**2 or draws.shape[0] != receiver_count:
+        raise ValueError('Cached grid requires one draw block per receiver in a square grid.')
+    indices = np.arange(receiver_count)
+    column = indices % grid_width
+    has_neighbor = (column ^ 1) < grid_width
+    neighbor = np.where(has_neighbor, indices + (column ^ 1) - column, indices)
+    target = receivers[:, None, :]
+    source = receivers[neighbor, None, :]
+    fresh_first, fresh_second, fresh_density, fresh = sample(
+        'slice', draws, target, light, width, curvature, half_extent)
+    source_first, source_second = fresh_first[neighbor], fresh_second[neighbor]
+    shifted_first, shifted_second = shift(source_first, source_second, source, target, light, curvature)
+    reverse_first, reverse_second = shift(fresh_first, fresh_second, target, source, light, curvature)
+    is_in_reverse = (np.maximum(np.abs(reverse_first), np.abs(reverse_second)) <= half_extent).all(axis=-1)
+    is_in_target = (np.maximum(np.abs(shifted_first), np.abs(shifted_second)) <= half_extent).all(axis=-1)
+    is_shifted = has_neighbor[:, None] & (fresh_density[neighbor] > 0) & is_in_target
+    physical, target_density, _ = evaluate(shifted_first, shifted_second, target, light, width, curvature)
+    shifted_density = np.where(is_shifted, target_density, 0)
+    shifted = np.divide(physical, shifted_density, out=np.zeros_like(physical), where=is_shifted)
+    jacobian = np.divide(fresh_density[neighbor], target_density, out=np.zeros_like(physical), where=is_shifted)
+    weight = np.where(has_neighbor[:, None] & is_in_reverse & (fresh_density > 0), 0.5, 1)
+    return dict(fresh_positions=np.concatenate((fresh_first, fresh_second), axis=-1),
+                fresh_density=fresh_density, fresh=fresh,
+                shifted_positions=np.concatenate((shifted_first, shifted_second), axis=-1),
+                shifted_density=shifted_density, shifted=shifted, jacobian=jacobian,
+                weight=weight, radiance=weight * fresh + 0.5 * shifted,
+                has_neighbor=has_neighbor,
+                null_source=has_neighbor[:, None] & (fresh_density[neighbor] == 0),
+                off_target=has_neighbor[:, None] & (fresh_density[neighbor] > 0) & ~is_in_target)

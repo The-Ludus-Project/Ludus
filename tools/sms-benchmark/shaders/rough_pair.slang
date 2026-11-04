@@ -28,7 +28,7 @@ struct PairParameters
     float HalfExtent;
     float SourceReceiverOffset;
     uint ReplicasPerReceiver;
-    uint Padding;
+    uint ReceiverGridWidth;
 };
 
 struct PairResult
@@ -210,6 +210,13 @@ PairResult SamplePair(bool isSlice, float4 uniforms, float split, float2 receive
 // Foundations of ReSTIR (SIGGRAPH 2022), for the partial-bijection support
 // contract. Here one source proposal is pushed forward explicitly and
 // combined with fresh target support by ordinary balance MIS.
+float4 ReplayPairSeed(float2 firstWorld, float2 secondWorld, float2 receiverWorld)
+{
+    float2 middle = WarpSlope(firstWorld - secondWorld);
+    return float4(WarpSlope(firstWorld - receiverWorld) + middle,
+                  WarpSlope(secondWorld - Parameters.LightPositionWorld) - middle);
+}
+
 bool MapPair(float2 firstWorld,
              float2 secondWorld,
              float2 sourceWorld,
@@ -217,63 +224,88 @@ bool MapPair(float2 firstWorld,
              out float2 outFirstWorld,
              out float2 outSecondWorld)
 {
-    float2 middle = WarpSlope(firstWorld - secondWorld);
-    float2 firstSeed = WarpSlope(firstWorld - sourceWorld) + middle;
-    float2 secondSeed = WarpSlope(secondWorld - Parameters.LightPositionWorld) - middle;
-    return SolvePair(firstSeed, secondSeed, targetWorld, Parameters.LightPositionWorld, outFirstWorld, outSecondWorld);
+    float4 seed = ReplayPairSeed(firstWorld, secondWorld, sourceWorld);
+    return SolvePair(seed.xy, seed.zw, targetWorld, Parameters.LightPositionWorld, outFirstWorld, outSecondWorld);
+}
+
+PairResult ShiftPairSample(PairResult source, float2 sourceWorld, float2 targetWorld)
+{
+    PairResult result = source;
+    if (source.HasFailed > 0 || source.Density == 0)
+    {
+        return result;
+    }
+
+    float2 firstWorld;
+    float2 secondWorld;
+    if (MapPair(source.FirstPositionWorld,
+                source.SecondPositionWorld,
+                sourceWorld,
+                targetWorld,
+                firstWorld,
+                secondWorld) == false)
+    {
+        result.HasFailed = 1;
+        return result;
+    }
+    if (IsOnPatch(firstWorld) == false || IsOnPatch(secondWorld) == false)
+    {
+        result.Density = 0;
+        result.Radiance = 0;
+        return result;
+    }
+    float sourceJacobian = ComputePairJacobian(source.FirstPositionWorld - sourceWorld,
+                                               source.SecondPositionWorld - Parameters.LightPositionWorld,
+                                               source.FirstPositionWorld - source.SecondPositionWorld);
+    float targetJacobian = ComputePairJacobian(firstWorld - targetWorld,
+                                               secondWorld - Parameters.LightPositionWorld,
+                                               firstWorld - secondWorld);
+    result.ShiftJacobian = sourceJacobian / targetJacobian;
+    result.Density /= result.ShiftJacobian;
+    result.FirstPositionWorld = firstWorld;
+    result.SecondPositionWorld = secondWorld;
+    result.Radiance = EvaluatePair(firstWorld, secondWorld, targetWorld).x / result.Density;
+    return result;
+}
+
+float ComputeFreshMisWeight(PairResult fresh, float2 targetWorld, float2 sourceWorld, out bool outHasFailed)
+{
+    outHasFailed = false;
+    if (fresh.HasFailed > 0 || fresh.Density == 0)
+    {
+        return 1;
+    }
+    float2 firstWorld;
+    float2 secondWorld;
+    outHasFailed = MapPair(fresh.FirstPositionWorld,
+                           fresh.SecondPositionWorld,
+                           targetWorld,
+                           sourceWorld,
+                           firstWorld,
+                           secondWorld) == false;
+    if (outHasFailed == true)
+    {
+        return 0;
+    }
+    return IsOnPatch(firstWorld) && IsOnPatch(secondWorld) ? 0.5 : 1;
 }
 
 PairResult SampleShiftMixture(float4 uniforms, float component, float2 receiverWorld)
 {
     float2 sourceWorld = receiverWorld - float2(Parameters.SourceReceiverOffset, 0);
-    bool isShift = component < 0.5;
-    float2 drawReceiverWorld = isShift ? sourceWorld : receiverWorld;
-    PairResult result = SamplePair(true, uniforms, component, drawReceiverWorld);
-    if (result.HasFailed > 0 || result.Density == 0)
+    if (component < 0.5)
     {
-        return result;
+        return ShiftPairSample(SamplePair(true, uniforms, component, sourceWorld), sourceWorld, receiverWorld);
     }
-
-    float2 mappedFirstWorld;
-    float2 mappedSecondWorld;
-    if (MapPair(result.FirstPositionWorld,
-                result.SecondPositionWorld,
-                drawReceiverWorld,
-                isShift ? receiverWorld : sourceWorld,
-                mappedFirstWorld,
-                mappedSecondWorld) == false)
+    PairResult result = SamplePair(true, uniforms, component, receiverWorld);
+    bool hasFailed;
+    float weight = ComputeFreshMisWeight(result, receiverWorld, sourceWorld, hasFailed);
+    if (weight > 0)
     {
-        result.HasFailed = 1;
-        return result;
+        result.Density *= 0.5 / weight;
+        result.Radiance *= 2 * weight;
     }
-    bool isMappedOnPatch = IsOnPatch(mappedFirstWorld) && IsOnPatch(mappedSecondWorld);
-    if (isShift)
-    {
-        if (isMappedOnPatch == false)
-        {
-            result.Density = 0;
-            result.Radiance = 0;
-            return result;
-        }
-        float sourceJacobian = ComputePairJacobian(result.FirstPositionWorld - sourceWorld,
-                                                   result.SecondPositionWorld - Parameters.LightPositionWorld,
-                                                   result.FirstPositionWorld - result.SecondPositionWorld);
-        float targetJacobian = ComputePairJacobian(mappedFirstWorld - receiverWorld,
-                                                   mappedSecondWorld - Parameters.LightPositionWorld,
-                                                   mappedFirstWorld - mappedSecondWorld);
-        result.ShiftJacobian = sourceJacobian / targetJacobian;
-        result.Density /= result.ShiftJacobian;
-        result.FirstPositionWorld = mappedFirstWorld;
-        result.SecondPositionWorld = mappedSecondWorld;
-        result.Radiance = EvaluatePair(mappedFirstWorld, mappedSecondWorld, receiverWorld).x / result.Density;
-    }
-    else if (isMappedOnPatch == false)
-    {
-        // The mapped proposal has no mass here. Only the fresh half of the
-        // mixture contributes to this sample's density.
-        result.Density *= 0.5;
-        result.Radiance *= 2;
-    }
+    result.HasFailed = max(result.HasFailed, hasFailed ? 1 : 0);
     return result;
 }
 

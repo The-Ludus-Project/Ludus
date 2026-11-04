@@ -28,8 +28,11 @@ ENTRIES = {
     'bdpt-mis': 'RenderRoughPairBdpt',
     'shift-mixture': 'RenderRoughPairShift',
     'probe': 'ProbeRoughPair',
+    'cached-neighbors': 'RenderRoughPairCache',
+    'probe-cache': 'ProbeRoughPairCache',
 }
-METHODS = ('slice', 'bdpt-mis', 'shift-mixture')
+DIRECT_METHODS = ('slice', 'bdpt-mis', 'shift-mixture')
+METHODS = (*DIRECT_METHODS, 'cached-neighbors')
 
 
 class Compute:
@@ -45,7 +48,8 @@ class Compute:
         self.pipelines = {}
         self.hashes = {}
         for method, entry in ENTRIES.items():
-            code = compile_entry(output / method, compiler, 'rough_pair.slang', entry)
+            source = 'rough_pair_cache.slang' if method in ('cached-neighbors', 'probe-cache') else 'rough_pair.slang'
+            code = compile_entry(output / method, compiler, source, entry)
             self.hashes[method] = hashlib.sha256(code.encode()).hexdigest()
             module = self.device.create_shader_module(code=code)
             self.pipelines[method] = self.device.create_compute_pipeline(
@@ -64,10 +68,10 @@ class Compute:
         return self.device.create_bind_group(layout=self.pipelines[method].get_bind_group_layout(0),
                                              entries=entries)
 
-    def dispatch(self, method, bindings, count, batch, offset, seed):
+    def dispatch(self, method, bindings, count, batch, offset, seed, grid_width=0):
         self.queue.write_buffer(self.parameters, 0, PARAMETER_LAYOUT.pack(
             count, batch, offset, seed, *LIGHT, WIDTH, CURVATURE, HALF_EXTENT, SOURCE_OFFSET[0],
-            REPLICAS_PER_RECEIVER, 0))
+            REPLICAS_PER_RECEIVER, grid_width))
         encoder = self.device.create_command_encoder()
         compute = encoder.begin_compute_pass(timestamp_writes=dict(query_set=self.query,
             beginning_of_pass_write_index=0, end_of_pass_write_index=1))
@@ -86,19 +90,19 @@ class Compute:
         receivers = rng.uniform(-1.1, 1.1, (count, 2)).astype(np.float32)
         draws = rng.random((count, 8), dtype=np.float32)
         draws = np.clip(draws, 2**-23, 1-2**-23)
-        records = np.zeros((count, 2 * len(METHODS) + 1, 4), dtype=np.float32)
+        records = np.zeros((count, 2 * len(DIRECT_METHODS) + 1, 4), dtype=np.float32)
         gpu = self.storage(records)
         bindings = self.bind('probe', {0: self.storage(receivers), 3: self.storage(draws), 4: gpu})
         self.dispatch('probe', bindings, count, 1, 0, seed)
         raw = np.frombuffer(self.queue.read_buffer(gpu), dtype=np.float32).reshape(records.shape)
-        actual = raw[:, :-1].reshape(count, len(METHODS), 8)
+        actual = raw[:, :-1].reshape(count, len(DIRECT_METHODS), 8)
         restored = raw[:, -1]
         if not np.isfinite(actual).all() or np.any(actual[..., 6]):
             raise RuntimeError('GPU probe produced invalid values or an unresolved root.')
         report = {}
         arguments = (draws[:, :5].astype(np.float64), receivers.astype(np.float64),
                      LIGHT.astype(np.float64), WIDTH, CURVATURE, HALF_EXTENT)
-        for index, method in enumerate(METHODS):
+        for index, method in enumerate(DIRECT_METHODS):
             if method == 'shift-mixture':
                 *oracle, jacobian = rough_pair.sample_shift(*arguments)
                 np.testing.assert_allclose(actual[:, index, 7], jacobian, rtol=0.001, atol=0.000025)
@@ -145,13 +149,60 @@ class Compute:
                     round_trip_max_absolute_error=float(np.max(np.abs(restored[accepted]-expected_source))))
         return report
 
-    def render(self, method, receivers, seconds, budget, batch, seed):
+    def probe_cache(self, seed):
+        # An odd grid tests the fresh-only tail of every row and ensures that
+        # padding lanes take part in barriers without writing a receiver.
+        grid_width = 9
+        receivers = make_receivers(grid_width)
+        rng = np.random.default_rng(seed)
+        probe_rounds = 4
+        shape = (len(receivers), probe_rounds * REPLICAS_PER_RECEIVER)
+        draws = np.clip(rng.random((*shape, 4), dtype=np.float32), 2**-23, 1-2**-23)
+        gpu = self.storage(np.zeros((*shape, 5, 4), dtype=np.float32))
+        bindings = self.bind('probe-cache', {0: self.storage(receivers), 3: self.storage(draws), 4: gpu})
+        self.dispatch('probe-cache', bindings, cache_lane_count(grid_width), probe_rounds, 0, seed, grid_width)
+        raw = np.frombuffer(self.queue.read_buffer(gpu), dtype=np.float32).reshape(*shape, 5, 4)
+        if not np.isfinite(raw).all() or np.any(raw[..., 4, 2]):
+            raise RuntimeError('Cached GPU probe produced invalid values or an unresolved root.')
+        expected = rough_pair.sample_cached_grid(draws.astype(np.float64), receivers.astype(np.float64),
+                                                grid_width, LIGHT.astype(np.float64), WIDTH, CURVATURE, HALF_EXTENT)
+        for index, kind in enumerate(('fresh', 'shifted')):
+            actual_density = raw[..., 2 * index + 1, 0]
+            expected_density = expected[f'{kind}_density']
+            np.testing.assert_array_equal(actual_density > 0, expected_density > 0)
+            np.testing.assert_allclose(actual_density, expected_density, rtol=0.001, atol=0.000025)
+            np.testing.assert_allclose(raw[..., 2 * index + 1, 1], expected[kind], rtol=0.001, atol=0.000025)
+            if kind == 'shifted':
+                present = expected_density > 0
+                np.testing.assert_allclose(raw[..., 2 * index, :][present], expected[f'{kind}_positions'][present],
+                                           rtol=0, atol=0.000025)
+            else:
+                np.testing.assert_allclose(raw[..., 0, :], expected['fresh_positions'], rtol=0, atol=0.000025)
+        np.testing.assert_array_equal(raw[..., 4, 0], expected['weight'])
+        np.testing.assert_allclose(raw[..., 3, 3], expected['jacobian'], rtol=0.001, atol=0.000025)
+        np.testing.assert_allclose(raw[..., 4, 1], expected['radiance'], rtol=0.001, atol=0.000025)
+        paired = expected['has_neighbor'][:, None]
+        fresh_only = paired & (expected['fresh_density'] > 0) & (expected['weight'] == 1)
+        accepted = expected['shifted_density'] > 0
+        null_source = expected['null_source']
+        off_target = expected['off_target']
+        if not (fresh_only.any() and accepted.any() and null_source.any() and off_target.any() and np.any(~paired)):
+            raise RuntimeError('Cache probe requires accepted shifts, both null cases, fresh-only support and singletons.')
+        return dict(rounds=int(np.prod(shape)), singleton_rounds=int(np.count_nonzero(~paired) * shape[1]),
+                    accepted_shifts=int(accepted.sum()), fresh_only_support=int(fresh_only.sum()),
+                    null_sources=int(null_source.sum()), off_target_shifts=int(off_target.sum()),
+                    max_radiance_error=float(np.max(np.abs(raw[..., 4, 1]-expected['radiance']))),
+                    max_jacobian_error=float(np.max(np.abs(raw[..., 3, 3]-expected['jacobian']))))
+
+    def render(self, method, receivers, grid_width, seconds, budget, batch, seed):
         lane_count = len(receivers) * REPLICAS_PER_RECEIVER
+        is_cached = method == 'cached-neighbors'
+        dispatch_count = cache_lane_count(grid_width) if is_cached else lane_count
         zeros = np.zeros((lane_count, 4), dtype=np.float32)
         accumulation = self.storage(zeros)
         bindings = self.bind(method, {0: self.storage(receivers), 2: accumulation})
         # Warm the pipeline before taking timestamps and discard the warm-up.
-        self.dispatch(method, bindings, lane_count, batch, 0, seed)
+        self.dispatch(method, bindings, dispatch_count, batch, 0, seed, grid_width)
         self.queue.write_buffer(accumulation, 0, zeros)
         samples = 0
         elapsed = 0.
@@ -160,7 +211,7 @@ class Compute:
         while (elapsed if budget == 'gpu' else wall_seconds) < seconds:
             if samples + batch > MAX_SAMPLES_PER_LANE:
                 raise RuntimeError('Reduce the time budget to keep counts exact in FP32.')
-            duration = self.dispatch(method, bindings, lane_count, batch, samples, seed)
+            duration = self.dispatch(method, bindings, dispatch_count, batch, samples, seed, grid_width)
             if duration <= 0:
                 raise RuntimeError('GPU timestamp query did not advance.')
             elapsed += duration
@@ -173,9 +224,21 @@ class Compute:
         samples *= REPLICAS_PER_RECEIVER
         mean = raw[:, 0] / samples
         second = raw[:, 1] / samples
+        round_variance = np.maximum(0, second-mean**2) * samples / (samples-1)
         return mean, dict(seed=seed, samples_per_receiver=samples, gpu_seconds=elapsed, wall_seconds=wall_seconds,
                           null_fraction=float(raw[:, 2].sum() / (samples * len(receivers))),
-                          standard_error=np.sqrt(np.maximum(0, second-mean**2) / (samples-1)))
+                          shifted_draws_per_round=(grid_width - grid_width % 2) / grid_width if is_cached else 0,
+                          mean_round_variance=float(round_variance.mean()),
+                          standard_error=np.sqrt(round_variance / samples))
+
+
+def cache_lane_count(grid_width):
+    return grid_width * (grid_width + grid_width % 2) * REPLICAS_PER_RECEIVER
+
+
+def make_receivers(grid_width):
+    axis = np.linspace(-0.9, 0.9, grid_width, dtype=np.float32)
+    return np.stack(np.meshgrid(axis, axis), axis=-1).reshape(-1, 2)
 
 
 def main():
@@ -187,6 +250,7 @@ def main():
     parser.add_argument('--extent', type=int, default=8)
     parser.add_argument('--batch', type=int, default=128)
     parser.add_argument('--runs', type=int, default=3)
+    parser.add_argument('--methods', choices=METHODS, nargs='+', default=DIRECT_METHODS)
     parser.add_argument('--probe-only', action='store_true')
     arguments = parser.parse_args()
     if (not np.isfinite(arguments.seconds) or min(arguments.seconds, arguments.extent, arguments.runs) <= 0
@@ -195,10 +259,10 @@ def main():
     arguments.output.mkdir(parents=True, exist_ok=False)
     compute = Compute(arguments.output, arguments.compiler)
     report = dict(adapter=compute.adapter, shader_sha256=compute.hashes, probe=compute.probe(9137))
+    report['probe']['cached-neighbors'] = compute.probe_cache(9137)
     print(json.dumps(report), flush=True)
     if not arguments.probe_only:
-        axis = np.linspace(-0.9, 0.9, arguments.extent, dtype=np.float32)
-        receivers = np.stack(np.meshgrid(axis, axis), axis=-1).reshape(-1, 2)
+        receivers = make_receivers(arguments.extent)
         reference = rough_pair.quadrature(receivers, LIGHT, WIDTH, CURVATURE, HALF_EXTENT, 30)
         refined = rough_pair.quadrature(receivers, LIGHT, WIDTH, CURVATURE, HALF_EXTENT, 34)
         report['quadrature_max_absolute_difference'] = float(np.max(np.abs(reference-refined)))
@@ -206,10 +270,11 @@ def main():
         results = []
         arrays = dict(receivers=receivers, reference=refined)
         for trial in range(arguments.runs):
-            first = trial % len(METHODS)
-            methods = METHODS[first:] + METHODS[:first]
+            first = trial % len(arguments.methods)
+            methods = arguments.methods[first:] + arguments.methods[:first]
             for method in methods:
-                image, result = compute.render(method, receivers, arguments.seconds, arguments.budget, arguments.batch, 1000+trial)
+                image, result = compute.render(method, receivers, arguments.extent, arguments.seconds,
+                                               arguments.budget, arguments.batch, 1000+trial)
                 error = image-refined
                 standard_error = result.pop('standard_error')
                 result.update(method=method, rmse=float(np.sqrt(np.mean(error**2))),
@@ -223,7 +288,7 @@ def main():
                 print(json.dumps(result), flush=True)
         report['runs'] = results
         report['settings'] = dict(extent=arguments.extent, batch=arguments.batch, seconds=arguments.seconds,
-                                  budget=arguments.budget, width=WIDTH, curvature=CURVATURE, half_extent=HALF_EXTENT, light=LIGHT.tolist())
+                                  budget=arguments.budget, methods=arguments.methods, width=WIDTH, curvature=CURVATURE, half_extent=HALF_EXTENT, light=LIGHT.tolist())
         np.savez(arguments.output / 'linear.npz', **arrays)
     (arguments.output / 'report.json').write_text(json.dumps(report, indent=2)+'\n')
 
