@@ -231,6 +231,8 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     list(APPEND editor_viewport_sources src/internal/render_graph_preview.h src/render_graph_preview.cpp
         src/internal/viewport_raster_capture.h src/viewport_raster_capture.cpp
         src/internal/viewport_graph_capture.h src/viewport_graph_capture.cpp
+        src/internal/graph_comparison_run.h src/graph_comparison_run.cpp
+        src/internal/graph_comparison_window.h src/graph_comparison_window.cpp
         src/internal/render_graph_capture_profile.h src/render_graph_capture_profile.cpp
         src/internal/render_graph_library_capture.h src/render_graph_library_capture.cpp
         src/internal/graph_display_frames.h src/graph_display_frames.cpp

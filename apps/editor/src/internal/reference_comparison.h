@@ -109,6 +109,15 @@ CompareGraphCaptureWithReference(foundation::BorrowedView<const graphics::render
                                  QImage& outDifference,
                                  QString& outError);
 
+/// Compare equal-sized sRGB display images. A nonempty samples view masks uncommitted candidate pixels.
+[[nodiscard]] bool
+CompareDisplayImages(const QImage& reference,
+                     const QImage& candidate,
+                     foundation::BorrowedView<const graphics::renderer::RenderGraphCapturePixel> samples,
+                     ReferenceComparison& outComparison,
+                     QImage& outDifference,
+                     QString& outError);
+
 /// Machine-readable record of a comparison, with field names matching ReferenceComparison.
 [[nodiscard]] QJsonObject MakeReferenceComparisonJson(const ReferenceComparison& comparison);
 

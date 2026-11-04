@@ -54,6 +54,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -2739,8 +2740,11 @@ void RendererWorkspace::startLibraryCaptureBuild(const QByteArray& generationIde
     }
     // A library capture is deterministic per generation and target, so one compiled before is reused.
     const QString captures = QDir::cleanPath(QDir(build).filePath(QStringLiteral("../library-captures")));
-    QString name = QStringLiteral("%1-%2-%3-%4").arg(hexIdentity, target.Library, target.Configuration, target.Output);
-    name.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_.-]")), QStringLiteral("_"));
+    const QJsonArray route{target.Library, target.Configuration, target.Output, target.IsRootConfiguration};
+    const QByteArray key =
+        QCryptographicHash::hash(QJsonDocument(route).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256)
+            .toHex();
+    const QString name = hexIdentity + QLatin1Char('-') + QString::fromLatin1(key);
     const QString destination = QDir(captures).filePath(name + QStringLiteral(".lurgrt"));
     const QString profile = QDir(captures).filePath(name + QStringLiteral(".lurgcp"));
     if (QFileInfo(destination).isFile() == true)
@@ -2777,6 +2781,10 @@ void RendererWorkspace::startLibraryCaptureBuild(const QByteArray& generationIde
                           target.Configuration,
                           QStringLiteral("--library-output"),
                           target.Output};
+    if (target.IsRootConfiguration == true)
+    {
+        arguments.append(QStringLiteral("--root-configuration"));
+    }
     appendBuildToolArguments(arguments);
     appendWorkerSocketArgument(arguments);
     mLibraryCaptureIdentity = generationIdentity;

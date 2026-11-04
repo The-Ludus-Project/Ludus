@@ -9,6 +9,7 @@
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/rhi.h>
@@ -450,4 +451,32 @@ TEST_CASE("Comparison labels full-coverage under-sampling and failures as partia
     CHECK(comparison.HasReferenceFailed == false);
     CHECK(DescribeReferenceComparison(comparison).contains(QStringLiteral("Reference complete")) == true);
     CHECK(DescribeReferenceComparison(comparison).contains(QStringLiteral("Partial diagnostic")) == false);
+}
+
+TEST_CASE("Display comparison uses supplied sRGB values and masks missing graph samples",
+          "[editor][reference-comparison]")
+{
+    QImage baseline(2, 1, QImage::Format_RGB32);
+    QImage candidate(2, 1, QImage::Format_RGB32);
+    baseline.fill(Qt::red);
+    candidate.fill(Qt::blue);
+    candidate.setPixelColor(1, 0, Qt::red);
+    constexpr usize PIXEL_COUNT = 2;
+    const StaticArray<renderer::RenderGraphCapturePixel, PIXEL_COUNT> samples{
+        renderer::RenderGraphCapturePixel{},
+        renderer::RenderGraphCapturePixel{ .Samples = 1 },
+    };
+    ReferenceComparison comparison;
+    QImage difference;
+    QString error;
+    REQUIRE(CompareDisplayImages(baseline,
+                                 candidate,
+                                 {samples.GetData(), samples.GetSize()},
+                                 comparison,
+                                 difference,
+                                 error) == true);
+    CHECK(comparison.Space == ReferenceComparisonSpace::Display);
+    CHECK(comparison.ComparedPixels == 1);
+    CHECK(comparison.MeanAbsoluteError == 0);
+    CHECK(difference.pixelColor(0, 0).red() == 64);
 }

@@ -25,6 +25,8 @@ struct RenderGraphCaptureTarget final
     QString Configuration;
     /// ColorTexture output of that configuration.
     QString Output;
+    /// Root configuration uses its existing exported output. Empty Output selects the first colour export.
+    bool IsRootConfiguration = false;
 
     [[nodiscard]] bool operator==(const RenderGraphCaptureTarget& other) const = default;
     /// "Library#Configuration.output", as the capture window lists and reports it.

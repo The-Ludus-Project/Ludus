@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ludus render comparison</title>
+<style>
+  :root { color-scheme: dark; font: 16px system-ui, sans-serif; background: #141619; color: #e9edf1; }
+  body { margin: 2rem auto; max-width: 80rem; padding: 0 1rem; }
+  h1 { margin-bottom: .25rem; }
+  h2 { margin-top: 2rem; }
+  p { margin: .5rem 0 1rem; }
+  header p, .note { color: #c0c8d0; }
+  .warnings { background: #392a1c; border: 1px solid #a76b3c; border-radius: .4rem; padding: .8rem 2rem; }
+  .warnings:empty { display: none; }
+  .controls { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; margin-bottom: .75rem; }
+  input { width: min(18rem, 50vw); }
+  .pair, dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+  #gallery-images { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr)); gap: .75rem; }
+  figure { margin: 0; overflow-wrap: anywhere; }
+  figcaption { padding: .45rem 0; }
+  img { display: block; width: 100%; height: auto; background: #222; }
+  .overlay { position: relative; overflow: hidden; }
+  .overlay img + img { position: absolute; inset: 0; clip-path: inset(0 calc(100% - var(--split, 50%)) 0 0); }
+  .line { position: absolute; inset: 0 auto 0 var(--split, 50%); border-left: 1px solid white; pointer-events: none; }
+  dl { grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); }
+  dl div { padding: .75rem; background: #22262b; border-radius: .4rem; }
+  dt { color: #c0c8d0; }
+  dd { margin: .25rem 0 0; font-variant-numeric: tabular-nums; }
+  pre { overflow: auto; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Ludus render comparison</h1>
+  <p>$width × $height · $space</p>
+</header>
+<ul id="warnings" class="warnings"></ul>
+<div class="controls">
+  <label id="candidate-picker" $multi_candidate_only>Candidate <select id="candidate-choice">$options</select></label>
+  <label for="view">View</label>
+  <select id="view">
+    <option value="side">Side by side</option>
+    <option value="wipe">Wipe</option>
+    <option value="error">Error heatmap</option>
+    <option value="gallery" $multi_candidate_only>All candidates</option>
+  </select>
+  <label id="wipe-control" hidden>Baseline reveal <input type="range" id="split" min="0" max="100" value="50"></label>
+</div>
+<section id="side" class="pair">
+  <figure><img id="baseline-image" src="$baseline_image" alt="Baseline image"><figcaption>Baseline · $baseline</figcaption></figure>
+  <figure><img id="candidate-image" alt="Candidate image"><figcaption>Candidate · <span id="candidate-name"></span></figcaption></figure>
+</section>
+<section id="wipe" hidden>
+  <figure>
+    <div class="overlay" id="overlay">
+      <img id="wipe-candidate" alt="Candidate image on the right">
+      <img id="wipe-baseline" alt="Baseline image on the left">
+      <span class="line"></span>
+    </div>
+    <figcaption>Baseline on the left · candidate on the right</figcaption>
+  </figure>
+</section>
+<section id="error" hidden>
+  <figure><img id="heatmap-image" alt="Largest absolute RGB channel error at each pixel">
+    <figcaption>Black · zero error. Orange · $scale or more. Grey · no samples in one or both inputs.</figcaption>
+  </figure>
+</section>
+<section id="gallery" hidden><div id="gallery-images"></div></section>
+<p class="note">$preview_note</p>
+<h2>Pixel statistics · <span id="metrics-candidate"></span></h2>
+<p class="note">Bias is candidate minus baseline. Pixel coordinates start at (0, 0) in the top left.</p>
+<dl id="metrics"></dl>
+<details><summary>Inputs and metrics as JSON</summary><pre>$metadata</pre></details>
+$entries
+<script>
+  const view = document.getElementById('view');
+  const split = document.getElementById('split');
+  const candidateChoice = document.getElementById('candidate-choice');
+  document.getElementById('wipe-baseline').src = document.getElementById('baseline-image').src;
+  function updateCandidate() {
+    const entry = document.getElementById('candidate-' + candidateChoice.value).content;
+    const candidateSource = entry.querySelector('.candidate-source').getAttribute('src');
+    document.getElementById('candidate-image').src = candidateSource;
+    document.getElementById('wipe-candidate').src = candidateSource;
+    document.getElementById('heatmap-image').src = entry.querySelector('.error-source').getAttribute('src');
+    const name = entry.querySelector('span').textContent;
+    document.getElementById('candidate-name').textContent = name;
+    document.getElementById('metrics-candidate').textContent = name;
+    for (const [target, source] of [['warnings', 'ul'], ['metrics', 'dl']]) {
+      document.getElementById(target).replaceChildren(...entry.querySelector(source).cloneNode(true).children);
+    }
+  }
+  function updateView() {
+    for (const mode of ['side', 'wipe', 'error', 'gallery']) {
+      document.getElementById(mode).hidden = view.value !== mode;
+    }
+    document.getElementById('wipe-control').hidden = view.value !== 'wipe';
+    document.getElementById('candidate-picker').hidden = candidateChoice.options.length < 2 || view.value === 'gallery';
+    if (view.value === 'gallery') {
+      showGallery();
+    }
+  }
+  function showGallery() {
+    const gallery = document.getElementById('gallery-images');
+    if (gallery.childElementCount > 0) {
+      return;
+    }
+    gallery.append(document.querySelector('#side figure').cloneNode(true));
+    gallery.querySelector('img').removeAttribute('id');
+    for (const option of candidateChoice.options) {
+      const entry = document.getElementById('candidate-' + option.value).content;
+      const figure = document.createElement('figure');
+      const image = entry.querySelector('img').cloneNode(true);
+      image.alt = 'Candidate image';
+      const caption = document.createElement('figcaption');
+      caption.textContent = option.textContent;
+      figure.append(image, caption);
+      gallery.append(figure);
+    }
+  }
+  function updateSplit() {
+    document.getElementById('overlay').style.setProperty('--split', split.value + '%');
+  }
+  candidateChoice.addEventListener('change', updateCandidate);
+  updateCandidate();
+  view.addEventListener('change', updateView);
+  split.addEventListener('input', updateSplit);
+  updateView();
+  updateSplit();
+</script>
+</body>
+</html>
