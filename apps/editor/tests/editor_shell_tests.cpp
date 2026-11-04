@@ -2,6 +2,7 @@
 // persistence (docs/development/editor-workspace.md#workspace-layout).
 
 #include "internal/code_editor.h"
+#include "internal/code_editor_area.h"
 #include "internal/controller.h"
 #include "internal/document_well.h"
 #include "internal/error_list.h"
@@ -1769,4 +1770,51 @@ TEST_CASE("Toolbars group commands, hide session commands until a game runs and 
             }
         }
     }
+}
+
+TEST_CASE("Routing opens ordinary text files as code tabs and keeps package shaders in Source",
+          "[editor][layout][shell][code-editor]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.show();
+    const QString descriptor = WriteProject(directory);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    // A standalone script with no owning render-graph package.
+    const QString script = QDir(root).filePath(QStringLiteral("scripts/door.luau"));
+    WriteBytes(script, QByteArrayLiteral("local function Open() end\nreturn Open\n"));
+    controller.OpenProject(descriptor);
+    Settle();
+
+    DocumentWell& well = Well(window);
+    CodeEditorArea* codeArea = window.findChild<CodeEditorArea*>();
+    REQUIRE(codeArea != nullptr);
+    // The Code document needs a loaded project, like the other project documents.
+    CHECK(well.IsDocumentAvailable(codeArea) == true);
+
+    ProjectExplorer* explorer = window.findChild<ProjectExplorer*>();
+    REQUIRE(explorer != nullptr);
+    REQUIRE(explorer->ActivateItem(ProjectItemKind::Scripts, script) == true);
+    Settle();
+    // The script opened as a code tab in the Code document, not externally.
+    CHECK(well.GetActiveDocumentOrNull() == codeArea);
+    CHECK(codeArea->GetTabCount() == 1);
+    REQUIRE(codeArea->GetActiveTabOrNull() != nullptr);
+    CHECK(codeArea->GetActiveTabOrNull()->GetPath() == script);
+    // A single-click open is a preview tab (CE01).
+    CHECK(codeArea->GetActiveTabOrNull()->IsPreview() == true);
+
+    // A package-owned shader still routes to the render-graph Source pane, not a
+    // code tab, so the render-graph Source tests keep their behavior.
+    RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+    REQUIRE(renderer != nullptr);
+    REQUIRE(explorer->ActivateItem(ProjectItemKind::Shader,
+                                   QDir(root).filePath(QStringLiteral("renderer/main_shaders/geometry.slang"))) ==
+            true);
+    Settle();
+    CHECK(well.GetActiveDocumentOrNull() == renderer);
+    // The shader did not add a second code tab.
+    CHECK(codeArea->GetTabCount() == 1);
 }

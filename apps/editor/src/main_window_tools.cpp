@@ -7,6 +7,7 @@
 
 #include "internal/activity_chip.h"
 #include "internal/audio_workspace.h"
+#include "internal/code_editor_area.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
 #include "internal/controller.h"
@@ -120,12 +121,9 @@ void MainWindow::openProjectItem(ProjectItemKind kind, const QString& path)
                                    QFileInfo(graph).canonicalFilePath() == QFileInfo(current).canonicalFilePath();
             if (graph.isEmpty() == true)
             {
-                ExternalCodeEditor editor;
-                QString error;
-                if (editor.Open(this, path, error) == false && error.isEmpty() == false)
-                {
-                    statusBar()->showMessage(error, STATUS_MESSAGE_MILLISECONDS);
-                }
+                // A shader with no owning render-graph package opens as an
+                // ordinary code tab (CE01); Open Externally stays available.
+                openCodeFile(path, true);
                 return;
             }
             if (isCurrent == false && (Renderer_->ConfirmDiscard() == false || Renderer_->OpenGraph(graph) == false))
@@ -138,12 +136,9 @@ void MainWindow::openProjectItem(ProjectItemKind kind, const QString& path)
         case ProjectItemKind::Scripts:
             if (path.isEmpty() == false)
             {
-                ExternalCodeEditor editor;
-                QString error;
-                if (editor.Open(this, path, error) == false && error.isEmpty() == false)
-                {
-                    statusBar()->showMessage(error, STATUS_MESSAGE_MILLISECONDS);
-                }
+                // A script file opens as a code tab; the Scripts work area moves
+                // onto CodeEditor in a later M1 change. Open Externally stays.
+                openCodeFile(path, true);
             }
             else
             {
@@ -159,6 +154,22 @@ void MainWindow::openProjectItem(ProjectItemKind kind, const QString& path)
         case ProjectItemKind::Configuration:
             static_cast<void>(mDocuments->OpenDocument(Configuration_));
             return;
+    }
+}
+
+void MainWindow::openCodeFile(const QString& path, bool isPreview)
+{
+    if (path.isEmpty() == true)
+    {
+        return;
+    }
+    // Opening the tab brings the Code document forward. A load failure is
+    // reported by the area's OpenFailed handler, which leaves Open Externally
+    // available on native hosts (the Project Explorer context menu and the
+    // render-graph Source menu keep their existing Open Externally actions).
+    if (mCodeArea->OpenFile(path, isPreview) == true)
+    {
+        static_cast<void>(mDocuments->OpenDocument(mCodeArea));
     }
 }
 
