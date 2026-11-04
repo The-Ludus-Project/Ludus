@@ -60,6 +60,8 @@ QString GetModelName(format::MaterialModel model)
             return QStringLiteral("Thin dielectric");
         case format::MaterialModel::DiffuseConductorMix:
             return QStringLiteral("Diffuse / rough conductor Mix");
+        case format::MaterialModel::Unresolved:
+            return QStringLiteral("Unsupported imported material");
     }
     return QStringLiteral("Unknown (%1)").arg(static_cast<uint32>(model));
 }
@@ -178,6 +180,11 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
                  name.empty() == true ? GetFallbackMaterialName(surface + 1)
                                       : QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size()))});
     rows.append({QStringLiteral("Model"), GetModelName(material.Scattering.Model)});
+    if (material.Scattering.Model == format::MaterialModel::Unresolved)
+    {
+        outRows = foundation::Move(rows);
+        return true;
+    }
     // Legacy materials without source parameters reflect their texture unscaled, or black untextured;
     // the same resolution the World composition writes into merged scenes.
     const foundation::math::Vector3 reflectance = material.HasSourceMaterial == true ? material.Reflectance

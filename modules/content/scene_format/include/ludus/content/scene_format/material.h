@@ -27,6 +27,8 @@ static const MaterialModelTag LUDUS_MATERIAL_MODEL_DIELECTRIC = 4;
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC = 5;
 /// Weighted Lambertian and rough conductor wire tag.
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_DIFFUSE_CONDUCTOR_MIX = 6;
+/// Content-only tag for a named source material without a scattering implementation.
+static const MaterialModelTag LUDUS_MATERIAL_MODEL_UNRESOLVED = 7;
 /// PBRT default bounded internal layer events; independent of scene path depth.
 static const MaterialModelTag LUDUS_COATING_MAX_DEPTH = 10;
 /// PBRT default number of independent layered evaluation/PDF estimates.
@@ -57,6 +59,9 @@ enum class MaterialModel : foundation::uint32
     ThinDielectric = LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC,
     /// Weighted Lambertian and isotropic rough conductor. The material metallic field is the conductor weight.
     DiffuseConductorMix = LUDUS_MATERIAL_MODEL_DIFFUSE_CONDUCTOR_MIX,
+    /// Stored import diagnostic for a named material without a scattering implementation.
+    /// Only content storage accepts this tag. Renderers require a resolved material.
+    Unresolved = LUDUS_MATERIAL_MODEL_UNRESOLVED,
 };
 /// Report whether the model uses the complex-IOR GGX lobe and its authored alpha.
 [[nodiscard]] constexpr bool HasRoughConductorLobe(MaterialModel model) noexcept
@@ -110,7 +115,7 @@ struct MaterialScattering final
 /// Number of scalar float32 fields in the explicit MaterialScattering wire schema.
 inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHANNELS + MATERIAL_RGB_CHANNELS + 2 + 2;
 /// Validate finite bounded optical parameters. Unsupported model tags reject.
-/// This validates storage; an evaluator separately admits the supported anisotropy.
+/// An evaluator separately admits the supported anisotropy.
 [[nodiscard]] constexpr bool IsMaterialScatteringValid(const MaterialScattering& scattering) noexcept
 {
     if (scattering.Model > MaterialModel::DiffuseConductorMix ||
@@ -131,6 +136,15 @@ inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHA
         }
     }
     return true;
+}
+/// Validate cooked optical storage, including the import-only unresolved marker.
+[[nodiscard]] constexpr bool IsStoredMaterialScatteringValid(MaterialScattering scattering) noexcept
+{
+    if (scattering.Model == MaterialModel::Unresolved)
+    {
+        scattering.Model = MaterialModel::MetallicRoughness;
+    }
+    return IsMaterialScatteringValid(scattering);
 }
 } // namespace ludus::content::scene_format
 #else

@@ -1466,14 +1466,12 @@ void ResolveCamera(const SceneIr& scene,
 
 [[nodiscard]] uint32 GetCookedSceneVersion(const CookPlan& plan) noexcept
 {
+    uint32 version = format::VERSION_7;
     for (const PlannedMaterial& material : plan.Materials)
     {
-        if (material.Scattering.Model == format::MaterialModel::DiffuseConductorMix)
-        {
-            return format::VERSION_8;
-        }
+        version = math::Max(version, format::GetMaterialModelBundleVersion(material.Scattering.Model));
     }
-    return format::VERSION_7;
+    return version;
 }
 
 void PackBundle(const SceneIr& scene,

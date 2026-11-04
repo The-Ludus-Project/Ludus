@@ -137,6 +137,8 @@ public:
     // Version-2 records do not support the scene extension yet and are refused.
     [[nodiscard]] bool ImportScene(const QJsonObject& level, QString& error);
     [[nodiscard]] QJsonObject SceneLevel() const;
+    /// Map all current and future slots of a logical source material in one World history entry.
+    [[nodiscard]] bool MapSceneMaterial(const QString& source, const QString& replacement, QString& outError);
     /// Replace the scene level's start view (`scene.camera`: eye, target, up, fov) as one undo
     /// step. Fails without a scene level or when the World's validation rejects the camera;
     /// failure preserves the draft and history, and an unchanged camera adds no history.

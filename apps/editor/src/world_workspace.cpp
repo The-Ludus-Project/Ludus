@@ -39,6 +39,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QItemSelectionModel>
 #include <QJsonDocument>
 #include <QKeySequence>
@@ -53,6 +54,7 @@
 #include <QPushButton>
 #include <QSaveFile>
 #include <QScrollArea>
+#include <QSet>
 #include <QSettings>
 #include <QShortcut>
 #include <QSplitter>
@@ -1473,6 +1475,11 @@ void WorldWorkspace::addMaterialGroup()
         rowLayout->addWidget(value, 1);
         rows->addRow(property.Label, row);
     }
+    if (materialOrNull != nullptr &&
+        materialOrNull->Scattering.Model == content::scene_format::MaterialModel::Unresolved)
+    {
+        addMaterialRepair(*rows);
+    }
     if (canEditCoating == true)
     {
         QLabel* help = new QLabel(
@@ -1508,6 +1515,142 @@ void WorldWorkspace::addMaterialGroup()
         rows->addRow(restore);
     }
     Inspector_->addWidget(group);
+}
+
+void WorldWorkspace::addMaterialRepair(QFormLayout& inoutRows)
+{
+    QWidget* group = inoutRows.parentWidget();
+    QLabel* explanation = new QLabel(
+        QStringLiteral("This imported PBRT material has no Ludus shading implementation. Map it to a material "
+                       "already assigned to a supported slot in this World."),
+        group);
+    explanation->setWordWrap(true);
+    inoutRows.addRow(explanation);
+    const QString source =
+        Document_.ScenePlacement(Document_.Entity(Selected_)).value(QStringLiteral("material")).toString();
+    const QJsonObject mappings = Document_.Draft()
+                                     .value(QStringLiteral("scene"))
+                                     .toObject()
+                                     .value(QStringLiteral("material_mappings"))
+                                     .toObject();
+    QComboBox* replacements = new QComboBox(group);
+    replacements->setObjectName(QStringLiteral("worldMaterialReplacement"));
+    replacements->setAccessibleName(QStringLiteral("Replacement material"));
+    const RenderScene& scene = Scene_->PreviewScene();
+    QHash<QString, QString> bindings;
+    const QJsonArray entities = Document_.Draft().value(QStringLiteral("entities")).toArray();
+    for (const QJsonValue value : entities)
+    {
+        const QJsonObject entity = value.toObject();
+        const QJsonObject placement = entity.value(QStringLiteral("scene")).toObject();
+        if (placement.isEmpty() == false)
+        {
+            bindings.insert(entity.value(QStringLiteral("id")).toString(),
+                            placement.value(QStringLiteral("material")).toString());
+        }
+    }
+    QSet<QString> listed;
+    for (const PreviewObject& object : scene.Objects)
+    {
+        const QString identity = bindings.value(object.Id);
+        if (identity.isEmpty() == true || identity == source || mappings.contains(identity) == true ||
+            listed.contains(identity) == true)
+        {
+            continue;
+        }
+        if (scene.Definition == nullptr || object.Surface < 0 ||
+            static_cast<foundation::usize>(object.Surface) >= scene.Definition->Materials.GetSize())
+        {
+            continue;
+        }
+        const resources::SceneMaterial& material =
+            scene.Definition->Materials[static_cast<foundation::usize>(object.Surface)];
+        if (material.Scattering.Model == content::scene_format::MaterialModel::Unresolved)
+        {
+            continue;
+        }
+        const std::string_view name = material.Name.View();
+        const QString display =
+            name.empty() == true
+                ? object.Name
+                : QStringLiteral("%1 (%2)").arg(QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size())),
+                                                object.Name);
+        replacements->addItem(display, identity);
+        listed.insert(identity);
+    }
+    if (replacements->count() == 0)
+    {
+        replacements->addItem(QStringLiteral("Import a supported material to map this slot."));
+        replacements->setEnabled(false);
+    }
+    inoutRows.addRow(QStringLiteral("Replacement"), replacements);
+    QPushButton* map = new QPushButton(QStringLiteral("Map to existing material"), group);
+    map->setObjectName(QStringLiteral("worldMapMaterial"));
+    map->setEnabled(replacements->isEnabled() == true && Pending_ == false && SceneBusy() == false);
+    connect(map, &QPushButton::clicked, this, [this, replacements, source]() {
+        mapImportedMaterial(source, replacements->currentData().toString(), replacements->currentText());
+    });
+    inoutRows.addRow(map);
+}
+
+void WorldWorkspace::mapImportedMaterial(const QString& source, const QString& replacement, const QString& label)
+{
+    if (Pending_ == true || SceneBusy() == true || source.isEmpty() == true || replacement.isEmpty() == true)
+    {
+        Changed(QStringLiteral("Finish the current World edit before mapping a material."));
+        return;
+    }
+    QStringList affected;
+    for (const QJsonValue value : Document_.Draft().value(QStringLiteral("entities")).toArray())
+    {
+        const QJsonObject entity = value.toObject();
+        const QJsonObject placement = entity.value(QStringLiteral("scene")).toObject();
+        if (placement.value(QStringLiteral("material")).toString() == source)
+        {
+            affected.append(entity.value(QStringLiteral("name")).toString() + QStringLiteral(" · ") +
+                            entity.value(QStringLiteral("id")).toString());
+        }
+    }
+    const QByteArray before = Document_.Encode();
+    QMessageBox confirmation(QMessageBox::Question,
+                             QStringLiteral("Map shared material"),
+                             QStringLiteral("Use %1 for %2 World slots and for future imports of this source material?")
+                                 .arg(label)
+                                 .arg(affected.size()),
+                             QMessageBox::Cancel,
+                             this);
+    confirmation.setTextFormat(Qt::PlainText);
+    constexpr qsizetype INLINE_AFFECTED_SLOT_LIMIT = 6;
+    const QString affectedSlots = affected.join(QLatin1Char('\n'));
+    if (affected.size() <= INLINE_AFFECTED_SLOT_LIMIT)
+    {
+        confirmation.setInformativeText(affectedSlots);
+    }
+    else
+    {
+        confirmation.setDetailedText(affectedSlots);
+    }
+    QPushButton* apply = confirmation.addButton(QStringLiteral("Map and apply"), QMessageBox::AcceptRole);
+    apply->setObjectName(QStringLiteral("worldConfirmMaterialMapping"));
+    confirmation.setDefaultButton(QMessageBox::Cancel);
+    confirmation.exec();
+    if (confirmation.clickedButton() != apply)
+    {
+        return;
+    }
+    if (Document_.Encode() != before || Pending_ == true || SceneBusy() == true)
+    {
+        Changed(QStringLiteral("The World changed while confirming. Review the affected slots and map again."));
+        return;
+    }
+    QString error;
+    if (Document_.MapSceneMaterial(source, replacement, error) == false)
+    {
+        Changed(error);
+        return;
+    }
+    Snapshot();
+    Changed(QStringLiteral("Material mapped for %1 slots. Undo is available.").arg(affected.size()));
 }
 
 void WorldWorkspace::restoreImportedCoating()
@@ -2068,6 +2211,12 @@ void WorldWorkspace::Changed(const QString& message)
     Components_->setEnabled(Pending_ == false && isBusy == false);
     Apply_->setEnabled(Pending_ && isBusy == false);
     Reset_->setEnabled(Pending_ && isBusy == false);
+    QPushButton* mapOrNull = findChild<QPushButton*>(QStringLiteral("worldMapMaterial"));
+    const QComboBox* replacementsOrNull = findChild<QComboBox*>(QStringLiteral("worldMaterialReplacement"));
+    if (mapOrNull != nullptr && replacementsOrNull != nullptr)
+    {
+        mapOrNull->setEnabled(replacementsOrNull->isEnabled() == true && Pending_ == false && isBusy == false);
+    }
     QPushButton* restoreCoatingOrNull = findChild<QPushButton*>(QStringLiteral("worldRestoreCoating"));
     if (restoreCoatingOrNull != nullptr)
     {

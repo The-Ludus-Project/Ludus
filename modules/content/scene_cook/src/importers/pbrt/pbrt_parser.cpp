@@ -1617,6 +1617,10 @@ Status SceneReader::defineMaterial(Directive& inoutDirective, std::string_view t
     {
         material.IsApproximated = true;
         warn(codes::MATERIAL_DEFAULTED, inoutDirective.Line, type.empty() == false ? type : "missing type");
+        if (name.empty() == false && type.empty() == false)
+        {
+            material.Scattering.Model = format::MaterialModel::Unresolved;
+        }
         markAllUsed(inoutDirective);
     }
     // Recognised parameters with no PBR slot; read so the unknown-parameter report stays focused.

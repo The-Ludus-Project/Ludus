@@ -53,6 +53,15 @@ bool IsAccepted(rhi::RasterStatus status) noexcept
 {
     return status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending;
 }
+/// Diagnostic color uses the display material only. It never enters the scene's emitter table.
+void SetUnresolvedMaterialDiagnostic(renderer::LitMaterialDescription& inoutMaterial) noexcept
+{
+    inoutMaterial.Surface.Tint = {0, 0, 0, 1};
+    inoutMaterial.Metallic = 1;
+    inoutMaterial.Emission = {UNRESOLVED_MATERIAL_TINT.X, UNRESOLVED_MATERIAL_TINT.Y, UNRESOLVED_MATERIAL_TINT.Z};
+    inoutMaterial.IsEmissionTwoSided = true;
+    inoutMaterial.DebugView = renderer::MaterialDebugView::None;
+}
 /// Area-weighted vertex normals for unlit authored meshes, which carry none. Debug views need
 /// normals for the lit program; degenerate fans fall back to +Y so every normal is nonzero.
 QVector<math::Vector3> ComputeVertexNormals(const PreviewMesh& mesh)
@@ -546,6 +555,11 @@ bool PreviewGpuGeneration::prepareAssets(QString& outError) noexcept
             lit.EnvironmentIrradiance = {SOLID_SKY_IRRADIANCE, SOLID_SKY_IRRADIANCE, SOLID_SKY_IRRADIANCE};
             lit.EnvironmentGroundScale = SOLID_GROUND_SCALE;
         }
+        if (surface.HasUnresolvedMaterial == true)
+        {
+            description.Tint = UNRESOLVED_MATERIAL_TINT;
+            SetUnresolvedMaterialDiagnostic(lit);
+        }
         renderer::LightSelection selection;
         if (IsAccepted(shouldUseLitMaterials() == true
                            ? Renderer.CreateLitMaterial(mProgram, lit, mMaterials[i], selection)
@@ -705,6 +719,10 @@ rhi::RasterStatus PreviewGpuGeneration::CreateLightingMaterial(usize objectIndex
         material.EnvironmentIrradiance = radiance * math::kPiF;
         material.EnvironmentRadiance = radiance;
     }
+    if (maps.HasUnresolvedMaterial == true)
+    {
+        SetUnresolvedMaterialDiagnostic(material);
+    }
     renderer::LightSelection report;
     return resources.Renderer.CreateLitMaterial(mProgram, material, outMaterial, report);
 #else
@@ -736,6 +754,12 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
         preview_lighting::InputsLimit limit = preview_lighting::InputsLimit::Emitter;
         const rhi::RasterStatus status =
             preview_lighting::BuildInputs(resources.Source, resources.LightingKey, resources.Lighting, target, &limit);
+        if (status == rhi::RasterStatus::Unsupported && target == preview_lighting::InputsTarget::Reference)
+        {
+            outError = QStringLiteral("Reference capture needs resolved materials. Select a purple World surface "
+                                      "and map its material before capturing.");
+            return false;
+        }
         if (status == rhi::RasterStatus::CapacityExceeded)
         {
             // Name the budget, so the reader knows what to reduce.

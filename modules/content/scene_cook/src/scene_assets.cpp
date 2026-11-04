@@ -752,14 +752,43 @@ struct CoatingOverride final
     return tree.GetText(tree.GetMember(tree.GetItem(objects, index), "id"));
 }
 
+[[nodiscard]] std::string_view GetMappedMaterial(const JsonTree& tree, JsonIndex mappings, JsonIndex object) noexcept
+{
+    const std::string_view source = tree.GetText(tree.GetMember(object, "material"));
+    const JsonIndex replacement = tree.GetMember(mappings, source);
+    return replacement == NO_JSON_NODE ? source : tree.GetText(replacement);
+}
+
 /// validate_level(value).
 [[nodiscard]] bool ValidateLevelNode(const JsonTree& tree, JsonIndex level, Failure& inoutFailure) noexcept
 {
     static constexpr std::string_view LEVEL_KEYS[] =
         {"version", "id", "name", "profile", "objects", "camera", "imports"};
-    if (tree.HasExactKeys(level, LEVEL_KEYS) == false)
+    static constexpr std::string_view MAPPED_LEVEL_KEYS[] =
+        {"version", "id", "name", "profile", "objects", "camera", "imports", "material_mappings"};
+    const JsonIndex mappings = tree.GetMember(level, "material_mappings");
+    if ((mappings == NO_JSON_NODE ? tree.HasExactKeys(level, LEVEL_KEYS)
+                                  : tree.HasExactKeys(level, MAPPED_LEVEL_KEYS)) == false)
     {
         return inoutFailure.FailInvalid("Invalid level fields");
+    }
+    if (mappings != NO_JSON_NODE)
+    {
+        if (tree.GetKind(mappings) != JsonKind::Object || tree.GetCount(mappings) > format::IMPORT_LIMITS.Materials)
+        {
+            return inoutFailure.FailInvalid("Invalid material mapping table");
+        }
+        for (usize index = 0; index < tree.GetCount(mappings); ++index)
+        {
+            const std::string_view source = tree.GetKey(mappings, index);
+            const JsonIndex target = tree.GetMember(mappings, source);
+            if (IsResourceIdText(source, "material") == false || IsResourceId(tree, target, "material") == false ||
+                tree.GetMember(mappings, tree.GetText(target)) != NO_JSON_NODE)
+            {
+                return inoutFailure.FailInvalid("Material mappings require distinct source and replacement IDs, "
+                                                "without chained mappings");
+            }
+        }
     }
     if (IsNumberEqual(tree, tree.GetMember(level, "version"), 1) == false ||
         tree.IsString(tree.GetMember(level, "profile"), LEVEL_PROFILE) == false ||
@@ -1184,12 +1213,14 @@ private:
         return inoutFailure.FailInvalid("Unsupported scene catalog");
     }
     ClosureBuilder builder(root, catalog->Tree, resources, inoutFailure);
+    const JsonIndex mappings = levelTree.GetMember(level, "material_mappings");
     const JsonIndex objects = levelTree.GetMember(level, "objects");
     for (usize i = 0; i < levelTree.GetCount(objects); ++i)
     {
         const JsonIndex item = levelTree.GetItem(objects, i);
         if (builder.Visit(levelTree.GetText(levelTree.GetMember(item, "mesh")), 0) == false ||
-            builder.Visit(levelTree.GetText(levelTree.GetMember(item, "material")), 0) == false)
+            builder.Visit(levelTree.GetText(levelTree.GetMember(item, "material")), 0) == false ||
+            builder.Visit(GetMappedMaterial(levelTree, mappings, item), 0) == false)
         {
             return false;
         }
@@ -1471,7 +1502,7 @@ struct SourceMaterialRecord final
     outRecord.Scattering.AlphaV = read();
     outRecord.Scattering.CoatingEta = read();
     outRecord.Scattering.CoatingThickness = read();
-    if (format::IsMaterialScatteringValid(outRecord.Scattering) == false ||
+    if (format::IsStoredMaterialScatteringValid(outRecord.Scattering) == false ||
         math::IsFinite(outRecord.Reflectance) == false || outRecord.Reflectance.X < 0 || outRecord.Reflectance.X > 1 ||
         outRecord.Reflectance.Y < 0 || outRecord.Reflectance.Y > 1 || outRecord.Reflectance.Z < 0 ||
         outRecord.Reflectance.Z > 1)
@@ -1537,7 +1568,7 @@ JsonIndex AddSourceMaterial(JsonTree& inoutTree, const SourceMaterialRecord& rec
     constexpr uint32 MAXIMUM_SOURCE_IDENTITY = ~uint32{0};
     if (identity.Kind != JsonKind::Integer || identity.Integer < 0 ||
         identity.Integer > static_cast<int64>(MAXIMUM_SOURCE_IDENTITY) || model.Kind != JsonKind::Integer ||
-        model.Integer < 0 || model.Integer > static_cast<int64>(format::MaterialModel::DiffuseConductorMix) ||
+        model.Integer < 0 || model.Integer > static_cast<int64>(format::MaterialModel::Unresolved) ||
         tree.GetKind(name) != JsonKind::String || tree.GetText(name).size() > format::MAX_MATERIAL_NAME_BYTES)
     {
         return inoutFailure.FailInvalid("invalid source material identity or model");
@@ -1590,7 +1621,7 @@ JsonIndex AddSourceMaterial(JsonTree& inoutTree, const SourceMaterialRecord& rec
         readScalar("alpha_v", outRecord.Scattering.AlphaV) == false ||
         readScalar("coating_eta", outRecord.Scattering.CoatingEta) == false ||
         readScalar("coating_thickness", outRecord.Scattering.CoatingThickness) == false ||
-        format::IsMaterialScatteringValid(outRecord.Scattering) == false ||
+        format::IsStoredMaterialScatteringValid(outRecord.Scattering) == false ||
         math::IsFinite(outRecord.Reflectance) == false || outRecord.Reflectance.X < 0 || outRecord.Reflectance.X > 1 ||
         outRecord.Reflectance.Y < 0 || outRecord.Reflectance.Y > 1 || outRecord.Reflectance.Z < 0 ||
         outRecord.Reflectance.Z > 1)
@@ -1804,9 +1835,9 @@ struct BundleParts final
             {
                 return false;
             }
-            if (source.Scattering.Model == format::MaterialModel::DiffuseConductorMix && version < format::VERSION_8)
+            if (version < format::GetMaterialModelBundleVersion(source.Scattering.Model))
             {
-                return inoutFailure.FailInvalid("Mix material requires LUSCN version 8");
+                return inoutFailure.FailInvalid("Material model requires a newer LUSCN version");
             }
         }
         BundleMaterial material;
@@ -2622,6 +2653,7 @@ struct MaterialVariant final
 /// Preserve source material ordering and share records for identical slot overrides.
 [[nodiscard]] bool CollectMaterialVariants(const JsonTree& tree,
                                            JsonIndex objects,
+                                           JsonIndex mappings,
                                            const Array<std::string_view>& materials,
                                            Array<MaterialVariant>& outVariants,
                                            Array<uint32>& outObjectMaterials,
@@ -2636,7 +2668,7 @@ struct MaterialVariant final
     for (usize objectIndex = 0; objectIndex < objectCount; ++objectIndex)
     {
         const JsonIndex object = tree.GetItem(objects, objectIndex);
-        sourceIndices[objectIndex] = FindIndex(materials, tree.GetText(tree.GetMember(object, "material")));
+        sourceIndices[objectIndex] = FindIndex(materials, GetMappedMaterial(tree, mappings, object));
     }
     for (usize sourceIndex = 0; sourceIndex < materials.GetSize(); ++sourceIndex)
     {
@@ -2687,6 +2719,7 @@ struct MaterialVariant final
                                          Failure& inoutFailure) noexcept
 {
     outBundle.Clear();
+    const JsonIndex mappings = levelTree.GetMember(level, "material_mappings");
     const JsonIndex objects = levelTree.GetMember(level, "objects");
     const usize objectCount = levelTree.GetCount(objects);
     Array<std::string_view> meshes;
@@ -2695,7 +2728,7 @@ struct MaterialVariant final
     {
         const JsonIndex item = levelTree.GetItem(objects, i);
         if (AddSortedUnique(meshes, levelTree.GetText(levelTree.GetMember(item, "mesh"))) == false ||
-            AddSortedUnique(materials, levelTree.GetText(levelTree.GetMember(item, "material"))) == false)
+            AddSortedUnique(materials, GetMappedMaterial(levelTree, mappings, item)) == false)
         {
             return inoutFailure.FailOutOfMemory();
         }
@@ -2706,7 +2739,8 @@ struct MaterialVariant final
     }
     Array<MaterialVariant> variants;
     Array<uint32> objectMaterials;
-    if (CollectMaterialVariants(levelTree, objects, materials, variants, objectMaterials, inoutFailure) == false)
+    if (CollectMaterialVariants(levelTree, objects, mappings, materials, variants, objectMaterials, inoutFailure) ==
+        false)
     {
         return false;
     }
@@ -2748,7 +2782,7 @@ struct MaterialVariant final
     // Version 6 assembles tangent-framed mesh parts or materials with surface/emission
     // maps; older mesh parts then gain absent (zero) tangents.
     bool isVersion7 = false;
-    bool isVersion8 = false;
+    uint32 typedVersion = format::VERSION_7;
     for (const Document& description : descriptions)
     {
         const JsonIndex source = description.Tree.GetMember(description.Root, "source_material");
@@ -2756,9 +2790,14 @@ struct MaterialVariant final
         if (source != NO_JSON_NODE)
         {
             const JsonIndex model = description.Tree.GetMember(source, "model");
-            isVersion8 =
-                isVersion8 == true ||
-                IsNumberEqual(description.Tree, model, static_cast<int64>(format::MaterialModel::DiffuseConductorMix));
+            const JsonNode& value = description.Tree.GetNode(model);
+            if (value.Kind == JsonKind::Integer && value.Integer >= 0 &&
+                value.Integer <= static_cast<int64>(format::MaterialModel::Unresolved))
+            {
+                typedVersion =
+                    math::Max(typedVersion,
+                              format::GetMaterialModelBundleVersion(static_cast<format::MaterialModel>(value.Integer)));
+            }
         }
     }
     bool isVersion6 = isVersion7;
@@ -2882,8 +2921,7 @@ struct MaterialVariant final
     }
     ByteWriter writer(outBundle);
     writer.Append(format::MAGIC);
-    const uint32 version = isVersion8 == true   ? format::VERSION_8
-                           : isVersion7 == true ? format::VERSION_7
+    const uint32 version = isVersion7 == true   ? typedVersion
                            : isVersion6 == true ? format::VERSION_6
                            : isVersion5 == true ? format::VERSION_5
                            : isVersion4 == true ? format::VERSION_4

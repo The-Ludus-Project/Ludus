@@ -289,7 +289,7 @@ and per-texel roughness. The IR already holds, and the cook reports dropping:
 | `conductor`, `coatedconductor` | metallic, colour from the named eta/k table |
 | `dielectric`, `thindielectric` | typed smooth `Dielectric`/`ThinDielectric` with scalar `eta` (default 1.5; a named spectrum keeps 1.5 with `SPECTRUM_APPROXIMATED`); a rough one imports smooth with `ROUGH_TRANSMISSION_APPROXIMATED`. The [reference tracers](../architecture/renderer-systems.md#smooth-dielectric-reference) render the transmission; raster and render graphs shade the legacy fallback, a smooth reflector with base colour 0.04 |
 | `mix` | the first material |
-| other materials | grey default, `MATERIAL_DEFAULTED` |
+| other materials | named unsupported models keep their identity as an unresolved material. World shows them in purple and offers a [shared material mapping](editor-workspace.md#repair-an-unsupported-imported-material). Unsupported inline materials retain the grey default. Both report `MATERIAL_DEFAULTED` |
 | area lights | emissive material in pbrt-v4 photometric units (RGB keeps its magnitude), source sidedness and optional power; unequal resolved radiances stay separate |
 | point, spot, distant lights | transformed world position/direction, RGB candela or lux, optional power/illuminance and spot cone |
 | infinite light | authored constant or HDR environment, converted from PBRT equal-area mapping to engine equirectangular mapping |

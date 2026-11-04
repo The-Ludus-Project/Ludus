@@ -51,8 +51,12 @@ struct PreviewTexture final
     /// Linear data (a cooked v6 surface map), uploaded as RGBA8 unorm rather than sRGB.
     bool IsLinear = false;
 };
+/// Editor-only tint for a surface whose imported material needs a mapping.
+inline constexpr foundation::math::Vector4 UNRESOLVED_MATERIAL_TINT{1, 0, 1, 1};
+
 struct PreviewSurface final
 {
+    bool HasUnresolvedMaterial = false;
     foundation::int32 Texture = -1;
     foundation::math::Vector4 Tint{1, 1, 1, 1};
     /// Straight linear RGBA base color for consumers that sample no textures, such as the
