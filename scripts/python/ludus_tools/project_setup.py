@@ -11,8 +11,9 @@ import os
 import re
 import shutil
 import subprocess
-from pathlib import Path
+from contextlib import nullcontext
 from dataclasses import replace
+from pathlib import Path
 
 from .buildlock import BuildTreeLock
 from .errors import INVALID_PROJECT, ToolingError
@@ -105,7 +106,7 @@ def tools(root: Path) -> dict:
 def run_command(argv, *, cwd, env):
     result = subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True, timeout=600)
     if result.returncode:
-        raise ToolingError("ConfigureFailed", result.stderr[-4096:] or result.stdout[-4096:])
+        raise ToolingError("ConfigureFailed", (result.stdout[-4096:] + result.stderr[-4096:]).strip())
     print(result.stdout, end="")
     return result.stdout
 
@@ -452,8 +453,9 @@ def repair_project(path: Path, *, tooling_root: Path, sdk: Path | None = None,
         raise ToolingError(INVALID_PROJECT, "Choose browser setup or desktop-only repair, not both")
     if web_sdk is not None and descriptor.preset.startswith("windows-msvc-"):
         raise ToolingError(INVALID_PROJECT, "Windows MSVC repair requires desktop-only setup")
-    # Native profiles share the local presets and verification metadata.
-    with BuildTreeLock(source / "out/setup"):
+    # The four Windows profiles share the local presets and verification metadata.
+    lock = BuildTreeLock(source / "out/setup") if descriptor.preset.startswith("windows-msvc-") else nullcontext()
+    with lock:
         return _repair_project(path, paths, descriptor, source, tooling_root, sdk, web_sdk,
                                disable_web, runner, cancel_check)
 
@@ -491,7 +493,8 @@ def _repair_project(path, paths, descriptor, source, tooling_root, sdk, web_sdk,
             raise ToolingError(INVALID_PROJECT, f"Invalid {key}; fix JSON before repair")
         local[key] = [p for p in items
                       if p.get("vendor", {}).get(OWNER) not in records
-                      and not str(p.get("vendor", {}).get(OWNER, "")).startswith("web-")]
+                      and (identity.target_triple == WINDOWS_TARGET
+                           or not str(p.get("vendor", {}).get(OWNER, "")).startswith("web-"))]
         if any(p.get("name") == "ludus-local-" + profile for p in local[key] for profile in records):
             raise ToolingError(INVALID_PROJECT, "Custom preset occupies a managed name; rename it before repair")
     local["version"] = max(local.get("version", 6), 6)
