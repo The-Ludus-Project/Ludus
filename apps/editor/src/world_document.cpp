@@ -1,4 +1,5 @@
 #include "internal/world_document.h"
+#include "internal/material_inspection.h"
 
 #include "internal/editor_identity.h"
 
@@ -826,7 +827,13 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         {
             continue;
         }
-        const auto scene = entity.value(QStringLiteral("scene")).toObject();
+        const QJsonObject scene = entity.value(QStringLiteral("scene")).toObject();
+        const bool hasCoating = scene.contains(QStringLiteral("coating"));
+        constexpr qsizetype BOUND_PLACEMENT_FIELDS = 4;
+        constexpr qsizetype INLINE_PLACEMENT_FIELDS = 7;
+        const qsizetype placementFields = Schema_.contains(QStringLiteral("scene_transform")) == true
+                                              ? BOUND_PLACEMENT_FIELDS
+                                              : INLINE_PLACEMENT_FIELDS;
         if (candidate.contains(QStringLiteral("scene")) == false ||
             entity.value(QStringLiteral("scene")).isObject() == false ||
             Fields(scene,
@@ -836,13 +843,29 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     QStringLiteral("basis"),
                     QStringLiteral("position"),
                     QStringLiteral("rotation"),
-                    QStringLiteral("scale")}) == false ||
-            scene.size() != (Schema_.contains(QStringLiteral("scene_transform")) ? 4 : 7) ||
+                    QStringLiteral("scale"),
+                    QStringLiteral("coating")}) == false ||
+            scene.size() != placementFields + (hasCoating == true ? 1 : 0) ||
             ResourceId(scene.value(QStringLiteral("mesh")), QStringLiteral("mesh")) == false ||
             ResourceId(scene.value(QStringLiteral("material")), QStringLiteral("material")) == false ||
             scene.value(QStringLiteral("parent")).isString() == false)
         {
             return Fail(error, QStringLiteral("Invalid scene instance."));
+        }
+        if (hasCoating == true)
+        {
+            const QJsonObject coating = scene.value(QStringLiteral("coating")).toObject();
+            if (coating.size() != static_cast<qsizetype>(sizeof(COATING_FIELDS) / sizeof(CoatingField)))
+            {
+                return Fail(error, QStringLiteral("A slot coating needs GGX alpha, IOR and optical thickness."));
+            }
+            for (const CoatingField& field : COATING_FIELDS)
+            {
+                if (Value(field.MakeNumberProperty(), coating.value(QString::fromLatin1(field.Key)), error) == false)
+                {
+                    return false;
+                }
+            }
         }
         for (const auto& key :
              {QStringLiteral("basis"), QStringLiteral("position"), QStringLiteral("rotation"), QStringLiteral("scale")})
@@ -1289,6 +1312,10 @@ bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
                              {QStringLiteral("material"), object.value(QStringLiteral("material"))},
                              {QStringLiteral("parent"), object.value(QStringLiteral("parent"))},
                              {QStringLiteral("basis"), basis}};
+        if (object.contains(QStringLiteral("coating")) == true)
+        {
+            instance.insert(QStringLiteral("coating"), object.value(QStringLiteral("coating")));
+        }
         const auto binding = Schema_.value(QStringLiteral("scene_transform")).toObject();
         if (binding.isEmpty())
         {
@@ -1531,12 +1558,17 @@ QJsonObject WorldDocument::SceneLevel() const
         {
             transform.append(number);
         }
-        objects.append(QJsonObject{{QStringLiteral("id"), entity.value(QStringLiteral("id"))},
-                                   {QStringLiteral("name"), entity.value(QStringLiteral("name"))},
-                                   {QStringLiteral("parent"), scene.value(QStringLiteral("parent"))},
-                                   {QStringLiteral("mesh"), scene.value(QStringLiteral("mesh"))},
-                                   {QStringLiteral("material"), scene.value(QStringLiteral("material"))},
-                                   {QStringLiteral("transform"), transform}});
+        QJsonObject object{{QStringLiteral("id"), entity.value(QStringLiteral("id"))},
+                           {QStringLiteral("name"), entity.value(QStringLiteral("name"))},
+                           {QStringLiteral("parent"), scene.value(QStringLiteral("parent"))},
+                           {QStringLiteral("mesh"), scene.value(QStringLiteral("mesh"))},
+                           {QStringLiteral("material"), scene.value(QStringLiteral("material"))},
+                           {QStringLiteral("transform"), transform}};
+        if (scene.contains(QStringLiteral("coating")) == true)
+        {
+            object.insert(QStringLiteral("coating"), scene.value(QStringLiteral("coating")));
+        }
+        objects.append(object);
     }
     level.insert(QStringLiteral("objects"), objects);
     return level;

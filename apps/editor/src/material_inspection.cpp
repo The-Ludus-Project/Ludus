@@ -18,12 +18,11 @@ namespace
 {
 namespace format = content::scene_format;
 using foundation::float32;
-using foundation::int32;
 using foundation::uint32;
 using foundation::usize;
 
 /// Significant digits shown for a material scalar; enough to round-trip typical source values.
-constexpr int32 DISPLAYED_DIGITS = 6;
+constexpr foundation::int32 DISPLAYED_DIGITS = 6;
 
 QString FormatScalar(float32 value)
 {
@@ -80,29 +79,44 @@ QString DescribeTexture(const resources::SceneDefinition& definition, uint32 tex
 }
 } // namespace
 
-bool DescribeSceneObjectMaterial(const RenderScene& scene,
-                                 const QString& objectId,
-                                 QVector<MaterialPropertyRow>& outRows)
+QJsonObject CoatingField::MakeNumberProperty() const
+{
+    return {{QStringLiteral("type"), QStringLiteral("number")},
+            {QStringLiteral("label"), QString::fromLatin1(Label)},
+            {QStringLiteral("min"), static_cast<foundation::float64>(Minimum)},
+            {QStringLiteral("max"), static_cast<foundation::float64>(Maximum)}};
+}
+
+const resources::SceneMaterial* GetSceneObjectMaterialOrNull(const RenderScene& scene, const QString& objectId)
 {
     if (scene.Definition == nullptr)
     {
-        return false;
+        return nullptr;
     }
     const resources::SceneDefinition& definition = *scene.Definition;
-    int32 surface = -1;
     for (const PreviewObject& object : scene.Objects)
     {
         if (object.Id == objectId)
         {
-            surface = object.Surface;
-            break;
+            return object.Surface >= 0 && static_cast<usize>(object.Surface) < definition.Materials.GetSize()
+                       ? &definition.Materials[static_cast<usize>(object.Surface)]
+                       : nullptr;
         }
     }
-    if (surface < 0 || static_cast<usize>(surface) >= definition.Materials.GetSize())
+    return nullptr;
+}
+
+bool DescribeSceneObjectMaterial(const RenderScene& scene,
+                                 const QString& objectId,
+                                 QVector<MaterialPropertyRow>& outRows)
+{
+    const resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(scene, objectId);
+    if (materialOrNull == nullptr)
     {
         return false;
     }
-    const resources::SceneMaterial& material = definition.Materials[static_cast<usize>(surface)];
+    const resources::SceneDefinition& definition = *scene.Definition;
+    const resources::SceneMaterial& material = *materialOrNull;
     QVector<MaterialPropertyRow> rows;
     const std::string_view name = material.Name.View();
     rows.append({QStringLiteral("Name"),
@@ -134,10 +148,11 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
     }
     else if (scattering.Model == format::MaterialModel::CoatedDiffuse)
     {
-        rows.append({QStringLiteral("Coating IOR"), FormatScalar(scattering.CoatingEta)});
-        rows.append({QStringLiteral("Coating thickness"), FormatScalar(scattering.CoatingThickness)});
+        rows.append({QStringLiteral("Coating IOR"), FormatScalar(scattering.CoatingEta), true});
+        rows.append({QStringLiteral("Coating thickness"), FormatScalar(scattering.CoatingThickness), true});
         rows.append({QStringLiteral("Coating GGX α (U, V)"),
-                     QStringLiteral("%1, %2").arg(FormatScalar(scattering.AlphaU), FormatScalar(scattering.AlphaV))});
+                     QStringLiteral("%1, %2").arg(FormatScalar(scattering.AlphaU), FormatScalar(scattering.AlphaV)),
+                     true});
     }
     else if (scattering.Model == format::MaterialModel::Dielectric ||
              scattering.Model == format::MaterialModel::ThinDielectric)
