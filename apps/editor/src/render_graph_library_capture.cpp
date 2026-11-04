@@ -8,7 +8,12 @@ namespace ludus::editor
 {
 QString RenderGraphCaptureTarget::GetLabel() const
 {
-    return QStringLiteral("%1#%2.%3").arg(Library, Configuration, Output);
+    if (IsRootConfiguration == false)
+    {
+        return QStringLiteral("%1#%2.%3").arg(Library, Configuration, Output);
+    }
+    return QStringLiteral("%1#%2 · %3")
+        .arg(Library, Configuration, Output.isEmpty() == true ? QStringLiteral("Final output") : Output);
 }
 
 QVector<RenderGraphCaptureTarget> ListCaptureTargets(const RenderGraphSourceBytes& files, const QString& rootGraph)

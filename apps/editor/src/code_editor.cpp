@@ -1433,6 +1433,7 @@ void CodeEditor::keyReleaseEvent(QKeyEvent* event)
 
 void CodeEditor::keyPressEvent(QKeyEvent* event)
 {
+    mLatencyProbe.MarkKeyArrived();
     if (event->key() == Qt::Key_Control)
     {
         updateDefinitionLink(viewport()->mapFromGlobal(QCursor::pos()), event->modifiers());

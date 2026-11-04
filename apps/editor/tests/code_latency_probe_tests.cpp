@@ -2,6 +2,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QElapsedTimer>
+
 using namespace ludus::editor;
 using namespace ludus::foundation;
 
@@ -44,5 +46,31 @@ TEST_CASE("starting clears the previous samples", "[editor][code-editor]")
     probe.MarkPainted();
     REQUIRE(probe.GetSampleCount() == 1);
     probe.Start();
+    REQUIRE(probe.GetSampleCount() == 0);
+}
+
+TEST_CASE("a sample measures from the key's arrival, including handling", "[editor][code-editor]")
+{
+    constexpr int64 HANDLING_NANOSECONDS = 2000000;
+    CodeLatencyProbe probe;
+    probe.Start();
+    probe.MarkKeyArrived();
+    QElapsedTimer handling;
+    handling.start();
+    while (handling.nsecsElapsed() < HANDLING_NANOSECONDS)
+    {
+    }
+    probe.MarkKeyHandled();
+    probe.MarkPainted();
+    REQUIRE(probe.GetSampleCount() == 1);
+    REQUIRE(probe.GetPercentileNanoseconds(50) >= HANDLING_NANOSECONDS);
+}
+
+TEST_CASE("a key that changes no text records no sample", "[editor][code-editor]")
+{
+    CodeLatencyProbe probe;
+    probe.Start();
+    probe.MarkKeyArrived();
+    probe.MarkPainted();
     REQUIRE(probe.GetSampleCount() == 0);
 }

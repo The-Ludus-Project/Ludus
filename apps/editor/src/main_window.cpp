@@ -5,6 +5,7 @@
 #include "internal/application_icon.h"
 #include "internal/audio_workspace.h"
 #include "internal/code_editor.h"
+#include "internal/code_editor_area.h"
 #include "internal/command_palette.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
@@ -855,7 +856,8 @@ void MainWindow::OpenProjectPath(const QString& path)
 {
     if (path.isEmpty() || Controller_->Caps().CanOpen == false || Content_->Importing() || AudioClosing_ ||
         (Audio_->ConfirmDiscard() == false || Scripts_->ConfirmDiscard() == false ||
-         World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false))
+         World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false) ||
+        mCodeArea->ConfirmDiscardAll() == false)
     {
         return;
     }
@@ -945,7 +947,7 @@ void MainWindow::OnReloadRequested()
     }
     CommitProjectFields();
     if (Audio_->ConfirmDiscard() == false || Scripts_->ConfirmDiscard() == false || World_->ConfirmDiscard() == false ||
-        Renderer_->ConfirmDiscard() == false)
+        Renderer_->ConfirmDiscard() == false || mCodeArea->ConfirmDiscardAll() == false)
     {
         return;
     }
@@ -972,6 +974,10 @@ void MainWindow::OnCopyJobDetails()
 void MainWindow::OnStateChanged()
 {
     LUDUS_PROFILE_SCOPE(EditorStateChanged);
+    if (RenderedProjectEpoch_ != Controller_->State().ProjectEpoch)
+    {
+        mDocuments->ClearClosedDocumentHistory();
+    }
     mProfilingPanel->SetProjectRoot(QFileInfo(Controller_->State().DescriptorPath).absolutePath());
     RenderFields();
     RenderRecentProjects();
@@ -1021,9 +1027,16 @@ void MainWindow::OnStateChanged()
         SetProjectWorkspace(root, false);
         World_->SetProject(root, state.ProjectEpoch);
         Renderer_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), state.ProjectEpoch);
+        // A new epoch drops the previous project's code hosts; a reload reopens
+        // them fresh, so no view keeps editing a stale document identity. Binding
+        // recovery here reads the project's crash journal before tabs restore.
+        mCodeArea->SetProject(root, state.ProjectEpoch);
         if (restore)
         {
             SetProjectWorkspace(root, true);
+            // After the saved tab layout is restored, reopen any unsaved buffer
+            // the journal held and re-anchor its draft to the current baseline.
+            mCodeArea->RestoreRecoveredBuffers();
         }
         Scripts_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), root, state.Saved.Preset);
         if (restore == true)
@@ -1042,6 +1055,10 @@ void MainWindow::OnStateChanged()
         World_->SetProject({}, state.ProjectEpoch);
         Scripts_->SetProject({}, {}, {});
         Renderer_->SetProject({}, state.ProjectEpoch);
+        // Closing the project flushes a final recovery checkpoint, then retires
+        // its code hosts and tabs and unbinds the journal (empty project root).
+        mCodeArea->FlushRecovery();
+        mCodeArea->SetProject({}, state.ProjectEpoch);
         mErrorList->ReplaceEntries(ErrorListProducer::RenderGraph, {});
         if (isEnteringWelcome == true)
         {
@@ -1664,6 +1681,7 @@ void MainWindow::OnNewProject()
     if (Controller_->Caps().CanProjectCreate == false || Content_->Importing() ||
         (Audio_->ConfirmDiscard() == false || Scripts_->ConfirmDiscard() == false ||
          World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false) ||
+        mCodeArea->ConfirmDiscardAll() == false ||
         ConfirmProjectChange(QStringLiteral("creating another project")) == false)
     {
         return;
@@ -1680,7 +1698,7 @@ void MainWindow::OnCloseProject()
     if (Controller_->Caps().CanCloseProject == false || Content_->Importing() || AudioLaunchPending_ || AudioClosing_ ||
         (Audio_->ConfirmDiscard() == false || Scripts_->ConfirmDiscard() == false ||
          World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false) ||
-        ConfirmProjectChange(QStringLiteral("closing the project")) == false)
+        mCodeArea->ConfirmDiscardAll() == false || ConfirmProjectChange(QStringLiteral("closing the project")) == false)
     {
         return;
     }
@@ -1815,7 +1833,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
         }
         if ((Audio_->ConfirmDiscard() == false || Scripts_->ConfirmDiscard() == false ||
              World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false) ||
-            Configuration_->ConfirmDiscard() == false)
+            Configuration_->ConfirmDiscard() == false || mCodeArea->ConfirmDiscardAll() == false)
         {
             event->ignore();
             return;

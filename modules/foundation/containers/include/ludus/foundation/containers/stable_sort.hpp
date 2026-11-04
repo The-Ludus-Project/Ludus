@@ -26,35 +26,45 @@ template <typename T, typename Compare>
     {
         return false;
     }
+    T* source = values;
+    T* destination = scratch;
     for (usize width = 1; width < count;)
     {
         for (usize first = 0; first < count;)
         {
             const usize middle = first + (width < count - first ? width : count - first);
             const usize last = middle + (width < count - middle ? width : count - middle);
-            usize left = first, right = middle;
+            usize left = first;
+            usize right = middle;
             for (usize output = first; output < last; ++output)
             {
-                if (left < middle && (right == last || less(values[right], values[left]) == false))
+                if (left < middle && (right == last || less(source[right], source[left]) == false))
                 {
-                    scratch[output] = values[left++];
+                    destination[output] = source[left++];
                 }
                 else
                 {
-                    scratch[output] = values[right++];
+                    destination[output] = source[right++];
                 }
             }
             first = last;
         }
-        for (usize i = 0; i < count; ++i)
-        {
-            values[i] = scratch[i];
-        }
+        // Alternate buffers so each merge pass writes every element only once.
+        T* previousSource = source;
+        source = destination;
+        destination = previousSource;
         if (width >= count - width)
         {
             break;
         }
         width *= 2;
+    }
+    if (source != values)
+    {
+        for (usize i = 0; i < count; ++i)
+        {
+            values[i] = source[i];
+        }
     }
     return true;
 }

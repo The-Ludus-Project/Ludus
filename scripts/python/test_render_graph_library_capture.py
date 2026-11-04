@@ -113,6 +113,33 @@ class LibraryCaptureBuildTests(unittest.TestCase):
                                                 library_output='color', **options)
             self.assertIn('insert the library on the root canvas and build the graph again', str(caught.exception))
 
+    def test_root_variant_cooks_from_the_saved_configuration(self):
+        from ludus_tools import render_graph_execution as execution
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = copy_template('compute_ray_tracing', root / 'source')
+            root_graph = manifest.with_name('main.lurender.json')
+            document = json.loads(root_graph.read_text())
+            configuration = copy.deepcopy(document['configurations'][0])
+            configuration['id'] = 'ComparisonVariant'
+            document['configurations'].append(configuration)
+            root_graph.write_bytes(graph.canonical_asset(document))
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ.get('LUDUS_RG1_CROSS'))
+            published = build.build_package(manifest, root / 'build', **options)
+            preview = root / 'viewport.lurgrt'
+            execution.cook_runtime(published['package'], preview)
+            original_preview = preview.read_bytes()
+            destination = root / 'candidate.lurgrt'
+            result = library_capture.rebuild_library_capture(
+                published['package'], root / 'capture-build', destination,
+                library='main.lurender.json', library_configuration='ComparisonVariant', library_output='',
+                is_root_configuration=True, **options)
+            self.assertEqual(result['runtime']['configuration'], 'ComparisonVariant')
+            self.assertEqual(result['source_generation'], published['generation'])
+            self.assertEqual(preview.read_bytes(), original_preview)
+            self.assertTrue(destination.is_file())
+
 
 if __name__ == '__main__':
     unittest.main()

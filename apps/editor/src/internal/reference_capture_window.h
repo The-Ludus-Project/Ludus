@@ -29,11 +29,23 @@ class QTabWidget;
 namespace ludus::editor
 {
 class CapturedImageView;
+class GraphComparisonWindow;
 class RenderGraphCaptureProfile;
 class RenderGraphLibraryCapture;
 class RenderGraphPreview;
 class RenderPreview;
 class RendererWorkspace;
+
+/// Display label for the RT1 traversal in capture status and saved comparison evidence.
+[[nodiscard]] QString DescribeReferenceTraversal(graphics::renderer::ReferenceTraversal traversal);
+
+/// Populate an empty chooser in ReferenceTraversal order and select the requested traversal.
+void PopulateReferenceTraversalChoices(QComboBox& inoutChoice, graphics::renderer::ReferenceTraversal traversal);
+
+/// Disable unsupported choices. When choosing a default, prefer GPU compute when available and otherwise CPU.
+void UpdateReferenceTraversalAvailability(QComboBox& inoutChoice,
+                                          const RenderPreview* previewOrNull,
+                                          bool shouldSelectDefault);
 
 /// Wall time one service tick may spend preparing or tracing before yielding to the event loop.
 inline constexpr foundation::uint64 REFERENCE_SERVICE_BUDGET_NANOSECONDS = 8'000'000;
@@ -171,6 +183,9 @@ private:
     QPointer<RenderPreview> mPreview;
     ViewportReferenceCapture mCapture;
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    void openGraphComparison();
+    QPointer<GraphComparisonWindow> mGraphComparison;
+    QPushButton* mCompareGraphsOrNull = nullptr;
     QPointer<RendererWorkspace> mProjectWorkspace;
     QPointer<RenderGraphPreview> mProjectGraph;
     QPointer<RenderGraphCaptureProfile> mCaptureProfile;
@@ -207,6 +222,7 @@ private:
     QString mComparisonError;
     bool mHasComparison = false;
     bool mIsComparing = false;
+    bool mHasSelectedTraversal = false;
     bool mIsComparisonAvailable = false;
     // Child widgets, created in the constructor and owned by this window.
     QSpinBox* const mLongSide;

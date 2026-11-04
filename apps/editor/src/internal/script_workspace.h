@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include "internal/controller.h"
+#include "internal/script_code_document.h"
 
 #include <QByteArray>
 #include <QJsonObject>
@@ -20,6 +21,8 @@ class QTableWidget;
 QT_END_NAMESPACE
 namespace ludus::editor
 {
+class CodeEditor;
+class CodeDocumentController;
 // Project-owned source/sequence drafts. Process and play ownership stay in the
 // controller. Loading only reads bounded files; cooking/activation are explicit.
 class ScriptWorkspace final : public QWidget
@@ -27,6 +30,8 @@ class ScriptWorkspace final : public QWidget
     Q_OBJECT
 public:
     explicit ScriptWorkspace(EditorController* controller, QWidget* parent = nullptr);
+    /// Destroys the source controller before its editor (see RendererWorkspace).
+    ~ScriptWorkspace() override;
     void SetProject(const QString& root, const QString& source, const QString& preset);
     void Refresh();
     /// Absolute source path of the loaded draft; empty when no program is selected.
@@ -77,7 +82,12 @@ private:
     QList<QByteArray> Redo_;
     QList<QPushButton*> DebugControls_;
     QComboBox* Assets_;
-    QPlainTextEdit* Text_;
+    // Script source is edited in the shared CodeEditor through a draft-backed
+    // script host (S5 moved onto the code editor seam). Graph assets still use
+    // the Nodes table and the Undo_/Redo_ stacks below.
+    ScriptCodeDocument SourceDocument_;
+    CodeEditor* Text_;
+    CodeDocumentController* SourceController_;
     QTableWidget* Nodes_;
     QPlainTextEdit* Debug_;
     QLabel* Status_;

@@ -118,7 +118,7 @@ def write_capture_sources(sources, manifest, library, configuration, output):
 
 
 def rebuild_library_capture(generation, output, destination, *, library, library_configuration, library_output,
-                            **options):
+                            is_root_configuration=False, **options):
     """Compile and cook the library capture of one library output of a published generation.
 
     generation is a generation or a build tree with current.json, as for rebuild_capture_profile.
@@ -131,6 +131,18 @@ def rebuild_library_capture(generation, output, destination, *, library, library
     build.require(library_path.is_relative_to(sources.resolve()) and library_path.is_file(), 'Capture', library,
                   f'generation {generation.name} carries no {library}. Only libraries the root graph imports are '
                   'saved with a generation; insert the library on the root canvas and build the graph again.')
+    if is_root_configuration:
+        root = manifest.with_name(manifest.name.removesuffix('.lushader.json') + '.lurender.json')
+        build.require(library_path == root.resolve(), 'Capture', library,
+                      "choose a configuration of the generation's root graph")
+        profile = reload.rebuild_capture_profile(generation, output, Path(destination).with_suffix('.lurgcp'),
+                                                 configuration=library_configuration, **options)
+        build.checkpoint(options.get('cancel'))
+        runtime = execution.cook_runtime(generation, destination, configuration=library_configuration)
+        return {'runtime': runtime, 'capture_profile': profile['capture_profile'],
+                'source_generation': generation.name, 'library': library,
+                'library_configuration': library_configuration, 'library_output': library_output,
+                'export': library_output}
     # Validate the target before copying the sources.
     make_capture_root(build.document(build.read(library_path), library), library, library_configuration,
                       library_output)
@@ -146,13 +158,14 @@ def rebuild_library_capture(generation, output, destination, *, library, library
     report = build.build_package(capture_manifest, output / 'build', root=capture_sources, **options)
     build.checkpoint(options.get('cancel'))
     destination.parent.mkdir(parents=True, exist_ok=True)
-    runtime = execution.cook_runtime(report['package'], destination)
     profile = None
     if reload.declares_capture_budget(capture_manifest, capture_sources):
         profiled = build.build_package(capture_manifest, output / 'profile', root=capture_sources,
                                        capture_profile=True, **options)
         build.checkpoint(options.get('cancel'))
         profile = execution.cook_capture_profile(profiled['package'], destination.with_suffix('.lurgcp'))
+    build.checkpoint(options.get('cancel'))
+    runtime = execution.cook_runtime(report['package'], destination)
     return {'build': report, 'runtime': runtime, 'capture_profile': profile, 'source_generation': generation.name,
             'library': library, 'library_configuration': library_configuration, 'library_output': library_output,
             'export': ROOT_ID + '/' + CAPTURE_OUTPUT}

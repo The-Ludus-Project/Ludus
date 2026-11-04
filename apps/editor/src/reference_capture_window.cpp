@@ -4,6 +4,7 @@
 #include "internal/reference_comparison.h"
 #include "internal/render_preview.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/graph_comparison_window.h"
 #    include "internal/render_graph_capture_profile.h"
 #    include "internal/render_graph_preview.h"
 #endif
@@ -60,7 +61,19 @@ constexpr int32 NATIVE_QUERIES_INDEX = static_cast<int32>(renderer::ReferenceTra
 constexpr int32 GPU_COMPUTE_INDEX = static_cast<int32>(renderer::ReferenceTraversal::GpuCompute);
 constexpr float64 MILLISECONDS_PER_SECOND = 1000;
 
-QString DescribeTraversal(renderer::ReferenceTraversal traversal)
+bool WriteAtomically(const QString& path, const QByteArray& bytes, QString& outError)
+{
+    QSaveFile file(path);
+    if (file.open(QIODevice::WriteOnly) == false || file.write(bytes) != bytes.size() || file.commit() == false)
+    {
+        outError = QStringLiteral("Could not write %1: %2").arg(path, file.errorString());
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+QString DescribeReferenceTraversal(renderer::ReferenceTraversal traversal)
 {
     switch (traversal)
     {
@@ -73,17 +86,50 @@ QString DescribeTraversal(renderer::ReferenceTraversal traversal)
     }
 }
 
-bool WriteAtomically(const QString& path, const QByteArray& bytes, QString& outError)
+void PopulateReferenceTraversalChoices(QComboBox& inoutChoice, renderer::ReferenceTraversal traversal)
 {
-    QSaveFile file(path);
-    if (file.open(QIODevice::WriteOnly) == false || file.write(bytes) != bytes.size() || file.commit() == false)
-    {
-        outError = QStringLiteral("Could not write %1: %2").arg(path, file.errorString());
-        return false;
-    }
-    return true;
+    // Item order follows ReferenceTraversal so indices convert directly.
+    inoutChoice.insertItem(NATIVE_QUERIES_INDEX, QStringLiteral("Native ray queries"));
+    inoutChoice.insertItem(CPU_ORACLE_INDEX, QStringLiteral("CPU oracle"));
+    inoutChoice.insertItem(GPU_COMPUTE_INDEX, QStringLiteral("GPU compute"));
+    inoutChoice.setCurrentIndex(static_cast<int32>(traversal));
+    inoutChoice.setToolTip(QStringLiteral("CPU oracle traces a CPU BVH and runs everywhere. GPU compute runs the "
+                                          "same path tracer, BVH included, in compute shaders on any GPU with "
+                                          "compute support. Native ray queries use the GPU's ray tracing "
+                                          "hardware. Neither GPU option falls back to the CPU."));
 }
-} // namespace
+
+void UpdateReferenceTraversalAvailability(QComboBox& inoutChoice,
+                                          const RenderPreview* previewOrNull,
+                                          bool shouldSelectDefault)
+{
+    bool isNativeAvailable = false;
+    bool isComputeAvailable = false;
+    if (previewOrNull != nullptr && previewOrNull->HasDevice() == true)
+    {
+#if defined(LUDUS_EDITOR_REFERENCE_NATIVE_QUERIES)
+        graphics::rhi::RayCapabilities rayCapabilities;
+        isNativeAvailable = graphics::rhi::GetRayCapabilities(previewOrNull->GetDevice(), rayCapabilities) ==
+                                graphics::rhi::RasterStatus::Ready &&
+                            rayCapabilities.MaxRays >= 2;
+#endif
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        graphics::rhi::ComputeCapabilities computeCapabilities;
+        isComputeAvailable = graphics::rhi::GetComputeCapabilities(previewOrNull->GetDevice(), computeCapabilities) ==
+                             graphics::rhi::RasterStatus::Ready;
+#endif
+    }
+    QStandardItemModel* modelOrNull = qobject_cast<QStandardItemModel*>(inoutChoice.model());
+    if (modelOrNull != nullptr)
+    {
+        modelOrNull->item(NATIVE_QUERIES_INDEX)->setEnabled(isNativeAvailable);
+        modelOrNull->item(GPU_COMPUTE_INDEX)->setEnabled(isComputeAvailable);
+    }
+    if (shouldSelectDefault == true)
+    {
+        inoutChoice.setCurrentIndex(isComputeAvailable == true ? GPU_COMPUTE_INDEX : CPU_ORACLE_INDEX);
+    }
+}
 
 ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* parentOrNull)
     : QWidget(parentOrNull, Qt::Window), mPreview(preview), mLongSide(new QSpinBox(this)), mSamples(new QSpinBox(this)),
@@ -119,15 +165,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mMaxDepth->setToolTip(QStringLiteral("Maximum scattering events per path. Light needing more bounces is "
                                          "omitted, which darkens the image slightly."));
     mTraversal->setObjectName(QStringLiteral("referenceTraversal"));
-    // Item order follows ReferenceTraversal so indices convert directly.
-    mTraversal->insertItem(NATIVE_QUERIES_INDEX, QStringLiteral("Native ray queries"));
-    mTraversal->insertItem(CPU_ORACLE_INDEX, QStringLiteral("CPU oracle"));
-    mTraversal->insertItem(GPU_COMPUTE_INDEX, QStringLiteral("GPU compute"));
-    mTraversal->setCurrentIndex(CPU_ORACLE_INDEX);
-    mTraversal->setToolTip(QStringLiteral("CPU oracle traces a CPU BVH and runs everywhere. GPU compute runs the "
-                                          "same path tracer, BVH included, in compute shaders on any GPU with "
-                                          "compute support. Native ray queries use the GPU's ray tracing "
-                                          "hardware. Neither GPU option falls back to the CPU."));
+    PopulateReferenceTraversalChoices(*mTraversal, ViewportReferenceSettings{}.Traversal);
     mCenterRays->setObjectName(QStringLiteral("referenceCenterRays"));
     mCenterRays->setChecked(ViewportReferenceSettings{}.ShouldCenterRays);
     mCenterRays->setToolTip(QStringLiteral("Trace each camera ray through its pixel's centre, as a render graph does, "
@@ -181,6 +219,12 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     QHBoxLayout* buttons = new QHBoxLayout;
     buttons->addWidget(mCaptureButton);
     buttons->addWidget(mStopButton);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mCompareGraphsOrNull = new QPushButton(QStringLiteral("Compare graphs…"), this);
+    mCompareGraphsOrNull->setObjectName(QStringLiteral("referenceCompareGraphs"));
+    buttons->addWidget(mCompareGraphsOrNull);
+    connect(mCompareGraphsOrNull, &QPushButton::clicked, this, &ReferenceCaptureWindow::openGraphComparison);
+#endif
     buttons->addStretch(1);
     buttons->addWidget(mSaveButton);
 
@@ -242,8 +286,11 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
         updateControls();
         updateStatus();
     });
+    connect(mTraversal, &QComboBox::activated, this, [this]() { mHasSelectedTraversal = true; });
     if (mPreview.isNull() == false)
     {
+        connect(mPreview, &RenderPreview::Changed, this, &ReferenceCaptureWindow::updateTraversalAvailability);
+        connect(mPreview, &RenderPreview::Stopped, this, &ReferenceCaptureWindow::updateTraversalAvailability);
         // Both captures' renderers live on the preview's device and must go before it.
         connect(mPreview, &RenderPreview::DeviceStopping, this, [this]() {
             if (mCapture.GetPhase() != ViewportReferencePhase::Idle || isRasterRendering() == true)
@@ -267,6 +314,13 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
 
 ReferenceCaptureWindow::~ReferenceCaptureWindow()
 {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mGraphComparison.isNull() == false)
+    {
+        disconnect(mGraphComparison, nullptr, this, nullptr);
+        delete mGraphComparison.data();
+    }
+#endif
     mServiceTimer.stop();
     releaseCaptures();
 }
@@ -462,12 +516,48 @@ void ReferenceCaptureWindow::updateGraphDescription()
 void ReferenceCaptureWindow::showEvent(QShowEvent* event)
 {
     QWidget::showEvent(event);
+    updateTraversalAvailability();
     requestCaptureProfile();
 }
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+void ReferenceCaptureWindow::openGraphComparison()
+{
+    if (mGraphComparison.isNull() == false)
+    {
+        mGraphComparison->raise();
+        mGraphComparison->activateWindow();
+        return;
+    }
+    if (mProjectWorkspace.isNull() == true || mPreview.isNull() == true || mServiceTimer.isActive() == true)
+    {
+        return;
+    }
+    updateTraversalAvailability();
+    ViewportReferenceSettings settings;
+    settings.LongSide = static_cast<uint32>(mLongSide->value());
+    settings.Samples = static_cast<uint32>(mSamples->value());
+    settings.MaxDepth = static_cast<uint32>(mMaxDepth->value());
+    settings.Traversal = static_cast<renderer::ReferenceTraversal>(mTraversal->currentIndex());
+    settings.ShouldCenterRays = mCenterRays->isChecked();
+    mGraphComparison = new GraphComparisonWindow(*mPreview, *mProjectWorkspace, settings, mHasSelectedTraversal, this);
+    connect(mGraphComparison, &QObject::destroyed, this, [this]() {
+        mGraphComparison.clear();
+        updateControls();
+        requestCaptureProfile();
+    });
+    mGraphComparison->show();
+    updateControls();
+}
+#endif
 
 void ReferenceCaptureWindow::requestCaptureProfile()
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mGraphComparison.isNull() == false)
+    {
+        return;
+    }
     const bool isGraphSelected =
         isGraphSource() == true || (mIsComparisonAvailable == true && mCompare->isChecked() == true);
     if (isVisible() == false || isGraphSelected == false || mCaptureProfile.isNull() == true ||
@@ -599,36 +689,7 @@ bool ReferenceCaptureWindow::isGraphSource() const noexcept
 
 void ReferenceCaptureWindow::updateTraversalAvailability()
 {
-    bool isNativeAvailable = false;
-#if defined(LUDUS_EDITOR_REFERENCE_NATIVE_QUERIES)
-    if (mPreview.isNull() == false && mPreview->HasDevice() == true)
-    {
-        graphics::rhi::RayCapabilities capabilities;
-        isNativeAvailable = graphics::rhi::GetRayCapabilities(mPreview->GetDevice(), capabilities) ==
-                                graphics::rhi::RasterStatus::Ready &&
-                            capabilities.MaxRays >= 2;
-    }
-#endif
-    bool isComputeAvailable = false;
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (mPreview.isNull() == false && mPreview->HasDevice() == true)
-    {
-        graphics::rhi::ComputeCapabilities capabilities;
-        isComputeAvailable = graphics::rhi::GetComputeCapabilities(mPreview->GetDevice(), capabilities) ==
-                             graphics::rhi::RasterStatus::Ready;
-    }
-#endif
-    QStandardItemModel* model = qobject_cast<QStandardItemModel*>(mTraversal->model());
-    if (model != nullptr)
-    {
-        model->item(NATIVE_QUERIES_INDEX)->setEnabled(isNativeAvailable);
-        model->item(GPU_COMPUTE_INDEX)->setEnabled(isComputeAvailable);
-    }
-    if ((isNativeAvailable == false && mTraversal->currentIndex() == NATIVE_QUERIES_INDEX) ||
-        (isComputeAvailable == false && mTraversal->currentIndex() == GPU_COMPUTE_INDEX))
-    {
-        mTraversal->setCurrentIndex(CPU_ORACLE_INDEX);
-    }
+    UpdateReferenceTraversalAvailability(*mTraversal, mPreview.data(), mHasSelectedTraversal == false);
 }
 
 void ReferenceCaptureWindow::updateComparisonAvailability()
@@ -830,6 +891,12 @@ bool ReferenceCaptureWindow::startGraphSource()
 
 bool ReferenceCaptureWindow::StartCapture()
 {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mGraphComparison.isNull() == false)
+    {
+        return false;
+    }
+#endif
     mServiceTimer.stop();
     releaseCaptures();
     mImage = {};
@@ -913,7 +980,7 @@ bool ReferenceCaptureWindow::StartCapture()
                    .arg(extent.height())
                    .arg(settings.Samples)
                    .arg(settings.MaxDepth)
-                   .arg(DescribeTraversal(settings.Traversal))
+                   .arg(DescribeReferenceTraversal(settings.Traversal))
                    .arg(settings.ShouldCenterRays == true ? QStringLiteral(", pixel centres") : QString{});
     mProgress->setRange(0, mSamples->value());
     mProgress->setValue(0);
@@ -1000,7 +1067,7 @@ bool ReferenceCaptureWindow::saveComparison(const QString& hdrPath, QString& out
         reference.insert(QStringLiteral("complete"), info.Complete);
         reference.insert(QStringLiteral("failed"), mCapture.GetPhase() == ViewportReferencePhase::Failed);
         reference.insert(QStringLiteral("error"), mCapture.GetError());
-        reference.insert(QStringLiteral("traversal"), DescribeTraversal(info.Traversal));
+        reference.insert(QStringLiteral("traversal"), DescribeReferenceTraversal(info.Traversal));
         reference.insert(QStringLiteral("seed"), QString::number(info.Seed));
         reference.insert(QStringLiteral("centerRays"), mCapture.AreRaysCentered());
     }
@@ -1202,6 +1269,13 @@ void ReferenceCaptureWindow::updateControls()
     mTraversal->setEnabled(isRunning == false && isReference == true);
     mCenterRays->setEnabled(isRunning == false && isReference == true);
     mCompare->setEnabled(isRunning == false && isReference == true && mIsComparisonAvailable == true);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mCompareGraphsOrNull->setEnabled(isRunning == false && mIsComparisonAvailable == true);
+    if (mGraphComparison.isNull() == false)
+    {
+        mCaptureButton->setEnabled(false);
+    }
+#endif
 }
 
 QString ReferenceCaptureWindow::describeRaster() const

@@ -1,4 +1,6 @@
 #include "internal/script_workspace.h"
+#include "internal/code_document_controller.h"
+#include "internal/code_editor.h"
 #include "internal/item_selection.h"
 
 #include <ludus/foundation/base/core.h>
@@ -110,10 +112,9 @@ ScriptWorkspace::ScriptWorkspace(EditorController* controller, QWidget* parent)
         }
     });
     layout->addLayout(actions);
-    Text_ = new QPlainTextEdit(this);
+    Text_ = new CodeEditor(this);
     Text_->setObjectName(QStringLiteral("scriptText"));
-    Text_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-
+    SourceController_ = new CodeDocumentController(*Text_, this);
     layout->addWidget(Text_);
     Nodes_ = new QTableWidget(this);
     ConfigureItemSelection(*Nodes_);
@@ -172,16 +173,25 @@ ScriptWorkspace::ScriptWorkspace(EditorController* controller, QWidget* parent)
             OpenSelected();
         }
     });
-    connect(Text_, &QPlainTextEdit::textChanged, this, [this]() {
+    connect(SourceController_, &CodeDocumentController::TextAccepted, this, [this]() {
+        // A source edit went through the script host; recompute the unsaved draft
+        // state and refresh, exactly as the former textChanged path did (S5).
         if (Rendering_ == false && Graph_ == false)
         {
-            Dirty_ = Text_->toPlainText().toUtf8() != Baseline_;
+            Dirty_ = SourceDocument_.IsDirty();
+            RenderGraph();
             Refresh();
         }
     });
     connect(Nodes_, &QTableWidget::cellChanged, this, &ScriptWorkspace::ChangeNode);
     connect(Controller_, &EditorController::StateChanged, this, &ScriptWorkspace::Refresh);
 }
+ScriptWorkspace::~ScriptWorkspace()
+{
+    delete SourceController_;
+    SourceController_ = nullptr;
+}
+
 void ScriptWorkspace::SetProject(const QString& root, const QString& source, const QString& preset)
 {
     if (Root_ == root && Source_ == source)
@@ -263,8 +273,24 @@ void ScriptWorkspace::OpenSelected()
     Redo_.clear();
     Dirty_ = false;
     Rendering_ = true;
-    Text_->setPlainText(QString::fromUtf8(Disk_));
-    Baseline_ = Text_->toPlainText().toUtf8();
+    // Load the draft into the script host and let the controller project it into
+    // the shared CodeEditor. The baseline is the on-disk content, so the host's
+    // dirty rule matches the former Text_/Baseline_ comparison.
+    SourceDocument_.SetBaseline(Disk_);
+    Baseline_ = Disk_;
+    // The controller edits source text through the host; a graph asset uses the
+    // Nodes table instead, so the source editor is unbound and read-only there.
+    SourceController_->Bind(Graph_ == false && Path_.isEmpty() == false ? &SourceDocument_ : nullptr);
+    Text_->SetDocumentHistory(Graph_ == false && Path_.isEmpty() == false);
+    if (SourceController_->IsBound() == true)
+    {
+        SourceController_->Synchronize(true);
+    }
+    else
+    {
+        Text_->setPlainText(QString::fromUtf8(Disk_));
+    }
+    Text_->SetHistoryAvailability(SourceDocument_.CanUndo(), SourceDocument_.CanRedo());
     Text_->setReadOnly(Graph_ || Path_.isEmpty());
     Rendering_ = false;
     RenderGraph();
@@ -289,13 +315,16 @@ void ScriptWorkspace::History(bool redo)
 {
     if (Graph_ == false)
     {
-        if (redo)
+        // Source history now runs through the script host and the shared editor.
+        const bool didChange = redo ? SourceDocument_.Redo() : SourceDocument_.Undo();
+        if (didChange == true)
         {
-            Text_->redo();
-        }
-        else
-        {
-            Text_->undo();
+            Rendering_ = true;
+            SourceController_->Synchronize(true);
+            Rendering_ = false;
+            Text_->SetHistoryAvailability(SourceDocument_.CanUndo(), SourceDocument_.CanRedo());
+            Dirty_ = SourceDocument_.IsDirty();
+            Refresh();
         }
         return;
     }
@@ -402,11 +431,11 @@ bool ScriptWorkspace::CanSave() const noexcept
 }
 bool ScriptWorkspace::CanUndo() const
 {
-    return Graph_ ? Undo_.isEmpty() == false : Text_->document()->isUndoAvailable();
+    return Graph_ ? Undo_.isEmpty() == false : SourceDocument_.CanUndo();
 }
 bool ScriptWorkspace::CanRedo() const
 {
-    return Graph_ ? Redo_.isEmpty() == false : Text_->document()->isRedoAvailable();
+    return Graph_ ? Redo_.isEmpty() == false : SourceDocument_.CanRedo();
 }
 void ScriptWorkspace::Undo()
 {
@@ -433,8 +462,8 @@ bool ScriptWorkspace::Save()
         Status_->setText(QStringLiteral("Asset changed on disk; reopen or merge explicitly."));
         return false;
     }
-    const auto bytes = Text_->toPlainText().toUtf8();
-    if (bytes.size() > 131072)
+    const QByteArray bytes = Graph_ == false ? SourceDocument_.GetDraft() : Text_->toPlainText().toUtf8();
+    if (bytes.size() > MAX_SCRIPT_DOCUMENT_BYTES)
     {
         return false;
     }
@@ -447,6 +476,15 @@ bool ScriptWorkspace::Save()
     }
     Disk_ = bytes;
     Baseline_ = bytes;
+    // Re-baseline the source host so the saved draft becomes clean (S5).
+    if (Graph_ == false)
+    {
+        SourceDocument_.MarkSaved();
+        Rendering_ = true;
+        SourceController_->Synchronize(true);
+        Rendering_ = false;
+        Text_->SetHistoryAvailability(SourceDocument_.CanUndo(), SourceDocument_.CanRedo());
+    }
     Dirty_ = false;
     Refresh();
     return true;
@@ -470,7 +508,16 @@ bool ScriptWorkspace::ConfirmDiscard()
     if (answer == QMessageBox::Discard)
     {
         Rendering_ = true;
-        Text_->setPlainText(QString::fromUtf8(Baseline_));
+        if (Graph_ == false)
+        {
+            SourceDocument_.SetBaseline(Baseline_);
+            SourceController_->Synchronize(true);
+            Text_->SetHistoryAvailability(SourceDocument_.CanUndo(), SourceDocument_.CanRedo());
+        }
+        else
+        {
+            Text_->setPlainText(QString::fromUtf8(Baseline_));
+        }
         Rendering_ = false;
         Undo_.clear();
         Redo_.clear();

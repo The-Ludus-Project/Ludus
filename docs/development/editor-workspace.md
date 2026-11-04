@@ -37,6 +37,7 @@ central document well, and **tool windows** dock around it (see
 | Start Page | New/Open and recent projects while no project is open |
 | World | 2D/3D placement, game-owned entities/components, typed fields, references, shared history/save/recovery and trusted preview |
 | Render Graph | The open render-graph package: its source tree beside the node **Canvas**, the **Source** text editor and the validated **Plan** ([render-graph authoring](render-graph-authoring.md)) |
+| Code | Any project text file as a code tab: shared buffer, atomic save, external-change conflicts, crash recovery and the code status bar ([code editor](code-editor.md)) |
 | Project Settings | Setup/engine overview, lifecycle actions, rendering resolution/scale, name/profile and expandable build/launch details |
 | Scripts | Project-owned script and sequence drafts |
 | Audio | Content selection, definitions, save and preview |
@@ -104,6 +105,13 @@ individual items, and Shift-click for a range. Ctrl+A / Command+A selects all
 selectable items in the focused view; Escape clears that view's selection. Arrow
 keys navigate and Shift+arrow extends selection. Text fields keep their own
 native selection, clipboard and undo shortcuts.
+
+Use **Search entities** above the World entity list to filter names, labels and
+stable IDs without changing the document. Matching ignores case and surrounding
+spaces; the count shows how many entities match. Clear the search to show all
+entities. Filtering deselects hidden entities, so Duplicate and Delete act only
+on visible selections. Picking a hidden entity in the viewport clears the search
+and reveals its selection. Search pauses while inspector edits need Apply or Reset.
 
 In the World entity list, Ctrl+D / Command+D duplicates the selected group;
 Delete (also Backspace on macOS) asks to delete the group. Each group operation
@@ -547,6 +555,10 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   and **Warnings** counts from the Error List open that tool window when
   clicked. The chip applies at most ten changes a second, so a fast job cannot
   flicker the status bar.
+- When a **code** view is active, the status bar also shows that view's cursor
+  position, selection, indentation, encoding, line endings, language and
+  language-server state; position, language and line endings are clickable to
+  change where the current milestone supports it ([code editor](code-editor.md#status-bar)).
 - **Tools → Options...** edits editor preferences. Its **Render Graph** page
   holds the advanced shader-tool overrides and the native shader worker socket
   ([build settings](render-graph-authoring.md#build-settings)).
@@ -763,6 +775,7 @@ keeps the window and its draft open.
 | Ctrl+S | Save the active document (World, Render Graph, Scripts, Project Settings, Audio or Configuration) |
 | Ctrl+Z / platform Redo | Undo / Redo in focused text, or the active document's history |
 | Ctrl+W | Close the active document tab (its draft stays open) |
+| Ctrl+Shift+T (Cmd+Shift+T on macOS) | Reopen the most recently closed workspace tab |
 | Ctrl+Shift+W | Close Project |
 | Ctrl+Shift+B | Build |
 | Ctrl+F5 / F5 | Build and Run / Build and Debug in RAD |
@@ -775,6 +788,10 @@ keeps the window and its draft open.
 | Shift+Alt+Enter | Focus Viewport on or off |
 | Ctrl+K (Cmd+K on macOS) / F3 | Command Palette / Run Command in Context |
 | F1 | Keyboard Shortcuts help |
+
+**Window → Reopen Closed Document** opens the tab in the active group with its
+draft intact. Repeat the command to step back through recent closes in the
+current project session.
 
 The **Command Palette** (Ctrl/Cmd+K) searches every menu command by name with fuzzy
 matching: letters must appear in order, and consecutive letters, word starts and
@@ -1880,8 +1897,8 @@ geometry. They have no area to hit or emit from.
 
 | Traversal | Use |
 | --- | --- |
-| CPU oracle | Default. Traces a CPU BVH on every platform and admits masked materials. |
-| GPU compute | Runs the same path tracer in compute shaders: BVH traversal, intersection, light and BSDF sampling, shading and accumulation. Needs only GPU compute support, not ray tracing hardware, and admits masked materials. Its image matches the CPU oracle's sample for sample within float32 rounding. |
+| CPU oracle | Default when GPU compute is unavailable. Traces a CPU BVH on every platform and admits masked materials. |
+| GPU compute | Default when supported by the editor build and device. Runs the same path tracer in compute shaders: BVH traversal, intersection, light and BSDF sampling, shading and accumulation. Needs only GPU compute support, not ray tracing hardware, and admits masked materials. Its image matches the CPU oracle's sample for sample within float32 rounding. |
 | Native ray queries | Uses the GPU's ray tracing hardware when the device and build support it, otherwise the option is disabled. Masked materials are rejected. Dense scenes have an open precision qualification item. |
 
 **Trace pixel centres** sends every camera ray through its pixel's centre instead
@@ -2032,6 +2049,83 @@ the frames rendered. Both the summary and JSON preserve reference completion,
 failure, coverage and sample-count information; a failed export also records the
 capture error. Completion describes reaching the requested sample count, not a
 claim that Monte Carlo noise has converged.
+
+#### Compare several render graphs
+
+In the native **Reference capture** window, choose **Compare graphs…**.
+Add candidate rows for the viewport output, saved root configurations and
+their colour exports, or saved library configuration outputs. Build and preview
+the saved graph first so its published generation contains those variants.
+The active viewport row uses its current output and renderer choice at the start
+of the run. For an ordinary raster output, choose **Display frame**. Accumulating
+ray outputs use **Accumulate**, which records the linear mean and exact counts.
+
+Set the graph defaults and use a row override where needed. The capture applies
+the sample target to each accumulating graph and records any graph-authored
+warm-up separately. Expected bounces are recorded for matching authored variants.
+The shader controls the actual bounce limit, which is reported as unknown.
+RT1 uses its own sample, depth and traversal fields. **RT1 traversal** starts
+with the choice from Reference Capture. The default is **GPU compute** when
+available and **CPU oracle** otherwise. You can select any supported traversal.
+The results manifest records the traversal, and the pixel-sampling option comes
+from Reference Capture.
+
+**Run and save…** freezes the current World and camera for the whole run,
+renders one baseline and then runs each candidate with a private producer. The
+selected row shows the baseline, candidate, signed difference and metrics side
+by side. A graph whose output extent differs from the frozen extent fails its
+row. Choose an export with view scale one to compare it at the same resolution.
+For a pre-rendered baseline, choose **Choose display baseline…**. Its dimensions
+set the capture extent and the comparison uses sRGB display values. For a saved
+linear baseline, use the offline command below.
+
+The new results folder contains the baseline, individual PNGs and linear
+captures when available, and `comparison.json` with the frozen scene and camera,
+graph routes, actual sample evidence and metrics. A failed row leaves earlier
+results available. Incomplete results with available pixels are labelled as
+diagnostic. **Stop** keeps completed rows and the last readable partial capture.
+
+#### Compare saved captures or image files
+
+Use `scripts/compare-render` to reopen a comparison or measure two images
+outside the editor. For a graph against RT1, choose the **Graph** in
+**Reference…**, select **RT1 reference** as the source, enable the comparison
+and use **Save…**. A graph with linear accumulation saves both
+`<base>.luhdr` and `<base>.graph.lurgcap` from the same frozen camera.
+For display-only output, compare the saved reference PNG and
+`<base>.raster.png`, or use any two supported image files.
+
+Install NumPy and Pillow in a Python 3.10 or newer environment, then run from
+the Ludus checkout with the expected image first.
+
+```bash
+python -m pip install numpy Pillow
+python scripts/compare-render scene.luhdr graph-a.lurgcap graph-b.lurgcap -o linear-report.html
+python scripts/compare-render expected.png actual.png -o display-report.html
+```
+
+Open the HTML report in a browser for side-by-side, wipe and error heatmap
+views. Use the candidate menu to switch between several inputs against the same
+baseline. The file embeds its images and data for offline use. The command also
+writes JSON to standard output with the full metrics and input metadata. The
+heatmap shows the largest absolute RGB channel error per pixel, from black at
+zero to orange at `--diff-scale` (0.25 by default). Grey marks pixels missing
+a sample on either side. Changing this scale leaves the metrics unchanged.
+
+Both inputs need the same pixel dimensions and comparison space. HDR captures
+use their raw scene-linear RGB values. Preview images compress each channel with
+`x / (1 + x)` before sRGB encoding. For display comparisons the tool reads still
+8-bit PNG, JPEG and WebP, applies EXIF orientation, converts embedded ICC profiles
+to sRGB, assumes sRGB for untagged images and composites alpha over black.
+
+The report includes MAE, RMSE, largest channel error and its pixel coordinates,
+and signed Rec. 709 luminance bias. Linear comparisons also report relative MSE
+with the baseline in the denominator (`error² / (baseline² + 0.01)`).
+Display comparisons report PSNR with peak one and a cap of 100 dB.
+For HDR captures, metrics cover only pixels with a committed sample on both sides.
+The report flags partial or failed captures and differences in recorded cameras.
+For comparisons across capture formats, verify that both captures used the same
+World. The formats record different kinds of scene identity.
 
 ## S4 scene authoring
 

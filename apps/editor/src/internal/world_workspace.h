@@ -27,6 +27,7 @@ class QToolButton;
 QT_END_NAMESPACE
 namespace ludus::editor
 {
+class WorldEntitySearch;
 // Desktop, project-owned schema UI. No runtime pools or project code are loaded.
 class RenderPanel;
 class RenderPreview;
@@ -308,6 +309,7 @@ private:
     bool RecoveryFailed_ = false;
     QMap<QString, QWidget*> Fields_;
     QListWidget* Entities_;
+    WorldEntitySearch* mEntitySearch;
     QLabel* Status_;
     QLabel* PathLabel_;
     QLineEdit* Name_ = nullptr;

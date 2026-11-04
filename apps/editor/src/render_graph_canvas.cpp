@@ -66,6 +66,10 @@ constexpr float64 NODE_BORDER_WIDTH = 1.5;
 constexpr float64 FOCUSED_EDGE_WIDTH = 3;
 constexpr float64 UNAVAILABLE_EDGE_WIDTH = 1.5;
 constexpr float64 UNRELATED_EDGE_OPACITY = 0.18;
+/// A card with this many wires or more is a hub (scene, camera, view). Its wires rest dimmed until it is selected
+/// or hovered, so the structure between ordinary cards stays readable instead of one fan of equal lines.
+constexpr qsizetype HUB_EDGE_COUNT = 6;
+constexpr float64 HUB_EDGE_OPACITY = 0.22;
 constexpr float64 UNRELATED_NODE_OPACITY = 0.25;
 constexpr float64 NODE_WIDTH = 190;
 constexpr float64 FRAME_PADDING = 40;
@@ -155,6 +159,19 @@ QColor GetLabelColour()
     return GetCanvasColour(design::ThemeColour::TextHud);
 }
 
+/// A node title is "name : kind". When both do not fit, the name stays whole and the kind goes (it is in the tooltip
+/// and the inspector); a name that still does not fit is shortened from the middle, so both its ends read.
+QString FitNodeTitle(const QFontMetricsF& metrics, const QString& title, float64 availableWidth)
+{
+    if (metrics.horizontalAdvance(title) <= availableWidth)
+    {
+        return title;
+    }
+    const qsizetype separator = title.indexOf(QStringLiteral(" : "));
+    const QString name = separator > 0 ? title.left(separator) : title;
+    return metrics.elidedText(name, Qt::ElideMiddle, availableWidth);
+}
+
 enum class CanvasLabelRole : uint8
 {
     Title,
@@ -173,7 +190,10 @@ void SetScaledLabel(QGraphicsSimpleTextItem& inoutLabel,
     const float64 labelScale =
         math::Max(1.0, minimumPixelHeight / (QFontMetricsF(inoutLabel.font()).height() * viewScale));
     inoutLabel.setScale(labelScale);
-    inoutLabel.setText(QFontMetricsF(inoutLabel.font()).elidedText(text, Qt::ElideRight, availableWidth / labelScale));
+    const QFontMetricsF metrics(inoutLabel.font());
+    inoutLabel.setText(role == CanvasLabelRole::Title
+                           ? FitNodeTitle(metrics, text, availableWidth / labelScale)
+                           : metrics.elidedText(text, Qt::ElideRight, availableWidth / labelScale));
 }
 
 QJsonObject FindConfiguration(const QJsonObject& graph, const QString& configuration)
@@ -1218,7 +1238,7 @@ void RenderGraphCanvas::Rebuild()
         QFont font = label->font();
         font.setBold(true);
         label->setFont(font);
-        label->setText(QFontMetricsF(font).elidedText(title, Qt::ElideRight, NODE_WIDTH - 2 * NODE_PADDING));
+        label->setText(FitNodeTitle(QFontMetricsF(font), title, NODE_WIDTH - 2 * NODE_PADDING));
         label->setToolTip(title);
         label->setBrush(Qt::white);
         label->setPos(NODE_PADDING, (HEADER_HEIGHT - label->boundingRect().height()) / 2);
@@ -1997,6 +2017,12 @@ void RenderGraphCanvas::updateConnectionHighlight()
     QSet<QString> connected;
     QSet<QString> highlightedInputs;
     QSet<QString> highlightedOutputs;
+    QHash<QString, qsizetype> wireCounts;
+    for (const EdgeView* edge : std::as_const(mEdges))
+    {
+        ++wireCounts[GetEndpointNode(edge->From)];
+        ++wireCounts[GetEndpointNode(edge->To)];
+    }
     for (qsizetype index = 0; index < mEdges.size(); ++index)
     {
         EdgeView* edge = mEdges.at(index);
@@ -2020,9 +2046,12 @@ void RenderGraphCanvas::updateConnectionHighlight()
             : mExecutionPlanOrNull->IsEnabled() == true && destinationOrNull->HasPlanActivity == true
                 ? destinationOrNull->PlanOpacity
                 : destinationOrNull->ActivityOpacity;
+        const bool isHubWire =
+            wireCounts.value(source) >= HUB_EDGE_COUNT || wireCounts.value(destination) >= HUB_EDGE_COUNT;
         edge->Path->setOpacity(isHighlighted == true || isSelected == true ? 1
                                : hasFocus == true                          ? UNRELATED_EDGE_OPACITY
-                                                                           : activityOpacity);
+                               : isHubWire == true ? math::Min(activityOpacity, HUB_EDGE_OPACITY)
+                                                   : activityOpacity);
         QPen pen(isHighlighted == true || isSelected == true ? GetSelectionColour() : GetEdgeColour(),
                  isHighlighted == true || isSelected == true ? FOCUSED_EDGE_WIDTH : 2);
         pen.setCosmetic(true);

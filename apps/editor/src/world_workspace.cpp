@@ -4,6 +4,7 @@
 #include "internal/item_selection.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_scene.h"
+#include "internal/world_entity_search.h"
 
 #include "internal/controller.h"
 #include "internal/editor_files.h"
@@ -373,6 +374,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     Entities_->setObjectName(QStringLiteral("worldEntities"));
     Entities_->setAccessibleName(QStringLiteral("World entities"));
     Entities_->setMinimumHeight(ENTITY_LIST_MINIMUM_HEIGHT);
+    mEntitySearch = new WorldEntitySearch(*Entities_, entityColumn);
+    entityLayout->addWidget(mEntitySearch);
     entityLayout->addWidget(Entities_, 1);
     // Entity commands share one row under the list.
     QHBoxLayout* commands = new QHBoxLayout;
@@ -581,6 +584,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         RenderInspector();
         Changed();
     };
+    connect(mEntitySearch, &WorldEntitySearch::SelectionChanged, this, updateSelection);
     connect(Entities_, &QListWidget::currentItemChanged, this, updateSelection);
     connect(Entities_, &QListWidget::itemSelectionChanged, this, updateSelection);
     const auto bindCommand = [this](const QKeySequence& key, QPushButton* button) {
@@ -1325,7 +1329,6 @@ void WorldWorkspace::Render()
 {
     Rendering_ = true;
     Entities_->clear();
-    QStringList retained;
     for (const QJsonValue value : Document_.Draft().value(QStringLiteral("entities")).toArray())
     {
         const QJsonObject entity = value.toObject();
@@ -1337,12 +1340,17 @@ void WorldWorkspace::Render()
         if (mSelectedEntities.contains(id) == true)
         {
             item->setSelected(true);
-            retained.append(id);
         }
         if (id == Selected_)
         {
             Entities_->setCurrentItem(item, QItemSelectionModel::NoUpdate);
         }
+    }
+    mEntitySearch->Refresh();
+    QStringList retained;
+    for (const QListWidgetItem* item : Entities_->selectedItems())
+    {
+        retained.append(item->data(Qt::UserRole).toString());
     }
     mSelectedEntities = retained;
     if (mSelectedEntities.contains(Selected_) == false)
@@ -1764,6 +1772,7 @@ void WorldWorkspace::Changed(const QString& message)
         field->setEnabled(isBusy == false || DraftPreview_);
     }
     Entities_->setEnabled(Pending_ == false && isBusy == false);
+    mEntitySearch->setEnabled(Entities_->isEnabled());
     mLightsPanel->setEnabled(Pending_ == false && isBusy == false);
     const bool isWorkerActive = isSceneWorkerActive();
     Import_->setEnabled(Document_.Loaded() && IsWorldDemo(Document_) == false && Pending_ == false &&
@@ -2002,6 +2011,7 @@ bool WorldWorkspace::SelectEntity(const QString& id)
     {
         return false;
     }
+    mEntitySearch->RevealEntity(id);
     mSelectedEntities = {id};
     Selected_ = id;
     Render();

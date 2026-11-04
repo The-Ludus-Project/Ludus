@@ -550,7 +550,8 @@ def cmd_render_graph(args) -> int:
                 from . import render_graph_library_capture
                 payload = render_graph_library_capture.rebuild_library_capture(
                     args.generation, args.output, args.destination, library=args.library,
-                    library_configuration=args.library_configuration, library_output=args.library_output, **options)
+                    library_configuration=args.library_configuration, library_output=args.library_output,
+                    is_root_configuration=args.root_configuration, **options)
             elif args.runtime_package:
                 from . import render_graph_reload
                 payload = render_graph_reload.rebuild(args.manifest, args.output, args.runtime_package,
@@ -716,6 +717,8 @@ def build_parser() -> argparse.ArgumentParser:
                                "PointLineMis.lurender.json")
     library_graph.add_argument("--library-configuration", required=True, help="configuration of that library")
     library_graph.add_argument("--library-output", required=True, help="ColorTexture output of that configuration")
+    library_graph.add_argument("--root-configuration", action="store_true",
+                               help="cook the saved root configuration and use its existing Export")
     library_graph.add_argument("--helper", help="installed SDK shader helper override")
     library_graph.add_argument("--compiler", help="pinned Slang executable override")
     library_graph.add_argument("--project", help="resolve the SDK and shader tools selected by this project")

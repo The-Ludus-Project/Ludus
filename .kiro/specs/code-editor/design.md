@@ -142,7 +142,7 @@ public:
 - Paste: when the clipboard's line count equals the cursor count, each cursor
   gets one line; otherwise each gets the whole text.
 
-## 6. Syntax service (CE08)
+## 6. Syntax service (CE08, CE26)
 
 - One `QThread` owns every tree-sitter parser, tree and query cursor. Work items
   carry the document identity, revision, the accumulated `TSInputEdit`s and a
@@ -161,6 +161,44 @@ public:
 - Capture names map to design-token syntax roles in one table in the registry.
 - Folds, outline, breadcrumb scopes and sticky headers come from the same pass,
   bounded by `CODE_MAX_FOLDS` and `CODE_MAX_OUTLINE_ITEMS`.
+
+### Folding (CE26)
+
+- `internal/code_fold_model.h/.cpp` is Qt-free. A fold range is a first line,
+  a last line, a kind (`Syntax`, `Region`, `Server`, `Indentation` or `Manual`)
+  and an optional name. The model merges the sources in the architecture's
+  order. Server ranges are added only for kinds missing from the syntax result.
+  Region markers are matched with the registry's patterns in the same worker
+  pass, against comment tokens only, so a marker inside a string does not fold.
+- Each view owns a collapsed set keyed by first line and kind. Edit deltas move
+  it between results, in the same way that `syntax_tokens` moves tokens. A new
+  result reconciles it: entries without a matching range are expanded and
+  dropped. The view checks the invariant (every hidden line lies inside a
+  collapsed range whose first line is visible) in debug builds after every
+  reconciliation.
+- The view hides lines with `QTextBlock::setVisible(false)` on its own
+  projection, followed by `markContentsDirty` over the changed range and a
+  viewport update. This is the approach Qt Creator uses with
+  `QPlainTextDocumentLayout`. Projections are per view, so split views fold
+  independently, and hiding blocks never touches the host.
+- The placeholder is drawn by the view after the first line's text and is
+  never inserted into the projection, like inlay text. Hit testing on it
+  expands the range.
+- One helper, `RevealRange`, expands the collapsed ranges that contain a
+  position. Navigation, find, diagnostics, debugger stops, multi-cursor
+  additions and selection-restoring undo call it. Edit paths that must not
+  reveal (Replace All, formatting, workspace edits) do not call it.
+- Selection and line commands expand their line span to cover collapsed ranges
+  that start on a selected line, before building the `CodeEditSet`.
+  `QTextCursor` already selects hidden blocks, so the clipboard gets the real
+  text.
+- Saved state per tab: first line, kind and a 64-bit hash of the first line's
+  text, at most `CODE_MAX_FOLDS` entries. Entries that no longer match are
+  dropped on restore.
+- Tests cover each item in CE26. Randomized edits against collapsed ranges
+  check the invariant and that no text is ever hidden without a control, and
+  check that copy, line commands and reveal behave the same in split views.
+  `[.benchmark]` covers Fold All and Unfold All on the 100,000-line corpus.
 
 ## 7. Language client (CE09, CE10, CE11, CE20)
 
