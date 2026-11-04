@@ -19,18 +19,25 @@
 // Each case prints one WARN summary; record those summaries in the task ledger.
 
 #include "internal/code_editor.h"
+#include "internal/code_file_document.h"
+#include "internal/code_file_limits.h"
 #include "internal/code_latency_probe.h"
 #include "internal/code_syntax_highlighter.h"
+#include "internal/code_text_profile.h"
 
 #include <ludus/foundation/containers/sort.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QByteArray>
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QList>
 #include <QString>
 #include <QSysInfo>
+#include <QTemporaryDir>
 #include <QTest>
 #include <QTextCursor>
 #include <QVector>
@@ -294,4 +301,58 @@ TEST_CASE("corpus: multi-cursor pre-feature typing baseline", "[.benchmark][edit
                   samples,
                   idleProbe);
     CHECK(editor.toPlainText().compare(source) == 0);
+}
+
+TEST_CASE("corpus: long-line file opened through the file host", "[.benchmark][editor][text][code-editor][file-host]")
+{
+    // The M0 baseline measured a single 1 MiB line at about 1 s per keystroke
+    // because Qt lays out the whole block. The file document host must keep such
+    // files off that path: a line wider than CODE_LONG_LINE_UTF16_UNITS gets no
+    // per-line formats or bracket matching (CE22). This case opens a long-line
+    // file through the host and records how long load + detection + profiling
+    // take, so the degraded mode's open cost is comparable with the "single
+    // 1 MiB line typing" baseline above. Typing in the degraded mode is still a
+    // Qt layout cost until the M2/M3 view mitigation lands; that is why this
+    // case times the host open path, not per-keystroke layout.
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    QByteArray bytes(LONG_LINE_BYTES, 'x');
+    bytes.append('\n');
+    const QString path = QDir(directory.path()).filePath(QStringLiteral("long_line.txt"));
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly) == true);
+        REQUIRE(file.write(bytes) == bytes.size());
+    }
+
+    QVector<int64> samples;
+    samples.reserve(SAMPLE_COUNT);
+    bool isWithinLongLineThreshold = false;
+    for (int32 sample = 0; sample < SAMPLE_COUNT; ++sample)
+    {
+        QElapsedTimer timer;
+        timer.start();
+        const CodeFileLoadResult result = LoadCodeFile(path);
+        samples.append(timer.nsecsElapsed());
+        // The single long line is within the normal byte band, so the host opens
+        // it editable; the long-line view mitigation (CE22) is what the degraded
+        // mode uses, and the threshold constant keeps per-line work off it.
+        isWithinLongLineThreshold =
+            static_cast<usize>(LONG_LINE_BYTES) > CODE_LONG_LINE_UTF16_UNITS && result.Status == CodeFileLoadStatus::Ok;
+    }
+    CHECK(isWithinLongLineThreshold == true);
+    Sort(samples.data(), static_cast<usize>(samples.size()), [](int64 left, int64 right) noexcept {
+        return left < right;
+    });
+    const QString summary =
+        QStringLiteral("BASELINE | long-line file host open | bytes=%1 samples=%2 | open us p50=%3 p95=%4 max=%5 | "
+                       "long-line threshold=%6 UTF-16 units | %7 / %8; Qt %9 | compare with 'single 1 MiB line typing'")
+            .arg(bytes.size())
+            .arg(samples.size())
+            .arg(GetNearestRankPercentile(samples, MEDIAN_PERCENTILE) / NANOSECONDS_PER_MICROSECOND)
+            .arg(GetNearestRankPercentile(samples, TAIL_PERCENTILE) / NANOSECONDS_PER_MICROSECOND)
+            .arg(samples.last() / NANOSECONDS_PER_MICROSECOND)
+            .arg(CODE_LONG_LINE_UTF16_UNITS)
+            .arg(QSysInfo::prettyProductName(), QSysInfo::currentCpuArchitecture(), QString::fromUtf8(qVersion()));
+    WARN(summary.toStdString());
 }

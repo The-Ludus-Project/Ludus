@@ -470,6 +470,12 @@ add_library(ludus_editor_code STATIC
     src/internal/code_editor_panel.h src/code_editor_panel.cpp
     src/internal/code_language_registry.h src/code_language_registry.cpp
     src/internal/code_latency_probe.h src/code_latency_probe.cpp
+    src/internal/code_file_limits.h
+    src/internal/code_text_profile.h
+    src/internal/code_text_detect.h src/code_text_detect.cpp
+    src/internal/code_editor_config.h src/code_editor_config.cpp
+    src/internal/code_file_document.h src/code_file_document.cpp
+    src/internal/code_conflict_banner.h src/code_conflict_banner.cpp
     src/internal/code_syntax_highlighter.h src/code_syntax_highlighter.cpp
     src/internal/code_document.h src/internal/code_edit_scope.h
     src/internal/code_text.h src/code_text.cpp
@@ -491,7 +497,7 @@ set_target_properties(ludus_editor_code PROPERTIES AUTOMOC ON)
 target_include_directories(ludus_editor_code PRIVATE src)
 target_compile_definitions(ludus_editor_code PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
 target_link_libraries(ludus_editor_code PUBLIC Qt6::Widgets Ludus::FoundationContainers
-    PRIVATE Ludus::FoundationBase Ludus::FoundationProfiling)
+    PRIVATE Ludus::FoundationBase Ludus::FoundationProfiling Ludus::FoundationStrings)
 if(NOT EMSCRIPTEN)
     target_link_libraries(ludus_editor_code PRIVATE Qt6::Concurrent)
 endif()
@@ -994,7 +1000,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set_tests_properties(ludus_editor_accessibility_tests PROPERTIES LABELS "unit;editor;native;accessibility"
             TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=cocoa")
     endif()
-    add_executable(ludus_code_editor_tests tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp tests/code_language_registry_tests.cpp tests/code_latency_probe_tests.cpp tests/code_editor_benchmark.cpp)
+    add_executable(ludus_code_editor_tests tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp tests/code_language_registry_tests.cpp tests/code_latency_probe_tests.cpp tests/code_file_document_tests.cpp tests/code_editor_benchmark.cpp)
     target_include_directories(ludus_code_editor_tests PRIVATE src)
     target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
     configure_file(tests/formatter_fixture.py generated/formatter_fixture.py COPYONLY)
