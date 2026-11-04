@@ -416,8 +416,33 @@ void CodeFormatter::decodeSlice()
         return;
     }
     mResult.Text.append(mCapture.Text.constData() + mCopiedBytes, static_cast<isize>(suffix));
-    const CodeTextSelection selection = mResult.MapSelection(mDocument.CaptureSelection());
-    const CodeEditStatus status = mDocument.ApplyServiceText(mResult.Identity, mResult.Text, selection);
+    const CodeTextSelection before = mDocument.CaptureSelection();
+    const CodeTextSelection after = mResult.MapSelection(before);
+    // Publish the formatter's own replacement ranges as one edit set (CE05):
+    // ascending, non-overlapping, already validated during decode. The edits
+    // borrow the inserted bytes from mResult.Replacements, which outlive the call.
+    QList<CodeTextEdit> edits;
+    edits.reserve(mResult.Replacements.size());
+    for (const CodeFormatReplacement& replacement : mResult.Replacements)
+    {
+        const CodeTextEdit edit =
+        {
+            .StartBytes = replacement.StartBytes,
+            .RemovedBytes = replacement.RemovedBytes,
+            .Inserted = {replacement.Inserted.constData(), static_cast<usize>(replacement.Inserted.size())},
+        };
+        edits.append(edit);
+    }
+    const CodeTextSelection beforeSelections[] = {before};
+    const CodeTextSelection afterSelections[] = {after};
+    const CodeEditSet set =
+    {
+        .Edits = {edits.constData(), static_cast<usize>(edits.size())},
+        .Before = {{beforeSelections, 1}},
+        .After = {{afterSelections, 1}},
+        .Transaction = {},
+    };
+    const CodeEditStatus status = mDocument.ApplyEditSet(mResult.Identity, set);
     finish(status == CodeEditStatus::Ok,
            status == CodeEditStatus::Ok
                ? QStringLiteral("Source formatted; Save publishes the draft.")

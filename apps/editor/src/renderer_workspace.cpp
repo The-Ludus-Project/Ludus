@@ -810,7 +810,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QWidget* interfacePage = CreateShaderInterfaceView(mSourceInterface, sourcePage);
     mSourceSplit = new QSplitter(Qt::Horizontal, sourcePage);
     mSourceSplit->setObjectName(QStringLiteral("renderGraphSourceSplitter"));
-    mSourceSplit->addWidget(new CodeEditorPanel(mSource, mSourceSplit));
+    mSourceSplit->addWidget(new CodeEditorPanel(mSource, mSourceController, mSourceSplit));
     mSourceSplit->addWidget(interfacePage);
     mSourceSplit->setCollapsible(0, false);
     mSourceSplit->setStretchFactor(0, 2);

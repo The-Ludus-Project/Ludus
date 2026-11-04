@@ -1,12 +1,14 @@
 #pragma once
 
 #include "internal/code_document.h"
+#include "internal/code_edit_set.h"
 #include "internal/code_text_profile.h"
 #include "internal/document_history.h"
 
 #include <ludus/foundation/base/types.h>
 
 #include <QByteArray>
+#include <QList>
 #include <QString>
 
 namespace ludus::editor
@@ -75,18 +77,17 @@ public:
     CodeFileDocument(CodeFileLoadResult&& result, foundation::uint64 epoch);
 
     [[nodiscard]] CodeDocumentSnapshot GetSnapshot() const noexcept override;
-    [[nodiscard]] CodeEditStatus ApplyEdit(const CodeDocumentIdentity& expected,
-                                           const CodeTextEdit& edit,
-                                           CodeTextSelection before,
-                                           CodeTextSelection after,
-                                           bool shouldMerge) override;
+    [[nodiscard]] CodeEditStatus
+    ApplyEdits(const CodeDocumentIdentity& expected, const CodeEditSet& edits, bool shouldMerge) override;
     void BreakUndoGroup() noexcept override;
     [[nodiscard]] bool CanUndo() const noexcept override;
     [[nodiscard]] bool CanRedo() const noexcept override;
 
-    /// Undo/redo one step, returning whether the draft changed.
-    [[nodiscard]] bool Undo();
-    [[nodiscard]] bool Redo();
+    /// Undo/redo one step, returning whether the draft changed. On a change, the
+    /// selection set recorded with that step is written to outSelections so the
+    /// view can restore every cursor (CE05); an empty list leaves the selection.
+    [[nodiscard]] bool Undo(QList<CodeTextSelection>& outSelections);
+    [[nodiscard]] bool Redo(QList<CodeTextSelection>& outSelections);
 
     [[nodiscard]] const QString& GetCanonicalPath() const noexcept
     {
@@ -153,22 +154,25 @@ public:
                                                                  const QByteArray& draftBytes);
 
 private:
-    /// Apply one validated byte edit to the draft, pushing an undo entry. The
-    /// validation mirrors the render-graph host: order, UTF-8 scalar boundaries
-    /// and capacity are all checked before any mutation.
-    [[nodiscard]] CodeEditStatus
-    applyByteEdit(const CodeTextEdit& edit, CodeTextSelection before, CodeTextSelection after, bool shouldMerge);
+    /// Apply a validated edit set to the draft, pushing one undo entry that
+    /// records the draft and the Before/After selection sets (CE05). Order,
+    /// overlap, UTF-8 scalar boundaries and capacity are all checked across the
+    /// whole set before any mutation, by ValidateAndApplyEditSet.
+    [[nodiscard]] CodeEditStatus applyByteEdits(const CodeEditSet& edits, bool shouldMerge);
     [[nodiscard]] foundation::uint64 revision() const noexcept;
     void captureDiskState();
 
     QString mCanonicalPath;
     QByteArray mSaved; ///< The last bytes read from or written to disk (no BOM).
     QByteArray mDraft; ///< The current editable bytes (no BOM).
+    /// The selection set of the current draft, kept so undo/redo can restore the
+    /// cursors that were active before and after each step.
+    QList<CodeTextSelection> mDraftSelections;
     CodeTextProfile mProfile;
     QString mExplanation;
     bool mIsReadOnly = false;
     foundation::uint64 mEpoch = 0;
-    DocumentHistory<QByteArray> mHistory;
+    DocumentHistory<CodeHistoryState> mHistory;
     bool mHasMergeableGroup = false;
     qint64 mDiskSize = 0;
     qint64 mDiskModifiedMsecs = 0;

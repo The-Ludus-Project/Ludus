@@ -54,17 +54,25 @@ CodeDocumentTab::CodeDocumentTab(CodeFileDocument* hostOrNull, const QString& ab
     });
     connect(mController, &CodeDocumentController::Failed, this, &CodeDocumentTab::Failed);
     connect(mEditor, &CodeEditor::UndoRequested, this, [this]() {
-        if (mHostOrNull != nullptr && mHostOrNull->Undo() == true)
+        QList<CodeTextSelection> selections;
+        if (mHostOrNull != nullptr && mHostOrNull->Undo(selections) == true)
         {
             mController->Synchronize(true);
+            // Restore the selection set recorded with the step so one undo brings
+            // back both the text and every cursor (CE05).
+            mController->RestoreSelectionSet(
+                {selections.constData(), static_cast<foundation::usize>(selections.size())});
             RefreshHistoryAvailability();
             Q_EMIT Edited();
         }
     });
     connect(mEditor, &CodeEditor::RedoRequested, this, [this]() {
-        if (mHostOrNull != nullptr && mHostOrNull->Redo() == true)
+        QList<CodeTextSelection> selections;
+        if (mHostOrNull != nullptr && mHostOrNull->Redo(selections) == true)
         {
             mController->Synchronize(true);
+            mController->RestoreSelectionSet(
+                {selections.constData(), static_cast<foundation::usize>(selections.size())});
             RefreshHistoryAvailability();
             Q_EMIT Edited();
         }
