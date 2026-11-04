@@ -99,13 +99,10 @@ bool Start(Scene& scene)
     return true;
 }
 
-/// A centred axis-aligned square, half of the target wide and high in clip space.
-void SetSquareMesh(rr::SelectionOutlineRenderer& outline)
+/// An axis-aligned rectangle with the given clip-space bounds.
+void SetRectangleMesh(rr::SelectionOutlineRenderer& outline, float32 minX, float32 minY, float32 maxX, float32 maxY)
 {
-    const Vector3 positions[] = {{-HALF_CLIP_EXTENT, -HALF_CLIP_EXTENT, 0},
-                                 {HALF_CLIP_EXTENT, -HALF_CLIP_EXTENT, 0},
-                                 {HALF_CLIP_EXTENT, HALF_CLIP_EXTENT, 0},
-                                 {-HALF_CLIP_EXTENT, HALF_CLIP_EXTENT, 0}};
+    const Vector3 positions[] = {{minX, minY, 0}, {maxX, minY, 0}, {maxX, maxY, 0}, {minX, maxY, 0}};
     const uint32 indices[] = {0, 1, 2, 0, 2, 3};
     const auto status = outline.SetMesh(BorrowedView<const Vector3>(positions), BorrowedView<const uint32>(indices));
     REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
@@ -115,6 +112,12 @@ void SetSquareMesh(rr::SelectionOutlineRenderer& outline)
         isReady = outline.GetMeshStatus() == rhi::RasterStatus::Ready;
     }
     REQUIRE(isReady);
+}
+
+/// A centred square, half of the target wide and high in clip space.
+void SetSquareMesh(rr::SelectionOutlineRenderer& outline)
+{
+    SetRectangleMesh(outline, -HALF_CLIP_EXTENT, -HALF_CLIP_EXTENT, HALF_CLIP_EXTENT, HALF_CLIP_EXTENT);
 }
 
 rhi::RasterStatus PrepareReady(rr::SelectionOutlineRenderer& outline,
@@ -197,6 +200,41 @@ TEST_CASE("Selection outline strokes the projected silhouette with a casing and 
     CHECK(IsNear(image, 48, MIDDLE_ROW, 0, 0, 0));
     CHECK(IsNear(image, 2, 2, 0, 0, 0));
     CHECK(IsNear(image, TARGET_WIDTH - 3, TARGET_HEIGHT - 3, 0, 0, 0));
+    REQUIRE(scene.Outline.Release(prepared) == rhi::RasterStatus::Ready);
+}
+
+TEST_CASE("Selection outline keeps the image orientation: clip +y is the top row and +x the left-to-right axis",
+          "[renderer][selection-outline][gpu]")
+{
+    ShutdownGuard guard;
+    Scene scene;
+    if (Start(scene) == false)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+    // Upper-left quadrant: pixels x in [12, 36) and y in [8, 24) of the 96 by 64 target, top row first.
+    constexpr float32 NEAR_EDGE_CLIP = 0.25f;
+    constexpr float32 FAR_EDGE_CLIP = 0.75f;
+    SetRectangleMesh(scene.Outline, -FAR_EDGE_CLIP, NEAR_EDGE_CLIP, -NEAR_EDGE_CLIP, FAR_EDGE_CLIP);
+    rr::PreparedSelectionOutline prepared;
+    REQUIRE(PrepareReady(scene.Outline, MakeView(0), prepared) == rhi::RasterStatus::Ready);
+    uint8 image[TARGET_WIDTH * TARGET_HEIGHT * BYTES_PER_PIXEL];
+    DrawFrame(scene, prepared, image);
+    constexpr uint32 LEFT_EDGE = 12;
+    constexpr uint32 RIGHT_EDGE = 36;
+    constexpr uint32 TOP_EDGE = 8;
+    constexpr uint32 BOTTOM_EDGE = 24;
+    constexpr uint32 MIDDLE_COLUMN = 24;
+    constexpr uint32 MIDDLE_ROW = 16;
+    CHECK(IsNear(image, LEFT_EDGE, MIDDLE_ROW, FULL, 0, 0));
+    CHECK(IsNear(image, RIGHT_EDGE - 1, MIDDLE_ROW, FULL, 0, 0));
+    CHECK(IsNear(image, MIDDLE_COLUMN, TOP_EDGE, FULL, 0, 0));
+    CHECK(IsNear(image, MIDDLE_COLUMN, BOTTOM_EDGE - 1, FULL, 0, 0));
+    // The mirrored positions, lower right, stay clear.
+    CHECK(IsNear(image, TARGET_WIDTH - LEFT_EDGE, TARGET_HEIGHT - MIDDLE_ROW, 0, 0, 0));
+    CHECK(IsNear(image, TARGET_WIDTH - MIDDLE_COLUMN, TARGET_HEIGHT - TOP_EDGE, 0, 0, 0));
+    CHECK(IsNear(image, MIDDLE_COLUMN, TARGET_HEIGHT - TOP_EDGE, 0, 0, 0));
+    CHECK(IsNear(image, TARGET_WIDTH - MIDDLE_COLUMN, TOP_EDGE, 0, 0, 0));
     REQUIRE(scene.Outline.Release(prepared) == rhi::RasterStatus::Ready);
 }
 
