@@ -1,6 +1,11 @@
 #include "internal/activity_chip.h"
 #include "internal/audio_workspace.h"
+#include "internal/code_document_tab.h"
+#include "internal/code_editor.h"
 #include "internal/code_editor_area.h"
+#include "internal/code_file_document.h"
+#include "internal/code_language_registry.h"
+#include "internal/code_status_bar.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
 #include "internal/document_well.h"
@@ -422,6 +427,56 @@ void MainWindow::BuildUi()
     StatusLabel_->setObjectName(QStringLiteral("workspaceStatus"));
     StatusLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     statusBar()->addWidget(StatusLabel_, 1);
+    // The code editor's status items sit left of the activity bar, shown only
+    // while a code view has a tab active (architecture, "Status bar").
+    mCodeStatusBarOrNull = new CodeStatusBar(this);
+    statusBar()->addPermanentWidget(mCodeStatusBarOrNull);
+    mCodeStatusBarOrNull->SetActiveTab(mCodeArea->GetActiveTabOrNull());
+    connect(mCodeArea, &CodeEditorArea::ActiveTabChanged, mCodeStatusBarOrNull, &CodeStatusBar::SetActiveTab);
+    // A save, edit or profile change can change the shown items (dirty, endings).
+    connect(mCodeArea, &CodeEditorArea::TabsChanged, mCodeStatusBarOrNull, [this]() {
+        mCodeStatusBarOrNull->Refresh();
+    });
+    // Language change applies a manual language override to the active view.
+    connect(mCodeStatusBarOrNull,
+            &CodeStatusBar::LanguageChangeRequested,
+            this,
+            [this](const QString& identifier) {
+                CodeDocumentTab* tab = mCodeArea->GetActiveTabOrNull();
+                if (tab == nullptr)
+                {
+                    return;
+                }
+                const auto descriptors = CodeLanguageRegistry::Get().GetDescriptors();
+                for (foundation::usize index = 0; index < descriptors.GetSize(); ++index)
+                {
+                    const CodeLanguageDescriptor& descriptor = descriptors.GetDataOrNull()[index];
+                    const QString candidate =
+                        QString::fromUtf8(descriptor.Identifier.GetDataOrNull(),
+                                          static_cast<qsizetype>(descriptor.Identifier.GetSize()));
+                    if (candidate == identifier)
+                    {
+                        tab->GetEditor().SetLanguage(descriptor.Language);
+                        mCodeStatusBarOrNull->Refresh();
+                        return;
+                    }
+                }
+            });
+    // Line-ending change rewrites the host profile; the dirty save path emits it.
+    connect(mCodeStatusBarOrNull,
+            &CodeStatusBar::LineEndingChangeRequested,
+            this,
+            [this](const QString& ending) {
+                CodeDocumentTab* tab = mCodeArea->GetActiveTabOrNull();
+                CodeFileDocument* host = tab == nullptr ? nullptr : tab->GetHostOrNull();
+                if (host == nullptr || host->IsReadOnly() == true)
+                {
+                    return;
+                }
+                host->SetProfileLineEnding(ending == QStringLiteral("crlf") ? CodeLineEnding::CrLf
+                                                                            : CodeLineEnding::Lf);
+                mCodeStatusBarOrNull->Refresh();
+            });
     // Right side: the running job and the problem counts, which open the Error List.
     mActivityBarOrNull = new StatusActivityBar(this);
     statusBar()->addPermanentWidget(mActivityBarOrNull);
