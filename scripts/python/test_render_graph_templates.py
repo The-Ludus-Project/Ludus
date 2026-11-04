@@ -17,6 +17,17 @@ from ludus_tools.errors import ToolingError
 SPECULAR_CHAIN_EVENTS = 8
 
 
+class TemplateLightSamplingTests(unittest.TestCase):
+    def test_shipped_templates_use_conditional_light_samples_and_evaluation(self):
+        from ludus_tools import render_graph_templates as templates
+
+        for identity in templates.TEMPLATES:
+            for filename, source in templates.template_files(identity, ('metal', 'spirv'), graph).items():
+                if Path(filename).suffix == '.slang':
+                    with self.subTest(template=identity, shader=filename):
+                        self.assertNotRegex(source, r'\b(LightSample|EvaluateLightPdfSolidAngle|EvaluateEnvironmentPdfSolidAngle)\b')
+
+
 class RestirTemplateTests(unittest.TestCase):
     def test_shipped_catalog_fits_aggregate_source_and_target_artifact_policy(self):
         from ludus_tools import render_graph_templates as templates
@@ -706,7 +717,7 @@ class VeachGuibasMisTemplateTests(unittest.TestCase):
         weights = shaders.joinpath('multiple_importance.slang').read_text()
         self.assertIn('#include "multiple_importance.slang"', shade)
         for call in ('SampleIncidentLight', 'SampleStandardBsdf', 'TraceClosest', 'TestVisibility',
-                     'EvaluateLightPdfSolidAngle', 'EvaluateEnvironmentPdfSolidAngle', 'ComputeMisWeight'):
+                     'EvaluateIncidentLightPdfSolidAngle', 'EvaluateIncidentEnvironmentPdfSolidAngle', 'ComputeMisWeight'):
             self.assertIn(call, shade)
         # Only the MIS pass weights its strategies; each single-strategy pass keeps weight one.
         self.assertIn('SampleLightStrategy(scene, launch, shadingPoint, true, queries)', shade)
@@ -1230,7 +1241,7 @@ class RisProjectedSolidAngleTemplateTests(unittest.TestCase):
         resampled = shaders.joinpath('resampled_light.slang').read_text()
         light = shaders.joinpath('projected_solid_angle_light.slang').read_text()
         for call in ('SelectLight', 'SampleIncidentLight', 'SampleStandardBsdf', 'TraceClosest', 'TestVisibility',
-                     'EvaluateEmission', 'GetSurfaceHit', 'EvaluateEnvironmentPdfSolidAngle',
+                     'EvaluateEmission', 'GetSurfaceHit', 'EvaluateIncidentEnvironmentPdfSolidAngle',
                      'EvaluateEmissiveTriangleSelectionPmf', 'TrySampleProjectedSolidAnglePolygon',
                      'TrySampleLinearlyTransformedCosinePolygon', 'ComputeClampedOptimalMisWeights',
                      'ComputePowerHeuristicWeight', 'EvaluateSurrogateTriangleProbability'):
@@ -1496,8 +1507,8 @@ class SalesinJaroszLinesTemplateTests(unittest.TestCase):
         shade = shaders.joinpath('shade.slang').read_text()
         strategy = shaders.joinpath('line_sampling.slang').read_text()
         weights = shaders.joinpath('multiple_importance.slang').read_text()
-        for call in ('SampleStandardBsdf', 'TraceClosest', 'TestVisibility', 'EvaluateLightPdfSolidAngle',
-                     'EvaluateEnvironmentPdfSolidAngle', 'EvaluateLineDensity', 'ComputeMisWeight'):
+        for call in ('SampleStandardBsdf', 'TraceClosest', 'TestVisibility', 'EvaluateIncidentLightPdfSolidAngle',
+                     'EvaluateIncidentEnvironmentPdfSolidAngle', 'EvaluateLineDensity', 'ComputeMisWeight'):
             self.assertIn(call, shade)
         for call in ('SampleIncidentLight', 'FindVisibleLineIntervals', 'HasMaskedOccluders', 'LineDirection::U',
                      'LineDirection::V', 'EvaluateLineDensity'):

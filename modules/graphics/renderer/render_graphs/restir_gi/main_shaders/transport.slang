@@ -43,13 +43,17 @@ struct BsdfStep
     bool HasVertex;
 };
 
-/// One addressed random number of this pixel, frame and pass. Every pass of the sequence is seeded identically, so
+/// One random address scoped to this pixel, frame and pass. Every pass of the sequence is seeded identically, so
 /// the scope includes GetGraphPassIndex() and no two passes repeat each other's values.
-float SampleGiRandom(RayLaunch launch, uint dimension)
+RandomAddress MakeGiRandomAddress(RayLaunch launch, uint dimension)
 {
     uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
-    RandomAddress address = MakeRandomAddress(uint2(pixel, GetGraphPassIndex()), launch.SampleIndex, dimension);
-    return SampleRandomFloat01(launch.Seed, address);
+    return MakeRandomAddress(uint2(pixel, GetGraphPassIndex()), launch.SampleIndex, dimension);
+}
+
+float SampleGiRandom(RayLaunch launch, uint dimension)
+{
+    return SampleRandomFloat01(launch.Seed, MakeGiRandomAddress(launch, dimension));
 }
 
 float ComputeLuminance(float3 value)
@@ -115,11 +119,10 @@ float3 SampleLightStrategy(SceneContext scene,
             lightCount - 1);
     selected.SelectionPmf = EvaluateLightSelectionPmf(scene, selected.LightIndex);
     selected.HasSample = true;
-    float3 shapeSample = float3(SampleGiRandom(launch, dimensionFirst + VERTEX_LIGHT_SHAPE_DIMENSION_FIRST),
-                                SampleGiRandom(launch, dimensionFirst + VERTEX_LIGHT_SHAPE_DIMENSION_FIRST + 1),
-                                SampleGiRandom(launch, dimensionFirst + VERTEX_LIGHT_SHAPE_DIMENSION_FIRST + 2));
-    LightSample light = SampleIncidentLight(scene, selected, shadingPoint.Hit, shapeSample);
-    float lightDensity = light.SelectionPmf * light.ConditionalPdf;
+    RandomAddress address = MakeGiRandomAddress(launch, dimensionFirst + VERTEX_LIGHT_SHAPE_DIMENSION_FIRST);
+    IncidentLightSample light =
+        SampleIncidentLight(scene, selected.LightIndex, shadingPoint.Hit, launch.Seed, address, queries);
+    float lightDensity = selected.SelectionPmf * light.ConditionalProbability;
     if (light.HasSample == false || lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false)
         return float3(0);
     float cosSurface =
@@ -133,8 +136,9 @@ float3 SampleLightStrategy(SceneContext scene,
                          bsdfDensity);
     if (cosSurface <= 0 || any(bsdfValue > 0) == false)
         return float3(0);
-    float weight =
-        isMisWeighted == true && light.IsDiscrete == false ? ComputePowerHeuristic(lightDensity, bsdfDensity) : 1;
+    float weight = isMisWeighted == true && light.Measure == IncidentLightMeasure::SolidAngle
+                       ? ComputePowerHeuristic(lightDensity, bsdfDensity)
+                       : 1;
     // Skip the shadow ray when the sample cannot contribute; an occluded or failed query adds nothing.
     if (weight <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
         return float3(0);
@@ -199,13 +203,15 @@ BsdfStep SampleBsdfStrategy(SceneContext scene,
     if (status == SceneQuery::Miss)
     {
         incidentRadiance = EvaluateEnvironment(scene, directionWorld);
-        lightDensity = EvaluateEnvironmentPdfSolidAngle(scene, directionWorld);
+        lightDensity = EvaluateLightSelectionPmf(scene, GetEnvironmentLightIndex(scene)) *
+                       EvaluateIncidentEnvironmentPdfSolidAngle(scene);
     }
     else if (status == SceneQuery::Surface)
     {
         incidentRadiance = EvaluateEmission(scene, endpoint, -directionWorld);
         // Measured from the receiver itself, as SampleIncidentLight measures its proposals.
-        lightDensity = EvaluateLightPdfSolidAngle(scene, shadingPoint.Hit.PositionWorld, endpoint);
+        lightDensity = EvaluateLightSelectionPmf(scene, GetSurfaceLightIndex(scene, endpoint)) *
+                       EvaluateIncidentLightPdfSolidAngle(scene, shadingPoint.Hit.PositionWorld, endpoint);
         result.Vertex = endpoint;
         result.HasVertex = true;
     }

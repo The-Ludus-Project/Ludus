@@ -40,10 +40,10 @@ float3 ResetPhotonMap(SceneContext scene, RayLaunch launch, inout RayQueryContex
     outRay = (Ray)0;
     outFlux = float3(0);
     LightInfo light = GetLightInfo(scene, lightIndex);
-    float3 shape = SampleFgRandomTriple(key.xy, key.w, key.z, FG_SOURCE_FIRST_DIMENSION);
     outRay.MaxDistanceWorld = FG_MAXIMUM_DISTANCE_WORLD;
     if (light.Kind == SceneLightKind::Mesh)
     {
+        float3 shape = SampleFgRandomTriple(key.xy, key.w, key.z, FG_SOURCE_FIRST_DIMENSION);
         float area = GetEmitter(scene, light.EmitterIndex).z;
         float target = shape.x * area;
         TriangleData triangle = (TriangleData)0;
@@ -186,7 +186,7 @@ float3 TracePhotons(SceneContext scene, RayLaunch launch, inout RayQueryContext 
                                                                 pixel,
                                                                 jacobian) == true)
                     {
-                        LightSample camera = (LightSample)0;
+                        IncidentLightSample camera = (IncidentLightSample)0;
                         camera.DirectionWorld = normalize(launch.CameraPositionWorld - hit.PositionWorld);
                         camera.PositionWorld = launch.CameraPositionWorld;
                         camera.DistanceWorld = length(launch.CameraPositionWorld - hit.PositionWorld);

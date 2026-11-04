@@ -146,7 +146,7 @@ float3 SampleLightDirectLighting(SceneContext scene,
     {
         return float3(0);
     }
-    LightSample lightSample = (LightSample)0;
+    IncidentLightSample lightSample = (IncidentLightSample)0;
     lightSample.TriangleIndex = triangle.TriangleIndex;
     lightSample.Barycentric = barycentric;
     lightSample.PositionWorld = endpoint.PositionWorld;

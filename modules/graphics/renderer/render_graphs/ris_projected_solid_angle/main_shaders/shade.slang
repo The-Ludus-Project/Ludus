@@ -230,7 +230,7 @@ bool TryEvaluateSurrogateProbability(SceneContext scene,
         weight *= ComputePowerHeuristicWeight(surrogateProbability * (densities.x + densities.y), bsdfDensity);
     if ((weight > 0) == false)
         return float3(0);
-    LightSample light = (LightSample)0;
+    IncidentLightSample light = (IncidentLightSample)0;
     light.TriangleIndex = target.Triangle.TriangleIndex;
     light.Barycentric = barycentric;
     light.PositionWorld = emitterHit.PositionWorld;
@@ -306,11 +306,13 @@ float3 SampleResampledEmissiveLight(SceneContext scene,
         return float3(0);
     if (GetLightInfo(scene, selected.LightIndex).Kind == SceneLightKind::Mesh)
         return SampleResampledEmissiveLight(scene, launch, shadingPoint, isMisWeighted, inoutContext, queries);
-    float3 shapeSample = float3(SampleSceneRandom(launch, SHADE_LIGHT_SHAPE_DIMENSION_FIRST),
-                                SampleSceneRandom(launch, SHADE_LIGHT_SHAPE_DIMENSION_FIRST + 1),
-                                SampleSceneRandom(launch, SHADE_LIGHT_SHAPE_DIMENSION_FIRST + 2));
-    LightSample light = SampleIncidentLight(scene, selected, shadingPoint.Hit, shapeSample);
-    float lightDensity = light.SelectionPmf * light.ConditionalPdf;
+    IncidentLightSample light = SampleIncidentLight(scene,
+                                                    selected.LightIndex,
+                                                    shadingPoint.Hit,
+                                                    launch,
+                                                    SHADE_LIGHT_SHAPE_DIMENSION_FIRST,
+                                                    queries);
+    float lightDensity = selected.SelectionPmf * light.ConditionalProbability;
     if (light.HasSample == false || lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false)
         return float3(0);
     float cosSurface = dot(shadingPoint.ShadingNormalWorld, light.DirectionWorld);
@@ -324,7 +326,7 @@ float3 SampleResampledEmissiveLight(SceneContext scene,
     if (cosSurface <= 0 || any(bsdfValue > 0) == false)
         return float3(0);
     float weight = 1;
-    if (isMisWeighted == true && light.IsDiscrete == false)
+    if (isMisWeighted == true && light.Measure == IncidentLightMeasure::SolidAngle)
         weight = ComputePowerHeuristicWeight(lightDensity, bsdfDensity);
     // Skip the shadow ray when the sample cannot contribute; an occluded or failed query adds nothing.
     if (weight <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
@@ -401,7 +403,8 @@ float3 SampleBsdfStrategy(SceneContext scene,
     {
         incidentRadiance = EvaluateEnvironment(scene, directionWorld);
         if (isMisWeighted == true)
-            lightDensity = EvaluateEnvironmentPdfSolidAngle(scene, directionWorld);
+            lightDensity = EvaluateLightSelectionPmf(scene, GetEnvironmentLightIndex(scene)) *
+                           EvaluateIncidentEnvironmentPdfSolidAngle(scene);
     }
     else if (status == SceneQuery::Surface)
     {

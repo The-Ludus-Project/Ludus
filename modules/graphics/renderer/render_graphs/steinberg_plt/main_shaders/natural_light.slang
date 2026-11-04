@@ -53,7 +53,7 @@ float ComputeAngleBetween(float3 firstWorld, float3 secondWorld)
 /// Angular brightness distribution of a natural source per steradian, at angle angleFromCenter from the
 /// direction of its centre: sqrt(1 - (q / q0)^2) inside the angular radius q0, zero outside. It integrates to
 /// one over the sphere of directions, so multiplying it by the source's solid-angle-integrated radiance
-/// (a LightSample's IncidentCoefficient) gives the radiance arriving from that direction.
+/// (a IncidentLightSample's IncidentCoefficient) gives the radiance arriving from that direction.
 float EvaluateNaturalSourceProfile(float angleFromCenter, float angularRadius)
 {
     if (angularRadius <= 0 || angleFromCenter >= angularRadius)

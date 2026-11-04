@@ -294,7 +294,7 @@ float3 ShadeReservoir(SceneContext scene, SurfaceHit receiver, Reservoir reservo
     {
         return float3(0);
     }
-    LightSample lightSample = (LightSample)0;
+    IncidentLightSample lightSample = (IncidentLightSample)0;
     lightSample.TriangleIndex = reservoir.TriangleIndex;
     lightSample.Barycentric = reservoir.Barycentric;
     lightSample.PositionWorld = endpoint.PositionWorld;

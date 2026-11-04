@@ -49,7 +49,8 @@ struct GratingPoint
 /// A directional, point or spot light shaded as a natural spherical source.
 struct NaturalDeltaSource
 {
-    LightSample Light;
+    IncidentLightSample Light;
+    float SelectionPmf;
     float AngularRadius;
     bool HasSource;
 };
@@ -111,13 +112,6 @@ bool TryLoadShadingPoint(SceneContext scene,
     return true;
 }
 
-float3 LoadLightShapeSample(RayLaunch launch)
-{
-    return float3(SampleSceneRandom(launch, SHADE_LIGHT_SHAPE_DIMENSION_FIRST),
-                  SampleSceneRandom(launch, SHADE_LIGHT_SHAPE_DIMENSION_FIRST + 1),
-                  SampleSceneRandom(launch, SHADE_LIGHT_SHAPE_DIMENSION_FIRST + 2));
-}
-
 /// Classical surfaces: one light sample through the standard BSDF and its shadow ray.
 float3
 SampleClassicalLight(SceneContext scene, RayLaunch launch, ShadingPoint shadingPoint, inout RayQueryContext queries)
@@ -125,8 +119,13 @@ SampleClassicalLight(SceneContext scene, RayLaunch launch, ShadingPoint shadingP
     SelectedLight selected = SelectLight(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION);
     if (selected.HasSample == false)
         return float3(0);
-    LightSample light = SampleIncidentLight(scene, selected, shadingPoint.Hit, LoadLightShapeSample(launch));
-    float lightDensity = light.SelectionPmf * light.ConditionalPdf;
+    IncidentLightSample light = SampleIncidentLight(scene,
+                                                    selected.LightIndex,
+                                                    shadingPoint.Hit,
+                                                    launch,
+                                                    SHADE_LIGHT_SHAPE_DIMENSION_FIRST,
+                                                    queries);
+    float lightDensity = selected.SelectionPmf * light.ConditionalProbability;
     if (light.HasSample == false || lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false)
         return float3(0);
     float cosSurface = dot(shadingPoint.ShadingNormalWorld, light.DirectionWorld);
@@ -146,15 +145,18 @@ SampleClassicalLight(SceneContext scene, RayLaunch launch, ShadingPoint shadingP
 
 /// The selected light when it is a directional, point or spot light. Mesh emitters and the environment reach a
 /// grating through the traced estimate instead, so they return HasSource = false here.
-NaturalDeltaSource SelectNaturalDeltaSource(SceneContext scene, RayLaunch launch, SurfaceHit receiver)
+NaturalDeltaSource
+SelectNaturalDeltaSource(SceneContext scene, RayLaunch launch, SurfaceHit receiver, inout RayQueryContext queries)
 {
     NaturalDeltaSource result = (NaturalDeltaSource)0;
     SelectedLight selected = SelectLight(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION);
     if (selected.HasSample == false)
         return result;
-    result.Light = SampleIncidentLight(scene, selected, receiver, LoadLightShapeSample(launch));
-    if (result.Light.HasSample == false || result.Light.IsDiscrete == false || result.Light.SelectionPmf <= 0 ||
-        any(result.Light.IncidentCoefficient > 0) == false)
+    result.Light =
+        SampleIncidentLight(scene, selected.LightIndex, receiver, launch, SHADE_LIGHT_SHAPE_DIMENSION_FIRST, queries);
+    result.SelectionPmf = selected.SelectionPmf;
+    if (result.Light.HasSample == false || result.Light.Measure != IncidentLightMeasure::Discrete ||
+        result.SelectionPmf <= 0 || any(result.Light.IncidentCoefficient > 0) == false)
         return result;
     result.AngularRadius =
         result.Light.HasFiniteEndpoint == true
@@ -208,7 +210,7 @@ float3 FinishDeltaSourceEstimate(SceneContext scene,
     // Skip the shadow ray for a zero estimate; an occluded or failed query adds nothing.
     if (any(radiance > 0) == false || TestVisibility(scene, queries, receiver, source.Light) != SceneQuery::Miss)
         return float3(0);
-    return radiance / source.Light.SelectionPmf;
+    return radiance / source.SelectionPmf;
 }
 
 /// Spectral radiance at one wavelength that a natural delta source sends to the viewer through one order:
@@ -301,7 +303,7 @@ float3 IntegrateWaveSourceRadiance(GratingPoint grating, NaturalDeltaSource sour
 float3
 EstimateWaveDeltaSource(SceneContext scene, RayLaunch launch, GratingPoint grating, inout RayQueryContext queries)
 {
-    NaturalDeltaSource source = SelectNaturalDeltaSource(scene, launch, grating.Surface.Hit);
+    NaturalDeltaSource source = SelectNaturalDeltaSource(scene, launch, grating.Surface.Hit, queries);
     if (source.HasSource == false)
         return float3(0);
     float3 radiance =
@@ -414,7 +416,7 @@ float3 IntegrateFacetSourceReflection(GratingPoint grating, NaturalDeltaSource s
 float3
 EstimateGeometricDeltaSource(SceneContext scene, RayLaunch launch, GratingPoint grating, inout RayQueryContext queries)
 {
-    NaturalDeltaSource source = SelectNaturalDeltaSource(scene, launch, grating.Surface.Hit);
+    NaturalDeltaSource source = SelectNaturalDeltaSource(scene, launch, grating.Surface.Hit, queries);
     if (source.HasSource == false)
         return float3(0);
     float3 reflection =
@@ -519,12 +521,17 @@ float3 MeasureCoherence(SceneContext scene, RayLaunch launch, inout RayQueryCont
     SelectedLight selected = SelectLight(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION);
     if (selected.HasSample == false)
         return float3(0);
-    LightSample light = SampleIncidentLight(scene, selected, shadingPoint.Hit, LoadLightShapeSample(launch));
+    IncidentLightSample light = SampleIncidentLight(scene,
+                                                    selected.LightIndex,
+                                                    shadingPoint.Hit,
+                                                    launch,
+                                                    SHADE_LIGHT_SHAPE_DIMENSION_FIRST,
+                                                    queries);
     if (light.HasSample == false || any(light.IncidentCoefficient > 0) == false ||
         dot(shadingPoint.ShadingNormalWorld, light.DirectionWorld) <= 0)
         return float3(0);
     float angularRadius = 0;
-    if (light.IsDiscrete == true)
+    if (light.Measure == IncidentLightMeasure::Discrete)
     {
         angularRadius =
             light.HasFiniteEndpoint == true

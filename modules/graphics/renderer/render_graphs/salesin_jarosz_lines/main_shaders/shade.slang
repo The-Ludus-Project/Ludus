@@ -146,11 +146,13 @@ SamplePointStrategy(SceneContext scene, RayLaunch launch, ShadingPoint shadingPo
     SelectedLight selected = SelectLight(scene, launch, SHADE_POINT_DIMENSION_FIRST);
     if (selected.HasSample == false)
         return float3(0);
-    float3 shapeSample = float3(SampleSceneRandom(launch, SHADE_POINT_DIMENSION_FIRST + 1),
-                                SampleSceneRandom(launch, SHADE_POINT_DIMENSION_FIRST + 2),
-                                SampleSceneRandom(launch, SHADE_POINT_DIMENSION_FIRST + 3));
-    LightSample light = SampleIncidentLight(scene, selected, shadingPoint.Hit, shapeSample);
-    float lightDensity = light.SelectionPmf * light.ConditionalPdf;
+    IncidentLightSample light = SampleIncidentLight(scene,
+                                                    selected.LightIndex,
+                                                    shadingPoint.Hit,
+                                                    launch,
+                                                    SHADE_POINT_DIMENSION_FIRST + 1,
+                                                    queries);
+    float lightDensity = selected.SelectionPmf * light.ConditionalProbability;
     if (light.HasSample == false || lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false)
         return float3(0);
     float cosSurface = dot(shadingPoint.ShadingNormalWorld, light.DirectionWorld);
@@ -163,7 +165,7 @@ SamplePointStrategy(SceneContext scene, RayLaunch launch, ShadingPoint shadingPo
                          bsdfDensity);
     if (cosSurface <= 0 || any(bsdfValue > 0) == false)
         return float3(0);
-    float weight = ComputeMisWeight(lightDensity, light.IsDiscrete == true ? 0 : bsdfDensity, 0);
+    float weight = ComputeMisWeight(lightDensity, light.Measure == IncidentLightMeasure::Discrete ? 0 : bsdfDensity, 0);
     // Skip the shadow ray when the sample cannot contribute; an occluded or failed query adds nothing.
     if (weight <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
         return float3(0);
@@ -212,7 +214,8 @@ float3 SampleBsdfStrategy(SceneContext scene,
     {
         incidentRadiance = EvaluateEnvironment(scene, directionWorld);
         // Each line strategy proposes the environment with the point proposal's density.
-        otherDensity0 = EvaluateEnvironmentPdfSolidAngle(scene, directionWorld);
+        otherDensity0 = EvaluateLightSelectionPmf(scene, GetEnvironmentLightIndex(scene)) *
+                        EvaluateIncidentEnvironmentPdfSolidAngle(scene);
         otherDensity1 = isLineWeighted == true ? otherDensity0 : 0;
     }
     else if (status == SceneQuery::Surface)
@@ -236,7 +239,8 @@ float3 SampleBsdfStrategy(SceneContext scene,
         else if (any(incidentRadiance > 0) == true)
         {
             // Measured from the receiver itself, as SampleIncidentLight measures its proposals.
-            otherDensity0 = EvaluateLightPdfSolidAngle(scene, shadingPoint.Hit.PositionWorld, endpoint);
+            otherDensity0 = EvaluateLightSelectionPmf(scene, GetSurfaceLightIndex(scene, endpoint)) *
+                            EvaluateIncidentLightPdfSolidAngle(scene, shadingPoint.Hit.PositionWorld, endpoint);
         }
     }
     // A failed query has latched queries.HasFailed; zero radiance adds nothing.

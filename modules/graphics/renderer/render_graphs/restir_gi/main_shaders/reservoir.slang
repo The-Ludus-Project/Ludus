@@ -377,7 +377,7 @@ bool CanGenerateSample(SceneContext scene,
         return false;
     if (shouldTestVisibility == false)
         return true;
-    LightSample connection = (LightSample)0;
+    IncidentLightSample connection = (IncidentLightSample)0;
     connection.TriangleIndex = samplePoint.TriangleIndex;
     connection.Barycentric = samplePoint.Barycentric;
     connection.PositionWorld = samplePoint.PositionWorld;
