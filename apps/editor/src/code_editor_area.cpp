@@ -6,7 +6,9 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QJsonArray>
+#include <QMessageBox>
 #include <QSplitter>
+#include <QStringList>
 #include <QTabWidget>
 
 // The central code-tab area (CE01, CE02): per-file tabs in up to two editor
@@ -116,6 +118,67 @@ void CodeEditorArea::SetProjectEpoch(uint64 epoch)
     mRegistry.SetProjectEpoch(epoch);
 }
 
+void CodeEditorArea::SetProject(const QString& projectRoot, uint64 epoch)
+{
+    SetProjectEpoch(epoch);
+    // Bind recovery after the epoch bump so the journal is read against the new
+    // project, not the one whose hosts were just dropped.
+    mRegistry.BindRecoveryProject(projectRoot);
+}
+
+void CodeEditorArea::RestoreRecoveredBuffers()
+{
+    const QVector<CodeRecoveredBuffer> buffers = mRegistry.TakeRecoveredBuffers();
+    for (const CodeRecoveredBuffer& buffer : buffers)
+    {
+        if (buffer.CanonicalPath.isEmpty() == true || QFileInfo::exists(buffer.CanonicalPath) == false)
+        {
+            // A journal for a deleted file: nothing to reopen, nothing to lose.
+            continue;
+        }
+        CodeFileDocument* host = mRegistry.FindHostOrNull(buffer.CanonicalPath);
+        if (host == nullptr)
+        {
+            // The file was not reopened from the saved layout; open a permanent
+            // tab so the recovered draft is visible rather than silently applied.
+            CodeDocumentTab* tab = openIn(activeGroupIndex(), buffer.CanonicalPath, false);
+            if (tab == nullptr)
+            {
+                continue;
+            }
+            host = hostOf(tab);
+        }
+        if (host == nullptr)
+        {
+            continue;
+        }
+        if (host->RestoreRecoveredDraft(buffer.SavedHash, buffer.Draft) == true)
+        {
+            // Push the recovered bytes into every open view of the host and mark
+            // the tab dirty, matching an in-editor edit.
+            for (CodeDocumentTab* tab : GetTabs())
+            {
+                if (hostOf(tab) == host)
+                {
+                    tab->MirrorFromHost();
+                    tab->MakePermanent();
+                    updateTabDecoration(tab);
+                }
+            }
+        }
+    }
+    // The restore pass is authoritative; drop the crashed session's journal so a
+    // later clean close does not resurrect it. New edits write a fresh journal.
+    mRegistry.ClearRecovery();
+    Q_EMIT TabsChanged();
+    onCurrentChanged();
+}
+
+void CodeEditorArea::FlushRecovery()
+{
+    mRegistry.FlushRecoveryNow();
+}
+
 CodeDocumentTab* CodeEditorArea::findTabInGroup(int32 group, const QString& path) const
 {
     const QString canonical = QFileInfo(path).canonicalFilePath();
@@ -147,6 +210,8 @@ void CodeEditorArea::addTabToGroup(int32 group, CodeDocumentTab* tab, bool isPre
     connect(tab, &CodeDocumentTab::Edited, this, [this, tab]() {
         mirrorEdit(tab);
         updateTabDecoration(tab);
+        // Journal the unsaved draft off the UI thread on an idle debounce (CE03).
+        mRegistry.ScheduleRecoveryCheckpoint();
         Q_EMIT TabsChanged();
     });
     connect(tab, &CodeDocumentTab::BecamePermanent, this, [this, group, tab]() {
@@ -311,6 +376,144 @@ void CodeEditorArea::CloseActiveTab()
         return;
     }
     removeTab(tab);
+}
+
+bool CodeEditorArea::PromptCloseDirtyTab(CodeDocumentTab* tab)
+{
+    if (tab == nullptr)
+    {
+        return false;
+    }
+    if (tab->IsDirty() == false)
+    {
+        removeTab(tab);
+        return true;
+    }
+    QMessageBox box(this);
+    box.setObjectName(QStringLiteral("codeDirtyCloseDialog"));
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(QStringLiteral("Unsaved changes"));
+    box.setText(QStringLiteral("Save changes to %1 before closing?").arg(QFileInfo(tab->GetPath()).fileName()));
+    box.setStandardButtons(QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    // Cancel is the safe default: a stray Enter or Escape keeps the draft.
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.setEscapeButton(QMessageBox::Cancel);
+    const int answer = box.exec();
+    if (answer == QMessageBox::Cancel)
+    {
+        return false;
+    }
+    if (answer == QMessageBox::Save)
+    {
+        CodeFileDocument* host = hostOf(tab);
+        QString error;
+        if (host == nullptr || host->Save(error) == false)
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("Save failed"),
+                error.isEmpty() == true ? QStringLiteral("The document could not be saved; it stays open.") : error);
+            return false;
+        }
+        updateTabDecoration(tab);
+        // The buffer is clean now; drop its journal file on the next checkpoint.
+        mRegistry.ScheduleRecoveryCheckpoint();
+    }
+    // Save succeeded or Don't Save: close the tab. A discarded dirty draft must
+    // not linger in the registry for recovery, so clear it before releasing.
+    if (answer == QMessageBox::Discard)
+    {
+        if (CodeFileDocument* host = hostOf(tab); host != nullptr)
+        {
+            QString error;
+            static_cast<void>(host->ReloadFromDisk(error));
+        }
+        mRegistry.ScheduleRecoveryCheckpoint();
+    }
+    removeTab(tab);
+    return true;
+}
+
+bool CodeEditorArea::HasDirtyBuffers() const
+{
+    for (CodeDocumentTab* tab : GetTabs())
+    {
+        if (tab->IsDirty() == true)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool CodeEditorArea::ConfirmDiscardAll()
+{
+    QList<CodeDocumentTab*> dirty;
+    for (CodeDocumentTab* tab : GetTabs())
+    {
+        if (tab->IsDirty() == true)
+        {
+            dirty.append(tab);
+        }
+    }
+    if (dirty.isEmpty() == true)
+    {
+        return true;
+    }
+    QStringList names;
+    for (CodeDocumentTab* tab : dirty)
+    {
+        const QString name = QFileInfo(tab->GetPath()).fileName();
+        if (names.contains(name) == false)
+        {
+            names.append(name);
+        }
+    }
+    QMessageBox box(this);
+    box.setObjectName(QStringLiteral("codeDiscardAllDialog"));
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(QStringLiteral("Unsaved code buffers"));
+    box.setText(QStringLiteral("Save changes to %1 code buffer(s) before continuing?").arg(names.size()));
+    box.setInformativeText(names.join(QStringLiteral("\n")));
+    box.setStandardButtons(QMessageBox::SaveAll | QMessageBox::Discard | QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.setEscapeButton(QMessageBox::Cancel);
+    const int answer = box.exec();
+    if (answer == QMessageBox::Cancel)
+    {
+        return false;
+    }
+    if (answer == QMessageBox::SaveAll)
+    {
+        QStringList failed;
+        for (CodeDocumentTab* tab : dirty)
+        {
+            CodeFileDocument* host = hostOf(tab);
+            QString error;
+            if (host == nullptr || host->Save(error) == false)
+            {
+                failed.append(QFileInfo(tab->GetPath()).fileName());
+            }
+            else
+            {
+                updateTabDecoration(tab);
+            }
+        }
+        mRegistry.ScheduleRecoveryCheckpoint();
+        if (failed.isEmpty() == false)
+        {
+            QMessageBox::warning(this,
+                                 QStringLiteral("Save failed"),
+                                 QStringLiteral("These buffers could not be saved and stay open:\n%1")
+                                     .arg(failed.join(QLatin1Char('\n'))));
+            return false;
+        }
+        return true;
+    }
+    // Don't Save: every dirty draft is discarded. Clear the journal so a clean
+    // close does not later offer the discarded buffers for recovery.
+    mRegistry.ClearRecovery();
+    return true;
 }
 
 int32 CodeEditorArea::GetGroupCount() const

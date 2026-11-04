@@ -306,6 +306,10 @@ void MainWindow::BuildUi()
             explanation.isEmpty() == true ? QStringLiteral("Could not open %1.").arg(file) : explanation;
         statusBar()->showMessage(message);
     });
+    // Closing a dirty code tab asks Save / Don't Save / Cancel before it closes.
+    connect(mCodeArea, &CodeEditorArea::DirtyCloseRequested, this, [this](CodeDocumentTab* tab) {
+        static_cast<void>(mCodeArea->PromptCloseDirtyTab(tab));
+    });
     mRenderingSettingsOrNull = new ProjectRenderingSettings(*Renderer_, form);
     projectLayout->insertWidget(projectLayout->indexOf(advanced), mRenderingSettingsOrNull);
     // The render-graph preview borrows the device and extraction of whichever viewport the
