@@ -1537,7 +1537,7 @@ JsonIndex AddSourceMaterial(JsonTree& inoutTree, const SourceMaterialRecord& rec
     constexpr uint32 MAXIMUM_SOURCE_IDENTITY = ~uint32{0};
     if (identity.Kind != JsonKind::Integer || identity.Integer < 0 ||
         identity.Integer > static_cast<int64>(MAXIMUM_SOURCE_IDENTITY) || model.Kind != JsonKind::Integer ||
-        model.Integer < 0 || model.Integer > static_cast<int64>(format::MaterialModel::ThinDielectric) ||
+        model.Integer < 0 || model.Integer > static_cast<int64>(format::MaterialModel::DiffuseConductorMix) ||
         tree.GetKind(name) != JsonKind::String || tree.GetText(name).size() > format::MAX_MATERIAL_NAME_BYTES)
     {
         return inoutFailure.FailInvalid("invalid source material identity or model");
@@ -1803,6 +1803,10 @@ struct BundleParts final
                 DecodeSourceMaterial({extension.data(), extension.size()}, source, inoutFailure) == false)
             {
                 return false;
+            }
+            if (source.Scattering.Model == format::MaterialModel::DiffuseConductorMix && version < format::VERSION_8)
+            {
+                return inoutFailure.FailInvalid("Mix material requires LUSCN version 8");
             }
         }
         BundleMaterial material;
@@ -2744,10 +2748,18 @@ struct MaterialVariant final
     // Version 6 assembles tangent-framed mesh parts or materials with surface/emission
     // maps; older mesh parts then gain absent (zero) tangents.
     bool isVersion7 = false;
+    bool isVersion8 = false;
     for (const Document& description : descriptions)
     {
-        isVersion7 =
-            isVersion7 == true || description.Tree.GetMember(description.Root, "source_material") != NO_JSON_NODE;
+        const JsonIndex source = description.Tree.GetMember(description.Root, "source_material");
+        isVersion7 = isVersion7 == true || source != NO_JSON_NODE;
+        if (source != NO_JSON_NODE)
+        {
+            const JsonIndex model = description.Tree.GetMember(source, "model");
+            isVersion8 =
+                isVersion8 == true ||
+                IsNumberEqual(description.Tree, model, static_cast<int64>(format::MaterialModel::DiffuseConductorMix));
+        }
     }
     bool isVersion6 = isVersion7;
     for (const std::string_view identity : meshes)
@@ -2870,7 +2882,8 @@ struct MaterialVariant final
     }
     ByteWriter writer(outBundle);
     writer.Append(format::MAGIC);
-    const uint32 version = isVersion7 == true   ? format::VERSION_7
+    const uint32 version = isVersion8 == true   ? format::VERSION_8
+                           : isVersion7 == true ? format::VERSION_7
                            : isVersion6 == true ? format::VERSION_6
                            : isVersion5 == true ? format::VERSION_5
                            : isVersion4 == true ? format::VERSION_4

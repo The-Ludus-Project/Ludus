@@ -38,6 +38,8 @@ float3 AdvanceMetropolisChain(SceneContext scene,
                               uint estimator,
                               bool isJumpRestore)
 {
+    if (RequireSceneBsdf(scene, SceneBsdfRequirement::FixedDimensionReflection, queries) == false)
+        return float3(0);
     uint wordCount;
     uint stride;
     GraphBuffer0.GetDimensions(wordCount, stride);

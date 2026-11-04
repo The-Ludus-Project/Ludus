@@ -750,7 +750,8 @@ void EvaluateScattering(float3 color,
     float nl = dot(normalWorld, l);
     if (nv <= 0 || nl <= 0)
         return;
-    if (model == MaterialModel::Diffuse)
+    bool isMix = model == MaterialModel::DiffuseConductorMix;
+    if (model == MaterialModel::Diffuse || (isMix == true && metallic == 0))
     {
         outValue = color / PI;
         outPdf = nl / PI;
@@ -770,11 +771,13 @@ void EvaluateScattering(float3 color,
     float term = 1 - vh;
     float3 fresnel = f0 + (1 - f0) * term * term * term * term * term;
     bool isConductor = model == MaterialModel::Conductor;
-    if (isConductor == true)
+    if (HasRoughConductorLobe(model) == true)
         fresnel = ComputeConductorFresnelRgb(vh, eta, extinction);
     float diffuseFraction = isConductor == true ? 0 : 1 - metallic;
     outValue = fresnel * (distribution * visibility) + color * (1 - fresnel) * (diffuseFraction / PI);
     float probability = ComputeMaterialSpecularProbability(model, metallic);
+    if (isMix == true)
+        outValue = fresnel * (distribution * visibility * probability) + color * ((1 - probability) / PI);
     outPdf = probability * distribution / (2 * (nv + gv)) + (1 - probability) * nl / PI;
 }
 float3 SampleScatteringBsdf(float3 normalWorld, float3 viewDirectionWorld, float alpha, float probability, float3 u)

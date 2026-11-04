@@ -203,6 +203,7 @@ enum class RenderGraphFailureReason : foundation::uint8
     WaveCapacity,               ///< A scalar optical connection exceeds the region or triangle workspace.
     WaveConnection,             ///< The optical wavelength or finite connection is outside the paraxial profile.
     WavePropagationCapacity,    ///< An optical connection exceeds the admitted number of successive regions.
+    FixedDimensionMaterial,     ///< An assigned surface lacks continuous reflection with a fixed sample dimension.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;

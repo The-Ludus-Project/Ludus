@@ -1388,7 +1388,16 @@ bool RenderScene::Merge(const RenderScene& authored,
     stream.setByteOrder(QDataStream::LittleEndian);
     stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
     stream.writeRawData(format::MAGIC.data(), static_cast<int32>(format::MAGIC.size()));
-    stream << format::VERSION_7 << static_cast<uint32>(meshCount) << static_cast<uint32>(materialCount)
+    uint32 version = format::VERSION_7;
+    for (const resources::SceneMaterial& material : imported.Materials)
+    {
+        if (material.Scattering.Model == format::MaterialModel::DiffuseConductorMix)
+        {
+            version = format::VERSION_8;
+            break;
+        }
+    }
+    stream << version << static_cast<uint32>(meshCount) << static_cast<uint32>(materialCount)
            << static_cast<uint32>(textureCount) << static_cast<uint32>(objectCount);
     const auto camera = level.value(QStringLiteral("camera")).toObject();
     for (const auto& key : {QStringLiteral("eye"), QStringLiteral("target"), QStringLiteral("up")})

@@ -24,3 +24,4 @@
 // Profile-specific failure codes, mirrored by the public RenderGraphFailureReason enum.
 #define LUDUS_SCENE_FAILURE_BSDF_ONLY_LIGHTS 15
 #define LUDUS_SCENE_FAILURE_PRIMARY_MATERIAL 16
+#define LUDUS_SCENE_FAILURE_FIXED_DIMENSION_MATERIAL 27

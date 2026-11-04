@@ -58,6 +58,8 @@ QString GetModelName(format::MaterialModel model)
             return QStringLiteral("Dielectric");
         case format::MaterialModel::ThinDielectric:
             return QStringLiteral("Thin dielectric");
+        case format::MaterialModel::DiffuseConductorMix:
+            return QStringLiteral("Diffuse / rough conductor Mix");
     }
     return QStringLiteral("Unknown (%1)").arg(static_cast<uint32>(model));
 }
@@ -193,10 +195,12 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
         rows.append({QStringLiteral("Addressing"),
                      material.Repeat == true ? QStringLiteral("Repeat") : QStringLiteral("Clamp")});
     }
-    rows.append({QStringLiteral("Metallic"), FormatScalar(material.Metallic)});
+    const bool isMix = material.Scattering.Model == format::MaterialModel::DiffuseConductorMix;
+    rows.append({isMix == true ? QStringLiteral("Conductor weight") : QStringLiteral("Metallic"),
+                 FormatScalar(material.Metallic)});
     rows.append({QStringLiteral("Roughness (perceptual)"), FormatScalar(material.Roughness)});
     const format::MaterialScattering& scattering = material.Scattering;
-    if (scattering.Model == format::MaterialModel::Conductor)
+    if (format::HasRoughConductorLobe(scattering.Model) == true)
     {
         rows.append({QStringLiteral("IOR η (RGB)"), FormatRgb(scattering.Eta)});
         rows.append({QStringLiteral("Extinction k (RGB)"), FormatRgb(scattering.K)});

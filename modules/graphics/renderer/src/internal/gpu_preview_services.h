@@ -445,9 +445,13 @@ Status PackGpuScene(const ReferenceJob& job,
     outUniform.Sampling[2] = (job.Description.ReverseZ ? 1U : 0U) | (job.Description.InfiniteFar ? 2U : 0U) |
                              (job.Description.CenterRays == true ? CENTER_RAYS_FLAG : 0U);
     bool isOpaque = true;
+    bool hasExtendedBsdf = false;
     for (usize i = 0; i < scene.InstanceCount; ++i)
     {
-        isOpaque = isOpaque == true && scene.Instances[i].Surface->Alpha == MaterialAlpha::Opaque;
+        const internal::ReferenceSurfaceData& surface = *scene.Instances[i].Surface;
+        isOpaque = isOpaque == true && surface.Alpha == MaterialAlpha::Opaque;
+        hasExtendedBsdf = hasExtendedBsdf == true || content::scene_format::SupportsFixedDimensionReflection(
+                                                         surface.Bsdf.Scattering.Model) == false;
     }
     outUniform.Sampling[2] |= isOpaque == true ? LUDUS_GPU_PREVIEW_OPAQUE_FLAG : 0;
     uint32 nativeOpaqueTriangleCount = 0;
@@ -467,7 +471,7 @@ Status PackGpuScene(const ReferenceJob& job,
     outUniform.SurfaceLayout[1] = static_cast<uint32>(lightsWide);
     outUniform.SurfaceLayout[2] = LUDUS_GPU_PREVIEW_KERNEL_VERSION;
     outUniform.Options.X = job.Description.SecondaryDistance;
-    outUniform.Options.W = GpuBits(job.SceneData);
+    outUniform.Options.W = GpuBits(job.SceneData | (hasExtendedBsdf == true ? LUDUS_GRAPH_REQUIRES_EXTENDED_BSDF : 0u));
     outUniform.BoundsMinimumWorld = GpuVector(scene.Bounds.Min, GpuBits(static_cast<uint32>(job.SourceGeneration)));
     outUniform.BoundsMaximumWorld =
         GpuVector(scene.Bounds.Max,

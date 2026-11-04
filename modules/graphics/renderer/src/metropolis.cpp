@@ -290,8 +290,7 @@ rhi::RasterStatus EvaluateMetropolisPath(const ReferenceSceneData& scene,
             break;
         }
         // The chain's primary-space paths keep reflection-only, non-delta vertices.
-        if (surface.Bsdf.Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse ||
-            IsReferenceDielectric(surface.Bsdf.Scattering.Model) == true)
+        if (content::scene_format::SupportsFixedDimensionReflection(surface.Bsdf.Scattering.Model) == false)
         {
             return rhi::RasterStatus::Unsupported;
         }

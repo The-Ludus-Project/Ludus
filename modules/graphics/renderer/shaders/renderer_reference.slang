@@ -706,7 +706,8 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
     float nl = dot(normalWorld, lightWorld);
     if (nv <= 0 || nl <= 0 || IsDielectricModel(bsdf.Model) == true)
         return 0;
-    if (bsdf.Model == MaterialModel::Diffuse)
+    bool isMix = bsdf.Model == MaterialModel::DiffuseConductorMix;
+    if (bsdf.Model == MaterialModel::Diffuse || (isMix == true && bsdf.Metallic == 0))
         return float4(bsdf.BaseColor / PI, nl / PI);
     float3 halfWorld = NormalizeOrZero(viewWorld + lightWorld);
     float nh = clamp(dot(normalWorld, halfWorld), 0, 1);
@@ -724,13 +725,15 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
     float square = oneMinus * oneMinus;
     float3 fresnel = reflectance + (float3(1) - reflectance) * (square * square * oneMinus);
     bool isConductor = bsdf.Model == MaterialModel::Conductor;
-    if (isConductor == true)
+    if (HasRoughConductorLobe(bsdf.Model) == true)
         fresnel = ComputeConductorFresnelRgb(vh, bsdf.Eta, bsdf.K);
     float diffuseFraction = isConductor == true ? 0 : 1 - bsdf.Metallic;
     float3 value =
         fresnel * (distribution * visibility) + bsdf.BaseColor * (float3(1) - fresnel) * (diffuseFraction / PI);
     float specularPdf = distribution / (2 * (nv + lambdaView));
     float probability = GetSpecularProbability(bsdf);
+    if (isMix == true)
+        value = fresnel * (distribution * visibility * probability) + bsdf.BaseColor * ((1 - probability) / PI);
     return float4(value, probability * specularPdf + (1 - probability) * nl / PI);
 }
 // SampleReferenceBsdf; returns zero for an ordinary null proposal.

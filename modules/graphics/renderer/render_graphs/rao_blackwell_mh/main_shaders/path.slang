@@ -83,11 +83,9 @@ float3 EvaluateMetropolisPath(SceneContext scene,
         if (depth == MH_SCATTERING_DEPTH || dot(hit.GeometricNormalWorld, viewDirectionWorld) <= 0)
             break;
         MaterialSample material = EvaluateMaterial(scene, hit);
-        if (material.IsValid == false || material.Model == MaterialModel::CoatedDiffuse)
+        if (material.IsValid == false)
         {
-            FailSceneQuery(queries,
-                           material.IsValid == false ? LUDUS_SCENE_FAILURE_SCENE_DATA
-                                                     : LUDUS_SCENE_FAILURE_PRIMARY_MATERIAL);
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
             break;
         }
         uint dimension = MH_CAMERA_DIMENSIONS + depth * MH_BSDF_DIMENSIONS;

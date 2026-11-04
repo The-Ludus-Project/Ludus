@@ -1223,6 +1223,35 @@ coverage requirements. The
 [scene coverage contract](render-graph-authoring.md#cameras-reusable-raster-graphs-and-scene-coverage)
 owns reporting per slot, role and view.
 
+### Diffuse and rough conductor Mix
+
+The [scene source format](scene-source-format.md#material) exposes a single
+weighted composition of Lambertian and isotropic rough conductor. Import it
+into an open World through the scene importer. The cooker retains the
+Lambertian color, the conductor's optical constants and GGX alpha, and the
+conductor weight as material data. LUSCN v8 admits the Mix tag in the v7
+record layout. Its metallic field stores the conductor weight and supplies
+the metallic fraction for the raster approximation. Earlier cooked versions
+keep their existing model set.
+
+If the conductor weight is $w$, the surface value is $(1-w) f_d + w f_c$.
+One uniform selects a lobe with those weights and two more sample its
+direction. The evaluator returns $(1-w) p_d + w p_c$ in solid angle for
+direct lighting and MIS. Continuation uses that full density with the
+weighted value and cosine. Null GGX proposals retain their probability.
+Thanks to Pharr, Jakob and Humphreys, [Physically Based Rendering, fourth
+edition, section 2.2.3](https://pbr-book.org/4ed/Monte_Carlo_Integration/Improving_Efficiency),
+for the one-sample mixture-density construction.
+
+The Wave Tracing graph requests the full surface transport interface.
+Rao-Blackwellized Metropolis requests continuous reflection with a
+fixed three-value sampler. The scene packer records whether the assigned
+materials satisfy that restriction. The graph checks it before tracing and
+reports an incompatible material requirement for internal walks and delta
+transmission. Both graphs admit the Mix through their common BSDF calls.
+Rebuild existing ray graph shader packages for scene kernel ABI 13 to use
+the new material model and requirement flag.
+
 ### Preparation and publication
 
 Validate the candidate definition and overrides, resolve its exact dependencies,

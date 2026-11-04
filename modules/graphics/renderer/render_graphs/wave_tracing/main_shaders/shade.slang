@@ -65,6 +65,8 @@ float EvaluateOpticalVisibility(SceneContext scene,
 }
 float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, uint mode)
 {
+    if (RequireSceneBsdf(scene, SceneBsdfRequirement::Transport, queries) == false)
+        return float3(0);
     HitRecord record;
     if (HasHitRecordCapacity(launch) == false || TryLoadHitRecord(scene, launch, record) == false)
     {
