@@ -481,7 +481,12 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
                             const GpuTraceCoverage& coverage,
                             bool shouldIncludeCpu) noexcept
 {
-    if (LUDUS_PROFILING_ENABLED == 0 || samples.IsValid() == false || IsCaptureActive() == true)
+    bool canSerialize = false;
+    if constexpr (LUDUS_PROFILING_ENABLED != 0)
+    {
+        canSerialize = samples.IsValid() == true && IsCaptureActive() == false;
+    }
+    if (canSerialize == false)
     {
         return false;
     }

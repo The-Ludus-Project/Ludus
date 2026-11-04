@@ -15,14 +15,15 @@ string(REGEX REPLACE "(^| )[/-](EHsc|W[0-4])( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_
 string(REGEX REPLACE "(^| )[/-](EHsc|W[0-4])( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
 if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
-    # Development uses RelWithDebInfo compiler/linker defaults and dependencies,
-    # with a separate solution configuration and output directories.
-    set(CMAKE_MAP_IMPORTED_CONFIG_DEVELOPMENT RelWithDebInfo)
-    foreach(flags IN ITEMS CXX EXE_LINKER SHARED_LINKER MODULE_LINKER STATIC_LINKER)
-        set(CMAKE_${flags}_FLAGS_DEVELOPMENT "${CMAKE_${flags}_FLAGS_RELWITHDEBINFO}"
-            CACHE STRING "MSVC ${flags} flags for Development")
+    # Development and Profile share RelWithDebInfo build settings and dependencies.
+    foreach(configuration IN ITEMS DEVELOPMENT PROFILE)
+        set(CMAKE_MAP_IMPORTED_CONFIG_${configuration} RelWithDebInfo)
+        foreach(flags IN ITEMS CXX EXE_LINKER SHARED_LINKER MODULE_LINKER STATIC_LINKER)
+            set(CMAKE_${flags}_FLAGS_${configuration} "${CMAKE_${flags}_FLAGS_RELWITHDEBINFO}"
+                CACHE STRING "MSVC ${flags} flags for ${configuration}")
+        endforeach()
     endforeach()
     if(NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
-        set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT ProgramDatabase)
+        set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,Development,Profile>:ProgramDatabase>")
     endif()
 endif()

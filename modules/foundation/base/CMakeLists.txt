@@ -155,7 +155,7 @@ if(LUDUS_BUILD_TESTS)
     ludus_enable_test_exceptions(ludus_foundation_base_tests)
 
     if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
-        target_compile_definitions(ludus_foundation_base_tests PRIVATE LUDUS_TEST_EXPECT_DEBUG=$<CONFIG:Debug>)
+        target_compile_definitions(ludus_foundation_base_tests PRIVATE LUDUS_TEST_EXPECT_$<UPPER_CASE:$<CONFIG>>=1)
     endif()
 
     add_test(NAME ludus_foundation_base_tests COMMAND ludus_foundation_base_tests)

@@ -114,7 +114,9 @@ jobs:
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           conan export third_party/catch2
           if ($LASTEXITCODE -ne 0) { throw 'Catch2 recipe export failed' }
-          foreach ($configuration in @('Debug', 'RelWithDebInfo')) {
+          $dependencyConfigurations = @('Debug', 'RelWithDebInfo')
+          if ($env:LUDUS_WINDOWS_GENERATOR -eq 'MSBuild') { $dependencyConfigurations += 'Release' }
+          foreach ($configuration in $dependencyConfigurations) {
             conan install --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host "build_type=$configuration" --settings:build build_type=Release --build=missing -g CMakeDeps --output-folder out/windows-msvc-probe/dependencies
             if ($LASTEXITCODE -ne 0) { throw "Catch2 $configuration setup failed" }
           }
@@ -164,8 +166,9 @@ jobs:
             $solution = 'out/windows-msvc-probe/engine'
             cmake -S . -B $solution @generator @engineOptions
             if ($LASTEXITCODE -ne 0) { throw 'Engine solution configure failed' }
-            $builds['Debug'] = $solution
-            $builds['Development'] = $solution
+            foreach ($configuration in @('Debug', 'Development', 'Profile', 'Release')) {
+              $builds[$configuration] = $solution
+            }
           } else {
             foreach ($configuration in @('Debug', 'RelWithDebInfo')) {
               $flavor = if ($configuration -eq 'Debug') { 'Debug' } else { 'Development' }
@@ -175,13 +178,15 @@ jobs:
               $builds[$configuration] = $build
             }
           }
+          $targets = @('ludus_foundation_base_tests', 'ludus_platform_win32_tests', 'ludus_rhi_d3d12_tests', 'ludus_rhi_lifecycle_tests')
+          if ($visualStudio) { $targets += 'ludus_foundation_profiling' }
           foreach ($configuration in $builds.Keys) {
             $build = $builds[$configuration]
-            cmake --build $build --config $configuration --target ludus_foundation_base_tests ludus_platform_win32_tests ludus_rhi_d3d12_tests ludus_rhi_lifecycle_tests @buildOptions
+            cmake --build $build --config $configuration --target @targets @buildOptions
             if ($LASTEXITCODE -ne 0) { throw "Engine $configuration build failed" }
           }
 
-          # Exercise both configurations after building both, so an output
+          # Run the tests after building all configurations, so an output
           # collision cannot silently substitute the most recently built binary.
           $suite = '^ludus_(foundation_base|platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
           foreach ($configuration in $builds.Keys) {
