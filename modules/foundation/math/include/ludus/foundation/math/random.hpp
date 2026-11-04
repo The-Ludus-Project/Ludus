@@ -49,11 +49,11 @@ class RandomStream
 public:
     /// @brief Default construction uses a DETERMINISTIC seed=0/selector=0 (not entropy).
     ///
-    /// mState/mIncrement have default member initializers; SeedInternal overwrites
+    /// mState/mIncrement have default member initializers; seedInternal overwrites
     /// them with the documented two-step PCG seeding for seed=0, selector=0.
     constexpr RandomStream() noexcept
     {
-        SeedInternal(0, 0);
+        seedInternal(0, 0);
     }
 
     /// @brief Reseed to the documented two-step PCG sequence. selector must be <= 0x7fffffffffffffff (a higher
@@ -67,7 +67,7 @@ public:
         {
             return false;
         }
-        SeedInternal(seed, selector);
+        seedInternal(seed, selector);
         return true;
     }
 
@@ -108,18 +108,19 @@ public:
 
 private:
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the (seed, selector) pair is the documented PCG API order.
-    void SeedInternal(uint64 seed, uint64 selector) noexcept
+    LUDUS_INLINE constexpr void seedInternal(uint64 seed, uint64 selector) noexcept
     {
         // Reference sequence: state=0, inc=(selector<<1)|1, step, +seed, step.
         mState = 0;
         mIncrement = (selector << 1u) | 1u;
-        StepState();
+        stepState();
         mState += seed;
-        StepState();
+        stepState();
     }
-    void StepState() noexcept
+    LUDUS_INLINE constexpr void stepState() noexcept
     {
-        mState = mState * 6364136223846793005ULL + mIncrement;
+        constexpr uint64 PCG_MULTIPLIER = 6364136223846793005ULL;
+        mState = mState * PCG_MULTIPLIER + mIncrement;
     }
 
     uint64 mState = 0;

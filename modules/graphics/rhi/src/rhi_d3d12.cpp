@@ -319,11 +319,16 @@ void EnableDebugLayer() noexcept
     return true;
 }
 
-/// Prefers the highest-performance hardware adapter; falls back to WARP so headless
-/// hosts without a GPU (CI runners) still run the same backend.
+/// Prefers the highest-performance hardware adapter with a WARP fallback.
+/// Test builds can select WARP explicitly to keep CI independent of host adapters.
 [[nodiscard]] bool SelectAdapter() noexcept
 {
-    for (UINT index = 0;; ++index)
+#if defined(LUDUS_RHI_TEST_READBACK)
+    const bool shouldUseWarp = ::GetEnvironmentVariableW(L"LUDUS_TEST_REQUIRE_WARP", nullptr, 0) != 0;
+#else
+    constexpr bool shouldUseWarp = false;
+#endif
+    for (UINT index = 0; shouldUseWarp == false; ++index)
     {
         IDXGIAdapter1* adapterOrNull = nullptr;
         if (gFactory->EnumAdapterByGpuPreference(index,
@@ -363,7 +368,7 @@ void EnableDebugLayer() noexcept
     }
     gAdapter = Move(warp);
     isSoftwareAdapter = true;
-    LUDUS_LOG_INFO(LOG_RHI, "Direct3D 12: no hardware adapter created a device; using WARP");
+    LUDUS_LOG_INFO(LOG_RHI, "Direct3D 12: using WARP");
     return true;
 }
 
