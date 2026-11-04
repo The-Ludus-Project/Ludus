@@ -1417,6 +1417,23 @@ level and refuses an existing conversion destination. Failed conversion preserve
 the active World. Save publishes only the converted World document. Existing
 `.world.json` documents without scene data remain readable.
 
+### Edit a coated-diffuse material from World
+
+Select an imported object whose Material model is **Coated diffuse**. In its
+**Material** group, enter the isotropic GGX alpha, coating index of refraction
+(IOR), and optical thickness. **Apply Changes** applies the fields to the
+selected slot in one World edit. Other instances of the imported material
+keep their own values. Use Undo/Redo to move between revisions and **Save World**
+to keep the override on reopening the World. **Use Imported Coating** removes
+the override from this slot as an undoable edit.
+
+The viewport retains the previous drawable scene while the new scene is
+prepared. Invalid fields keep their edit buffers available for correction.
+If assembly fails, use the reported repair or undo the edit. The default
+raster view approximates changes in coat roughness. A compatible reference
+capture uses the authored alpha, IOR and optical thickness together. See
+[the coated-diffuse profile](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference).
+
 ### Scene start view
 
 A World with an imported scene has a **start view**: the level `camera` (`eye`,

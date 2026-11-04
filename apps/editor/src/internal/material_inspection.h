@@ -1,17 +1,59 @@
 #pragma once
 
+#include <ludus/content/scene_format/material.h>
+
+#include <QJsonObject>
 #include <QString>
 #include <QVector>
+
+namespace ludus::resources
+{
+struct SceneMaterial;
+}
 
 namespace ludus::editor
 {
 struct RenderScene;
 
+struct CoatingField final
+{
+    const char* Key;
+    const char* Label;
+    foundation::float32 content::scene_format::MaterialScattering::* Member;
+    foundation::float32 Minimum;
+    foundation::float32 Maximum;
+
+    [[nodiscard]] QJsonObject MakeNumberProperty() const;
+};
+
+inline const CoatingField COATING_FIELDS[] = {
+    {"alpha",
+     "Coating GGX alpha",
+     &content::scene_format::MaterialScattering::AlphaU,
+     content::scene_format::LUDUS_COATING_MIN_ALPHA,
+     1},
+    {"eta",
+     "Coating IOR",
+     &content::scene_format::MaterialScattering::CoatingEta,
+     1,
+     content::scene_format::MAX_MATERIAL_OPTICAL_CONSTANT},
+    {"thickness",
+     "Coating optical thickness",
+     &content::scene_format::MaterialScattering::CoatingThickness,
+     0,
+     content::scene_format::MAX_MATERIAL_OPTICAL_CONSTANT},
+};
+
+/// Borrow the resolved material for as long as the scene definition is retained.
+[[nodiscard]] const resources::SceneMaterial* GetSceneObjectMaterialOrNull(const RenderScene& scene,
+                                                                           const QString& objectId);
+
 /// One read-only row of the World inspector's Material group.
 struct MaterialPropertyRow final
 {
-    QString Label; ///< Property name, with its unit or space where it has one.
-    QString Value; ///< Displayed value; colours are comma-separated linear RGB.
+    QString Label;                   ///< Property name, with its unit or space where it has one.
+    QString Value;                   ///< Displayed value; colours are comma-separated linear RGB.
+    bool IsCoatingParameter = false; ///< Editable separately in an imported coated-diffuse slot.
 };
 
 /// Describe the decoded material a scene object of a loaded render scene uses, as the renderer
