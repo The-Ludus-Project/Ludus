@@ -2633,6 +2633,17 @@ To add an icon:
 3. Run the editor tests tagged `[icons]`. The resource helper in
    `apps/editor/CMakeLists.txt` discovers SVG files in that directory automatically.
 
+### Which commands get a label
+
+One set serves every toolbar, so a command looks the same wherever it appears.
+Commands that start something or choose a destination (Open, Save, Build, Run,
+Debug, Play, Stop, Reload Code) draw their icon beside the label. Peers in a
+run of symmetric commands (Undo, Redo, Pause, Step, Resume) are icon-only and
+carry a tooltip that names the command and its shortcut. A toolbar command
+never appears as bare text, and `[style][spacing]` tests fail when a layout
+margin or spacing is typed as a pixel number instead of a `design::SPACING_*`
+token.
+
 Engine concepts that Lucide has no drawing for (entity, probe, cook) will be
 drawn in house on the same grid and stroke. List their attribution here when
 added.

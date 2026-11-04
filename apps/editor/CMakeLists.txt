@@ -594,13 +594,15 @@ ludus_editor_add_objects(ludus_editor_render_graph_canvas
     src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
     src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
     src/internal/render_graph_job.h src/render_graph_job.cpp)
-target_link_libraries(ludus_editor_render_graph_canvas PUBLIC ludus_editor_render_graph_model Ludus::RenderGraphFormat)
+target_link_libraries(ludus_editor_render_graph_canvas PUBLIC ludus_editor_render_graph_model ludus_editor_presentation
+    Ludus::RenderGraphFormat)
 
 # File names and icons shared by the explorers, content browser and Renderer tab.
 ludus_editor_add_objects(ludus_editor_presentation
     src/internal/path_text.h src/path_text.cpp
-    src/internal/editor_icons.h src/editor_icons.cpp)
-target_link_libraries(ludus_editor_presentation PUBLIC Qt6::Widgets Ludus::FoundationBase)
+    src/internal/editor_icons.h src/editor_icons.cpp
+    src/internal/theme_fonts.h src/theme_fonts.cpp)
+target_link_libraries(ludus_editor_presentation PUBLIC Qt6::Widgets Ludus::FoundationBase Ludus::FoundationContainers)
 
 # The Renderer tab's authoring panels that need no viewport device. The
 # workspace class itself (renderer_workspace.cpp) compiles with each preview
@@ -641,7 +643,6 @@ target_link_libraries(ludus_editor_render_graph_authoring
 ludus_editor_add_objects(ludus_editor_content
     src/internal/content_browser.h src/content_catalog_model.cpp src/content_import.cpp src/content_workspace.cpp
     src/internal/state_view.h src/state_view.cpp
-    src/internal/theme_fonts.h src/theme_fonts.cpp
     src/editor_files.cpp src/internal/scene_archive.h src/scene_archive.cpp)
 target_link_libraries(ludus_editor_content PUBLIC ludus_editor_presentation Qt6::Core Qt6::Widgets
     Ludus::AudioContent Ludus::FoundationMath ludus_stb_image)
@@ -1411,7 +1412,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     target_compile_definitions(ludus_render_graph_pipeline_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
         LUDUS_EDITOR_PROJECT_ROOT="${PROJECT_SOURCE_DIR}")
     target_link_libraries(ludus_render_graph_pipeline_tests PRIVATE
-        ludus_editor_render_graph_model ludus_editor_render_graph_canvas ludus_editor_shader_api_resources
+        ludus_editor_render_graph_model ludus_editor_render_graph_canvas ludus_editor_presentation ludus_editor_shader_api_resources
         Ludus::RenderGraphFormat Qt6::Core Qt6::Widgets Qt6::Test
         Ludus::FoundationContainers Ludus::FoundationMath Catch2::Catch2)
     ludus_apply_project_defaults(ludus_render_graph_pipeline_tests)

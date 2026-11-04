@@ -214,8 +214,11 @@ explicit splitter boundaries. Avoid floating card decoration around every
 inspector field; long property lists need consistent alignment and compact rows.
 
 Use a system sans-serif font; monospace only for paths, code and numeric debug
-values. Use a small spacing scale (4/8/12/16/24 logical px), clear section titles,
-and text with icons for primary actions. Match command glyphs by optical size,
+values. Use a small spacing scale (4/8/12/16/24/32 logical px, the `design::SPACING_*`
+tokens; layout code never types a pixel value, and the `[style][spacing]` test enforces
+it), clear section titles in the Title type role, and text with icons for primary
+actions. Peers in a run of symmetric commands (Undo/Redo, Pause/Step/Resume) are
+icon-only with a tooltip. Match command glyphs by optical size,
 stroke weight and modest rounding; reserve the dimensional L for branding.
 Combo boxes reserve the full text advance, including letter spacing and glyph
 bearings, alongside their arrow column. Qt's ink bounds can be narrower than
