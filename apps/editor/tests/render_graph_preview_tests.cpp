@@ -4044,6 +4044,61 @@ TEST_CASE("Live graph viewport presents GPU images through navigation and resize
     rhi::Shutdown();
 }
 
+TEST_CASE("A GPU viewport recreated for an empty World presents its built-in view, not the previous graph image",
+          "[.render-native][gpu-display][empty-world]")
+{
+    REQUIRE(PreviewViewport::GetPresentation() == ViewportPresentation::SharedDevice);
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    RenderPreview source;
+    PreviewViewport viewport(&source);
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    REQUIRE(workspace.PreviewRuntime() == true);
+    RenderGraphPreview& graph = *workspace.GetPreviewOrNull();
+    viewport.resize(640, 480);
+    viewport.show();
+    const auto waitFor = [](auto predicate) {
+        QElapsedTimer timer;
+        timer.start();
+        constexpr int32 DEADLINE_MILLISECONDS = 10'000;
+        while (predicate() == false && timer.elapsed() < DEADLINE_MILLISECONDS)
+        {
+            QTest::qWait(1);
+        }
+        return predicate();
+    };
+    // Each World switch stops the preview, which destroys the GPU window, and restarts it afterwards.
+    const auto restart = [&](const RenderScene& scene) {
+        source.Stop();
+        REQUIRE(source.SetScene(scene) == true);
+        REQUIRE(waitFor([&]() { return source.Start(); }) == true);
+        const uint64 presented = viewport.PresentedFrames();
+        REQUIRE(waitFor([&]() { return viewport.PresentedFrames() > presented; }) == true);
+    };
+    REQUIRE(source.SetScene(MakeScene({0, 1, 0, 1})) == true);
+    REQUIRE(source.Start() == true);
+    REQUIRE(waitFor([&]() { return viewport.PresentedFrames() > 0; }) == true);
+    CHECK(&viewport.GetFrameSource() == &graph.GetDisplayFrames());
+    // New World publishes a World without objects while no window exists.
+    RenderScene empty = MakeScene({0, 1, 0, 1});
+    empty.Identity = QByteArrayLiteral("empty-world");
+    empty.Objects.clear();
+    restart(empty);
+    CHECK(source.IsBuiltInViewShown() == true);
+    CHECK(&viewport.GetFrameSource() == &source);
+    // Opening a World with objects hands the recreated window back to the graph.
+    restart(MakeScene({1, 0, 0, 1}));
+    CHECK(source.IsBuiltInViewShown() == false);
+    CHECK(&viewport.GetFrameSource() == &graph.GetDisplayFrames());
+    source.Stop();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
 TEST_CASE("Forward-lit template follows World materials camera and viewport extent",
           "[editor][render-graph][preview][forward-lit]")
 {

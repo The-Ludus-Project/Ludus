@@ -1163,6 +1163,9 @@ private:
         FrameLayoutOrNull->addWidget(Container);
         MessageOrNull->hide();
         Container->show();
+        // The built-in view may have changed while no window existed (a stopped preview has none),
+        // so choose the presented frames now instead of keeping the previous World's graph image.
+        Widget->applyEditFrameSource();
         Window->update();
         Service.start(SERVICE_INTERVAL_MILLISECONDS);
     }
@@ -2179,6 +2182,21 @@ void PreviewViewport::applyBuiltInPresentation(bool wasShowing)
     }
 #else
     static_cast<void>(wasShowing);
+#endif
+}
+void PreviewViewport::applyEditFrameSource()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->ProjectGraph.isNull() == true || mState->Window == nullptr)
+    {
+        return;
+    }
+    const bool isEditSource = mFrameSource == Preview_ || mFrameSource == &mState->ProjectGraph->GetDisplayFrames();
+    if (isEditSource == false)
+    {
+        return;
+    }
+    SetFrameSource(isShowingBuiltInView() == true ? Preview_ : nullptr);
 #endif
 }
 void PreviewViewport::updateRayPathOverlay()
