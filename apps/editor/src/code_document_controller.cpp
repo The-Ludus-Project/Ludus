@@ -146,6 +146,17 @@ void CodeDocumentController::RestoreSelection(CodeTextSelection selection)
     mIsSynchronizing = wasSynchronizing;
 }
 
+void CodeDocumentController::RestoreSelectionSet(foundation::BorrowedView<const CodeTextSelection> selections)
+{
+    if (selections.IsValid() == false || selections.IsEmpty() == true)
+    {
+        return;
+    }
+    // The primary selection is first in document order (design section 2). The
+    // single Qt cursor follows it; the multi-cursor layer restores the rest.
+    RestoreSelection(selections[0]);
+}
+
 void CodeDocumentController::Synchronize(bool shouldRestoreView)
 {
     if (mIsSynchronizing == true)
@@ -452,6 +463,34 @@ CodeEditStatus CodeDocumentController::ApplyServiceText(const CodeDocumentIdenti
         const int32 horizontal = mEditor.horizontalScrollBar()->value();
         Synchronize();
         RestoreSelection(selection);
+        mEditor.verticalScrollBar()->setValue(vertical);
+        mEditor.horizontalScrollBar()->setValue(horizontal);
+        Q_EMIT TextAccepted();
+    }
+    return status;
+}
+
+CodeEditStatus CodeDocumentController::ApplyEditSet(const CodeDocumentIdentity& expected, const CodeEditSet& edits)
+{
+    if (mHostOrNull == nullptr || mEditor.isReadOnly() == true)
+    {
+        return CodeEditStatus::Unavailable;
+    }
+    if (mHostOrNull->GetSnapshot().Identity != expected || expected != mIdentity)
+    {
+        return CodeEditStatus::Conflict;
+    }
+    // Break any open typing group so the set is its own single undo step, then
+    // apply the whole set through the host. shouldMerge is false: an edit set is
+    // never coalesced into neighbouring typing.
+    BreakUndoGroup();
+    const int32 vertical = mEditor.verticalScrollBar()->value();
+    const int32 horizontal = mEditor.horizontalScrollBar()->value();
+    const CodeEditStatus status = mHostOrNull->ApplyEdits(expected, edits, false);
+    if (status == CodeEditStatus::Ok)
+    {
+        Synchronize();
+        RestoreSelectionSet(edits.After.Selections);
         mEditor.verticalScrollBar()->setValue(vertical);
         mEditor.horizontalScrollBar()->setValue(horizontal);
         Q_EMIT TextAccepted();

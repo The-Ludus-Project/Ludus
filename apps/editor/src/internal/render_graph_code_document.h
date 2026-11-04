@@ -17,6 +17,12 @@ public:
     void Bind(const QString& file, foundation::uint64 epoch);
     void ResetBinding();
     [[nodiscard]] CodeDocumentSnapshot GetSnapshot() const noexcept override;
+    /// Apply an edit set by validating the whole set against the package's draft
+    /// (order, overlap, UTF-8 boundaries, capacity) and forwarding one combined
+    /// replacement to the package history, so the set lands as one undo step
+    /// (CE05). A single edit keeps going straight through ApplyEdit below.
+    [[nodiscard]] CodeEditStatus
+    ApplyEdits(const CodeDocumentIdentity& expected, const CodeEditSet& edits, bool shouldMerge) override;
     [[nodiscard]] CodeEditStatus ApplyEdit(const CodeDocumentIdentity& expected,
                                            const CodeTextEdit& edit,
                                            CodeTextSelection before,

@@ -46,22 +46,19 @@ public:
     }
 
     [[nodiscard]] CodeDocumentSnapshot GetSnapshot() const noexcept override;
-    [[nodiscard]] CodeEditStatus ApplyEdit(const CodeDocumentIdentity& expected,
-                                           const CodeTextEdit& edit,
-                                           CodeTextSelection before,
-                                           CodeTextSelection after,
-                                           bool shouldMerge) override;
+    [[nodiscard]] CodeEditStatus
+    ApplyEdits(const CodeDocumentIdentity& expected, const CodeEditSet& edits, bool shouldMerge) override;
     void BreakUndoGroup() noexcept override;
     [[nodiscard]] bool CanUndo() const noexcept override;
     [[nodiscard]] bool CanRedo() const noexcept override;
 
-    /// Undo/redo one step, returning whether the draft changed.
+    /// Undo/redo one step, returning whether the draft changed. The Scripts work
+    /// area is single-cursor, so no selection set is surfaced here.
     [[nodiscard]] bool Undo();
     [[nodiscard]] bool Redo();
 
 private:
-    [[nodiscard]] CodeEditStatus
-    applyByteEdit(const CodeTextEdit& edit, CodeTextSelection before, CodeTextSelection after, bool shouldMerge);
+    [[nodiscard]] CodeEditStatus applyByteEdits(const CodeEditSet& edits, bool shouldMerge);
     QByteArray mBaseline;
     QByteArray mDraft;
     DocumentHistory<QByteArray> mHistory;

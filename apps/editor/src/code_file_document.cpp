@@ -1,10 +1,8 @@
 #include "internal/code_file_document.h"
 
+#include "internal/code_edit_set.h"
 #include "internal/code_editor_config.h"
 #include "internal/code_text_detect.h"
-
-#include <ludus/foundation/strings/status.hpp>
-#include <ludus/foundation/strings/utf8.hpp>
 
 #include <QCryptographicHash>
 #include <QFile>
@@ -12,7 +10,6 @@
 #include <QObject>
 #include <QSaveFile>
 
-#include <string_view>
 #include <utility>
 
 // The file document host (CE03, CE04, CE22). Loading runs on the background
@@ -22,12 +19,8 @@
 namespace ludus::editor
 {
 using foundation::BorrowedView;
-using foundation::isize;
-using foundation::StringStatus;
 using foundation::uint64;
 using foundation::usize;
-using foundation::Utf8View;
-using foundation::ValidateUtf8;
 
 namespace
 {
@@ -38,17 +31,6 @@ constexpr qint64 MAX_LOADABLE_BYTES = static_cast<qint64>(CODE_FILE_READ_ONLY_LI
 [[nodiscard]] QByteArray hashBytes(const QByteArray& bytes)
 {
     return QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
-}
-
-[[nodiscard]] bool isValidPrefix(BorrowedView<const char> bytes, usize count) noexcept
-{
-    if (count == 0)
-    {
-        return true;
-    }
-    Utf8View proof;
-    usize errorOffset = 0;
-    return ValidateUtf8({bytes.GetDataOrNull(), count}, proof, errorOffset) == StringStatus::Ok;
 }
 
 [[nodiscard]] QString describeReadOnly(const CodeTextProfile& profile)
@@ -153,11 +135,9 @@ CodeDocumentSnapshot CodeFileDocument::GetSnapshot() const noexcept
             IsDirty()};
 }
 
-CodeEditStatus CodeFileDocument::ApplyEdit(const CodeDocumentIdentity& expected,
-                                           const CodeTextEdit& edit,
-                                           CodeTextSelection before,
-                                           CodeTextSelection after,
-                                           bool shouldMerge)
+CodeEditStatus CodeFileDocument::ApplyEdits(const CodeDocumentIdentity& expected,
+                                            const CodeEditSet& edits,
+                                            bool shouldMerge)
 {
     if (mIsReadOnly == true)
     {
@@ -167,64 +147,38 @@ CodeEditStatus CodeFileDocument::ApplyEdit(const CodeDocumentIdentity& expected,
     {
         return CodeEditStatus::Conflict;
     }
-    return applyByteEdit(edit, before, after, shouldMerge);
+    return applyByteEdits(edits, shouldMerge);
 }
 
-CodeEditStatus CodeFileDocument::applyByteEdit(const CodeTextEdit& edit,
-                                               CodeTextSelection before,
-                                               CodeTextSelection after,
-                                               bool shouldMerge)
+CodeEditStatus CodeFileDocument::applyByteEdits(const CodeEditSet& edits, bool shouldMerge)
 {
     const BorrowedView<const char> original{mDraft.constData(), static_cast<usize>(mDraft.size())};
-    if (edit.Inserted.IsValid() == false || edit.StartBytes > original.GetSize() ||
-        edit.RemovedBytes > original.GetSize() - edit.StartBytes)
+    QByteArray candidate;
+    const CodeEditStatus status = ValidateAndApplyEditSet(original, CODE_FILE_NORMAL_LIMIT_BYTES, edits, candidate);
+    if (status != CodeEditStatus::Ok)
     {
-        return CodeEditStatus::InvalidText;
-    }
-    const usize retainedBytes = original.GetSize() - edit.RemovedBytes;
-    if (retainedBytes > CODE_FILE_NORMAL_LIMIT_BYTES ||
-        edit.Inserted.GetSize() > CODE_FILE_NORMAL_LIMIT_BYTES - retainedBytes)
-    {
-        return CodeEditStatus::Capacity;
-    }
-    if (isValidPrefix(original, edit.StartBytes) == false ||
-        isValidPrefix(original, edit.StartBytes + edit.RemovedBytes) == false ||
-        isValidPrefix(edit.Inserted, edit.Inserted.GetSize()) == false || before.AnchorBytes > original.GetSize() ||
-        before.CaretBytes > original.GetSize() || isValidPrefix(original, before.AnchorBytes) == false ||
-        isValidPrefix(original, before.CaretBytes) == false)
-    {
-        return CodeEditStatus::InvalidText;
-    }
-    const usize newSize = retainedBytes + edit.Inserted.GetSize();
-    if (after.AnchorBytes > newSize || after.CaretBytes > newSize)
-    {
-        return CodeEditStatus::InvalidText;
-    }
-    QByteArray candidate = mDraft;
-    candidate.replace(static_cast<isize>(edit.StartBytes),
-                      static_cast<isize>(edit.RemovedBytes),
-                      edit.Inserted.GetDataOrNull(),
-                      static_cast<isize>(edit.Inserted.GetSize()));
-    const BorrowedView<const char> result{candidate.constData(), static_cast<usize>(candidate.size())};
-    if (isValidPrefix(result, after.AnchorBytes) == false || isValidPrefix(result, after.CaretBytes) == false)
-    {
-        return CodeEditStatus::InvalidText;
+        return status;
     }
     if (candidate == mDraft)
     {
+        // A no-op set (or a set that cancels out) records no history, matching the
+        // single-edit path. Selections are left for the caller to restore.
         return CodeEditStatus::Ok;
     }
-    const QByteArray previous = mDraft;
+    const CodeHistoryState previous = {.Text = mDraft, .Selections = CopyCodeSelectionSet(edits.Before)};
+    const CodeHistoryState next = {.Text = candidate, .Selections = CopyCodeSelectionSet(edits.After)};
     const bool canMerge = shouldMerge == true && mHasMergeableGroup == true;
-    if (mHistory.Commit(previous, candidate, canMerge) == false)
+    if (mHistory.Commit(previous, next, canMerge) == false)
     {
         // A full history (revision saturated) is still allowed to edit the
         // draft; it simply cannot record another undo step.
-        mDraft = candidate;
+        mDraft = std::move(candidate);
+        mDraftSelections = next.Selections;
         mHasMergeableGroup = false;
         return CodeEditStatus::Ok;
     }
-    mDraft = candidate;
+    mDraft = std::move(candidate);
+    mDraftSelections = next.Selections;
     mHasMergeableGroup = true;
     return CodeEditStatus::Ok;
 }
@@ -245,16 +199,32 @@ bool CodeFileDocument::CanRedo() const noexcept
     return mHistory.CanRedo();
 }
 
-bool CodeFileDocument::Undo()
+bool CodeFileDocument::Undo(QList<CodeTextSelection>& outSelections)
 {
     BreakUndoGroup();
-    return mHistory.Undo(mDraft);
+    CodeHistoryState state = {.Text = mDraft, .Selections = mDraftSelections};
+    if (mHistory.Undo(state) == false)
+    {
+        return false;
+    }
+    mDraft = state.Text;
+    mDraftSelections = state.Selections;
+    outSelections = state.Selections;
+    return true;
 }
 
-bool CodeFileDocument::Redo()
+bool CodeFileDocument::Redo(QList<CodeTextSelection>& outSelections)
 {
     BreakUndoGroup();
-    return mHistory.Redo(mDraft);
+    CodeHistoryState state = {.Text = mDraft, .Selections = mDraftSelections};
+    if (mHistory.Redo(state) == false)
+    {
+        return false;
+    }
+    mDraft = state.Text;
+    mDraftSelections = state.Selections;
+    outSelections = state.Selections;
+    return true;
 }
 
 void CodeFileDocument::SetProfileLineEnding(CodeLineEnding ending) noexcept
@@ -312,6 +282,7 @@ bool CodeFileDocument::ReloadFromDisk(QString& outError)
     mDiskSize = reloaded.FileSize;
     mDiskModifiedMsecs = reloaded.ModifiedMsecsSinceEpoch;
     mDiskHash = reloaded.ContentHash;
+    mDraftSelections.clear();
     mHistory.BreakGroup();
     mHasMergeableGroup = false;
     return true;
@@ -355,6 +326,7 @@ QByteArray CodeFileDocument::GetSavedHash() const
 void CodeFileDocument::DiscardDraft() noexcept
 {
     mDraft = mSaved;
+    mDraftSelections.clear();
     mHistory.Reset();
     mHasMergeableGroup = false;
 }
@@ -372,6 +344,7 @@ CodeRecoveredDraftStatus CodeFileDocument::RestoreRecoveredDraft(const QByteArra
     // over different on-disk content is still adopted, never dropped; the caller
     // shows the conflict so the user decides between the draft and the file.
     mDraft = draftBytes;
+    mDraftSelections.clear();
     mHistory.Reset();
     mHasMergeableGroup = false;
     return hashBytes(mSaved) == expectedSavedHash ? CodeRecoveredDraftStatus::Restored

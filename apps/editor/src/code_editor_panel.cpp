@@ -2,9 +2,11 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include "internal/code_document_controller.h"
 #include "internal/code_edit_scope.h"
 #include "internal/code_editor.h"
 #include "internal/code_navigation.h"
+#include "internal/code_text.h"
 
 #include <QCheckBox>
 #include <QFont>
@@ -29,8 +31,9 @@ namespace ludus::editor
 {
 using namespace foundation;
 
-CodeEditorPanel::CodeEditorPanel(CodeEditor* editor, QWidget* parentOrNull)
-    : QWidget(parentOrNull), mEditor(editor), mSearch(new QWidget(this)), mReplaceRow(new QWidget(mSearch)),
+CodeEditorPanel::CodeEditorPanel(CodeEditor* editor, CodeDocumentController* controllerOrNull, QWidget* parentOrNull)
+    : QWidget(parentOrNull), mEditor(editor), mControllerOrNull(controllerOrNull), mSearch(new QWidget(this)),
+      mReplaceRow(new QWidget(mSearch)),
       mFindText(new QLineEdit(mSearch)), mReplacement(new QLineEdit(mReplaceRow)),
       mIsCaseSensitive(new QCheckBox(QStringLiteral("Match case"), mSearch)), mStatus(new QLabel(mSearch))
 {
@@ -253,12 +256,97 @@ void CodeEditorPanel::replaceText()
     findText(false);
 }
 
+bool CodeEditorPanel::replaceAllThroughEditSet(const QString& findText,
+                                               const QString& replacement,
+                                               bool isCaseSensitive)
+{
+    // Collect every match as an ordered, non-overlapping byte edit against the
+    // host's current draft, then publish them as one edit set (CE05): validated
+    // and applied whole, one undo step. QTextDocument::find advances past each
+    // match, so the ranges are already ascending and cannot overlap.
+    const CodeTextCapture capture = mControllerOrNull->Capture();
+    if (capture.Identity.Document == 0)
+    {
+        return false;
+    }
+    const bool hasCrLf = capture.Text.contains("\r\n");
+    QByteArray replacementBytes = replacement.toUtf8();
+    if (hasCrLf == true)
+    {
+        replacementBytes.replace("\n", "\r\n");
+    }
+
+    QTextDocument::FindFlags flags;
+    if (isCaseSensitive == true)
+    {
+        flags |= QTextDocument::FindCaseSensitively;
+    }
+    QList<CodeTextEdit> edits;
+    QTextCursor cursor(mEditor->document());
+    int32 count = 0;
+    while (true)
+    {
+        cursor = mEditor->document()->find(findText, cursor, flags);
+        if (cursor.isNull() == true)
+        {
+            break;
+        }
+        usize startBytes = 0;
+        usize endBytes = 0;
+        if (GetCodeByteOffset(capture.Text, cursor.selectionStart(), startBytes) == false ||
+            GetCodeByteOffset(capture.Text, cursor.selectionEnd(), endBytes) == false || endBytes < startBytes)
+        {
+            // A match that cannot be mapped to a scalar boundary is skipped rather
+            // than producing an invalid set; the whole operation still applies the
+            // matches it could map.
+            continue;
+        }
+        const CodeTextEdit edit =
+        {
+            .StartBytes = startBytes,
+            .RemovedBytes = endBytes - startBytes,
+            .Inserted = {replacementBytes.constData(), static_cast<usize>(replacementBytes.size())},
+        };
+        edits.append(edit);
+        ++count;
+    }
+    if (edits.isEmpty() == true)
+    {
+        mStatus->setText(QStringLiteral("0 replacements"));
+        return true;
+    }
+    const CodeTextSelection beforeSelections[] = {mControllerOrNull->CaptureSelection()};
+    const CodeEditSet set =
+    {
+        .Edits = {edits.constData(), static_cast<usize>(edits.size())},
+        .Before = {{beforeSelections, 1}},
+        .After = {},
+        .Transaction = {},
+    };
+    const CodeEditStatus status = mControllerOrNull->ApplyEditSet(capture.Identity, set);
+    if (status != CodeEditStatus::Ok)
+    {
+        mStatus->setText(QStringLiteral("Replace All was rejected because the source changed."));
+        return true;
+    }
+    mStatus->setText(QStringLiteral("%1 replacements").arg(count));
+    return true;
+}
+
 void CodeEditorPanel::replaceAll()
 {
     if (mEditor->isReadOnly() == true || mFindText->text().isEmpty() == true)
     {
         return;
     }
+    if (mControllerOrNull != nullptr && replaceAllThroughEditSet(mFindText->text(),
+                                                                 mReplacement->text(),
+                                                                 mIsCaseSensitive->isChecked()) == true)
+    {
+        return;
+    }
+    // Fallback (no bound controller): the Qt edit block still lands as one undo
+    // step through the controller's whole-text diff.
     const CodeEditScope operation(*mEditor);
     QTextDocument::FindFlags flags;
     if (mIsCaseSensitive->isChecked() == true)

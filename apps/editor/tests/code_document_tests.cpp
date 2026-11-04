@@ -1,6 +1,7 @@
 #include "internal/code_assistance.h"
 #include "internal/code_document_controller.h"
 #include "internal/code_edit_scope.h"
+#include "internal/code_edit_set.h"
 #include "internal/code_editor_panel.h"
 #include "internal/code_formatter.h"
 #include "internal/code_navigation.h"
@@ -64,29 +65,29 @@ public:
                 LimitBytes,
                 true};
     }
-    CodeEditStatus ApplyEdit(const CodeDocumentIdentity& expected,
-                             const CodeTextEdit& edit,
-                             CodeTextSelection before,
-                             CodeTextSelection after,
-                             bool shouldMerge) override
+    CodeEditStatus ApplyEdits(const CodeDocumentIdentity& expected,
+                              const CodeEditSet& edits,
+                              bool shouldMerge) override
     {
         if (expected != GetSnapshot().Identity)
         {
             return CodeEditStatus::Conflict;
         }
-        QByteArray candidate = mState.Text;
-        candidate.replace(static_cast<isize>(edit.StartBytes),
-                          static_cast<isize>(edit.RemovedBytes),
-                          edit.Inserted.GetDataOrNull(),
-                          static_cast<isize>(edit.Inserted.GetSize()));
-        if (static_cast<usize>(candidate.size()) > LimitBytes)
+        const BorrowedView<const char> original{mState.Text.constData(), static_cast<usize>(mState.Text.size())};
+        QByteArray candidate;
+        const CodeEditStatus status = ValidateAndApplyEditSet(original, LimitBytes, edits, candidate);
+        if (status != CodeEditStatus::Ok)
         {
-            return CodeEditStatus::Capacity;
+            return status;
         }
         if (candidate == mState.Text)
         {
             return CodeEditStatus::Ok;
         }
+        const CodeTextSelection before =
+            edits.Before.Selections.IsEmpty() == false ? edits.Before.Selections[0] : CodeTextSelection{};
+        const CodeTextSelection after =
+            edits.After.Selections.IsEmpty() == false ? edits.After.Selections[0] : CodeTextSelection{};
         MemoryTextState previous = mState;
         previous.Selection = before;
         const MemoryTextState next{candidate, after};
