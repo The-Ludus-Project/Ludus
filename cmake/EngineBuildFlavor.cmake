@@ -2,7 +2,25 @@
 # dependency ABI. The Visual Studio source build names all four flavors;
 # Development and Profile use RelWithDebInfo compiler and dependency settings.
 set(LUDUS_BUILD_FLAVOR "" CACHE STRING "Ludus flavor: Debug, Development, Profile, Release")
-set_property(CACHE LUDUS_BUILD_FLAVOR PROPERTY STRINGS Debug Development Profile Release)
+set(LUDUS_BUILD_FLAVORS Debug Development Profile Release)
+set_property(CACHE LUDUS_BUILD_FLAVOR PROPERTY STRINGS ${LUDUS_BUILD_FLAVORS})
+
+function(ludus_get_build_flavor_id flavor output)
+    list(FIND LUDUS_BUILD_FLAVORS "${flavor}" index)
+    if(index LESS 0)
+        message(FATAL_ERROR "Unknown Ludus build flavor '${flavor}'")
+    endif()
+    math(EXPR id "${index} + 1")
+    set(${output} "${id}" PARENT_SCOPE)
+endfunction()
+
+function(ludus_format_sdk_variant output)
+    set(variant "assert-v${LUDUS_ASSERT_POLICY_VERSION}-${LUDUS_BUILD_FLAVOR}-${CMAKE_BUILD_TYPE}-dialogs-${LUDUS_ASSERT_DIALOGS_AVAILABLE}-asan-${LUDUS_ENABLE_ASAN}-ubsan-${LUDUS_ENABLE_UBSAN}-tsan-${LUDUS_ENABLE_TSAN}")
+    if(EMSCRIPTEN)
+        string(APPEND variant "-web-wasm32")
+    endif()
+    set(${output} "${variant}" PARENT_SCOPE)
+endfunction()
 
 set(LUDUS_VISUAL_STUDIO_MULTI_CONFIG OFF)
 if(CMAKE_CONFIGURATION_TYPES)
@@ -12,7 +30,7 @@ if(CMAKE_CONFIGURATION_TYPES)
 
     if(LUDUS_BUILD_FLAVOR STREQUAL "")
         set(LUDUS_VISUAL_STUDIO_MULTI_CONFIG ON)
-        set(CMAKE_CONFIGURATION_TYPES Debug Development Profile Release)
+        set(CMAKE_CONFIGURATION_TYPES ${LUDUS_BUILD_FLAVORS})
     else()
         # Preserve existing solutions explicitly configured for a single flavor.
         if(LUDUS_BUILD_FLAVOR STREQUAL "Debug")
@@ -28,17 +46,19 @@ if(CMAKE_CONFIGURATION_TYPES)
 endif()
 
 if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
-    string(CONCAT LUDUS_BUILD_FLAVOR_ID
-        "$<$<CONFIG:Debug>:1>" "$<$<CONFIG:Development>:2>"
-        "$<$<CONFIG:Profile>:3>" "$<$<CONFIG:Release>:4>")
+    set(LUDUS_BUILD_FLAVOR_ID "")
+    foreach(flavor IN LISTS LUDUS_BUILD_FLAVORS)
+        ludus_get_build_flavor_id("${flavor}" id)
+        string(APPEND LUDUS_BUILD_FLAVOR_ID "$<$<CONFIG:${flavor}>:${id}>")
+    endforeach()
 elseif(LUDUS_BUILD_FLAVOR STREQUAL "Debug" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(LUDUS_BUILD_FLAVOR_ID 1)
+    ludus_get_build_flavor_id(Debug LUDUS_BUILD_FLAVOR_ID)
 elseif(LUDUS_BUILD_FLAVOR STREQUAL "Development" AND CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
-    set(LUDUS_BUILD_FLAVOR_ID 2)
+    ludus_get_build_flavor_id(Development LUDUS_BUILD_FLAVOR_ID)
 elseif(LUDUS_BUILD_FLAVOR STREQUAL "Profile" AND CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
-    set(LUDUS_BUILD_FLAVOR_ID 3)
+    ludus_get_build_flavor_id(Profile LUDUS_BUILD_FLAVOR_ID)
 elseif(LUDUS_BUILD_FLAVOR STREQUAL "Release" AND CMAKE_BUILD_TYPE MATCHES "^(Release|MinSizeRel)$")
-    set(LUDUS_BUILD_FLAVOR_ID 4)
+    ludus_get_build_flavor_id(Release LUDUS_BUILD_FLAVOR_ID)
 else()
     message(FATAL_ERROR
         "Invalid Ludus flavor/configuration: '${LUDUS_BUILD_FLAVOR}' / '${CMAKE_BUILD_TYPE}'. "
@@ -81,16 +101,9 @@ endif()
 
 if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
     set(LUDUS_BUILD_FLAVOR_DEFINE "$<UPPER_CASE:$<CONFIG>>")
-    # The Windows source build has no installed SDK variant.
+    # Install metadata is configured independently for each Windows flavor.
     return()
 endif()
 
 string(TOUPPER "${LUDUS_BUILD_FLAVOR}" LUDUS_BUILD_FLAVOR_DEFINE)
-set(LUDUS_SDK_VARIANT
-    "assert-v${LUDUS_ASSERT_POLICY_VERSION}-${LUDUS_BUILD_FLAVOR}-${CMAKE_BUILD_TYPE}-dialogs-${LUDUS_ASSERT_DIALOGS_AVAILABLE}-asan-${LUDUS_ENABLE_ASAN}-ubsan-${LUDUS_ENABLE_UBSAN}-tsan-${LUDUS_ENABLE_TSAN}")
-
-# Browser Base has terminal ASSERT semantics and no native control transport.
-# Keep its installed variant distinct from native libraries with the same flavor.
-if(EMSCRIPTEN)
-    string(APPEND LUDUS_SDK_VARIANT "-web-wasm32")
-endif()
+ludus_format_sdk_variant(LUDUS_SDK_VARIANT)

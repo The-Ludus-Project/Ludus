@@ -24,6 +24,8 @@ if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
         endforeach()
     endforeach()
     if(NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
-        set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,Development,Profile>:ProgramDatabase>")
+        # Keep debug information in SDK objects so consumers can link and debug
+        # a relocated static archive without a producer compile PDB.
+        set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,Development,Profile>:Embedded>")
     endif()
 endif()

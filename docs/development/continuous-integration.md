@@ -408,7 +408,11 @@ solution before CTest runs any configuration, then archives a test log for each.
 Both generators use compiler-native locked Catch2 and signed DXIL. The D3D12 suite checks the reported software adapter, and the
 workflow checks that both the fullscreen and transfer cases were compiled.
 The `windows-msvc-Ninja` and `windows-msvc-MSBuild` artifacts record the build
-configuration and test logs. The historical Clang/WARP job still runs.
+configuration and test logs. The historical Clang/WARP job still runs. The MSBuild job also installs all
+four SDKs from the solution, relocates their prefixes and configures a separate
+consumer against each one. The consumer compiles signed DXIL with the installed
+shader helper and presents on WARP. A separate check rejects installing Release
+over the Debug prefix.
 
 
 ## Dependencies and caches
