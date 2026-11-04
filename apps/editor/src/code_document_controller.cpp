@@ -48,6 +48,7 @@ QByteArray CopyCodeText(BorrowedView<const char> bytes)
 CodeDocumentController::CodeDocumentController(CodeEditor& inoutEditor, QObject* parentOrNull)
     : QObject(parentOrNull), mEditor(inoutEditor)
 {
+    connect(&mEditor, &QObject::destroyed, this, [this]() { mIsEditorAlive = false; });
     connect(&mEditor, &CodeEditor::EditStarted, this, &CodeDocumentController::beginOperation);
     connect(&mEditor, &CodeEditor::EditFinished, this, &CodeDocumentController::endOperation);
     connect(&mEditor, &CodeEditor::EditBoundary, this, &CodeDocumentController::BreakUndoGroup);
@@ -77,7 +78,11 @@ void CodeDocumentController::captureSelectionChange()
 
 CodeDocumentController::~CodeDocumentController()
 {
-    mEditor.SetDocumentHistory(false);
+    // Qt can destroy the editor before its sibling controller during widget teardown.
+    if (mIsEditorAlive == true)
+    {
+        mEditor.SetDocumentHistory(false);
+    }
 }
 
 bool CodeDocumentController::IsBound() const noexcept

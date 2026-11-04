@@ -12,6 +12,7 @@
 #include "internal/renderer_workspace.h"
 #include "internal/viewport_object_interaction.h"
 #include "internal/world_document.h"
+#include "internal/world_entity_search.h"
 #include "internal/world_lighting_coverage.h"
 #include "internal/world_workspace.h"
 #include "scene_fixture.h"
@@ -2798,4 +2799,67 @@ TEST_CASE("A failed placement validation presents the last validated scene again
     REQUIRE(workspace.CanUndo() == true);
     workspace.Undo();
     CHECK(GetPresentedX(workspace, id) == originalX);
+}
+
+TEST_CASE("World entity search keeps group commands scoped to visible matches", "[editor][world][search]")
+{
+    QTemporaryDir directory;
+    const QString path = Fixture(directory);
+    WorldWorkspace workspace;
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    QListWidget* entities = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    QLineEdit* search = workspace.findChild<QLineEdit*>(QStringLiteral("worldEntitySearch"));
+    QLabel* count = workspace.findChild<QLabel*>(QStringLiteral("worldEntityCount"));
+    REQUIRE(entities != nullptr);
+    REQUIRE(search != nullptr);
+    REQUIRE(count != nullptr);
+    REQUIRE(entities->count() > 1);
+    const QByteArray before = workspace.Document().Encode();
+    QListWidgetItem* first = entities->item(0);
+    const QString identity = first->data(Qt::UserRole).toString();
+    WorldEntitySearch* controls = workspace.findChild<WorldEntitySearch*>();
+    REQUIRE(controls != nullptr);
+    QSignalSpy selectionChanges(controls, &WorldEntitySearch::SelectionChanged);
+    entities->selectAll();
+    search->setText(QStringLiteral("  %1  ").arg(identity.toUpper()));
+    CHECK(selectionChanges.count() == 1);
+    CHECK(first->isHidden() == false);
+    CHECK(workspace.Document().Encode() == before);
+    CHECK(count->text() == QStringLiteral("1 of %1 entities").arg(entities->count()));
+    REQUIRE(entities->selectedItems().size() == 1);
+    CHECK(entities->selectedItems().front() == first);
+    entities->selectAll();
+    CHECK(entities->selectedItems().size() == 1);
+    workspace.findChild<QPushButton*>(QStringLiteral("worldDuplicate"))->click();
+    CHECK(entities->count() ==
+          QJsonDocument::fromJson(before).object().value(QStringLiteral("entities")).toArray().size() + 1);
+    // A document rebuild reapplies the query. The new stable ID does not match it.
+    CHECK(count->text() == QStringLiteral("1 of %1 entities").arg(entities->count()));
+    search->setText(QStringLiteral("no matching entity"));
+    CHECK(entities->selectedItems().isEmpty() == true);
+    CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldDuplicate"))->isEnabled() == false);
+    CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldDelete"))->isEnabled() == false);
+    CHECK(count->toolTip().contains(QStringLiteral("Clear or change")) == true);
+    const QByteArray filtered = workspace.Document().Encode();
+    REQUIRE(workspace.SelectEntity(identity) == true);
+    CHECK(search->text().isEmpty() == true);
+    CHECK(entities->selectedItems().size() == 1);
+    CHECK(workspace.Document().Encode() == filtered);
+    for (ludus::foundation::int32 index = 0; index < entities->count(); ++index)
+    {
+        CHECK(entities->item(index)->isHidden() == false);
+    }
+    entities->selectAll();
+    CHECK(entities->selectedItems().size() == entities->count());
+    search->setText(entities->item(0)->text().toUpper());
+    CHECK(entities->item(0)->isHidden() == false);
+    entities->clearSelection();
+    entities->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    QLineEdit* name = workspace.findChild<QLineEdit*>(QStringLiteral("worldEntityName"));
+    REQUIRE(name != nullptr);
+    Type(name, QStringLiteral("Pending rename"));
+    CHECK(search->isEnabled() == false);
+    workspace.findChild<QPushButton*>(QStringLiteral("worldReset"))->click();
+    CHECK(search->isEnabled() == true);
 }

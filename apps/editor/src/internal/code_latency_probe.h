@@ -10,10 +10,11 @@ namespace ludus::editor
 {
 /// Keypress-to-paint latency measurement for the code editor.
 ///
-/// The view calls MarkKeyHandled() at the end of a text-modifying key event and
-/// MarkPainted() at the end of the paint that first shows that edit. The probe
-/// records the elapsed time of each pending keystroke and keeps a bounded ring
-/// of samples for a p50/p95 summary. It is idle and free until Start() is
+/// The view calls MarkKeyArrived() when a key event reaches it,
+/// MarkKeyHandled() after that event changed the text, and MarkPainted() at the
+/// end of the paint that first shows the edit. The probe records the elapsed time
+/// from the key's arrival to that paint, so a sample includes key handling, and
+/// keeps a bounded ring of samples for a p50/p95 summary. It is idle and free until Start() is
 /// called, so ordinary editing performs no measurement and no timer wakeups,
 /// honouring the "idle editing performs no polling" budget.
 ///
@@ -40,8 +41,13 @@ public:
         return mIsRecording;
     }
 
-    /// Note that a text-modifying key event was handled. Starts the timer for
-    /// the keystroke whose glyph the next paint should show. A no-op unless
+    /// Note that a key event reached the view, before any handling. Keystrokes
+    /// that change no text are discarded by MarkKeyHandled() not being called.
+    /// A no-op unless recording.
+    void MarkKeyArrived() noexcept;
+    /// Note that the key event since the last MarkKeyArrived() changed the text,
+    /// so the next paint should show it. Measures from that arrival; without a
+    /// preceding MarkKeyArrived() it measures from this call. A no-op unless
     /// recording.
     void MarkKeyHandled() noexcept;
     /// Note that a paint completed. If a keystroke is pending, records the
@@ -56,8 +62,10 @@ public:
 
 private:
     QVector<foundation::int64> mSamples;
+    QElapsedTimer mKeyArrival;
     QElapsedTimer mPendingKey;
     bool mIsRecording = false;
+    bool mHasKeyArrival = false;
     bool mHasPendingKey = false;
     foundation::int32 mWriteIndex = 0;
     foundation::int32 mCount = 0;

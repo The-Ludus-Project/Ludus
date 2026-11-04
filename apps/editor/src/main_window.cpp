@@ -5,6 +5,7 @@
 #include "internal/application_icon.h"
 #include "internal/audio_workspace.h"
 #include "internal/code_editor.h"
+#include "internal/code_editor_area.h"
 #include "internal/command_palette.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
@@ -972,6 +973,10 @@ void MainWindow::OnCopyJobDetails()
 void MainWindow::OnStateChanged()
 {
     LUDUS_PROFILE_SCOPE(EditorStateChanged);
+    if (RenderedProjectEpoch_ != Controller_->State().ProjectEpoch)
+    {
+        mDocuments->ClearClosedDocumentHistory();
+    }
     mProfilingPanel->SetProjectRoot(QFileInfo(Controller_->State().DescriptorPath).absolutePath());
     RenderFields();
     RenderRecentProjects();
@@ -1021,6 +1026,9 @@ void MainWindow::OnStateChanged()
         SetProjectWorkspace(root, false);
         World_->SetProject(root, state.ProjectEpoch);
         Renderer_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), state.ProjectEpoch);
+        // A new epoch drops the previous project's code hosts; a reload reopens
+        // them fresh, so no view keeps editing a stale document identity.
+        mCodeArea->SetProjectEpoch(state.ProjectEpoch);
         if (restore)
         {
             SetProjectWorkspace(root, true);
@@ -1042,6 +1050,8 @@ void MainWindow::OnStateChanged()
         World_->SetProject({}, state.ProjectEpoch);
         Scripts_->SetProject({}, {}, {});
         Renderer_->SetProject({}, state.ProjectEpoch);
+        // Closing the project retires its code hosts and tabs.
+        mCodeArea->SetProjectEpoch(state.ProjectEpoch);
         mErrorList->ReplaceEntries(ErrorListProducer::RenderGraph, {});
         if (isEnteringWelcome == true)
         {

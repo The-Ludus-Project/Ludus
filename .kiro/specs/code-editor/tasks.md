@@ -21,8 +21,9 @@ Requirements: CE21, CE25. Prerequisite: none.
 - [x] Add the keypress-to-paint latency probe through the existing editor
   profiling scopes, and the `[.benchmark]` corpus (real shaders, 100,000-line
   C++, 8 MiB JSON, a 1 MiB single line, typing during diagnostics, 100 cursors).
-  Record baseline numbers for the current editor. *(Probe and corpus authored;
-  baseline numbers deferred to a machine with the toolchain, see the gate note.)*
+  Record baseline numbers for the current editor. *(Probe and corpus authored in
+  the sandbox; baseline recorded on an Apple M5 on 2026-11-03, see
+  [M0 baseline](#m0-baseline-2026-11-03).)*
 - [x] Write the tree-sitter dependency ADR under `docs/decisions/`: library and
   grammar revisions, licenses, recipes, the Wasm build, warning handling and
   update policy. Verify each grammar's license and query set at the pinned
@@ -82,6 +83,63 @@ are **not yet recorded** and remain outstanding for M0's performance intent
 registry reproduces the existing `.slang`-to-Slang mapping (with the documented
 `.slangh` micro-deviation), and the probe is inert unless explicitly started.
 
+### M0 baseline (2026-11-03)
+
+Measured against `origin/develop` `a7239cb9` (before any M1 change) on branch
+`codex/code-editor-m0-baseline`. This was also the first build of the M0 code.
+Host: Apple M5 (10 cores, 16 GiB), macOS 26.6, Homebrew Clang 23.1.3,
+Homebrew Qt 6.12.0, preset `macos-clang-development` (RelWithDebInfo),
+`QT_QPA_PLATFORM=offscreen`. Concurrent agent builds kept the load average at
+3.4-4.7, so this is not a quiet reference machine. The M9 qualification still
+uses the native probe on quiet reference machines.
+
+Commands:
+
+```bash
+./init.sh --cli --with-tests --with-editor --preset-only --skip-checks --skip-sanitizers --skip-sdk macos-clang-development
+cmake --build --preset macos-clang-development --target ludus_code_editor_tests
+QT_QPA_PLATFORM=offscreen out/build/macos-clang-development/apps/editor/ludus_code_editor_tests
+QT_QPA_PLATFORM=offscreen out/build/macos-clang-development/apps/editor/ludus_code_editor_tests "[.benchmark][code-editor]" -r compact
+```
+
+Results:
+
+- The M0 code compiled warning-clean.
+- `ludus_code_editor_tests`: 57 test cases passed, 2 skipped. The skipped cases
+  need `LUDUS_TEST_SLANGD`, which was not set.
+- The `[.benchmark][code-editor]` corpus ran three times.
+
+Each benchmark sample is one `x` key event sent through `keyPressEvent`, then
+an undo, with 100 samples per workload. The p95 is nearest-rank. The table gives
+the range of each figure across the three runs, in microseconds unless stated.
+"Handling" covers key press and release, the document change, relayout and the
+offscreen paint. "Key-to-paint" is the view's `CodeLatencyProbe`, measured from
+the key's arrival to the paint that shows the edit.
+
+| Workload | Handling p50 | Handling p95 | Key-to-paint p50 | Key-to-paint p95 | Budget check |
+| --- | --- | --- | --- | --- | --- |
+| Slang shader, 1,001 lines, lexical highlighter | 185-249 | 203-299 | 52-70 | 62-92 | Within 4 ms |
+| 100,000-line C++ as plain text (6.7 M chars) | 1,302-1,554 | 1,359-1,671 | 807-1,001 | 838-1,077 | Within 4 ms |
+| 8 MiB JSON as plain text (134,190 lines) | 133-154 | 148-175 | 117-135 | 129-153 | Within 4 ms |
+| Single 1 MiB line | 917-934 ms | 959-1,111 ms | 657-673 ms | 693-794 ms | Fails by about 250x |
+| Slang, 2,001 lines, 200 build markers | 1,428-1,597 | 1,484-1,977 | 1,015-1,129 | 1,055-1,366 | Within 4 ms |
+| 100 inserts in one edit block (pre-M2) | 793-901 | 855-2,475 | n/a | n/a | Within the 8 ms 100-cursor budget |
+
+Observations for later milestones:
+
+- The single long line is the known Qt whole-block layout cost. CE22's
+  20,000-unit long-line threshold (M1 file host, M3 formats) has to keep such
+  files out of this path. This measurement is the evidence the escape hatch in
+  the architecture's alternatives would be judged against.
+- 200 static build markers cost about 7x the plain shader per keystroke. Live
+  analysis diagnostics (M4) add more markers, so M4 should re-measure this case.
+- The 100,000-line plain-text file costs about 10x the 8 MiB JSON file, which
+  has more lines and more characters. Neither has a highlighter, so the cause is
+  unexplained. M3 should profile it before attributing any change to
+  tree-sitter.
+- The 100-position case showed one run with a 6 ms maximum under load. This is
+  the pre-M2 Qt path, not the edit-set path.
+
 ## M1 - Every text file is a document
 
 Requirements: CE01-CE04, CE20, CE22, CE23. Prerequisite: M0.
@@ -126,15 +184,16 @@ Requirements: CE05-CE07, CE17. Prerequisite: M1.
   in the Ludus profile, and Ctrl+Shift+P palette with Ctrl+K chords in the VS
   Code profile. Update the documents that name F9 for profiling
   (`docs/development/editor-workspace.md`, `docs/architecture/graphics-debugging.md`)
-  in the same change. Add
-  shortcut-collision tests for both profiles.
+  in the same change. Reserve the folding bindings from the architecture in
+  both profiles, so the collision tests cover them before M3 adds the commands.
+  Add shortcut-collision tests for both profiles.
 - [ ] Measure 1-cursor and 100-cursor typing against the budgets.
 
 Gate: the CE05-CE07 and CE17 tests pass; the typing budgets are recorded.
 
 ## M3 - Syntax service
 
-Requirements: CE08, CE19 (syntax roles), CE22. Prerequisite: M0 ADR accepted, M1.
+Requirements: CE08, CE19 (syntax roles), CE22, CE26. Prerequisite: M0 ADR accepted, M1, M2 (folding bindings).
 
 - [ ] Add the tree-sitter recipes and the private C target; build them on every
   supported native and Wasm configuration.
@@ -144,12 +203,20 @@ Requirements: CE08, CE19 (syntax roles), CE22. Prerequisite: M0 ADR accepted, M1
   fallback and sliced reapplication.
 - [ ] Add queries and role mappings for Slang, Luau, C, C++, JSON, CMake and
   Markdown. Add the syntax roles and contrast pairs to the design tokens.
-- [ ] Add folding (syntax with indentation as the fallback), outline,
-  breadcrumbs, sticky scroll and expand/shrink selection.
+- [ ] Add folding (design section 6, "Folding"): syntax, region-marker,
+  indentation and manual ranges; placeholders and gutter controls; caret
+  skipping and `RevealRange` at every reveal site; selections, the clipboard
+  and line commands over hidden lines; reconciliation after edits; per-view
+  state restored with the tab; the fold commands with their bindings in both
+  profiles; announcements. Add the randomized invariant tests and measure Fold
+  All and Unfold All on the 100,000-line corpus.
+- [ ] Add outline, breadcrumbs, sticky scroll and expand/shrink selection.
 - [ ] Measure open, scroll and reparse budgets, and the large-file behavior.
 
 Gate: highlighting is correct on the corpus; a stale result never lands at a
-wrong offset under randomized edit tests; the budgets are recorded.
+wrong offset under randomized edit tests; the CE26 tests pass and no
+randomized edit leaves a hidden line without a visible control; the budgets
+are recorded.
 
 ## M4 - Generic language client
 
@@ -160,8 +227,8 @@ Requirements: CE09-CE11, CE20. Prerequisite: M2, M3.
 - [ ] Add capability dispatch, the request table, priorities, cancellation,
   incremental synchronization, position-encoding negotiation and the restart
   policy.
-- [ ] Add hover, Analysis diagnostics, semantic tokens, inlay hints, document
-  and workspace symbols, the remaining Go to commands, references window,
+- [ ] Add hover, Analysis diagnostics, semantic tokens, inlay hints, folding
+  ranges (merged by kind per CE26), document and workspace symbols, the remaining Go to commands, references window,
   completion resolve and snippets.
 - [ ] Add rename with preview, code actions with the light bulb, and workspace
   edits with transaction undo.
@@ -241,7 +308,7 @@ Requirements: CE18, CE19, CE21, CE24, CE25. Prerequisite: M1-M8.
   accepted exceptions.
 - [ ] Update the architecture status and baseline table, and the user guide.
 
-Gate: CE01-CE25 each have evidence or an accepted, recorded exception.
+Gate: CE01-CE26 each have evidence or an accepted, recorded exception.
 
 ## Standard gates
 

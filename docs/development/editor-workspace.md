@@ -105,6 +105,13 @@ selectable items in the focused view; Escape clears that view's selection. Arrow
 keys navigate and Shift+arrow extends selection. Text fields keep their own
 native selection, clipboard and undo shortcuts.
 
+Use **Search entities** above the World entity list to filter names, labels and
+stable IDs without changing the document. Matching ignores case and surrounding
+spaces; the count shows how many entities match. Clear the search to show all
+entities. Filtering deselects hidden entities, so Duplicate and Delete act only
+on visible selections. Picking a hidden entity in the viewport clears the search
+and reveals its selection. Search pauses while inspector edits need Apply or Reset.
+
 In the World entity list, Ctrl+D / Command+D duplicates the selected group;
 Delete (also Backspace on macOS) asks to delete the group. Each group operation
 is one World undo step and publishes only after the whole candidate validates.
@@ -763,6 +770,7 @@ keeps the window and its draft open.
 | Ctrl+S | Save the active document (World, Render Graph, Scripts, Project Settings, Audio or Configuration) |
 | Ctrl+Z / platform Redo | Undo / Redo in focused text, or the active document's history |
 | Ctrl+W | Close the active document tab (its draft stays open) |
+| Ctrl+Shift+T (Cmd+Shift+T on macOS) | Reopen the most recently closed workspace tab |
 | Ctrl+Shift+W | Close Project |
 | Ctrl+Shift+B | Build |
 | Ctrl+F5 / F5 | Build and Run / Build and Debug in RAD |
@@ -775,6 +783,10 @@ keeps the window and its draft open.
 | Shift+Alt+Enter | Focus Viewport on or off |
 | Ctrl+K (Cmd+K on macOS) / F3 | Command Palette / Run Command in Context |
 | F1 | Keyboard Shortcuts help |
+
+**Window → Reopen Closed Document** opens the tab in the active group with its
+draft intact. Repeat the command to step back through recent closes in the
+current project session.
 
 The **Command Palette** (Ctrl/Cmd+K) searches every menu command by name with fuzzy
 matching: letters must appear in order, and consecutive letters, word starts and

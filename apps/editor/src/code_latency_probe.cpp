@@ -1,6 +1,6 @@
 #include "internal/code_latency_probe.h"
 
-#include <algorithm>
+#include <ludus/foundation/containers/sort.hpp>
 
 namespace ludus::editor
 {
@@ -10,6 +10,7 @@ using foundation::int64;
 void CodeLatencyProbe::Start() noexcept
 {
     mIsRecording = true;
+    mHasKeyArrival = false;
     mHasPendingKey = false;
     mWriteIndex = 0;
     mCount = 0;
@@ -19,7 +20,18 @@ void CodeLatencyProbe::Start() noexcept
 void CodeLatencyProbe::Stop() noexcept
 {
     mIsRecording = false;
+    mHasKeyArrival = false;
     mHasPendingKey = false;
+}
+
+void CodeLatencyProbe::MarkKeyArrived() noexcept
+{
+    if (mIsRecording == false)
+    {
+        return;
+    }
+    mKeyArrival.start();
+    mHasKeyArrival = true;
 }
 
 void CodeLatencyProbe::MarkKeyHandled() noexcept
@@ -28,7 +40,15 @@ void CodeLatencyProbe::MarkKeyHandled() noexcept
     {
         return;
     }
-    mPendingKey.start();
+    if (mHasKeyArrival == true)
+    {
+        mPendingKey = mKeyArrival;
+    }
+    else
+    {
+        mPendingKey.start();
+    }
+    mHasKeyArrival = false;
     mHasPendingKey = true;
 }
 
@@ -67,7 +87,9 @@ int64 CodeLatencyProbe::GetPercentileNanoseconds(int32 percentile) const
         return 0;
     }
     QVector<int64> sorted = mSamples;
-    std::sort(sorted.begin(), sorted.end());
+    foundation::Sort(sorted.data(),
+                     static_cast<foundation::usize>(sorted.size()),
+                     [](int64 left, int64 right) noexcept { return left < right; });
     constexpr int32 PERCENT_MAX = 100;
     int32 rank = (percentile * (sorted.size() - 1)) / PERCENT_MAX;
     if (rank < 0)

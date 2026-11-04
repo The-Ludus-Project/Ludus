@@ -61,6 +61,9 @@ constexpr int DOCK_TITLE_PADDING = 6;
 constexpr int TAB_ICON_GAP = 6;
 constexpr int ICON_ONLY_TAB_PADDING = 8;
 constexpr int TOOL_BUTTON_PADDING = 4;
+/// Room a menu button reserves at its right edge for the drop-down chevron, in logical pixels: the label is centred in
+/// what remains, so the chevron never lands on the last letters.
+constexpr int TOOL_BUTTON_MENU_INDICATOR_WIDTH = 16;
 constexpr int HEADER_PADDING = 4;
 constexpr int TOOL_BAR_SPACING = 4;
 constexpr int SEPARATOR_EXTENT = 4;
@@ -293,6 +296,8 @@ int EditorStyle::pixelMetric(PixelMetric metric, const QStyleOption* optionOrNul
             return 2 * TAB_PADDING_HORIZONTAL;
         case PM_TabBarTabVSpace:
             return 2 * TAB_PADDING_VERTICAL + TAB_UNDERLINE_WIDTH;
+        case PM_MenuButtonIndicator:
+            return TOOL_BUTTON_MENU_INDICATOR_WIDTH;
         case PM_ToolBarItemSpacing:
         case PM_ToolBarFrameWidth:
             return TOOL_BAR_SPACING;
@@ -447,12 +452,25 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
         case PE_IndicatorArrowDown:
         case PE_IndicatorArrowUp:
         case PE_IndicatorArrowLeft:
-        case PE_IndicatorArrowRight:
+        case PE_IndicatorArrowRight: {
+            // A menu button's chevron sits in the column its label leaves, centred on the button's height; the
+            // common style would put it in the bottom corner, level with the last letters.
+            const QToolButton* menuButtonOrNull = qobject_cast<const QToolButton*>(widgetOrNull);
+            QRect chevronRect = option->rect;
+            if (menuButtonOrNull != nullptr && element == PE_IndicatorArrowDown &&
+                menuButtonOrNull->popupMode() != QToolButton::MenuButtonPopup)
+            {
+                chevronRect = QRect(menuButtonOrNull->width() - TOOL_BUTTON_MENU_INDICATOR_WIDTH,
+                                    0,
+                                    TOOL_BUTTON_MENU_INDICATOR_WIDTH,
+                                    menuButtonOrNull->height());
+            }
             DrawChevron(
                 painter,
-                option->rect,
+                chevronRect,
                 element,
                 option->palette.color(isEnabled == true ? QPalette::Active : QPalette::Disabled, QPalette::ButtonText));
+        }
             return;
         default:
             break;
@@ -512,6 +530,21 @@ void EditorStyle::drawControl(ControlElement element,
             }
             break;
         }
+        case CE_ToolButtonLabel: {
+            const QStyleOptionToolButton* tool = qstyleoption_cast<const QStyleOptionToolButton*>(option);
+            const bool isInstantMenu = tool != nullptr &&
+                                       tool->features.testFlag(QStyleOptionToolButton::HasMenu) == true &&
+                                       tool->features.testFlag(QStyleOptionToolButton::MenuButtonPopup) == false;
+            if (isInstantMenu == false)
+            {
+                break;
+            }
+            // Centre the label in what the chevron leaves, so a long label ends before the chevron starts.
+            QStyleOptionToolButton label = *tool;
+            label.rect.setRight(label.rect.right() - proxy()->pixelMetric(PM_MenuButtonIndicator, tool, widgetOrNull));
+            QProxyStyle::drawControl(element, &label, painter, widgetOrNull);
+            return;
+        }
         case CE_TabBarTabLabel: {
             const QStyleOptionTab* tab = qstyleoption_cast<const QStyleOptionTab*>(option);
             if (tab == nullptr || tab->icon.isNull() == true || IsIconOnlyDockTabBar(widgetOrNull, *this) == false)
@@ -543,7 +576,11 @@ void EditorStyle::drawControl(ControlElement element,
         }
         case CE_TabBarTabShape: {
             const QStyleOptionTab* tab = qstyleoption_cast<const QStyleOptionTab*>(option);
-            if (tab == nullptr || (tab->shape != QTabBar::RoundedNorth && tab->shape != QTabBar::TriangularNorth))
+            const bool isNorth =
+                tab != nullptr && (tab->shape == QTabBar::RoundedNorth || tab->shape == QTabBar::TriangularNorth);
+            const bool isSouth =
+                tab != nullptr && (tab->shape == QTabBar::RoundedSouth || tab->shape == QTabBar::TriangularSouth);
+            if (isNorth == false && isSouth == false)
             {
                 break;
             }
@@ -561,10 +598,9 @@ void EditorStyle::drawControl(ControlElement element,
             painter->fillRect(tab->rect, fill);
             if (isSelected == true)
             {
-                painter->fillRect(QRect(tab->rect.left(),
-                                        tab->rect.bottom() + 1 - TAB_UNDERLINE_WIDTH,
-                                        tab->rect.width(),
-                                        TAB_UNDERLINE_WIDTH),
+                // The accent rule sits on the edge facing the content: below a north tab, above a south one.
+                const int ruleTop = isNorth == true ? tab->rect.bottom() + 1 - TAB_UNDERLINE_WIDTH : tab->rect.top();
+                painter->fillRect(QRect(tab->rect.left(), ruleTop, tab->rect.width(), TAB_UNDERLINE_WIDTH),
                                   mColours.Accent);
                 if (tab->state.testFlag(State_HasFocus) == true)
                 {
@@ -755,8 +791,15 @@ QSize EditorStyle::sizeFromContents(ContentsType type,
             const int horizontal = isCompact == true ? COMPACT_BUTTON_PADDING_HORIZONTAL : BUTTON_PADDING_HORIZONTAL;
             return contentsSize + QSize(2 * (horizontal + edgeWidth), 2 * (vertical + edgeWidth));
         }
-        case CT_ToolButton:
-            return contentsSize + QSize(2 * TOOL_BUTTON_PADDING, 2 * TOOL_BUTTON_PADDING);
+        case CT_ToolButton: {
+            // A menu button also holds its chevron, which the label never overlaps.
+            const QStyleOptionToolButton* tool = qstyleoption_cast<const QStyleOptionToolButton*>(option);
+            const bool isInstantMenu = tool != nullptr &&
+                                       tool->features.testFlag(QStyleOptionToolButton::HasMenu) == true &&
+                                       tool->features.testFlag(QStyleOptionToolButton::MenuButtonPopup) == false;
+            const int indicator = isInstantMenu == true ? TOOL_BUTTON_MENU_INDICATOR_WIDTH : 0;
+            return contentsSize + QSize(2 * TOOL_BUTTON_PADDING + indicator, 2 * TOOL_BUTTON_PADDING);
+        }
         case CT_LineEdit:
             // The editor inside a spin box or combo box sits inside the field's own padding.
             if (widgetOrNull != nullptr &&
