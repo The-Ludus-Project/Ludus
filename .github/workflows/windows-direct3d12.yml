@@ -213,32 +213,19 @@ jobs:
               if ($cases -notmatch [regex]::Escape($required)) { throw "Missing D3D12 test: $required" }
             }
           }
-      - name: Install and exercise each SDK with an external WARP consumer
+      - name: Install and relocate all four SDKs
         if: matrix.generator == 'MSBuild'
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           $solution = "$PWD/out/build/windows-msvc-visual-studio"
           $workspace = "$PWD/out/windows-msvc-probe"
-          $source = "$workspace/external source"
           $relocated = "$workspace/relocated SDKs"
-          New-Item -ItemType Directory -Force $source, "$source/shaders", $relocated | Out-Null
-          Copy-Item tests/sdk_consumer/windows/CMakeLists.txt, tests/sdk_consumer/windows/smoke.cpp $source
-          Copy-Item tests/sdk_consumer/shaders/diagnostic.slang, tests/sdk_consumer/shaders/uniforms.slang "$source/shaders"
-          $generator = @('-G', 'Visual Studio 17 2022', '-A', 'x64', '-T', "v143,version=$($env:VCToolsVersion.TrimEnd('\')),host=x64", '-DCMAKE_SYSTEM_VERSION=10.0.26100.0')
+          New-Item -ItemType Directory -Force $relocated | Out-Null
           foreach ($configuration in @('Debug', 'Development', 'Profile', 'Release')) {
             $prefix = "$workspace/install/$configuration"
             cmake --install $solution --config $configuration --prefix $prefix
             if ($LASTEXITCODE -ne 0) { throw "Install failed for $configuration" }
-            $sdk = "$relocated/$configuration"
-            Move-Item $prefix $sdk
-            $consumer = "$workspace/consumer-$configuration"
-            $consumerConfiguration = if ($configuration -in @('Development', 'Profile')) { 'RelWithDebInfo' } else { $configuration }
-            cmake -S $source -B $consumer @generator "-DCMAKE_CONFIGURATION_TYPES=$consumerConfiguration" "-DCMAKE_PREFIX_PATH=$sdk" "-DEXPECTED_FLAVOR=$configuration" "-DLUDUS_SLANG_COMPILER=$PWD/out/shader-tools/slang/bin/slangc.exe" "-DLUDUS_DXC_DIRECTORY=$PWD/out/shader-tools/dxc"
-            if ($LASTEXITCODE -ne 0) { throw "External $configuration SDK configure failed" }
-            cmake --build $consumer --config $consumerConfiguration
-            if ($LASTEXITCODE -ne 0) { throw "External $configuration SDK build failed" }
-            ctest --test-dir $consumer -C $consumerConfiguration --output-on-failure --no-tests=error
-            if ($LASTEXITCODE -ne 0) { throw "External $configuration WARP smoke failed" }
+            Move-Item $prefix "$relocated/$configuration"
           }
 
           $collision = cmake --install $solution --config Release --prefix "$relocated/Debug" 2>&1 | Out-String
@@ -246,6 +233,12 @@ jobs:
             throw "The install did not reject a mixed SDK prefix: $collision"
           }
           exit 0
+      - name: Verify incremental C++ and DXIL builds and run WARP
+        if: matrix.generator == 'MSBuild'
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          & out/host-tools/venv/Scripts/python.exe tests/sdk_consumer/windows/verify_incremental.py "$PWD/out/windows-msvc-probe"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows SDK incremental verification failed' }
       - name: Create and repair a Ninja project against all installed SDKs
         if: matrix.generator == 'MSBuild'
         env:
@@ -264,6 +257,8 @@ jobs:
             out/build/windows-msvc-*/Testing/Temporary/
             out/windows-msvc-probe/**/compiler-identity.txt
             out/windows-msvc-probe/**/CMakeCache.txt
+            out/windows-msvc-probe/incremental/**/*.d
+            out/windows-msvc-probe/incremental/**/manifest.json
             out/windows-msvc-probe/**/Testing/Temporary/
           if-no-files-found: warn
           retention-days: 14
