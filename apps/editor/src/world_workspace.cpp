@@ -18,6 +18,7 @@
 #include "internal/state_view.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_lights_panel.h"
+#include "internal/world_terrain.h"
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/core.h>
@@ -460,6 +461,15 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                     QStringLiteral(" created. Edit its Transform and properties in the inspector. Undo is available."));
         });
     }
+
+    objectMenu->addSeparator();
+    QAction* generateTerrain = objectMenu->addAction(QStringLiteral("Generate Terrain…"));
+    generateTerrain->setObjectName(QStringLiteral("worldGenerateTerrain"));
+    connect(objectMenu, &QMenu::aboutToShow, generateTerrain, [this, generateTerrain]() {
+        generateTerrain->setEnabled(Add_->isEnabled() == true && Document_.HasBuiltInTerrain() == true &&
+                                    isSceneWorkerActive() == false);
+    });
+    connect(generateTerrain, &QAction::triggered, this, [this]() { showTerrainGenerator(); });
 
     mLightsPanel = new WorldLightsPanel(sections);
     sections->setStretchFactor(0, ENTITY_SECTION_STRETCH);
@@ -2058,6 +2068,22 @@ void WorldWorkspace::RenderInspector()
         const auto component = definition.toObject();
         const auto cid = component.value(QStringLiteral("id")).toString();
         const auto label = component.value(QStringLiteral("label")).toString();
+        if (Document_.HasBuiltInTerrain() == true && cid == GetTerrainComponentId())
+        {
+            if (attached.contains(cid) == true)
+            {
+                QGroupBox* group = new QGroupBox(label);
+                QVBoxLayout* layout = new QVBoxLayout(group);
+                QPushButton* editGeneration = new QPushButton(QStringLiteral("Edit Generation…"), group);
+                editGeneration->setObjectName(QStringLiteral("worldEditTerrainGeneration"));
+                layout->addWidget(editGeneration);
+                connect(editGeneration, &QPushButton::clicked, this, [this, key = Selected_]() {
+                    showTerrainGenerator(key);
+                });
+                Inspector_->addWidget(group);
+            }
+            continue;
+        }
         if (attached.contains(cid) == false)
         {
             Components_->addItem(label, cid);

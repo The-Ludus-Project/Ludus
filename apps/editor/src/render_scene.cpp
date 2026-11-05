@@ -3,6 +3,7 @@
 #include "internal/qt_numeric_stream.h"
 #include "internal/render_scene_limits.h"
 #include "internal/world_demo_adapter.h"
+#include "internal/world_terrain.h"
 
 #include <ludus/content/scene_format/limits.h>
 #include <ludus/content/scene_format/luscn.h>
@@ -99,6 +100,8 @@ constexpr usize AABB_CORNER_COUNT = 8;
 constexpr float64 MAX_PREVIEW_COORDINATE = 1e6;
 /// MAX_PREVIEW_COORDINATE for single-precision transformed geometry.
 constexpr float32 MAX_PREVIEW_COORDINATE_FLOAT = 1e6F;
+/// Orthogonality tolerance for a World object's composed transform.
+constexpr float32 WORLD_TRANSFORM_TOLERANCE = 1e-4F;
 /// Members of a preview mesh document: version, positions, uvs and indices.
 constexpr usize PREVIEW_MESH_FIELD_COUNT = 4;
 /// Most positions one preview mesh may declare.
@@ -783,6 +786,9 @@ bool RenderScene::Load(const QString& root,
     }
     bool bounds = false;
     bool hasAuthoredLighting = false;
+    usize terrainVertices = 0;
+    const bool canGenerateTerrain = world.HasBuiltInTerrain();
+    const QString terrainComponent = GetTerrainComponentId();
     math::Vector3 low{}, high{};
     for (const auto value : world.Draft().value(QStringLiteral("entities")).toArray())
     {
@@ -791,7 +797,13 @@ bool RenderScene::Load(const QString& root,
         {
             continue;
         }
-        if (Attached(entity, renderable) == false && Attached(entity, cameraBinding) == false &&
+        const QJsonObject terrain =
+            canGenerateTerrain == true
+                ? entity.value(QStringLiteral("components")).toObject().value(terrainComponent).toObject()
+                : QJsonObject{};
+        const bool hasTerrain = terrain.isEmpty() == false;
+        const bool hasRenderable = Attached(entity, renderable);
+        if (hasTerrain == false && hasRenderable == false && Attached(entity, cameraBinding) == false &&
             Attached(entity, lightBinding) == false && Attached(entity, luminaireBinding) == false)
         {
             continue;
@@ -881,23 +893,56 @@ bool RenderScene::Load(const QString& root,
                                       .toJson(QJsonDocument::Compact);
             }
         }
-        if (Attached(entity, renderable))
+        if (hasRenderable == true || hasTerrain == true)
         {
-            const auto values = Values(entity, renderable);
-            if (values.value(QStringLiteral("visible")).toBool())
+            const QJsonObject values = Values(entity, renderable);
+            if (hasRenderable == false || values.value(QStringLiteral("visible")).toBool() == true)
             {
                 PreviewObject object;
                 object.Id = id;
                 object.Name = name;
-                object.Mesh = Find(candidate.Meshes, values.value(QStringLiteral("mesh")).toString());
+                if (hasTerrain == true)
+                {
+                    PreviewMesh mesh;
+                    mesh.Id = QStringLiteral("terrain:") + id;
+                    if (static_cast<usize>(candidate.Meshes.size()) >= MAX_PREVIEW_MESHES)
+                    {
+                        return Fail(outError,
+                                    QStringLiteral("World exceeds the %1-mesh viewport limit. Hide or remove "
+                                                   "a terrain before adding another.")
+                                        .arg(MAX_PREVIEW_MESHES));
+                    }
+                    if (BuildTerrainMesh(terrain, mesh, outError) == false)
+                    {
+                        return Fail(outError, name + QStringLiteral(": ") + outError);
+                    }
+                    terrainVertices += static_cast<usize>(mesh.Positions.size());
+                    if (terrainVertices > format::RESIDENT_REFERENCE_LIMITS.Vertices)
+                    {
+                        return Fail(outError,
+                                    QStringLiteral("Terrain exceeds %1 combined vertices. Reduce Samples per "
+                                                   "side or remove a terrain.")
+                                        .arg(format::RESIDENT_REFERENCE_LIMITS.Vertices));
+                    }
+                    object.Mesh = static_cast<int32>(candidate.Meshes.size());
+                    assetsIdentity += QJsonDocument(QJsonObject{{QStringLiteral("terrain"), terrain},
+                                                                {QStringLiteral("mesh"), mesh.Id}})
+                                          .toJson(QJsonDocument::Compact);
+                    candidate.Meshes.append(foundation::Move(mesh));
+                }
+                else
+                {
+                    object.Mesh = Find(candidate.Meshes, values.value(QStringLiteral("mesh")).toString());
+                }
                 const auto textureId = values.value(QStringLiteral("texture")).toString();
                 object.Texture = textureId.isEmpty() ? -1 : Find(candidate.Textures, textureId);
                 if (object.Mesh < 0 || (textureId.isEmpty() == false && object.Texture < 0) ||
-                    Number(values.value(QStringLiteral("r")), object.Tint.X) == false ||
-                    Number(values.value(QStringLiteral("g")), object.Tint.Y) == false ||
-                    Number(values.value(QStringLiteral("b")), object.Tint.Z) == false || object.Tint.X < 0 ||
-                    object.Tint.X > 1 || object.Tint.Y < 0 || object.Tint.Y > 1 || object.Tint.Z < 0 ||
-                    object.Tint.Z > 1 || math::TryToAffine3(trs, 1e-4F, object.Transform) != math::MathStatus::Success)
+                    (hasRenderable == true && (Number(values.value(QStringLiteral("r")), object.Tint.X) == false ||
+                                               Number(values.value(QStringLiteral("g")), object.Tint.Y) == false ||
+                                               Number(values.value(QStringLiteral("b")), object.Tint.Z) == false)) ||
+                    object.Tint.X < 0 || object.Tint.X > 1 || object.Tint.Y < 0 || object.Tint.Y > 1 ||
+                    object.Tint.Z < 0 || object.Tint.Z > 1 ||
+                    math::TryToAffine3(trs, WORLD_TRANSFORM_TOLERANCE, object.Transform) != math::MathStatus::Success)
                 {
                     return Fail(outError, name + QStringLiteral(": choose mapped mesh/texture, RGB in [0,1]."));
                 }

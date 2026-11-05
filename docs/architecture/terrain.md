@@ -1,9 +1,10 @@
 # Terrain systems architecture
 
-Status: proposed. Repository baseline: `1e6bd1a`, inspected on 2026-10-06.
-No terrain module, terrain editor, mesh renderer or rigid-body terrain adapter
-is implemented by this document. Sizes and performance budgets below are
-starting profiles; acceptance requires measurements on the selected targets.
+Status: the [World editor](../development/editor-workspace.md#s4-scene-authoring)
+generates bounded heightfield meshes for default Worlds. The tiled terrain
+module, streaming renderer, and physics adapter below remain proposed. Sizes
+and performance budgets are starting profiles and require measurements on the
+selected targets.
 
 Ludus should represent ordinary outdoor ground as streamed, tiled heightfields,
 render it with reusable regular-grid patches, and generate it through a small,
@@ -85,7 +86,7 @@ Follow [AGENTS.md](../../AGENTS.md), [steering](../../.kiro/steering/coding-stan
 | GraphicsRhi | Current public rendering is bounded fullscreen rendering. Indexed buffers, sampled textures, depth, instancing and completion tickets need implementation before the proposed terrain renderer. |
 | PhysicsFluid | A fluid field is present; it is not a rigid-body heightfield collider. Water and land keep separate owners. |
 | Resources and general graphics design | General residency coordination and mesh/texture retirement are proposed. Do not claim those adapters already ship. |
-| Editor workspace | Terrain authoring is a new document/controller adapter, not an existing editor capability. |
+| Editor workspace | Default Worlds can generate and edit a bounded heightfield mesh. Layered authoring needs a terrain document and controller. |
 
 See [resource management](resource-management.md), [RHI and device design](rhi-gdi.md),
 [game world](game-world.md), [threading](threading.md),

@@ -33,7 +33,8 @@ public:
     [[nodiscard]] bool Refresh(bool launch);
     void Stop() noexcept;
     void WorldChanged();
-    void PreviewDraft(const WorldDocument& draft);
+    void PreviewDraft(const WorldDocument& draft, bool shouldStart = false);
+    [[nodiscard]] QString GetLoadError() const;
     [[nodiscard]] QWidget* TakeViewport(QWidget* parent);
     void SetSelection(const QString& id, bool pending);
     [[nodiscard]] RenderPreview& Preview() noexcept
@@ -78,7 +79,7 @@ Q_SIGNALS:
     void TintRequested(const QString& id, const QJsonObject& binding);
 
 private:
-    void Publish(const RenderScene& scene, bool launch);
+    [[nodiscard]] bool publish(const RenderScene& scene, bool shouldLaunch);
     void navigate();
     void updateNavigationControls();
     void ShowStatus();

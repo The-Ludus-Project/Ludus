@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/identity/uuid.hpp>
@@ -85,6 +86,11 @@ public:
     [[nodiscard]] const QJsonObject& Schema() const noexcept
     {
         return Schema_;
+    }
+    /// Whether this document uses the bundled default schema with terrain authoring enabled.
+    [[nodiscard]] LUDUS_INLINE bool HasBuiltInTerrain() const noexcept
+    {
+        return mHasBuiltInTerrain;
     }
     /// True when the open World is a version-2 record with a document AssetId and entity UUIDs.
     [[nodiscard]] bool HasUuidRecords() const;
@@ -205,5 +211,6 @@ private:
     QJsonObject Saved_;
     DocumentHistory<QJsonObject, 32> History_;
     bool Loaded_ = false;
+    bool mHasBuiltInTerrain = false;
 };
 } // namespace ludus::editor

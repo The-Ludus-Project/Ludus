@@ -373,6 +373,7 @@ function(ludus_editor_add_builtin_world target)
     qt_add_resources(${target} ludus_builtin_world
         PREFIX "/world" BASE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world"
         FILES "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/world.schema.json"
+              "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/terrain.component.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/render.preview.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/cube.mesh.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/plane.mesh.json"
@@ -739,6 +740,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/world_lights_panel.cpp
     src/builtin_world.cpp
     src/world_document.cpp
+    src/world_terrain.cpp
+    src/world_terrain_editing.cpp
     src/world_demo_adapter.cpp
     src/internal/material_inspection.h
     src/material_inspection.cpp
@@ -1091,6 +1094,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/viewport_trace_tests.cpp
         tests/import_report_tests.cpp
         tests/world_workspace_tests.cpp
+        tests/world_terrain_tests.cpp
         tests/material_inspection_tests.cpp
         tests/inspector_fields_tests.cpp
         tests/level_workspace_tests.cpp

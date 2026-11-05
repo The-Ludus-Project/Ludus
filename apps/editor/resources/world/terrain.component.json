@@ -1,0 +1,111 @@
+{
+  "id": "terrain",
+  "label": "Terrain",
+  "help": "Generate a finite heightfield with Edit Generation.",
+  "required": false,
+  "properties": [
+    {
+      "id": "version",
+      "label": "Recipe version",
+      "type": "integer",
+      "default": 1,
+      "help": "Selects the saved generation algorithm.",
+      "unit": "",
+      "min": 1,
+      "max": 1
+    },
+    {
+      "id": "shape",
+      "label": "Shape",
+      "type": "enum",
+      "default": "Rolling Hills",
+      "help": "Controls the shape of the elevation profile.",
+      "unit": "",
+      "choices": [
+        "Rolling Hills",
+        "Ridges",
+        "Flat"
+      ]
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "type": "integer",
+      "default": 0,
+      "help": "Reproduces a variation of the same shape.",
+      "unit": "",
+      "min": 0,
+      "max": 2147483647
+    },
+    {
+      "id": "width",
+      "label": "Width",
+      "type": "number",
+      "default": 32,
+      "help": "Extent along the local X axis.",
+      "unit": "m",
+      "min": 1,
+      "max": 256
+    },
+    {
+      "id": "depth",
+      "label": "Depth",
+      "type": "number",
+      "default": 32,
+      "help": "Extent along the local Z axis.",
+      "unit": "m",
+      "min": 1,
+      "max": 256
+    },
+    {
+      "id": "minimumElevation",
+      "label": "Minimum elevation",
+      "type": "number",
+      "default": 0,
+      "help": "Lower bound relative to the entity origin.",
+      "unit": "m",
+      "min": -128,
+      "max": 128
+    },
+    {
+      "id": "maximumElevation",
+      "label": "Maximum elevation",
+      "type": "number",
+      "default": 8,
+      "help": "Upper bound relative to the entity origin.",
+      "unit": "m",
+      "min": -128,
+      "max": 128
+    },
+    {
+      "id": "featureSize",
+      "label": "Feature size",
+      "type": "number",
+      "default": 16,
+      "help": "Approximate size of the largest hills or ridges.",
+      "unit": "m",
+      "min": 1,
+      "max": 256
+    },
+    {
+      "id": "roughness",
+      "label": "Roughness",
+      "type": "number",
+      "default": 0.45,
+      "help": "Amount of smaller detail.",
+      "unit": "",
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "samples",
+      "label": "Samples per side",
+      "type": "integer",
+      "default": 33,
+      "help": "More samples give finer mesh detail.",
+      "unit": "",
+      "min": 2,
+      "max": 64
+    }
+  ]
+}

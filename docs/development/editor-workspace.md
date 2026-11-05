@@ -609,6 +609,25 @@ down. Only render graphs that read luminaires, such as the
 are lit by it; **Lit** and reference capture ignore it. Selecting it outlines the
 panel and its emission direction in the viewport.
 
+Choose **Add Geometry / Light → Generate Terrain…** to create a heightfield in a
+default World. Pick Rolling Hills, Ridges, or Flat, then set a seed, width and
+depth, elevation bounds, feature size, roughness, and samples per side. Width and
+depth extend along the entity's local X and Z axes. Elevation is measured in
+metres along local Y. Flat uses the minimum elevation for the whole surface.
+
+**Preview** frames the candidate in the World viewport. **Create Terrain** adds
+and selects it as one undoable edit. Select the entity and use **Edit Generation…**
+in Properties to preview and apply a new recipe. Cancel restores the applied World
+view. The entity keeps its transform when regenerated and can be moved, copied,
+or deleted using the same commands as other World entities. Press **F** in the
+viewport to frame the selected terrain again.
+
+Save World keeps the seed, settings, and recipe version. The editor rebuilds the
+bounded indexed mesh when it extracts the World, including after reopening.
+The terrain uses the current viewport shading and authored lights. This first
+editor workflow provides a single mesh of at most 64 samples per side. Collision,
+sculpting, erosion, and streamed terrain are future work.
+
 The geometry and default schema ship inside the editor, so this workflow needs
 no model import or project asset files. Imported scenes and these objects can
 share a default World. Project-owned schemas keep their existing component and

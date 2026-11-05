@@ -218,6 +218,7 @@ private:
     void SceneVerified(bool accepted);
     void Render();
     void RenderInspector();
+    void showTerrainGenerator(const QString& key = {});
     /// Refresh the light list from the World and the presented scene.
     void renderLights();
     /// Apply a light switch, Solo or Enable All from the light list as one undo step.

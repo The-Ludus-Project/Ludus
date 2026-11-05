@@ -438,13 +438,13 @@ bool RenderPanel::Refresh(bool launch)
     connect(Job_, &RenderLoadJob::Finished, this, [this]() {
         auto* finished = Job_;
         Job_ = nullptr;
-        const bool current = finished->Generation() == Generation_;
-        const bool success = finished->Success();
-        if (current && success)
+        const bool isCurrent = finished->Generation() == Generation_;
+        bool isAccepted = finished->Success();
+        if (isCurrent == true && isAccepted == true)
         {
-            Publish(finished->Scene(), finished->Launch());
+            isAccepted = publish(finished->Scene(), finished->Launch());
         }
-        else if (current)
+        else if (isCurrent == true)
         {
             Stale_ = finished->Error();
             Status_->setText(
@@ -455,9 +455,9 @@ bool RenderPanel::Refresh(bool launch)
         Stop_->setEnabled(Preview_.Running());
         UpdateTintAction();
         finished->deleteLater();
-        if (current)
+        if (isCurrent == true)
         {
-            Q_EMIT Loaded(success);
+            Q_EMIT Loaded(isAccepted);
         }
         if (Again_)
         {
@@ -469,7 +469,7 @@ bool RenderPanel::Refresh(bool launch)
     });
     return true;
 }
-void RenderPanel::Publish(const RenderScene& scene, bool launch)
+bool RenderPanel::publish(const RenderScene& scene, bool shouldLaunch)
 {
     Stale_.clear();
     const auto selected = Preview_.Navigation().value(QStringLiteral("camera")).toString();
@@ -490,8 +490,9 @@ void RenderPanel::Publish(const RenderScene& scene, bool launch)
         mShouldUseDefaultCamera == true && selected.isEmpty() == true && scene.DefaultCamera >= 0;
     if (Preview_.SetScene(scene) == false)
     {
-        Status_->setText(Preview_.Status());
-        return;
+        Stale_ = Preview_.Status();
+        Status_->setText(Stale_);
+        return false;
     }
     mShouldUseDefaultCamera = false;
     if (shouldUseDefaultCamera == true)
@@ -501,14 +502,14 @@ void RenderPanel::Publish(const RenderScene& scene, bool launch)
         Cameras_->setCurrentIndex(scene.DefaultCamera + 1);
     }
     navigate();
-    if (launch)
+    if (shouldLaunch == true)
     {
         Q_EMIT Starting();
         if (Preview_.Start() == false)
         {
             Viewport_->ClearFrame(Preview_.Status());
         }
-        return;
+        return true;
     }
     if (Preview_.Running() == false)
     {
@@ -520,6 +521,11 @@ void RenderPanel::Publish(const RenderScene& scene, bool launch)
                 .arg(scene.Textures.size())
                 .arg(scene.Cameras.size()));
     }
+    return true;
+}
+QString RenderPanel::GetLoadError() const
+{
+    return Stale_;
 }
 void RenderPanel::SetSelection(const QString& id, bool pending)
 {
@@ -548,12 +554,12 @@ QWidget* RenderPanel::TakeViewport(QWidget* parent)
     Viewport_->setParent(parent);
     return Viewport_;
 }
-void RenderPanel::PreviewDraft(const WorldDocument& draft)
+void RenderPanel::PreviewDraft(const WorldDocument& draft, bool shouldStart)
 {
     PreviewWorld_ = draft;
     if (draft.Loaded() && draft.SceneLevel().isEmpty())
     {
-        (void)Refresh(Preview_.Running());
+        (void)Refresh(shouldStart == true || Preview_.Running() == true);
     }
 }
 void RenderPanel::Stop() noexcept
