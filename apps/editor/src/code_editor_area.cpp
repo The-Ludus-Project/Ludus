@@ -71,7 +71,23 @@ CodeEditorArea::CodeEditorArea(QWidget* parentOrNull) : QWidget(parentOrNull), m
     });
 }
 
-CodeEditorArea::~CodeEditorArea() = default;
+CodeEditorArea::~CodeEditorArea()
+{
+    // Tabs borrow their hosts from mRegistry, but QWidget::~QWidget deletes the
+    // tab widgets only after every member, including the registry, is gone.
+    // Hiding a shown area during that teardown sends focus-out to a code editor,
+    // whose controller then touches its freed host. Destroy the views first,
+    // while the registry is alive, without running this area's slots on the way.
+    const QList<QObject*> descendants = mSplitter->findChildren<QObject*>();
+    for (QObject* descendant : descendants)
+    {
+        QObject::disconnect(descendant, nullptr, this, nullptr);
+    }
+    mGroups.clear();
+    mTabHosts.clear();
+    delete mSplitter;
+    mSplitter = nullptr;
+}
 
 QTabWidget* CodeEditorArea::createGroup()
 {
