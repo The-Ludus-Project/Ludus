@@ -3,6 +3,8 @@
 // into its own executable (see CMakeLists) and only when sanitizers are OFF (the
 // sanitizer runtimes provide their own operator new/delete).
 
+#include <ludus/foundation/base/config.h>
+#include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/fixed_array.hpp>
 #include <ludus/foundation/containers/ring_buffer.hpp>
@@ -16,6 +18,10 @@
 #include <cstdlib>
 #include <initializer_list>
 #include <new>
+
+#if defined(LUDUS_PLATFORM_WINDOWS)
+#    include <malloc.h>
+#endif
 
 namespace
 {
@@ -41,18 +47,27 @@ void Reset() noexcept
 // delete; we count both. A helper does the aligned allocation for all overloads.
 namespace
 {
-void* AlignedAlloc(std::size_t n, std::size_t al) noexcept
+void* AllocateAligned(ludus::foundation::usize size, ludus::foundation::usize alignment) noexcept
 {
-    if (al < alignof(std::max_align_t))
+    if (alignment < alignof(std::max_align_t))
     {
-        al = alignof(std::max_align_t);
+        alignment = alignof(std::max_align_t);
     }
-    std::size_t rounded = (n + al - 1) & ~(al - 1);
-    if (rounded == 0)
-    {
-        rounded = al;
-    }
-    return std::aligned_alloc(al, rounded);
+    const ludus::foundation::usize rounded = (size + alignment - 1) & ~(alignment - 1);
+    const ludus::foundation::usize request = rounded == 0 ? alignment : rounded;
+#if defined(LUDUS_PLATFORM_WINDOWS)
+    return _aligned_malloc(request, alignment);
+#else
+    return std::aligned_alloc(alignment, request);
+#endif
+}
+void FreeAligned(void* pointerOrNull) noexcept
+{
+#if defined(LUDUS_PLATFORM_WINDOWS)
+    _aligned_free(pointerOrNull);
+#else
+    std::free(pointerOrNull);
+#endif
 }
 void CountNew(std::size_t n) noexcept
 {
@@ -77,7 +92,7 @@ void CountDelete(void* p) noexcept
 void* operator new(std::size_t n)
 {
     CountNew(n);
-    void* p = AlignedAlloc(n, alignof(std::max_align_t));
+    void* p = AllocateAligned(n, alignof(std::max_align_t));
     if (p == nullptr)
     {
         throw std::bad_alloc{};
@@ -87,7 +102,7 @@ void* operator new(std::size_t n)
 void* operator new(std::size_t n, std::align_val_t al)
 {
     CountNew(n);
-    void* p = AlignedAlloc(n, static_cast<std::size_t>(al));
+    void* p = AllocateAligned(n, static_cast<std::size_t>(al));
     if (p == nullptr)
     {
         throw std::bad_alloc{};
@@ -97,32 +112,32 @@ void* operator new(std::size_t n, std::align_val_t al)
 void* operator new(std::size_t n, const std::nothrow_t&) noexcept
 {
     CountNew(n);
-    return gRejectNothrowAllocation ? nullptr : AlignedAlloc(n, alignof(std::max_align_t));
+    return gRejectNothrowAllocation ? nullptr : AllocateAligned(n, alignof(std::max_align_t));
 }
 void* operator new(std::size_t n, std::align_val_t al, const std::nothrow_t&) noexcept
 {
     CountNew(n);
-    return gRejectNothrowAllocation ? nullptr : AlignedAlloc(n, static_cast<std::size_t>(al));
+    return gRejectNothrowAllocation ? nullptr : AllocateAligned(n, static_cast<std::size_t>(al));
 }
 void operator delete(void* p) noexcept
 {
     CountDelete(p);
-    std::free(p);
+    FreeAligned(p);
 }
 void operator delete(void* p, std::size_t) noexcept
 {
     CountDelete(p);
-    std::free(p);
+    FreeAligned(p);
 }
 void operator delete(void* p, std::align_val_t) noexcept
 {
     CountDelete(p);
-    std::free(p);
+    FreeAligned(p);
 }
 void operator delete(void* p, std::size_t, std::align_val_t) noexcept
 {
     CountDelete(p);
-    std::free(p);
+    FreeAligned(p);
 }
 // NOLINTEND(readability-inconsistent-declaration-parameter-name)
 

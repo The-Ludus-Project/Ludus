@@ -19,8 +19,11 @@
 #include <utility>
 
 #if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#    include <fcntl.h>
 #    include <io.h>
 #    include <process.h>
+#    include <share.h>
+#    include <sys/stat.h>
 #    define LUDUS_GETPID _getpid
 #else
 #    include <fcntl.h>
@@ -316,13 +319,21 @@ void pruneSessions(const std::filesystem::path& directory,
 std::FILE* exclusiveCreate(const std::filesystem::path& path) noexcept
 {
 #if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
-    std::FILE* file = nullptr;
-    // "wbx" is honored by the UCRT; fall back if unavailable.
-    if (::fopen_s(&file, path.string().c_str(), "wbx") != 0)
+    // Thanks to Microsoft, "_sopen_s, _wsopen_s", for exclusive creation
+    // with read sharing. The active stream must stay visible to log readers.
+    // https://learn.microsoft.com/cpp/c-runtime-library/reference/sopen-s-wsopen-s
+    int descriptor = -1;
+    constexpr int OPEN_FLAGS = _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT;
+    if (::_wsopen_s(&descriptor, path.c_str(), OPEN_FLAGS, _SH_DENYWR, _S_IREAD | _S_IWRITE) != 0)
     {
         return nullptr;
     }
-    return file;
+    std::FILE* fileOrNull = ::_fdopen(descriptor, "wb");
+    if (fileOrNull == nullptr)
+    {
+        (void)::_close(descriptor);
+    }
+    return fileOrNull;
 #else
 #    if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     // Darwin stdio does not implement C11's exclusive-create mode. Preserve

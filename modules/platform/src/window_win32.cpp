@@ -3,7 +3,9 @@
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
+#include <ludus/input/keyboard_event.h>
 #include <ludus/platform/base/window.h>
+#include <ludus/platform/keyboard_sink.h>
 #include <ludus/platform/log_categories.h>
 #include <ludus/platform/native_window.h>
 
@@ -13,7 +15,7 @@
 #    error "The Win32 window backend requires Windows"
 #endif
 
-#include <windows.h>
+#include "internal/win32_keymap.hpp"
 // The SDK maps CreateWindow to CreateWindowW; Ludus names its factory CreateWindow.
 #undef CreateWindow
 
@@ -62,12 +64,17 @@ public:
     LRESULT HandleMessage(HWND window, UINT message, WPARAM wordParameter, LPARAM longParameter) noexcept;
 
 private:
+    void synchronizeKeyboardSink(input::Key pressedKey = input::Key::Unknown) noexcept;
+    void resetKeyboard(input::ResetReason reason, input::Key pressedKey = input::Key::Unknown) noexcept;
+    void deliverKey(UINT message, WPARAM virtualKey, LPARAM keyState) noexcept;
     void refreshExtent() noexcept;
     void close() noexcept;
 
     HWND mWindowOrNull = nullptr;
     DWORD mOwnerThread = 0;
     bool mIsClosed = false;
+    bool mIsFocused = false;
+    KeyboardSink mSynchronizedSink{};
 };
 
 [[nodiscard]] bool IsOwnerThread(DWORD owner) noexcept
@@ -186,6 +193,7 @@ bool Win32Window::HandleEvent([[maybe_unused]] const Event& event) noexcept
     {
         return false;
     }
+    synchronizeKeyboardSink();
     // Win32 delivers a window's messages only to its creating thread. Pumping the
     // thread queue also dispatches messages for this thread's other windows.
     MSG message{};
@@ -220,6 +228,24 @@ LRESULT Win32Window::HandleMessage(HWND window, UINT message, WPARAM wordParamet
             SetWindowLongPtrW(window, GWLP_USERDATA, 0);
             mWindowOrNull = nullptr;
             break;
+        case WM_SETFOCUS:
+            mIsFocused = true;
+            resetKeyboard(input::ResetReason::FocusEntered);
+            break;
+        case WM_KILLFOCUS:
+            if (mIsFocused == true)
+            {
+                mIsFocused = false;
+                resetKeyboard(input::ResetReason::FocusLost);
+            }
+            break;
+        case WM_KEYDOWN:
+        case WM_KEYUP:
+        case WM_SYSKEYDOWN:
+        case WM_SYSKEYUP:
+            deliverKey(message, wordParameter, longParameter);
+            // Preserve Win32 system shortcuts and default menu processing.
+            break;
         case WM_SIZE:
             refreshExtent();
             return 0;
@@ -240,6 +266,80 @@ LRESULT Win32Window::HandleMessage(HWND window, UINT message, WPARAM wordParamet
             break;
     }
     return DefWindowProcW(window, message, wordParameter, longParameter);
+}
+
+void Win32Window::synchronizeKeyboardSink(input::Key pressedKey) noexcept
+{
+    const KeyboardSink sink = GetKeyboardSink();
+    if (sink.UserData != mSynchronizedSink.UserData || sink.OnRecord != mSynchronizedSink.OnRecord ||
+        sink.OnReset != mSynchronizedSink.OnReset)
+    {
+        resetKeyboard(mIsFocused == true ? input::ResetReason::FocusEntered : input::ResetReason::FocusLost,
+                      pressedKey);
+    }
+}
+
+void Win32Window::resetKeyboard(input::ResetReason reason, input::Key pressedKey) noexcept
+{
+    mSynchronizedSink = GetKeyboardSink();
+    if (mSynchronizedSink.OnReset == nullptr)
+    {
+        return;
+    }
+    input::FocusBaseline baseline{};
+    baseline.Focused = reason == input::ResetReason::FocusEntered;
+    if (baseline.Focused == true)
+    {
+        // GetKeyboardState follows the owner thread's message queue. The high bit
+        // represents a held key, while the low bit for lock keys is toggle state.
+        // Thanks to Microsoft, "GetKeyboardState function" and "MapVirtualKeyW function".
+        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getkeyboardstate
+        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-mapvirtualkeyw
+        BYTE keys[VIRTUAL_KEY_COUNT]{};
+        if (GetKeyboardState(keys) != FALSE)
+        {
+            for (UINT virtualKey = 0; virtualKey < VIRTUAL_KEY_COUNT; ++virtualKey)
+            {
+                if ((keys[virtualKey] & KEYBOARD_STATE_DOWN) == 0 || HasAmbiguousScanCode(virtualKey) == true)
+                {
+                    continue;
+                }
+                const input::Key key = MapScanCode(MapVirtualKeyW(virtualKey, MAPVK_VK_TO_VSC_EX), virtualKey);
+                if (input::IsValidKey(key) == true && key != pressedKey)
+                {
+                    baseline.Keys[static_cast<usize>(key)] = true;
+                }
+            }
+        }
+    }
+    mSynchronizedSink.OnReset(mSynchronizedSink.UserData, reason, baseline);
+}
+
+void Win32Window::deliverKey(UINT message, WPARAM virtualKey, LPARAM keyState) noexcept
+{
+    if (mIsClosed == true || mIsFocused == false)
+    {
+        return;
+    }
+    const WORD flags = HIWORD(keyState);
+    const UINT scanCode = (flags & SCAN_CODE_MASK) | ((flags & KF_EXTENDED) != 0 ? EXTENDED_SCAN_PREFIX : 0);
+    const input::Key key = MapScanCode(scanCode, virtualKey);
+    const bool isDown = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+    const bool isRepeat = isDown == true && (flags & KF_REPEAT) != 0;
+    // Another window may pump the thread queue. If this is the sink's first
+    // fresh down, keep it out of the held snapshot so it still creates an edge.
+    synchronizeKeyboardSink(isDown == true && isRepeat == false ? key : input::Key::Unknown);
+    const KeyboardSink sink = GetKeyboardSink();
+    if (sink.OnRecord == nullptr || input::IsValidKey(key) == false)
+    {
+        return;
+    }
+    input::KeyboardRecord record;
+    record.Source = input::RecordSource::Native;
+    record.PhysicalKey = key;
+    record.Transition = isDown == true ? input::KeyTransition::Down : input::KeyTransition::Up;
+    record.Repeat = isRepeat;
+    sink.OnRecord(sink.UserData, record);
 }
 
 void Win32Window::refreshExtent() noexcept
@@ -274,10 +374,12 @@ void Win32Window::close() noexcept
         return;
     }
     mIsClosed = true;
+    mIsFocused = false;
     mNativeWindowInfo.Win32WindowOrNull = nullptr;
     mNativeWindowInfo.Width = 0;
     mNativeWindowInfo.Height = 0;
     mVisibility = WindowVisibility::Occluded;
+    resetKeyboard(input::ResetReason::WindowClosed);
 }
 } // namespace
 

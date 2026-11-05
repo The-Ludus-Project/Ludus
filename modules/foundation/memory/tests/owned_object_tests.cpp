@@ -78,7 +78,8 @@ constexpr usize OVER_ALIGNMENT = 128;
 
 struct alignas(OVER_ALIGNMENT) OverAligned
 {
-    int32 Value = 0;
+    // Fill the fixture's representation so MSVC observes the requested size without implicit padding.
+    ludus::foundation::uint8 Storage[OVER_ALIGNMENT]{};
 };
 
 struct Base

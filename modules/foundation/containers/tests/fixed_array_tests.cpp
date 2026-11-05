@@ -2,6 +2,8 @@
 
 #include <ludus/foundation/containers/fixed_array.hpp>
 
+#include <ludus/foundation/containers/static_array.hpp>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <span>
@@ -30,9 +32,13 @@ struct ConstructOnly
     ConstructOnly& operator=(ConstructOnly&&) noexcept = default;
 };
 
-struct alignas(32) OverAligned
+constexpr usize OVER_ALIGNMENT = 32;
+constexpr usize OVER_ALIGNED_PADDING = OVER_ALIGNMENT - sizeof(uint32);
+
+struct alignas(OVER_ALIGNMENT) OverAligned
 {
     uint32 Value = 0;
+    ludus::foundation::StaticArray<ludus::foundation::uint8, OVER_ALIGNED_PADDING> Padding{};
 };
 
 static_assert(std::is_trivially_destructible_v<FixedArray<uint32, SMALL_CAPACITY>>);

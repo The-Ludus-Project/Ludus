@@ -1,9 +1,11 @@
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/measurement.h>
 #include <ludus/platform/base/window.h>
+#include <ludus/platform/entropy.h>
 #include <ludus/platform/native_window.h>
 
 #include "diagnostic.h"
@@ -16,6 +18,7 @@ using ludus::foundation::uint32;
 using ludus::foundation::uint8;
 using ludus::foundation::UniquePtr;
 using ludus::foundation::usize;
+namespace filesystem = ludus::foundation::filesystem;
 namespace rhi = ludus::graphics::rhi;
 namespace platform = ludus::platform;
 
@@ -27,6 +30,11 @@ int main()
     constexpr uint32 WIDTH = 160;
     constexpr uint32 HEIGHT = 120;
     constexpr usize DIAGNOSTIC_UNIFORM_VALUES = 12;
+
+    uint8 randomByte = 0;
+    LUDUS_REQUIRE(platform::TryFillSystemEntropy(&randomByte, 1) == true);
+    filesystem::Directory directory;
+    LUDUS_REQUIRE(directory.Open(".").Succeeded() == true);
 
     platform::WindowManager windows;
     UniquePtr<platform::Window> window;

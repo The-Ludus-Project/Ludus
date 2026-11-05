@@ -64,6 +64,13 @@ on:
       - 'modules/graphics/rhi/src/raster_unsupported.cpp'
       - 'modules/graphics/rhi/tests/d3d12*'
       - 'tests/sdk_consumer/shaders/raster.slang'
+      - 'modules/foundation/base/tests/windows_diagnostic_probe.cpp'
+      - 'tests/assertions/windows_diagnostics.py'
+      - 'modules/foundation/filesystem/**'
+      - 'modules/foundation/logging/src/sinks/file_sink.cpp'
+      - 'tests/filesystem/windows_recovery.py'
+      - 'modules/platform/src/entropy.cpp'
+      - 'modules/platform/src/internal/win32_keymap.hpp'
       - 'modules/platform/src/window_win32.cpp'
       - 'modules/platform/src/internal/window_win32.hpp'
       - 'modules/platform/tests/win32_tests.cpp'
@@ -82,7 +89,7 @@ env:
   LUDUS_CI_COMMIT_SHA: ${{ inputs.batch_sha || github.sha }}
 jobs:
   msvc:
-    name: D0 MSVC / ${{ matrix.generator }}
+    name: MSVC host and D3D12 / ${{ matrix.generator }}
     runs-on: windows-2022
     timeout-minutes: 60
     strategy:
@@ -132,7 +139,7 @@ jobs:
           }
       - name: Bootstrap pinned shader tools
         run: python scripts/shader-probe bootstrap
-      - name: Build and test primitives and the Win32/D3D12 closure
+      - name: Build and test primitives, Foundation host services and the Win32/D3D12 closure
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts/python
         run: |
@@ -189,7 +196,19 @@ jobs:
               $builds[$flavor] = $preset
             }
           }
-          $targets = @('ludus_foundation_base_tests', 'ludus_platform_win32_tests', 'ludus_rhi_d3d12_tests', 'ludus_rhi_lifecycle_tests')
+          $testTargets = @(
+            'ludus_foundation_base_tests', 'ludus_foundation_memory_tests',
+            'ludus_foundation_containers_tests', 'ludus_containers_alloc_tests',
+            'ludus_foundation_time_tests', 'ludus_foundation_threading_tests',
+            'ludus_threading_startup_tests', 'ludus_threading_alloc_tests', 'ludus_threading_profiling_tests',
+            'ludus_foundation_logging_tests', 'ludus_logging_allocation_failure_tests',
+            'ludus_foundation_profiling_tests', 'ludus_foundation_identity_tests',
+            'ludus_filesystem_tests', 'ludus_filesystem_namespace_fault_tests',
+            'ludus_filesystem_pack_fault_tests', 'ludus_filesystem_async_fault_tests',
+            'ludus_platform_entropy_tests', 'ludus_platform_win32_tests', 'ludus_input_tests',
+            'ludus_rhi_d3d12_tests', 'ludus_rhi_lifecycle_tests'
+          )
+          $targets = $testTargets + @('ludus_filesystem_windows_recovery_probe', 'ludus_windows_diagnostic_probe')
           if ($visualStudio) { $targets += 'ludus_windows_sdk' }
           foreach ($configuration in $builds.Keys) {
             $preset = $builds[$configuration]
@@ -200,7 +219,9 @@ jobs:
 
           # Run the tests after building all configurations, so an output
           # collision cannot silently substitute the most recently built binary.
-          $suite = '^ludus_(foundation_base|platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
+          $testNames = $testTargets + @('ludus_filesystem_windows_recovery', 'ludus_windows_diagnostic_death')
+          $suite = '^(' + ($testNames -join '|') + ')$'
+          $failedConfigurations = @()
           foreach ($configuration in $builds.Keys) {
             $preset = $builds[$configuration]
             $build = "out/build/$preset"
@@ -211,8 +232,11 @@ jobs:
             if (Test-Path $lastTest) {
               Copy-Item $lastTest "$build/Testing/Temporary/$configuration.log"
             }
-            if ($testStatus -ne 0) { throw "Engine $configuration tests failed" }
+            if ($testStatus -ne 0) { $failedConfigurations += $configuration }
             $tests = ctest --preset $preset --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
+            foreach ($name in $testNames) {
+              if ($name -notin $tests.tests.name) { throw "Missing required $configuration test $name" }
+            }
             $d3d12 = ($tests.tests | Where-Object name -eq ludus_rhi_d3d12_tests).command[0]
             $cases = & $d3d12 --list-tests '[ordered-compute]'
             if ($LASTEXITCODE -ne 0 -or @($cases -match 'Portable ordered compute dispatches feed indirect raster').Count -ne 1) {
@@ -227,6 +251,9 @@ jobs:
             }
             python tests/build_contract/windows_file_api.py launch $build $fileApiConfiguration $d3d12
             if ($LASTEXITCODE -ne 0) { throw "Engine $configuration File API launch failed" }
+          }
+          if ($failedConfigurations.Count -gt 0) {
+            throw "Engine tests failed in $($failedConfigurations -join ', ')"
           }
       - name: Install and relocate all four SDKs
         if: matrix.generator == 'MSBuild'
@@ -345,12 +372,13 @@ jobs:
             -DLUDUS_SLANG_COMPILER="$tools/slang/bin/slangc.exe" -DLUDUS_DXC_DIRECTORY="$tools/dxc"
           cmake --build out/build/windows-clang-development --target \
             ludus_platform ludus_graphics_rhi \
-            ludus_platform_win32_tests ludus_rhi_d3d12_tests ludus_rhi_lifecycle_tests -- -k 0
+            ludus_platform_win32_tests ludus_platform_entropy_tests ludus_rhi_d3d12_tests ludus_rhi_lifecycle_tests \
+            ludus_filesystem_tests ludus_filesystem_windows_recovery_probe ludus_foundation_logging_tests -- -k 0
       - name: Test the Win32 window and Direct3D 12 backends
         run: |
           export PATH="$PWD/out/host-tools/venv/Scripts:$PATH"
           ctest --test-dir out/build/windows-clang-development --output-on-failure --no-tests=error \
-            --tests-regex '^ludus_(platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
+            --tests-regex '^ludus_((platform_win32|platform_entropy|rhi_d3d12|rhi_lifecycle|filesystem|foundation_logging)_tests|filesystem_windows_recovery)$'
           out/build/windows-clang-development/modules/graphics/rhi/ludus_rhi_d3d12_tests.exe --list-tests \
             | grep -q "Portable texture transfers initialize mips"
           # The DXIL pixel tests are configured only with the shader tools; require them here.
