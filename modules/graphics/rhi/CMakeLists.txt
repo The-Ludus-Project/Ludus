@@ -68,7 +68,7 @@ elseif(WIN32)
     # Direct3D 12 bring-up: device, swap chain, clear and present
     # (docs/architecture/windows-direct3d12.md). Unimplemented feature families
     # use the portable Unsupported implementations.
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_d3d12.cpp src/raster_d3d12.cpp src/raster_draw_d3d12.cpp src/transfer_d3d12.cpp src/raster_unsupported.cpp src/ray_unsupported.cpp
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_d3d12.cpp src/compute_d3d12.cpp src/raster_d3d12.cpp src/raster_draw_d3d12.cpp src/transfer_d3d12.cpp src/raster_unsupported.cpp src/ray_unsupported.cpp
         src/native_interop_unsupported.cpp src/hosted_consumer_unsupported.cpp)
     ludus_configure_win32_target(ludus_graphics_rhi)
     target_link_libraries(ludus_graphics_rhi PRIVATE d3d12 dxgi dxguid user32)
@@ -363,7 +363,7 @@ if(TARGET ludus_rhi_render_tests AND LUDUS_SPIRV_CROSS)
     set_tests_properties(ludus_rhi_ray_queries PROPERTIES LABELS "rhi;gpu;ray" TIMEOUT 60)
 endif()
 
-# Shared raster conformance artifacts intentionally contain no compute/transfer dependency.
+# Shared conformance uses the same authored shaders and image oracles on native backends.
 foreach(conformance_target IN ITEMS ludus_rhi_render_tests ludus_rhi_d3d12_tests)
     if(TARGET ${conformance_target} AND LUDUS_SLANG_COMPILER AND (NOT WIN32 OR LUDUS_DXC_DIRECTORY))
         foreach(conformance_entry IN ITEMS write mask sample)
@@ -371,5 +371,12 @@ foreach(conformance_target IN ITEMS ludus_rhi_render_tests ludus_rhi_d3d12_tests
                 SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r10.slang"
                 VERTEX vertexMain FRAGMENT ${conformance_entry}Main)
         endforeach()
+        set(ordered_compute_shader "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/ordered_compute.slang")
+        ludus_compile_shader(TARGET ${conformance_target} NAME ordered_advance
+            SOURCE "${ordered_compute_shader}" COMPUTE AdvanceCounter)
+        ludus_compile_shader(TARGET ${conformance_target} NAME ordered_prepare
+            SOURCE "${ordered_compute_shader}" COMPUTE PrepareDraw)
+        ludus_compile_shader(TARGET ${conformance_target} NAME ordered_draw RASTER
+            SOURCE "${ordered_compute_shader}" VERTEX DrawVertex FRAGMENT DrawFragment)
     endif()
 endforeach()

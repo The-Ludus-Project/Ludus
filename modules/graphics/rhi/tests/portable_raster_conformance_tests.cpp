@@ -2,10 +2,14 @@
 #include "conformance_sample.h"
 #include "conformance_write.h"
 #include "internal/readback.h"
+#include "ordered_advance.h"
+#include "ordered_draw.h"
+#include "ordered_prepare.h"
 #include "raster.h"
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
 
@@ -44,11 +48,12 @@ struct DeviceOwner final
 #if defined(_WIN32)
     rhi::backend::d3d12::ComOwner<ID3D12InfoQueue> Messages;
 #endif
-    DeviceOwner()
+    explicit DeviceOwner(bool shouldRequireCompute = false)
     {
         rhi::Shutdown();
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
+        description.Required.Compute = shouldRequireCompute;
         rhi::StartupInfo failure;
         const rhi::DeviceStatus status =
             rhi::CreateDevice({}, { .Width = WIDTH, .Height = HEIGHT }, description, Device, Surface, &failure);
@@ -107,13 +112,14 @@ std::span<const uint8> GetBytes(const StaticArray<T, COUNT>& values)
 {
     return {reinterpret_cast<const uint8*>(values.GetData()), sizeof(T) * COUNT};
 }
-void WaitForTexture(rhi::DeviceHandle device, rhi::TextureHandle texture, rhi::RasterStatus status)
+template <typename Handle>
+void RequireReady(rhi::DeviceHandle device, Handle handle, rhi::RasterStatus status = rhi::RasterStatus::Pending)
 {
     const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
     {
         std::this_thread::yield();
-        status = rhi::GetStatus(device, texture);
+        status = rhi::GetStatus(device, handle);
     }
     REQUIRE(status == rhi::RasterStatus::Ready);
 }
@@ -158,7 +164,7 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
                            {2, 2, isSrgb == true ? rhi::RasterFormat::Rgba8Srgb : rhi::RasterFormat::Rgba8Unorm},
                            {image.AsSpan(), 8},
                            texture);
-    WaitForTexture(owner.Device, texture, textureStatus);
+    RequireReady(owner.Device, texture, textureStatus);
     rhi::TextureViewHandle view;
     rhi::SamplerHandle sampler;
     REQUIRE(rhi::CreateTextureView(owner.Device, texture, view) == rhi::RasterStatus::Ready);
@@ -377,10 +383,9 @@ TEST_CASE("Portable line fill draws triangle edges and leaves interiors clear", 
     constexpr usize TEXEL_BYTES = 4;
     const StaticArray<uint8, TEXEL_BYTES> white{255, 255, 255, 255};
     rhi::TextureHandle texture;
-    WaitForTexture(
-        owner.Device,
-        texture,
-        rhi::CreateTexture(owner.Device, {1, 1, rhi::RasterFormat::Rgba8Unorm}, {white.AsSpan(), 4}, texture));
+    RequireReady(owner.Device,
+                 texture,
+                 rhi::CreateTexture(owner.Device, {1, 1, rhi::RasterFormat::Rgba8Unorm}, {white.AsSpan(), 4}, texture));
     rhi::TextureViewHandle view;
     rhi::SamplerHandle sampler;
     REQUIRE(rhi::CreateTextureView(owner.Device, texture, view) == rhi::RasterStatus::Ready);
@@ -664,5 +669,263 @@ TEST_CASE("Portable surface graph preparation precedes frame acquisition", "[rhi
             FAIL("Surface graph did not publish its authored clear");
         }
     }
+    owner.CheckDebugMessages();
+}
+
+TEST_CASE("Portable ordered compute dispatches feed indirect raster and transfer readback",
+          "[rhi][gpu][ordered-compute]")
+{
+    DeviceOwner owner(true);
+    const rhi::DeviceHandle device = owner.Device;
+#if defined(_WIN32)
+    REQUIRE(rhi::SetFrameTarget(device,
+                                owner.Surface,
+                                { .Width = WIDTH, .Height = HEIGHT, .ShouldPresentToSurface = false }) ==
+            rhi::DeviceStatus::Ready);
+#endif
+
+    rhi::ComputeCapabilities capabilities;
+    REQUIRE(rhi::GetComputeCapabilities(device, capabilities) == rhi::RasterStatus::Ready);
+    const usize counterOffset = capabilities.StorageOffsetAlignment;
+    Array<uint8> initialCounter;
+    REQUIRE(initialCounter.TryResize(counterOffset + sizeof(uint32)) == true);
+    rhi::BufferHandle counter;
+    REQUIRE(rhi::CreateBuffer(device,
+                              {rhi::BufferRole::Storage, initialCounter.GetSize()},
+                              initialCounter.AsSpan(),
+                              counter) == rhi::RasterStatus::Ready);
+    constexpr uint32 COUNTER_SEED = 40;
+    rhi::TransferTicket update;
+    REQUIRE(rhi::RequestBufferUpdate(device,
+                                     counter,
+                                     counterOffset,
+                                     reinterpret_cast<const uint8*>(&COUNTER_SEED),
+                                     sizeof(COUNTER_SEED),
+                                     update) == rhi::RasterStatus::Pending);
+    RequireReady(device, update);
+    REQUIRE(rhi::Release(device, update) == rhi::RasterStatus::Ready);
+
+    constexpr uint32 TRIANGLE_INDEX_COUNT = 3;
+    constexpr usize TRIANGLE_COORDINATES = TRIANGLE_INDEX_COUNT * FLOAT2_VALUES;
+    const StaticArray<float32, TRIANGLE_COORDINATES> initialVertices{};
+    const rhi::IndexedIndirectArguments initialArguments{};
+    const StaticArray<uint32, TRIANGLE_INDEX_COUNT> initialIndices{0, 1, 2};
+    rhi::BufferHandle vertices;
+    rhi::BufferHandle arguments;
+    rhi::BufferHandle indices;
+    REQUIRE(rhi::CreateBuffer(device,
+                              {rhi::BufferRole::StorageVertex, sizeof(initialVertices)},
+                              GetBytes(initialVertices),
+                              vertices) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBuffer(device,
+                              {rhi::BufferRole::StorageIndirect, sizeof(initialArguments)},
+                              {reinterpret_cast<const uint8*>(&initialArguments), sizeof(initialArguments)},
+                              arguments) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBuffer(device,
+                              {rhi::BufferRole::Index32, sizeof(initialIndices)},
+                              GetBytes(initialIndices),
+                              indices) == rhi::RasterStatus::Ready);
+
+    const auto makeDispatch = [&](const rhi::RasterShaderDescription& description,
+                                  std::span<const rhi::RasterBindingResource> resources) {
+        rhi::RasterShaderHandle shader;
+        rhi::BindingLayoutHandle layout;
+        rhi::ComputeDispatch dispatch;
+        REQUIRE(rhi::CreateRasterShader(device, description, shader) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CreateBindingLayout(device, description.Bindings, layout) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CreateBindingSet(device, layout, resources, dispatch.Bindings) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CreateComputePipeline(device, {shader, layout}, dispatch.Pipeline) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Destroy(device, shader) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Destroy(device, layout) == rhi::RasterStatus::Ready);
+        return dispatch;
+    };
+    const rhi::RasterShaderDescription advanceShader = ludus::shaders::ordered_advance::Compute();
+    const rhi::RasterShaderDescription prepareShader = ludus::shaders::ordered_prepare::Compute();
+    const rhi::RasterBindingResource counterBinding{advanceShader.Bindings[0].Binding,
+                                                    counter,
+                                                    counterOffset,
+                                                    sizeof(uint32)};
+    const StaticArray<rhi::RasterBindingResource, BINDING_COUNT> prepareBindings{{
+        {prepareShader.Bindings[0].Binding, counter, counterOffset, sizeof(uint32)},
+        {prepareShader.Bindings[1].Binding, vertices, 0, sizeof(initialVertices)},
+        {prepareShader.Bindings[2].Binding, arguments, 0, sizeof(initialArguments)},
+    }};
+    rhi::ComputeDispatch advance = makeDispatch(advanceShader, {&counterBinding, 1});
+    rhi::ComputeDispatch prepare = makeDispatch(prepareShader, prepareBindings.AsSpan());
+
+    rhi::RasterShaderHandle vertex;
+    rhi::RasterShaderHandle fragment;
+    rhi::BindingLayoutHandle rasterLayout;
+    rhi::BindingSetHandle rasterSet;
+    rhi::RasterPipelineHandle rasterPipeline;
+    REQUIRE(rhi::CreateRasterShader(device, ludus::shaders::ordered_draw::Vertex(), vertex) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateRasterShader(device, ludus::shaders::ordered_draw::Fragment(), fragment) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBindingLayout(device, {}, rasterLayout) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBindingSet(device, rasterLayout, {}, rasterSet) == rhi::RasterStatus::Ready);
+    constexpr usize COORDINATE_STRIDE = sizeof(float32) * FLOAT2_VALUES;
+    const rhi::RasterVertexStream stream{COORDINATE_STRIDE, false};
+    const rhi::RasterVertexAttribute attribute{0, 0, 0, rhi::RasterVertexFormat::Float2};
+    REQUIRE(rhi::CreateRasterPipeline(device,
+                                      {vertex,
+                                       fragment,
+                                       rasterLayout,
+                                       {&stream, 1},
+                                       {&attribute, 1},
+                                       false,
+                                       false,
+                                       rhi::RasterTarget::Rgba8Unorm},
+                                      rasterPipeline) == rhi::RasterStatus::Ready);
+    rhi::TextureHandle target;
+    REQUIRE(rhi::CreateTexture(device, { .Width = WIDTH, .Height = HEIGHT, .Attachment = true }, {}, target) ==
+            rhi::RasterStatus::Ready);
+    rhi::RasterTextureState targetState;
+    REQUIRE(rhi::GetTextureState(device, target, targetState) == rhi::RasterStatus::Ready);
+
+    rhi::OrderedGraph graph;
+    rhi::GraphVersion counterInput;
+    rhi::GraphVersion vertexInput;
+    rhi::GraphVersion indirectInput;
+    rhi::GraphVersion indexInput;
+    rhi::GraphVersion targetInput;
+    REQUIRE(rhi::CreateOrderedGraph(device, graph) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, counter, counterInput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, vertices, vertexInput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, arguments, indirectInput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, indices, indexInput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ImportGraphTexture(device,
+                                    graph,
+                                    target,
+                                    targetState,
+                                    rhi::RasterTextureUse::ColorAttachment,
+                                    targetInput) == rhi::RasterStatus::Ready);
+    constexpr usize ADVANCE_PASS_COUNT = 2;
+    for (usize pass = 0; pass < ADVANCE_PASS_COUNT; ++pass)
+    {
+        rhi::GraphVersion next;
+        REQUIRE(rhi::NextGraphVersion(device, graph, counterInput, next) == rhi::RasterStatus::Ready);
+        const rhi::GraphUse use{next,
+                                rhi::GraphAccessMode::StorageReadWrite,
+                                counterOffset,
+                                sizeof(uint32),
+                                rhi::RasterVisibility::Compute};
+        REQUIRE(rhi::AddGraphPass(device,
+                                  graph,
+                                  {
+                                      .Name = "advance counter",
+                                      .Attachment = {},
+                                      .Uses = &use,
+                                      .UseCount = 1,
+                                      .Dispatch = &advance,
+                                  }) == rhi::RasterStatus::Ready);
+        counterInput = next;
+    }
+
+    rhi::GraphVersion vertexOutput;
+    rhi::GraphVersion indirectOutput;
+    REQUIRE(rhi::NextGraphVersion(device, graph, vertexInput, vertexOutput) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::NextGraphVersion(device, graph, indirectInput, indirectOutput) == rhi::RasterStatus::Ready);
+    const StaticArray<rhi::GraphUse, BINDING_COUNT> prepareUses{{
+        {counterInput,
+         rhi::GraphAccessMode::StorageRead,
+         counterOffset,
+         sizeof(uint32),
+         rhi::RasterVisibility::Compute},
+        {vertexOutput,
+         rhi::GraphAccessMode::StorageReadWrite,
+         0,
+         sizeof(initialVertices),
+         rhi::RasterVisibility::Compute},
+        {indirectOutput,
+         rhi::GraphAccessMode::StorageReadWrite,
+         0,
+         sizeof(initialArguments),
+         rhi::RasterVisibility::Compute},
+    }};
+    REQUIRE(rhi::AddGraphPass(device,
+                              graph,
+                              {
+                                  .Name = "prepare indirect draw",
+                                  .Attachment = {},
+                                  .Uses = prepareUses.GetData(),
+                                  .UseCount = prepareUses.GetSize(),
+                                  .Dispatch = &prepare,
+                              }) == rhi::RasterStatus::Ready);
+
+    rhi::GraphVersion targetOutput;
+    REQUIRE(rhi::NextGraphVersion(device, graph, targetInput, targetOutput) == rhi::RasterStatus::Ready);
+    constexpr usize DRAW_USE_COUNT = 4;
+    const StaticArray<rhi::GraphUse, DRAW_USE_COUNT> drawUses{{
+        {vertexOutput, rhi::GraphAccessMode::Vertex, 0, sizeof(initialVertices)},
+        {indirectOutput, rhi::GraphAccessMode::Indirect, 0, sizeof(initialArguments)},
+        {indexInput, rhi::GraphAccessMode::Index, 0, sizeof(initialIndices)},
+        {targetOutput, rhi::GraphAccessMode::ColorWrite},
+    }};
+    const rhi::RasterVertexSlice slice{vertices, 0, sizeof(initialVertices)};
+    const rhi::RasterDraw draw
+    {
+        .Pipeline = rasterPipeline,
+        .Bindings = rasterSet,
+        .Vertices = {&slice, 1},
+        .Indices = indices,
+        .IndexCount = TRIANGLE_INDEX_COUNT,
+        .VertexCount = TRIANGLE_INDEX_COUNT,
+        .InstanceCount = 1,
+        .Indirect = arguments,
+    };
+    REQUIRE(rhi::AddGraphPass(device,
+                              graph,
+                              {
+                                  .Name = "draw generated triangle",
+                                  .Attachment = { .Color = target },
+                                  .Uses = drawUses.GetData(),
+                                  .UseCount = drawUses.GetSize(),
+                                  .Draws = &draw,
+                                  .DrawCount = 1,
+                              }) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::AddGraphRoot(device, graph, targetOutput, rhi::GraphRoot::Readback) == rhi::RasterStatus::Ready);
+    rhi::GraphReport report;
+    REQUIRE(rhi::CompileOrderedGraph(device, graph, report) == rhi::RasterStatus::Ready);
+    REQUIRE(report.ComputePasses == ADVANCE_PASS_COUNT + 1);
+    REQUIRE(report.RasterPasses == 1);
+
+    REQUIRE(rhi::Destroy(device, advance.Pipeline) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, advance.Bindings) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, prepare.Pipeline) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, prepare.Bindings) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::ExecuteOrderedGraph(device, owner.Surface, graph, completion) == rhi::RasterStatus::Ready);
+
+    rhi::ReadbackTicket counterReadback;
+    REQUIRE(rhi::RequestBufferReadback(device, counter, counterOffset, sizeof(uint32), counterReadback) ==
+            rhi::RasterStatus::Pending);
+    REQUIRE(rhi::Destroy(device, counter) == rhi::RasterStatus::Ready);
+    RequireReady(device, counterReadback);
+    uint32 actualCounter = 0;
+    REQUIRE(
+        rhi::CopyReadback(device, counterReadback, reinterpret_cast<uint8*>(&actualCounter), sizeof(actualCounter)) ==
+        rhi::RasterStatus::Ready);
+    CHECK(actualCounter == COUNTER_SEED + ADVANCE_PASS_COUNT);
+    REQUIRE(rhi::Release(device, counterReadback) == rhi::RasterStatus::Ready);
+
+    constexpr usize ROW_BYTES = WIDTH * CHANNELS;
+    rhi::ReadbackTicket imageReadback;
+    REQUIRE(rhi::RequestTextureReadback(device, target, {0, 0, 0, WIDTH, HEIGHT}, ROW_BYTES, imageReadback) ==
+            rhi::RasterStatus::Pending);
+    RequireReady(device, imageReadback);
+    StaticArray<uint8, PIXEL_BYTES> pixels{};
+    REQUIRE(rhi::CopyReadback(device, imageReadback, pixels.GetData(), pixels.GetSize()) == rhi::RasterStatus::Ready);
+    const StaticArray<uint8, CHANNELS> expected{0, 255, 0, 255};
+    for (usize index = 0; index < pixels.GetSize(); ++index)
+    {
+        if (pixels[index] != expected[index % CHANNELS])
+        {
+            CAPTURE(index);
+            FAIL("Indirect triangle did not cover the offscreen image");
+        }
+    }
+    REQUIRE(rhi::Release(device, imageReadback) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::GetStatus(device, completion) == rhi::RasterStatus::Ready);
     owner.CheckDebugMessages();
 }

@@ -57,6 +57,7 @@ on:
       - 'modules/graphics/rhi/src/internal/d3d12_transfer.h'
       - 'modules/graphics/rhi/tests/portable_transfer_conformance_tests.cpp'
       - 'modules/graphics/rhi/tests/portable_raster_conformance_tests.cpp'
+      - 'modules/graphics/rhi/tests/shaders/ordered_compute.slang'
       - 'tests/sdk_consumer/shaders/r10.slang'
       - 'modules/graphics/rhi/CMakeLists.txt'
       - 'cmake/shaders/compile_raster.py'
@@ -213,6 +214,10 @@ jobs:
             if ($testStatus -ne 0) { throw "Engine $configuration tests failed" }
             $tests = ctest --preset $preset --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
             $d3d12 = ($tests.tests | Where-Object name -eq ludus_rhi_d3d12_tests).command[0]
+            $cases = & $d3d12 --list-tests '[ordered-compute]'
+            if ($LASTEXITCODE -ne 0 -or @($cases -match 'Portable ordered compute dispatches feed indirect raster').Count -ne 1) {
+              throw "The DXIL ordered compute conformance case is missing from $d3d12"
+            }
             if ($visualStudio -and (Split-Path -Leaf (Split-Path -Parent $d3d12)) -ne $configuration) {
               throw "CTest selected the wrong D3D12 executable for $configuration ($d3d12)"
             }
@@ -351,6 +356,8 @@ jobs:
           # The DXIL pixel tests are configured only with the shader tools; require them here.
           out/build/windows-clang-development/modules/graphics/rhi/ludus_rhi_d3d12_tests.exe --list-tests \
             | grep -q "draws the fullscreen pipeline across resizes"
+          out/build/windows-clang-development/modules/graphics/rhi/ludus_rhi_d3d12_tests.exe --list-tests '[ordered-compute]' \
+            | grep -q "Portable ordered compute dispatches feed indirect raster"
       - name: Preserve Windows test logs
         if: always()
         uses: actions/upload-artifact@v4

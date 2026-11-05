@@ -47,7 +47,9 @@ constexpr uint32 COMPUTE_KIND = 5;
 /// PSV0 runtime info: version 1 adds the shader stage byte, version 3 the entry name's
 /// string table offset. Earlier versions carry no entry name and are rejected.
 constexpr usize RUNTIME_STAGE_OFFSET = 24;
+constexpr usize RUNTIME_THREADS_OFFSET = 36;
 constexpr usize RUNTIME_ENTRY_OFFSET = 48;
+constexpr usize WORKGROUP_AXIS_COUNT = (RUNTIME_ENTRY_OFFSET - RUNTIME_THREADS_OFFSET) / UINT32_BYTES;
 constexpr usize RUNTIME_VERSION3_BYTES = 52;
 
 [[nodiscard]] bool ReadUint32(std::span<const uint8> bytes, usize offset, uint32& outValue) noexcept
@@ -188,6 +190,33 @@ bool HasDxilEntry(std::span<const uint8> bytes, ShaderStage stage, std::string_v
     return programVersion >> PROGRAM_KIND_SHIFT == kind && validationKind == kind && validationEntry == entry;
 }
 
+bool HasDxilWorkgroupSize(std::span<const uint8> bytes, std::span<const uint32> size) noexcept
+{
+    std::span<const uint8> part;
+    uint32 runtimeBytes = 0;
+    if (size.size() != WORKGROUP_AXIS_COUNT || IsDxilContainer(bytes) == false ||
+        FindPart(bytes, VALIDATION_PART_CODE, part) == false || ReadUint32(part, 0, runtimeBytes) == false ||
+        runtimeBytes < RUNTIME_VERSION3_BYTES || runtimeBytes > part.size() - UINT32_BYTES)
+    {
+        return false;
+    }
+    const std::span<const uint8> runtime = part.subspan(UINT32_BYTES, runtimeBytes);
+    if (runtime[RUNTIME_STAGE_OFFSET] != COMPUTE_KIND)
+    {
+        return false;
+    }
+    for (usize axis = 0; axis < size.size(); ++axis)
+    {
+        uint32 threads = 0;
+        if (ReadUint32(runtime, RUNTIME_THREADS_OFFSET + axis * UINT32_BYTES, threads) == false || threads == 0 ||
+            threads != size[axis])
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool HasDxilBindings(std::span<const uint8> bytes, const RasterLayout& layout) noexcept
 {
     // PSVResourceBindInfo1: ResType, Space, LowerBound, UpperBound, ResKind,
@@ -203,6 +232,9 @@ bool HasDxilBindings(std::span<const uint8> bytes, const RasterLayout& layout) n
     constexpr uint32 SAMPLER_TYPE = 1;
     constexpr uint32 UNIFORM_TYPE = 2;
     constexpr uint32 TEXTURE_TYPE = 3;
+    constexpr uint32 STRUCTURED_SRV_TYPE = 5;
+    constexpr uint32 STRUCTURED_UAV_TYPE = 8;
+    constexpr uint32 STRUCTURED_BUFFER_KIND = 12;
     constexpr uint32 TEXTURE2D_KIND = 2;
     constexpr uint32 TEXTURE3D_KIND = 4;
     constexpr uint32 TEXTURE_CUBE_KIND = 5;
@@ -263,10 +295,15 @@ bool HasDxilBindings(std::span<const uint8> bytes, const RasterLayout& layout) n
             {
                 continue;
             }
-            const uint32 expectedType = binding.Kind == RasterBindingKind::UniformBuffer ? UNIFORM_TYPE
-                                        : binding.Kind == RasterBindingKind::Sampler     ? SAMPLER_TYPE
-                                                                                         : TEXTURE_TYPE;
-            const uint32 expectedKind = binding.Kind == RasterBindingKind::UniformBuffer    ? UNIFORM_KIND
+            const bool isStorage =
+                binding.Kind == RasterBindingKind::StorageRead || binding.Kind == RasterBindingKind::StorageReadWrite;
+            const uint32 expectedType = binding.Kind == RasterBindingKind::UniformBuffer      ? UNIFORM_TYPE
+                                        : binding.Kind == RasterBindingKind::Sampler          ? SAMPLER_TYPE
+                                        : binding.Kind == RasterBindingKind::StorageRead      ? STRUCTURED_SRV_TYPE
+                                        : binding.Kind == RasterBindingKind::StorageReadWrite ? STRUCTURED_UAV_TYPE
+                                                                                              : TEXTURE_TYPE;
+            const uint32 expectedKind = isStorage == true                                   ? STRUCTURED_BUFFER_KIND
+                                        : binding.Kind == RasterBindingKind::UniformBuffer  ? UNIFORM_KIND
                                         : binding.Kind == RasterBindingKind::Sampler        ? SAMPLER_KIND
                                         : binding.Kind == RasterBindingKind::Texture2D      ? TEXTURE2D_KIND
                                         : binding.Kind == RasterBindingKind::Texture2DArray ? TEXTURE_ARRAY_KIND

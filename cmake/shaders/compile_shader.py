@@ -371,8 +371,9 @@ def compile_dxil(args, lock):
     output.mkdir(parents=True, exist_ok=True)
     extra = [part for path in args.include for part in ('-I', path)] + ['-D' + value for value in args.define]
     commands, dependencies, entries, sizes, containers, interfaces = [], [], {}, {}, {}, {}
-    is_raster = getattr(args, "raster", False)
-    for stage, source_entry in (('vertex', args.vertex), ('fragment', args.fragment)):
+    stages = {'compute': args.compute} if args.compute else {'vertex': args.vertex, 'fragment': args.fragment}
+    has_reflected_interface = args.raster or args.compute is not None
+    for stage, source_entry in stages.items():
         artifact = output / f'{args.name}.{stage}.dxil'
         reflection = output / f'{stage}.reflection.json'
         depfile = output / f'{stage}.d'
@@ -387,21 +388,21 @@ def compile_dxil(args, lock):
         reflected = json.loads(reflection.read_text())['entryPoints']
         if len(reflected) != 1 or reflected[0]['stage'] != stage or reflected[0]['name'] != source_entry:
             raise RuntimeError('Expected one DXIL entry with the requested stage')
-        if is_raster:
+        if has_reflected_interface:
             from compile_raster import raster_interface
             interfaces[stage] = raster_interface(json.loads(reflection.read_text()), stage, dxil=True)
         else:
             sizes[stage] = constant_buffer_uniform_size(reflection, 'DXIL', 'register b0, space 0')
         entries[stage] = source_entry
         containers[stage] = dxil_container(artifact)
-    header = '#pragma once\n#include <ludus/foundation/base/types.h>\n#include <ludus/graphics/rhi/' + ('raster.h' if is_raster else 'render.h') + '>\n'
+    header = '#pragma once\n#include <ludus/foundation/base/types.h>\n#include <ludus/graphics/rhi/' + ('raster.h' if has_reflected_interface else 'render.h') + '>\n'
     header += f'namespace ludus::shaders::{args.name} {{\n'
-    for stage in ('vertex', 'fragment'):
+    for stage in stages:
         data = containers[stage]
         header += f'alignas(4) inline constexpr foundation::uint8 {stage.upper()}_DXIL[] = {{\n'
         header += ',\n'.join('    ' + ', '.join(f'0x{x:02x}U' for x in data[i:i + 16]) for i in range(0, len(data), 16))
         header += '\n};\n'
-        if is_raster:
+        if has_reflected_interface:
             interface = interfaces[stage]
             label = stage.upper() + '_DXIL'
             if interface['entries']:
@@ -431,6 +432,8 @@ def compile_dxil(args, lock):
                 header += f' result.Bindings = {label}_BINDINGS;\n'
             if interface['inputs']:
                 header += f' result.Inputs = {label}_INPUTS;\n'
+            for axis, size in enumerate(interface.get('workgroup', [])):
+                header += f' result.WorkgroupSize[{axis}] = {size};\n'
             if members:
                 header += f' result.UniformMembers = {label}_MEMBERS;\n'
             header += ' return result;\n}\n'
@@ -442,7 +445,7 @@ def compile_dxil(args, lock):
     manifest = {'compiler': lock['slang'], 'dxc': {'version': pin['version'], 'sha256': pin['sha256']},
                 'commands': commands, 'uniform_sizes': sizes, 'interfaces': interfaces, 'dxil_entries': entries, 'profiles': {'dxil': 'sm_6_0'},
                 'sha256': {f'{args.name}.{stage}.dxil': hashlib.sha256(containers[stage]).hexdigest()
-                           for stage in ('vertex', 'fragment')},
+                           for stage in stages},
                 'layout': 'See separate DXIL reflection JSON; never assume packing equality.'}
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     target = output / f'{args.name}.h'
@@ -511,9 +514,9 @@ def main():
     if not args.compute and (not args.vertex or not args.fragment):
         raise RuntimeError("Raster/fullscreen compilation requires vertex and fragment entries")
     if args.dxil:
-        if (args.compute or args.metal or args.spirv_cross or args.validator or args.worker_socket or
-                args.native_binding_arrays or args.fragment_storage):
-            raise RuntimeError('DXIL builds support scalar fullscreen or raster vertex/fragment stages')
+        if (args.metal or args.spirv_cross or args.validator or args.worker_socket or args.native_binding_arrays or
+                args.fragment_storage or args.native_ray_queries or args.native_ray_pipeline or args.graph_software_rays):
+            raise RuntimeError('DXIL builds support scalar fullscreen, raster and compute stages without ray queries or fragment storage')
         compile_dxil(args, lock)
         return
     if args.raster or args.compute:

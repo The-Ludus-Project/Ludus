@@ -101,6 +101,14 @@ struct InterfaceId<ID3D12PipelineState> final
     }
 };
 template <>
+struct InterfaceId<ID3D12CommandSignature> final
+{
+    [[nodiscard]] static LUDUS_INLINE const IID& Get() noexcept
+    {
+        return IID_ID3D12CommandSignature;
+    }
+};
+template <>
 struct InterfaceId<ID3D12Resource> final
 {
     [[nodiscard]] static LUDUS_INLINE const IID& Get() noexcept
