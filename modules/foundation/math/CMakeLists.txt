@@ -168,7 +168,7 @@ if(LUDUS_BUILD_TESTS)
     # production path under a malloc wrap and assert no allocation occurs. Runs
     # only without sanitizers (they intercept the allocator themselves), matching
     # the containers module pattern.
-    if(NOT LUDUS_ENABLE_ASAN AND NOT LUDUS_ENABLE_UBSAN AND NOT LUDUS_ENABLE_TSAN)
+    if(NOT MSVC AND NOT LUDUS_ENABLE_ASAN AND NOT LUDUS_ENABLE_UBSAN AND NOT LUDUS_ENABLE_TSAN)
         add_executable(ludus_math_alloc_tests)
         target_sources(ludus_math_alloc_tests PRIVATE tests/allocation_tests.cpp)
         target_include_directories(ludus_math_alloc_tests PRIVATE tests)

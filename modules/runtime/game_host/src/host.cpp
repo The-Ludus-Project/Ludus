@@ -1,7 +1,11 @@
 #include <ludus/runtime/game_host/host.h>
 
-#include "internal/frame_presenter.h"
-#include "internal/host_session.h"
+#include <ludus/foundation/base/config.h>
+
+#if LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
+#    include "internal/frame_presenter.h"
+#    include "internal/host_session.h"
+#endif
 #include "internal/identity.h"
 
 namespace ludus::runtime::game_host
@@ -23,6 +27,11 @@ uint32 HostAbiMinor() noexcept
 
 RunResult InspectModule(std::string_view path, game_api::GameMetadata& metadata) noexcept
 {
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    (void)path;
+    (void)metadata;
+    return RunResult::ModuleLoadFailed;
+#else
     LoadedModule module;
     const auto loaded = LoadModule(path, 1, CurrentHostIdentity(), CurrentAbiMajor(), CurrentAbiMinor(), module);
     if (loaded != LoadStatus::Ok)
@@ -32,6 +41,7 @@ RunResult InspectModule(std::string_view path, game_api::GameMetadata& metadata)
     }
     metadata = module.Metadata();
     return module.Close() ? RunResult::Ok : RunResult::Internal;
+#endif
 }
 
 RunResult Run(const HostConfig& config) noexcept
@@ -46,6 +56,9 @@ RunResult Run(const HostConfig& config) noexcept
         return RunResult::BadArguments;
     }
 
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    return RunResult::ModuleLoadFailed;
+#else
     FramePresenter presenter;
     const auto started = presenter.Start(config.Mode);
     if (started != RunResult::Ok)
@@ -62,14 +75,6 @@ RunResult Run(const HostConfig& config) noexcept
         return session.InitialFailure();
     }
     return session.RunLoop(config.MaxFrames, &presenter);
-}
-
-RunResult RunStatic(const HostConfig& config, StaticEntryFn entry) noexcept
-{
-    if (entry == nullptr)
-    {
-        return RunResult::BadArguments;
-    }
-    return RunStaticEntry(config, entry);
+#endif
 }
 } // namespace ludus::runtime::game_host

@@ -9,11 +9,42 @@ namespace ludus::content
 struct JsonValue;
 }
 #include <ludus/content/json.h>
+#include <random>
 #include <string>
 #include <type_traits>
-#include <unistd.h>
 
 using namespace ludus::content;
+namespace
+{
+class TemporaryContentRoot final
+{
+public:
+    TemporaryContentRoot()
+    {
+        const std::filesystem::path directory = std::filesystem::temp_directory_path();
+        std::random_device random;
+        const std::filesystem::path candidate = directory / ("ludus content " + std::to_string(random()));
+        REQUIRE(std::filesystem::create_directory(candidate) == true);
+        mPath = candidate;
+    }
+
+    ~TemporaryContentRoot()
+    {
+        std::error_code error;
+        (void)std::filesystem::remove_all(mPath, error);
+    }
+
+    [[nodiscard]] std::string GetUtf8Path() const
+    {
+        const std::u8string bytes = mPath.u8string();
+        return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    }
+
+private:
+    std::filesystem::path mPath;
+};
+} // namespace
+
 static_assert(std::is_same_v<decltype(&JsonValue::Get), JsonValue (JsonValue::*)(const char*) const noexcept>);
 TEST_CASE("Catalog preserves identity and rejects malformed replacements")
 {
@@ -90,11 +121,10 @@ TEST_CASE("SHA256 matches multi-block published vectors for every split")
     }
     REQUIRE(chunked.Finish() == oneShot);
 }
-TEST_CASE("Root bounded saves preserve conflicts and reject symlink traversal")
+TEST_CASE("Root bounded saves preserve conflicts and accept UTF-8 names")
 {
-    const auto root = std::filesystem::temp_directory_path() / std::string("ludus-content-" + std::to_string(getpid()));
-    std::filesystem::create_directories(root);
-    const auto path = root.string();
+    const TemporaryContentRoot root;
+    const std::string path = root.GetUtf8Path();
     const uint8 a[] = {'a'}, b[] = {'b'};
     REQUIRE(SaveFile(path, "document.json", a, nullptr) == Status::Ok);
     Bytes data;
@@ -103,14 +133,22 @@ TEST_CASE("Root bounded saves preserve conflicts and reject symlink traversal")
     REQUIRE(SaveFile(path, "document.json", b, &digest) == Status::Ok);
     REQUIRE(SaveFile(path, "document.json", a, &digest) == Status::Conflict);
     REQUIRE(ReadFile(path, "../secret", 10, data) == Status::Invalid);
-    std::filesystem::create_directory_symlink("/tmp", root / "escape");
+    REQUIRE(ReadFile(path, "document.json", 10, data) == Status::Ok);
+    CHECK(data.Data()[0] == 'b');
+    REQUIRE(SaveFile(path, "音.json", a, nullptr) == Status::Ok);
+    CHECK(SaveFile(path, "音.json", b, nullptr) == Status::Conflict);
+    REQUIRE(ReadFile(path, "音.json", 10, data) == Status::Ok);
+    CHECK(data.Data()[0] == 'a');
+#if LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
+    const std::filesystem::path outside = std::filesystem::temp_directory_path();
+    std::filesystem::create_directory_symlink(outside, std::filesystem::path(path) / "escape");
     REQUIRE(ReadFile(path, "escape/x", 10, data) != Status::Ok);
-    std::filesystem::remove_all(root);
+#endif
 }
 TEST_CASE("Descriptor-bound revisions survive atomic replacement and detect in-place changes")
 {
-    char directory[] = "/tmp/ludus-file-reader-XXXXXX";
-    REQUIRE(mkdtemp(directory) != nullptr);
+    const TemporaryContentRoot root;
+    const std::string directory = root.GetUtf8Path();
     const uint8 first[] = {'a', 'b', 'c'}, second[] = {'d', 'e'};
     REQUIRE(SaveFile(directory, "source.wav", first, nullptr) == Status::Ok);
     FileReader reader, clone;
@@ -138,13 +176,12 @@ TEST_CASE("Descriptor-bound revisions survive atomic replacement and detect in-p
     REQUIRE(partial.Add({first, 1}));
     REQUIRE(partial.Add({first + 1, 2}));
     REQUIRE(partial.Finish() == Hash(first));
-    std::filesystem::remove_all(directory);
 }
 
 TEST_CASE("file-size admission respects the cap and preserves prior output", "[primitive][content]")
 {
-    char directory[] = "/tmp/ludus-file-size-XXXXXX";
-    REQUIRE(mkdtemp(directory) != nullptr);
+    const TemporaryContentRoot root;
+    const std::string directory = root.GetUtf8Path();
     const uint8 content[] = {1, 2, 3};
     REQUIRE(SaveFile(directory, "bytes.bin", content, nullptr) == Status::Ok);
     Bytes output;
@@ -158,13 +195,12 @@ TEST_CASE("file-size admission respects the cap and preserves prior output", "[p
     REQUIRE(ReadFile(directory, "bytes.bin", 3, output) == Status::Ok);
     REQUIRE(output.Data().size() == 3);
     REQUIRE(output.Data()[2] == 3);
-    std::filesystem::remove_all(directory);
 }
 
 TEST_CASE("Filesystem-backed content reads preserve capped failures and empty data")
 {
-    char directory[] = "/tmp/ludus-content-capped-XXXXXX";
-    REQUIRE(mkdtemp(directory) != nullptr);
+    const TemporaryContentRoot root;
+    const std::string directory = root.GetUtf8Path();
     const uint8 initial[] = {'a', 'b', 'c'};
     REQUIRE(SaveFile(directory, "data", initial, nullptr) == Status::Ok);
     Bytes output;
@@ -186,7 +222,6 @@ TEST_CASE("Filesystem-backed content reads preserve capped failures and empty da
     REQUIRE(count == 0);
     REQUIRE(reader.Seek(-1, true) == Status::Invalid);
     REQUIRE(reader.Seek(-9223372036854775807LL - 1, true) == Status::Invalid);
-    std::filesystem::remove_all(directory);
 }
 
 TEST_CASE("Content JSON adapter preserves document limits and numeric behavior", "[content][parsing]")

@@ -141,6 +141,9 @@ struct RoomScatter final
     /// Durable identity from a version-2 World record; nil for version-1 content.
     foundation::identity::SourceObjectId Object{};
 };
+/// Maximum encoded size of an authored level.
+inline constexpr usize LEVEL_TEXT_CAPACITY_BYTES = 65536;
+
 // Bounded owned content, independent of the input buffer and runtime handles.
 struct Level final
 {

@@ -749,6 +749,23 @@ with optional tooling absent.
   separately; verify portable code and implement necessary OS boundaries for
   each required profile. Use the same cooked authored sample and inputs as other
   platforms; do not invent lights or substitute a fixed demonstration scene.
+
+  The `windows-msvc-runtime` source preset builds the shared World player, core
+  Content and Resources, Renderer, text shaping and atlas, localization, UI,
+  and standalone static GameHost. The [World example](../examples/world-demo.md#windows-direct3d-12)
+  runs the same packed authored room with the same camera and input as the
+  other native backends. The Content tests cover UTF-8 names, new-file and
+  revision conflicts, bounded reads and readers retained across replacement.
+  Static GameHost has a bounded Create/Update/Quiesce/Destroy test.
+
+  The preset also builds the portable gameplay, fluid, network wire and
+  audio processing modules. The World sample has no network transport, scripted
+  behavior, device audio playback, font overlay or fluid gameplay. Windows
+  audio device/worker qualification, Luau admission, native scene-cooker file
+  operations and authored render-graph package DXIL remain open. Dynamic GameHost
+  loading and supervisor transport are tracked under D6c and D6d. The Windows
+  Ninja CI test uses WARP. D6a physical-GPU exit evidence remains pending.
+
 - **D6b (SDK/IDEs):** install/export the SDK and shader helpers, then build an
   external project in VS Code/Ninja and a generated Visual Studio/MSBuild
   solution. Exercise selectable presets, code navigation, diagnostics,
@@ -824,10 +841,10 @@ these rows remain pending.
 | RHI / transfers and lifetime | D4a | verified (Clang/WARP) | Production MSVC baseline and physical-GPU evidence still pending | PR #622 | `5b56bea2`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40375496878) |
 | RHI / compute and ordered mixed graph | D4b | verified (Clang/MSVC WARP) | D7 physical-GPU qualification | PR #992 | `9858bdb4`, [Windows CI](https://github.com/The-Ludus-Project/Ludus/actions/runs/41951508494) |
 | GPU timing / PIX / DRED | frame/pass duration, external GPU capture, DRED logs | implemented | D5b | PIX replay and physical adapter evidence pending | Windows RHI `[d5b]` and `[ordered-compute]` conformance |
-| Renderer / graph | unassigned | unreviewed | D6a after D4b/D5a | pending | none |
-| Text / localization / UI | unassigned | unreviewed | D6a required-profile audit and sample | pending | none |
-| Content / resources | unassigned | unreviewed | D6a cook/load/error journeys | pending | none |
-| Runtime / game host | unassigned | unreviewed | D6a boot/shutdown; D6c DLL reload and symbols | pending | none |
+| Renderer / graph | D6a | World raster source preset | Run on a physical GPU; add DXIL for authored graph packages | pending | Packed World and renderer pixel tests |
+| Text / localization / UI | D6a | Source targets in runtime preset | Validate MSVC shaping, atlas, localization and UI tests | pending | Windows runtime CI targets |
+| Content / resources | D6a | Packed room loader and Content saves | Qualify native scene cooker and runtime on Windows | pending | Packed/loose replay and bounded publication tests |
+| Runtime / game host | D6a | Standalone static host source target | Validate startup and shutdown; D6c DLL reload and symbols | pending | Static lifecycle test |
 | Behavior / scripting | unassigned | unreviewed | D0 compiler admission; D6a runtime; D6c authoring/reload | pending | none |
 | Gameplay / physics | unassigned | unreviewed | D6a required-profile audit | pending | none |
 | Audio | unassigned | unreviewed | D6a playback/device/failure evidence for required profiles | pending | none |

@@ -113,7 +113,7 @@ if(LUDUS_BUILD_TESTS)
     # Allocation probe: injects every allocation failure during preparation and
     # checks that sampling and queries never allocate. Sanitizers intercept the
     # allocator themselves, so the probe runs only without them.
-    if(NOT LUDUS_ENABLE_ASAN AND NOT LUDUS_ENABLE_UBSAN AND NOT LUDUS_ENABLE_TSAN)
+    if(NOT MSVC AND NOT LUDUS_ENABLE_ASAN AND NOT LUDUS_ENABLE_UBSAN AND NOT LUDUS_ENABLE_TSAN)
         add_executable(ludus_geometry_alloc_tests)
         target_sources(ludus_geometry_alloc_tests PRIVATE tests/allocation_tests.cpp)
         target_link_libraries(

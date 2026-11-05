@@ -42,6 +42,7 @@ option(LUDUS_BUILD_TESTS "Build Ludus tests" ON)
 option(LUDUS_BUILD_SHADER_WORKER "Build the optional native Slang compiler library and headless worker" OFF)
 option(LUDUS_SHADER_WORKER_ONLY "Configure only the headless shader tooling closure" OFF)
 option(LUDUS_BUILD_SMOKE_APP "Build the smoke executable" ON)
+option(LUDUS_BUILD_WINDOWS_RUNTIME "Build the Windows source runtime beyond Platform and RHI" OFF)
 option(LUDUS_BUILD_WORLD_DEMO "Build the graphical game world reference (requires shader tools)" OFF)
 option(LUDUS_BUILD_SHADER_PROBE "Build the isolated offline shader feasibility probe" OFF)
 option(LUDUS_BUILD_LUAU_PROBE "Build the private S0 Luau feasibility probe (requires scripts/luau-probe bootstrap)" OFF)
@@ -223,6 +224,10 @@ else()
     install(SCRIPT "${PROJECT_BINARY_DIR}/cmake/CheckSdkVariant.cmake" ALL_COMPONENTS)
 endif()
 
+if(LUDUS_BUILD_WINDOWS_RUNTIME AND (NOT WIN32 OR LUDUS_VISUAL_STUDIO_MULTI_CONFIG))
+    message(FATAL_ERROR "LUDUS_BUILD_WINDOWS_RUNTIME requires a single-configuration Windows build. Use the windows-msvc-runtime preset.")
+endif()
+
 include(EngineDependencyPreflight)
 
 include(EngineTestDiagnostics)
@@ -251,24 +256,26 @@ if(LUDUS_SHADER_WORKER_ONLY)
     return()
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    # Windows builds the FoundationThreading closure (threading.md, T3) and the
-    # Direct3D 12 bring-up closure: Platform's Win32 window and the RHI
-    # (docs/architecture/windows-direct3d12.md). Keep the installed Windows
-    # module list in dependency order and closed over its Ludus::* links.
-    # FoundationProfiling links
-    # FoundationStrings, which links FoundationHash; Platform links Input, Logging
-    # and Identity (through PlatformEntropy); the RHI links Math and Threading.
-    # scripts/python/test_ci.py checks this list against the modules' links.
-    foreach(module IN ITEMS memory containers hash strings time profiling threading identity math logging filesystem)
-        add_subdirectory(modules/foundation/${module})
-    endforeach()
-    add_subdirectory(modules/input)
-    add_subdirectory(modules/platform)
-    add_subdirectory(modules/graphics/rhi)
-    if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
-        ludus_install_windows_sdk()
+    if(NOT LUDUS_BUILD_WINDOWS_RUNTIME)
+        # Windows builds the FoundationThreading closure (threading.md, T3) and the
+        # Direct3D 12 bring-up closure: Platform's Win32 window and the RHI
+        # (docs/architecture/windows-direct3d12.md). Keep the installed Windows
+        # module list in dependency order and closed over its Ludus::* links.
+        # FoundationProfiling links
+        # FoundationStrings, which links FoundationHash; Platform links Input, Logging
+        # and Identity (through PlatformEntropy); the RHI links Math and Threading.
+        # scripts/python/test_ci.py checks this list against the modules' links.
+        foreach(module IN ITEMS memory containers hash strings time profiling threading identity math logging filesystem)
+            add_subdirectory(modules/foundation/${module})
+        endforeach()
+        add_subdirectory(modules/input)
+        add_subdirectory(modules/platform)
+        add_subdirectory(modules/graphics/rhi)
+        if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
+            ludus_install_windows_sdk()
+        endif()
+        return()
     endif()
-    return()
 endif()
 # Portable bounded networking primitives are shared by native and web targets.
 add_subdirectory(modules/network/core)
@@ -422,13 +429,19 @@ else()
 
     # Reference GameHost executable (project-live-reload). Built alongside the
     # smoke apps; it links Ludus::GameHost and no Qt.
-    add_subdirectory(apps/game_host)
+    if(NOT WIN32)
+        add_subdirectory(apps/game_host)
+    endif()
 
     if(LUDUS_BUILD_TESTS)
         enable_testing()
     endif()
 
-    add_subdirectory(tests)
+    if(NOT WIN32)
+        add_subdirectory(tests)
+    elseif(LUDUS_BUILD_TESTS)
+        add_subdirectory(tests/fixtures/curves_surfaces)
+    endif()
 endif()
 
 # Editor-OFF builds never discover Qt; browser and native shells share widgets.
@@ -519,7 +532,7 @@ if(LUDUS_BUILD_UNICODE)
     ludus_sdk_register_dependency(ICU4C "78.3" "Unicode-3.0" bundled)
 endif()
 if(NOT EMSCRIPTEN)
-    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText Text GameHost ShaderDevelopment)
+    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText Text ShaderDevelopment)
         ludus_sdk_register_component(${_component})
         ludus_sdk_register_feature(${_component})
     endforeach()
@@ -528,6 +541,11 @@ else()
         ludus_sdk_register_component(${_component})
         ludus_sdk_register_feature(${_component})
     endforeach()
+endif()
+
+if(TARGET Ludus::GameHost)
+    ludus_sdk_register_component(GameHost)
+    ludus_sdk_register_feature(GameHost)
 endif()
 
 if(LUDUS_BUILD_SHADER_WORKER)
@@ -541,7 +559,7 @@ endif()
 # deps of a static library are still part of the consumer's link line). Audited
 # from conanfile.py + the module CMakeLists (GraphicsRhi->volk, Text->
 # FreeType/HarfBuzz, assertion/concurrency paths->Threads).
-if(NOT APPLE)
+if(NOT APPLE AND NOT WIN32)
     ludus_sdk_register_dependency(volk "1.4.357.0" "MIT" bundled)
     if(NOT EMSCRIPTEN)
         ludus_sdk_register_dependency(VulkanMemoryAllocator "3.3.0" "MIT" bundled)
@@ -559,12 +577,16 @@ ludus_sdk_register_dependency(xxHash "0.8.3" "BSD-2-Clause" bundled)
 ludus_sdk_register_dependency(Threads     "system"    "system"             system)
 
 # System prerequisites that cannot reasonably be bundled.
-if(APPLE)
+if(WIN32)
+    ludus_sdk_register_system_prerequisite("x64 Microsoft STL and dynamic CRT matching the SDK configuration")
+    ludus_sdk_register_system_prerequisite("Windows SDK for Win32 and Direct3D 12 system libraries")
+    ludus_sdk_register_system_prerequisite("Pinned Slang and DXC for offline DXIL compilation")
+elseif(APPLE)
     ludus_sdk_register_system_prerequisite("macOS libc / libc++ runtime matching the recorded cxx_runtime_abi")
 else()
     ludus_sdk_register_system_prerequisite("libc / libstdc++ runtime matching the recorded cxx_runtime_abi")
 endif()
-if(NOT EMSCRIPTEN)
+if(NOT EMSCRIPTEN AND NOT WIN32)
     if(NOT APPLE)
         ludus_sdk_register_system_prerequisite("Vulkan loader (libvulkan.so.1) and a Vulkan-capable GPU/driver for RHI runtime")
     endif()
@@ -651,7 +673,7 @@ foreach(template_directory IN ITEMS default forward_lit restir_di visibility_buf
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph/templates/${template_directory}")
 endforeach()
 # Gameplay project helper + host/shipping main templates (project-live-reload).
-if(NOT EMSCRIPTEN)
+if(TARGET Ludus::GameHost AND NOT WIN32)
     install(FILES
         cmake/LudusGame.cmake
         cmake/LudusGameShippingMain.cpp

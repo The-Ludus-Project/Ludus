@@ -20,6 +20,10 @@ on:
       - '.github/workflows/windows-direct3d12.yml'
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
+      - 'apps/world_demo/**'
+      - 'modules/content/**'
+      - 'modules/graphics/renderer/**'
+      - 'modules/runtime/game_host/**'
       - 'config/cmake/windows-msvc*'
       - 'cmake/EngineBuildFlavor.cmake'
       - 'cmake/EngineCompilerWarnings.cmake'
@@ -139,6 +143,32 @@ jobs:
           }
       - name: Bootstrap pinned shader tools
         run: python scripts/shader-probe bootstrap
+      - name: Build and exercise the Windows source runtime on WARP
+        if: matrix.generator == 'Ninja'
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-dependencies"
+          conan export third_party/harfbuzz
+          if ($LASTEXITCODE -ne 0) { throw 'HarfBuzz recipe export failed' }
+          conan install --requires=harfbuzz/14.5.1 --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host build_type=RelWithDebInfo --settings:build build_type=Release --build=missing -o 'freetype/*:shared=False' -o 'freetype/*:with_png=False' -o 'freetype/*:with_zlib=False' -o 'freetype/*:with_brotli=False' -o 'freetype/*:with_bzip2=False' -g CMakeDeps --output-folder $env:LUDUS_WINDOWS_DEPENDENCIES
+          if ($LASTEXITCODE -ne 0) { throw 'Windows runtime dependencies failed to install' }
+          cmake --preset windows-msvc-runtime
+          if ($LASTEXITCODE -ne 0) { throw 'Windows runtime configure failed' }
+          $targets = @('ludus_world_demo', 'ludus_world_frame_renderer_tests', 'ludus_world_demo_tests',
+            'ludus_content_tests', 'ludus_resources_tests', 'ludus_static_game_host_tests',
+            'ludus_text_tests', 'ludus_graphics_text_tests', 'ludus_localization_tests', 'ludus_ui_tests',
+            'ludus_audio_tests', 'ludus_network_core_tests', 'ludus_physics_fluid_tests', 'ludus_platform_pacing_tests')
+          cmake --build --preset windows-msvc-runtime --target @targets
+          if ($LASTEXITCODE -ne 0) { throw 'Windows runtime build failed' }
+          $testNames = @($targets | Where-Object { $_ -notin @('ludus_world_demo', 'ludus_world_frame_renderer_tests') })
+          $testNames += @('ludus_world_packed_room_d3d12', 'ludus_world_frame_renderer_pixels')
+          $suite = '^(' + ($testNames -join '|') + ')$'
+          $tests = ctest --preset windows-msvc-runtime --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
+          foreach ($name in $testNames) {
+            if ($name -notin $tests.tests.name) { throw "Missing runtime test $name" }
+          }
+          ctest --preset windows-msvc-runtime --tests-regex $suite
+          if ($LASTEXITCODE -ne 0) { throw 'Windows runtime tests failed' }
       - name: Build and test primitives, Foundation host services and the Win32/D3D12 closure
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts/python

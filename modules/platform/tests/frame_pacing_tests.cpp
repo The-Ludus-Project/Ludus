@@ -453,7 +453,7 @@ TEST_CASE("The system clock is a stateless native adapter", "[pacing]")
 TEST_CASE("The system wait never completes before its interval", "[pacing]")
 {
     const PacingClock clock = ludus::platform::GetSystemPacingClock();
-#if LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_LINUX
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
     // Lower bounds only: a loaded host may wake late, but a completed wait never wakes early.
     for (uint32 attempt = 0; attempt < SYSTEM_WAIT_ATTEMPTS; ++attempt)
     {

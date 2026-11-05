@@ -1,7 +1,9 @@
 #include "internal/application.h"
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/parse_number.hpp>
-#include <ludus/foundation/filesystem/filesystem.hpp>
+#include <ludus/foundation/base/pointer.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/filesystem/pack.hpp>
 #include <ludus/foundation/logging/log.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
@@ -12,6 +14,63 @@
 #include <string_view>
 namespace
 {
+using ludus::foundation::StaticArray;
+using ludus::foundation::uint8;
+using ludus::foundation::usize;
+using ludus::world_demo::LEVEL_TEXT_CAPACITY_BYTES;
+using LevelBytes = StaticArray<char, LEVEL_TEXT_CAPACITY_BYTES>;
+namespace filesystem = ludus::foundation::filesystem;
+
+bool ReadLevelSource(std::string_view nativePath,
+                     std::string_view packedPath,
+                     LevelBytes& outBytes,
+                     usize& outSize) noexcept
+{
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    const usize separator = nativePath.find_last_of("/\\");
+#else
+    const usize separator = nativePath.find_last_of('/');
+#endif
+    const std::string_view root =
+        separator == std::string_view::npos ? std::string_view(".") : nativePath.substr(0, separator + 1);
+    const std::string_view leaf = separator == std::string_view::npos ? nativePath : nativePath.substr(separator + 1);
+    filesystem::ProviderHandle storage;
+    if (filesystem::CreateDirectoryProvider(root, storage).Succeeded() == false)
+    {
+        return false;
+    }
+    if (packedPath.empty() == false)
+    {
+        filesystem::ProviderHandle pack;
+        if (filesystem::CreatePackProvider(storage, leaf, {}, pack).Succeeded() == false)
+        {
+            return false;
+        }
+        storage = ludus::foundation::Move(pack);
+    }
+    const filesystem::Provider* providerOrNull = storage.Get();
+    filesystem::ProviderFile* fileOrNull = nullptr;
+    const std::string_view path = packedPath.empty() == true ? leaf : packedPath;
+    if (providerOrNull == nullptr || providerOrNull->OpenRead(path, fileOrNull).Succeeded() == false)
+    {
+        return false;
+    }
+    ludus::foundation::core::UniquePtr<filesystem::ProviderFile> file(fileOrNull);
+    const ludus::foundation::uint64 size = file->Size();
+    if (size == 0 || size > LEVEL_TEXT_CAPACITY_BYTES)
+    {
+        return false;
+    }
+    const usize byteCount = static_cast<usize>(size);
+    const filesystem::ReadResult read = file->ReadAt(0, {reinterpret_cast<uint8*>(outBytes.GetData()), byteCount});
+    if (read.Outcome.Succeeded() == false || read.BytesRead != byteCount)
+    {
+        return false;
+    }
+    outSize = byteCount;
+    return true;
+}
+
 constexpr ludus::foundation::uint64 HEADLESS_DEFAULT_TICKS = 120;
 constexpr ludus::foundation::usize MAX_TRACE_PATH_BYTES = 4096;
 // Windowed --pacing-report runs retain records for startup and loading iterations beyond --frames.
@@ -155,7 +214,7 @@ int main(int argc, char** argv)
     } cleanup;
     // --level is an explicit bounded read. The same codec validates Editor and
     // runtime; loading never rewrites, builds or repairs the source project.
-    char levelBytes[65536] = {};
+    LevelBytes levelBytes;
     usize levelSize = 0;
     bool headless = false;
     bool follow = false;
@@ -204,43 +263,37 @@ int main(int argc, char** argv)
                 return 1;
             }
         }
-        else if (flag == "--level" && argument + 1 < argc)
+        else if ((flag == "--level" || flag == "--level-pack") && argument + 1 < argc)
         {
             const std::string_view path(argv[++argument]);
-            if (levelSize != 0 || path.empty() || path.size() > 4096)
+            std::string_view packedPath;
+            if (flag == "--level-pack")
             {
-                return 1;
-            }
-            // Split only at this existing filesystem compatibility boundary;
-            // Directory owns the root and refuses child symlinks.
-            auto slash = std::string_view::npos;
-            for (usize i = 0; i < path.size(); ++i)
-            {
-                if (path[i] == '/')
+                if (argument + 1 >= argc)
                 {
-                    slash = i;
+                    return 1;
+                }
+                packedPath = argv[++argument];
+                if (filesystem::ValidPath(packedPath) == false)
+                {
+                    return 1;
                 }
             }
-            const auto root = slash == std::string_view::npos ? std::string_view(".")
-                              : slash == 0                    ? path.substr(0, 1)
-                                                              : path.substr(0, slash);
-            const auto leaf = slash == std::string_view::npos ? path : path.substr(slash + 1);
-            ludus::foundation::filesystem::Directory directory;
-            ludus::foundation::filesystem::File file;
-            if (directory.Open(root).Succeeded() == false || directory.OpenRead(leaf, file).Succeeded() == false ||
-                file.Size() == 0 || file.Size() > sizeof(levelBytes))
+            if (levelSize != 0 || path.empty() == true || path.size() > filesystem::MAX_ROOT_BYTES ||
+                ReadLevelSource(path, packedPath, levelBytes, levelSize) == false)
             {
-                return 1;
-            }
-            levelSize = static_cast<usize>(file.Size());
-            const auto read = file.ReadAt(0, {reinterpret_cast<uint8*>(levelBytes), levelSize});
-            if (read.Outcome.Succeeded() == false || read.BytesRead != levelSize)
-            {
+                LUDUS_LOG_ERROR(ludus::foundation::logging::LOG_CORE,
+                                "Cannot read level '{}' from '{}'. Check the path or rebuild the level pack.",
+                                packedPath,
+                                path);
                 return 1;
             }
             Level checked;
-            if (ReadLevel({levelBytes, levelSize}, checked).Error != LevelError::None)
+            if (ReadLevel({levelBytes.GetData(), levelSize}, checked).Error != LevelError::None)
             {
+                LUDUS_LOG_ERROR(ludus::foundation::logging::LOG_CORE,
+                                "Invalid level data in '{}'. Validate the authored World and rebuild its pack.",
+                                path);
                 return 1;
             }
         }
@@ -249,7 +302,7 @@ int main(int argc, char** argv)
             return 1;
         }
     }
-    const auto source = levelSize != 0 ? std::string_view(levelBytes, levelSize) : ExampleLevel();
+    const std::string_view source = levelSize != 0 ? std::string_view(levelBytes.GetData(), levelSize) : ExampleLevel();
 #if LUDUS_TARGET_OS == LUDUS_OS_WEB
     // A browser trace leaves MEMFS only through an explicit page download
     // (trace_system.hpp), which this demo does not implement.
@@ -349,7 +402,7 @@ int main(int argc, char** argv)
         return 1;
     }
     if (application.Start(ludus::graphics::rhi::BackendSelection::Auto,
-                          levelSize != 0 ? levelBytes : nullptr,
+                          levelSize != 0 ? levelBytes.GetData() : nullptr,
                           levelSize) == false)
     {
         return 1;
