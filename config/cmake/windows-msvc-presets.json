@@ -57,6 +57,16 @@
       }
     },
     {
+      "name": "windows-msvc-runtime",
+      "displayName": "Windows MSVC Runtime (Ninja)",
+      "inherits": "windows-msvc-development",
+      "cacheVariables": {
+        "LUDUS_BUILD_WINDOWS_RUNTIME": "ON",
+        "LUDUS_BUILD_WORLD_DEMO": "ON",
+        "LUDUS_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
       "name": "windows-msvc-profile",
       "displayName": "Windows MSVC Profile (Ninja)",
       "inherits": "windows-msvc-ninja-base",
@@ -76,6 +86,15 @@
     }
   ],
   "buildPresets": [
+    {
+      "name": "windows-msvc-runtime",
+      "configurePreset": "windows-msvc-runtime",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
     {
       "name": "windows-msvc-debug",
       "configurePreset": "windows-msvc-debug",
@@ -154,6 +173,21 @@
     }
   ],
   "testPresets": [
+    {
+      "name": "windows-msvc-runtime",
+      "configurePreset": "windows-msvc-runtime",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
     {
       "name": "windows-msvc-debug",
       "configurePreset": "windows-msvc-debug",

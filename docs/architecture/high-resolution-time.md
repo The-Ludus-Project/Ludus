@@ -200,6 +200,12 @@ targets, wait and early-wake counts, and an outcome (`Baseline`, `Waited`, `Late
 The native clock reads `time::Now()` and waits for the interval remaining until
 the target, recomputed from a fresh reading before every wait, so the target
 stays absolute in the FoundationTime domain and wake errors do not accumulate.
+Windows uses one relative waitable timer per waiting thread. The wait rounds up
+to a 100 ns timer unit and the pacer rechecks the monotonic clock after waking.
+It requests a high-resolution timer and falls back to a regular timer if that
+request fails. See Microsoft's [CreateWaitableTimerExW](https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw)
+and [SetWaitableTimer](https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-setwaitabletimer).
+
 Linux sleeps with POSIX
 [`nanosleep(2)`](https://man7.org/linux/man-pages/man2/nanosleep.2.html). macOS
 waits on a one-shot `kevent64(2)` timer with `NOTE_CRITICAL`, which removes the

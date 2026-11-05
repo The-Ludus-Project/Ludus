@@ -256,14 +256,19 @@ the digest of the new bytes for the next edit. Pass `nullptr` instead of an
 expected digest to require that a new destination does not exist. Run these
 synchronous operations outside audio callbacks and render critical paths.
 
-The current `Content::SaveFile` adapter supports Linux, macOS and Emscripten MEMFS.
+`Content::SaveFile` supports Windows, Linux, macOS and Emscripten MEMFS.
+Windows verifies the expected SHA-256 against a bounded read bracketed by native
+revision observations. The [FoundationFilesystem publisher](filesystem.md#f5-persistence-and-cooked-file-hints)
+then rechecks that revision under its writer lock before staging and before
+atomic replacement. Create-only saves check absence under the same lock.
+Windows requests file sync and inherits the directory ACL. The native revision
+stamp cannot detect an external writer that preserves its metadata.
 The browser path requires one filesystem owner and never yields between digest
 checks and rename. It skips the unsupported native writer lock and publishes only
 volatile session memory; download is still required to keep edits across reload.
 It keeps the same public signature and SHA-256 expected-digest policy. Other platforms return
 `Unsupported`; portable catalogs and JSON processing do not depend on this save
-backend. This adapter is separate from the proposed FoundationFilesystem F5
-persistence API and does not implement watchers or asynchronous acquisition.
+backend. Watchers and asynchronous acquisition are separate filesystem operations.
 
 The caller supplies a trusted existing root and a validated relative UTF-8 path.
 Root symlinks are allowed; every child-directory component and destination is
@@ -272,7 +277,7 @@ must be regular files or absent; FIFO checks are nonblocking. Already-open
 directory mutation, hard links and privileged actors are not a sandbox guarantee.
 The caller creates parent directories; the adapter does not create them.
 
-A nonblocking exclusive `flock` on the parent directory serializes cooperating
+On Linux and macOS, a nonblocking exclusive `flock` on the parent directory serializes cooperating
 Ludus writers. A busy lock, missing expected file, or digest/absence mismatch
 returns `Conflict`. Other open/read errors retain their actual Content status
 (`IoError`, `Limit`, or `OutOfMemory`) rather than being called a conflict.

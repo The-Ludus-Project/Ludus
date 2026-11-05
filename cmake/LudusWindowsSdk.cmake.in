@@ -38,6 +38,11 @@ function(ludus_enable_d3d12_agility target_name)
 endfunction()
 
 function(ludus_configure_windows_sdk_targets)
+    # A single-config source SDK already exports its flavor definition and uses
+    # the actual CMake configuration name. Only the solution needs adjustment.
+    if(NOT @LUDUS_VISUAL_STUDIO_MULTI_CONFIG@)
+        return()
+    endif()
     string(TOUPPER "@LUDUS_BUILD_FLAVOR@" flavor)
     set_property(TARGET Ludus::FoundationBase APPEND PROPERTY INTERFACE_COMPILE_DEFINITIONS "LUDUS_BUILD_${flavor}=1")
     if("@CMAKE_BUILD_TYPE@" MATCHES "^(Development|Profile)$")

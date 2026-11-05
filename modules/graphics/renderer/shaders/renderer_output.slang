@@ -75,7 +75,8 @@ float3 GetBackdrop(float uvY)
     return parameters.Output.z > 0.5 ? backdrop : SrgbToLinear(backdrop);
 }
 // Display colour of one scene texel under the output parameters, with the backdrop composited when it is on.
-[noinline] float3 DisplayColor(float4 scene, float uvY, bool hasBackdrop)
+LUDUS_SHADER_NOINLINE_WHEN_SUPPORTED
+float3 DisplayColor(float4 scene, float uvY, bool hasBackdrop)
 {
     float3 color = EncodeColor(ToneMapColor(scene.rgb));
     if (hasBackdrop)
@@ -86,7 +87,8 @@ float3 GetBackdrop(float uvY)
 }
 // The tone curve applied to a grey value: ApplyPbrNeutral and the Reinhard branch of ToneMapColor for r = g = b, in
 // one scalar. Edge detection only needs the display brightness, so it skips the three-channel curve.
-[noinline] float ToneMapGrey(float grey)
+LUDUS_SHADER_NOINLINE_WHEN_SUPPORTED
+float ToneMapGrey(float grey)
 {
     float value = grey * parameters.Output.x;
     bool isFinite = IsFiniteBits(value);
@@ -118,7 +120,8 @@ int2 ClampPixel(int2 pixel, int2 size)
 {
     return clamp(pixel, int2(0), size - 1);
 }
-[noinline] float LoadLuma(int2 pixel, int2 size, bool hasBackdrop)
+LUDUS_SHADER_NOINLINE_WHEN_SUPPORTED
+float LoadLuma(int2 pixel, int2 size, bool hasBackdrop)
 {
     int2 clamped = ClampPixel(pixel, size);
     return ApproximateLuma(image.Load(int3(clamped, 0)), (clamped.y + 0.5) / size.y, hasBackdrop);

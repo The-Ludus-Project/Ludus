@@ -99,7 +99,7 @@ struct HostConfig final
 /// @brief Run one host session to completion.
 ///
 /// Owns engine init/shutdown, window + RHI (for Windowed), the gameplay module lifecycle and, when a ControlFd is
-/// set, the play protocol loop. Never throws.
+/// set, the play protocol loop. On Windows, dynamic module runs return ModuleLoadFailed.
 [[nodiscard]] RunResult Run(const HostConfig& config) noexcept;
 
 /// @brief Entry signature of a statically linked gameplay implementation.
@@ -118,10 +118,13 @@ using StaticEntryFn = game_api::GetGameApiFn;
 ///
 /// No dlopen, no module path, no reload (a shipping build does not hot reload).
 /// `entry` is the project's LudusGetGameApi reinterpreted to StaticEntryFn.
+/// Windows sessions require standalone operation (ControlFd = -1 and AwaitLoad = false).
+/// A control channel request on Windows returns ProtocolError before invoking entry.
 [[nodiscard]] RunResult RunStatic(const HostConfig& config, StaticEntryFn entry) noexcept;
 
 /// @brief Explicit metadata probe in a separate host process; validates the ABI and
 /// SDK identity without creating an instance or starting a graphics session.
+/// Returns ModuleLoadFailed and preserves metadata on Windows.
 [[nodiscard]] RunResult InspectModule(std::string_view path, game_api::GameMetadata& metadata) noexcept;
 
 /// @brief The host's own ABI identity string (the compatibility key it stamps and compares against a module's

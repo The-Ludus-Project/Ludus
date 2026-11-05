@@ -12,7 +12,7 @@ if(LUDUS_BUILD_TESTS)
     ludus_enable_test_exceptions(ludus_world_camera_view_tests)
     add_test(NAME ludus_world_camera_view_tests COMMAND ludus_world_camera_view_tests)
     set_tests_properties(ludus_world_camera_view_tests PROPERTIES LABELS "unit;camera;world-demo")
-    if(NOT LUDUS_ENABLE_ASAN AND NOT LUDUS_ENABLE_UBSAN AND NOT LUDUS_ENABLE_TSAN)
+    if(NOT MSVC AND NOT LUDUS_ENABLE_ASAN AND NOT LUDUS_ENABLE_UBSAN AND NOT LUDUS_ENABLE_TSAN)
         add_executable(ludus_camera_allocation_tests tests/camera_allocation_tests.cpp)
         target_link_libraries(ludus_camera_allocation_tests PRIVATE ludus_world_camera_view Catch2::Catch2WithMain)
         ludus_apply_project_defaults(ludus_camera_allocation_tests)
@@ -116,6 +116,10 @@ if(LUDUS_BUILD_WORLD_DEMO)
         # Draws a real extraction on a headless device and reads the pixels back.
         add_executable(ludus_world_frame_renderer_tests tests/frame_renderer_tests.cpp)
         target_link_libraries(ludus_world_frame_renderer_tests PRIVATE ludus_world_frame_renderer Ludus::FoundationTime Catch2::Catch2WithMain)
+        if(WIN32)
+            ludus_attach_d3d12_agility(ludus_world_frame_renderer_tests "${LUDUS_D3D12_AGILITY_SDK_VERSION}"
+                "${LUDUS_D3D12_AGILITY_BINARIES}" "${LUDUS_D3D12_AGILITY_LICENSE}")
+        endif()
         ludus_apply_project_defaults(ludus_world_frame_renderer_tests)
         ludus_enable_test_exceptions(ludus_world_frame_renderer_tests)
         add_test(NAME ludus_world_frame_renderer_pixels COMMAND ludus_world_frame_renderer_tests)
@@ -123,7 +127,26 @@ if(LUDUS_BUILD_WORLD_DEMO)
     endif()
     add_executable(ludus_world_demo application.cpp main.cpp)
     target_link_libraries(ludus_world_demo PRIVATE ludus_world_demo_model ludus_world_demo_pacing ludus_world_frame_renderer Ludus::FoundationFilesystem Ludus::Input Ludus::Platform Ludus::GraphicsRhi Ludus::FoundationLogging Ludus::FoundationProfiling)
+    if(WIN32)
+        ludus_attach_d3d12_agility(ludus_world_demo "${LUDUS_D3D12_AGILITY_SDK_VERSION}"
+            "${LUDUS_D3D12_AGILITY_BINARIES}" "${LUDUS_D3D12_AGILITY_LICENSE}")
+    endif()
     ludus_apply_project_defaults(ludus_world_demo)
+    if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
+        set(packed_world_arguments "$<TARGET_FILE:ludus_world_demo>"
+            "${PROJECT_SOURCE_DIR}/scripts/pack" "${CMAKE_CURRENT_SOURCE_DIR}/levels")
+        add_test(NAME ludus_world_packed_room
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/packed_world.py"
+                ${packed_world_arguments})
+        set_tests_properties(ludus_world_packed_room PROPERTIES LABELS "world-demo;content" TIMEOUT 120)
+        if(WIN32)
+            add_test(NAME ludus_world_packed_room_d3d12
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/packed_world.py"
+                    ${packed_world_arguments} --windowed)
+            set_tests_properties(ludus_world_packed_room_d3d12 PROPERTIES
+                LABELS "world-demo;renderer;windows" TIMEOUT 120 RUN_SERIAL TRUE)
+        endif()
+    endif()
     if(EMSCRIPTEN)
         target_link_options(ludus_world_demo PRIVATE -fno-exceptions -g0 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=33554432 -sMAXIMUM_MEMORY=268435456 -sSTACK_SIZE=262144 -sASSERTIONS=1)
         set_target_properties(ludus_world_demo PROPERTIES OUTPUT_NAME index SUFFIX ".js")

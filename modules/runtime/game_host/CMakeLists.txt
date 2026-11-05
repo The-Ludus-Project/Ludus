@@ -38,25 +38,19 @@ configure_file(
 target_sources(ludus_runtime_game_host
     PRIVATE
         src/host.cpp
+        src/static_session.cpp
         src/entry.cpp
         src/frame_presenter.cpp
         src/internal/frame_presenter.h
         src/host_pacing.cpp
         src/host_services.cpp
-        src/host_session.cpp
-        src/property_exchange.cpp
         src/identity.cpp
-        src/module_loader.cpp
         src/protocol.cpp
         src/protocol_codec.cpp
-        src/timing_telemetry.cpp
         src/internal/host_pacing.h
         src/internal/host_services.h
-        src/internal/host_session.h
         src/internal/identity.h
-        src/internal/module_loader.h
         src/internal/protocol_codec.h
-        src/internal/timing_telemetry.h
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
@@ -65,6 +59,14 @@ target_sources(ludus_runtime_game_host
             include/ludus/runtime/game_host/host.h
             include/ludus/runtime/game_host/protocol.h
 )
+
+if(WIN32)
+    ludus_configure_win32_target(ludus_runtime_game_host)
+else()
+    target_sources(ludus_runtime_game_host PRIVATE
+        src/host_session.cpp src/property_exchange.cpp src/module_loader.cpp src/timing_telemetry.cpp
+        src/internal/host_session.h src/internal/module_loader.h src/internal/timing_telemetry.h)
+endif()
 
 target_include_directories(ludus_runtime_game_host
     PRIVATE
@@ -78,6 +80,7 @@ target_link_libraries(ludus_runtime_game_host
         Ludus::GameApi
     PRIVATE
         Ludus::FoundationLogging
+        Ludus::FoundationFilesystem
         Ludus::FoundationConfigJson
         Ludus::RuntimeConfiguration
         Ludus::FoundationContainers
@@ -97,11 +100,21 @@ install(TARGETS ludus_runtime_game_host
     FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
 
+if(LUDUS_BUILD_TESTS)
+    find_package(Catch2 3 REQUIRED CONFIG)
+    add_executable(ludus_static_game_host_tests tests/static_session_tests.cpp)
+    target_link_libraries(ludus_static_game_host_tests PRIVATE Ludus::GameHost Catch2::Catch2WithMain)
+    ludus_apply_project_defaults(ludus_static_game_host_tests)
+    ludus_enable_test_exceptions(ludus_static_game_host_tests)
+    add_test(NAME ludus_static_game_host_tests COMMAND ludus_static_game_host_tests)
+    set_tests_properties(ludus_static_game_host_tests PROPERTIES LABELS "unit;game-host" TIMEOUT 30)
+endif()
+
 # L0 two-generation feasibility: build two tiny gameplay fixture modules (A and
 # B) as MODULE libraries, plus a module that exports no entry and one with a
 # wrong identity, then prove concurrent load, hidden symbols, correct code
 # dispatch, and rejection of missing/incompatible modules.
-if(LUDUS_BUILD_TESTS)
+if(LUDUS_BUILD_TESTS AND NOT WIN32)
     find_package(Catch2 3 REQUIRED CONFIG)
     find_package(Threads REQUIRED)
 

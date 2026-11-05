@@ -184,7 +184,7 @@ Status PrepareEncoderLevels(BorrowedView<const math::Vector3> anchorsModel,
         minimumModel.Y = math::Min(minimumModel.Y, positionModel.Y);
         minimumModel.Z = math::Min(minimumModel.Z, positionModel.Z);
     }
-    constexpr float32 GRID_SIZE = LUDUS_LIGHT_ENCODER_GRID_SIZE;
+    constexpr float32 GRID_SIZE = static_cast<float32>(LUDUS_LIGHT_ENCODER_GRID_SIZE);
     constexpr uint32 MAX_GRID_COORDINATE = (uint32{1} << LUDUS_LIGHT_ENCODER_COORDINATE_BITS) - 1;
     uint32 maximum = 0;
     for (usize i = 0; i < anchorsModel.GetSize(); ++i)

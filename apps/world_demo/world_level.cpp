@@ -190,7 +190,7 @@ LevelResult ReadWorldLevel(std::string_view source, Level& output) noexcept
     parsing::JsonDocument document;
     parsing::ParseError error;
     parsing::JsonLimits limits;
-    limits.MaxInputBytes = 65536;
+    limits.MaxInputBytes = LEVEL_TEXT_CAPACITY_BYTES;
     limits.MaxArrayElements = MAX_WORLD_ENTITIES;
     limits.MaxValues = 4096;
     limits.MaxStringBytes = 128;

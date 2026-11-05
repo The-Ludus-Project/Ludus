@@ -20,3 +20,19 @@ unset(agility_package)
 
 set(LUDUS_D3D12_AGILITY_BINARIES "${ludus_d3d12_agility_SOURCE_DIR}/build/native/bin/x64")
 set(LUDUS_D3D12_AGILITY_LICENSE "${ludus_d3d12_agility_SOURCE_DIR}/LICENSE.txt")
+
+if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG OR LUDUS_BUILD_WINDOWS_RUNTIME)
+    ludus_sdk_register_dependency(Microsoft.Direct3D.D3D12 "${LUDUS_D3D12_AGILITY_PACKAGE_VERSION}"
+        "Microsoft DirectX Software License Terms" bundled)
+endif()
+
+function(ludus_install_d3d12_agility package_directory)
+    install(FILES "${PROJECT_SOURCE_DIR}/cmake/LudusD3D12Agility.cmake"
+        "${PROJECT_SOURCE_DIR}/cmake/D3D12AgilityExports.cpp"
+        "${PROJECT_SOURCE_DIR}/cmake/StageD3D12Agility.cmake"
+        DESTINATION "${package_directory}")
+    install(FILES "${LUDUS_D3D12_AGILITY_BINARIES}/D3D12Core.dll"
+        "${LUDUS_D3D12_AGILITY_BINARIES}/d3d12SDKLayers.dll"
+        "${LUDUS_D3D12_AGILITY_LICENSE}"
+        DESTINATION "${package_directory}/agility")
+endfunction()

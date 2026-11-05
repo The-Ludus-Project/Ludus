@@ -29,6 +29,9 @@ target_sources(ludus_platform_pacing
     PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include
         FILES include/ludus/platform/frame_pacing.h)
 target_link_libraries(ludus_platform_pacing PUBLIC Ludus::FoundationBase Ludus::FoundationTime)
+if(WIN32)
+    ludus_configure_win32_target(ludus_platform_pacing)
+endif()
 ludus_apply_project_defaults(ludus_platform_pacing)
 
 add_library(ludus_platform STATIC)

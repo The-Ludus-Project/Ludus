@@ -28,8 +28,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
 endif()
 
-# The Windows configuration builds only the FoundationThreading closure (no text).
-if(NOT EMSCRIPTEN AND NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
+if(NOT EMSCRIPTEN AND (NOT WIN32 OR LUDUS_BUILD_WINDOWS_RUNTIME))
     foreach(package freetype harfbuzz)
         find_package(${package} QUIET CONFIG)
         if(NOT ${package}_FOUND)

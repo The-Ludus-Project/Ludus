@@ -14,7 +14,6 @@ constexpr float32 MAX_ACTOR_SPEED = 32.0F;
 /// Largest starting health a level may give an actor.
 constexpr uint32 MAX_ACTOR_HEALTH = 100000;
 /// Initial capacity of the canonical level text buffers, in bytes.
-constexpr usize LEVEL_TEXT_CAPACITY_BYTES = 65536;
 class Reader final
 {
 public:
@@ -430,7 +429,7 @@ bool Identifier(const Name& name) noexcept
 } // namespace
 LevelResult ReadLevel(std::string_view source, Level& output) noexcept
 {
-    if (source.size() > 65536)
+    if (source.size() > LEVEL_TEXT_CAPACITY_BYTES)
     {
         return {LevelError::Capacity, 0};
     }

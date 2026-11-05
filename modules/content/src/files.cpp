@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/filesystem/filesystem.hpp>
+#include <ludus/foundation/filesystem/persistence.hpp>
 #include <new>
 #include <span>
 #include <string_view>
@@ -221,21 +222,13 @@ Status ContentStatus(foundation::filesystem::Status status) noexcept
     }
     return Status::IoError;
 }
-} // namespace
-Status ReadFile(std::string_view root, std::string_view path, usize cap, Bytes& output) noexcept
+Status ReadFromDirectory(const foundation::filesystem::Directory& directory,
+                         std::string_view path,
+                         usize cap,
+                         Bytes& outBytes) noexcept
 {
-    if (root.empty() || ValidPath(path) == false)
-    {
-        return Status::Invalid;
-    }
-    foundation::filesystem::Directory directory;
-    auto result = directory.Open(root);
-    if (result.Succeeded() == false)
-    {
-        return ContentStatus(result.Code);
-    }
     foundation::filesystem::File file;
-    result = directory.OpenRead(path, file);
+    const foundation::filesystem::Result result = directory.OpenRead(path, file);
     if (result.Succeeded() == false)
     {
         return ContentStatus(result.Code);
@@ -254,14 +247,85 @@ Status ReadFile(std::string_view root, std::string_view path, usize cap, Bytes& 
     {
         return Status::OutOfMemory;
     }
-    const auto read = file.ReadAt(0, next.Data());
+    const foundation::filesystem::ReadResult read = file.ReadAt(0, next.Data());
     if (read.Outcome.Succeeded() == false)
     {
         return ContentStatus(read.Outcome.Code);
     }
-    output = Move(next);
+    if (read.BytesRead != size)
+    {
+        return Status::Conflict;
+    }
+    outBytes = Move(next);
     return Status::Ok;
 }
+
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+Status SaveWindowsFile(std::string_view root,
+                       std::string_view path,
+                       std::span<const uint8> data,
+                       const Digest* expectedOrNull) noexcept
+{
+    namespace filesystem = foundation::filesystem;
+    filesystem::WriteOptions options;
+    options.MaxBytes = MAX_SAVE_BYTES;
+    options.Sync = filesystem::SyncPolicy::File;
+    options.Condition = filesystem::WriteCondition::Missing;
+    if (expectedOrNull != nullptr)
+    {
+        filesystem::Directory directory;
+        const filesystem::Result opened = directory.Open(root);
+        if (opened.Succeeded() == false)
+        {
+            return ContentStatus(opened.Code);
+        }
+        const filesystem::Result before = directory.Observe(path, options.Expected);
+        if (before.Succeeded() == false)
+        {
+            return before.Code == filesystem::Status::NotFound ? Status::Conflict : ContentStatus(before.Code);
+        }
+        Bytes current;
+        const Status read = ReadFromDirectory(directory, path, MAX_SAVE_BYTES, current);
+        if (read != Status::Ok)
+        {
+            return read == Status::NotFound ? Status::Conflict : read;
+        }
+        filesystem::FileStamp afterStamp;
+        const filesystem::Result after = directory.Observe(path, afterStamp);
+        if (after.Succeeded() == false)
+        {
+            return after.Code == filesystem::Status::NotFound ? Status::Conflict : ContentStatus(after.Code);
+        }
+        if (afterStamp != options.Expected || Hash(current.Data()) != *expectedOrNull)
+        {
+            return Status::Conflict;
+        }
+        // Recheck the digest-validated revision under the filesystem's writer lock.
+        options.Condition = filesystem::WriteCondition::MatchingStamp;
+    }
+    filesystem::WriteDirectory directory;
+    const filesystem::Result opened = directory.Open(root);
+    if (opened.Succeeded() == false)
+    {
+        return ContentStatus(opened.Code);
+    }
+    const filesystem::PublicationResult published = directory.Publish(path, data, options);
+    return published.Published == true ? Status::Ok : ContentStatus(published.Outcome.Code);
+}
+#endif
+} // namespace
+
+Status ReadFile(std::string_view root, std::string_view path, usize cap, Bytes& outBytes) noexcept
+{
+    if (root.empty() || ValidPath(path) == false)
+    {
+        return Status::Invalid;
+    }
+    foundation::filesystem::Directory directory;
+    const foundation::filesystem::Result result = directory.Open(root);
+    return result.Succeeded() == true ? ReadFromDirectory(directory, path, cap, outBytes) : ContentStatus(result.Code);
+}
+
 Status
 SaveFile(std::string_view root, std::string_view path, std::span<const uint8> data, const Digest* expected) noexcept
 {
@@ -269,11 +333,13 @@ SaveFile(std::string_view root, std::string_view path, std::span<const uint8> da
     {
         return Status::Invalid;
     }
-#if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_WEB
     if (data.size() > MAX_SAVE_BYTES)
     {
         return Status::Limit;
     }
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    return SaveWindowsFile(root, path, data, expected);
+#elif LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_WEB
     Fd directory;
     Text<1024> leaf;
     auto status = Parent(root, path, directory, leaf);

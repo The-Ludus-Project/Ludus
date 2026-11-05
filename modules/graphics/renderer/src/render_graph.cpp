@@ -128,7 +128,7 @@ format::ShaderTarget GetTarget(rhi::Backend backend) noexcept
             return format::ShaderTarget::Wgsl;
         case rhi::Backend::WebGL2:
             return format::ShaderTarget::GlslEs;
-        // No DXIL target yet: the Direct3D 12 RHI rejects every shader artifact.
+        // The authored package format has no DXIL target. Preparation rejects it below.
         case rhi::Backend::Direct3D12:
         case rhi::Backend::Vulkan:
             break;
@@ -2229,6 +2229,10 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     if (rhi::GetDeviceInfo(device, information) != rhi::DeviceStatus::Ready)
     {
         return Status::NotReady;
+    }
+    if (information.Startup.SelectedBackend == rhi::Backend::Direct3D12)
+    {
+        return Status::Unsupported;
     }
     const format::ShaderTarget target = GetTarget(information.Startup.SelectedBackend);
     status = ValidateTargetUniforms(plan, target);

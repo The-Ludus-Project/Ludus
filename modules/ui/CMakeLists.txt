@@ -17,7 +17,7 @@ if(LUDUS_BUILD_TESTS)
     set_tests_properties(ludus_ui_tests PROPERTIES LABELS "unit;ui")
 endif()
 
-if(LUDUS_BUILD_TESTS AND NOT LUDUS_ENABLE_ASAN AND NOT LUDUS_ENABLE_UBSAN AND NOT LUDUS_ENABLE_TSAN)
+if(LUDUS_BUILD_TESTS AND NOT MSVC AND NOT LUDUS_ENABLE_ASAN AND NOT LUDUS_ENABLE_UBSAN AND NOT LUDUS_ENABLE_TSAN)
     add_executable(ludus_ui_allocation_tests tests/allocation_tests.cpp)
     target_link_libraries(ludus_ui_allocation_tests PRIVATE Ludus::Ui Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_ui_allocation_tests)

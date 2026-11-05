@@ -17,6 +17,8 @@
 // kqueue(2), kevent64(2) EVFILT_TIMER and close(2) only: the zero-leeway wait (ADR 0003).
 #    include <sys/event.h>
 #    include <unistd.h>
+#elif LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#    include <windows.h>
 #endif
 
 // The pacing contract follows docs/architecture/high-resolution-time.md, "Native
@@ -146,6 +148,62 @@ PacingWaitStatus WaitWithCriticalTimer(Duration interval) noexcept
 }
 #endif
 
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+// Thanks to Microsoft, "CreateWaitableTimerExW function" and "SetWaitableTimer
+// function", for the one-shot relative timer and per-thread wait handle.
+// https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw
+// https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-setwaitabletimer
+class WaitableTimer final
+{
+public:
+    WaitableTimer() noexcept
+        : mHandleOrNull(CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ACCESS))
+    {
+        if (mHandleOrNull == nullptr)
+        {
+            mHandleOrNull = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ACCESS);
+        }
+    }
+
+    ~WaitableTimer() noexcept
+    {
+        if (mHandleOrNull != nullptr)
+        {
+            (void)CloseHandle(mHandleOrNull);
+        }
+    }
+
+    WaitableTimer(const WaitableTimer&) = delete;
+    WaitableTimer& operator=(const WaitableTimer&) = delete;
+
+    [[nodiscard]] PacingWaitStatus Wait(Duration interval) const noexcept
+    {
+        if (interval.Nanoseconds == 0)
+        {
+            return PacingWaitStatus::Completed;
+        }
+        if (mHandleOrNull == nullptr)
+        {
+            return PacingWaitStatus::Failed;
+        }
+        // Round up to a relative FILETIME tick without overflowing the nanosecond count.
+        constexpr uint64 NANOSECONDS_PER_TIMER_TICK = 100;
+        LARGE_INTEGER due{};
+        due.QuadPart = -static_cast<int64>((interval.Nanoseconds - 1) / NANOSECONDS_PER_TIMER_TICK + 1);
+        if (SetWaitableTimer(mHandleOrNull, &due, 0, nullptr, nullptr, FALSE) == FALSE)
+        {
+            return PacingWaitStatus::Failed;
+        }
+        return WaitForSingleObject(mHandleOrNull, INFINITE) == WAIT_OBJECT_0 ? PacingWaitStatus::Completed
+                                                                             : PacingWaitStatus::Failed;
+    }
+
+private:
+    static constexpr DWORD TIMER_ACCESS = SYNCHRONIZE | TIMER_MODIFY_STATE;
+    HANDLE mHandleOrNull;
+};
+#endif
+
 PacingWaitStatus WaitForSystemInterval(void* /*contextOrNull*/, Duration interval) noexcept
 {
     // A relative wait for the remaining interval keeps the absolute target in the
@@ -153,6 +211,9 @@ PacingWaitStatus WaitForSystemInterval(void* /*contextOrNull*/, Duration interva
     // after every return, so neither an early nor a late wake accumulates.
 #if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     return WaitWithCriticalTimer(interval);
+#elif LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    thread_local const WaitableTimer timer;
+    return timer.Wait(interval);
 #elif LUDUS_PLATFORM_HAS_PACING_WAIT
     return SleepForInterval(interval);
 #else

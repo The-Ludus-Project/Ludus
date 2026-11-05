@@ -4,8 +4,9 @@
 
 #include "wav_fixture.h"
 
+#include <chrono>
 #include <cstdlib>
-#include <time.h>
+#include <thread>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -73,8 +74,7 @@ TEST_CASE("Native device renders resident and streaming voices and joins on shut
                 progressed = true;
                 break;
             }
-            const timespec delay{0, 1000000};
-            nanosleep(&delay, nullptr);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         REQUIRE(progressed);
         REQUIRE(system.RetireStream(stream) == Status::Ok);

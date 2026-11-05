@@ -4,8 +4,11 @@
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/rhi/lifetime.h>
+#include <ludus/graphics/rhi/measurement.h>
 #include <ludus/input/actions.h>
 #include <ludus/platform/keyboard_sink.h>
+
+#include <string_view>
 namespace ludus::world_demo
 {
 namespace
@@ -300,6 +303,19 @@ AppState Application::Frame() noexcept
     const rhi::StartupInfo& startup = device.Startup;
     mSelectedBackend = startup.SelectedBackend;
     const rhi::RasterStatus prepared = mFrameRenderer.Prepare(mDevice);
+    if (mIsRendererReady == false && prepared == rhi::RasterStatus::Ready &&
+        mSelectedBackend == rhi::Backend::Direct3D12)
+    {
+        rhi::MeasurementAdapter adapter;
+        if (rhi::GetMeasurementAdapter(mDevice, adapter) == rhi::RasterStatus::Ready && adapter.SoftwareKnown == true)
+        {
+            const std::string_view kind = adapter.Software == true ? "software" : "hardware";
+            LUDUS_LOG_INFO(foundation::logging::LOG_CORE,
+                           "World renderer: Direct3D 12 {} adapter '{}'",
+                           kind,
+                           adapter.Name);
+        }
+    }
     mIsRendererReady = prepared == rhi::RasterStatus::Ready;
     if (mIsRendererReady == false && prepared != rhi::RasterStatus::Pending)
     {

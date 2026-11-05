@@ -121,21 +121,23 @@ private:
 /// @param root Nonempty filesystem root (up to 4096 bytes); a root symlink is allowed.
 /// @param path Valid relative UTF-8 path; symlinks below the root are rejected.
 /// @param cap Maximum admitted file size in bytes; empty files are valid.
-/// @param output Replaced only on success; unchanged on every failure.
+/// @param outBytes Replaced only on success; unchanged on every failure.
 /// @return Ok, Invalid, NotFound, Limit, OutOfMemory, IoError, Conflict if the
 /// opened revision changes during reading, or Unsupported on other platforms.
-/// @note Synchronous Linux/macOS or Emscripten session-filesystem I/O; call
+/// @note Synchronous Windows, Linux, macOS or Emscripten session-filesystem I/O; call
 /// outside render/audio critical paths. Browser reads do not access host files.
-[[nodiscard]] Status ReadFile(std::string_view root, std::string_view path, usize cap, Bytes& output) noexcept;
-/// Atomically create or replace one content file on Linux, macOS or browser MEMFS.
+[[nodiscard]] Status ReadFile(std::string_view root, std::string_view path, usize cap, Bytes& outBytes) noexcept;
+/// Atomically create or replace one content file on Windows, Linux, macOS or browser MEMFS.
 /// @param root Trusted existing native or session directory (up to 4096 bytes); a root
 /// symlink is allowed. Already-open directory mutation is outside this boundary.
 /// @param path Valid relative UTF-8 path; parent directories must already exist.
 /// Symlinks below the root and non-regular destination files are rejected.
 /// @param data Bytes to publish, at most 32 MiB; empty data creates an empty file.
 /// @param expected Borrowed digest of the last-read destination, or nullptr to
-/// require absence. Checked under a nonblocking cooperative parent-directory lock
-/// before writing and again before publication. Only needed for this call.
+/// require absence. Only needed for this call. On Windows, validate the digest
+/// against the observed revision, then check its native stamp under the
+/// FoundationFilesystem writer lock before staging and before replacement.
+/// Linux and macOS check the digest under their native parent-directory lock.
 /// @return Ok means atomic pathname publication succeeded. Conflict means a busy
 /// lock, absent expected file, or digest/absence mismatch; Invalid, Limit,
 /// OutOfMemory and IoError report admission or prepublication failure.
@@ -143,7 +145,8 @@ private:
 /// owned temporaries are removed where possible, and foreign temporaries retained.
 /// @note Synchronous; writers must cooperate with the directory lock for strict
 /// compare-and-swap. Uncooperative writers can race the final check and rename.
-/// @note Uses an exclusive 0600 same-directory temporary named with a
+/// @note On Windows the publisher inherits the directory ACL and requests file sync.
+/// On Linux and macOS, uses an exclusive 0600 same-directory temporary named with a
 /// .ludus-save suffix (subject to native filename limits). Successful replacement
 /// creates a new inode; existing readers retain the old revision. File fsync and
 /// close must succeed before publication; directory sync is best-effort afterward.

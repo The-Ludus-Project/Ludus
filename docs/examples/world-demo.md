@@ -85,6 +85,39 @@ launch target. Tests with `world` in their names are separate executables.
 frames through Cocoa/Metal and exits. No installed SDK consumer project is
 needed for this engine application.
 
+### Windows Direct3D 12
+
+Use an x64 Visual Studio 2022 developer shell with MSVC 14.44 and Windows SDK
+10.0.26100.0. Prepare CMake, Ninja and the pinned Conan dependencies as in the
+[Ninja runtime step](../../.github/workflows/windows-direct3d12.yml). Set
+`LUDUS_WINDOWS_DEPENDENCIES` to the CMakeDeps output directory containing
+Catch2, FreeType and HarfBuzz metadata for RelWithDebInfo. Configure and build
+from the source checkout.
+
+```powershell
+python scripts/shader-probe bootstrap
+cmake --preset windows-msvc-runtime
+cmake --build --preset windows-msvc-runtime --target ludus_world_demo ludus_world_frame_renderer_tests
+python scripts/pack apps/world_demo/levels out/world-levels.lupak
+out/build/windows-msvc-runtime/apps/world_demo/ludus_world_demo.exe --level-pack out/world-levels.lupak first-room.world.json
+```
+
+`--level-pack <archive> <relative-entry>` loads the starting room from an
+existing version-1 Ludus pack. Native Linux and macOS builds accept the same
+pack. The named entry goes through the same World validation as `--level` and
+the embedded room. The existing restart and exit actions still select the
+embedded rooms. On Windows the player logs the selected Direct3D 12 adapter
+and whether it is hardware or software.
+
+For a bounded check, add `--frames 3 --follow-camera`. The
+`ludus_world_packed_room_d3d12` test compares loose and packed replay hashes,
+requires three presented frames and rejects a corrupt pack. The
+`ludus_world_frame_renderer_pixels` test reads back the authored room's
+raster output. CI sets `LUDUS_TEST_REQUIRE_WARP=1` for those checks. For a
+physical GPU run, remove that environment variable and verify that the player
+logs a hardware adapter. Exercise WASD, Space, pause, minimize and restore,
+resize, and close on the same packed room.
+
 ## Edit levels and gameplay
 
 Edit [first-room.world.json](../../apps/world_demo/levels/first-room.world.json) or

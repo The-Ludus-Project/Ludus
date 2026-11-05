@@ -7,7 +7,8 @@ target_link_libraries(ludus_audio_content PUBLIC Ludus::Content Ludus::Audio PRI
 ludus_apply_project_defaults(ludus_audio_content)
 install(TARGETS ludus_audio_content EXPORT LudusTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
-if(LUDUS_BUILD_TESTS)
+# The file-backed fixture uses POSIX temporary directories.
+if(LUDUS_BUILD_TESTS AND NOT WIN32)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_audio_content_tests tests/content_tests.cpp)
     target_include_directories(ludus_audio_content_tests PRIVATE "${PROJECT_SOURCE_DIR}/modules/audio/tests" "${PROJECT_SOURCE_DIR}/examples/audio-content")

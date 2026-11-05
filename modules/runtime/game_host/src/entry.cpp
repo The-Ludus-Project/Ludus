@@ -15,8 +15,10 @@
 
 #include <ludus/runtime/game_host/host.h>
 
+#include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/config/json.hpp>
+#include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
 #include <ludus/runtime/configuration/host_options.hpp>
@@ -28,9 +30,13 @@
 #include <string>
 #include <string_view>
 
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#    include <windows.h>
+#else
+#    include <fcntl.h>
+#    include <sys/stat.h>
+#    include <unistd.h>
+#endif
 
 namespace
 {
@@ -40,10 +46,24 @@ using ludus::foundation::uint8;
 using ludus::foundation::usize;
 constexpr ludus::foundation::logging::LogCategory kConfigurationLog{"Configuration"};
 /// Smallest and largest authored configuration file the host reads, in bytes.
-constexpr off_t MIN_AUTHORED_FILE_BYTES = 20;
-constexpr off_t MAX_AUTHORED_FILE_BYTES = 262144;
+constexpr uint64 MIN_AUTHORED_FILE_BYTES = 20;
+constexpr uint64 MAX_AUTHORED_FILE_BYTES = 262144;
 /// Largest control descriptor accepted from the command line: it must fit an int.
 constexpr uint64 MAX_FILE_DESCRIPTOR = 0x7fffffffU;
+
+void WriteStandardOutput(std::string_view text) noexcept
+{
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    const HANDLE outputOrNull = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (outputOrNull != nullptr && outputOrNull != INVALID_HANDLE_VALUE)
+    {
+        DWORD written = 0;
+        (void)WriteFile(outputOrNull, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
+    }
+#else
+    (void)::write(STDOUT_FILENO, text.data(), text.size());
+#endif
+}
 
 struct AuthoredBytes final
 {
@@ -55,6 +75,30 @@ struct AuthoredBytes final
     }
     [[nodiscard]] bool Read(const char* path) noexcept
     {
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+        namespace filesystem = ludus::foundation::filesystem;
+        const std::string_view nativePath(path);
+        const usize separator = nativePath.find_last_of("/\\");
+        const std::string_view root =
+            separator == std::string_view::npos ? std::string_view(".") : nativePath.substr(0, separator + 1);
+        const std::string_view leaf =
+            separator == std::string_view::npos ? nativePath : nativePath.substr(separator + 1);
+        filesystem::Directory directory;
+        filesystem::File file;
+        if (directory.Open(root).Succeeded() == false || directory.OpenRead(leaf, file).Succeeded() == false ||
+            file.Size() < MIN_AUTHORED_FILE_BYTES || file.Size() > MAX_AUTHORED_FILE_BYTES)
+        {
+            return false;
+        }
+        Size = static_cast<usize>(file.Size());
+        Data = new (std::nothrow) uint8[Size];
+        if (Data == nullptr)
+        {
+            return false;
+        }
+        const filesystem::ReadResult read = file.ReadAt(0, {Data, Size});
+        return read.Outcome.Succeeded() == true && read.BytesRead == Size;
+#else
         const int fd = ::open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
         if (fd < 0)
         {
@@ -69,8 +113,9 @@ struct AuthoredBytes final
             }
         } closeFd{fd};
         struct stat info = {};
-        if (::fstat(fd, &info) != 0 || S_ISREG(info.st_mode) == false || info.st_size < MIN_AUTHORED_FILE_BYTES ||
-            info.st_size > MAX_AUTHORED_FILE_BYTES)
+        if (::fstat(fd, &info) != 0 || S_ISREG(info.st_mode) == false ||
+            info.st_size < static_cast<off_t>(MIN_AUTHORED_FILE_BYTES) ||
+            info.st_size > static_cast<off_t>(MAX_AUTHORED_FILE_BYTES))
         {
             return false;
         }
@@ -96,6 +141,7 @@ struct AuthoredBytes final
         }
         uint8 extra = 0;
         return ::read(fd, &extra, 1) == 0;
+#endif
     }
 };
 
@@ -301,8 +347,8 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         {
             // Report the host ABI identity and exit (acceptance/debug helper).
             const std::string_view id = ludus::runtime::game_host::HostIdentity();
-            (void)::write(STDOUT_FILENO, id.data(), id.size());
-            (void)::write(STDOUT_FILENO, "\n", 1);
+            WriteStandardOutput(id);
+            WriteStandardOutput("\n");
             return 0;
         }
     }
@@ -338,7 +384,7 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
                 ",\"capabilities\":" + std::to_string(metadata.Capabilities) +
                 ",\"property_schema\":" + std::to_string(metadata.PropertySchemaVersion) +
                 ",\"checkpoint_schema\":" + std::to_string(metadata.CheckpointSchemaVersion) + "}\n";
-            (void)::write(STDOUT_FILENO, record.data(), record.size());
+            WriteStandardOutput(record);
         }
         return static_cast<int>(result);
     }
