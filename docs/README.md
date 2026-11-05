@@ -158,6 +158,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Ludus Randomness Architecture](architecture/randomness.md)
 - [Ludus RHI and Graphics Device Interface Architecture](architecture/rhi-gdi.md)
 - [Ludus scene source format (`.luscene.json`)](architecture/scene-source-format.md)
+- [Ludus Shading Language (LUSL)](architecture/shading-language.md)
 - [Ludus Strings Architecture](architecture/strings.md)
 - [macOS Platform backend](architecture/macos-platform.md)
 - [Module startup and shutdown architecture](architecture/module-lifecycle.md)
@@ -219,6 +220,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [ADR 0024: Curves and surfaces domains, statuses and numeric guarantees](decisions/0024-curves-surfaces-contracts.md)
 - [ADR 0025: Pin the native reference toolchain to LLVM 23](decisions/0025-llvm-toolchain-pin.md)
 - [ADR 0026: Adopt tree-sitter for code-editor syntax structure](decisions/0026-tree-sitter-syntax-dependency.md)
+- [ADR 0027: Ludus Shading Language as a front end that emits Slang](decisions/0027-ludus-shading-language.md)
 
 ## Research and reviews
 
