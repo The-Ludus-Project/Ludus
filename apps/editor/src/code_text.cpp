@@ -56,13 +56,22 @@ bool DecodeCodeText(const QByteArray& bytes, QString& outText)
 // https://www.unicode.org/versions/Unicode18.0.0/core-spec/chapter-3/
 bool GetCodeByteOffset(const QByteArray& bytes, int32 position, usize& outOffset) noexcept
 {
-    if (position < 0)
+    CodePositionOffset start;
+    return AdvanceCodeByteOffset(bytes, position, start, outOffset);
+}
+
+bool AdvanceCodeByteOffset(const QByteArray& bytes,
+                           int32 position,
+                           CodePositionOffset& inoutFrom,
+                           usize& outOffset) noexcept
+{
+    const usize length = static_cast<usize>(bytes.size());
+    if (position < inoutFrom.Position || inoutFrom.OffsetBytes > length)
     {
         return false;
     }
-    usize offset = 0;
-    int32 units = 0;
-    const usize length = static_cast<usize>(bytes.size());
+    usize offset = inoutFrom.OffsetBytes;
+    int32 units = inoutFrom.Position;
     while (offset < length && units < position)
     {
         const usize width = GetScalarWidth(static_cast<uint8>(bytes.at(static_cast<isize>(offset))));
@@ -87,6 +96,7 @@ bool GetCodeByteOffset(const QByteArray& bytes, int32 position, usize& outOffset
     {
         return false;
     }
+    inoutFrom = { .Position = position, .OffsetBytes = offset };
     outOffset = offset;
     return true;
 }
@@ -121,8 +131,16 @@ bool GetCodeCursorPosition(const QByteArray& bytes, usize offset, int32& outPosi
 
 bool IsCodeScalarBoundary(const QByteArray& bytes, usize offset) noexcept
 {
-    const usize size = static_cast<usize>(bytes.size());
-    return offset <= size && (offset == size || IsContinuation(bytes.at(static_cast<isize>(offset))) == false);
+    return IsCodeScalarBoundary(BorrowedView<const char>{bytes.constData(), static_cast<usize>(bytes.size())}, offset);
+}
+
+bool IsCodeScalarBoundary(BorrowedView<const char> bytes, usize offset) noexcept
+{
+    if (bytes.IsValid() == false || offset > bytes.GetSize())
+    {
+        return false;
+    }
+    return offset == bytes.GetSize() || IsContinuation(bytes[offset]) == false;
 }
 
 CodeTextEdit MakeCodeTextEdit(const QByteArray& before, const QByteArray& after) noexcept

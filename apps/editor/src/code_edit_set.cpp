@@ -1,5 +1,7 @@
 #include "internal/code_edit_set.h"
 
+#include "internal/code_text.h"
+
 #include <ludus/foundation/strings/status.hpp>
 #include <ludus/foundation/strings/utf8.hpp>
 
@@ -9,6 +11,12 @@
 // Whole-set validation and application for the edit-set seam (CE05). Qt types
 // are used for the owned result buffer and selection list only; the validation
 // itself works over BorrowedView<const char> and never touches a widget.
+//
+// Cost is linear in the original plus the inserted bytes, whatever the number
+// of edits or selections: hosts hold validated UTF-8 (checked on bind and
+// admission), so a scalar boundary is a constant-time check on one byte, and
+// only the inserted bytes are validated. Validating the prefix up to every
+// offset instead made Replace All and multi-cursor edits quadratic.
 
 namespace ludus::editor
 {
@@ -21,19 +29,19 @@ using foundation::ValidateUtf8;
 
 namespace
 {
-[[nodiscard]] bool isValidPrefix(BorrowedView<const char> bytes, usize count) noexcept
+[[nodiscard]] bool IsValidUtf8Bytes(BorrowedView<const char> bytes) noexcept
 {
-    if (count == 0)
-    {
-        return true;
-    }
-    if (bytes.IsValid() == false || count > bytes.GetSize())
+    if (bytes.IsValid() == false)
     {
         return false;
     }
+    if (bytes.IsEmpty() == true)
+    {
+        return true;
+    }
     Utf8View proof;
     usize errorOffset = 0;
-    return ValidateUtf8({bytes.GetDataOrNull(), count}, proof, errorOffset) == StringStatus::Ok;
+    return ValidateUtf8({bytes.GetDataOrNull(), bytes.GetSize()}, proof, errorOffset) == StringStatus::Ok;
 }
 
 [[nodiscard]] bool areSelectionsWithin(const CodeSelectionSet& selections, usize size, BorrowedView<const char> bytes)
@@ -47,7 +55,8 @@ namespace
     {
         const CodeTextSelection selection = view[index];
         if (selection.AnchorBytes > size || selection.CaretBytes > size ||
-            isValidPrefix(bytes, selection.AnchorBytes) == false || isValidPrefix(bytes, selection.CaretBytes) == false)
+            IsCodeScalarBoundary(bytes, selection.AnchorBytes) == false ||
+            IsCodeScalarBoundary(bytes, selection.CaretBytes) == false)
         {
             return false;
         }
@@ -105,9 +114,9 @@ CodeEditStatus ValidateAndApplyEditSet(BorrowedView<const char> original,
         }
         isFirst = false;
         previousEnd = edit.StartBytes + edit.RemovedBytes;
-        if (isValidPrefix(original, edit.StartBytes) == false ||
-            isValidPrefix(original, edit.StartBytes + edit.RemovedBytes) == false ||
-            isValidPrefix(edit.Inserted, edit.Inserted.GetSize()) == false)
+        if (IsCodeScalarBoundary(original, edit.StartBytes) == false ||
+            IsCodeScalarBoundary(original, edit.StartBytes + edit.RemovedBytes) == false ||
+            IsValidUtf8Bytes(edit.Inserted) == false)
         {
             return CodeEditStatus::InvalidText;
         }

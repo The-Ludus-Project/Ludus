@@ -261,10 +261,20 @@ bool CodeEditorPanel::replaceAllThroughEditSet(const QString& findText,
 {
     // Collect every match as an ordered, non-overlapping byte edit against the
     // host's current draft, then publish them as one edit set (CE05): validated
-    // and applied whole, one undo step. QTextDocument::find advances past each
-    // match, so the ranges are already ascending and cannot overlap.
+    // and applied whole, one undo step.
+    //
+    // Matches are found in one pass over the decoded draft, which is the text the
+    // editor shows (the controller decodes the same bytes with DecodeCodeText), so
+    // its positions are editor positions. QTextDocument::find cost about 100 us
+    // per match, seconds for a large Replace All. Each match is mapped by walking
+    // on from the previous one, so mapping is one pass over the bytes as well.
     const CodeTextCapture capture = mControllerOrNull->Capture();
     if (capture.Identity.Document == 0)
+    {
+        return false;
+    }
+    QString decoded;
+    if (DecodeCodeText(capture.Text, decoded) == false)
     {
         return false;
     }
@@ -275,29 +285,29 @@ bool CodeEditorPanel::replaceAllThroughEditSet(const QString& findText,
         replacementBytes.replace("\n", "\r\n");
     }
 
-    QTextDocument::FindFlags flags;
-    if (isCaseSensitive == true)
-    {
-        flags |= QTextDocument::FindCaseSensitively;
-    }
+    // Like QTextDocument::find, a match never spans a line break.
+    const bool canMatch =
+        findText.contains(QLatin1Char('\n')) == false && findText.contains(QChar(QChar::ParagraphSeparator)) == false;
+    const Qt::CaseSensitivity sensitivity = isCaseSensitive == true ? Qt::CaseSensitive : Qt::CaseInsensitive;
     QList<CodeTextEdit> edits;
-    QTextCursor cursor(mEditor->document());
     int32 count = 0;
-    while (true)
+    CodePositionOffset mapped;
+    qsizetype from = 0;
+    while (canMatch == true)
     {
-        cursor = mEditor->document()->find(findText, cursor, flags);
-        if (cursor.isNull() == true)
+        const qsizetype at = decoded.indexOf(findText, from, sensitivity);
+        if (at < 0)
         {
             break;
         }
+        from = at + findText.size();
         usize startBytes = 0;
         usize endBytes = 0;
-        if (GetCodeByteOffset(capture.Text, cursor.selectionStart(), startBytes) == false ||
-            GetCodeByteOffset(capture.Text, cursor.selectionEnd(), endBytes) == false || endBytes < startBytes)
+        if (AdvanceCodeByteOffset(capture.Text, static_cast<int32>(at), mapped, startBytes) == false ||
+            AdvanceCodeByteOffset(capture.Text, static_cast<int32>(from), mapped, endBytes) == false)
         {
-            // A match that cannot be mapped to a scalar boundary is skipped rather
-            // than producing an invalid set; the whole operation still applies the
-            // matches it could map.
+            // A match that cannot be mapped to a scalar boundary (inside a
+            // surrogate pair) is skipped rather than producing an invalid set.
             continue;
         }
         const CodeTextEdit edit =
@@ -323,9 +333,16 @@ bool CodeEditorPanel::replaceAllThroughEditSet(const QString& findText,
         .Transaction = {},
     };
     const CodeEditStatus status = mControllerOrNull->ApplyEditSet(capture.Identity, set);
+    if (status == CodeEditStatus::Capacity)
+    {
+        mStatus->setText(QStringLiteral("Nothing was replaced: %1 replacements would make the file larger than its "
+                                        "size limit. Shorten the replacement or replace fewer matches.")
+                             .arg(count));
+        return true;
+    }
     if (status != CodeEditStatus::Ok)
     {
-        mStatus->setText(QStringLiteral("Replace All was rejected because the source changed."));
+        mStatus->setText(QStringLiteral("Nothing was replaced because the source changed. Run Replace All again."));
         return true;
     }
     mStatus->setText(QStringLiteral("%1 replacements").arg(count));
