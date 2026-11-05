@@ -17,10 +17,10 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
+#include <QResizeEvent>
 #include <QShortcut>
 #include <QShowEvent>
 #include <QSize>
-#include <QResizeEvent>
 #include <QTextCursor>
 #include <QTextDocument>
 

@@ -84,13 +84,14 @@ private:
     /// Every match of the compiled pattern within [rangeStart, rangeEnd) of
     /// `text`, in one global pass. A zero-width match advances by one to make
     /// progress, as an editor's find does.
-    [[nodiscard]] QList<Match>
-    collectMatches(const QString& text, const class QRegularExpression& pattern, foundation::int32 rangeStart, foundation::int32 rangeEnd) const;
+    [[nodiscard]] QList<Match> collectMatches(const QString& text,
+                                              const class QRegularExpression& pattern,
+                                              foundation::int32 rangeStart,
+                                              foundation::int32 rangeEnd) const;
     /// The replacement for one match: the literal replacement, with regex
     /// backreferences expanded when regex is on, and the match's case pattern
     /// applied when preserve case is on.
-    [[nodiscard]] QString
-    replacementFor(const class QRegularExpressionMatch& match, const QString& matchedText) const;
+    [[nodiscard]] QString replacementFor(const class QRegularExpressionMatch& match, const QString& matchedText) const;
     /// Publish the ordered edits as one CodeEditSet through the controller; map
     /// every match's editor positions to bytes in one pass. Returns false when no
     /// controller is bound so the caller can use the Qt fallback.

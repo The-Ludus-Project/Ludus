@@ -2,8 +2,8 @@
 
 #include <ludus/foundation/base/core.h>
 
-#include "internal/code_find_overlay.h"
 #include "internal/code_editor.h"
+#include "internal/code_find_overlay.h"
 
 #include <QCheckBox>
 #include <QHBoxLayout>
