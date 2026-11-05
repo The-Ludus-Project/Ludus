@@ -1,8 +1,10 @@
 # Ludus Shading Language (LUSL)
 
 Status: proposed, November 4, 2026; the design's open questions were resolved the
-same day (see [resolved questions](#resolved-questions)). Nothing described here
-is implemented.
+same day (see [resolved questions](#resolved-questions)). L1a, the preprocessor,
+is implemented in `Ludus::ShaderLanguage`; see the
+[module guide](../modules/tooling/shader-language.md) for its exact behavior and
+limits. The rest of L1 and later phases are not implemented.
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
 
@@ -109,7 +111,9 @@ Rules for the compiler:
     them.
   - `ShaderLanguage` owns its own limits: tokens, include depth, macro expansion
     depth and count, syntax nodes, specializations and retained diagnostics.
-  - Their values are set in L1, measured against built-in content.
+  - Their values are set in L1, measured against built-in content. The
+    preprocessor's limits are listed in the
+    [module guide](../modules/tooling/shader-language.md#limits).
 
 ## Language
 

@@ -318,6 +318,7 @@ add_subdirectory(modules/audio)
 add_subdirectory(third_party/yyjson)
 add_subdirectory(modules/foundation/parsing)
 add_subdirectory(modules/tooling/shader_compiler)
+add_subdirectory(modules/tooling/shader_language)
 add_subdirectory(modules/foundation/reflection)
 add_subdirectory(modules/foundation/serialization)
 # Native game modules are shared libraries that link the installed reflection
