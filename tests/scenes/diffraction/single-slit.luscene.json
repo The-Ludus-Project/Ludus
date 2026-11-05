@@ -1,0 +1,69 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Single slit",
+  "description": "Single slit for edge-diffraction (UTD) work. A small one-sided square light (3 cm, radiance 10000) at z = 0.5 faces an opaque black screen at z = 0. The screen has a vertical slit 5 cm wide and 80 cm long; its two long edges are knife edges (zero-thickness half-planes). A white Lambertian wall at z = -1 receives the light. Geometric optics gives a fully lit 9 cm strip inside a 21 cm penumbra and darkness beyond; diffraction adds fringes and light inside the geometric shadow. At a design wavelength of 5 mm the Fresnel number w^2 / (lambda L1 L2 / (L1 + L2)) is 1.5 and the light's transverse coherence width at the slit, lambda L1 / a, is 1.7 slit widths; scale all lengths with the wavelength. The camera stands between the screen and the wall, facing the wall.",
+  "camera": {
+    "eye": [0, 0, -0.1],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 47.92497794915637
+  },
+  "materials": [
+    {"name": "White wall", "model": "diffuse", "base_color": [0.8, 0.8, 0.8]},
+    {"name": "Black screen", "model": "diffuse", "base_color": [0, 0, 0]},
+    {"name": "Light", "model": "diffuse", "base_color": [0, 0, 0], "emission": {"radiance": [10000, 10000, 10000], "two_sided": false}}
+  ],
+  "objects": [
+    {
+      "name": "Wall",
+      "material": "White wall",
+      "positions": [
+        [-1.5, -1.5, -1],
+        [1.5, -1.5, -1],
+        [1.5, 1.5, -1],
+        [-1.5, 1.5, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Slit screen",
+      "material": "Black screen",
+      "positions": [
+        [-1.5, -1.5, 0],
+        [-0.025, -1.5, 0],
+        [-0.025, 1.5, 0],
+        [-1.5, 1.5, 0],
+        [0.025, -1.5, 0],
+        [1.5, -1.5, 0],
+        [1.5, 1.5, 0],
+        [0.025, 1.5, 0],
+        [-0.025, 0.4, 0],
+        [0.025, 0.4, 0],
+        [-0.025, -0.4, 0],
+        [0.025, -0.4, 0]
+      ],
+      "polygons": [
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+        [8, 9, 7, 2],
+        [1, 4, 11, 10]
+      ]
+    },
+    {
+      "name": "Light",
+      "material": "Light",
+      "positions": [
+        [-0.015, -0.015, 0.5],
+        [-0.015, 0.015, 0.5],
+        [0.015, 0.015, 0.5],
+        [0.015, -0.015, 0.5]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    }
+  ]
+}

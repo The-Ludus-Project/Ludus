@@ -48,12 +48,15 @@ MIT license), which the import records like any other source license.
 | `many_lights/many-emitter-room.luscene.json` | The Cornell room with its ceiling light replaced by a 4 × 4 grid of small emitters, each its own material, whose radiance spans a factor of 64. | The many-emitter room of the [RIS projected-solid-angle template](../development/render-graph-authoring.md#resample-many-area-lights-with-projected-solid-angle-sampling) and the polygonal-light-sampling template's triangle-budget check |
 | `many_lights/emitter-field-diffuse.luscene.json` | The Cornell room with a 40 × 40 field of small emitters (3200 emissive triangles) in four radiance levels and three tints; one object per level and tint; rough dielectric walls. | The diffuse variant of the hidden `[.ris-projected-solid-angle-benchmark]` |
 | `many_lights/emitter-field-specular.luscene.json` | The same field over glossy metal (roughness 0.2), which mirrors the emitters. | The specular variant of `[.ris-projected-solid-angle-benchmark]` |
+| `diffraction/single-slit.luscene.json` | A single slit for edge diffraction, such as the Uniform Theory of Diffraction (UTD): a 3 cm one-sided square light 0.5 m in front of an opaque black screen with a vertical slit 5 cm wide and 80 cm long, whose long edges are knife edges, and a white Lambertian wall 1 m behind the screen. The camera stands between the screen and the wall. At a design wavelength of 5 mm the Fresnel number is 1.5 and the light's transverse coherence width at the slit is 1.7 slit widths; scale every length with the wavelength. | The import check of `ludus_scene_import_tests`; no renderer test yet |
 | `line_sampling/large-line-grid.luscene.json` | A 20 m floor and a ceiling 4 m above it, each tessellated into 160 × 160 quads (102,400 triangles), under a 2 m square light. 3.2 MB, because it lists every quad. | The [`[scene-capacity]` regression](renderer-systems.md#l51-budgeted-scene-capacity) of the line-sampling template |
 
-All but the large line grid use the Cornell room camera of the GPU tests: eye at
+All but the single slit and the large line grid use the Cornell room camera of the GPU tests: eye at
 (0, 0, 3.4) looking down −z, with a vertical field of view of 2·atan(1/2.2) ≈ 48.89°.
 The large line grid's camera stands at (15, 0.6, 10) and looks along −x, with a
-vertical field of view of 2·atan(1/1.2) ≈ 79.61°. The test camera renders 96 × 64
+vertical field of view of 2·atan(1/1.2) ≈ 79.61°. The single slit's camera stands at
+(0, 0, −0.1) and looks down −z at the wall, with a vertical field of view of
+2·atan(0.4/0.9) ≈ 47.92°, which shows the wall from y = −0.4 to 0.4. The test camera renders 96 × 64
 pixels; the viewport keeps its own aspect ratio, so it can show a little more or less
 of the scene.
 
