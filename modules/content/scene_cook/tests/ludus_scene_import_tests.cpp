@@ -129,6 +129,51 @@ TEST_CASE("Ludus scene import cooks the engine's occlusion test scenes", "[scene
     }
 }
 
+TEST_CASE("Ludus scene import cooks the engine's single-slit diffraction scene", "[scene_cook][ludus-scene]")
+{
+    const std::string entry = GetTestScene("diffraction/single-slit.luscene.json").string();
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(entry, {}, result, error) == true);
+    CHECK(result.Format == SceneSourceFormat::LudusScene);
+    CHECK(result.Summary.Errors == 0);
+    CHECK(result.Summary.SourceAreaLights == 1);
+    // The light's black surface becomes LUSCN's white rough emitter surface.
+    CHECK(ReportHasCode(result, codes::MATERIAL_APPROXIMATED) == true);
+
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    // The camera stands between the screen (z = 0) and the wall (z = -1), facing the wall.
+    CHECK(decoded.Eye == math::Vector3{0, 0, -0.1F});
+    CHECK(decoded.Target == math::Vector3{0, 0, -1});
+
+    usize emitters = 0;
+    usize triangles = 0;
+    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    {
+        const ludus::resources::SceneMesh& mesh = decoded.Meshes[object.Mesh];
+        triangles += mesh.Indices.GetSize() / 3;
+        const ludus::resources::SceneMaterial& material = decoded.Materials[object.Material];
+        if (material.Emission.X == 0.0F)
+        {
+            continue;
+        }
+        ++emitters;
+        // The cooked format's largest radiance, so the small coherent-enough light still lights the wall.
+        CHECK(material.Emission == math::Vector3{10000, 10000, 10000});
+        CHECK(material.IsEmissionTwoSided == false);
+        // The one-sided light faces the screen and the wall behind it, towards -z.
+        for (const math::Vector3& normal : mesh.Normals)
+        {
+            CHECK(normal == math::Vector3{0, 0, -1});
+        }
+    }
+    CHECK(emitters == 1);
+    // Wall and light quads plus the four screen quads around the slit.
+    CHECK(triangles == 12);
+}
+
 TEST_CASE("Ludus scene import keeps materials and reports invalid documents", "[scene_cook][ludus-scene]")
 {
     ScratchDirectory scratch;
