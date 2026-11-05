@@ -33,6 +33,23 @@ int main(int argumentCount, char** arguments)
         return 1;
     }
     const std::string_view mode(arguments[1]);
+    if (mode == "reject-junction")
+    {
+        Directory reader;
+        WriteDirectory writer;
+        if (reader.Open(".").Succeeded() == false || writer.Open(".").Succeeded() == false)
+        {
+            return 2;
+        }
+        File file;
+        FileStamp stamp;
+        const bool hasRefusedRead = reader.OpenRead("link/output.bin", file).Code == Status::AccessDenied;
+        const bool hasRefusedObservation = reader.Observe("link/output.bin", stamp).Code == Status::AccessDenied;
+        const bool hasRefusedWrite = writer.Publish("link/output.bin", NEW_BYTES).Outcome.Code == Status::AccessDenied;
+        constexpr int JUNCTION_ACCEPTED = 4;
+        return hasRefusedRead == true && hasRefusedObservation == true && hasRefusedWrite == true ? 0
+                                                                                                  : JUNCTION_ACCEPTED;
+    }
     shouldInterrupt = mode != "retry";
     shouldInterruptAfterPublication = mode == "after";
     WriteDirectory writer;

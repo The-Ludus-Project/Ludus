@@ -409,7 +409,9 @@ Both generators use compiler-native locked Catch2 and signed DXIL. The D3D12 sui
 workflow checks that both the fullscreen and transfer cases were compiled.
 The D5a additions run the FoundationBase, memory and containers (including
 allocation failure), time, threading, logging, profiling, identity, filesystem,
-entropy and input suites in each MSVC configuration. The filesystem process
+entropy and input suites in each MSVC configuration. The Windows assertion
+probe inspects the terminal diagnostic packet, confirms that report transport
+is unavailable and checks that normal exit handlers were bypassed. The filesystem process
 probe terminates the writer before and after atomic publication on the runner's
 filesystem, then checks the accepted bytes and retries. This exercises process
 interruption separately from storage power loss.

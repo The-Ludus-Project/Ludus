@@ -1,4 +1,5 @@
 #include <ludus/foundation/base/pointer.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/input/keyboard.h>
 #include <ludus/platform/base/window.h>
 #include <ludus/platform/keyboard_sink.h>
@@ -146,10 +147,24 @@ TEST_CASE("Win32 delivers physical keys, repeats, and focus cancellation", "[win
     CHECK(keyboard.GetKeyboardSnapshot().Released[static_cast<usize>(Key::ControlRight)] == false);
     CHECK(keyboard.GetKeyboardSnapshot().Pressed[static_cast<usize>(Key::KeyA)] == false);
 
+    constexpr usize VIRTUAL_KEY_COUNT = 256;
+    constexpr BYTE KEY_DOWN = 0x80;
+    ludus::foundation::StaticArray<BYTE, VIRTUAL_KEY_COUNT> original{};
+    REQUIRE(GetKeyboardState(original.GetData()) != FALSE);
+    ludus::foundation::StaticArray<BYTE, VIRTUAL_KEY_COUNT> held = original;
+    held[VK_RCONTROL] = KEY_DOWN;
+    held[VK_RETURN] = KEY_DOWN;
+    REQUIRE(SetKeyboardState(held.GetData()) != FALSE);
     SendMessageW(handle, WM_SETFOCUS, 0, 0);
+    REQUIRE(SetKeyboardState(original.GetData()) != FALSE);
     SendMessageW(handle, WM_KEYDOWN, 'Q', MAKELPARAM(1, A_POSITION));
     REQUIRE(keyboard.ConsumeStep(4) == StepStatus::Ok);
     CHECK(keyboard.GetKeyboardSnapshot().Pressed[static_cast<usize>(Key::KeyA)] == true);
+    CHECK(keyboard.GetKeyboardSnapshot().Down[static_cast<usize>(Key::ControlRight)] == true);
+    CHECK(keyboard.GetKeyboardSnapshot().Suppressed[static_cast<usize>(Key::ControlRight)] == true);
+    CHECK(keyboard.GetKeyboardSnapshot().Pressed[static_cast<usize>(Key::ControlRight)] == false);
+    CHECK(keyboard.GetKeyboardSnapshot().Down[static_cast<usize>(Key::Enter)] == false);
+    CHECK(keyboard.GetKeyboardSnapshot().Down[static_cast<usize>(Key::KeypadEnter)] == false);
     SendMessageW(handle, WM_CLOSE, 0, 0);
     REQUIRE(keyboard.ConsumeStep(5) == StepStatus::Ok);
     CHECK(keyboard.GetKeyboardSnapshot().LastReset == ResetReason::WindowClosed);

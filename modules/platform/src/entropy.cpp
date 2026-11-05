@@ -13,8 +13,11 @@
 #    endif
 #elif LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
 #    define LUDUS_PLATFORM_HAS_ENTROPY 1
-#    include <bcrypt.h>
+// The Windows SDK requires the Win32 types before the CNG declarations.
+// clang-format off
 #    include <windows.h>
+#    include <bcrypt.h>
+// clang-format on
 #else
 #    define LUDUS_PLATFORM_HAS_ENTROPY 0
 #endif

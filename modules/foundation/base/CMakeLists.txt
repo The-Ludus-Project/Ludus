@@ -163,6 +163,18 @@ if(LUDUS_BUILD_TESTS)
 
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     find_package(Threads REQUIRED)
+    if(WIN32)
+        add_executable(ludus_windows_diagnostic_probe tests/windows_diagnostic_probe.cpp)
+        target_include_directories(ludus_windows_diagnostic_probe PRIVATE src)
+        ludus_configure_win32_target(ludus_windows_diagnostic_probe)
+        target_link_libraries(ludus_windows_diagnostic_probe PRIVATE Ludus::FoundationBase)
+        ludus_apply_project_defaults(ludus_windows_diagnostic_probe)
+        add_test(NAME ludus_windows_diagnostic_death
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/assertions/windows_diagnostics.py"
+                "$<TARGET_FILE:ludus_windows_diagnostic_probe>")
+        set_tests_properties(ludus_windows_diagnostic_death PROPERTIES LABELS "foundation;assert-death;windows" TIMEOUT 30)
+    endif()
+
     # Both backends use identical driver code and compiler policy. Compile its
     # concurrency-heavy includes once, but keep each runtime in its own binary.
     # Do not link Base here: the fake executable provides a separate runtime.

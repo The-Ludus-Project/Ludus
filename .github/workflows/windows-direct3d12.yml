@@ -64,6 +64,8 @@ on:
       - 'modules/graphics/rhi/src/raster_unsupported.cpp'
       - 'modules/graphics/rhi/tests/d3d12*'
       - 'tests/sdk_consumer/shaders/raster.slang'
+      - 'modules/foundation/base/tests/windows_diagnostic_probe.cpp'
+      - 'tests/assertions/windows_diagnostics.py'
       - 'modules/foundation/filesystem/**'
       - 'tests/filesystem/windows_recovery.py'
       - 'modules/platform/src/entropy.cpp'
@@ -205,7 +207,7 @@ jobs:
             'ludus_platform_entropy_tests', 'ludus_platform_win32_tests', 'ludus_input_tests',
             'ludus_rhi_d3d12_tests', 'ludus_rhi_lifecycle_tests'
           )
-          $targets = $testTargets + @('ludus_filesystem_windows_recovery_probe')
+          $targets = $testTargets + @('ludus_filesystem_windows_recovery_probe', 'ludus_windows_diagnostic_probe')
           if ($visualStudio) { $targets += 'ludus_windows_sdk' }
           foreach ($configuration in $builds.Keys) {
             $preset = $builds[$configuration]
@@ -216,7 +218,7 @@ jobs:
 
           # Run the tests after building all configurations, so an output
           # collision cannot silently substitute the most recently built binary.
-          $testNames = $testTargets + @('ludus_filesystem_windows_recovery')
+          $testNames = $testTargets + @('ludus_filesystem_windows_recovery', 'ludus_windows_diagnostic_death')
           $suite = '^(' + ($testNames -join '|') + ')$'
           foreach ($configuration in $builds.Keys) {
             $preset = $builds[$configuration]

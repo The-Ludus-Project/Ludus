@@ -158,6 +158,33 @@ constexpr StaticArray<Key, 2 * SCAN_CODE_COUNT> MakeScanTable() noexcept
 
 constexpr StaticArray<Key, 2 * SCAN_CODE_COUNT> SCAN_TABLE = MakeScanTable();
 
+[[nodiscard]] LUDUS_INLINE bool HasAmbiguousScanCode(UINT virtualKey) noexcept
+{
+    // A virtual-key snapshot cannot distinguish keypad Enter or NumLock-off
+    // navigation keys from their extended-key counterparts.
+    switch (virtualKey)
+    {
+        case VK_RETURN:
+        case VK_CLEAR:
+        case VK_INSERT:
+        case VK_DELETE:
+        case VK_HOME:
+        case VK_END:
+        case VK_PRIOR:
+        case VK_NEXT:
+        case VK_LEFT:
+        case VK_RIGHT:
+        case VK_UP:
+        case VK_DOWN:
+        case VK_SHIFT:
+        case VK_CONTROL:
+        case VK_MENU:
+            return true;
+        default:
+            return false;
+    }
+}
+
 [[nodiscard]] LUDUS_INLINE Key MapScanCode(UINT scanCode, WPARAM virtualKey) noexcept
 {
     if (virtualKey == VK_PAUSE || virtualKey == VK_CANCEL)

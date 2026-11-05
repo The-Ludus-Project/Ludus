@@ -64,8 +64,8 @@ public:
     LRESULT HandleMessage(HWND window, UINT message, WPARAM wordParameter, LPARAM longParameter) noexcept;
 
 private:
-    void synchronizeKeyboardSink() noexcept;
-    void resetKeyboard(input::ResetReason reason) noexcept;
+    void synchronizeKeyboardSink(input::Key pressedKey = input::Key::Unknown) noexcept;
+    void resetKeyboard(input::ResetReason reason, input::Key pressedKey = input::Key::Unknown) noexcept;
     void deliverKey(UINT message, WPARAM virtualKey, LPARAM keyState) noexcept;
     void refreshExtent() noexcept;
     void close() noexcept;
@@ -268,17 +268,18 @@ LRESULT Win32Window::HandleMessage(HWND window, UINT message, WPARAM wordParamet
     return DefWindowProcW(window, message, wordParameter, longParameter);
 }
 
-void Win32Window::synchronizeKeyboardSink() noexcept
+void Win32Window::synchronizeKeyboardSink(input::Key pressedKey) noexcept
 {
     const KeyboardSink sink = GetKeyboardSink();
     if (sink.UserData != mSynchronizedSink.UserData || sink.OnRecord != mSynchronizedSink.OnRecord ||
         sink.OnReset != mSynchronizedSink.OnReset)
     {
-        resetKeyboard(mIsFocused == true ? input::ResetReason::FocusEntered : input::ResetReason::FocusLost);
+        resetKeyboard(mIsFocused == true ? input::ResetReason::FocusEntered : input::ResetReason::FocusLost,
+                      pressedKey);
     }
 }
 
-void Win32Window::resetKeyboard(input::ResetReason reason) noexcept
+void Win32Window::resetKeyboard(input::ResetReason reason, input::Key pressedKey) noexcept
 {
     mSynchronizedSink = GetKeyboardSink();
     if (mSynchronizedSink.OnReset == nullptr)
@@ -299,13 +300,12 @@ void Win32Window::resetKeyboard(input::ResetReason reason) noexcept
         {
             for (UINT virtualKey = 0; virtualKey < VIRTUAL_KEY_COUNT; ++virtualKey)
             {
-                if ((keys[virtualKey] & KEYBOARD_STATE_DOWN) == 0 || virtualKey == VK_SHIFT ||
-                    virtualKey == VK_CONTROL || virtualKey == VK_MENU)
+                if ((keys[virtualKey] & KEYBOARD_STATE_DOWN) == 0 || HasAmbiguousScanCode(virtualKey) == true)
                 {
                     continue;
                 }
                 const input::Key key = MapScanCode(MapVirtualKeyW(virtualKey, MAPVK_VK_TO_VSC_EX), virtualKey);
-                if (input::IsValidKey(key) == true)
+                if (input::IsValidKey(key) == true && key != pressedKey)
                 {
                     baseline.Keys[static_cast<usize>(key)] = true;
                 }
@@ -321,21 +321,24 @@ void Win32Window::deliverKey(UINT message, WPARAM virtualKey, LPARAM keyState) n
     {
         return;
     }
-    synchronizeKeyboardSink();
-    const KeyboardSink sink = GetKeyboardSink();
     const WORD flags = HIWORD(keyState);
     const UINT scanCode = (flags & SCAN_CODE_MASK) | ((flags & KF_EXTENDED) != 0 ? EXTENDED_SCAN_PREFIX : 0);
     const input::Key key = MapScanCode(scanCode, virtualKey);
+    const bool isDown = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+    const bool isRepeat = isDown == true && (flags & KF_REPEAT) != 0;
+    // Another window may pump the thread queue. If this is the sink's first
+    // fresh down, keep it out of the held snapshot so it still creates an edge.
+    synchronizeKeyboardSink(isDown == true && isRepeat == false ? key : input::Key::Unknown);
+    const KeyboardSink sink = GetKeyboardSink();
     if (sink.OnRecord == nullptr || input::IsValidKey(key) == false)
     {
         return;
     }
-    const bool isDown = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
     input::KeyboardRecord record;
     record.Source = input::RecordSource::Native;
     record.PhysicalKey = key;
     record.Transition = isDown == true ? input::KeyTransition::Down : input::KeyTransition::Up;
-    record.Repeat = isDown == true && (flags & KF_REPEAT) != 0;
+    record.Repeat = isRepeat;
     sink.OnRecord(sink.UserData, record);
 }
 

@@ -31,5 +31,21 @@ def verify(probe: Path) -> None:
                     raise RuntimeError(f"{phase}: retry did not publish the complete bytes")
 
 
+def verify_junction(probe: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="ludus junction ") as directory:
+        root = Path(directory)
+        target = root / "target"
+        target.mkdir()
+        output = target / "output.bin"
+        output.write_bytes(b"old")
+        subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", "link", "target"],
+                       cwd=root, check=True, timeout=10)
+        subprocess.run([probe, "reject-junction"], cwd=root, check=True, timeout=10)
+        if output.read_bytes() != b"old":
+            raise RuntimeError("Publication crossed the child junction")
+
+
 if __name__ == "__main__":
-    verify(Path(sys.argv[1]).resolve())
+    probe = Path(sys.argv[1]).resolve()
+    verify(probe)
+    verify_junction(probe)

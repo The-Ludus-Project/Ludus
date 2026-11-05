@@ -724,8 +724,10 @@ profiling under MSVC; prior Clang evidence remains separately identified.
 
 The Win32 backend delivers physical scan-code transitions to the attached
 keyboard sink, including repeats and extended modifier and keypad keys.
-Focus loss and close cancel held state. Focus entry samples held keys for the
-reducer's suppressed baseline. Platform entropy uses the system-preferred
+Focus loss and close cancel held state. Focus entry samples held keys with an
+unambiguous physical mapping for the reducer's suppressed baseline. Keys that
+share a virtual key, such as the two Enter keys, resume from physical key
+messages. Platform entropy uses the system-preferred
 Windows CNG provider. FoundationFilesystem uses pinned Windows handles and the
 existing bounded async queue. The [filesystem contract](filesystem.md#f5-persistence-and-cooked-file-hints)
 covers Windows atomic replacement, the cooperative lock and parent-flush
