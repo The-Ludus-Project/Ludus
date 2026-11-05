@@ -540,7 +540,7 @@ cmake --build out/build/windows-mingw-check --target ludus_platform ludus_graphi
 | D3a (Clang/WARP verified) | Raster resources, bindings and DXIL interfaces | Windows resource/binding, bounded failure, pending upload retirement and DXIL suites passed for PR #617 at `172002e4` ([run 40359506345](https://github.com/The-Ludus-Project/Ludus/actions/runs/40359506345)); production MSVC and hardware evidence remain pending |
 | D3b (Clang/WARP verified) | Portable raster pipelines/passes, attachments, depth/stencil/blend and transitions | Shared raster images and debug-queue checks passed for PR #620 at `c239b3d9` ([run 40369593745](https://github.com/The-Ludus-Project/Ludus/actions/runs/40369593745)); production MSVC and physical-GPU evidence pending |
 | D4a (Clang/WARP verified) | Transfers, readback and lifetime | Windows transfer/lifetime, offscreen, cancellation, failure preservation and raster suites passed at `5b56bea2` ([run 40375496878](https://github.com/The-Ludus-Project/Ludus/actions/runs/40375496878)); production MSVC and physical-GPU evidence pending |
-| D4b | Compute and ordered render graphs | Compute/graph suites, mixed graphics/compute/transfer journeys; required compute profile admitted |
+| D4b (Clang/MSVC WARP verified) | Compute and ordered render graphs | Required compute admission and the shared mixed compute/raster/transfer journey passed at `9858bdb4` ([run 41951508494](https://github.com/The-Ludus-Project/Ludus/actions/runs/41951508494)) |
 | D5a | Windows host services and Foundation validation | Native input, entropy, files/persistence/watch tests; diagnostics and Foundation runtime evidence |
 | D5b | GPU measurement and debugging | Timestamp/pass-scope tests; PIX capture/markers and DRED failure diagnostics documented |
 | D6a | Renderer, content and playable runtime | Shared authored project renders, accepts input, loads/saves and shuts down on a physical Windows GPU |
@@ -809,7 +809,7 @@ these rows remain pending.
 | RHI / raster resources and bindings | D3a | verified (Clang/WARP) | Production MSVC baseline and hardware evidence still pending | PR #617 | `172002e4`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40359506345) |
 | RHI / raster rendering | D3b | verified (Clang/WARP) | Production MSVC and physical-GPU evidence pending | PR #620 | `c239b3d9`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40369593745) |
 | RHI / transfers and lifetime | D4a | verified (Clang/WARP) | Production MSVC baseline and physical-GPU evidence still pending | PR #622 | `5b56bea2`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40375496878) |
-| RHI / compute and ordered mixed graph | D4b | in progress | Compute/storage/dispatch and mixed transfer journeys | Windows qualification pending | shared ordered-compute fixture |
+| RHI / compute and ordered mixed graph | D4b | verified (Clang/MSVC WARP) | D7 physical-GPU qualification | PR #992 | `9858bdb4`, [Windows CI](https://github.com/The-Ludus-Project/Ludus/actions/runs/41951508494) |
 | GPU timing / PIX / DRED | unassigned | needs port | D5b | pending | none |
 | Renderer / graph | unassigned | unreviewed | D6a after D4b/D5a | pending | none |
 | Text / localization / UI | unassigned | unreviewed | D6a required-profile audit and sample | pending | none |
