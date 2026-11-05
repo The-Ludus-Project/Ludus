@@ -639,7 +639,17 @@ consumer relocates each prefix, builds signed DXIL with the installed helper
 and draws a frame in a Win32 window on WARP. This acceptance uses the
 test-enabled build so the WARP selection switch is available. The Windows lane
 also runs the smoke test during [project setup and repair](../development/project-sdk-workflow.md#windows-msvc-projects)
-against each installed SDK. Physical-GPU qualification remains pending.
+against each installed SDK.
+
+For each installed flavor, the Windows lane also checks incremental builds
+of the external smoke project with Ninja and MSBuild. A C++ edit must rebuild
+the smoke object and relink without regenerating DXIL. An edit to the
+transitive Slang include must regenerate the changed fragment DXIL and
+embedded header, then rebuild and relink the consumer. The smoke test runs
+on WARP before and after each edit, and an unchanged build must leave the
+outputs untouched.
+
+Physical-GPU qualification remains pending.
 
 ### D3 and D4: complete the portable graphics contract
 
