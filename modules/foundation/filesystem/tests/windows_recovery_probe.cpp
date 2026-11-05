@@ -60,5 +60,9 @@ int main(int argumentCount, char** arguments)
     const PublicationResult result =
         writer.Publish("output.bin", NEW_BYTES, { .Sync = SyncPolicy::File, .Expected = {} });
     constexpr int PUBLICATION_FAILED = 3;
-    return result.Outcome.Succeeded() == true && result.Published == true ? 0 : PUBLICATION_FAILED;
+    if (result.Outcome.Succeeded() == true && result.Published == true)
+    {
+        return 0;
+    }
+    return result.Outcome.NativeCode != 0 ? result.Outcome.NativeCode : PUBLICATION_FAILED;
 }

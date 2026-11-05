@@ -33,9 +33,10 @@ using ludus::foundation::usize;
     return GetAllocationStatistics(GetContainerAllocationDomain());
 }
 
-constexpr usize OVER_ALIGNED_PAYLOAD_WORDS = 3;
+constexpr usize OVER_ALIGNMENT = 64;
+constexpr usize OVER_ALIGNED_PAYLOAD_WORDS = OVER_ALIGNMENT / sizeof(uint64) - 1;
 
-struct alignas(64) OverAligned
+struct alignas(OVER_ALIGNMENT) OverAligned
 {
     uint64 Key = 0;
     StaticArray<uint64, OVER_ALIGNED_PAYLOAD_WORDS> Payload{};

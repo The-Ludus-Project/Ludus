@@ -175,17 +175,19 @@ if(LUDUS_BUILD_TESTS)
         set_tests_properties(ludus_windows_diagnostic_death PROPERTIES LABELS "foundation;assert-death;windows" TIMEOUT 30)
     endif()
 
-    # Both backends use identical driver code and compiler policy. Compile its
-    # concurrency-heavy includes once, but keep each runtime in its own binary.
-    # Do not link Base here: the fake executable provides a separate runtime.
-    add_library(ludus_assert_test_driver OBJECT tests/assert_child.cpp)
-    target_include_directories(ludus_assert_test_driver PRIVATE src include ${ludus_generated_include_dirs})
-    target_link_libraries(ludus_assert_test_driver PRIVATE Threads::Threads)
-    ludus_apply_project_defaults(ludus_assert_test_driver)
+    if(NOT WIN32)
+        # Both backends use identical driver code and compiler policy. Compile its
+        # concurrency-heavy includes once, but keep each runtime in its own binary.
+        # Do not link Base here: the fake executable provides a separate runtime.
+        add_library(ludus_assert_test_driver OBJECT tests/assert_child.cpp)
+        target_include_directories(ludus_assert_test_driver PRIVATE src include ${ludus_generated_include_dirs})
+        target_link_libraries(ludus_assert_test_driver PRIVATE Threads::Threads)
+        ludus_apply_project_defaults(ludus_assert_test_driver)
 
-    add_executable(ludus_assert_child $<TARGET_OBJECTS:ludus_assert_test_driver>)
-    target_link_libraries(ludus_assert_child PRIVATE Ludus::FoundationBase Threads::Threads)
-    ludus_apply_project_defaults(ludus_assert_child)
+        add_executable(ludus_assert_child $<TARGET_OBJECTS:ludus_assert_test_driver>)
+        target_link_libraries(ludus_assert_child PRIVATE Ludus::FoundationBase Threads::Threads)
+        ludus_apply_project_defaults(ludus_assert_child)
+    endif()
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_executable(ludus_assert_allocation_child tests/assert_allocation_child.cpp)

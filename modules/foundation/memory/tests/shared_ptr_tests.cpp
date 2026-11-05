@@ -81,6 +81,8 @@ constexpr usize OVER_ALIGNMENT = 128;
 struct alignas(OVER_ALIGNMENT) OverAligned
 {
     int32 Value = 0;
+    // Fill the fixture's representation while keeping Memory independent of Containers.
+    ludus::foundation::uint8 Padding[OVER_ALIGNMENT - sizeof(Value)]{};
 };
 
 // Destruction order record for the inheritance cases. The bases deliberately

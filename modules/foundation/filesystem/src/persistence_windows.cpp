@@ -8,7 +8,6 @@
 #include <ludus/foundation/filesystem/persistence.hpp>
 
 #include <atomic>
-#include <cstddef>
 #include <cstring>
 #include <new>
 
@@ -148,27 +147,45 @@ Result WriteBytes(HANDLE file, std::span<const uint8> bytes) noexcept
     return {};
 }
 
-Result RenameTemporary(HANDLE file, HANDLE parent, std::wstring_view leaf, bool shouldReplace) noexcept
+Result RenameTemporary(HANDLE file, std::wstring_view leaf, bool shouldReplace) noexcept
 {
-    // Thanks to Microsoft, "FILE_RENAME_INFO structure" and "FILE_RENAME_INFORMATION
-    // structure", for the relative rename ABI and the POSIX replacement flag,
-    // which lets delete-sharing readers continue using the previous revision.
-    // https://learn.microsoft.com/windows/win32/api/winbase/ns-winbase-file_rename_info
+    // Thanks to Microsoft, "FILE_RENAME_INFORMATION structure", for the native
+    // same-directory rename ABI and POSIX replacement flag. The Win32 wrapper
+    // rejected our relative rename on Windows Server 2022. The NT service can
+    // resolve a simple leaf in the opened temporary's own directory.
     // https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
+    // https://learn.microsoft.com/windows-hardware/drivers/ddi/wdm/ne-wdm-_file_information_class
+    using SetInformation = NTSTATUS(NTAPI*)(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, ULONG);
+    const HMODULE moduleOrNull = GetModuleHandleW(L"ntdll.dll");
+    if (moduleOrNull == nullptr)
+    {
+        return {Status::Unsupported};
+    }
+    const FARPROC exportOrNull = GetProcAddress(moduleOrNull, "NtSetInformationFile");
+    if (exportOrNull == nullptr)
+    {
+        return {Status::Unsupported};
+    }
+    // GetProcAddress erases the signature. Both pointers use the same Windows ABI representation.
+    static_assert(sizeof(SetInformation) == sizeof(FARPROC));
+    SetInformation setInformation;
+    std::memcpy(&setInformation, &exportOrNull, sizeof(setInformation));
+    constexpr ULONG NATIVE_RENAME_INFORMATION_EX = 65;
     constexpr usize NAME_OFFSET = offsetof(FILE_RENAME_INFO, FileName);
     constexpr usize BUFFER_BYTES = sizeof(FILE_RENAME_INFO) + MAX_PATH_BYTES * sizeof(wchar_t);
     alignas(FILE_RENAME_INFO) StaticArray<uint8, BUFFER_BYTES> buffer{};
     FILE_RENAME_INFO* rename = new (buffer.GetData()) FILE_RENAME_INFO{};
     rename->Flags = shouldReplace == true ? FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS : 0;
-    rename->RootDirectory = parent;
     rename->FileNameLength = static_cast<DWORD>(leaf.size() * sizeof(wchar_t));
     std::memcpy(buffer.GetData() + NAME_OFFSET, leaf.data(), rename->FileNameLength);
     const DWORD used = static_cast<DWORD>(NAME_OFFSET + rename->FileNameLength + sizeof(wchar_t));
-    if (SetFileInformationByHandle(file, FileRenameInfoEx, rename, used) != FALSE)
+    IO_STATUS_BLOCK operation{};
+    const NTSTATUS status = setInformation(file, &operation, rename, used, NATIVE_RENAME_INFORMATION_EX);
+    if (status >= 0)
     {
         return {};
     }
-    const DWORD error = GetLastError();
+    const DWORD error = RtlNtStatusToDosError(status);
     if (shouldReplace == false && (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS))
     {
         return {Status::Conflict, static_cast<int32>(error)};
@@ -336,8 +353,7 @@ PublicationResult WriteDirectory::Publish(std::string_view relativePath,
 #if defined(LUDUS_FILESYSTEM_WINDOWS_RECOVERY_TESTING)
         detail::InterruptWindowsPublication(false);
 #endif
-        publication.Outcome =
-            RenameTemporary(temporary.Get(), directory, leaf, options.Condition != WriteCondition::Missing);
+        publication.Outcome = RenameTemporary(temporary.Get(), leaf, options.Condition != WriteCondition::Missing);
         publication.Published = publication.Outcome.Succeeded();
     }
 #if defined(LUDUS_FILESYSTEM_WINDOWS_RECOVERY_TESTING)

@@ -76,7 +76,9 @@ PublicationResult PublishFile(const Fixture& fixture, std::string_view path, std
 TEST_CASE("Windows publication preserves pinned roots and opened file revisions", "[windows][filesystem]")
 {
     Fixture fixture;
-    REQUIRE(PublishFile(fixture, ASSET, OldBytes()).Outcome.Succeeded() == true);
+    const PublicationResult seeded = PublishFile(fixture, ASSET, OldBytes());
+    CAPTURE(seeded.Outcome.NativeCode);
+    REQUIRE(seeded.Outcome.Succeeded() == true);
     File old;
     REQUIRE(fixture.Reader.OpenRead(ASSET, old).Succeeded() == true);
     const std::filesystem::path moved = fixture.Root.native() + L" moved";
@@ -87,6 +89,7 @@ TEST_CASE("Windows publication preserves pinned roots and opened file revisions"
     REQUIRE(fixture.Reader.Observe(ASSET, options.Expected).Succeeded() == true);
     options.Condition = WriteCondition::MatchingStamp;
     const PublicationResult replaced = fixture.Writer.Publish(ASSET, NewBytes(), options);
+    CAPTURE(replaced.Outcome.NativeCode);
     REQUIRE(replaced.Published == true);
     CHECK(replaced.FileSynced == true);
     CHECK(replaced.DirectorySynced == replaced.Outcome.Succeeded());
