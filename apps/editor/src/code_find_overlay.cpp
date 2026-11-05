@@ -11,7 +11,7 @@
 #include <QByteArray>
 #include <QCheckBox>
 #include <QFrame>
-#include <QGridLayout>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -23,6 +23,7 @@
 #include <QSize>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QVBoxLayout>
 
 // The find/replace overlay (CE07, design section 4). It replaces the bottom find
 // panel with a floating widget over the editor viewport. Searching and counting
@@ -49,8 +50,8 @@ constexpr int32 OVERLAY_MARGIN = 8;
         return target;
     }
     bool hasLetter = false;
-    bool allUpper = true;
-    bool allLower = true;
+    bool isAllUpper = true;
+    bool isAllLower = true;
     for (const QChar character : source)
     {
         if (character.isLetter() == false)
@@ -58,18 +59,18 @@ constexpr int32 OVERLAY_MARGIN = 8;
             continue;
         }
         hasLetter = true;
-        allUpper = allUpper == true && character.isUpper() == true;
-        allLower = allLower == true && character.isLower() == true;
+        isAllUpper = isAllUpper == true && character.isUpper() == true;
+        isAllLower = isAllLower == true && character.isLower() == true;
     }
     if (hasLetter == false)
     {
         return target;
     }
-    if (allUpper == true)
+    if (isAllUpper == true)
     {
         return target.toUpper();
     }
-    if (allLower == true)
+    if (isAllLower == true)
     {
         return target.toLower();
     }
@@ -97,10 +98,10 @@ CodeFindOverlay::CodeFindOverlay(CodeEditor* editor, CodeDocumentController* con
     QFrame* frame = new QFrame(this);
     frame->setObjectName(QStringLiteral("codeFindOverlayFrame"));
     frame->setFrameShape(QFrame::StyledPanel);
-    QGridLayout* outer = new QGridLayout(this);
+    QVBoxLayout* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
-    outer->addWidget(frame, 0, 0);
-    QGridLayout* grid = new QGridLayout(frame);
+    outer->addWidget(frame);
+    QVBoxLayout* rows = new QVBoxLayout(frame);
 
     mFindText->setObjectName(QStringLiteral("codeEditorFind"));
     mFindText->setPlaceholderText(QStringLiteral("Find"));
@@ -124,29 +125,24 @@ CodeFindOverlay::CodeFindOverlay(CodeEditor* editor, CodeDocumentController* con
     mShouldPreserveCase->setObjectName(QStringLiteral("codeEditorPreserveCase"));
     mShouldPreserveCase->setToolTip(QStringLiteral("Match the case of each replaced occurrence."));
 
-    int32 row = 0;
-    grid->addWidget(mFindText, row, 0);
-    QWidget* findButtons = new QWidget(this);
-    QGridLayout* findButtonsLayout = new QGridLayout(findButtons);
-    findButtonsLayout->setContentsMargins(0, 0, 0, 0);
-    findButtonsLayout->addWidget(previous, 0, 0);
-    findButtonsLayout->addWidget(next, 0, 1);
-    findButtonsLayout->addWidget(close, 0, 2);
-    grid->addWidget(findButtons, row, 1);
-    ++row;
-    QWidget* optionRow = new QWidget(this);
-    QGridLayout* optionLayout = new QGridLayout(optionRow);
-    optionLayout->setContentsMargins(0, 0, 0, 0);
-    optionLayout->addWidget(mIsCaseSensitive, 0, 0);
-    optionLayout->addWidget(mIsWholeWord, 0, 1);
-    optionLayout->addWidget(mIsRegex, 0, 2);
-    optionLayout->addWidget(mIsInSelection, 0, 3);
-    optionLayout->addWidget(mStatus, 0, 4);
-    optionLayout->setColumnStretch(4, 1);
-    grid->addWidget(optionRow, row, 0, 1, 2);
-    ++row;
-    QGridLayout* replacementLayout = new QGridLayout(mReplaceRow);
-    replacementLayout->setContentsMargins(0, 0, 0, 0);
+    // Row 1: the find field and its Previous/Next/Close buttons.
+    QHBoxLayout* findRow = new QHBoxLayout;
+    findRow->addWidget(mFindText, 1);
+    findRow->addWidget(previous);
+    findRow->addWidget(next);
+    findRow->addWidget(close);
+    rows->addLayout(findRow);
+    // Row 2: the matching options and the match-count status.
+    QHBoxLayout* optionRow = new QHBoxLayout;
+    optionRow->addWidget(mIsCaseSensitive);
+    optionRow->addWidget(mIsWholeWord);
+    optionRow->addWidget(mIsRegex);
+    optionRow->addWidget(mIsInSelection);
+    optionRow->addWidget(mStatus, 1);
+    rows->addLayout(optionRow);
+    // Row 3: the replacement field, preserve case and the replace buttons.
+    QHBoxLayout* replacementRow = new QHBoxLayout(mReplaceRow);
+    replacementRow->setContentsMargins(0, 0, 0, 0);
     mReplacement->setObjectName(QStringLiteral("codeEditorReplacement"));
     mReplacement->setPlaceholderText(QStringLiteral("Replace with"));
     mReplacement->setAccessibleName(QStringLiteral("Replacement text"));
@@ -154,12 +150,11 @@ CodeFindOverlay::CodeFindOverlay(CodeEditor* editor, CodeDocumentController* con
     replace->setObjectName(QStringLiteral("codeEditorReplace"));
     QPushButton* replaceAll = new QPushButton(QStringLiteral("Replace All"), mReplaceRow);
     replaceAll->setObjectName(QStringLiteral("codeEditorReplaceAll"));
-    replacementLayout->addWidget(mReplacement, 0, 0);
-    replacementLayout->addWidget(mShouldPreserveCase, 0, 1);
-    replacementLayout->addWidget(replace, 0, 2);
-    replacementLayout->addWidget(replaceAll, 0, 3);
-    replacementLayout->setColumnStretch(0, 1);
-    grid->addWidget(mReplaceRow, row, 0, 1, 2);
+    replacementRow->addWidget(mReplacement, 1);
+    replacementRow->addWidget(mShouldPreserveCase);
+    replacementRow->addWidget(replace);
+    replacementRow->addWidget(replaceAll);
+    rows->addWidget(mReplaceRow);
 
     connect(mEditor, &CodeEditor::FindRequested, this, [this]() { Reveal(false); });
     connect(mEditor, &CodeEditor::ReplaceRequested, this, [this]() { Reveal(true); });
@@ -599,10 +594,10 @@ void CodeFindOverlay::replaceAll()
     // reuses one replacement string and needs no per-match regex re-match: the
     // work stays one pass. Backreferences and preserve case need the match, so
     // only then is the pattern re-matched at each occurrence.
-    const bool needsPerMatch = mIsRegex->isChecked() == true || mShouldPreserveCase->isChecked() == true;
+    const bool shouldReMatchEach = mIsRegex->isChecked() == true || mShouldPreserveCase->isChecked() == true;
     QList<QString> replacements;
     replacements.reserve(matches.size());
-    if (needsPerMatch == false)
+    if (shouldReMatchEach == false)
     {
         const QString replacement = mReplacement->text();
         for (int32 index = 0; index < matches.size(); ++index)

@@ -73,34 +73,35 @@ struct BoundOverlay final
           Panel(new CodeEditorPanel(Editor, Controller))
     {
         Controller->Bind(&inoutHost);
-        Find = Panel->findChild<QLineEdit*>(QStringLiteral("codeEditorFind"));
-        Replacement = Panel->findChild<QLineEdit*>(QStringLiteral("codeEditorReplacement"));
-        ReplaceAll = Panel->findChild<QAbstractButton*>(QStringLiteral("codeEditorReplaceAll"));
-        Replace = Panel->findChild<QAbstractButton*>(QStringLiteral("codeEditorReplace"));
-        FindNext = Panel->findChild<QAbstractButton*>(QStringLiteral("codeEditorFindNext"));
-        FindPrevious = Panel->findChild<QAbstractButton*>(QStringLiteral("codeEditorFindPrevious"));
-        Status = Panel->findChild<QLabel*>(QStringLiteral("codeEditorFindStatus"));
-        Regex = Panel->findChild<QCheckBox*>(QStringLiteral("codeEditorRegex"));
-        WholeWord = Panel->findChild<QCheckBox*>(QStringLiteral("codeEditorWholeWord"));
-        InSelection = Panel->findChild<QCheckBox*>(QStringLiteral("codeEditorInSelection"));
-        PreserveCase = Panel->findChild<QCheckBox*>(QStringLiteral("codeEditorPreserveCase"));
+        FindOrNull = Panel->findChild<QLineEdit*>(QStringLiteral("codeEditorFind"));
+        ReplacementOrNull = Panel->findChild<QLineEdit*>(QStringLiteral("codeEditorReplacement"));
+        ReplaceAllOrNull = Panel->findChild<QAbstractButton*>(QStringLiteral("codeEditorReplaceAll"));
+        FindNextOrNull = Panel->findChild<QAbstractButton*>(QStringLiteral("codeEditorFindNext"));
+        FindPreviousOrNull = Panel->findChild<QAbstractButton*>(QStringLiteral("codeEditorFindPrevious"));
+        StatusOrNull = Panel->findChild<QLabel*>(QStringLiteral("codeEditorFindStatus"));
+        RegexOrNull = Panel->findChild<QCheckBox*>(QStringLiteral("codeEditorRegex"));
+        WholeWordOrNull = Panel->findChild<QCheckBox*>(QStringLiteral("codeEditorWholeWord"));
+        InSelectionOrNull = Panel->findChild<QCheckBox*>(QStringLiteral("codeEditorInSelection"));
+        PreserveCaseOrNull = Panel->findChild<QCheckBox*>(QStringLiteral("codeEditorPreserveCase"));
         // "Match case" has no object name in the original panel; find it by text.
         for (QCheckBox* candidate : Panel->findChildren<QCheckBox*>())
         {
             if (candidate->text() == QStringLiteral("Match case"))
             {
-                MatchCase = candidate;
+                MatchCaseOrNull = candidate;
             }
         }
-        REQUIRE(Find != nullptr);
-        REQUIRE(Replacement != nullptr);
-        REQUIRE(ReplaceAll != nullptr);
-        REQUIRE(Status != nullptr);
-        REQUIRE(Regex != nullptr);
-        REQUIRE(WholeWord != nullptr);
-        REQUIRE(InSelection != nullptr);
-        REQUIRE(PreserveCase != nullptr);
-        REQUIRE(MatchCase != nullptr);
+        REQUIRE(FindOrNull != nullptr);
+        REQUIRE(ReplacementOrNull != nullptr);
+        REQUIRE(ReplaceAllOrNull != nullptr);
+        REQUIRE(FindNextOrNull != nullptr);
+        REQUIRE(FindPreviousOrNull != nullptr);
+        REQUIRE(StatusOrNull != nullptr);
+        REQUIRE(RegexOrNull != nullptr);
+        REQUIRE(WholeWordOrNull != nullptr);
+        REQUIRE(InSelectionOrNull != nullptr);
+        REQUIRE(PreserveCaseOrNull != nullptr);
+        REQUIRE(MatchCaseOrNull != nullptr);
     }
     ~BoundOverlay()
     {
@@ -113,18 +114,17 @@ struct BoundOverlay final
     CodeEditor* Editor;
     CodeDocumentController* Controller;
     CodeEditorPanel* Panel;
-    QLineEdit* Find = nullptr;
-    QLineEdit* Replacement = nullptr;
-    QAbstractButton* ReplaceAll = nullptr;
-    QAbstractButton* Replace = nullptr;
-    QAbstractButton* FindNext = nullptr;
-    QAbstractButton* FindPrevious = nullptr;
-    QLabel* Status = nullptr;
-    QCheckBox* Regex = nullptr;
-    QCheckBox* WholeWord = nullptr;
-    QCheckBox* InSelection = nullptr;
-    QCheckBox* PreserveCase = nullptr;
-    QCheckBox* MatchCase = nullptr;
+    QLineEdit* FindOrNull = nullptr;
+    QLineEdit* ReplacementOrNull = nullptr;
+    QAbstractButton* ReplaceAllOrNull = nullptr;
+    QAbstractButton* FindNextOrNull = nullptr;
+    QAbstractButton* FindPreviousOrNull = nullptr;
+    QLabel* StatusOrNull = nullptr;
+    QCheckBox* RegexOrNull = nullptr;
+    QCheckBox* WholeWordOrNull = nullptr;
+    QCheckBox* InSelectionOrNull = nullptr;
+    QCheckBox* PreserveCaseOrNull = nullptr;
+    QCheckBox* MatchCaseOrNull = nullptr;
 };
 } // namespace
 
@@ -145,12 +145,12 @@ TEST_CASE("A regex replace all rewrites every match through one edit set", "[cod
     REQUIRE(directory.isValid() == true);
     CodeFileDocument host = OpenHost(directory, QByteArray("a1 b22 c333\n"));
     BoundOverlay bound(host);
-    bound.Regex->setChecked(true);
-    bound.Find->setText(QStringLiteral("([a-z])([0-9]+)"));
-    bound.Replacement->setText(QStringLiteral("$2$1"));
-    bound.ReplaceAll->click();
+    bound.RegexOrNull->setChecked(true);
+    bound.FindOrNull->setText(QStringLiteral("([a-z])([0-9]+)"));
+    bound.ReplacementOrNull->setText(QStringLiteral("$2$1"));
+    bound.ReplaceAllOrNull->click();
     CHECK(DraftOf(host) == QByteArray("1a 22b 333c\n"));
-    CHECK(bound.Status->text() == QStringLiteral("3 replacements"));
+    CHECK(bound.StatusOrNull->text() == QStringLiteral("3 replacements"));
     // One undo step restores the whole file.
     QList<CodeTextSelection> undone;
     REQUIRE(host.Undo(undone) == true);
@@ -163,11 +163,11 @@ TEST_CASE("Whole word matches only complete words", "[code-editor][find-overlay]
     REQUIRE(directory.isValid() == true);
     CodeFileDocument host = OpenHost(directory, QByteArray("in inside bin in\n"));
     BoundOverlay bound(host);
-    bound.WholeWord->setChecked(true);
-    bound.MatchCase->setChecked(true);
-    bound.Find->setText(QStringLiteral("in"));
-    bound.Replacement->setText(QStringLiteral("ON"));
-    bound.ReplaceAll->click();
+    bound.WholeWordOrNull->setChecked(true);
+    bound.MatchCaseOrNull->setChecked(true);
+    bound.FindOrNull->setText(QStringLiteral("in"));
+    bound.ReplacementOrNull->setText(QStringLiteral("ON"));
+    bound.ReplaceAllOrNull->click();
     // Only the standalone "in" words change, not "inside" or "bin".
     CHECK(DraftOf(host) == QByteArray("ON inside bin ON\n"));
 }
@@ -183,11 +183,11 @@ TEST_CASE("In selection limits replace all to the frozen range", "[code-editor][
     selection.setPosition(0);
     selection.setPosition(8, QTextCursor::KeepAnchor);
     bound.Editor->setTextCursor(selection);
-    bound.InSelection->setChecked(true);
-    bound.MatchCase->setChecked(true);
-    bound.Find->setText(QStringLiteral("x"));
-    bound.Replacement->setText(QStringLiteral("y"));
-    bound.ReplaceAll->click();
+    bound.InSelectionOrNull->setChecked(true);
+    bound.MatchCaseOrNull->setChecked(true);
+    bound.FindOrNull->setText(QStringLiteral("x"));
+    bound.ReplacementOrNull->setText(QStringLiteral("y"));
+    bound.ReplaceAllOrNull->click();
     // The third line is outside the selection and is untouched.
     CHECK(DraftOf(host) == QByteArray("y y\ny y\nx x\n"));
 }
@@ -198,10 +198,10 @@ TEST_CASE("Preserve case matches the case of each replaced occurrence", "[code-e
     REQUIRE(directory.isValid() == true);
     CodeFileDocument host = OpenHost(directory, QByteArray("foo Foo FOO\n"));
     BoundOverlay bound(host);
-    bound.PreserveCase->setChecked(true);
-    bound.Find->setText(QStringLiteral("foo")); // Case-insensitive by default.
-    bound.Replacement->setText(QStringLiteral("bar"));
-    bound.ReplaceAll->click();
+    bound.PreserveCaseOrNull->setChecked(true);
+    bound.FindOrNull->setText(QStringLiteral("foo")); // Case-insensitive by default.
+    bound.ReplacementOrNull->setText(QStringLiteral("bar"));
+    bound.ReplaceAllOrNull->click();
     CHECK(DraftOf(host) == QByteArray("bar Bar BAR\n"));
 }
 
@@ -211,16 +211,16 @@ TEST_CASE("The match count reports the total and the current match", "[code-edit
     REQUIRE(directory.isValid() == true);
     CodeFileDocument host = OpenHost(directory, QByteArray("a a a\n"));
     BoundOverlay bound(host);
-    bound.MatchCase->setChecked(true);
-    bound.Find->setText(QStringLiteral("a"));
+    bound.MatchCaseOrNull->setChecked(true);
+    bound.FindOrNull->setText(QStringLiteral("a"));
     // Before navigating, the total is shown.
-    CHECK(bound.Status->text() == QStringLiteral("3 matches"));
-    bound.FindNext->click();
-    CHECK(bound.Status->text() == QStringLiteral("1 of 3"));
-    bound.FindNext->click();
-    CHECK(bound.Status->text() == QStringLiteral("2 of 3"));
-    bound.FindPrevious->click();
-    CHECK(bound.Status->text() == QStringLiteral("1 of 3"));
+    CHECK(bound.StatusOrNull->text() == QStringLiteral("3 matches"));
+    bound.FindNextOrNull->click();
+    CHECK(bound.StatusOrNull->text() == QStringLiteral("1 of 3"));
+    bound.FindNextOrNull->click();
+    CHECK(bound.StatusOrNull->text() == QStringLiteral("2 of 3"));
+    bound.FindPreviousOrNull->click();
+    CHECK(bound.StatusOrNull->text() == QStringLiteral("1 of 3"));
 }
 
 TEST_CASE("An invalid regular expression is reported and nothing changes", "[code-editor][find-overlay]")
@@ -229,12 +229,12 @@ TEST_CASE("An invalid regular expression is reported and nothing changes", "[cod
     REQUIRE(directory.isValid() == true);
     CodeFileDocument host = OpenHost(directory, QByteArray("abc\n"));
     BoundOverlay bound(host);
-    bound.Regex->setChecked(true);
-    bound.Find->setText(QStringLiteral("(unterminated"));
-    bound.Replacement->setText(QStringLiteral("x"));
-    bound.ReplaceAll->click();
+    bound.RegexOrNull->setChecked(true);
+    bound.FindOrNull->setText(QStringLiteral("(unterminated"));
+    bound.ReplacementOrNull->setText(QStringLiteral("x"));
+    bound.ReplaceAllOrNull->click();
     CHECK(DraftOf(host) == QByteArray("abc\n"));
-    CHECK(bound.Status->text().startsWith(QStringLiteral("Invalid pattern")) == true);
+    CHECK(bound.StatusOrNull->text().startsWith(QStringLiteral("Invalid pattern")) == true);
 }
 
 TEST_CASE("Find next wraps at the end of the document", "[code-editor][find-overlay]")
@@ -243,9 +243,9 @@ TEST_CASE("Find next wraps at the end of the document", "[code-editor][find-over
     REQUIRE(directory.isValid() == true);
     CodeFileDocument host = OpenHost(directory, QByteArray("v V v\n"));
     BoundOverlay bound(host);
-    bound.Find->setText(QStringLiteral("v")); // Case-insensitive: three matches.
+    bound.FindOrNull->setText(QStringLiteral("v")); // Case-insensitive: three matches.
     bound.Editor->moveCursor(QTextCursor::End);
-    bound.FindNext->click();
+    bound.FindNextOrNull->click();
     CHECK(bound.Editor->textCursor().selectionStart() == 0);
     CHECK(bound.Editor->textCursor().selectedText() == QStringLiteral("v"));
 }
@@ -258,16 +258,16 @@ TEST_CASE("A large regex replace all through the overlay stays linear", "[code-e
     const QByteArray original = RepeatLine(QByteArray("float value = 1.0;\n"), LINES);
     CodeFileDocument host = OpenHost(directory, original);
     BoundOverlay bound(host);
-    bound.Regex->setChecked(true);
-    bound.Find->setText(QStringLiteral("float"));
-    bound.Replacement->setText(QStringLiteral("double"));
+    bound.RegexOrNull->setChecked(true);
+    bound.FindOrNull->setText(QStringLiteral("float"));
+    bound.ReplacementOrNull->setText(QStringLiteral("double"));
 
     QElapsedTimer timer;
     timer.start();
-    bound.ReplaceAll->click();
+    bound.ReplaceAllOrNull->click();
     const qint64 elapsedMs = timer.elapsed();
 
     CHECK(DraftOf(host) == RepeatLine(QByteArray("double value = 1.0;\n"), LINES));
-    CHECK(bound.Status->text() == QStringLiteral("%1 replacements").arg(LINES));
+    CHECK(bound.StatusOrNull->text() == QStringLiteral("%1 replacements").arg(LINES));
     CHECK(elapsedMs < LINEAR_WORK_CEILING_MS);
 }
