@@ -37,6 +37,10 @@ def main():
         if packed_hash is None or loose_hash is None or packed_hash[1] != loose_hash[1]:
             raise RuntimeError("Packed and loose rooms did not produce the same 12-tick replay hash.")
         if arguments.windowed:
+            agility = arguments.player.parent / "D3D12"
+            for filename in ("D3D12Core.dll", "d3d12SDKLayers.dll", "LICENSE.txt"):
+                if not (agility / filename).is_file():
+                    raise RuntimeError(f"Missing Agility runtime file {agility / filename}. Rebuild the player.")
             output = run([*packed, "--frames", "3", "--follow-camera"])
             if os.environ.get("LUDUS_TEST_REQUIRE_WARP") and "Direct3D 12 software adapter" not in output:
                 raise RuntimeError(f"The windowed test did not select WARP.\n{output}")

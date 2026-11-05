@@ -78,6 +78,7 @@ function(ludus_install_windows_sdk)
         "${PROJECT_SOURCE_DIR}/cmake/shaders/cook_texture.py"
         "${PROJECT_SOURCE_DIR}/config/shader_toolchain.json"
         DESTINATION "${package_directory}/shaders")
+    ludus_install_d3d12_agility("${package_directory}")
     install(FILES "${PROJECT_SOURCE_DIR}/LICENSE" "${PROJECT_SOURCE_DIR}/cmake/sdk/THIRD_PARTY_NOTICES.md"
         DESTINATION "${data_directory}/licenses")
     install(FILES "${PROJECT_SOURCE_DIR}/third_party/xxhash/LICENSE"

@@ -255,6 +255,9 @@ if(LUDUS_SHADER_WORKER_ONLY)
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/LudusShaderTools")
     return()
 endif()
+if(WIN32 AND (LUDUS_BUILD_TESTS OR LUDUS_VISUAL_STUDIO_MULTI_CONFIG OR LUDUS_BUILD_WINDOWS_RUNTIME))
+    include(EngineD3D12Agility)
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     if(NOT LUDUS_BUILD_WINDOWS_RUNTIME)
         # Windows builds the FoundationThreading closure (threading.md, T3) and the
@@ -499,6 +502,13 @@ install(
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/${LUDUS_ENGINE_PACKAGE_NAME}"
 )
 
+
+if(WIN32)
+    configure_file(cmake/LudusWindowsSdk.cmake.in "${PROJECT_BINARY_DIR}/cmake/LudusWindowsSdk.cmake" @ONLY)
+    install(FILES "${PROJECT_BINARY_DIR}/cmake/LudusWindowsSdk.cmake"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/${LUDUS_ENGINE_PACKAGE_NAME}")
+    ludus_install_d3d12_agility("${CMAKE_INSTALL_LIBDIR}/cmake/${LUDUS_ENGINE_PACKAGE_NAME}")
+endif()
 
 configure_package_config_file(
     "${PROJECT_SOURCE_DIR}/cmake/LudusConfig.cmake.in"

@@ -67,13 +67,26 @@ def verify(sdk, flavor, workspace, visual_studio):
     objects = [path for path in build.rglob("*.obj") if path.name in ("smoke.cpp.obj", "smoke.obj")]
     require(len(objects) == 1, f"Expected one smoke object, got {objects}")
     object_file = objects[0]
+    runtime_directory = executable.parent / "D3D12"
+    runtime_files = tuple(runtime_directory / name for name in
+                          ("D3D12Core.dll", "d3d12SDKLayers.dll", "LICENSE.txt"))
+    installed_runtime = sdk / "lib" / "cmake" / "Ludus" / "agility"
+    require(all(path.read_bytes() == (installed_runtime / path.name).read_bytes() for path in runtime_files),
+            "The executable did not stage the installed Agility runtime")
     outputs = (*shader_files, object_file, executable)
+
+    baseline = snapshot(outputs)
+    core = runtime_directory / "D3D12Core.dll"
+    core.unlink()
+    run(*build_command)
+    require(core.read_bytes() == (installed_runtime / core.name).read_bytes(),
+            "An incremental build did not restore the missing Agility core")
+    require(snapshot(outputs) == baseline, "Restoring the Agility runtime relinked the executable")
 
     def verify_idle(previous):
         run(*build_command)
         require(snapshot(outputs) == previous, "Build rewrote outputs without any input changes")
 
-    baseline = snapshot(outputs)
     verify_idle(baseline)
 
     # Cross the timestamp resolution used by build tools, then change a literal

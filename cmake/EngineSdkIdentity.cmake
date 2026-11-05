@@ -93,7 +93,7 @@ function(ludus_sdk_register_feature name)
 endfunction()
 
 # A redistributable dependency entry: "name|version|licenses|kind".
-# kind is bundled (static lib shipped in the SDK) or system (must be present).
+# kind is bundled (shipped in the SDK) or system (must be present).
 function(ludus_sdk_register_dependency name version licenses kind)
     set_property(GLOBAL APPEND PROPERTY LUDUS_SDK_DEPENDENCIES "${name}|${version}|${licenses}|${kind}")
 endfunction()

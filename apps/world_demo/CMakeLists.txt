@@ -116,6 +116,10 @@ if(LUDUS_BUILD_WORLD_DEMO)
         # Draws a real extraction on a headless device and reads the pixels back.
         add_executable(ludus_world_frame_renderer_tests tests/frame_renderer_tests.cpp)
         target_link_libraries(ludus_world_frame_renderer_tests PRIVATE ludus_world_frame_renderer Ludus::FoundationTime Catch2::Catch2WithMain)
+        if(WIN32)
+            ludus_attach_d3d12_agility(ludus_world_frame_renderer_tests "${LUDUS_D3D12_AGILITY_SDK_VERSION}"
+                "${LUDUS_D3D12_AGILITY_BINARIES}" "${LUDUS_D3D12_AGILITY_LICENSE}")
+        endif()
         ludus_apply_project_defaults(ludus_world_frame_renderer_tests)
         ludus_enable_test_exceptions(ludus_world_frame_renderer_tests)
         add_test(NAME ludus_world_frame_renderer_pixels COMMAND ludus_world_frame_renderer_tests)
@@ -123,6 +127,10 @@ if(LUDUS_BUILD_WORLD_DEMO)
     endif()
     add_executable(ludus_world_demo application.cpp main.cpp)
     target_link_libraries(ludus_world_demo PRIVATE ludus_world_demo_model ludus_world_demo_pacing ludus_world_frame_renderer Ludus::FoundationFilesystem Ludus::Input Ludus::Platform Ludus::GraphicsRhi Ludus::FoundationLogging Ludus::FoundationProfiling)
+    if(WIN32)
+        ludus_attach_d3d12_agility(ludus_world_demo "${LUDUS_D3D12_AGILITY_SDK_VERSION}"
+            "${LUDUS_D3D12_AGILITY_BINARIES}" "${LUDUS_D3D12_AGILITY_LICENSE}")
+    endif()
     ludus_apply_project_defaults(ludus_world_demo)
     if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set(packed_world_arguments "$<TARGET_FILE:ludus_world_demo>"

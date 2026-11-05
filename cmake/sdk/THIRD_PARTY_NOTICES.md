@@ -109,6 +109,14 @@ in `share/Ludus/licenses/` by the release-packaging step. Where a build has not
 yet produced those files (e.g. a developer `cmake --install` without the release
 packager), this notices file plus the manifest inventory record the obligation.
 
+## DirectX 12 Agility SDK (Windows x64)
+
+Microsoft's DirectX 12 Agility SDK 1.620.1 supplies the Windows app-local
+`D3D12Core.dll` and optional `d3d12SDKLayers.dll`. The Windows Ludus SDK
+includes the original Microsoft DirectX Software License Terms as `LICENSE.txt`
+beside those binaries under `lib/cmake/Ludus/agility/`.
+https://www.nuget.org/packages/Microsoft.Direct3D.D3D12/1.620.1
+
 ## xxHash 0.8.3
 
 Yann Collet and contributors, BSD-2-Clause. https://github.com/Cyan4973/xxHash/tree/v0.8.3
