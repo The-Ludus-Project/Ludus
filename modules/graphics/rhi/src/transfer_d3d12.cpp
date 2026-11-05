@@ -65,7 +65,10 @@ void RetainResource(ID3D12Resource* resource, ComOwner<ID3D12Resource>& outOwner
     resource->AddRef();
     outOwner = ComOwner<ID3D12Resource>(resource);
 }
-RasterStatus MakeBuffer(usize size, D3D12_HEAP_TYPE type, ComOwner<ID3D12Resource>& outResource) noexcept
+RasterStatus MakeBuffer(usize size,
+                        D3D12_HEAP_TYPE type,
+                        ComOwner<ID3D12Resource>& outResource,
+                        D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE) noexcept
 {
     const D3D12_HEAP_PROPERTIES heap{ .Type = type };
     D3D12_RESOURCE_DESC description{};
@@ -76,6 +79,7 @@ RasterStatus MakeBuffer(usize size, D3D12_HEAP_TYPE type, ComOwner<ID3D12Resourc
     description.MipLevels = 1;
     description.SampleDesc.Count = 1;
     description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    description.Flags = flags;
     const D3D12_RESOURCE_STATES state = type == D3D12_HEAP_TYPE_UPLOAD     ? D3D12_RESOURCE_STATE_GENERIC_READ
                                         : type == D3D12_HEAP_TYPE_READBACK ? D3D12_RESOURCE_STATE_COPY_DEST
                                                                            : D3D12_RESOURCE_STATE_COMMON;
@@ -185,7 +189,13 @@ RasterStatus UploadBuffer(Transfer& inoutTransfer,
 {
     ComOwner<ID3D12Resource> buffer;
     const usize allocation = (description.Size + CBV_ALIGNMENT - 1) / CBV_ALIGNMENT * CBV_ALIGNMENT;
-    RasterStatus status = MakeBuffer(allocation, D3D12_HEAP_TYPE_DEFAULT, buffer);
+    const bool hasStorage = description.Role == BufferRole::Storage || description.Role == BufferRole::StorageVertex ||
+                            description.Role == BufferRole::StorageIndirect;
+    RasterStatus status =
+        MakeBuffer(allocation,
+                   D3D12_HEAP_TYPE_DEFAULT,
+                   buffer,
+                   hasStorage == true ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE);
     if (status != RasterStatus::Ready)
     {
         return status;
@@ -200,7 +210,7 @@ RasterStatus UploadBuffer(Transfer& inoutTransfer,
     status = SubmitTransfer(inoutTransfer);
     if (status == RasterStatus::Ready)
     {
-        SetBuffer(bufferSlot, Move(buffer));
+        SetBuffer(bufferSlot, hasStorage, Move(buffer));
     }
     return status;
 }

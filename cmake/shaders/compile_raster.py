@@ -161,6 +161,8 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
         descriptors = [b for b in bindings if b.get('kind') == 'descriptorTableSlot']
         if (metal or dxil) and not descriptors:
             native_kinds = ('constantBuffer', 'shaderResource') if stage == 'compute' else ('constantBuffer', 'shaderResource', 'samplerState')
+            if dxil and stage == 'compute':
+                native_kinds += ('unorderedAccess',)
             # Metal buffers also carry zero-count shaderResource metadata.
             # Only the occupied native category identifies their descriptor.
             descriptors = [b for b in bindings if b.get('kind') in native_kinds
@@ -235,11 +237,16 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             raise RuntimeError('Compute profile accepts buffers, native scenes and unfiltered 2D color/depth textures only')
         if metal or dxil:
             native_kind = {'StorageRead': 'constantBuffer', 'StorageReadWrite': 'constantBuffer', 'UniformBuffer': 'constantBuffer', 'Texture2D': 'shaderResource', 'Texture2DArray': 'shaderResource', 'TextureCube': 'shaderResource', 'Texture3D': 'shaderResource', 'TextureDepth2D': 'shaderResource', 'TextureStencil2D': 'shaderResource', 'Sampler': 'samplerState'}[kind]
-            native = [b for b in bindings if b.get('kind') == native_kind]
+            if dxil and kind in ('StorageRead', 'StorageReadWrite'):
+                native_kind = 'shaderResource' if kind == 'StorageRead' else 'unorderedAccess'
+            native = [b for b in bindings if b.get('kind') == native_kind and b.get('count', 1) != 0]
             if len(native) != 1 or native[0]['index'] != index:
                 raise RuntimeError('Native binding remapping is outside this raster profile')
-        if dxil and (count != 1 or is_runtime or kind not in ('UniformBuffer', 'Sampler', 'Texture2D', 'Texture2DArray', 'TextureCube', 'Texture3D')):
-            raise RuntimeError('DXIL D3a supports scalar uniform, sampled color and sampler bindings only')
+        if dxil:
+            supported = (('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'Texture2D') if stage == 'compute'
+                         else ('UniformBuffer', 'Sampler', 'Texture2D', 'Texture2DArray', 'TextureCube', 'Texture3D'))
+            if count != 1 or is_runtime or kind not in supported:
+                raise RuntimeError(f'DXIL {stage} requires scalar bindings of kinds: {", ".join(supported)}')
         value = {'binding': index, 'kind': kind, 'size': size, 'name': resource['name']}
         if is_runtime and kind not in ('Texture2D', 'Texture2DArray', 'TextureCube', 'Texture3D'):
             raise RuntimeError('Runtime arrays require sampled color texture descriptors')

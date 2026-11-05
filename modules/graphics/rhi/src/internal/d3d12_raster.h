@@ -20,7 +20,13 @@ struct Attachment final
 [[nodiscard]] ID3D12Resource* GetBuffer(usize slot) noexcept;
 [[nodiscard]] D3D12_SHADER_BYTECODE GetShader(usize slot) noexcept;
 [[nodiscard]] ID3D12RootSignature* GetSignature(usize slot) noexcept;
-void BindSet(ID3D12GraphicsCommandList* commands, usize slot) noexcept;
+void BindSet(ID3D12GraphicsCommandList* commands, usize slot, ShaderStage stage) noexcept;
+void ResetBufferStates() noexcept;
+void InitializeCompute() noexcept;
+void ReleaseCompute() noexcept;
+[[nodiscard]] ID3D12CommandSignature* GetIndexedIndirectSignature() noexcept;
+[[nodiscard]] RasterStatus GrowComputePipelines(usize count) noexcept;
+void DestroyComputePipeline(usize slot) noexcept;
 [[nodiscard]] Attachment GetAttachment(usize slot, uint32 mip, uint32 layer) noexcept;
 [[nodiscard]] ID3D12GraphicsCommandList* GetCommandsOrNull() noexcept;
 [[nodiscard]] Attachment GetSurfaceAttachment() noexcept;

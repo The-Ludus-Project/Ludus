@@ -13,7 +13,7 @@ namespace ludus::graphics::rhi::backend::d3d12
                                                const BufferDescription& description,
                                                BorrowedView<const uint8> bytes) noexcept;
 void PollInitialBuffers() noexcept;
-void SetBuffer(usize slot, ComOwner<ID3D12Resource>&& resource) noexcept;
+void SetBuffer(usize slot, bool hasStorage, ComOwner<ID3D12Resource>&& resource) noexcept;
 [[nodiscard]] ID3D12Resource* GetTexture(usize slot) noexcept;
 [[nodiscard]] D3D12_RESOURCE_STATES GetTextureState(usize slot) noexcept;
 void SetTextureState(usize slot, D3D12_RESOURCE_STATES state) noexcept;

@@ -36,6 +36,8 @@ constexpr usize DESCRIPTOR_TABLE_COUNT = RASTER_BINDING_COUNT;
 struct Buffer final
 {
     ComOwner<ID3D12Resource> Resource;
+    D3D12_RESOURCE_STATES State = D3D12_RESOURCE_STATE_COMMON;
+    bool HasStorage = false;
 };
 struct Texture final
 {
@@ -371,6 +373,8 @@ RasterStatus RasterGrow(RasterKind kind, usize count) noexcept
             break;
         case RasterKind::Pipeline:
             return GrowPipelines(count);
+        case RasterKind::ComputePipeline:
+            return GrowComputePipelines(count);
         default:
             return RasterStatus::Unsupported;
     }
@@ -387,11 +391,6 @@ RasterStatus RasterCreateBuffer(usize slot,
                                 std::span<const uint8> bytes,
                                 uint32 request) noexcept
 {
-    if (description.Role == BufferRole::Storage || description.Role == BufferRole::StorageVertex ||
-        description.Role == BufferRole::StorageIndirect)
-    {
-        return RasterStatus::Unsupported;
-    }
     return CreateInitialBuffer({slot, request}, description, {bytes.data(), bytes.size()});
 }
 RasterStatus RasterCreateTexture(usize slot,
@@ -699,11 +698,8 @@ RasterStatus RasterCreateSampler(usize slot, const SamplerDescription& descripti
 RasterStatus
 RasterCreateShader(usize slot, const ShaderDescription& description, const RasterShaderInfo& info, uint32) noexcept
 {
-    if (info.Stage == ShaderStage::Compute)
-    {
-        return RasterStatus::Unsupported;
-    }
-    if (HasDxilEntry(description.Dxil, info.Stage, description.DxilEntry) == false ||
+    if ((info.Stage == ShaderStage::Compute && HasDxilWorkgroupSize(description.Dxil, info.WorkgroupSize) == false) ||
+        HasDxilEntry(description.Dxil, info.Stage, description.DxilEntry) == false ||
         HasDxilBindings(description.Dxil, info.Layout) == false)
     {
         return RasterStatus::InvalidDescription;
@@ -723,16 +719,23 @@ RasterStatus RasterCreateLayout(usize slot, const RasterLayout& layout, uint32) 
     for (usize entry = 0; entry < layout.Count; ++entry)
     {
         const RasterBinding& binding = layout.Entries[entry];
-        if (binding.Count != 1 || binding.HasDynamicOffset == true || binding.Visibility == RasterVisibility::Compute ||
+        const bool isStorage =
+            binding.Kind == RasterBindingKind::StorageRead || binding.Kind == RasterBindingKind::StorageReadWrite;
+        constexpr usize MAX_PORTABLE_STORAGE_STRIDE = sizeof(uint32) * 4;
+        if (binding.Count != 1 || binding.HasDynamicOffset == true ||
+            (isStorage == true &&
+             (binding.Visibility != RasterVisibility::Compute || binding.MinSize > MAX_PORTABLE_STORAGE_STRIDE ||
+              (MAX_PORTABLE_STORAGE_STRIDE % binding.MinSize) != 0)) ||
             (binding.Kind != RasterBindingKind::UniformBuffer && binding.Kind != RasterBindingKind::Sampler &&
-             TextureBinding(binding.Kind) == false))
+             TextureBinding(binding.Kind) == false && isStorage == false))
         {
             return RasterStatus::Unsupported;
         }
         D3D12_DESCRIPTOR_RANGE& range = ranges[entry];
-        range.RangeType = binding.Kind == RasterBindingKind::UniformBuffer ? D3D12_DESCRIPTOR_RANGE_TYPE_CBV
-                          : binding.Kind == RasterBindingKind::Sampler     ? D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER
-                                                                           : D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        range.RangeType = binding.Kind == RasterBindingKind::UniformBuffer      ? D3D12_DESCRIPTOR_RANGE_TYPE_CBV
+                          : binding.Kind == RasterBindingKind::Sampler          ? D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER
+                          : binding.Kind == RasterBindingKind::StorageReadWrite ? D3D12_DESCRIPTOR_RANGE_TYPE_UAV
+                                                                                : D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         range.NumDescriptors = 1;
         range.BaseShaderRegister = binding.Binding;
         range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
@@ -824,6 +827,39 @@ RasterStatus RasterCreateSet(usize slot, const RasterLayout& layout, const Raste
                                                           static_cast<UINT>(roundedSize)};
             GetDeviceOrNull()->CreateConstantBufferView(&uniform, descriptor);
         }
+        else if (binding.Kind == RasterBindingKind::StorageRead || binding.Kind == RasterBindingKind::StorageReadWrite)
+        {
+            const usize stride = binding.MinSize;
+            const usize offset = snapshot.Offsets[entry];
+            const usize size = snapshot.Sizes[entry];
+            if (offset % stride != 0 || size % stride != 0)
+            {
+                return RasterStatus::InvalidDescription;
+            }
+            ID3D12Resource* resource = gBuffers[resourceSlot].Resource.Get();
+            const uint64 firstElement = offset / stride;
+            const uint32 elementCount = static_cast<uint32>(size / stride);
+            const uint32 elementStride = static_cast<uint32>(stride);
+            if (binding.Kind == RasterBindingKind::StorageReadWrite)
+            {
+                D3D12_UNORDERED_ACCESS_VIEW_DESC storage{};
+                storage.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+                storage.Buffer.FirstElement = firstElement;
+                storage.Buffer.NumElements = elementCount;
+                storage.Buffer.StructureByteStride = elementStride;
+                GetDeviceOrNull()->CreateUnorderedAccessView(resource, nullptr, &storage, descriptor);
+            }
+            else
+            {
+                D3D12_SHADER_RESOURCE_VIEW_DESC storage{};
+                storage.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+                storage.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                storage.Buffer.FirstElement = firstElement;
+                storage.Buffer.NumElements = elementCount;
+                storage.Buffer.StructureByteStride = elementStride;
+                GetDeviceOrNull()->CreateShaderResourceView(resource, &storage, descriptor);
+            }
+        }
         else
         {
             const View& view = gViews[resourceSlot];
@@ -870,6 +906,9 @@ void RasterDestroy(RasterKind kind, usize slot) noexcept
             break;
         case RasterKind::Pipeline:
             DestroyPipeline(slot);
+            break;
+        case RasterKind::ComputePipeline:
+            DestroyComputePipeline(slot);
             break;
         case RasterKind::Set:
             gSets[slot] = {};
@@ -987,15 +1026,54 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
         texture.State = next;
     }
 }
+// Thanks to Microsoft, "Using Resource Barriers to Synchronize Resource States
+// in Direct3D 12", for buffer decay after ExecuteCommandLists and UAV ordering.
+// https://learn.microsoft.com/windows/win32/direct3d12/using-resource-barriers-to-synchronize-resource-states-in-direct3d-12
+void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
+{
+    Buffer& buffer = gBuffers[slot];
+    if (buffer.HasStorage == false)
+    {
+        return;
+    }
+    const D3D12_RESOURCE_STATES next = use == GraphAccessMode::StorageReadWrite ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                                                                                : D3D12_RESOURCE_STATE_GENERIC_READ;
+    D3D12_RESOURCE_BARRIER barrier{};
+    if (buffer.State != next)
+    {
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition = {buffer.Resource.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, buffer.State, next};
+        buffer.State = next;
+    }
+    else if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+    {
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        barrier.UAV.pResource = buffer.Resource.Get();
+    }
+    else
+    {
+        return;
+    }
+    GetCommandsOrNull()->ResourceBarrier(1, &barrier);
+}
 namespace d3d12
 {
 DXGI_FORMAT GetRasterFormat(RasterFormat format) noexcept
 {
     return GetFormat(format);
 }
-void SetBuffer(usize slot, ComOwner<ID3D12Resource>&& resource) noexcept
+void SetBuffer(usize slot, bool hasStorage, ComOwner<ID3D12Resource>&& resource) noexcept
 {
-    gBuffers[slot].Resource = Move(resource);
+    gBuffers[slot] = { .Resource = Move(resource), .HasStorage = hasStorage };
+}
+void ResetBufferStates() noexcept
+{
+    // Every transfer and frame is a separate ExecuteCommandLists call on the
+    // same queue. Begin tracking again when a fresh frame list starts.
+    for (Buffer& buffer : gBuffers)
+    {
+        buffer.State = D3D12_RESOURCE_STATE_COMMON;
+    }
 }
 ID3D12Resource* GetTexture(usize slot) noexcept
 {
@@ -1031,7 +1109,7 @@ Attachment GetAttachment(usize slot, uint32 mip, uint32 layer) noexcept
             GetDescriptor(texture.Targets.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, index),
             GetDescriptor(texture.Depths.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, index)};
 }
-void BindSet(ID3D12GraphicsCommandList* commands, usize slot) noexcept
+void BindSet(ID3D12GraphicsCommandList* commands, usize slot, ShaderStage stage) noexcept
 {
     const Set& set = gSets[slot];
     constexpr usize MAX_BOUND_HEAPS = 2;
@@ -1060,7 +1138,14 @@ void BindSet(ID3D12GraphicsCommandList* commands, usize slot) noexcept
         const uint32 index = isSampler == true ? samplerIndex++ : resourceIndex++;
         D3D12_GPU_DESCRIPTOR_HANDLE handle = heap->GetGPUDescriptorHandleForHeapStart();
         handle.ptr += uint64{index} * GetDeviceOrNull()->GetDescriptorHandleIncrementSize(type);
-        commands->SetGraphicsRootDescriptorTable(static_cast<UINT>(entry), handle);
+        if (stage == ShaderStage::Compute)
+        {
+            commands->SetComputeRootDescriptorTable(static_cast<UINT>(entry), handle);
+        }
+        else
+        {
+            commands->SetGraphicsRootDescriptorTable(static_cast<UINT>(entry), handle);
+        }
     }
 }
 } // namespace d3d12

@@ -40,8 +40,19 @@ if "-DRASTER=1" in arguments and stage == "fragment":
                             "elementType": {"fields": [{"name": "color", "binding": {"offset": 16},
                                 "type": {"kind": "vector", "elementCount": 4, "elementType": {"scalarType": "float32"}}}]}}}]
     bindings = [{"name": "settings", "binding": {"kind": "constantBuffer", "index": 3, "used": 1}}]
+point = {"name": entry, "stage": stage, "bindings": bindings}
+if stage == "compute":
+    parameters = []
+    point["threadGroupSize"] = [8, 4, 2]
+    for index, (category, access) in enumerate((("shaderResource", "read"), ("unorderedAccess", "readWrite"))):
+        name = f"values{index}"
+        binding = {"kind": category, "index": index}
+        parameters.append({"name": name, "binding": binding, "type": {
+            "kind": "resource", "baseShape": "structuredBuffer", "access": access,
+            "resultType": {"kind": "scalar", "scalarType": "uint32"}}})
+        bindings.append({"name": name, "binding": dict(binding, used=1)})
 with open(option("-reflection-json"), "w") as reflection:
-    json.dump({"entryPoints": [{"name": entry, "stage": stage, "bindings": bindings}], "parameters": parameters}, reflection)
+    json.dump({"entryPoints": [point], "parameters": parameters}, reflection)
 with open(option("-depfile"), "w") as depfile:
     # Windows drive letters must not be mistaken for the target separator.
     depfile.write("C:/checkout/out/" + stage + ".dxil: C:/checkout/shaders/fullscreen.slang\\n")
@@ -49,7 +60,7 @@ with open(option("-depfile"), "w") as depfile:
 
 
 class DxilDriverTests(unittest.TestCase):
-    def compile(self, root, dxc_name="dxc", libraries=None, raster=False):
+    def compile(self, root, dxc_name="dxc", libraries=None, raster=False, compute=None):
         compiler = root / "slangc"
         compiler.write_text(FAKE_SLANG)
         compiler.chmod(0o755)
@@ -66,7 +77,7 @@ class DxilDriverTests(unittest.TestCase):
         source.write_text("// source\n")
         arguments = argparse.Namespace(source=str(source), output=str(root / "out"), name="fullscreen",
                                        compiler=str(compiler), include=[], define=["RASTER=1"] if raster else [], dxc_path=str(dxc), raster=raster,
-                                       vertex="vertexMain", fragment="fragmentMain")
+                                       vertex="vertexMain", fragment="fragmentMain", compute=compute)
         DRIVER.compile_dxil(arguments, lock)
         return root / "out"
 
@@ -139,6 +150,19 @@ class DxilDriverTests(unittest.TestCase):
                 resource["type"] = {"kind": "resource", "baseShape": "structuredBuffer", "resultType": {"kind": "scalar", "scalarType": "float32"}}
             with self.subTest(mutation=mutation), self.assertRaises(RuntimeError):
                 raster_interface(changed, "fragment", dxil=True)
+
+    def test_compute_header_carries_scalar_storage_and_workgroup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = self.compile(Path(temporary), compute="ComputeMain")
+            header = (output / "fullscreen.h").read_text()
+            self.assertIn("graphics::rhi::RasterShaderDescription Compute()", header)
+            self.assertIn('result.Artifact.Dxil = COMPUTE_DXIL; result.Artifact.DxilEntry = "ComputeMain";', header)
+            self.assertIn(".Binding=0,.Kind=graphics::rhi::RasterBindingKind::StorageRead,", header)
+            self.assertIn(".Binding=1,.Kind=graphics::rhi::RasterBindingKind::StorageReadWrite,", header)
+            self.assertIn("result.WorkgroupSize[2] = 2;", header)
+            self.assertEqual(sorted(path.name for path in output.glob("*.dxil")), ["fullscreen.compute.dxil"])
+            manifest = json.loads((output / "manifest.json").read_text())
+            self.assertEqual(manifest["interfaces"]["compute"]["workgroup"], [8, 4, 2])
 
     def test_windows_tools_are_independently_pinned(self):
         lock = json.loads((ROOT / "config/shader_toolchain.json").read_text())

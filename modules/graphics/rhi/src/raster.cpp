@@ -873,12 +873,17 @@ bool ShaderFits(const RasterShaderInfo& shader, const RasterLayout& layout) noex
     for (usize i = 0; i < shader.Layout.Count; ++i)
     {
         const auto& need = shader.Layout.Entries[i];
+        // D3D12 encodes the structured element stride in the descriptor.
+        const bool hasExactStride =
+            backend::Kind() == Backend::Direct3D12 &&
+            (need.Kind == RasterBindingKind::StorageRead || need.Kind == RasterBindingKind::StorageReadWrite);
         bool found = false;
         const auto stage = shader.Stage == ShaderStage::Vertex ? 1U : shader.Stage == ShaderStage::Fragment ? 2U : 4U;
         for (usize j = 0; j < layout.Count; ++j)
         {
             const auto& entry = layout.Entries[j];
-            if (entry.Binding == need.Binding && entry.Kind == need.Kind && entry.MinSize >= need.MinSize &&
+            if (entry.Binding == need.Binding && entry.Kind == need.Kind &&
+                (hasExactStride == true ? entry.MinSize == need.MinSize : entry.MinSize >= need.MinSize) &&
                 entry.IsRuntimeSized == need.IsRuntimeSized &&
                 (need.IsRuntimeSized == true ? entry.Count >= need.Count : entry.Count == need.Count) &&
                 static_cast<uint8>(entry.Indexing) >= static_cast<uint8>(need.Indexing) &&

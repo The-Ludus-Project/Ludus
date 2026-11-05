@@ -42,7 +42,7 @@ void RequireReady(rhi::DeviceHandle device, rhi::TextureHandle texture)
 }
 } // namespace
 
-TEST_CASE("D3b admits required raster while compute remains unavailable", "[rhi][windows][d3a]")
+TEST_CASE("D4b admits required raster and compute on shader model 6", "[rhi][windows][d3a]")
 {
     ResourceDevice owner;
     if (std::getenv("LUDUS_TEST_REQUIRE_WARP") != nullptr)
@@ -56,7 +56,7 @@ TEST_CASE("D3b admits required raster while compute remains unavailable", "[rhi]
     rhi::DeviceInfo information;
     REQUIRE(rhi::GetDeviceInfo(owner.Device, information) == rhi::DeviceStatus::Ready);
     CHECK(information.Enabled.PortableRaster == true);
-    CHECK(information.Enabled.Compute == false);
+    CHECK(information.Enabled.IndirectRendering == information.Enabled.Compute);
     CHECK(information.Enabled.OrderedRasterGraph == true);
     CHECK(information.Profile.Raster.MaxBufferSize > 0);
     CHECK(information.Profile.Raster.DrawsPerFrame > 0);
@@ -76,8 +76,12 @@ TEST_CASE("D3b admits required raster while compute remains unavailable", "[rhi]
     REQUIRE(rhi::DestroyDevice(owner.Device) == rhi::DeviceStatus::Ready);
     owner.Surface = {};
     description.Required.Compute = true;
-    CHECK(rhi::CreateDevice({}, {}, description, owner.Device, owner.Surface, &failure) == rhi::DeviceStatus::Failed);
-    CHECK(failure.Error == rhi::StartupError::RequirementsUnsatisfied);
+    description.Required.OrderedRasterGraph = true;
+    REQUIRE(rhi::CreateDevice({}, {}, description, owner.Device, owner.Surface, &failure) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::GetDeviceInfo(owner.Device, information) == rhi::DeviceStatus::Ready);
+    CHECK(information.Enabled.Compute == true);
+    CHECK(information.Enabled.IndirectRendering == true);
+    CHECK(information.Profile.Compute.MaxStorageBindings >= 4);
 }
 
 TEST_CASE("D3a binding snapshots retain native buffers and descriptors within configured limits", "[rhi][windows][d3a]")

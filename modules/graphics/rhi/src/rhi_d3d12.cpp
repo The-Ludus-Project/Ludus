@@ -651,6 +651,7 @@ void ReleaseBackBuffers() noexcept
 
 void ReleaseDevice() noexcept
 {
+    ReleaseCompute();
     gRootSignature.Reset();
     gCommands.Reset();
     for (ComOwner<ID3D12CommandAllocator>& allocator : gAllocators)
@@ -815,6 +816,7 @@ bool Initialize(const ApplicationInfo&) noexcept
         LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: creating the queue, fence or command objects failed");
         return false;
     }
+    InitializeCompute();
     return true;
 }
 bool ConnectWindow(const WindowInfo& window) noexcept
@@ -950,6 +952,7 @@ FrameStatus Begin() noexcept
         return FailFrame("ID3D12GraphicsCommandList::Reset", result);
     }
     isRecording = true;
+    ResetBufferStates();
     RasterEndPass();
     const D3D12_RESOURCE_BARRIER toTarget =
         MakeTransition(gSurfaceOrNull,

@@ -29,11 +29,15 @@ namespace
 {
 constexpr uint32 PIXEL_KIND = 0;
 constexpr uint32 VERTEX_KIND = 1;
+constexpr uint32 COMPUTE_KIND = 5;
+constexpr usize COMPUTE_AXIS_COUNT = 3;
+using WorkgroupSize = ludus::foundation::StaticArray<uint32, COMPUTE_AXIS_COUNT>;
 /// PSV0 runtime info sizes of versions 2 and 3; version 3 adds the entry name.
 constexpr uint32 RUNTIME_VERSION2_BYTES = 48;
 constexpr uint32 RUNTIME_VERSION3_BYTES = 52;
 constexpr usize RUNTIME_STAGE_OFFSET = 24;
 constexpr usize RUNTIME_ENTRY_OFFSET = 48;
+constexpr usize RUNTIME_THREADS_OFFSET = 36;
 /// One resource binding record of PSV0 version 2.
 constexpr uint32 RESOURCE_RECORD_BYTES = 24;
 constexpr usize CONTAINER_SIZE_OFFSET = 24;
@@ -49,6 +53,7 @@ struct ContainerShape final
     uint32 ValidationKind = VERTEX_KIND;
     std::string_view Entry = "vertexMain";
     uint32 RuntimeBytes = RUNTIME_VERSION3_BYTES;
+    WorkgroupSize Threads{};
     bool ShouldTerminateEntry = true;
     bool ShouldDuplicateValidation = false;
 };
@@ -98,6 +103,10 @@ Array<uint8> MakeValidationPart(const ContainerShape& shape)
     if (shape.RuntimeBytes >= RUNTIME_VERSION3_BYTES)
     {
         WriteUint32(part, runtime + RUNTIME_ENTRY_OFFSET, 1);
+        for (usize axis = 0; axis < shape.Threads.GetSize(); ++axis)
+        {
+            WriteUint32(part, runtime + RUNTIME_THREADS_OFFSET + axis * sizeof(uint32), shape.Threads[axis]);
+        }
     }
     AppendUint32(part, 1);
     AppendUint32(part, RESOURCE_RECORD_BYTES);
@@ -295,6 +304,43 @@ TEST_CASE("DXIL PSV resource kinds distinguish sampled dimensions and samplers",
         layout.Entries[0].Kind = rhi::RasterBindingKind::StorageRead;
         CHECK(rhi::internal::HasDxilBindings(bytes.AsSpan(), layout) == false);
     }
+}
+
+TEST_CASE("DXIL PSV validates compute workgroups and structured access", "[rhi][dxil]")
+{
+    namespace rhi = ludus::graphics::rhi;
+    ContainerShape shape;
+    shape.ProgramKind = COMPUTE_KIND;
+    shape.ValidationKind = COMPUTE_KIND;
+    shape.Entry = "ComputeMain";
+    shape.Threads = {8, 4, 2};
+    shape.ResourceType = 8;
+    shape.ResourceKind = 12;
+    Array<uint8> bytes = MakeContainer(shape);
+    CHECK(HasDxilEntry(bytes.AsSpan(), ShaderStage::Compute, "ComputeMain") == true);
+    CHECK(rhi::internal::HasDxilWorkgroupSize(bytes.AsSpan(), shape.Threads.AsSpan()) == true);
+    const WorkgroupSize wrongThreads{4, 8, 2};
+    CHECK(rhi::internal::HasDxilWorkgroupSize(bytes.AsSpan(), wrongThreads.AsSpan()) == false);
+    CHECK(rhi::internal::HasDxilWorkgroupSize(bytes.AsSpan(), {}) == false);
+
+    rhi::internal::RasterLayout layout;
+    layout.Count = 1;
+    layout.DescriptorCount = 1;
+    layout.Entries[0] =
+    {
+        .Kind = rhi::RasterBindingKind::StorageReadWrite,
+        .Visibility = rhi::RasterVisibility::Compute,
+        .MinSize = sizeof(uint32),
+    };
+    CHECK(rhi::internal::HasDxilBindings(bytes.AsSpan(), layout) == true);
+    layout.Entries[0].Kind = rhi::RasterBindingKind::StorageRead;
+    CHECK(rhi::internal::HasDxilBindings(bytes.AsSpan(), layout) == false);
+    shape.ResourceType = 5;
+    bytes = MakeContainer(shape);
+    CHECK(rhi::internal::HasDxilBindings(bytes.AsSpan(), layout) == true);
+    shape.ValidationKind = VERTEX_KIND;
+    bytes = MakeContainer(shape);
+    CHECK(rhi::internal::HasDxilWorkgroupSize(bytes.AsSpan(), shape.Threads.AsSpan()) == false);
 }
 
 TEST_CASE("DXIL vertex input semantics are bounded and preserve failed outputs", "[rhi][dxil]")

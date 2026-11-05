@@ -330,10 +330,6 @@ void RasterEndPass() noexcept
 }
 RasterStatus RasterDraw(const RasterPacket& packet) noexcept
 {
-    if (packet.Indirect != RASTER_INVALID)
-    {
-        return RasterStatus::Unsupported;
-    }
     if (isPassOpen == false)
     {
         RasterPassInfo surface;
@@ -354,10 +350,11 @@ RasterStatus RasterDraw(const RasterPacket& packet) noexcept
     commands->SetGraphicsRootSignature(GetSignature(info.Layout));
     commands->SetPipelineState(pipeline.State.Get());
     commands->OMSetStencilRef(info.StencilReference);
-    BindSet(commands, packet.Set);
+    BindSet(commands, packet.Set, ShaderStage::Vertex);
     StaticArray<D3D12_VERTEX_BUFFER_VIEW, STREAM_COUNT> vertices{};
     for (usize stream = 0; stream < info.StreamCount; ++stream)
     {
+        ComputeBufferBarrier(packet.Vertices[stream], GraphAccessMode::Vertex);
         vertices[stream] = {GetBuffer(packet.Vertices[stream])->GetGPUVirtualAddress() + packet.Offsets[stream],
                             static_cast<UINT>(packet.Sizes[stream]),
                             info.Streams[stream].Stride};
@@ -383,7 +380,20 @@ RasterStatus RasterDraw(const RasterPacket& packet) noexcept
                                    static_cast<LONG>(scissor.Y + scissor.Height)};
     commands->RSSetViewports(1, &nativeViewport);
     commands->RSSetScissorRects(1, &nativeScissor);
-    commands->DrawIndexedInstanced(packet.IndexCount, packet.InstanceCount, 0, 0, 0);
+    if (packet.Indirect != RASTER_INVALID)
+    {
+        ComputeBufferBarrier(packet.Indirect, GraphAccessMode::Indirect);
+        commands->ExecuteIndirect(GetIndexedIndirectSignature(),
+                                  1,
+                                  GetBuffer(packet.Indirect),
+                                  packet.IndirectOffset,
+                                  nullptr,
+                                  0);
+    }
+    else
+    {
+        commands->DrawIndexedInstanced(packet.IndexCount, packet.InstanceCount, 0, 0, 0);
+    }
     return RasterStatus::Ready;
 }
 namespace d3d12

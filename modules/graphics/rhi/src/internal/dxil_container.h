@@ -23,10 +23,14 @@ struct DxilVertexInput final
                                        foundation::uint32 location,
                                        DxilVertexInput& outInput) noexcept;
 
-/// Validate the complete PSV0 resource table against the scalar raster layout.
+/// Validate the complete PSV0 resource table against the scalar shader layout.
 /// Rejects missing/extra bindings, register spaces, kinds, ranges and duplicates.
 [[nodiscard]] bool HasDxilBindings(std::span<const ludus::foundation::uint8> bytes,
                                    const RasterLayout& layout) noexcept;
+
+/// Compare the three reflected compute workgroup dimensions to PSV0.
+[[nodiscard]] bool HasDxilWorkgroupSize(std::span<const foundation::uint8> bytes,
+                                        std::span<const foundation::uint32> size) noexcept;
 
 /// Bytes in the fixed container header: four-character code, 16-byte hash, version,
 /// total size and part count.
