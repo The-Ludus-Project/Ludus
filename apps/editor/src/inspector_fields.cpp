@@ -43,7 +43,6 @@ constexpr int32 SWATCH_HEIGHT = design::SPACING_EXTRA_LARGE;
 constexpr int32 CHIP_SIZE = design::SPACING_LARGE;
 constexpr int32 COPIED_FEEDBACK_MILLISECONDS = 1200;
 constexpr int32 MAXIMUM_DISPLAY_DIGITS = 17;
-constexpr int32 DISPLAY_CHANNEL_MAXIMUM = 255;
 } // namespace
 
 float64 ComputeScrubbedValue(float64 startValue,

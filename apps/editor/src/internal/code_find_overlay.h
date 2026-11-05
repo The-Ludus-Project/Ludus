@@ -8,6 +8,7 @@
 
 QT_BEGIN_NAMESPACE
 class QCheckBox;
+class QKeyEvent;
 class QLabel;
 class QLineEdit;
 class QResizeEvent;
@@ -52,6 +53,9 @@ public:
     void Dismiss();
 
 protected:
+    /// Accepts every key its fields leave unhandled (Return after a find, for
+    /// example), so typing in the overlay never edits the editor beneath it.
+    void keyPressEvent(QKeyEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void showEvent(QShowEvent* event) override;
 

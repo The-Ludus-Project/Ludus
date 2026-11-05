@@ -503,6 +503,7 @@ add_library(ludus_editor_code STATIC
     src/internal/code_document.h src/internal/code_edit_scope.h
     src/internal/code_text.h src/code_text.cpp
     src/internal/code_keymap.h src/code_keymap.cpp
+    src/internal/editor_commands.h src/editor_commands.cpp
     src/internal/code_multi_cursor.h src/code_multi_cursor.cpp
     src/internal/code_document_controller.h src/code_document_controller.cpp
     src/internal/code_formatter.h src/code_formatter.cpp
@@ -768,8 +769,6 @@ ludus_editor_add_objects(ludus_editor_application
     src/main_window_layout.cpp
     src/main_window_tools.cpp
     src/main_window_project_files.cpp
-    src/internal/editor_commands.h
-    src/editor_commands.cpp
     src/internal/command_palette.h
     src/command_palette.cpp
     src/internal/options_dialog.h

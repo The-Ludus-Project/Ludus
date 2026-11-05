@@ -677,6 +677,26 @@ headers. Separate the groups with a blank line.
 
 ## Build, test, and validate
 
+### Build before opening a pull request (hard rule)
+
+Integration pull requests compile nothing native, so the first build of a
+merged change is the batch run, after the maintainer has merged it. Every
+merged change that fails to build blocks promotion for everyone.
+
+- Before opening or updating a pull request that changes C++, Slang or CMake,
+  configure with warnings as errors and build what you changed. Local presets
+  default to `LUDUS_WARNINGS_AS_ERRORS=OFF`, so reconfigure explicitly:
+  `cmake --preset <preset> -DLUDUS_WARNINGS_AS_ERRORS=ON`.
+- For anything under `apps/editor` or a module the editor links, build
+  `ludus_editor` and `ludus_editor_tests` (which also builds every editor
+  `*_tests` executable): `cmake --build --preset <preset> --target ludus_editor
+  ludus_editor_tests`. Otherwise build the default target. Linking matters:
+  moving a call into another library can compile cleanly and fail to link.
+- Put the exact build command and its final lines in the pull request body.
+- If you cannot build (no toolchain, sandbox limits), open the pull request as
+  a draft whose title starts with `[unbuilt]` and say so in the body. Never
+  describe code that was not compiled as ready for review.
+
 - Tag GPU math/transport oracle cases with `[reference-compute]` so CTest discovers
   each with its own deadline. Reuse the renderer-owned cold preparation budget and
   yield during asynchronous polling; keep unrelated scenarios out of a shared

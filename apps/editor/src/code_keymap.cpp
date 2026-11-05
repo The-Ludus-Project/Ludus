@@ -139,12 +139,12 @@ QList<CodeKeymapBinding> CodeKeymap::GetProfileBindings(CodeKeymapProfile profil
         bindings.append(CodeKeymapBinding
         {
             .CommandId = QStringLiteral("editor.foldAll"),
-            .Shortcut = QStringLiteral("Ctrl+K Ctrl+0"),
+            .Shortcut = QStringLiteral("Ctrl+K, Ctrl+0"),
         });
         bindings.append(CodeKeymapBinding
         {
             .CommandId = QStringLiteral("editor.unfoldAll"),
-            .Shortcut = QStringLiteral("Ctrl+K Ctrl+J"),
+            .Shortcut = QStringLiteral("Ctrl+K, Ctrl+J"),
         });
         bindings.append(CodeKeymapBinding
         {

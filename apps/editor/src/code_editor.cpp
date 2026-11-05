@@ -1181,8 +1181,9 @@ bool CodeEditor::languageHasStructuralEditing() const
 QChar CodeEditor::autoClosingCloseFor(QChar open) const
 {
     const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
-    for (const CodeLanguagePair& pair : descriptor.AutoClosingPairs)
+    for (usize index = 0; index < descriptor.AutoClosingPairs.GetSize(); ++index)
     {
+        const CodeLanguagePair& pair = descriptor.AutoClosingPairs[index];
         if (QLatin1Char(pair.Open) == open)
         {
             return QLatin1Char(pair.Close);
@@ -1194,8 +1195,9 @@ QChar CodeEditor::autoClosingCloseFor(QChar open) const
 QChar CodeEditor::surroundingCloseFor(QChar open) const
 {
     const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
-    for (const CodeLanguagePair& pair : descriptor.SurroundingPairs)
+    for (usize index = 0; index < descriptor.SurroundingPairs.GetSize(); ++index)
     {
+        const CodeLanguagePair& pair = descriptor.SurroundingPairs[index];
         if (QLatin1Char(pair.Open) == open)
         {
             return QLatin1Char(pair.Close);
@@ -1207,8 +1209,9 @@ QChar CodeEditor::surroundingCloseFor(QChar open) const
 bool CodeEditor::isCloseOfAutoClosingPair(QChar character) const
 {
     const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
-    for (const CodeLanguagePair& pair : descriptor.AutoClosingPairs)
+    for (usize index = 0; index < descriptor.AutoClosingPairs.GetSize(); ++index)
     {
+        const CodeLanguagePair& pair = descriptor.AutoClosingPairs[index];
         if (QLatin1Char(pair.Close) == character)
         {
             return true;
@@ -1220,8 +1223,9 @@ bool CodeEditor::isCloseOfAutoClosingPair(QChar character) const
 bool CodeEditor::isOpenBracket(QChar character) const
 {
     const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
-    for (const CodeLanguagePair& pair : descriptor.BracketPairs)
+    for (usize index = 0; index < descriptor.BracketPairs.GetSize(); ++index)
     {
+        const CodeLanguagePair& pair = descriptor.BracketPairs[index];
         if (QLatin1Char(pair.Open) == character)
         {
             return true;
@@ -1233,8 +1237,9 @@ bool CodeEditor::isOpenBracket(QChar character) const
 QChar CodeEditor::bracketCloseFor(QChar open) const
 {
     const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
-    for (const CodeLanguagePair& pair : descriptor.BracketPairs)
+    for (usize index = 0; index < descriptor.BracketPairs.GetSize(); ++index)
     {
+        const CodeLanguagePair& pair = descriptor.BracketPairs[index];
         if (QLatin1Char(pair.Open) == open)
         {
             return QLatin1Char(pair.Close);
@@ -1794,7 +1799,11 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
         const QChar typedChar = typed.size() == 1 ? typed.at(0) : QChar();
         const QChar openClose = typedChar.isNull() == true ? QChar() : autoClosingCloseFor(typedChar);
         const QChar next = document()->characterAt(cursor.position());
-        if (canPair == true && typedChar.isNull() == false)
+        // A quote's close equals its open, and the caret before a closing quote is
+        // inside the string it ends, which the excluded ranges reject. Let such a
+        // symmetric close step over regardless; brackets still need canPair.
+        const bool isSymmetricClose = typedChar.isNull() == false && openClose == typedChar;
+        if ((canPair == true || isSymmetricClose == true) && typedChar.isNull() == false)
         {
             // Step over a just-closed pair: typing the close character when it is
             // already next moves past it rather than inserting a duplicate. This
@@ -1809,7 +1818,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
             // Auto-close: typing an opening bracket or quote inserts its close and
             // leaves the caret between them, when the next character would not run
             // the pair into following text.
-            if (openClose.isNull() == false &&
+            if (canPair == true && openClose.isNull() == false &&
                 (next.isSpace() == true || next.isNull() == true || isCloseOfAutoClosingPair(next) == true))
             {
                 const CodeEditScope operation(*this);
