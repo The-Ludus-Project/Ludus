@@ -33,8 +33,11 @@ struct DeviceSession final
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
         description.EnableGpuTiming = shouldEnableTiming;
-        REQUIRE(rhi::CreateDevice({}, { .Width = WIDTH, .Height = HEIGHT }, description, Device, Surface) ==
-                rhi::DeviceStatus::Ready);
+        rhi::StartupInfo failure;
+        const rhi::DeviceStatus status =
+            rhi::CreateDevice({}, { .Width = WIDTH, .Height = HEIGHT }, description, Device, Surface, &failure);
+        CAPTURE(shouldEnableTiming, failure.Error);
+        REQUIRE(status == rhi::DeviceStatus::Ready);
     }
 
     ~DeviceSession() noexcept
@@ -168,6 +171,7 @@ TEST_CASE("Direct3D 12 frame and pass timestamps follow submission fences", "[rh
     CHECK(passes.State == rhi::GpuTimingState::Available);
     CHECK(passes.Count == 0);
     REQUIRE(rhi::DestroyDevice(session.Device) == rhi::DeviceStatus::Ready);
+    session.Surface = {};
     CHECK(rhi::GetGpuTiming(device, frame) == rhi::RasterStatus::InvalidHandle);
     CheckDuration(frame);
 
@@ -213,6 +217,7 @@ TEST_CASE("Direct3D 12 device removal invalidates pending timestamps and logs di
     CHECK(logging::LogSystem::Statistics().Written >= recordsBefore + 2);
     removable.Reset();
     REQUIRE(rhi::DestroyDevice(session.Device) == rhi::DeviceStatus::Ready);
+    session.Surface = {};
 
     session.Open(true);
     REQUIRE(rhi::GetGpuTiming(session.Device, frame) == rhi::RasterStatus::Ready);

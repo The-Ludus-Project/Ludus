@@ -5,8 +5,6 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 
-#include <cstring>
-
 // Thanks to the Microsoft PIX team, "WinPixEventRuntime", ABI Usage, for the
 // optional command-list exports. The external PIX process owns GPU capture.
 // https://devblogs.microsoft.com/pix/winpixeventruntime/
@@ -34,11 +32,8 @@ bool hasLoggedRemoval = false;
 template <typename Procedure>
 Procedure LoadPixProcedureOrNull(const char* name) noexcept
 {
-    const FARPROC exportOrNull = GetProcAddress(gPixRuntimeOrNull, name);
-    static_assert(sizeof(Procedure) == sizeof(FARPROC));
-    Procedure procedureOrNull = nullptr;
-    std::memcpy(&procedureOrNull, &exportOrNull, sizeof(procedureOrNull));
-    return procedureOrNull;
+    // Restore the documented WINAPI signature erased by GetProcAddress.
+    return reinterpret_cast<Procedure>(GetProcAddress(gPixRuntimeOrNull, name));
 }
 
 DiagnosticName CopyDiagnosticName(const char* narrowOrNull, const wchar_t* wideOrNull) noexcept
