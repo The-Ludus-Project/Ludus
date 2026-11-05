@@ -1,8 +1,8 @@
 #include "hit_record.slang"
 
 // Pass 2 of 2 (scene compute): rebuild the recorded surface and estimate first-hit direct lighting.
-// Radiance = surface emission + one light sample: SelectLight chooses a light uniformly,
-// SampleIncidentLight proposes a point or direction on it, TestVisibility traces the shadow ray
+// Radiance = surface emission + one light sample: SampleLight chooses a light uniformly and proposes a point
+// or direction on it, TestVisibility traces the shadow ray
 // and EvaluateStandardBsdf weights the result. A miss returns the environment. There is no
 // indirect bounce. One visibility query. The surface comes from the record (GetSurfaceHit), not
 // from tracing the camera ray again; when it is smooth glass, FollowSpecularChain continues
@@ -23,12 +23,15 @@ float3 SampleDirectLighting(SceneContext scene,
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return float3(0);
     }
-    SelectedLight selected = SelectLight(scene, launch, SHADE_RANDOM_DIMENSION_FIRST);
-    if (selected.HasSample == false)
-        return float3(0);
-    IncidentLightSample light =
-        SampleIncidentLight(scene, selected.LightIndex, receiver, launch, SHADE_INCIDENT_DIMENSION_FIRST, queries);
-    float probability = selected.SelectionPmf * light.ConditionalProbability;
+    SceneLightSample sample = SampleLight(scene,
+                                         receiver,
+                                         launch,
+                                         SHADE_RANDOM_DIMENSION_FIRST,
+                                         SHADE_INCIDENT_DIMENSION_FIRST,
+                                         LightSelectionPolicy::Uniform,
+                                         queries);
+    IncidentLightSample light = sample.Incident;
+    float probability = sample.Selection.SelectionPmf * light.ConditionalProbability;
     if (light.HasSample == false || probability <= 0 || any(light.IncidentCoefficient > 0) == false)
         return float3(0);
     // Zero for glass, whose delta lobes no light sample reaches.

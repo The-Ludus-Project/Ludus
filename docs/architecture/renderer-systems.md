@@ -1486,11 +1486,19 @@ Record any intentionally mixed approximation in the capture's rendering profile.
 ### Unified light discovery and incident sampling
 
 Scene shaders enumerate analytic lights, mesh emitters and the environment through
-`GetLightCount` and `GetLightInfo`. Built-in templates using the default incident
-proposal use addressed kind-owned draws and combine the source PMF with the
-conditional probability when weighting the estimate. Authored shaders can use
-the existing explicit-coordinate API. The CPU oracle and GPU reference keep
-their matched named proposals and random addresses.
+`GetLightCount` and `GetLightInfo`. For direct lighting, `SampleLight` selects one
+catalog source and samples its incident light. The chosen kind owns its draws.
+The result carries the source PMF and the conditional probability separately.
+For a BSDF ray, `EvaluateLightAlongRay` returns emitted radiance and the two
+probability terms under the same selection policy, whether the ray hits a mesh
+or escapes to the environment.
+
+Use the uniform policy for ordinary direct lighting. A shader that already
+estimates the mesh contribution with a specialized proposal can use the non-mesh
+policy for its remaining contribution. Its PMF is normalized over the analytic
+and environment sources, and the two estimates are added. The CPU oracle and GPU
+reference keep their matched named proposals and random addresses. Existing
+authored shaders can still use the explicit-coordinate API.
 
 #### Scene ownership and source identity
 

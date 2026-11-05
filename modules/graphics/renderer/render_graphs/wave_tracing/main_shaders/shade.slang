@@ -105,16 +105,17 @@ float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQu
         float3 geometricNormalWorld =
             dot(hit.GeometricNormalWorld, viewWorld) < 0 ? -hit.GeometricNormalWorld : hit.GeometricNormalWorld;
         uint dimension = SHADE_RANDOM_DIMENSION_FIRST + depth * WAVE_RANDOM_VERTEX_STRIDE;
-        SelectedLight selected = SelectLight(scene, launch, dimension);
-        if (selected.HasSample == true)
+        SceneLightSample sample = SampleLight(scene,
+                                             hit,
+                                             launch,
+                                             dimension,
+                                             dimension + WAVE_LIGHT_SHAPE_FIRST,
+                                             LightSelectionPolicy::Uniform,
+                                             queries);
+        if (sample.Selection.HasSample == true)
         {
-            IncidentLightSample light = SampleIncidentLight(scene,
-                                                            selected.LightIndex,
-                                                            hit,
-                                                            launch,
-                                                            dimension + WAVE_LIGHT_SHAPE_FIRST,
-                                                            queries);
-            float probability = selected.SelectionPmf * light.ConditionalProbability;
+            IncidentLightSample light = sample.Incident;
+            float probability = sample.Selection.SelectionPmf * light.ConditionalProbability;
             float cosine = dot(shadingNormalWorld, light.DirectionWorld);
             if (isDielectric == false && light.HasSample == true && probability > 0 && cosine > 0 &&
                 dot(geometricNormalWorld, light.DirectionWorld) > 0 && any(light.IncidentCoefficient > 0) == true)

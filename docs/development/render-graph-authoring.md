@@ -2434,7 +2434,7 @@ pass.
 | Pipeline node | Kernel source | Work | Queries |
 | --- | --- | --- | --- |
 | `primary` | `main_shaders/primary.slang` (`TracePrimaryHit`) | Draw a subpixel jitter, build the ray with `MakeCameraRay`, call `TraceClosest` and write the hit record. Returns `float3(0)`. | One surface query |
-| `shade` | `main_shaders/shade.slang` (`ShadeRecordedHit`) | Validate the record, rebuild the surface with `GetSurfaceHit`, then return the surface emission plus one light sample: `SelectLight` and `SampleIncidentLight` choose it, `TestVisibility` traces the shadow ray from the surface, and `EvaluateStandardBsdf` weights it. A miss returns `EvaluateEnvironment`. | One visibility query |
+| `shade` | `main_shaders/shade.slang` (`ShadeRecordedHit`) | Validate the record, rebuild the surface with `GetSurfaceHit`, then return the surface emission plus one light sample: `SampleLight` chooses and samples it, `TestVisibility` traces the shadow ray from the surface, and `EvaluateStandardBsdf` weights it. A miss returns `EvaluateEnvironment`. | One visibility query |
 
 `main_shaders/hit_record.slang` owns the record layout, two `uint4` words per pixel:
 
@@ -4526,12 +4526,14 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetMaterial / EvaluateMaterial | Bound constant factors / sampled base color, metallic, roughness, emission and mapped world normal |
 | EvaluateEmission | Emission at a hit or sampled surface, respecting geometric sidedness |
 | GetLightInfo | Checked typed record for directional, point, spot, mesh or aggregate environment source |
-| GetLuminaireCount / GetLuminaireInfo | The World's [panel luminaires](#sample-a-directional-luminaire-with-slice-sampling) in source-identity order: center, half extent, orthonormal tangent/bitangent/normal frame and beam profile. They are not lights, so SelectLight never chooses them and no query hits them; zero without the lights scene data |
+| GetLuminaireCount / GetLuminaireInfo | The World's [panel luminaires](#sample-a-directional-luminaire-with-slice-sampling) in source-identity order: center, half extent, orthonormal tangent/bitangent/normal frame and beam profile. The current catalog excludes panels while their directional beam proposal is specialized; zero without the lights scene data |
 | GetEmitter / GetEmitterTriangle / GetTriangle | Emitter range/area and checked world geometry for custom proposals |
 | GetGeometryHierarchyNodeCount / GetGeometryHierarchyNode / GetGeometryHierarchyTriangle | Immutable preorder BVH topology, world bounds and checked leaf-order triangle indices; see [geometry sampling](#sample-one-more-vertex-with-a-geometry-hierarchy) |
 | GetEmitterBounds | Precomputed emitter bounding sphere, geometric-normal cone and emission sidedness, for one weight per emitter without a triangle loop |
 | IsSurfaceCovered | Fixed-mip sampled-endpoint alpha coverage, using the same inclusive cutoff as closest-hit traversal, with no ray query; keep uncovered area samples as zero events |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
+| SampleLight | Select a catalog source and sample it with the default incident proposal. Returns the selection PMF and conditional probability separately. |
+| EvaluateLightAlongRay | Return the radiance and matching continuous light proposal for a traced mesh hit or environment miss, using the same selection policy as SampleLight. |
 | SelectLight / EvaluateLightSelectionPmf | Default uniform source selection and its discrete probability. SelectLight(scene, queries) uses the invocation stream. |
 | SelectLightByMeshPower / EvaluateMeshPowerLightSelectionPmf | Addressed catalog selection and its matching PMF. Mesh lights split their uniform category share by power, with uniform fallback. |
 | SampleIncidentLight(scene, lightIndex, receiver, launch, firstDimension, queries) | Addressed conditional proposal for one source. Returns an IncidentLightSample with its probability and measure. |
@@ -4970,20 +4972,17 @@ its source selection probability. Emission maps are sampled at the actual UV;
 black texels and back-side one-sided samples remain zero-contribution events.
 The initial environment proposal is uniform sphere, including HDR maps.
 
-The Compute ray tracing template chooses a source at one explicit address, then
-passes the source index and an independent address range to the incident sampler.
+The Compute ray tracing template uses `SampleLight` with independent addresses
+for source selection and the conditional incident proposal.
 
 ```slang
-SelectedLight selected = SelectLight(scene, launch, LIGHT_SELECTION_DIMENSION);
-if (selected.HasSample == false)
+SceneLightSample light = SampleLight(
+    scene, receiver, launch, LIGHT_SELECTION_DIMENSION, INCIDENT_DIMENSION_FIRST,
+    LightSelectionPolicy::Uniform, queries);
+if (light.Incident.HasSample == false)
     return float3(0);
 
-IncidentLightSample incident = SampleIncidentLight(
-    scene, selected.LightIndex, receiver, launch, INCIDENT_DIMENSION_FIRST, queries);
-if (incident.HasSample == false)
-    return float3(0);
-
-float probability = selected.SelectionPmf * incident.ConditionalProbability;
+float probability = light.Selection.SelectionPmf * light.Incident.ConditionalProbability;
 ```
 
 Reserve `SCENE_INCIDENT_LIGHT_DIMENSION_COUNT` slots for the default incident
@@ -4997,8 +4996,9 @@ Use the probability product after checking `incident.HasSample` and use
 probability is a density per steradian for `IncidentLightMeasure::SolidAngle` and
 a mass for `IncidentLightMeasure::Discrete`. Analytic delta samples have
 conditional mass one and zero competing solid-angle density. For MIS after a
-BSDF sample, resolve the source index, evaluate the original selector's PMF at
-the original receiver, and multiply it by the matching conditional density.
+BSDF sample, pass the trace result, original receiver position and same
+selection policy to `EvaluateLightAlongRay`. Multiply its source PMF by its
+conditional solid-angle density.
 See the [light sampling architecture](../architecture/renderer-systems.md#unified-light-discovery-and-incident-sampling).
 
 ### Select emissive triangles by power

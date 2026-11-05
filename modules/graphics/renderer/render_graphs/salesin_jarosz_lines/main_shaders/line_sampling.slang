@@ -191,12 +191,15 @@ bool FindLineProposal(SceneContext scene,
                       out LineProposal outProposal)
 {
     outProposal = (LineProposal)0;
-    SelectedLight selected = SelectLight(scene, launch, firstDimension);
-    if (selected.HasSample == false)
-        return false;
-    outProposal.PointSample =
-        SampleIncidentLight(scene, selected.LightIndex, receiver, launch, firstDimension + 1, queries);
-    outProposal.SelectionPmf = selected.SelectionPmf;
+    SceneLightSample sample = SampleLight(scene,
+                                         receiver,
+                                         launch,
+                                         firstDimension,
+                                         firstDimension + 1,
+                                         LightSelectionPolicy::Uniform,
+                                         queries);
+    outProposal.PointSample = sample.Incident;
+    outProposal.SelectionPmf = sample.Selection.SelectionPmf;
     if (outProposal.PointSample.HasSample == false)
         return false;
     outProposal.HasProposal = true;

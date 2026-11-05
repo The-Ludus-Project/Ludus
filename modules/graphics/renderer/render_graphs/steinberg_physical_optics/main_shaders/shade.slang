@@ -1056,22 +1056,18 @@ float3 TracePath(SceneContext scene, RayLaunch launch, bool isWave, inout RayQue
                 {
                     continuation.PropagationWorld = -incidentWorld;
                     continuation.Weight = stored.ContinuationWeight;
-                    float lightDensity = 0;
-                    if (status == SceneQuery::Miss)
-                    {
-                        continuation.Kind = LightEndpointKind::Environment;
-                        continuation.RadianceRgb = EvaluateEnvironment(scene, incidentWorld);
-                        lightDensity = EvaluateLightSelectionPmf(scene, GetEnvironmentLightIndex(scene)) *
-                                       EvaluateIncidentEnvironmentPdfSolidAngle(scene);
-                    }
-                    else
-                    {
-                        continuation.Kind = LightEndpointKind::Radiator;
-                        continuation.RadianceRgb = EvaluateEmission(scene, next, -incidentWorld);
+                    RayLightEvaluation light = EvaluateLightAlongRay(scene,
+                                                                    hit.PositionWorld,
+                                                                    incidentWorld,
+                                                                    status,
+                                                                    next,
+                                                                    LightSelectionPolicy::Uniform);
+                    continuation.Kind = status == SceneQuery::Miss ? LightEndpointKind::Environment
+                                                                    : LightEndpointKind::Radiator;
+                    continuation.RadianceRgb = light.Radiance;
+                    if (status == SceneQuery::Surface)
                         continuation.DistanceWorld = next.DistanceWorld;
-                        lightDensity = EvaluateLightSelectionPmf(scene, GetSurfaceLightIndex(scene, next)) *
-                                       EvaluateIncidentLightPdfSolidAngle(scene, hit.PositionWorld, next);
-                    }
+                    float lightDensity = light.SelectionPmf * light.ConditionalPdfSolidAngle;
                     if (isDelta == false)
                         continuation.Weight *= ComputePowerHeuristic(lobeDensity, lightDensity);
                     hasContinuation = any(continuation.RadianceRgb > 0);
