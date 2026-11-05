@@ -2,28 +2,19 @@
 
 #include <ludus/foundation/base/core.h>
 
-#include "internal/code_document_controller.h"
-#include "internal/code_edit_scope.h"
+#include "internal/code_find_overlay.h"
 #include "internal/code_editor.h"
-#include "internal/code_navigation.h"
-#include "internal/code_text.h"
 
 #include <QCheckBox>
-#include <QFont>
 #include <QHBoxLayout>
 #include <QInputDialog>
-#include <QKeySequence>
 #include <QLabel>
-#include <QLineEdit>
 #include <QMenu>
 #include <QPushButton>
-#include <QShortcut>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QString>
-#include <QTextBlock>
 #include <QTextCursor>
-#include <QTextDocument>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -32,9 +23,7 @@ namespace ludus::editor
 using namespace foundation;
 
 CodeEditorPanel::CodeEditorPanel(CodeEditor* editor, CodeDocumentController* controllerOrNull, QWidget* parentOrNull)
-    : QWidget(parentOrNull), mEditor(editor), mControllerOrNull(controllerOrNull), mSearch(new QWidget(this)),
-      mReplaceRow(new QWidget(mSearch)), mFindText(new QLineEdit(mSearch)), mReplacement(new QLineEdit(mReplaceRow)),
-      mIsCaseSensitive(new QCheckBox(QStringLiteral("Match case"), mSearch)), mStatus(new QLabel(mSearch))
+    : QWidget(parentOrNull), mEditor(editor)
 {
     LUDUS_ASSERT(editor != nullptr);
     QVBoxLayout* layout = new QVBoxLayout(this);
@@ -117,44 +106,14 @@ CodeEditorPanel::CodeEditorPanel(CodeEditor* editor, CodeDocumentController* con
     connect(guides, &QCheckBox::toggled, editor, &CodeEditor::SetIndentGuidesVisible);
     updatePresentation();
     layout->addLayout(tools);
-    layout->addWidget(mSearch);
     layout->addWidget(editor, 1);
-    QVBoxLayout* searchLayout = new QVBoxLayout(mSearch);
-    searchLayout->setContentsMargins(0, 0, 0, 0);
-    QHBoxLayout* findRow = new QHBoxLayout;
-    mFindText->setObjectName(QStringLiteral("codeEditorFind"));
-    mFindText->setPlaceholderText(QStringLiteral("Find"));
-    mFindText->setAccessibleName(QStringLiteral("Find text"));
-    mFindText->setClearButtonEnabled(true);
-    mStatus->setObjectName(QStringLiteral("codeEditorFindStatus"));
-    mStatus->setAccessibleName(QStringLiteral("Search result"));
-    QPushButton* previous = new QPushButton(QStringLiteral("Previous"), mSearch);
-    QPushButton* next = new QPushButton(QStringLiteral("Next"), mSearch);
-    QPushButton* close = new QPushButton(QStringLiteral("Close"), mSearch);
-    findRow->addWidget(mFindText, 1);
-    findRow->addWidget(previous);
-    findRow->addWidget(next);
-    findRow->addWidget(close);
-    searchLayout->addLayout(findRow);
-    QHBoxLayout* options = new QHBoxLayout;
-    options->addWidget(mIsCaseSensitive);
-    options->addWidget(mStatus, 1);
-    searchLayout->addLayout(options);
-    QHBoxLayout* replacementRow = new QHBoxLayout(mReplaceRow);
-    replacementRow->setContentsMargins(0, 0, 0, 0);
-    mReplacement->setObjectName(QStringLiteral("codeEditorReplacement"));
-    mReplacement->setPlaceholderText(QStringLiteral("Replace with"));
-    mReplacement->setAccessibleName(QStringLiteral("Replacement text"));
-    QPushButton* replace = new QPushButton(QStringLiteral("Replace"), mReplaceRow);
-    replace->setObjectName(QStringLiteral("codeEditorReplace"));
-    QPushButton* replaceAll = new QPushButton(QStringLiteral("Replace All"), mReplaceRow);
-    replaceAll->setObjectName(QStringLiteral("codeEditorReplaceAll"));
-    replacementRow->addWidget(mReplacement, 1);
-    replacementRow->addWidget(replace);
-    replacementRow->addWidget(replaceAll);
-    searchLayout->addWidget(mReplaceRow);
-    connect(editor, &CodeEditor::FindRequested, this, [this]() { showSearch(false); });
-    connect(editor, &CodeEditor::ReplaceRequested, this, [this]() { showSearch(true); });
+
+    // The find/replace overlay (CE07) floats over the editor's viewport rather
+    // than taking a row of its own; it is parented to the editor so it tracks the
+    // viewport, is owned by it, and never steals layout space. Find (Ctrl+F) and
+    // Replace reveal it through the editor's FindRequested/ReplaceRequested.
+    static_cast<void>(new CodeFindOverlay(editor, controllerOrNull, editor));
+
     connect(editor, &CodeEditor::GoToLineRequested, this, [this]() {
         bool isAccepted = false;
         const int32 line = QInputDialog::getInt(this,
@@ -170,219 +129,5 @@ CodeEditorPanel::CodeEditorPanel(CodeEditor* editor, CodeDocumentController* con
             mEditor->GoToLine(line);
         }
     });
-    connect(previous, &QPushButton::clicked, this, [this]() { findText(true); });
-    connect(next, &QPushButton::clicked, this, [this]() { findText(false); });
-    connect(mFindText, &QLineEdit::returnPressed, this, [this]() { findText(false); });
-    connect(replace, &QPushButton::clicked, this, &CodeEditorPanel::replaceText);
-    connect(replaceAll, &QPushButton::clicked, this, &CodeEditorPanel::replaceAll);
-    connect(mFindText, &QLineEdit::textChanged, mStatus, &QLabel::clear);
-    connect(close, &QPushButton::clicked, this, [this]() {
-        mSearch->hide();
-        mEditor->setFocus();
-    });
-    QShortcut* escape = new QShortcut(QKeySequence(Qt::Key_Escape), mSearch);
-    escape->setContext(Qt::WidgetWithChildrenShortcut);
-    connect(escape, &QShortcut::activated, close, &QPushButton::click);
-    mSearch->hide();
-}
-
-void CodeEditorPanel::showSearch(bool shouldReplace)
-{
-    mSearch->show();
-    mReplaceRow->setVisible(shouldReplace == true && mEditor->isReadOnly() == false);
-    const QString selection = mEditor->textCursor().selectedText();
-    if (selection.isEmpty() == false && selection.contains(QChar::ParagraphSeparator) == false)
-    {
-        mFindText->setText(selection);
-    }
-    mStatus->clear();
-    mFindText->setFocus();
-    mFindText->selectAll();
-}
-
-void CodeEditorPanel::findText(bool shouldSearchBackward)
-{
-    if (mFindText->text().isEmpty() == true)
-    {
-        return;
-    }
-    QTextDocument::FindFlags flags;
-    if (mIsCaseSensitive->isChecked() == true)
-    {
-        flags |= QTextDocument::FindCaseSensitively;
-    }
-    if (shouldSearchBackward == true)
-    {
-        flags |= QTextDocument::FindBackward;
-    }
-    QTextCursor found = mEditor->document()->find(mFindText->text(), mEditor->textCursor(), flags);
-    if (found.isNull() == true)
-    {
-        QTextCursor boundary(mEditor->document());
-        boundary.movePosition(shouldSearchBackward == true ? QTextCursor::End : QTextCursor::Start);
-        found = mEditor->document()->find(mFindText->text(), boundary, flags);
-    }
-    if (found.isNull() == true)
-    {
-        mStatus->setText(QStringLiteral("No matches"));
-    }
-    else
-    {
-        mEditor->GetNavigation().RememberCurrent();
-        mEditor->setTextCursor(found);
-        mEditor->ensureCursorVisible();
-        mStatus->clear();
-    }
-}
-
-void CodeEditorPanel::replaceText()
-{
-    if (mEditor->isReadOnly() == true || mFindText->text().isEmpty() == true)
-    {
-        return;
-    }
-    const CodeEditScope operation(*mEditor);
-    QTextCursor cursor = mEditor->textCursor();
-    const Qt::CaseSensitivity sensitivity =
-        mIsCaseSensitive->isChecked() == true ? Qt::CaseSensitive : Qt::CaseInsensitive;
-    if (cursor.hasSelection() == true && cursor.selectedText().compare(mFindText->text(), sensitivity) == 0)
-    {
-        cursor.beginEditBlock();
-        cursor.insertText(mReplacement->text());
-        cursor.endEditBlock();
-        mEditor->setTextCursor(cursor);
-    }
-    findText(false);
-}
-
-bool CodeEditorPanel::replaceAllThroughEditSet(const QString& findText,
-                                               const QString& replacement,
-                                               bool isCaseSensitive)
-{
-    // Collect every match as an ordered, non-overlapping byte edit against the
-    // host's current draft, then publish them as one edit set (CE05): validated
-    // and applied whole, one undo step.
-    //
-    // Matches are found in one pass over the decoded draft, which is the text the
-    // editor shows (the controller decodes the same bytes with DecodeCodeText), so
-    // its positions are editor positions. QTextDocument::find cost about 100 us
-    // per match, seconds for a large Replace All. Each match is mapped by walking
-    // on from the previous one, so mapping is one pass over the bytes as well.
-    const CodeTextCapture capture = mControllerOrNull->Capture();
-    if (capture.Identity.Document == 0)
-    {
-        return false;
-    }
-    QString decoded;
-    if (DecodeCodeText(capture.Text, decoded) == false)
-    {
-        return false;
-    }
-    const bool hasCrLf = capture.Text.contains("\r\n");
-    QByteArray replacementBytes = replacement.toUtf8();
-    if (hasCrLf == true)
-    {
-        replacementBytes.replace("\n", "\r\n");
-    }
-
-    // Like QTextDocument::find, a match never spans a line break.
-    const bool canMatch =
-        findText.contains(QLatin1Char('\n')) == false && findText.contains(QChar(QChar::ParagraphSeparator)) == false;
-    const Qt::CaseSensitivity sensitivity = isCaseSensitive == true ? Qt::CaseSensitive : Qt::CaseInsensitive;
-    QList<CodeTextEdit> edits;
-    int32 count = 0;
-    CodePositionOffset mapped;
-    qsizetype from = 0;
-    while (canMatch == true)
-    {
-        const qsizetype at = decoded.indexOf(findText, from, sensitivity);
-        if (at < 0)
-        {
-            break;
-        }
-        from = at + findText.size();
-        usize startBytes = 0;
-        usize endBytes = 0;
-        if (AdvanceCodeByteOffset(capture.Text, static_cast<int32>(at), mapped, startBytes) == false ||
-            AdvanceCodeByteOffset(capture.Text, static_cast<int32>(from), mapped, endBytes) == false)
-        {
-            // A match that cannot be mapped to a scalar boundary (inside a
-            // surrogate pair) is skipped rather than producing an invalid set.
-            continue;
-        }
-        const CodeTextEdit edit =
-        {
-            .StartBytes = startBytes,
-            .RemovedBytes = endBytes - startBytes,
-            .Inserted = {replacementBytes.constData(), static_cast<usize>(replacementBytes.size())},
-        };
-        edits.append(edit);
-        ++count;
-    }
-    if (edits.isEmpty() == true)
-    {
-        mStatus->setText(QStringLiteral("0 replacements"));
-        return true;
-    }
-    const CodeTextSelection beforeSelections[] = {mControllerOrNull->CaptureSelection()};
-    const CodeEditSet set =
-    {
-        .Edits = {edits.constData(), static_cast<usize>(edits.size())},
-        .Before = {{beforeSelections, 1}},
-        .After = {},
-        .Transaction = {},
-    };
-    const CodeEditStatus status = mControllerOrNull->ApplyEditSet(capture.Identity, set);
-    if (status == CodeEditStatus::Capacity)
-    {
-        mStatus->setText(QStringLiteral("Nothing was replaced: %1 replacements would make the file larger than its "
-                                        "size limit. Shorten the replacement or replace fewer matches.")
-                             .arg(count));
-        return true;
-    }
-    if (status != CodeEditStatus::Ok)
-    {
-        mStatus->setText(QStringLiteral("Nothing was replaced because the source changed. Run Replace All again."));
-        return true;
-    }
-    mStatus->setText(QStringLiteral("%1 replacements").arg(count));
-    return true;
-}
-
-void CodeEditorPanel::replaceAll()
-{
-    if (mEditor->isReadOnly() == true || mFindText->text().isEmpty() == true)
-    {
-        return;
-    }
-    if (mControllerOrNull != nullptr &&
-        replaceAllThroughEditSet(mFindText->text(), mReplacement->text(), mIsCaseSensitive->isChecked()) == true)
-    {
-        return;
-    }
-    // Fallback (no bound controller): the Qt edit block still lands as one undo
-    // step through the controller's whole-text diff.
-    const CodeEditScope operation(*mEditor);
-    QTextDocument::FindFlags flags;
-    if (mIsCaseSensitive->isChecked() == true)
-    {
-        flags |= QTextDocument::FindCaseSensitively;
-    }
-    QTextCursor group(mEditor->document());
-    group.beginEditBlock();
-    QTextCursor cursor(mEditor->document());
-    int32 count = 0;
-    while (true)
-    {
-        cursor = mEditor->document()->find(mFindText->text(), cursor, flags);
-        if (cursor.isNull() == true)
-        {
-            break;
-        }
-        cursor.insertText(mReplacement->text());
-        ++count;
-    }
-    group.endEditBlock();
-    mStatus->setText(QStringLiteral("%1 replacements").arg(count));
 }
 } // namespace ludus::editor
