@@ -23,7 +23,8 @@ if(EMSCRIPTEN)
     set(editor_audio_source src/audio_preview_browser.cpp)
 else()
     set(editor_process_sources src/tool_process.cpp src/play_process.cpp src/source_watch.cpp)
-    set(editor_audio_source src/audio_preview.cpp)
+    # The startup sound needs a device that may start without a user gesture: native only.
+    set(editor_audio_source src/audio_preview.cpp src/startup_sound_player.cpp)
 endif()
 
 # --- Qt discovery (local to the enabled editor only) -------------------------
@@ -753,6 +754,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/main_window.h
     src/internal/audio_workspace.h
     src/internal/audio_preview.h
+    src/internal/startup_sound.h
+    src/startup_sound.cpp
     src/content_jobs.cpp
     src/internal/script_workspace.h
     src/script_workspace.cpp
@@ -883,6 +886,11 @@ qt_add_resources(ludus_editor_application_resources ludus_brand
     PREFIX "/ludus"
     BASE "${PROJECT_SOURCE_DIR}/docs/wiki/assets"
     FILES ${editor_brand_assets})
+# The startup theme the native editor plays on launch (docs/development/editor-workspace.md#startup-sound).
+qt_add_resources(ludus_editor_application_resources ludus_startup_sound
+    PREFIX "/ludus"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/resources"
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/startup-theme.flac")
 # Ship editable, self-contained examples with both presentations. Generated
 # build outputs and local machine settings are never part of the sample library;
 # they are excluded relative to each sample root, not the checkout path.
@@ -1123,6 +1131,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/browser_import_tests.cpp
         tests/configuration_workspace_tests.cpp
         tests/audio_content_tests.cpp
+        tests/startup_sound_tests.cpp
         tests/workspace_tests.cpp
         tests/project_store_tests.cpp
         tests/project_store_v2_tests.cpp

@@ -75,6 +75,19 @@ OptionsDialog::OptionsDialog(QWidget* parentOrNull)
     form->addRow(mProblem);
     mStack->addWidget(renderGraph);
     mPages->addItem(QStringLiteral("Render Graph"));
+#if !defined(Q_OS_WASM)
+    // The Render Graph page stays first so the dialog still opens on it and accept() can return to row 0.
+    QWidget* general = new QWidget(mStack);
+    general->setObjectName(QStringLiteral("optionsGeneralPage"));
+    QFormLayout* generalForm = new QFormLayout(general);
+    mStartupSoundOrNull = new QCheckBox(QStringLiteral("Play the startup sound when the editor opens"), general);
+    mStartupSoundOrNull->setObjectName(QStringLiteral("optionsPlayStartupSound"));
+    mStartupSoundOrNull->setToolTip(
+        QStringLiteral("The Ludus theme, about four seconds. LUDUS_STARTUP_SOUND=0 or 1 overrides this choice."));
+    generalForm->addRow(mStartupSoundOrNull);
+    mStack->addWidget(general);
+    mPages->addItem(QStringLiteral("General"));
+#endif
     mPages->setCurrentRow(0);
 
     QHBoxLayout* body = new QHBoxLayout;
@@ -139,6 +152,19 @@ void OptionsDialog::SetResolvedBuildTools(const QString& sdk, const RenderGraphB
     }
     lines.append(QStringLiteral("Selection and shader tools are detected again for each build."));
     mResolved->setText(lines.join(QLatin1Char('\n')));
+}
+
+void OptionsDialog::SetPlaysStartupSound(bool shouldPlay)
+{
+    if (mStartupSoundOrNull != nullptr)
+    {
+        mStartupSoundOrNull->setChecked(shouldPlay);
+    }
+}
+
+bool OptionsDialog::ShouldPlayStartupSound() const
+{
+    return mStartupSoundOrNull != nullptr && mStartupSoundOrNull->isChecked() == true;
 }
 
 void OptionsDialog::accept()

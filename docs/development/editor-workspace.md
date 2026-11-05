@@ -340,6 +340,30 @@ missing/stale setup in the status area and Output. It never configures, builds,
 downloads, runs project hooks, or changes files. Configure, Build, Build and Run,
 and Stop remain explicit actions.
 
+### Startup sound
+
+The desktop editor plays the Ludus startup theme, about 4.5 seconds long, once
+when its window first appears. That happens on every launch, whether the editor
+opens the Start Page or a project given with `--project`.
+
+- **Turn it off:** uncheck **Tools → Options... → General → Play the startup
+  sound when the editor opens**. The choice is remembered for this computer.
+- **Override it for one launch or a script:** set `LUDUS_STARTUP_SOUND=0` (or
+  `false`, `off`) to silence it, or `LUDUS_STARTUP_SOUND=1` (or `true`, `on`) to
+  play it even when the option is off. The variable beats the option either way.
+- Closing the editor while the theme plays fades it out instead of cutting it.
+
+Playback uses the engine's own Audio device path (CoreAudio on macOS,
+PulseAudio or ALSA on Linux) on a worker thread, so it never delays the window.
+Without an output device the editor stays silent and logs one
+`Editor.StartupSound` line. The browser editor has no startup sound: browsers
+start audio only after a click or key press. Editor tests never play it.
+
+The theme ships inside the editor as the lossless FLAC
+`apps/editor/resources/startup-theme.flac` (44.1 kHz, 16-bit stereo, peaks at
+−1.1 dBFS). It was composed by Minha Ju in GarageBand and is distributed under
+the repository's MIT license, like the rest of Ludus.
+
 ## Recent projects
 
 The **Welcome** work area shows recent projects only when no project is open.
@@ -561,7 +585,8 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   change where the current milestone supports it ([code editor](code-editor.md#status-bar)).
 - **Tools → Options...** edits editor preferences. Its **Render Graph** page
   holds the advanced shader-tool overrides and the native shader worker socket
-  ([build settings](render-graph-authoring.md#build-settings)).
+  ([build settings](render-graph-authoring.md#build-settings)). Its **General**
+  page turns the [startup sound](#startup-sound) on or off.
 
 Layout preferences are local to this computer. The window's tool-window layout
 is saved in `workspace.json` (see [Workspace layout (S1)](#workspace-layout-s1));
