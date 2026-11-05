@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 from ludus_tools.buildlock import BuildTreeLock
-from ludus_tools.native import WINDOWS_CONFIGURATIONS
+from ludus_tools.native import WINDOWS_CONFIGURATIONS, WINDOWS_VISUAL_STUDIO_PREFIX
 from ludus_tools.project_setup import OWNER, cache_value
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -85,10 +85,30 @@ def verify(workspace):
         expected = project / "out/build" / profile / "ludus_windows_sdk_smoke.exe"
         run("run", project, "--profile", profile, contains=str(expected))
 
+    for flavor, configuration in WINDOWS_CONFIGURATIONS.items():
+        profile = WINDOWS_VISUAL_STUDIO_PREFIX + flavor.lower()
+        tree = project / "out/build" / profile
+        expected = tree / configuration / "ludus_windows_sdk_smoke.exe"
+        output = run("repair", project, "--tools", ROOT, "--profile", profile,
+                     "--sdk", installed / flavor, contains="100% tests passed")
+        assert "ludus_windows_sdk_smoke" in output
+        assert cache_value(tree / "CMakeCache.txt", "CMAKE_CONFIGURATION_TYPES") == configuration
+        assert cache_value(tree / "CMakeCache.txt", "CMAKE_GENERATOR") == "Visual Studio 17 2022"
+        assert (tree / "LudusWindowsSdkConsumer.sln").is_file()
+        check_read_only(project, profile, contains=f" · {flavor} · x86_64-pc-windows-msvc")
+        expected.unlink()
+        output = run("run", project, "--profile", profile, contains=str(expected))
+        assert f"--config {configuration}" in output and expected.is_file()
+
     profile = "windows-msvc-profile"
     sdk = installed / "Profile"
     moved = workspace / "moved SDK Profile"
     sdk.rename(moved)
+    # The command-line SDK takes precedence over the old path in the VS preset.
+    visual_studio = WINDOWS_VISUAL_STUDIO_PREFIX + "profile"
+    run("run", project, "--profile", visual_studio, "--sdk", moved, contains="SDK inputs changed; reconfiguring")
+    visual_studio_cache = project / "out/build" / visual_studio / "CMakeCache.txt"
+    assert Path(cache_value(visual_studio_cache, "Ludus_DIR")).is_relative_to(moved)
     check_read_only(project, profile, fails=True)
     args = ("repair", project, "--tools", ROOT, "--profile", profile, "--sdk", moved)
     run(*args, contains="100% tests passed")
@@ -120,7 +140,7 @@ def verify(workspace):
     local = json.loads(presets.read_bytes())
     assert [p["name"] for p in local["configurePresets"] if "vendor" not in p] == ["custom"]
     for key in ("configurePresets", "buildPresets", "testPresets"):
-        assert len([p for p in local[key] if OWNER in p.get("vendor", {})]) == 4
+        assert len([p for p in local[key] if OWNER in p.get("vendor", {})]) == 8
     assert json.loads(ide.read_bytes())["editor.tabSize"] == 4
     assert all(file.read_bytes() == before for file, before in portable.items())
     for flavor in WINDOWS_CONFIGURATIONS:

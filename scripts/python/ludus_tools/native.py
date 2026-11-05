@@ -6,6 +6,7 @@ import platform
 from .errors import INVALID_PROJECT, ToolingError
 
 WINDOWS_TARGET = "x86_64-pc-windows-msvc"
+WINDOWS_VISUAL_STUDIO_PREFIX = "windows-msvc-visual-studio-"
 WINDOWS_CONFIGURATIONS = {
     "Debug": "Debug", "Development": "RelWithDebInfo", "Profile": "RelWithDebInfo", "Release": "Release",
 }
@@ -15,7 +16,24 @@ PRESET_FLAVOR = {
     for family in ("linux", "macos")
     for flavor in ("Debug", "Development", "Release")
 }
-PRESET_FLAVOR.update({f"windows-msvc-{flavor.lower()}": flavor for flavor in WINDOWS_CONFIGURATIONS})
+PRESET_FLAVOR.update({
+    prefix + flavor.lower(): flavor
+    for prefix in ("windows-msvc-", WINDOWS_VISUAL_STUDIO_PREFIX)
+    for flavor in WINDOWS_CONFIGURATIONS
+})
+
+
+def is_visual_studio_profile(profile: str) -> bool:
+    return profile.startswith(WINDOWS_VISUAL_STUDIO_PREFIX)
+
+
+def visual_studio_configure_fields(configuration: str) -> dict:
+    return {
+        "generator": "Visual Studio 17 2022",
+        "architecture": "x64,version=10.0.26100.0",
+        "toolset": "v143,version=14.44,host=x64",
+        "cacheVariables": {"CMAKE_CONFIGURATION_TYPES": configuration},
+    }
 
 
 def default_profile() -> str:

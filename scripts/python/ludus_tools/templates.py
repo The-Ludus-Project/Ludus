@@ -11,7 +11,7 @@ Templates are addressed by ``(id, version)`` which is recorded in the project
 descriptor's ``template`` object so later template versions never silently
 overwrite user-owned game code (design "Project creation and Editor workflow").
 
-The only bundled template initially is ``minimal`` (version 5): a single native
+The only bundled template initially is ``minimal`` (version 6): a single native
 application target that queries the public engine version
 using public headers only — no new engine subsystem, no scene/ECS/hot reload.
 Placeholders are substituted by exact key, never by executing template content,
@@ -31,7 +31,7 @@ from typing import Callable, Optional
 
 from .descriptor import TARGET_NAME_RE
 from .errors import DESTINATION_EXISTS, GENERATION_FAILED, INVALID_PROJECT, ToolingError
-from .native import WINDOWS_CONFIGURATIONS
+from .native import WINDOWS_CONFIGURATIONS, WINDOWS_VISUAL_STUDIO_PREFIX, visual_studio_configure_fields
 from .toolchain import pinned_llvm_tool
 
 TEMPLATE_SCHEMA_VERSION = 1
@@ -329,7 +329,7 @@ int main()
             "",
         ),
     ]
-    return Template(id="minimal", version=5, files=files)
+    return Template(id="minimal", version=6, files=files)
 
 
 _TEMPLATES: dict[str, Template] = {t.id: t for t in (_minimal_template(),)}
@@ -370,24 +370,24 @@ def render_files(template: Template, inputs: ProjectInputs) -> list[TemplateFile
         if f.relpath == "CMakePresets.json":
             presets = json.loads(content)
             for flavor, configuration in WINDOWS_CONFIGURATIONS.items():
-                name = "windows-msvc-" + flavor.lower()
-                condition = {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows"}
-                presets["configurePresets"].append({
-                    "name": name,
+                ninja = {
                     "generator": "Ninja",
-                    "binaryDir": "${sourceDir}/out/build/" + name,
-                    "condition": condition,
-                    "cacheVariables": {
-                        "CMAKE_BUILD_TYPE": configuration, "CMAKE_CXX_COMPILER": "cl.exe",
-                        "CMAKE_PREFIX_PATH": "$env{LUDUS_SDK_PREFIX}", "BUILD_TESTING": "ON",
-                        "LUDUS_PROJECT_SDK_FLAVOR": flavor,
-                    },
-                })
-                build = {"name": name, "configurePreset": name, "condition": condition}
-                presets["buildPresets"].append(build)
-                presets["testPresets"].append({**build,
-                                               "output": {"outputOnFailure": True},
-                                               "execution": {"noTestsAction": "error"}})
+                    "cacheVariables": {"CMAKE_BUILD_TYPE": configuration, "CMAKE_CXX_COMPILER": "cl.exe"},
+                }
+                for prefix, fields in (("windows-msvc-", ninja),
+                                       (WINDOWS_VISUAL_STUDIO_PREFIX, visual_studio_configure_fields(configuration))):
+                    name = prefix + flavor.lower()
+                    condition = {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows"}
+                    fields["cacheVariables"].update(CMAKE_PREFIX_PATH="$env{LUDUS_SDK_PREFIX}",
+                                                    BUILD_TESTING="ON", LUDUS_PROJECT_SDK_FLAVOR=flavor)
+                    presets["configurePresets"].append(dict(fields, name=name, condition=condition,
+                                                           binaryDir="${sourceDir}/out/build/" + name))
+                    build = {"name": name, "configurePreset": name, "condition": condition}
+                    if prefix == WINDOWS_VISUAL_STUDIO_PREFIX:
+                        build["configuration"] = configuration
+                    presets["buildPresets"].append(build)
+                    presets["testPresets"].append(dict(build, output={"outputOnFailure": True},
+                                                       execution={"noTestsAction": "error"}))
             content = json.dumps(presets, indent=2) + "\n"
         rendered.append(TemplateFile(f.relpath, content, f.executable))
     return rendered
