@@ -1,7 +1,9 @@
 #include "internal/world_document.h"
-#include "internal/material_inspection.h"
 
+#include "internal/builtin_world.h"
 #include "internal/editor_identity.h"
+#include "internal/material_inspection.h"
+#include "internal/world_terrain.h"
 
 #include <ludus/content/identity_records/migration_manifest.h>
 #include <ludus/content/identity_records/world_records.h>
@@ -385,7 +387,30 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
     {
         return Fail(error, QStringLiteral("Schema needs version 1, stable id, label, components and assets arrays."));
     }
-    const auto components = schema.value(QStringLiteral("components")).toArray();
+    QJsonArray components = schema.value(QStringLiteral("components")).toArray();
+    bool hasBuiltInTerrain = false;
+    if (schema.value(QStringLiteral("id")) == QJsonValue(QStringLiteral("ludus.world.default.v1")))
+    {
+        QByteArray bundledSchema;
+        if (ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), bundledSchema, error) == false)
+        {
+            return false;
+        }
+        if (bytes == bundledSchema)
+        {
+            // Extend the in-memory schema while retaining the base bytes used by World recovery fingerprints.
+            QByteArray terrainBytes;
+            QJsonObject terrainComponent;
+            if (ReadBuiltInWorldAsset(QStringLiteral("terrain.component.json"), terrainBytes, error) == false ||
+                Decode(terrainBytes, MAX_SCHEMA_BYTES, terrainComponent, error) == false)
+            {
+                return false;
+            }
+            components.append(terrainComponent);
+            schema.insert(QStringLiteral("components"), components);
+            hasBuiltInTerrain = true;
+        }
+    }
     if (components.size() > 16 || schema.value(QStringLiteral("assets")).toArray().size() > 4096)
     {
         return Fail(error, QStringLiteral("Schema supports 0–16 components and at most 4096 declared assets."));
@@ -562,6 +587,7 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
         }
     }
     Schema_ = foundation::Move(schema);
+    mHasBuiltInTerrain = hasBuiltInTerrain;
     error.clear();
     return true;
 }
@@ -717,10 +743,25 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         ids.insert(id);
         labels.insert(label);
     }
+    const QString terrainComponent = GetTerrainComponentId();
     for (const auto value : entities)
     {
         const auto e = value.toObject();
         const auto components = e.value(QStringLiteral("components")).toObject();
+        if (HasBuiltInTerrain() == true && components.contains(terrainComponent) == true)
+        {
+            if (components.contains(QStringLiteral("transform")) == false ||
+                e.contains(QStringLiteral("scene")) == true)
+            {
+                return Fail(error,
+                            QStringLiteral("Generated terrain needs a Transform and its own entity. Use "
+                                           "Generate Terrain to create it."));
+            }
+            if (ValidateTerrainRecipe(components.value(terrainComponent).toObject(), error) == false)
+            {
+                return false;
+            }
+        }
         for (const auto definition : Schema_.value(QStringLiteral("components")).toArray())
         {
             const auto c = definition.toObject();
@@ -1009,6 +1050,7 @@ void WorldDocument::Clear()
     Draft_ = {};
     Saved_ = {};
     Schema_ = {};
+    mHasBuiltInTerrain = false;
     Loaded_ = false;
     History_.Reset();
 }
