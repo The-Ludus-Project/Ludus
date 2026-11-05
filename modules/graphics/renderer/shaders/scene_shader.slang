@@ -1321,6 +1321,13 @@ void EvaluateStandardBsdf(MaterialSample material,
 }
 float3 SampleStandardBsdf(MaterialSample material, float3 viewDirectionWorld, float3 samples)
 {
+    if (material.Model == MaterialModel::ProjectBrdf)
+        return SampleProjectBrdfDirection(material.Roughness,
+                                          material.Eta,
+                                          material.K,
+                                          material.ShadingNormalWorld,
+                                          viewDirectionWorld,
+                                          samples);
     return SampleScatteringBsdf(material.ShadingNormalWorld,
                                 viewDirectionWorld,
                                 ComputeMaterialAlpha(material.Model, material.Roughness, material.AlphaU),

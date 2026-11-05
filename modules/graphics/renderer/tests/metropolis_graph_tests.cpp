@@ -59,6 +59,7 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
     bool isJumpRestoreOnly = false;
     bool hasSurface = false;
     bool hasIncompatibleSampler = false;
+    format::MaterialModel model = format::MaterialModel::DiffuseConductorMix;
     SECTION("MH and Jump Restore RB alongside") {}
     SECTION("Jump Restore estimator comparison")
     {
@@ -72,6 +73,18 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
     {
         hasSurface = true;
         hasIncompatibleSampler = true;
+        model = format::MaterialModel::CoatedDiffuse;
+    }
+    SECTION("A project BRDF declares fixed-dimension reflection")
+    {
+        hasSurface = true;
+        model = format::MaterialModel::ProjectBrdf;
+    }
+    SECTION("A project BRDF without the guarantee fails the material requirement")
+    {
+        hasSurface = true;
+        hasIncompatibleSampler = true;
+        model = format::MaterialModel::ProjectBrdf;
     }
     Session session;
     rhi::DeviceHandle device;
@@ -104,8 +117,15 @@ TEST_CASE("MH graph captures resolve the latest weighted estimate after burn-in"
     renderer::SceneShaderMaterial material;
     material.BaseColor = {0.5F, 0.5F, 0.5F};
     material.Metallic = 0.25F;
-    material.Scattering.Model = hasIncompatibleSampler == true ? format::MaterialModel::CoatedDiffuse
-                                                               : format::MaterialModel::DiffuseConductorMix;
+    material.Scattering.Model = model;
+    if (model == format::MaterialModel::ProjectBrdf)
+    {
+        material.Roughness = 0.35F;
+        material.Metallic = 0;
+        material.Scattering.Eta = {{0.25F, 0.5F, 0.25F}};
+        material.Scattering.K = {{0, 4, 12}};
+        material.Scattering.CoatingThickness = hasIncompatibleSampler == true ? 0 : 1;
+    }
     renderer::RenderGraphMesh mesh;
     mesh.Geometry = {positionsWorld.GetData(), positionsWorld.GetSize(), indices.GetData(), indices.GetSize()};
     renderer::RenderGraphItem item;

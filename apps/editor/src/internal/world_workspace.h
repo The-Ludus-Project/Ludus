@@ -26,6 +26,11 @@ class QVBoxLayout;
 class QSplitter;
 class QToolButton;
 QT_END_NAMESPACE
+namespace ludus::resources
+{
+struct SceneMaterial;
+}
+
 namespace ludus::editor
 {
 class WorldEntitySearch;
@@ -221,6 +226,11 @@ private:
     /// presented viewport scene; a placeholder until that scene has loaded.
     void addMaterialGroup();
     void addMaterialRepair(QFormLayout& inoutRows);
+    void addProjectBrdfControls(QFormLayout& inoutRows,
+                                const resources::SceneMaterial* materialOrNull,
+                                const QJsonObject& placement);
+    void assignProjectBrdf(const QString& material);
+    [[nodiscard]] bool readProjectBrdfRoughness(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull);
     void mapImportedMaterial(const QString& source, const QString& replacement, const QString& label);
     void bindViewportInteraction();
     void updateViewportInteraction();
@@ -233,7 +243,7 @@ private:
     [[nodiscard]] bool readDraft(WorldDocument& inoutDocument,
                                  QString& outError,
                                  QWidget*& outInvalidOrNull,
-                                 bool shouldReadCoating = true);
+                                 bool shouldReadMaterial = true);
     [[nodiscard]] bool readCoatingFields(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull);
     void restoreInheritedCoating();
     void applySharedCoating();

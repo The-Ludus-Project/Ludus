@@ -476,8 +476,8 @@ Status PackGpuScene(const ReferenceJob& job,
     {
         const internal::ReferenceSurfaceData& surface = *scene.Instances[i].Surface;
         isOpaque = isOpaque == true && surface.Alpha == MaterialAlpha::Opaque;
-        hasExtendedBsdf = hasExtendedBsdf == true || content::scene_format::SupportsFixedDimensionReflection(
-                                                         surface.Bsdf.Scattering.Model) == false;
+        hasExtendedBsdf = hasExtendedBsdf == true ||
+                          content::scene_format::SupportsFixedDimensionReflection(surface.Bsdf.Scattering) == false;
     }
     outUniform.Sampling[2] |= isOpaque == true ? LUDUS_GPU_PREVIEW_OPAQUE_FLAG : 0;
     uint32 nativeOpaqueTriangleCount = 0;

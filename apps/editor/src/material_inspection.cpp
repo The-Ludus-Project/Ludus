@@ -60,6 +60,8 @@ QString GetModelName(format::MaterialModel model)
             return QStringLiteral("Thin dielectric");
         case format::MaterialModel::DiffuseConductorMix:
             return QStringLiteral("Diffuse / rough conductor Mix");
+        case format::MaterialModel::ProjectBrdf:
+            return QStringLiteral("Project BRDF");
         case format::MaterialModel::Unresolved:
             return QStringLiteral("Unsupported imported material");
     }
@@ -126,6 +128,14 @@ QString DescribeTexture(const resources::SceneDefinition& definition, uint32 tex
 QString GetFallbackMaterialName(int materialIndex)
 {
     return QStringLiteral("Material %1").arg(materialIndex);
+}
+
+QJsonObject MakeProjectBrdfRoughnessProperty()
+{
+    return {{QStringLiteral("type"), QStringLiteral("number")},
+            {QStringLiteral("label"), QStringLiteral("Project BRDF roughness")},
+            {QStringLiteral("min"), format::MIN_AUTHORED_ROUGHNESS},
+            {QStringLiteral("max"), 1}};
 }
 
 QJsonObject CoatingField::MakeNumberProperty() const
@@ -203,11 +213,21 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
                      material.Repeat == true ? QStringLiteral("Repeat") : QStringLiteral("Clamp")});
     }
     const bool isMix = material.Scattering.Model == format::MaterialModel::DiffuseConductorMix;
-    rows.append({isMix == true ? QStringLiteral("Conductor weight") : QStringLiteral("Metallic"),
-                 FormatScalar(material.Metallic)});
-    rows.append({QStringLiteral("Roughness (perceptual)"), FormatScalar(material.Roughness)});
+    if (material.Scattering.Model != format::MaterialModel::ProjectBrdf)
+    {
+        rows.append({isMix == true ? QStringLiteral("Conductor weight") : QStringLiteral("Metallic"),
+                     FormatScalar(material.Metallic)});
+        rows.append({QStringLiteral("Roughness (perceptual)"), FormatScalar(material.Roughness)});
+    }
     const format::MaterialScattering& scattering = material.Scattering;
-    if (format::HasRoughConductorLobe(scattering.Model) == true)
+    if (scattering.Model == format::MaterialModel::ProjectBrdf)
+    {
+        rows.append({QStringLiteral("Lobe weights"), FormatRgb(scattering.Eta)});
+        rows.append({QStringLiteral("Lobe powers"), FormatRgb(scattering.K)});
+        rows.append({QStringLiteral("Fixed-dimension reflection"),
+                     scattering.CoatingThickness == 1 ? QStringLiteral("Declared") : QStringLiteral("Undeclared")});
+    }
+    else if (format::HasRoughConductorLobe(scattering.Model) == true)
     {
         rows.append({QStringLiteral("IOR η (RGB)"), FormatRgb(scattering.Eta)});
         rows.append({QStringLiteral("Extinction k (RGB)"), FormatRgb(scattering.K)});

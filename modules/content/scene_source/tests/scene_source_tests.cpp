@@ -132,6 +132,23 @@ TEST_CASE("Scene source Mix requires a weight and valid rough conductor paramete
         "conductor.eta");
 }
 
+TEST_CASE("Scene source checks the versioned project BRDF program", "[scene-source][project-brdf]")
+{
+    constexpr std::string_view MATERIAL = R"("name": "Wall", "model": "diffuse")";
+    RequireFailure(ReplaceInValid(MATERIAL, R"("name":"demo/wall","model":"project_brdf","roughness":0.35,
+                                  "brdf":{"version":2,"weights":[0.25,0.5,0.25],"powers":[0,4,12]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "brdf.version");
+    RequireFailure(ReplaceInValid(MATERIAL, R"("name":"demo/wall","model":"project_brdf","roughness":0.35,
+                                  "brdf":{"version":1,"weights":[0,0,0],"powers":[0,4,12]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "brdf.weights");
+    RequireFailure(ReplaceInValid(MATERIAL, R"("name":"demo/wall","model":"project_brdf","roughness":0.35,
+                                  "brdf":{"version":1,"weights":[0.25,0.5,0.25],"powers":[0,4,33]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "brdf.powers");
+}
+
 TEST_CASE("Scene source camera, description and emission are optional", "[scene-source]")
 {
     const std::string text = R"({"format": "ludus.scene", "version": 1, "name": "Bare",

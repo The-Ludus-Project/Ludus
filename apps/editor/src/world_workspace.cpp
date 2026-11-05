@@ -1520,14 +1520,141 @@ void WorldWorkspace::addMaterialGroup()
             rows->addRow(shared);
         }
     }
-    if (localCoating.isEmpty() == false)
+    if (localCoating.isEmpty() == false && scene.contains(QStringLiteral("project_brdf")) == false)
     {
         QPushButton* restore = new QPushButton(QStringLiteral("Use Inherited Coating"), group);
         restore->setObjectName(QStringLiteral("worldRestoreCoating"));
         connect(restore, &QPushButton::clicked, this, &WorldWorkspace::restoreInheritedCoating);
         rows->addRow(restore);
     }
+    addProjectBrdfControls(*rows, materialOrNull, scene);
     Inspector_->addWidget(group);
+}
+
+void WorldWorkspace::addProjectBrdfControls(QFormLayout& inoutRows,
+                                            const resources::SceneMaterial* materialOrNull,
+                                            const QJsonObject& placement)
+{
+    using content::scene_format::MaterialModel;
+    QWidget* group = inoutRows.parentWidget();
+    const QJsonObject binding = placement.value(QStringLiteral("project_brdf")).toObject();
+    const bool isProjectBrdf =
+        materialOrNull != nullptr && materialOrNull->Scattering.Model == MaterialModel::ProjectBrdf;
+    if (isProjectBrdf == true)
+    {
+        const QJsonValue initial = binding.value(QStringLiteral("roughness"));
+        constexpr foundation::int32 FLOAT32_ROUND_TRIP_DIGITS = 9;
+        const QString text =
+            QString::number(initial.toDouble(static_cast<foundation::float64>(materialOrNull->Roughness)),
+                            'g',
+                            FLOAT32_ROUND_TRIP_DIGITS);
+        QLineEdit* field = new QLineEdit(text, group);
+        const QString key = QStringLiteral("scene/project_brdf/roughness");
+        field->setObjectName(QStringLiteral("worldField:") + key);
+        field->setProperty("initialRoughnessText", text);
+        Fields_.insert(key, field);
+        connect(field, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
+        inoutRows.addRow(QStringLiteral("Project BRDF roughness"), field);
+    }
+    if (binding.isEmpty() == false)
+    {
+        QPushButton* restore = new QPushButton(QStringLiteral("Use Inherited Material"), group);
+        restore->setObjectName(QStringLiteral("worldRestoreProjectBrdf"));
+        connect(restore, &QPushButton::clicked, this, [this]() { assignProjectBrdf({}); });
+        inoutRows.addRow(restore);
+    }
+    const RenderScene& scene = Scene_->PreviewScene();
+    if (scene.Definition == nullptr)
+    {
+        return;
+    }
+    QHash<QString, QString> bindings;
+    const QJsonArray entities = Document_.Draft().value(QStringLiteral("entities")).toArray();
+    for (const QJsonValue value : entities)
+    {
+        const QJsonObject entity = value.toObject();
+        const QJsonObject slot = entity.value(QStringLiteral("scene")).toObject();
+        if (slot.isEmpty() == false)
+        {
+            const QJsonObject assigned = slot.value(QStringLiteral("project_brdf")).toObject();
+            bindings.insert(
+                entity.value(QStringLiteral("id")).toString(),
+                assigned.value(QStringLiteral("material")).toString(Document_.GetInheritedMaterialId(slot)));
+        }
+    }
+    QComboBox* choices = new QComboBox(group);
+    choices->setObjectName(QStringLiteral("worldProjectBrdfChoice"));
+    choices->setAccessibleName(QStringLiteral("Project BRDF"));
+    const QString current =
+        binding.value(QStringLiteral("material")).toString(Document_.GetInheritedMaterialId(placement));
+    QSet<QString> listed;
+    for (const PreviewObject& object : scene.Objects)
+    {
+        const QString identity = bindings.value(object.Id);
+        if (identity.isEmpty() == true || listed.contains(identity) == true ||
+            (isProjectBrdf == true && current == identity) || object.Surface < 0 ||
+            static_cast<foundation::usize>(object.Surface) >= scene.Definition->Materials.GetSize())
+        {
+            continue;
+        }
+        const resources::SceneMaterial& material =
+            scene.Definition->Materials[static_cast<foundation::usize>(object.Surface)];
+        if (material.Scattering.Model != MaterialModel::ProjectBrdf)
+        {
+            continue;
+        }
+        const std::string_view name = material.Name.View();
+        const QString display =
+            QStringLiteral("%1 (%2)").arg(QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size())),
+                                          object.Name);
+        choices->addItem(display, identity);
+        listed.insert(identity);
+    }
+    if (choices->count() > 0)
+    {
+        inoutRows.addRow(QStringLiteral("Project BRDF"), choices);
+        QPushButton* assign = new QPushButton(QStringLiteral("Assign Project BRDF"), group);
+        assign->setObjectName(QStringLiteral("worldAssignProjectBrdf"));
+        connect(assign, &QPushButton::clicked, this, [this, choices]() {
+            assignProjectBrdf(choices->currentData().toString());
+        });
+        inoutRows.addRow(assign);
+    }
+    else
+    {
+        delete choices;
+    }
+}
+
+void WorldWorkspace::assignProjectBrdf(const QString& material)
+{
+    if (Pending_ == true || SceneBusy() == true)
+    {
+        return;
+    }
+    const QJsonObject entity = Document_.Entity(Selected_);
+    QJsonObject scene = entity.value(QStringLiteral("scene")).toObject();
+    if (material.isEmpty() == true)
+    {
+        scene.remove(QStringLiteral("project_brdf"));
+    }
+    else
+    {
+        scene.insert(QStringLiteral("project_brdf"), QJsonObject{{QStringLiteral("material"), material}});
+    }
+    QString error;
+    if (Document_.Edit(Selected_,
+                       entity.value(QStringLiteral("components")).toObject(),
+                       entity.value(QStringLiteral("name")).toString(),
+                       error,
+                       &scene) == false)
+    {
+        Changed(error);
+        return;
+    }
+    Snapshot();
+    Changed(material.isEmpty() == true ? QStringLiteral("Inherited material restored. Undo is available.")
+                                       : QStringLiteral("Project BRDF assigned to this slot. Undo is available."));
 }
 
 void WorldWorkspace::addMaterialRepair(QFormLayout& inoutRows)
@@ -1556,7 +1683,7 @@ void WorldWorkspace::addMaterialRepair(QFormLayout& inoutRows)
     {
         const QJsonObject entity = value.toObject();
         const QJsonObject placement = entity.value(QStringLiteral("scene")).toObject();
-        if (placement.isEmpty() == false)
+        if (placement.isEmpty() == false && placement.contains(QStringLiteral("project_brdf")) == false)
         {
             bindings.insert(entity.value(QStringLiteral("id")).toString(),
                             placement.value(QStringLiteral("material")).toString());
@@ -1731,7 +1858,8 @@ void WorldWorkspace::applySharedCoating()
     {
         const QJsonObject entity = value.toObject();
         const QJsonObject slot = entity.value(QStringLiteral("scene")).toObject();
-        if (Document_.GetInheritedMaterialId(slot) == material && slot.contains(QStringLiteral("coating")) == false)
+        if (Document_.GetInheritedMaterialId(slot) == material && slot.contains(QStringLiteral("coating")) == false &&
+            slot.contains(QStringLiteral("project_brdf")) == false)
         {
             affected.append(entity.value(QStringLiteral("name")).toString() + QStringLiteral(" · ") +
                             entity.value(QStringLiteral("id")).toString());
@@ -2327,6 +2455,14 @@ void WorldWorkspace::Changed(const QString& message)
     {
         restoreCoatingOrNull->setEnabled(Pending_ == false && isBusy == false);
     }
+    for (const QString& name : {QStringLiteral("worldAssignProjectBrdf"), QStringLiteral("worldRestoreProjectBrdf")})
+    {
+        QPushButton* buttonOrNull = findChild<QPushButton*>(name);
+        if (buttonOrNull != nullptr)
+        {
+            buttonOrNull->setEnabled(Pending_ == false && isBusy == false);
+        }
+    }
     const bool hasRecovery = Document_.Loaded() && Dirty() == false && Unsaved_ == false &&
                              QFileInfo::exists(Path_ + QStringLiteral(".ludus-recovery"));
     Recovery_->setVisible(hasRecovery);
@@ -2340,6 +2476,30 @@ void WorldWorkspace::Changed(const QString& message)
     updateViewportInteraction();
     Q_EMIT DocumentChanged();
 }
+bool WorldWorkspace::readProjectBrdfRoughness(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull)
+{
+    QLineEdit* fieldOrNull = qobject_cast<QLineEdit*>(Fields_.value(QStringLiteral("scene/project_brdf/roughness")));
+    if (fieldOrNull == nullptr || fieldOrNull->text() == fieldOrNull->property("initialRoughnessText").toString())
+    {
+        return true;
+    }
+    QJsonValue roughness;
+    if (WorldDocument::ParseValue(MakeProjectBrdfRoughnessProperty(), fieldOrNull->text(), roughness, outError) ==
+        false)
+    {
+        outInvalidOrNull = fieldOrNull;
+        return false;
+    }
+    QJsonObject binding = inoutScene.value(QStringLiteral("project_brdf")).toObject();
+    if (binding.isEmpty() == true)
+    {
+        binding.insert(QStringLiteral("material"), Document_.GetInheritedMaterialId(inoutScene));
+    }
+    binding.insert(QStringLiteral("roughness"), roughness);
+    inoutScene.insert(QStringLiteral("project_brdf"), binding);
+    return true;
+}
+
 bool WorldWorkspace::readCoatingFields(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull)
 {
     QJsonObject coating;
@@ -2378,7 +2538,7 @@ bool WorldWorkspace::readCoatingFields(QJsonObject& inoutScene, QString& outErro
 bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
                                QString& outError,
                                QWidget*& outInvalidOrNull,
-                               bool shouldReadCoating)
+                               bool shouldReadMaterial)
 {
     auto components = Document_.Entity(Selected_).value(QStringLiteral("components")).toObject();
     for (auto c = components.begin(); c != components.end(); ++c)
@@ -2460,7 +2620,8 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
             scene.insert(key, values);
         }
     }
-    if (shouldReadCoating == true && readCoatingFields(scene, outError, outInvalidOrNull) == false)
+    if (shouldReadMaterial == true && (readCoatingFields(scene, outError, outInvalidOrNull) == false ||
+                                       readProjectBrdfRoughness(scene, outError, outInvalidOrNull) == false))
     {
         return false;
     }
