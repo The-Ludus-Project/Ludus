@@ -343,3 +343,24 @@ and no pinned toolchain; PR CI skips the editor build and tests). The new
 `code_edit_set_tests` (overlap/unordered/stale rejection with the buffer
 unchanged, and one-undo-step text-and-selection restore) and the migrated
 formatter/Replace All paths are pending host verification by the maintainer.
+
+**Host verification (2026-11-04).** Built and tested on macOS: the batch
+compiled and its tests passed. Replace All was quadratic in the file size. Each
+match was mapped from the start of the text, and the validator re-validated the
+UTF-8 prefix up to every edit and selection offset. On a 1.2 MB file, 65,536
+matches took 78 s to map and 23 s to validate. The fix:
+
+- Host drafts are validated UTF-8, so `ValidateAndApplyEditSet` checks
+  boundaries in constant time (`IsCodeScalarBoundary`) and validates only the
+  inserted bytes. Its cost is linear in the original plus the inserted bytes,
+  for any number of edits or selections. This is a precondition on the function.
+- `AdvanceCodeByteOffset` maps ascending positions by walking on from the
+  previous one. Replace All, and later the multi-cursor and Replace in Files
+  paths, map their positions in one pass.
+- Replace All finds matches in one `QString::indexOf` pass over the decoded
+  draft. `QTextDocument::find` cost about 100 µs per match.
+
+Mapping and validating 65,536 edits now takes about 10 ms, and a 16,384-match
+Replace All through the panel about 80 ms. Regressions in `code_edit_set_tests`
+cover both, plus CRLF, case and non-ASCII matching. Later batches must keep
+per-edit and per-cursor work constant-time or amortized over one pass.

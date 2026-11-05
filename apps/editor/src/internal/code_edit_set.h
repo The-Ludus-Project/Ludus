@@ -42,6 +42,10 @@ struct CodeHistoryState final
 ///     building an oversized buffer),
 /// and either the whole set applies or none of it does. outResult is only
 /// written when the status is Ok; on any failure it is left unchanged.
+/// @pre original holds valid UTF-8, as every host's draft does (validated on
+/// bind and admission). Boundaries are then checked in constant time and only
+/// the inserted bytes are validated, so the cost is linear in the original plus
+/// the inserted bytes regardless of how many edits or selections the set has.
 [[nodiscard]] CodeEditStatus ValidateAndApplyEditSet(foundation::BorrowedView<const char> original,
                                                      foundation::usize limitBytes,
                                                      const CodeEditSet& edits,

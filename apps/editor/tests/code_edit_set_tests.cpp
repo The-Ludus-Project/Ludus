@@ -5,14 +5,23 @@
 // shared ValidateAndApplyEditSet, not a mock.
 
 #include "internal/code_document.h"
+#include "internal/code_document_controller.h"
 #include "internal/code_edit_set.h"
+#include "internal/code_editor.h"
+#include "internal/code_editor_panel.h"
 #include "internal/code_file_document.h"
+#include "internal/code_text.h"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QAbstractButton>
 #include <QByteArray>
+#include <QCheckBox>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
+#include <QLabel>
+#include <QLineEdit>
 #include <QList>
 #include <QString>
 #include <QTemporaryDir>
@@ -60,6 +69,46 @@ MakeSet(const QList<CodeTextEdit>& edits, const QList<CodeTextSelection>& before
     };
     return set;
 }
+
+// Generous wall-clock ceiling for work that is linear in the text. The
+// quadratic versions these tests guard against took 8 s to 100 s on the same
+// inputs, so the ceiling separates the two even on a loaded sanitizer runner.
+constexpr qint64 LINEAR_WORK_CEILING_MS = 2000;
+
+[[nodiscard]] QByteArray RepeatLine(const QByteArray& line, qsizetype count)
+{
+    QByteArray text;
+    text.reserve(line.size() * count);
+    for (qsizetype index = 0; index < count; ++index)
+    {
+        text.append(line);
+    }
+    return text;
+}
+
+// A panel bound to a real file host, as the render-graph Source pane binds its
+// own. The panel owns the editor; the controller is deleted first because its
+// destructor disconnects from the editor.
+struct BoundPanel final
+{
+    explicit BoundPanel(CodeFileDocument& inoutHost)
+        : Editor(new CodeEditor()), Controller(new CodeDocumentController(*Editor)),
+          Panel(new CodeEditorPanel(Editor, Controller))
+    {
+        Controller->Bind(&inoutHost);
+    }
+    ~BoundPanel()
+    {
+        delete Controller;
+        delete Panel;
+    }
+    BoundPanel(const BoundPanel&) = delete;
+    BoundPanel& operator=(const BoundPanel&) = delete;
+
+    CodeEditor* Editor;
+    CodeDocumentController* Controller;
+    CodeEditorPanel* Panel;
+};
 } // namespace
 
 TEST_CASE("An overlapping edit set is rejected and the buffer is unchanged", "[code-editor][edit-set]")
@@ -217,4 +266,167 @@ TEST_CASE("The validator rejects an out-of-range or boundary-splitting set", "[c
             CodeEditStatus::InvalidText);
         CHECK(result == QByteArray("sentinel"));
     }
+}
+
+TEST_CASE("Forward byte-offset mapping agrees with the walk from the start", "[code-editor][edit-set]")
+{
+    // ASCII, two-, three- and four-byte scalars, CRLF and a lone CR. Positions
+    // inside the surrogate pair or the CRLF have no byte offset.
+    const QByteArray text = QByteArray("a\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80\r\nb\rc");
+    CodePositionOffset from;
+    for (int32 position = 0; position <= text.size(); ++position)
+    {
+        usize expected = 0;
+        const bool canMap = GetCodeByteOffset(text, position, expected);
+        usize actual = 0;
+        CodePositionOffset probe = from;
+        CHECK(AdvanceCodeByteOffset(text, position, probe, actual) == canMap);
+        if (canMap == true)
+        {
+            CHECK(actual == expected);
+            CHECK(probe.Position == position);
+            CHECK(probe.OffsetBytes == expected);
+            from = probe;
+        }
+        else
+        {
+            CHECK(probe.Position == from.Position);
+            CHECK(probe.OffsetBytes == from.OffsetBytes);
+        }
+    }
+
+    SECTION("A position before the starting pair is rejected and outputs survive")
+    {
+        usize offset = 7;
+        CodePositionOffset late = from;
+        REQUIRE(late.Position > 0);
+        CHECK(AdvanceCodeByteOffset(text, late.Position - 1, late, offset) == false);
+        CHECK(offset == 7);
+        CHECK(late.Position == from.Position);
+        CHECK(late.OffsetBytes == from.OffsetBytes);
+    }
+}
+
+TEST_CASE("Mapping and validating 65,536 Replace All edits stays linear", "[code-editor][edit-set]")
+{
+    const QByteArray text = RepeatLine(QByteArray("float value = 1.0;\n"), 65536);
+    const QString decoded = QString::fromUtf8(text);
+    const QByteArray replacement("double");
+
+    QElapsedTimer timer;
+    timer.start();
+    QList<CodeTextEdit> edits;
+    CodePositionOffset mapped;
+    qsizetype from = 0;
+    while (true)
+    {
+        const qsizetype at = decoded.indexOf(QStringLiteral("float"), from);
+        if (at < 0)
+        {
+            break;
+        }
+        usize startBytes = 0;
+        usize endBytes = 0;
+        REQUIRE(AdvanceCodeByteOffset(text, static_cast<int32>(at), mapped, startBytes) == true);
+        REQUIRE(AdvanceCodeByteOffset(text, static_cast<int32>(at + 5), mapped, endBytes) == true);
+        edits.append(CodeTextEdit
+        {
+            .StartBytes = startBytes,
+            .RemovedBytes = endBytes - startBytes,
+            .Inserted = {replacement.constData(), static_cast<usize>(replacement.size())},
+        });
+        from = at + 5;
+    }
+    REQUIRE(edits.size() == 65536);
+    const QList<CodeTextSelection> none;
+    QByteArray result;
+    REQUIRE(ValidateAndApplyEditSet({text.constData(), static_cast<usize>(text.size())},
+                                    usize{8} << 20,
+                                    MakeSet(edits, none, none),
+                                    result) == CodeEditStatus::Ok);
+    const qint64 elapsedMs = timer.elapsed();
+    CHECK(result == RepeatLine(QByteArray("double value = 1.0;\n"), 65536));
+    CHECK(elapsedMs < LINEAR_WORK_CEILING_MS);
+}
+
+TEST_CASE("Replace All in a large file applies every match as one undo step", "[code-editor][edit-set]")
+{
+    constexpr qsizetype LINES = 16384;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QByteArray original = RepeatLine(QByteArray("float value = 1.0;\n"), LINES);
+    CodeFileDocument host = OpenHost(directory, original);
+    BoundPanel bound(host);
+    REQUIRE(bound.Editor->toPlainText().size() == original.size());
+
+    QLineEdit* find = bound.Panel->findChild<QLineEdit*>(QStringLiteral("codeEditorFind"));
+    QLineEdit* replacement = bound.Panel->findChild<QLineEdit*>(QStringLiteral("codeEditorReplacement"));
+    QAbstractButton* replaceAll = bound.Panel->findChild<QAbstractButton*>(QStringLiteral("codeEditorReplaceAll"));
+    QLabel* status = bound.Panel->findChild<QLabel*>(QStringLiteral("codeEditorFindStatus"));
+    REQUIRE(find != nullptr);
+    REQUIRE(replacement != nullptr);
+    REQUIRE(replaceAll != nullptr);
+    REQUIRE(status != nullptr);
+    find->setText(QStringLiteral("float"));
+    replacement->setText(QStringLiteral("double"));
+
+    QElapsedTimer timer;
+    timer.start();
+    replaceAll->click();
+    const qint64 elapsedMs = timer.elapsed();
+
+    const QByteArray expected = RepeatLine(QByteArray("double value = 1.0;\n"), LINES);
+    CHECK(DraftOf(host) == expected);
+    CHECK(status->text() == QStringLiteral("%1 replacements").arg(LINES));
+    CHECK(elapsedMs < LINEAR_WORK_CEILING_MS);
+
+    QList<CodeTextSelection> selections;
+    REQUIRE(host.Undo(selections) == true);
+    CHECK(DraftOf(host) == original);
+    CHECK(host.CanUndo() == false);
+}
+
+TEST_CASE("Replace All matches like the editor across CRLF, case and non-ASCII text", "[code-editor][edit-set]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    // A four-byte scalar (two UTF-16 units), a two-byte scalar and CRLF line
+    // endings all shift byte offsets away from editor positions.
+    const QByteArray original("\xF0\x9F\x98\x80 Float a;\r\n\xC3\xA9 float b; FLOAT c;\r\n");
+    CodeFileDocument host = OpenHost(directory, original);
+    BoundPanel bound(host);
+
+    QLineEdit* find = bound.Panel->findChild<QLineEdit*>(QStringLiteral("codeEditorFind"));
+    QLineEdit* replacement = bound.Panel->findChild<QLineEdit*>(QStringLiteral("codeEditorReplacement"));
+    QAbstractButton* replaceAll = bound.Panel->findChild<QAbstractButton*>(QStringLiteral("codeEditorReplaceAll"));
+    QCheckBox* matchCaseOrNull = nullptr;
+    for (QCheckBox* candidate : bound.Panel->findChildren<QCheckBox*>())
+    {
+        if (candidate->text() == QStringLiteral("Match case"))
+        {
+            matchCaseOrNull = candidate;
+        }
+    }
+    REQUIRE(find != nullptr);
+    REQUIRE(replacement != nullptr);
+    REQUIRE(replaceAll != nullptr);
+    REQUIRE(matchCaseOrNull != nullptr);
+    find->setText(QStringLiteral("float"));
+    replacement->setText(QStringLiteral("double"));
+
+    SECTION("Ignoring case replaces every spelling")
+    {
+        matchCaseOrNull->setChecked(false);
+        replaceAll->click();
+        CHECK(DraftOf(host) == QByteArray("\xF0\x9F\x98\x80 double a;\r\n\xC3\xA9 double b; double c;\r\n"));
+    }
+    SECTION("Matching case replaces only the exact spelling")
+    {
+        matchCaseOrNull->setChecked(true);
+        replaceAll->click();
+        CHECK(DraftOf(host) == QByteArray("\xF0\x9F\x98\x80 Float a;\r\n\xC3\xA9 double b; FLOAT c;\r\n"));
+    }
+    QList<CodeTextSelection> selections;
+    REQUIRE(host.Undo(selections) == true);
+    CHECK(DraftOf(host) == original);
 }
