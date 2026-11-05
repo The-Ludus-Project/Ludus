@@ -16,6 +16,8 @@
 #if defined(_WIN32)
 #    include "internal/d3d12_device.h"
 #    include <d3d12sdklayers.h>
+#    include <ludus/graphics/rhi/gpu_scope.h>
+#    include <string_view>
 #endif
 
 #include <chrono>
@@ -54,6 +56,9 @@ struct DeviceOwner final
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
         description.Required.Compute = shouldRequireCompute;
+#if defined(_WIN32)
+        description.EnableGpuTiming = shouldRequireCompute;
+#endif
         rhi::StartupInfo failure;
         const rhi::DeviceStatus status =
             rhi::CreateDevice({}, { .Width = WIDTH, .Height = HEIGHT }, description, Device, Surface, &failure);
@@ -895,6 +900,9 @@ TEST_CASE("Portable ordered compute dispatches feed indirect raster and transfer
     REQUIRE(rhi::Destroy(device, prepare.Pipeline) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(device, prepare.Bindings) == rhi::RasterStatus::Ready);
     rhi::SubmissionToken completion;
+#if defined(_WIN32)
+    REQUIRE(rhi::ArmGpuPassTimings(device) == rhi::RasterStatus::Ready);
+#endif
     REQUIRE(rhi::ExecuteOrderedGraph(device, owner.Surface, graph, completion) == rhi::RasterStatus::Ready);
 
     rhi::ReadbackTicket counterReadback;
@@ -927,5 +935,24 @@ TEST_CASE("Portable ordered compute dispatches feed indirect raster and transfer
     }
     REQUIRE(rhi::Release(device, imageReadback) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::GetStatus(device, completion) == rhi::RasterStatus::Ready);
+#if defined(_WIN32)
+    rhi::GpuPassTimings timings;
+    REQUIRE(rhi::GetGpuPassTimings(device, timings) == rhi::RasterStatus::Ready);
+    REQUIRE(timings.State == rhi::GpuTimingState::Available);
+    REQUIRE(timings.Count == report.ComputePasses + report.RasterPasses);
+    CHECK(timings.DroppedPasses == 0);
+    for (usize index = 0; index < timings.Count; ++index)
+    {
+        const rhi::GpuPassTiming& timing = timings.Passes[index];
+        CHECK(timing.Timing.State == rhi::GpuTimingState::Available);
+        CHECK(timing.Timing.DurationNanoseconds >= 0);
+        const bool isCompute = index < report.ComputePasses;
+        CHECK(timing.Kind == (isCompute == true ? rhi::GpuPassKind::Compute : rhi::GpuPassKind::Raster));
+        const char* expectedName = index < ADVANCE_PASS_COUNT ? "advance counter"
+                                   : isCompute == true        ? "prepare indirect draw"
+                                                              : "draw generated triangle";
+        CHECK(std::string_view(timing.Scope.Name.GetData()) == expectedName);
+    }
+#endif
     owner.CheckDebugMessages();
 }

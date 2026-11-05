@@ -1,4 +1,5 @@
 #include "internal/backend.h"
+#include "internal/d3d12_diagnostics.h"
 #include "internal/d3d12_raster.h"
 #include "internal/dxil_container.h"
 #include "internal/lifecycle.h"
@@ -202,7 +203,8 @@ void LogFailure(const char* operation, HRESULT result) noexcept
 
 [[nodiscard]] FrameStatus FailFrame(StartupError error) noexcept
 {
-    isRecording = false;
+    LogDeviceRemoval(gDevice.Get());
+    DiscardRecording();
     gSurfaceOrNull = nullptr;
     gFrame = {};
     if (internal::Current(gToken) == true)
@@ -226,7 +228,13 @@ void LogFailure(const char* operation, HRESULT result) noexcept
 
 [[nodiscard]] bool WaitForFence(uint64 value) noexcept
 {
-    if (value == 0 || gFence->GetCompletedValue() >= value)
+    const uint64 completed = gFence->GetCompletedValue();
+    if (completed == ~uint64{0})
+    {
+        LogDeviceRemoval(gDevice.Get());
+        return false;
+    }
+    if (value == 0 || completed >= value)
     {
         return true;
     }
@@ -234,7 +242,12 @@ void LogFailure(const char* operation, HRESULT result) noexcept
     {
         return false;
     }
-    return WaitForSingleObject(gFenceEventOrNull, FENCE_TIMEOUT_MILLISECONDS) == WAIT_OBJECT_0;
+    if (WaitForSingleObject(gFenceEventOrNull, FENCE_TIMEOUT_MILLISECONDS) != WAIT_OBJECT_0)
+    {
+        return false;
+    }
+    const uint64 signaled = gFence->GetCompletedValue();
+    return signaled >= value && signaled != ~uint64{0};
 }
 
 [[nodiscard]] bool SignalFence(uint64& outValue) noexcept
@@ -256,8 +269,18 @@ void LogFailure(const char* operation, HRESULT result) noexcept
     {
         return true;
     }
+    if (IsDeviceRemoved() == true)
+    {
+        LogDeviceRemoval(gDevice.Get());
+        return false;
+    }
     uint64 value = 0;
-    return SignalFence(value) == true && WaitForFence(value) == true;
+    const bool isDrained = SignalFence(value) == true && WaitForFence(value) == true;
+    if (isDrained == false)
+    {
+        LogDeviceRemoval(gDevice.Get());
+    }
+    return isDrained;
 }
 
 [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE GetTargetDescriptor(uint32 index) noexcept
@@ -316,6 +339,7 @@ void EnableDebugLayer() noexcept
         return false;
     }
     gDevice = Adopt(deviceOrNull);
+    static_cast<void>(gDevice->SetName(L"Ludus/Device"));
     return true;
 }
 
@@ -389,6 +413,7 @@ void EnableDebugLayer() noexcept
         return false;
     }
     gQueue = Adopt(queueOrNull);
+    static_cast<void>(gQueue->SetName(L"Ludus/DirectQueue"));
     ID3D12Fence* fenceOrNull = nullptr;
     if (FAILED(gDevice->CreateFence(0,
                                     D3D12_FENCE_FLAG_NONE,
@@ -425,6 +450,7 @@ void EnableDebugLayer() noexcept
         return false;
     }
     gCommands = Adopt(commandsOrNull);
+    static_cast<void>(gCommands->SetName(L"Ludus/FrameCommands"));
     // Command lists are created open; every frame resets it again.
     if (FAILED(gCommands->Close()) == true)
     {
@@ -651,6 +677,8 @@ void ReleaseBackBuffers() noexcept
 
 void ReleaseDevice() noexcept
 {
+    ReleaseTimings();
+    ReleasePixMarkers();
     ReleaseCompute();
     gRootSignature.Reset();
     gCommands.Reset();
@@ -681,6 +709,16 @@ void ReleaseDevice() noexcept
 
 namespace d3d12
 {
+void DiscardRecording() noexcept
+{
+    if (isRecording == true)
+    {
+        CloseTimingScopes(*gCommands);
+        static_cast<void>(gCommands->Close());
+        isRecording = false;
+    }
+}
+
 ID3D12GraphicsCommandList* GetCommandsOrNull() noexcept
 {
     return isRecording == true ? gCommands.Get() : nullptr;
@@ -700,6 +738,15 @@ ID3D12CommandQueue* GetQueueOrNull() noexcept
 ID3D12Fence* GetFenceOrNull() noexcept
 {
     return gFence.Get();
+}
+bool CheckDeviceRemoval() noexcept
+{
+    if (IsDeviceRemoved() == false)
+    {
+        return false;
+    }
+    static_cast<void>(FailFrame(StartupError::DeviceLost));
+    return true;
 }
 uint64 GetCompletedFence() noexcept
 {
@@ -787,6 +834,8 @@ bool Initialize(const ApplicationInfo&) noexcept
     {
         return false;
     }
+    ConfigureDred();
+    InitializePixMarkers();
     EnableDebugLayer();
     UINT factoryFlags = 0;
 #if defined(LUDUS_BUILD_DEBUG) || defined(LUDUS_BUILD_DEVELOPMENT)
@@ -847,11 +896,7 @@ bool InitializeRendering() noexcept
 void ShutdownRendering() noexcept
 {
     static_cast<void>(WaitForIdle());
-    if (isRecording == true)
-    {
-        static_cast<void>(gCommands->Close());
-        isRecording = false;
-    }
+    DiscardRecording();
     gHeadless.Reset();
     gSurfaceOrNull = nullptr;
     gFrame = {};
@@ -954,6 +999,7 @@ FrameStatus Begin() noexcept
     isRecording = true;
     ResetBufferStates();
     RasterEndPass();
+    BeginTimingFrame(*gCommands);
     const D3D12_RESOURCE_BARRIER toTarget =
         MakeTransition(gSurfaceOrNull,
                        { .Before = D3D12_RESOURCE_STATE_PRESENT, .After = D3D12_RESOURCE_STATE_RENDER_TARGET });
@@ -977,10 +1023,12 @@ FrameStatus End() noexcept
     {
         return FrameStatus::InvalidState;
     }
+    RasterEndPass();
     const D3D12_RESOURCE_BARRIER toPresent =
         MakeTransition(gSurfaceOrNull,
                        { .Before = D3D12_RESOURCE_STATE_RENDER_TARGET, .After = D3D12_RESOURCE_STATE_PRESENT });
     gCommands->ResourceBarrier(1, &toPresent);
+    EndTimingFrame(*gCommands);
     HRESULT result = gCommands->Close();
     isRecording = false;
     gSurfaceOrNull = nullptr;
@@ -1005,6 +1053,7 @@ FrameStatus End() noexcept
     {
         return FailFrame(StartupError::DeviceLost);
     }
+    SubmitTimings(value);
     gSubmitted[gSlot] = value;
     gSlot = (gSlot + 1) % FRAME_COUNT;
     return FrameStatus::Ready;
@@ -1251,7 +1300,7 @@ ResourceStatus Draw(usize slot) noexcept
     gCommands->DrawInstanced(FULLSCREEN_VERTEX_COUNT, 1, 0, 0);
     return ResourceStatus::Ready;
 }
-// GPU timing and allocation telemetry are not implemented yet; adapter identity is.
+// Adapter identity is independent of optional timing and allocation telemetry.
 bool AllocatorBlockBytes(uint64&) noexcept
 {
     return false;
@@ -1286,15 +1335,6 @@ MeasurementAdapter TimingAdapter() noexcept
     output.Software = isSoftwareAdapter == true || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
     return output;
 }
-RasterStatus TimingArm() noexcept
-{
-    return RasterStatus::Unsupported;
-}
-GpuTiming TimingPoll() noexcept
-{
-    return { .State = GpuTimingState::Unavailable };
-}
-void TimingReset() noexcept {}
 bool RasterAllocationBytes(internal::RasterKind, usize, uint64&) noexcept
 {
     return false;

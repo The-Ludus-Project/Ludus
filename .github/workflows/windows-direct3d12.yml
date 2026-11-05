@@ -53,6 +53,7 @@ on:
       - 'modules/graphics/rhi/src/internal/dxil_container.h'
       - 'modules/graphics/rhi/src/*d3d12*'
       - 'modules/graphics/rhi/src/internal/d3d12_device.h'
+      - 'modules/graphics/rhi/src/internal/d3d12_diagnostics.h'
       - 'modules/graphics/rhi/src/internal/d3d12_raster.h'
       - 'modules/graphics/rhi/src/internal/d3d12_transfer.h'
       - 'modules/graphics/rhi/tests/portable_transfer_conformance_tests.cpp'
@@ -61,7 +62,6 @@ on:
       - 'tests/sdk_consumer/shaders/r10.slang'
       - 'modules/graphics/rhi/CMakeLists.txt'
       - 'cmake/shaders/compile_raster.py'
-      - 'modules/graphics/rhi/src/raster_unsupported.cpp'
       - 'modules/graphics/rhi/tests/d3d12*'
       - 'tests/sdk_consumer/shaders/raster.slang'
       - 'modules/foundation/base/tests/windows_diagnostic_probe.cpp'
@@ -242,6 +242,10 @@ jobs:
             if ($LASTEXITCODE -ne 0 -or @($cases -match 'Portable ordered compute dispatches feed indirect raster').Count -ne 1) {
               throw "The DXIL ordered compute conformance case is missing from $d3d12"
             }
+            $diagnostics = & $d3d12 --list-tests '[d5b]'
+            if ($LASTEXITCODE -ne 0 -or @($diagnostics -match 'Direct3D 12 (frame and pass timestamps|device removal)').Count -ne 2) {
+              throw "The D5b timing and device removal cases are missing from $d3d12"
+            }
             if ($visualStudio -and (Split-Path -Leaf (Split-Path -Parent $d3d12)) -ne $configuration) {
               throw "CTest selected the wrong D3D12 executable for $configuration ($d3d12)"
             }
@@ -386,6 +390,9 @@ jobs:
             | grep -q "draws the fullscreen pipeline across resizes"
           out/build/windows-clang-development/modules/graphics/rhi/ludus_rhi_d3d12_tests.exe --list-tests '[ordered-compute]' \
             | grep -q "Portable ordered compute dispatches feed indirect raster"
+          diagnostics="$(out/build/windows-clang-development/modules/graphics/rhi/ludus_rhi_d3d12_tests.exe --list-tests '[d5b]')"
+          grep -q "Direct3D 12 frame and pass timestamps follow submission fences" <<< "$diagnostics"
+          grep -q "Direct3D 12 device removal invalidates pending timestamps" <<< "$diagnostics"
       - name: Preserve Windows test logs
         if: always()
         uses: actions/upload-artifact@v4

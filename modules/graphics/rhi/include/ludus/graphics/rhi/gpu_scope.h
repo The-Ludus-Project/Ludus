@@ -34,7 +34,8 @@ struct GpuScopeDescription final
 /// Compute uses its encoder/dispatch interval. Values are elapsed time, not shader busy time.
 enum class GpuPassKind : foundation::uint8
 {
-    /// Vertex/fragment stage envelope on Metal; TOP/BOTTOM render-pass interval on Vulkan.
+    /// Vertex/fragment stage envelope on Metal, TOP/BOTTOM render-pass interval on Vulkan,
+    /// or the interval between two bottom-of-pipe samples around a Direct3D 12 raster pass.
     Raster,
     /// Physical compute operation, including GPU stalls.
     Compute,

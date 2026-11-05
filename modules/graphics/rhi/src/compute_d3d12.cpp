@@ -1,3 +1,4 @@
+#include "internal/d3d12_diagnostics.h"
 #include "internal/d3d12_raster.h"
 #include "internal/raster.h"
 
@@ -66,10 +67,12 @@ RasterStatus ComputeEncode(const ComputePacket& packet) noexcept
     ID3D12GraphicsCommandList* commands = GetCommandsOrNull();
     LUDUS_ASSERT(commands != nullptr);
     const ComputePipeline& pipeline = gComputePipelines[packet.Pipeline];
+    BeginPhysicalPassTiming(*commands, GpuPassKind::Compute);
     commands->SetPipelineState(pipeline.State.Get());
     commands->SetComputeRootSignature(GetSignature(pipeline.Layout));
     BindSet(commands, packet.Set, ShaderStage::Compute);
     commands->Dispatch(packet.Groups[0], packet.Groups[1], packet.Groups[2]);
+    EndPhysicalPassTiming(*commands);
     return RasterStatus::Ready;
 }
 
