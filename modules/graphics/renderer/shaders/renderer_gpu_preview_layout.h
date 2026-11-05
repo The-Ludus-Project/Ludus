@@ -23,8 +23,9 @@
 // word Z, beside native opacity ranges in X.
 #define LUDUS_GPU_PREVIEW_KERNEL_VERSION 13
 // Words per mesh emitter in the bounds records that follow the emitter records:
-// sphere centre/radius, normal-cone axis/cosine, then flag bits in word 2 X.
+// sphere centre/radius, normal-cone axis/cosine, then flags (X) and the mesh power CDF (Y).
 #define LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS 3
+#define LUDUS_GPU_PREVIEW_EMITTER_METADATA_WORD 2
 #define LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_TWO_SIDED 1u
 
 #define LUDUS_GPU_PREVIEW_TRIANGLE_WORDS 16

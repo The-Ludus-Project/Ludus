@@ -213,6 +213,12 @@
       "value": 0.1,
       "minimum": 0,
       "maximum": 1
+    },
+    {
+      "id": "IS_MESH_POWER_SELECTION_ENABLED",
+      "label": "Power-weighted mesh light selection",
+      "type": "Bool",
+      "value": false
     }
   ]
 }

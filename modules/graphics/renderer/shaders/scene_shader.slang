@@ -308,7 +308,8 @@ EmitterBounds GetEmitterBounds(SceneContext scene, uint emitterIndex)
     result.RadiusWorld = sphereWorld.w;
     result.NormalAxisWorld = normalConeWorld.xyz;
     result.CosConeHalfAngle = normalConeWorld.w;
-    result.IsEmissionTwoSided = (asuint(SceneValue(offset + 2).x) & LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_TWO_SIDED) != 0;
+    result.IsEmissionTwoSided = (asuint(SceneValue(offset + LUDUS_GPU_PREVIEW_EMITTER_METADATA_WORD).x) &
+                                 LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_TWO_SIDED) != 0;
     result.IsValid = true;
     return result;
 }
@@ -633,6 +634,69 @@ SelectedLight SelectLight(SceneContext scene, RayLaunch launch, uint dimension)
                                               count,
                                               result.LightIndex);
     result.SelectionPmf = result.HasSample == true ? 1.0 / float(count) : 0;
+    return result;
+}
+static uint ReadMeshPowerCumulative(uint meshCount, uint meshIndex)
+{
+    const uint offset = Offsets.z + Counts.z + meshCount + meshIndex * LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS;
+    return asuint(SceneValue(offset + LUDUS_GPU_PREVIEW_EMITTER_METADATA_WORD).y);
+}
+/// Evaluate the catalog PMF for SelectLightByMeshPower, including its uniform fallback.
+float EvaluateMeshPowerLightSelectionPmf(SceneContext scene, uint lightIndex)
+{
+    const uint lightCount = GetLightCount(scene);
+    if (lightIndex >= lightCount)
+        return 0;
+    const uint meshCount = GetEmitterCount(scene);
+    if (lightIndex < Counts.w || lightIndex >= Counts.w + meshCount)
+        return 1.0 / float(lightCount);
+    const uint meshIndex = lightIndex - Counts.w;
+    const uint meshTotal = ReadMeshPowerCumulative(meshCount, meshCount - 1);
+    if (meshTotal == 0)
+        return 1.0 / float(lightCount);
+    const uint previous = meshIndex == 0 ? 0 : ReadMeshPowerCumulative(meshCount, meshIndex - 1);
+    const uint weight = ReadMeshPowerCumulative(meshCount, meshIndex) - previous;
+    return float(weight) / float((meshTotal / meshCount) * lightCount);
+}
+/// Select one catalog source at the given dimension. Mesh lights split their original total
+/// probability by area times emitted luminance, with nonzero support for each light.
+/// Analytic and environment source probabilities match SelectLight. With no mesh table,
+/// selection is uniform. Empty catalogs or exhausted random addresses return no sample.
+SelectedLight SelectLightByMeshPower(SceneContext scene, RayLaunch launch, uint dimension)
+{
+    const uint meshCount = GetEmitterCount(scene);
+    const uint meshTotal = meshCount == 0 ? 0 : ReadMeshPowerCumulative(meshCount, meshCount - 1);
+    if (meshTotal == 0)
+        return SelectLight(scene, launch, dimension);
+    const uint ticketsPerSource = meshTotal / meshCount;
+    const uint total = ticketsPerSource * GetLightCount(scene);
+    const uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
+    SelectedLight result = (SelectedLight)0;
+    uint ticket;
+    if (TrySampleRandomBounded(launch.Seed, PixelRandomAddress(pixel, launch.SampleIndex, dimension), total, ticket) ==
+        false)
+        return result;
+    if (ticket < meshTotal)
+    {
+        uint low = 0;
+        uint high = meshCount - 1;
+        while (low < high)
+        {
+            const uint middle = low + (high - low) / 2;
+            if (ReadMeshPowerCumulative(meshCount, middle) <= ticket)
+                low = middle + 1;
+            else
+                high = middle;
+        }
+        result.LightIndex = Counts.w + low;
+    }
+    else
+    {
+        const uint otherIndex = (ticket - meshTotal) / ticketsPerSource;
+        result.LightIndex = otherIndex < Counts.w ? otherIndex : otherIndex + meshCount;
+    }
+    result.SelectionPmf = EvaluateMeshPowerLightSelectionPmf(scene, result.LightIndex);
+    result.HasSample = true;
     return result;
 }
 /// One emissive triangle drawn from the renderer's power-weighted triangle CDF.

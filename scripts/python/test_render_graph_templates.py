@@ -735,6 +735,7 @@ class VeachGuibasMisTemplateTests(unittest.TestCase):
         self.assertEqual((settings['MIS_HEURISTIC']['minimum'], settings['MIS_HEURISTIC']['maximum']), (0, 3))
         self.assertEqual(settings['MIS_POWER_EXPONENT']['value'], 2)
         self.assertEqual(settings['MIS_CUTOFF_THRESHOLD']['value'], 0.1)
+        self.assertIs(settings['IS_MESH_POWER_SELECTION_ENABLED']['value'], False)
         # All three shade passes read one disjoint random range: light selection, shape, BSDF direction.
         header = shaders.joinpath('hit_record.slang').read_text()
         constant = lambda name: int(re.search(rf'static const uint {name} = (\d+);', header).group(1))

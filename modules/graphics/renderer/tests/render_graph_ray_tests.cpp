@@ -5870,7 +5870,6 @@ namespace
 // docs/architecture/many-area-light-sampling-reference-review.md, "Equal-time benchmark".
 constexpr usize EMITTER_FIELD_GRID = 40;
 constexpr usize EMITTER_FIELD_TILE_COUNT = EMITTER_FIELD_GRID * EMITTER_FIELD_GRID;
-constexpr usize EMITTER_FIELD_QUAD_COUNT = MANY_EMITTER_ROOM_QUAD_COUNT + EMITTER_FIELD_TILE_COUNT;
 constexpr usize EMITTER_FIELD_LEVEL_COUNT = 4;
 constexpr usize EMITTER_FIELD_TINT_COUNT = 3;
 constexpr usize EMITTER_FIELD_MATERIAL_COUNT =
@@ -5891,17 +5890,28 @@ struct EmitterFieldRoom final
     Array<math::Vector3> Positions;
     Array<uint32> Indices;
     Array<uint32> Slots;
-    StaticArray<uint32, EMITTER_FIELD_MATERIAL_COUNT> Bindings{};
+    Array<uint32> Bindings;
     StaticArray<renderer::SceneShaderMaterial, EMITTER_FIELD_MATERIAL_COUNT> Materials{};
     StaticArray<renderer::RenderGraphMesh, 1> Meshes{};
     StaticArray<renderer::RenderGraphItem, 1> Items{};
     StaticArray<renderer::ViewDescription, 1> Cameras{};
     renderer::SceneShaderInputs Inputs;
-    explicit EmitterFieldRoom(SurfaceFinish finish)
+    renderer::DirectLight Sun;
+    explicit EmitterFieldRoom(SurfaceFinish finish, usize independentGrid = 0, bool hasSunAndSky = false)
     {
-        REQUIRE(Positions.TryResize(EMITTER_FIELD_QUAD_COUNT * MANY_EMITTER_QUAD_CORNERS) == true);
-        REQUIRE(Indices.TryResize(EMITTER_FIELD_QUAD_COUNT * MANY_EMITTER_QUAD_INDICES) == true);
-        REQUIRE(Slots.TryResize(EMITTER_FIELD_QUAD_COUNT * 2) == true);
+        const bool hasIndependentSources = independentGrid != 0;
+        const usize grid = hasIndependentSources == true ? independentGrid : EMITTER_FIELD_GRID;
+        const usize tileCount = grid * grid;
+        const usize quadCount = MANY_EMITTER_ROOM_QUAD_COUNT + tileCount;
+        REQUIRE(Positions.TryResize(quadCount * MANY_EMITTER_QUAD_CORNERS) == true);
+        REQUIRE(Indices.TryResize(quadCount * MANY_EMITTER_QUAD_INDICES) == true);
+        REQUIRE(Slots.TryResize(quadCount * 2) == true);
+        REQUIRE(Bindings.TryResize(hasIndependentSources == true ? MANY_EMITTER_FIRST_LIGHT + tileCount
+                                                                 : EMITTER_FIELD_MATERIAL_COUNT) == true);
+        for (uint32 material = 0; material < EMITTER_FIELD_MATERIAL_COUNT && material < Bindings.GetSize(); ++material)
+        {
+            Bindings[material] = material;
+        }
         for (usize quad = 0; quad < MANY_EMITTER_ROOM_QUAD_COUNT; ++quad)
         {
             for (usize corner = 0; corner < MANY_EMITTER_QUAD_CORNERS; ++corner)
@@ -5913,27 +5923,31 @@ struct EmitterFieldRoom final
         }
         // Tiles face down like the Cornell light, with its corner order; centers 0.05 apart, sides 0.03 long.
         constexpr float32 TILE_HEIGHT_WORLD = .98F;
-        constexpr float32 TILE_SPACING_WORLD = 2.F / static_cast<float32>(EMITTER_FIELD_GRID);
-        constexpr float32 TILE_FIRST_CENTER_WORLD = -1 + TILE_SPACING_WORLD / 2;
+        const float32 tileSpacingWorld = 2.F / static_cast<float32>(grid);
+        const float32 tileFirstCenterWorld = -1 + tileSpacingWorld / 2;
         constexpr float32 TILE_HALF_SIDE_WORLD = .015F;
-        for (usize tile = 0; tile < EMITTER_FIELD_TILE_COUNT; ++tile)
+        const float32 tileHalfSideWorld =
+            TILE_HALF_SIDE_WORLD * (static_cast<float32>(EMITTER_FIELD_GRID) / static_cast<float32>(grid));
+        for (usize tile = 0; tile < tileCount; ++tile)
         {
-            const float32 centerX =
-                TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(tile % EMITTER_FIELD_GRID);
-            const usize tileRow = tile / EMITTER_FIELD_GRID;
-            const float32 centerZ = TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(tileRow);
+            const float32 centerX = tileFirstCenterWorld + tileSpacingWorld * static_cast<float32>(tile % grid);
+            const usize tileRow = tile / grid;
+            const float32 centerZ = tileFirstCenterWorld + tileSpacingWorld * static_cast<float32>(tileRow);
             const usize quad = MANY_EMITTER_ROOM_QUAD_COUNT + tile;
             const usize first = quad * MANY_EMITTER_QUAD_CORNERS;
-            Positions[first] = {centerX - TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ - TILE_HALF_SIDE_WORLD};
-            Positions[first + 1] = {centerX + TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ - TILE_HALF_SIDE_WORLD};
-            Positions[first + 2] = {centerX + TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ + TILE_HALF_SIDE_WORLD};
-            Positions[first + 3] = {centerX - TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ + TILE_HALF_SIDE_WORLD};
+            Positions[first] = {centerX - tileHalfSideWorld, TILE_HEIGHT_WORLD, centerZ - tileHalfSideWorld};
+            Positions[first + 1] = {centerX + tileHalfSideWorld, TILE_HEIGHT_WORLD, centerZ - tileHalfSideWorld};
+            Positions[first + 2] = {centerX + tileHalfSideWorld, TILE_HEIGHT_WORLD, centerZ + tileHalfSideWorld};
+            Positions[first + 3] = {centerX - tileHalfSideWorld, TILE_HEIGHT_WORLD, centerZ + tileHalfSideWorld};
             // Levels and tints cycle with different periods along and across rows, so neighbors differ in both.
-            const usize level = (tile * 5 + tile / EMITTER_FIELD_GRID) % EMITTER_FIELD_LEVEL_COUNT;
+            const usize level = (tile * 5 + tile / grid) % EMITTER_FIELD_LEVEL_COUNT;
             const usize tint = tile % EMITTER_FIELD_TINT_COUNT;
             const uint32 material =
                 MANY_EMITTER_FIRST_LIGHT + static_cast<uint32>(level * EMITTER_FIELD_TINT_COUNT + tint);
-            WriteQuad(quad, material, Indices.GetData(), Slots.GetData());
+            const uint32 slot =
+                hasIndependentSources == true ? MANY_EMITTER_FIRST_LIGHT + static_cast<uint32>(tile) : material;
+            Bindings[slot] = material;
+            WriteQuad(quad, slot, Indices.GetData(), Slots.GetData());
         }
         constexpr StaticArray<float32, EMITTER_FIELD_LEVEL_COUNT> EMISSION_LEVELS{{.25F, 1, 4, 16}};
         constexpr StaticArray<math::Vector3, EMITTER_FIELD_TINT_COUNT> TINTS{{{1, 1, 1}, {1, .6F, .3F}, {.3F, .6F, 1}}};
@@ -5956,15 +5970,22 @@ struct EmitterFieldRoom final
         }
         Materials[MANY_EMITTER_RED].BaseColor = {.8F, .1F, .1F};
         Materials[MANY_EMITTER_GREEN].BaseColor = {.1F, .8F, .1F};
-        for (uint32 material = 0; material < EMITTER_FIELD_MATERIAL_COUNT; ++material)
-        {
-            Bindings[material] = material;
-        }
         Meshes[0].Geometry = {Positions.GetData(), Positions.GetSize(), Indices.GetData(), Indices.GetSize()};
         Meshes[0].MaterialSlots = {Slots.GetData(), Slots.GetSize()};
         Meshes[0].MaterialBindings = {Bindings.GetData(), Bindings.GetSize()};
         Items[0].SourceId = 1;
         Inputs.Materials = {Materials.GetData(), Materials.GetSize()};
+        if (hasSunAndSky == true)
+        {
+            constexpr float32 SUN_ILLUMINANCE = .8F;
+            constexpr math::Vector3 SKY_RADIANCE{.2F, .25F, .3F};
+            Sun.SourceId = 1;
+            Sun.Kind = renderer::LightKind::Directional;
+            Sun.Direction = {0, 0, -1};
+            Sun.Intensity = SUN_ILLUMINANCE;
+            Inputs.Lights = {&Sun, 1};
+            Inputs.Environment = SKY_RADIANCE;
+        }
         // The Cornell room's camera.
         const CornellBox cornell;
         Cameras[0] = cornell.Cameras[0];
@@ -6364,6 +6385,89 @@ TEST_CASE("Measure RIS projected-solid-angle and Veach and Guibas MIS error at e
             CHECK(risError.FailurePixels == 0);
             CHECK(equalTime.FailurePixels == 0);
         }
+    }
+}
+
+TEST_CASE("Measure Veach and Guibas mesh power selection error at equal GPU time", "[.mesh-power-benchmark]")
+{
+    constexpr usize MANY_LIGHT_GRID = 24;
+    constexpr usize MIXED_LIGHT_GRID = 5;
+    bool hasSunAndSky = false;
+    SECTION("many independent mesh lights") {}
+    SECTION("mesh lights, sun and sky")
+    {
+        hasSunAndSky = true;
+    }
+    const usize grid = hasSunAndSky == true ? MIXED_LIGHT_GRID : MANY_LIGHT_GRID;
+    const EmitterFieldRoom room(SurfaceFinish::Diffuse, grid, hasSunAndSky);
+    GraphGpuFixture fixture(true, false);
+    rhi::MeasurementAdapter adapter;
+    REQUIRE(rhi::GetMeasurementAdapter(fixture.Device, adapter) == rhi::RasterStatus::Ready);
+    constexpr PackageLocation weighted{LUDUS_RG3_VEACH_GUIBAS_MESH_POWER_DIRECTORY,
+                                       "rg2_veach_guibas_mis_mesh_power.lurgrt"};
+    const EstimatorCost uniformFirst = MeasureEstimatorCost(fixture, VEACH_GUIBAS_BENCHMARK, room, "uniform");
+    const EstimatorCost powerFirst = MeasureEstimatorCost(fixture, weighted, room, "mesh power");
+    const EstimatorCost powerSecond = MeasureEstimatorCost(fixture, weighted, room, "mesh power");
+    const EstimatorCost uniformSecond = MeasureEstimatorCost(fixture, VEACH_GUIBAS_BENCHMARK, room, "uniform");
+    const float64 uniformMilliseconds = (uniformFirst.PrimaryMilliseconds + uniformFirst.ShadeMilliseconds +
+                                         uniformSecond.PrimaryMilliseconds + uniformSecond.ShadeMilliseconds) /
+                                        2;
+    const float64 powerMilliseconds = (powerFirst.PrimaryMilliseconds + powerFirst.ShadeMilliseconds +
+                                       powerSecond.PrimaryMilliseconds + powerSecond.ShadeMilliseconds) /
+                                      2;
+    REQUIRE(uniformMilliseconds > 0);
+    REQUIRE(powerMilliseconds > 0);
+    WARN(adapter.Name << ", " << grid * grid << " independent mesh lights, sun and sky " << hasSunAndSky << ", "
+                      << BENCHMARK_EXTENT.Width << 'x' << BENCHMARK_EXTENT.Height << ": uniform " << uniformMilliseconds
+                      << " ms/sample, mesh power " << powerMilliseconds << " ms/sample");
+
+    Array<uint8> reference;
+    {
+        PreparedGraph referenceGraph(fixture,
+                                     VEACH_GUIBAS_BENCHMARK,
+                                     room,
+                                     BENCHMARK_REFERENCE_REVISION,
+                                     BENCHMARK_EXTENT);
+        const uint32 output = referenceGraph.GetVeachGuibasExports()[VEACH_GUIBAS_MIS];
+        for (usize frame = 0; frame < BENCHMARK_REFERENCE_FRAMES; ++frame)
+        {
+            RenderFrame(referenceGraph.Graph, fixture);
+        }
+        ReadExport(referenceGraph.Graph, fixture, output, referenceGraph.Extent, reference);
+    }
+    REQUIRE(CountFailurePixels(reference) == 0);
+    WARN("Uniform reference at " << BENCHMARK_REFERENCE_FRAMES << " independent samples; "
+                                 << CountResolvedReferencePixels(reference) << " resolved pixels");
+
+    MisCheckpoints uniform;
+    MisCheckpoints power;
+    uniform.Count = BENCHMARK_SAMPLE_BUDGET_COUNT * 2;
+    power.Count = BENCHMARK_SAMPLE_BUDGET_COUNT;
+    for (usize budget = 0; budget < power.Count; ++budget)
+    {
+        const usize samples = BENCHMARK_SAMPLE_BUDGETS[budget];
+        power.FrameCounts[budget] = samples;
+        uniform.FrameCounts[budget] = samples;
+        const float64 equalTimeSamples = static_cast<float64>(samples) * powerMilliseconds / uniformMilliseconds;
+        uniform.FrameCounts[BENCHMARK_SAMPLE_BUDGET_COUNT + budget] =
+            math::Max(static_cast<usize>(math::Floor(equalTimeSamples + .5)), usize{1});
+    }
+    RenderMisCheckpoints(fixture, VEACH_GUIBAS_BENCHMARK, room, uniform);
+    RenderMisCheckpoints(fixture, weighted, room, power);
+    for (usize budget = 0; budget < power.Count; ++budget)
+    {
+        const usize matched = BENCHMARK_SAMPLE_BUDGET_COUNT + budget;
+        const ImageError powerError = ComputeImageError(power.Images[budget], reference);
+        const ImageError uniformError = ComputeImageError(uniform.Images[budget], reference);
+        const ImageError matchedError = ComputeImageError(uniform.Images[matched], reference);
+        WARN("Mesh power at " << power.FrameCounts[budget] << " spp: linear RMSE " << powerError.LinearRootMeanSquare
+                              << ", MAPE " << powerError.MeanAbsolutePercentage << "; uniform at equal samples: RMSE "
+                              << uniformError.LinearRootMeanSquare << ", MAPE " << uniformError.MeanAbsolutePercentage
+                              << "; uniform at equal time (" << uniform.FrameCounts[matched] << " spp): RMSE "
+                              << matchedError.LinearRootMeanSquare << ", MAPE " << matchedError.MeanAbsolutePercentage);
+        CHECK(powerError.FailurePixels == 0);
+        CHECK(uniformError.FailurePixels == 0);
+        CHECK(matchedError.FailurePixels == 0);
     }
 }
 
