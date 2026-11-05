@@ -3040,6 +3040,100 @@ TEST_CASE("An open World publishes newly imported diffuse conductor Mix geometry
     workspace.StopPreview();
 }
 
+TEST_CASE("World assigns a project BRDF and saves a slot roughness edit", "[editor][world][project-brdf]")
+{
+    namespace format = ludus::content::scene_format;
+    using ludus::foundation::float32;
+    QTemporaryDir directory;
+    WorldWorkspace workspace;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        workspace.show();
+    }
+    const QString recipient = OpenPlacementWorld(directory, workspace);
+    WaitForValidatedScene(workspace);
+    const QString path = workspace.Path();
+    const QString source = directory.filePath(QStringLiteral("glaze.luscene.json"));
+    Write(source, QByteArrayLiteral(R"({
+        "format":"ludus.scene","version":1,"name":"Glaze scene",
+        "materials":[{"name":"demo/glaze","model":"project_brdf","base_color":[0.3,0.5,0.7],"roughness":0.35,
+                      "brdf":{"version":1,"weights":[0.25,0.5,0.25],"powers":[0,4,12],
+                              "fixed_dimension_reflection":true}}],
+        "objects":[{"name":"Donor","material":"demo/glaze",
+                    "positions":[[2,0,0],[3,0,0],[2,1,0]],"polygons":[[0,1,2]]}]
+    })"));
+    REQUIRE(workspace.ImportScene(source) == true);
+    WaitForValidatedScene(workspace);
+    QString donor;
+    const RenderScene& scene = GetLevel(workspace).PreviewScene();
+    REQUIRE(scene.Objects.size() == 2);
+    for (const PreviewObject& object : scene.Objects)
+    {
+        if (object.Id != recipient)
+        {
+            donor = object.Id;
+        }
+    }
+    REQUIRE(donor.isEmpty() == false);
+    const auto checkMaterial = [](const WorldWorkspace& view, const QString& id, float32 roughness) {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(GetLevel(view).PreviewScene(), id);
+        REQUIRE(materialOrNull != nullptr);
+        CHECK(materialOrNull->Scattering.Model == format::MaterialModel::ProjectBrdf);
+        CHECK(materialOrNull->Scattering.Eta[1] == 0.5F);
+        CHECK(materialOrNull->Scattering.K[2] == 12);
+        CHECK(format::SupportsFixedDimensionReflection(materialOrNull->Scattering) == true);
+        CHECK(materialOrNull->Roughness == roughness);
+    };
+    checkMaterial(workspace, donor, 0.35F);
+    REQUIRE(workspace.SelectEntity(recipient) == true);
+    QPushButton* assignOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAssignProjectBrdf"));
+    REQUIRE(assignOrNull != nullptr);
+    REQUIRE(assignOrNull->isEnabled() == true);
+    assignOrNull->click();
+    WaitForValidatedScene(workspace);
+    checkMaterial(workspace, recipient, 0.35F);
+    CHECK(GetLevel(workspace).PreviewScene().Definition->Materials.GetSize() == 1);
+
+    const QString roughnessField = QStringLiteral("scene/project_brdf/roughness");
+    Type(Field(workspace, roughnessField), QStringLiteral("0"));
+    CHECK(workspace.Apply() == false);
+    checkMaterial(workspace, recipient, 0.35F);
+    Type(Field(workspace, roughnessField), QStringLiteral("0.75"));
+    REQUIRE(workspace.Apply() == true);
+    WaitForValidatedScene(workspace);
+    checkMaterial(workspace, recipient, 0.75F);
+    checkMaterial(workspace, donor, 0.35F);
+    CHECK(GetLevel(workspace).PreviewScene().Definition->Materials.GetSize() == 2);
+
+    REQUIRE(workspace.CanUndo() == true);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    checkMaterial(workspace, recipient, 0.35F);
+    REQUIRE(workspace.CanRedo() == true);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkMaterial(workspace, recipient, 0.75F);
+    REQUIRE(workspace.Save() == true);
+    WaitForValidatedScene(workspace);
+    workspace.StopPreview();
+    workspace.hide();
+
+    WorldWorkspace reopened;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        reopened.show();
+    }
+    reopened.SetProject(directory.path(), 2);
+    REQUIRE(reopened.Open(path) == true);
+    WaitForValidatedScene(reopened);
+    REQUIRE(reopened.SelectEntity(recipient) == true);
+    checkMaterial(reopened, recipient, 0.75F);
+    checkMaterial(reopened, donor, 0.35F);
+    CHECK(Field(reopened, roughnessField)->text() == QStringLiteral("0.75"));
+    reopened.StopPreview();
+}
+
 TEST_CASE("World maps a shared unsupported PBRT material and retains the repair on reimport",
           "[editor][world][material-repair]")
 {

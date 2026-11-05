@@ -106,6 +106,8 @@ enum class SphereSurfaces : uint8
     Opaque,
     /// Weighted diffuse and rough conductor with matched proposals.
     Mix,
+    /// Project-authored three-lobe continuous reflection.
+    ProjectBrdf,
     /// Coated diffuse on the sphere, the wall and the masked quad.
     Coated,
     /// A smooth glass sphere (index 1.5) and a thin masked pane (index 1.33) in front of the wall.
@@ -234,6 +236,17 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
         {
             material.Scattering.Model = ludus::content::scene_format::MaterialModel::DiffuseConductorMix;
             material.Metallic = i == 0 ? 0.25F : 0.65F;
+        }
+        if (surfaces == SphereSurfaces::ProjectBrdf)
+        {
+            namespace format = ludus::content::scene_format;
+            material.Scattering = {};
+            material.Scattering.Model = format::MaterialModel::ProjectBrdf;
+            material.Scattering.Eta = {{0.25F, 0.5F, 0.25F}};
+            material.Scattering.K = {{0, 4, 12}};
+            material.Scattering.CoatingThickness = 1;
+            material.Metallic = 0;
+            material.Roughness = i == 0 ? 0.35F : 0.7F;
         }
         if (surfaces == SphereSurfaces::Glass && (i == 0 || i == 3))
         {
@@ -1832,11 +1845,14 @@ TEST_CASE("GPU-compute light-sampling mode is part of the integral and the raw c
     REQUIRE(gpu.Renderer.Release(handle) == S::Ready);
 }
 
-TEST_CASE("Typed diffuse conductor mix coated diffuse and dielectrics match between CPU and GPU reference transport",
+TEST_CASE("Typed reflection and transmission match between CPU and GPU reference transport",
           "[renderer][gpu][reference-compute]")
 {
-    const SphereSurfaces surfaces =
-        GENERATE(SphereSurfaces::Opaque, SphereSurfaces::Mix, SphereSurfaces::Coated, SphereSurfaces::Glass);
+    const SphereSurfaces surfaces = GENERATE(SphereSurfaces::Opaque,
+                                             SphereSurfaces::Mix,
+                                             SphereSurfaces::ProjectBrdf,
+                                             SphereSurfaces::Coated,
+                                             SphereSurfaces::Glass);
     CAPTURE(surfaces);
     rhi::Shutdown();
     struct Guard final

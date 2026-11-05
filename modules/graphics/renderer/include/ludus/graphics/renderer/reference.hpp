@@ -97,7 +97,9 @@ struct ReferenceBsdfSample final
 /// the lobe, Y/Z sample it. Diffuse uses cosine sampling; conductors and legacy
 /// pure metals use visible-GGX reflection; legacy mixed surfaces mix cosine diffuse
 /// and GGX equally. DiffuseConductorMix uses Metallic as the conductor proposal
-/// probability and returns the weighted sum of both lobe densities. Dielectrics reflect with probability equal to their
+/// probability and returns the weighted sum of both lobe densities. ProjectBrdf
+/// chooses one authored cosine-power lobe and returns the full mixture density.
+/// Dielectrics reflect with probability equal to their
 /// Fresnel reflectance (a thin slab's includes its interreflections) and otherwise refract, or pass straight through a
 /// thin slab; transmitted radiance is scaled by the inverse squared relative index. Coatings sample an internal layered
 /// path using the supplied random context; Weight and MisPdf have distinct contracts. Internal depth and roulette

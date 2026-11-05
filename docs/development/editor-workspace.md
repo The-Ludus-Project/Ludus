@@ -1485,6 +1485,23 @@ The raster view approximates changes in coat roughness. A compatible reference
 capture uses the authored alpha, IOR and optical thickness together.
 [Coated-diffuse reference profile](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference)
 
+### Assign and edit a project BRDF
+
+Import a [Ludus scene source with a project BRDF](../architecture/scene-source-format.md#project-brdf-program)
+on one of its objects. To use that BRDF elsewhere, select another World slot,
+choose the material by its project name in the **Material** group, then click
+**Assign Project BRDF**. The assignment uses the imported roughness and keeps
+the slot's inherited binding available through **Use Inherited Material**.
+
+To vary the selected slot, edit **Project BRDF roughness** and click
+**Apply Changes**. Equal values on the same material share storage. The
+assignment and roughness edit each support undo and redo, and **Save World**
+keeps both across reopening.
+
+The raster viewport approximates the surface using base color and roughness.
+The reference paths and Wave Tracing evaluate the authored terms. Metropolis
+also requires the program's fixed-dimension reflection declaration.
+
 ### Repair an unsupported imported material
 
 When a PBRT scene assigns an unsupported named material, World keeps the geometry

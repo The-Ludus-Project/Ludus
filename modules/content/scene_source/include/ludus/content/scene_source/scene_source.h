@@ -87,6 +87,8 @@ enum class SourceMaterialModel : uint8
     MetallicRoughness,
     /// Weighted Lambertian and rough conductor reflection (`"model": "mix"`).
     Mix,
+    /// Authored cosine-power reflection program (`"model": "project_brdf"`).
+    ProjectBrdf,
 };
 
 /// Constant rough conductor lobe of a source Mix. RGB channels use the engine's optical proxy.
@@ -100,12 +102,20 @@ struct SourceRoughConductor final
     foundation::math::Vector3d Extinction{};
 };
 
+/// Version-1 program for three weighted reciprocal cosine-power reflection terms.
+struct SourceProjectBrdf final
+{
+    foundation::math::Vector3d Weights{};     ///< Relative nonnegative weights, normalized at evaluation.
+    foundation::math::Vector3d Powers{};      ///< Nonnegative cosine exponents at zero roughness.
+    bool HasFixedDimensionReflection = false; ///< Declares the fixed three-random-value reflection contract.
+};
+
 /// @brief A named material. Emission makes every polygon that uses it a light.
 struct SourceMaterial final
 {
     /// Unique, nonempty name that objects refer to.
     foundation::String Name;
-    /// Reflection model; Metallic and Roughness apply to MetallicRoughness only.
+    /// Reflection model; roughness also applies to project BRDF programs.
     SourceMaterialModel Model = SourceMaterialModel::Diffuse;
     /// Linear Rec. 709 reflectance, each channel in [0, 1].
     foundation::math::Vector3d BaseColor{0.5, 0.5, 0.5};
@@ -117,6 +127,8 @@ struct SourceMaterial final
     float64 MixWeight = 0.0;
     /// Conductor inputs for Mix materials.
     SourceRoughConductor Conductor;
+    /// Authored program for ProjectBrdf materials.
+    SourceProjectBrdf Brdf;
     /// Constant emitted linear Rec. 709 radiance in W/(sr m^2) per channel, finite and
     /// nonnegative; all zero for a material that does not emit.
     foundation::math::Vector3d EmittedRadiance{};

@@ -706,6 +706,8 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
     float nl = dot(normalWorld, lightWorld);
     if (nv <= 0 || nl <= 0 || IsDielectricModel(bsdf.Model) == true)
         return 0;
+    if (bsdf.Model == MaterialModel::ProjectBrdf)
+        return EvaluateProjectBrdf(bsdf.BaseColor, bsdf.Roughness, bsdf.Eta, bsdf.K, nv, nl);
     bool isMix = bsdf.Model == MaterialModel::DiffuseConductorMix;
     if (bsdf.Model == MaterialModel::Diffuse || (isMix == true && bsdf.Metallic == 0))
         return float4(bsdf.BaseColor / PI, nl / PI);
@@ -739,6 +741,8 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
 // SampleReferenceBsdf; returns zero for an ordinary null proposal.
 float3 SampleBsdfDirection(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 samples)
 {
+    if (bsdf.Model == MaterialModel::ProjectBrdf)
+        return SampleProjectBrdfDirection(bsdf.Roughness, bsdf.Eta, bsdf.K, normalWorld, viewWorld, samples);
     if (dot(normalWorld, viewWorld) <= 0)
         return 0;
     float3 axisXWorld =

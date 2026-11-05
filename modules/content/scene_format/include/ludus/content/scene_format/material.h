@@ -29,6 +29,12 @@ static const MaterialModelTag LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC = 5;
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_DIFFUSE_CONDUCTOR_MIX = 6;
 /// Content-only tag for a named source material without a scattering implementation.
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_UNRESOLVED = 7;
+/// Project-authored cosine-power BRDF program, version 1.
+static const MaterialModelTag LUDUS_MATERIAL_MODEL_PROJECT_BRDF = 8;
+/// Maximum authored cosine exponent before applying perceptual roughness.
+static const MaterialScalar LUDUS_PROJECT_BRDF_MAX_POWER = 32;
+/// Minimum total lobe weight, to keep normalization bounded in binary32.
+static const MaterialScalar LUDUS_PROJECT_BRDF_MIN_WEIGHT = 0.001F;
 /// PBRT default bounded internal layer events; independent of scene path depth.
 static const MaterialModelTag LUDUS_COATING_MAX_DEPTH = 10;
 /// PBRT default number of independent layered evaluation/PDF estimates.
@@ -62,6 +68,8 @@ enum class MaterialModel : foundation::uint32
     /// Stored import diagnostic for a named material without a scattering implementation.
     /// Only content storage accepts this tag. Renderers require a resolved material.
     Unresolved = LUDUS_MATERIAL_MODEL_UNRESOLVED,
+    /// Project-authored continuous reflection program with up to three cosine-power lobes.
+    ProjectBrdf = LUDUS_MATERIAL_MODEL_PROJECT_BRDF,
 };
 /// Report whether the model uses the complex-IOR GGX lobe and its authored alpha.
 [[nodiscard]] constexpr bool HasRoughConductorLobe(MaterialModel model) noexcept
@@ -91,6 +99,8 @@ inline constexpr foundation::float32 DEFAULT_DIELECTRIC_ETA = 1.5F;
 /// Legacy base colour of an imported dielectric for evaluators without transmission: the
 /// normal-incidence reflectance ((eta - 1) / (eta + 1))^2 of the default index.
 inline constexpr foundation::float32 DIELECTRIC_FALLBACK_REFLECTANCE = 0.04F;
+/// Number of weighted cosine-power terms in the version-1 project BRDF program.
+inline constexpr foundation::usize PROJECT_BRDF_LOBE_COUNT = MATERIAL_RGB_CHANNELS;
 /// Source material parameters, shared by tools and runtime without renderer dependencies.
 /// AlphaU/V are the resolved GGX distribution widths, not perceptual roughness.
 /// Reference conductors and coatings currently admit isotropic alpha only. The
@@ -104,20 +114,43 @@ struct MaterialScattering final
 {
     MaterialModel Model = MaterialModel::MetallicRoughness; ///< Evaluation model.
     foundation::StaticArray<foundation::float32, MATERIAL_RGB_CHANNELS> Eta{
-        {1, 1, 1}}; ///< Positive complex-IOR real part, RGB proxy.
+        {1, 1, 1}}; ///< Positive complex-IOR real part, or three project BRDF lobe weights.
     foundation::StaticArray<foundation::float32, MATERIAL_RGB_CHANNELS>
-        K{};                                              ///< Nonnegative complex-IOR imaginary part, RGB proxy.
+        K{};                                              ///< Complex-IOR imaginary part, or three project BRDF powers.
     foundation::float32 AlphaU = 1;                       ///< GGX alpha along the tangent; [MIN_MATERIAL_ALPHA,1].
     foundation::float32 AlphaV = 1;                       ///< GGX alpha along the bitangent; same domain.
     foundation::float32 CoatingEta = DEFAULT_COATING_ETA; ///< Dielectric coating index of refraction.
-    foundation::float32 CoatingThickness = DEFAULT_COATING_THICKNESS; ///< PBRT layer optical thickness.
+    foundation::float32 CoatingThickness =
+        DEFAULT_COATING_THICKNESS; ///< Optical thickness, or project BRDF guarantee (0 or 1).
 };
+/// Test the fixed-dimension reflection guarantee, including a project program's declaration.
+[[nodiscard]] constexpr bool SupportsFixedDimensionReflection(const MaterialScattering& scattering) noexcept
+{
+    return scattering.Model == MaterialModel::ProjectBrdf ? scattering.CoatingThickness == 1
+                                                          : SupportsFixedDimensionReflection(scattering.Model);
+}
 /// Number of scalar float32 fields in the explicit MaterialScattering wire schema.
 inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHANNELS + MATERIAL_RGB_CHANNELS + 2 + 2;
 /// Validate finite bounded optical parameters. Unsupported model tags reject.
 /// An evaluator separately admits the supported anisotropy.
 [[nodiscard]] constexpr bool IsMaterialScatteringValid(const MaterialScattering& scattering) noexcept
 {
+    if (scattering.Model == MaterialModel::ProjectBrdf)
+    {
+        foundation::float32 total = 0;
+        for (foundation::usize lobe = 0; lobe < PROJECT_BRDF_LOBE_COUNT; ++lobe)
+        {
+            if ((scattering.Eta[lobe] >= 0 && scattering.Eta[lobe] <= 1) == false ||
+                (scattering.K[lobe] >= 0 && scattering.K[lobe] <= LUDUS_PROJECT_BRDF_MAX_POWER) == false)
+            {
+                return false;
+            }
+            total += scattering.Eta[lobe];
+        }
+        return total >= LUDUS_PROJECT_BRDF_MIN_WEIGHT && scattering.AlphaU == 1 && scattering.AlphaV == 1 &&
+               scattering.CoatingEta == DEFAULT_COATING_ETA &&
+               (scattering.CoatingThickness == 0 || scattering.CoatingThickness == 1);
+    }
     if (scattering.Model > MaterialModel::DiffuseConductorMix ||
         (scattering.Model == MaterialModel::DiffuseConductorMix && scattering.AlphaU != scattering.AlphaV) ||
         (scattering.AlphaU >= MIN_MATERIAL_ALPHA && scattering.AlphaU <= 1) == false ||
@@ -160,5 +193,6 @@ enum MaterialModel : MaterialModelTag
     Dielectric = LUDUS_MATERIAL_MODEL_DIELECTRIC,          ///< Smooth nonabsorbing dielectric interface.
     ThinDielectric = LUDUS_MATERIAL_MODEL_THIN_DIELECTRIC, ///< Thin dielectric slab.
     DiffuseConductorMix = LUDUS_MATERIAL_MODEL_DIFFUSE_CONDUCTOR_MIX, ///< Weighted Lambertian and conductor.
+    ProjectBrdf = LUDUS_MATERIAL_MODEL_PROJECT_BRDF,                  ///< Bounded project-authored reflection program.
 };
 #endif // __cplusplus

@@ -21,7 +21,7 @@
 #define LUDUS_GPU_PREVIEW_LUMINAIRE_BEAM_WORD 3
 // 12: panel luminaires after the lights; 9: emitter bounds after the emitter records; 8: BVH leaf order in order
 // word Z, beside native opacity ranges in X.
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 13
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 14
 // Words per mesh emitter in the bounds records that follow the emitter records:
 // sphere centre/radius, normal-cone axis/cosine, then flag bits in word 2 X.
 #define LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS 3

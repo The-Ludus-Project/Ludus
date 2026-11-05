@@ -892,6 +892,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         }
         const QJsonObject scene = entity.value(QStringLiteral("scene")).toObject();
         const bool hasCoating = scene.contains(QStringLiteral("coating"));
+        const bool hasProjectBrdf = scene.contains(QStringLiteral("project_brdf"));
         constexpr qsizetype BOUND_PLACEMENT_FIELDS = 4;
         constexpr qsizetype INLINE_PLACEMENT_FIELDS = 7;
         const qsizetype placementFields = Schema_.contains(QStringLiteral("scene_transform")) == true
@@ -907,8 +908,9 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     QStringLiteral("position"),
                     QStringLiteral("rotation"),
                     QStringLiteral("scale"),
-                    QStringLiteral("coating")}) == false ||
-            scene.size() != placementFields + (hasCoating == true ? 1 : 0) ||
+                    QStringLiteral("coating"),
+                    QStringLiteral("project_brdf")}) == false ||
+            scene.size() != placementFields + (hasCoating == true ? 1 : 0) + (hasProjectBrdf == true ? 1 : 0) ||
             ResourceId(scene.value(QStringLiteral("mesh")), QStringLiteral("mesh")) == false ||
             ResourceId(scene.value(QStringLiteral("material")), QStringLiteral("material")) == false ||
             scene.value(QStringLiteral("parent")).isString() == false)
@@ -918,6 +920,18 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         if (hasCoating == true && ValidateCoating(scene.value(QStringLiteral("coating")), error) == false)
         {
             return false;
+        }
+        if (hasProjectBrdf == true)
+        {
+            const QJsonObject binding = scene.value(QStringLiteral("project_brdf")).toObject();
+            const QJsonValue roughness = binding.value(QStringLiteral("roughness"));
+            if (binding.size() != (roughness.isUndefined() == true ? 1 : 2) ||
+                ResourceId(binding.value(QStringLiteral("material")), QStringLiteral("material")) == false ||
+                (roughness.isUndefined() == false &&
+                 Value(MakeProjectBrdfRoughnessProperty(), roughness, error) == false))
+            {
+                return Fail(error, QStringLiteral("Assign a project BRDF and enter a valid roughness."));
+            }
         }
         for (const auto& key :
              {QStringLiteral("basis"), QStringLiteral("position"), QStringLiteral("rotation"), QStringLiteral("scale")})
@@ -1368,6 +1382,10 @@ bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
         {
             instance.insert(QStringLiteral("coating"), object.value(QStringLiteral("coating")));
         }
+        if (object.contains(QStringLiteral("project_brdf")) == true)
+        {
+            instance.insert(QStringLiteral("project_brdf"), object.value(QStringLiteral("project_brdf")));
+        }
         const auto binding = Schema_.value(QStringLiteral("scene_transform")).toObject();
         if (binding.isEmpty())
         {
@@ -1662,6 +1680,10 @@ QJsonObject WorldDocument::SceneLevel() const
         if (scene.contains(QStringLiteral("coating")) == true)
         {
             object.insert(QStringLiteral("coating"), scene.value(QStringLiteral("coating")));
+        }
+        if (scene.contains(QStringLiteral("project_brdf")) == true)
+        {
+            object.insert(QStringLiteral("project_brdf"), scene.value(QStringLiteral("project_brdf")));
         }
         objects.append(object);
     }

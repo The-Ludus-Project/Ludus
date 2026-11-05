@@ -59,7 +59,8 @@ void LoadPackage(renderer::RenderGraphPackage& outPackage)
     REQUIRE(file.ReadAt(0, bytes.AsSpan()).BytesRead == bytes.GetSize());
     REQUIRE(outPackage.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
 }
-void CheckSceneWaveGraph(uint32 screen, bool shouldMix = false)
+using ludus::content::scene_format::MaterialModel;
+void CheckSceneWaveGraph(uint32 screen, MaterialModel model = MaterialModel::MetallicRoughness)
 {
     Session session;
     rhi::DeviceHandle device;
@@ -111,14 +112,24 @@ void CheckSceneWaveGraph(uint32 screen, bool shouldMix = false)
     inputs.Lights = {&source, 1};
     const uint32 materialIndex = 0;
     renderer::SceneShaderMaterial material;
-    if (shouldMix == true)
+    if (model != MaterialModel::MetallicRoughness)
     {
         material.BaseColor = {0.8F, 0.7F, 0.6F};
-        material.Metallic = 0.25F;
-        material.Scattering.Model = ludus::content::scene_format::MaterialModel::DiffuseConductorMix;
-        material.Scattering.AlphaU = 0.2F;
-        material.Scattering.AlphaV = material.Scattering.AlphaU;
-        material.Scattering.K = {{3, 4, 5}};
+        material.Scattering.Model = model;
+        if (model == MaterialModel::ProjectBrdf)
+        {
+            material.Roughness = 0.35F;
+            material.Scattering.Eta = {{0.25F, 0.5F, 0.25F}};
+            material.Scattering.K = {{0, 4, 12}};
+            material.Scattering.CoatingThickness = 0;
+        }
+        else
+        {
+            material.Metallic = 0.25F;
+            material.Scattering.AlphaU = 0.2F;
+            material.Scattering.AlphaV = material.Scattering.AlphaU;
+            material.Scattering.K = {{3, 4, 5}};
+        }
         inputs.Materials = {&material, 1};
         items[0].MaterialOverrides = {&materialIndex, 1};
     }
@@ -198,7 +209,13 @@ TEST_CASE("Scene wave graph lights an unobstructed beam from the current World",
 TEST_CASE("Scene wave graph renders a diffuse conductor Mix through the transport interface",
           "[renderer][gpu][wave-tracing][graph][mix]")
 {
-    CheckSceneWaveGraph(0, true);
+    CheckSceneWaveGraph(0, MaterialModel::DiffuseConductorMix);
+}
+
+TEST_CASE("Scene wave graph renders a project BRDF without a fixed-dimension declaration",
+          "[renderer][gpu][wave-tracing][graph][project-brdf]")
+{
+    CheckSceneWaveGraph(0, MaterialModel::ProjectBrdf);
 }
 
 TEST_CASE("Scene wave graph blocks an opaque screen from the current World", "[renderer][gpu][wave-tracing][graph]")

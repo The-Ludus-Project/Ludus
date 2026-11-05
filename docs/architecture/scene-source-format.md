@@ -144,15 +144,47 @@ value.
 | Member | Required | Meaning |
 | --- | --- | --- |
 | `name` | yes | Unique name that objects refer to. |
-| `model` | yes | `"diffuse"`: ideal Lambertian reflection. `"metallic_roughness"`: the engine's metallic-roughness model. `"mix"`: a weighted sum of Lambertian and rough conductor reflection. |
+| `model` | yes | `"diffuse"`: ideal Lambertian reflection. `"metallic_roughness"`: the engine's metallic-roughness model. `"mix"`: a weighted sum of Lambertian and rough conductor reflection. `"project_brdf"` selects a [project BRDF program](#project-brdf-program). |
 | `base_color` | yes | Linear Rec. 709 reflectance, each channel in [0, 1]. |
 | `metallic` | no | `metallic_roughness` only; [0, 1], default 0. |
-| `roughness` | no | `metallic_roughness` only; perceptual roughness in [0, 1], default 1. |
+| `roughness` | for project BRDF | Perceptual roughness in [0.045, 1] for `project_brdf`. Optional in [0, 1] for `metallic_roughness`, default 1. |
+| `brdf` | for project BRDF | Versioned reflection program described below. |
 | `weight` | for Mix | Conductor fraction in [0, 1]. The Lambertian lobe uses the complementary weight and `base_color`. |
 | `conductor` | for Mix | Contains `alpha` (isotropic GGX width in [0.0001, 1]), `eta` (three positive real IOR channels), and `k` (three nonnegative extinction channels). Optical constants are at most 10000. |
 | `emission` | no | Makes every polygon of the material an area light. |
 | `emission.radiance` | yes | Constant emitted linear Rec. 709 radiance in W/(sr·m²) per channel; finite and nonnegative. |
 | `emission.two_sided` | no | `true` emits from both faces; default `false`, the front face only. |
+
+### Project BRDF program
+
+Give the material a unique `project/name` within the source document. An object
+can use it by name, for example `"material": "demo/glaze"`.
+
+```json
+{
+  "name": "demo/glaze",
+  "model": "project_brdf",
+  "base_color": [0.3, 0.5, 0.7],
+  "roughness": 0.35,
+  "brdf": {
+    "version": 1,
+    "weights": [0.25, 0.5, 0.25],
+    "powers": [0, 4, 12],
+    "fixed_dimension_reflection": true
+  }
+}
+```
+
+Version 1 evaluates a weighted sum of three reciprocal cosine-power terms.
+Enter three relative weights in [0, 1] with a total of at least 0.001 and
+three powers in [0, 32]. A zero weight disables its term. A zero power gives
+a Lambertian term. Roughness brings every term toward Lambertian as it
+approaches 1. The optional `fixed_dimension_reflection` boolean declares
+continuous reflection with exactly three random values per proposal.
+Its default is `false`.
+
+See [assign and edit a project BRDF in World](../development/editor-workspace.md#assign-and-edit-a-project-brdf)
+and the [transport contract](renderer-systems.md#project-brdf-programs).
 
 ### Object
 

@@ -17,6 +17,8 @@ namespace ludus::editor
 {
 struct RenderScene;
 
+[[nodiscard]] QJsonObject MakeProjectBrdfRoughnessProperty();
+
 struct CoatingField final
 {
     const char* Key;

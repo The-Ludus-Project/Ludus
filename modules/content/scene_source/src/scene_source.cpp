@@ -1,6 +1,6 @@
 #include <ludus/content/scene_source/scene_source.h>
 
-#include <ludus/content/scene_format/material.h>
+#include <ludus/content/scene_format/luscn.h>
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -411,11 +411,57 @@ ReadMix(JsonValue value, const JsonPath& path, Failure& inoutFailure, SourceMate
 }
 
 [[nodiscard]] SceneSourceStatus
+ReadProjectBrdf(JsonValue value, const JsonPath& path, Failure& inoutFailure, SourceProjectBrdf& outBrdf) noexcept
+{
+    SceneSourceStatus status =
+        CheckMembers(value, {"version", "weights", "powers"}, {"fixed_dimension_reflection"}, path, inoutFailure);
+    if (status != SceneSourceStatus::Success)
+    {
+        return status;
+    }
+    constexpr uint64 PROGRAM_VERSION = 1;
+    uint64 version = 0;
+    if (value.Get("version").Integer(version) == false || version != PROGRAM_VERSION)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "expected BRDF program version 1",
+                                 JsonPath(path, "version"));
+    }
+    status = ReadVector(value.Get("weights"), 0.0, 1.0, JsonPath(path, "weights"), inoutFailure, outBrdf.Weights);
+    if (status == SceneSourceStatus::Success)
+    {
+        const float32 total = static_cast<float32>(outBrdf.Weights.X) + static_cast<float32>(outBrdf.Weights.Y) +
+                              static_cast<float32>(outBrdf.Weights.Z);
+        if (total < scene_format::LUDUS_PROJECT_BRDF_MIN_WEIGHT)
+        {
+            return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                     "increase the total lobe weight to at least 0.001",
+                                     JsonPath(path, "weights"));
+        }
+        status = ReadVector(value.Get("powers"),
+                            0.0,
+                            static_cast<float64>(scene_format::LUDUS_PROJECT_BRDF_MAX_POWER),
+                            JsonPath(path, "powers"),
+                            inoutFailure,
+                            outBrdf.Powers);
+    }
+    const JsonValue guarantee = value.Get("fixed_dimension_reflection");
+    if (status == SceneSourceStatus::Success && guarantee.Valid() == true &&
+        guarantee.Boolean(outBrdf.HasFixedDimensionReflection) == false)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::Malformed,
+                                 "expected a boolean",
+                                 JsonPath(path, "fixed_dimension_reflection"));
+    }
+    return status;
+}
+
+[[nodiscard]] SceneSourceStatus
 ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, SourceMaterial& outMaterial) noexcept
 {
     SceneSourceStatus status = CheckMembers(value,
                                             {"name", "model", "base_color"},
-                                            {"metallic", "roughness", "emission", "weight", "conductor"},
+                                            {"metallic", "roughness", "emission", "weight", "conductor", "brdf"},
                                             path,
                                             inoutFailure);
     if (status == SceneSourceStatus::Success)
@@ -436,6 +482,13 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     {
         return inoutFailure.Fail(SceneSourceStatus::InvalidValue, "weight and conductor require the mix model", path);
     }
+    const bool isProjectBrdf = model == "project_brdf";
+    if (isProjectBrdf == false && value.Get("brdf").Valid() == true)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "brdf requires the project_brdf model",
+                                 JsonPath(path, "brdf"));
+    }
     if (model == DIFFUSE_MODEL || isMix == true)
     {
         outMaterial.Model = isMix == true ? SourceMaterialModel::Mix : SourceMaterialModel::Diffuse;
@@ -453,10 +506,28 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     {
         outMaterial.Model = SourceMaterialModel::MetallicRoughness;
     }
+    else if (isProjectBrdf == true)
+    {
+        const std::string_view name = outMaterial.Name.GetView();
+        const usize separator = name.find('/');
+        if (separator == 0 || separator == std::string_view::npos || separator + 1 == name.size())
+        {
+            return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                     "use a project/name BRDF ID",
+                                     JsonPath(path, "name"));
+        }
+        if (value.Get("metallic").Valid() == true)
+        {
+            return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                     "metallic applies to metallic_roughness only",
+                                     JsonPath(path, "metallic"));
+        }
+        outMaterial.Model = SourceMaterialModel::ProjectBrdf;
+    }
     else
     {
         return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
-                                 "must be diffuse, metallic_roughness or mix",
+                                 "must be diffuse, metallic_roughness, mix or project_brdf",
                                  JsonPath(path, "model"));
     }
     status = ReadVector(value.Get("base_color"),
@@ -471,10 +542,19 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
         status = ReadBoundedNumber(metallic, 0.0, 1.0, JsonPath(path, "metallic"), inoutFailure, outMaterial.Metallic);
     }
     const JsonValue roughness = value.Get("roughness");
-    if (status == SceneSourceStatus::Success && roughness.Valid() == true)
+    if (status == SceneSourceStatus::Success && (roughness.Valid() == true || isProjectBrdf == true))
     {
-        status =
-            ReadBoundedNumber(roughness, 0.0, 1.0, JsonPath(path, "roughness"), inoutFailure, outMaterial.Roughness);
+        const float64 minimum = isProjectBrdf == true ? scene_format::MIN_AUTHORED_ROUGHNESS : 0.0;
+        status = ReadBoundedNumber(roughness,
+                                   minimum,
+                                   1.0,
+                                   JsonPath(path, "roughness"),
+                                   inoutFailure,
+                                   outMaterial.Roughness);
+    }
+    if (status == SceneSourceStatus::Success && isProjectBrdf == true)
+    {
+        status = ReadProjectBrdf(value.Get("brdf"), JsonPath(path, "brdf"), inoutFailure, outMaterial.Brdf);
     }
     if (status == SceneSourceStatus::Success && isMix == true)
     {

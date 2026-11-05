@@ -1249,8 +1249,28 @@ fixed three-value sampler. The scene packer records whether the assigned
 materials satisfy that restriction. The graph checks it before tracing and
 reports an incompatible material requirement for internal walks and delta
 transmission. Both graphs admit the Mix through their common BSDF calls.
-Rebuild existing ray graph shader packages for scene kernel ABI 13 to use
-the new material model and requirement flag.
+### Project BRDF programs
+
+A project can import a [versioned reflection program](scene-source-format.md#project-brdf-program)
+under its own material name. Version 1 supports three cosine-power terms with
+project-authored weights, powers and base color. This is a bounded data program
+with a CPU oracle and a shared Slang implementation.
+
+For normalized lobe weight $w_i$ and exponent $e_i = (1-r) p_i$, the BRDF
+multiplies the base color by the weighted sum of
+$(e_i+2)(n·v)^{e_i}(n·l)^{e_i}/(2\pi)$. One uniform selects a lobe.
+Two uniforms sample its cosine-power solid-angle density
+$(e_i+2)(n·l)^{e_i+1}/(2\pi)$. Evaluation and continuation return the full
+mixture density. Thanks to Pharr, Jakob and Humphreys for the mixture
+construction and hemisphere CDF inversion in *Physically Based Rendering*,
+fourth edition. [Section 2.2.3](https://pbr-book.org/4ed/Monte_Carlo_Integration/Improving_Efficiency)
+and [Appendix A.5.2](https://pbr-book.org/4ed/Sampling_Algorithms/Sampling_Multidimensional_Functions).
+
+Wave Tracing uses the standard BSDF calls for the program. Metropolis uses
+those calls when the program declares fixed-dimension reflection. An omitted
+or false declaration produces the existing incompatible material requirement
+diagnostic. Rebuild existing ray graph shader packages for scene kernel ABI 14
+to pick up the evaluator. The graph sources use the same interface.
 
 ### Preparation and publication
 

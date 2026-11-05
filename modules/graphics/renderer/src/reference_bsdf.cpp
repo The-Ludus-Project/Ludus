@@ -110,6 +110,53 @@ float32 GetMicrofacetAlpha(const ReferenceBsdf& bsdf) noexcept
     return format::HasRoughConductorLobe(bsdf.Scattering.Model) == true ? bsdf.Scattering.AlphaU
                                                                         : bsdf.Roughness * bsdf.Roughness;
 }
+// Thanks to Pharr, Jakob and Humphreys, Physically Based Rendering, 4th ed., sections 2.2.3 and A.5.2,
+// https://pbr-book.org/4ed/Monte_Carlo_Integration/Improving_Efficiency and
+// https://pbr-book.org/4ed/Sampling_Algorithms/Sampling_Multidimensional_Functions:
+// apply mixture PDFs and hemisphere CDF inversion to a reciprocal power basis.
+[[nodiscard]] ReferenceBsdfEvaluation
+EvaluateProjectBrdf(const ReferenceBsdf& bsdf, float32 viewCosine, float32 lightCosine) noexcept
+{
+    const float32 viewLightCosine = math::Min(1.0F, viewCosine * lightCosine);
+    const float32 clampedLightCosine = math::Min(1.0F, lightCosine);
+    float32 value = 0;
+    float32 pdf = 0;
+    float32 total = 0;
+    for (usize lobe = 0; lobe < format::PROJECT_BRDF_LOBE_COUNT; ++lobe)
+    {
+        const float32 weight = bsdf.Scattering.Eta[lobe];
+        const float32 power = (1 - bsdf.Roughness) * bsdf.Scattering.K[lobe];
+        const float32 scale = weight * (power + 2) / math::kTauF;
+        const float32 viewLightPower =
+            power == 0
+                ? 1.0F
+                : static_cast<float32>(math::Pow(static_cast<float64>(viewLightCosine), static_cast<float64>(power)));
+        value += scale * viewLightPower;
+        pdf += scale * static_cast<float32>(
+                           math::Pow(static_cast<float64>(clampedLightCosine), static_cast<float64>(power + 1)));
+        total += weight;
+    }
+    return {bsdf.BaseColor * (value / total), pdf / total};
+}
+
+[[nodiscard]] math::Vector3
+SampleProjectBrdf(const ReferenceBsdf& bsdf, const Basis& frame, math::Vector3 sample) noexcept
+{
+    const float32 firstWeight = bsdf.Scattering.Eta[0];
+    const float32 secondWeight = bsdf.Scattering.Eta[1];
+    const float32 thirdWeight = bsdf.Scattering.Eta[2];
+    const float32 firstTwoWeights = firstWeight + secondWeight;
+    const float32 selector = sample.X * (firstTwoWeights + thirdWeight);
+    const bool shouldSelectFirst = selector < firstWeight || (secondWeight == 0 && thirdWeight == 0);
+    const usize lobe = shouldSelectFirst == true ? 0 : (selector < firstTwoWeights || thirdWeight == 0 ? 1 : 2);
+    const float32 power = (1 - bsdf.Roughness) * bsdf.Scattering.K[lobe];
+    const float32 cosine =
+        static_cast<float32>(math::Pow(static_cast<float64>(1 - sample.Y), 1.0 / static_cast<float64>(power + 2)));
+    const float32 radius = math::Sqrt(math::Max(0.0F, 1 - cosine * cosine));
+    const float32 angle = math::kTauF * sample.Z;
+    return frame.World({radius * math::Cos(angle), radius * math::Sin(angle), cosine});
+}
+
 ReferenceBsdfEvaluation Evaluate(const ReferenceBsdf& b, math::Vector3 n, math::Vector3 v, math::Vector3 l) noexcept
 {
     const float32 nv = math::Dot(n, v);
@@ -117,6 +164,10 @@ ReferenceBsdfEvaluation Evaluate(const ReferenceBsdf& b, math::Vector3 n, math::
     if (nv <= 0 || nl <= 0 || internal::IsReferenceDielectric(b.Scattering.Model) == true)
     {
         return {};
+    }
+    if (b.Scattering.Model == format::MaterialModel::ProjectBrdf)
+    {
+        return EvaluateProjectBrdf(b, nv, nl);
     }
     const bool isMix = b.Scattering.Model == format::MaterialModel::DiffuseConductorMix;
     if (b.Scattering.Model == format::MaterialModel::Diffuse || (isMix == true && b.Metallic == 0))
@@ -229,7 +280,11 @@ rhi::RasterStatus SampleReferenceBsdf(const ReferenceBsdf& b,
     const float32 angle = math::kTauF * sample.Z;
     const float32 diskX = radius * math::Cos(angle);
     const float32 diskY = radius * math::Sin(angle);
-    if (sample.X >= SpecularProbability(b))
+    if (b.Scattering.Model == format::MaterialModel::ProjectBrdf)
+    {
+        direction = SampleProjectBrdf(b, frame, sample);
+    }
+    else if (sample.X >= SpecularProbability(b))
     {
         direction = frame.World({diskX, diskY, math::Sqrt(math::Max(0.0F, 1 - sample.Y))});
     }

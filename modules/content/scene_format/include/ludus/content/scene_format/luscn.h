@@ -71,10 +71,13 @@ inline constexpr uint32 VERSION_7 = 7;
 inline constexpr uint32 VERSION_8 = 8;
 /// Version 9 admits the unresolved import marker in the unchanged version-7 record layout.
 inline constexpr uint32 VERSION_9 = 9;
+/// Version 10 admits project BRDF programs using the version-7 record layout.
+inline constexpr uint32 VERSION_10 = 10;
 /// Earliest typed bundle version that can store a validated material model.
 [[nodiscard]] constexpr uint32 GetMaterialModelBundleVersion(MaterialModel model) noexcept
 {
-    return model == MaterialModel::Unresolved            ? VERSION_9
+    return model == MaterialModel::ProjectBrdf           ? VERSION_10
+           : model == MaterialModel::Unresolved          ? VERSION_9
            : model == MaterialModel::DiffuseConductorMix ? VERSION_8
                                                          : VERSION_7;
 }
@@ -136,7 +139,9 @@ inline constexpr uint32 ALPHA_OPAQUE = 0;
 /// MaterialRecordV5::AlphaMode: discard where base texture alpha is below AlphaCutoff.
 inline constexpr uint32 ALPHA_MASKED = 1;
 /// Smallest admitted material roughness.
-inline constexpr float32 MIN_ROUGHNESS = .045F;
+inline constexpr foundation::float64 MIN_AUTHORED_ROUGHNESS = .045;
+/// Minimum roughness rounded to the cooked binary32 representation.
+inline constexpr float32 MIN_ROUGHNESS = static_cast<float32>(MIN_AUTHORED_ROUGHNESS);
 /// Largest admitted emission per channel.
 inline constexpr float32 MAX_EMISSION = 10000.0F;
 
@@ -144,7 +149,7 @@ inline constexpr float32 MAX_EMISSION = 10000.0F;
 struct Header final
 {
     char Magic[8];        ///< MAGIC.
-    uint32 Version;       ///< VERSION_1 through VERSION_9.
+    uint32 Version;       ///< VERSION_1 through VERSION_10.
     uint32 MeshCount;     ///< 1..BundleLimits::Meshes of the version.
     uint32 MaterialCount; ///< 1..BundleLimits::Materials of the version.
     uint32 TextureCount;  ///< 0..BundleLimits::Textures of the version.
@@ -439,10 +444,10 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
 /// True for a version this header describes.
 [[nodiscard]] constexpr bool IsSupportedVersion(uint32 version) noexcept
 {
-    return version >= VERSION_1 && version <= VERSION_9;
+    return version >= VERSION_1 && version <= VERSION_10;
 }
 /// True when the version carries version 3 material emission terms, object source
-/// IDs and the lighting trailer (versions 3 through 9).
+/// IDs and the lighting trailer (versions 3 through 10).
 [[nodiscard]] constexpr bool HasLightingRecords(uint32 version) noexcept
 {
     return version >= VERSION_3;
@@ -471,7 +476,7 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
     return version >= VERSION_6;
 }
 /// Admission ceilings for a supported version: the import profile for versions 5
-/// through 9, otherwise the resident reference profile.
+/// through 10, otherwise the resident reference profile.
 [[nodiscard]] constexpr const BundleLimits& GetBundleLimits(uint32 version) noexcept
 {
     return version >= VERSION_5 ? IMPORT_LIMITS : RESIDENT_REFERENCE_LIMITS;

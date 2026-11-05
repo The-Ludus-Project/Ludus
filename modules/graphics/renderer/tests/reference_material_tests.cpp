@@ -581,3 +581,36 @@ TEST_CASE("Diffuse conductor Mix samples the full weighted directional density",
         }
     }
 }
+
+TEST_CASE("Project BRDF samples the authored powers and full mixture density",
+          "[renderer][rt1][materials][project-brdf]")
+{
+    namespace format = ludus::content::scene_format;
+    const math::Vector3 normalWorld{0, 0, 1};
+    const math::Vector3 viewWorld{0.6F, 0, 0.8F};
+    rr::ReferenceBsdf material;
+    material.Scattering.Model = format::MaterialModel::ProjectBrdf;
+    material.Scattering.Eta = {{0.25F, 0, 0.75F}};
+    material.Scattering.K = {{0, 12, 4}};
+    material.Scattering.CoatingThickness = 1;
+    material.BaseColor = {0.2F, 0.4F, 0.8F};
+    material.Roughness = 0.5F;
+    for (const float32 selector : {0.125F, 0.625F})
+    {
+        rr::ReferenceBsdfSample sample;
+        REQUIRE(rr::SampleReferenceBsdf(material, normalWorld, viewWorld, {selector, 0.75F, 0.125F}, sample) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(sample.Accepted == true);
+        const float32 cosine = selector < 0.25F ? 0.5F : math::Sqrt(0.5F);
+        const float32 expectedPdf = (0.25F * cosine + 1.5F * cosine * cosine * cosine) / math::kPiF;
+        const float32 expectedValue = (0.25F + 1.5F * cosine * cosine * viewWorld.Z * viewWorld.Z) / math::kPiF;
+        CHECK(sample.Direction.Z == Catch::Approx(cosine));
+        CHECK(sample.MisPdf == Catch::Approx(expectedPdf));
+        CHECK(math::Distance(sample.Evaluation.Value, material.BaseColor * expectedValue) < 1e-6F);
+        CHECK(math::Distance(sample.Weight, material.BaseColor * (expectedValue * cosine / expectedPdf)) < 1e-6F);
+        rr::ReferenceBsdfEvaluation reversed;
+        REQUIRE(rr::EvaluateReferenceBsdf(material, normalWorld, sample.Direction, viewWorld, reversed) ==
+                rhi::RasterStatus::Ready);
+        CHECK(math::Distance(reversed.Value, sample.Evaluation.Value) < 1e-6F);
+    }
+}

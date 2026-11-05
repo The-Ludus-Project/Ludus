@@ -557,6 +557,16 @@ then gain absent tangents, version 3 parts dropping their stored bake UVs.
 
 ### Typed source materials (LUSCN v7)
 
+LUSCN v10 admits the version-1 [project BRDF program](scene-source-format.md#project-brdf-program)
+using the v7 record width. For its tag, the two three-float vectors hold the
+lobe weights and powers. The coating-thickness field holds the declared
+fixed-dimension reflection flag as zero or one. A World or level slot can
+carry a `project_brdf` binding with the project material resource ID
+(`material`) and optional perceptual `roughness`. It takes precedence over
+the inherited material and preserves the original binding and coating.
+Slots with the same material resource and effective roughness share a cooked
+record, including explicit roughness equal to the imported default.
+
 LUSCN v9 admits a storage-only unresolved marker for named PBRT materials
 without a supported model. It retains the v7 layout and the original material
 identity. World level `material_mappings` optionally maps original material

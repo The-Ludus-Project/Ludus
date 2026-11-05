@@ -747,13 +747,46 @@ struct CoatingOverride final
     return true;
 }
 
+[[nodiscard]] bool ReadProjectBrdfBinding(const JsonTree& tree, JsonIndex binding, float32& outRoughness) noexcept
+{
+    outRoughness = 0;
+    if (binding == NO_JSON_NODE)
+    {
+        return true;
+    }
+    const JsonIndex material = tree.GetMember(binding, "material");
+    const JsonIndex roughness = tree.GetMember(binding, "roughness");
+    if (tree.GetKind(binding) != JsonKind::Object || tree.GetCount(binding) != (roughness == NO_JSON_NODE ? 1 : 2) ||
+        IsResourceId(tree, material, "material") == false)
+    {
+        return false;
+    }
+    if (roughness == NO_JSON_NODE)
+    {
+        return true;
+    }
+    PythonNumber number;
+    if (IsAuthoredNumber(tree, roughness, number) == false || number.ToFloat() < format::MIN_AUTHORED_ROUGHNESS ||
+        number.ToFloat() > 1)
+    {
+        return false;
+    }
+    outRoughness = static_cast<float32>(number.ToFloat());
+    return true;
+}
+
 [[nodiscard]] std::string_view GetObjectId(const JsonTree& tree, JsonIndex objects, usize index) noexcept
 {
     return tree.GetText(tree.GetMember(tree.GetItem(objects, index), "id"));
 }
 
-[[nodiscard]] std::string_view GetMappedMaterial(const JsonTree& tree, JsonIndex mappings, JsonIndex object) noexcept
+[[nodiscard]] std::string_view GetResolvedMaterial(const JsonTree& tree, JsonIndex mappings, JsonIndex object) noexcept
 {
+    const JsonIndex binding = tree.GetMember(object, "project_brdf");
+    if (binding != NO_JSON_NODE)
+    {
+        return tree.GetText(tree.GetMember(binding, "material"));
+    }
     const std::string_view source = tree.GetText(tree.GetMember(object, "material"));
     const JsonIndex replacement = tree.GetMember(mappings, source);
     return replacement == NO_JSON_NODE ? source : tree.GetText(replacement);
@@ -831,17 +864,32 @@ struct CoatingOverride final
         return inoutFailure.FailInvalid("Level object limit");
     }
     static constexpr std::string_view OBJECT_KEYS[] = {"id", "name", "parent", "mesh", "material", "transform"};
-    static constexpr std::string_view COATED_OBJECT_KEYS[] =
-        {"id", "name", "parent", "mesh", "material", "transform", "coating"};
+    constexpr usize REQUIRED_OBJECT_FIELDS = sizeof(OBJECT_KEYS) / sizeof(OBJECT_KEYS[0]);
     const usize objectCount = tree.GetCount(objects);
     for (usize i = 0; i < objectCount; ++i)
     {
         const JsonIndex item = tree.GetItem(objects, i);
         const JsonIndex coating = tree.GetMember(item, "coating");
-        if ((coating == NO_JSON_NODE ? tree.HasExactKeys(item, OBJECT_KEYS)
-                                     : tree.HasExactKeys(item, COATED_OBJECT_KEYS)) == false)
+        const JsonIndex binding = tree.GetMember(item, "project_brdf");
+        const usize optionalObjectFields =
+            (coating == NO_JSON_NODE ? usize{0} : usize{1}) + (binding == NO_JSON_NODE ? usize{0} : usize{1});
+        if (tree.GetKind(item) != JsonKind::Object ||
+            tree.GetCount(item) != REQUIRED_OBJECT_FIELDS + optionalObjectFields)
         {
             return inoutFailure.FailInvalid("Invalid level object fields");
+        }
+        for (const std::string_view key : OBJECT_KEYS)
+        {
+            if (tree.GetMember(item, key) == NO_JSON_NODE)
+            {
+                return inoutFailure.FailInvalid("Invalid level object fields");
+            }
+        }
+        float32 roughness = 0;
+        if (ReadProjectBrdfBinding(tree, binding, roughness) == false)
+        {
+            return inoutFailure.FailInvalid(
+                "Invalid project BRDF binding. Assign a project BRDF and check its roughness.");
         }
         CoatingOverride parameters;
         if (ReadCoatingOverride(tree, coating, parameters) == false)
@@ -1245,7 +1293,7 @@ private:
         const JsonIndex item = levelTree.GetItem(objects, i);
         if (builder.Visit(levelTree.GetText(levelTree.GetMember(item, "mesh")), 0) == false ||
             builder.Visit(levelTree.GetText(levelTree.GetMember(item, "material")), 0) == false ||
-            builder.Visit(GetMappedMaterial(levelTree, mappings, item), 0) == false)
+            builder.Visit(GetResolvedMaterial(levelTree, mappings, item), 0) == false)
         {
             return false;
         }
@@ -1593,7 +1641,7 @@ JsonIndex AddSourceMaterial(JsonTree& inoutTree, const SourceMaterialRecord& rec
     constexpr uint32 MAXIMUM_SOURCE_IDENTITY = ~uint32{0};
     if (identity.Kind != JsonKind::Integer || identity.Integer < 0 ||
         identity.Integer > static_cast<int64>(MAXIMUM_SOURCE_IDENTITY) || model.Kind != JsonKind::Integer ||
-        model.Integer < 0 || model.Integer > static_cast<int64>(format::MaterialModel::Unresolved) ||
+        model.Integer < 0 || model.Integer > static_cast<int64>(format::MaterialModel::ProjectBrdf) ||
         tree.GetKind(name) != JsonKind::String || tree.GetText(name).size() > format::MAX_MATERIAL_NAME_BYTES)
     {
         return inoutFailure.FailInvalid("invalid source material identity or model");
@@ -2673,6 +2721,7 @@ struct MaterialVariant final
 {
     usize SourceIndex = 0;
     CoatingOverride Coating;
+    float32 ProjectRoughness = 0;
 };
 
 /// Preserve source material ordering and share records for identical slot overrides.
@@ -2696,7 +2745,7 @@ struct MaterialVariant final
     for (usize objectIndex = 0; objectIndex < objectCount; ++objectIndex)
     {
         const JsonIndex object = tree.GetItem(objects, objectIndex);
-        sourceIndices[objectIndex] = FindIndex(materials, GetMappedMaterial(tree, mappings, object));
+        sourceIndices[objectIndex] = FindIndex(materials, GetResolvedMaterial(tree, mappings, object));
     }
     for (usize sourceIndex = 0; sourceIndex < materials.GetSize(); ++sourceIndex)
     {
@@ -2704,6 +2753,8 @@ struct MaterialVariant final
         const JsonIndex shared = tree.GetMember(sharedCoatings, materials[sourceIndex]);
         const Document& description = descriptions[sourceIndex];
         const JsonIndex sourceNode = description.Tree.GetMember(description.Root, "source_material");
+        const float32 defaultRoughness =
+            static_cast<float32>(GetNumberMember(description.Tree, description.Root, "roughness").ToFloat());
         SourceMaterialRecord source;
         if (sourceNode != NO_JSON_NODE &&
             ReadSourceMaterial(description.Tree, sourceNode, source, inoutFailure) == false)
@@ -2718,8 +2769,21 @@ struct MaterialVariant final
             }
             const JsonIndex object = tree.GetItem(objects, objectIndex);
             CoatingOverride coating;
+            const JsonIndex binding = tree.GetMember(object, "project_brdf");
+            float32 roughness = 0;
+            if (ReadProjectBrdfBinding(tree, binding, roughness) == false ||
+                (binding != NO_JSON_NODE && source.Scattering.Model != format::MaterialModel::ProjectBrdf))
+            {
+                return inoutFailure.FailInvalid("The assigned project BRDF is unavailable. Restore the inherited "
+                                                "material or assign a valid project BRDF.");
+            }
+            if (roughness == defaultRoughness)
+            {
+                roughness = 0;
+            }
             const JsonIndex local = tree.GetMember(object, "coating");
-            const JsonIndex instance = local != NO_JSON_NODE ? local : shared;
+            const JsonIndex instance =
+                binding != NO_JSON_NODE ? NO_JSON_NODE : (local != NO_JSON_NODE ? local : shared);
             if (ReadCoatingOverride(tree, instance, coating) == false)
             {
                 return inoutFailure.FailInvalid("Invalid coating instance");
@@ -2735,7 +2799,8 @@ struct MaterialVariant final
                 coating = {};
             }
             usize variantIndex = firstVariant;
-            while (variantIndex < outVariants.GetSize() && outVariants[variantIndex].Coating != coating)
+            while (variantIndex < outVariants.GetSize() && (outVariants[variantIndex].Coating != coating ||
+                                                            outVariants[variantIndex].ProjectRoughness != roughness))
             {
                 ++variantIndex;
             }
@@ -2743,10 +2808,10 @@ struct MaterialVariant final
             {
                 if (variantIndex == format::IMPORT_LIMITS.Materials)
                 {
-                    return inoutFailure.FailInvalid(
-                        "Scene material capacity exceeded. Undo a slot coating override or reuse an existing coating.");
+                    return inoutFailure.FailInvalid("Scene material capacity exceeded. Reset a slot override or reuse "
+                                                    "existing material parameters.");
                 }
-                if (outVariants.TryAdd(MaterialVariant{sourceIndex, coating}) == false)
+                if (outVariants.TryAdd(MaterialVariant{sourceIndex, coating, roughness}) == false)
                 {
                     return inoutFailure.FailOutOfMemory();
                 }
@@ -2777,7 +2842,7 @@ struct MaterialVariant final
     {
         const JsonIndex item = levelTree.GetItem(objects, i);
         if (AddSortedUnique(meshes, levelTree.GetText(levelTree.GetMember(item, "mesh"))) == false ||
-            AddSortedUnique(materials, GetMappedMaterial(levelTree, mappings, item)) == false)
+            AddSortedUnique(materials, GetResolvedMaterial(levelTree, mappings, item)) == false)
         {
             return inoutFailure.FailOutOfMemory();
         }
@@ -2841,7 +2906,7 @@ struct MaterialVariant final
             const JsonIndex model = description.Tree.GetMember(source, "model");
             const JsonNode& value = description.Tree.GetNode(model);
             if (value.Kind == JsonKind::Integer && value.Integer >= 0 &&
-                value.Integer <= static_cast<int64>(format::MaterialModel::Unresolved))
+                value.Integer <= static_cast<int64>(format::MaterialModel::ProjectBrdf))
             {
                 typedVersion =
                     math::Max(typedVersion,
@@ -3019,7 +3084,9 @@ struct MaterialVariant final
         {
             source.Reflectance = {};
         }
-        float64 roughness = GetNumberMember(tree, description.Root, "roughness").ToFloat();
+        float64 roughness = variant.ProjectRoughness > 0
+                                ? static_cast<float64>(variant.ProjectRoughness)
+                                : GetNumberMember(tree, description.Root, "roughness").ToFloat();
         const CoatingOverride& coating = variant.Coating;
         if (coating.Alpha > 0)
         {

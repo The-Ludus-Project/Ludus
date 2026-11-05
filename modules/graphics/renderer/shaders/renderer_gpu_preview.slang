@@ -750,6 +750,13 @@ void EvaluateScattering(float3 color,
     float nl = dot(normalWorld, l);
     if (nv <= 0 || nl <= 0)
         return;
+    if (model == MaterialModel::ProjectBrdf)
+    {
+        float4 evaluated = EvaluateProjectBrdf(color, roughness, eta, extinction, nv, nl);
+        outValue = evaluated.xyz;
+        outPdf = evaluated.w;
+        return;
+    }
     bool isMix = model == MaterialModel::DiffuseConductorMix;
     if (model == MaterialModel::Diffuse || (isMix == true && metallic == 0))
     {
@@ -1144,14 +1151,16 @@ float3 Integrate(uint pixel, uint sample)
                         (dot(normalWorld, lightDirectionWorld) * (isDelta ? 1 : PowerWeight(pdf, bsdfPdf)) / pdf);
             }
         }
+        float3 samples = float3(Random01(pixel, sample, dimension + 3),
+                                Random01(pixel, sample, dimension + 4),
+                                Random01(pixel, sample, dimension + 5));
         float3 outgoingDirectionWorld =
-            SampleScatteringBsdf(normalWorld,
-                                 viewDirectionWorld,
-                                 ComputeMaterialAlpha(model, roughness, extinctionAndAlpha.w),
-                                 ComputeMaterialSpecularProbability(model, metallic),
-                                 float3(Random01(pixel, sample, dimension + 3),
-                                        Random01(pixel, sample, dimension + 4),
-                                        Random01(pixel, sample, dimension + 5)));
+            model == MaterialModel::ProjectBrdf
+                ? SampleProjectBrdfDirection(roughness, etaAndModel.xyz, extinctionAndAlpha.xyz,
+                                             normalWorld, viewDirectionWorld, samples)
+                : SampleScatteringBsdf(normalWorld, viewDirectionWorld,
+                                       ComputeMaterialAlpha(model, roughness, extinctionAndAlpha.w),
+                                       ComputeMaterialSpecularProbability(model, metallic), samples);
         if (dot(normalWorld, outgoingDirectionWorld) <= 0 || dot(scatteringNormalWorld, outgoingDirectionWorld) <= 0)
             break;
         float3 value;
