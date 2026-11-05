@@ -357,8 +357,10 @@ These checks establish scheduling progress, not a display-performance claim.
 macOS ThreadSanitizer run of `Ludus::FoundationThreading`
 ([threading milestone T3](../architecture/threading.md#milestones)). Every batch
 calls it, and promotion requires it. Integration PRs run it only when they change
-the threading module, the Windows FoundationBase diagnostics backend, the Windows
-Conan profile or the workflow itself.
+the threading module or the workflow itself. The Windows Conan profile and the
+Windows FoundationBase diagnostics backend also build in the
+[Direct3D 12 lane](#windows-direct3d-12-lane), so changes to them reach Windows in
+the batch.
 
 The Windows job installs the upstream LLVM 23.1.3 installer on `windows-2022`, after
 checking it against its pinned SHA-256 digest (Chocolatey does not package LLVM 23
@@ -383,10 +385,23 @@ before 22.1.3 could not; see [macOS sanitizer runtimes](building.md#macos-saniti
 `.github/workflows/windows-direct3d12.yml` builds and runs the
 [Windows Direct3D 12 bring-up](../architecture/windows-direct3d12.md): the Win32
 Platform backend and the Direct3D 12 RHI backend. Every batch calls it, and
-promotion requires it. Integration PRs run it only when they change the
-Win32 or Direct3D 12 sources and tests, the DXIL shader toolchain (pins, bootstrap,
-driver and the fullscreen diagnostic shader), the Windows Conan profile or the
-workflow itself. Changes to shared RHI or Platform code reach it in the batch.
+promotion requires it. Like the other native platform suites, it does not run
+on integration pull requests, including Windows port changes: its MSVC Ninja and
+MSBuild matrices take 15–30 minutes per push, and the batch qualifies the combined
+`develop` changes before `main` advances. A Windows compile or runtime regression
+can therefore enter `develop`; the failed batch rejects it, and a focused fix or
+revert follows the [recovery](#recover-a-failed-batch) process. When a Windows
+change needs evidence before acceptance, dispatch the workflow manually on its
+task branch:
+
+```bash
+gh workflow run windows-direct3d12.yml --ref <task-branch>
+```
+
+A dispatched run checks out the branch head and never cancels an in-progress run
+of the same branch. Its result is advisory evidence for review, not promotion.
+`scripts/python/test_batch_ci.py` rejects a pull-request, push or merge-group
+trigger on this workflow.
 
 The job uses the same pinned LLVM installer, host tools and locked Catch2 package
 as the Windows threading job; `scripts/python/test_ci.py` checks that both lanes

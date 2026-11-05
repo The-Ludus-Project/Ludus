@@ -14,15 +14,14 @@ on:
         required: true
         type: string
   workflow_dispatch:
-  # Targeted lanes for changes to the backends they alone execute; every batch
-  # also runs them. Other integration PRs keep the inexpensive checks only.
+  # Targeted lanes for changes to the threading backends they alone execute;
+  # every batch also runs them. Windows Conan profile and FoundationBase
+  # Windows sources also build in the Direct3D 12 lane, so the batch owns them.
+  # Other integration PRs keep the inexpensive checks only.
   pull_request:
     paths:
       - '.github/workflows/threading-platforms.yml'
-      - 'config/conan/profiles/windows-clang-x86_64'
       - 'modules/foundation/threading/**'
-      - 'modules/foundation/base/src/diagnostic_output_windows.cpp'
-      - 'modules/foundation/base/src/diagnostics_windows.cpp'
 permissions:
   contents: read
 concurrency:

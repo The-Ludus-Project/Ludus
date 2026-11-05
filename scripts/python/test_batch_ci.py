@@ -338,6 +338,21 @@ class WorkflowContractTests(unittest.TestCase):
                     self.assertIn("ref: ${{ inputs.batch_sha || github.sha }}", step)
                     self.assertIn("persist-credentials: false", step)
 
+    def test_windows_lanes_leave_integration_pull_requests_to_the_batch(self):
+        def triggers(name):
+            workflow = (self.ROOT / ".github/workflows" / name).read_text()
+            return workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0] + "\n"
+
+        direct3d12 = triggers("windows-direct3d12.yml")
+        self.assertIn("  workflow_call:\n", direct3d12)
+        self.assertIn("  workflow_dispatch:\n", direct3d12)
+        self.assertNotRegex(direct3d12, r"(?m)^  (pull_request|pull_request_target|push|merge_group):")
+        # The threading lane stays targeted at the backends only it executes;
+        # Windows build inputs shared with the Direct3D 12 lane belong to the batch.
+        threading = triggers("threading-platforms.yml")
+        paths = re.findall(r"(?m)^      - '([^']+)'$", threading.split("  pull_request:\n", 1)[1])
+        self.assertCountEqual(paths, [".github/workflows/threading-platforms.yml", "modules/foundation/threading/**"])
+
     def test_promotion_privilege_is_separate_from_candidate_execution(self):
         workflow = (self.ROOT / ".github/workflows/batch-ci.yml").read_text()
         self.assertIn("group: ludus-batch-promotion\n  cancel-in-progress: false", workflow)
