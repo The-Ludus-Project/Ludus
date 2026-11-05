@@ -926,6 +926,9 @@ void MainWindow::applyDefaultDockSizes()
         openToolWindow(mErrorListDock);
     }
     resizeDocks({mProjectExplorerDock, mPropertiesDock}, {explorer, properties}, Qt::Horizontal);
+    // resizeDocks only records the sizes and posts a layout request; apply them now, so the default arrangement
+    // is the one shown and saved rather than appearing an event-loop pass later.
+    layout()->activate();
 }
 
 void MainWindow::ResetWorkspaceLayout()

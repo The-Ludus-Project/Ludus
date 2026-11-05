@@ -91,10 +91,11 @@ struct VectorComponent final
                                      QWidget* parentOrNull,
                                      const std::function<void()>& onScrubbed);
 
-/// Linear RGB in 0 to 1 as the display (sRGB) colour a swatch shows.
+/// Linear RGB, clamped to 0 to 1, as the display (sRGB) colour a swatch shows, by the exact sRGB transfer.
 [[nodiscard]] QColor
 ConvertLinearToDisplayColour(foundation::float64 red, foundation::float64 green, foundation::float64 blue);
-/// Display colour as linear RGB in 0 to 1, the inverse of ConvertLinearToDisplayColour.
+/// Display colour as linear RGB in 0 to 1, the inverse of ConvertLinearToDisplayColour. Black and white channels
+/// convert exactly, so pure primaries keep zero channels.
 void ConvertDisplayToLinearColour(const QColor& display,
                                   foundation::float64& outRed,
                                   foundation::float64& outGreen,
