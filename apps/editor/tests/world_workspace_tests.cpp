@@ -1877,6 +1877,7 @@ QPointF GetFillCentre(const ludus::editor::ViewportHandleFill& fill)
     return (fill.CornersPixel[0] + fill.CornersPixel[1] + fill.CornersPixel[2] + fill.CornersPixel[3]) * 0.25;
 }
 /// The committed position after pressing at pressPixel and releasing at releasePixel, with the move tool.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): press then release is the drag order.
 QJsonArray DragCommittedPosition(ViewportObjectInteraction& inoutInteraction,
                                  QSignalSpy& inoutCommitted,
                                  const QRectF& frame,
@@ -1891,6 +1892,7 @@ QJsonArray DragCommittedPosition(ViewportObjectInteraction& inoutInteraction,
     REQUIRE(inoutCommitted.count() == commitsBefore + 1);
     return inoutCommitted.last()[1].toJsonObject().value(QStringLiteral("position")).toArray();
 }
+// NOLINTEND(bugprone-easily-swappable-parameters)
 } // namespace
 TEST_CASE("Move plane handles sit beside the pivot, lose to a shaft under the pointer and drag in their plane",
           "[editor][world][object-interaction][gizmo]")

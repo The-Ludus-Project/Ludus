@@ -25,7 +25,6 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/runtime/resources/scene.h>
 
-#include "internal/inspector_fields.h"
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QColorSpace>
@@ -1743,6 +1742,7 @@ void WorldWorkspace::addMaterialRepair(QFormLayout& inoutRows)
     inoutRows.addRow(map);
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the source, replacement path and label are distinct.
 void WorldWorkspace::mapImportedMaterial(const QString& source, const QString& replacement, const QString& label)
 {
     if (Pending_ == true || SceneBusy() == true || source.isEmpty() == true || replacement.isEmpty() == true)

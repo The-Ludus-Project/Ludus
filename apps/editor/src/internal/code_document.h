@@ -111,6 +111,7 @@ public:
     /// Apply a single contiguous replacement. The default forwards a one-element
     /// edit set to ApplyEdits, so a host only implements ApplyEdits; it stays
     /// virtual for the few call sites that still build one edit directly.
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters): before then after is the undo order of ApplyEdits.
     [[nodiscard]] virtual CodeEditStatus ApplyEdit(const CodeDocumentIdentity& expected,
                                                    const CodeTextEdit& edit,
                                                    CodeTextSelection before,
@@ -129,6 +130,7 @@ public:
         };
         return ApplyEdits(expected, set, shouldMerge);
     }
+    // NOLINTEND(bugprone-easily-swappable-parameters)
     virtual void BreakUndoGroup() noexcept = 0;
     [[nodiscard]] virtual bool CanUndo() const noexcept = 0;
     [[nodiscard]] virtual bool CanRedo() const noexcept = 0;
