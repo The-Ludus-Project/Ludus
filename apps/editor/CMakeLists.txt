@@ -216,6 +216,8 @@ set(editor_viewport_sources
     src/mesh_silhouette.cpp
     src/internal/viewport_object_interaction.h
     src/viewport_object_interaction.cpp
+    src/internal/viewport_gizmo_readout.h
+    src/viewport_gizmo_readout.cpp
     src/viewport_navigation.cpp
     src/internal/orientation_widget.h
     src/orientation_widget.cpp

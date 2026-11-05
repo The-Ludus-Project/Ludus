@@ -10,6 +10,7 @@
 #include <QLineF>
 #include <QPointF>
 #include <QRectF>
+#include <QString>
 
 namespace ludus::editor
 {
@@ -26,7 +27,8 @@ struct ViewportHandleFill final
 {
     static constexpr foundation::usize TRIANGLE_CORNERS = 3;
     static constexpr foundation::usize MAX_CORNERS = 4;
-    foundation::StaticArray<QPointF, MAX_CORNERS> CornersPixel{};
+    using Corners = foundation::StaticArray<QPointF, MAX_CORNERS>;
+    Corners CornersPixel{};
     foundation::usize CornerCount = TRIANGLE_CORNERS;
     QRgb Color = 0;
 };
@@ -43,8 +45,10 @@ struct ViewportObjectOverlay final
     static constexpr foundation::int32 RING_SEGMENTS = 64;
     static constexpr foundation::usize MAX_GLYPH_STROKES = 3;
     static constexpr foundation::usize MAX_HANDLE_STROKES = AXIS_COUNT * (RING_SEGMENTS + MAX_GLYPH_STROKES);
-    /// Arrowheads and cubes of the three axes plus the pivot marker.
-    static constexpr foundation::usize MAX_HANDLE_FILLS = AXIS_COUNT + 1;
+    /// A plane handle or the centre handle is a dark casing and the solid shape over it.
+    static constexpr foundation::usize FILLS_PER_CASED_HANDLE = 2;
+    /// Arrowheads and cubes of the three axes, the three plane handles with their casings, and the pivot marker.
+    static constexpr foundation::usize MAX_HANDLE_FILLS = AXIS_COUNT + AXIS_COUNT * FILLS_PER_CASED_HANDLE + 1;
     /// The selection amber of the design tokens, shared with the graph canvas.
     static constexpr QRgb SELECTION_COLOR = design::GetThemeArgb(design::ThemeColour::SelectionAmber, true);
     /// Opacity, of 255, of the casing under the outline.
@@ -62,5 +66,9 @@ struct ViewportObjectOverlay final
     /// Solid handle shapes drawn over the strokes.
     foundation::Array<ViewportHandleFill> HandleFills;
     QRectF FramePixel;
+    /// Number shown beside the pointer while a handle is dragged; empty otherwise.
+    QString ReadoutText;
+    /// Pointer position the readout is placed beside, in the same logical pixels as the strokes.
+    QPointF ReadoutAnchorPixel;
 };
 } // namespace ludus::editor
