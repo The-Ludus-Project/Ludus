@@ -24,6 +24,7 @@
 #    include "internal/saved_graph_comparison_view.h"
 #endif
 #include "internal/script_workspace.h"
+#include "internal/search_tool_window.h"
 #include "internal/setup_guidance.h"
 #include "internal/state_view.h"
 #include "internal/timing_panel.h"
@@ -256,6 +257,13 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
 
 MainWindow::~MainWindow()
 {
+    // The Search tool window borrows the scope provider by reference, so destroy
+    // the dock (and with it the tool window) before the non-QObject scope it used.
+    delete mSearchDockOrNull;
+    mSearchDockOrNull = nullptr;
+    mSearchOrNull = nullptr;
+    delete mSearchScopeOrNull;
+    mSearchScopeOrNull = nullptr;
     // QWidget teardown changes focus and destroys children before QObject
     // disconnects receivers. Stop member callbacks while MainWindow is alive.
     disconnect(qApp, nullptr, this, nullptr);
@@ -630,6 +638,22 @@ void MainWindow::BuildMenus()
     addToolWindowCommand(VIEW_PROJECT_EXPLORER_COMMAND, mProjectExplorerDock);
     addToolWindowCommand(VIEW_PROPERTIES_COMMAND, mPropertiesDock);
     addToolWindowCommand(VIEW_ERROR_LIST_COMMAND, mErrorListDock);
+    // The Search tool window (CE07) gets a plain View-menu entry so it is
+    // discoverable; its keymap binding (Find in Files) is added with the keymap
+    // profiles in M2 batch 6, not here, to avoid a premature shortcut collision.
+    if (mSearchDockOrNull != nullptr)
+    {
+        QAction* searchAction = new QAction(QStringLiteral("&Search"), this);
+        searchAction->setObjectName(QStringLiteral("viewSearchToolWindow"));
+        connect(searchAction, &QAction::triggered, this, [this]() {
+            showToolWindow(mSearchDockOrNull);
+            if (mSearchOrNull != nullptr)
+            {
+                mSearchOrNull->FocusQuery();
+            }
+        });
+        viewMenu->addAction(searchAction);
+    }
     addToolWindowCommand(VIEW_OUTPUT_COMMAND, OutputDock_);
     addToolWindowCommand(VIEW_CONTENT_COMMAND, mContentDock);
     addToolWindowCommand(VIEW_RENDER_PREVIEW_COMMAND, mRenderPreviewDock);
@@ -1063,6 +1087,10 @@ void MainWindow::OnStateChanged()
         // them fresh, so no view keeps editing a stale document identity. Binding
         // recovery here reads the project's crash journal before tabs restore.
         mCodeArea->SetProject(root, state.ProjectEpoch);
+        if (mSearchScopeOrNull != nullptr)
+        {
+            mSearchScopeOrNull->SetProjectRoot(root);
+        }
         if (restore)
         {
             SetProjectWorkspace(root, true);
@@ -1091,6 +1119,10 @@ void MainWindow::OnStateChanged()
         // its code hosts and tabs and unbinds the journal (empty project root).
         mCodeArea->FlushRecovery();
         mCodeArea->SetProject({}, state.ProjectEpoch);
+        if (mSearchScopeOrNull != nullptr)
+        {
+            mSearchScopeOrNull->SetProjectRoot({});
+        }
         mErrorList->ReplaceEntries(ErrorListProducer::RenderGraph, {});
         if (isEnteringWelcome == true)
         {

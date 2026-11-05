@@ -48,6 +48,25 @@ inline constexpr foundation::usize CODE_FILE_READ_ONLY_LIMIT_BYTES = foundation:
 /// A line wider than this many UTF-16 units loses per-line formats and matching.
 inline constexpr foundation::usize CODE_LONG_LINE_UTF16_UNITS = 20000;
 
+/// Project-wide search limits (CE07, design section 8). Each has one owner here.
+/// A file larger than this is skipped by the search worker; the architecture's
+/// search section treats project search as a source-tree operation, not a way to
+/// grep very large generated or binary files.
+inline constexpr foundation::usize CODE_SEARCH_FILE_LIMIT_BYTES = foundation::usize{16} * CODE_FILE_BYTES_PER_MIB;
+/// Bytes probed for a NUL at the start of a file to classify it as binary and
+/// skip it, as common project-search tools do.
+inline constexpr foundation::usize CODE_SEARCH_BINARY_PROBE_BYTES = foundation::usize{8} * 1024;
+/// The whole search stops after this many matches, so a pathological pattern
+/// cannot flood the UI; the tool window says the results were truncated.
+inline constexpr foundation::int32 CODE_SEARCH_MAX_MATCHES = 10000;
+/// Matches are delivered to the UI thread in batches of at most this many
+/// through a queued signal, so a long search streams instead of blocking.
+inline constexpr foundation::int32 CODE_SEARCH_RESULT_BATCH = 256;
+/// The most files one Replace in Files workspace edit may touch (design section
+/// 7). A larger result set is reported rather than applied, so one action cannot
+/// rewrite an unbounded number of files.
+inline constexpr foundation::int32 CODE_MAX_WORKSPACE_EDIT_FILES = 256;
+
 /// Classify a byte count against the size thresholds. Line-count degradation
 /// (CODE_FILE_NORMAL_LIMIT_LINES) is applied by the caller, which knows the
 /// decoded line count; this function sees only bytes.
