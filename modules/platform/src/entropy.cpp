@@ -11,6 +11,10 @@
 #    if LUDUS_TARGET_OS == LUDUS_OS_MACOS
 #        include <sys/random.h>
 #    endif
+#elif LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#    define LUDUS_PLATFORM_HAS_ENTROPY 1
+#    include <bcrypt.h>
+#    include <windows.h>
 #else
 #    define LUDUS_PLATFORM_HAS_ENTROPY 0
 #endif
@@ -56,6 +60,10 @@ bool RequestEntropy(uint8* outBytes, usize size) noexcept
 {
 #    if LUDUS_TARGET_OS == LUDUS_OS_WEB
     return FillBrowserEntropy(outBytes, size) == 1;
+#    elif LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    // Thanks to Microsoft, "BCryptGenRandom function", for the handle-free system RNG.
+    // https://learn.microsoft.com/windows/win32/api/bcrypt/nf-bcrypt-bcryptgenrandom
+    return BCryptGenRandom(nullptr, outBytes, static_cast<ULONG>(size), BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
 #    else
     return getentropy(outBytes, size) == 0;
 #    endif

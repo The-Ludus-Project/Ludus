@@ -11,6 +11,9 @@ target_sources(ludus_platform_entropy
         FILES include/ludus/platform/entropy.h)
 # FoundationIdentity owns the EntropySource contract; Identity never depends on Platform.
 target_link_libraries(ludus_platform_entropy PUBLIC Ludus::FoundationBase Ludus::FoundationIdentity)
+if(WIN32)
+    target_link_libraries(ludus_platform_entropy PRIVATE bcrypt)
+endif()
 ludus_apply_project_defaults(ludus_platform_entropy)
 
 # Native frame pacing is its own small target so frame loops and their tests can

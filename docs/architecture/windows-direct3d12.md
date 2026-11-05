@@ -722,6 +722,16 @@ packs, cancellation and bounded failures. Revalidate FoundationBase diagnostics,
 memory/alignment/allocation failure, containers, time/threading, logging and
 profiling under MSVC; prior Clang evidence remains separately identified.
 
+The Win32 backend delivers physical scan-code transitions to the attached
+keyboard sink, including repeats and extended modifier and keypad keys.
+Focus loss and close cancel held state. Focus entry samples held keys for the
+reducer's suppressed baseline. Platform entropy uses the system-preferred
+Windows CNG provider. FoundationFilesystem uses pinned Windows handles and the
+existing bounded async queue. The [filesystem contract](filesystem.md#f5-persistence-and-cooked-file-hints)
+covers Windows atomic replacement, the cooperative lock and parent-flush
+reporting. The [MSVC CI matrix](../development/continuous-integration.md)
+records runtime evidence separately from the Clang lane.
+
 D5b delivers GPU frame/pass timestamps with valid frequency/completion/failure
 handling as required by the public contracts, PIX markers/capture and DRED
 collection on device failure. Record real capture and diagnostic artifacts,

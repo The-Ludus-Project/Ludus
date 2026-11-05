@@ -12,7 +12,7 @@ function(ludus_install_windows_sdk)
     set(LUDUS_WINDOWS_SDK_COMPONENTS
         FoundationBase FoundationMemory FoundationContainers FoundationHash FoundationStrings FoundationTime
         FoundationProfiling FoundationThreading FoundationThreadingProfiling FoundationIdentity FoundationMath
-        FoundationLogging Input Platform PlatformEntropy PlatformPacing GraphicsRhi)
+        FoundationLogging FoundationFilesystem Input Platform PlatformEntropy PlatformPacing GraphicsRhi)
     add_custom_target(ludus_windows_sdk)
     foreach(component IN LISTS LUDUS_WINDOWS_SDK_COMPONENTS)
         add_dependencies(ludus_windows_sdk "Ludus::${component}")

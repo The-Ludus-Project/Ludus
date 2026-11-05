@@ -33,7 +33,11 @@ selected by the host; this boundary is not a sandbox against hostile mutation
 of already-open directories, bind mounts, hard links or privileged processes.
 
 Linux, macOS and Emscripten MEMFS provide synchronous regular-file reads through
-a shared POSIX backend. Browser reads stay in the session filesystem; host files
+a shared POSIX backend. Windows pins a directory handle, opens each UTF-16
+component relative to it and refuses child reparse points. It uses 64-bit
+overlapped offsets with a private completion event per read. Native readers
+share delete access so a publisher can replace their directory entry while they
+finish reading the previous object. Browser reads stay in the session filesystem; host files
 must first pass the editor's bounded import adapter. Browser durable publication,
 native watches and asynchronous host I/O remain unavailable. Other targets
 explicitly return Unsupported. Empty files are valid. Bound
@@ -364,11 +368,11 @@ also requires waiting for terminal completion before buffer reuse.
 ## F5 persistence and cooked-file hints
 
 `persistence.hpp` adds an explicit host-selected `WriteDirectory` capability,
-separate from read mounts. Linux and macOS pin the trusted root; unsupported
-native targets, including browsers, return Unsupported. `Publish` admits a
+separate from read mounts. Windows, Linux and macOS pin the trusted root.
+Other targets return Unsupported. `Publish` admits a
 complete caller buffer against `MaxBytes` (32 MiB by default), traverses existing
 parents without following child symlinks, and refuses non-regular destinations.
-It takes a nonblocking advisory lock on the selected parent directory, checks the
+On Linux and macOS it takes a nonblocking advisory lock on the selected parent directory, checks the
 requested precondition, creates an exclusive same-directory 0600 temporary,
 handles full/short/interrupted writes, applies the requested file sync, closes
 once, rechecks the destination and atomically renames. Temporary names contain a
@@ -378,8 +382,18 @@ stable through the call; publication itself allocates no C++ storage.
 
 Each transaction opens an independent directory file description before taking
 its lock. Duplicating a root descriptor would share flock ownership between calls
-and incorrectly admit concurrent writers using the same capability. Cooperating
-writers serialize per parent; contention returns Conflict without blocking.
+and incorrectly admit concurrent writers using the same capability. On Windows,
+the equivalent lock is an exclusive write share on the reserved
+`.ludus-write-lock` entry. Leave the lock file in place. Windows releases the
+share when its owner closes the handle or the process exits. Windows temporaries
+inherit the parent ACL. The backend flushes the temporary when requested, then
+uses a handle-relative NTFS rename that preserves already opened revisions.
+Windows attempts the parent flush for `FileAndDirectory` and reports any native
+failure with `Published` true and `DirectorySynced` false. An interrupted process
+can leave an unpublished temporary. A retry uses an exclusive new name and
+never adopts its bytes. The watcher observes registered final paths only.
+
+Cooperating writers serialize per parent; contention returns Conflict without blocking.
 `WriteCondition` permits any regular/absent destination, requires absence, or
 requires an expected `FileStamp`. `Directory::Observe` captures metadata without
 allocation and preserves output on failure. Stamps contain device/inode, size,
@@ -450,8 +464,9 @@ throughput improvement or power-loss durability claim follows from these tests.
 still depends only on FoundationBase among engine modules. Private fallible native
 thread/condition boundaries create a dedicated blocking pool on Linux, macOS and
 Windows. This pool deliberately does not run on FoundationThreading: that module's
-job callbacks must not block on I/O. Windows supports memory/pack providers; native
-directory I/O still reports Unsupported. Browser initialization explicitly reports
+job callbacks must not block on I/O. Windows runs native directory and pack reads on that same bounded pool.
+Cancellation follows the shared terminal-collection contract, so destinations
+remain owned by the request until collection. Browser initialization explicitly reports
 Unsupported without starting threads or allocating scheduler storage.
 
 Initialize allocates a fixed slot array and worker array; optional tracing adds
@@ -689,7 +704,7 @@ publishes the resource. These four events must remain separately visible.
 | --- | --- | --- |
 | Linux | Buffered pread workers | Buffered io_uring, normal sleeping completion waits, batched offset reads. Probe actual setup/opcode support and policy restrictions; initially disable SQPOLL, IOPOLL, registered-buffer specialization and multishot operations. Preserve metadata/revision semantics. |
 | macOS | Buffered pread workers | Keep this simple path unless traces justify another adapter. Dispatch I/O is a separate ownership/fragment-delivery experiment, not an assumed zero-allocation replacement. |
-| Windows | Worker pool for memory/pack providers; native directory unsupported | First implement/test a native root and revision provider. Then compare OVERLAPPED offset ReadFile plus IOCP, with stable per-operation records, captured EOF and explicit handle sharing/replacement semantics. |
+| Windows | Blocking workers over overlapped offset reads with retained native revisions | Compare IOCP with stable per-operation records while preserving captured EOF and handle sharing and replacement semantics. |
 | Browser | AsyncReader initialization Unsupported | A separate host acquisition adapter may use async fetch into bounded owned staging, verify revision/bytes, then publish a memory/pack provider. Enforce response limits during acquisition; HTTP range/version behavior and abort quiescence need their own tests. No blocking main-thread I/O or claim that native AsyncReader already supports fetch. |
 | GPU-oriented cooked data | CPU destination API | DirectStorage is a separate Content/RHI experiment with target-specific cooked codec/layout, staging, status and GPU-fence retirement. It does not transparently replace VirtualFile CPU reads. |
 | Consoles | No support claim | Add adapters using the licensed platform SDK and the same lifetime tests; public desktop documentation cannot establish console behavior. |

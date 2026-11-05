@@ -402,11 +402,17 @@ hardware-adapter qualification.
 
 The D0 matrix uses MSVC 14.44 and Windows SDK 10.0.26100.0. It runs the
 [primitive probe and the existing Win32/RHI source build](../architecture/windows-direct3d12.md#d0-win32-and-rhi-source-build)
-with Ninja and Visual Studio/MSBuild. Ninja uses separate Debug and Development
-build trees. MSBuild builds Debug, Development, Profile and Release in one
+with Ninja and Visual Studio/MSBuild. Ninja uses separate Debug, Development,
+Profile and Release build trees. MSBuild builds Debug, Development, Profile and Release in one
 solution before CTest runs any configuration, then archives a test log for each.
 Both generators use compiler-native locked Catch2 and signed DXIL. The D3D12 suite checks the reported software adapter, and the
 workflow checks that both the fullscreen and transfer cases were compiled.
+The D5a additions run the FoundationBase, memory and containers (including
+allocation failure), time, threading, logging, profiling, identity, filesystem,
+entropy and input suites in each MSVC configuration. The filesystem process
+probe terminates the writer before and after atomic publication on the runner's
+filesystem, then checks the accepted bytes and retries. This exercises process
+interruption separately from storage power loss.
 The `windows-msvc-Ninja` and `windows-msvc-MSBuild` artifacts record the build
 configuration and test logs. The historical Clang/WARP job still runs. The MSBuild job also installs all
 four SDKs from the solution, relocates their prefixes and configures a separate

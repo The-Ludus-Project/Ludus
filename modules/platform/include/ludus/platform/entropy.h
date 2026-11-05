@@ -14,7 +14,8 @@ namespace ludus::platform
 /// @brief Fill a buffer with cryptographically secure random bytes from the operating system.
 ///
 /// macOS and Linux call `getentropy(3)` in requests of at most 256 bytes, its
-/// per-call limit. Browser builds call Web Crypto `crypto.getRandomValues` (the
+/// per-call limit. Windows uses the system-preferred CNG generator with the same
+/// request bound. Browser builds call Web Crypto `crypto.getRandomValues` (the
 /// global Web Crypto object under Node) in requests of the same size; a missing
 /// or throwing Web Crypto object reports failure instead of raising a JavaScript
 /// exception. Other targets have no adapter yet and fail every nonempty request.

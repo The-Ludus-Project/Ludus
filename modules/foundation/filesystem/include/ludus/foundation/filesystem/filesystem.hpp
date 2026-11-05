@@ -33,7 +33,7 @@ enum class Status : uint8
 struct Result final
 {
     Status Code = Status::Ok; ///< Portable outcome.
-    int32 NativeCode = 0;     ///< Native errno on syscall failure; zero otherwise.
+    int32 NativeCode = 0;     ///< Native errno or Windows error code on failure; zero otherwise.
     /// Returns whether the operation succeeded.
     [[nodiscard]] bool Succeeded() const noexcept
     {
@@ -72,7 +72,7 @@ struct ReadResult final
 // pp. 109-114: their prepare/rebind boundary informs revision ownership here.
 // Active file readers retain old bytes; Content owns asset rebinding. Design
 // inspiration only, no article code copied. See docs/architecture/filesystem.md.
-/// Owns an opened regular-file revision on Linux, macOS or Emscripten MEMFS.
+/// Owns an opened regular-file revision on Windows, Linux, macOS or Emscripten MEMFS.
 /// Other targets return Unsupported. Browser reads address session memory, not host files.
 /// Concurrent const operations require disjoint destinations and stable owner lifetime.
 /// Closing, moving and replacing an owner require exclusive access.
@@ -112,9 +112,9 @@ private:
     Impl* mImpl = nullptr;
 };
 
-/// Pins a host-selected trusted root on Linux, macOS or Emscripten MEMFS.
+/// Pins a host-selected trusted root on Windows, Linux, macOS or Emscripten MEMFS.
 /// Other targets return Unsupported. Browser roots belong to the session filesystem.
-/// Child symlinks are rejected at every component. This is not a sandbox against
+/// Child symlinks and Windows reparse points are rejected at every component. This is not a sandbox against
 /// hostile renames, hard links or mount changes. Const operations require a stable lifetime.
 class Directory final
 {
@@ -137,7 +137,7 @@ public:
     /// Failure preserves the existing root. Trusted roots may have symlink ancestry.
     [[nodiscard]] Result Open(std::string_view nativeRoot) noexcept;
     /// Opens a validated relative path as a regular-file revision; failure preserves output.
-    /// Native filename equivalence follows the host filesystem, including macOS case/Unicode rules.
+    /// Native filename equivalence follows the host filesystem, including Windows and macOS case rules.
     [[nodiscard]] Result OpenRead(std::string_view relativePath, File& output) const noexcept;
     /// Observes a validated path without allocating or opening the leaf for reading.
     /// Rejects child symlinks and non-regular leaves; failure preserves output.

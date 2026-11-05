@@ -259,7 +259,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     # FoundationStrings, which links FoundationHash; Platform links Input, Logging
     # and Identity (through PlatformEntropy); the RHI links Math and Threading.
     # scripts/python/test_ci.py checks this list against the modules' links.
-    foreach(module IN ITEMS memory containers hash strings time profiling threading identity math logging)
+    foreach(module IN ITEMS memory containers hash strings time profiling threading identity math logging filesystem)
         add_subdirectory(modules/foundation/${module})
     endforeach()
     add_subdirectory(modules/input)

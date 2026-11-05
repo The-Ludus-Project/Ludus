@@ -34,7 +34,7 @@ namespace
 {
 uint32 __stdcall ThreadEntry(void* context) noexcept
 {
-    auto& thread = *static_cast<IoWorker*>(context);
+    IoWorker& thread = *static_cast<IoWorker*>(context);
     thread.Function(thread.Context);
     return 0;
 }
@@ -44,13 +44,13 @@ bool IoWorker::Start(void (*function)(void*) noexcept, void* context) noexcept
 {
     Function = function;
     Context = context;
-    Handle = reinterpret_cast<HANDLE>(_beginthreadex(nullptr, 0, ThreadEntry, this, 0, nullptr));
-    return Handle != nullptr;
+    HandleOrNull = reinterpret_cast<HANDLE>(_beginthreadex(nullptr, 0, ThreadEntry, this, 0, nullptr));
+    return HandleOrNull != nullptr;
 }
 void IoWorker::Join() noexcept
 {
-    LUDUS_REQUIRE(WaitForSingleObject(Handle, INFINITE) == WAIT_OBJECT_0);
-    (void)CloseHandle(Handle);
-    Handle = nullptr;
+    LUDUS_REQUIRE(WaitForSingleObject(HandleOrNull, INFINITE) == WAIT_OBJECT_0);
+    (void)CloseHandle(HandleOrNull);
+    HandleOrNull = nullptr;
 }
 } // namespace ludus::foundation::filesystem::detail
