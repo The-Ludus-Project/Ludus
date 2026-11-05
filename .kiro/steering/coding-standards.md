@@ -81,6 +81,21 @@ ownership. Size is a review signal, not a hard line-count target. The staged wor
 and remaining preview/editor boundaries belong to the existing
 [editor GUI systems context](../../docs/architecture/editor-gui-systems.md#implementation-boundaries-and-refactoring).
 
+## Build before opening a pull request (hard rule)
+
+Integration pull requests compile nothing native; a change that does not build
+breaks batch validation for everyone after it is merged. See "Build before
+opening a pull request" in `AGENTS.md`.
+
+- Before opening or updating a pull request that changes C++, Slang or CMake,
+  reconfigure with `-DLUDUS_WARNINGS_AS_ERRORS=ON` (local presets default to
+  OFF) and build `ludus_editor` and `ludus_editor_tests` for editor changes,
+  or the default target otherwise. Paste the command and its final lines into
+  the pull request body.
+- "Authored, not run" applies to tests that need a display or GPU, never to
+  compiling and linking. If you cannot build, open a draft titled
+  `[unbuilt] ...` and say so.
+
 ## Other standing rules
 
 Apply [AGENTS.md's explicit-type and shader rules](../../AGENTS.md#explicit-types-and-shader-source)

@@ -160,8 +160,8 @@ TEST_CASE("The search worker enumerates roots and skips the excluded tree", "[co
     QTemporaryDir directory;
     REQUIRE(directory.isValid() == true);
     const QString root = QFileInfo(directory.path()).absoluteFilePath();
-    WriteFile(root, QStringLiteral("src/a.txt"), QByteArray("needle here\n"));
-    WriteFile(root, QStringLiteral("src/sub/b.txt"), QByteArray("another needle\n"));
+    static_cast<void>(WriteFile(root, QStringLiteral("src/a.txt"), QByteArray("needle here\n")));
+    static_cast<void>(WriteFile(root, QStringLiteral("src/sub/b.txt"), QByteArray("another needle\n")));
     const QString buildDir = WriteFile(root, QStringLiteral("out/build/x.txt"), QByteArray("needle in build\n"));
     static_cast<void>(buildDir);
 
@@ -182,7 +182,7 @@ TEST_CASE("The worker skips binary and oversize files and searches dirty buffers
     REQUIRE(directory.isValid() == true);
     const QString root = QFileInfo(directory.path()).absoluteFilePath();
     const QString textPath = WriteFile(root, QStringLiteral("a.txt"), QByteArray("needle on disk\n"));
-    WriteFile(root, QStringLiteral("binary.bin"), QByteArray("needle\0needle", 13));
+    static_cast<void>(WriteFile(root, QStringLiteral("binary.bin"), QByteArray("needle\0needle", 13)));
 
     CodeSearchService service;
     CodeSearchQuery query;

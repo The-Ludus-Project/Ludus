@@ -1,4 +1,5 @@
 #include "internal/code_find_overlay.h"
+#include "design_tokens.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -12,11 +13,13 @@
 #include <QCheckBox>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
+#include <QRegularExpressionMatchIterator>
 #include <QResizeEvent>
 #include <QShortcut>
 #include <QShowEvent>
@@ -38,7 +41,7 @@ namespace
 {
 using namespace foundation;
 
-constexpr int32 OVERLAY_MARGIN = 8;
+constexpr int32 OVERLAY_MARGIN = design::SPACING_SMALL;
 
 // Apply the case pattern of `source` to `target` for preserve-case replace: an
 // all-upper source upper-cases the target, an all-lower source lower-cases it,
@@ -223,6 +226,15 @@ void CodeFindOverlay::showEvent(QShowEvent* event)
 // (Escape is handled by a QShortcut with WidgetWithChildren context; see the
 // constructor. No event filter is installed.)
 
+void CodeFindOverlay::keyPressEvent(QKeyEvent* event)
+{
+    // A key the overlay's fields leave unhandled must stop here. QLineEdit emits
+    // returnPressed and then ignores Return, and the overlay is a child of the
+    // editor, so without this Enter in the find field would reach the editor and
+    // replace the match it just selected with a line break.
+    event->accept();
+}
+
 void CodeFindOverlay::resizeEvent(QResizeEvent* event)
 {
     if (event != nullptr)
@@ -282,16 +294,15 @@ QList<CodeFindOverlay::Match> CodeFindOverlay::collectMatches(const QString& tex
                                                               int32 rangeEnd) const
 {
     QList<Match> matches;
-    int32 offset = rangeStart;
-    while (offset <= rangeEnd)
+    // One iterator over the text: QRegularExpression::match validates the whole
+    // subject as UTF-16 on every call, so a match() per occurrence is quadratic.
+    // The global iterator validates once and steps over zero-width matches.
+    QRegularExpressionMatchIterator iterator = pattern.globalMatch(text, rangeStart);
+    while (iterator.hasNext() == true)
     {
-        const QRegularExpressionMatch match = pattern.match(text, offset);
-        if (match.hasMatch() == false)
-        {
-            break;
-        }
+        const QRegularExpressionMatch match = iterator.next();
         const int32 start = static_cast<int32>(match.capturedStart());
-        int32 end = static_cast<int32>(match.capturedEnd());
+        const int32 end = static_cast<int32>(match.capturedEnd());
         if (start >= rangeEnd)
         {
             break; // The match begins past the range; stop.
@@ -301,8 +312,6 @@ QList<CodeFindOverlay::Match> CodeFindOverlay::collectMatches(const QString& tex
             break; // A match that would cross the in-selection boundary is excluded.
         }
         matches.append(Match{ .Start = start, .End = end });
-        // A zero-width match advances by one so the scan makes progress.
-        offset = end > start ? end : end + 1;
     }
     return matches;
 }
@@ -607,11 +616,26 @@ void CodeFindOverlay::replaceAll()
     }
     else
     {
-        for (const Match& found : matches)
+        // Re-walk the same iterator rather than calling match() per occurrence,
+        // which would revalidate the whole text each time (see collectMatches).
+        QRegularExpressionMatchIterator iterator = pattern.globalMatch(text, matches.first().Start);
+        int32 index = 0;
+        while (iterator.hasNext() == true && index < matches.size())
         {
-            const QString matchedText = text.mid(found.Start, found.End - found.Start);
-            const QRegularExpressionMatch regexMatch = pattern.match(text, found.Start);
-            replacements.append(replacementFor(regexMatch, matchedText));
+            const QRegularExpressionMatch regexMatch = iterator.next();
+            if (static_cast<int32>(regexMatch.capturedStart()) != matches.at(index).Start)
+            {
+                continue;
+            }
+            const Match& found = matches.at(index);
+            replacements.append(replacementFor(regexMatch, text.mid(found.Start, found.End - found.Start)));
+            ++index;
+        }
+        if (replacements.size() != matches.size())
+        {
+            mStatus->setText(
+                QStringLiteral("Nothing was replaced because the matches changed. Run Replace All again."));
+            return;
         }
     }
     if (applyReplacements(matches, replacements) == true)

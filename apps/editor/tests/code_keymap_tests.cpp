@@ -14,6 +14,8 @@
 #include <QSettings>
 #include <QString>
 
+#include <string>
+
 using namespace ludus::editor;
 
 namespace
@@ -39,6 +41,18 @@ void ClearKeymapSettings()
     }
     return QStringLiteral("<unbound>");
 }
+
+// Names each collision so a failing check says which bindings to fix.
+[[nodiscard]] std::string DescribeConflicts(const QList<CodeKeymapConflict>& conflicts)
+{
+    QString text;
+    for (const CodeKeymapConflict& conflict : conflicts)
+    {
+        text +=
+            QStringLiteral("%1: %2 vs %3; ").arg(conflict.Shortcut, conflict.FirstCommandId, conflict.SecondCommandId);
+    }
+    return text.toStdString();
+}
 } // namespace
 
 TEST_CASE("Both keymap profiles are free of shortcut collisions", "[editor][keymap]")
@@ -48,15 +62,39 @@ TEST_CASE("Both keymap profiles are free of shortcut collisions", "[editor][keym
     {
         CodeKeymap keymap;
         keymap.SetActiveProfile(CodeKeymapProfile::Ludus);
-        CHECK(keymap.DetectConflicts().isEmpty() == true);
+        const QList<CodeKeymapConflict> conflicts = keymap.DetectConflicts();
+        INFO(DescribeConflicts(conflicts));
+        CHECK(conflicts.isEmpty() == true);
     }
     SECTION("VS Code profile")
     {
         CodeKeymap keymap;
         keymap.SetActiveProfile(CodeKeymapProfile::VsCode);
-        CHECK(keymap.DetectConflicts().isEmpty() == true);
+        const QList<CodeKeymapConflict> conflicts = keymap.DetectConflicts();
+        INFO(DescribeConflicts(conflicts));
+        CHECK(conflicts.isEmpty() == true);
     }
     ClearKeymapSettings();
+}
+
+TEST_CASE("Every built-in shortcut is text Qt parses into keys", "[editor][keymap]")
+{
+    // QKeySequence separates chord strokes with ", "; "Ctrl+K Ctrl+0" parses to an
+    // empty sequence, which never triggers and hides collisions from the check above.
+    for (const CodeKeymapProfile profile : {CodeKeymapProfile::Ludus, CodeKeymapProfile::VsCode})
+    {
+        for (const CodeKeymapBinding& binding : CodeKeymap::GetProfileBindings(profile))
+        {
+            if (binding.Shortcut.isEmpty() == true)
+            {
+                continue;
+            }
+            INFO(binding.CommandId.toStdString() + " = " + binding.Shortcut.toStdString());
+            const QKeySequence keys(binding.Shortcut);
+            CHECK(keys.isEmpty() == false);
+            CHECK(keys.toString(QKeySequence::PortableText) == binding.Shortcut);
+        }
+    }
 }
 
 TEST_CASE("The decided bindings resolve per the 2026-11-03 resolution", "[editor][keymap]")

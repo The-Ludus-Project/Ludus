@@ -711,3 +711,45 @@ budgets, and the recorded native runs the individual batch entries list
 (multiple cursors with IME and a screen reader, the find overlay, project search
 and Replace in Files, surrounding pairs, and the keymap first-use choice and
 both profiles).
+
+### M2 host verification (2026-11-05)
+
+Built on macOS with the pinned toolchain and `LUDUS_WARNINGS_AS_ERRORS=ON`, then
+ran `ludus_code_editor_tests` and `ludus_render_graph_configuration_tests`
+offscreen. The merged M2 stack did not compile, and five tests failed once it did:
+
+- **Build.** `code_editor.cpp` iterated `BorrowedView` with range-for, which it
+  does not support (index loops now). `CodeEditor` called `CreateEditorCommand`,
+  defined only in the application target, so every test executable linking
+  `ludus_editor_code` failed to link (`editor_commands.cpp` moved into
+  `ludus_editor_code`). Three ignored `[[nodiscard]]` results in
+  `code_search_tests.cpp`.
+- **Quadratic regex matching.** The find overlay's match count, Replace All and
+  the project search called `QRegularExpression::match` once per occurrence.
+  Each call validates the whole subject as UTF-16, so 16,384 matches took
+  6.5–8.5 s and ran again on every find-field keystroke. All three now walk one
+  `globalMatch` iterator, which validates once. The search also finds each
+  line's end once per line instead of once per match.
+- **VS Code chords never fired.** The profile wrote chords as `Ctrl+K Ctrl+0`;
+  `QKeySequence` separates strokes with `, `, so both folding chords parsed to
+  an empty sequence and collided with each other. A test now requires every
+  built-in shortcut to round-trip through `QKeySequence`.
+- **Enter in the find field replaced the match.** `QLineEdit` ignores Return
+  after `returnPressed`, so the key reached the editor beneath the overlay and
+  replaced the selected match with a line break. The overlay accepts keys its
+  fields leave unhandled.
+- **A quote did not step over its own close.** The caret before a closing quote
+  is inside the string, which the excluded ranges reject, so the second `"`
+  inserted a third. Symmetric pairs now step over inside strings; brackets
+  still need a position outside strings and comments.
+- **Shell regressions outside the code editor suite.** The Search tool window
+  joined the bottom tab group but not the diagnostics group that starts closed,
+  so it kept the bottom area open and shrank the World viewport below the
+  layout tests' limits; it now starts closed and collapses with that group and
+  is listed in the Window menu. The find overlay's margin now comes from the
+  spacing tokens. The profiling shell test still pressed F9, which the keymap
+  decision moved to Ctrl+Alt+F9.
+
+Kiro's sandbox cannot compile, so the "authored, not run" label covered
+compiling as well as running. `AGENTS.md` and `.kiro/steering` now require a
+warnings-as-errors build before a pull request, or a draft titled `[unbuilt]`.

@@ -226,9 +226,10 @@ bool MeshSilhouette::buildCoverage(uint32 frameWidthPixels, uint32 frameHeightPi
         {
             continue;
         }
-        const int32 firstRow = static_cast<int32>(math::Clamp(math::Ceil(minimumY - PIXEL_CENTRE), 0.0, lastRowValue));
-        const int32 finalRow =
-            static_cast<int32>(math::Clamp(math::Floor(maximumY - PIXEL_CENTRE), -1.0, lastRowValue));
+        const int32 firstRow = static_cast<int32>(
+            math::Clamp(math::Ceil(static_cast<float64>(minimumY - PIXEL_CENTRE)), 0.0, lastRowValue));
+        const int32 finalRow = static_cast<int32>(
+            math::Clamp(math::Floor(static_cast<float64>(maximumY - PIXEL_CENTRE)), -1.0, lastRowValue));
         for (int32 row = firstRow; row <= finalRow; ++row)
         {
             const float32 centreY = static_cast<float32>(row) + PIXEL_CENTRE;
@@ -257,10 +258,10 @@ bool MeshSilhouette::buildCoverage(uint32 frameWidthPixels, uint32 frameHeightPi
             {
                 continue;
             }
-            const int32 firstColumn =
-                static_cast<int32>(math::Clamp(math::Ceil(minimumX - PIXEL_CENTRE), 0.0, lastColumnValue));
-            const int32 finalColumn =
-                static_cast<int32>(math::Clamp(math::Floor(maximumX - PIXEL_CENTRE), -1.0, lastColumnValue));
+            const int32 firstColumn = static_cast<int32>(
+                math::Clamp(math::Ceil(static_cast<float64>(minimumX - PIXEL_CENTRE)), 0.0, lastColumnValue));
+            const int32 finalColumn = static_cast<int32>(
+                math::Clamp(math::Floor(static_cast<float64>(maximumX - PIXEL_CENTRE)), -1.0, lastColumnValue));
             uint8* rowPixels = mCoverage.GetData() + static_cast<usize>(row) * mCoverageWidth;
             for (int32 column = firstColumn; column <= finalColumn; ++column)
             {

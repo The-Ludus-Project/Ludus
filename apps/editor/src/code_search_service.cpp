@@ -12,6 +12,7 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
+#include <QRegularExpressionMatchIterator>
 #include <QThread>
 
 // The project-wide search service (CE07, design section 8). Matching is one pure
@@ -77,15 +78,14 @@ int32 FindMatchesInText(const QString& text,
     int32 lineNumber = 0;
     int32 lineStart = 0;
     int32 scannedTo = 0; // The offset up to which lineNumber/lineStart are current.
-    int32 offset = 0;
+    int32 lineEnd = -1;  // The end of the line starting at lineStart, once found.
     const int32 size = static_cast<int32>(text.size());
-    while (offset <= size && appended < remainingCap)
+    // One iterator: QRegularExpression::match revalidates the whole subject as
+    // UTF-16 on every call, so a match() per occurrence is quadratic in the file.
+    QRegularExpressionMatchIterator iterator = pattern.globalMatch(text);
+    while (iterator.hasNext() == true && appended < remainingCap)
     {
-        const QRegularExpressionMatch match = pattern.match(text, offset);
-        if (match.hasMatch() == false)
-        {
-            break;
-        }
+        const QRegularExpressionMatch match = iterator.next();
         const int32 start = static_cast<int32>(match.capturedStart());
         const int32 end = static_cast<int32>(match.capturedEnd());
         // Advance the line bookkeeping up to this match's start without rescanning
@@ -96,15 +96,20 @@ int32 FindMatchesInText(const QString& text,
             {
                 ++lineNumber;
                 lineStart = scannedTo + 1;
+                lineEnd = -1;
             }
             ++scannedTo;
         }
         // A match that spans a line break is clipped to its first line, so a
         // result always maps to one editor line.
-        int32 lineEnd = text.indexOf(QLatin1Char('\n'), lineStart);
+        // Find each line's end once, not once per match on that line.
         if (lineEnd < 0)
         {
-            lineEnd = size;
+            lineEnd = static_cast<int32>(text.indexOf(QLatin1Char('\n'), lineStart));
+            if (lineEnd < 0)
+            {
+                lineEnd = size;
+            }
         }
         const int32 matchEndOnLine = end < lineEnd ? end : lineEnd;
         outMatches.append(CodeSearchMatch
@@ -117,7 +122,6 @@ int32 FindMatchesInText(const QString& text,
             .LineText = text.mid(lineStart, lineEnd - lineStart),
         });
         ++appended;
-        offset = end > start ? end : end + 1;
     }
     return appended;
 }

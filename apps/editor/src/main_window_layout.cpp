@@ -978,10 +978,14 @@ void MainWindow::applyDefaultDockSizes()
     const foundation::int32 properties =
         qBound(MIN_PROPERTIES_DOCK_PIXELS, width() * PROPERTIES_DOCK_PERCENT / PERCENT, MAX_PROPERTIES_DOCK_PIXELS);
     // The diagnostics group is closed until it has something to show: new errors or warnings reveal the
-    // Error List, a build reveals Output, a play session reveals Timing and recording reveals Profiling.
-    for (QDockWidget* dock : {mErrorListDock, OutputDock_, TimingDock_, mProfilingDock})
+    // Error List, a build reveals Output, a play session reveals Timing, recording reveals Profiling and
+    // Find in Files reveals Search.
+    for (QDockWidget* dock : {mErrorListDock, mSearchDockOrNull, OutputDock_, TimingDock_, mProfilingDock})
     {
-        dock->hide();
+        if (dock != nullptr)
+        {
+            dock->hide();
+        }
     }
     if (mErrorList->GetCount(ErrorListSeverity::Error) != 0 || mErrorList->GetCount(ErrorListSeverity::Warning) != 0)
     {
@@ -1075,6 +1079,7 @@ void MainWindow::buildWindowMenu(QMenu* menu)
     for (QDockWidget* dock : {mProjectExplorerDock,
                               mPropertiesDock,
                               mErrorListDock,
+                              mSearchDockOrNull,
                               OutputDock_,
                               mContentDock,
                               mRenderPreviewDock,

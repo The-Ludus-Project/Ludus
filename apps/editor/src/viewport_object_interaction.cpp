@@ -965,11 +965,11 @@ bool ViewportObjectInteraction::dragPlane(QPointF positionPixel, bool shouldSnap
     const math::Vector3 travelWorld = hitWorld - mDragPlaneStartWorld;
     const math::Vector3 firstWorld = mParentToWorld.Columns[mDragPlaneFirstAxis];
     const math::Vector3 secondWorld = mParentToWorld.Columns[mDragPlaneSecondAxis];
-    const float64 firstFirst = math::Dot(firstWorld, firstWorld);
-    const float64 firstSecond = math::Dot(firstWorld, secondWorld);
-    const float64 secondSecond = math::Dot(secondWorld, secondWorld);
-    const float64 firstTravel = math::Dot(firstWorld, travelWorld);
-    const float64 secondTravel = math::Dot(secondWorld, travelWorld);
+    const float64 firstFirst = static_cast<float64>(math::Dot(firstWorld, firstWorld));
+    const float64 firstSecond = static_cast<float64>(math::Dot(firstWorld, secondWorld));
+    const float64 secondSecond = static_cast<float64>(math::Dot(secondWorld, secondWorld));
+    const float64 firstTravel = static_cast<float64>(math::Dot(firstWorld, travelWorld));
+    const float64 secondTravel = static_cast<float64>(math::Dot(secondWorld, travelWorld));
     const float64 determinant = firstFirst * secondSecond - firstSecond * firstSecond;
     if (math::Abs(determinant) < MINIMUM_PLANE_DETERMINANT)
     {
