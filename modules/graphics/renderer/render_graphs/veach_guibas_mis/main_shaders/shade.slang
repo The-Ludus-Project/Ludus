@@ -87,6 +87,9 @@ bool TryLoadShadingPoint(SceneContext scene,
     return true;
 }
 
+static const LightSelectionPolicy VEACH_LIGHT_SELECTION_POLICY =
+    IS_MESH_POWER_SELECTION_ENABLED ? LightSelectionPolicy::MeshPower : LightSelectionPolicy::Uniform;
+
 /// Light strategy: one light proposal and its shadow ray. With isMisWeighted it is weighted against
 /// BSDF sampling; otherwise it is the plain light-sampling estimator (weight one).
 float3 SampleLightStrategy(SceneContext scene,
@@ -95,18 +98,15 @@ float3 SampleLightStrategy(SceneContext scene,
                            bool isMisWeighted,
                            inout RayQueryContext queries)
 {
-    SelectedLight selected = IS_MESH_POWER_SELECTION_ENABLED
-                                 ? SelectLightByMeshPower(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION)
-                                 : SelectLight(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION);
-    if (selected.HasSample == false)
-        return float3(0);
-    IncidentLightSample light = SampleIncidentLight(scene,
-                                                    selected.LightIndex,
-                                                    shadingPoint.Hit,
-                                                    launch,
-                                                    SHADE_LIGHT_SHAPE_DIMENSION_FIRST,
-                                                    queries);
-    float lightDensity = selected.SelectionPmf * light.ConditionalProbability;
+    SceneLightSample sample = SampleLight(scene,
+                                          shadingPoint.Hit,
+                                          launch,
+                                          SHADE_LIGHT_SELECTION_DIMENSION,
+                                          SHADE_LIGHT_SHAPE_DIMENSION_FIRST,
+                                          VEACH_LIGHT_SELECTION_POLICY,
+                                          queries);
+    IncidentLightSample light = sample.Incident;
+    float lightDensity = sample.Selection.SelectionPmf * light.ConditionalProbability;
     if (light.HasSample == false || lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false)
         return float3(0);
     float cosSurface =
@@ -127,12 +127,6 @@ float3 SampleLightStrategy(SceneContext scene,
     if (weight <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
         return float3(0);
     return shadingPoint.Throughput * bsdfValue * light.IncidentCoefficient * (cosSurface * weight / lightDensity);
-}
-
-float EvaluateVeachGuibasSelectionPmf(SceneContext scene, uint lightIndex)
-{
-    return IS_MESH_POWER_SELECTION_ENABLED ? EvaluateMeshPowerLightSelectionPmf(scene, lightIndex)
-                                           : EvaluateLightSelectionPmf(scene, lightIndex);
 }
 
 /// BSDF strategy: one BSDF-sampled ray and the emitter or environment it reaches. With isMisWeighted
@@ -170,23 +164,14 @@ float3 SampleBsdfStrategy(SceneContext scene,
                      queries,
                      SpawnSurfaceRay(shadingPoint.Hit, directionWorld, SHADE_MAXIMUM_TRACE_DISTANCE_WORLD),
                      endpoint);
-    float3 incidentRadiance = float3(0);
-    float lightDensity = 0;
-    if (status == SceneQuery::Miss)
-    {
-        incidentRadiance = EvaluateEnvironment(scene, directionWorld);
-        if (isMisWeighted == true)
-            lightDensity = EvaluateVeachGuibasSelectionPmf(scene, GetEnvironmentLightIndex(scene)) *
-                           EvaluateIncidentEnvironmentPdfSolidAngle(scene);
-    }
-    else if (status == SceneQuery::Surface)
-    {
-        incidentRadiance = EvaluateEmission(scene, endpoint, -directionWorld);
-        // Measured from the receiver itself, as SampleIncidentLight measures its proposals.
-        if (isMisWeighted == true)
-            lightDensity = EvaluateVeachGuibasSelectionPmf(scene, GetSurfaceLightIndex(scene, endpoint)) *
-                           EvaluateIncidentLightPdfSolidAngle(scene, shadingPoint.Hit.PositionWorld, endpoint);
-    }
+    RayLightEvaluation light = EvaluateLightAlongRay(scene,
+                                                     shadingPoint.Hit.PositionWorld,
+                                                     directionWorld,
+                                                     status,
+                                                     endpoint,
+                                                     VEACH_LIGHT_SELECTION_POLICY);
+    float3 incidentRadiance = light.Radiance;
+    float lightDensity = light.SelectionPmf * light.ConditionalPdfSolidAngle;
     // A failed query has latched queries.HasFailed; zero radiance adds nothing.
     if (any(incidentRadiance > 0) == false)
         return float3(0);

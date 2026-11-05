@@ -116,16 +116,15 @@ bool TryLoadShadingPoint(SceneContext scene,
 float3
 SampleClassicalLight(SceneContext scene, RayLaunch launch, ShadingPoint shadingPoint, inout RayQueryContext queries)
 {
-    SelectedLight selected = SelectLight(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION);
-    if (selected.HasSample == false)
-        return float3(0);
-    IncidentLightSample light = SampleIncidentLight(scene,
-                                                    selected.LightIndex,
-                                                    shadingPoint.Hit,
-                                                    launch,
-                                                    SHADE_LIGHT_SHAPE_DIMENSION_FIRST,
-                                                    queries);
-    float lightDensity = selected.SelectionPmf * light.ConditionalProbability;
+    SceneLightSample sample = SampleLight(scene,
+                                          shadingPoint.Hit,
+                                          launch,
+                                          SHADE_LIGHT_SELECTION_DIMENSION,
+                                          SHADE_LIGHT_SHAPE_DIMENSION_FIRST,
+                                          LightSelectionPolicy::Uniform,
+                                          queries);
+    IncidentLightSample light = sample.Incident;
+    float lightDensity = sample.Selection.SelectionPmf * light.ConditionalProbability;
     if (light.HasSample == false || lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false)
         return float3(0);
     float cosSurface = dot(shadingPoint.ShadingNormalWorld, light.DirectionWorld);
@@ -518,15 +517,14 @@ float3 MeasureCoherence(SceneContext scene, RayLaunch launch, inout RayQueryCont
     float3 radiance;
     if (TryLoadShadingPoint(scene, launch, queries, shadingPoint, radiance) == false)
         return float3(0);
-    SelectedLight selected = SelectLight(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION);
-    if (selected.HasSample == false)
-        return float3(0);
-    IncidentLightSample light = SampleIncidentLight(scene,
-                                                    selected.LightIndex,
-                                                    shadingPoint.Hit,
-                                                    launch,
-                                                    SHADE_LIGHT_SHAPE_DIMENSION_FIRST,
-                                                    queries);
+    SceneLightSample sample = SampleLight(scene,
+                                          shadingPoint.Hit,
+                                          launch,
+                                          SHADE_LIGHT_SELECTION_DIMENSION,
+                                          SHADE_LIGHT_SHAPE_DIMENSION_FIRST,
+                                          LightSelectionPolicy::Uniform,
+                                          queries);
+    IncidentLightSample light = sample.Incident;
     if (light.HasSample == false || any(light.IncidentCoefficient > 0) == false ||
         dot(shadingPoint.ShadingNormalWorld, light.DirectionWorld) <= 0)
         return float3(0);

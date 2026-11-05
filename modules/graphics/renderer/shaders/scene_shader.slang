@@ -210,6 +210,26 @@ struct IncidentLightSample
     bool HasFiniteEndpoint;       ///< False for a connection towards an infinite source.
     bool HasSample;               ///< Other fields describe a proposal only when true.
 };
+/// Distribution over scene catalog sources. The incident proposal remains the same.
+enum LightSelectionPolicy : uint
+{
+    Uniform,   ///< Equal mass for every source.
+    MeshPower, ///< Redistribute the mesh portion of the uniform PMF by power.
+    NonMesh,   ///< Uniform over the remaining sources when an integrator supplies its own mesh proposal.
+};
+/// A selected source and its conditional incident sample. Keep the two probabilities separate for MIS.
+struct SceneLightSample
+{
+    SelectedLight Selection;
+    IncidentLightSample Incident;
+};
+/// Emitted radiance and the matching continuous light proposal for a traced ray.
+struct RayLightEvaluation
+{
+    float3 Radiance;                ///< Emission towards the receiver, including visible background.
+    float SelectionPmf;             ///< Source probability under the selected policy.
+    float ConditionalPdfSolidAngle; ///< Incident density per steradian, excluding the source PMF.
+};
 /// Legacy sample with the default uniform selection PMF and a discrete flag.
 struct LightSample
 {
@@ -1175,6 +1195,45 @@ float EvaluateEnvironmentPdfSolidAngle(SceneContext scene, float3 directionWorld
 {
     return EvaluateLightSelectionPmf(scene, GetEnvironmentLightIndex(scene)) * UNIFORM_ENVIRONMENT_PDF_SOLID_ANGLE;
 }
+/// Evaluate selection mass for a catalog index under the requested policy.
+float EvaluateLightSelectionPmf(SceneContext scene, uint lightIndex, LightSelectionPolicy policy)
+{
+    if (policy == LightSelectionPolicy::MeshPower)
+        return EvaluateMeshPowerLightSelectionPmf(scene, lightIndex);
+    if (policy == LightSelectionPolicy::NonMesh)
+    {
+        const uint count = GetLightCount(scene);
+        const uint meshCount = GetEmitterCount(scene);
+        if (lightIndex >= count || (lightIndex >= Counts.w && lightIndex < Counts.w + meshCount))
+            return 0;
+        return 1.0 / float(count - meshCount);
+    }
+    return EvaluateLightSelectionPmf(scene, lightIndex);
+}
+/// Evaluate the emitted light reached by a closest query and the matching default light proposal.
+/// A miss evaluates background emission. A failed query produces zero. Delta lights have no continuous density.
+RayLightEvaluation EvaluateLightAlongRay(SceneContext scene,
+                                         float3 receiverPositionWorld,
+                                         float3 directionWorld,
+                                         SceneQuery status,
+                                         SurfaceHit endpoint,
+                                         LightSelectionPolicy policy)
+{
+    RayLightEvaluation result = (RayLightEvaluation)0;
+    if (status == SceneQuery::Surface)
+    {
+        result.Radiance = EvaluateEmission(scene, endpoint, -directionWorld);
+        result.SelectionPmf = EvaluateLightSelectionPmf(scene, GetSurfaceLightIndex(scene, endpoint), policy);
+        result.ConditionalPdfSolidAngle = EvaluateIncidentLightPdfSolidAngle(scene, receiverPositionWorld, endpoint);
+    }
+    else if (status == SceneQuery::Miss)
+    {
+        result.Radiance = EvaluateEnvironment(scene, directionWorld);
+        result.SelectionPmf = EvaluateLightSelectionPmf(scene, GetEnvironmentLightIndex(scene), policy);
+        result.ConditionalPdfSolidAngle = EvaluateIncidentEnvironmentPdfSolidAngle(scene);
+    }
+    return result;
+}
 /// Draw a pseudorandom float in [0,1) at an explicit address, without advancing queries.
 /// @pre dimension is no greater than FoundationMath's RANDOM_MAX_DIMENSION.
 float SampleSceneRandom(RayLaunch launch, uint dimension)
@@ -1232,6 +1291,45 @@ IncidentLightSample SampleIncidentLight(SceneContext scene,
                                launch.Seed,
                                PixelRandomAddress(pixel, launch.SampleIndex, firstDimension),
                                inoutQueries);
+}
+/// Select and sample one scene light. Selection and incident addresses are independent.
+/// Uses the chosen kind's default incident proposal and does not trace visibility.
+SceneLightSample SampleLight(SceneContext scene,
+                             SurfaceHit receiver,
+                             RayLaunch launch,
+                             uint selectionDimension,
+                             uint incidentDimension,
+                             LightSelectionPolicy policy,
+                             inout RayQueryContext inoutQueries)
+{
+    SceneLightSample result = (SceneLightSample)0;
+    if (inoutQueries.HasFailed == true)
+        return result;
+    if (policy == LightSelectionPolicy::MeshPower)
+        result.Selection = SelectLightByMeshPower(scene, launch, selectionDimension);
+    else if (policy == LightSelectionPolicy::NonMesh)
+    {
+        const uint meshCount = GetEmitterCount(scene);
+        const uint count = GetLightCount(scene) - meshCount;
+        if (count == 0)
+            return result;
+        const uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
+        uint ordinal;
+        if (TrySampleRandomBounded(launch.Seed,
+                                   PixelRandomAddress(pixel, launch.SampleIndex, selectionDimension),
+                                   count,
+                                   ordinal) == false)
+            return result;
+        result.Selection.LightIndex = ordinal < Counts.w ? ordinal : ordinal + meshCount;
+        result.Selection.SelectionPmf = 1.0 / float(count);
+        result.Selection.HasSample = true;
+    }
+    else
+        result.Selection = SelectLight(scene, launch, selectionDimension);
+    if (result.Selection.HasSample == true)
+        result.Incident =
+            SampleIncidentLight(scene, result.Selection.LightIndex, receiver, launch, incidentDimension, inoutQueries);
+    return result;
 }
 /// Draw a pseudorandom float in [0,1), advancing the renderer-owned invocation stream.
 /// Available in ray generation, closest-hit and miss with no ScenePayload fields.

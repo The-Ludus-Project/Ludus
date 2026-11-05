@@ -157,20 +157,14 @@ FgPoint TraceFgCamera(SceneContext scene,
         SurfaceHit hit;
         SceneQuery status =
             TraceClosest(scene, queries, SpawnSurfaceRay(point.Hit, directionWorld, FG_MAXIMUM_DISTANCE_WORLD), hit);
-        float3 emission = float3(0);
-        float lightDensity = 0;
-        if (status == SceneQuery::Miss)
-        {
-            emission = EvaluateEnvironment(scene, directionWorld);
-            lightDensity = EvaluateLightSelectionPmf(scene, GetEnvironmentLightIndex(scene)) *
-                           EvaluateIncidentEnvironmentPdfSolidAngle(scene);
-        }
-        else if (status == SceneQuery::Surface)
-        {
-            emission = EvaluateEmission(scene, hit, -directionWorld);
-            lightDensity = EvaluateLightSelectionPmf(scene, GetSurfaceLightIndex(scene, hit)) *
-                           EvaluateIncidentLightPdfSolidAngle(scene, point.Hit.PositionWorld, hit);
-        }
+        RayLightEvaluation light = EvaluateLightAlongRay(scene,
+                                                         point.Hit.PositionWorld,
+                                                         directionWorld,
+                                                         status,
+                                                         hit,
+                                                         LightSelectionPolicy::Uniform);
+        float3 emission = light.Radiance;
+        float lightDensity = light.SelectionPmf * light.ConditionalPdfSolidAngle;
         float3 value;
         float density;
         EvaluateStandardBsdf(point.Material, point.ViewDirectionWorld, directionWorld, value, density);

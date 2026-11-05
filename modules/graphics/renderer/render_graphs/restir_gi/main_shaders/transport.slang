@@ -198,23 +198,14 @@ BsdfStep SampleBsdfStrategy(SceneContext scene,
                      queries,
                      SpawnSurfaceRay(shadingPoint.Hit, directionWorld, TRANSPORT_MAXIMUM_TRACE_DISTANCE_WORLD),
                      endpoint);
-    float3 incidentRadiance = float3(0);
-    float lightDensity = 0;
-    if (status == SceneQuery::Miss)
-    {
-        incidentRadiance = EvaluateEnvironment(scene, directionWorld);
-        lightDensity = EvaluateLightSelectionPmf(scene, GetEnvironmentLightIndex(scene)) *
-                       EvaluateIncidentEnvironmentPdfSolidAngle(scene);
-    }
-    else if (status == SceneQuery::Surface)
-    {
-        incidentRadiance = EvaluateEmission(scene, endpoint, -directionWorld);
-        // Measured from the receiver itself, as SampleIncidentLight measures its proposals.
-        lightDensity = EvaluateLightSelectionPmf(scene, GetSurfaceLightIndex(scene, endpoint)) *
-                       EvaluateIncidentLightPdfSolidAngle(scene, shadingPoint.Hit.PositionWorld, endpoint);
-        result.Vertex = endpoint;
-        result.HasVertex = true;
-    }
+    RayLightEvaluation light = EvaluateLightAlongRay(scene,
+                                                     shadingPoint.Hit.PositionWorld,
+                                                     directionWorld,
+                                                     status,
+                                                     endpoint,
+                                                     LightSelectionPolicy::Uniform);
+    float3 incidentRadiance = light.Radiance;
+    float lightDensity = light.SelectionPmf * light.ConditionalPdfSolidAngle;
     // A failed query has latched queries.HasFailed; zero radiance adds nothing.
     if (any(incidentRadiance > 0) == true)
         result.Radiance = result.Throughput * incidentRadiance *
