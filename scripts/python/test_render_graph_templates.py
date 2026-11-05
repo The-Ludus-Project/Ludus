@@ -716,9 +716,11 @@ class VeachGuibasMisTemplateTests(unittest.TestCase):
         shade = shaders.joinpath('shade.slang').read_text()
         weights = shaders.joinpath('multiple_importance.slang').read_text()
         self.assertIn('#include "multiple_importance.slang"', shade)
-        for call in ('SampleIncidentLight', 'SampleStandardBsdf', 'TraceClosest', 'TestVisibility',
-                     'EvaluateIncidentLightPdfSolidAngle', 'EvaluateIncidentEnvironmentPdfSolidAngle', 'ComputeMisWeight'):
-            self.assertIn(call, shade)
+        for call in ('SampleStandardBsdf', 'TraceClosest', 'TestVisibility', 'ComputeMisWeight'):
+            self.assertRegex(shade, rf'\b{call}\(')
+        # Light sampling and the competing BSDF density must use the same selection policy.
+        for call in ('SampleLight', 'EvaluateLightAlongRay'):
+            self.assertRegex(shade, rf'\b{call}\([^;]*\bVEACH_LIGHT_SELECTION_POLICY\b')
         # Only the MIS pass weights its strategies; each single-strategy pass keeps weight one.
         self.assertIn('SampleLightStrategy(scene, launch, shadingPoint, true, queries)', shade)
         self.assertIn('SampleBsdfStrategy(scene, launch, shadingPoint, true, queries)', shade)
