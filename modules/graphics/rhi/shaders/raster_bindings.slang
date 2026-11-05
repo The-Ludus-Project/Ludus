@@ -17,6 +17,14 @@
 #    define LUDUS_SHADER_VERTEX_ID SV_VulkanVertexID
 #endif
 
+// DXC's SM 6.0 validator rejects vector IR left across noinline call boundaries
+// in an entry-point shader. Let DXC inline and scalarize these helpers.
+#if defined(LUDUS_DXIL)
+#    define LUDUS_SHADER_NOINLINE_WHEN_SUPPORTED
+#else
+#    define LUDUS_SHADER_NOINLINE_WHEN_SUPPORTED [noinline]
+#endif
+
 // Native Metal reflection follows HLSL registers; portable targets follow the
 // descriptor annotation above. Expand one owned numeric slot into its register
 // spelling so these two interfaces cannot acquire independent slot literals.
