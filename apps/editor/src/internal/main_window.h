@@ -16,6 +16,7 @@
 // so rendering never dispatches new edits. Field edits are accepted before Save
 // or an identity change can overtake them.
 
+#include "internal/code_keymap.h"
 #include "internal/controller.h"
 
 #include <ludus/foundation/base/types.h>
@@ -127,6 +128,13 @@ private:
     void InitializeWorkspace();
     void ResetWorkspaceLayout();
     void arrangeDefaultDocks();
+    /// Apply the active keymap profile's resolved shortcuts to every shell and
+    /// code-editor action (CE07/CE17). Called after BuildUi creates the actions
+    /// and whenever the profile or an override changes.
+    void applyKeymap();
+    /// On the first run with no stored keymap profile, offer the Ludus / VS Code
+    /// choice and persist it; a no-op once a profile has been chosen.
+    void chooseKeymapOnFirstUse();
     /// Give each tool window tab its dock's icon. Qt names the tabs but does not set their icons.
     void syncDockTabIcons();
     /// Size the default arrangement for this window: side column width, Project Explorer and
@@ -266,6 +274,9 @@ private:
     QDockWidget* mSearchDockOrNull = nullptr;
     SearchToolWindow* mSearchOrNull = nullptr;
     CodeAreaSearchScope* mSearchScopeOrNull = nullptr;
+    // The editor keymap (CE07/CE17 shortcut resolution): the active profile, the
+    // user overrides and the resolved bindings applied to the shell's actions.
+    CodeKeymap mKeymap;
     QDockWidget* mContentDock;
     QDockWidget* mRenderPreviewDock;
     QDockWidget* mProfilingDock;

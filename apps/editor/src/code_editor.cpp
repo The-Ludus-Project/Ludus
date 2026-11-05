@@ -8,6 +8,7 @@
 #include "internal/code_language_registry.h"
 #include "internal/code_navigation.h"
 #include "internal/code_syntax_highlighter.h"
+#include "internal/editor_commands.h"
 
 #include <QAction>
 #include <QBrush>
@@ -270,6 +271,21 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     addShortcut(QStringLiteral("Previous Diagnostic"), QKeySequence(Qt::SHIFT | Qt::Key_F8), [this]() {
         GoToDiagnostic(true);
     });
+    // Code-editor keymap commands (CE16/CE26): registered as the shell's
+    // catalogue commands so the keymap profiles own their bindings, with a
+    // WidgetWithChildren shortcut context so F9 and the fold chords only fire
+    // while this view has focus. Their gutter and fold-model behavior lands in
+    // M8/M3; here they emit a request the owner will later act on.
+    const auto addKeymapCommand = [this](const EditorCommand& command, void (CodeEditor::*signal)()) {
+        QAction* action = CreateEditorCommand(command, this);
+        action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        connect(action, &QAction::triggered, this, signal);
+        addAction(action);
+    };
+    addKeymapCommand(EDITOR_TOGGLE_BREAKPOINT_COMMAND, &CodeEditor::ToggleBreakpointRequested);
+    addKeymapCommand(EDITOR_FOLD_ALL_COMMAND, &CodeEditor::FoldAllRequested);
+    addKeymapCommand(EDITOR_UNFOLD_ALL_COMMAND, &CodeEditor::UnfoldAllRequested);
+    addKeymapCommand(EDITOR_TOGGLE_FOLD_COMMAND, &CodeEditor::ToggleFoldRequested);
     // Multiple cursors (CE06). Only the collision-free bindings are set here;
     // batch 6's keymap profiles assign the rest (Add Next Occurrence stays
     // unbound because Ctrl+D is Duplicate Lines). The commands are discoverable in

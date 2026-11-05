@@ -196,7 +196,7 @@ Requirements: CE05-CE07, CE17. Prerequisite: M1.
   read the registry and `HasStructuralEditing` instead of a hard-coded Slang
   set; authored, not run — see the
   [M2 batch 5 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-5-registry-driven-pairs-and-indentation-ce17-2026-11-05).)*
-- [ ] Add the Ludus and VS Code keymap profiles, user overrides, conflict
+- [x] Add the Ludus and VS Code keymap profiles, user overrides, conflict
   detection and the first-use choice. Apply the decided bindings: Record
   Profiling to Ctrl+Alt+F9, F9 Toggle Breakpoint in code editors, Ctrl+K palette
   in the Ludus profile, and Ctrl+Shift+P palette with Ctrl+K chords in the VS
@@ -204,7 +204,10 @@ Requirements: CE05-CE07, CE17. Prerequisite: M1.
   (`docs/development/editor-workspace.md`, `docs/architecture/graphics-debugging.md`)
   in the same change. Reserve the folding bindings from the architecture in
   both profiles, so the collision tests cover them before M3 adds the commands.
-  Add shortcut-collision tests for both profiles.
+  Add shortcut-collision tests for both profiles. *(Batch 6;
+  `internal/code_keymap.h/.cpp`, `editor.toggleBreakpoint`/fold commands,
+  `profiling.record` moved to Ctrl+Alt+F9; authored, not run — see the
+  [M2 batch 6 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-6-keymap-profiles-ce07ce17-shortcut-resolution-2026-11-05).)*
 - [ ] Measure 1-cursor and 100-cursor typing against the budgets.
 
 Gate: the CE05-CE07 and CE17 tests pass; the typing budgets are recorded.

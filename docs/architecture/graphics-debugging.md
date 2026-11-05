@@ -1,8 +1,8 @@
 # Graphics debugging architecture and implementation plan
 
 Status: implementation contract, 2026-10-20. Native local-editor P0/P1 recording
-and local P2 pass-duration counters are implemented: CPU/GPU/Both controls, F9,
-frame timing and shared pass scopes. Hosted transport, resource naming, P3 and
+and local P2 pass-duration counters are implemented: CPU/GPU/Both controls,
+the Record Profiling shortcut (Ctrl+Alt+F9), frame timing and shared pass scopes. Hosted transport, resource naming, P3 and
 native Metal/RenderDoc debugger capture remain planned.
 Implementation availability is distinct from platform/hardware qualification.
 
@@ -311,9 +311,11 @@ capture state machine above and works without RenderDoc or Xcode running.
 | Summary | Available GPU sample count and clearly scoped frame-duration statistics; CPU trace health. Missing/pending timings are unavailable, never zero. |
 | Result | Save/reveal the trace, open in Perfetto explicitly, and retain the previous successful result if another recording fails. |
 
-F9 is the shared Record/Stop action in the native editor command catalogue. Its
-native key label appears in the existing Keyboard Shortcuts UI. Future shortcut
-overrides follow the editor's shortcut policy. The shortcut uses the last
+Ctrl+Alt+F9 is the shared Record/Stop action in the native editor command
+catalogue, in every keymap profile (F9 itself toggles a breakpoint when a code
+editor has focus; the resolution was decided 2026-11-03, see the code-editor
+decision log). Its native key label appears in the existing Keyboard Shortcuts
+UI. Future shortcut overrides follow the editor's shortcut policy. The shortcut uses the last
 configured mode and target
 and never starts a second recording while Arming or Finalizing. Opening the tool
 window exposes configuration before the first recording. Menu access remains
@@ -408,7 +410,7 @@ adapters. It does not wait for G2/G3 or for a full pass-timing implementation.
 
 | Phase | Deliverable and dependency | Exit gate |
 | --- | --- | --- |
-| P0 Editor CPU recording | Shared profiling controller, tool window, CPU mode, Record/Stop action and proposed F9 shortcut; reuse the current CPU tracer/exporter. | Menu/toolbar/shortcut share availability; bounded capture exports and opens in Perfetto; Busy, disabled build and export-retry behavior preserve data and editor responsiveness. |
+| P0 Editor CPU recording | Shared profiling controller, tool window, CPU mode, Record/Stop action and its Ctrl+Alt+F9 shortcut; reuse the current CPU tracer/exporter. | Menu/toolbar/shortcut share availability; bounded capture exports and opens in Perfetto; Busy, disabled build and export-retry behavior preserve data and editor responsiveness. |
 | P1 Coarse GPU Perfetto recording | GPU and Both modes; shared viewport probe ownership, typed frame-duration samples, coverage and single-trace export. Reuse existing RHI measurement support; no vendor debugger prerequisite. | Metal and Vulkan recordings show validated duration counters and CPU scope filtering; delayed/skipped/disjoint samples, Stats on/off, cancellation and finalization produce honest coverage without GPU waits. |
 | P2 Pass durations and hosted recording | Local Metal/Vulkan bounded native queries and shared physical-pass scopes implemented; producer-side hosted transport remains pending. | Named pass counters survive pass merging, query pressure and restart; unsupported precision remains explicit; hosted traces identify their producer and preserve image leases. |
 | P3 Correlated GPU execution lanes | Backend CPU/GPU clock mapping with uncertainty, queue tracks and submission correlation. Metal per-batch calibration, Vulkan calibrated timestamps and overlap lanes implemented. | Actual GPU slices align within the stated measured error, nest legally in Perfetto, preserve overlap on separate queues and degrade to duration-only data if calibration fails. |
