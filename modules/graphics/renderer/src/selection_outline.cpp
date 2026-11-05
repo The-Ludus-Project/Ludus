@@ -57,7 +57,12 @@ struct MaskInstance final
 };
 constexpr usize EDGE_VERTICES_OFFSET = sizeof(MaskInstance);
 constexpr usize VERSION_BYTES = sizeof(MaskInstance) + QUAD_VERTEX_COUNT * sizeof(EdgeVertex);
-static_assert(sizeof(math::Vector3) == 12 && sizeof(EdgeVertex) == 64 && sizeof(MaskInstance) == 64);
+// The shaders read these records with the layouts below.
+constexpr usize POSITION_BYTES = 3 * sizeof(float32);
+constexpr usize EDGE_VERTEX_BYTES = 4 * sizeof(math::Vector4);
+constexpr usize MASK_INSTANCE_BYTES = MATRIX_ROWS * sizeof(math::Vector4);
+static_assert(sizeof(math::Vector3) == POSITION_BYTES && sizeof(EdgeVertex) == EDGE_VERTEX_BYTES &&
+              sizeof(MaskInstance) == MASK_INSTANCE_BYTES);
 
 bool Accepted(Status status) noexcept
 {
@@ -178,7 +183,7 @@ struct SelectionOutlineRenderer::State final
     Status Setup = Status::Pending;
     usize Phase = 0;
 
-    Version* resolve(PreparedSelectionOutline value) noexcept
+    Version* Resolve(PreparedSelectionOutline value) noexcept
     {
         const uint32 index = internal::SelectionOutlineAccess::GetSlot(value);
         if (internal::SelectionOutlineAccess::GetOwner(value) != Identity || index >= MAXIMUM_VERSIONS)
@@ -190,14 +195,14 @@ struct SelectionOutlineRenderer::State final
                    ? &version
                    : nullptr;
     }
-    void drop(Version& inoutVersion) noexcept
+    void Drop(Version& inoutVersion) noexcept
     {
         static_cast<void>(rhi::Destroy(Device, inoutVersion.Instance));
         const uint64 generation = inoutVersion.Generation;
         inoutVersion = {};
         inoutVersion.Generation = generation + 1;
     }
-    void dropMask() noexcept
+    void DropMask() noexcept
     {
         static_cast<void>(rhi::Destroy(Device, MaskBindings));
         static_cast<void>(rhi::Destroy(Device, MaskView));
@@ -208,7 +213,7 @@ struct SelectionOutlineRenderer::State final
         MaskWidth = 0;
         MaskHeight = 0;
     }
-    void dropMesh() noexcept
+    void DropMesh() noexcept
     {
         static_cast<void>(rhi::Destroy(Device, MeshVertices));
         static_cast<void>(rhi::Destroy(Device, MeshIndices));
@@ -219,13 +224,13 @@ struct SelectionOutlineRenderer::State final
         HasMesh = false;
     }
     /// Make the mask texture, its view and its edge-pass bindings exist for width by height.
-    Status ensureMask(uint32 width, uint32 height) noexcept
+    Status EnsureMask(uint32 width, uint32 height) noexcept
     {
         if (MaskWidth == width && MaskHeight == height && rhi::IsNull(MaskTexture) == false)
         {
             return Status::Ready;
         }
-        dropMask();
+        DropMask();
         rhi::TextureDescription description;
         description.Width = width;
         description.Height = height;
@@ -238,7 +243,7 @@ struct SelectionOutlineRenderer::State final
         const Status viewStatus = rhi::CreateTextureView(Device, MaskTexture, MaskView);
         if (Accepted(viewStatus) == false)
         {
-            dropMask();
+            DropMask();
             return viewStatus;
         }
         const StaticArray<rhi::RasterBindingResource, EDGE_FRAGMENT_BINDING_COUNT> resources{
@@ -246,7 +251,7 @@ struct SelectionOutlineRenderer::State final
         status = rhi::CreateBindingSet(Device, EdgeLayout, resources.AsSpan(), MaskBindings);
         if (Accepted(status) == false)
         {
-            dropMask();
+            DropMask();
             return status;
         }
         MaskWidth = width;
@@ -259,11 +264,11 @@ struct SelectionOutlineRenderer::State final
         {
             if (version.IsUsed == true)
             {
-                drop(version);
+                Drop(version);
             }
         }
-        dropMesh();
-        dropMask();
+        DropMesh();
+        DropMask();
         for (rhi::RasterPipelineHandle& pipeline : Pipelines)
         {
             static_cast<void>(rhi::Destroy(Device, pipeline));
@@ -548,7 +553,7 @@ Status SelectionOutlineRenderer::SetMesh(BorrowedView<const math::Vector3> posit
         static_cast<void>(rhi::Destroy(state.Device, triangles));
         return status;
     }
-    state.dropMesh();
+    state.DropMesh();
     state.MeshVertices = vertices;
     state.MeshIndices = triangles;
     state.MeshVertexCount = static_cast<uint32>(vertexCount);
@@ -562,7 +567,7 @@ void SelectionOutlineRenderer::ClearMesh() noexcept
 {
     if (mState.Get() != nullptr)
     {
-        mState->dropMesh();
+        mState->DropMesh();
     }
 }
 
@@ -608,7 +613,7 @@ Status SelectionOutlineRenderer::Prepare(const SelectionOutlineView& view,
     {
         return Status::CapacityExceeded;
     }
-    const Status mask = state.ensureMask(view.Width, view.Height);
+    const Status mask = state.EnsureMask(view.Width, view.Height);
     if (Accepted(mask) == false)
     {
         return mask;
@@ -708,7 +713,7 @@ Status SelectionOutlineRenderer::Prepare(const SelectionOutlineView& view,
     const Status status = GetStatus(prepared);
     if (Accepted(status) == false)
     {
-        state.drop(version);
+        state.Drop(version);
         return status;
     }
     outPrepared = prepared;
@@ -722,7 +727,7 @@ Status SelectionOutlineRenderer::GetStatus(PreparedSelectionOutline prepared) no
         return Status::InvalidHandle;
     }
     State& state = *mState;
-    State::Version* versionOrNull = state.resolve(prepared);
+    State::Version* versionOrNull = state.Resolve(prepared);
     if (versionOrNull == nullptr)
     {
         return Status::InvalidHandle;
@@ -760,7 +765,7 @@ Status SelectionOutlineRenderer::Draw(PreparedSelectionOutline prepared,
         return Status::InvalidHandle;
     }
     State& state = *mState;
-    const State::Version* versionOrNull = state.resolve(prepared);
+    const State::Version* versionOrNull = state.Resolve(prepared);
     if (versionOrNull == nullptr)
     {
         return Status::InvalidHandle;
@@ -854,12 +859,12 @@ Status SelectionOutlineRenderer::Release(PreparedSelectionOutline& inoutPrepared
     {
         return Status::InvalidHandle;
     }
-    State::Version* versionOrNull = mState->resolve(inoutPrepared);
+    State::Version* versionOrNull = mState->Resolve(inoutPrepared);
     if (versionOrNull == nullptr)
     {
         return Status::InvalidHandle;
     }
-    mState->drop(*versionOrNull);
+    mState->Drop(*versionOrNull);
     inoutPrepared = {};
     return Status::Ready;
 }
