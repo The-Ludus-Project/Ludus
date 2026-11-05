@@ -42,6 +42,18 @@ struct CodePositionOffset final
                                          foundation::usize& outOffset) noexcept;
 [[nodiscard]] bool
 GetCodeCursorPosition(const QByteArray& bytes, foundation::usize offset, foundation::int32& outPosition) noexcept;
+/// Map `offset` to its Qt UTF-16 position by walking forward from `inoutFrom`, a
+/// pair previously produced for the same bytes, instead of from the start. This
+/// is the byte-to-position mirror of AdvanceCodeByteOffset: mapping ascending
+/// offsets this way (every cursor of a selection set the controller restores)
+/// costs one pass over the text in total, never one walk per cursor.
+/// @pre bytes contains validated UTF-8 and inoutFrom is a boundary of it.
+/// On success, inoutFrom becomes {outPosition, offset}. An offset before
+/// inoutFrom, or inside a scalar or CRLF, is rejected and both outputs survive.
+[[nodiscard]] bool AdvanceCodeCursorPosition(const QByteArray& bytes,
+                                             foundation::usize offset,
+                                             CodePositionOffset& inoutFrom,
+                                             foundation::int32& outPosition) noexcept;
 /// Constant-time scalar-boundary check for already validated source bytes.
 /// CRLF's interior is a scalar boundary, although it is not a Qt cursor boundary.
 [[nodiscard]] bool IsCodeScalarBoundary(const QByteArray& bytes, foundation::usize offset) noexcept;

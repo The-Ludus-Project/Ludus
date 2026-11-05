@@ -4,6 +4,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include "internal/code_latency_probe.h"
+#include "internal/code_multi_cursor.h"
 
 #include <QColor>
 #include <QList>
@@ -97,6 +98,17 @@ public:
     }
     /// Apply a single native undo group; commands preserve read-only buffers.
     void IndentSelection(bool shouldOutdent = false);
+    /// Multiple-cursor commands (CE06). AddCursorAbove/Below place a collapsed
+    /// cursor at the same column on the adjacent line; AddNextOccurrence selects
+    /// the word under the caret, then the next match on repeat; AddAllOccurrences
+    /// selects every match at once; ClearSecondaryCursors collapses to one. They
+    /// delegate to the view's multi-cursor overlay and are no-ops in a read-only
+    /// buffer. The keymap profiles bind them; menus and the palette call them.
+    void AddCursorAbove();
+    void AddCursorBelow();
+    void AddNextOccurrence();
+    void AddAllOccurrences();
+    void ClearSecondaryCursors();
     void ToggleLineComment();
     void DuplicateLines();
     void MoveLines(bool shouldMoveDown);
@@ -150,6 +162,12 @@ public:
     /// The keypress-to-paint latency probe for this view. Idle until Start();
     /// used by the native latency run and interactive qualification.
     [[nodiscard]] CodeLatencyProbe& GetLatencyProbe() const noexcept;
+    /// The secondary-cursor overlay for this view (CE06). Owned by the editor;
+    /// the controller drives it when restoring a multi-cursor selection set.
+    [[nodiscard]] CodeMultiCursor& GetMultiCursor() const noexcept;
+    /// Repaint the secondary carets and selections and announce the new cursor
+    /// count (CE06). The multi-cursor overlay calls this after it changes the set.
+    void NotifyMultiCursorChanged();
 
 Q_SIGNALS:
     /// A font, wrapping or guide preference changed on the GUI thread.
@@ -171,6 +189,9 @@ Q_SIGNALS:
     void AssistanceDismissed();
     void CompletionChosen(foundation::int32 row);
     void SignatureOverloadRequested(foundation::int32 direction);
+    /// The number of cursors changed (1 plus the secondary cursors, CE06). The
+    /// status bar shows the count; emitted only when the count actually changes.
+    void CursorCountChanged(foundation::int32 count);
 
 private:
     QListWidget* mCompletionList;
@@ -238,5 +259,8 @@ private:
     bool mIsDefinitionClick = false;
     /// Keypress-to-paint latency probe; idle unless explicitly started.
     mutable CodeLatencyProbe mLatencyProbe;
+    /// Secondary-cursor overlay (CE06). A plain value member bound to this view;
+    /// it holds no Qt-child lifetime and is destroyed with the editor.
+    mutable CodeMultiCursor mMultiCursor;
 };
 } // namespace ludus::editor

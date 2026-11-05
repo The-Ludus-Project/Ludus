@@ -2,9 +2,11 @@
 
 #include "internal/code_document.h"
 #include "internal/code_editor.h"
+#include "internal/code_multi_cursor.h"
 
 #include <QByteArray>
 #include <QElapsedTimer>
+#include <QList>
 #include <QObject>
 
 namespace ludus::editor
@@ -32,10 +34,12 @@ public:
     [[nodiscard]] CodeTextCapture Capture() const;
     [[nodiscard]] CodeTextSelection CaptureSelection() const;
     void RestoreSelection(CodeTextSelection selection);
-    /// Restore a whole selection set recorded with an undo/redo step (CE05). For
-    /// now the view carries one Qt cursor, so this restores the primary (first)
-    /// selection; the secondary cursors are drawn by the multi-cursor layer that
-    /// a later batch adds. An empty set leaves the view's selection untouched.
+    /// Restore a whole selection set recorded with an undo/redo step (CE05). The
+    /// primary (first) selection becomes the single Qt cursor; the rest become
+    /// the view's secondary cursors through its multi-cursor layer (CE06). An
+    /// empty set leaves the view's selection untouched. Byte offsets are mapped
+    /// to Qt positions in one ascending pass with AdvanceCodeByteOffset, so a
+    /// hundred-cursor set costs one walk of the text, not one walk per cursor.
     void RestoreSelectionSet(foundation::BorrowedView<const CodeTextSelection> selections);
     /// Publish formatter/completion text with an exact identity. One history group;
     /// never writes a file. Invalid/stale text preserves the accepted draft.
@@ -51,6 +55,20 @@ public:
     /// `expected` is the identity the caller built the set against; it must match
     /// the bound host, so a set computed against older text is rejected whole.
     [[nodiscard]] CodeEditStatus ApplyEditSet(const CodeDocumentIdentity& expected, const CodeEditSet& edits);
+
+    /// Apply one multi-cursor text operation as a single CodeEditSet (CE06). The
+    /// regions arrive in document order (ascending Start) in the view's UTF-16
+    /// coordinates, one per cursor; exactly one is flagged primary. Every Start
+    /// and End is mapped to a UTF-8 byte offset in one ascending pass with
+    /// AdvanceCodeByteOffset, so the mapping is one walk of the text regardless of
+    /// the cursor count. On Ok the whole set has applied as one undo step, the
+    /// view has re-synchronized with the single Qt cursor on the primary region's
+    /// resulting caret, and outSecondaryCursors holds the resulting caret of each
+    /// non-primary region (UTF-16, document order) for the view's overlay. A
+    /// stale identity, an unmappable position or a rejected set keeps the accepted
+    /// draft and leaves outSecondaryCursors unchanged.
+    [[nodiscard]] CodeEditStatus ApplyMultiCursorEdit(const QList<CodeRegionEdit>& regionsInDocumentOrder,
+                                                      QList<CodeSecondaryCursor>& outSecondaryCursors);
 
 Q_SIGNALS:
     void TextAccepted();

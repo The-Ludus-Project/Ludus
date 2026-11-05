@@ -499,6 +499,7 @@ add_library(ludus_editor_code STATIC
     src/internal/code_syntax_highlighter.h src/code_syntax_highlighter.cpp
     src/internal/code_document.h src/internal/code_edit_scope.h
     src/internal/code_text.h src/code_text.cpp
+    src/internal/code_multi_cursor.h src/code_multi_cursor.cpp
     src/internal/code_document_controller.h src/code_document_controller.cpp
     src/internal/code_formatter.h src/code_formatter.cpp
     src/internal/slang_language_service.h src/slang_language_service.cpp
@@ -1026,7 +1027,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set_tests_properties(ludus_editor_accessibility_tests PROPERTIES LABELS "unit;editor;native;accessibility"
             TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=cocoa")
     endif()
-    add_executable(ludus_code_editor_tests tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp tests/code_language_registry_tests.cpp tests/code_latency_probe_tests.cpp tests/code_file_document_tests.cpp tests/code_edit_set_tests.cpp tests/code_document_registry_tests.cpp tests/code_recovery_journal_tests.cpp tests/code_editor_area_tests.cpp tests/code_status_bar_tests.cpp tests/script_code_document_tests.cpp tests/code_editor_benchmark.cpp)
+    add_executable(ludus_code_editor_tests tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp tests/code_language_registry_tests.cpp tests/code_latency_probe_tests.cpp tests/code_file_document_tests.cpp tests/code_edit_set_tests.cpp tests/code_document_registry_tests.cpp tests/code_recovery_journal_tests.cpp tests/code_editor_area_tests.cpp tests/code_status_bar_tests.cpp tests/script_code_document_tests.cpp tests/code_multi_cursor_tests.cpp tests/code_editor_benchmark.cpp)
     target_include_directories(ludus_code_editor_tests PRIVATE src)
     target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
     configure_file(tests/formatter_fixture.py generated/formatter_fixture.py COPYONLY)
