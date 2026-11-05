@@ -67,6 +67,7 @@ on:
       - 'modules/foundation/base/tests/windows_diagnostic_probe.cpp'
       - 'tests/assertions/windows_diagnostics.py'
       - 'modules/foundation/filesystem/**'
+      - 'modules/foundation/logging/src/sinks/file_sink.cpp'
       - 'tests/filesystem/windows_recovery.py'
       - 'modules/platform/src/entropy.cpp'
       - 'modules/platform/src/internal/win32_keymap.hpp'
@@ -220,6 +221,7 @@ jobs:
           # collision cannot silently substitute the most recently built binary.
           $testNames = $testTargets + @('ludus_filesystem_windows_recovery', 'ludus_windows_diagnostic_death')
           $suite = '^(' + ($testNames -join '|') + ')$'
+          $failedConfigurations = @()
           foreach ($configuration in $builds.Keys) {
             $preset = $builds[$configuration]
             $build = "out/build/$preset"
@@ -230,7 +232,7 @@ jobs:
             if (Test-Path $lastTest) {
               Copy-Item $lastTest "$build/Testing/Temporary/$configuration.log"
             }
-            if ($testStatus -ne 0) { throw "Engine $configuration tests failed" }
+            if ($testStatus -ne 0) { $failedConfigurations += $configuration }
             $tests = ctest --preset $preset --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
             foreach ($name in $testNames) {
               if ($name -notin $tests.tests.name) { throw "Missing required $configuration test $name" }
@@ -249,6 +251,9 @@ jobs:
             }
             python tests/build_contract/windows_file_api.py launch $build $fileApiConfiguration $d3d12
             if ($LASTEXITCODE -ne 0) { throw "Engine $configuration File API launch failed" }
+          }
+          if ($failedConfigurations.Count -gt 0) {
+            throw "Engine tests failed in $($failedConfigurations -join ', ')"
           }
       - name: Install and relocate all four SDKs
         if: matrix.generator == 'MSBuild'
@@ -368,12 +373,12 @@ jobs:
           cmake --build out/build/windows-clang-development --target \
             ludus_platform ludus_graphics_rhi \
             ludus_platform_win32_tests ludus_platform_entropy_tests ludus_rhi_d3d12_tests ludus_rhi_lifecycle_tests \
-            ludus_filesystem_tests ludus_filesystem_windows_recovery_probe -- -k 0
+            ludus_filesystem_tests ludus_filesystem_windows_recovery_probe ludus_foundation_logging_tests -- -k 0
       - name: Test the Win32 window and Direct3D 12 backends
         run: |
           export PATH="$PWD/out/host-tools/venv/Scripts:$PATH"
           ctest --test-dir out/build/windows-clang-development --output-on-failure --no-tests=error \
-            --tests-regex '^ludus_((platform_win32|platform_entropy|rhi_d3d12|rhi_lifecycle|filesystem)_tests|filesystem_windows_recovery)$'
+            --tests-regex '^ludus_((platform_win32|platform_entropy|rhi_d3d12|rhi_lifecycle|filesystem|foundation_logging)_tests|filesystem_windows_recovery)$'
           out/build/windows-clang-development/modules/graphics/rhi/ludus_rhi_d3d12_tests.exe --list-tests \
             | grep -q "Portable texture transfers initialize mips"
           # The DXIL pixel tests are configured only with the shader tools; require them here.
