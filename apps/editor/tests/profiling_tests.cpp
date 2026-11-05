@@ -266,7 +266,8 @@ TEST_CASE("repeated profiling toggles save distinct traces and enable revealing 
     }
 }
 
-TEST_CASE("editor shell F9 records through the same menu toolbar and Profiling window action", "[profiling][editor]")
+TEST_CASE("editor shell Ctrl+Alt+F9 records through the same menu toolbar and Profiling window action",
+          "[profiling][editor]")
 {
     QTemporaryDir directory;
     EditorController controller({}, nullptr, directory.filePath(QStringLiteral("recent.json")));
@@ -290,13 +291,14 @@ TEST_CASE("editor shell F9 records through the same menu toolbar and Profiling w
     dock->hide();
     window.activateWindow();
     QTest::qWait(20);
-    QTest::keyClick(&window, Qt::Key_F9);
+    // Record Profiling is Ctrl+Alt+F9 in every keymap profile (shortcut resolution decided 2026-11-03).
+    QTest::keyClick(&window, Qt::Key_F9, Qt::ControlModifier | Qt::AltModifier);
     REQUIRE(panel->GetController().GetState() == ProfilingState::Recording);
     CHECK(dock->isVisible() == true);
     {
         LUDUS_PROFILE_SCOPE(EditorF9Evidence);
     }
-    QTest::keyClick(&window, Qt::Key_F9);
+    QTest::keyClick(&window, Qt::Key_F9, Qt::ControlModifier | Qt::AltModifier);
     REQUIRE(FinishRecording(panel->GetController()) == true);
     CHECK(panel->GetController().GetState() == ProfilingState::Complete);
     CHECK(ReadTrace(destination->text()).isEmpty() == false);

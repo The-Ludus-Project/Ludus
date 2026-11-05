@@ -419,10 +419,13 @@ void MainWindow::collapseResolvedGraphErrors()
         return;
     }
     // Only collapse the bottom tab group when Error List is the visible tab. An explicitly
-    // selected Output, Timing or Profiling view remains open; new problems reveal Error List.
-    for (QDockWidget* dock : {mErrorListDock, OutputDock_, TimingDock_, mProfilingDock})
+    // selected Output, Search, Timing or Profiling view remains open; new problems reveal Error List.
+    for (QDockWidget* dock : {mErrorListDock, mSearchDockOrNull, OutputDock_, TimingDock_, mProfilingDock})
     {
-        dock->hide();
+        if (dock != nullptr)
+        {
+            dock->hide();
+        }
     }
 }
 

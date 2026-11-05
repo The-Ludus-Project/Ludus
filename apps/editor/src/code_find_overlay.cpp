@@ -1,4 +1,5 @@
 #include "internal/code_find_overlay.h"
+#include "design_tokens.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -40,7 +41,7 @@ namespace
 {
 using namespace foundation;
 
-constexpr int32 OVERLAY_MARGIN = 8;
+constexpr int32 OVERLAY_MARGIN = design::SPACING_SMALL;
 
 // Apply the case pattern of `source` to `target` for preserve-case replace: an
 // all-upper source upper-cases the target, an all-lower source lower-cases it,

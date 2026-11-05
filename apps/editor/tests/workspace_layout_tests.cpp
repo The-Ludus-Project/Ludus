@@ -393,6 +393,8 @@ TEST_CASE("World stays visible beside tool windows and receives focused document
         {
             dock->raise();
             QApplication::processEvents();
+            INFO(dock->objectName().toStdString() << " raised at " << size.width() << "x" << size.height()
+                                                  << "; World is " << world->width() << "x" << world->height());
             CHECK(world->isVisible() == true);
             CHECK(world->width() > 400);
             CHECK(world->height() > 300);
@@ -527,6 +529,7 @@ TEST_CASE("The bottom tool windows start closed until a problem is reported", "[
     Reset(window);
     QDockWidget* errors = Dock(window, QStringLiteral("errorListDock"));
     for (const QString& name : {QStringLiteral("errorListDock"),
+                                QStringLiteral("searchDock"),
                                 QStringLiteral("outputDock"),
                                 QStringLiteral("timingDock"),
                                 QStringLiteral("profilingDock")})

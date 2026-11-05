@@ -742,6 +742,13 @@ offscreen. The merged M2 stack did not compile, and five tests failed once it di
   is inside the string, which the excluded ranges reject, so the second `"`
   inserted a third. Symmetric pairs now step over inside strings; brackets
   still need a position outside strings and comments.
+- **Shell regressions outside the code editor suite.** The Search tool window
+  joined the bottom tab group but not the diagnostics group that starts closed,
+  so it kept the bottom area open and shrank the World viewport below the
+  layout tests' limits; it now starts closed and collapses with that group and
+  is listed in the Window menu. The find overlay's margin now comes from the
+  spacing tokens. The profiling shell test still pressed F9, which the keymap
+  decision moved to Ctrl+Alt+F9.
 
 Kiro's sandbox cannot compile, so the "authored, not run" label covered
 compiling as well as running. `AGENTS.md` and `.kiro/steering` now require a
