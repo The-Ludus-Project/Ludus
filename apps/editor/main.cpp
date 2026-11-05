@@ -14,6 +14,7 @@
 #    include "internal/crash_reporting.h"
 #endif
 #include "internal/qt_accessibility.h"
+#include "internal/startup_sound.h"
 #include "internal/theme_fonts.h"
 #include "internal/window_size.h"
 
@@ -142,6 +143,9 @@ int main(int argc, char** argv)
     }
 #else
     window.show();
+    // Plays once on its own worker; joined (after a short fade if still playing) when main returns.
+    ludus::editor::StartupSoundPlayer startupSound;
+    ludus::editor::PlayStartupSoundIfEnabled(startupSound);
 #    if defined(LUDUS_EDITOR_CRASH_CAPTURE)
     QTimer::singleShot(0, &window, [&window]() { ludus::editor::PresentEditorCrashReportingNotice(&window); });
 #    endif

@@ -21,6 +21,7 @@
 #include "internal/render_graph_job.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
+#include "internal/startup_sound.h"
 #include "internal/world_workspace.h"
 
 #include <ludus/foundation/base/types.h>
@@ -36,6 +37,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSettings>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QStringList>
@@ -374,10 +376,16 @@ void MainWindow::showOptions()
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->SetBuildSettings(Renderer_->GetBuildSettings());
     dialog->SetResolvedBuildTools(Renderer_->GetResolvedSdk(), Renderer_->GetResolvedBuildTools());
+    dialog->SetPlaysStartupSound(ReadStartupSoundSetting(QSettings()));
     // Tool overrides belong to the project they were chosen for; a project change while the
     // dialog is open discards them.
     const foundation::uint64 epoch = Controller_->State().ProjectEpoch;
     connect(dialog, &QDialog::accepted, this, [this, dialog, epoch]() {
+#if !defined(Q_OS_WASM)
+        // The startup sound is an editor-wide preference, kept whatever project is open.
+        QSettings settings;
+        WriteStartupSoundSetting(settings, dialog->ShouldPlayStartupSound());
+#endif
         if (Controller_->State().ProjectEpoch == epoch)
         {
             Renderer_->SetBuildSettings(dialog->GetBuildSettings());
