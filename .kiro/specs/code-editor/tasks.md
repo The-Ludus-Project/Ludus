@@ -184,8 +184,12 @@ Requirements: CE05-CE07, CE17. Prerequisite: M1.
   engine for find/count/replace, Replace All as one linear `CodeEditSet`;
   authored, not run — see the
   [M2 batch 3 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-3-the-find-overlay-ce07-2026-11-05).)*
-- [ ] Implement the search service, the Search tool window and Replace in
-  Files with preview (design section 8).
+- [x] Implement the search service, the Search tool window and Replace in
+  Files with preview (design section 8). *(Batch 4; `internal/code_search_service.h/.cpp`
+  (worker + one-pass `FindMatchesInText`), `internal/search_tool_window.h/.cpp`,
+  `CodeDocumentRegistry::ApplyWorkspaceEdit` minting one `CodeTransactionId`;
+  authored, not run — see the
+  [M2 batch 4 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-4-search-and-replace-in-files-ce07-ce11-2026-11-05).)*
 - [ ] Add auto-closing and surrounding pairs and indentation rules from the
   registry.
 - [ ] Add the Ludus and VS Code keymap profiles, user overrides, conflict

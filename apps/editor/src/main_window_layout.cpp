@@ -20,6 +20,7 @@
 #include "internal/project_rendering_settings.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
+#include "internal/search_tool_window.h"
 #include "internal/state_view.h"
 #include "internal/theme_fonts.h"
 #include "internal/timing_panel.h"
@@ -80,7 +81,7 @@ namespace
 {
 // Version 6: the calm default (Project Explorer left, Properties right, diagnostics closed until needed);
 // older layouts reset. Version 5 added the render-graph Render Preview tool window.
-constexpr foundation::int32 LAYOUT_VERSION = 6;
+constexpr foundation::int32 LAYOUT_VERSION = 7;
 constexpr foundation::int32 PERCENT = 100;
 // First-run window: this share of the screen, at least the minimum below.
 constexpr foundation::int32 DEFAULT_WINDOW_PERCENT = 85;
@@ -401,6 +402,28 @@ void MainWindow::BuildUi()
     mErrorListDock->setObjectName(QStringLiteral("errorListDock"));
     mErrorListDock->setWindowIcon(GetEditorIcon(EditorIcon::Error));
     mErrorListDock->setWidget(mErrorList);
+
+    // The Search tool window (CE07): project-wide find and Replace in Files. Its
+    // scope provider is backed by the code area's registry (for dirty buffers)
+    // and the active project root, updated in the project chain. Activating a
+    // result opens the file and reveals the match through openCodeFile+GoToLine.
+    mSearchScopeOrNull = new CodeAreaSearchScope(mCodeArea->GetRegistry());
+    mSearchDockOrNull = new QDockWidget(QStringLiteral("Search"), this);
+    mSearchDockOrNull->setObjectName(QStringLiteral("searchDock"));
+    mSearchDockOrNull->setWindowIcon(GetEditorIcon(EditorIcon::Error));
+    mSearchOrNull = new SearchToolWindow(mCodeArea->GetRegistry(), *mSearchScopeOrNull, mSearchDockOrNull);
+    mSearchDockOrNull->setWidget(mSearchOrNull);
+    connect(mSearchOrNull,
+            &SearchToolWindow::OpenRequested,
+            this,
+            [this](const QString& path, foundation::int32 line, foundation::int32 column) {
+                openCodeFile(path, false);
+                CodeDocumentTab* tab = mCodeArea->GetActiveTabOrNull();
+                if (tab != nullptr)
+                {
+                    tab->GetEditor().GoToLine(line, column);
+                }
+            });
 
     InspectorDock_ = new QDockWidget(QStringLiteral("Live Inspector"), this);
     InspectorDock_->setObjectName(QStringLiteral("liveInspectorDock"));
@@ -795,6 +818,7 @@ void MainWindow::arrangeDefaultDocks()
     addDockWidget(Qt::RightDockWidgetArea, mPropertiesDock);
     tabifyDockWidget(mPropertiesDock, InspectorDock_);
     addDockWidget(Qt::BottomDockWidgetArea, mErrorListDock);
+    tabifyDockWidget(mErrorListDock, mSearchDockOrNull);
     tabifyDockWidget(mErrorListDock, OutputDock_);
     tabifyDockWidget(mErrorListDock, TimingDock_);
     tabifyDockWidget(mErrorListDock, mProfilingDock);
@@ -816,6 +840,7 @@ QList<QDockWidget*> MainWindow::getToolWindows() const
         mPropertiesDock,
         InspectorDock_,
         mErrorListDock,
+        mSearchDockOrNull,
         OutputDock_,
         TimingDock_,
         mProfilingDock,

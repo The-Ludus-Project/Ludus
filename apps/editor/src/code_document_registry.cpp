@@ -1,7 +1,10 @@
 #include "internal/code_document_registry.h"
 
+#include "internal/code_file_limits.h"
 #include "internal/code_recovery_writer.h"
+#include "internal/code_text.h"
 
+#include <QByteArray>
 #include <QDir>
 #include <QFileInfo>
 #include <QStandardPaths>
@@ -17,6 +20,7 @@ namespace ludus::editor
 {
 using foundation::int32;
 using foundation::uint64;
+using foundation::usize;
 
 namespace
 {
@@ -159,6 +163,24 @@ CodeFileDocument* CodeDocumentRegistry::FindHostOrNull(const QString& absolutePa
     const QString key = canonicalKey(absolutePath);
     QHash<QString, HostEntry>::const_iterator iterator = mHosts.constFind(key);
     return iterator == mHosts.constEnd() ? nullptr : iterator->Host.get();
+}
+
+QHash<QString, QByteArray> CodeDocumentRegistry::GetDirtyDrafts() const
+{
+    QHash<QString, QByteArray> drafts;
+    for (QHash<QString, HostEntry>::const_iterator iterator = mHosts.constBegin(); iterator != mHosts.constEnd();
+         ++iterator)
+    {
+        const CodeFileDocument* host = iterator->Host.get();
+        if (host->IsDirty() == false)
+        {
+            continue;
+        }
+        const CodeDocumentSnapshot snapshot = host->GetSnapshot();
+        drafts.insert(host->GetCanonicalPath(),
+                      QByteArray(snapshot.Text.GetDataOrNull(), static_cast<qsizetype>(snapshot.Text.GetSize())));
+    }
+    return drafts;
 }
 
 void CodeDocumentRegistry::BindRecoveryProject(const QString& projectRoot)
@@ -326,5 +348,164 @@ void CodeDocumentRegistry::ClearRecovery()
     }
     mJournaledPaths.clear();
     mJournal.Clear();
+}
+
+namespace
+{
+/// One file prepared for a workspace edit: the acquired host, whether it was
+/// already open before this edit (so it is not released afterwards), the byte
+/// edits and the owned inserted bytes those edits borrow.
+struct PreparedWorkspaceFile final
+{
+    CodeFileDocument* HostOrNull = nullptr;
+    QList<CodeTextEdit> Edits;
+    QList<QByteArray> InsertedBytes;
+};
+
+/// Map one file's editor-coordinate replacements to byte edits against its
+/// snapshot, in one forward pass. Returns false when a position cannot be mapped
+/// to a scalar boundary; on success outPrepared.Edits borrow outPrepared.InsertedBytes.
+[[nodiscard]] bool PrepareFileEdits(const CodeWorkspaceFileEdit& fileEdit, PreparedWorkspaceFile& outPrepared)
+{
+    const CodeDocumentSnapshot snapshot = outPrepared.HostOrNull->GetSnapshot();
+    const QByteArray bytes(snapshot.Text.GetDataOrNull(), static_cast<qsizetype>(snapshot.Text.GetSize()));
+    const bool hasCrLf = bytes.contains("\r\n");
+    outPrepared.Edits.reserve(fileEdit.Replacements.size());
+    outPrepared.InsertedBytes.reserve(fileEdit.Replacements.size());
+    CodePositionOffset mapped;
+    for (const CodeWorkspaceReplacement& replacement : fileEdit.Replacements)
+    {
+        if (replacement.EndPosition < replacement.StartPosition)
+        {
+            return false;
+        }
+        usize startBytes = 0;
+        usize endBytes = 0;
+        if (AdvanceCodeByteOffset(bytes, replacement.StartPosition, mapped, startBytes) == false ||
+            AdvanceCodeByteOffset(bytes, replacement.EndPosition, mapped, endBytes) == false)
+        {
+            return false;
+        }
+        QString text = replacement.Replacement;
+        if (hasCrLf == true)
+        {
+            text.replace(QStringLiteral("\n"), QStringLiteral("\r\n"));
+        }
+        outPrepared.InsertedBytes.append(text.toUtf8());
+        const QByteArray& owned = outPrepared.InsertedBytes.last();
+        outPrepared.Edits.append(CodeTextEdit
+        {
+            .StartBytes = startBytes,
+            .RemovedBytes = endBytes - startBytes,
+            .Inserted = {owned.constData(), static_cast<usize>(owned.size())},
+        });
+    }
+    return true;
+}
+} // namespace
+
+CodeWorkspaceEditStatus CodeDocumentRegistry::ApplyWorkspaceEdit(const QList<CodeWorkspaceFileEdit>& fileEdits)
+{
+    if (fileEdits.isEmpty() == true || fileEdits.size() > CODE_MAX_WORKSPACE_EDIT_FILES)
+    {
+        return CodeWorkspaceEditStatus::Rejected;
+    }
+
+    // Acquire and prepare every file, releasing any host we opened if preparation
+    // or validation fails, so a rejected edit leaves no file open or changed.
+    QList<PreparedWorkspaceFile> prepared;
+    prepared.reserve(fileEdits.size());
+    // Every successful AcquireHost is balanced by exactly one ReleaseHost. A host
+    // that a view already held survives the release (its view keeps a reference);
+    // a host opened only for this edit is destroyed when released if it is clean.
+    const auto releaseAll = [this, &prepared]() {
+        for (const PreparedWorkspaceFile& file : prepared)
+        {
+            if (file.HostOrNull != nullptr)
+            {
+                ReleaseHost(file.HostOrNull);
+            }
+        }
+    };
+
+    bool isRejected = false;
+    for (const CodeWorkspaceFileEdit& fileEdit : fileEdits)
+    {
+        PreparedWorkspaceFile file;
+        CodeFileLoadStatus status = CodeFileLoadStatus::Failed;
+        QString explanation;
+        file.HostOrNull = AcquireHost(fileEdit.AbsolutePath, status, explanation);
+        if (file.HostOrNull == nullptr)
+        {
+            isRejected = true;
+            break;
+        }
+        // Record it so releaseAll balances the acquire even on the failure path.
+        prepared.append(std::move(file));
+        if (prepared.last().HostOrNull->IsReadOnly() == true || PrepareFileEdits(fileEdit, prepared.last()) == false)
+        {
+            isRejected = true;
+            break;
+        }
+    }
+
+    // Validate every prepared file against its snapshot WITHOUT mutating it, so
+    // the whole edit is all-or-nothing across files (design section 7).
+    for (int32 index = 0; isRejected == false && index < prepared.size(); ++index)
+    {
+        const PreparedWorkspaceFile& file = prepared.at(index);
+        const CodeDocumentSnapshot snapshot = file.HostOrNull->GetSnapshot();
+        const CodeTextSelection beforeSelections[] = {CodeTextSelection{0, 0}};
+        const CodeEditSet set =
+        {
+            .Edits = {file.Edits.constData(), static_cast<usize>(file.Edits.size())},
+            .Before = {{beforeSelections, 1}},
+            .After = {},
+            .Transaction = {},
+        };
+        QByteArray probe;
+        if (ValidateAndApplyEditSet(snapshot.Text, snapshot.LimitBytes, set, probe) != CodeEditStatus::Ok)
+        {
+            isRejected = true;
+        }
+    }
+
+    if (isRejected == true)
+    {
+        releaseAll();
+        return CodeWorkspaceEditStatus::Rejected;
+    }
+
+    // Every file validated: mint one transaction id and apply each slice, then
+    // save. Validation above guarantees each ApplyEdits returns Ok.
+    const CodeTransactionId transaction{++mNextTransaction};
+    bool didSaveFail = false;
+    for (int32 index = 0; index < prepared.size(); ++index)
+    {
+        PreparedWorkspaceFile& file = prepared[index];
+        const CodeDocumentSnapshot snapshot = file.HostOrNull->GetSnapshot();
+        const CodeTextSelection beforeSelections[] = {CodeTextSelection{0, 0}};
+        const CodeEditSet set =
+        {
+            .Edits = {file.Edits.constData(), static_cast<usize>(file.Edits.size())},
+            .Before = {{beforeSelections, 1}},
+            .After = {},
+            .Transaction = transaction,
+        };
+        static_cast<void>(file.HostOrNull->ApplyEdits(snapshot.Identity, set, false));
+        QString saveError;
+        if (file.HostOrNull->Save(saveError) == false)
+        {
+            didSaveFail = true;
+        }
+    }
+
+    // Mirror and record dirty state, then release the one reference each acquire
+    // took. A host a view already held keeps that view's reference and stays
+    // open; a host opened only for this edit is now clean (saved) and is dropped.
+    Q_EMIT DirtyStateChanged();
+    ScheduleRecoveryCheckpoint();
+    releaseAll();
+    return didSaveFail == true ? CodeWorkspaceEditStatus::AppliedButSaveFailed : CodeWorkspaceEditStatus::Ok;
 }
 } // namespace ludus::editor

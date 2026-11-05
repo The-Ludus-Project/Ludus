@@ -49,8 +49,10 @@ namespace ludus::editor
 {
 
 class AudioWorkspace;
+class CodeAreaSearchScope;
 class CodeEditorArea;
 class CodeStatusBar;
+class SearchToolWindow;
 class ConfigurationWorkspace;
 class ContentWorkspace;
 class DocumentWell;
@@ -258,6 +260,12 @@ private:
     QLabel* mNoProperties;
     QDockWidget* mErrorListDock;
     ErrorList* mErrorList;
+    // The Search tool window and its scope provider (CE07); created in BuildUi
+    // after the code area, so they are pointers rather than initializer-list
+    // members, and are owned by their dock / this window.
+    QDockWidget* mSearchDockOrNull = nullptr;
+    SearchToolWindow* mSearchOrNull = nullptr;
+    CodeAreaSearchScope* mSearchScopeOrNull = nullptr;
     QDockWidget* mContentDock;
     QDockWidget* mRenderPreviewDock;
     QDockWidget* mProfilingDock;

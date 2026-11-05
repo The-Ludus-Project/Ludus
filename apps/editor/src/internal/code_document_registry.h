@@ -29,6 +29,38 @@ struct CodeRecoveredBuffer final
     QByteArray Draft;
 };
 
+/// One replacement within one file's workspace edit (CE11, design section 7), in
+/// decoded (UTF-16) editor coordinates: replace [StartPosition, EndPosition) of
+/// the file with Replacement. The ranges within a file must be ascending and
+/// non-overlapping, as the search producer emits them.
+struct CodeWorkspaceReplacement final
+{
+    foundation::int32 StartPosition = 0;
+    foundation::int32 EndPosition = 0;
+    QString Replacement;
+};
+
+/// One file's slice of a Replace in Files workspace edit: the file to edit and
+/// its ascending, non-overlapping replacements in editor coordinates.
+struct CodeWorkspaceFileEdit final
+{
+    QString AbsolutePath;
+    QList<CodeWorkspaceReplacement> Replacements;
+};
+
+/// The outcome of CodeDocumentRegistry::ApplyWorkspaceEdit.
+enum class CodeWorkspaceEditStatus : foundation::uint8
+{
+    /// Every file applied as one transaction and was saved.
+    Ok,
+    /// Nothing was applied: a file failed to open, map or validate, or the edit
+    /// touched more than CODE_MAX_WORKSPACE_EDIT_FILES files. No file changed.
+    Rejected,
+    /// Every file applied, but at least one could not be saved to disk; its host
+    /// stays dirty with the applied edit so no work is lost.
+    AppliedButSaveFailed,
+};
+
 /// One authoritative file host per canonical path within a project epoch (CE02).
 /// The registry creates a host on first open, hands the same host to every view
 /// of that path (so split groups and mirrored views share one draft and one
@@ -81,6 +113,13 @@ public:
     /// The host already open for `absolutePath` in the current epoch, or null.
     [[nodiscard]] CodeFileDocument* FindHostOrNull(const QString& absolutePath) const;
 
+    /// A snapshot of every open host whose buffer differs from disk: the
+    /// canonical path to the current unsaved draft bytes. The Search tool window
+    /// passes this to the search worker so open edits are searched instead of the
+    /// stale bytes on disk (design section 8). The bytes are copied, so the
+    /// returned map is safe to hand to a worker thread.
+    [[nodiscard]] QHash<QString, QByteArray> GetDirtyDrafts() const;
+
     /// Bind the recovery journal to `projectRoot`. Call on project open, before
     /// restoring tabs, so journal files from a crashed session of the same
     /// project are read and later entries are scoped to it. An empty root (no
@@ -117,6 +156,20 @@ public:
     /// pass completes and when recovery is explicitly discarded.
     void ClearRecovery();
 
+    /// Apply a Replace in Files workspace edit as one transaction (CE11, design
+    /// section 7). The registry mints a non-zero CodeTransactionId, opens or
+    /// finds a host for every file, maps each file's editor-coordinate
+    /// replacements to UTF-8 byte edits in one pass with AdvanceCodeByteOffset,
+    /// and VALIDATES every file (identity, ascending non-overlap, boundaries,
+    /// capacity) before changing anything. If any file fails validation, or the
+    /// edit touches more than CODE_MAX_WORKSPACE_EDIT_FILES files, nothing is
+    /// applied and the status is Rejected. On Ok every file applied its slice as
+    /// one undo step carrying the shared transaction id and was saved; a save
+    /// failure leaves the applied edit in a dirty host and returns
+    /// AppliedButSaveFailed. Hosts opened only to apply are released afterwards;
+    /// an already-open host keeps its view's undo history. GUI thread only.
+    [[nodiscard]] CodeWorkspaceEditStatus ApplyWorkspaceEdit(const QList<CodeWorkspaceFileEdit>& fileEdits);
+
 Q_SIGNALS:
     /// A host's dirty state may have changed, so owners can refresh Save All and
     /// tab decorations. Emitted after an edit is mirrored.
@@ -138,6 +191,9 @@ private:
     void onRecoveryDebounce();
 
     foundation::uint64 mEpoch = 0;
+    // The next workspace-edit transaction id to mint; 0 is reserved for "no
+    // transaction", so minting pre-increments (CE11).
+    foundation::uint64 mNextTransaction = 0;
     // Keyed by canonical path within the current epoch.
     QHash<QString, HostEntry> mHosts;
 

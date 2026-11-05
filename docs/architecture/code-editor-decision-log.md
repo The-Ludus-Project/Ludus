@@ -488,3 +488,71 @@ All, match count with "N of M", invalid-regex reporting, find-next wrap and the
 are pending host verification by the maintainer on macOS: `./scripts/build`,
 `./scripts/test`, `./scripts/check --all`, the ASan/UBSan lane, and a recorded
 native run of the overlay including its floating placement and a screen reader.
+
+### M2 batch 4: search and Replace in Files (CE07, CE11, 2026-11-05)
+
+The editor gained project-wide search and Replace in Files (design sections 7
+and 8): a background search service, a Search tool window, and a workspace-edit
+path on the registry. New files: `internal/code_search_service.h/.cpp`,
+`internal/search_tool_window.h/.cpp`, the owner constants in
+`internal/code_file_limits.h`, and `CodeDocumentRegistry::ApplyWorkspaceEdit`.
+
+Decisions and deviations recorded here:
+
+- **Matching is one pure pass, shared by the worker and the tests.**
+  `FindMatchesInText` compiles the query once into a `QRegularExpression`
+  (literal queries escaped, whole word wrapped in `\b(?:...)\b`,
+  UseUnicodePropertiesOption off per section 8) and walks the decoded text once,
+  deriving each match's line and column from a running offset that only moves
+  forward — never a per-match scan from the start, and never
+  `QTextDocument::find`. It stops at the passed cap so the whole search is bounded
+  by `CODE_SEARCH_MAX_MATCHES`.
+- **The worker mirrors the recovery writer.** `CodeSearchService` owns a per-job
+  `QThread` that deep-copies its inputs (roots, exclusions, query, and a snapshot
+  of every dirty buffer), enumerates the authored roots, skips the excluded
+  `out/` and `.git` prefixes, binary files (a NUL in the first
+  `CODE_SEARCH_BINARY_PROBE_BYTES`) and files over `CODE_SEARCH_FILE_LIMIT_BYTES`,
+  and streams results back in batches of at most `CODE_SEARCH_RESULT_BATCH`
+  through queued signals. A dirty file is searched from its passed-in draft, not
+  disk. Only one worker runs at a time; Start cancels and joins the previous one.
+- **Replace in Files is one workspace-edit transaction (section 7).**
+  `ApplyWorkspaceEdit` mints a non-zero `CodeTransactionId` (its first use;
+  `CodeEditSet::Transaction` was threaded through but unused until now), acquires
+  a host per file through the registry, maps each file's editor-coordinate
+  replacements to byte edits in one `AdvanceCodeByteOffset` pass, and VALIDATES
+  every file against its snapshot before changing anything. If any file fails, or
+  the edit exceeds `CODE_MAX_WORKSPACE_EDIT_FILES`, nothing is applied (Rejected).
+  On success each file applied its slice as one undo step carrying the shared
+  transaction id and was saved; a save failure leaves the applied edit in a dirty
+  host (`AppliedButSaveFailed`) so no work is lost. Every acquire is balanced by a
+  release, so a host opened only to apply is dropped afterwards while a host a
+  view already held keeps its undo history. A timing regression rewrites 64 files
+  of 2,000 lines under a wall-clock ceiling.
+- **The results tree is the preview.** The Search tool window shows every match
+  grouped by file; Replace in Files turns exactly those shown matches into the
+  workspace edit, so the user reviews before applying. Each match carries its
+  absolute editor offsets, so Replace in Files needs no re-find. Activating a
+  result emits `OpenRequested(path, line, column)`, which the shell routes to
+  `openCodeFile` + `CodeEditor::GoToLine`.
+- **The scope provider avoids a shell dependency in the window.**
+  `CodeSearchScopeProvider` is a small Qt-free interface the window queries for
+  roots, exclusions and dirty buffers at each run; `CodeAreaSearchScope`
+  implements it over the code area's registry and a project root the shell
+  updates. `CodeDocumentRegistry::GetDirtyDrafts` returns copied snapshots safe
+  to hand to the worker.
+- **Shell wiring.** The Search dock is a `QDockWidget` on `MainWindow`, tabbed
+  with the Error List in the bottom area, listed in `getToolWindows()` with
+  `LAYOUT_VERSION` bumped to 7 so saved layouts reset to include it, and given a
+  plain View-menu entry. Its keymap binding (Find in Files) is deferred to batch
+  6 with the keymap profiles, to avoid a premature shortcut collision.
+
+Authored, not run: the editor was not built or tested in this sandbox (no Qt6
+and no pinned toolchain; PR CI skips the editor build and tests). The new
+`code_search_tests` (one-pass line/column mapping, regex/whole-word/case/cap,
+root enumeration with exclusions, binary and dirty-buffer handling, the
+all-or-nothing workspace edit, and the 64-file timing ceiling) and the shell
+wiring are pending host verification by the maintainer on macOS: `./scripts/build`,
+`./scripts/test`, `./scripts/check --all`, the ASan/UBSan lane, and a recorded
+native run of a project search, result navigation and Replace in Files including
+a screen reader. The worker runs real threads, so the offscreen tests pump the
+event loop for its queued signals.
