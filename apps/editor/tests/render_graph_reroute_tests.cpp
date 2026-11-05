@@ -2,6 +2,7 @@
 #include "internal/render_graph_navigation.h"
 #include "internal/render_graph_reroutes.h"
 #include "internal/renderer_workspace.h"
+#include "mouse_fixture.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -208,7 +209,7 @@ TEST_CASE("wire add drag remove save and undo preserve selection tracing and bui
     const QByteArray identity = ComputeRenderGraphBuildIdentity(document, GetDefault(), RenderGraphSource::Draft);
     const uint64 revision = document.GetRevision();
     const QPoint point = canvas.mapFromScene(GetWire(canvas).path().pointAtPercent(0.5));
-    QTest::mouseDClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+    tests::DoubleClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, point);
     REQUIRE(GetRoutes(document).size() == 1);
     CHECK(document.GetRevision() == revision + 1);
     CheckTrace(canvas);

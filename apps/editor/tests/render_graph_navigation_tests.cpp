@@ -1,6 +1,7 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_navigation.h"
 #include "internal/renderer_workspace.h"
+#include "mouse_fixture.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -278,7 +279,7 @@ TEST_CASE("Find Node confirms through keyboard or list and synchronizes the work
         const QPoint point = results->visualItemRect(results->item(0)).center();
         QTest::mouseClick(results->viewport(), Qt::LeftButton, Qt::NoModifier, point);
         CHECK(selected.count() == 0);
-        QTest::mouseDClick(results->viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        tests::DoubleClick(results->viewport(), Qt::LeftButton, Qt::NoModifier, point);
     }
     CHECK(canvas.GetSelectedNodes() == QStringList{QStringLiteral("output")});
     CHECK(selected.count() == 1);

@@ -6,6 +6,7 @@
 #include "internal/render_graph_pipeline.h"
 #include "internal/renderer_workspace.h"
 #include "internal/theme_colour.h"
+#include "mouse_fixture.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/types.h>
@@ -864,7 +865,7 @@ TEST_CASE("RG3b double-clicking a Subgraph navigates to its source", "[editor][r
     canvas.resetTransform();
     const QPointF raster = canvas.GetNodePosition(QStringLiteral("raster"));
     canvas.centerOn(raster);
-    QTest::mouseDClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, ToViewport(canvas, raster + QPointF(30, 8)));
+    tests::DoubleClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, ToViewport(canvas, raster + QPointF(30, 8)));
     REQUIRE(activated.count() == 1);
     CHECK(activated.at(0).at(0).toString() == GetLibrary());
     CHECK(canvas.GetFile() == GetLibrary());

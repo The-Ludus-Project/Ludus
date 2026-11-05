@@ -3,6 +3,7 @@
 #include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/renderer_workspace.h"
+#include "mouse_fixture.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -182,7 +183,7 @@ TEST_CASE("pipeline details expose clickable parts and per-use choices with Prop
         }
         dialogOrNull->accept();
     });
-    QTest::mouseDClick(canvas.viewport(),
+    tests::DoubleClick(canvas.viewport(),
                        Qt::LeftButton,
                        Qt::NoModifier,
                        canvas.mapFromScene(position + QPointF(30, 8)));
@@ -269,9 +270,9 @@ TEST_CASE("double-clicking a pipeline shader opens its source with Properties hi
         hasShader = shaderOrNull != nullptr;
         if (shaderOrNull != nullptr)
         {
-            QTest::mouseDClick(shaderOrNull, Qt::RightButton);
+            tests::DoubleClick(shaderOrNull, Qt::RightButton);
             CHECK(dialogOrNull->isVisible() == true);
-            QTest::mouseDClick(shaderOrNull, Qt::LeftButton);
+            tests::DoubleClick(shaderOrNull, Qt::LeftButton);
             hasClosedDetails = dialogOrNull->isVisible() == false;
             if (isSourceMapped == false)
             {
@@ -288,7 +289,7 @@ TEST_CASE("double-clicking a pipeline shader opens its source with Properties hi
     RenderGraphCanvas& canvas = workspace.GetCanvas();
     const QPointF position = canvas.GetNodePosition(WORK);
     canvas.centerOn(position);
-    QTest::mouseDClick(canvas.viewport(),
+    tests::DoubleClick(canvas.viewport(),
                        Qt::LeftButton,
                        Qt::NoModifier,
                        canvas.mapFromScene(position + QPointF(30, 8)));
