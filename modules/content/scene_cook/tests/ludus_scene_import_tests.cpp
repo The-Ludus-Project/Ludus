@@ -144,7 +144,7 @@ TEST_CASE("Ludus scene import cooks the engine's single-slit diffraction scene",
     ludus::resources::SceneDefinition decoded;
     REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
             ludus::resources::Status::Ok);
-    // The camera stands between the screen (z = 0) and the wall (z = -1), facing the wall.
+    // The camera stands between the jaws (z in [-0.02, 0]) and the wall (z = -1), facing the wall.
     CHECK(decoded.Eye == math::Vector3{0, 0, -0.1F});
     CHECK(decoded.Target == math::Vector3{0, 0, -1});
 
@@ -163,15 +163,15 @@ TEST_CASE("Ludus scene import cooks the engine's single-slit diffraction scene",
         // The cooked format's largest radiance, so the small coherent-enough light still lights the wall.
         CHECK(material.Emission == math::Vector3{10000, 10000, 10000});
         CHECK(material.IsEmissionTwoSided == false);
-        // The one-sided light faces the screen and the wall behind it, towards -z.
+        // The one-sided light faces the jaws and the wall behind them, towards -z.
         for (const math::Vector3& normal : mesh.Normals)
         {
             CHECK(normal == math::Vector3{0, 0, -1});
         }
     }
     CHECK(emitters == 1);
-    // Wall and light quads plus the four screen quads around the slit.
-    CHECK(triangles == 12);
+    // Wall and light quads plus two closed jaws of six quads each.
+    CHECK(triangles == 28);
 }
 
 TEST_CASE("Ludus scene import keeps materials and reports invalid documents", "[scene_cook][ludus-scene]")

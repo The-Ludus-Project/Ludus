@@ -48,7 +48,7 @@ MIT license), which the import records like any other source license.
 | `many_lights/many-emitter-room.luscene.json` | The Cornell room with its ceiling light replaced by a 4 × 4 grid of small emitters, each its own material, whose radiance spans a factor of 64. | The many-emitter room of the [RIS projected-solid-angle template](../development/render-graph-authoring.md#resample-many-area-lights-with-projected-solid-angle-sampling) and the polygonal-light-sampling template's triangle-budget check |
 | `many_lights/emitter-field-diffuse.luscene.json` | The Cornell room with a 40 × 40 field of small emitters (3200 emissive triangles) in four radiance levels and three tints; one object per level and tint; rough dielectric walls. | The diffuse variant of the hidden `[.ris-projected-solid-angle-benchmark]` |
 | `many_lights/emitter-field-specular.luscene.json` | The same field over glossy metal (roughness 0.2), which mirrors the emitters. | The specular variant of `[.ris-projected-solid-angle-benchmark]` |
-| `diffraction/single-slit.luscene.json` | A single slit for edge diffraction, such as the Uniform Theory of Diffraction (UTD): a 3 cm one-sided square light 0.5 m in front of an opaque black screen with a vertical slit 5 cm wide and 80 cm long, whose long edges are knife edges, and a white Lambertian wall 1 m behind the screen. The camera stands between the screen and the wall. At a design wavelength of 5 mm the Fresnel number is 1.5 and the light's transverse coherence width at the slit is 1.7 slit widths; scale every length with the wavelength. | The import check of `ludus_scene_import_tests`; no renderer test yet |
+| `diffraction/single-slit.luscene.json` | A single slit for edge diffraction, such as the Uniform Theory of Diffraction (UTD): a 3 cm one-sided square light 0.5 m in front of two black jaws 5 cm apart, and a white Lambertian wall 1 m behind them. Each jaw is a closed 2 cm slab whose slit edge is a 30° wedge (exterior angle 330°, UTD n = 11/6), flat towards the light and bevelled towards the wall. The camera stands between the jaws and the wall. See [single-slit reference results](#single-slit-reference-results). | The edge-diffraction oracle tests (`[edge-diffraction]` in `ludus_renderer_tests`) and the import check of `ludus_scene_import_tests` |
 | `line_sampling/large-line-grid.luscene.json` | A 20 m floor and a ceiling 4 m above it, each tessellated into 160 × 160 quads (102,400 triangles), under a 2 m square light. 3.2 MB, because it lists every quad. | The [`[scene-capacity]` regression](renderer-systems.md#l51-budgeted-scene-capacity) of the line-sampling template |
 
 All but the single slit and the large line grid use the Cornell room camera of the GPU tests: eye at
@@ -70,6 +70,46 @@ Some test rooms need what version 1 cannot describe, so they stay in the test co
   occluders differ from case to case;
 - the large line scene read from an exported reference scene, such as Intel Sponza,
   which is not part of the repository.
+
+### Single-slit reference results
+
+The single slit has no renderer test yet: it exists so that a diffraction implementation can be compared with known
+physics. The edge-diffraction oracle (`modules/graphics/renderer/tests/edge_diffraction_oracle.h`) computes, in
+float64, the radiance that leaves the wall for the scene's light at a design wavelength of 5 mm:
+
+- **Geometric optics**, straight-line visibility through the slit, which is what a ray tracer without diffraction
+  renders;
+- **Fresnel-Kirchhoff**, the classical physical-optics integral over the slit for a black, infinitely thin screen;
+- **UTD**, geometric optics plus Kouyoumjian and Pathak's uniform diffraction from both 30° jaw edges, for soft and
+  hard edges, and their mean for unpolarized light.
+
+The light is a spatially incoherent emitter, so the oracle adds the intensities of its points. Its tests check the
+oracle against tabulated Fresnel integrals, Sommerfeld's exact half-plane solution, Keller's non-uniform limit,
+reciprocity, continuity across every shadow and reflection boundary, and conserved power. Run them with
+`ludus_renderer_tests "[edge-diffraction]"`. `ludus_renderer_tests "[.single-slit-profile]"` prints the wall
+radiance of every model along the row y = 0 as comma-separated values.
+
+What the wall shows along y = 0 (radiance in W/(sr·m²); the profile is symmetric in x):
+
+| x | Geometric | Fresnel-Kirchhoff | UTD unpolarized | UTD soft / hard |
+| --- | --- | --- | --- | --- |
+| 0 | 1.018 | 1.229 | 1.228 | 1.264 / 1.192 |
+| 4 cm | 1.017 | 0.789 | 0.789 | 0.801 / 0.778 |
+| 8 cm | 0.421 | 0.213 | 0.213 | 0.202 / 0.225 |
+| 12 cm | 0 | 0.097 | 0.097 | 0.092 / 0.102 |
+| 20 cm | 0 | 0.018 | 0.018 | 0.015 / 0.022 |
+| 25 cm | 0 | 0.021 | 0.021 | — |
+| 50 cm | 0 | 0.0041 | 0.0045 | 0.0041 / 0.0049 |
+
+- Geometric optics gives a flat strip of 1.02 within 4.5 cm of the centre, penumbrae out to 10.5 cm, and nothing
+  beyond.
+- Diffraction narrows and brightens the centre by about 20%, and puts light where geometric optics has none. The light
+  falls off in fringes about 12 cm apart, with peaks near 25, 37 and 50 cm.
+- Soft and hard edges differ by a few percent in the beam and by up to a factor of 1.7 deep in the shadow. Kirchhoff and
+  unpolarized UTD agree within 1% across the beam. Further out they part, because a thin black screen and a 30°
+  conducting wedge are different obstacles.
+- All lengths scale with the wavelength. The oracle treats the 3 m edges as infinitely long and leaves out
+  diffraction from their ends, which UTD does not describe.
 
 ### Keeping the files and the GPU fixtures in step
 

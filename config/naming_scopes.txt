@@ -109,3 +109,6 @@ apps/editor/src/internal/geometry_document.h
 apps/editor/src/geometry_document.cpp
 apps/editor/tests/geometry_document_tests.cpp
 apps/editor/tests/geometry_preview_tests.cpp
+modules/graphics/renderer/tests/edge_diffraction_oracle.h
+modules/graphics/renderer/tests/edge_diffraction_oracle.cpp
+modules/graphics/renderer/tests/edge_diffraction_oracle_tests.cpp

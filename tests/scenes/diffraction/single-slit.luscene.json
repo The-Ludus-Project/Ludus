@@ -2,7 +2,7 @@
   "format": "ludus.scene",
   "version": 1,
   "name": "Single slit",
-  "description": "Single slit for edge-diffraction (UTD) work. A small one-sided square light (3 cm, radiance 10000) at z = 0.5 faces an opaque black screen at z = 0. The screen has a vertical slit 5 cm wide and 80 cm long; its two long edges are knife edges (zero-thickness half-planes). A white Lambertian wall at z = -1 receives the light. Geometric optics gives a fully lit 9 cm strip inside a 21 cm penumbra and darkness beyond; diffraction adds fringes and light inside the geometric shadow. At a design wavelength of 5 mm the Fresnel number w^2 / (lambda L1 L2 / (L1 + L2)) is 1.5 and the light's transverse coherence width at the slit, lambda L1 / a, is 1.7 slit widths; scale all lengths with the wavelength. The camera stands between the screen and the wall, facing the wall.",
+  "description": "Single slit for edge diffraction (UTD). A 3 cm one-sided square light (radiance 10000) at z = 0.5 faces two black jaws 5 cm apart. Each jaw is a closed 2 cm slab spanning y in [-1.5, 1.5] whose slit edge is a 30 degree wedge: a flat face at z = 0 towards the light and a bevel towards the wall, so the edge's exterior angle is 330 degrees (UTD n = 11/6) and the bevel stays in shadow. A white Lambertian wall at z = -1 receives the light. Geometric optics gives a fully lit 9 cm strip inside a 21 cm penumbra and darkness beyond; diffraction adds fringes and light inside the geometric shadow. At a design wavelength of 5 mm the Fresnel number is 1.5 and the light's transverse coherence width at the slit is 1.7 slit widths; scale all lengths with the wavelength. The camera stands between the jaws and the wall, facing the wall.",
   "camera": {
     "eye": [0, 0, -0.1],
     "target": [0, 0, -1],
@@ -11,7 +11,7 @@
   },
   "materials": [
     {"name": "White wall", "model": "diffuse", "base_color": [0.8, 0.8, 0.8]},
-    {"name": "Black screen", "model": "diffuse", "base_color": [0, 0, 0]},
+    {"name": "Black jaw", "model": "diffuse", "base_color": [0, 0, 0]},
     {"name": "Light", "model": "diffuse", "base_color": [0, 0, 0], "emission": {"radiance": [10000, 10000, 10000], "two_sided": false}}
   ],
   "objects": [
@@ -29,27 +29,47 @@
       ]
     },
     {
-      "name": "Slit screen",
-      "material": "Black screen",
+      "name": "Right jaw",
+      "material": "Black jaw",
       "positions": [
-        [-1.5, -1.5, 0],
-        [-0.025, -1.5, 0],
-        [-0.025, 1.5, 0],
-        [-1.5, 1.5, 0],
         [0.025, -1.5, 0],
         [1.5, -1.5, 0],
-        [1.5, 1.5, 0],
+        [1.5, -1.5, -0.02],
+        [0.059641016151377554, -1.5, -0.02],
         [0.025, 1.5, 0],
-        [-0.025, 0.4, 0],
-        [0.025, 0.4, 0],
-        [-0.025, -0.4, 0],
-        [0.025, -0.4, 0]
+        [1.5, 1.5, 0],
+        [1.5, 1.5, -0.02],
+        [0.059641016151377554, 1.5, -0.02]
       ],
       "polygons": [
+        [1, 5, 4, 0],
+        [7, 6, 2, 3],
+        [4, 7, 3, 0],
+        [2, 6, 5, 1],
+        [3, 2, 1, 0],
+        [5, 6, 7, 4]
+      ]
+    },
+    {
+      "name": "Left jaw",
+      "material": "Black jaw",
+      "positions": [
+        [-0.025, -1.5, 0],
+        [-1.5, -1.5, 0],
+        [-1.5, -1.5, -0.02],
+        [-0.059641016151377554, -1.5, -0.02],
+        [-0.025, 1.5, 0],
+        [-1.5, 1.5, 0],
+        [-1.5, 1.5, -0.02],
+        [-0.059641016151377554, 1.5, -0.02]
+      ],
+      "polygons": [
+        [0, 4, 5, 1],
+        [3, 2, 6, 7],
+        [0, 3, 7, 4],
+        [1, 5, 6, 2],
         [0, 1, 2, 3],
-        [4, 5, 6, 7],
-        [8, 9, 7, 2],
-        [1, 4, 11, 10]
+        [4, 7, 6, 5]
       ]
     },
     {
