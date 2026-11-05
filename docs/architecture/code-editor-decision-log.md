@@ -652,3 +652,62 @@ assertion (Ctrl+Alt+F9) are pending host verification by the maintainer on
 macOS: `./scripts/build`, `./scripts/test`, `./scripts/check --all`, the
 ASan/UBSan lane, and a recorded native run of the first-use choice, both
 profiles and an override, which offscreen tests do not qualify.
+
+### M2 batch 7: typing budgets (CE21, 2026-11-05)
+
+The `[.benchmark]` corpus gained two workloads that measure typing through the
+real M2 multi-cursor edit-set path: `1-cursor typing (edit-set path)` and
+`100-cursor typing (edit-set path)`. Both bind a `CodeFileDocument` host through
+a `CodeDocumentController`, place the cursors (the primary plus 99 secondaries
+for the 100-cursor case) through the `CodeMultiCursor` overlay, send a real key
+event through `CodeEditor::keyPressEvent`, and record handling and key-to-paint
+latency with the `CodeLatencyProbe`, undoing between samples. This replaces the
+M0 note that the 100-position case stayed a programmatic edit block "until M2
+adds multiple cursors": it now exercises the production path (one `CodeEditSet`
+distributed across every cursor, then a view re-synchronize), which is what the
+architecture's 8 ms 100-cursor budget governs. The single-cursor case uses the
+same path so the two are directly comparable.
+
+Authored, not run: the corpus records numbers only when built and run on a
+reference machine (no Qt6 and no pinned toolchain in this sandbox; PR CI skips
+the editor build and tests), exactly as the M0 baseline did (recorded on an
+Apple M5). The two new workloads print one WARN summary each; the maintainer runs
+`ludus_code_editor_tests "[.benchmark][code-editor]"` on a quiet reference
+machine and records the summaries against the 1-cursor (4 ms) and 100-cursor
+(8 ms) budgets. Until then the typing budgets for M2 are pending that run.
+
+### M2 gate report (2026-11-05)
+
+M2 (editing parity: CE05-CE07, CE17) landed in seven batches, each its own pull
+request into `develop`, each started from a freshly fetched `origin/develop`:
+
+- Batch 1 - the edit-set seam (`CodeEditSet`/`CodeSelectionSet`), formatting and
+  Replace All moved onto it. Host-verified and made linear in #983.
+- Batch 2 - multiple cursors (CE06): the secondary-cursor overlay, one
+  `CodeEditSet` per operation mapped in one pass, `AdvanceCodeCursorPosition`.
+- Batch 3 - the find overlay (CE07): regex, whole word, in selection, match
+  count, preserve-case replace, one regex engine for find/count/replace.
+- Batch 4 - search, the Search tool window and Replace in Files (CE07, CE11):
+  the background search service, the workspace-edit transaction on the registry.
+- Batch 5 - registry-driven auto-closing, surrounding pairs and smart indent
+  (CE17).
+- Batch 6 - the Ludus and VS Code keymap profiles (CE07/CE17 shortcut
+  resolution), overrides, conflict detection and the first-use choice.
+- Batch 7 - the 1-cursor and 100-cursor typing-budget workloads (CE21).
+
+**Gate status - authored, not run.** Every batch was authored and read closely
+against the C++23, naming (source_policy.py, validated locally), standard-library
+(ADR 0003) and Qt-free-seam rules, and the per-edit/per-cursor one-pass rule the
+#983 host verification set; each multi-edit path carries a wall-clock timing
+regression. But this sandbox has no Qt6 and no pinned toolchain and the PR CI
+skips the editor build and tests, so none of the editor code was compiled or run
+here. Pending on a toolchain-capable host (macOS), for the merged stack:
+`./scripts/build` and `./scripts/test` for the debug preset (the new
+`code_multi_cursor_tests`, `code_find_overlay_tests`, `code_search_tests`,
+`code_pairs_tests`, `code_keymap_tests` and the updated `code_edit_set_tests`),
+`./scripts/check --all` (clang-format and clang-tidy at the pinned version), the
+ASan/UBSan lane, the `[.benchmark]` 1-cursor and 100-cursor numbers against the
+budgets, and the recorded native runs the individual batch entries list
+(multiple cursors with IME and a screen reader, the find overlay, project search
+and Replace in Files, surrounding pairs, and the keymap first-use choice and
+both profiles).
