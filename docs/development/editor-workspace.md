@@ -1635,18 +1635,17 @@ and on without editing or re-importing the source scene. Use it to compare a
 render against another renderer's image of the same scene when the source file
 adds lights the other scene never had, or to see what one light contributes.
 
-- **Imported emitters** lists the imported scene's emissive surfaces. The importer
-  merges area lights with equal radiance, sidedness, power and material into one
-  emitter group (see the [budget planner](best-effort-scene-import.md#budget-planner)),
-  so one row can switch several shapes. For example, the eight `L = 1000` candle
-  flames of the staircase scene are one row. The tooltip gives the radiance (or
-  luminous power) and object count.
-- **Imported lights** lists the scene's analytic lights.
-- **World lights** lists authored light entities. Their checkbox writes the bound
-  `enabled` property, as the inspector does.
-- **Solo** keeps only the selected light on. **Enable All** switches every light
-  back on. Each switch, Solo and Enable All is one World edit: Undo and Redo
-  restore the previous switches, and **Save World** keeps them.
+The **Kind** column labels imported emitters as **Area light** and labels both
+imported and authored analytic lights as **Directional light**, **Point light**
+or **Spot light**. An imported area light can cover several shapes that the
+importer merged because they share radiance, sidedness, power and material.
+The row tooltip shows its radiance or luminous power and object count.
+See the [import budget planner](best-effort-scene-import.md#budget-planner).
+
+Use the checkbox on any light row to switch it on or off. **Solo** keeps only
+the selected light on across imported and authored sources. **Enable All**
+switches every light back on. Each action is one World edit. Undo and Redo
+restore the previous state, and **Save World** keeps it.
 
 A switched-off light keeps its identity and authored values. The viewport,
 reference path tracer, render graphs and the Light Transformer see no emission
@@ -1664,8 +1663,8 @@ switched-off sources are recorded, and the list is removed when every light is
 on, so a World without switches keeps its earlier bytes. It is admitted only beside
 a root `scene`, with unique entries and at most one per import-profile material
 plus one per cooked light. A re-import can regroup emitters. Switches the new
-scene does not contain are listed under **Missing from the scene** instead of
-failing the World; **Remove Missing** forgets them.
+scene does not contain appear as **Missing emitter** or **Missing light** rows.
+**Remove Missing** forgets those switches.
 
 ### Earlier built-in viewport profile
 
