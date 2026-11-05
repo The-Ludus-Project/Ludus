@@ -178,8 +178,12 @@ Requirements: CE05-CE07, CE17. Prerequisite: M1.
   `AdvanceCodeCursorPosition`; one `CodeEditSet` per operation mapped in one pass;
   authored, not run — see the
   [M2 batch 2 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-2-multiple-cursors-ce06-2026-11-05).)*
-- [ ] Replace the bottom find panel with the find overlay: regex, whole word,
-  in selection, match count and preserve-case replace.
+- [x] Replace the bottom find panel with the find overlay: regex, whole word,
+  in selection, match count and preserve-case replace. *(Batch 3;
+  `internal/code_find_overlay.h/.cpp` replaces the panel's find rows, one regex
+  engine for find/count/replace, Replace All as one linear `CodeEditSet`;
+  authored, not run — see the
+  [M2 batch 3 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-3-the-find-overlay-ce07-2026-11-05).)*
 - [ ] Implement the search service, the Search tool window and Replace in
   Files with preview (design section 8).
 - [ ] Add auto-closing and surrounding pairs and indentation rules from the

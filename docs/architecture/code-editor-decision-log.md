@@ -436,3 +436,55 @@ preset, `./scripts/check --all` (clang-format and clang-tidy at the pinned
 version), the ASan/UBSan lane, and a recorded native run of multiple cursors
 (typing, column selection, add occurrence and paste) including IME and
 VoiceOver, which offscreen tests do not qualify.
+
+### M2 batch 3: the find overlay (CE07, 2026-11-05)
+
+The bottom find panel's find/replace rows are replaced by a floating overlay,
+`CodeFindOverlay` (`internal/code_find_overlay.h/.cpp`), that sits over the top
+of the editor's viewport (design section 4). It adds regex, whole word, in
+selection, a live match count and preserve-case replace to the existing find,
+Previous/Next, replace and Replace All. `CodeEditorPanel` keeps its editing
+toolbar (text size, wrap, guides, position, diagnostics) and Go to Line, and now
+hosts the overlay instead of the inline rows; the overlay is parented to and
+owned by the editor so it tracks the viewport and takes no layout space.
+
+Decisions and deviations recorded here:
+
+- **The overlay keeps the panel's find object names and status strings.** The
+  find field, replacement field, replace / Replace All buttons, the status label
+  and the "Match case" check box keep `codeEditorFind`, `codeEditorReplacement`,
+  `codeEditorReplace`, `codeEditorReplaceAll`, `codeEditorFindStatus` and their
+  text, so the existing editor and edit-set tests (and the "%1 replacements" /
+  "No matches" strings) are unchanged. The new options add
+  `codeEditorRegex`, `codeEditorWholeWord`, `codeEditorInSelection` and
+  `codeEditorPreserveCase`.
+- **One regex engine for find, count and replace.** The query is compiled once
+  into a `QRegularExpression` (literal queries are `QRegularExpression::escape`d;
+  whole word wraps the source in `\b(?:...)\b`; case follows Match case). Find,
+  the match count and Replace All all collect matches in one global pass over the
+  decoded text, never `QTextDocument::find` in a loop. An invalid regex is
+  reported inline and changes nothing.
+- **Replace All stays linear, like #983.** It builds the ordered edits and maps
+  every match's editor position to a byte offset by walking forward from one
+  `CodePositionOffset` with `AdvanceCodeByteOffset`, then publishes one
+  `CodeEditSet` through `CodeDocumentController::ApplyEditSet`. The common case (a
+  literal find/replace with no regex or preserve case) reuses one replacement
+  string and needs no per-match re-match, so a large Replace All is one pass. A
+  timing regression in `code_find_overlay_tests` replaces 16,384 regex matches
+  through the overlay against the same wall-clock ceiling as the edit-set tests.
+  With no bound controller the Qt edit-block fallback applies the edits from the
+  end as one undo step.
+- **In selection freezes its range.** The target range is captured when In
+  selection is turned on, so edits do not shrink it mid-operation, and matches
+  that would cross the boundary are excluded.
+- **Preserve case** matches an occurrence's all-upper, all-lower or capitalized
+  pattern onto the replacement; a mixed-case occurrence is left as authored.
+
+Authored, not run: the editor was not built or tested in this sandbox (no Qt6
+and no pinned toolchain; PR CI skips the editor build and tests). The new
+`code_find_overlay_tests` (regex/whole-word/in-selection/preserve-case Replace
+All, match count with "N of M", invalid-regex reporting, find-next wrap and the
+16,384-match timing ceiling) and the unchanged edit-set and editor find tests
+are pending host verification by the maintainer on macOS: `./scripts/build`,
+`./scripts/test`, `./scripts/check --all`, the ASan/UBSan lane, and a recorded
+native run of the overlay including its floating placement and a screen reader.
