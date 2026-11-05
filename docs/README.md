@@ -101,6 +101,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Localization: catalogs, release cooking and formatting](modules/localization.md)
 - [Ludus::FoundationGeometry](modules/foundation/geometry.md)
 - [Ludus::FoundationMath](modules/foundation/math.md)
+- [ShaderLanguage: the LUSL front end](modules/tooling/shader-language.md)
 - [Unicode: pinned ICU4C host service](modules/foundation/unicode.md)
 - [World restore (two-pass)](modules/content/world-restore.md)
 

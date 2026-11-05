@@ -4,6 +4,7 @@
 modules/content/scene_cook
 modules/content/scene_format
 modules/content/scene_source
+modules/tooling/shader_language
 modules/content/identity_records
 modules/content/procedural/environment
 modules/content/string_dictionary
