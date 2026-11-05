@@ -217,21 +217,38 @@ TEST_CASE("Replace in Files applies one transaction across files or none", "[cod
     {
         // Replace both "foo" in a.txt ([0,3) and [8,11)) and the one in b.txt.
         QList<CodeWorkspaceFileEdit> edits;
-        edits.append(CodeWorkspaceFileEdit{ .AbsolutePath = pathA,
-                                            .Replacements = {
-                                                CodeWorkspaceReplacement{ .StartPosition = 0,
-                                                                          .EndPosition = 3,
-                                                                          .Replacement = QStringLiteral("bar") },
-                                                CodeWorkspaceReplacement{ .StartPosition = 8,
-                                                                          .EndPosition = 11,
-                                                                          .Replacement = QStringLiteral("bar") },
-                                            } });
-        edits.append(CodeWorkspaceFileEdit{ .AbsolutePath = pathB,
-                                            .Replacements = {
-                                                CodeWorkspaceReplacement{ .StartPosition = 0,
-                                                                          .EndPosition = 3,
-                                                                          .Replacement = QStringLiteral("bar") },
-                                            } });
+        edits.append(CodeWorkspaceFileEdit
+        {
+            .AbsolutePath = pathA,
+            .Replacements =
+                {
+                    CodeWorkspaceReplacement
+                    {
+                        .StartPosition = 0,
+                        .EndPosition = 3,
+                        .Replacement = QStringLiteral("bar"),
+                    },
+                    CodeWorkspaceReplacement
+                    {
+                        .StartPosition = 8,
+                        .EndPosition = 11,
+                        .Replacement = QStringLiteral("bar"),
+                    },
+                },
+        });
+        edits.append(CodeWorkspaceFileEdit
+        {
+            .AbsolutePath = pathB,
+            .Replacements =
+                {
+                    CodeWorkspaceReplacement
+                    {
+                        .StartPosition = 0,
+                        .EndPosition = 3,
+                        .Replacement = QStringLiteral("bar"),
+                    },
+                },
+        });
         CHECK(registry.ApplyWorkspaceEdit(edits) == CodeWorkspaceEditStatus::Ok);
         CHECK(ReadFile(pathA) == QByteArray("bar and bar\n"));
         CHECK(ReadFile(pathB) == QByteArray("bar only\n"));
@@ -241,18 +258,32 @@ TEST_CASE("Replace in Files applies one transaction across files or none", "[cod
     {
         // The second file's range is out of bounds, so neither file is touched.
         QList<CodeWorkspaceFileEdit> edits;
-        edits.append(CodeWorkspaceFileEdit{ .AbsolutePath = pathA,
-                                            .Replacements = {
-                                                CodeWorkspaceReplacement{ .StartPosition = 0,
-                                                                          .EndPosition = 3,
-                                                                          .Replacement = QStringLiteral("bar") },
-                                            } });
-        edits.append(CodeWorkspaceFileEdit{ .AbsolutePath = pathB,
-                                            .Replacements = {
-                                                CodeWorkspaceReplacement{ .StartPosition = 100,
-                                                                          .EndPosition = 103,
-                                                                          .Replacement = QStringLiteral("bar") },
-                                            } });
+        edits.append(CodeWorkspaceFileEdit
+        {
+            .AbsolutePath = pathA,
+            .Replacements =
+                {
+                    CodeWorkspaceReplacement
+                    {
+                        .StartPosition = 0,
+                        .EndPosition = 3,
+                        .Replacement = QStringLiteral("bar"),
+                    },
+                },
+        });
+        edits.append(CodeWorkspaceFileEdit
+        {
+            .AbsolutePath = pathB,
+            .Replacements =
+                {
+                    CodeWorkspaceReplacement
+                    {
+                        .StartPosition = 100,
+                        .EndPosition = 103,
+                        .Replacement = QStringLiteral("bar"),
+                    },
+                },
+        });
         CHECK(registry.ApplyWorkspaceEdit(edits) == CodeWorkspaceEditStatus::Rejected);
         CHECK(ReadFile(pathA) == QByteArray("foo and foo\n"));
         CHECK(ReadFile(pathB) == QByteArray("foo only\n"));
@@ -281,9 +312,12 @@ TEST_CASE("A large multi-file Replace in Files stays linear", "[code-editor][sea
         for (qsizetype line = 0; line < LINES; ++line)
         {
             const int32 start = static_cast<int32>(line) * 17; // "float value = 1;\n" is 17 chars.
-            replacements.append(CodeWorkspaceReplacement{ .StartPosition = start,
-                                                          .EndPosition = start + 5,
-                                                          .Replacement = QStringLiteral("double") });
+            replacements.append(CodeWorkspaceReplacement
+            {
+                .StartPosition = start,
+                .EndPosition = start + 5,
+                .Replacement = QStringLiteral("double"),
+            });
         }
         edits.append(CodeWorkspaceFileEdit{ .AbsolutePath = path, .Replacements = replacements });
     }

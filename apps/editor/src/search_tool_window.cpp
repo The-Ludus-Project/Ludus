@@ -133,10 +133,13 @@ void SearchToolWindow::FocusQuery()
 
 CodeSearchQuery SearchToolWindow::currentQuery() const
 {
-    return CodeSearchQuery{ .Pattern = mQuery->text(),
-                            .IsRegex = mIsRegex->isChecked(),
-                            .IsWholeWord = mIsWholeWord->isChecked(),
-                            .IsCaseSensitive = mIsCaseSensitive->isChecked() };
+    return CodeSearchQuery
+    {
+        .Pattern = mQuery->text(),
+        .IsRegex = mIsRegex->isChecked(),
+        .IsWholeWord = mIsWholeWord->isChecked(),
+        .IsCaseSensitive = mIsCaseSensitive->isChecked(),
+    };
 }
 
 void SearchToolWindow::startSearch()
@@ -257,9 +260,12 @@ void SearchToolWindow::replaceInFiles()
             // them to byte offsets against the file's current snapshot.
             const int32 startOffset = matchItem->data(0, ROLE_START_OFFSET).toInt();
             const int32 endOffset = matchItem->data(0, ROLE_END_OFFSET).toInt();
-            fileEdit.Replacements.append(CodeWorkspaceReplacement{ .StartPosition = startOffset,
-                                                                   .EndPosition = endOffset,
-                                                                   .Replacement = replacement });
+            fileEdit.Replacements.append(CodeWorkspaceReplacement
+            {
+                .StartPosition = startOffset,
+                .EndPosition = endOffset,
+                .Replacement = replacement,
+            });
         }
         if (fileEdit.Replacements.isEmpty() == false)
         {

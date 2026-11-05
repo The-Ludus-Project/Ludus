@@ -265,8 +265,7 @@ private:
             bytes = file.readAll();
         }
         // Skip a file with a NUL in its first probe window: it is treated as binary.
-        const int32 probe =
-            static_cast<int32>(qMin(static_cast<usize>(bytes.size()), CODE_SEARCH_BINARY_PROBE_BYTES));
+        const int32 probe = static_cast<int32>(qMin(static_cast<usize>(bytes.size()), CODE_SEARCH_BINARY_PROBE_BYTES));
         if (bytes.left(probe).contains('\0') == true)
         {
             return false;
