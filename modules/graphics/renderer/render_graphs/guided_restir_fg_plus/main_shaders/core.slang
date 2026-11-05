@@ -69,9 +69,13 @@ uint GetFgDirectionCell(float2 directionUv)
     uint2 cell = min(uint2(directionUv * float(FG_DIRECTION_SIDE)), uint2(FG_DIRECTION_SIDE - 1));
     return cell.y * FG_DIRECTION_SIDE + cell.x;
 }
+RandomAddress MakeFgRandomAddress(uint path, uint frame, uint dimension)
+{
+    return MakeRandomAddress(uint2(path, 0), frame, dimension);
+}
 float SampleFgRandom(uint2 seed, uint path, uint frame, uint dimension)
 {
-    return SampleRandomFloat01(seed, MakeRandomAddress(uint2(path, 0), frame, dimension));
+    return SampleRandomFloat01(seed, MakeFgRandomAddress(path, frame, dimension));
 }
 float SampleFgRandom(RayLaunch launch, uint dimension)
 {

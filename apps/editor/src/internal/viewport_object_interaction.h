@@ -51,6 +51,28 @@ public:
         Rotate,
         Scale
     };
+    /// What a handle drags: one axis, a plane (move only) or every axis at once (scale only).
+    enum class HandleKind : foundation::uint8
+    {
+        Axis,
+        Plane,
+        Uniform
+    };
+    /// A handle under the pointer or being dragged. Index is the axis, from 0 for X, of an axis handle and the axis
+    /// normal to the plane of a plane handle (0 for the YZ plane, 1 for XZ, 2 for XY); it is negative for no handle.
+    struct HandleTarget final
+    {
+        HandleKind Kind = HandleKind::Axis;
+        foundation::int32 Index = -1;
+        [[nodiscard]] LUDUS_INLINE bool IsValid() const noexcept
+        {
+            return Index >= 0;
+        }
+        [[nodiscard]] LUDUS_INLINE bool operator==(const HandleTarget& other) const noexcept
+        {
+            return Index == other.Index && (Index < 0 || Kind == other.Kind);
+        }
+    };
     explicit ViewportObjectInteraction(RenderPreview& inoutPreview, QObject* parentOrNull);
     /// Refresh authoring permission/placement from the authoritative World. Cancels a stale gesture.
     void SetWorld(const WorldDocument& world, const QString& selected, bool canEdit);
@@ -78,15 +100,31 @@ public:
     [[nodiscard]] bool Hover(QPointF positionPixel, const QRectF& framePixel);
     /// Drop the hover highlight, as when the pointer leaves the viewport.
     void ClearHover();
-    /// Axis, from 0 for X, of the handle under the pointer, or -1 when none.
+    /// Axis, from 0 for X, of the axis handle under the pointer, or -1 when none, or when it is a plane or centre
+    /// handle.
     [[nodiscard]] LUDUS_INLINE foundation::int32 GetHoveredAxis() const noexcept
     {
-        return mHoverAxis;
+        return mHoverTarget.Kind == HandleKind::Axis ? mHoverTarget.Index : -1;
+    }
+    /// The handle of any kind under the pointer; its Index is negative when there is none.
+    [[nodiscard]] LUDUS_INLINE HandleTarget GetHoveredHandle() const noexcept
+    {
+        return mHoverTarget;
+    }
+    /// Whether the pointer is over a handle of any kind.
+    [[nodiscard]] LUDUS_INLINE bool HasHoveredHandle() const noexcept
+    {
+        return mHoverTarget.IsValid();
     }
     /// Whether a handle drag is in progress.
     [[nodiscard]] LUDUS_INLINE bool IsDragging() const noexcept
     {
-        return mDragAxis >= 0;
+        return mDragTarget.IsValid();
+    }
+    /// The handle being dragged; its Index is negative when no drag is in progress.
+    [[nodiscard]] LUDUS_INLINE HandleTarget GetDraggedHandle() const noexcept
+    {
+        return mDragTarget;
     }
     [[nodiscard]] bool Press(QPointF positionPixel, const QRectF& framePixel);
     [[nodiscard]] bool Move(QPointF positionPixel, bool shouldSnap);
@@ -131,6 +169,14 @@ private:
     };
     /// BuildOverlay without the GPU outline hand-off.
     void buildOverlayGeometry(const QRectF& framePixel, ViewportObjectOverlay& outOverlay);
+
+    /// A plane handle: a parallelogram beside the pivot, spanned by the screen directions of two axes.
+    struct PlaneHandle
+    {
+        /// The axis normal to the plane.
+        foundation::int32 NormalAxis = 0;
+        ViewportHandleFill::Corners CornersPixel{};
+    };
     [[nodiscard]] bool describe(const QRectF& framePixel, foundation::math::Matrix4& outWorldToClip) const;
     [[nodiscard]] bool project(foundation::math::Vector3 positionWorld, QPointF& outPositionPixel) const;
     [[nodiscard]] QRectF resolveFrame(const QRectF& framePixel) const;
@@ -148,9 +194,28 @@ private:
     [[nodiscard]] bool refreshSilhouette(foundation::int32 meshIndex);
     void buildHandles();
     /// Axis of the built handle nearest positionPixel within reach, or -1; records that handle's screen direction.
-    [[nodiscard]] foundation::int32 pickHandle(QPointF positionPixel);
+    /// The handle under positionPixel: the centre handle first, then an axis within a few pixels of its shaft, then a
+    /// plane handle, then the nearest axis within reach. Records an axis handle's screen direction.
+    [[nodiscard]] HandleTarget pickHandle(QPointF positionPixel);
+    /// Fill mPlaneHandles for the move tool from each axis's screen direction, skipping a plane seen edge-on.
+    void buildPlaneHandles(const foundation::StaticArray<QPointF, AXIS_COUNT>& axisUnitsPixel,
+                           const foundation::StaticArray<bool, AXIS_COUNT>& hasAxisUnits,
+                           foundation::math::Vector3 forwardWorld);
+    /// Colour of a handle with hover and drag emphasis applied. colourAxis selects the axis token.
+    [[nodiscard]] QRgb getHandleColour(HandleTarget target, foundation::int32 colourAxis, bool isBack) const;
     /// Append one handle's strokes and fills with hover and drag emphasis applied.
     void appendHandleGeometry(const HandleLine& handle, ViewportObjectOverlay& inoutOverlay) const;
+    /// Append a plane handle's casing and solid parallelogram.
+    void appendPlaneGeometry(const PlaneHandle& plane, ViewportObjectOverlay& inoutOverlay) const;
+    /// Append the centre handle's casing and solid cube.
+    void appendUniformGeometry(ViewportObjectOverlay& inoutOverlay) const;
+    /// Begin dragging a plane handle: fix the plane through the pivot and where the pointer meets it.
+    [[nodiscard]] bool beginPlaneDrag(QPointF positionPixel);
+    /// Drag results for the three kinds of handle. Each updates the placement values and the readout text, and returns
+    /// false when the pointer gives no usable value.
+    [[nodiscard]] bool dragAxis(QPointF deltaPixel, bool shouldSnap, QJsonArray& inoutValues);
+    [[nodiscard]] bool dragPlane(QPointF positionPixel, bool shouldSnap, QJsonArray& inoutValues);
+    [[nodiscard]] bool dragUniform(QPointF deltaPixel, bool shouldSnap, QJsonArray& inoutValues);
     [[nodiscard]] foundation::math::Affine3 makeTransform(const QJsonObject& placement) const;
     /// Recompute mMeshBoundsMesh for a changed scene identity; false leaves it empty (no rejection).
     [[nodiscard]] bool refreshMeshBounds();
@@ -173,6 +238,21 @@ private:
     static constexpr foundation::usize MAX_HANDLE_LINES =
         static_cast<foundation::usize>(AXIS_COUNT) * static_cast<foundation::usize>(RING_SEGMENTS);
     foundation::FixedArray<HandleLine, MAX_HANDLE_LINES> mHandles;
+    static constexpr foundation::usize MAX_PLANE_HANDLES = static_cast<foundation::usize>(AXIS_COUNT);
+    foundation::FixedArray<PlaneHandle, MAX_PLANE_HANDLES> mPlaneHandles;
+    /// Whether the scale tool's centre handle, at the pivot, is built.
+    bool mHasUniformHandle = false;
+    /// The plane a plane drag moves in: through the pivot as pressed, with the world directions of its two parent
+    /// axes, and where the pointer met it when pressed.
+    foundation::math::Matrix4 mDragClipToWorld;
+    foundation::math::Vector3 mDragPlaneOriginWorld;
+    foundation::math::Vector3 mDragPlaneNormalWorld;
+    foundation::math::Vector3 mDragPlaneStartWorld;
+    foundation::int32 mDragPlaneFirstAxis = 0;
+    foundation::int32 mDragPlaneSecondAxis = 1;
+    /// Numeric readout of the drag in progress, and the pointer position it follows.
+    QString mReadoutText;
+    QPointF mReadoutAnchorPixel;
     ViewportObjectOverlay mPaintOverlay;
     /// Welded edge adjacency of the selected object's mesh, cached with the scene identity and mesh it was built for.
     MeshSilhouette mSilhouette;
@@ -196,8 +276,8 @@ private:
     GpuOutline mGpuOutline;
     GpuOutline mGpuOutlineReported;
     Tool mTool = Tool::Move;
-    foundation::int32 mDragAxis = -1;
-    foundation::int32 mHoverAxis = -1;
+    HandleTarget mDragTarget;
+    HandleTarget mHoverTarget;
     bool mCanEdit = false;
     bool mIsActive = true;
     bool mHasPresentedView = false;

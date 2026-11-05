@@ -134,6 +134,8 @@ class FileApiTests(unittest.TestCase):
                 "type": target.get("type", "EXECUTABLE"),
                 "artifacts": target.get("artifacts", [{"path": f"bin/{target['name']}"}]),
             }
+            if "nameOnDisk" in target:
+                documents[f"{target['name']}.json"]["nameOnDisk"] = target["nameOnDisk"]
         for name, content in documents.items():
             (self.reply / name).write_text(json.dumps(content))
 
@@ -147,6 +149,15 @@ class FileApiTests(unittest.TestCase):
         self.assertEqual(names, ["app_main", "tool.v2"])
         resolved = cmake_targets.target_executable(self.build, "tool.v2", engine, client="ludus-editor")
         self.assertEqual(resolved, (self.build / "custom/out/tool.v2").resolve())
+
+    def test_resolves_primary_executable_with_separate_debug_symbols(self) -> None:
+        self.write_reply([{
+            "name": "app",
+            "nameOnDisk": "custom-app.exe",
+            "artifacts": [{"path": "debug/app.pdb"}, {"path": "custom/bin/custom-app.exe"}],
+        }])
+        resolved = cmake_targets.target_executable(self.build, "app", engine)
+        self.assertEqual(resolved, (self.build / "custom/bin/custom-app.exe").resolve())
 
     def test_library_and_ambiguous_and_missing_rejected(self) -> None:
         self.write_reply([{"name": "libfoo", "type": "STATIC_LIBRARY", "artifacts": []}])

@@ -173,6 +173,50 @@ struct Inputs final
     uint64 DependencyRevision = 0;
 };
 
+/// Reuse a nonemissive surface’s first draw material when its tint matches.
+[[nodiscard]] inline bool BuildMaterialOwners(const RenderScene& scene, Array<usize>& outOwners) noexcept
+{
+    Array<usize> firstUse;
+    Array<usize> owners;
+    const usize surfaceCount = static_cast<usize>(scene.Surfaces.size());
+    const usize objectCount = static_cast<usize>(scene.Objects.size());
+    if (firstUse.TryResize(surfaceCount) == false || owners.TryResize(objectCount) == false)
+    {
+        return false;
+    }
+    for (usize& index : firstUse)
+    {
+        index = objectCount;
+    }
+    for (usize index = 0; index < objectCount; ++index)
+    {
+        const PreviewObject& object = scene.Objects[static_cast<qsizetype>(index)];
+        const usize surfaceIndex = static_cast<usize>(object.Surface);
+        if (surfaceIndex >= surfaceCount)
+        {
+            return false;
+        }
+        owners[index] = index;
+        const PreviewSurface& surface = scene.Surfaces[object.Surface];
+        // Emissive surfaces can resolve differently per placement, including on degenerate geometry.
+        if (surface.Emission != math::Vector3{} || surface.HasEmissionPower == true)
+        {
+            continue;
+        }
+        usize& first = firstUse[surfaceIndex];
+        if (first == objectCount)
+        {
+            first = index;
+        }
+        if (scene.Objects[static_cast<qsizetype>(first)].Tint == object.Tint)
+        {
+            owners[index] = first;
+        }
+    }
+    outOwners = Move(owners);
+    return true;
+}
+
 /// Consumer of BuildInputs.
 enum class InputsTarget : uint8
 {

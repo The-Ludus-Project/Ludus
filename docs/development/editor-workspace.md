@@ -1112,7 +1112,23 @@ for 0.1 metre movement, 15 degree rotation or 0.1 scale-factor increments.
 The handles stay 80 logical pixels long at any distance and take their colours
 from the `axis.x`, `axis.y` and `axis.z` design tokens, with an X, Y or Z letter
 at each tip so colour is never the only cue. Move ends each shaft in a solid
-arrowhead and scale in a cube; a small square marks the pivot. With a tool
+arrowhead and scale in a cube; a small square marks the pivot. Move also has
+three small square handles beside the pivot, for the XY, YZ and XZ planes: dragging
+one moves along both of its axes at once, following the pointer exactly on that plane,
+and each takes the colour of the axis normal to its plane, a little quieter than the
+arrows. A plane seen nearly edge-on has no square, so a plane handle is never shown
+where a drag would run away. Scale replaces the pivot square with a larger centre
+cube: dragging it up and to the right grows every axis by the same factor and down
+and to the left shrinks them, never below 1% of the original. Both new handles have a
+dark casing under them, thicken or brighten under the pointer like the axes, and win
+the pointer over a shaft only where the shaft is not within 4 pixels of it; the centre
+cube wins over everything near the pivot. While any handle is dragged a small label
+beside the pointer reads the gesture: the distance moved in metres (`X +0.250 m`, or
+`X +0.250  Z -0.120 m` on a plane), the angle turned in degrees (`Z +15.0°`) or the
+scale factor (`X ×1.25`, or `×1.25` for the centre). **Shift** snaps the number as
+well as the object. The label uses the viewport colours, the system fixed font at the
+caption size of the design tokens, and is painted text in a label-sized texture, so
+the handles remain one batch of triangles; it disappears with the gesture. With a tool
 active, the handle under the pointer thickens and lightens and the cursor becomes
 an open hand; while a handle is dragged the cursor is a closed hand, that handle
 stays highlighted and the other axes fade towards the viewport colour. The half of
@@ -1463,18 +1479,30 @@ the active World. Save publishes only the converted World document. Existing
 
 Select an imported object whose Material model is **Coated diffuse**. In its
 **Material** group, enter the isotropic GGX alpha, coating index of refraction
-(IOR), and optical thickness. **Apply Changes** applies the fields to the
-selected slot in one World edit. Other instances of the imported material
-keep their own values. Use Undo/Redo to move between revisions and **Save World**
-to keep the override on reopening the World. **Use Imported Coating** removes
-the override from this slot as an undoable edit.
+(IOR), and optical thickness.
 
-The viewport retains the previous drawable scene while the new scene is
-prepared. Invalid fields keep their edit buffers available for correction.
-If assembly fails, use the reported repair or undo the edit. The default
-raster view approximates changes in coat roughness. A compatible reference
-capture uses the authored alpha, IOR and optical thickness together. See
-[the coated-diffuse profile](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference).
+- **Apply Changes** gives the selected slot its own coating when the values
+  change. **Use Inherited Coating** rejoins the shared instance or imported
+  defaults.
+- **Apply to Shared Coating** edits the World instance for every slot inheriting
+  that imported material. Review the affected slots before confirming. Slots
+  with their own coating keep their values. Apply or reset other inspector
+  edits before changing the shared coating.
+
+Both actions are undoable. **Save World** preserves the shared and slot
+coatings across reopening. Reimport resolves newly placed slots through the
+same source material identity, so they inherit its shared World coating.
+
+The viewport retains the previous drawable scene while the next version
+prepares. Invalid fields keep their edit buffers available for correction.
+If assembly fails, use the reported repair or undo the edit. Matching coatings
+for the same source material share one cooked record, including values that
+match the imported defaults. The built-in viewport reuses draw materials for
+matching nonemissive surfaces with the same tint.
+
+The raster view approximates changes in coat roughness. A compatible reference
+capture uses the authored alpha, IOR and optical thickness together.
+[Coated-diffuse reference profile](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference)
 
 ### Repair an unsupported imported material
 

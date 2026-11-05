@@ -235,7 +235,8 @@ private:
                                  QWidget*& outInvalidOrNull,
                                  bool shouldReadCoating = true);
     [[nodiscard]] bool readCoatingFields(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull);
-    void restoreImportedCoating();
+    void restoreInheritedCoating();
+    void applySharedCoating();
     void PickTint(const QString& id, const QJsonObject& binding);
     void Snapshot();
     /// Create sun as one undoable edit and select it; the status gives the reason when the World cannot be edited.

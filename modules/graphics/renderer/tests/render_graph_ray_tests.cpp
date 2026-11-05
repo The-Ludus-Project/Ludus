@@ -3619,6 +3619,30 @@ TEST_CASE("Native primary hits on a triangle's edge rebuild their surface in the
     }
 }
 
+TEST_CASE("Veach and Guibas MIS gives a directional light full weight",
+          "[render-graph][gpu][veach-guibas][template][mis]")
+{
+    GraphGpuFixture fixture;
+    CornellBox room;
+    room.Materials[CORNELL_LIGHT].Emission = {};
+    room.Inputs.Environment = {};
+    renderer::DirectLight sun;
+    sun.SourceId = 1;
+    sun.Kind = renderer::LightKind::Directional;
+    sun.Direction = {0, 0, -1};
+    room.Inputs.Lights = {&sun, 1};
+
+    PreparedGraph graph(fixture,
+                        {LUDUS_RG3_VEACH_GUIBAS_MIS_TEMPLATE_DIRECTORY, "rg2_veach_guibas_mis_template.lurgrt"},
+                        room,
+                        1);
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> pixels;
+    RenderVeachGuibasOutputs(graph, fixture, 1, pixels);
+    CHECK(ComputeMeanRadiance(pixels[VEACH_GUIBAS_MIS]).X > 0);
+    CHECK(ComputeMeanRadiance(pixels[VEACH_GUIBAS_BSDF_SAMPLING]).X == 0);
+    CHECK(CountDifferingPixels(pixels[VEACH_GUIBAS_MIS], pixels[VEACH_GUIBAS_LIGHT_SAMPLING], 0) == 0);
+}
+
 TEST_CASE("Every MIS heuristic of the Veach and Guibas template estimates the same integral as each strategy alone",
           "[render-graph][gpu][veach-guibas][template][mis]")
 {

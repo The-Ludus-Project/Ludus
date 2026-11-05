@@ -810,7 +810,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QWidget* interfacePage = CreateShaderInterfaceView(mSourceInterface, sourcePage);
     mSourceSplit = new QSplitter(Qt::Horizontal, sourcePage);
     mSourceSplit->setObjectName(QStringLiteral("renderGraphSourceSplitter"));
-    mSourceSplit->addWidget(new CodeEditorPanel(mSource, mSourceSplit));
+    mSourceSplit->addWidget(new CodeEditorPanel(mSource, mSourceController, mSourceSplit));
     mSourceSplit->addWidget(interfacePage);
     mSourceSplit->setCollapsible(0, false);
     mSourceSplit->setStretchFactor(0, 2);
@@ -5340,6 +5340,13 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
         });
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        connect(mPreviewSourceOrNull, &RenderPreview::RenderAdmissionChanged, this, [this]() {
+            if (mPreviewSourceOrNull->HasDevice() == true)
+            {
+                mPreviewPump.Start();
+                mPreviewPump.Wake();
+            }
+        });
         connect(mPreviewSourceOrNull, &RenderPreview::NavigationChanged, this, [this]() {
             mArePreviewInputsDirty = true;
             mPreviewPump.Wake();
@@ -5543,7 +5550,15 @@ void RendererWorkspace::ServicePreview()
         refreshRenderWarning(mPreviewSourceOrNull->Scene());
     }
     constexpr foundation::float64 NANOSECONDS_PER_MILLISECOND = 1'000'000.0;
-    preview.Tick(static_cast<foundation::float64>(preparationTimer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND);
+    const bool hasVisibleConsumer =
+        mPreviewSourceOrNull == nullptr || mPreviewSourceOrNull->ShouldRenderPresentation() == true ||
+        mPreviewImage->visibleRegion().isEmpty() == false || mTextureViewerOrNull->visibleRegion().isEmpty() == false;
+    const bool hasActiveCapture =
+        mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->HasActiveGpuCapture() == true;
+    const RenderGraphPreviewWork work = hasActiveCapture == true     ? RenderGraphPreviewWork::FinishPending
+                                        : hasVisibleConsumer == true ? RenderGraphPreviewWork::Render
+                                                                     : RenderGraphPreviewWork::Prepare;
+    preview.Tick(static_cast<foundation::float64>(preparationTimer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND, work);
     mPreviewPump.SetProducerPending(preview.HasPendingWork());
     if (mPreviewSourceOrNull == nullptr || mPreviewSourceOrNull->HasDevice() == false ||
         preview.GetTargetSize().isEmpty() == true)

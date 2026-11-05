@@ -5,6 +5,7 @@
     "minor": 29,
     "patch": 0
   },
+  "include": ["config/cmake/windows-msvc-presets.json"],
   "configurePresets": [
     {
       "name": "linux-clang-base",

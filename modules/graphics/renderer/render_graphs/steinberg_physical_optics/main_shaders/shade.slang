@@ -950,25 +950,22 @@ bool TryMakeConnection(SceneContext scene,
     if (selected.HasSample == false)
         return false;
     uint shapeFirst = GetShadeVertexDimension(index, SHADE_VERTEX_LIGHT_SHAPE_DIMENSION_FIRST);
-    float3 shapeSample = float3(SampleSceneRandom(launch, shapeFirst),
-                                SampleSceneRandom(launch, shapeFirst + 1),
-                                SampleSceneRandom(launch, shapeFirst + 2));
-    LightSample light = SampleIncidentLight(scene, selected, receiver, shapeSample);
-    float lightDensity = light.SelectionPmf * light.ConditionalPdf;
+    IncidentLightSample light = SampleIncidentLight(scene, selected.LightIndex, receiver, launch, shapeFirst, queries);
+    float lightDensity = selected.SelectionPmf * light.ConditionalProbability;
     float cosine = dot(light.DirectionWorld, vertex.Frame.NormalWorld);
     if (light.HasSample == false || lightDensity <= 0 || cosine <= 0 || any(light.IncidentCoefficient > 0) == false)
         return false;
     outEndpoint.RadianceRgb = light.IncidentCoefficient;
     outEndpoint.PropagationWorld = -light.DirectionWorld;
     outEndpoint.DistanceWorld = light.DistanceWorld;
-    outEndpoint.IsDiscrete = light.IsDiscrete;
+    outEndpoint.IsDiscrete = light.Measure == IncidentLightMeasure::Discrete;
     outEndpoint.Kind = LightEndpointKind::Radiator;
-    if (light.IsDiscrete == true && light.HasFiniteEndpoint == false)
+    if (light.Measure == IncidentLightMeasure::Discrete && light.HasFiniteEndpoint == false)
         outEndpoint.Kind = LightEndpointKind::Sun;
-    else if (light.IsDiscrete == false && light.TriangleIndex == SCENE_INVALID_INDEX)
+    else if (light.Measure == IncidentLightMeasure::SolidAngle && light.TriangleIndex == SCENE_INVALID_INDEX)
         outEndpoint.Kind = LightEndpointKind::Environment;
     float weight = cosine / (vertex.LobeProbability * lightDensity);
-    if (light.IsDiscrete == false)
+    if (light.Measure == IncidentLightMeasure::SolidAngle)
         weight *=
             ComputePowerHeuristic(lightDensity,
                                   EvaluateLobeDensity(vertex, light.DirectionWorld, samplingWavelength, settings));
@@ -1064,14 +1061,16 @@ float3 TracePath(SceneContext scene, RayLaunch launch, bool isWave, inout RayQue
                     {
                         continuation.Kind = LightEndpointKind::Environment;
                         continuation.RadianceRgb = EvaluateEnvironment(scene, incidentWorld);
-                        lightDensity = EvaluateEnvironmentPdfSolidAngle(scene, incidentWorld);
+                        lightDensity = EvaluateLightSelectionPmf(scene, GetEnvironmentLightIndex(scene)) *
+                                       EvaluateIncidentEnvironmentPdfSolidAngle(scene);
                     }
                     else
                     {
                         continuation.Kind = LightEndpointKind::Radiator;
                         continuation.RadianceRgb = EvaluateEmission(scene, next, -incidentWorld);
                         continuation.DistanceWorld = next.DistanceWorld;
-                        lightDensity = EvaluateLightPdfSolidAngle(scene, hit.PositionWorld, next);
+                        lightDensity = EvaluateLightSelectionPmf(scene, GetSurfaceLightIndex(scene, next)) *
+                                       EvaluateIncidentLightPdfSolidAngle(scene, hit.PositionWorld, next);
                     }
                     if (isDelta == false)
                         continuation.Weight *= ComputePowerHeuristic(lobeDensity, lightDensity);
@@ -1157,10 +1156,8 @@ float3 MeasureCoherence(SceneContext scene, RayLaunch launch, inout RayQueryCont
     if (selected.HasSample == false)
         return float3(0);
     uint shapeFirst = GetShadeVertexDimension(0, SHADE_VERTEX_LIGHT_SHAPE_DIMENSION_FIRST);
-    float3 shapeSample = float3(SampleSceneRandom(launch, shapeFirst),
-                                SampleSceneRandom(launch, shapeFirst + 1),
-                                SampleSceneRandom(launch, shapeFirst + 2));
-    LightSample light = SampleIncidentLight(scene, selected, shadingPoint.Hit, shapeSample);
+    IncidentLightSample light =
+        SampleIncidentLight(scene, selected.LightIndex, shadingPoint.Hit, launch, shapeFirst, queries);
     if (light.HasSample == false || any(light.IncidentCoefficient > 0) == false ||
         dot(shadingPoint.ShadingNormalWorld, light.DirectionWorld) <= 0 ||
         TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
@@ -1170,9 +1167,9 @@ float3 MeasureCoherence(SceneContext scene, RayLaunch launch, inout RayQueryCont
     endpoint.PropagationWorld = -light.DirectionWorld;
     endpoint.DistanceWorld = light.DistanceWorld;
     endpoint.Kind = LightEndpointKind::Radiator;
-    if (light.IsDiscrete == true && light.HasFiniteEndpoint == false)
+    if (light.Measure == IncidentLightMeasure::Discrete && light.HasFiniteEndpoint == false)
         endpoint.Kind = LightEndpointKind::Sun;
-    else if (light.IsDiscrete == false && light.TriangleIndex == SCENE_INVALID_INDEX)
+    else if (light.Measure == IncidentLightMeasure::SolidAngle && light.TriangleIndex == SCENE_INVALID_INDEX)
         endpoint.Kind = LightEndpointKind::Environment;
     Beam beam = MakeLightBeam(endpoint, PO_COHERENCE_WAVELENGTH_NANOMETERS, GetOpticsSettings());
     float lengthMicrometers =

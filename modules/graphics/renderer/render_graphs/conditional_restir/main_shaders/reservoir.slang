@@ -488,7 +488,7 @@ float3 GatherSuffix(SceneContext scene, Prefix prefix, Reservoir reservoir, inou
     if (any(contribution > 0) == false)
         return float3(0);
     float3 offsetWorld = endpoint.PositionWorld - prefix.Hit.PositionWorld;
-    LightSample light = (LightSample)0;
+    IncidentLightSample light = (IncidentLightSample)0;
     light.TriangleIndex = reservoir.TriangleIndex;
     light.Barycentric = reservoir.Barycentric;
     light.PositionWorld = endpoint.PositionWorld;

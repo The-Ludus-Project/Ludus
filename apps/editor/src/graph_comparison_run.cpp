@@ -93,6 +93,11 @@ bool HasReferenceSamples(BorrowedView<const renderer::ReferencePixel> pixels)
 }
 } // namespace
 
+GraphComparisonRun::~GraphComparisonRun()
+{
+    Stop();
+}
+
 bool GraphComparisonRun::Start(RenderPreview& inoutPreview,
                                RendererWorkspace& inoutWorkspace,
                                const ViewportReferenceSettings& settings,
@@ -197,11 +202,19 @@ bool GraphComparisonRun::Start(RenderPreview& inoutPreview,
     mPhase = displayBaseline.isNull() == true ? Phase::Reference : Phase::NextCandidate;
     mStatus = QStringLiteral("Frozen World and camera at %1.").arg(DescribeExtent(extent));
     writeManifest(QStringLiteral("running"));
+    mPreview = &inoutPreview;
+    mPreview->BeginGpuCapture();
     return true;
 }
 
 void GraphComparisonRun::Service()
 {
+    const RenderGraphPreview* graphOrNull = mWorkspace.isNull() == true ? nullptr : mWorkspace->GetPreviewOrNull();
+    if (mPreview.isNull() == true || mPreview->HasOpenViewportSubmission() == true ||
+        (graphOrNull != nullptr && graphOrNull->HasOpenSubmission() == true))
+    {
+        return;
+    }
     switch (mPhase)
     {
         case Phase::Idle:
@@ -569,6 +582,11 @@ void GraphComparisonRun::finishRun(const QString& state, const QString& message)
     mReferencePixels = {};
     mDisplayBaseline = {};
     mPhase = Phase::Idle;
+    if (mPreview.isNull() == false)
+    {
+        mPreview->EndGpuCapture();
+        mPreview.clear();
+    }
     mStatus = QStringLiteral("%1 Results: %2").arg(message, QDir::toNativeSeparators(mDirectory));
     writeManifest(state);
     mScene = {};

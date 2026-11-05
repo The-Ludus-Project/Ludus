@@ -478,6 +478,9 @@ struct RenderGraphPreview::State final
     uint64 UpdatedRevision = 0;
     uint64 MaterialStatusRevision = 0;
     QString MaterialStatus;
+    uint64 OpenSubmissionGeneration = 0;
+    uint64 OpenSubmissionRevision = 0;
+    bool HasOpenSubmission = false;
     bool IsAwaitingProducer = false;
     QElapsedTimer ProducerTimer;
     int32 ProducerTimeoutMilliseconds = MAX_PRODUCER_MILLISECONDS;
@@ -647,6 +650,7 @@ void RenderGraphPreview::Detach() noexcept
     state.Candidate = {};
     state.Active = {};
     state.UpdatedRevision = 0;
+    state.HasOpenSubmission = false;
     state.IsAwaitingProducer = false;
     state.ProducerTimer.invalidate();
     Q_EMIT Changed();
@@ -1037,12 +1041,16 @@ void RenderGraphPreview::SetDirectPresentation(bool shouldPresentDirectly) noexc
 {
     mState->ShouldPresentDirectly = shouldPresentDirectly;
 }
+bool RenderGraphPreview::HasOpenSubmission() const noexcept
+{
+    return mState->HasOpenSubmission;
+}
 bool RenderGraphPreview::HasPendingWork() const noexcept
 {
     const State& state = *mState;
     const renderer::RenderGraphCandidateState candidate = state.Activation.GetReport().Candidate;
-    return state.IsAwaitingProducer == true || state.Reader.IsBusy() == true || state.IsCopyingDisplay == true ||
-           state.Inspector.IsBusy() == true || state.HasPendingPreparation == true ||
+    return state.HasOpenSubmission == true || state.IsAwaitingProducer == true || state.Reader.IsBusy() == true ||
+           state.IsCopyingDisplay == true || state.Inspector.IsBusy() == true || state.HasPendingPreparation == true ||
            state.Display.HasPendingSelectionOutline() == true || state.Capture.HasPendingWork() == true ||
            candidate == renderer::RenderGraphCandidateState::Preparing ||
            (candidate == renderer::RenderGraphCandidateState::NeedsUpdate && state.HasExtraction == true);
@@ -1055,16 +1063,16 @@ GraphDisplayFrames& RenderGraphPreview::GetDisplayFrames() noexcept
 {
     return mState->Display;
 }
-void RenderGraphPreview::Tick(float64 preparationMilliseconds)
+void RenderGraphPreview::Tick(float64 preparationMilliseconds, RenderGraphPreviewWork work)
 {
     State& state = *mState;
     renderer::RenderGraph* activeOrNull = state.Activation.GetActiveOrNull();
     const bool hasPendingSamples = activeOrNull != nullptr && activeOrNull->HasPendingSamples() == true;
     const bool hasActiveWork =
         state.IsAttached == true &&
-        (hasPendingSamples == true || state.IsCopyingDisplay == true || state.Reader.IsBusy() == true ||
-         state.IsAwaitingProducer == true || state.Inspector.IsBusy() == true || state.IsInspectionRequested == true ||
-         state.Candidate.Serial != 0 ||
+        ((work == RenderGraphPreviewWork::Render && hasPendingSamples == true) || state.HasOpenSubmission == true ||
+         state.IsCopyingDisplay == true || state.Reader.IsBusy() == true || state.IsAwaitingProducer == true ||
+         state.Inspector.IsBusy() == true || state.IsInspectionRequested == true || state.Candidate.Serial != 0 ||
          (state.HasExtraction == true &&
           (state.Extraction.Revision != mPresentedRevision || state.Session != mPresentedSession)));
     QElapsedTimer timer;
@@ -1075,12 +1083,15 @@ void RenderGraphPreview::Tick(float64 preparationMilliseconds)
         // Moves the selection outline over the shown image without waiting for a new graph frame.
         static_cast<void>(state.Display.PollSelectionOutline());
     }
-    tick();
+    tick(work);
     if (state.IsAttached == false)
     {
         return;
     }
-    pollFailures();
+    if (work == RenderGraphPreviewWork::Render || state.IsFailureRequested == true)
+    {
+        pollFailures();
+    }
     if (hasActiveWork == true || state.HasCompletedStatisticsFrame == true)
     {
         state.Statistics.AddCpuWork(preparationMilliseconds +
@@ -1100,12 +1111,19 @@ void RenderGraphPreview::Tick(float64 preparationMilliseconds)
         }
     }
 }
-void RenderGraphPreview::tick()
+void RenderGraphPreview::tick(RenderGraphPreviewWork work)
 {
     LUDUS_PROFILE_SCOPE(EditorRenderGraphTick);
     State& state = *mState;
     if (state.IsAttached == false)
     {
+        return;
+    }
+    if (state.HasOpenSubmission == true)
+    {
+        renderer::RenderGraph* active = state.Activation.GetActiveOrNull();
+        LUDUS_REQUIRE(active != nullptr);
+        submitFrame(*active, state.OpenSubmissionGeneration, state.OpenSubmissionRevision);
         return;
     }
     if (state.Inspector.IsBusy() == true)
@@ -1244,6 +1262,11 @@ void RenderGraphPreview::tick()
         finishCopy();
         return;
     }
+    if (work == RenderGraphPreviewWork::FinishPending)
+    {
+        state.Trace.Cancel("capture owns viewport device");
+        return;
+    }
     // No frame is open and no export copy is in flight: the active graph's attachments hold
     // the last completed frame until the next Render, so the viewer reads them now.
     if (state.IsInspectionEnabled == true && state.IsInspectionRequested == true && state.Inspector.IsBusy() == false &&
@@ -1259,7 +1282,7 @@ void RenderGraphPreview::tick()
     {
         static_cast<void>(stage());
     }
-    advance();
+    advance(work == RenderGraphPreviewWork::Render);
 }
 
 void RenderGraphPreview::finishCopy()
@@ -1339,7 +1362,7 @@ void RenderGraphPreview::finishDisplayCopy()
     }
 }
 
-void RenderGraphPreview::advance()
+void RenderGraphPreview::advance(bool shouldSubmitFrame)
 {
     State& state = *mState;
     // No live frame or export copy is in flight here, so the capture graph may submit its sample.
@@ -1481,6 +1504,11 @@ void RenderGraphPreview::advance()
     }
     const uint64 drawable = activeOrNull->GetDrawableSceneRevision();
     // While frozen the inspection view is rasterized from the free camera; the live graph waits.
+    if (shouldSubmitFrame == false)
+    {
+        state.Trace.Cancel("viewport output hidden");
+        return;
+    }
     if (state.IsFrozen == true ||
         (state.FailedOutputGeneration == report.ActiveGeneration && state.FailedOutputRevision == drawable) ||
         drawable == 0 ||
@@ -1490,15 +1518,29 @@ void RenderGraphPreview::advance()
         return;
     }
     state.Trace.BeginFrame();
-    rhi::SubmissionToken completion;
     state.ProducerTimeoutMilliseconds =
         activeOrNull->HasPendingSamples() == true && activeOrNull->GetSubmittedRaySamples() == 0
             ? FIRST_SAMPLE_PRODUCER_MILLISECONDS
             : MAX_PRODUCER_MILLISECONDS;
     Q_EMIT PreparingSubmission();
+    submitFrame(*activeOrNull, report.ActiveGeneration, drawable);
+}
+
+void RenderGraphPreview::submitFrame(renderer::RenderGraph& inoutGraph, uint64 generation, uint64 drawableRevision)
+{
+    State& state = *mState;
+    rhi::SubmissionToken completion;
     const rhi::RasterStatus rendered =
-        activeOrNull->Render(state.Surface, state.Active.Width, state.Active.Height, completion);
-    if (rendered == rhi::RasterStatus::NotReady)
+        inoutGraph.Render(state.Surface, state.Active.Width, state.Active.Height, completion);
+    rhi::FrameInfo frame;
+    state.HasOpenSubmission = (rendered == rhi::RasterStatus::Pending || rendered == rhi::RasterStatus::NotReady) &&
+                              rhi::GetFrameInfo(state.Device, state.Surface, frame) == rhi::DeviceStatus::Ready;
+    if (state.HasOpenSubmission == true)
+    {
+        state.OpenSubmissionGeneration = generation;
+        state.OpenSubmissionRevision = drawableRevision;
+    }
+    if (state.HasOpenSubmission == true || rendered == rhi::RasterStatus::NotReady)
     {
         state.Trace.SetStage("Await graph submission admission (NotReady)");
         return;
@@ -1511,13 +1553,13 @@ void RenderGraphPreview::advance()
         return;
     }
     Q_EMIT SubmissionRecorded();
-    state.RenderedGeneration = report.ActiveGeneration;
+    state.RenderedGeneration = generation;
     // Progressive samples of one drawable scene keep its view even after newer revisions evict it.
-    if (state.HasRenderedView == false || state.RenderedRevision != drawable)
+    if (state.HasRenderedView == false || state.RenderedRevision != drawableRevision)
     {
-        state.HasRenderedView = state.FindSubmittedView(drawable, state.RenderedView);
+        state.HasRenderedView = state.FindSubmittedView(drawableRevision, state.RenderedView);
     }
-    state.RenderedRevision = drawable;
+    state.RenderedRevision = drawableRevision;
     state.Trace.SetStage("Await producer completion (observed)");
     state.IsAwaitingProducer = true;
     state.ProducerTimer.start();

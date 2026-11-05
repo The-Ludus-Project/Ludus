@@ -79,7 +79,7 @@ float3 SampleTerminalCoefficient(SceneContext scene,
                          (cosineReceiver * cosineEmitter * inverseDensityArea / distanceSquaredWorld);
     if (any(coefficient > 0) == false)
         return float3(0);
-    LightSample light = (LightSample)0;
+    IncidentLightSample light = (IncidentLightSample)0;
     light.TriangleIndex = endpoint.TriangleIndex;
     light.Barycentric = endpoint.Barycentric;
     light.PositionWorld = endpoint.PositionWorld;

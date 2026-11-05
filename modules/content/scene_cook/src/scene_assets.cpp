@@ -764,13 +764,21 @@ struct CoatingOverride final
 {
     static constexpr std::string_view LEVEL_KEYS[] =
         {"version", "id", "name", "profile", "objects", "camera", "imports"};
-    static constexpr std::string_view MAPPED_LEVEL_KEYS[] =
-        {"version", "id", "name", "profile", "objects", "camera", "imports", "material_mappings"};
     const JsonIndex mappings = tree.GetMember(level, "material_mappings");
-    if ((mappings == NO_JSON_NODE ? tree.HasExactKeys(level, LEVEL_KEYS)
-                                  : tree.HasExactKeys(level, MAPPED_LEVEL_KEYS)) == false)
+    const JsonIndex sharedCoatings = tree.GetMember(level, "shared_coatings");
+    constexpr usize REQUIRED_FIELDS = sizeof(LEVEL_KEYS) / sizeof(LEVEL_KEYS[0]);
+    const usize optionalFields =
+        (mappings == NO_JSON_NODE ? usize{0} : usize{1}) + (sharedCoatings == NO_JSON_NODE ? usize{0} : usize{1});
+    if (tree.GetKind(level) != JsonKind::Object || tree.GetCount(level) != REQUIRED_FIELDS + optionalFields)
     {
         return inoutFailure.FailInvalid("Invalid level fields");
+    }
+    for (const std::string_view key : LEVEL_KEYS)
+    {
+        if (tree.GetMember(level, key) == NO_JSON_NODE)
+        {
+            return inoutFailure.FailInvalid("Missing required level field");
+        }
     }
     if (mappings != NO_JSON_NODE)
     {
@@ -787,6 +795,23 @@ struct CoatingOverride final
             {
                 return inoutFailure.FailInvalid("Material mappings require distinct source and replacement IDs, "
                                                 "without chained mappings");
+            }
+        }
+    }
+    if (sharedCoatings != NO_JSON_NODE)
+    {
+        if (tree.GetKind(sharedCoatings) != JsonKind::Object ||
+            tree.GetCount(sharedCoatings) > format::IMPORT_LIMITS.Materials)
+        {
+            return inoutFailure.FailInvalid("Invalid shared coating instance table");
+        }
+        for (usize index = 0; index < tree.GetCount(sharedCoatings); ++index)
+        {
+            CoatingOverride parameters;
+            if (IsResourceIdText(tree.GetKey(sharedCoatings, index), "material") == false ||
+                ReadCoatingOverride(tree, tree.GetValue(sharedCoatings, index), parameters) == false)
+            {
+                return inoutFailure.FailInvalid("A shared coating needs an imported material ID and valid parameters");
             }
         }
     }
@@ -2652,13 +2677,16 @@ struct MaterialVariant final
 
 /// Preserve source material ordering and share records for identical slot overrides.
 [[nodiscard]] bool CollectMaterialVariants(const JsonTree& tree,
-                                           JsonIndex objects,
-                                           JsonIndex mappings,
+                                           JsonIndex level,
                                            const Array<std::string_view>& materials,
+                                           const Array<Document>& descriptions,
                                            Array<MaterialVariant>& outVariants,
                                            Array<uint32>& outObjectMaterials,
                                            Failure& inoutFailure) noexcept
 {
+    const JsonIndex objects = tree.GetMember(level, "objects");
+    const JsonIndex sharedCoatings = tree.GetMember(level, "shared_coatings");
+    const JsonIndex mappings = tree.GetMember(level, "material_mappings");
     const usize objectCount = tree.GetCount(objects);
     Array<uint32> sourceIndices;
     if (sourceIndices.TryResize(objectCount) == false || outObjectMaterials.TryResize(objectCount) == false)
@@ -2673,6 +2701,15 @@ struct MaterialVariant final
     for (usize sourceIndex = 0; sourceIndex < materials.GetSize(); ++sourceIndex)
     {
         const usize firstVariant = outVariants.GetSize();
+        const JsonIndex shared = tree.GetMember(sharedCoatings, materials[sourceIndex]);
+        const Document& description = descriptions[sourceIndex];
+        const JsonIndex sourceNode = description.Tree.GetMember(description.Root, "source_material");
+        SourceMaterialRecord source;
+        if (sourceNode != NO_JSON_NODE &&
+            ReadSourceMaterial(description.Tree, sourceNode, source, inoutFailure) == false)
+        {
+            return false;
+        }
         for (usize objectIndex = 0; objectIndex < objectCount; ++objectIndex)
         {
             if (sourceIndices[objectIndex] != sourceIndex)
@@ -2681,9 +2718,21 @@ struct MaterialVariant final
             }
             const JsonIndex object = tree.GetItem(objects, objectIndex);
             CoatingOverride coating;
-            if (ReadCoatingOverride(tree, tree.GetMember(object, "coating"), coating) == false)
+            const JsonIndex local = tree.GetMember(object, "coating");
+            const JsonIndex instance = local != NO_JSON_NODE ? local : shared;
+            if (ReadCoatingOverride(tree, instance, coating) == false)
             {
-                return inoutFailure.FailInvalid("Invalid coating override");
+                return inoutFailure.FailInvalid("Invalid coating instance");
+            }
+            if (coating.Alpha > 0 && source.Scattering.Model != format::MaterialModel::CoatedDiffuse)
+            {
+                return inoutFailure.FailInvalid("A coating instance requires a coated-diffuse material. "
+                                                "Reset its coating or restore its source material.");
+            }
+            if (coating.Alpha == source.Scattering.AlphaU && coating.Alpha == source.Scattering.AlphaV &&
+                coating.Eta == source.Scattering.CoatingEta && coating.Thickness == source.Scattering.CoatingThickness)
+            {
+                coating = {};
             }
             usize variantIndex = firstVariant;
             while (variantIndex < outVariants.GetSize() && outVariants[variantIndex].Coating != coating)
@@ -2737,13 +2786,6 @@ struct MaterialVariant final
     {
         return true;
     }
-    Array<MaterialVariant> variants;
-    Array<uint32> objectMaterials;
-    if (CollectMaterialVariants(levelTree, objects, mappings, materials, variants, objectMaterials, inoutFailure) ==
-        false)
-    {
-        return false;
-    }
     Array<Document> descriptions;
     if (descriptions.TryResize(materials.GetSize()) == false)
     {
@@ -2766,6 +2808,13 @@ struct MaterialVariant final
         {
             return false;
         }
+    }
+    Array<MaterialVariant> variants;
+    Array<uint32> objectMaterials;
+    if (CollectMaterialVariants(levelTree, level, materials, descriptions, variants, objectMaterials, inoutFailure) ==
+        false)
+    {
+        return false;
     }
     for (const Document& description : descriptions)
     {
@@ -2974,11 +3023,6 @@ struct MaterialVariant final
         const CoatingOverride& coating = variant.Coating;
         if (coating.Alpha > 0)
         {
-            if (source.Scattering.Model != format::MaterialModel::CoatedDiffuse)
-            {
-                return inoutFailure.FailInvalid("A coating override requires a coated-diffuse source material. Reset "
-                                                "the slot coating or restore its source material.");
-            }
             if (coating.Alpha != source.Scattering.AlphaU || coating.Alpha != source.Scattering.AlphaV)
             {
                 roughness = math::Max(math::Sqrt(static_cast<float64>(coating.Alpha)),

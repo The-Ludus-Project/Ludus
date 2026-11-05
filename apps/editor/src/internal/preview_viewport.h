@@ -210,6 +210,7 @@ private:
     void resizeSurface();
     /// Letterbox the frame and resize the drawable for the preview's current size preset.
     void applyViewportSize();
+    void setRenderPresentationVisible(bool isVisible) noexcept;
     /// Size preset the frame layout currently uses; differs from the preview's until applied.
     foundation::usize mAppliedViewportSize = VIEWPORT_SIZE_PRESET_COUNT;
     /// Reformat the statistics overlay from RenderPreview and push it to the active presentation.

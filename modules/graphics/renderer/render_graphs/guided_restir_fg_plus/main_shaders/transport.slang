@@ -127,20 +127,20 @@ FgPoint TraceFgCamera(SceneContext scene,
         selected.LightIndex = min(uint(SampleFgRandom(launch, FG_DIRECT_FIRST_DIMENSION) * float(count)), count - 1);
         selected.SelectionPmf = EvaluateLightSelectionPmf(scene, selected.LightIndex);
         selected.HasSample = true;
-        LightSample light = SampleIncidentLight(
-            scene,
-            selected,
-            point.Hit,
-            SampleFgRandomTriple(launch.Seed, GetFgPixel(launch), launch.SampleIndex, FG_DIRECT_FIRST_DIMENSION + 1));
+        RandomAddress address =
+            MakeFgRandomAddress(GetFgPixel(launch), launch.SampleIndex, FG_DIRECT_FIRST_DIMENSION + 1);
+        IncidentLightSample light =
+            SampleIncidentLight(scene, selected.LightIndex, point.Hit, launch.Seed, address, queries);
         float3 value;
         float density;
         EvaluateStandardBsdf(point.Material, point.ViewDirectionWorld, light.DirectionWorld, value, density);
-        float lightDensity = light.SelectionPmf * light.ConditionalPdf;
+        float lightDensity = selected.SelectionPmf * light.ConditionalProbability;
         float cosine = dot(point.Material.ShadingNormalWorld, light.DirectionWorld);
         if (light.HasSample == true && lightDensity > 0 && cosine > 0 && any(value > 0) == true &&
             TestVisibility(scene, queries, point.Hit, light) == SceneQuery::Miss)
         {
-            float weight = light.IsDiscrete == true ? 1 : ComputeFgPowerWeight(lightDensity, density);
+            float weight =
+                light.Measure == IncidentLightMeasure::Discrete ? 1 : ComputeFgPowerWeight(lightDensity, density);
             radiance += value * light.IncidentCoefficient * (cosine * weight / lightDensity);
         }
     }
@@ -162,12 +162,14 @@ FgPoint TraceFgCamera(SceneContext scene,
         if (status == SceneQuery::Miss)
         {
             emission = EvaluateEnvironment(scene, directionWorld);
-            lightDensity = EvaluateEnvironmentPdfSolidAngle(scene, directionWorld);
+            lightDensity = EvaluateLightSelectionPmf(scene, GetEnvironmentLightIndex(scene)) *
+                           EvaluateIncidentEnvironmentPdfSolidAngle(scene);
         }
         else if (status == SceneQuery::Surface)
         {
             emission = EvaluateEmission(scene, hit, -directionWorld);
-            lightDensity = EvaluateLightPdfSolidAngle(scene, point.Hit.PositionWorld, hit);
+            lightDensity = EvaluateLightSelectionPmf(scene, GetSurfaceLightIndex(scene, hit)) *
+                           EvaluateIncidentLightPdfSolidAngle(scene, point.Hit.PositionWorld, hit);
         }
         float3 value;
         float density;

@@ -48,7 +48,7 @@ def main():
                  "--tools", tools], cwd=root, env=env)
             descriptor = json.loads((project / "ludus.project.json").read_text())
             assert descriptor["preset"] == "macos-clang-development", descriptor
-            assert descriptor["template"]["version"] == 4
+            assert descriptor["template"]["version"] == 5
             for tracked in ("ludus.project.json", "ludus.lock.json", "CMakeLists.txt", "CMakePresets.json"):
                 assert str(root) not in (project / tracked).read_text(), tracked
             run([cli, "project", "check", project, "--tools", tools], cwd=root, env=env)

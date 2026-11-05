@@ -67,9 +67,9 @@ bool TrySampleOmvEmitter(SceneContext scene, RayLaunch launch, out SurfaceHit ou
     outPdfArea = 1 / (float(count) * emitter.z);
     return outEmitter.IsValid == true && IsSurfaceCovered(scene, outEmitter) == true;
 }
-LightSample MakeOmvConnection(SurfaceHit from, SurfaceHit to)
+IncidentLightSample MakeOmvConnection(SurfaceHit from, SurfaceHit to)
 {
-    LightSample result = (LightSample)0;
+    IncidentLightSample result = (IncidentLightSample)0;
     float3 offsetWorld = to.PositionWorld - from.PositionWorld;
     result.DistanceWorld = length(offsetWorld);
     result.DirectionWorld = result.DistanceWorld > 0 ? offsetWorld / result.DistanceWorld : float3(0);
@@ -82,7 +82,7 @@ LightSample MakeOmvConnection(SurfaceHit from, SurfaceHit to)
 }
 float3 EvaluateOmvDirect(SceneContext scene, GeometrySamplingContext context, inout RayQueryContext queries)
 {
-    LightSample light = MakeOmvConnection(context.Receiver, context.Emitter);
+    IncidentLightSample light = MakeOmvConnection(context.Receiver, context.Emitter);
     if (light.HasSample == false || dot(context.Receiver.GeometricNormalWorld, light.DirectionWorld) <= 0)
         return float3(0);
     float3 value;
@@ -106,8 +106,8 @@ float3 EvaluateOmvConnection(SceneContext scene,
     outBsdfPdfArea = 0;
     if (IsSurfaceCovered(scene, middle) == false)
         return float3(0);
-    LightSample first = MakeOmvConnection(context.Receiver, middle);
-    LightSample second = MakeOmvConnection(middle, context.Emitter);
+    IncidentLightSample first = MakeOmvConnection(context.Receiver, middle);
+    IncidentLightSample second = MakeOmvConnection(middle, context.Emitter);
     if (first.HasSample == false || second.HasSample == false ||
         dot(context.Receiver.GeometricNormalWorld, first.DirectionWorld) <= 0 ||
         dot(middle.GeometricNormalWorld, -first.DirectionWorld) <= 0 ||

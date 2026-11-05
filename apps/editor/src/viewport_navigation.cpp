@@ -181,7 +181,7 @@ void PreviewViewport::leaveEvent(QEvent* event)
 void PreviewViewport::updateGizmoCursor()
 {
     const bool isDragging = mObjectInteraction->IsDragging();
-    if (isDragging == true || mObjectInteraction->GetHoveredAxis() >= 0)
+    if (isDragging == true || mObjectInteraction->HasHoveredHandle() == true)
     {
         setCursor(isDragging == true ? Qt::ClosedHandCursor : Qt::OpenHandCursor);
         mHasGizmoCursor = true;
@@ -424,6 +424,7 @@ void PreviewViewport::focusOutEvent(QFocusEvent* event)
 }
 void PreviewViewport::hideEvent(QHideEvent* event)
 {
+    setRenderPresentationVisible(false);
     if (mPlayEndpointOrNull != nullptr)
     {
         // A hidden tab or dock is an occluded window: the game drops to its hidden pacing.

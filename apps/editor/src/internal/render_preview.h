@@ -140,9 +140,16 @@ public:
         return mShaders;
     }
     void Resize(foundation::int32 width, foundation::int32 height) override;
-    /// Suppress repeated GPU submissions for hidden browser surfaces; allow the first
-    /// candidate frame so import validation can complete while its tab is hidden.
+    /// Track whether a viewport can display new frames.
     void SetPresentationVisible(bool isVisible) noexcept;
+    [[nodiscard]] bool ShouldRenderPresentation() const noexcept;
+    /// A scene import needs a candidate frame even while its viewport is hidden.
+    void SetNeedsValidationFrame(bool isNeeded) noexcept;
+    /// Pair each active capture on this device with a matching end call.
+    void BeginGpuCapture() noexcept;
+    void EndGpuCapture() noexcept;
+    [[nodiscard]] bool HasActiveGpuCapture() const noexcept;
+    [[nodiscard]] bool HasOpenViewportSubmission() const noexcept;
     /// Lowest admitted mouse rotation multiplier, relative to the default angular speed.
     static constexpr foundation::float32 MINIMUM_LOOK_SENSITIVITY = 0.1F;
     /// Highest admitted mouse rotation multiplier.
@@ -306,6 +313,7 @@ Q_SIGNALS:
     void DrawableSizeChanged(const QSize& size);
     void Changed();
     void NavigationChanged();
+    void RenderAdmissionChanged();
     void RendererPreferenceChanged(bool shouldForceRaster);
     void DeviceRequested();
     /// Emitted before the owned device is destroyed; borrowers must release device resources.
@@ -401,6 +409,9 @@ private:
     bool mHasPendingFrame = false;
     bool mHasFrame = false;
     bool mIsPresentationVisible = true;
+    bool mIsValidationFrameNeeded = false;
+    bool mIsRasterSubmissionOpen = false;
+    foundation::usize mActiveGpuCaptures = 0;
     bool mHasViewport = false;
     bool mHasPreparedView = false;
     bool mIsAwaitingProducer = false;

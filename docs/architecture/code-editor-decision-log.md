@@ -294,3 +294,52 @@ Remaining differences, recorded rather than fixed here:
   Forward buttons navigate graph history from the canvas and its toolbar". It
   passes alone, and it failed before M1 tasks 5-7 too, so an earlier test
   leaves state behind.
+
+### M2 batch 1: edit sets (CE05, 2026-11-04)
+
+The document seam gained `CodeEditSet` and `CodeSelectionSet` (design section 2):
+an ordered, non-overlapping set of `CodeTextEdit`s with a `Before`/`After`
+selection set and a `CodeTransactionId`. `CodeDocumentHost::ApplyEdits` is the
+new primary edit entry point; `ApplyEdit` stays a virtual one-element wrapper
+over it, so existing single-edit call sites (the controller's typing path) are
+unchanged. The whole-set validation (ascending order, no overlap, UTF-8 scalar
+boundaries, cumulative capacity, all or nothing) lives in one shared helper,
+`ValidateAndApplyEditSet` in `code_edit_set.{h,cpp}`, which the file, script,
+render-graph and test hosts all call, replacing the three near-identical private
+`applyByteEdit` bodies.
+
+Decisions and deviations recorded here:
+
+- **One undo step restores text and selections.** `DocumentHistory` stores only
+  the payload `T`, with no selections. Rather than rearchitect it, the file host
+  now instantiates `DocumentHistory<CodeHistoryState>`, where `CodeHistoryState`
+  carries the UTF-8 text and the selection set and compares **text only**, so a
+  bare caret move still records no history. `CodeFileDocument::Undo`/`Redo` now
+  surface the step's selection set; `CodeDocumentController::RestoreSelectionSet`
+  restores it. The script host stays `DocumentHistory<QByteArray>` and keeps its
+  single-cursor `Undo()`/`Redo()`: the Scripts work area is not multi-cursor.
+- **RestoreSelectionSet restores the primary selection only for now.** The view
+  still carries one Qt cursor; the secondary cursors are a batch-2 (CE06) layer.
+  The selection set is already recorded per step, so batch 2 restores the rest
+  without another history change.
+- **Formatting and Replace All moved onto the seam.** The formatter publishes its
+  clang-format replacement ranges as one `CodeEditSet` (they were already an
+  ascending, validated replacement list) through the new
+  `CodeDocumentController::ApplyEditSet`, instead of collapsing to a whole-text
+  `ApplyServiceText`. `CodeEditorPanel` gained an optional bound controller so
+  Replace All builds a byte-offset edit set and applies it whole; with no bound
+  controller it falls back to the Qt edit-block path, which still lands as one
+  undo step. `ApplyServiceText` is retained for completion/whole-text callers.
+- **The render-graph host forwards one combined edit.** It owns no buffer, so
+  `ApplyEdits` validates the whole set against the package draft and forwards a
+  single `RenderGraphDocument::ApplyTextEdit`, keeping the package's one-step
+  history. No package change was needed.
+- **Status for a rejected set.** An unordered or overlapping set returns
+  `Conflict` (not a new status), matching the single-edit identity-mismatch
+  rejection; the buffer, history and selections are unchanged.
+
+Authored, not run: the editor was not built or tested in this sandbox (no Qt6
+and no pinned toolchain; PR CI skips the editor build and tests). The new
+`code_edit_set_tests` (overlap/unordered/stale rejection with the buffer
+unchanged, and one-undo-step text-and-selection restore) and the migrated
+formatter/Replace All paths are pending host verification by the maintainer.

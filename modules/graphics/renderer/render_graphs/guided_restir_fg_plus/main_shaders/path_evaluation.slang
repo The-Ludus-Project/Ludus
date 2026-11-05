@@ -73,7 +73,7 @@ float3 EvaluateFgPathBody(SceneContext scene,
         return float3(0);
     if (shouldTestVisibility == true)
     {
-        LightSample connection = (LightSample)0;
+        IncidentLightSample connection = (IncidentLightSample)0;
         connection.DirectionWorld = directionWorld;
         connection.PositionWorld = gatherHit.PositionWorld;
         connection.DistanceWorld = sqrt(squaredDistance);

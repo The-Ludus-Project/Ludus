@@ -118,7 +118,7 @@ bool TestProductionVisibility(SceneContext scene,
     const float distanceWorld = length(offsetWorld);
     if (distanceWorld <= 0)
         return false;
-    LightSample sample = (LightSample)0;
+    IncidentLightSample sample = (IncidentLightSample)0;
     sample.TriangleIndex = reservoir.TriangleIndex;
     sample.Barycentric = reservoir.Barycentric;
     sample.PositionWorld = endpoint.PositionWorld;

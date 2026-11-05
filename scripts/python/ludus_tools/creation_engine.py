@@ -105,6 +105,8 @@ def prepare_creation_sdk(root: Path, prefix: Path, *, runner, cancel_check=None,
     No system installs or project hooks run.
     """
     profile = profile or PROFILE
+    if profile.startswith("windows-msvc-"):
+        raise ToolingError("MissingTools", "Install a matching Windows MSVC SDK and pass its prefix with --sdk")
     from .project_setup import environment
     env = environment(root) if environ is None else dict(environ)
     env["CI"] = "true"

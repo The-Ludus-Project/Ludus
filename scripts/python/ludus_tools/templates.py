@@ -11,7 +11,7 @@ Templates are addressed by ``(id, version)`` which is recorded in the project
 descriptor's ``template`` object so later template versions never silently
 overwrite user-owned game code (design "Project creation and Editor workflow").
 
-The only bundled template initially is ``minimal`` (version 4): a single native
+The only bundled template initially is ``minimal`` (version 5): a single native
 application target that queries the public engine version
 using public headers only — no new engine subsystem, no scene/ECS/hot reload.
 Placeholders are substituted by exact key, never by executing template content,
@@ -20,6 +20,7 @@ so a file name or value can never trigger an arbitrary command.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -30,6 +31,7 @@ from typing import Callable, Optional
 
 from .descriptor import TARGET_NAME_RE
 from .errors import DESTINATION_EXISTS, GENERATION_FAILED, INVALID_PROJECT, ToolingError
+from .native import WINDOWS_CONFIGURATIONS
 from .toolchain import pinned_llvm_tool
 
 TEMPLATE_SCHEMA_VERSION = 1
@@ -104,6 +106,13 @@ include(CTest)
 # Resolve the shared Ludus SDK. The CLI/Editor supply LUDUS_SDK_PREFIX via the
 # generated preset; no engine source is compiled by this project (P01/P12).
 find_package(Ludus CONFIG REQUIRED)
+if(DEFINED LUDUS_PROJECT_SDK_FLAVOR AND NOT Ludus_BUILD_FLAVOR STREQUAL LUDUS_PROJECT_SDK_FLAVOR)
+    message(FATAL_ERROR "Select the ${LUDUS_PROJECT_SDK_FLAVOR} Ludus SDK for this preset")
+endif()
+if(MSVC)
+    set(CMAKE_CXX23_STANDARD_COMPILE_OPTION "-std:c++23preview")
+    string(REGEX REPLACE "(^| )[/-]EHsc( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+endif()
 
 add_executable({{ TARGET }} src/main.cpp)
 target_link_libraries({{ TARGET }} PRIVATE {{ LINK_TARGETS }})
@@ -320,7 +329,7 @@ int main()
             "",
         ),
     ]
-    return Template(id="minimal", version=4, files=files)
+    return Template(id="minimal", version=5, files=files)
 
 
 _TEMPLATES: dict[str, Template] = {t.id: t for t in (_minimal_template(),)}
@@ -357,7 +366,30 @@ def render_files(template: Template, inputs: ProjectInputs) -> list[TemplateFile
         if f.relpath == "ludus.project.json":
             # Written by the caller (create.py) with the canonical descriptor.
             continue
-        rendered.append(TemplateFile(f.relpath, _substitute(f.content, values), f.executable))
+        content = _substitute(f.content, values)
+        if f.relpath == "CMakePresets.json":
+            presets = json.loads(content)
+            for flavor, configuration in WINDOWS_CONFIGURATIONS.items():
+                name = "windows-msvc-" + flavor.lower()
+                condition = {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows"}
+                presets["configurePresets"].append({
+                    "name": name,
+                    "generator": "Ninja",
+                    "binaryDir": "${sourceDir}/out/build/" + name,
+                    "condition": condition,
+                    "cacheVariables": {
+                        "CMAKE_BUILD_TYPE": configuration, "CMAKE_CXX_COMPILER": "cl.exe",
+                        "CMAKE_PREFIX_PATH": "$env{LUDUS_SDK_PREFIX}", "BUILD_TESTING": "ON",
+                        "LUDUS_PROJECT_SDK_FLAVOR": flavor,
+                    },
+                })
+                build = {"name": name, "configurePreset": name, "condition": condition}
+                presets["buildPresets"].append(build)
+                presets["testPresets"].append({**build,
+                                               "output": {"outputOnFailure": True},
+                                               "execution": {"noTestsAction": "error"}})
+            content = json.dumps(presets, indent=2) + "\n"
+        rendered.append(TemplateFile(f.relpath, content, f.executable))
     return rendered
 
 

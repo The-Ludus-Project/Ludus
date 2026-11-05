@@ -104,6 +104,8 @@ def create_project(
     from .native import default_profile, profile_for_identity
 
     preset = preset or (profile_for_identity(local_identity) if local_identity else default_profile())
+    if preset.startswith("windows-msvc-") and (release or ci is not None):
+        raise ToolingError(INVALID_PROJECT, "Windows MSVC project creation requires local SDK setup; omit --release and --ci")
     target = _derive_target(name)
 
     engine_req = desc.EngineRequirement(version=engine_version, components=list(components), features=[])

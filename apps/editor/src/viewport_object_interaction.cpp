@@ -1,6 +1,7 @@
 #include "internal/viewport_object_interaction.h"
 #include "design_tokens.h"
 #include "internal/render_preview.h"
+#include "internal/viewport_gizmo_readout.h"
 #include "internal/world_document.h"
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -43,6 +44,27 @@ constexpr float64 ARROW_HALF_WIDTH_PIXELS = 6;
 /// Half side of a scale handle's cube and of the pivot marker, in logical pixels.
 constexpr float64 CUBE_HALF_PIXELS = 5.5;
 constexpr float64 PIVOT_HALF_PIXELS = 3.5;
+/// Plane handle: a parallelogram this far from the pivot along both screen axes, in logical pixels.
+constexpr float64 PLANE_INNER_PIXELS = 22;
+constexpr float64 PLANE_OUTER_PIXELS = 38;
+/// Dark casing around a plane or centre handle, so it reads over a bright object.
+constexpr float64 CASING_GROWTH_PIXELS = 1.5;
+/// Slack added around a plane handle when testing the pointer against it.
+constexpr float64 PLANE_HIT_MARGIN_PIXELS = 3;
+/// Smallest sine of the angle between a plane's two screen axes, and smallest cosine between the plane's normal and
+/// the view direction, for which its handle is shown; below either the plane is seen too nearly edge-on to drag in.
+constexpr float64 MINIMUM_PLANE_SINE = 0.3;
+constexpr float32 MINIMUM_PLANE_FACING = 0.25F;
+/// Share, in percent, of the viewport colour mixed into a plane handle at rest, so the axes stay the louder cue.
+constexpr int32 PLANE_REST_PERCENT = 20;
+/// Half side of the scale tool's centre cube, and half side of the square around the pivot that hits it.
+constexpr float64 CENTRE_HALF_PIXELS = 7.5;
+constexpr float64 CENTRE_HIT_HALF_PIXELS = 10;
+/// A pointer this close to an axis shaft grabs the axis even where a plane handle also lies under it.
+constexpr float64 SHAFT_PRIORITY_PIXELS = 4;
+/// Unit vector, up and to the right on the screen, along which dragging the centre handle grows the scale.
+constexpr float64 UNIFORM_DRAG_COMPONENT = 0.70710678118654752;
+constexpr float64 MINIMUM_PLANE_DETERMINANT = 0.000000001;
 constexpr float64 MOVE_SNAP_METRES = 0.1;
 constexpr float64 ROTATE_SNAP_DEGREES = 15;
 constexpr float64 SCALE_SNAP = 0.1;
@@ -79,6 +101,16 @@ constexpr StaticArray<QRgb, AXIS_COUNT> AXIS_COLORS{design::GetThemeArgb(design:
 constexpr QRgb RECEDE_COLOR = design::GetThemeArgb(design::ThemeColour::SurfaceViewport, true);
 constexpr QRgb EMPHASIS_COLOR = design::GetThemeArgb(design::ThemeColour::TextHud, true);
 constexpr QRgb PIVOT_COLOR = design::GetThemeArgb(design::ThemeColour::TextHud, true);
+/// The centre handle rests in the text-over-viewport colour and takes the accent colour under the pointer.
+constexpr QRgb CENTRE_COLOR = design::GetThemeArgb(design::ThemeColour::TextHud, true);
+constexpr QRgb CENTRE_EMPHASIS_COLOR = design::GetThemeArgb(design::ThemeColour::AccentPrimary, true);
+/// The two axes a plane handle spans, indexed by the axis normal to the plane.
+struct PlaneAxes final
+{
+    int32 First = 0;
+    int32 Second = 1;
+};
+constexpr StaticArray<PlaneAxes, AXIS_COUNT> PLANE_AXES{{{1, 2}, {0, 2}, {0, 1}}};
 constexpr int32 MixChannel(int32 from, int32 to, int32 percent) noexcept
 {
     return from + (to - from) * percent / PERCENT_DENOMINATOR;
@@ -94,6 +126,86 @@ float64 ComputeSnap(float64 value, float64 interval) noexcept
 {
     const float64 scaled = value / interval;
     return static_cast<float64>(static_cast<int64>(scaled + (scaled < 0 ? -0.5 : 0.5))) * interval;
+}
+/// The ray through positionPixel, from the near plane towards the far side; false for a degenerate camera.
+bool TryMakePixelRay(const math::Matrix4& clipToWorld,
+                     const QRectF& framePixel,
+                     QPointF positionPixel,
+                     math::Ray3& outRay)
+{
+    const float32 x = static_cast<float32>((positionPixel.x() - framePixel.left()) / framePixel.width() * 2 - 1);
+    const float32 y = static_cast<float32>(1 - (positionPixel.y() - framePixel.top()) / framePixel.height() * 2);
+    math::Vector3 nearWorld;
+    math::Vector3 middleWorld;
+    if (math::TryPerspectiveDivide(clipToWorld * math::Vector4{x, y, 1, 1}, 0, nearWorld) !=
+            math::MathStatus::Success ||
+        math::TryPerspectiveDivide(clipToWorld * math::Vector4{x, y, 0.5F, 1}, 0, middleWorld) !=
+            math::MathStatus::Success)
+    {
+        return false;
+    }
+    outRay = {nearWorld, middleWorld - nearWorld};
+    return true;
+}
+/// Where ray meets the plane through originWorld with normal normalWorld, in front of the ray's origin.
+bool TryIntersectPlane(const math::Ray3& ray,
+                       math::Vector3 originWorld,
+                       math::Vector3 normalWorld,
+                       math::Vector3& outHitWorld)
+{
+    math::Vector3 unitDirection;
+    if (math::TryNormalize(ray.Direction, unitDirection) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    const float32 alignment = math::Dot(normalWorld, unitDirection);
+    if (math::Abs(alignment) < PROJECTION_EPSILON)
+    {
+        return false;
+    }
+    const float32 distance = math::Dot(normalWorld, originWorld - ray.Origin) / alignment;
+    if (math::IsFinite(distance) == false || distance < 0)
+    {
+        return false;
+    }
+    outHitWorld = ray.Origin + unitDirection * distance;
+    return true;
+}
+/// Whether point lies inside the convex quad, whichever way round its corners run.
+bool IsInsideQuad(QPointF point, const ViewportHandleFill::Corners& cornersPixel)
+{
+    bool hasPositive = false;
+    bool hasNegative = false;
+    for (usize corner = 0; corner < cornersPixel.GetSize(); ++corner)
+    {
+        const QPointF edge = cornersPixel[(corner + 1) % cornersPixel.GetSize()] - cornersPixel[corner];
+        const QPointF toPoint = point - cornersPixel[corner];
+        const float64 cross = edge.x() * toPoint.y() - edge.y() * toPoint.x();
+        hasPositive = hasPositive == true || cross > 0;
+        hasNegative = hasNegative == true || cross < 0;
+    }
+    return hasPositive == false || hasNegative == false;
+}
+/// The quad with every corner moved growthPixels further from its centre.
+ViewportHandleFill::Corners GrowQuad(const ViewportHandleFill::Corners& cornersPixel, float64 growthPixels)
+{
+    QPointF centrePixel;
+    for (const QPointF& cornerPixel : cornersPixel)
+    {
+        centrePixel += cornerPixel;
+    }
+    centrePixel /= static_cast<float64>(cornersPixel.GetSize());
+    ViewportHandleFill::Corners grown = cornersPixel;
+    for (QPointF& cornerPixel : grown)
+    {
+        const QPointF outward = cornerPixel - centrePixel;
+        const float64 length = math::Sqrt(QPointF::dotProduct(outward, outward));
+        if (length > 0)
+        {
+            cornerPixel += outward * (growthPixels / length);
+        }
+    }
+    return grown;
 }
 float64 ComputeDistanceSquared(QPointF point, const QLineF& line) noexcept
 {
@@ -434,18 +546,11 @@ QString ViewportObjectInteraction::Pick(QPointF positionPixel, const QRectF& out
     {
         return {};
     }
-    const float32 x = static_cast<float32>((positionPixel.x() - framePixel.left()) / framePixel.width() * 2 - 1);
-    const float32 y = static_cast<float32>(1 - (positionPixel.y() - framePixel.top()) / framePixel.height() * 2);
-    math::Vector3 nearWorld;
-    math::Vector3 middleWorld;
-    if (math::TryPerspectiveDivide(clipToWorld * math::Vector4{x, y, 1, 1}, 0, nearWorld) !=
-            math::MathStatus::Success ||
-        math::TryPerspectiveDivide(clipToWorld * math::Vector4{x, y, 0.5F, 1}, 0, middleWorld) !=
-            math::MathStatus::Success)
+    math::Ray3 rayWorld;
+    if (TryMakePixelRay(clipToWorld, framePixel, positionPixel, rayWorld) == false)
     {
         return {};
     }
-    const math::Ray3 rayWorld{nearWorld, middleWorld - nearWorld};
     float64 nearest = 0;
     bool hasHit = false;
     QString result;
@@ -507,11 +612,13 @@ math::Affine3 ViewportObjectInteraction::makeTransform(const QJsonObject& placem
 void ViewportObjectInteraction::buildHandles()
 {
     mHandles.Clear();
+    mPlaneHandles.Clear();
+    mHasUniformHandle = false;
     if (mCanEdit == false || mTool == Tool::Select)
     {
         return;
     }
-    const math::Affine3 meshToWorld = makeTransform(mDragAxis >= 0 ? mCandidate : mPlacement);
+    const math::Affine3 meshToWorld = makeTransform(IsDragging() == true ? mCandidate : mPlacement);
     if (project(meshToWorld.Translation, mPivotPixel) == false)
     {
         return;
@@ -531,12 +638,14 @@ void ViewportObjectInteraction::buildHandles()
     const float32 radiusWorld = static_cast<float32>(HANDLE_PIXELS / pixelsPerMetre);
     const math::Vector3 forwardWorld =
         math::Rotate(mPreviewOrNull->GetVisibleCameraSample().Pose.Orientation, {0, 0, -1});
+    StaticArray<QPointF, AXIS_COUNT> axisUnitsPixel{};
+    StaticArray<bool, AXIS_COUNT> hasAxisUnits{};
     for (int32 axis = 0; axis < AXIS_COUNT; ++axis)
     {
         math::Affine3 axisFrameToWorld = meshToWorld;
         if (mTool == Tool::Rotate)
         {
-            QJsonObject axisPlacement = mDragAxis >= 0 ? mCandidate : mPlacement;
+            QJsonObject axisPlacement = IsDragging() == true ? mCandidate : mPlacement;
             QJsonArray rotation = axisPlacement.value(QStringLiteral("rotation")).toArray();
             // Euler XYZ adjustments compose Rz * Ry * Rx. Each handle follows the
             // derivative axis of its stored angle, including a rotated imported basis/parent.
@@ -565,6 +674,8 @@ void ViewportObjectInteraction::buildHandles()
         {
             if (length >= MINIMUM_AXIS_PIXELS)
             {
+                axisUnitsPixel[static_cast<usize>(axis)] = directionPixel / length;
+                hasAxisUnits[static_cast<usize>(axis)] = true;
                 if (mHandles.TryAdd(
                         {QLineF(mPivotPixel, mPivotPixel + directionPixel * (HANDLE_PIXELS / length)), axis, false}) ==
                     false)
@@ -608,51 +719,140 @@ void ViewportObjectInteraction::buildHandles()
             }
         }
     }
+    if (mTool == Tool::Move)
+    {
+        buildPlaneHandles(axisUnitsPixel, hasAxisUnits, forwardWorld);
+    }
+    mHasUniformHandle = mTool == Tool::Scale;
 }
-int32 ViewportObjectInteraction::pickHandle(QPointF positionPixel)
+void ViewportObjectInteraction::buildPlaneHandles(const StaticArray<QPointF, AXIS_COUNT>& axisUnitsPixel,
+                                                  const StaticArray<bool, AXIS_COUNT>& hasAxisUnits,
+                                                  math::Vector3 forwardWorld)
 {
+    for (int32 normalAxis = 0; normalAxis < AXIS_COUNT; ++normalAxis)
+    {
+        const PlaneAxes axes = PLANE_AXES[static_cast<usize>(normalAxis)];
+        const usize first = static_cast<usize>(axes.First);
+        const usize second = static_cast<usize>(axes.Second);
+        math::Vector3 normalWorld;
+        if (hasAxisUnits[first] == false || hasAxisUnits[second] == false ||
+            math::TryNormalize(math::Cross(mParentToWorld.Columns[axes.First], mParentToWorld.Columns[axes.Second]),
+                               normalWorld) != math::MathStatus::Success)
+        {
+            continue;
+        }
+        // A plane seen edge-on cannot be dragged in, and two axes lying along each other leave no square to show.
+        const QPointF firstPixel = axisUnitsPixel[first];
+        const QPointF secondPixel = axisUnitsPixel[second];
+        const float64 sine = math::Abs(firstPixel.x() * secondPixel.y() - firstPixel.y() * secondPixel.x());
+        if (math::Abs(math::Dot(normalWorld, forwardWorld)) < MINIMUM_PLANE_FACING || sine < MINIMUM_PLANE_SINE)
+        {
+            continue;
+        }
+        PlaneHandle plane;
+        plane.NormalAxis = normalAxis;
+        plane.CornersPixel = {mPivotPixel + firstPixel * PLANE_INNER_PIXELS + secondPixel * PLANE_INNER_PIXELS,
+                              mPivotPixel + firstPixel * PLANE_OUTER_PIXELS + secondPixel * PLANE_INNER_PIXELS,
+                              mPivotPixel + firstPixel * PLANE_OUTER_PIXELS + secondPixel * PLANE_OUTER_PIXELS,
+                              mPivotPixel + firstPixel * PLANE_INNER_PIXELS + secondPixel * PLANE_OUTER_PIXELS};
+        // Admission is bounded by the three planes of the tool; TryAdd cannot fail.
+        static_cast<void>(mPlaneHandles.TryAdd(plane));
+    }
+}
+ViewportObjectInteraction::HandleTarget ViewportObjectInteraction::pickHandle(QPointF positionPixel)
+{
+    if (mHasUniformHandle == true && math::Abs(positionPixel.x() - mPivotPixel.x()) <= CENTRE_HIT_HALF_PIXELS &&
+        math::Abs(positionPixel.y() - mPivotPixel.y()) <= CENTRE_HIT_HALF_PIXELS)
+    {
+        return {HandleKind::Uniform, 0};
+    }
     float64 nearest = HANDLE_HIT_PIXELS * HANDLE_HIT_PIXELS;
-    int32 axis = -1;
+    HandleTarget axisTarget;
+    QPointF axisDirectionPixel;
     for (const HandleLine& handle : mHandles)
     {
         const float64 distance = ComputeDistanceSquared(positionPixel, handle.Line);
         if (distance < nearest)
         {
             nearest = distance;
-            axis = handle.Axis;
-            mAxisPixel = handle.Line.p2() - handle.Line.p1();
+            axisTarget = {HandleKind::Axis, handle.Axis};
+            axisDirectionPixel = handle.Line.p2() - handle.Line.p1();
         }
     }
-    return axis;
+    // The thin shaft keeps its own pixels, so a plane handle never hides the line it sits beside.
+    const bool isOnShaft = axisTarget.IsValid() == true && nearest <= SHAFT_PRIORITY_PIXELS * SHAFT_PRIORITY_PIXELS;
+    if (isOnShaft == false)
+    {
+        float64 nearestCentre = HANDLE_HIT_PIXELS * HANDLE_HIT_PIXELS * AXIS_COUNT;
+        HandleTarget planeTarget;
+        for (const PlaneHandle& plane : mPlaneHandles)
+        {
+            if (IsInsideQuad(positionPixel, GrowQuad(plane.CornersPixel, PLANE_HIT_MARGIN_PIXELS)) == true)
+            {
+                const QPointF centrePixel =
+                    (plane.CornersPixel[0] + plane.CornersPixel[1] + plane.CornersPixel[2] + plane.CornersPixel[3]) *
+                    0.25;
+                const float64 distance = QPointF::dotProduct(positionPixel - centrePixel, positionPixel - centrePixel);
+                if (distance < nearestCentre)
+                {
+                    nearestCentre = distance;
+                    planeTarget = {HandleKind::Plane, plane.NormalAxis};
+                }
+            }
+        }
+        if (planeTarget.IsValid() == true)
+        {
+            return planeTarget;
+        }
+    }
+    if (axisTarget.IsValid() == true)
+    {
+        mAxisPixel = axisDirectionPixel;
+    }
+    return axisTarget;
 }
 bool ViewportObjectInteraction::Hover(QPointF positionPixel, const QRectF& outerFramePixel)
 {
-    int32 axis = -1;
+    HandleTarget target;
     const QRectF framePixel = resolveFrame(outerFramePixel);
-    if (mDragAxis < 0 && mIsActive == true && framePixel.contains(positionPixel) == true)
+    if (IsDragging() == false && mIsActive == true && framePixel.contains(positionPixel) == true)
     {
         mFramePixel = framePixel;
         if (describe(framePixel, mWorldToClip) == true)
         {
             buildHandles();
-            axis = pickHandle(positionPixel);
+            target = pickHandle(positionPixel);
         }
     }
-    if (mDragAxis >= 0 || axis == mHoverAxis)
+    if (IsDragging() == true || target == mHoverTarget)
     {
-        return mHoverAxis >= 0;
+        return mHoverTarget.IsValid();
     }
-    mHoverAxis = axis;
+    mHoverTarget = target;
     Q_EMIT Changed();
-    return axis >= 0;
+    return target.IsValid();
 }
 void ViewportObjectInteraction::ClearHover()
 {
-    if (mHoverAxis >= 0)
+    if (mHoverTarget.IsValid() == true)
     {
-        mHoverAxis = -1;
+        mHoverTarget = {};
         Q_EMIT Changed();
     }
+}
+bool ViewportObjectInteraction::beginPlaneDrag(QPointF positionPixel)
+{
+    const PlaneAxes axes = PLANE_AXES[static_cast<usize>(mDragTarget.Index)];
+    mDragPlaneFirstAxis = axes.First;
+    mDragPlaneSecondAxis = axes.Second;
+    mDragPlaneOriginWorld = makeTransform(mPlacement).Translation;
+    math::Ray3 pressRay;
+    // The drag keeps the projection it was pressed with, as the axis drags keep their pixel scale.
+    return math::TryNormalize(math::Cross(mParentToWorld.Columns[axes.First], mParentToWorld.Columns[axes.Second]),
+                              mDragPlaneNormalWorld) == math::MathStatus::Success &&
+           math::TryInverse(mWorldToClip, mDragClipToWorld) == math::MathStatus::Success &&
+           TryMakePixelRay(mDragClipToWorld, mFramePixel, positionPixel, pressRay) == true &&
+           TryIntersectPlane(pressRay, mDragPlaneOriginWorld, mDragPlaneNormalWorld, mDragPlaneStartWorld) == true;
 }
 bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outerFramePixel)
 {
@@ -667,24 +867,35 @@ bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outer
         return false;
     }
     buildHandles();
-    const int32 axis = pickHandle(positionPixel);
-    if (axis >= 0)
+    const HandleTarget target = pickHandle(positionPixel);
+    if (target.IsValid() == true)
     {
-        mDragAxis = axis;
-        mHoverAxis = -1;
+        mDragTarget = target;
+        mHoverTarget = {};
         mCandidate = mPlacement;
         mPressPixel = positionPixel;
+        mReadoutText.clear();
+        mReadoutAnchorPixel = positionPixel;
         mPixelsPerUnit = 0;
-        const math::Vector3 directionWorld = mParentToWorld.Columns[axis];
         QPointF unitPixel;
         const math::Affine3 meshToWorld = makeTransform(mPlacement);
         mRotationDirection =
             math::Dot(math::Cross(meshToWorld.Columns[0], meshToWorld.Columns[1]), meshToWorld.Columns[2]) < 0 ? -1 : 1;
-        if (mTool == Tool::Move && project(meshToWorld.Translation + directionWorld, unitPixel) == true)
+        if (target.Kind == HandleKind::Plane && mTool == Tool::Move)
+        {
+            if (beginPlaneDrag(positionPixel) == false)
+            {
+                Cancel();
+                return true;
+            }
+        }
+        else if (target.Kind == HandleKind::Axis && mTool == Tool::Move &&
+                 project(meshToWorld.Translation + mParentToWorld.Columns[target.Index], unitPixel) == true)
         {
             mPixelsPerUnit = math::Sqrt(QPointF::dotProduct(unitPixel - mPivotPixel, unitPixel - mPivotPixel));
         }
-        if (mTool == Tool::Move && mPixelsPerUnit < static_cast<float64>(PROJECTION_EPSILON))
+        if (target.Kind == HandleKind::Axis && mTool == Tool::Move &&
+            mPixelsPerUnit < static_cast<float64>(PROJECTION_EPSILON))
         {
             Cancel();
             return true;
@@ -695,25 +906,12 @@ bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outer
     Q_EMIT SelectionRequested(Pick(positionPixel, framePixel));
     return true;
 }
-bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
+bool ViewportObjectInteraction::dragAxis(QPointF deltaPixel, bool shouldSnap, QJsonArray& inoutValues)
 {
-    if (mDragAxis < 0)
-    {
-        return false;
-    }
-    const QPointF deltaPixel = positionPixel - mPressPixel;
-    if (math::IsFinite(deltaPixel.x()) == false || math::IsFinite(deltaPixel.y()) == false ||
-        math::Abs(deltaPixel.x()) > MAXIMUM_GESTURE_PIXELS || math::Abs(deltaPixel.y()) > MAXIMUM_GESTURE_PIXELS)
-    {
-        return true;
-    }
+    const int32 axis = mDragTarget.Index;
     const float64 axisLength = math::Sqrt(QPointF::dotProduct(mAxisPixel, mAxisPixel));
     const float64 distancePixel = QPointF::dotProduct(deltaPixel, mAxisPixel) / axisLength;
-    const QString key = mTool == Tool::Move     ? QStringLiteral("position")
-                        : mTool == Tool::Rotate ? QStringLiteral("rotation")
-                                                : QStringLiteral("scale");
-    QJsonArray values = mPlacement.value(key).toArray();
-    const float64 original = values[mDragAxis].toDouble();
+    const float64 original = inoutValues[axis].toDouble();
     float64 value = original;
     if (mTool == Tool::Move)
     {
@@ -723,6 +921,7 @@ bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
             delta = ComputeSnap(delta, MOVE_SNAP_METRES);
         }
         value += delta;
+        mReadoutText = FormatMoveReadout({axis, delta}, {});
     }
     else if (mTool == Tool::Rotate)
     {
@@ -733,6 +932,7 @@ bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
         }
         value += delta;
         value -= static_cast<float64>(static_cast<int64>(value / DEGREES_PER_TURN)) * DEGREES_PER_TURN;
+        mReadoutText = FormatRotateReadout(axis, delta);
     }
     else
     {
@@ -741,13 +941,115 @@ bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
         {
             factor = ComputeSnap(factor, SCALE_SNAP);
         }
-        value = original * math::Max(factor, MINIMUM_SCALE_FACTOR);
+        factor = math::Max(factor, MINIMUM_SCALE_FACTOR);
+        value = original * factor;
+        mReadoutText = FormatScaleReadout(axis, factor);
     }
     if (math::IsFinite(value) == false)
     {
+        return false;
+    }
+    inoutValues[axis] = value;
+    return true;
+}
+bool ViewportObjectInteraction::dragPlane(QPointF positionPixel, bool shouldSnap, QJsonArray& inoutValues)
+{
+    math::Ray3 ray;
+    math::Vector3 hitWorld;
+    if (TryMakePixelRay(mDragClipToWorld, mFramePixel, positionPixel, ray) == false ||
+        TryIntersectPlane(ray, mDragPlaneOriginWorld, mDragPlaneNormalWorld, hitWorld) == false)
+    {
+        return false;
+    }
+    // The pointer's travel in the plane, expressed in the parent-local axes the position is stored in.
+    const math::Vector3 travelWorld = hitWorld - mDragPlaneStartWorld;
+    const math::Vector3 firstWorld = mParentToWorld.Columns[mDragPlaneFirstAxis];
+    const math::Vector3 secondWorld = mParentToWorld.Columns[mDragPlaneSecondAxis];
+    const float64 firstFirst = math::Dot(firstWorld, firstWorld);
+    const float64 firstSecond = math::Dot(firstWorld, secondWorld);
+    const float64 secondSecond = math::Dot(secondWorld, secondWorld);
+    const float64 firstTravel = math::Dot(firstWorld, travelWorld);
+    const float64 secondTravel = math::Dot(secondWorld, travelWorld);
+    const float64 determinant = firstFirst * secondSecond - firstSecond * firstSecond;
+    if (math::Abs(determinant) < MINIMUM_PLANE_DETERMINANT)
+    {
+        return false;
+    }
+    float64 firstDelta = (firstTravel * secondSecond - secondTravel * firstSecond) / determinant;
+    float64 secondDelta = (secondTravel * firstFirst - firstTravel * firstSecond) / determinant;
+    if (shouldSnap == true)
+    {
+        firstDelta = ComputeSnap(firstDelta, MOVE_SNAP_METRES);
+        secondDelta = ComputeSnap(secondDelta, MOVE_SNAP_METRES);
+    }
+    const float64 firstValue = inoutValues[mDragPlaneFirstAxis].toDouble() + firstDelta;
+    const float64 secondValue = inoutValues[mDragPlaneSecondAxis].toDouble() + secondDelta;
+    if (math::IsFinite(firstValue) == false || math::IsFinite(secondValue) == false)
+    {
+        return false;
+    }
+    inoutValues[mDragPlaneFirstAxis] = firstValue;
+    inoutValues[mDragPlaneSecondAxis] = secondValue;
+    mReadoutText = FormatMoveReadout({mDragPlaneFirstAxis, firstDelta}, {mDragPlaneSecondAxis, secondDelta});
+    return true;
+}
+bool ViewportObjectInteraction::dragUniform(QPointF deltaPixel, bool shouldSnap, QJsonArray& inoutValues)
+{
+    const float64 distancePixel = (deltaPixel.x() - deltaPixel.y()) * UNIFORM_DRAG_COMPONENT;
+    float64 factor = 1 + distancePixel / HANDLE_PIXELS;
+    if (shouldSnap == true)
+    {
+        factor = ComputeSnap(factor, SCALE_SNAP);
+    }
+    factor = math::Max(factor, MINIMUM_SCALE_FACTOR);
+    QJsonArray scaled = inoutValues;
+    for (int32 axis = 0; axis < AXIS_COUNT; ++axis)
+    {
+        const float64 value = inoutValues[axis].toDouble() * factor;
+        if (math::IsFinite(value) == false)
+        {
+            return false;
+        }
+        scaled[axis] = value;
+    }
+    inoutValues = scaled;
+    mReadoutText = FormatScaleReadout(GIZMO_READOUT_NO_AXIS, factor);
+    return true;
+}
+bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
+{
+    if (IsDragging() == false)
+    {
+        return false;
+    }
+    const QPointF deltaPixel = positionPixel - mPressPixel;
+    if (math::IsFinite(deltaPixel.x()) == false || math::IsFinite(deltaPixel.y()) == false ||
+        math::Abs(deltaPixel.x()) > MAXIMUM_GESTURE_PIXELS || math::Abs(deltaPixel.y()) > MAXIMUM_GESTURE_PIXELS)
+    {
         return true;
     }
-    values[mDragAxis] = value;
+    const QString key = mTool == Tool::Move     ? QStringLiteral("position")
+                        : mTool == Tool::Rotate ? QStringLiteral("rotation")
+                                                : QStringLiteral("scale");
+    QJsonArray values = mPlacement.value(key).toArray();
+    bool isValueUsable = false;
+    switch (mDragTarget.Kind)
+    {
+        case HandleKind::Plane:
+            isValueUsable = dragPlane(positionPixel, shouldSnap, values);
+            break;
+        case HandleKind::Uniform:
+            isValueUsable = dragUniform(deltaPixel, shouldSnap, values);
+            break;
+        case HandleKind::Axis:
+            isValueUsable = dragAxis(deltaPixel, shouldSnap, values);
+            break;
+    }
+    if (isValueUsable == false)
+    {
+        return true;
+    }
+    mReadoutAnchorPixel = positionPixel;
     mCandidate = mPlacement;
     mCandidate.insert(key, values);
     Q_EMIT Changed();
@@ -755,12 +1057,13 @@ bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
 }
 bool ViewportObjectInteraction::Release()
 {
-    if (mDragAxis < 0)
+    if (IsDragging() == false)
     {
         return false;
     }
     const QJsonObject candidate = mCandidate;
-    mDragAxis = -1;
+    mDragTarget = {};
+    mReadoutText.clear();
     if (candidate != mPlacement)
     {
         Q_EMIT PlacementCommitted(mSelected, candidate);
@@ -771,10 +1074,11 @@ bool ViewportObjectInteraction::Release()
 void ViewportObjectInteraction::Cancel()
 {
     ClearHover();
-    if (mDragAxis >= 0)
+    if (IsDragging() == true)
     {
-        mDragAxis = -1;
+        mDragTarget = {};
         mCandidate = {};
+        mReadoutText.clear();
         Q_EMIT Changed();
     }
 }
@@ -837,6 +1141,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
     outOverlay.OutlineLinesPixel.Clear();
     outOverlay.HandleStrokes.Clear();
     outOverlay.HandleFills.Clear();
+    outOverlay.ReadoutText.clear();
     outOverlay.FramePixel = {};
     const QRectF framePixel = resolveFrame(outerFramePixel);
     if (describe(framePixel, mWorldToClip) == false || mSelected.isEmpty() == true ||
@@ -848,6 +1153,11 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
     }
     mFramePixel = framePixel;
     outOverlay.FramePixel = framePixel;
+    if (IsDragging() == true)
+    {
+        outOverlay.ReadoutText = mReadoutText;
+        outOverlay.ReadoutAnchorPixel = mReadoutAnchorPixel;
+    }
     const RenderScene& scene = mPreviewOrNull->Scene();
     for (const PreviewObject& object : scene.Objects)
     {
@@ -855,7 +1165,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
         {
             continue;
         }
-        const math::Affine3 meshToWorld = mDragAxis >= 0 ? makeTransform(mCandidate) : object.Transform;
+        const math::Affine3 meshToWorld = IsDragging() == true ? makeTransform(mCandidate) : object.Transform;
         if (mIsGpuOutlineEnabled == true)
         {
             mGpuOutline.SceneIdentity = scene.Identity;
@@ -872,7 +1182,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
         outOverlay.OutlineLinesPixel.GetSize() + LUMINAIRE_OUTLINE_LINES <= MAX_OUTLINE_LINES)
     {
         // The panel square in the transform's XY plane and its emission along -Z, one half extent long.
-        const math::Affine3 panelToWorld = makeTransform(mDragAxis >= 0 ? mCandidate : mPlacement);
+        const math::Affine3 panelToWorld = makeTransform(IsDragging() == true ? mCandidate : mPlacement);
         const float32 halfExtent = mLuminaireHalfExtentWorld;
         const StaticArray<math::Vector3, LUMINAIRE_OUTLINE_CORNERS> cornersPanel{{{-halfExtent, -halfExtent, 0},
                                                                                   {halfExtent, -halfExtent, 0},
@@ -909,7 +1219,16 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
     {
         appendHandleGeometry(handle, outOverlay);
     }
-    if (mHandles.IsEmpty() == false)
+    for (const PlaneHandle& plane : mPlaneHandles)
+    {
+        appendPlaneGeometry(plane, outOverlay);
+    }
+    if (mHasUniformHandle == true)
+    {
+        // The centre handle takes the pivot's place, so the scale tool has one marker at its origin.
+        appendUniformGeometry(outOverlay);
+    }
+    else if (mHandles.IsEmpty() == false)
     {
         // The pivot marker shows where the transform acts; it stays above every shaft.
         ViewportHandleFill pivot;
@@ -922,12 +1241,11 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
         outOverlay.HandleFills.Add(pivot);
     }
 }
-void ViewportObjectInteraction::appendHandleGeometry(const HandleLine& handle,
-                                                     ViewportObjectOverlay& inoutOverlay) const
+QRgb ViewportObjectInteraction::getHandleColour(HandleTarget target, int32 colourAxis, bool isBack) const
 {
-    const bool isEmphasized = handle.Axis == mDragAxis || (mDragAxis < 0 && handle.Axis == mHoverAxis);
-    const bool isReceding = mDragAxis >= 0 && handle.Axis != mDragAxis;
-    QRgb color = AXIS_COLORS[static_cast<usize>(handle.Axis)];
+    const bool isEmphasized = target == (IsDragging() == true ? mDragTarget : mHoverTarget);
+    const bool isReceding = IsDragging() == true && isEmphasized == false;
+    QRgb color = AXIS_COLORS[static_cast<usize>(colourAxis)];
     if (isEmphasized == true)
     {
         color = MixColour(color, EMPHASIS_COLOR, EMPHASIS_PERCENT);
@@ -936,10 +1254,54 @@ void ViewportObjectInteraction::appendHandleGeometry(const HandleLine& handle,
     {
         color = MixColour(color, RECEDE_COLOR, RECEDE_AXES_PERCENT);
     }
-    else if (handle.IsBack == true)
+    else if (isBack == true)
     {
         color = MixColour(color, RECEDE_COLOR, RECEDE_BACK_PERCENT);
     }
+    else if (target.Kind == HandleKind::Plane)
+    {
+        // At rest a plane square is quieter than the axis it sits between.
+        color = MixColour(color, RECEDE_COLOR, PLANE_REST_PERCENT);
+    }
+    return color;
+}
+void ViewportObjectInteraction::appendPlaneGeometry(const PlaneHandle& plane, ViewportObjectOverlay& inoutOverlay) const
+{
+    ViewportHandleFill casing;
+    casing.CornerCount = ViewportHandleFill::MAX_CORNERS;
+    casing.Color = RECEDE_COLOR;
+    casing.CornersPixel = GrowQuad(plane.CornersPixel, CASING_GROWTH_PIXELS);
+    ViewportHandleFill square;
+    square.CornerCount = ViewportHandleFill::MAX_CORNERS;
+    square.Color = getHandleColour({HandleKind::Plane, plane.NormalAxis}, plane.NormalAxis, false);
+    square.CornersPixel = plane.CornersPixel;
+    inoutOverlay.HandleFills.Add(casing);
+    inoutOverlay.HandleFills.Add(square);
+}
+void ViewportObjectInteraction::appendUniformGeometry(ViewportObjectOverlay& inoutOverlay) const
+{
+    const HandleTarget target{HandleKind::Uniform, 0};
+    const bool isEmphasized = target == (IsDragging() == true ? mDragTarget : mHoverTarget);
+    const QPointF halfPixel(CENTRE_HALF_PIXELS, CENTRE_HALF_PIXELS);
+    ViewportHandleFill cube;
+    cube.CornerCount = ViewportHandleFill::MAX_CORNERS;
+    cube.Color = isEmphasized == true ? CENTRE_EMPHASIS_COLOR : CENTRE_COLOR;
+    cube.CornersPixel = {mPivotPixel + QPointF(-halfPixel.x(), -halfPixel.y()),
+                         mPivotPixel + QPointF(halfPixel.x(), -halfPixel.y()),
+                         mPivotPixel + halfPixel,
+                         mPivotPixel + QPointF(-halfPixel.x(), halfPixel.y())};
+    ViewportHandleFill casing = cube;
+    casing.Color = RECEDE_COLOR;
+    casing.CornersPixel = GrowQuad(cube.CornersPixel, CASING_GROWTH_PIXELS);
+    inoutOverlay.HandleFills.Add(casing);
+    inoutOverlay.HandleFills.Add(cube);
+}
+void ViewportObjectInteraction::appendHandleGeometry(const HandleLine& handle,
+                                                     ViewportObjectOverlay& inoutOverlay) const
+{
+    const HandleTarget target{HandleKind::Axis, handle.Axis};
+    const bool isEmphasized = target == (IsDragging() == true ? mDragTarget : mHoverTarget);
+    const QRgb color = getHandleColour(target, handle.Axis, handle.IsBack);
     const float32 widthPixels = static_cast<float32>(isEmphasized == true ? EMPHASIZED_HANDLE_WIDTH : HANDLE_WIDTH);
     inoutOverlay.HandleStrokes.Add({handle.Line, color, widthPixels});
     if (mTool == Tool::Rotate)
@@ -1034,6 +1396,14 @@ void ViewportObjectInteraction::Paint(QPainter& inoutPainter, const QRectF& oute
     {
         inoutPainter.setBrush(QColor::fromRgb(fill.Color));
         inoutPainter.drawPolygon(fill.CornersPixel.GetData(), static_cast<int32>(fill.CornerCount));
+    }
+    if (mPaintOverlay.ReadoutText.isEmpty() == false)
+    {
+        PaintGizmoReadout(inoutPainter,
+                          mPaintOverlay.ReadoutText,
+                          PlaceGizmoReadout(mPaintOverlay.ReadoutAnchorPixel,
+                                            MeasureGizmoReadout(mPaintOverlay.ReadoutText),
+                                            mPaintOverlay.FramePixel));
     }
     inoutPainter.restore();
 }

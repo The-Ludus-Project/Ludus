@@ -7,6 +7,7 @@
 #include "internal/level_workspace.h"
 #include "internal/main_window.h"
 #include "internal/material_inspection.h"
+#include "internal/preview_lighting.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_panel.h"
 #include "internal/render_preview.h"
@@ -22,6 +23,7 @@
 #include <QImage>
 #include <QMenu>
 #include <QPainter>
+#include <cmath>
 #include <ludus/foundation/base/compiler.h>
 
 #include "internal/workspace_style.h"
@@ -1867,6 +1869,291 @@ TEST_CASE("Scale handles end in a cube and rotation rings dim their far half",
     CHECK(backCount > 0);
     CHECK(overlay.HandleStrokes.GetSize() <= ViewportObjectOverlay::MAX_HANDLE_STROKES);
 }
+namespace
+{
+/// Centre of a four-corner fill, in frame pixels.
+QPointF GetFillCentre(const ludus::editor::ViewportHandleFill& fill)
+{
+    return (fill.CornersPixel[0] + fill.CornersPixel[1] + fill.CornersPixel[2] + fill.CornersPixel[3]) * 0.25;
+}
+/// The committed position after pressing at pressPixel and releasing at releasePixel, with the move tool.
+QJsonArray DragCommittedPosition(ViewportObjectInteraction& inoutInteraction,
+                                 QSignalSpy& inoutCommitted,
+                                 const QRectF& frame,
+                                 QPointF pressPixel,
+                                 QPointF releasePixel,
+                                 bool shouldSnap)
+{
+    const qsizetype commitsBefore = inoutCommitted.count();
+    REQUIRE(inoutInteraction.Press(pressPixel, frame) == true);
+    REQUIRE(inoutInteraction.Move(releasePixel, shouldSnap) == true);
+    REQUIRE(inoutInteraction.Release() == true);
+    REQUIRE(inoutCommitted.count() == commitsBefore + 1);
+    return inoutCommitted.last()[1].toJsonObject().value(QStringLiteral("position")).toArray();
+}
+} // namespace
+TEST_CASE("Move plane handles sit beside the pivot, lose to a shaft under the pointer and drag in their plane",
+          "[editor][world][object-interaction][gizmo]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    const RenderScene scene = MakeInteractionScene();
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    QSignalSpy committed(&interaction, &ViewportObjectInteraction::PlacementCommitted);
+    const QRectF frame{0, 0, 800, 600};
+    ViewportObjectOverlay overlay;
+    interaction.BuildOverlay(frame, overlay);
+
+    // Viewed down -Z the Z axis is end-on, so only the XY plane faces the camera: an arrowhead each for X and Y, the
+    // plane's casing and solid square, and the pivot marker last.
+    REQUIRE(overlay.HandleFills.GetSize() == 5);
+    const ViewportHandleFill casing = overlay.HandleFills[2];
+    const ViewportHandleFill square = overlay.HandleFills[3];
+    CHECK(casing.CornerCount == 4);
+    CHECK(square.CornerCount == 4);
+    CHECK(casing.Color ==
+          ludus::editor::design::GetThemeArgb(ludus::editor::design::ThemeColour::SurfaceViewport, true));
+    CHECK(square.Color != GetAxisToken(2));
+    CHECK(qBlue(square.Color) > qRed(square.Color));
+    CHECK(overlay.HandleFills[4].CornerCount == 4);
+    const QPointF squarePixel = GetFillCentre(square);
+    CHECK(squarePixel.x() > frame.center().x() + 22);
+    CHECK(squarePixel.y() < frame.center().y() - 22);
+    CHECK(QRectF(casing.CornersPixel[0], casing.CornersPixel[2]).width() >
+          QRectF(square.CornersPixel[0], square.CornersPixel[2]).width());
+
+    // The square is a handle of its own; a shaft within a few pixels still wins over it.
+    CHECK(interaction.Hover(squarePixel, frame) == true);
+    CHECK(interaction.GetHoveredHandle().Kind == ViewportObjectInteraction::HandleKind::Plane);
+    CHECK(interaction.GetHoveredHandle().Index == 2);
+    CHECK(interaction.GetHoveredAxis() == -1);
+    CHECK(interaction.HasHoveredHandle() == true);
+    interaction.BuildOverlay(frame, overlay);
+    CHECK(overlay.HandleFills[3].Color != square.Color);
+    CHECK(interaction.Hover(frame.center() + QPointF(40, 2), frame) == true);
+    CHECK(interaction.GetHoveredHandle().Kind == ViewportObjectInteraction::HandleKind::Axis);
+    CHECK(interaction.GetHoveredAxis() == 0);
+    CHECK(interaction.Hover(frame.center() + QPointF(10, -10), frame) == false);
+    CHECK(interaction.HasHoveredHandle() == false);
+
+    // Dragging along one axis of the plane moves exactly as that axis' own handle does, and the plane's normal stays
+    // put.
+    const QJsonArray byAxis = DragCommittedPosition(interaction,
+                                                    committed,
+                                                    frame,
+                                                    frame.center() + QPointF(70, 0),
+                                                    frame.center() + QPointF(110, 0),
+                                                    false);
+    const QJsonArray byPlane =
+        DragCommittedPosition(interaction, committed, frame, squarePixel, squarePixel + QPointF(40, 0), false);
+    CHECK(byPlane[0].toDouble() == Catch::Approx(byAxis[0].toDouble()).margin(0.001));
+    CHECK(byPlane[0].toDouble() > 2);
+    CHECK(byPlane[1].toDouble() == Catch::Approx(3).margin(0.001));
+    CHECK(byPlane[2].toDouble() == 4);
+
+    // A diagonal drag moves both plane axes, up on the screen being +Y.
+    const QJsonArray diagonal =
+        DragCommittedPosition(interaction, committed, frame, squarePixel, squarePixel + QPointF(40, -40), false);
+    CHECK(diagonal[0].toDouble() == Catch::Approx(byAxis[0].toDouble()).margin(0.001));
+    CHECK(diagonal[1].toDouble() == Catch::Approx(3 + (byAxis[0].toDouble() - 2)).margin(0.001));
+    CHECK(diagonal[2].toDouble() == 4);
+
+    // Shift snaps each plane axis to a tenth of a metre.
+    const QJsonArray snapped =
+        DragCommittedPosition(interaction, committed, frame, squarePixel, squarePixel + QPointF(37, -53), true);
+    for (int axis = 0; axis < 2; ++axis)
+    {
+        const ludus::foundation::float64 tenths = snapped[axis].toDouble() * 10;
+        CHECK(tenths == Catch::Approx(std::round(tenths)).margin(0.0001));
+    }
+    CHECK(snapped[2].toDouble() == 4);
+}
+TEST_CASE("Move plane drags show the distance moved beside the pointer and clear it with the gesture",
+          "[editor][world][object-interaction][gizmo]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    const RenderScene scene = MakeInteractionScene();
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    const QRectF frame{0, 0, 800, 600};
+    ViewportObjectOverlay overlay;
+    interaction.BuildOverlay(frame, overlay);
+    CHECK(overlay.ReadoutText.isEmpty() == true);
+    const QPointF squarePixel = GetFillCentre(overlay.HandleFills[3]);
+    const QRgb restColour = overlay.HandleFills[3].Color;
+
+    // The label appears with the drag, follows the pointer and names both axes of the plane.
+    REQUIRE(interaction.Press(squarePixel, frame) == true);
+    CHECK(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::Plane);
+    const QPointF movedPixel = squarePixel + QPointF(40, -40);
+    REQUIRE(interaction.Move(movedPixel, false) == true);
+    interaction.BuildOverlay(frame, overlay);
+    CHECK(overlay.ReadoutText.startsWith(QStringLiteral("X +")) == true);
+    CHECK(overlay.ReadoutText.contains(QStringLiteral("Y +")) == true);
+    CHECK(overlay.ReadoutText.endsWith(QStringLiteral(" m")) == true);
+    CHECK(overlay.ReadoutAnchorPixel == movedPixel);
+    // The plane being dragged is emphasized.
+    CHECK(overlay.HandleFills[3].Color != restColour);
+    interaction.Cancel();
+    interaction.BuildOverlay(frame, overlay);
+    CHECK(overlay.ReadoutText.isEmpty() == true);
+
+    // A released drag leaves no label either.
+    REQUIRE(interaction.Press(squarePixel, frame) == true);
+    REQUIRE(interaction.Move(movedPixel, false) == true);
+    REQUIRE(interaction.Release() == true);
+    interaction.BuildOverlay(frame, overlay);
+    CHECK(overlay.ReadoutText.isEmpty() == true);
+
+    // An axis drag shows its one distance.
+    REQUIRE(interaction.Press(frame.center() + QPointF(70, 0), frame) == true);
+    REQUIRE(interaction.Move(frame.center() + QPointF(110, 0), true) == true);
+    interaction.BuildOverlay(frame, overlay);
+    CHECK(overlay.ReadoutText.startsWith(QStringLiteral("X +")) == true);
+    CHECK(overlay.ReadoutText.contains(QStringLiteral("Y")) == false);
+    interaction.Cancel();
+}
+TEST_CASE("Move plane handles follow the camera: an oblique view shows all three, each its own plane",
+          "[editor][world][object-interaction][gizmo]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    const RenderScene scene = MakeInteractionScene();
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    const QRectF frame{0, 0, 800, 600};
+    ViewportObjectOverlay overlay;
+    // Looking from above and aside, every axis has a length on the screen and every plane faces the camera.
+    preview.Orbit(70, 90);
+    interaction.BuildOverlay(frame, overlay);
+    // Three arrowheads, three planes with their casings, and the pivot marker.
+    CHECK(overlay.HandleFills.GetSize() == ViewportObjectOverlay::MAX_HANDLE_FILLS);
+    ludus::foundation::StaticArray<bool, ViewportObjectInteraction::AXIS_COUNT> hasNormal{};
+    ludus::foundation::usize normalCount = 0;
+    for (ludus::foundation::usize plane = 0;
+         plane < static_cast<ludus::foundation::usize>(ViewportObjectInteraction::AXIS_COUNT);
+         ++plane)
+    {
+        const QPointF centre = GetFillCentre(overlay.HandleFills[3 + 2 * plane + 1]);
+        REQUIRE(interaction.Hover(centre, frame) == true);
+        const ViewportObjectInteraction::HandleTarget target = interaction.GetHoveredHandle();
+        CHECK(target.Kind == ViewportObjectInteraction::HandleKind::Plane);
+        REQUIRE(target.Index >= 0);
+        REQUIRE(target.Index < ViewportObjectInteraction::AXIS_COUNT);
+        normalCount += hasNormal[static_cast<ludus::foundation::usize>(target.Index)] == true ? 0 : 1;
+        hasNormal[static_cast<ludus::foundation::usize>(target.Index)] = true;
+    }
+    // Each square is its own plane: the three normals are all different.
+    CHECK(normalCount == 3);
+}
+TEST_CASE("The scale centre handle scales every axis together and shows one factor",
+          "[editor][world][object-interaction][gizmo]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    const RenderScene scene = MakeInteractionScene();
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Scale);
+    QSignalSpy committed(&interaction, &ViewportObjectInteraction::PlacementCommitted);
+    const QRectF frame{0, 0, 800, 600};
+    ViewportObjectOverlay overlay;
+    interaction.BuildOverlay(frame, overlay);
+
+    // X and Y cubes, then the centre casing and cube, which replace the pivot marker.
+    REQUIRE(overlay.HandleFills.GetSize() == 4);
+    const QPointF centre = GetFillCentre(overlay.HandleFills[3]);
+    CHECK(centre.x() == Catch::Approx(frame.center().x()));
+    CHECK(centre.y() == Catch::Approx(frame.center().y()));
+    CHECK(overlay.HandleFills[3].Color != overlay.HandleFills[0].Color);
+
+    // The centre wins over everything near the pivot; the axis cubes stay their own handles.
+    CHECK(interaction.Hover(centre + QPointF(6, -6), frame) == true);
+    CHECK(interaction.GetHoveredHandle().Kind == ViewportObjectInteraction::HandleKind::Uniform);
+    CHECK(interaction.GetHoveredAxis() == -1);
+    interaction.BuildOverlay(frame, overlay);
+    CHECK(overlay.HandleFills[3].Color != GetAxisToken(0));
+    CHECK(interaction.Hover(centre + QPointF(80, 0), frame) == true);
+    CHECK(interaction.GetHoveredAxis() == 0);
+    CHECK(interaction.Hover(centre + QPointF(30, 0), frame) == true);
+    CHECK(interaction.GetHoveredAxis() == 0);
+
+    // Up and to the right grows every axis by the same factor; the pointer travels 40 px on each screen axis.
+    REQUIRE(interaction.Press(centre, frame) == true);
+    CHECK(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::Uniform);
+    REQUIRE(interaction.Move(centre + QPointF(40, -40), false) == true);
+    interaction.BuildOverlay(frame, overlay);
+    const ludus::foundation::float64 factor = 1 + 80 * ludus::foundation::math::Sqrt(0.5) / 80;
+    CHECK(overlay.ReadoutText == QStringLiteral("\u00D7") + QString::number(factor, 'f', 2));
+    REQUIRE(interaction.Release() == true);
+    REQUIRE(committed.count() == 1);
+    const QJsonArray grown = committed[0][1].toJsonObject().value(QStringLiteral("scale")).toArray();
+    CHECK(grown[0].toDouble() == Catch::Approx(factor));
+    CHECK(grown[1].toDouble() == Catch::Approx(factor));
+    CHECK(grown[2].toDouble() == Catch::Approx(factor));
+    CHECK(committed[0][1].toJsonObject().value(QStringLiteral("position")) == QJsonArray{2, 3, 4});
+
+    // Shift snaps the factor to a tenth; a drag past zero stops at the smallest scale instead of inverting.
+    REQUIRE(interaction.Press(centre, frame) == true);
+    REQUIRE(interaction.Move(centre + QPointF(20, 0), true) == true);
+    interaction.BuildOverlay(frame, overlay);
+    CHECK(overlay.ReadoutText == QStringLiteral("\u00D71.20"));
+    REQUIRE(interaction.Move(centre + QPointF(-4000, 4000), false) == true);
+    REQUIRE(interaction.Release() == true);
+    const QJsonArray floored = committed[1][1].toJsonObject().value(QStringLiteral("scale")).toArray();
+    CHECK(floored[0].toDouble() == Catch::Approx(0.01));
+    CHECK(floored[2].toDouble() == Catch::Approx(0.01));
+}
+TEST_CASE("Rotation and axis scale drags show the angle in degrees and the factor of their axis",
+          "[editor][world][object-interaction][gizmo]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    const RenderScene scene = MakeInteractionScene();
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    const QRectF frame{0, 0, 800, 600};
+    ViewportObjectOverlay overlay;
+
+    interaction.SetTool(ViewportObjectInteraction::Tool::Scale);
+    REQUIRE(interaction.Press(frame.center() + QPointF(70, 0), frame) == true);
+    REQUIRE(interaction.Move(frame.center() + QPointF(110, 0), true) == true);
+    interaction.BuildOverlay(frame, overlay);
+    CHECK(overlay.ReadoutText == QStringLiteral("X \u00D71.50"));
+    interaction.Cancel();
+
+    interaction.SetTool(ViewportObjectInteraction::Tool::Rotate);
+    const ludus::foundation::float64 diagonal = 80 * ludus::foundation::math::Sqrt(0.5);
+    const QPointF ringPixel = frame.center() + QPointF(diagonal, -diagonal);
+    REQUIRE(interaction.Press(ringPixel, frame) == true);
+    REQUIRE(interaction.Move(ringPixel + QPointF(-20, -20), true) == true);
+    interaction.BuildOverlay(frame, overlay);
+    // Shift snaps to fifteen degrees, and the angle carries its sign and the degree symbol.
+    CHECK(overlay.ReadoutText.startsWith(QStringLiteral("Z ")) == true);
+    CHECK(overlay.ReadoutText.endsWith(QStringLiteral("\u00B0")) == true);
+    CHECK(overlay.ReadoutText.contains(QStringLiteral(".0")) == true);
+    const ludus::foundation::float64 degrees = overlay.ReadoutText.mid(2, overlay.ReadoutText.size() - 3).toDouble();
+    CHECK(std::fmod(std::abs(degrees), 15) == Catch::Approx(0).margin(0.0001));
+    CHECK(degrees != 0);
+    interaction.Cancel();
+}
 TEST_CASE("Viewport move axes follow a rotated scaled parent and preserve parent-local placement",
           "[editor][world][object-interaction]")
 {
@@ -2946,6 +3233,236 @@ Shape "trianglemesh" "point3 P" [-0.4 -0.7 0 0.4 -0.7 0 0 0.7 0] "integer indice
     CHECK(sharedSlots == 3);
     checkMaterial(reopened, first, format::MaterialModel::Diffuse);
     checkMaterial(reopened, second, format::MaterialModel::Diffuse);
+    reopened.StopPreview();
+}
+
+TEST_CASE("World coating instances share storage and retain slot and shared edits on reimport",
+          "[editor][world][coating][instancing]")
+{
+    using namespace ludus::foundation;
+    namespace format = ludus::content::scene_format;
+    QTemporaryDir directory;
+    const QString path = Fixture(directory);
+    const QString external = directory.filePath(QStringLiteral("external"));
+    REQUIRE(QDir().mkpath(external) == true);
+    const QString source = QDir(external).filePath(QStringLiteral("coat.pbrt"));
+    Write(source, QByteArrayLiteral(R"(LookAt 0 0 3 0 0 0 0 1 0
+Camera "perspective" "float fov" 45
+WorldBegin
+MakeNamedMaterial "Varnish" "string type" "coateddiffuse" "rgb reflectance" [0.5 0.3 0.1]
+    "float roughness" 0.125 "bool remaproughness" false
+MakeNamedMaterial "Imported" "string type" "hair"
+NamedMaterial "Imported"
+Shape "trianglemesh" "point3 P" [-1 -1 0 1 -1 0 0 1 0] "integer indices" [0 1 2]
+NamedMaterial "Varnish"
+Shape "trianglemesh" "point3 P" [2 -1 0 3 -1 0 2 1 0] "integer indices" [0 1 2]
+)"));
+    QString error;
+    const QString relativeLevel = QStringLiteral("scenes/coat.lulevel");
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(directory.path(), relativeLevel, external, error, "coat.pbrt"));
+    const QJsonObject level = QJsonDocument::fromJson(Read(directory.filePath(relativeLevel))).object();
+    WorldDocument document = Document();
+    REQUIRE(document.ImportScene(level, error) == true);
+    QString first;
+    QString donor;
+    for (const QJsonValue value : level.value(QStringLiteral("objects")).toArray())
+    {
+        const QJsonObject object = value.toObject();
+        const QString name = object.value(QStringLiteral("name")).toString();
+        if (name == QStringLiteral("Imported"))
+        {
+            first = object.value(QStringLiteral("id")).toString();
+        }
+        else if (name == QStringLiteral("Varnish"))
+        {
+            donor = object.value(QStringLiteral("id")).toString();
+        }
+    }
+    REQUIRE(first.isEmpty() == false);
+    REQUIRE(donor.isEmpty() == false);
+    const QString material =
+        document.ScenePlacement(document.Entity(first)).value(QStringLiteral("material")).toString();
+    const QString replacement =
+        document.ScenePlacement(document.Entity(donor)).value(QStringLiteral("material")).toString();
+    REQUIRE(document.MapSceneMaterial(material, replacement, error) == true);
+    REQUIRE(document.RemoveEntity(donor, error) == true);
+    QString second;
+    REQUIRE(document.DuplicateEntity(ludus::platform::GetSystemEntropySource(), error, first, second) == true);
+    Write(path, document.Encode());
+
+    WorldWorkspace workspace;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        workspace.show();
+    }
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    WaitForValidatedScene(workspace);
+
+    const auto checkAlpha = [](const WorldWorkspace& view, const QString& id, float32 alpha) {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(GetLevel(view).PreviewScene(), id);
+        REQUIRE(materialOrNull != nullptr);
+        CHECK(materialOrNull->Scattering.Model == format::MaterialModel::CoatedDiffuse);
+        CHECK(materialOrNull->Scattering.AlphaU == alpha);
+    };
+    const auto checkSharing = [](const WorldWorkspace& view, usize count) {
+        const RenderScene& scene = GetLevel(view).PreviewScene();
+        REQUIRE(scene.Definition != nullptr);
+        CHECK(scene.Definition->Materials.GetSize() == count);
+        Array<usize> owners;
+        REQUIRE(preview_lighting::BuildMaterialOwners(scene, owners) == true);
+        usize unique = 0;
+        for (usize index = 0; index < owners.GetSize(); ++index)
+        {
+            if (owners[index] == index)
+            {
+                ++unique;
+            }
+        }
+        CHECK(unique == count);
+    };
+    const QString alphaField = QStringLiteral("scene/coating/alpha");
+    const auto applyShared = [](WorldWorkspace& inoutView, const QString& included, const QString& excluded) {
+        QPushButton* sharedOrNull = inoutView.findChild<QPushButton*>(QStringLiteral("worldApplySharedCoating"));
+        REQUIRE(sharedOrNull != nullptr);
+        REQUIRE(sharedOrNull->isEnabled() == true);
+        QTimer::singleShot(0, [&included, &excluded]() {
+            QMessageBox* dialogOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            REQUIRE(dialogOrNull != nullptr);
+            CHECK(dialogOrNull->defaultButton() == dialogOrNull->button(QMessageBox::Cancel));
+            CHECK(dialogOrNull->informativeText().contains(included) == true);
+            if (excluded.isEmpty() == false)
+            {
+                CHECK(dialogOrNull->informativeText().contains(excluded) == false);
+            }
+            QPushButton* applyOrNull =
+                dialogOrNull->findChild<QPushButton*>(QStringLiteral("worldConfirmSharedCoating"));
+            REQUIRE(applyOrNull != nullptr);
+            applyOrNull->click();
+        });
+        sharedOrNull->click();
+        WaitForValidatedScene(inoutView);
+    };
+
+    checkSharing(workspace, 1);
+    RenderPreview& preview = GetLevel(workspace).GetRenderPreview();
+    const bool canVerifyDraws =
+        PreviewViewport::CanPresent() == true && QApplication::platformName() == QStringLiteral("cocoa");
+    uint32 sharedDraws = 0;
+    if (canVerifyDraws == true)
+    {
+        preview.SetShading(PreviewShading::Lit);
+        REQUIRE(QTest::qWaitFor([&preview]() { return preview.Report().Visible == 2 && preview.Frames() > 0; },
+                                MAX_SCENE_WAIT_MILLISECONDS) == true);
+        sharedDraws = preview.Report().Draws;
+        CHECK(sharedDraws > 0);
+    }
+    const auto checkDraws = [&](uint32 draws) {
+        if (canVerifyDraws == true)
+        {
+            REQUIRE(QTest::qWaitFor([&preview, draws]() { return preview.Report().Draws == draws; },
+                                    MAX_SCENE_WAIT_MILLISECONDS) == true);
+        }
+    };
+    REQUIRE(workspace.SelectEntity(first) == true);
+    Type(Field(workspace, alphaField), QStringLiteral("0.1250000001"));
+    REQUIRE(workspace.Apply() == true);
+    CHECK(workspace.Document().ScenePlacement(workspace.Document().Entity(first)).contains(QStringLiteral("coating")) ==
+          false);
+    CHECK(workspace.Document().GetSharedCoating(replacement).isEmpty() == true);
+    checkSharing(workspace, 1);
+
+    Type(Field(workspace, alphaField), QStringLiteral("0.25"));
+    applyShared(workspace, second, {});
+    checkAlpha(workspace, first, 0.25F);
+    checkAlpha(workspace, second, 0.25F);
+    CHECK(workspace.Document().GetSharedCoating(replacement).value(QStringLiteral("alpha")).toDouble() == 0.25);
+    checkSharing(workspace, 1);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    checkAlpha(workspace, first, 0.125F);
+    checkAlpha(workspace, second, 0.125F);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkAlpha(workspace, second, 0.25F);
+
+    REQUIRE(workspace.SelectEntity(first) == true);
+    Type(Field(workspace, alphaField), QStringLiteral("0.5"));
+    REQUIRE(workspace.Apply() == true);
+    WaitForValidatedScene(workspace);
+    checkAlpha(workspace, first, 0.5F);
+    checkAlpha(workspace, second, 0.25F);
+    checkSharing(workspace, 2);
+    checkDraws(sharedDraws + 1);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    checkAlpha(workspace, first, 0.25F);
+    checkSharing(workspace, 1);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkAlpha(workspace, first, 0.5F);
+    checkSharing(workspace, 2);
+
+    REQUIRE(workspace.SelectEntity(second) == true);
+    Type(Field(workspace, alphaField), QStringLiteral("0.5"));
+    applyShared(workspace, second, first);
+    checkAlpha(workspace, first, 0.5F);
+    checkAlpha(workspace, second, 0.5F);
+    checkSharing(workspace, 1);
+    checkDraws(sharedDraws);
+    Type(Field(workspace, alphaField), QStringLiteral("0.375"));
+    applyShared(workspace, second, first);
+    checkAlpha(workspace, first, 0.5F);
+    checkAlpha(workspace, second, 0.375F);
+    checkSharing(workspace, 2);
+    REQUIRE(workspace.Save() == true);
+    WaitForValidatedScene(workspace);
+    CHECK(workspace.Dirty() == false);
+    workspace.StopPreview();
+    workspace.hide();
+
+    WorldWorkspace reopened;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        reopened.show();
+    }
+    reopened.SetProject(directory.path(), 2);
+    REQUIRE(reopened.Open(path) == true);
+    WaitForValidatedScene(reopened);
+    checkAlpha(reopened, first, 0.5F);
+    checkAlpha(reopened, second, 0.375F);
+    REQUIRE(reopened.ImportScene(source) == true);
+    WaitForValidatedScene(reopened);
+    const RenderScene& imported = GetLevel(reopened).PreviewScene();
+    REQUIRE(imported.Objects.size() == 4);
+    usize inheritedSlots = 0;
+    for (const PreviewObject& object : imported.Objects)
+    {
+        const QString binding = reopened.Document()
+                                    .ScenePlacement(reopened.Document().Entity(object.Id))
+                                    .value(QStringLiteral("material"))
+                                    .toString();
+        if (binding == material)
+        {
+            ++inheritedSlots;
+            checkAlpha(reopened, object.Id, object.Id == first ? 0.5F : 0.375F);
+        }
+        else
+        {
+            CHECK(binding == replacement);
+            checkAlpha(reopened, object.Id, 0.375F);
+        }
+    }
+    CHECK(inheritedSlots == 3);
+    checkSharing(reopened, 2);
+    REQUIRE(reopened.SelectEntity(first) == true);
+    QPushButton* inheritOrNull = reopened.findChild<QPushButton*>(QStringLiteral("worldRestoreCoating"));
+    REQUIRE(inheritOrNull != nullptr);
+    inheritOrNull->click();
+    WaitForValidatedScene(reopened);
+    checkAlpha(reopened, first, 0.375F);
+    checkSharing(reopened, 1);
     reopened.StopPreview();
 }
 

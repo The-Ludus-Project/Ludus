@@ -143,13 +143,14 @@ _STAMP_FILES = (
     "share/Ludus/LudusSdkManifest.json",
     "lib/cmake/Ludus/LudusConfig.cmake",
     "lib/cmake/Ludus/LudusTargets.cmake",
+    "lib/cmake/Ludus/LudusWindowsSdk.cmake",
 )
 
 
 def compute_stamp(prefix: Path) -> str:
     """A content fingerprint of the SDK inputs that affect a build.
 
-    Hashes the manifest and exported CMake metadata plus the size+mtime of every
+    Hashes the manifest, exported CMake metadata and contents of every
     installed static library. A locally rebuilt engine changes these even when
     the prefix path is unchanged, so the stamp — not path equality — gates
     reconfigure/relink for mutable local prefixes.
@@ -163,9 +164,11 @@ def compute_stamp(prefix: Path) -> str:
             h.update(p.read_bytes())
     lib_dir = prefix / "lib"
     if lib_dir.is_dir():
-        for lib in sorted(lib_dir.glob("*.a")):
+        windows_exports = (prefix / "lib/cmake/Ludus").glob("LudusTargets-*.cmake")
+        inputs = [*lib_dir.glob("*.a"), *lib_dir.glob("*.lib"), *windows_exports]
+        for lib in sorted(inputs):
             # Hash the library *content*, not just size+mtime: an in-place engine
-            # rebuild that lands a same-size .a within the same clock second (or
+            # rebuild that lands a same-size archive within the same clock second (or
             # with mtime restored by a packaging step) must still change the
             # stamp so needs_reconfigure / assert_stamp_unchanged see it (P06).
             h.update(lib.name.encode("utf-8"))

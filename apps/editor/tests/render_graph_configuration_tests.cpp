@@ -3,6 +3,7 @@
 #include "internal/render_graph_live_build.h"
 #include "internal/render_graph_pipeline.h"
 #include "internal/renderer_workspace.h"
+#include "mouse_fixture.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -339,7 +340,7 @@ TEST_CASE("canvas interface editing previews repairs with Properties hidden", "[
     const auto openFromCanvas = [&]() {
         QTimer::singleShot(0, &canvas, editDialog);
         const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("input")) + QPointF(20, 10));
-        QTest::mouseDClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+        tests::DoubleClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, point);
     };
     openFromCanvas();
     CHECK(document.GetRevision() == revision);

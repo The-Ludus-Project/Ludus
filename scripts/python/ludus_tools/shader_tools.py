@@ -30,8 +30,8 @@ def required_shader_tools(manifest: dict) -> set[str]:
 
 def preparation_steps(root: Path, required: set[str]):
     """Trusted, cancellable setup steps; callers must never use this during ordinary builds."""
-    python = root / "out/host-tools/venv/bin/python"
-    for tools, script, arguments in (({"compiler", "validator"}, "shader-probe", ["bootstrap"]),
+    python = root / "out/host-tools/venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    for tools, script, arguments in (({"compiler", "validator", "dxc"}, "shader-probe", ["bootstrap"]),
                                      ({"spirv_cross"}, "bootstrap-spirv-cross", [])):
         selected = required & tools
         if selected:
@@ -50,7 +50,9 @@ def project_shader_tools(project: Path, source: Path, profile: str, has_web_sdk:
     cmake_files = [source / "CMakeLists.txt", *(source / "cmake").glob("*.cmake")]
     if any("ludus_compile_shader" in file.read_text() for file in cmake_files):
         required.add("compiler")
-        if not profile.startswith("macos-"):
+        if profile.startswith("windows-msvc-"):
+            required.add("dxc")
+        elif not profile.startswith("macos-"):
             required.add("validator")
     graphs = project / "graphs"
     for manifest in sorted(graphs.glob("*/*.lushader.json")):

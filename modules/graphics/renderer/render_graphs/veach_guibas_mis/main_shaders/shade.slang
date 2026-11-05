@@ -9,7 +9,7 @@
 //   from the surface it hits, or the environment on a miss.
 // Each pass returns surface emission plus one estimate:
 // - ShadeMultipleImportance: both strategies, MIS-weighted with each other's density for the same
-//   direction (EvaluateLightPdfSolidAngle, EvaluateEnvironmentPdfSolidAngle). The graph's color output.
+//   direction (source PMF times the conditional incident density). The graph's color output.
 // - ShadeLightSampling: the light strategy alone, with weight one (lightSampling output).
 // - ShadeBsdfSampling: the BSDF strategy alone, with weight one (bsdfSampling output). It never reaches
 //   a directional, point or spot light, so those lights are absent from this image.
@@ -98,11 +98,13 @@ float3 SampleLightStrategy(SceneContext scene,
     SelectedLight selected = SelectLight(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION);
     if (selected.HasSample == false)
         return float3(0);
-    float3 shapeSample = float3(SampleSceneRandom(launch, SHADE_LIGHT_SHAPE_DIMENSION_FIRST),
-                                SampleSceneRandom(launch, SHADE_LIGHT_SHAPE_DIMENSION_FIRST + 1),
-                                SampleSceneRandom(launch, SHADE_LIGHT_SHAPE_DIMENSION_FIRST + 2));
-    LightSample light = SampleIncidentLight(scene, selected, shadingPoint.Hit, shapeSample);
-    float lightDensity = light.SelectionPmf * light.ConditionalPdf;
+    IncidentLightSample light = SampleIncidentLight(scene,
+                                                    selected.LightIndex,
+                                                    shadingPoint.Hit,
+                                                    launch,
+                                                    SHADE_LIGHT_SHAPE_DIMENSION_FIRST,
+                                                    queries);
+    float lightDensity = selected.SelectionPmf * light.ConditionalProbability;
     if (light.HasSample == false || lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false)
         return float3(0);
     float cosSurface =
@@ -117,7 +119,7 @@ float3 SampleLightStrategy(SceneContext scene,
     if (cosSurface <= 0 || any(bsdfValue > 0) == false)
         return float3(0);
     float weight = 1;
-    if (isMisWeighted == true && light.IsDiscrete == false)
+    if (isMisWeighted == true && light.Measure == IncidentLightMeasure::SolidAngle)
         weight = ComputeMisWeight(lightDensity, bsdfDensity);
     // Skip the shadow ray when the sample cannot contribute; an occluded or failed query adds nothing.
     if (weight <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
@@ -166,14 +168,16 @@ float3 SampleBsdfStrategy(SceneContext scene,
     {
         incidentRadiance = EvaluateEnvironment(scene, directionWorld);
         if (isMisWeighted == true)
-            lightDensity = EvaluateEnvironmentPdfSolidAngle(scene, directionWorld);
+            lightDensity = EvaluateLightSelectionPmf(scene, GetEnvironmentLightIndex(scene)) *
+                           EvaluateIncidentEnvironmentPdfSolidAngle(scene);
     }
     else if (status == SceneQuery::Surface)
     {
         incidentRadiance = EvaluateEmission(scene, endpoint, -directionWorld);
         // Measured from the receiver itself, as SampleIncidentLight measures its proposals.
         if (isMisWeighted == true)
-            lightDensity = EvaluateLightPdfSolidAngle(scene, shadingPoint.Hit.PositionWorld, endpoint);
+            lightDensity = EvaluateLightSelectionPmf(scene, GetSurfaceLightIndex(scene, endpoint)) *
+                           EvaluateIncidentLightPdfSolidAngle(scene, shadingPoint.Hit.PositionWorld, endpoint);
     }
     // A failed query has latched queries.HasFailed; zero radiance adds nothing.
     if (any(incidentRadiance > 0) == false)

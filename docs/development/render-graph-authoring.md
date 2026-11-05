@@ -2517,9 +2517,9 @@ a required `color` output (MIS) and optional `lightSampling` and `bsdfSampling`
 outputs. The package requires a native Metal or Vulkan ray profile.
 
 It reuses that template's `primary` pass and 32-byte hit record, then runs three
-shade passes over every pixel. They read the same record and the same random
-dimensions, `[2, 9)`: light selection, three light-shape coordinates and three
-`SampleStandardBsdf` coordinates. So each MIS sample combines exactly the light and
+shade passes over every pixel. They read the same record and reserve the same random
+dimensions, `[2, 9)`: one for light selection, three for the incident proposal,
+and three for `SampleStandardBsdf`. So each MIS sample combines exactly the light and
 BSDF samples shown in the two comparison images.
 
 | Pipeline node | Function in `main_shaders/shade.slang` | Estimate | Output |
@@ -2535,12 +2535,12 @@ Every pass makes at most one surface query and one visibility query.
 
 The **light strategy** selects a light uniformly with `SelectLight`, proposes a point
 or direction on it with `SampleIncidentLight` and traces the shadow ray with
-`TestVisibility`. Its density is the selection probability times the conditional
-solid-angle density. The **BSDF strategy** samples `SampleStandardBsdf` and follows
-the direction with `TraceClosest`. It collects emission from the surface it hits, or
-the environment on a miss. `EvaluateLightPdfSolidAngle` and
-`EvaluateEnvironmentPdfSolidAngle` give the light strategy's density for that same
-direction, measured from the receiver. `ComputeMisWeight` in
+`TestVisibility`. It multiplies the source PMF by the incident sample's
+conditional probability. The **BSDF strategy** samples `SampleStandardBsdf` and
+follows the direction with `TraceClosest`. It collects emission from the surface
+it hits, or the environment on a miss. For MIS it resolves the hit or environment
+light index and multiplies that source's PMF by the conditional solid-angle
+density at the receiver. `ComputeMisWeight` in
 `main_shaders/multiple_importance.slang` weights each sample against the other
 strategy's density, and the MIS pass sums the two weighted estimates. A directional,
 point or spot light is a delta light that BSDF sampling never reaches: its light
@@ -4520,6 +4520,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
 | SelectLight / EvaluateLightSelectionPmf | Default uniform source selection and its discrete probability. SelectLight(scene, queries) uses the invocation stream. |
 | SampleIncidentLight(scene, lightIndex, receiver, launch, firstDimension, queries) | Addressed conditional proposal for one source. Returns an IncidentLightSample with its probability and measure. |
+| SampleIncidentLight(scene, lightIndex, receiver, seed, firstAddress, queries) | The same conditional proposal with an explicit Philox key and address. Preserves scope and event while advancing dimensions within the incident reservation. |
 | GetSurfaceLightIndex / GetEnvironmentLightIndex | Resolve the catalog index of an emissive hit or the environment. Return SCENE_INVALID_INDEX when absent. |
 | EvaluateIncidentLightPdfSolidAngle / EvaluateIncidentEnvironmentPdfSolidAngle | Conditional solid-angle densities for a mesh endpoint or an environment direction, excluding source selection. |
 | SampleIncidentLight(scene, selected, receiver, shapeSample) | Explicit-coordinate compatibility overload returning a LightSample with the uniform source PMF. |

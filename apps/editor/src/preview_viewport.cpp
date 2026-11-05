@@ -2845,6 +2845,18 @@ void PreviewViewport::resizeSurface()
     }
 #endif
 }
+void PreviewViewport::setRenderPresentationVisible(bool isVisible) noexcept
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->Preview.isNull() == false)
+    {
+        mState->Preview->SetPresentationVisible(isVisible);
+    }
+#else
+    static_cast<void>(isVisible);
+#endif
+}
+
 void PreviewViewport::applyViewportSize()
 {
     const foundation::usize index = Preview_->GetViewportSize();

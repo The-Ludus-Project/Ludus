@@ -1119,13 +1119,13 @@ float SampleSceneRandom(RayLaunch launch, uint dimension)
     return SampleRandomFloat01(launch.Seed, PixelRandomAddress(pixel, launch.SampleIndex, dimension));
 }
 /// Sample one catalog source using the kind's addressed incident proposal, without advancing the automatic stream.
-/// Mesh reads firstDimension through firstDimension + 2, environment reads only the last two, and analytic sources
+/// Mesh reads three dimensions starting at the address, environment reads only the last two, and analytic sources
 /// read no dimensions. An out-of-range source returns no sample. Exhausting a needed address fails the invocation.
 IncidentLightSample SampleIncidentLight(SceneContext scene,
                                         uint lightIndex,
                                         SurfaceHit receiver,
-                                        RayLaunch launch,
-                                        uint firstDimension,
+                                        uint2 seed,
+                                        RandomAddress firstAddress,
                                         inout RayQueryContext inoutQueries)
 {
     IncidentLightSample empty = (IncidentLightSample)0;
@@ -1138,17 +1138,36 @@ IncidentLightSample SampleIncidentLight(SceneContext scene,
     float3 shapeSample = float3(0);
     if (light.Kind == SceneLightKind::Mesh || light.Kind == SceneLightKind::Environment)
     {
-        if (firstDimension > RANDOM_MAX_DIMENSION - INCIDENT_LIGHT_LAST_DIMENSION_OFFSET)
+        if (firstAddress.Dimension > RANDOM_MAX_DIMENSION - INCIDENT_LIGHT_LAST_DIMENSION_OFFSET)
         {
             FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_RANDOM_EXHAUSTED);
             return empty;
         }
+        RandomAddress address = firstAddress;
         if (light.Kind == SceneLightKind::Mesh)
-            shapeSample.x = SampleSceneRandom(launch, firstDimension);
-        shapeSample.y = SampleSceneRandom(launch, firstDimension + INCIDENT_LIGHT_SECOND_DIMENSION_OFFSET);
-        shapeSample.z = SampleSceneRandom(launch, firstDimension + INCIDENT_LIGHT_LAST_DIMENSION_OFFSET);
+            shapeSample.x = SampleRandomFloat01(seed, address);
+        address.Dimension = firstAddress.Dimension + INCIDENT_LIGHT_SECOND_DIMENSION_OFFSET;
+        shapeSample.y = SampleRandomFloat01(seed, address);
+        address.Dimension = firstAddress.Dimension + INCIDENT_LIGHT_LAST_DIMENSION_OFFSET;
+        shapeSample.z = SampleRandomFloat01(seed, address);
     }
     return SampleIncidentLightAtCoordinates(scene, light, receiver, shapeSample);
+}
+/// Sample one source using the launch's pixel/sample address and the first reserved incident dimension.
+IncidentLightSample SampleIncidentLight(SceneContext scene,
+                                        uint lightIndex,
+                                        SurfaceHit receiver,
+                                        RayLaunch launch,
+                                        uint firstDimension,
+                                        inout RayQueryContext inoutQueries)
+{
+    uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
+    return SampleIncidentLight(scene,
+                               lightIndex,
+                               receiver,
+                               launch.Seed,
+                               PixelRandomAddress(pixel, launch.SampleIndex, firstDimension),
+                               inoutQueries);
 }
 /// Draw a pseudorandom float in [0,1), advancing the renderer-owned invocation stream.
 /// Available in ray generation, closest-hit and miss with no ScenePayload fields.

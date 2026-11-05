@@ -3,6 +3,7 @@
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/render_preview.h"
 #    include "internal/selection_outline_request.h"
+#    include "internal/viewport_gizmo_readout.h"
 #    include "internal/viewport_object_interaction.h"
 #    include "internal/viewport_object_overlay.h"
 #    include "internal/viewport_object_overlay_item.h"
@@ -14,6 +15,7 @@
 #    include <QColor>
 #    include <QGuiApplication>
 #    include <QImage>
+#    include <QPainter>
 #    include <QQuickItem>
 #    include <QQuickPaintedItem>
 #    include <QQuickWindow>
@@ -120,6 +122,89 @@ TEST_CASE("Native object overlays upload solid handle fills after the strokes",
     CHECK(verticesPixel[17].b == 255);
     REQUIRE(overlay.HandleFills.TryResize(ViewportObjectOverlay::MAX_HANDLE_FILLS + 1) == true);
     CHECK(UpdateViewportObjectOverlayNode(overlay, rootOrNull) == nullptr);
+}
+
+TEST_CASE("Gizmo readouts print signed values at a precision that suits each tool",
+          "[editor][object-interaction][gizmo]")
+{
+    const QString degree = QString(QChar(u'\u00B0'));
+    const QString times = QString(QChar(u'\u00D7'));
+    CHECK(FormatMoveReadout({0, 0.25}, {}) == QStringLiteral("X +0.250 m"));
+    CHECK(FormatMoveReadout({0, 0.25}, {2, -0.12}) == QStringLiteral("X +0.250  Z -0.120 m"));
+    CHECK(FormatMoveReadout({1, 12.3456}, {}) == QStringLiteral("Y +12.346 m"));
+    // A value that rounds to nothing carries no sign.
+    CHECK(FormatMoveReadout({1, -0.0004}, {}) == QStringLiteral("Y 0.000 m"));
+    CHECK(FormatMoveReadout({1, 0.0004}, {}) == QStringLiteral("Y 0.000 m"));
+    CHECK(FormatRotateReadout(2, 15) == QStringLiteral("Z +15.0") + degree);
+    CHECK(FormatRotateReadout(0, -7.5) == QStringLiteral("X -7.5") + degree);
+    CHECK(FormatRotateReadout(1, -0.01) == QStringLiteral("Y 0.0") + degree);
+    CHECK(FormatScaleReadout(GIZMO_READOUT_NO_AXIS, 1.2549) == times + QStringLiteral("1.25"));
+    CHECK(FormatScaleReadout(1, 0.5) == QStringLiteral("Y ") + times + QStringLiteral("0.50"));
+}
+
+TEST_CASE("Gizmo readout labels stay beside the pointer and inside the frame", "[editor][object-interaction][gizmo]")
+{
+    CHECK(MeasureGizmoReadout(QString()).isEmpty() == true);
+    const QSizeF size = MeasureGizmoReadout(QStringLiteral("X +0.250 m"));
+    REQUIRE(size.width() > 0);
+    REQUIRE(size.height() > 0);
+    CHECK(MeasureGizmoReadout(QStringLiteral("X +0.250  Z -0.120 m")).width() > size.width());
+    const QRectF frame{10, 20, 800, 600};
+    // Below and to the right of the pointer, so the pointer does not hide the number.
+    const QPointF beside = PlaceGizmoReadout({100, 100}, size, frame);
+    CHECK(beside.x() > 100);
+    CHECK(beside.y() > 100);
+    // Against the right or bottom edge it moves to the other side of the pointer.
+    const QPointF atRight = PlaceGizmoReadout({frame.right() - 2, 100}, size, frame);
+    CHECK(atRight.x() + size.width() <= frame.right() - 2);
+    CHECK(atRight.y() == beside.y());
+    const QPointF atBottom = PlaceGizmoReadout({100, frame.bottom() - 2}, size, frame);
+    CHECK(atBottom.y() + size.height() <= frame.bottom() - 2);
+    // A corner gets both flips, and a frame smaller than the label keeps the label's top-left on it.
+    const QPointF atCorner = PlaceGizmoReadout(frame.bottomRight(), size, frame);
+    CHECK(frame.contains(QRectF(atCorner, size)) == true);
+    CHECK(PlaceGizmoReadout({20, 30}, size, QRectF(10, 20, 10, 10)).x() >= 10);
+}
+
+TEST_CASE("Gizmo readout labels paint a dark plate with light text and keep out of the stroke batch",
+          "[editor][object-interaction][gizmo]")
+{
+    const QString text = QStringLiteral("X +0.250 m");
+    const QSizeF size = MeasureGizmoReadout(text);
+    QImage image(static_cast<int32>(size.width()) + 8,
+                 static_cast<int32>(size.height()) + 8,
+                 QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+    {
+        QPainter painter(&image);
+        PaintGizmoReadout(painter, text, {4, 4});
+    }
+    // The corner of the plate is dark over the white image; the text brightens some pixel inside it again.
+    const QColor plate = image.pixelColor(static_cast<int32>(size.width() * 0.5), 5);
+    CHECK(plate.lightness() < 100);
+    bool hasLightText = false;
+    for (int32 y = 6; y < static_cast<int32>(size.height()) + 2; ++y)
+    {
+        for (int32 x = 6; x < static_cast<int32>(size.width()) + 2; ++x)
+        {
+            hasLightText = hasLightText == true || image.pixelColor(x, y).lightness() > 200;
+        }
+    }
+    CHECK(hasLightText == true);
+
+    // The label is painted text, not triangles: it adds nothing to the uploaded geometry.
+    ViewportObjectOverlay overlay;
+    overlay.FramePixel = {0, 0, 300, 200};
+    REQUIRE(overlay.HandleStrokes.TryAdd({QLineF(20, 30, 20, 110), qRgb(255, 0, 0), 4}) == true);
+    QSGNode* rootOrNull = UpdateViewportObjectOverlayNode(overlay, nullptr);
+    REQUIRE(rootOrNull != nullptr);
+    const int32 vertexCount = static_cast<QSGGeometryNode*>(rootOrNull->firstChild())->geometry()->vertexCount();
+    overlay.ReadoutText = text;
+    overlay.ReadoutAnchorPixel = {50, 50};
+    rootOrNull = UpdateViewportObjectOverlayNode(overlay, rootOrNull);
+    REQUIRE(rootOrNull != nullptr);
+    CHECK(static_cast<QSGGeometryNode*>(rootOrNull->firstChild())->geometry()->vertexCount() == vertexCount);
+    delete rootOrNull;
 }
 
 TEST_CASE("Selection outlines and picking follow the presented image camera, not the live one",
