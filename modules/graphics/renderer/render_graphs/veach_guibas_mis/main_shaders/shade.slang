@@ -3,7 +3,7 @@
 
 // Passes 2 to 4 (scene compute): rebuild the recorded surface and estimate first-hit direct lighting
 // with the two strategies that Veach and Guibas combine (multiple_importance.slang):
-// - light: SelectLight chooses a light uniformly, SampleIncidentLight proposes a point or direction
+// - light: The configured selector chooses one catalog light, SampleIncidentLight proposes a point or direction
 //   on it and TestVisibility traces the shadow ray;
 // - BSDF: SampleStandardBsdf proposes a direction and TraceClosest finds what it reaches: emission
 //   from the surface it hits, or the environment on a miss.
@@ -95,7 +95,9 @@ float3 SampleLightStrategy(SceneContext scene,
                            bool isMisWeighted,
                            inout RayQueryContext queries)
 {
-    SelectedLight selected = SelectLight(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION);
+    SelectedLight selected = IS_MESH_POWER_SELECTION_ENABLED
+                                 ? SelectLightByMeshPower(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION)
+                                 : SelectLight(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION);
     if (selected.HasSample == false)
         return float3(0);
     IncidentLightSample light = SampleIncidentLight(scene,
@@ -125,6 +127,12 @@ float3 SampleLightStrategy(SceneContext scene,
     if (weight <= 0 || TestVisibility(scene, queries, shadingPoint.Hit, light) != SceneQuery::Miss)
         return float3(0);
     return shadingPoint.Throughput * bsdfValue * light.IncidentCoefficient * (cosSurface * weight / lightDensity);
+}
+
+float EvaluateVeachGuibasSelectionPmf(SceneContext scene, uint lightIndex)
+{
+    return IS_MESH_POWER_SELECTION_ENABLED ? EvaluateMeshPowerLightSelectionPmf(scene, lightIndex)
+                                           : EvaluateLightSelectionPmf(scene, lightIndex);
 }
 
 /// BSDF strategy: one BSDF-sampled ray and the emitter or environment it reaches. With isMisWeighted
@@ -168,7 +176,7 @@ float3 SampleBsdfStrategy(SceneContext scene,
     {
         incidentRadiance = EvaluateEnvironment(scene, directionWorld);
         if (isMisWeighted == true)
-            lightDensity = EvaluateLightSelectionPmf(scene, GetEnvironmentLightIndex(scene)) *
+            lightDensity = EvaluateVeachGuibasSelectionPmf(scene, GetEnvironmentLightIndex(scene)) *
                            EvaluateIncidentEnvironmentPdfSolidAngle(scene);
     }
     else if (status == SceneQuery::Surface)
@@ -176,7 +184,7 @@ float3 SampleBsdfStrategy(SceneContext scene,
         incidentRadiance = EvaluateEmission(scene, endpoint, -directionWorld);
         // Measured from the receiver itself, as SampleIncidentLight measures its proposals.
         if (isMisWeighted == true)
-            lightDensity = EvaluateLightSelectionPmf(scene, GetSurfaceLightIndex(scene, endpoint)) *
+            lightDensity = EvaluateVeachGuibasSelectionPmf(scene, GetSurfaceLightIndex(scene, endpoint)) *
                            EvaluateIncidentLightPdfSolidAngle(scene, shadingPoint.Hit.PositionWorld, endpoint);
     }
     // A failed query has latched queries.HasFailed; zero radiance adds nothing.

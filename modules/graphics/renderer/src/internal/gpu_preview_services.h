@@ -77,6 +77,33 @@ bool SameGpuTexture(const rhi::TextureCpuContent& a, const rhi::TextureCpuConten
     return a.Bytes == b.Bytes && a.Width == b.Width && a.Height == b.Height && a.RowPitch == b.RowPitch &&
            a.Format == b.Format;
 }
+/// Pack a catalog CDF by grouping the existing area-times-luminance triangle tickets.
+void PackMeshPowerSelection(const ReferenceJob& job, math::Vector4* inoutBoundsWords) noexcept
+{
+    const usize meshCount = job.ShaderEmitters.GetSize();
+    if (meshCount < 2 || job.Scene.EmitterCdf.GetSize() == 0)
+    {
+        return;
+    }
+    const uint32 triangleTotal = job.Scene.EmitterCdf[job.Scene.EmitterCdf.GetSize() - 1];
+    if (triangleTotal == 0)
+    {
+        return;
+    }
+    // Leave room for one environment source. Every analytic and environment light gets one equal
+    // share, and the mesh lights split meshCount shares. Reserve one ticket per mesh for support.
+    const uint64 sourceCapacity = uint64(meshCount) + job.Description.LightCount + 1;
+    const uint64 ticketsPerSource = uint64{~uint32{0}} / sourceCapacity;
+    const uint64 weightedTickets = meshCount * (ticketsPerSource - 1);
+    for (usize i = 0; i < meshCount; ++i)
+    {
+        const math::Vector4& emitter = job.ShaderEmitters[i];
+        const usize lastTriangle = static_cast<usize>(emitter.X) + static_cast<usize>(emitter.Y) - 1;
+        const uint64 cumulative = i + 1 + weightedTickets * job.Scene.EmitterCdf[lastTriangle] / triangleTotal;
+        inoutBoundsWords[i * LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS + LUDUS_GPU_PREVIEW_EMITTER_METADATA_WORD].Y =
+            GpuBits(static_cast<uint32>(cumulative));
+    }
+}
 Status PackGpuScene(const ReferenceJob& job,
                     bool shouldPackVisibility,
                     bool shouldPartitionNativeOpacity,
@@ -258,11 +285,10 @@ Status PackGpuScene(const ReferenceJob& job,
         math::Vector4* out = boundsWords + i * LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS;
         out[0] = GpuVector(bounds.SphereWorld.Center, bounds.SphereWorld.Radius);
         out[1] = GpuVector(bounds.NormalAxisWorld, bounds.CosConeHalfAngle);
-        out[2] = {GpuBits(bounds.IsEmissionTwoSided == true ? LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_TWO_SIDED : 0U),
-                  0,
-                  0,
-                  0};
+        out[LUDUS_GPU_PREVIEW_EMITTER_METADATA_WORD] =
+            {GpuBits(bounds.IsEmissionTwoSided == true ? LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_TWO_SIDED : 0U), 0, 0, 0};
     }
+    PackMeshPowerSelection(job, boundsWords);
     for (usize i = 0; i < scene.InstanceCount; ++i)
     {
         const internal::ReferenceInstance& instance = scene.Instances[i];

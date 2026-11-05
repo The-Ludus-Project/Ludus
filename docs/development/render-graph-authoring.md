@@ -2533,8 +2533,8 @@ The viewport shows the first export, MIS, by default. Choose
 `lightSamplingOutput` or `bsdfSamplingOutput` in its output selector to compare.
 Every pass makes at most one surface query and one visibility query.
 
-The **light strategy** selects a light uniformly with `SelectLight`, proposes a point
-or direction on it with `SampleIncidentLight` and traces the shadow ray with
+The **light strategy** selects a light from the scene catalog, proposes a point
+or direction with `SampleIncidentLight` and traces the shadow ray with
 `TestVisibility`. It multiplies the source PMF by the incident sample's
 conditional probability. The **BSDF strategy** samples `SampleStandardBsdf` and
 follows the direction with `TraceClosest`. It collects emission from the surface
@@ -2553,6 +2553,20 @@ sample that reaches it keeps weight one.
 | `MIS_HEURISTIC` | `1` (power) | `0`–`3` | `0` balance, `1` power, `2` cutoff, `3` maximum |
 | `MIS_POWER_EXPONENT` | `2` | `1`–`16` | Exponent β of the power heuristic |
 | `MIS_CUTOFF_THRESHOLD` | `0.1` | `0`–`1` | A strategy whose density is below this fraction of the larger one gets no weight |
+| `IS_MESH_POWER_SELECTION_ENABLED` | `false` | Boolean | Redistribute mesh-light selection probability by emitted power. |
+
+Enable **Power-weighted mesh light selection** in the graph settings to favor
+mesh lights with greater emissive area times emitted luminance. The scene
+packs a cumulative table from the existing triangle power weights, with at
+least one integer ticket for every mesh light. The total mesh probability
+remains the same as under uniform selection, and each analytic light and the
+sky retain their uniform probability. When the scene has fewer than two mesh
+lights or no usable power table, selection is uniform.
+
+Both strategies use the active selector's probability when computing MIS
+weights. The light strategy uses the same random dimension for source selection
+in both modes. The incident sampler and the incident and BSDF random addresses
+stay fixed.
 
 Change them in Properties or with the canvas's **Edit Graph Settings...** action, as
 for the [ReSTIR DI template](#use-the-built-in-restir-di-template). The
@@ -4519,6 +4533,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | IsSurfaceCovered | Fixed-mip sampled-endpoint alpha coverage, using the same inclusive cutoff as closest-hit traversal, with no ray query; keep uncovered area samples as zero events |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
 | SelectLight / EvaluateLightSelectionPmf | Default uniform source selection and its discrete probability. SelectLight(scene, queries) uses the invocation stream. |
+| SelectLightByMeshPower / EvaluateMeshPowerLightSelectionPmf | Addressed catalog selection and its matching PMF. Mesh lights split their uniform category share by power, with uniform fallback. |
 | SampleIncidentLight(scene, lightIndex, receiver, launch, firstDimension, queries) | Addressed conditional proposal for one source. Returns an IncidentLightSample with its probability and measure. |
 | SampleIncidentLight(scene, lightIndex, receiver, seed, firstAddress, queries) | The same conditional proposal with an explicit Philox key and address. Preserves scope and event while advancing dimensions within the incident reservation. |
 | GetSurfaceLightIndex / GetEnvironmentLightIndex | Resolve the catalog index of an emissive hit or the environment. Return SCENE_INVALID_INDEX when absent. |

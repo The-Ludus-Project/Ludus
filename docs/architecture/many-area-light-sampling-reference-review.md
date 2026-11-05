@@ -987,6 +987,45 @@ comparisons of complete RT1 sampling modes. To measure the effect of source
 selection on its own, keep the incident proposal fixed and vary the source
 selection PMF.
 
+#### Veach–Guibas source selection at equal GPU time
+
+The opt-in `[.mesh-power-benchmark]` case in `ludus_render_graph_ray_tests`
+compares the uniform and mesh-power selectors in the same Veach–Guibas graph.
+The diffuse Cornell room has one independent mesh source per ceiling tile, with
+emitted luminance varying across the tiles. One scene has 576 mesh sources. The
+other has 25 mesh sources plus a directional light and a constant sky. Both
+selectors use the same incident proposal, Philox seed, and sample dimensions.
+
+The Metal run on Apple M5 used 288 × 192 pixels and the compute BVH. It averaged
+the sum of the median primary and MIS shade kernel times from two timing rounds
+per selector, in uniform, mesh power, mesh power, uniform order. Each round used
+8 warmup and 64 measured frames. The benchmark rounds the matched uniform sample
+count to the nearest whole sample. Error uses decoded linear RGB from the
+tone-mapped readback, over pixels with all reference channels at most 4. The
+reference uses uniform selection at 4096 spp and an independent seed. Linear
+error covered 54,609 pixels for the many-mesh scene and 54,891 for the mixed
+scene. Both scenes had zero failure pixels.
+
+| Scene | Uniform kernel ms/sample | Mesh power kernel ms/sample |
+| --- | --- | --- |
+| 576 mesh lights | 0.944 | 1.052 |
+| 25 mesh lights, Sun and sky | 0.966 | 1.010 |
+
+Each error cell gives linear RMSE and guarded MAPE.
+
+| Scene | Mesh power spp | Mesh power | Uniform at equal spp | Uniform at equal GPU time |
+| --- | --- | --- | --- | --- |
+| 576 mesh lights | 4 | 0.24634 / 0.20198 | 0.27867 / 0.34110 | 0.27867 / 0.34110 (4 spp) |
+| 576 mesh lights | 16 | 0.12744 / 0.10795 | 0.14312 / 0.18187 | 0.13606 / 0.17177 (18 spp) |
+| 576 mesh lights | 64 | 0.06260 / 0.05593 | 0.07066 / 0.09331 | 0.06682 / 0.08872 (71 spp) |
+| 25 mesh lights, Sun and sky | 4 | 0.25703 / 0.27073 | 0.30298 / 0.35412 | 0.30298 / 0.35412 (4 spp) |
+| 25 mesh lights, Sun and sky | 16 | 0.12543 / 0.15147 | 0.14559 / 0.19025 | 0.14121 / 0.18406 (17 spp) |
+| 25 mesh lights, Sun and sky | 64 | 0.06340 / 0.07553 | 0.07332 / 0.09483 | 0.07171 / 0.09263 (67 spp) |
+
+Mesh power reduced RMSE at matched GPU time in both rooms. At the 64-spp
+budget the reduction was 6.3% with 576 mesh lights and 11.6% in the mixed scene.
+These measurements cover direct illumination on one device.
+
 ## Ownership
 
 | Piece | Owner | Notes |

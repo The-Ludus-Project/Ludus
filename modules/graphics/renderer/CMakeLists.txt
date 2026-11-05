@@ -1096,6 +1096,20 @@ if(TARGET ludus_renderer_render_tests)
             string(TOUPPER "${benchmark_template}" benchmark_definition)
             target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
                 "LUDUS_RG3_${benchmark_definition}_BENCHMARK_DIRECTORY=\"${benchmark_package_directory}\"")
+            set(power_staged "${benchmark_staged}_mesh_power")
+            ludus_stage_render_graph_inputs("${benchmark_staged}" "${power_staged}" main.lushader.json)
+            string(JSON selector_setting GET "${benchmark_manifest}" settings 3 id)
+            if(NOT selector_setting STREQUAL "IS_MESH_POWER_SELECTION_ENABLED")
+                message(FATAL_ERROR "Veach and Guibas benchmark could not find the mesh power setting.")
+            endif()
+            string(JSON power_manifest SET "${benchmark_manifest}" settings 3 value true)
+            file(WRITE "${power_staged}.lushader.json" "${power_manifest}\n")
+            file(COPY_FILE "${power_staged}.lushader.json" "${power_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
+            ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_veach_guibas_mis_mesh_power
+                MANIFEST "${power_staged}/main.lushader.json" RUNTIME_PACKAGE)
+            cmake_path(GET rg2_veach_guibas_mis_mesh_power_RUNTIME_PACKAGE PARENT_PATH power_package_directory)
+            target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+                LUDUS_RG3_VEACH_GUIBAS_MESH_POWER_DIRECTORY="${power_package_directory}")
             continue()
         endif()
         # One RIS package per RIS_TARGET:RIS_CANDIDATE_COUNT:RIS_NORMALIZATION_CANDIDATE_COUNT variant; the benchmark
