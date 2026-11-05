@@ -556,3 +556,46 @@ wiring are pending host verification by the maintainer on macOS: `./scripts/buil
 native run of a project search, result navigation and Replace in Files including
 a screen reader. The worker runs real threads, so the offscreen tests pump the
 event loop for its queued signals.
+
+### M2 batch 5: registry-driven pairs and indentation (CE17, 2026-11-05)
+
+Auto-closing, surrounding pairs and smart indentation now come from the language
+registry instead of a hard-coded Slang set. `CodeLanguageDescriptor` gains
+`AutoClosingPairs` (brackets plus the string quote) and `SurroundingPairs`
+(brackets plus string and character quotes) beside the existing `BracketPairs`;
+the Slang record fills all three and plain text leaves them empty.
+
+Decisions and deviations recorded here:
+
+- **The view reads the registry, not the `CodeLanguage::Slang` enum.** The
+  auto-closing block in `CodeEditor::handleKeyPress` is gated on
+  `languageHasStructuralEditing()` (the descriptor's `HasStructuralEditing`) and
+  looks pairs up through `autoClosingCloseFor`, `isCloseOfAutoClosingPair`,
+  `isOpenBracket` and `bracketCloseFor`, which query the current descriptor.
+  Adding a language's pairs is now a registry record, not a view change. The
+  Slang-only comment/string exclusion (via the highlighter's `CodeBlockData`
+  excluded ranges) is preserved, so a bracket typed inside a comment or string
+  still does not pair.
+- **Surrounding pairs are new behavior.** Typing an opening bracket or quote
+  with a selection wraps the selection in the pair and keeps it selected, rather
+  than replacing it; previously any selection suppressed pairing entirely. The
+  wrap is one undo step.
+- **Smart indentation generalized from `{`.** Return after a line whose last
+  non-space character opens any registry bracket pair indents the next line, and
+  when that bracket's matching close is right after the caret the close drops
+  onto its own dedented line. The old code hard-coded `{`/`}`.
+- **The preference and the step-over behavior are unchanged.** The existing
+  Auto-close Brackets preference (`mShouldPairBrackets`) still gates pairing, and
+  typing a closing character that already sits next to the caret steps over it,
+  as before; a quote whose open equals its close uses the same step-over so a
+  closing quote is not duplicated. Bracket-match highlighting (a separate,
+  matching-only feature) keeps its fixed set and is out of scope here.
+
+Authored, not run: the editor was not built or tested in this sandbox (no Qt6
+and no pinned toolchain; PR CI skips the editor build and tests). The new
+`code_pairs_tests` (auto-close, quote close/step-over, Backspace-deletes-pair,
+surround with bracket and quote, Return smart indent, and the plain-text opt-out)
+and the unchanged bracket-pairing test are pending host verification by the
+maintainer on macOS: `./scripts/build`, `./scripts/test`, `./scripts/check --all`,
+the ASan/UBSan lane, and a recorded native run including IME, which offscreen
+tests do not qualify.

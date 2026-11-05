@@ -72,6 +72,23 @@ constexpr CodeLanguagePair SLANG_BRACKETS[] = {
     { .Open = '{', .Close = '}' },
 };
 
+// Auto-closing adds the string quote to the brackets; surrounding adds both the
+// string and character quotes, so a selection can be wrapped in either.
+constexpr CodeLanguagePair SLANG_AUTO_CLOSING[] = {
+    { .Open = '(', .Close = ')' },
+    { .Open = '[', .Close = ']' },
+    { .Open = '{', .Close = '}' },
+    { .Open = '"', .Close = '"' },
+};
+
+constexpr CodeLanguagePair SLANG_SURROUNDING[] = {
+    { .Open = '(', .Close = ')' },
+    { .Open = '[', .Close = ']' },
+    { .Open = '{', .Close = '}' },
+    { .Open = '"', .Close = '"' },
+    { .Open = '\'', .Close = '\'' },
+};
+
 // The table itself, in CodeLanguage enum order. Every field matches the current
 // behavior: plain text has no coloring and no structural editing; Slang colors
 // lexically, toggles "//" comments and pairs brackets.
@@ -84,6 +101,8 @@ const CodeLanguageDescriptor TABLE[] = {
         .SuffixPatterns = {},
         .LineComment = {},
         .BracketPairs = {},
+        .AutoClosingPairs = {},
+        .SurroundingPairs = {},
         .HasLexicalColoring = false,
         .HasStructuralEditing = false,
     },
@@ -95,6 +114,8 @@ const CodeLanguageDescriptor TABLE[] = {
         .SuffixPatterns = BorrowedView<const BorrowedView<const char>>(SLANG_SUFFIXES),
         .LineComment = Literal("//"),
         .BracketPairs = BorrowedView<const CodeLanguagePair>(SLANG_BRACKETS),
+        .AutoClosingPairs = BorrowedView<const CodeLanguagePair>(SLANG_AUTO_CLOSING),
+        .SurroundingPairs = BorrowedView<const CodeLanguagePair>(SLANG_SURROUNDING),
         .HasLexicalColoring = true,
         .HasStructuralEditing = true,
     },

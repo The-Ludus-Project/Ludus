@@ -5,6 +5,7 @@
 #include <ludus/foundation/profiling/profiling.hpp>
 
 #include "internal/code_edit_scope.h"
+#include "internal/code_language_registry.h"
 #include "internal/code_navigation.h"
 #include "internal/code_syntax_highlighter.h"
 
@@ -1156,6 +1157,76 @@ void CodeEditor::updateSelections()
     setExtraSelections(selections);
 }
 
+bool CodeEditor::languageHasStructuralEditing() const
+{
+    return CodeLanguageRegistry::Get().Describe(mLanguage).HasStructuralEditing == true;
+}
+
+QChar CodeEditor::autoClosingCloseFor(QChar open) const
+{
+    const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
+    for (const CodeLanguagePair& pair : descriptor.AutoClosingPairs)
+    {
+        if (QLatin1Char(pair.Open) == open)
+        {
+            return QLatin1Char(pair.Close);
+        }
+    }
+    return {};
+}
+
+QChar CodeEditor::surroundingCloseFor(QChar open) const
+{
+    const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
+    for (const CodeLanguagePair& pair : descriptor.SurroundingPairs)
+    {
+        if (QLatin1Char(pair.Open) == open)
+        {
+            return QLatin1Char(pair.Close);
+        }
+    }
+    return {};
+}
+
+bool CodeEditor::isCloseOfAutoClosingPair(QChar character) const
+{
+    const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
+    for (const CodeLanguagePair& pair : descriptor.AutoClosingPairs)
+    {
+        if (QLatin1Char(pair.Close) == character)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool CodeEditor::isOpenBracket(QChar character) const
+{
+    const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
+    for (const CodeLanguagePair& pair : descriptor.BracketPairs)
+    {
+        if (QLatin1Char(pair.Open) == character)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+QChar CodeEditor::bracketCloseFor(QChar open) const
+{
+    const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
+    for (const CodeLanguagePair& pair : descriptor.BracketPairs)
+    {
+        if (QLatin1Char(pair.Open) == open)
+        {
+            return QLatin1Char(pair.Close);
+        }
+    }
+    return {};
+}
+
 QTextCursor CodeEditor::getSelectedLines() const
 {
     const QTextCursor current = textCursor();
@@ -1653,10 +1724,37 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
         Redo();
         return;
     }
-    if (isReadOnly() == false && mShouldPairBrackets == true && mLanguage == CodeLanguage::Slang &&
+    // Surrounding pairs (CE17): typing an opening bracket or quote with a
+    // selection wraps the selection in the pair from the language registry and
+    // keeps it selected, instead of replacing it. Driven by the registry, so a
+    // new language opts in through its record rather than a code change here.
+    if (isReadOnly() == false && mShouldPairBrackets == true && languageHasStructuralEditing() == true &&
+        (event->modifiers() == Qt::NoModifier || event->modifiers() == Qt::ShiftModifier) &&
+        textCursor().hasSelection() == true && event->text().size() == 1)
+    {
+        const QChar close = surroundingCloseFor(event->text().at(0));
+        if (close.isNull() == false)
+        {
+            QTextCursor cursor = textCursor();
+            const int32 start = cursor.selectionStart();
+            const int32 end = cursor.selectionEnd();
+            const CodeEditScope operation(*this);
+            cursor.beginEditBlock();
+            const QString wrapped = event->text() + cursor.selectedText() + close;
+            cursor.insertText(wrapped);
+            cursor.endEditBlock();
+            // Reselect the original text, now between the inserted pair.
+            cursor.setPosition(start + 1);
+            cursor.setPosition(end + 1, QTextCursor::KeepAnchor);
+            setTextCursor(cursor);
+            return;
+        }
+    }
+    if (isReadOnly() == false && mShouldPairBrackets == true && languageHasStructuralEditing() == true &&
         (event->modifiers() == Qt::NoModifier || event->modifiers() == Qt::ShiftModifier) &&
         textCursor().hasSelection() == false &&
-        ((event->text().size() == 1 && QStringView(u"()[]{}").contains(event->text().at(0)) == true) ||
+        ((event->text().size() == 1 && autoClosingCloseFor(event->text().at(0)).isNull() == false) ||
+         (event->text().size() == 1 && isCloseOfAutoClosingPair(event->text().at(0)) == true) ||
          event->key() == Qt::Key_Backspace))
     {
         QTextCursor cursor = textCursor();
@@ -1676,34 +1774,41 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
                 }
             }
         }
-        const QStringView pairs(u"()[]{}");
         const QString typed = event->text();
-        const int32 pairIndex = typed.size() == 1 ? static_cast<int32>(pairs.indexOf(typed.at(0))) : -1;
+        const QChar typedChar = typed.size() == 1 ? typed.at(0) : QChar();
+        const QChar openClose = typedChar.isNull() == true ? QChar() : autoClosingCloseFor(typedChar);
         const QChar next = document()->characterAt(cursor.position());
-        if (canPair == true && pairIndex >= 0)
+        if (canPair == true && typedChar.isNull() == false)
         {
-            if (pairIndex % 2 == 1 && next == typed.at(0))
+            // Step over a just-closed pair: typing the close character when it is
+            // already next moves past it rather than inserting a duplicate. This
+            // also handles a quote whose open equals its close when one is next.
+            if (isCloseOfAutoClosingPair(typedChar) == true && next == typedChar)
             {
                 cursor.movePosition(QTextCursor::NextCharacter);
                 setTextCursor(cursor);
                 Q_EMIT EditBoundary();
                 return;
             }
-            if (pairIndex % 2 == 0 &&
-                (next.isSpace() == true || next.isNull() == true || QStringView(u")]}").contains(next) == true))
+            // Auto-close: typing an opening bracket or quote inserts its close and
+            // leaves the caret between them, when the next character would not run
+            // the pair into following text.
+            if (openClose.isNull() == false &&
+                (next.isSpace() == true || next.isNull() == true || isCloseOfAutoClosingPair(next) == true))
             {
                 const CodeEditScope operation(*this);
                 cursor.beginEditBlock();
-                cursor.insertText(typed + pairs.at(pairIndex + 1));
+                cursor.insertText(typed + openClose);
                 cursor.movePosition(QTextCursor::PreviousCharacter);
                 cursor.endEditBlock();
                 setTextCursor(cursor);
                 return;
             }
         }
-        const int32 previousPair = static_cast<int32>(pairs.indexOf(document()->characterAt(cursor.position() - 1)));
-        if (canPair == true && event->key() == Qt::Key_Backspace && previousPair >= 0 && previousPair % 2 == 0 &&
-            next == pairs.at(previousPair + 1))
+        // Backspace between a freshly typed pair deletes both characters.
+        const QChar previous = document()->characterAt(cursor.position() - 1);
+        if (canPair == true && event->key() == Qt::Key_Backspace && previous.isNull() == false &&
+            autoClosingCloseFor(previous) == next && next.isNull() == false)
         {
             const CodeEditScope operation(*this);
             cursor.beginEditBlock();
@@ -1752,16 +1857,23 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
         const QString baseIndentation = prefix.left(GetIndentLength(prefix));
         QString indentation = baseIndentation;
         bool shouldExpandPair = false;
-        if (mLanguage != CodeLanguage::PlainText && prefix.trimmed().endsWith(QLatin1Char('{')) == true)
+        // Smart indentation (CE17): a line ending in an opening bracket from the
+        // language registry indents the next line, and when the matching close is
+        // right after the caret the close drops onto its own dedented line.
+        const QString trimmedPrefix = prefix.trimmed();
+        const QChar trailingOpen = trimmedPrefix.isEmpty() == false ? trimmedPrefix.back() : QChar();
+        if (languageHasStructuralEditing() == true && trailingOpen.isNull() == false &&
+            isOpenBracket(trailingOpen) == true)
         {
             indentation += QString(INDENT_WIDTH, QLatin1Char(' '));
-            if (mShouldPairBrackets == true && document()->characterAt(cursor.position()) == QLatin1Char('}'))
+            if (mShouldPairBrackets == true &&
+                document()->characterAt(cursor.position()) == bracketCloseFor(trailingOpen))
             {
                 mHighlighter->rehighlightBlock(cursor.block());
                 const CodeBlockData* dataOrNull = static_cast<CodeBlockData*>(cursor.block().userData());
                 if (dataOrNull != nullptr)
                 {
-                    const isize opening = prefix.lastIndexOf(QLatin1Char('{'));
+                    const isize opening = prefix.lastIndexOf(trailingOpen);
                     for (const CodeBracket& bracket : dataOrNull->Brackets)
                     {
                         shouldExpandPair = shouldExpandPair == true || bracket.Position == opening;

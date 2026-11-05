@@ -45,8 +45,19 @@ struct CodeLanguageDescriptor final
     /// The line-comment token, or empty when the language has none. Plain text
     /// has none, so comment toggling is disabled, exactly as today.
     foundation::BorrowedView<const char> LineComment;
-    /// Bracket pairs understood for matching and automatic pairing.
+    /// Bracket pairs understood for matching and smart indentation. Typing the
+    /// open bracket at the end of a line increases the next line's indent, and a
+    /// closing bracket on its own line dedents (CE17).
     foundation::BorrowedView<const CodeLanguagePair> BracketPairs;
+    /// Pairs that auto-close when the open character is typed with no selection
+    /// (CE17): the brackets plus quotes. A pair whose Open equals Close (a quote)
+    /// closes only when the caret is not already inside an identical run, so
+    /// typing the closing quote of an existing pair steps over it.
+    foundation::BorrowedView<const CodeLanguagePair> AutoClosingPairs;
+    /// Pairs that surround the selection when the open character is typed with a
+    /// selection (CE17): the selection is wrapped in Open..Close and kept
+    /// selected. Usually the same set as AutoClosingPairs.
+    foundation::BorrowedView<const CodeLanguagePair> SurroundingPairs;
     /// True when the single-line lexer colors this language. Plain text is
     /// false, which is the current PlainText fast path in the highlighter.
     bool HasLexicalColoring = false;

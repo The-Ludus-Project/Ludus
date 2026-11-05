@@ -190,8 +190,12 @@ Requirements: CE05-CE07, CE17. Prerequisite: M1.
   `CodeDocumentRegistry::ApplyWorkspaceEdit` minting one `CodeTransactionId`;
   authored, not run — see the
   [M2 batch 4 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-4-search-and-replace-in-files-ce07-ce11-2026-11-05).)*
-- [ ] Add auto-closing and surrounding pairs and indentation rules from the
-  registry.
+- [x] Add auto-closing and surrounding pairs and indentation rules from the
+  registry. *(Batch 5; `CodeLanguageDescriptor` gains `AutoClosingPairs` and
+  `SurroundingPairs`; the view's pairing, surround-on-selection and smart indent
+  read the registry and `HasStructuralEditing` instead of a hard-coded Slang
+  set; authored, not run — see the
+  [M2 batch 5 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-5-registry-driven-pairs-and-indentation-ce17-2026-11-05).)*
 - [ ] Add the Ludus and VS Code keymap profiles, user overrides, conflict
   detection and the first-use choice. Apply the decided bindings: Record
   Profiling to Ctrl+Alt+F9, F9 Toggle Breakpoint in code editors, Ctrl+K palette
