@@ -12,81 +12,15 @@ on:
         description: Stable main commit captured with this candidate.
         required: true
         type: string
+  # Integration PRs keep the inexpensive admission checks only; every batch
+  # runs this lane before promotion. Dispatch it on a task branch when a
+  # Windows change needs evidence before it reaches develop.
   workflow_dispatch:
-  # Targeted lane for changes to the code it alone executes; every batch also
-  # runs it. Other integration PRs keep the inexpensive checks only.
-  pull_request:
-    paths:
-      - '.github/workflows/windows-direct3d12.yml'
-      - 'CMakeLists.txt'
-      - 'CMakePresets.json'
-      - 'apps/world_demo/**'
-      - 'modules/content/**'
-      - 'modules/graphics/renderer/**'
-      - 'modules/localization/**'
-      - 'modules/runtime/game_host/**'
-      - 'config/cmake/windows-msvc*'
-      - 'cmake/EngineBuildFlavor.cmake'
-      - 'cmake/EngineCompilerWarnings.cmake'
-      - 'cmake/EngineOptions.cmake'
-      - 'cmake/EngineWindowsMsvc.cmake'
-      - 'cmake/EngineWindowsSdk.cmake'
-      - 'cmake/*D3D12Agility*'
-      - 'cmake/LudusWindowsSdk.cmake.in'
-      - 'cmake/LudusConfig.cmake.in'
-      - 'cmake/LudusSdkManifest.json.in'
-      - 'cmake/CheckSdkVariant.cmake.in'
-      - 'tests/sdk_consumer/windows/**'
-      - 'cmake/LudusShaders.cmake'
-      - 'cmake/shaders/compile_shader.py'
-      - 'config/conan/profiles/windows-clang-x86_64'
-      - 'config/conan/profiles/windows-msvc-probe-x86_64'
-      - 'config/tool_versions.json'
-      - 'config/shader_toolchain.json'
-      - 'modules/graphics/rhi/shaders/raster_bindings.slang'
-      - 'modules/foundation/base/include/ludus/foundation/base/checked_integer.hpp'
-      - 'modules/foundation/base/include/ludus/foundation/base/byte_order.hpp'
-      - 'modules/foundation/base/include/ludus/foundation/base/compiler.h'
-      - 'modules/foundation/base/include/ludus/foundation/base/config.h'
-      - 'modules/foundation/base/include/ludus/foundation/base/types.h'
-      - 'modules/foundation/base/src/types.cpp'
-      - 'modules/foundation/base/tests/checked_integer_tests.cpp'
-      - 'modules/foundation/base/tests/byte_order_tests.cpp'
-      - 'tests/build_contract/primitive_portability/**'
-      - 'tests/build_contract/windows_file_api.py'
-      - 'scripts/python/cmake_targets.py'
-      - 'modules/graphics/rhi/src/dxil_container.cpp'
-      - 'modules/graphics/rhi/src/internal/dxil_container.h'
-      - 'modules/graphics/rhi/src/*d3d12*'
-      - 'modules/graphics/rhi/src/internal/d3d12_device.h'
-      - 'modules/graphics/rhi/src/internal/d3d12_diagnostics.h'
-      - 'modules/graphics/rhi/src/internal/d3d12_raster.h'
-      - 'modules/graphics/rhi/src/internal/d3d12_transfer.h'
-      - 'modules/graphics/rhi/tests/portable_transfer_conformance_tests.cpp'
-      - 'modules/graphics/rhi/tests/portable_raster_conformance_tests.cpp'
-      - 'modules/graphics/rhi/tests/shaders/ordered_compute.slang'
-      - 'tests/sdk_consumer/shaders/r10.slang'
-      - 'modules/graphics/rhi/CMakeLists.txt'
-      - 'cmake/shaders/compile_raster.py'
-      - 'modules/graphics/rhi/tests/d3d12*'
-      - 'tests/sdk_consumer/shaders/raster.slang'
-      - 'modules/foundation/base/tests/windows_diagnostic_probe.cpp'
-      - 'tests/assertions/windows_diagnostics.py'
-      - 'modules/foundation/filesystem/**'
-      - 'modules/foundation/logging/src/sinks/file_sink.cpp'
-      - 'tests/filesystem/windows_recovery.py'
-      - 'modules/platform/src/entropy.cpp'
-      - 'modules/platform/src/internal/win32_keymap.hpp'
-      - 'modules/platform/src/window_win32.cpp'
-      - 'modules/platform/src/internal/window_win32.hpp'
-      - 'modules/platform/tests/win32_tests.cpp'
-      - 'scripts/shader-probe'
-      - 'tests/sdk_consumer/shaders/diagnostic.slang'
 permissions:
   contents: read
 concurrency:
   group: windows-direct3d12-${{ inputs.batch_sha || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 env:
   CI: "true"
   LUDUS_DIAGNOSTIC_INTERACTIVE: "0"
