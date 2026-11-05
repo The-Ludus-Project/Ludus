@@ -141,11 +141,20 @@ def _latest_codemodel(
     return reply, model, aggregate
 
 
-def _select_configuration(model: Any, build_dir: Path, engine: Any) -> Any:
-    """Select the single configuration of a single-config (Ninja) build tree."""
+def _select_configuration(model: Any, build_dir: Path, engine: Any,
+                          configuration: str | None = None) -> Any:
+    """Select an exact configuration, or the sole configuration by default."""
     configurations = (model or {}).get("configurations")
     if not isinstance(configurations, list) or not configurations:
         raise engine.EngineError("CMake codemodel has no configurations; reconfigure")
+    if configuration is not None:
+        names = [entry.get("name") for entry in configurations if isinstance(entry, dict)]
+        matches = [entry for entry in configurations if isinstance(entry, dict) and entry.get("name") == configuration]
+        if len(matches) != 1:
+            raise engine.EngineError(
+                f"CMake configuration {configuration!r} must match exactly one entry in {build_dir}; available: {names}"
+            )
+        return matches[0]
     if len(configurations) != 1:
         raise engine.EngineError(
             "the editor requires a single-config (Ninja) build tree; "
@@ -160,6 +169,7 @@ def target_executable(
     engine: Any,
     client: str = "ludus-editor",
     *,
+    configuration: str | None = None,
     require_version: bool = True,
     bounded: bool = True,
     messages: dict[str, str] | None = None,
@@ -167,8 +177,8 @@ def target_executable(
     """Resolve `target` to its single executable artifact via the File API.
 
     Reads the latest named reply for `client`, (optionally) verifies codemodel
-    major 2 and a single configuration, finds exactly one target with the
-    requested name, and resolves its primary EXECUTABLE artifact. CMake's
+    major 2, selects the explicitly named configuration or the sole one,
+    finds exactly one target, and resolves its primary EXECUTABLE artifact. CMake's
     codemodel v2 target object names that artifact with `nameOnDisk` when
     there are additional outputs such as a Windows PDB. Artifact paths may
     be absolute or in custom output directories;
@@ -186,9 +196,9 @@ def target_executable(
         build_dir, client, engine, require_version=require_version, messages=text
     )
     try:
-        if require_version:
-            configuration = _select_configuration(model, build_dir, engine)
-            targets = configuration["targets"]
+        if require_version or configuration is not None:
+            selected = _select_configuration(model, build_dir, engine, configuration)
+            targets = selected["targets"]
         else:
             # RAD's historical shape: flatten targets across configurations.
             targets = [entry for config in model["configurations"] for entry in config["targets"]]

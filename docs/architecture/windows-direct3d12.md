@@ -610,6 +610,14 @@ and Release under Ninja and in one Visual Studio solution. This source build
 covers the existing Windows module list and produces an SDK for each Visual
 Studio configuration.
 
+After building all four flavors, the Windows lane resolves the D3D12 test
+executable through the CMake File API, compares it with CTest's command for the
+selected build, and launches it on WARP. The resolver uses the exact
+configuration name in the Visual Studio solution. Ninja selects Debug,
+RelWithDebInfo, or Release in the corresponding flavor's separate build tree.
+The installed SDK project check also launches each Ninja flavor with
+`ludus project run`.
+
 #### Install and use a Windows SDK from the solution
 
 Build the `ludus_windows_sdk` target and install to a separate prefix for

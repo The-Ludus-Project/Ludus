@@ -176,6 +176,33 @@ class FileApiTests(unittest.TestCase):
         with self.assertRaisesRegex(engine.EngineError, "single-config"):
             cmake_targets.list_executable_targets(self.build, engine, client="ludus-editor")
 
+    def test_resolves_the_named_configuration(self) -> None:
+        self.write_reply([{"name": "app"}])
+        model_path = self.reply / "model.json"
+        model = json.loads(model_path.read_text())
+        model["configurations"] = []
+        for name in ("Debug", "Development", "Profile", "Release"):
+            detail = name + ".json"
+            model["configurations"].append({"name": name, "targets": [{"name": "app", "jsonFile": detail}]})
+            (self.reply / detail).write_text(json.dumps({
+                "type": "EXECUTABLE",
+                "nameOnDisk": "custom.exe",
+                "artifacts": [{"path": f"symbols/{name}.pdb"}, {"path": f"bin/{name}/custom.exe"}],
+            }))
+        model_path.write_text(json.dumps(model))
+        for name in ("Debug", "Development", "Profile", "Release"):
+            with self.subTest(configuration=name):
+                executable = cmake_targets.target_executable(self.build, "app", engine, configuration=name)
+                self.assertEqual(executable, (self.build / f"bin/{name}/custom.exe").resolve())
+        with self.assertRaisesRegex(engine.EngineError, "single-config"):
+            cmake_targets.target_executable(self.build, "app", engine)
+        with self.assertRaisesRegex(engine.EngineError, "configuration 'RelWithDebInfo'"):
+            cmake_targets.target_executable(self.build, "app", engine, configuration="RelWithDebInfo")
+        model["configurations"].append(model["configurations"][0])
+        model_path.write_text(json.dumps(model))
+        with self.assertRaisesRegex(engine.EngineError, "match exactly one"):
+            cmake_targets.target_executable(self.build, "app", engine, configuration="Debug")
+
     def test_identity_mismatch_rejected(self) -> None:
         self.write_reply([{"name": "app"}])
         other = Path(self.temp.name) / "elsewhere"

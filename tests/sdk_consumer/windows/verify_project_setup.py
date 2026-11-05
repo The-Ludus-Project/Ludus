@@ -80,8 +80,10 @@ def verify(workspace):
         assert Path(cache_value(cache, "Ludus_DIR")).is_relative_to(sdk)
 
     for flavor in WINDOWS_CONFIGURATIONS:
-        check_read_only(project, "windows-msvc-" + flavor.lower(),
-                        contains=f" · {flavor} · x86_64-pc-windows-msvc")
+        profile = "windows-msvc-" + flavor.lower()
+        check_read_only(project, profile, contains=f" · {flavor} · x86_64-pc-windows-msvc")
+        expected = project / "out/build" / profile / "ludus_windows_sdk_smoke.exe"
+        run("run", project, "--profile", profile, contains=str(expected))
 
     profile = "windows-msvc-profile"
     sdk = installed / "Profile"
