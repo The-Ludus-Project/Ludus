@@ -192,6 +192,14 @@ Q_SIGNALS:
     /// The number of cursors changed (1 plus the secondary cursors, CE06). The
     /// status bar shows the count; emitted only when the count actually changes.
     void CursorCountChanged(foundation::int32 count);
+    /// A code-editor keymap command fired while this view had focus (CE16/CE26):
+    /// toggle a breakpoint on the caret line, or fold/unfold. The gutter and fold
+    /// model that act on these land in later milestones (M8, M3); the commands
+    /// and their bindings are registered now so the keymap profiles cover them.
+    void ToggleBreakpointRequested();
+    void FoldAllRequested();
+    void UnfoldAllRequested();
+    void ToggleFoldRequested();
 
 private:
     QListWidget* mCompletionList;

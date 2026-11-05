@@ -127,7 +127,9 @@ inline constexpr EditorCommand PROFILING_RECORD_COMMAND
     .Id = "profiling.record",
     .Text = "Record &Profiling",
     .ToolbarText = "Record Profiling",
-    .Shortcut = "F9",
+    // Ctrl+Alt+F9 in every keymap profile and focus context (shortcut resolution
+    // decided 2026-11-03), so F9 is free to toggle a breakpoint in a code editor.
+    .Shortcut = "Ctrl+Alt+F9",
     .Help = "Record or stop editor CPU scopes, viewport GPU durations, or both in a Perfetto trace.",
     .IsCheckable = true,
 };
@@ -138,6 +140,54 @@ inline constexpr EditorCommand VIEW_PROFILING_COMMAND
     .ToolbarText = "",
     .Shortcut = "",
     .Help = "Choose CPU, GPU or Both and manage Perfetto recordings.",
+    .IsCheckable = false,
+};
+
+// Code-editor commands whose bindings the keymap profiles own (CE16/CE26). Each
+// is bound with a WidgetWithChildren shortcut context on the code editor so F9
+// and the fold chords only fire while a code view has focus. The breakpoint
+// gutter action and the fold ranges land in later milestones (M8, M3); the
+// commands and their reserved bindings are registered now so the keymap profiles
+// and the shortcut-collision tests cover them.
+inline constexpr EditorCommand EDITOR_TOGGLE_BREAKPOINT_COMMAND
+{
+    .Id = "editor.toggleBreakpoint",
+    .Text = "Toggle &Breakpoint",
+    .ToolbarText = "",
+    .Shortcut = "F9",
+    .Help = "Toggle a breakpoint on the current line of the active code editor.",
+    .IsCheckable = false,
+};
+// The fold commands carry no catalogue default: their binding differs between
+// keymap profiles (VS Code uses Ctrl+K chords, which the Ludus profile cannot
+// use because it keeps Ctrl+K for the palette), so the keymap owns it. The
+// binding is reserved in both profiles' tables (code_keymap.cpp) and applied to
+// the code view when the fold commands are wired in M3.
+inline constexpr EditorCommand EDITOR_FOLD_ALL_COMMAND
+{
+    .Id = "editor.foldAll",
+    .Text = "&Fold All",
+    .ToolbarText = "",
+    .Shortcut = "",
+    .Help = "Collapse every foldable region in the active code editor.",
+    .IsCheckable = false,
+};
+inline constexpr EditorCommand EDITOR_UNFOLD_ALL_COMMAND
+{
+    .Id = "editor.unfoldAll",
+    .Text = "&Unfold All",
+    .ToolbarText = "",
+    .Shortcut = "",
+    .Help = "Expand every folded region in the active code editor.",
+    .IsCheckable = false,
+};
+inline constexpr EditorCommand EDITOR_TOGGLE_FOLD_COMMAND
+{
+    .Id = "editor.toggleFold",
+    .Text = "Toggle Fo&ld",
+    .ToolbarText = "",
+    .Shortcut = "",
+    .Help = "Fold or unfold the region at the caret in the active code editor.",
     .IsCheckable = false,
 };
 

@@ -599,3 +599,56 @@ and the unchanged bracket-pairing test are pending host verification by the
 maintainer on macOS: `./scripts/build`, `./scripts/test`, `./scripts/check --all`,
 the ASan/UBSan lane, and a recorded native run including IME, which offscreen
 tests do not qualify.
+
+### M2 batch 6: keymap profiles (CE07/CE17 shortcut resolution, 2026-11-05)
+
+The editor gained two keymap profiles with user overrides, conflict detection
+and a first-use choice, and applied the shortcut resolution decided 2026-11-03
+(copied into this log under M0). New files: `internal/code_keymap.h/.cpp`.
+
+Decisions and deviations recorded here:
+
+- **`CodeKeymap` owns the profiles.** It holds the per-profile binding tables
+  (Ludus and VS Code), the user's overrides and the active profile (persisted in
+  `QSettings`), resolves the effective binding per command (override, else
+  profile, else none), detects collisions, and applies the resolved shortcuts
+  onto the shell's QActions by object name (the command id). It is unit testable
+  without a window.
+- **The decided bindings.** Record Profiling moved from F9 to Ctrl+Alt+F9 in both
+  profiles and every focus context (the `PROFILING_RECORD_COMMAND` catalogue
+  default changed too), freeing F9 to toggle a breakpoint when a code editor has
+  focus. The Ludus profile keeps Ctrl+K for the command palette; the VS Code
+  profile opens the palette with Ctrl+Shift+P and frees Ctrl+K for chords.
+- **Folding bindings are reserved per profile, not shared.** Because the Ludus
+  profile keeps Ctrl+K for the palette, it cannot also use Ctrl+K chords, so its
+  fold bindings are single Ctrl+Shift keys; the VS Code profile uses the Ctrl+K
+  chords it is known for. `DetectConflicts` was strengthened to treat a single
+  key that opens another binding's chord as a collision (a complete Ctrl+K would
+  swallow the first stroke of a Ctrl+K chord), so "both profiles are
+  collision-free" is a real guarantee, not an artefact of chord-vs-single
+  inequality. The fold commands carry no catalogue default; the keymap owns their
+  binding and applies it to the code view when the fold commands land in M3.
+- **The breakpoint command is registered now.** `editor.toggleBreakpoint` (F9 in
+  both profiles) plus the three fold commands are registered on each `CodeEditor`
+  with a WidgetWithChildren shortcut context, so they only fire while a code view
+  has focus, and emit a request the owner will act on when the gutter (M8) and
+  fold model (M3) land.
+- **The first-use choice is interactive only.** On the first run with no stored
+  profile the shell offers the Ludus / VS Code choice once (a modal in
+  `showEvent`) and persists it; it defaults to Ludus. Offscreen (headless tests
+  and CI) never shows the modal, so the default Ludus profile is used there,
+  which keeps the existing command-palette shell test (Ctrl+K) green.
+- **Documents updated.** `docs/development/editor-workspace.md` and
+  `docs/architecture/graphics-debugging.md` now name Ctrl+Alt+F9 for Record
+  Profiling and F9 for Toggle Breakpoint, and the workspace guide describes the
+  two profiles and the first-use choice.
+
+Authored, not run: the editor was not built or tested in this sandbox (no Qt6
+and no pinned toolchain; PR CI skips the editor build and tests). The new
+`code_keymap_tests` (both profiles collision-free, the decided bindings resolve,
+the fresh-install default and persisted choice, and an override that takes
+precedence and is detectable as a conflict) and the updated `profiling_tests`
+assertion (Ctrl+Alt+F9) are pending host verification by the maintainer on
+macOS: `./scripts/build`, `./scripts/test`, `./scripts/check --all`, the
+ASan/UBSan lane, and a recorded native run of the first-use choice, both
+profiles and an override, which offscreen tests do not qualify.

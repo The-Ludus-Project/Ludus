@@ -628,8 +628,10 @@ preview; its input and presentation limits are documented with that workflow.
 
 In the native editor, choose **Tools > Profiling...** or **View > Profiling**.
 Select **CPU**, **GPU**, or **Both**, then use **Record Profiling** in the tool
-window's toolbar or Tools menu. **F9** uses the same Record/Stop action;
-some Mac keyboards require Fn. Press it again to stop. Mode and output cannot
+window's toolbar or Tools menu. **Ctrl+Alt+F9** (Cmd+Alt+F9 on macOS) uses the
+same Record/Stop action in every keymap profile; some Mac keyboards require Fn.
+Press it again to stop. (F9 now toggles a breakpoint when a code editor has
+focus.) Mode and output cannot
 change during recording/finalization. The action opens the Profiling window so
 its status and Record/Stop control remain visible. The status shows elapsed time
 and event counts during capture, then the saved trace's absolute path. Failed
@@ -786,8 +788,15 @@ keeps the window and its draft open.
 | Ctrl+Alt+L / F4 | Show Project Explorer / Properties |
 | Ctrl+Alt+E / Ctrl+Alt+O | Show Error List / Output |
 | Shift+Alt+Enter | Focus Viewport on or off |
-| Ctrl+K (Cmd+K on macOS) / F3 | Command Palette / Run Command in Context |
+| Ctrl+K / F3 | Command Palette (Ludus keymap; VS Code uses Ctrl+Shift+P) / Run Command in Context |
+| Ctrl+Alt+F9 | Record Profiling (every keymap profile) |
+| F9 | Toggle Breakpoint (when a code editor has focus) |
 | F1 | Keyboard Shortcuts help |
+
+Two keymap profiles ship: **Ludus** (the house layout, Ctrl+K opens the command
+palette) and **VS Code** (Ctrl+Shift+P opens the palette and Ctrl+K is free for
+chords). The editor asks which to use on first run and remembers the choice; you
+can change it and override individual bindings later.
 
 **Window → Reopen Closed Document** opens the tab in the active group with its
 draft intact. Repeat the command to step back through recent closes in the

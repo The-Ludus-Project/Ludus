@@ -128,6 +128,10 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     setupRayPaths();
 #endif
     BuildMenus();
+    // Apply the active keymap profile over the catalogue defaults now that every
+    // shell action exists (CE07/CE17). The first-use profile choice runs once the
+    // window is shown (showEvent), then re-applies.
+    applyKeymap();
     InitializeWorkspace();
     connect(mDocuments, &DocumentWell::ActiveDocumentChanged, this, &MainWindow::renderActiveDocument);
     connect(mDocuments, &DocumentWell::LayoutChanged, this, &MainWindow::updateContextStrip);

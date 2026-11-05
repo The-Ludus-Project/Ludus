@@ -52,6 +52,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
@@ -798,6 +799,42 @@ void MainWindow::showEvent(QShowEvent* event)
         mShouldSizeDefaultDocks = false;
         QTimer::singleShot(0, this, &MainWindow::applyDefaultDockSizes);
     }
+    // The first run with no stored keymap profile offers the Ludus / VS Code
+    // choice once the window is visible, then re-applies the chosen profile.
+    chooseKeymapOnFirstUse();
+}
+
+void MainWindow::applyKeymap()
+{
+    mKeymap.ApplyToActions(this);
+}
+
+void MainWindow::chooseKeymapOnFirstUse()
+{
+    if (mKeymap.HasStoredProfile() == true)
+    {
+        return;
+    }
+    // Offscreen (headless tests and CI) never shows the modal chooser; the keymap
+    // defaults to Ludus there, which is also the first-run default on a desktop
+    // until the user picks a profile. The choice is only prompted interactively.
+    if (QGuiApplication::platformName() == QStringLiteral("offscreen"))
+    {
+        return;
+    }
+    QMessageBox chooser(this);
+    chooser.setObjectName(QStringLiteral("keymapFirstUseChooser"));
+    chooser.setWindowTitle(QStringLiteral("Choose a keymap"));
+    chooser.setText(QStringLiteral("Choose the editor keymap. You can change it later in Options."));
+    chooser.setInformativeText(QStringLiteral("Ludus keeps Ctrl+K for the command palette. VS Code uses Ctrl+Shift+P "
+                                              "and frees Ctrl+K for chords."));
+    QPushButton* ludusButton = chooser.addButton(QStringLiteral("Ludus"), QMessageBox::AcceptRole);
+    QPushButton* vsCodeButton = chooser.addButton(QStringLiteral("VS Code"), QMessageBox::AcceptRole);
+    chooser.setDefaultButton(ludusButton);
+    chooser.exec();
+    mKeymap.SetActiveProfile(chooser.clickedButton() == vsCodeButton ? CodeKeymapProfile::VsCode
+                                                                     : CodeKeymapProfile::Ludus);
+    applyKeymap();
 }
 
 void MainWindow::arrangeDefaultDocks()

@@ -166,7 +166,9 @@ TEST_CASE("profiling controls share F9 action and refuse GPU mode without a devi
     panel.addAction(action);
     QComboBox* modes = panel.findChild<QComboBox*>(QStringLiteral("profilingMode"));
     REQUIRE(modes != nullptr);
-    CHECK(action->shortcut() == QKeySequence(QStringLiteral("F9")));
+    // Record Profiling moved from F9 to Ctrl+Alt+F9 so F9 can toggle a breakpoint
+    // in a code editor (shortcut resolution decided 2026-11-03).
+    CHECK(action->shortcut() == QKeySequence(QStringLiteral("Ctrl+Alt+F9")));
     CHECK(modes->count() == 3);
     modes->setCurrentIndex(1);
     action->trigger();
