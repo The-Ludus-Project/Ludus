@@ -69,12 +69,21 @@ for prefix, manifest, results, domain, namespace in releases:
 
 
 def literal(text: str) -> str:
-    """C++ string_view literal; octal escapes have a fixed width, so no digit can extend them."""
+    """Emit the UTF-8 bytes as a portable C++ string_view literal."""
     data = text.encode("utf-8")
     if len(data) == 0:
         # An empty (pointer, length) pair trips clang-tidy bugprone-string-constructor.
         return "std::string_view{}"
-    body = "".join(chr(byte) if 0x20 <= byte < 0x7f and chr(byte) not in '"\\?' else f"\\{byte:03o}" for byte in data)
+    parts = []
+    for byte in data:
+        character = chr(byte)
+        is_printable = 0x20 <= byte < 0x7f and character not in '"\\?'
+        # MSVC warns when a decimal digit immediately follows an octal escape,
+        # even after three octal digits. Start a new literal at that boundary.
+        if is_printable and character.isdecimal() and parts and parts[-1].startswith("\\"):
+            parts.append('""')
+        parts.append(character if is_printable else f"\\{byte:03o}")
+    body = "".join(parts)
     return f'std::string_view{{"{body}", {len(data)}}}'
 
 

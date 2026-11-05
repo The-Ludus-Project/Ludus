@@ -23,6 +23,7 @@ on:
       - 'apps/world_demo/**'
       - 'modules/content/**'
       - 'modules/graphics/renderer/**'
+      - 'modules/localization/**'
       - 'modules/runtime/game_host/**'
       - 'config/cmake/windows-msvc*'
       - 'cmake/EngineBuildFlavor.cmake'
@@ -125,7 +126,7 @@ jobs:
               "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             }
           }
-      - name: Install pinned host tools and compiler-native Catch2
+      - name: Install pinned host tools and export the Catch2 recipe
         run: |
           python -m venv out/host-tools/venv
           $python = "$PWD/out/host-tools/venv/Scripts/python.exe"
@@ -136,11 +137,6 @@ jobs:
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           conan export third_party/catch2
           if ($LASTEXITCODE -ne 0) { throw 'Catch2 recipe export failed' }
-          $dependencyConfigurations = @('Debug', 'RelWithDebInfo', 'Release')
-          foreach ($configuration in $dependencyConfigurations) {
-            conan install --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host "build_type=$configuration" --settings:build build_type=Release --build=missing -g CMakeDeps --output-folder out/windows-msvc-probe/dependencies
-            if ($LASTEXITCODE -ne 0) { throw "Catch2 $configuration setup failed" }
-          }
       - name: Bootstrap pinned shader tools
         run: python scripts/shader-probe bootstrap
       - name: Build and exercise the Windows source runtime on WARP
@@ -158,7 +154,7 @@ jobs:
             'ludus_content_tests', 'ludus_resources_tests', 'ludus_static_game_host_tests',
             'ludus_text_tests', 'ludus_graphics_text_tests', 'ludus_localization_tests', 'ludus_ui_tests',
             'ludus_audio_tests', 'ludus_network_core_tests', 'ludus_physics_fluid_tests', 'ludus_platform_pacing_tests')
-          cmake --build --preset windows-msvc-runtime --target @targets
+          cmake --build --preset windows-msvc-runtime --target @targets -- -k 0
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime build failed' }
           $testNames = @($targets | Where-Object { $_ -notin @('ludus_world_demo', 'ludus_world_frame_renderer_tests') })
           $testNames += @('ludus_world_packed_room_d3d12', 'ludus_world_frame_renderer_pixels')
@@ -169,6 +165,14 @@ jobs:
           }
           ctest --preset windows-msvc-runtime --tests-regex $suite
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime tests failed' }
+      - name: Prepare Catch2 for the four RHI build flavors
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          $dependencyConfigurations = @('Debug', 'RelWithDebInfo', 'Release')
+          foreach ($configuration in $dependencyConfigurations) {
+            conan install --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host "build_type=$configuration" --settings:build build_type=Release --build=missing -g CMakeDeps --output-folder out/windows-msvc-probe/dependencies
+            if ($LASTEXITCODE -ne 0) { throw "Catch2 $configuration setup failed" }
+          }
       - name: Build and test primitives, Foundation host services and the Win32/D3D12 closure
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts/python
