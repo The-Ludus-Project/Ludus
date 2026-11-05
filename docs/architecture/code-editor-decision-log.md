@@ -364,3 +364,75 @@ Mapping and validating 65,536 edits now takes about 10 ms, and a 16,384-match
 Replace All through the panel about 80 ms. Regressions in `code_edit_set_tests`
 cover both, plus CRLF, case and non-ASCII matching. Later batches must keep
 per-edit and per-cursor work constant-time or amortized over one pass.
+
+### M2 batch 2: multiple cursors (CE06, 2026-11-05)
+
+The view gained a secondary-cursor overlay, `CodeMultiCursor`
+(`internal/code_multi_cursor.h/.cpp`), owned by `CodeEditor` as a plain value
+member bound to the view. The primary cursor stays Qt's own `QTextCursor`, so
+Qt's accessibility, IME and clipboard still see one cursor (design section 5);
+the secondary cursors are the overlay's own UTF-16 anchor/caret regions, kept
+sorted by start in document order and merged whenever they touch the primary or
+each other. The overlay implements add next occurrence, add all occurrences,
+cursors above and below, Escape-to-collapse, Alt+drag column (box) selection,
+movement for every cursor through Qt's own `QTextCursor` operations, and input
+distribution for typing, Backspace, Delete, Return, Tab and paste.
+
+Decisions and deviations recorded here:
+
+- **Every multi-cursor text operation is one `CodeEditSet`, mapped in one pass.**
+  `CodeMultiCursor` builds an ordered region set in the view's UTF-16 coordinates
+  and hands it to the new `CodeDocumentController::ApplyMultiCursorEdit`, which
+  maps every region's start and end to byte offsets by walking forward from a
+  single `CodePositionOffset` with `AdvanceCodeByteOffset` (never
+  `GetCodeByteOffset` per cursor), encodes each region's inserted text once,
+  computes every after-caret from a running byte delta without a second walk, and
+  publishes the whole set through the existing `ApplyEdits` seam. A set over
+  40,000 cursors is one undo step and one pass over the text. This follows the
+  host-verification rule from batch 1 that per-edit and per-cursor work stays
+  amortized over one pass; a timing regression in `code_multi_cursor_tests`
+  guards it against a wall-clock ceiling at a realistic size.
+- **Byte-to-position mapping gained its ascending mirror.** Restoring a
+  multi-cursor selection set maps many ascending byte offsets back to Qt
+  positions, which `GetCodeCursorPosition` did only from the start. A new
+  `AdvanceCodeCursorPosition` (the mirror of `AdvanceCodeByteOffset` added in
+  #983) walks forward from a previous pair, so
+  `CodeDocumentController::RestoreSelectionSet` maps a whole selection set in one
+  pass. `RestoreSelectionSet` now restores the primary as the single Qt cursor
+  and the rest as the overlay's secondary cursors, completing the batch-1 note
+  that one undo step restores the whole set.
+- **Occurrence search is one `QString::indexOf` pass, not `QTextDocument::find`.**
+  Add next and add all occurrences search the decoded text with
+  `QString::indexOf`, matching the Replace All fix in #983, so adding a cursor to
+  every match in a large file is linear.
+- **The controller finds the overlay, not the reverse.** The controller sets
+  itself on the editor's overlay in its constructor and clears it in its
+  destructor (before `SetDocumentHistory(false)`), so an unbound view keeps the
+  overlay inert and every multi-cursor text operation is a no-op. No Qt
+  parent-chain lookup is used.
+- **The status bar shows the cursor count.** `CodeStatusBar` now shows
+  "N cursors" from `CursorCountChanged`, replacing the batch-1 placeholder note.
+- **Key bindings are left to batch 6, except where they do not collide.** The
+  add-cursor commands are public `CodeEditor` methods (`AddCursorAbove`,
+  `AddCursorBelow`, `AddNextOccurrence`, `AddAllOccurrences`,
+  `ClearSecondaryCursors`), reachable from the overlay, menus and the palette and
+  exercised directly by the CE06 tests. Only the collision-free bindings are set
+  here: Ctrl+Alt+Up/Down (cursor above/below), Ctrl+Shift+L (add all
+  occurrences), Escape (collapse), and Alt+drag (column selection). Add next
+  occurrence is deliberately NOT bound to Ctrl+D, which is already Duplicate
+  Lines; the per-profile resolution of that conflict is batch 6's keymap work.
+  Input distribution (typing, Backspace, Delete, Return, Tab, movement and
+  paste) is behavior, not a binding, and runs whenever a secondary cursor exists.
+
+Authored, not run: the editor was not built or tested in this sandbox (no Qt6
+and no pinned toolchain; PR CI skips the editor build and tests). The new
+`code_multi_cursor_tests` (typing/Backspace/selection-replace distribution as one
+undo step, add next/all occurrences, cursor below, Escape collapse, paste
+line-per-cursor and whole-text, CRLF and non-ASCII mapping, and the
+40,000-cursor timing ceiling) and the `AdvanceCodeCursorPosition` and
+`RestoreSelectionSet` changes are pending host verification by the maintainer on
+macOS. Pending specifically: `./scripts/build` and `./scripts/test` for the debug
+preset, `./scripts/check --all` (clang-format and clang-tidy at the pinned
+version), the ASan/UBSan lane, and a recorded native run of multiple cursors
+(typing, column selection, add occurrence and paste) including IME and
+VoiceOver, which offscreen tests do not qualify.

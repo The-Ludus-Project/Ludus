@@ -61,6 +61,8 @@ CodeDocumentController::CodeDocumentController(CodeEditor& inoutEditor, QObject*
     });
     connect(&mEditor, &CodeEditor::cursorPositionChanged, this, &CodeDocumentController::captureSelectionChange);
     connect(&mEditor, &CodeEditor::selectionChanged, this, &CodeDocumentController::captureSelectionChange);
+    // The multi-cursor overlay publishes its edits through this controller (CE06).
+    mEditor.GetMultiCursor().SetController(this);
 }
 
 void CodeDocumentController::captureSelectionChange()
@@ -81,6 +83,7 @@ CodeDocumentController::~CodeDocumentController()
     // Qt can destroy the editor before its sibling controller during widget teardown.
     if (mIsEditorAlive == true)
     {
+        mEditor.GetMultiCursor().SetController(nullptr);
         mEditor.SetDocumentHistory(false);
     }
 }
@@ -152,9 +155,37 @@ void CodeDocumentController::RestoreSelectionSet(foundation::BorrowedView<const 
     {
         return;
     }
-    // The primary selection is first in document order (design section 2). The
-    // single Qt cursor follows it; the multi-cursor layer restores the rest.
+    // The primary selection is first (design section 2); the single Qt cursor
+    // follows it. The rest become the view's secondary cursors (CE06). Both the
+    // primary and the secondaries are mapped from UTF-8 bytes to Qt positions by
+    // walking forward from one CodePositionOffset, so a whole selection set is one
+    // pass over the text. The selections recorded with an undo step are already in
+    // document order; a caret that no longer maps to a boundary is dropped.
     RestoreSelection(selections[0]);
+    QList<CodeSecondaryCursor> secondary;
+    CodePositionOffset from;
+    for (usize index = 1; index < selections.GetSize(); ++index)
+    {
+        const CodeTextSelection selection = selections[index];
+        // Map the lower byte then the higher byte so the walk always advances;
+        // the selection's direction is reapplied from which end the caret was on.
+        const usize lowBytes = qMin(selection.AnchorBytes, selection.CaretBytes);
+        const usize highBytes = qMax(selection.AnchorBytes, selection.CaretBytes);
+        int32 low = 0;
+        int32 high = 0;
+        if (AdvanceCodeCursorPosition(mBytes, lowBytes, from, low) == false ||
+            AdvanceCodeCursorPosition(mBytes, highBytes, from, high) == false)
+        {
+            continue;
+        }
+        const bool isForward = selection.CaretBytes >= selection.AnchorBytes;
+        secondary.append(CodeSecondaryCursor
+        {
+            .Anchor = isForward == true ? low : high,
+            .Caret = isForward == true ? high : low,
+        });
+    }
+    mEditor.GetMultiCursor().AdoptSecondaryCursors(secondary);
 }
 
 void CodeDocumentController::Synchronize(bool shouldRestoreView)
@@ -495,6 +526,146 @@ CodeEditStatus CodeDocumentController::ApplyEditSet(const CodeDocumentIdentity& 
         mEditor.horizontalScrollBar()->setValue(horizontal);
         Q_EMIT TextAccepted();
     }
+    return status;
+}
+
+CodeEditStatus CodeDocumentController::ApplyMultiCursorEdit(const QList<CodeRegionEdit>& regionsInDocumentOrder,
+                                                            QList<CodeSecondaryCursor>& outSecondaryCursors)
+{
+    if (mHostOrNull == nullptr || mEditor.isReadOnly() == true)
+    {
+        return CodeEditStatus::Unavailable;
+    }
+    if (regionsInDocumentOrder.isEmpty() == true || mHostOrNull->GetSnapshot().Identity != mIdentity)
+    {
+        return CodeEditStatus::Conflict;
+    }
+
+    // Pass one: map every region's Qt positions to byte offsets by walking forward
+    // from a single CodePositionOffset (never GetCodeByteOffset per region), encode
+    // each region's inserted text once, and record the byte selection sets. The
+    // After caret of each region is its removed-range start shifted by the running
+    // byte delta of every earlier edit, so the result positions need no second
+    // walk. Inserted bytes are owned here so the borrowed set stays valid for the
+    // whole ApplyEdits call.
+    QList<CodeTextEdit> edits;
+    edits.reserve(regionsInDocumentOrder.size());
+    QList<QByteArray> insertedBytes;
+    insertedBytes.reserve(regionsInDocumentOrder.size());
+    QList<CodeTextSelection> before;
+    before.reserve(regionsInDocumentOrder.size());
+    QList<CodeTextSelection> after;
+    after.reserve(regionsInDocumentOrder.size());
+    QList<usize> primaryFirstAfter; // after-byte caret per region, same order as the input.
+    primaryFirstAfter.reserve(regionsInDocumentOrder.size());
+    int32 primaryIndex = -1;
+    CodePositionOffset from;
+    isize delta = 0; // running (inserted - removed) bytes of every earlier region.
+    for (int32 index = 0; index < regionsInDocumentOrder.size(); ++index)
+    {
+        const CodeRegionEdit& region = regionsInDocumentOrder.at(index);
+        if (region.End < region.Start)
+        {
+            return CodeEditStatus::InvalidText;
+        }
+        usize startBytes = 0;
+        usize endBytes = 0;
+        if (AdvanceCodeByteOffset(mBytes, region.Start, from, startBytes) == false ||
+            AdvanceCodeByteOffset(mBytes, region.End, from, endBytes) == false)
+        {
+            return CodeEditStatus::InvalidText;
+        }
+        QString insertedText = region.Inserted;
+        if (mHasCrLf == true)
+        {
+            insertedText.replace(QStringLiteral("\n"), QStringLiteral("\r\n"));
+        }
+        QStringEncoder encoder(QStringEncoder::Utf8);
+        const QByteArray encoded = encoder.encode(insertedText);
+        if (encoder.hasError() == true)
+        {
+            return CodeEditStatus::InvalidText;
+        }
+        insertedBytes.append(encoded);
+        const QByteArray& owned = insertedBytes.last();
+        edits.append(CodeTextEdit
+        {
+            .StartBytes = startBytes,
+            .RemovedBytes = endBytes - startBytes,
+            .Inserted = {owned.constData(), static_cast<usize>(owned.size())},
+        });
+        before.append(CodeTextSelection{ .AnchorBytes = startBytes, .CaretBytes = endBytes });
+        const usize afterCaret =
+            static_cast<usize>(static_cast<isize>(startBytes) + delta) + static_cast<usize>(owned.size());
+        after.append(CodeTextSelection{ .AnchorBytes = afterCaret, .CaretBytes = afterCaret });
+        primaryFirstAfter.append(afterCaret);
+        delta += static_cast<isize>(owned.size()) - static_cast<isize>(endBytes - startBytes);
+        if (region.IsPrimary == true)
+        {
+            primaryIndex = index;
+        }
+    }
+    if (primaryIndex < 0)
+    {
+        return CodeEditStatus::InvalidText;
+    }
+
+    // The seam wants the primary selection first, then the rest in document order.
+    // Every region here is already collapsed to a caret, so the ordering only
+    // decides which caret the single Qt cursor follows after Synchronize.
+    QList<CodeTextSelection> orderedAfter;
+    orderedAfter.reserve(after.size());
+    orderedAfter.append(after.at(primaryIndex));
+    for (int32 index = 0; index < after.size(); ++index)
+    {
+        if (index != primaryIndex)
+        {
+            orderedAfter.append(after.at(index));
+        }
+    }
+
+    const CodeEditSet set =
+    {
+        .Edits = {edits.constData(), static_cast<usize>(edits.size())},
+        .Before = {{before.constData(), static_cast<usize>(before.size())}},
+        .After = {{orderedAfter.constData(), static_cast<usize>(orderedAfter.size())}},
+        .Transaction = {},
+    };
+
+    BreakUndoGroup();
+    const int32 vertical = mEditor.verticalScrollBar()->value();
+    const int32 horizontal = mEditor.horizontalScrollBar()->value();
+    const CodeEditStatus status = mHostOrNull->ApplyEdits(mIdentity, set, false);
+    if (status != CodeEditStatus::Ok)
+    {
+        return status;
+    }
+    Synchronize();
+
+    // The primary region's resulting caret becomes the single Qt cursor; every
+    // other region's caret becomes a secondary cursor, mapped from bytes to Qt
+    // positions in one forward pass (ascending because the carets are in document
+    // order once the removed ranges are gone).
+    RestoreSelection(after.at(primaryIndex));
+    QList<CodeSecondaryCursor> secondary;
+    CodePositionOffset positionFrom;
+    for (int32 index = 0; index < primaryFirstAfter.size(); ++index)
+    {
+        if (index == primaryIndex)
+        {
+            continue;
+        }
+        int32 caret = 0;
+        if (AdvanceCodeCursorPosition(mBytes, primaryFirstAfter.at(index), positionFrom, caret) == false)
+        {
+            continue;
+        }
+        secondary.append(CodeSecondaryCursor{ .Anchor = caret, .Caret = caret });
+    }
+    outSecondaryCursors = secondary;
+    mEditor.verticalScrollBar()->setValue(vertical);
+    mEditor.horizontalScrollBar()->setValue(horizontal);
+    Q_EMIT TextAccepted();
     return status;
 }
 } // namespace ludus::editor

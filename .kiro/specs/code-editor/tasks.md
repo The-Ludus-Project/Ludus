@@ -172,8 +172,12 @@ Requirements: CE05-CE07, CE17. Prerequisite: M1.
 
 - [ ] Extend the seam with `CodeEditSet` and the selection set (design
   section 2). Move formatting and Replace All onto it.
-- [ ] Implement multiple cursors, column selection, add next and all
-  occurrences, and cursors above and below (design section 5).
+- [x] Implement multiple cursors, column selection, add next and all
+  occurrences, and cursors above and below (design section 5). *(Batch 2;
+  `internal/code_multi_cursor.h/.cpp`, `CodeDocumentController::ApplyMultiCursorEdit`,
+  `AdvanceCodeCursorPosition`; one `CodeEditSet` per operation mapped in one pass;
+  authored, not run — see the
+  [M2 batch 2 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-2-multiple-cursors-ce06-2026-11-05).)*
 - [ ] Replace the bottom find panel with the find overlay: regex, whole word,
   in selection, match count and preserve-case replace.
 - [ ] Implement the search service, the Search tool window and Replace in

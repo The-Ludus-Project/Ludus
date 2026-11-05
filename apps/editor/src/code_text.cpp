@@ -103,12 +103,21 @@ bool AdvanceCodeByteOffset(const QByteArray& bytes,
 
 bool GetCodeCursorPosition(const QByteArray& bytes, usize offset, int32& outPosition) noexcept
 {
-    if (offset > static_cast<usize>(bytes.size()))
+    CodePositionOffset start;
+    return AdvanceCodeCursorPosition(bytes, offset, start, outPosition);
+}
+
+bool AdvanceCodeCursorPosition(const QByteArray& bytes,
+                               usize offset,
+                               CodePositionOffset& inoutFrom,
+                               int32& outPosition) noexcept
+{
+    if (offset > static_cast<usize>(bytes.size()) || offset < inoutFrom.OffsetBytes)
     {
         return false;
     }
-    usize byte = 0;
-    int32 units = 0;
+    usize byte = inoutFrom.OffsetBytes;
+    int32 units = inoutFrom.Position;
     while (byte < offset)
     {
         const usize width = GetScalarWidth(static_cast<uint8>(bytes.at(static_cast<isize>(byte))));
@@ -125,6 +134,7 @@ bool GetCodeCursorPosition(const QByteArray& bytes, usize offset, int32& outPosi
         byte += consumed;
         units += width == FOUR_BYTE_WIDTH ? 2 : 1;
     }
+    inoutFrom = { .Position = units, .OffsetBytes = offset };
     outPosition = units;
     return true;
 }

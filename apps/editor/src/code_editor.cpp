@@ -76,6 +76,8 @@ constexpr int32 DECIMAL_RADIX = 10;
 constexpr int32 MAX_BRACKET_SCAN_CHARACTERS = 32768;
 constexpr int32 CURRENT_LINE_ALPHA = 24;
 constexpr int32 MATCHED_BRACKET_ALPHA = 96;
+/// Secondary-selection highlight opacity for multiple cursors (CE06).
+constexpr int32 SECONDARY_SELECTION_ALPHA = 96;
 constexpr uint32 LIGHT_ERROR = 0xC4314B;
 constexpr uint32 DARK_ERROR = 0xFF7B8A;
 constexpr uint32 LIGHT_WARNING = 0x9A6700;
@@ -160,7 +162,7 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     : QPlainTextEdit(parentOrNull), mGutter(new CodeEditorGutter(this)),
       mHighlighter(new CodeSyntaxHighlighter(document())),
       mFormatAction(new QAction(QStringLiteral("Format Document"), this)),
-      mChooseFormatterAction(new QAction(QStringLiteral("Choose Formatter..."), this))
+      mChooseFormatterAction(new QAction(QStringLiteral("Choose Formatter..."), this)), mMultiCursor(*this)
 {
     mCompletionList = new QListWidget(this);
     mCompletionList->setWindowFlags(Qt::ToolTip);
@@ -267,6 +269,22 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     addShortcut(QStringLiteral("Previous Diagnostic"), QKeySequence(Qt::SHIFT | Qt::Key_F8), [this]() {
         GoToDiagnostic(true);
     });
+    // Multiple cursors (CE06). Only the collision-free bindings are set here;
+    // batch 6's keymap profiles assign the rest (Add Next Occurrence stays
+    // unbound because Ctrl+D is Duplicate Lines). The commands are discoverable in
+    // the menu and the palette regardless of their binding.
+    addShortcut(QStringLiteral("Add Cursor Above"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Up), [this]() {
+        AddCursorAbove();
+    });
+    addShortcut(QStringLiteral("Add Cursor Below"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Down), [this]() {
+        AddCursorBelow();
+    });
+    addShortcut(QStringLiteral("Select All Occurrences"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L), [this]() {
+        AddAllOccurrences();
+    });
+    QAction* addNext = new QAction(QStringLiteral("Add Next Occurrence"), this);
+    connect(addNext, &QAction::triggered, this, [this]() { AddNextOccurrence(); });
+    addAction(addNext);
     QAction* pairs = new QAction(QStringLiteral("Auto-close Brackets"), this);
     pairs->setCheckable(true);
     mShouldPairBrackets = preferences.value(QStringLiteral("codeEditor/autoCloseBrackets"), true).toBool();
@@ -355,6 +373,11 @@ void CodeEditor::paintEvent(QPaintEvent* event)
     if (mShouldShowIndentGuides == true)
     {
         paintIndentGuides(event);
+    }
+    if (mMultiCursor.HasSecondaryCursors() == true)
+    {
+        QPainter painter(viewport());
+        mMultiCursor.Paint(painter);
     }
     paintDiagnosticCallout();
     mLatencyProbe.MarkPainted();
@@ -508,6 +531,18 @@ CodeLatencyProbe& CodeEditor::GetLatencyProbe() const noexcept
     return mLatencyProbe;
 }
 
+CodeMultiCursor& CodeEditor::GetMultiCursor() const noexcept
+{
+    return mMultiCursor;
+}
+
+void CodeEditor::NotifyMultiCursorChanged()
+{
+    updateSelections();
+    viewport()->update();
+    Q_EMIT CursorCountChanged(mMultiCursor.GetCursorCount());
+}
+
 void CodeEditor::SetDocumentHistory(bool shouldUseDocumentHistory)
 {
     mShouldUseDocumentHistory = shouldUseDocumentHistory;
@@ -633,6 +668,13 @@ void CodeEditor::inputMethodEvent(QInputMethodEvent* event)
 
 void CodeEditor::insertFromMimeData(const QMimeData* source)
 {
+    // Multi-cursor paste distributes clipboard lines across the cursors (CE06);
+    // with no secondary cursor Qt's single-cursor paste is used unchanged.
+    if (isReadOnly() == false && mMultiCursor.HasSecondaryCursors() == true && source != nullptr &&
+        source->hasText() == true && mMultiCursor.HandlePaste(source->text()) == true)
+    {
+        return;
+    }
     const CodeEditScope operation(*this);
     QPlainTextEdit::insertFromMimeData(source);
 }
@@ -971,6 +1013,26 @@ void CodeEditor::updateSelections()
     currentLine.format.setBackground(lineColor);
     currentLine.format.setProperty(QTextFormat::FullWidthSelection, true);
     selections.append(currentLine);
+    // Secondary selections (CE06) are drawn as Qt highlights like the primary's;
+    // their carets are painted by the overlay since extra selections draw none.
+    if (mMultiCursor.HasSecondaryCursors() == true)
+    {
+        QColor secondaryColor = palette().color(QPalette::Highlight);
+        secondaryColor.setAlpha(SECONDARY_SELECTION_ALPHA);
+        for (const CodeSecondaryCursor& secondary : mMultiCursor.GetSecondaryCursors())
+        {
+            if (secondary.Anchor == secondary.Caret)
+            {
+                continue;
+            }
+            QTextEdit::ExtraSelection selection;
+            selection.cursor = QTextCursor(document());
+            selection.cursor.setPosition(secondary.Start());
+            selection.cursor.setPosition(secondary.End(), QTextCursor::KeepAnchor);
+            selection.format.setBackground(secondaryColor);
+            selections.append(selection);
+        }
+    }
     appendDiagnosticSelections(selections);
     if (mDefinitionLink.hasSelection() == true)
     {
@@ -1153,6 +1215,47 @@ void CodeEditor::IndentSelection(bool shouldOutdent)
     }
     current.endEditBlock();
     setTextCursor(current);
+}
+
+void CodeEditor::AddCursorAbove()
+{
+    if (isReadOnly() == true)
+    {
+        return;
+    }
+    mMultiCursor.AddCursorInDirection(true);
+}
+
+void CodeEditor::AddCursorBelow()
+{
+    if (isReadOnly() == true)
+    {
+        return;
+    }
+    mMultiCursor.AddCursorInDirection(false);
+}
+
+void CodeEditor::AddNextOccurrence()
+{
+    if (isReadOnly() == true)
+    {
+        return;
+    }
+    mMultiCursor.AddNextOccurrence();
+}
+
+void CodeEditor::AddAllOccurrences()
+{
+    if (isReadOnly() == true)
+    {
+        return;
+    }
+    mMultiCursor.AddAllOccurrences();
+}
+
+void CodeEditor::ClearSecondaryCursors()
+{
+    static_cast<void>(mMultiCursor.Collapse());
 }
 
 void CodeEditor::ToggleLineComment()
@@ -1392,6 +1495,19 @@ void CodeEditor::mousePressEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    // Alt+click begins a column (box) selection (CE06). The anchor is the clicked
+    // position; dragging extends the box, one cursor per spanned line.
+    if (event->button() == Qt::LeftButton && event->modifiers() == Qt::AltModifier)
+    {
+        static_cast<void>(mMultiCursor.Collapse());
+        setTextCursor(cursorForPosition(position));
+        mMultiCursor.ColumnSelectTo(position);
+        event->accept();
+        return;
+    }
+    // A plain click collapses any secondary cursors, like an ordinary editor: the
+    // click places the single caret and the multi-cursor set is abandoned.
+    static_cast<void>(mMultiCursor.Collapse());
     QPlainTextEdit::mousePressEvent(event);
 }
 
@@ -1404,6 +1520,12 @@ void CodeEditor::mouseMoveEvent(QMouseEvent* event)
     }
     if (mIsDefinitionClick == true)
     {
+        event->accept();
+        return;
+    }
+    if (event->buttons().testFlag(Qt::LeftButton) == true && event->modifiers() == Qt::AltModifier)
+    {
+        mMultiCursor.ColumnSelectTo(event->position().toPoint());
         event->accept();
         return;
     }
@@ -1469,6 +1591,22 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
     if (event->key() == Qt::Key_Escape && hasPopup == true)
     {
         HideAssistance();
+        event->accept();
+        return;
+    }
+    // Multiple cursors (CE06). The add-cursor commands are QActions bound above,
+    // so they reach this view before keyPressEvent; here only the set's own
+    // behavior is handled. Escape collapses to the primary, and every edit,
+    // deletion, Return, Tab, paste and movement is distributed across the whole
+    // set while a secondary cursor exists.
+    if (event->key() == Qt::Key_Escape && mMultiCursor.HasSecondaryCursors() == true)
+    {
+        static_cast<void>(mMultiCursor.Collapse());
+        event->accept();
+        return;
+    }
+    if (hasPopup == false && mMultiCursor.HasSecondaryCursors() == true && mMultiCursor.HandleKeyPress(event) == true)
+    {
         event->accept();
         return;
     }

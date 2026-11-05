@@ -153,6 +153,8 @@ void CodeStatusBar::SetActiveTab(CodeDocumentTab* tabOrNull)
         // caret. Reconnect so the bar follows the active view live.
         connect(editor, &QPlainTextEdit::cursorPositionChanged, this, &CodeStatusBar::updatePosition);
         connect(editor, &QPlainTextEdit::selectionChanged, this, &CodeStatusBar::updateSelection);
+        // The multiple-cursor count (CE06) also refreshes the selection item.
+        connect(editor, &CodeEditor::CursorCountChanged, this, &CodeStatusBar::updateSelection);
         // A lifetime guard: if the editor is destroyed under us, drop the tab so
         // a later Refresh does not touch a dangling pointer.
         connect(editor, &QObject::destroyed, this, [this]() {
@@ -199,10 +201,17 @@ void CodeStatusBar::updateSelection()
         mSelection->setVisible(false);
         return;
     }
+    const int cursorCount = editor->GetMultiCursor().GetCursorCount();
+    if (cursorCount > 1)
+    {
+        // Multiple cursors (CE06): show how many, the way other editors do.
+        mSelection->setVisible(true);
+        mSelection->setText(QStringLiteral("%1 cursors").arg(cursorCount));
+        return;
+    }
     const QTextCursor cursor = editor->textCursor();
     if (cursor.hasSelection() == false)
     {
-        // A single caret shows no count; the multi-cursor count arrives in M2.
         mSelection->setVisible(false);
         mSelection->setText(QString{});
         return;
