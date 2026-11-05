@@ -179,8 +179,11 @@ void CodeDocumentController::RestoreSelectionSet(foundation::BorrowedView<const 
             continue;
         }
         const bool isForward = selection.CaretBytes >= selection.AnchorBytes;
-        secondary.append(CodeSecondaryCursor{ .Anchor = isForward == true ? low : high,
-                                              .Caret = isForward == true ? high : low });
+        secondary.append(CodeSecondaryCursor
+        {
+            .Anchor = isForward == true ? low : high,
+            .Caret = isForward == true ? high : low,
+        });
     }
     mEditor.GetMultiCursor().AdoptSecondaryCursors(secondary);
 }
@@ -527,7 +530,7 @@ CodeEditStatus CodeDocumentController::ApplyEditSet(const CodeDocumentIdentity& 
 }
 
 CodeEditStatus CodeDocumentController::ApplyMultiCursorEdit(const QList<CodeRegionEdit>& regionsInDocumentOrder,
-                                                           QList<CodeSecondaryCursor>& outSecondaryCursors)
+                                                            QList<CodeSecondaryCursor>& outSecondaryCursors)
 {
     if (mHostOrNull == nullptr || mEditor.isReadOnly() == true)
     {
@@ -592,8 +595,8 @@ CodeEditStatus CodeDocumentController::ApplyMultiCursorEdit(const QList<CodeRegi
             .Inserted = {owned.constData(), static_cast<usize>(owned.size())},
         });
         before.append(CodeTextSelection{ .AnchorBytes = startBytes, .CaretBytes = endBytes });
-        const usize afterCaret = static_cast<usize>(static_cast<isize>(startBytes) + delta) +
-                                 static_cast<usize>(owned.size());
+        const usize afterCaret =
+            static_cast<usize>(static_cast<isize>(startBytes) + delta) + static_cast<usize>(owned.size());
         after.append(CodeTextSelection{ .AnchorBytes = afterCaret, .CaretBytes = afterCaret });
         primaryFirstAfter.append(afterCaret);
         delta += static_cast<isize>(owned.size()) - static_cast<isize>(endBytes - startBytes);

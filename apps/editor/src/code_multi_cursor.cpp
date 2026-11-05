@@ -40,9 +40,7 @@ constexpr int32 SECONDARY_CARET_OPACITY = 200;
 
 } // namespace
 
-CodeMultiCursor::CodeMultiCursor(CodeEditor& inoutEditor) noexcept : mEditor(inoutEditor)
-{
-}
+CodeMultiCursor::CodeMultiCursor(CodeEditor& inoutEditor) noexcept : mEditor(inoutEditor) {}
 
 int32 CodeMultiCursor::GetCursorCount() const noexcept
 {
@@ -74,22 +72,27 @@ QList<CodeRegionEdit> CodeMultiCursor::collectRegions() const
     QList<CodeRegionEdit> regions;
     regions.reserve(mSecondary.size() + 1);
     const QTextCursor primary = mEditor.textCursor();
-    regions.append(CodeRegionEdit{ .Start = primary.selectionStart(),
-                                   .End = primary.selectionEnd(),
-                                   .Inserted = QString{},
-                                   .IsPrimary = true });
+    regions.append(CodeRegionEdit
+    {
+        .Start = primary.selectionStart(),
+        .End = primary.selectionEnd(),
+        .Inserted = QString{},
+        .IsPrimary = true,
+    });
     for (const CodeSecondaryCursor& secondary : mSecondary)
     {
-        regions.append(CodeRegionEdit{ .Start = secondary.Start(),
-                                       .End = secondary.End(),
-                                       .Inserted = QString{},
-                                       .IsPrimary = false });
+        regions.append(CodeRegionEdit
+        {
+            .Start = secondary.Start(),
+            .End = secondary.End(),
+            .Inserted = QString{},
+            .IsPrimary = false,
+        });
     }
-    foundation::Sort(regions.data(),
-                     static_cast<usize>(regions.size()),
-                     [](const CodeRegionEdit& left, const CodeRegionEdit& right) noexcept {
-                         return left.Start < right.Start;
-                     });
+    foundation::Sort(
+        regions.data(),
+        static_cast<usize>(regions.size()),
+        [](const CodeRegionEdit& left, const CodeRegionEdit& right) noexcept { return left.Start < right.Start; });
     return regions;
 }
 

@@ -43,10 +43,10 @@ struct CodeSecondaryCursor final
 /// a single walk of the text, never one walk per region.
 struct CodeRegionEdit final
 {
-    foundation::int32 Start = 0;   ///< Removed-range start (UTF-16), ascending across the set.
-    foundation::int32 End = 0;     ///< Removed-range end (UTF-16); End >= Start.
-    QString Inserted;              ///< Replacement text with LF newlines; the host owns CRLF re-insertion.
-    bool IsPrimary = false;        ///< The one region whose caret the single Qt cursor follows afterwards.
+    foundation::int32 Start = 0; ///< Removed-range start (UTF-16), ascending across the set.
+    foundation::int32 End = 0;   ///< Removed-range end (UTF-16); End >= Start.
+    QString Inserted;            ///< Replacement text with LF newlines; the host owns CRLF re-insertion.
+    bool IsPrimary = false;      ///< The one region whose caret the single Qt cursor follows afterwards.
 };
 
 /// Secondary-cursor state and input distribution for one CodeEditor (CE06).

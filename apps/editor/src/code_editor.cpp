@@ -1605,8 +1605,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
         event->accept();
         return;
     }
-    if (hasPopup == false && mMultiCursor.HasSecondaryCursors() == true &&
-        mMultiCursor.HandleKeyPress(event) == true)
+    if (hasPopup == false && mMultiCursor.HasSecondaryCursors() == true && mMultiCursor.HandleKeyPress(event) == true)
     {
         event->accept();
         return;
