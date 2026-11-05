@@ -197,6 +197,9 @@ private:
     [[nodiscard]] QString askScreenshotPath();
     /// Point object selection at the camera of the shown project graph frame, or the live camera.
     void applyPresentedView();
+    /// Draw the selection outline on the GPU into the shown graph frame while that is possible, and on the CPU in the
+    /// overlay otherwise; keeps the GPU request in step with the selection and its drag preview.
+    void updateGpuSelectionOutline();
     [[nodiscard]] QRectF getInteractionFrame() const;
     [[nodiscard]] QPointF getInteractionPosition(QPointF globalPosition) const;
     /// Snap the camera to the axis view of the orientation handle under globalPosition. False when the

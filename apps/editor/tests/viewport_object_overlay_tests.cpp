@@ -2,6 +2,7 @@
 
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/render_preview.h"
+#    include "internal/selection_outline_request.h"
 #    include "internal/viewport_gizmo_readout.h"
 #    include "internal/viewport_object_interaction.h"
 #    include "internal/viewport_object_overlay.h"
@@ -267,6 +268,63 @@ TEST_CASE("Selection outlines and picking follow the presented image camera, not
     REQUIRE(live.OutlineLinesPixel.GetSize() == shown.OutlineLinesPixel.GetSize());
     const QPointF movedPixel = live.OutlineLinesPixel[0].p1() - shown.OutlineLinesPixel[0].p1();
     CHECK(movedPixel.manhattanLength() > 1);
+}
+
+TEST_CASE("The GPU outline replaces the CPU silhouette and reports the selected mesh, drag placement and stroke scale",
+          "[editor][object-interaction][gpu-outline]")
+{
+    RenderScene scene;
+    scene.Identity = QByteArrayLiteral("gpu-outline-fixture");
+    PreviewMesh mesh;
+    mesh.Positions = {{-1, -1, 0}, {1, -1, 0}, {0, 1, 0}};
+    mesh.Indices = {0, 1, 2};
+    scene.Meshes.append(mesh);
+    PreviewObject object;
+    object.Id = QStringLiteral("selected");
+    object.Transform.Translation = {0.5F, 0, 0};
+    scene.Objects.append(object);
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(scene) == true);
+    WorldDocument document;
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, object.Id, false);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Select);
+    const QRectF framePixel{0, 0, 800, 600};
+    ViewportObjectOverlay cpu;
+    interaction.BuildOverlay(framePixel, cpu);
+    REQUIRE(cpu.OutlineLinesPixel.GetSize() == 3);
+    SelectionOutlineRequest request;
+    CHECK(interaction.TryGetGpuOutlineRequest(request) == false);
+
+    // The image is rendered at twice the logical size of the viewport.
+    interaction.SetImageSize({1600, 1200});
+    QSignalSpy reports(&interaction, &ViewportObjectInteraction::GpuOutlineChanged);
+    interaction.SetGpuOutlineEnabled(true);
+    ViewportObjectOverlay gpu;
+    interaction.BuildOverlay(framePixel, gpu);
+    CHECK(gpu.OutlineLinesPixel.IsEmpty() == true);
+    REQUIRE(reports.count() == 1);
+    REQUIRE(interaction.TryGetGpuOutlineRequest(request) == true);
+    CHECK(request.Mesh == 0);
+    CHECK(request.SceneIdentity == scene.Identity);
+    CHECK(request.PositionsMesh.GetSize() == 3);
+    CHECK(request.Indices.GetSize() == 3);
+    CHECK(request.MeshToWorld == object.Transform);
+    CHECK(request.StrokeScale == 2.0F);
+    CHECK(request.OutlineWidth == ViewportObjectOverlay::OUTLINE_WIDTH_PIXELS);
+    CHECK(request.CasingWidth == ViewportObjectOverlay::CASING_WIDTH_PIXELS);
+    // An unchanged request is reported once, even when the camera moves: the GPU projects it.
+    interaction.BuildOverlay(framePixel, gpu);
+    preview.Orbit(40, 15);
+    interaction.BuildOverlay(framePixel, gpu);
+    CHECK(reports.count() == 1);
+
+    // Back on the CPU, the silhouette returns and nothing more is reported.
+    interaction.SetGpuOutlineEnabled(false);
+    interaction.BuildOverlay(framePixel, gpu);
+    CHECK(gpu.OutlineLinesPixel.GetSize() == 3);
+    CHECK(reports.count() == 1);
+    CHECK(interaction.TryGetGpuOutlineRequest(request) == false);
 }
 
 TEST_CASE("Native selection highlighting renders without a full-viewport painted texture",

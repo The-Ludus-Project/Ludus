@@ -305,6 +305,39 @@ stale handles on release/restart. CPU fixtures cover Latin, Hangul and Arabic sh
 cluster provenance, warm cache reuse, transparent gutters and atlas pressure.
 These are correctness checks; no throughput or physical GPU speedup is claimed.
 
+### Selection outline on the GPU
+
+`SelectionOutlineRenderer`
+([header](../../modules/graphics/renderer/include/ludus/graphics/renderer/selection_outline.hpp))
+draws the silhouette outline of one selected triangle mesh over an image. It finds the
+outline in screen space instead of from the mesh's edges, so a frame costs one rasterization
+of the mesh's triangles and a bounded per-pixel search near it, selecting a mesh costs one
+upload, and nothing is built from the mesh on the CPU. The editor uses it for the World
+viewport's selection.
+
+- **Mask pass.** The mesh is rasterized into an RGBA8 mask the size of the target, white where it covers
+  a pixel. There is no depth test, so another object in front does not hide the outline, and depth is
+  pinned inside the clip volume so only the camera plane and the frame sides clip.
+- **Edge pass.** One quad over the mesh's projected bounds, padded by the casing width, samples the mask.
+  Each pixel searches its neighbourhood, a square of radius `ceil(casing half width)` pixels capped at
+  eight, for the nearest pixel whose coverage differs from its own, and turns that distance into
+  coverage of the main stroke and of the wider casing, centred on the silhouette. Stroke and casing
+  combine in premultiplied alpha, and the pass loads and blends over the target.
+- **Why a bounded search, not jump flooding.** The strokes are a few pixels wide, so a search that
+  stops at the stroke width is cheaper and simpler than log2(extent) flood passes over a full-size
+  texture, and needs only one extra texture. A larger width than `MAX_STROKE_WIDTH_PIXELS` is rejected.
+- **Portability.** It uses the portable raster profile only: vertex and index buffers, one per-instance
+  stream, one sampled texture with a sampler, premultiplied blending, and surface or RGBA8 linear
+  attachments as targets. The Slang sources are `renderer_selection_mask.slang` and
+  `renderer_selection_outline.slang`, cooked with the shader helper like the other renderer recipes,
+  and the same pipelines serve the native and browser backends.
+
+Initialize with the four stages, poll until Ready, then `SetMesh` once per selected mesh and `Prepare`
+a version (one 320-byte buffer, at most four at once) for each distinct matrix and target extent.
+`Draw` records its two passes into an open frame; it takes the target and optional viewport from the
+pass description it is given. Only the outer contour and the contours of holes in the projected
+area are stroked, which is the same silhouette the CPU outline marks.
+
 ## Implemented L3: material and content versions
 
 L3 extends the existing Renderer with [MaterialProgram, MaterialVersion and

@@ -1051,7 +1051,8 @@ bool RenderGraphPreview::HasPendingWork() const noexcept
     const renderer::RenderGraphCandidateState candidate = state.Activation.GetReport().Candidate;
     return state.HasOpenSubmission == true || state.IsAwaitingProducer == true || state.Reader.IsBusy() == true ||
            state.IsCopyingDisplay == true || state.Inspector.IsBusy() == true || state.HasPendingPreparation == true ||
-           state.Capture.HasPendingWork() == true || candidate == renderer::RenderGraphCandidateState::Preparing ||
+           state.Display.HasPendingSelectionOutline() == true || state.Capture.HasPendingWork() == true ||
+           candidate == renderer::RenderGraphCandidateState::Preparing ||
            (candidate == renderer::RenderGraphCandidateState::NeedsUpdate && state.HasExtraction == true);
 }
 bool RenderGraphPreview::HasGpuFrame() const noexcept
@@ -1077,6 +1078,11 @@ void RenderGraphPreview::Tick(float64 preparationMilliseconds, RenderGraphPrevie
     QElapsedTimer timer;
     timer.start();
     state.HasCompletedStatisticsFrame = false;
+    if (state.IsAttached == true)
+    {
+        // Moves the selection outline over the shown image without waiting for a new graph frame.
+        static_cast<void>(state.Display.PollSelectionOutline());
+    }
     tick(work);
     if (state.IsAttached == false)
     {
@@ -1202,7 +1208,12 @@ void RenderGraphPreview::tick(RenderGraphPreviewWork work)
         // the display-copy graph. Explicit inspection keeps the existing readback path.
         if (canUseGpuDisplay == true)
         {
-            const rhi::RasterStatus copied = state.Display.Copy(state.Surface, texture, width, height);
+            const rhi::RasterStatus copied =
+                state.Display.Copy(state.Surface,
+                                   texture,
+                                   width,
+                                   height,
+                                   state.HasRenderedView == true ? &state.RenderedView.WorldToClip : nullptr);
             if (copied == rhi::RasterStatus::NotReady)
             {
                 state.Trace.SetStage("Await GPU display capacity");

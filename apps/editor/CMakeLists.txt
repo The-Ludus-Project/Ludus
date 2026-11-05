@@ -836,7 +836,8 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     target_link_libraries(ludus_editor_application PUBLIC ludus_editor_texture_display Ludus::GraphicsRhi Qt6::Quick)
     ludus_compile_renderer_shaders(TARGET ludus_editor_application SHADERS
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
-        renderer_overlay renderer_grid renderer_light_transformer_encoder)
+        renderer_overlay renderer_grid renderer_selection_mask renderer_selection_outline
+        renderer_light_transformer_encoder)
     ludus_compile_renderer_shaders(TARGET ludus_editor_application SHADERS
         renderer_lit_shadow renderer_clustered renderer_clustered_shadow
         renderer_clustered_authored renderer_clustered_authored_shadow

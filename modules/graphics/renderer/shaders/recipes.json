@@ -35,6 +35,16 @@
     "vertex": "GridVertexMain",
     "fragment": "GridFragmentMain"
   },
+  "renderer_selection_mask": {
+    "source": "renderer_selection_mask.slang",
+    "vertex": "MaskVertexMain",
+    "fragment": "MaskFragmentMain"
+  },
+  "renderer_selection_outline": {
+    "source": "renderer_selection_outline.slang",
+    "vertex": "EdgeVertexMain",
+    "fragment": "EdgeFragmentMain"
+  },
   "renderer_material": {
     "source": "renderer_material.slang",
     "vertex": "vertexMain",

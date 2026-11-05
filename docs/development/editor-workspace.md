@@ -1179,7 +1179,26 @@ A multiple selection, unapplied inspector fields or a running scene operation
 other than a background placement validation disables transform handles. Axis handles viewed directly end-on are hidden;
 orbit to expose them.
 
-The outline is found on the CPU from a cached edge adjacency of the selected mesh,
+The outline has two implementations that mark the same silhouette.
+
+**GPU outline.** While the native shared-device viewport shows a GPU frame of the project
+render graph, the selected mesh is rasterized into a mask and a screen-space pass strokes
+the mask's boundary into the shown image, so nothing is built from the mesh on the CPU
+and selecting a mesh costs one upload of its positions and indices. The mask has no depth
+test, so another object in front of the selection does not hide any of the outline. The
+two-pixel amber stroke and its four-pixel casing keep their logical width, scaled to the
+image's pixels. The snapshot of each graph frame stays clean, and the shown image is a second
+display slot with the outline drawn over it; a camera change composes the new frame
+the same way, and moving the selection or previewing a drag recomposes the shown frame from
+the clean snapshot without waiting for the graph. The outline therefore sits under the
+Qt overlay: transform handles, including their casings, draw over it.
+If the GPU rejects the mesh or an outline draw fails, the viewport falls back to the
+CPU outline until the device restarts. The renderer part is
+`SelectionOutlineRenderer` in the renderer module, described in
+[Renderer systems](../architecture/renderer-systems.md#selection-outline-on-the-gpu).
+
+**CPU outline.** The software readback, built-in preview and browser views, and any frame whose
+camera is unknown, build the outline on the CPU from a cached edge adjacency of the selected mesh,
 built once per scene and mesh, with vertices at one position welded. Each update
 transforms the vertices, keeps the edges between a front-facing and a back-facing
 triangle plus open edges, and drops those with the object on both sides in a
@@ -1194,7 +1213,7 @@ viewport-sized overlay texture. Camera and gesture changes are projected once
 per Qt frame, and the readback presentation draws the same strokes in one batch.
 CPU profiling includes `EditorObjectOverlayBuild`, `EditorObjectOverlayUpload`
 and `EditorObjectOverlayPaint` to distinguish these costs, and `EditorSilhouetteBuild`,
-`EditorSilhouetteExtract` and `EditorSilhouetteCoverage` for the outline itself. The browser's separate
+`EditorSilhouetteExtract` and `EditorSilhouetteCoverage` for the CPU outline. The browser's separate
 GPU canvas does not yet composite the overlay.
 
 To compare the old painted texture with the batched geometry, build the optional

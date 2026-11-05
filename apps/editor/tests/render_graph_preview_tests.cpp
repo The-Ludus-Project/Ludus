@@ -4607,3 +4607,107 @@ TEST_CASE("A viewport graph capture explains outputs it cannot capture before us
     CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Idle);
     CHECK(extent.isEmpty() == true);
 }
+
+TEST_CASE("Graph display frames draw the selection outline on the GPU and move it without a new graph frame",
+          "[editor][render-graph][preview][gpu-display][selection-outline]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No headless GPU adapter");
+    }
+    RenderPreview viewport;
+    viewport.Resize(WIDTH, HEIGHT);
+    REQUIRE(viewport.SetScene(MakeCookedScene(MakeTexture({{255, 0, 0, 255}}))) == true);
+    renderer::ViewDescription view;
+    QString error;
+    REQUIRE(viewport.DescribeConventionalView(WIDTH, HEIGHT, view, error) == true);
+    RenderGraphExtraction extraction;
+    REQUIRE(MakeRenderGraphExtraction(viewport.Scene(), view, 1, extraction, error) == true);
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetDirectPresentation(true);
+    preview.SetExtraction(extraction);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 1; }) == true);
+    REQUIRE(preview.HasGpuFrame() == true);
+    GraphDisplayFrames& display = preview.GetDisplayFrames();
+    REQUIRE(display.CanDrawSelectionOutline() == true);
+    const auto readShown = [&](QImage& outImage) {
+        rhi::ReadbackTicket ticket;
+        REQUIRE(display.RequestShownReadback(ticket) == rhi::RasterStatus::Pending);
+        rhi::RasterStatus status = rhi::RasterStatus::Pending;
+        for (usize attempt = 0; attempt < ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
+        {
+            status = rhi::GetStatus(device.Device, ticket);
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+        const QSize size = display.GetShownSize();
+        outImage = QImage(size, QImage::Format_RGBA8888);
+        REQUIRE(rhi::CopyReadback(device.Device, ticket, outImage.bits(), static_cast<usize>(outImage.sizeInBytes())) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Release(device.Device, ticket) == rhi::RasterStatus::Ready);
+    };
+    const auto countOutline = [](const QImage& image) {
+        usize count = 0;
+        for (int32 y = 0; y < image.height(); ++y)
+        {
+            for (int32 x = 0; x < image.width(); ++x)
+            {
+                const QRgb pixel = image.pixel(x, y);
+                count += qRed(pixel) > 230 && qGreen(pixel) > 100 && qGreen(pixel) < 160 && qBlue(pixel) < 40 ? 1 : 0;
+            }
+        }
+        return count;
+    };
+    QImage clean;
+    readShown(clean);
+    CHECK(countOutline(clean) == 0);
+    // The scene's triangle is the selection, drawn through the camera of the shown frame.
+    const RenderScene& scene = viewport.Scene();
+    REQUIRE(scene.Objects.size() == 1);
+    SelectionOutlineRequest request;
+    request.SceneIdentity = scene.Identity;
+    request.Mesh = scene.Objects[0].Mesh;
+    request.PositionsMesh = GetRenderSceneMeshPositions(scene, request.Mesh);
+    request.Indices = GetRenderSceneMeshIndices(scene, request.Mesh);
+    request.MeshToWorld = scene.Objects[0].Transform;
+    request.OutlineColor = {1, 0.5F, 0, 1};
+    request.CasingColor = {0, 0, 0, 0.5F};
+    const uint64 cleanSerial = display.GetLatestSerial();
+    REQUIRE(display.SetSelectionOutline(request) == true);
+    REQUIRE(TickUntil(preview, [&]() { return display.GetLatestSerial() > cleanSerial; }) == true);
+    QImage outlined;
+    readShown(outlined);
+    CHECK(countOutline(outlined) > 0);
+    // Away from the silhouette the image is the graph's own.
+    CHECK(outlined.pixel(WIDTH / 2, HEIGHT / 2) == clean.pixel(WIDTH / 2, HEIGHT / 2));
+    CHECK(outlined.pixel(0, 0) == clean.pixel(0, 0));
+    // A moved candidate redraws from the same clean frame: no graph frame is produced.
+    const uint64 outlinedSerial = display.GetLatestSerial();
+    request.MeshToWorld.Translation.X += 0.25F;
+    REQUIRE(display.SetSelectionOutline(request) == true);
+    REQUIRE(TickUntil(preview, [&]() { return display.GetLatestSerial() > outlinedSerial; }) == true);
+    CHECK(preview.GetPresentedRevision() == 1);
+    QImage moved;
+    readShown(moved);
+    CHECK(countOutline(moved) > 0);
+    CHECK(moved != outlined);
+    // Clearing shows the clean snapshot again.
+    const uint64 movedSerial = display.GetLatestSerial();
+    display.ClearSelectionOutline();
+    REQUIRE(TickUntil(preview, [&]() { return display.GetLatestSerial() > movedSerial; }) == true);
+    QImage restored;
+    readShown(restored);
+    CHECK(restored == clean);
+    // A new graph frame is composed with the outline before it is shown.
+    REQUIRE(display.SetSelectionOutline(request) == true);
+    REQUIRE(TickUntil(preview, [&]() { return display.HasPendingSelectionOutline() == false; }) == true);
+    preview.SetCamera(view, 2);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 2; }) == true);
+    REQUIRE(TickUntil(preview, [&]() { return display.HasPendingSelectionOutline() == false; }) == true);
+    QImage next;
+    readShown(next);
+    CHECK(countOutline(next) > 0);
+    preview.Detach();
+}
