@@ -112,8 +112,8 @@ void CodeMultiCursor::sortAndMerge()
         // The primary owns its span: drop a secondary that touches it. A bare
         // caret touches the primary when it falls within [start, end]; a secondary
         // with its own selection touches when the ranges intersect or abut.
-        const bool touchesPrimary = secondary.Start() <= primaryEnd && secondary.End() >= primaryStart;
-        if (touchesPrimary == true)
+        const bool isTouchingPrimary = secondary.Start() <= primaryEnd && secondary.End() >= primaryStart;
+        if (isTouchingPrimary == true)
         {
             continue;
         }
@@ -388,15 +388,15 @@ bool CodeMultiCursor::HandleKeyPress(QKeyEvent* event)
     // Text operations. Each becomes one CodeEditSet across every cursor. The
     // controller maps and applies them in one pass and returns the new carets.
     QString inserted;
-    bool removesBefore = false;
-    bool removesAfter = false;
+    bool shouldRemoveBefore = false;
+    bool shouldRemoveAfter = false;
     if (event->key() == Qt::Key_Backspace && moveModifiers == Qt::NoModifier)
     {
-        removesBefore = true;
+        shouldRemoveBefore = true;
     }
     else if (event->key() == Qt::Key_Delete && moveModifiers == Qt::NoModifier)
     {
-        removesAfter = true;
+        shouldRemoveAfter = true;
     }
     else if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && moveModifiers == Qt::NoModifier)
     {
@@ -422,11 +422,11 @@ bool CodeMultiCursor::HandleKeyPress(QKeyEvent* event)
         if (region.Start == region.End)
         {
             // A bare caret: Backspace removes the char before, Delete the char after.
-            if (removesBefore == true && region.Start > 0)
+            if (shouldRemoveBefore == true && region.Start > 0)
             {
                 region.Start -= 1;
             }
-            else if (removesAfter == true && region.End < mEditor.document()->characterCount() - 1)
+            else if (shouldRemoveAfter == true && region.End < mEditor.document()->characterCount() - 1)
             {
                 region.End += 1;
             }
@@ -457,10 +457,10 @@ bool CodeMultiCursor::HandlePaste(const QString& text)
     {
         perCursor.removeLast();
     }
-    const bool oneLineEach = perCursor.size() == regions.size();
+    const bool isOneLinePerCursor = perCursor.size() == regions.size();
     for (int32 index = 0; index < regions.size(); ++index)
     {
-        regions[index].Inserted = oneLineEach == true ? perCursor.at(index) : normalized;
+        regions[index].Inserted = isOneLinePerCursor == true ? perCursor.at(index) : normalized;
     }
     return applyRegionEdits(regions);
 }

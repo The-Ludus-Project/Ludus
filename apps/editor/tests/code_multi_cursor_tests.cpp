@@ -74,26 +74,26 @@ struct BoundView final
 };
 
 // Place the primary caret at a document position with no selection.
-void PutCaret(CodeEditor& editor, int32 position)
+void PutCaret(CodeEditor& inoutEditor, int32 position)
 {
-    QTextCursor cursor(editor.document());
+    QTextCursor cursor(inoutEditor.document());
     cursor.setPosition(position);
-    editor.setTextCursor(cursor);
+    inoutEditor.setTextCursor(cursor);
 }
 
 // Add a collapsed secondary cursor at a position through the public overlay.
-void AddSecondaryCaret(CodeEditor& editor, int32 position)
+void AddSecondaryCaret(CodeEditor& inoutEditor, int32 position)
 {
-    QList<CodeSecondaryCursor> cursors = editor.GetMultiCursor().GetSecondaryCursors();
+    QList<CodeSecondaryCursor> cursors = inoutEditor.GetMultiCursor().GetSecondaryCursors();
     cursors.append(CodeSecondaryCursor{ .Anchor = position, .Caret = position });
-    editor.GetMultiCursor().AdoptSecondaryCursors(cursors);
+    inoutEditor.GetMultiCursor().AdoptSecondaryCursors(cursors);
 }
 
 // Send one key press through the production keyPressEvent path.
-void SendKey(CodeEditor& editor, int key, Qt::KeyboardModifiers modifiers, const QString& text)
+void SendKey(CodeEditor& inoutEditor, int key, Qt::KeyboardModifiers modifiers, const QString& text)
 {
     QKeyEvent event(QEvent::KeyPress, key, modifiers, text);
-    QCoreApplication::sendEvent(&editor, &event);
+    QCoreApplication::sendEvent(&inoutEditor, &event);
 }
 
 constexpr qint64 LINEAR_WORK_CEILING_MS = 2000;
