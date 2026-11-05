@@ -14,6 +14,7 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QString>
+#include <QTextBlock>
 #include <QTextCursor>
 #include <QToolButton>
 #include <QVBoxLayout>
