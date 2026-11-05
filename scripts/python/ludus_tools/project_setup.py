@@ -24,7 +24,8 @@ from .resolve import compute_stamp, write_stamp
 from .sdkstore import SdkStore
 from .descriptor import parse_descriptor_file
 from .engine_pin import validate_install_prefix
-from .native import WINDOWS_CONFIGURATIONS, WINDOWS_TARGET, validate_target
+from .native import (WINDOWS_CONFIGURATIONS, WINDOWS_TARGET, is_visual_studio_profile,
+                     validate_target, visual_studio_configure_fields)
 from .toolchain import PINNED_LLVM_MAJOR
 from .shader_tools import REPAIR_MESSAGE, preparation_steps, project_shader_tools, verify_translator
 
@@ -88,14 +89,17 @@ def executable(path: Path) -> Path:
     return path
 
 
-def tools(root: Path) -> dict:
+def tools(root: Path, *, needs_ninja: bool = True) -> dict:
     if os.name == "nt":
         scripts = root / "out/host-tools/venv/Scripts"
         compiler = shutil.which("cl.exe")
         if not compiler:
             raise ToolingError("MissingTools", "Open the x64 VS 2022 developer shell with MSVC 14.44 and the Windows SDK")
-        return {name: executable(scripts / (name + ".exe")) for name in ("cmake", "ctest", "ninja")} | {
-            "compiler": executable(Path(compiler))}
+        configured = {name: executable(scripts / (name + ".exe")) for name in ("cmake", "ctest")}
+        configured["compiler"] = executable(Path(compiler))
+        if needs_ninja:
+            configured["ninja"] = executable(scripts / "ninja.exe")
+        return configured
 
     venv = root / "out/host-tools/venv/bin"
     return {"cmake": executable(venv / "cmake"), "ctest": executable(venv / "ctest"),
@@ -219,11 +223,13 @@ def _identity_stamp(identity) -> str:
 
 def _inputs(root: Path, source: Path, sdk: Path, profile: str, web_sdk: Path | None, *, project: Path | None = None):
     native = load_prefix_manifest(sdk)
-    configured = tools(root)
-    cache = {"CMAKE_MAKE_PROGRAM": configured["ninja"].as_posix(),
-             "CMAKE_CXX_COMPILER": configured["compiler"].as_posix(),
-             "CMAKE_PREFIX_PATH": sdk.as_posix(),
-             "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"}
+    is_visual_studio = is_visual_studio_profile(profile)
+    configured = tools(root, needs_ninja=not is_visual_studio)
+    cache = {"CMAKE_PREFIX_PATH": sdk.as_posix()}
+    if not is_visual_studio:
+        cache.update(CMAKE_MAKE_PROGRAM=configured["ninja"].as_posix(),
+                     CMAKE_CXX_COMPILER=configured["compiler"].as_posix(),
+                     CMAKE_EXPORT_COMPILE_COMMANDS="ON")
     # Package discovery remains in CMake; include prepared dependencies needed by
     # exported native libraries, without baking machine paths into tracked files.
     dependencies = root / "out/conan" / profile
@@ -263,9 +269,15 @@ def _inputs(root: Path, source: Path, sdk: Path, profile: str, web_sdk: Path | N
         cache["LUDUS_DXC_DIRECTORY"] = shader_paths["dxil.dll"].parent.as_posix()
     fields = {"cacheVariables": cache}
     if native.target_triple == WINDOWS_TARGET:
-        fields["generator"] = "Ninja"
-        cache.update(CMAKE_BUILD_TYPE=WINDOWS_CONFIGURATIONS[native.flavor], BUILD_TESTING="ON",
-                     LUDUS_PROJECT_SDK_FLAVOR=native.flavor,
+        configuration = WINDOWS_CONFIGURATIONS[native.flavor]
+        if is_visual_studio:
+            fields = visual_studio_configure_fields(configuration)
+            fields["cacheVariables"].update(cache)
+            cache = fields["cacheVariables"]
+        else:
+            fields["generator"] = "Ninja"
+            cache["CMAKE_BUILD_TYPE"] = configuration
+        cache.update(BUILD_TESTING="ON", LUDUS_PROJECT_SDK_FLAVOR=native.flavor,
                      Ludus_DIR=(sdk / "lib/cmake/Ludus").as_posix())
     records = {profile: fields}
     stamps = {str(sdk): _identity_stamp(native)}
@@ -306,7 +318,7 @@ def verify_tool_versions(configured, root: Path, runner, env, identity=None):
     for key, pattern in (("cmake", r"cmake version (\d+\.\d+\.\d+)"),
                          ("ninja", r"(\d+\.\d+\.\d+)"),
                          ("compiler", r"clang version (\d+)")):
-        if key == "compiler" and is_msvc:
+        if key not in configured or (key == "compiler" and is_msvc):
             continue
         output = runner([str(configured[key]), "--version"], cwd=root, env=env)
         match = re.search(pattern, output)
@@ -390,12 +402,14 @@ def check_project(path: Path, *, tooling_root: Path, profile: str | None = None,
                     "CMAKE_CXX_FLAGS", "CMAKE_OSX_SYSROOT", "CMAKE_OSX_ARCHITECTURES",
                     "CMAKE_OSX_DEPLOYMENT_TARGET"]
             if profile.startswith("windows-msvc-"):
-                keys.extend(("CMAKE_BUILD_TYPE", "Ludus_DIR"))
+                keys.extend(("CMAKE_BUILD_TYPE", "CMAKE_CONFIGURATION_TYPES", "Ludus_DIR"))
+                if cache_value(cache_path, "CMAKE_GENERATOR") != fields["generator"]:
+                    raise ToolingError(INVALID_PROJECT, f"Stale CMake generator for {profile}; run repair")
             for key in keys:
                 expected = fields["cacheVariables"].get(key)
                 cached = cache_value(cache_path, key)
                 if expected and cached != expected and not (
-                    os.name == "nt" and key != "CMAKE_BUILD_TYPE"
+                    os.name == "nt" and key not in ("CMAKE_BUILD_TYPE", "CMAKE_CONFIGURATION_TYPES")
                     and cached is not None and Path(cached) == Path(expected)
                 ):
                     raise ToolingError(INVALID_PROJECT, f"Stale CMake cache for {profile}: {key}; run repair")
@@ -510,10 +524,13 @@ def _repair_project(path, paths, descriptor, source, tooling_root, sdk, web_sdk,
         marker = {OWNER: profile}
         local["configurePresets"].append(dict(fields, name=name, hidden=False,
             binaryDir="${sourceDir}/out/build/" + profile, cmakeExecutable=str(configured["cmake"]), vendor=marker))
-        local["buildPresets"].append(dict(name=name, configurePreset=name, vendor=marker))
+        build = dict(name=name, configurePreset=name, vendor=marker)
+        if is_visual_studio_profile(profile):
+            build["configuration"] = resolved.build_type
+        local["buildPresets"].append(build)
         if not profile.startswith("web-"):
-            local["testPresets"].append(dict(name=name, configurePreset=name, vendor=marker,
-                output={"outputOnFailure": True}, execution={"noTestsAction": "error"}))
+            local["testPresets"].append(dict(build, output={"outputOnFailure": True},
+                                            execution={"noTestsAction": "error"}))
     local_settings = parse_local_settings_file(paths.local_settings_path)
     local_settings.set_override(target=identity.target_triple, flavor=identity.flavor, prefix=str(sdk))
     env = environment(tooling_root)

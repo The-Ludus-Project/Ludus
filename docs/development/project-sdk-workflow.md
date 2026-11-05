@@ -280,6 +280,20 @@ project before publication. Repair configures, builds and runs CTest with
 the local preset. Use the resulting `ludus-local-windows-msvc-*` presets in
 CMake Tools launched from the same developer environment.
 
+For Visual Studio/MSBuild, use the corresponding
+`windows-msvc-visual-studio-debug`, `windows-msvc-visual-studio-development`,
+`windows-msvc-visual-studio-profile`, or `windows-msvc-visual-studio-release`
+profile. Each profile generates a solution with the configuration accepted by
+its installed SDK. Development and Profile use `RelWithDebInfo` in separate
+solutions, each linked against its own SDK flavor. The CLI builds that
+configuration and uses the CMake File API to launch its executable. For example:
+
+```powershell
+$profile = 'windows-msvc-visual-studio-profile'
+& $python -m ludus_tools project repair $project --tools $tools --profile $profile --sdk 'C:/SDKs/Ludus/Profile'
+& $python -m ludus_tools project run $project --profile $profile
+```
+
 Check reports missing or stale setup without writing files. After moving an SDK
 or replacing the tooling, run repair with the new paths. Repair preserves
 other flavors, custom presets, and unrelated IDE settings. For Win32 and

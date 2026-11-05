@@ -249,7 +249,7 @@ jobs:
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           & out/host-tools/venv/Scripts/python.exe tests/sdk_consumer/windows/verify_incremental.py "$PWD/out/windows-msvc-probe"
           if ($LASTEXITCODE -ne 0) { throw 'Windows SDK incremental verification failed' }
-      - name: Create and repair a Ninja project against all installed SDKs
+      - name: Create, repair and launch SDK projects with Ninja and MSBuild
         if: matrix.generator == 'MSBuild'
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts/python

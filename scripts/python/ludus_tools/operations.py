@@ -35,7 +35,8 @@ from .resolve import Resolution, assert_stamp_unchanged, needs_reconfigure, reso
 from .sdkstore import SdkStore
 
 # Map a descriptor preset to the native flavor and CMake build type.
-from .native import PRESET_FLAVOR, WINDOWS_CONFIGURATIONS, target_for_profile, validate_target
+from .native import (PRESET_FLAVOR, WINDOWS_CONFIGURATIONS, is_visual_studio_profile,
+                     target_for_profile, validate_target)
 
 DESCRIPTOR_NAME = "ludus.project.json"
 LOCK_NAME = "ludus.lock.json"
@@ -221,8 +222,41 @@ def configure_argv(cmake: str, preset: str, source_dir: Path, build_dir: Path) -
     return [cmake, "--preset", preset_for(source_dir, preset), "-S", str(source_dir), "-B", str(build_dir)]
 
 
-def build_argv(cmake: str, build_dir: Path, target: str) -> list[str]:
-    return [cmake, "--build", str(build_dir), "--target", target]
+def _project_configure_argv(cmake: str, resolved: ResolvedProject) -> list[str]:
+    paths = resolved.paths
+    argv = configure_argv(cmake, resolved.descriptor.preset, paths.source_dir, paths.build_dir)
+    if is_visual_studio_profile(resolved.descriptor.preset):
+        # Explicit SDK resolution also takes precedence over a repaired local preset.
+        prefix = resolved.resolution.prefix
+        argv.extend((f"-DCMAKE_PREFIX_PATH={prefix.as_posix()}",
+                     f"-DLudus_DIR={(prefix / 'lib/cmake/Ludus').as_posix()}"))
+    return argv
+
+
+def _project_needs_reconfigure(resolved: ResolvedProject) -> bool:
+    build_dir = resolved.paths.build_dir
+    if needs_reconfigure(build_dir, resolved.resolution):
+        return True
+    if is_visual_studio_profile(resolved.descriptor.preset):
+        from .project_setup import cache_value
+
+        cache = build_dir / "CMakeCache.txt"
+        if not cache.is_file():
+            return True
+        configured_sdk = cache_value(cache, "Ludus_DIR")
+        return not configured_sdk or Path(configured_sdk) != resolved.resolution.prefix / "lib/cmake/Ludus"
+    return False
+
+
+def build_argv(cmake: str, build_dir: Path, target: str, *, configuration: str | None = None) -> list[str]:
+    argv = [cmake, "--build", str(build_dir), "--target", target]
+    if configuration is not None:
+        argv.extend(("--config", configuration))
+    return argv
+
+
+def _project_configuration(resolved: ResolvedProject) -> str | None:
+    return resolved.build_type if is_visual_studio_profile(resolved.descriptor.preset) else None
 
 
 def _run(argv: Sequence[str], *, cwd: Path, env: dict, echo: bool = True) -> int:
@@ -281,7 +315,7 @@ def op_configure(resolved: ResolvedProject) -> int:
         except Exception:
             pass  # File API query is best-effort before first configure
         code = _run(
-            configure_argv(cmake, resolved.descriptor.preset, resolved.paths.source_dir, resolved.paths.build_dir),
+            _project_configure_argv(cmake, resolved),
             cwd=resolved.paths.source_dir,
             env=env,
         )
@@ -298,7 +332,7 @@ def op_build(resolved: ResolvedProject) -> int:
     with BuildTreeLock(resolved.paths.build_dir):
         # Reconfigure if the SDK inputs changed since last configure (mutable
         # local prefixes). Path equality is insufficient; we compare the stamp.
-        if needs_reconfigure(resolved.paths.build_dir, resolved.resolution):
+        if _project_needs_reconfigure(resolved):
             print("SDK inputs changed; reconfiguring", file=sys.stderr)
             try:
                 from cmake_targets import query_codemodel  # type: ignore
@@ -307,7 +341,7 @@ def op_build(resolved: ResolvedProject) -> int:
             except Exception:
                 pass
             code = _run(
-                configure_argv(cmake, resolved.descriptor.preset, resolved.paths.source_dir, resolved.paths.build_dir),
+                _project_configure_argv(cmake, resolved),
                 cwd=resolved.paths.source_dir,
                 env=env,
             )
@@ -317,7 +351,8 @@ def op_build(resolved: ResolvedProject) -> int:
         # The SDK must not change under us mid-operation.
         assert_stamp_unchanged(resolved.paths.build_dir, resolved.resolution)
         code = _run(
-            build_argv(cmake, resolved.paths.build_dir, resolved.descriptor.target),
+            build_argv(cmake, resolved.paths.build_dir, resolved.descriptor.target,
+                       configuration=_project_configuration(resolved)),
             cwd=resolved.paths.source_dir,
             env=env,
         )
@@ -363,6 +398,7 @@ def resolve_artifact(resolved: ResolvedProject) -> Path:
             resolved.descriptor.target,
             engine,
             client="ludus-cli",
+            configuration=_project_configuration(resolved),
         )
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ToolingError(GENERATION_FAILED, f"Cannot resolve the built executable: {exc}") from exc
