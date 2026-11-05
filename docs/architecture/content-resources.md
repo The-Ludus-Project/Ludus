@@ -565,6 +565,12 @@ mapping per slot and retains the original IDs and import provenance for
 reimport. Renderers require resolved scattering. World draws the unresolved
 surface with an editor diagnostic and asks the author to choose a replacement.
 
+World and level documents can store one `shared_coatings` instance per resolved
+material resource ID. A slot-level `coating` record takes precedence over that
+instance. Slots with neither use the imported values. Cooking interns matching
+coatings per source material in the same table, including an override equal to
+the imported defaults. Material mappings resolve the inherited instance from the original ID on reimport.
+
 Version 7 keeps all version 6 records and appends a `MaterialExtensionV7` after
 **each** material. Its width is derived from the explicit wire fields in
 `ludus/content/scene_format/luscn.h`; never serialize host padding. The extension

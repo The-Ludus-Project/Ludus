@@ -4,6 +4,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/base/pointer.hpp>
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <ludus/content/scene_format/luscn.h>
@@ -180,6 +181,7 @@ private:
     [[nodiscard]] bool prepareLighting(graphics::rhi::SurfaceHandle surface, QString& outError) noexcept;
     foundation::StaticArray<graphics::renderer::Mesh, PREVIEW_MESH_CAPACITY> mMeshes{};
     foundation::StaticArray<graphics::renderer::MaterialVersion, PREVIEW_MATERIAL_CAPACITY> mMaterials{};
+    foundation::Array<foundation::usize> mLightingMaterialOwners;
     graphics::renderer::MaterialProgram mProgram{};
     graphics::renderer::Snapshot mSnapshot{};
     PreviewReferenceSetup mReference{};

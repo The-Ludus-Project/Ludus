@@ -1429,7 +1429,9 @@ void WorldWorkspace::addMaterialGroup()
     const RenderScene& presented = Scene_->PreviewScene();
     const resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(presented, Selected_);
     const QJsonObject scene = Document_.Entity(Selected_).value(QStringLiteral("scene")).toObject();
-    const QJsonObject coating = scene.value(QStringLiteral("coating")).toObject();
+    const QJsonObject localCoating = scene.value(QStringLiteral("coating")).toObject();
+    const QJsonObject sharedCoating = Document_.GetSharedCoating(Document_.GetInheritedMaterialId(scene));
+    const QJsonObject coating = localCoating.isEmpty() == true ? sharedCoating : localCoating;
     const bool canEditCoating = materialOrNull != nullptr &&
                                 materialOrNull->Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse;
     QVector<MaterialPropertyRow> properties;
@@ -1483,8 +1485,11 @@ void WorldWorkspace::addMaterialGroup()
     if (canEditCoating == true)
     {
         QLabel* help = new QLabel(
-            QStringLiteral("Apply Changes edits this slot only. The raster preview approximates coat roughness. "
-                           "Use a compatible reference view to see the effect of IOR and optical thickness."),
+            localCoating.isEmpty() == true
+                ? QStringLiteral("This slot inherits its coating. Apply Changes creates a slot-only instance. "
+                                 "Apply to Shared Coating edits the inherited instance for all its slots.")
+                : QStringLiteral("This slot has its own coating instance. Use Inherited Coating to rejoin "
+                                 "the shared instance."),
             group);
         help->setWordWrap(true);
         rows->addRow(help);
@@ -1506,12 +1511,20 @@ void WorldWorkspace::addMaterialGroup()
             connect(field, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
             rows->addRow(QString::fromLatin1(property.Label), field);
         }
+        if (localCoating.isEmpty() == true)
+        {
+            QPushButton* shared = new QPushButton(QStringLiteral("Apply to Shared Coating"), group);
+            shared->setObjectName(QStringLiteral("worldApplySharedCoating"));
+            shared->setEnabled(Pending_ == true && SceneBusy() == false);
+            connect(shared, &QPushButton::clicked, this, &WorldWorkspace::applySharedCoating);
+            rows->addRow(shared);
+        }
     }
-    if (coating.isEmpty() == false)
+    if (localCoating.isEmpty() == false)
     {
-        QPushButton* restore = new QPushButton(QStringLiteral("Use Imported Coating"), group);
+        QPushButton* restore = new QPushButton(QStringLiteral("Use Inherited Coating"), group);
         restore->setObjectName(QStringLiteral("worldRestoreCoating"));
-        connect(restore, &QPushButton::clicked, this, &WorldWorkspace::restoreImportedCoating);
+        connect(restore, &QPushButton::clicked, this, &WorldWorkspace::restoreInheritedCoating);
         rows->addRow(restore);
     }
     Inspector_->addWidget(group);
@@ -1653,7 +1666,7 @@ void WorldWorkspace::mapImportedMaterial(const QString& source, const QString& r
     Changed(QStringLiteral("Material mapped for %1 slots. Undo is available.").arg(affected.size()));
 }
 
-void WorldWorkspace::restoreImportedCoating()
+void WorldWorkspace::restoreInheritedCoating()
 {
     if (Pending_ == true || SceneBusy() == true)
     {
@@ -1677,7 +1690,94 @@ void WorldWorkspace::restoreImportedCoating()
         return;
     }
     Snapshot();
-    Changed(QStringLiteral("Imported coating restored to this slot. Undo is available."));
+    Changed(QStringLiteral("Inherited coating restored to this slot. Undo is available."));
+}
+
+void WorldWorkspace::applySharedCoating()
+{
+    if (Pending_ == false || SceneBusy() == true)
+    {
+        return;
+    }
+    const QJsonObject placement = Document_.Entity(Selected_).value(QStringLiteral("scene")).toObject();
+    const QString material = Document_.GetInheritedMaterialId(placement);
+    if (material.isEmpty() == true || placement.contains(QStringLiteral("coating")) == true)
+    {
+        return;
+    }
+    WorldDocument candidate = Document_;
+    QString error;
+    QWidget* invalidOrNull = nullptr;
+    QJsonObject edit;
+    if (readCoatingFields(edit, error, invalidOrNull) == false ||
+        readDraft(candidate, error, invalidOrNull, false) == false)
+    {
+        if (invalidOrNull != nullptr)
+        {
+            invalidOrNull->setFocus();
+        }
+        Changed(error);
+        return;
+    }
+    const QJsonObject coating = edit.value(QStringLiteral("coating")).toObject();
+    if (coating.isEmpty() == true || candidate.Draft() != Document_.Draft())
+    {
+        Changed(QStringLiteral("Change coating values only, or apply or reset your other edits first."));
+        return;
+    }
+
+    QStringList affected;
+    for (const QJsonValue value : Document_.Draft().value(QStringLiteral("entities")).toArray())
+    {
+        const QJsonObject entity = value.toObject();
+        const QJsonObject slot = entity.value(QStringLiteral("scene")).toObject();
+        if (Document_.GetInheritedMaterialId(slot) == material && slot.contains(QStringLiteral("coating")) == false)
+        {
+            affected.append(entity.value(QStringLiteral("name")).toString() + QStringLiteral(" · ") +
+                            entity.value(QStringLiteral("id")).toString());
+        }
+    }
+    const QJsonObject before = Document_.Draft();
+    QMessageBox confirmation(
+        QMessageBox::Question,
+        QStringLiteral("Edit shared coating"),
+        QStringLiteral("Apply these values to %1 inherited slots and future imports of this material?")
+            .arg(affected.size()),
+        QMessageBox::Cancel,
+        this);
+    confirmation.setTextFormat(Qt::PlainText);
+    constexpr qsizetype INLINE_SLOT_LIMIT = 6;
+    const QString affectedSlots = affected.join(QLatin1Char('\n'));
+    if (affected.size() <= INLINE_SLOT_LIMIT)
+    {
+        confirmation.setInformativeText(affectedSlots);
+    }
+    else
+    {
+        confirmation.setDetailedText(affectedSlots);
+    }
+    QPushButton* apply = confirmation.addButton(QStringLiteral("Apply to Shared Coating"), QMessageBox::AcceptRole);
+    apply->setObjectName(QStringLiteral("worldConfirmSharedCoating"));
+    confirmation.setDefaultButton(QMessageBox::Cancel);
+    confirmation.exec();
+    if (confirmation.clickedButton() != apply)
+    {
+        return;
+    }
+    if (Document_.Draft() != before || SceneBusy() == true)
+    {
+        Changed(QStringLiteral("The World changed while confirming. Review the slots and apply again."));
+        return;
+    }
+    if (Document_.SetSharedCoating(material, coating, error) == false)
+    {
+        Changed(error);
+        return;
+    }
+    DraftTimer_.stop();
+    Pending_ = false;
+    Snapshot();
+    Changed(QStringLiteral("Shared coating applied to %1 slots. Undo is available.").arg(affected.size()));
 }
 
 void WorldWorkspace::RenderInspector()
@@ -2217,6 +2317,11 @@ void WorldWorkspace::Changed(const QString& message)
     {
         mapOrNull->setEnabled(replacementsOrNull->isEnabled() == true && Pending_ == false && isBusy == false);
     }
+    QPushButton* sharedCoatingOrNull = findChild<QPushButton*>(QStringLiteral("worldApplySharedCoating"));
+    if (sharedCoatingOrNull != nullptr)
+    {
+        sharedCoatingOrNull->setEnabled(Pending_ == true && isBusy == false);
+    }
     QPushButton* restoreCoatingOrNull = findChild<QPushButton*>(QStringLiteral("worldRestoreCoating"));
     if (restoreCoatingOrNull != nullptr)
     {
@@ -2259,7 +2364,8 @@ bool WorldWorkspace::readCoatingFields(QJsonObject& inoutScene, QString& outErro
             outInvalidOrNull = fieldOrNull;
             return false;
         }
-        hasChanged = hasChanged == true || value != initial;
+        hasChanged = hasChanged == true || static_cast<foundation::float32>(value.toDouble()) !=
+                                               static_cast<foundation::float32>(initial.toDouble());
         coating.insert(key, value);
     }
     if (hasChanged == true)

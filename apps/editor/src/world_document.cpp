@@ -341,6 +341,23 @@ QJsonObject Defaults(const QJsonObject& component)
     }
     return out;
 }
+[[nodiscard]] bool ValidateCoating(const QJsonValue& value, QString& outError)
+{
+    const QJsonObject coating = value.toObject();
+    if (coating.size() != static_cast<qsizetype>(sizeof(COATING_FIELDS) / sizeof(CoatingField)))
+    {
+        return Fail(outError, QStringLiteral("A coating instance needs GGX alpha, IOR and optical thickness."));
+    }
+    for (const CoatingField& field : COATING_FIELDS)
+    {
+        if (Value(field.MakeNumberProperty(), coating.value(QString::fromLatin1(field.Key)), outError) == false)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
 {
@@ -613,7 +630,8 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                                                                         QStringLiteral("schema"),
                                                                         QStringLiteral("entities"),
                                                                         QStringLiteral("scene"),
-                                                                        QStringLiteral("disabled_lights")};
+                                                                        QStringLiteral("disabled_lights"),
+                                                                        QStringLiteral("shared_coatings")};
     if (HasSchema() == false || (hasScopedIds == false && hasUuidRecords == false) ||
         Fields(candidate, rootFields) == false ||
         candidate.value(QStringLiteral("schema")) != Schema_.value(QStringLiteral("id")) ||
@@ -634,6 +652,28 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     QStringLiteral("World supports at most %1 entities and %2 KiB.")
                         .arg(MAX_ENTITIES)
                         .arg(MAX_BYTES / BYTES_PER_KIBIBYTE));
+    }
+    const QJsonValue sharedCoatings = candidate.value(QStringLiteral("shared_coatings"));
+    if (sharedCoatings.isUndefined() == false)
+    {
+        const QJsonObject instances = sharedCoatings.toObject();
+        if (candidate.contains(QStringLiteral("scene")) == false || sharedCoatings.isObject() == false ||
+            instances.size() > static_cast<qsizetype>(content::scene_format::IMPORT_LIMITS.Materials))
+        {
+            return Fail(error, QStringLiteral("Invalid shared coating instances. Check the World's scene and table."));
+        }
+        for (QJsonObject::const_iterator instance = instances.constBegin(); instance != instances.constEnd();
+             ++instance)
+        {
+            if (ResourceId(QJsonValue(instance.key()), QStringLiteral("material")) == false)
+            {
+                return Fail(error, QStringLiteral("A shared coating must name an imported material resource ID."));
+            }
+            if (ValidateCoating(instance.value(), error) == false)
+            {
+                return false;
+            }
+        }
     }
     // Entity keys: version-2 UUIDs or version-1 IDs, the values entity-typed properties hold.
     QSet<QString> ids;
@@ -875,20 +915,9 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         {
             return Fail(error, QStringLiteral("Invalid scene instance."));
         }
-        if (hasCoating == true)
+        if (hasCoating == true && ValidateCoating(scene.value(QStringLiteral("coating")), error) == false)
         {
-            const QJsonObject coating = scene.value(QStringLiteral("coating")).toObject();
-            if (coating.size() != static_cast<qsizetype>(sizeof(COATING_FIELDS) / sizeof(CoatingField)))
-            {
-                return Fail(error, QStringLiteral("A slot coating needs GGX alpha, IOR and optical thickness."));
-            }
-            for (const CoatingField& field : COATING_FIELDS)
-            {
-                if (Value(field.MakeNumberProperty(), coating.value(QString::fromLatin1(field.Key)), error) == false)
-                {
-                    return false;
-                }
-            }
+            return false;
         }
         for (const auto& key :
              {QStringLiteral("basis"), QStringLiteral("position"), QStringLiteral("rotation"), QStringLiteral("scale")})
@@ -1370,6 +1399,12 @@ bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
     }
     auto metadata = level;
     metadata.remove(QStringLiteral("objects"));
+    const QJsonValue sharedCoatings = metadata.value(QStringLiteral("shared_coatings"));
+    metadata.remove(QStringLiteral("shared_coatings"));
+    if (sharedCoatings.isUndefined() == false)
+    {
+        candidate.insert(QStringLiteral("shared_coatings"), sharedCoatings);
+    }
     candidate.insert(QStringLiteral("scene"), metadata);
     candidate.insert(QStringLiteral("entities"), entities);
     return Commit(candidate, error);
@@ -1386,6 +1421,28 @@ bool WorldDocument::MapSceneMaterial(const QString& source, const QString& repla
     scene.insert(QStringLiteral("material_mappings"), mappings);
     QJsonObject candidate = Draft_;
     candidate.insert(QStringLiteral("scene"), scene);
+    return Commit(candidate, outError);
+}
+
+QString WorldDocument::GetInheritedMaterialId(const QJsonObject& placement) const
+{
+    const QString source = placement.value(QStringLiteral("material")).toString();
+    const QJsonObject mappings =
+        Draft_.value(QStringLiteral("scene")).toObject().value(QStringLiteral("material_mappings")).toObject();
+    return mappings.value(source).toString(source);
+}
+
+QJsonObject WorldDocument::GetSharedCoating(const QString& material) const
+{
+    return Draft_.value(QStringLiteral("shared_coatings")).toObject().value(material).toObject();
+}
+
+bool WorldDocument::SetSharedCoating(const QString& material, const QJsonObject& coating, QString& outError)
+{
+    QJsonObject candidate = Draft_;
+    QJsonObject instances = candidate.value(QStringLiteral("shared_coatings")).toObject();
+    instances.insert(material, coating);
+    candidate.insert(QStringLiteral("shared_coatings"), instances);
     return Commit(candidate, outError);
 }
 
@@ -1609,6 +1666,10 @@ QJsonObject WorldDocument::SceneLevel() const
         objects.append(object);
     }
     level.insert(QStringLiteral("objects"), objects);
+    if (Draft_.contains(QStringLiteral("shared_coatings")) == true)
+    {
+        level.insert(QStringLiteral("shared_coatings"), Draft_.value(QStringLiteral("shared_coatings")));
+    }
     return level;
 }
 QByteArray WorldDocument::Encode() const
