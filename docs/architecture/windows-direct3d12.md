@@ -51,12 +51,12 @@ a private release protocol over the Ludus owner.
 
 | Field | Value |
 | --- | --- |
-| Target | D1/D2: Windows 10 version 1703 or later, x86_64, little endian, 64-bit pointers; D0/D7 must revalidate the minimum OS against the full runtime/editor dependency set |
+| Target | Windows x86_64, little endian, 64-bit pointers. See the [Agility runtime](#directx-12-agility-runtime) for the Windows loader requirement. D7 must revalidate the minimum OS against the full runtime/editor dependency set. |
 | Host and tools | Current: Windows host, LLVM 23.1.3, CMake/Ninja/Conan. Target: pinned MSVC toolset/SDK, Ninja and MSBuild; exact new pins and setup delivered in D0 |
 | Target SDK | Current: Windows 10/11 SDK supplied by the build image, Microsoft STL and dynamic CRT. D0 pins the SDK and matching dependency/CRT configuration for MSVC |
 | Runtime graphics | Direct3D 12 at feature level 11_0 or higher on a hardware adapter, otherwise WARP |
-| Unsupported variants | 32-bit x86, ARM64 and ARM64EC; UWP/GDK; Windows before 10 version 1703 (per-monitor DPI v2) |
-| Dependency pins | No runtime dependencies; build-time Slang 2026.1.2 (Windows x86_64) and DXC 1.9.2609 in `config/shader_toolchain.json`; Catch2 for tests through the existing Windows Conan profile |
+| Unsupported variants | 32-bit x86, ARM64 and ARM64EC; UWP/GDK |
+| Dependency pins | Windows x64 executables use the DirectX 12 Agility SDK 1.620.1; build-time Slang 2026.1.2 (Windows x86_64) and DXC 1.9.2609 in `config/shader_toolchain.json`; Catch2 for tests through the existing Windows Conan profile |
 | Validation | Existing Clang D1/D2 lane: `.github/workflows/windows-direct3d12.yml` on `windows-2022` (WARP; no GPU). MSVC, MSBuild and physical-GPU acceptance pending |
 | Owner and branch | D1: `codex/windows-direct3d12-rhi` (merged); D2: `codex/windows-d3d12-dxil-draw`; D3a: `codex/windows-integration-d3a`; D3b: `codex/windows-integration-d3b`; D4a: `codex/windows-d4a` |
 | Last audited base | Plan/toolchain audit: `develop` at `94bc3e3c` (2026-10-26); historical D1/D2 runtime evidence remains at the commits recorded below |
@@ -169,9 +169,10 @@ lifecycle (`Start`, `SetFrameTarget`, `BeginFrameStatus`, `EndFrameStatus`,
   10 seconds, fails the session with `DeviceLost`. Other command, resize or
   `Present` failures report `RenderingUnavailable`. The facade then shuts the
   backend down.
-- **Debugging.** Debug and Development builds enable the Direct3D 12 debug
-  layer and the DXGI debug factory when the Windows *Graphics Tools* optional
-  feature is installed, and continue without them otherwise.
+- **Debugging.** Debug and Development builds try to enable the Direct3D 12 debug
+  layer and the DXGI debug factory. The app-local SDK includes the matching
+  Direct3D 12 debug layer. The DXGI debug factory uses the Windows *Graphics Tools*
+  optional feature. The backend can continue when either is unavailable.
 - **Limits.** `MaxFrameDimension2D` is 16384 and the uniform limit is the 64 KiB
   constant-buffer view, clamped by the facade to 16384 bytes.
 
@@ -451,6 +452,28 @@ index `LUDUS_SHADER_VERTEX_ID` from the RHI's `raster_bindings.slang`, which
 selects `SV_VertexID` for DXIL. DXC is licensed under NCSA and MIT terms;
 `dxil.dll` is covered by Microsoft's DirectX Shader Compiler license, and the
 tools are used at build time only, never installed with an SDK.
+
+## DirectX 12 Agility runtime
+
+The Windows graphics tests and executables configured with the installed SDK's
+`ludus_apply_app_policy` use Microsoft's DirectX 12 Agility SDK automatically.
+CMake downloads and verifies the pinned x64 NuGet package when configuring the
+Windows tests or Visual Studio SDK. The installed Ludus SDK includes that runtime,
+so building a consumer from a relocated SDK uses the same version offline.
+
+The build exports the SDK version and relative path from each executable and
+stages the matching DLLs in its `D3D12/` subdirectory. Windows uses its system
+core when that core is newer. The Agility loader requires Windows 10 version 1909
+with the applicable servicing update or a later supported Windows release.
+Direct3D feature support still depends on the adapter and driver.
+See [Microsoft's Agility SDK setup guide](https://devblogs.microsoft.com/directx/gettingstarted-dx12agility/).
+
+For a custom CMake executable that skips `ludus_apply_app_policy`, call
+`ludus_enable_d3d12_agility(your_executable)` after creating the target. When
+distributing the application, keep `D3D12/D3D12Core.dll` and
+`D3D12/LICENSE.txt` beside the executable in that layout. The matching
+`d3d12SDKLayers.dll` is for development builds. If a deployment reports an
+invalid Direct3D redistributable, restore the `D3D12` folder from the same build.
 
 ## Build and test
 

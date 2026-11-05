@@ -156,6 +156,8 @@ if(LUDUS_BUILD_TESTS AND WIN32)
     add_executable(ludus_rhi_d3d12_tests tests/d3d12_tests.cpp tests/d3d12_diagnostics_tests.cpp tests/d3d12_resource_tests.cpp tests/d3d12_transfer_tests.cpp tests/portable_transfer_conformance_tests.cpp)
     target_include_directories(ludus_rhi_d3d12_tests PRIVATE src)
     target_link_libraries(ludus_rhi_d3d12_tests PRIVATE Ludus::GraphicsRhi Ludus::Platform Ludus::FoundationLogging Catch2::Catch2WithMain user32)
+    ludus_attach_d3d12_agility(ludus_rhi_d3d12_tests "${LUDUS_D3D12_AGILITY_SDK_VERSION}"
+        "${LUDUS_D3D12_AGILITY_BINARIES}" "${LUDUS_D3D12_AGILITY_LICENSE}")
     ludus_configure_win32_target(ludus_rhi_d3d12_tests)
     ludus_apply_project_defaults(ludus_rhi_d3d12_tests)
     ludus_enable_test_exceptions(ludus_rhi_d3d12_tests)

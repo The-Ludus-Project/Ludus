@@ -20,6 +20,8 @@ function(ludus_install_windows_sdk)
         ludus_sdk_register_feature("${component}")
     endforeach()
     ludus_sdk_register_dependency(Threads "system" "system" system)
+    ludus_sdk_register_dependency(Microsoft.Direct3D.D3D12 "${LUDUS_D3D12_AGILITY_PACKAGE_VERSION}"
+        "Microsoft DirectX Software License Terms" bundled)
     ludus_sdk_register_dependency(xxHash "0.8.3" "BSD-2-Clause" bundled)
     ludus_sdk_register_system_prerequisite("x64 Microsoft STL and dynamic CRT matching the SDK configuration")
     ludus_sdk_register_system_prerequisite("Windows SDK for Win32 and Direct3D 12 system libraries")
@@ -78,6 +80,14 @@ function(ludus_install_windows_sdk)
         "${PROJECT_SOURCE_DIR}/cmake/shaders/cook_texture.py"
         "${PROJECT_SOURCE_DIR}/config/shader_toolchain.json"
         DESTINATION "${package_directory}/shaders")
+    install(FILES "${PROJECT_SOURCE_DIR}/cmake/LudusD3D12Agility.cmake"
+        "${PROJECT_SOURCE_DIR}/cmake/D3D12AgilityExports.cpp"
+        "${PROJECT_SOURCE_DIR}/cmake/StageD3D12Agility.cmake"
+        DESTINATION "${package_directory}")
+    install(FILES "${LUDUS_D3D12_AGILITY_BINARIES}/D3D12Core.dll"
+        "${LUDUS_D3D12_AGILITY_BINARIES}/d3d12SDKLayers.dll"
+        "${LUDUS_D3D12_AGILITY_LICENSE}"
+        DESTINATION "${package_directory}/agility")
     install(FILES "${PROJECT_SOURCE_DIR}/LICENSE" "${PROJECT_SOURCE_DIR}/cmake/sdk/THIRD_PARTY_NOTICES.md"
         DESTINATION "${data_directory}/licenses")
     install(FILES "${PROJECT_SOURCE_DIR}/third_party/xxhash/LICENSE"

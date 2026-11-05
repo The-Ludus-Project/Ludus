@@ -312,7 +312,7 @@ struct StateTransition final
 void EnableDebugLayer() noexcept
 {
 #if defined(LUDUS_BUILD_DEBUG) || defined(LUDUS_BUILD_DEVELOPMENT)
-    // The debug layer ships with the optional Graphics Tools feature; continue without it.
+    // The debug layer comes from the app-local Agility SDK or Windows Graphics Tools.
     ID3D12Debug* debugOrNull = nullptr;
     if (SUCCEEDED(D3D12GetDebugInterface(GetInterfaceId(debugOrNull), GetInterfaceOutput(debugOrNull))) == true &&
         debugOrNull != nullptr)
@@ -322,7 +322,9 @@ void EnableDebugLayer() noexcept
     }
     else
     {
-        LUDUS_LOG_INFO(LOG_RHI, "Direct3D 12: debug layer unavailable (install the Graphics Tools feature)");
+        LUDUS_LOG_INFO(LOG_RHI,
+                       "Direct3D 12: debug layer unavailable (restore the matching d3d12SDKLayers.dll in D3D12 "
+                       "or install Windows Graphics Tools)");
     }
 #endif
 }
