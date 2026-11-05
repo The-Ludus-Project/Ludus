@@ -7,6 +7,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <QAction>
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
@@ -20,7 +21,6 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTreeWidget>
-#include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 
 #include <catch2/catch_test_macros.hpp>
@@ -106,23 +106,11 @@ qsizetype FindRow(const WorldLightsPanel& panel, WorldLightOrigin origin, qsizet
     return -1;
 }
 
-QTreeWidgetItem* FindItem(QTreeWidget& inoutTree, qsizetype row)
-{
-    for (QTreeWidgetItemIterator it(&inoutTree); *it != nullptr; ++it)
-    {
-        if ((*it)->data(0, Qt::UserRole).isValid() == true && (*it)->data(0, Qt::UserRole).toLongLong() == row)
-        {
-            return *it;
-        }
-    }
-    return nullptr;
-}
-
 void SetRowChecked(WorldLightsPanel& inoutPanel, qsizetype row, bool isChecked)
 {
     QTreeWidget* treeOrNull = inoutPanel.findChild<QTreeWidget*>(QStringLiteral("worldLights"));
     REQUIRE(treeOrNull != nullptr);
-    QTreeWidgetItem* itemOrNull = FindItem(*treeOrNull, row);
+    QTreeWidgetItem* itemOrNull = treeOrNull->topLevelItem(static_cast<int32>(row));
     REQUIRE(itemOrNull != nullptr);
     itemOrNull->setCheckState(0, isChecked == true ? Qt::Checked : Qt::Unchecked);
 }
@@ -133,7 +121,7 @@ void ClickCommand(WorldLightsPanel& inoutPanel, const QString& name, qsizetype s
     {
         QTreeWidget* treeOrNull = inoutPanel.findChild<QTreeWidget*>(QStringLiteral("worldLights"));
         REQUIRE(treeOrNull != nullptr);
-        QTreeWidgetItem* itemOrNull = FindItem(*treeOrNull, selectedRow);
+        QTreeWidgetItem* itemOrNull = treeOrNull->topLevelItem(static_cast<int32>(selectedRow));
         REQUIRE(itemOrNull != nullptr);
         treeOrNull->clearSelection();
         itemOrNull->setSelected(true);
@@ -349,6 +337,55 @@ TEST_CASE("World light switches turn imported emitters and lights off without a 
     CHECK(IsEmitterSwitchedOff(reopened, poweredKey.SourceId) == true);
     CHECK(reopened.AuthoredLights.Count == 0);
     CHECK(reopened.Identity == soloIdentity);
+    // Add an authored light alongside the imported sources and exercise the same list controls.
+    QAction* addSunOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
+    REQUIRE(addSunOrNull != nullptr);
+    REQUIRE(addSunOrNull->isEnabled() == true);
+    addSunOrNull->trigger();
+    WaitForWorld(workspace);
+    const qsizetype sun = FindRow(*panelOrNull, WorldLightOrigin::WorldLight);
+    REQUIRE(sun >= 0);
+    QTreeWidget* treeOrNull = panelOrNull->findChild<QTreeWidget*>(QStringLiteral("worldLights"));
+    REQUIRE(treeOrNull != nullptr);
+    REQUIRE(treeOrNull->topLevelItemCount() == panelOrNull->GetRows().size());
+    CHECK(treeOrNull->headerItem()->text(1) == QStringLiteral("Kind"));
+    CHECK(treeOrNull->topLevelItem(static_cast<int32>(ceiling))->text(1) == QStringLiteral("Area light"));
+    CHECK(treeOrNull->topLevelItem(static_cast<int32>(point))->text(1) == QStringLiteral("Point light"));
+    CHECK(treeOrNull->topLevelItem(static_cast<int32>(sun))->text(0) == QStringLiteral("Sun"));
+    CHECK(treeOrNull->topLevelItem(static_cast<int32>(sun))->text(1) == QStringLiteral("Directional light"));
+    for (int32 i = 0; i < treeOrNull->topLevelItemCount(); ++i)
+    {
+        CHECK(treeOrNull->topLevelItem(i)->childCount() == 0);
+    }
+
+    ClickCommand(*panelOrNull, QStringLiteral("worldLightsSolo"), sun);
+    WaitForWorld(workspace);
+    CHECK(levelOrNull->PreviewScene().AuthoredLights.Count == 1);
+    CHECK(IsEmitterSwitchedOff(levelOrNull->PreviewScene(), ceilingKey.SourceId) == true);
+    ClickCommand(*panelOrNull, QStringLiteral("worldLightsSolo"), ceiling);
+    WaitForWorld(workspace);
+    CHECK(panelOrNull->GetRows()[sun].IsEnabled == false);
+    CHECK(levelOrNull->PreviewScene().AuthoredLights.Count == 0);
+    CHECK(IsEmitterOn(levelOrNull->PreviewScene(), ceilingKey.SourceId) == true);
+    ClickCommand(*panelOrNull, QStringLiteral("worldLightsEnableAll"));
+    WaitForWorld(workspace);
+    CHECK(workspace.Document().GetLightSwitches().Disabled.isEmpty() == true);
+    CHECK(panelOrNull->GetRows()[sun].IsEnabled == true);
+    CHECK(levelOrNull->PreviewScene().AuthoredLights.Count == 2);
+    SetRowChecked(*panelOrNull, sun, false);
+    WaitForWorld(workspace);
+    CHECK(panelOrNull->GetRows()[sun].IsEnabled == false);
+    CHECK(levelOrNull->PreviewScene().AuthoredLights.Count == 1);
+    workspace.Undo();
+    WaitForWorld(workspace);
+    workspace.Undo();
+    WaitForWorld(workspace);
+    CHECK(panelOrNull->GetRows()[sun].IsEnabled == false);
+    CHECK(IsEmitterOn(levelOrNull->PreviewScene(), ceilingKey.SourceId) == true);
+    workspace.Undo();
+    WaitForWorld(workspace);
+    CHECK(panelOrNull->GetRows()[sun].IsEnabled == true);
+    CHECK(IsEmitterSwitchedOff(levelOrNull->PreviewScene(), ceilingKey.SourceId) == true);
     workspace.StopPreview();
 }
 
@@ -501,7 +538,7 @@ TEST_CASE("Switching a light keeps the light list's scroll position and selectio
     QScrollBar* scrollOrNull = treeOrNull->verticalScrollBar();
     REQUIRE(scrollOrNull->maximum() > 0);
     const qsizetype selectedRow = ROW_COUNT / 2;
-    QTreeWidgetItem* selectedOrNull = FindItem(*treeOrNull, selectedRow);
+    QTreeWidgetItem* selectedOrNull = treeOrNull->topLevelItem(static_cast<int32>(selectedRow));
     REQUIRE(selectedOrNull != nullptr);
     treeOrNull->scrollToItem(selectedOrNull, QAbstractItemView::PositionAtTop);
     selectedOrNull->setSelected(true);
@@ -512,7 +549,7 @@ TEST_CASE("Switching a light keeps the light list's scroll position and selectio
     rows[selectedRow].IsEnabled = false;
     panel.SetRows(rows, {{{LightSourceKind::Emitter, rows[selectedRow].Key.SourceId}}});
     CHECK(scrollOrNull->value() == scrolled);
-    CHECK(FindItem(*treeOrNull, selectedRow) == selectedOrNull);
+    CHECK(treeOrNull->topLevelItem(static_cast<int32>(selectedRow)) == selectedOrNull);
     CHECK(selectedOrNull->isSelected() == true);
     CHECK(selectedOrNull->checkState(0) == Qt::Unchecked);
 

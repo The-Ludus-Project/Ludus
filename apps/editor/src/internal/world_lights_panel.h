@@ -46,6 +46,7 @@ struct WorldLightRow final
     /// World lights: the entity key.
     QString EntityKey;
     QString Label;
+    QString KindLabel;
     /// Radiance or intensity, object count and source ID, for the tooltip.
     QString Detail;
     bool IsEnabled = true;

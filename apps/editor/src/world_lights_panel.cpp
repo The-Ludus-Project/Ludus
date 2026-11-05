@@ -6,6 +6,7 @@
 #include <ludus/runtime/resources/scene.h>
 
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
@@ -13,7 +14,6 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <QTreeWidget>
-#include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 
 namespace ludus::editor
@@ -25,11 +25,11 @@ using foundation::int32;
 using foundation::uint64;
 using foundation::usize;
 
-/// Item data role holding a child item's row index into WorldLightsPanel::GetRows().
-constexpr int32 ROW_ROLE = Qt::UserRole;
+constexpr int32 NAME_COLUMN = 0;
+constexpr int32 KIND_COLUMN = 1;
 /// Significant digits of radiance, intensity and power in row tooltips.
 constexpr int32 DISPLAY_SIGNIFICANT_DIGITS = 4;
-/// Smallest list height that still shows a section and a few rows.
+/// Smallest list height that still shows a header and a few rows.
 constexpr int32 MIN_LIST_HEIGHT = 120;
 
 bool IsImported(WorldLightOrigin origin) noexcept
@@ -61,32 +61,37 @@ QString GetLightKindLabel(resources::SceneLightKind kind)
     }
     return QStringLiteral("Light");
 }
-QString GetSectionTitle(WorldLightOrigin origin)
+QString GetLightKindLabel(const QString& kind)
 {
-    switch (origin)
+    if (kind == QStringLiteral("directional"))
     {
-        case WorldLightOrigin::ImportedEmitter:
-            return QStringLiteral("Imported emitters");
-        case WorldLightOrigin::ImportedLight:
-            return QStringLiteral("Imported lights");
-        case WorldLightOrigin::WorldLight:
-            return QStringLiteral("World lights");
-        case WorldLightOrigin::Missing:
-            return QStringLiteral("Missing from the scene");
+        return GetLightKindLabel(resources::SceneLightKind::Directional);
     }
-    return {};
+    if (kind == QStringLiteral("point"))
+    {
+        return GetLightKindLabel(resources::SceneLightKind::Point);
+    }
+    if (kind == QStringLiteral("spot"))
+    {
+        return GetLightKindLabel(resources::SceneLightKind::Spot);
+    }
+    return QStringLiteral("Light");
 }
-/// The component a World binds as its light, and that component's `enabled` property.
+/// The component a World binds as its light, and the properties that describe the row.
 struct WorldLightBinding final
 {
     QString Component;
     QString EnabledProperty;
+    QString KindProperty;
 };
 WorldLightBinding ReadLightBinding(const RenderScene& scene)
 {
+    const QJsonObject properties = scene.LightBinding.value(QStringLiteral("properties")).toObject();
     return {
         scene.LightBinding.value(QStringLiteral("component")).toString(),
-        scene.LightBinding.value(QStringLiteral("properties")).toObject().value(QStringLiteral("enabled")).toString()};
+        properties.value(QStringLiteral("enabled")).toString(),
+        properties.value(QStringLiteral("kind")).toString(),
+    };
 }
 } // namespace
 
@@ -120,9 +125,12 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
             WorldLightRow row;
             row.Origin = WorldLightOrigin::WorldLight;
             row.EntityKey = world.GetEntityKey(entity);
-            row.Label = entity.value(QStringLiteral("name")).toString();
-            row.Detail = QStringLiteral("World light entity %1").arg(world.GetEntityLabel(entity));
-            row.IsEnabled = component.toObject().value(binding.EnabledProperty).toBool();
+            const QString entityLabel = world.GetEntityLabel(entity);
+            row.Label = entity.value(QStringLiteral("name")).toString(entityLabel);
+            row.Detail = QStringLiteral("World light entity %1").arg(entityLabel);
+            const QJsonObject properties = component.toObject();
+            row.KindLabel = GetLightKindLabel(properties.value(binding.KindProperty).toString());
+            row.IsEnabled = properties.value(binding.EnabledProperty).toBool();
             authoredSources.insert(ComputeEntitySourceId(row.EntityKey));
             worldLights.append(row);
         }
@@ -165,6 +173,7 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
                 row.Key = key;
                 row.IsEnabled = switches.IsDisabled(key) == false;
                 row.Label = GetEmitterLabel(names.value(0), objectCounts.size() + 1);
+                row.KindLabel = QStringLiteral("Area light");
                 row.Detail =
                     material.HasEmissionPower == true
                         ? QStringLiteral("Emitter %1 · %2 lm")
@@ -186,6 +195,7 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
             }
             rows[i].Detail += QStringLiteral(" · %1 objects").arg(objectCounts[i]);
         }
+        qsizetype lightNumber = 0;
         for (const resources::SceneLight& light : definition.Lights)
         {
             if (light.IsEnabled == false || authoredSources.contains(light.SourceId) == true)
@@ -196,7 +206,8 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
             row.Origin = WorldLightOrigin::ImportedLight;
             row.Key = {LightSourceKind::Light, light.SourceId};
             row.IsEnabled = switches.IsDisabled(row.Key) == false;
-            row.Label = GetLightKindLabel(light.Kind);
+            row.KindLabel = GetLightKindLabel(light.Kind);
+            row.Label = QStringLiteral("Light %1").arg(++lightNumber);
             row.Detail = QStringLiteral("Light %1 · intensity %2")
                              .arg(FormatLightSourceId(light.SourceId), FormatRgb(light.IntensityRgb));
             rows.append(row);
@@ -218,6 +229,8 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
             row.IsEnabled = false;
             row.Label = key.Kind == LightSourceKind::Emitter ? QStringLiteral("Missing emitter")
                                                              : QStringLiteral("Missing light");
+            row.KindLabel =
+                key.Kind == LightSourceKind::Emitter ? QStringLiteral("Area light") : QStringLiteral("Light");
             row.Detail = QStringLiteral("%1 %2 is switched off but not in the imported scene. Remove it, or "
                                         "re-import the scene that contained it.")
                              .arg(GetLightSourceKindName(key.Kind), FormatLightSourceId(key.SourceId));
@@ -330,11 +343,15 @@ WorldLightsPanel::WorldLightsPanel(QWidget* parentOrNull) : QWidget(parentOrNull
     mTreeOrNull = new QTreeWidget(this);
     mTreeOrNull->setObjectName(QStringLiteral("worldLights"));
     mTreeOrNull->setAccessibleName(QStringLiteral("World lights"));
-    mTreeOrNull->setHeaderHidden(true);
+    mTreeOrNull->setHeaderLabels({QStringLiteral("Name"), QStringLiteral("Kind")});
+    mTreeOrNull->header()->setStretchLastSection(false);
+    mTreeOrNull->header()->setSectionResizeMode(NAME_COLUMN, QHeaderView::Stretch);
+    mTreeOrNull->header()->setSectionResizeMode(KIND_COLUMN, QHeaderView::ResizeToContents);
+    mTreeOrNull->setItemsExpandable(false);
     mTreeOrNull->setRootIsDecorated(false);
     mTreeOrNull->setMinimumHeight(MIN_LIST_HEIGHT);
-    mTreeOrNull->setToolTip(QStringLiteral("Switch lights on or off. Imported emitters are grouped as the importer "
-                                           "merged them; a switched-off light keeps its authored values."));
+    mTreeOrNull->setToolTip(QStringLiteral("Switch any light on or off. An imported area light can cover several "
+                                           "emissive shapes. Switching it off keeps its authored values."));
     layout->addWidget(mTreeOrNull, 1);
     QHBoxLayout* commands = new QHBoxLayout;
     mSoloOrNull = new QPushButton(QStringLiteral("Solo"), this);
@@ -389,10 +406,10 @@ void WorldLightsPanel::SetRows(QVector<WorldLightRow> rows, LightSwitchSet switc
     const WorldLightRow previous = hasSelection == true ? mRows[selected] : WorldLightRow{};
     if (mTreeOrNull->topLevelItemCount() > 0)
     {
-        const QTreeWidgetItem* topOrNull = mTreeOrNull->itemAt(0, 0);
-        mHasTopRow = topOrNull != nullptr && topOrNull->data(0, ROW_ROLE).isValid() == true;
-        mTopRow = mHasTopRow == true ? mRows[static_cast<qsizetype>(topOrNull->data(0, ROW_ROLE).toLongLong())]
-                                     : WorldLightRow{};
+        QTreeWidgetItem* topOrNull = mTreeOrNull->itemAt(0, 0);
+        const qsizetype top = topOrNull != nullptr ? mTreeOrNull->indexOfTopLevelItem(topOrNull) : -1;
+        mHasTopRow = top >= 0;
+        mTopRow = mHasTopRow == true ? mRows[top] : WorldLightRow{};
     }
     mRows = foundation::Move(rows);
     mSwitches = foundation::Move(switches);
@@ -413,19 +430,17 @@ void WorldLightsPanel::SetRows(QVector<WorldLightRow> rows, LightSwitchSet switc
 }
 void WorldLightsPanel::updateItems()
 {
-    for (QTreeWidgetItemIterator it(mTreeOrNull); *it != nullptr; ++it)
+    for (int32 i = 0; i < mTreeOrNull->topLevelItemCount(); ++i)
     {
-        QTreeWidgetItem* item = *it;
-        if (item->data(0, ROW_ROLE).isValid() == false)
-        {
-            continue;
-        }
-        const WorldLightRow& row = mRows[static_cast<qsizetype>(item->data(0, ROW_ROLE).toLongLong())];
-        item->setText(0, row.Label);
-        item->setToolTip(0, row.Detail);
+        QTreeWidgetItem* item = mTreeOrNull->topLevelItem(i);
+        const WorldLightRow& row = mRows[i];
+        item->setText(NAME_COLUMN, row.Label);
+        item->setText(KIND_COLUMN, row.KindLabel);
+        item->setToolTip(NAME_COLUMN, row.Detail);
+        item->setToolTip(KIND_COLUMN, row.Detail);
         if (row.Origin != WorldLightOrigin::Missing)
         {
-            item->setCheckState(0, row.IsEnabled == true ? Qt::Checked : Qt::Unchecked);
+            item->setCheckState(NAME_COLUMN, row.IsEnabled == true ? Qt::Checked : Qt::Unchecked);
         }
     }
 }
@@ -433,46 +448,26 @@ void WorldLightsPanel::rebuildItems(const WorldLightRow* selectedOrNull)
 {
     mTreeOrNull->clear();
     QTreeWidgetItem* topItemOrNull = nullptr;
-    for (const WorldLightOrigin origin : {WorldLightOrigin::ImportedEmitter,
-                                          WorldLightOrigin::ImportedLight,
-                                          WorldLightOrigin::Missing,
-                                          WorldLightOrigin::WorldLight})
+    for (const WorldLightRow& row : mRows)
     {
-        QTreeWidgetItem* sectionOrNull = nullptr;
-        for (qsizetype i = 0; i < mRows.size(); ++i)
+        QTreeWidgetItem* item = new QTreeWidgetItem(mTreeOrNull);
+        Qt::ItemFlags flags = Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+        if (row.Origin != WorldLightOrigin::Missing)
         {
-            const WorldLightRow& row = mRows[i];
-            if (row.Origin != origin)
-            {
-                continue;
-            }
-            if (sectionOrNull == nullptr)
-            {
-                sectionOrNull = new QTreeWidgetItem(mTreeOrNull, {GetSectionTitle(origin)});
-                sectionOrNull->setFlags(Qt::ItemIsEnabled);
-            }
-            QTreeWidgetItem* item = new QTreeWidgetItem(sectionOrNull, {row.Label});
-            item->setData(0, ROW_ROLE, QVariant::fromValue(static_cast<qint64>(i)));
-            item->setToolTip(0, row.Detail);
-            Qt::ItemFlags flags = Qt::ItemIsEnabled | Qt::ItemIsSelectable;
-            if (row.Origin != WorldLightOrigin::Missing)
-            {
-                flags |= Qt::ItemIsUserCheckable;
-                item->setCheckState(0, row.IsEnabled == true ? Qt::Checked : Qt::Unchecked);
-            }
-            item->setFlags(flags);
-            if (selectedOrNull != nullptr && IsSameLight(row, *selectedOrNull) == true)
-            {
-                item->setSelected(true);
-                mTreeOrNull->setCurrentItem(item, 0, QItemSelectionModel::NoUpdate);
-            }
-            if (mHasTopRow == true && IsSameLight(row, mTopRow) == true)
-            {
-                topItemOrNull = item;
-            }
+            flags |= Qt::ItemIsUserCheckable;
+        }
+        item->setFlags(flags);
+        if (selectedOrNull != nullptr && IsSameLight(row, *selectedOrNull) == true)
+        {
+            item->setSelected(true);
+            mTreeOrNull->setCurrentItem(item, NAME_COLUMN, QItemSelectionModel::NoUpdate);
+        }
+        if (mHasTopRow == true && IsSameLight(row, mTopRow) == true)
+        {
+            topItemOrNull = item;
         }
     }
-    mTreeOrNull->expandAll();
+    updateItems();
     if (topItemOrNull != nullptr)
     {
         mTreeOrNull->scrollToItem(topItemOrNull, QAbstractItemView::PositionAtTop);
@@ -480,16 +475,16 @@ void WorldLightsPanel::rebuildItems(const WorldLightRow* selectedOrNull)
 }
 void WorldLightsPanel::rowChanged(QTreeWidgetItem* item)
 {
-    if (mIsRendering == true || item == nullptr || item->data(0, ROW_ROLE).isValid() == false)
+    if (mIsRendering == true || item == nullptr)
     {
         return;
     }
-    const qsizetype row = static_cast<qsizetype>(item->data(0, ROW_ROLE).toLongLong());
+    const qsizetype row = mTreeOrNull->indexOfTopLevelItem(item);
     if (row < 0 || row >= mRows.size() || mRows[row].Origin == WorldLightOrigin::Missing)
     {
         return;
     }
-    const bool isEnabled = item->checkState(0) == Qt::Checked;
+    const bool isEnabled = item->checkState(NAME_COLUMN) == Qt::Checked;
     if (isEnabled == mRows[row].IsEnabled)
     {
         return;
@@ -516,11 +511,6 @@ void WorldLightsPanel::updateCommands()
 qsizetype WorldLightsPanel::getSelectedRow() const
 {
     const QList<QTreeWidgetItem*> selected = mTreeOrNull->selectedItems();
-    if (selected.isEmpty() == true || selected.first()->data(0, ROW_ROLE).isValid() == false)
-    {
-        return -1;
-    }
-    const qsizetype row = static_cast<qsizetype>(selected.first()->data(0, ROW_ROLE).toLongLong());
-    return row >= 0 && row < mRows.size() ? row : -1;
+    return selected.isEmpty() == true ? -1 : mTreeOrNull->indexOfTopLevelItem(selected.first());
 }
 } // namespace ludus::editor
