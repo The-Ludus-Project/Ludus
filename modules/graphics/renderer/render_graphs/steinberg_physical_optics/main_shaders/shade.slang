@@ -1057,13 +1057,13 @@ float3 TracePath(SceneContext scene, RayLaunch launch, bool isWave, inout RayQue
                     continuation.PropagationWorld = -incidentWorld;
                     continuation.Weight = stored.ContinuationWeight;
                     RayLightEvaluation light = EvaluateLightAlongRay(scene,
-                                                                    hit.PositionWorld,
-                                                                    incidentWorld,
-                                                                    status,
-                                                                    next,
-                                                                    LightSelectionPolicy::Uniform);
-                    continuation.Kind = status == SceneQuery::Miss ? LightEndpointKind::Environment
-                                                                    : LightEndpointKind::Radiator;
+                                                                     hit.PositionWorld,
+                                                                     incidentWorld,
+                                                                     status,
+                                                                     next,
+                                                                     LightSelectionPolicy::Uniform);
+                    continuation.Kind =
+                        status == SceneQuery::Miss ? LightEndpointKind::Environment : LightEndpointKind::Radiator;
                     continuation.RadianceRgb = light.Radiance;
                     if (status == SceneQuery::Surface)
                         continuation.DistanceWorld = next.DistanceWorld;

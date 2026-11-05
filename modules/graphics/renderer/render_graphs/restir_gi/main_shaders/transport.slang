@@ -199,11 +199,11 @@ BsdfStep SampleBsdfStrategy(SceneContext scene,
                      SpawnSurfaceRay(shadingPoint.Hit, directionWorld, TRANSPORT_MAXIMUM_TRACE_DISTANCE_WORLD),
                      endpoint);
     RayLightEvaluation light = EvaluateLightAlongRay(scene,
-                                                    shadingPoint.Hit.PositionWorld,
-                                                    directionWorld,
-                                                    status,
-                                                    endpoint,
-                                                    LightSelectionPolicy::Uniform);
+                                                     shadingPoint.Hit.PositionWorld,
+                                                     directionWorld,
+                                                     status,
+                                                     endpoint,
+                                                     LightSelectionPolicy::Uniform);
     float3 incidentRadiance = light.Radiance;
     float lightDensity = light.SelectionPmf * light.ConditionalPdfSolidAngle;
     // A failed query has latched queries.HasFailed; zero radiance adds nothing.

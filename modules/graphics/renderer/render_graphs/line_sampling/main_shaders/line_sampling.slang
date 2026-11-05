@@ -130,12 +130,12 @@ bool ProposeLineU(SceneContext scene,
 {
     outProposal = (LineProposal)0;
     SceneLightSample sample = SampleLight(scene,
-                                         receiver,
-                                         launch,
-                                         firstDimension,
-                                         firstDimension + 1,
-                                         LightSelectionPolicy::Uniform,
-                                         queries);
+                                          receiver,
+                                          launch,
+                                          firstDimension,
+                                          firstDimension + 1,
+                                          LightSelectionPolicy::Uniform,
+                                          queries);
     outProposal.PointSample = sample.Incident;
     outProposal.SelectionPmf = sample.Selection.SelectionPmf;
     if (outProposal.PointSample.HasSample == false)

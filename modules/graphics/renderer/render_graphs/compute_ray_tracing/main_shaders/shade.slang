@@ -24,12 +24,12 @@ float3 SampleDirectLighting(SceneContext scene,
         return float3(0);
     }
     SceneLightSample sample = SampleLight(scene,
-                                         receiver,
-                                         launch,
-                                         SHADE_RANDOM_DIMENSION_FIRST,
-                                         SHADE_INCIDENT_DIMENSION_FIRST,
-                                         LightSelectionPolicy::Uniform,
-                                         queries);
+                                          receiver,
+                                          launch,
+                                          SHADE_RANDOM_DIMENSION_FIRST,
+                                          SHADE_INCIDENT_DIMENSION_FIRST,
+                                          LightSelectionPolicy::Uniform,
+                                          queries);
     IncidentLightSample light = sample.Incident;
     float probability = sample.Selection.SelectionPmf * light.ConditionalProbability;
     if (light.HasSample == false || probability <= 0 || any(light.IncidentCoefficient > 0) == false)

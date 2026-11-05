@@ -144,12 +144,12 @@ float3
 SamplePointStrategy(SceneContext scene, RayLaunch launch, ShadingPoint shadingPoint, inout RayQueryContext queries)
 {
     SceneLightSample sample = SampleLight(scene,
-                                         shadingPoint.Hit,
-                                         launch,
-                                         SHADE_POINT_DIMENSION_FIRST,
-                                         SHADE_POINT_DIMENSION_FIRST + 1,
-                                         LightSelectionPolicy::Uniform,
-                                         queries);
+                                          shadingPoint.Hit,
+                                          launch,
+                                          SHADE_POINT_DIMENSION_FIRST,
+                                          SHADE_POINT_DIMENSION_FIRST + 1,
+                                          LightSelectionPolicy::Uniform,
+                                          queries);
     IncidentLightSample light = sample.Incident;
     float lightDensity = sample.Selection.SelectionPmf * light.ConditionalProbability;
     if (light.HasSample == false || lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false)

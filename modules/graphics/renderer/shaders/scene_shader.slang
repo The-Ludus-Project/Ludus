@@ -226,9 +226,9 @@ struct SceneLightSample
 /// Emitted radiance and the matching continuous light proposal for a traced ray.
 struct RayLightEvaluation
 {
-    float3 Radiance;                     ///< Emission towards the receiver, including visible background.
-    float SelectionPmf;                  ///< Source probability under the selected policy.
-    float ConditionalPdfSolidAngle;      ///< Incident density per steradian, excluding the source PMF.
+    float3 Radiance;                ///< Emission towards the receiver, including visible background.
+    float SelectionPmf;             ///< Source probability under the selected policy.
+    float ConditionalPdfSolidAngle; ///< Incident density per steradian, excluding the source PMF.
 };
 /// Legacy sample with the default uniform selection PMF and a discrete flag.
 struct LightSample
@@ -1327,12 +1327,8 @@ SceneLightSample SampleLight(SceneContext scene,
     else
         result.Selection = SelectLight(scene, launch, selectionDimension);
     if (result.Selection.HasSample == true)
-        result.Incident = SampleIncidentLight(scene,
-                                              result.Selection.LightIndex,
-                                              receiver,
-                                              launch,
-                                              incidentDimension,
-                                              inoutQueries);
+        result.Incident =
+            SampleIncidentLight(scene, result.Selection.LightIndex, receiver, launch, incidentDimension, inoutQueries);
     return result;
 }
 /// Draw a pseudorandom float in [0,1), advancing the renderer-owned invocation stream.

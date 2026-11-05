@@ -158,11 +158,11 @@ FgPoint TraceFgCamera(SceneContext scene,
         SceneQuery status =
             TraceClosest(scene, queries, SpawnSurfaceRay(point.Hit, directionWorld, FG_MAXIMUM_DISTANCE_WORLD), hit);
         RayLightEvaluation light = EvaluateLightAlongRay(scene,
-                                                        point.Hit.PositionWorld,
-                                                        directionWorld,
-                                                        status,
-                                                        hit,
-                                                        LightSelectionPolicy::Uniform);
+                                                         point.Hit.PositionWorld,
+                                                         directionWorld,
+                                                         status,
+                                                         hit,
+                                                         LightSelectionPolicy::Uniform);
         float3 emission = light.Radiance;
         float lightDensity = light.SelectionPmf * light.ConditionalPdfSolidAngle;
         float3 value;

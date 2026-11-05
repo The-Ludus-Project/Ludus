@@ -99,12 +99,12 @@ float3 SampleLightStrategy(SceneContext scene,
                            inout RayQueryContext queries)
 {
     SceneLightSample sample = SampleLight(scene,
-                                         shadingPoint.Hit,
-                                         launch,
-                                         SHADE_LIGHT_SELECTION_DIMENSION,
-                                         SHADE_LIGHT_SHAPE_DIMENSION_FIRST,
-                                         VEACH_LIGHT_SELECTION_POLICY,
-                                         queries);
+                                          shadingPoint.Hit,
+                                          launch,
+                                          SHADE_LIGHT_SELECTION_DIMENSION,
+                                          SHADE_LIGHT_SHAPE_DIMENSION_FIRST,
+                                          VEACH_LIGHT_SELECTION_POLICY,
+                                          queries);
     IncidentLightSample light = sample.Incident;
     float lightDensity = sample.Selection.SelectionPmf * light.ConditionalProbability;
     if (light.HasSample == false || lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false)
@@ -165,11 +165,11 @@ float3 SampleBsdfStrategy(SceneContext scene,
                      SpawnSurfaceRay(shadingPoint.Hit, directionWorld, SHADE_MAXIMUM_TRACE_DISTANCE_WORLD),
                      endpoint);
     RayLightEvaluation light = EvaluateLightAlongRay(scene,
-                                                    shadingPoint.Hit.PositionWorld,
-                                                    directionWorld,
-                                                    status,
-                                                    endpoint,
-                                                    VEACH_LIGHT_SELECTION_POLICY);
+                                                     shadingPoint.Hit.PositionWorld,
+                                                     directionWorld,
+                                                     status,
+                                                     endpoint,
+                                                     VEACH_LIGHT_SELECTION_POLICY);
     float3 incidentRadiance = light.Radiance;
     float lightDensity = light.SelectionPmf * light.ConditionalPdfSolidAngle;
     // A failed query has latched queries.HasFailed; zero radiance adds nothing.

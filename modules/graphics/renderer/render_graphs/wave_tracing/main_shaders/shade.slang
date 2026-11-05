@@ -106,12 +106,12 @@ float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQu
             dot(hit.GeometricNormalWorld, viewWorld) < 0 ? -hit.GeometricNormalWorld : hit.GeometricNormalWorld;
         uint dimension = SHADE_RANDOM_DIMENSION_FIRST + depth * WAVE_RANDOM_VERTEX_STRIDE;
         SceneLightSample sample = SampleLight(scene,
-                                             hit,
-                                             launch,
-                                             dimension,
-                                             dimension + WAVE_LIGHT_SHAPE_FIRST,
-                                             LightSelectionPolicy::Uniform,
-                                             queries);
+                                              hit,
+                                              launch,
+                                              dimension,
+                                              dimension + WAVE_LIGHT_SHAPE_FIRST,
+                                              LightSelectionPolicy::Uniform,
+                                              queries);
         if (sample.Selection.HasSample == true)
         {
             IncidentLightSample light = sample.Incident;
