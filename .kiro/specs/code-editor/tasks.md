@@ -208,9 +208,18 @@ Requirements: CE05-CE07, CE17. Prerequisite: M1.
   `internal/code_keymap.h/.cpp`, `editor.toggleBreakpoint`/fold commands,
   `profiling.record` moved to Ctrl+Alt+F9; authored, not run — see the
   [M2 batch 6 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-6-keymap-profiles-ce07ce17-shortcut-resolution-2026-11-05).)*
-- [ ] Measure 1-cursor and 100-cursor typing against the budgets.
+- [x] Measure 1-cursor and 100-cursor typing against the budgets. *(Batch 7;
+  `code_editor_benchmark` gains 1-cursor and 100-cursor `[.benchmark]` workloads
+  that type a real key event through the M2 multi-cursor edit-set path; the
+  numbers are recorded on a reference machine by the maintainer, as the M0
+  baseline was — authored, not run here. See the
+  [M2 batch 7 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-7-typing-budgets-ce21-2026-11-05).)*
 
-Gate: the CE05-CE07 and CE17 tests pass; the typing budgets are recorded.
+Gate: the CE05-CE07 and CE17 tests pass; the typing budgets are recorded. The
+test cases are authored; the budgets are recorded on a reference machine by the
+maintainer (the benchmark corpus does not run in the sandbox, as in M0), and the
+functional CE05-CE07/CE17 cases are pending host verification. See the
+[M2 gate report](../../../docs/architecture/code-editor-decision-log.md#m2-gate-report-2026-11-05).
 
 ## M3 - Syntax service
 

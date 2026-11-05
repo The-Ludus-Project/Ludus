@@ -18,10 +18,12 @@
 //   QT_QPA_PLATFORM=offscreen ludus_code_editor_tests "[.benchmark]"
 // Each case prints one WARN summary; record those summaries in the task ledger.
 
+#include "internal/code_document_controller.h"
 #include "internal/code_editor.h"
 #include "internal/code_file_document.h"
 #include "internal/code_file_limits.h"
 #include "internal/code_latency_probe.h"
+#include "internal/code_multi_cursor.h"
 #include "internal/code_syntax_highlighter.h"
 #include "internal/code_text_profile.h"
 
@@ -301,6 +303,93 @@ TEST_CASE("corpus: multi-cursor pre-feature typing baseline", "[.benchmark][edit
                   samples,
                   idleProbe);
     CHECK(editor.toPlainText().compare(source) == 0);
+}
+
+// Measure real key-event typing with `cursorCount` cursors (1 plus the
+// secondaries) through the M2 multi-cursor edit-set path: a CodeFileDocument
+// host bound through a CodeDocumentController, so a keystroke is distributed as
+// one CodeEditSet and the view re-synchronizes, exactly as in the editor. This
+// is the M2 typing budget the gate records (1-cursor and 100-cursor).
+void MeasureMultiCursorTyping(const char* workload, int32 cursorCount)
+{
+    constexpr int32 LINES_PER_CURSOR = 4;
+    QByteArray source;
+    const QByteArray line("value = value + 1\n");
+    for (int32 repeat = 0; repeat < cursorCount * LINES_PER_CURSOR; ++repeat)
+    {
+        source.append(line);
+    }
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString path = QDir(directory.path()).filePath(QStringLiteral("budget.txt"));
+    QFile file(path);
+    REQUIRE(file.open(QIODevice::WriteOnly) == true);
+    REQUIRE(file.write(source) == source.size());
+    file.close();
+
+    CodeFileDocument host(LoadCodeFile(path), 1);
+    CodeEditor editor;
+    CodeDocumentController controller(editor);
+    editor.resize(VIEW_WIDTH, VIEW_HEIGHT);
+    editor.show();
+    controller.Bind(&host);
+    FinishEvents();
+
+    // A caret at the start of every fourth line: the primary on the first, a
+    // secondary on each of the rest (line N starts at N * line length).
+    QTextCursor primary(editor.document());
+    primary.setPosition(0);
+    editor.setTextCursor(primary);
+    QList<CodeSecondaryCursor> cursors;
+    cursors.reserve(cursorCount - 1);
+    for (int32 index = 1; index < cursorCount; ++index)
+    {
+        const int32 position = index * LINES_PER_CURSOR * static_cast<int32>(line.size());
+        cursors.append(CodeSecondaryCursor{ .Anchor = position, .Caret = position });
+    }
+    editor.GetMultiCursor().AdoptSecondaryCursors(cursors);
+    REQUIRE(editor.GetMultiCursor().GetCursorCount() == cursorCount);
+    FinishEvents();
+
+    CodeLatencyProbe& probe = editor.GetLatencyProbe();
+    probe.Start();
+    QVector<int64> samples;
+    samples.reserve(SAMPLE_COUNT);
+    for (int32 sample = 0; sample < SAMPLE_COUNT; ++sample)
+    {
+        QElapsedTimer timer;
+        timer.start();
+        QTest::keyClick(&editor, Qt::Key_X);
+        FinishEvents();
+        samples.append(timer.nsecsElapsed());
+        QList<CodeTextSelection> undone;
+        static_cast<void>(host.Undo(undone));
+        controller.Synchronize();
+        editor.GetMultiCursor().AdoptSecondaryCursors(cursors);
+        FinishEvents();
+    }
+    probe.Stop();
+    ReportSamples(workload,
+                  QStringLiteral("M2 multi-cursor edit-set path, %1 cursors").arg(cursorCount),
+                  static_cast<int32>(source.size()),
+                  editor.blockCount(),
+                  samples,
+                  probe);
+}
+
+TEST_CASE("corpus: 1-cursor typing through the edit-set path", "[.benchmark][editor][text][code-editor]")
+{
+    // The single-cursor budget: one key, distributed through the same edit-set
+    // path the 100-cursor case uses, so the two are directly comparable.
+    MeasureMultiCursorTyping("1-cursor typing (edit-set path)", 1);
+}
+
+TEST_CASE("corpus: 100-cursor typing through the edit-set path", "[.benchmark][editor][text][code-editor]")
+{
+    // The 100-cursor budget (architecture's 8 ms 100-cursor workload), now
+    // measured through the real multi-cursor path M2 added, not a programmatic
+    // edit block.
+    MeasureMultiCursorTyping("100-cursor typing (edit-set path)", CURSOR_CORPUS_COUNT);
 }
 
 TEST_CASE("corpus: long-line file opened through the file host", "[.benchmark][editor][text][code-editor][file-host]")
