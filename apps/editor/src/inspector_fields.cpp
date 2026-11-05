@@ -8,7 +8,6 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QColorDialog>
-#include <QColorSpace>
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QLineEdit>
@@ -199,23 +198,24 @@ QWidget* MakeVectorRow(const QVector<VectorComponent>& components,
     return row;
 }
 
+// The sRGB transfer is FoundationMath's exact IEC 61966-2-1 piecewise curve (DecodeSrgb/EncodeSrgb), so the result
+// does not depend on the Qt version. QColorTransform::map(QColor) changed between releases: Qt 6.12 returns
+// ExtendedRgb colours, which never compare equal to the plain Rgb colours a picker or painter uses, and evaluates the
+// transfer approximately (display (255, 0, 128) decoded green as 2^-24 rather than 0).
 QColor ConvertLinearToDisplayColour(float64 red, float64 green, float64 blue)
 {
-    const QColorTransform transform =
-        QColorSpace(QColorSpace::SRgbLinear).transformationToColorSpace(QColorSpace(QColorSpace::SRgb));
-    return transform.map(QColor::fromRgbF(static_cast<float>(math::Clamp(red, 0.0, 1.0)),
-                                          static_cast<float>(math::Clamp(green, 0.0, 1.0)),
-                                          static_cast<float>(math::Clamp(blue, 0.0, 1.0))));
+    const auto encode = [](float64 linear) {
+        return math::EncodeSrgb(static_cast<float32>(math::Clamp(linear, 0.0, 1.0)));
+    };
+    return QColor::fromRgbF(encode(red), encode(green), encode(blue));
 }
 
 void ConvertDisplayToLinearColour(const QColor& display, float64& outRed, float64& outGreen, float64& outBlue)
 {
-    const QColorTransform transform =
-        QColorSpace(QColorSpace::SRgb).transformationToColorSpace(QColorSpace(QColorSpace::SRgbLinear));
-    const QColor linear = transform.map(display);
-    outRed = static_cast<float64>(linear.redF());
-    outGreen = static_cast<float64>(linear.greenF());
-    outBlue = static_cast<float64>(linear.blueF());
+    const QColor rgb = display.toRgb();
+    outRed = static_cast<float64>(math::DecodeSrgb(rgb.redF()));
+    outGreen = static_cast<float64>(math::DecodeSrgb(rgb.greenF()));
+    outBlue = static_cast<float64>(math::DecodeSrgb(rgb.blueF()));
 }
 
 ColourSwatch::ColourSwatch(QLineEdit& inoutRed, QLineEdit& inoutGreen, QLineEdit& inoutBlue, QWidget* parentOrNull)
