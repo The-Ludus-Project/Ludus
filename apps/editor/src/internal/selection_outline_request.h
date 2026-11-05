@@ -33,6 +33,6 @@ struct SelectionOutlineRequest final
     /// Logical width of the main stroke.
     foundation::float32 OutlineWidth = 2;
     /// Logical width of the casing.
-    foundation::float32 CasingWidth = 4;
+    foundation::float32 CasingWidth = OutlineWidth * 2;
 };
 } // namespace ludus::editor

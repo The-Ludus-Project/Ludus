@@ -64,74 +64,80 @@ rr::SelectionOutlineView MakeView(float32 translationClipX)
     return view;
 }
 
-bool Start(Scene& scene)
+bool Start(Scene& inoutScene)
 {
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
     rhi::StartupInfo failure;
-    const auto started = rhi::CreateDevice({},
-                                           { .Width = TARGET_WIDTH, .Height = TARGET_HEIGHT },
-                                           description,
-                                           scene.Device,
-                                           scene.Surface,
-                                           &failure);
+    const rhi::DeviceStatus started = rhi::CreateDevice({},
+                                                        { .Width = TARGET_WIDTH, .Height = TARGET_HEIGHT },
+                                                        description,
+                                                        inoutScene.Device,
+                                                        inoutScene.Surface,
+                                                        &failure);
 #if defined(LUDUS_TEST_METAL)
     if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
     {
-        scene.IsSkipped = true;
+        inoutScene.IsSkipped = true;
         return false;
     }
 #endif
     REQUIRE(started == rhi::DeviceStatus::Ready);
-    const auto initialized = scene.Outline.Initialize(scene.Device,
-                                                      ludus::shaders::renderer_selection_mask::Vertex(),
-                                                      ludus::shaders::renderer_selection_mask::Fragment(),
-                                                      ludus::shaders::renderer_selection_outline::Vertex(),
-                                                      ludus::shaders::renderer_selection_outline::Fragment());
+    const rhi::RasterStatus initialized =
+        inoutScene.Outline.Initialize(inoutScene.Device,
+                                      ludus::shaders::renderer_selection_mask::Vertex(),
+                                      ludus::shaders::renderer_selection_mask::Fragment(),
+                                      ludus::shaders::renderer_selection_outline::Vertex(),
+                                      ludus::shaders::renderer_selection_outline::Fragment());
     REQUIRE((initialized == rhi::RasterStatus::Ready || initialized == rhi::RasterStatus::Pending));
-    auto setup = initialized;
+    rhi::RasterStatus setup = initialized;
     for (usize i = 0; i < POLL_LIMIT && setup == rhi::RasterStatus::Pending; ++i)
     {
-        setup = scene.Outline.Poll();
+        setup = inoutScene.Outline.Poll();
     }
     REQUIRE(setup == rhi::RasterStatus::Ready);
-    REQUIRE(scene.Outline.IsReady());
+    REQUIRE(inoutScene.Outline.IsReady());
     return true;
 }
 
 /// An axis-aligned rectangle with the given clip-space bounds.
-void SetRectangleMesh(rr::SelectionOutlineRenderer& outline, float32 minX, float32 minY, float32 maxX, float32 maxY)
+void SetRectangleMesh(rr::SelectionOutlineRenderer& inoutOutline,
+                      float32 minX,
+                      float32 minY,
+                      float32 maxX,
+                      float32 maxY)
 {
     const Vector3 positions[] = {{minX, minY, 0}, {maxX, minY, 0}, {maxX, maxY, 0}, {minX, maxY, 0}};
     const uint32 indices[] = {0, 1, 2, 0, 2, 3};
-    const auto status = outline.SetMesh(BorrowedView<const Vector3>(positions), BorrowedView<const uint32>(indices));
+    const rhi::RasterStatus status =
+        inoutOutline.SetMesh(BorrowedView<const Vector3>(positions), BorrowedView<const uint32>(indices));
     REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
     bool isReady = false;
     for (usize i = 0; i < POLL_LIMIT && isReady == false; ++i)
     {
-        isReady = outline.GetMeshStatus() == rhi::RasterStatus::Ready;
+        isReady = inoutOutline.GetMeshStatus() == rhi::RasterStatus::Ready;
     }
     REQUIRE(isReady);
 }
 
 /// A centred square, half of the target wide and high in clip space.
-void SetSquareMesh(rr::SelectionOutlineRenderer& outline)
+void SetSquareMesh(rr::SelectionOutlineRenderer& inoutOutline)
 {
-    SetRectangleMesh(outline, -HALF_CLIP_EXTENT, -HALF_CLIP_EXTENT, HALF_CLIP_EXTENT, HALF_CLIP_EXTENT);
+    SetRectangleMesh(inoutOutline, -HALF_CLIP_EXTENT, -HALF_CLIP_EXTENT, HALF_CLIP_EXTENT, HALF_CLIP_EXTENT);
 }
 
-rhi::RasterStatus PrepareReady(rr::SelectionOutlineRenderer& outline,
+rhi::RasterStatus PrepareReady(rr::SelectionOutlineRenderer& inoutOutline,
                                const rr::SelectionOutlineView& view,
                                rr::PreparedSelectionOutline& outPrepared)
 {
-    const auto prepared = outline.Prepare(view, outPrepared);
+    const rhi::RasterStatus prepared = inoutOutline.Prepare(view, outPrepared);
     if (prepared != rhi::RasterStatus::Ready && prepared != rhi::RasterStatus::Pending)
     {
         return prepared;
     }
     for (usize i = 0; i < POLL_LIMIT; ++i)
     {
-        if (outline.GetStatus(outPrepared) == rhi::RasterStatus::Ready)
+        if (inoutOutline.GetStatus(outPrepared) == rhi::RasterStatus::Ready)
         {
             return rhi::RasterStatus::Ready;
         }
@@ -139,16 +145,16 @@ rhi::RasterStatus PrepareReady(rr::SelectionOutlineRenderer& outline,
     return rhi::RasterStatus::Pending;
 }
 
-void DrawFrame(Scene& scene,
+void DrawFrame(Scene& inoutScene,
                const rr::PreparedSelectionOutline& prepared,
                uint8 (&outImage)[TARGET_WIDTH * TARGET_HEIGHT * BYTES_PER_PIXEL])
 {
-    REQUIRE(rhi::BeginFrame(scene.Device, scene.Surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginFrame(inoutScene.Device, inoutScene.Surface) == rhi::DeviceStatus::Ready);
     const rhi::RasterPassDescription clear;
-    REQUIRE(rhi::BeginRasterPass(scene.Device, clear) == rhi::RasterStatus::Ready);
-    REQUIRE(scene.Outline.Draw(prepared, clear) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::BeginRasterPass(inoutScene.Device, clear) == rhi::RasterStatus::Ready);
+    REQUIRE(inoutScene.Outline.Draw(prepared, clear) == rhi::RasterStatus::Ready);
     rhi::SubmissionToken completion;
-    REQUIRE(rhi::EndFrame(scene.Device, completion) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::EndFrame(inoutScene.Device, completion) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::backend::ReadHeadlessPixels(outImage));
 }
 
@@ -284,25 +290,25 @@ TEST_CASE("Selection outline rejects invalid meshes, views and a fifth version",
     CHECK(scene.Outline.SetMesh(BorrowedView<const Vector3>(nonFinite), BorrowedView<const uint32>(triangle)) ==
           rhi::RasterStatus::InvalidDescription);
     SetSquareMesh(scene.Outline);
-    auto emptyExtent = MakeView(0);
+    rr::SelectionOutlineView emptyExtent = MakeView(0);
     emptyExtent.Width = 0;
     CHECK(scene.Outline.Prepare(emptyExtent, prepared) == rhi::RasterStatus::InvalidDescription);
-    auto thinnerCasing = MakeView(0);
+    rr::SelectionOutlineView thinnerCasing = MakeView(0);
     thinnerCasing.Style.CasingWidthPixels = thinnerCasing.Style.OutlineWidthPixels - 1;
     CHECK(scene.Outline.Prepare(thinnerCasing, prepared) == rhi::RasterStatus::InvalidDescription);
-    auto tooWide = MakeView(0);
+    rr::SelectionOutlineView tooWide = MakeView(0);
     tooWide.Style.CasingWidthPixels = rr::SelectionOutlineRenderer::MAX_STROKE_WIDTH_PIXELS + 1;
     CHECK(scene.Outline.Prepare(tooWide, prepared) == rhi::RasterStatus::InvalidDescription);
     constexpr usize VERSION_LIMIT = 4;
     rr::PreparedSelectionOutline versions[VERSION_LIMIT];
-    for (auto& version : versions)
+    for (rr::PreparedSelectionOutline& version : versions)
     {
-        const auto status = scene.Outline.Prepare(MakeView(0), version);
+        const rhi::RasterStatus status = scene.Outline.Prepare(MakeView(0), version);
         REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
     }
     rr::PreparedSelectionOutline fifth;
     CHECK(scene.Outline.Prepare(MakeView(0), fifth) == rhi::RasterStatus::CapacityExceeded);
-    for (auto& version : versions)
+    for (rr::PreparedSelectionOutline& version : versions)
     {
         CHECK(scene.Outline.Release(version) == rhi::RasterStatus::Ready);
     }
@@ -325,7 +331,7 @@ TEST_CASE("Selection outline strokes an RGBA8 attachment texture the same way as
     description.Height = TARGET_HEIGHT;
     description.Attachment = true;
     rhi::TextureHandle texture;
-    const auto created = rhi::CreateTexture(scene.Device, description, {}, texture);
+    const rhi::RasterStatus created = rhi::CreateTexture(scene.Device, description, {}, texture);
     REQUIRE((created == rhi::RasterStatus::Ready || created == rhi::RasterStatus::Pending));
     REQUIRE(rhi::BeginFrame(scene.Device, scene.Surface) == rhi::DeviceStatus::Ready);
     rhi::RasterPassDescription pass;

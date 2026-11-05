@@ -21,6 +21,9 @@ constexpr usize MASK_VERTEX_INPUT_COUNT = 5;
 constexpr usize EDGE_VERTEX_INPUT_COUNT = 4;
 constexpr usize EDGE_FRAGMENT_BINDING_COUNT = 2;
 constexpr usize MATRIX_ROWS = 4;
+constexpr usize INDICES_PER_TRIANGLE = 3;
+constexpr usize ALPHA_CHANNEL = 3;
+constexpr usize LAST_MATRIX_COLUMN = 3;
 constexpr usize MAXIMUM_VERSIONS = 4;
 constexpr usize QUAD_VERTEX_COUNT = 4;
 constexpr usize QUAD_INDEX_COUNT = 6;
@@ -115,22 +118,22 @@ struct SelectionOutlineAccess final
     static PreparedSelectionOutline Make(const Identity& identity) noexcept
     {
         PreparedSelectionOutline value;
-        value.Owner = identity.Owner;
-        value.Generation = identity.Generation;
-        value.Slot = identity.Slot;
+        value.mOwner = identity.Owner;
+        value.mGeneration = identity.Generation;
+        value.mSlot = identity.Slot;
         return value;
     }
     static uint64 GetOwner(PreparedSelectionOutline value) noexcept
     {
-        return value.Owner;
+        return value.mOwner;
     }
     static uint64 GetGeneration(PreparedSelectionOutline value) noexcept
     {
-        return value.Generation;
+        return value.mGeneration;
     }
     static uint32 GetSlot(PreparedSelectionOutline value) noexcept
     {
-        return value.Slot;
+        return value.mSlot;
     }
 };
 } // namespace internal
@@ -187,12 +190,12 @@ struct SelectionOutlineRenderer::State final
                    ? &version
                    : nullptr;
     }
-    void drop(Version& version) noexcept
+    void drop(Version& inoutVersion) noexcept
     {
-        static_cast<void>(rhi::Destroy(Device, version.Instance));
-        const uint64 generation = version.Generation;
-        version = {};
-        version.Generation = generation + 1;
+        static_cast<void>(rhi::Destroy(Device, inoutVersion.Instance));
+        const uint64 generation = inoutVersion.Generation;
+        inoutVersion = {};
+        inoutVersion.Generation = generation + 1;
     }
     void dropMask() noexcept
     {
@@ -498,7 +501,7 @@ Status SelectionOutlineRenderer::SetMesh(BorrowedView<const math::Vector3> posit
     const usize vertexCount = positionsMesh.GetSize();
     const usize indexCount = indices.GetSize();
     if (positionsMesh.IsValid() == false || indices.IsValid() == false || vertexCount == 0 || indexCount == 0 ||
-        indexCount % 3 != 0 || vertexCount > ~uint32{0} || indexCount > ~uint32{0})
+        indexCount % INDICES_PER_TRIANGLE != 0 || vertexCount > ~uint32{0} || indexCount > ~uint32{0})
     {
         return Status::InvalidDescription;
     }
@@ -658,7 +661,7 @@ Status SelectionOutlineRenderer::Prepare(const SelectionOutlineView& view,
         instance.Rows[row] = {view.MeshToClip.At(row, 0),
                               view.MeshToClip.At(row, 1),
                               view.MeshToClip.At(row, 2),
-                              view.MeshToClip.At(row, 3)};
+                              view.MeshToClip.At(row, LAST_MATRIX_COLUMN)};
     }
     const math::Vector4 parameters{1 / width,
                                    1 / height,
@@ -799,7 +802,7 @@ Status SelectionOutlineRenderer::Draw(PreparedSelectionOutline prepared,
     maskPass.Clear[0] = MASK_CLEAR;
     maskPass.Clear[1] = MASK_CLEAR;
     maskPass.Clear[2] = MASK_CLEAR;
-    maskPass.Clear[3] = MASK_CLEAR;
+    maskPass.Clear[ALPHA_CHANNEL] = MASK_CLEAR;
     Status status = rhi::BeginRasterPass(state.Device, maskPass);
     if (status != Status::Ready)
     {

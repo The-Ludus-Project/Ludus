@@ -162,7 +162,7 @@ private:
     graphics::renderer::SelectionOutlineStyle mOutlineStyle{};
     foundation::float32 mOutlineStrokeScale = 1;
     foundation::float32 mOutlineLogicalOutlineWidth = 2;
-    foundation::float32 mOutlineLogicalCasingWidth = 4;
+    foundation::float32 mOutlineLogicalCasingWidth = mOutlineLogicalOutlineWidth * 2;
     /// Counts every change of what should be drawn; mComposedRevision is the count the shown image reflects.
     foundation::int32 mRejectedMesh = -1;
     QByteArray mRejectedSceneIdentity;

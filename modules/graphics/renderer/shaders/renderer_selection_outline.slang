@@ -35,8 +35,7 @@ static const int MAXIMUM_SEARCH_PIXELS = 8;
 // Distance beyond any stroke, meaning that no boundary is near.
 static const float NO_BOUNDARY_PIXELS = 1e6;
 static const float HALF = 0.5;
-[shader("vertex")] EdgeVarying EdgeVertexMain(EdgeInput input)
-{
+[shader("vertex")] EdgeVarying EdgeVertexMain(EdgeInput input) {
     EdgeVarying output;
     output.PositionClip = float4(input.PositionUv.xy, 0, 1);
     output.Uv = input.PositionUv.zw;
@@ -44,8 +43,7 @@ static const float HALF = 0.5;
     output.CasingColor = input.CasingColor;
     output.Params = input.Params;
     return output;
-}
-float IsCovered(float2 uv)
+} float IsCovered(float2 uv)
 {
     return maskImage.SampleLevel(maskSampler, uv, 0).r >= COVERED_THRESHOLD ? 1.0 : 0.0;
 }

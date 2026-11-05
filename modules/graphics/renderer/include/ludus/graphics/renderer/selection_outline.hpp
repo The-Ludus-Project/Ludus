@@ -24,7 +24,7 @@ struct SelectionOutlineStyle final
     foundation::float32 OutlineWidthPixels = 2;
     /// Width of the casing stroke, centred on the silhouette: at least OutlineWidthPixels and at most
     /// MAX_STROKE_WIDTH_PIXELS.
-    foundation::float32 CasingWidthPixels = 4;
+    foundation::float32 CasingWidthPixels = OutlineWidthPixels * 2;
 };
 /// Everything one frame of a selection outline depends on besides the mesh.
 struct SelectionOutlineView final
@@ -49,9 +49,9 @@ struct SelectionOutlineAccess;
 struct PreparedSelectionOutline final
 {
 private:
-    foundation::uint64 Owner = 0;
-    foundation::uint64 Generation = 0;
-    foundation::uint32 Slot = 0;
+    foundation::uint64 mOwner = 0;
+    foundation::uint64 mGeneration = 0;
+    foundation::uint32 mSlot = 0;
     /// Grants private access to incarnation identities.
     friend struct internal::SelectionOutlineAccess;
 };

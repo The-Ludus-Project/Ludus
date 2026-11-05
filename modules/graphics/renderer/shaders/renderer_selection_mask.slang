@@ -19,8 +19,7 @@ struct Varying
 {
     float4 PositionClip : SV_Position;
 };
-[shader("vertex")] Varying MaskVertexMain(Input input)
-{
+[shader("vertex")] Varying MaskVertexMain(Input input) {
     Varying output;
     float4 positionHomogeneous = float4(input.PositionMesh, 1);
     float clipX = dot(input.Row0, positionHomogeneous);
@@ -30,8 +29,8 @@ struct Varying
     // matches the silhouette whatever the depth convention or far distance of the view.
     output.PositionClip = float4(clipX, clipY, clipW * DEPTH_FRACTION, clipW);
     return output;
-}
-[shader("fragment")] float4 MaskFragmentMain(Varying input) : SV_Target
+}[shader("fragment")] float4 MaskFragmentMain(Varying input)
+    : SV_Target
 {
     return float4(1, 1, 1, 1);
 }
