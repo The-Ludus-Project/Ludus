@@ -21,11 +21,19 @@ using ludus::world_demo::LEVEL_TEXT_CAPACITY_BYTES;
 using LevelBytes = StaticArray<char, LEVEL_TEXT_CAPACITY_BYTES>;
 namespace filesystem = ludus::foundation::filesystem;
 
-bool ReadLevelSource(std::string_view nativePath,
-                     std::string_view packedPath,
-                     LevelBytes& outBytes,
-                     usize& outSize) noexcept
+// Names the two paths of one --level/--level-pack request so callers cannot swap them.
+struct LevelSourcePaths
 {
+    // Native file: the level text, or the pack that contains it.
+    std::string_view NativePath;
+    // Path inside the pack; empty when NativePath is the level text itself.
+    std::string_view PackedPath;
+};
+
+bool ReadLevelSource(const LevelSourcePaths& paths, LevelBytes& outBytes, usize& outSize) noexcept
+{
+    const std::string_view nativePath = paths.NativePath;
+    const std::string_view packedPath = paths.PackedPath;
 #if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
     const usize separator = nativePath.find_last_of("/\\");
 #else
@@ -280,7 +288,7 @@ int main(int argc, char** argv)
                 }
             }
             if (levelSize != 0 || path.empty() == true || path.size() > filesystem::MAX_ROOT_BYTES ||
-                ReadLevelSource(path, packedPath, levelBytes, levelSize) == false)
+                ReadLevelSource({ .NativePath = path, .PackedPath = packedPath }, levelBytes, levelSize) == false)
             {
                 LUDUS_LOG_ERROR(ludus::foundation::logging::LOG_CORE,
                                 "Cannot read level '{}' from '{}'. Check the path or rebuild the level pack.",
