@@ -217,6 +217,24 @@ private:
     void insertFromMimeData(const QMimeData* source) override;
     void focusOutEvent(QFocusEvent* event) override;
     bool viewportEvent(QEvent* event) override;
+    /// The structural-editing pairs for the current language, from the registry
+    /// (CE17). HasStructuralEditing is false for plain text, so these are empty
+    /// and no auto-closing, surrounding or smart indentation happens.
+    [[nodiscard]] bool languageHasStructuralEditing() const;
+    /// The close character auto-closing pairs with `open`, or a null QChar when
+    /// `open` opens no auto-closing pair for the current language.
+    [[nodiscard]] QChar autoClosingCloseFor(QChar open) const;
+    /// The close character the surrounding pair wraps a selection in for `open`,
+    /// or a null QChar when `open` surrounds nothing.
+    [[nodiscard]] QChar surroundingCloseFor(QChar open) const;
+    /// Whether `character` closes any auto-closing pair of the current language,
+    /// so typing it next steps over the existing close (and Backspace between a
+    /// pair removes both).
+    [[nodiscard]] bool isCloseOfAutoClosingPair(QChar character) const;
+    /// Whether `character` is the open of any bracket pair of the current
+    /// language, for smart indentation after a trailing open bracket.
+    [[nodiscard]] bool isOpenBracket(QChar character) const;
+    [[nodiscard]] QChar bracketCloseFor(QChar open) const;
     [[nodiscard]] foundation::int32 getGutterWidth() const;
     void updateGutterWidth();
     void paintGutter(QPaintEvent* event);
