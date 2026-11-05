@@ -190,7 +190,6 @@ Requirements: CE05-CE07, CE17. Prerequisite: M1.
   `CodeDocumentRegistry::ApplyWorkspaceEdit` minting one `CodeTransactionId`;
   authored, not run — see the
   [M2 batch 4 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-4-search-and-replace-in-files-ce07-ce11-2026-11-05).)*
-<<<<<<< HEAD
 - [x] Add auto-closing and surrounding pairs and indentation rules from the
   registry. *(Batch 5; `CodeLanguageDescriptor` gains `AutoClosingPairs` and
   `SurroundingPairs`; the view's pairing, surround-on-selection and smart indent

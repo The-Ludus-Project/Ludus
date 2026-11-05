@@ -131,28 +131,52 @@ QList<CodeKeymapBinding> CodeKeymap::GetProfileBindings(CodeKeymapProfile profil
     {
         // VS Code opens the palette with Ctrl+Shift+P and leaves Ctrl+K free, so
         // the folding commands use VS Code's own Ctrl+K chords.
-        bindings.append(CodeKeymapBinding{ .CommandId = QStringLiteral("tools.commandPalette"),
-                                           .Shortcut = QStringLiteral("Ctrl+Shift+P") });
-        bindings.append(
-            CodeKeymapBinding{ .CommandId = QStringLiteral("editor.foldAll"), .Shortcut = QStringLiteral("Ctrl+K Ctrl+0") });
-        bindings.append(
-            CodeKeymapBinding{ .CommandId = QStringLiteral("editor.unfoldAll"), .Shortcut = QStringLiteral("Ctrl+K Ctrl+J") });
-        bindings.append(
-            CodeKeymapBinding{ .CommandId = QStringLiteral("editor.toggleFold"), .Shortcut = QStringLiteral("Ctrl+Shift+[") });
+        bindings.append(CodeKeymapBinding
+        {
+            .CommandId = QStringLiteral("tools.commandPalette"),
+            .Shortcut = QStringLiteral("Ctrl+Shift+P"),
+        });
+        bindings.append(CodeKeymapBinding
+        {
+            .CommandId = QStringLiteral("editor.foldAll"),
+            .Shortcut = QStringLiteral("Ctrl+K Ctrl+0"),
+        });
+        bindings.append(CodeKeymapBinding
+        {
+            .CommandId = QStringLiteral("editor.unfoldAll"),
+            .Shortcut = QStringLiteral("Ctrl+K Ctrl+J"),
+        });
+        bindings.append(CodeKeymapBinding
+        {
+            .CommandId = QStringLiteral("editor.toggleFold"),
+            .Shortcut = QStringLiteral("Ctrl+Shift+["),
+        });
     }
     else
     {
         // The Ludus profile keeps Ctrl+K for the command palette, so Ctrl+K is not
         // free to prefix a chord; the folding commands use single Ctrl+Shift keys
         // instead, which do not collide with the palette or each other.
-        bindings.append(CodeKeymapBinding{ .CommandId = QStringLiteral("tools.commandPalette"),
-                                           .Shortcut = QStringLiteral("Ctrl+K") });
-        bindings.append(
-            CodeKeymapBinding{ .CommandId = QStringLiteral("editor.foldAll"), .Shortcut = QStringLiteral("Ctrl+Shift+-") });
-        bindings.append(
-            CodeKeymapBinding{ .CommandId = QStringLiteral("editor.unfoldAll"), .Shortcut = QStringLiteral("Ctrl+Shift+=") });
-        bindings.append(
-            CodeKeymapBinding{ .CommandId = QStringLiteral("editor.toggleFold"), .Shortcut = QStringLiteral("Ctrl+Shift+[") });
+        bindings.append(CodeKeymapBinding
+        {
+            .CommandId = QStringLiteral("tools.commandPalette"),
+            .Shortcut = QStringLiteral("Ctrl+K"),
+        });
+        bindings.append(CodeKeymapBinding
+        {
+            .CommandId = QStringLiteral("editor.foldAll"),
+            .Shortcut = QStringLiteral("Ctrl+Shift+-"),
+        });
+        bindings.append(CodeKeymapBinding
+        {
+            .CommandId = QStringLiteral("editor.unfoldAll"),
+            .Shortcut = QStringLiteral("Ctrl+Shift+="),
+        });
+        bindings.append(CodeKeymapBinding
+        {
+            .CommandId = QStringLiteral("editor.toggleFold"),
+            .Shortcut = QStringLiteral("Ctrl+Shift+["),
+        });
     }
     return bindings;
 }
@@ -222,9 +246,12 @@ QList<CodeKeymapConflict> CodeKeymap::DetectConflicts() const
             }
             if (isConflict == true)
             {
-                conflicts.append(CodeKeymapConflict{ .Shortcut = bindings.at(first).Shortcut,
-                                                     .FirstCommandId = bindings.at(first).CommandId,
-                                                     .SecondCommandId = bindings.at(second).CommandId });
+                conflicts.append(CodeKeymapConflict
+                {
+                    .Shortcut = bindings.at(first).Shortcut,
+                    .FirstCommandId = bindings.at(first).CommandId,
+                    .SecondCommandId = bindings.at(second).CommandId,
+                });
             }
         }
     }
