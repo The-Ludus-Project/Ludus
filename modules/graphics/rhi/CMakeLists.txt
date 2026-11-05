@@ -68,7 +68,7 @@ elseif(WIN32)
     # Direct3D 12 bring-up: device, swap chain, clear and present
     # (docs/architecture/windows-direct3d12.md). Unimplemented feature families
     # use the portable Unsupported implementations.
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_d3d12.cpp src/compute_d3d12.cpp src/raster_d3d12.cpp src/raster_draw_d3d12.cpp src/transfer_d3d12.cpp src/raster_unsupported.cpp src/ray_unsupported.cpp
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_d3d12.cpp src/compute_d3d12.cpp src/raster_d3d12.cpp src/raster_draw_d3d12.cpp src/transfer_d3d12.cpp src/measurement_d3d12.cpp src/debug_d3d12.cpp src/ray_unsupported.cpp
         src/native_interop_unsupported.cpp src/hosted_consumer_unsupported.cpp)
     ludus_configure_win32_target(ludus_graphics_rhi)
     target_link_libraries(ludus_graphics_rhi PRIVATE d3d12 dxgi dxguid user32)
@@ -153,9 +153,9 @@ endif()
 
 if(LUDUS_BUILD_TESTS AND WIN32)
     target_compile_definitions(ludus_graphics_rhi PRIVATE LUDUS_RHI_TEST_READBACK=1)
-    add_executable(ludus_rhi_d3d12_tests tests/d3d12_tests.cpp tests/d3d12_resource_tests.cpp tests/d3d12_transfer_tests.cpp tests/portable_transfer_conformance_tests.cpp)
+    add_executable(ludus_rhi_d3d12_tests tests/d3d12_tests.cpp tests/d3d12_diagnostics_tests.cpp tests/d3d12_resource_tests.cpp tests/d3d12_transfer_tests.cpp tests/portable_transfer_conformance_tests.cpp)
     target_include_directories(ludus_rhi_d3d12_tests PRIVATE src)
-    target_link_libraries(ludus_rhi_d3d12_tests PRIVATE Ludus::GraphicsRhi Ludus::Platform Catch2::Catch2WithMain user32)
+    target_link_libraries(ludus_rhi_d3d12_tests PRIVATE Ludus::GraphicsRhi Ludus::Platform Ludus::FoundationLogging Catch2::Catch2WithMain user32)
     ludus_configure_win32_target(ludus_rhi_d3d12_tests)
     ludus_apply_project_defaults(ludus_rhi_d3d12_tests)
     ludus_enable_test_exceptions(ludus_rhi_d3d12_tests)

@@ -19,8 +19,9 @@ developers can investigate frame costs without launching a vendor capture tool.
 The [RHI contract](rhi-gdi.md) owns device, command, resource and completion
 lifetime; the [public rendering guide](../development/fullscreen-rendering.md)
 records implemented rendering profiles. Native backends are Vulkan on Linux and
-Metal on macOS; browsers use WebGPU or WebGL 2. Windows/D3D12 and mobile capture
-integration require their platform backends and qualification first.
+Metal on macOS and Direct3D 12 on Windows. Browsers use WebGPU or WebGL 2.
+Windows supports external PIX GPU capture with optional Ludus command-list
+events. Mobile capture remains a separate platform qualification.
 
 The [reconciled profiling architecture](profiling-final.md) owns CPU traces,
 counters and the [GPU timing data contract](profiling-final.md#basic-gpu-timing-for-perfetto).
@@ -135,7 +136,7 @@ and diagnose mismatches without corrupting commands or changing rendering.
 | Metal | Object `label` properties and legal command-buffer/encoder debug groups or signposts. Labels do not extend borrowed resource lifetime. |
 | WebGPU | Object labels and encoder/pass debug groups where available through the pinned port. |
 | WebGL 2 | Capability-checked annotation facilities or tool-side metadata. Never require a desktop GL extension. |
-| Future D3D12 | Object names plus PIX command-list/queue events; CPU PIX events are a separate instrumentation choice. |
+| D3D12 | Device, direct-queue and frame command-list names. The optional WinPixEventRuntime adds a frame region and the existing named physical pass regions to the frame command list. |
 
 Name/scope capability is independent of debugger presence, capture ability,
 timestamps and validation. Annotation enablement must not require recording a
@@ -248,6 +249,63 @@ owns only capture control and borrowed API pointers. Missing runtime attachment
 returns RestartRequired with the external-launch remedy. Negotiate only calls
 available in the selected API version; capture/replay of extensions, ray queries
 and shared external memory requires explicit feature qualification.
+
+### PIX and DRED on Windows
+
+D5b uses the external PIX launcher and viewer. For a capture, use a windowed
+D3D12 executable and select **Launch For GPU Capture** in PIX before the
+executable creates its D3D12 device. Select the process that records the GPU
+work. Capture a submitted frame with the GPU Capture button and save it to a
+fresh local path under `out/`. To qualify the artifact, open it in PIX and
+check the rendered output, the queue, the recorded operations and the
+`Ludus/Frame` region with its authored pass names. External capture of
+standalone presented frames is the D5b workflow. The in-application request
+service and qualification of offscreen and hosted replay are later work.
+[PIX capture instructions](https://devblogs.microsoft.com/pix/taking-a-capture/)
+
+To see the regions, place a trusted, architecture-matched
+`WinPixEventRuntime.dll` beside the executable before launch. The Windows
+adapter uses the documented command-list ABI and requires both the begin and
+end exports. The marker runtime alone cannot inject the GPU capturer. The
+application runs and collects GPU durations when PIX, the marker DLL, or the
+Graphics Tools debug layer is absent. With the marker DLL absent, an external
+capture can still show D3D12 API calls. Normal builds and SDK installations
+have no PIX dependency.
+[WinPixEventRuntime installation and ABI](https://devblogs.microsoft.com/pix/winpixeventruntime/)
+
+The existing `EnableGpuTiming` request enables optional frame and pass probes.
+Each measures bottom-of-pipe intervals on the direct queue. The frame sample
+covers the acquired frame's clear, transitions and commands through the final
+target transition. Named physical pass samples bracket raster pass encoding or
+one compute dispatch and carry the logical pass count. The backend resolves
+64-bit ticks into private readback storage and polls the submission fence
+before mapping. Skipped frames keep both probes armed. A probe cannot be
+rearmed while pending, and a full pass batch drops only the excess samples.
+A failed frequency query or readback yields Failed. A changed frequency or
+invalid interval yields Disjoint. The reported tick size comes from the queue
+frequency. Samples have no CPU-clock alignment and exclude presentation.
+A failed shutdown drain retains unfinished query storage. A new session can
+render and retry the affected probe after completion or device removal.
+
+Debug and Development force DRED auto-breadcrumbs and page-fault tracking
+before device creation when the runtime exposes the settings interface.
+Profile and Release use the system's DRED settings. On detected device
+removal, Ludus logs the native HRESULT and collects the available DRED reports
+before device teardown. Logs include a bounded prefix of command-list progress,
+the first uncompleted operation, the fault address and matching live and
+recently freed allocation records. An unavailable report includes its HRESULT.
+Enable an ordinary console, debugger or file log sink to retain the output.
+Preserve that log alongside the matching executable and shader artifacts, then
+recreate the device to resume rendering.
+[Microsoft's DRED guide](https://learn.microsoft.com/windows/win32/direct3d12/use-dred)
+
+For a controlled removal, run the existing Windows RHI test executable with the
+`[d5b]` filter. The fixture calls the native removal API after submitting a
+frame and verifies that the pending measurement is invalidated and a new
+device can render. Windows CI retains its console report in the CTest log.
+A forced removal can have an empty page-fault report. Record physical adapter,
+driver, OS, build configuration and PIX/runtime versions alongside any
+hardware capture and removal artifacts.
 
 ## Editor, hosted game and SDK workflow
 
@@ -466,13 +524,13 @@ never infer Windows, Android, browser or ray-tracing support from a Mac capture.
 
 | Tool/activity | Planned integration boundary |
 | --- | --- |
-| PIX | Windows/D3D12 prerequisite. Load the PIX GPU capturer before D3D12 calls; use next-frame or explicit-region APIs and target-window selection. Timing capture has separate library/privilege requirements. WinPixEventRuntime alone does not supply the capturer. |
+| PIX | D5b uses external GPU capture and optional command-list regions. Programmatic capture control and PIX Timing Capture have separate tool and qualification requirements. |
 | Nsight Graphics | Start with external launch and standard annotations. Optional SDK control for graphics capture/GPU traces remains version-gated while the API is beta; initialize before the graphics context and keep external launch available. |
 | Radeon tools | Standard labels plus tested Radeon Developer Panel/CLI recipes for RGP, RMV and RRA. Driver and activity support are separate capabilities. |
 | Android APA and AGI | Qualify the Android backend, development packaging, device/layer setup, Vulkan/ATrace annotations and artifact retrieval. APA is recommended for system profiling; its experimental frame profiler is not a universal baseline. Retain tested RenderDoc/AGI recipes. |
 | Browser tools | WebGPU Inspector for WebGPU and Spector.js for WebGL; optional development-only instrumentation before API creation. Qualify workers/iframes and the actual pinned Emscripten port. |
 | Hardware-specific profiling | Arm Performance Studio, Snapdragon Profiler and Intel GPA initially use shared names plus documented supported-device workflows. |
-| GPU crash analysis | Optional Aftermath, Radeon GPU Detective and future D3D12 DRED integration under crash-report ownership. Keep matching shader artifacts; do not label a crash dump as a frame capture. |
+| GPU crash analysis | Optional Aftermath, Radeon GPU Detective and deeper DRED analysis under crash-report ownership. Keep matching shader artifacts; do not label a crash dump as a frame capture. |
 
 Before implementation, resolve any missing native capture API version, artifact
 completion condition or hosted replay support with a small feasibility fixture.

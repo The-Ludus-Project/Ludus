@@ -1,3 +1,4 @@
+#include "internal/d3d12_diagnostics.h"
 #include "internal/d3d12_raster.h"
 #include "internal/dxil_container.h"
 
@@ -267,6 +268,7 @@ RasterStatus RasterBeginPass(const RasterPassInfo& info) noexcept
     {
         return RasterStatus::InvalidState;
     }
+    BeginPhysicalPassTiming(*commandsOrNull, GpuPassKind::Raster);
     StaticArray<D3D12_CPU_DESCRIPTOR_HANDLE, COLOR_COUNT> targets{};
     const usize count = info.ColorCount == 0 ? 1 : info.ColorCount;
     Attachment first;
@@ -326,6 +328,11 @@ void RasterEndPass() noexcept
 {
     // Validity for Discard belongs to the facade; preserving native bits is legal.
     // CPU RTV/DSV handles are consumed during recording and never rewritten.
+    ID3D12GraphicsCommandList* commandsOrNull = GetCommandsOrNull();
+    if (isPassOpen == true && commandsOrNull != nullptr)
+    {
+        EndPhysicalPassTiming(*commandsOrNull);
+    }
     isPassOpen = false;
 }
 RasterStatus RasterDraw(const RasterPacket& packet) noexcept

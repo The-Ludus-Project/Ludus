@@ -1,3 +1,4 @@
+#include "internal/d3d12_diagnostics.h"
 #include "internal/d3d12_raster.h"
 #include "internal/d3d12_transfer.h"
 #include "internal/dxil_container.h"
@@ -963,6 +964,8 @@ uint64 RasterCompleted() noexcept
 }
 void RasterReset() noexcept
 {
+    LogDeviceRemoval(GetDeviceOrNull());
+    DiscardRecording();
     const bool isDrained = WaitForQueue();
     ResetRasterPasses();
     PollTextures();

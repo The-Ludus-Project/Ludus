@@ -734,11 +734,12 @@ covers Windows atomic replacement, the cooperative lock and parent-flush
 reporting. The [MSVC CI matrix](../development/continuous-integration.md)
 records runtime evidence separately from the Clang lane.
 
-D5b delivers GPU frame/pass timestamps with valid frequency/completion/failure
-handling as required by the public contracts, PIX markers/capture and DRED
-collection on device failure. Record real capture and diagnostic artifacts,
-including behavior when optional capture/debug tooling is absent. Follow the
-[graphics debugging owner](graphics-debugging.md).
+D5b implements nonblocking GPU frame and physical-pass durations, optional PIX
+command-list events, external PIX GPU capture and DRED logging on device removal.
+The Windows suite exercises fence-gated timing, raster and compute scopes, and
+forced device removal. Follow the [Windows PIX and DRED workflow](graphics-debugging.md#pix-and-dred-on-windows)
+to collect a hardware capture and diagnostic artifacts and to verify rendering
+with optional tooling absent.
 
 ### D6: deliver runtime and developer workflows
 
@@ -822,7 +823,7 @@ these rows remain pending.
 | RHI / raster rendering | D3b | verified (Clang/WARP) | Production MSVC and physical-GPU evidence pending | PR #620 | `c239b3d9`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40369593745) |
 | RHI / transfers and lifetime | D4a | verified (Clang/WARP) | Production MSVC baseline and physical-GPU evidence still pending | PR #622 | `5b56bea2`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40375496878) |
 | RHI / compute and ordered mixed graph | D4b | verified (Clang/MSVC WARP) | D7 physical-GPU qualification | PR #992 | `9858bdb4`, [Windows CI](https://github.com/The-Ludus-Project/Ludus/actions/runs/41951508494) |
-| GPU timing / PIX / DRED | unassigned | needs port | D5b | pending | none |
+| GPU timing / PIX / DRED | frame/pass duration, external GPU capture, DRED logs | implemented | D5b | PIX replay and physical adapter evidence pending | Windows RHI `[d5b]` and `[ordered-compute]` conformance |
 | Renderer / graph | unassigned | unreviewed | D6a after D4b/D5a | pending | none |
 | Text / localization / UI | unassigned | unreviewed | D6a required-profile audit and sample | pending | none |
 | Content / resources | unassigned | unreviewed | D6a cook/load/error journeys | pending | none |
