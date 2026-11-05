@@ -176,7 +176,7 @@ Status OverlayList::Quad(math::Vector4 rectangle,
     const auto x1 = static_cast<float32>(2.0 * static_cast<float64>(rectangle.Z) / width - 1);
     const auto y0 = static_cast<float32>(1 - 2.0 * static_cast<float64>(rectangle.Y) / height);
     const auto y1 = static_cast<float32>(1 - 2.0 * static_cast<float64>(rectangle.W) / height);
-    const float32 mask = coverage ? 1 : 0;
+    const float32 mask = coverage == true ? 1.0F : 0.0F;
     const OverlayVertex corners[]{{{x0, y0, 0, 1}, {uv.X, uv.Y, mask, 0}, color},
                                   {{x1, y0, 0, 1}, {uv.Z, uv.Y, mask, 0}, color},
                                   {{x1, y1, 0, 1}, {uv.Z, uv.W, mask, 0}, color},

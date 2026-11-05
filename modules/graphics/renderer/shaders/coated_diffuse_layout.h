@@ -22,11 +22,11 @@ static const CoatingWord COATING_PDF_DOMAIN = 0x434f4150;
 static const CoatingWord COATING_SAMPLE_DOMAIN = 0x434f4153;
 static const CoatingWord COATING_ROULETTE_START = 3;
 static const CoatingScalar COATING_ROULETTE_THRESHOLD = 0.25;
-static const CoatingScalar COATING_BASIS_SWITCH_COSINE = 0.99999;
-static const CoatingScalar COATING_MIN_NORMAL_Z = 0.000001;
-static const CoatingScalar COATING_MIN_NORMAL_COSINE_FOURTH = 1e-16;
+static const CoatingScalar COATING_BASIS_SWITCH_COSINE = 0.99999f;
+static const CoatingScalar COATING_MIN_NORMAL_Z = 0.000001f;
+static const CoatingScalar COATING_MIN_NORMAL_COSINE_FOURTH = 1e-16f;
 static const CoatingScalar COATING_REFLECTION_JACOBIAN = 4;
-static const CoatingScalar COATING_PDF_ESTIMATE_WEIGHT = 0.9;
+static const CoatingScalar COATING_PDF_ESTIMATE_WEIGHT = 0.9f;
 #ifdef __cplusplus
 } // namespace ludus::graphics::renderer::internal
 #endif

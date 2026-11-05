@@ -54,7 +54,8 @@ TEST_CASE("Fabricated / cross-system / stale handles are rejected safely", "[aud
     REQUIRE(sys.PlayClip(p, v) == Status::InvalidHandle);
 }
 
-TEST_CASE("Handles from an ended audio session are rejected by the next session", "[audio][admission]")
+TEST_CASE("Handles from an ended audio session are rejected by the next session",
+          "[audio][admission][native-audio-worker]")
 {
     // Audio keeps its own uint32 session source (docs/architecture/object-handles-uuid.md,
     // stage 2). Each session restarts slots and generations, so the session field

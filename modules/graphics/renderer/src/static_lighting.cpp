@@ -60,6 +60,11 @@ struct ChartRecord final
 // docs/architecture/threading.md#reference-review-and-resulting-changes.
 struct StaticLightingBake::State final
 {
+#if defined(LUDUS_COMPILER_MSVC)
+#    pragma warning(push)
+// C4324 describes the deliberate tail padding that separates concurrent range records.
+#    pragma warning(disable : 4324)
+#endif
     /// One triangle range job's results, read by the owner only after the Wait fence.
     struct alignas(RANGE_RECORD_ALIGNMENT) Range final
     {
@@ -76,6 +81,9 @@ struct StaticLightingBake::State final
     {
         std::atomic<uint64> CompletedSamples{0};
     };
+#if defined(LUDUS_COMPILER_MSVC)
+#    pragma warning(pop)
+#endif
     StaticLightingBakeDescription Description;
     internal::ReferenceJob Job;
     Array<internal::ReferenceSurfaceData> Surfaces;

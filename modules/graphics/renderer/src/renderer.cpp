@@ -1856,7 +1856,7 @@ Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription&
         }
     }
     auto pass = description;
-    pass.ClearDepth = view.Depth == DepthConvention::ReverseZ ? 0 : 1;
+    pass.ClearDepth = view.Depth == DepthConvention::ReverseZ ? 0.0F : 1.0F;
     const bool isSurface = rhi::IsNull(description.Color) == true && description.ColorCount == 0;
     bool isHdr = isGBuffer;
     if (isGBuffer == true && (description.ColorCount != DEFERRED_TARGET_COUNT || description.Colors == nullptr))
