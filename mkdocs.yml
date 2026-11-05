@@ -103,6 +103,7 @@ nav:
       - Save, validate and build render graphs: development/render-graph-authoring.md
       - Render graph authoring proposal: architecture/render-graph-authoring.md
       - Shared scene shader contract proposal: architecture/shared-scene-shader-contract.md
+      - Ludus Shading Language (LUSL) proposal: architecture/shading-language.md
       - Render graph frame capture proposal: architecture/render-graph-frame-capture.md
       - Sequencer and cinematic capture proposal: architecture/sequencer-cinematics.md
       - Benchmark scenes and suites: development/benchmark-scenes.md
