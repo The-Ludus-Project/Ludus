@@ -79,11 +79,16 @@ TEST_CASE("Windows publication preserves pinned roots and opened file revisions"
     const PublicationResult seeded = PublishFile(fixture, ASSET, OldBytes());
     CAPTURE(seeded.Outcome.NativeCode);
     REQUIRE(seeded.Outcome.Succeeded() == true);
+    // NTFS can refuse an ancestor rename while a file below it is open.
+    // Move the root with only the directory capabilities held, then retain a file.
+    const std::filesystem::path moved = fixture.Root.native() + L" moved";
+    std::error_code moveError;
+    std::filesystem::rename(fixture.Root, moved, moveError);
+    CAPTURE(moveError.value());
+    REQUIRE(moveError.value() == 0);
+    fixture.Root = moved;
     File old;
     REQUIRE(fixture.Reader.OpenRead(ASSET, old).Succeeded() == true);
-    const std::filesystem::path moved = fixture.Root.native() + L" moved";
-    std::filesystem::rename(fixture.Root, moved);
-    fixture.Root = moved;
 
     WriteOptions options;
     REQUIRE(fixture.Reader.Observe(ASSET, options.Expected).Succeeded() == true);
