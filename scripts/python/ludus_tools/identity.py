@@ -210,6 +210,21 @@ def require_compatible(installed: SdkIdentity, **kwargs: Any) -> None:
 _RUNTIME_ABI_FALLBACK = "libstdc++-cxx11"
 
 
+def detect_msvc_version(cxx: str, env: dict) -> str:
+    """Read the MSVC banner. cl without sources emits it and exits with an error."""
+    import re
+    import subprocess
+
+    try:
+        result = subprocess.run([cxx], capture_output=True, text=True, errors="replace",
+                                timeout=10, env=dict(env, VSLANG="1033"))
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    match = re.search(r"Microsoft[^\r\n]*?(\d+\.\d+\.\d+)(?:\.\d+)? for x64",
+                      result.stdout + result.stderr)
+    return match.group(1) if match else ""
+
+
 def _detect_compiler(cxx: str) -> tuple[str, str]:
     """Return (compiler_id, compiler_version) for a C++ compiler, best-effort."""
     import re
@@ -253,7 +268,20 @@ def detect_host_toolchain(
 
     candidate = cxx or os.environ.get("CXX") or shutil.which("clang++") or shutil.which("c++")
     compiler_id, compiler_version = ("", "")
-    if candidate:
+    from .native import WINDOWS_TARGET
+
+    if reference.target_triple == WINDOWS_TARGET:
+        candidate = cxx or shutil.which("cl.exe")
+        env = {key: value for key, value in os.environ.items() if key != "BUTLER_API_KEY"}
+        if candidate:
+            compiler_version = detect_msvc_version(candidate, env)
+            if compiler_version:
+                compiler_id = "MSVC"
+                # The package admits the pinned 14.44 series. CMake and the
+                # cl banner can also represent the patch with different precision.
+                if compiler_version.startswith("19.44.") and reference.compiler_version.startswith("19.44."):
+                    compiler_version = reference.compiler_version
+    elif candidate:
         compiler_id, compiler_version = _detect_compiler(candidate)
     if strict and (not compiler_id or not compiler_version):
         raise ToolingError(SDK_INCOMPATIBLE, "cannot identify the selected C++ compiler; prepare the pinned toolchain")

@@ -1,0 +1,282 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "windows-msvc-base",
+      "hidden": true,
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/config/cmake/windows-msvc.cmake",
+        "CMAKE_PREFIX_PATH": "$env{LUDUS_WINDOWS_DEPENDENCIES}",
+        "LUDUS_ENABLE_CCACHE": "OFF",
+        "LUDUS_BUILD_TESTS": "ON",
+        "LUDUS_SLANG_COMPILER": "${sourceDir}/out/shader-tools/slang/bin/slangc.exe",
+        "LUDUS_DXC_DIRECTORY": "${sourceDir}/out/shader-tools/dxc"
+      }
+    },
+    {
+      "name": "windows-msvc-ninja-base",
+      "hidden": true,
+      "inherits": "windows-msvc-base",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "cl.exe",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "windows-msvc-visual-studio",
+      "displayName": "Windows MSVC (Visual Studio 2022)",
+      "inherits": "windows-msvc-base",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64,version=10.0.26100.0",
+      "toolset": "v143,version=14.44,host=x64",
+      "binaryDir": "${sourceDir}/out/build/${presetName}"
+    },
+    {
+      "name": "windows-msvc-debug",
+      "displayName": "Windows MSVC Debug (Ninja)",
+      "inherits": "windows-msvc-ninja-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LUDUS_BUILD_FLAVOR": "Debug"
+      }
+    },
+    {
+      "name": "windows-msvc-development",
+      "displayName": "Windows MSVC Development (Ninja)",
+      "inherits": "windows-msvc-ninja-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "LUDUS_BUILD_FLAVOR": "Development"
+      }
+    },
+    {
+      "name": "windows-msvc-profile",
+      "displayName": "Windows MSVC Profile (Ninja)",
+      "inherits": "windows-msvc-ninja-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "LUDUS_BUILD_FLAVOR": "Profile"
+      }
+    },
+    {
+      "name": "windows-msvc-release",
+      "displayName": "Windows MSVC Release (Ninja)",
+      "inherits": "windows-msvc-ninja-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LUDUS_BUILD_FLAVOR": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-msvc-debug",
+      "configurePreset": "windows-msvc-debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-visual-studio-debug",
+      "configurePreset": "windows-msvc-visual-studio",
+      "configuration": "Debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-development",
+      "configurePreset": "windows-msvc-development",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-visual-studio-development",
+      "configurePreset": "windows-msvc-visual-studio",
+      "configuration": "Development",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-profile",
+      "configurePreset": "windows-msvc-profile",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-visual-studio-profile",
+      "configurePreset": "windows-msvc-visual-studio",
+      "configuration": "Profile",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-release",
+      "configurePreset": "windows-msvc-release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-visual-studio-release",
+      "configurePreset": "windows-msvc-visual-studio",
+      "configuration": "Release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-msvc-debug",
+      "configurePreset": "windows-msvc-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-visual-studio-debug",
+      "configurePreset": "windows-msvc-visual-studio",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-development",
+      "configurePreset": "windows-msvc-development",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-visual-studio-development",
+      "configurePreset": "windows-msvc-visual-studio",
+      "configuration": "Development",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-profile",
+      "configurePreset": "windows-msvc-profile",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-visual-studio-profile",
+      "configurePreset": "windows-msvc-visual-studio",
+      "configuration": "Profile",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-release",
+      "configurePreset": "windows-msvc-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-visual-studio-release",
+      "configurePreset": "windows-msvc-visual-studio",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    }
+  ]
+}

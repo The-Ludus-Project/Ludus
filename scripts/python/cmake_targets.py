@@ -168,8 +168,10 @@ def target_executable(
 
     Reads the latest named reply for `client`, (optionally) verifies codemodel
     major 2 and a single configuration, finds exactly one target with the
-    requested name, and requires it to be an EXECUTABLE with exactly one
-    artifact. Artifact paths may be absolute or in custom output directories;
+    requested name, and resolves its primary EXECUTABLE artifact. CMake's
+    codemodel v2 target object names that artifact with `nameOnDisk` when
+    there are additional outputs such as a Windows PDB. Artifact paths may
+    be absolute or in custom output directories;
     they are returned as a resolved absolute path and never guessed from a
     conventional layout.
 
@@ -204,9 +206,16 @@ def target_executable(
         detail = _bounded_read_json(detail_path, aggregate, engine) if bounded else read_json(detail_path, engine)
     except (KeyError, TypeError) as exc:
         raise engine.EngineError(text["bad_reply"]) from exc
-    if detail.get("type") != "EXECUTABLE" or len(detail.get("artifacts", [])) != 1:
+    artifacts = detail.get("artifacts", [])
+    if require_version and len(artifacts) > 1:
+        # CMake File API, codemodel v2 target object: nameOnDisk identifies
+        # the primary output even when the target also produces debug symbols.
+        # https://cmake.org/cmake/help/v3.31/manual/cmake-file-api.7.html#codemodel-version-2-target-object
+        primary = detail.get("nameOnDisk")
+        artifacts = [artifact for artifact in artifacts if Path(artifact["path"]).name == primary]
+    if detail.get("type") != "EXECUTABLE" or len(artifacts) != 1:
         raise engine.EngineError(text["not_executable"].format(target=target, build_dir=build_dir))
-    return (build_dir / detail["artifacts"][0]["path"]).resolve()
+    return (build_dir / artifacts[0]["path"]).resolve()
 
 
 # Target types the project-live-reload build generation resolver accepts

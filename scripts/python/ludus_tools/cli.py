@@ -159,10 +159,14 @@ def cmd_project_create(args) -> int:
     if args.tools and not args.engine:
         from .creation_engine import select_creation_sdk, prepare_creation_sdk
         from .project_setup import run_command
+        from .identity import load_prefix_manifest
+        from .native import profile_for_identity
+
         root = Path(args.tools).resolve()
+        profile = args.profile or (profile_for_identity(load_prefix_manifest(local_prefix)) if local_prefix else None)
         local_prefix = select_creation_sdk(root, explicit=local_prefix,
-            profile=args.profile,
-            prepare=lambda prefix: prepare_creation_sdk(root, prefix, runner=run_command, profile=args.profile))
+            profile=profile,
+            prepare=lambda prefix: prepare_creation_sdk(root, prefix, runner=run_command, profile=profile))
     if not args.engine and not local_prefix:
         raise ToolingError("InvalidProject", "create requires --engine <release> or --sdk <prefix>")
     verifier = None

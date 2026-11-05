@@ -9,20 +9,22 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
-from pathlib import Path
+from contextlib import nullcontext
 from dataclasses import replace
+from pathlib import Path
 
 from .buildlock import BuildTreeLock
 from .errors import INVALID_PROJECT, ToolingError
-from .identity import load_prefix_manifest
+from .identity import detect_msvc_version, load_prefix_manifest
 from .lockfile import parse_local_settings_file
 from .operations import PRESET_FLAVOR, locate_project, resolve_project
 from .resolve import compute_stamp, write_stamp
 from .sdkstore import SdkStore
 from .descriptor import parse_descriptor_file
 from .engine_pin import validate_install_prefix
-from .native import validate_target
+from .native import WINDOWS_CONFIGURATIONS, WINDOWS_TARGET, validate_target
 from .toolchain import PINNED_LLVM_MAJOR
 from .shader_tools import REPAIR_MESSAGE, preparation_steps, project_shader_tools, verify_translator
 
@@ -87,6 +89,14 @@ def executable(path: Path) -> Path:
 
 
 def tools(root: Path) -> dict:
+    if os.name == "nt":
+        scripts = root / "out/host-tools/venv/Scripts"
+        compiler = shutil.which("cl.exe")
+        if not compiler:
+            raise ToolingError("MissingTools", "Open the x64 VS 2022 developer shell with MSVC 14.44 and the Windows SDK")
+        return {name: executable(scripts / (name + ".exe")) for name in ("cmake", "ctest", "ninja")} | {
+            "compiler": executable(Path(compiler))}
+
     venv = root / "out/host-tools/venv/bin"
     return {"cmake": executable(venv / "cmake"), "ctest": executable(venv / "ctest"),
             "ninja": executable(venv / "ninja"),
@@ -96,14 +106,15 @@ def tools(root: Path) -> dict:
 def run_command(argv, *, cwd, env):
     result = subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True, timeout=600)
     if result.returncode:
-        raise ToolingError("ConfigureFailed", result.stderr[-4096:] or result.stdout[-4096:])
+        raise ToolingError("ConfigureFailed", (result.stdout[-4096:] + result.stderr[-4096:]).strip())
     print(result.stdout, end="")
     return result.stdout
 
 
 def environment(root: Path) -> dict:
     env = os.environ.copy()
-    entries = (root / "out/host-tools/bin", root / "out/host-tools/venv/bin")
+    venv_scripts = "Scripts" if os.name == "nt" else "bin"
+    entries = (root / "out/host-tools/bin", root / "out/host-tools/venv" / venv_scripts)
     env["PATH"] = os.pathsep.join(map(str, entries)) + os.pathsep + env.get("PATH", "")
     env["CONAN_HOME"] = str(root / "out/conan/home")
     env["CONAN_NON_INTERACTIVE"] = "1"
@@ -137,7 +148,14 @@ def _shader_inputs(root: Path, sdk: Path, required: set[str]) -> dict:
     paths = {}
     try:
         if "compiler" in required:
-            paths["compiler"] = executable(root / "out/shader-tools/slang/bin/slangc")
+            compiler = "slangc.exe" if os.name == "nt" else "slangc"
+            paths["compiler"] = executable(root / "out/shader-tools/slang/bin" / compiler)
+        if "dxc" in required:
+            for library in ("dxcompiler.dll", "dxil.dll"):
+                file = root / "out/shader-tools/dxc" / library
+                if not file.is_file():
+                    raise ToolingError("MissingTools", f"Missing pinned DXC library: {file}")
+                paths[library] = file
         if "validator" in required:
             paths["validator"] = spirv_validator(root)
         if "spirv_cross" in required:
@@ -162,7 +180,6 @@ def _prepare_shader_tools(root: Path, sdk: Path, required: set[str], *, runner, 
     cancel_check()
     # Projects sharing this trusted tooling root must not race a tool installation.
     with BuildTreeLock(root / "out/shader-tools"):
-        executable(root / "out/host-tools/venv/bin/python")
         for group, command in preparation_steps(root, required):
             try:
                 _shader_inputs(root, sdk, group)
@@ -170,6 +187,7 @@ def _prepare_shader_tools(root: Path, sdk: Path, required: set[str], *, runner, 
             except ToolingError:
                 pass
             cancel_check()
+            executable(Path(command[0]))
             runner(command, cwd=root, env=environment(root))
             cancel_check()
             _shader_inputs(root, sdk, group)
@@ -202,9 +220,9 @@ def _identity_stamp(identity) -> str:
 def _inputs(root: Path, source: Path, sdk: Path, profile: str, web_sdk: Path | None, *, project: Path | None = None):
     native = load_prefix_manifest(sdk)
     configured = tools(root)
-    cache = {"CMAKE_MAKE_PROGRAM": str(configured["ninja"]),
-             "CMAKE_CXX_COMPILER": str(configured["compiler"]),
-             "CMAKE_PREFIX_PATH": str(sdk),
+    cache = {"CMAKE_MAKE_PROGRAM": configured["ninja"].as_posix(),
+             "CMAKE_CXX_COMPILER": configured["compiler"].as_posix(),
+             "CMAKE_PREFIX_PATH": sdk.as_posix(),
              "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"}
     # Package discovery remains in CMake; include prepared dependencies needed by
     # exported native libraries, without baking machine paths into tracked files.
@@ -240,8 +258,16 @@ def _inputs(root: Path, source: Path, sdk: Path, profile: str, web_sdk: Path | N
     for name, key in (("shader_compiler", "LUDUS_SLANG_COMPILER"), ("validator", "LUDUS_SPIRV_VALIDATOR"),
                       ("spirv_cross", "LUDUS_SPIRV_CROSS")):
         if name in shader_paths:
-            cache[key] = str(shader_paths[name])
-    records = {profile: {"cacheVariables": cache}}
+            cache[key] = shader_paths[name].as_posix()
+    if "dxil.dll" in shader_paths:
+        cache["LUDUS_DXC_DIRECTORY"] = shader_paths["dxil.dll"].parent.as_posix()
+    fields = {"cacheVariables": cache}
+    if native.target_triple == WINDOWS_TARGET:
+        fields["generator"] = "Ninja"
+        cache.update(CMAKE_BUILD_TYPE=WINDOWS_CONFIGURATIONS[native.flavor], BUILD_TESTING="ON",
+                     LUDUS_PROJECT_SDK_FLAVOR=native.flavor,
+                     Ludus_DIR=(sdk / "lib/cmake/Ludus").as_posix())
+    records = {profile: fields}
     stamps = {str(sdk): _identity_stamp(native)}
     if web_sdk:
         toolchain = _validate_web_sdk(root, web_sdk, native)
@@ -271,9 +297,17 @@ def verify_tool_versions(configured, root: Path, runner, env, identity=None):
     clang = versions.get("minimum", {}).get("clang", "")
     expected = {"cmake": pins.get("cmake", "3.29.6"), "ninja": pins.get("ninja", "1.11.1.3").rsplit(".", 1)[0],
                 "compiler": clang.split(".", 1)[0] if clang else str(PINNED_LLVM_MAJOR)}
+    is_msvc = identity is not None and identity.target_triple == WINDOWS_TARGET
+    if is_msvc:
+        expected["cmake"] = versions["windows_msvc_probe"]["cmake"]
+        if (not detect_msvc_version(str(configured["compiler"]), env).startswith("19.44.")
+                or env.get("WINDOWSSDKVERSION", "").rstrip("\\/") != "10.0.26100.0"):
+            raise ToolingError("MissingTools", "Open the x64 VS 2022 developer shell with MSVC 14.44 and Windows SDK 10.0.26100.0")
     for key, pattern in (("cmake", r"cmake version (\d+\.\d+\.\d+)"),
                          ("ninja", r"(\d+\.\d+\.\d+)"),
                          ("compiler", r"clang version (\d+)")):
+        if key == "compiler" and is_msvc:
+            continue
         output = runner([str(configured[key]), "--version"], cwd=root, env=env)
         match = re.search(pattern, output)
         wanted = expected[key]
@@ -307,7 +341,7 @@ def _list(source: Path, configured, profiles, runner, env):
 
 
 def setup_for_profile(settings: dict, profile: str) -> dict:
-    if settings.get("profile", profile) == profile:
+    if settings.get("signature") and settings.get("profile", profile) == profile:
         return settings
     return settings.get("profiles", {}).get(profile, {})
 
@@ -352,11 +386,18 @@ def check_project(path: Path, *, tooling_root: Path, profile: str | None = None,
             raise ToolingError(INVALID_PROJECT, f"Stale local preset for {profile}; run repair")
         cache_path = source / "out/build" / profile / "CMakeCache.txt"
         if cache_path.is_file():
-            for key in ("CMAKE_PREFIX_PATH", "CMAKE_MAKE_PROGRAM", "CMAKE_CXX_COMPILER",
-                        "CMAKE_CXX_FLAGS", "CMAKE_OSX_SYSROOT", "CMAKE_OSX_ARCHITECTURES",
-                        "CMAKE_OSX_DEPLOYMENT_TARGET"):
+            keys = ["CMAKE_PREFIX_PATH", "CMAKE_MAKE_PROGRAM", "CMAKE_CXX_COMPILER",
+                    "CMAKE_CXX_FLAGS", "CMAKE_OSX_SYSROOT", "CMAKE_OSX_ARCHITECTURES",
+                    "CMAKE_OSX_DEPLOYMENT_TARGET"]
+            if profile.startswith("windows-msvc-"):
+                keys.extend(("CMAKE_BUILD_TYPE", "Ludus_DIR"))
+            for key in keys:
                 expected = fields["cacheVariables"].get(key)
-                if expected and cache_value(cache_path, key) != expected:
+                cached = cache_value(cache_path, key)
+                if expected and cached != expected and not (
+                    os.name == "nt" and key != "CMAKE_BUILD_TYPE"
+                    and cached is not None and Path(cached) == Path(expected)
+                ):
                     raise ToolingError(INVALID_PROJECT, f"Stale CMake cache for {profile}: {key}; run repair")
     ide = read_object(source / ".vscode/settings.json")
     if ide.get("cmake.useCMakePresets") != "always" or ide.get("cmake.cmakePath", str(configured["cmake"])) != str(configured["cmake"]):
@@ -407,9 +448,20 @@ def select_repair_sdk(path: Path, *, tooling_root: Path, prepare=None) -> Path:
 def repair_project(path: Path, *, tooling_root: Path, sdk: Path | None = None,
                    web_sdk: Path | None = None, disable_web: bool = False, profile: str | None = None,
                    runner=run_command, cancel_check=lambda: None):
+    paths, descriptor, source = supported_project(path, profile)
     if disable_web and web_sdk is not None:
         raise ToolingError(INVALID_PROJECT, "Choose browser setup or desktop-only repair, not both")
-    paths, descriptor, source = supported_project(path, profile)
+    if web_sdk is not None and descriptor.preset.startswith("windows-msvc-"):
+        raise ToolingError(INVALID_PROJECT, "Windows MSVC repair requires desktop-only setup")
+    # The four Windows profiles share the local presets and verification metadata.
+    lock = BuildTreeLock(source / "out/setup") if descriptor.preset.startswith("windows-msvc-") else nullcontext()
+    with lock:
+        return _repair_project(path, paths, descriptor, source, tooling_root, sdk, web_sdk,
+                               disable_web, runner, cancel_check)
+
+
+def _repair_project(path, paths, descriptor, source, tooling_root, sdk, web_sdk,
+                    disable_web, runner, cancel_check):
     if sdk is None:
         sdk = resolve_project(path, store=SdkStore(), profile=descriptor.preset, enforce_host_toolchain=False).resolution.prefix
     sdk = sdk.resolve()
@@ -441,7 +493,8 @@ def repair_project(path: Path, *, tooling_root: Path, sdk: Path | None = None,
             raise ToolingError(INVALID_PROJECT, f"Invalid {key}; fix JSON before repair")
         local[key] = [p for p in items
                       if p.get("vendor", {}).get(OWNER) not in records
-                      and not str(p.get("vendor", {}).get(OWNER, "")).startswith("web-")]
+                      and (identity.target_triple == WINDOWS_TARGET
+                           or not str(p.get("vendor", {}).get(OWNER, "")).startswith("web-"))]
         if any(p.get("name") == "ludus-local-" + profile for p in local[key] for profile in records):
             raise ToolingError(INVALID_PROJECT, "Custom preset occupies a managed name; rename it before repair")
     local["version"] = max(local.get("version", 6), 6)
@@ -449,11 +502,13 @@ def repair_project(path: Path, *, tooling_root: Path, sdk: Path | None = None,
         if "ludus-local-" + profile in roots:
             raise ToolingError(INVALID_PROJECT, "Custom root preset occupies a managed name")
         inherited = profile + "-base" if profile + "-base" in roots else profile
-        if inherited not in roots:
+        if inherited in roots:
+            fields = dict(fields, inherits=inherited)
+        elif not profile.startswith("windows-msvc-"):
             raise ToolingError(INVALID_PROJECT, f"Missing supported base preset: {profile}")
         name = "ludus-local-" + profile
         marker = {OWNER: profile}
-        local["configurePresets"].append(dict(fields, name=name, inherits=inherited, hidden=False,
+        local["configurePresets"].append(dict(fields, name=name, hidden=False,
             binaryDir="${sourceDir}/out/build/" + profile, cmakeExecutable=str(configured["cmake"]), vendor=marker))
         local["buildPresets"].append(dict(name=name, configurePreset=name, vendor=marker))
         if not profile.startswith("web-"):
@@ -462,13 +517,22 @@ def repair_project(path: Path, *, tooling_root: Path, sdk: Path | None = None,
     local_settings = parse_local_settings_file(paths.local_settings_path)
     local_settings.set_override(target=identity.target_triple, flavor=identity.flavor, prefix=str(sdk))
     env = environment(tooling_root)
-    env["LUDUS_SDK_PREFIX"] = str(sdk)
+    env["LUDUS_SDK_PREFIX"] = sdk.as_posix()
     cancel_check()
     verify_tool_versions(configured, tooling_root, runner, env, resolved.resolution.identity)
+    profiles = dict(all_settings.get("profiles", {}))
+    old_profile = all_settings.get("profile", descriptor.preset)
+    if all_settings.get("signature"):
+        profiles[old_profile] = {key: all_settings.get(key, "") for key in ("signature", "web_sdk")}
+    profiles.pop(descriptor.preset, None)
+    setup_path = paths.project_dir / ".ludus/setup.json"
     # Own the selected native tree for the complete configure/build/test sequence.
     with BuildTreeLock(resolved.paths.build_dir):
         # A failed repair must not leave a previous verification stamp valid.
-        (paths.project_dir / ".ludus/setup.json").unlink(missing_ok=True)
+        if profiles:
+            write_object(setup_path, {"profiles": profiles})
+        else:
+            setup_path.unlink(missing_ok=True)
         write_object(source / "CMakeUserPresets.json", local)
         ide["cmake.useCMakePresets"] = "always"
         # Machine CMake paths belong to ignored presets, not tracked IDE files.
@@ -506,11 +570,6 @@ def repair_project(path: Path, *, tooling_root: Path, sdk: Path | None = None,
         # ordinary Editor/CLI configure path to use the updated SDK afterward.
         write_stamp(resolved.paths.build_dir, resolved.resolution)
         state = {"signature": _signature(configured, records, stamps), "web_sdk": str(web_sdk) if web_sdk else ""}
-        profiles = dict(all_settings.get("profiles", {}))
-        old_profile = all_settings.get("profile", descriptor.preset)
-        if all_settings.get("signature"):
-            profiles[old_profile] = {key: all_settings.get(key, "") for key in ("signature", "web_sdk")}
         profiles[descriptor.preset] = state
-        write_object(paths.project_dir / ".ludus/setup.json",
-                     dict(state, profile=descriptor.preset, profiles=profiles))
+        write_object(setup_path, dict(state, profile=descriptor.preset, profiles=profiles))
     return check_project(path, tooling_root=tooling_root, profile=descriptor.preset, runner=runner, cancel_check=cancel_check)

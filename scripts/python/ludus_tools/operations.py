@@ -35,7 +35,7 @@ from .resolve import Resolution, assert_stamp_unchanged, needs_reconfigure, reso
 from .sdkstore import SdkStore
 
 # Map a descriptor preset to the native flavor and CMake build type.
-from .native import PRESET_FLAVOR, target_for_profile, validate_target
+from .native import PRESET_FLAVOR, WINDOWS_CONFIGURATIONS, target_for_profile, validate_target
 
 DESCRIPTOR_NAME = "ludus.project.json"
 LOCK_NAME = "ludus.lock.json"
@@ -197,7 +197,7 @@ def _target_triple_for_lock(lock, flavor, target: Optional[str] = None) -> Optio
 
 
 def _build_type(flavor: str) -> str:
-    return {"Debug": "Debug", "Development": "RelWithDebInfo", "Release": "Release"}[flavor]
+    return WINDOWS_CONFIGURATIONS[flavor]
 
 
 # --- CMake drivers (exact argv, no shell) ------------------------------------
@@ -339,8 +339,8 @@ def op_run(resolved: ResolvedProject) -> int:
         return build_code
 
     artifact = resolve_artifact(resolved)
-    if artifact is None or not artifact.is_file():
-        raise ToolingError(GENERATION_FAILED, "post-build artifact resolution failed")
+    if not artifact.is_file():
+        raise ToolingError(GENERATION_FAILED, f"Built executable is missing: {artifact}; reconfigure and rebuild")
     if not os.access(artifact, os.X_OK):
         raise ToolingError(GENERATION_FAILED, f"resolved artifact is not executable: {artifact}")
 
@@ -350,25 +350,19 @@ def op_run(resolved: ResolvedProject) -> int:
     return _run(argv, cwd=run_cwd, env=env)
 
 
-def resolve_artifact(resolved: ResolvedProject) -> Optional[Path]:
+def resolve_artifact(resolved: ResolvedProject) -> Path:
     """Resolve the executable artifact via the CMake File API (never guessed)."""
-    try:
-        from cmake_targets import target_executable  # type: ignore
-    except Exception:
-        return None
-    try:
-        # cmake_targets needs an "engine"-like object for error translation; the
-        # CLI passes a tiny shim exposing EngineError. We call the resolver
-        # defensively and translate any failure to None (caller reports).
-        from types import SimpleNamespace
+    from types import SimpleNamespace
 
-        engine = SimpleNamespace(EngineError=ValueError)
+    from cmake_targets import target_executable  # type: ignore
 
+    engine = SimpleNamespace(EngineError=ValueError)
+    try:
         return target_executable(
             resolved.paths.build_dir,
             resolved.descriptor.target,
             engine,
             client="ludus-cli",
         )
-    except Exception:
-        return None
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ToolingError(GENERATION_FAILED, f"Cannot resolve the built executable: {exc}") from exc

@@ -16,8 +16,9 @@ continues to honor an explicit shell `SDKROOT` override.
 > **macOS** with pinned upstream Clang 23, single-config Ninja, and
 > Debug/Development/Release SDK identities. The installed macOS CLI has native
 > Apple silicon acceptance; Intel identity/architecture selection is covered by
-> unit tests and still needs native Intel acceptance. Windows tooling and general
-> scene authoring require separate acceptance. [Browser releases](editor-game-releases.md) and
+> unit tests and still needs native Intel acceptance. [Windows MSVC project setup](#windows-msvc-projects)
+> covers the installed Foundation, Input, Platform, and RHI SDK. General scene authoring
+> requires separate acceptance. [Browser releases](editor-game-releases.md) and
 > [native live editing](project-live-reload.md) have their own implemented scope;
 > an embedded viewport remains future work.
 > Do not assume unsupported combinations work.
@@ -247,6 +248,47 @@ outside any repository is accepted; initialize Git there and push it to GitHub.
 `ludus project ci init` reports whether `origin` is on github.com. It reads
 `.git/config` and never runs Git or contacts the remote. GitHub Actions is the
 only supported provider.
+
+## Windows MSVC projects
+
+Use the x64 Visual Studio 2022 developer shell initialized with MSVC 14.44
+and Windows SDK 10.0.26100.0. Install Python 3.10 or later and prepare the host
+tools in the Ludus checkout. Run these PowerShell commands from that checkout.
+
+```powershell
+$tools = $PWD.Path
+$env:PYTHONPATH = "$tools/scripts/python"
+python -m venv out/host-tools/venv
+$python = "$tools/out/host-tools/venv/Scripts/python.exe"
+$pins = Get-Content config/tool_versions.json | ConvertFrom-Json
+& $python -m pip install "cmake==$($pins.windows_msvc_probe.cmake)" "ninja==$($pins.managed.ninja)"
+
+$project = 'C:/Projects/MyGame'
+& $python -m ludus_tools project create $project --name MyGame --tools $tools --sdk 'C:/SDKs/Ludus/Debug'
+& $python -m ludus_tools project check $project --tools $tools
+& $python -m ludus_tools project repair $project --tools $tools --profile windows-msvc-profile --sdk 'C:/SDKs/Ludus/Profile'
+& $python -m ludus_tools project check $project --tools $tools --profile windows-msvc-profile
+```
+
+The minimal template provides `windows-msvc-debug`,
+`windows-msvc-development`, `windows-msvc-profile`, and
+`windows-msvc-release` as configure, build, and test presets. Select a matching
+[installed SDK](../architecture/windows-direct3d12.md) for each flavor.
+Development and Profile both use CMake `RelWithDebInfo` and have separate
+SDK selections and build trees. Create with `--tools` verifies the new
+project before publication. Repair configures, builds and runs CTest with
+the local preset. Use the resulting `ludus-local-windows-msvc-*` presets in
+CMake Tools launched from the same developer environment.
+
+Check reports missing or stale setup without writing files. After moving an SDK
+or replacing the tooling, run repair with the new paths. Repair preserves
+other flavors, custom presets, and unrelated IDE settings. For Win32 and
+D3D12 applications, select the installed `Platform` and `GraphicsRhi`
+components. Repair prepares Slang and DXC for projects using
+`ludus_compile_shader`. The Windows workflow uses a local SDK prefix and covers
+the installed Foundation, Input, Platform, and RHI closure. Editor and GameHost
+integration, browser setup, and release automation have separate acceptance
+requirements.
 
 ## Check and repair project setup
 
