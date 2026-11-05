@@ -101,5 +101,5 @@ differently:
 - **Not fixed by this ADR:**
   - the exact grammar, limits and diagnostic codes, set in L1;
   - the standalone binding model, set in L3;
-  - the open questions listed in the
-    [design](../architecture/shading-language.md#open-questions).
+  - the design's open questions, since resolved in its
+    [resolved questions](../architecture/shading-language.md#resolved-questions).

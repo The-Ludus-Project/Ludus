@@ -1,6 +1,8 @@
 # Ludus Shading Language (LUSL)
 
-Status: proposed, November 4, 2026. Nothing described here is implemented.
+Status: proposed, November 4, 2026; the design's open questions were resolved the
+same day (see [resolved questions](#resolved-questions)). Nothing described here
+is implemented.
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
 
@@ -137,8 +139,13 @@ LUSL keeps a C preprocessor, run before parsing:
   definition.
 - **The emitted Slang contains no LUSL macros.** Slang files included through
   [`extern slang`](#slang-interoperability) keep their own preprocessing.
-- **Open:** whether stringification (`#`) and token pasting (`##`) are needed.
-  The proposal leaves them out of L1.
+- **Stringification (`#`) and token pasting (`##`)** have their C meanings.
+  - A pasted result must form one valid token, or the expansion is an error.
+  - Strings exist only in `static_assert` messages, `#error` and attribute
+    arguments, so stringification is useful only there.
+  - Every check, including naming, runs on the expanded declarations. Its
+    diagnostic points at both the macro use and the definition that pasted the
+    name.
 
 ### Declarations and statements
 
@@ -179,8 +186,15 @@ LUSL keeps a C preprocessor, run before parsing:
 - `bool` may not appear in a struct that crosses the buffer boundary. Use
   `uint32`, matching the render graph's rejection of accidental host `bool`
   layouts.
-- **Open:** whether `float3`-style aliases are also accepted. The proposal
-  allows only one spelling.
+- **Slang/HLSL-style aliases are accepted.**
+  - The aliases: `float`, `int`, `uint`, `half` and `double`, plus the vector
+    and matrix forms built from them (`float3`, `uint2`, `bool4`, `half3`,
+    `float4x4`, ...).
+  - Each is an exact alias of the fixed-width type with the same width:
+    `float3` *is* `float32x3`. Mixing the two spellings is therefore never a
+    conversion.
+  - Diagnostics name the fixed-width spelling.
+  - The formatter keeps whichever spelling the author wrote.
 
 ### Matrices and coordinate spaces
 
@@ -221,8 +235,19 @@ LUSL keeps a C preprocessor, run before parsing:
 - **Boolean operators**: `&&` and `||` take only `bool`, and conditions in `if`,
   `while`, `for` and `?:` must be `bool`. Unary `!` does not exist; write
   `condition == false`.
-- **Bare `bool` operands** are legal. **Open:** whether to warn on them to match
-  the review-only `condition == true` style.
+- **Bare `bool` operands are a style warning.**
+  - Ludus style writes `condition == true` instead of a bare boolean operand.
+    For Slang and C++ that rule is review-only, because the lexical gate cannot
+    see types. The LUSL checker can.
+  - Where it fires: a `bool` value used directly as an `if`, `while`, `for` or
+    `?:` condition, or as an operand of `&&` or `||`.
+  - Examples: `if (isVisible)`, `isA && isB`.
+  - Each warning carries an automatic fix that inserts `== true`, and the
+    formatter can apply it.
+  - The warning follows the [style setting](#style-rules): an error in the
+    engine repository.
+  - Non-`bool` conditions such as `if (count)` are always errors, because there
+    are no implicit conversions.
 
 ### Zero initialization
 
@@ -457,14 +482,64 @@ Targets disagree on several operations. LUSL defines each one once:
 | Case | Constant expression | Runtime |
 | --- | --- | --- |
 | Unsigned overflow | Wraps | Wraps |
-| Signed overflow | Error | Proposed: two's-complement wrap, lowered through unsigned arithmetic where a target leaves it undefined. **Open** until L1 measures the Metal cost |
+| Signed overflow | Error | Two's-complement wrap on every target ([below](#signed-overflow)) |
 | Integer division or modulo by zero | Error | Unspecified value; the emitted code never traps |
 | Shift count at or above the bit width | Error | Count masked to `width - 1` by the emitter |
-| Local array index out of range | Error | Unspecified value. **Open:** development-build checks |
+| Local or `groupshared` array index out of range | Error | Development builds clamp and latch a failure ([below](#development-bounds-checks)); release builds give an unspecified value |
 | NaN and infinity | No literals or sentinel constants | Test finiteness through bit-inspection functions; Metal compiles with fast math |
 | Float to integer out of range | Error | Unspecified value |
 | Two writable arguments alias | Compile error | — |
 | Read before definite assignment | Compile error, unless declared `= void` | — |
+
+#### Signed overflow
+
+Signed `+`, `-` and `*` wrap on every target, as unsigned arithmetic does:
+`INT32_MAX + 1` is `INT32_MIN`.
+
+- **Most targets need nothing extra.** SPIR-V, HLSL/DXIL and WGSL already
+  define signed arithmetic as wrapping, so the emitter writes the operation
+  directly.
+- **Metal needs a rewrite.** The Metal Shading Language is based on C++, where
+  signed overflow is undefined behavior and the compiler may assume it never
+  happens.
+  - For the Metal target only, the emitter writes the operation through
+    unsigned arithmetic and converts back: `int32(uint32(a) + uint32(b))`.
+  - GPUs use the same instruction for signed and unsigned addition, so this is
+    expected to cost nothing, while the emitted Metal source gets longer.
+- **L1 measures one risk.** The only expected loss is loop optimizations that
+  rely on signed counters never overflowing. L1 compares Metal code generation
+  and timing for loops with signed counters before and after the rewrite.
+  - If the cost is measurable, the design records an explicit exemption, such
+    as loop counters, with the measurement.
+  - The language rule itself stays "wraps".
+
+#### Development bounds checks
+
+- **Constant indices** into fixed-size local and `groupshared` arrays are
+  checked at compile time in every build: `weights[LOBE_COUNT]` on a
+  `LOBE_COUNT`-element array is an error.
+- **Runtime indices in development builds:**
+  - **Check:** the emitter adds a comparison before each such access.
+  - **On failure:**
+    - the index is clamped, so the access stays inside the array;
+    - a per-invocation failure flag is set, with a failure code identifying the
+      access.
+  - **No signature changes.** The flag is a private per-thread global, so
+    function signatures and Slang interoperability are unchanged.
+  - **Reporting:** the generated render-graph wrapper combines the flag with the
+    existing invocation failure latch of the
+    [shared scene shader contract](shared-scene-shader-contract.md#public-shader-operations).
+    The invocation shows the error color, and the failure code maps back
+    through the source map to the LUSL line.
+  - **Opting out:** a development build can turn the checks off. This helps
+    when a bug depends on the generated code and the extra comparisons hide it.
+- **Release builds emit no checks.** Development and release are already
+  separate build keys, so checked and unchecked artifacts never mix.
+- **Costs:** development shaders run slower, with an extra comparison and a few
+  extra registers per checked access.
+- **Buffers are out of scope.** Buffer resources (`StructuredBuffer` and
+  similar) are not checked: the graphics APIs define their out-of-range
+  behavior, and their sizes are known only at run time.
 
 ## Tooling
 
@@ -472,13 +547,8 @@ Targets disagree on several operations. LUSL defines each one once:
   repository's initializer-brace rules. `scripts/check --format` and
   `source_policy.py` cover `.lusl` and `.luslh`. Checks the compiler enforces
   are not repeated lexically.
-- **Naming:** the checker enforces the Slang naming rules, warnings promoted to
-  errors in the engine repository:
-  - PascalCase types, functions and members;
-  - lowerCamelCase parameters and locals;
-  - `outName` parameters.
-
-  **Open:** whether game projects may relax them.
+- **Naming and bare `bool` operands** are [style rules](#style-rules), checked
+  by the compiler.
 - **Diagnostics are structured.** Each carries file, line, column, stable code
   (`LUSL0001`), message and, where safe, a fix. Examples: `!x` offers
   `x == false`; an implicit conversion offers the explicit constructor; a read
@@ -493,6 +563,47 @@ Targets disagree on several operations. LUSL defines each one once:
     [ADR 0026](../decisions/0026-tree-sitter-syntax-dependency.md) recipe and
     pinning rules;
   - a language-server mode of the same library in L4.
+
+### Style rules
+
+The checker separates style rules from language rules:
+
+- **Style rules:**
+  - **Naming**, from the engine's Slang naming rules:
+    - PascalCase types, functions and struct members;
+    - lowerCamelCase parameters and locals;
+    - `outName` out parameters;
+    - UPPER_CASE constants;
+    - boolean names that read as questions (`isVisible`, `hasHit`).
+  - **[Bare `bool` operands](#conversions-and-literals).**
+- **Language rules** are everything else:
+  - no unary `!`;
+  - no implicit conversions;
+  - call-site `out`/`inout` marks and the aliasing check;
+  - definite assignment;
+  - one declarator per declaration;
+  - named array sizes.
+
+  They are always errors, everywhere.
+
+Style rules follow a style setting:
+
+| Setting | Effect | Where it applies |
+| --- | --- | --- |
+| `strict` | Style findings are errors | Always in the engine repository; the default for game projects |
+| `warn` | Style findings are warnings | Game projects that choose it |
+| `off` | Style findings are not reported | Game projects that choose it |
+
+- **The setting is project-wide.** It lives in the game project's
+  configuration; L1 defines the key.
+- **No per-file switch.** Code borrowed from another engine or library
+  normally stays in Slang or GLSL. It reaches LUSL through
+  [`extern slang`](#slang-interoperability) instead of being relaxed in place.
+- **Typical relaxed projects:**
+  - teams porting shaders that use Unreal-style or `snake_case` names, or `g_`
+    globals;
+  - studios with an existing convention, such as camelCase functions or
+    booleans without question prefixes.
 
 ## Determinism and build identity
 
@@ -513,6 +624,9 @@ Targets disagree on several operations. LUSL defines each one once:
 | Targets | Emitted Slang compiled through `ShaderCompiler` for `Spirv`, `SpirvRayQuery`, `Wgsl` and `Metal`, validated by spirv-val and the WGSL validator; DXIL in Windows CI |
 | Differential | A ported built-in render-graph shader produces the same pixel hashes as its Slang original |
 | Zero rule | GPU readback proves zeroed locals, arrays, structs and cleared `groupshared` memory |
+| Signed overflow | GPU readback proves wrapping on every target, including Metal; L1 records the Metal loop code-generation and timing comparison |
+| Bounds checks | A development build clamps an out-of-range index and shows the error color with the mapped LUSL line; the release build of the same source contains no checks |
+| Style setting | The same sources under `strict`, `warn` and `off` give errors, warnings and no findings, while language-rule errors stay identical |
 | Determinism | Two compilations, on two hosts, compare byte for byte |
 | Robustness | Bounded fuzzing of the preprocessor and parser under ASan/UBSan: no crash, bounded diagnostics |
 
@@ -521,20 +635,24 @@ Targets disagree on several operations. LUSL defines each one once:
 | Phase | Scope | Acceptance |
 | --- | --- | --- |
 | L0 | This design and ADR 0027 | Reviewed and accepted into `develop` |
-| L1 | `Ludus::ShaderLanguage` and `luslc`: preprocessor, parser, types, untyped literals, the zero rule, definite assignment, `in`/`out`/`inout` with call-site marks, named arguments, designated initializers, `extern slang`, Slang emitter, source map, formatter; authored render-graph functions and compute entry points | Golden, diagnostic, target, determinism and fuzz tests; one built-in graph shader ported with identical pixels |
+| L1 | `Ludus::ShaderLanguage` and `luslc`: preprocessor (with `#` and `##`), parser, types and their aliases, untyped literals, the zero rule, definite assignment, `in`/`out`/`inout` with call-site marks, named arguments, designated initializers, `extern slang`, signed-overflow lowering, development bounds checks, style rules and setting, Slang emitter, source map, formatter; authored render-graph functions and compute entry points | Golden, diagnostic, target, signed-overflow, bounds-check, style-setting, determinism and fuzz tests; one built-in graph shader ported with identical pixels |
 | L2 | Interfaces, concepts, templates, `if constexpr`, constraint ordering, specialization budget report, `groupshared` clear | A material-permutation sample matches its Slang-interface version |
 | L3 | Vertex and fragment stages, the standalone binding model, `.luslh` generated from Slang reflection, LUSL output from the schema generator | A raster graph ported with identical pixels |
 | L4 | Language server, tree-sitter grammar, uniformity qualifiers, coordinate-space types, debug-view qualification, dynamic dispatch evaluation | Code editor acceptance for LUSL |
 
-## Open questions
+## Resolved questions
 
-1. Accept `float3`-style aliases in addition to `float32x3`? Proposed: no.
-2. Preprocessor stringification and token pasting? Proposed: not in L1.
-3. Signed overflow semantics on Metal. Proposed: wrap, pending the L1 cost
-   measurement.
-4. Warn on bare `bool` operands?
-5. May game projects relax the naming rules?
-6. Bounds checks on local arrays in development builds?
+The design's six open questions were resolved by the author on November 4,
+2026:
+
+| Question | Decision | Section |
+| --- | --- | --- |
+| Accept `float3`-style aliases? | Yes, as exact aliases of the fixed-width types | [Types](#types) |
+| Preprocessor `#` and `##`? | Yes, with C semantics | [Preprocessor](#preprocessor) |
+| Signed overflow on Metal | Wrap on every target; Metal lowers through unsigned arithmetic, and L1 measures loop code generation | [Signed overflow](#signed-overflow) |
+| Warn on bare `bool` operands? | Yes, as a style warning with an automatic `== true` fix; an error in the engine repository | [Conversions and literals](#conversions-and-literals) |
+| May game projects relax naming? | Yes, through a project-wide `strict`/`warn`/`off` style setting. The engine is always `strict`, and language rules are never relaxed | [Style rules](#style-rules) |
+| Development bounds checks on local arrays? | Yes, for local and `groupshared` arrays: clamp and latch a mapped failure. Release builds emit no checks | [Development bounds checks](#development-bounds-checks) |
 
 ## References
 
