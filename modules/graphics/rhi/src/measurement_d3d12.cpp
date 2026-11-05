@@ -5,6 +5,8 @@
 #include "internal/gpu_scope_backend.h"
 #include "internal/measurement.h"
 
+#include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/time/time.hpp>
 
@@ -20,6 +22,7 @@ using namespace d3d12;
 
 constexpr uint32 TIMESTAMPS_PER_INTERVAL = 2;
 constexpr uint32 FRAME_QUERY_COUNT = TIMESTAMPS_PER_INTERVAL;
+constexpr uint64 UNKNOWN_SUBMISSION_FENCE = ~uint64{0};
 constexpr uint32 PASS_QUERY_COUNT = static_cast<uint32>(MAX_GPU_TIMED_PASSES) * TIMESTAMPS_PER_INTERVAL;
 
 // Each probe owns one heap and one readback buffer for the session. An armed
@@ -29,6 +32,7 @@ struct QueryStorage final
 {
     ComOwner<ID3D12QueryHeap> Heap;
     ComOwner<ID3D12Resource> Readback;
+    ComOwner<ID3D12Fence> CompletionFence;
     uint64 Frequency = 0;
     uint64 StartNanoseconds = 0;
     uint64 Fence = 0;
@@ -49,8 +53,25 @@ RasterStatus GetQueryFailure(HRESULT result) noexcept
     return result == E_OUTOFMEMORY ? RasterStatus::OutOfMemory : RasterStatus::Failed;
 }
 
+bool CanReleaseQueries(const QueryStorage& storage) noexcept
+{
+    return storage.Fence == 0 || storage.CompletionFence->GetCompletedValue() >= storage.Fence;
+}
+
 RasterStatus PrepareQueries(uint32 count, QueryStorage& inoutStorage) noexcept
 {
+    ID3D12Fence* fence = GetFenceOrNull();
+    LUDUS_ASSERT(fence != nullptr);
+    if (inoutStorage.Heap.Get() != nullptr && inoutStorage.CompletionFence.Get() != fence)
+    {
+        // A timed-out device may still be using this probe's bounded storage.
+        // A new session can render and retry arming once the old fence retires.
+        if (CanReleaseQueries(inoutStorage) == false)
+        {
+            return RasterStatus::Failed;
+        }
+        inoutStorage = {};
+    }
     uint64 frequency = 0;
     const HRESULT frequencyResult = GetQueueOrNull()->GetTimestampFrequency(&frequency);
     if (FAILED(frequencyResult) == true || frequency == 0)
@@ -98,8 +119,11 @@ RasterStatus PrepareQueries(uint32 count, QueryStorage& inoutStorage) noexcept
         }
         inoutStorage.Heap = Move(heap);
         inoutStorage.Readback = ComOwner<ID3D12Resource>(resourceOrNull);
+        fence->AddRef();
+        inoutStorage.CompletionFence = ComOwner<ID3D12Fence>(fence);
     }
     inoutStorage.Frequency = frequency;
+    inoutStorage.Fence = 0;
     return RasterStatus::Ready;
 }
 
@@ -344,6 +368,20 @@ void EndTimingFrame(ID3D12GraphicsCommandList& inoutCommands) noexcept
     }
 }
 
+void MarkTimingsQueued() noexcept
+{
+    // ExecuteCommandLists can enqueue work even when the later Present or
+    // Signal fails. A drain or the removed-device sentinel then proves safety.
+    if (gFrameTiming.State == GpuTimingState::Armed)
+    {
+        gFrameQueries.Fence = UNKNOWN_SUBMISSION_FENCE;
+    }
+    if (gPassTimings.GetReport().State == GpuTimingState::Armed && gPassTimings.GetReport().Count != 0)
+    {
+        gPassQueries.Fence = UNKNOWN_SUBMISSION_FENCE;
+    }
+}
+
 void SubmitTimings(uint64 fence) noexcept
 {
     if (gFrameTiming.State == GpuTimingState::Armed)
@@ -351,19 +389,26 @@ void SubmitTimings(uint64 fence) noexcept
         gFrameQueries.Fence = fence;
         gFrameTiming.State = GpuTimingState::Pending;
     }
-    if (gPassTimings.GetReport().State == GpuTimingState::Armed)
+    if (gPassQueries.Fence == UNKNOWN_SUBMISSION_FENCE && gPassTimings.GetReport().State == GpuTimingState::Armed)
     {
         gPassQueries.Fence = fence;
     }
     gPassTimings.Submit();
 }
 
-void ReleaseTimings() noexcept
+void ReleaseTimings(bool isQueueDrained) noexcept
 {
     TimingReset();
     ResetPassTimings();
-    gFrameQueries = {};
-    gPassQueries = {};
+    const auto release = [isQueueDrained](QueryStorage& inoutStorage) noexcept {
+        if (CanReleaseQueries(inoutStorage) == true ||
+            (isQueueDrained == true && inoutStorage.CompletionFence.Get() == GetFenceOrNull()))
+        {
+            inoutStorage = {};
+        }
+    };
+    release(gFrameQueries);
+    release(gPassQueries);
 }
 
 void BeginPhysicalPassTiming(ID3D12GraphicsCommandList& inoutCommands, GpuPassKind kind) noexcept

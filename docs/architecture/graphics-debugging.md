@@ -284,6 +284,8 @@ rearmed while pending, and a full pass batch drops only the excess samples.
 A failed frequency query or readback yields Failed. A changed frequency or
 invalid interval yields Disjoint. The reported tick size comes from the queue
 frequency. Samples have no CPU-clock alignment and exclude presentation.
+A failed shutdown drain retains unfinished query storage. A new session can
+render and retry the affected probe after completion or device removal.
 
 Debug and Development force DRED auto-breadcrumbs and page-fault tracking
 before device creation when the runtime exposes the settings interface.

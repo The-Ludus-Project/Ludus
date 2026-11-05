@@ -13,8 +13,9 @@ void BeginTimingFrame(ID3D12GraphicsCommandList& inoutCommands) noexcept;
 void DiscardRecording() noexcept;
 void CloseTimingScopes(ID3D12GraphicsCommandList& inoutCommands) noexcept;
 void EndTimingFrame(ID3D12GraphicsCommandList& inoutCommands) noexcept;
+void MarkTimingsQueued() noexcept;
 void SubmitTimings(foundation::uint64 fence) noexcept;
-void ReleaseTimings() noexcept;
+void ReleaseTimings(bool isQueueDrained) noexcept;
 void BeginPhysicalPassTiming(ID3D12GraphicsCommandList& inoutCommands, GpuPassKind kind) noexcept;
 void EndPhysicalPassTiming(ID3D12GraphicsCommandList& inoutCommands) noexcept;
 

@@ -677,7 +677,6 @@ void ReleaseBackBuffers() noexcept
 
 void ReleaseDevice() noexcept
 {
-    ReleaseTimings();
     ReleasePixMarkers();
     ReleaseCompute();
     gRootSignature.Reset();
@@ -895,8 +894,9 @@ bool InitializeRendering() noexcept
 }
 void ShutdownRendering() noexcept
 {
-    static_cast<void>(WaitForIdle());
+    const bool isDrained = WaitForIdle();
     DiscardRecording();
+    ReleaseTimings(isDrained);
     gHeadless.Reset();
     gSurfaceOrNull = nullptr;
     gFrame = {};
@@ -1038,6 +1038,7 @@ FrameStatus End() noexcept
         return FailFrame("ID3D12GraphicsCommandList::Close", result);
     }
     ID3D12CommandList* const lists[] = {gCommands.Get()};
+    MarkTimingsQueued();
     gQueue->ExecuteCommandLists(1, lists);
     if (gSwapChain.Get() != nullptr && gTarget.ShouldPresentToSurface == true)
     {
