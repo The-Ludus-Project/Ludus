@@ -3,8 +3,6 @@
 #include <ludus/foundation/base/core.h>
 
 #if defined(LUDUS_PLATFORM_WINDOWS)
-#    define WIN32_LEAN_AND_MEAN
-#    define NOMINMAX
 #    include <windows.h>
 #elif !defined(LUDUS_PLATFORM_WEB)
 #    include <pthread.h>
@@ -32,7 +30,7 @@ struct IoGate
 struct IoWorker
 {
 #if defined(LUDUS_PLATFORM_WINDOWS)
-    HANDLE Handle = nullptr;
+    HANDLE HandleOrNull = nullptr;
 #elif !defined(LUDUS_PLATFORM_WEB)
     pthread_t Handle{};
 #endif

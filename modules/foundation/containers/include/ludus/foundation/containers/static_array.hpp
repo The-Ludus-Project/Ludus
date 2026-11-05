@@ -38,6 +38,8 @@ namespace ludus::foundation::core
 template <typename ElementType, usize Count>
 struct StaticArray
 {
+    static_assert(Count > 0);
+
     /// Stored element type.
     using ValueType = ElementType;
     /// Size and index type.
@@ -95,25 +97,21 @@ struct StaticArray
     /// First element. @pre Count > 0.
     [[nodiscard]] constexpr ElementType& GetFirst() noexcept
     {
-        LUDUS_ASSERT(Count > 0);
         return mData[0];
     }
     /// Read-only first element. @pre Count > 0.
     [[nodiscard]] constexpr const ElementType& GetFirst() const noexcept
     {
-        LUDUS_ASSERT(Count > 0);
         return mData[0];
     }
     /// Last element. @pre Count > 0.
     [[nodiscard]] constexpr ElementType& GetLast() noexcept
     {
-        LUDUS_ASSERT(Count > 0);
         return mData[Count - 1];
     }
     /// Read-only last element. @pre Count > 0.
     [[nodiscard]] constexpr const ElementType& GetLast() const noexcept
     {
-        LUDUS_ASSERT(Count > 0);
         return mData[Count - 1];
     }
 

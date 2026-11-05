@@ -722,6 +722,18 @@ packs, cancellation and bounded failures. Revalidate FoundationBase diagnostics,
 memory/alignment/allocation failure, containers, time/threading, logging and
 profiling under MSVC; prior Clang evidence remains separately identified.
 
+The Win32 backend delivers physical scan-code transitions to the attached
+keyboard sink, including repeats and extended modifier and keypad keys.
+Focus loss and close cancel held state. Focus entry samples held keys with an
+unambiguous physical mapping for the reducer's suppressed baseline. Keys that
+share a virtual key, such as the two Enter keys, resume from physical key
+messages. Platform entropy uses the system-preferred
+Windows CNG provider. FoundationFilesystem uses pinned Windows handles and the
+existing bounded async queue. The [filesystem contract](filesystem.md#f5-persistence-and-cooked-file-hints)
+covers Windows atomic replacement, the cooperative lock and parent-flush
+reporting. The [MSVC CI matrix](../development/continuous-integration.md)
+records runtime evidence separately from the Clang lane.
+
 D5b delivers GPU frame/pass timestamps with valid frequency/completion/failure
 handling as required by the public contracts, PIX markers/capture and DRED
 collection on device failure. Record real capture and diagnostic artifacts,
@@ -798,12 +810,12 @@ these rows remain pending.
 | FoundationBase / target ABI | threading T3; D0 pending | verified (Clang only) | Revalidate with MSVC in D0 | threading T3 | [threading evidence](../development/threading-evidence.md#platform-completion-t3) |
 | Toolchain / build configuration (Clang) | D1, D2 | verified (WARP) | Retain historical scope; MSVC migration tracked separately | PR #573; PR #586 | Windows lane, PR #573 (`7167c8a2`) |
 | MSVC / Ninja / MSBuild / configuration mapping | unassigned | needs port | D0; pins, compiler gates, presets and policy reconciliation | pending | none |
-| Memory / containers / diagnostics | unassigned | unreviewed | D0 baseline and D5a runtime/failure audit under MSVC | pending | none |
-| Time / threading | threading T3; D0 pending | verified (Clang only) | Re-run MSVC suites in D0/D5a | threading T3 | [threading evidence](../development/threading-evidence.md#platform-completion-t3) |
-| Logging / profiling | unassigned | needs port | D5a; closure builds, Windows suites still needed | pending | none |
-| Filesystem / persistence / watches | unassigned | needs port | D5a; audit existing Windows async support | pending | none |
+| Memory / containers / diagnostics | D5a | MSVC suites enabled | Verify allocation, alignment and terminal diagnostic behavior across configurations | [PR #999](https://github.com/The-Ludus-Project/Ludus/pull/999) | [Windows matrix](https://github.com/The-Ludus-Project/Ludus/pull/999/checks) |
+| Time / threading | threading T3; D5a | Clang verified, MSVC suites enabled | Revalidate startup, allocation and profiling paths under MSVC | [PR #999](https://github.com/The-Ludus-Project/Ludus/pull/999) | [Clang threading evidence](../development/threading-evidence.md#platform-completion-t3), [Windows matrix](https://github.com/The-Ludus-Project/Ludus/pull/999/checks) |
+| Logging / profiling | D5a | MSVC suites enabled | Validate log allocation failure, recorder and export tests | [PR #999](https://github.com/The-Ludus-Project/Ludus/pull/999) | [Windows matrix](https://github.com/The-Ludus-Project/Ludus/pull/999/checks) |
+| Filesystem / persistence / watches | D5a | Windows implementation and tests | Validate retained native revisions, process interruption and bounded watcher behavior | [PR #999](https://github.com/The-Ludus-Project/Ludus/pull/999) | [Windows matrix](https://github.com/The-Ludus-Project/Ludus/pull/999/checks) |
 | Platform / host (Win32 windows) | D1; D0 pending | verified (Clang/WARP) | Revalidate in D0; hosted channel in D6d | PR #573 | Windows lane, PR #573 (`7167c8a2`) |
-| Input / system entropy | unassigned | needs port | Win32 key delivery/focus recovery and entropy in D5a | pending | none |
+| Input / system entropy | D5a | Win32 implementation and tests | Validate key delivery, focus recovery and the system entropy adapter | [PR #999](https://github.com/The-Ludus-Project/Ludus/pull/999) | [Windows matrix](https://github.com/The-Ludus-Project/Ludus/pull/999/checks) |
 | RHI / graphics (clear/present) | D1; D0 pending | verified (Clang/WARP) | MSVC and hardware-adapter evidence in D0 | PR #573 | Windows lane, PR #573 (`7167c8a2`) |
 | RHI / graphics (DXIL/fullscreen) | D2; D0 pending | verified (Clang/WARP) | MSVC and hardware-adapter evidence in D0 | PR #586 | [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249) |
 | RHI / raster resources and bindings | D3a | verified (Clang/WARP) | Production MSVC baseline and hardware evidence still pending | PR #617 | `172002e4`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40359506345) |

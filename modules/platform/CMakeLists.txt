@@ -11,6 +11,10 @@ target_sources(ludus_platform_entropy
         FILES include/ludus/platform/entropy.h)
 # FoundationIdentity owns the EntropySource contract; Identity never depends on Platform.
 target_link_libraries(ludus_platform_entropy PUBLIC Ludus::FoundationBase Ludus::FoundationIdentity)
+if(WIN32)
+    target_link_libraries(ludus_platform_entropy PRIVATE bcrypt)
+    ludus_configure_win32_target(ludus_platform_entropy)
+endif()
 ludus_apply_project_defaults(ludus_platform_entropy)
 
 # Native frame pacing is its own small target so frame loops and their tests can
@@ -302,7 +306,8 @@ endif()
 
 if(LUDUS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Windows")
     add_executable(ludus_platform_win32_tests tests/win32_tests.cpp)
-    target_link_libraries(ludus_platform_win32_tests PRIVATE Ludus::Platform Catch2::Catch2WithMain user32)
+    target_link_libraries(ludus_platform_win32_tests PRIVATE
+        Ludus::Platform Ludus::FoundationContainers Catch2::Catch2WithMain user32)
     ludus_configure_win32_target(ludus_platform_win32_tests)
     ludus_apply_project_defaults(ludus_platform_win32_tests)
     ludus_enable_test_exceptions(ludus_platform_win32_tests)

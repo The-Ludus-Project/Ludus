@@ -1181,7 +1181,7 @@ bool CodeEditor::languageHasStructuralEditing() const
 QChar CodeEditor::autoClosingCloseFor(QChar open) const
 {
     const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
-    for (usize index = 0; index < descriptor.AutoClosingPairs.GetSize(); ++index)
+    for (usize index = 0; index < descriptor.AutoClosingPairs.GetSize(); index = index + 1)
     {
         const CodeLanguagePair& pair = descriptor.AutoClosingPairs[index];
         if (QLatin1Char(pair.Open) == open)
@@ -1195,7 +1195,7 @@ QChar CodeEditor::autoClosingCloseFor(QChar open) const
 QChar CodeEditor::surroundingCloseFor(QChar open) const
 {
     const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
-    for (usize index = 0; index < descriptor.SurroundingPairs.GetSize(); ++index)
+    for (usize index = 0; index < descriptor.SurroundingPairs.GetSize(); index = index + 1)
     {
         const CodeLanguagePair& pair = descriptor.SurroundingPairs[index];
         if (QLatin1Char(pair.Open) == open)
@@ -1209,7 +1209,7 @@ QChar CodeEditor::surroundingCloseFor(QChar open) const
 bool CodeEditor::isCloseOfAutoClosingPair(QChar character) const
 {
     const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
-    for (usize index = 0; index < descriptor.AutoClosingPairs.GetSize(); ++index)
+    for (usize index = 0; index < descriptor.AutoClosingPairs.GetSize(); index = index + 1)
     {
         const CodeLanguagePair& pair = descriptor.AutoClosingPairs[index];
         if (QLatin1Char(pair.Close) == character)
@@ -1223,7 +1223,7 @@ bool CodeEditor::isCloseOfAutoClosingPair(QChar character) const
 bool CodeEditor::isOpenBracket(QChar character) const
 {
     const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
-    for (usize index = 0; index < descriptor.BracketPairs.GetSize(); ++index)
+    for (usize index = 0; index < descriptor.BracketPairs.GetSize(); index = index + 1)
     {
         const CodeLanguagePair& pair = descriptor.BracketPairs[index];
         if (QLatin1Char(pair.Open) == character)
@@ -1237,7 +1237,7 @@ bool CodeEditor::isOpenBracket(QChar character) const
 QChar CodeEditor::bracketCloseFor(QChar open) const
 {
     const CodeLanguageDescriptor& descriptor = CodeLanguageRegistry::Get().Describe(mLanguage);
-    for (usize index = 0; index < descriptor.BracketPairs.GetSize(); ++index)
+    for (usize index = 0; index < descriptor.BracketPairs.GetSize(); index = index + 1)
     {
         const CodeLanguagePair& pair = descriptor.BracketPairs[index];
         if (QLatin1Char(pair.Open) == open)

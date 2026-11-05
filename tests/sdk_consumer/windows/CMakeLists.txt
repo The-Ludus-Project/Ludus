@@ -8,7 +8,7 @@ set(CMAKE_CXX23_STANDARD_COMPILE_OPTION "-std:c++23preview")
 string(REGEX REPLACE "(^| )[/-]EHsc( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 string(REGEX REPLACE "(^| )[/-]W[0-4]( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
-find_package(Ludus CONFIG REQUIRED COMPONENTS FoundationBase GraphicsRhi Platform
+find_package(Ludus CONFIG REQUIRED COMPONENTS FoundationBase FoundationFilesystem GraphicsRhi Platform
     PATHS "${CMAKE_PREFIX_PATH}" NO_DEFAULT_PATH)
 if(NOT Ludus_BUILD_FLAVOR STREQUAL EXPECTED_FLAVOR OR
    NOT Ludus_SDK_CONFIGURATION STREQUAL EXPECTED_FLAVOR)
@@ -34,7 +34,7 @@ if(NOT is_in_prefix OR NOT EXISTS "${archive}")
 endif()
 
 add_executable(ludus_windows_sdk_smoke smoke.cpp)
-target_link_libraries(ludus_windows_sdk_smoke PRIVATE Ludus::GraphicsRhi Ludus::Platform)
+target_link_libraries(ludus_windows_sdk_smoke PRIVATE Ludus::FoundationFilesystem Ludus::GraphicsRhi Ludus::Platform)
 ludus_apply_app_policy(ludus_windows_sdk_smoke)
 target_compile_options(ludus_windows_sdk_smoke PRIVATE /W4 /WX /permissive- /Zc:__cplusplus /Zc:preprocessor)
 target_compile_definitions(ludus_windows_sdk_smoke PRIVATE

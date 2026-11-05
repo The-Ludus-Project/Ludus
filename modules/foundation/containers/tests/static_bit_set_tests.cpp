@@ -72,10 +72,10 @@ void RequireMatches(const StaticBitSet<BitCount>& bits, const Model<BitCount>& m
     REQUIRE(bits.IsNoneSet() == (count == 0));
     REQUIRE(bits.AreAllSet() == (count == BitCount));
     // Tail bits past BitCount stay zero in the exposed words.
-    const usize tail = BitCount % StaticBitSet<BitCount>::BITS_PER_WORD;
-    if (tail != 0)
+    constexpr usize TAIL = BitCount % StaticBitSet<BitCount>::BITS_PER_WORD;
+    if constexpr (TAIL != 0)
     {
-        REQUIRE((bits.GetWords()[StaticBitSet<BitCount>::WORD_COUNT - 1] >> tail) == 0);
+        REQUIRE((bits.GetWords()[StaticBitSet<BitCount>::WORD_COUNT - 1] >> TAIL) == 0);
     }
     // FindNextSet visits exactly the set bits in order.
     usize expected = 0;

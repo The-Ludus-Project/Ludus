@@ -40,8 +40,10 @@ struct PublicationResult final
     bool DirectorySynced = false; ///< Native parent sync acknowledged after publication.
     Result Cleanup{};             ///< Temporary unlink or descriptor close failure, if any; never hides Outcome.
 };
-/// Explicit host-selected write capability on Linux/macOS; other targets return Unsupported.
-/// Does not resolve virtual mounts. Child symlinks and non-regular destinations are refused.
+/// Explicit host-selected write capability on Windows, Linux and macOS.
+/// Other targets return Unsupported.
+/// Operates outside virtual mounts. Refuses child symlinks, Windows reparse points
+/// and non-regular destinations.
 /// Root selection is trusted; hostile renames, hard links and mounts are outside this boundary.
 /// Concurrent Publish calls require a stable owner lifetime and disjoint source buffers.
 class WriteDirectory final
@@ -63,13 +65,15 @@ public:
     [[nodiscard]] Result Open(std::string_view nativeRoot) noexcept;
     /// Returns whether a root is pinned.
     [[nodiscard]] bool IsOpen() const noexcept;
-    /// Writes a complete bounded buffer into an exclusive same-directory 0600 temporary.
-    /// Handles short/interrupted writes, checks the condition before/after preparation,
-    /// and atomically renames. A nonblocking advisory directory lock coordinates peers.
+    /// Writes a complete bounded buffer into an exclusive same-directory temporary.
+    /// Checks the condition before and after preparation, then atomically renames.
+    /// Linux and macOS use a 0600 temporary and an advisory directory lock.
+    /// Windows inherits the directory ACL and takes a nonblocking write share on
+    /// the reserved .ludus-write-lock file. Leave that file in place.
     /// Pre-publication failure preserves the destination; owned temporary cleanup is reported.
-    /// Open File readers retain previous revisions. No allocations occur during Publish.
-    /// Native fsync acknowledgments depend on the OS, filesystem and storage device;
-    /// FileAndDirectory does not promise persistence through power loss (including macOS caches).
+    /// Open File readers retain previous revisions. Publish allocates no C++ storage.
+    /// FileAndDirectory reports a failed parent flush with Published still true.
+    /// Native sync acknowledgments depend on the OS, filesystem and storage device.
     [[nodiscard]] PublicationResult Publish(std::string_view relativePath,
                                             std::span<const uint8> bytes,
                                             const WriteOptions& options = {}) const noexcept;

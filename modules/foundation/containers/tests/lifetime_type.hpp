@@ -8,10 +8,12 @@
 // end) rather than just checking final values.
 
 #include <ludus/foundation/containers/relocation.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 
 #include <ludus/foundation/base/types.h>
 
 #include <cstdint>
+#include <cstdlib>
 
 namespace ludus::containers::testing
 {
@@ -147,7 +149,7 @@ private:
         // touched — a lifetime bug in the container.
         if (t.mCanary != kAlive)
         {
-            __builtin_trap();
+            std::abort();
         }
     }
 
@@ -230,9 +232,13 @@ struct Relocatable
 
 // Over-aligned element type (two cache lines). Verifies the aligned allocation
 // seam and that Data() is correctly aligned.
-struct alignas(128) OverAligned
+constexpr usize OVER_ALIGNMENT = 128;
+constexpr usize OVER_ALIGNED_PADDING = OVER_ALIGNMENT - sizeof(ludus::foundation::int32);
+
+struct alignas(OVER_ALIGNMENT) OverAligned
 {
-    int Value = 0;
+    ludus::foundation::int32 Value = 0;
+    ludus::foundation::StaticArray<ludus::foundation::uint8, OVER_ALIGNED_PADDING> Padding{};
     OverAligned() = default;
     explicit OverAligned(int v) noexcept : Value(v) {}
     friend bool operator==(const OverAligned& a, const OverAligned& b) noexcept
