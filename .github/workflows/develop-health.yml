@@ -1,0 +1,40 @@
+name: Develop health re-evaluation
+
+# Thanks to GitHub, "Events that trigger workflows", workflow_run: it starts
+# after the batch run completes, so the gate reads that run's final result.
+# Like schedule, it runs the default branch's definition; manual dispatch on
+# develop re-evaluates before this file reaches main.
+# https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run
+on:
+  workflow_run:
+    workflows: [Batched integration and promotion]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: develop-health-reevaluation
+  cancel-in-progress: false
+
+jobs:
+  reevaluate:
+    name: Re-run Develop health on open develop pull requests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: read
+    steps:
+      # Trusted default-branch (or dispatched) revision; no pull request code runs here.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Re-run each gate when develop's health may have changed
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: python3 scripts/python/develop_health.py reevaluate

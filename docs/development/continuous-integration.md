@@ -207,6 +207,81 @@ GitHub's [scheduled workflow contract](https://docs.github.com/en/actions/refere
 The administrator must verify ruleset interactions before enabling promotion;
 a missing permission or denied push fails rather than weakening the protections.
 
+## Develop health
+
+A red batch closes `develop` to everything except proven fixes. Without this,
+later changes merge while the batch is already failing, and new breakage hides
+behind the existing failure until the batch can no longer be repaired in one step.
+
+The **Develop health** job in `ci.yml` runs on every pull request targeting
+`develop`. It reads completed `Batched integration and promotion` runs on `main`,
+newest first, and uses the latest *validated* batch: one whose suites ran. Ticks
+that captured nothing, failed captures and cancelled runs are skipped. A batch
+whose suites all passed is green even if its promotion then failed. If no
+validated batch appears within the scan bound, develop is treated as open.
+Because the gate reads run history rather than coordinator state, it applies as
+soon as it reaches `develop`.
+
+| Develop | Pull request | Result |
+| --- | --- | --- |
+| Green | Any | Passes |
+| Red | Documentation-only, and no `wiki` suite failed | Passes |
+| Red | Declares fixes for failed batch jobs, with evidence on its head commit | Passes, listing the jobs still red |
+| Red | Anything else | Fails, naming the failed batch jobs |
+
+To submit a fix while develop is red:
+
+1. Add one line per batch job the PR fixes to its description, using the job
+   name exactly as the failed batch reports it:
+
+   ```text
+   Batch-Fix: native / ASan and UBSan
+   ```
+
+   A fix declares only the jobs it repairs; independent failures can be fixed by
+   separate PRs. Prefer reverting the offending change when it is identifiable.
+2. Merge current `develop` into the branch. The evidence must contain the last
+   attempted batch candidate (`ci/last-batch-attempt`), so it exercises the fix
+   on top of the code that failed.
+3. Dispatch the workflow that owns each declared job on the branch. The gate
+   reports the exact command, for example:
+
+   ```bash
+   gh workflow run ci.yml --ref <branch> -f validation_tier=full
+   ```
+
+   The prefix selects the workflow: `native` is `ci.yml`, `sdk` is
+   `project-sdk.yml`, `wiki` is `wiki.yml`, `browser` is `webgpu-probe.yml`,
+   `threading` is `threading-platforms.yml`, `windows` is
+   `windows-direct3d12.yml` and `recovery` is `filesystem-recovery.yml`.
+   Branch dispatches never deploy the wiki or promote.
+4. When each declared job has succeeded on the PR's exact head commit, re-run
+   the **Develop health** check. Editing the description starts a new run.
+
+Evidence runs the branch's own workflow definitions. Review workflow edits in a
+fix PR: a changed job cannot prove itself. Batches run `main`'s definitions, so a
+job renamed on `develop` since the last promotion has no matching evidence job;
+the maintainer decides whether to waive that batch. Evidence requires a branch
+in this repository, since fork dispatches do not run here.
+
+`develop-health.yml` re-runs the gate on open `develop` pull requests after a
+batch completes, when that batch is red or turned develop green. It skips ticks
+that validated nothing and green-after-green results. A pull request whose latest
+`ci.yml` run is still in progress is listed in that job's summary; re-run its gate
+after the run completes. `workflow_run` uses the default branch's definition, so
+automatic re-evaluation starts once this workflow reaches `main`. Until then,
+dispatch **Develop health re-evaluation** on `develop` to re-check every open PR.
+
+For an infrastructure failure, a maintainer can set the repository variable
+`DEVELOP_HEALTH_WAIVER` to the failed batch run ID, then dispatch the
+re-evaluation. The waiver opens develop only for that run; the next red batch
+closes it again. Dispatch the coordinator with **retry** as described below, and
+clear the variable once a batch passes. Agents never set waivers.
+
+Make **Develop health** a required check on `develop` once a batch passes. Until
+then it reports the failing batch without blocking acceptance, so the existing
+backlog can be cleared with fix and revert PRs first.
+
 ## Recover a failed batch
 
 Validation failures or cancellation before promotion keep main and its deployed
