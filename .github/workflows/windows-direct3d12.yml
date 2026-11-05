@@ -47,6 +47,8 @@ on:
       - 'modules/foundation/base/tests/checked_integer_tests.cpp'
       - 'modules/foundation/base/tests/byte_order_tests.cpp'
       - 'tests/build_contract/primitive_portability/**'
+      - 'tests/build_contract/windows_file_api.py'
+      - 'scripts/python/cmake_targets.py'
       - 'modules/graphics/rhi/src/dxil_container.cpp'
       - 'modules/graphics/rhi/src/internal/dxil_container.h'
       - 'modules/graphics/rhi/src/*d3d12*'
@@ -130,6 +132,8 @@ jobs:
       - name: Bootstrap pinned shader tools
         run: python scripts/shader-probe bootstrap
       - name: Build and test primitives and the Win32/D3D12 closure
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/python
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           $dependencies = "$PWD/out/windows-msvc-probe/dependencies"
@@ -167,6 +171,8 @@ jobs:
           $env:LUDUS_WINDOWS_DEPENDENCIES = $dependencies
           $builds = [ordered]@{}
           if ($visualStudio) {
+            python tests/build_contract/windows_file_api.py query out/build/windows-msvc-visual-studio
+            if ($LASTEXITCODE -ne 0) { throw 'Engine File API query failed' }
             cmake --preset windows-msvc-visual-studio
             if ($LASTEXITCODE -ne 0) { throw 'Engine solution configure failed' }
             foreach ($configuration in @('Debug', 'Development', 'Profile', 'Release')) {
@@ -175,6 +181,8 @@ jobs:
           } else {
             foreach ($flavor in @('Debug', 'Development', 'Profile', 'Release')) {
               $preset = "windows-msvc-$($flavor.ToLowerInvariant())"
+              python tests/build_contract/windows_file_api.py query "out/build/$preset"
+              if ($LASTEXITCODE -ne 0) { throw "Engine $flavor File API query failed" }
               cmake --preset $preset
               if ($LASTEXITCODE -ne 0) { throw "Engine $flavor configure failed" }
               $builds[$flavor] = $preset
@@ -208,10 +216,12 @@ jobs:
             if ($visualStudio -and (Split-Path -Leaf (Split-Path -Parent $d3d12)) -ne $configuration) {
               throw "CTest selected the wrong D3D12 executable for $configuration ($d3d12)"
             }
-            $cases = & $d3d12 --list-tests | Out-String
-            foreach ($required in @('Portable texture transfers initialize mips', 'draws the fullscreen pipeline across resizes')) {
-              if ($cases -notmatch [regex]::Escape($required)) { throw "Missing D3D12 test: $required" }
+            $fileApiConfiguration = $configuration
+            if (-not $visualStudio -and $configuration -in @('Development', 'Profile')) {
+              $fileApiConfiguration = 'RelWithDebInfo'
             }
+            python tests/build_contract/windows_file_api.py launch $build $fileApiConfiguration $d3d12
+            if ($LASTEXITCODE -ne 0) { throw "Engine $configuration File API launch failed" }
           }
       - name: Install and exercise each SDK with an external WARP consumer
         if: matrix.generator == 'MSBuild'
