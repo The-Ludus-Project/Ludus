@@ -1,6 +1,6 @@
 #pragma once
-#include "renderer_gpu_preview_layout.h"
 #include "math.slang"
+#include "renderer_gpu_preview_layout.h"
 
 // Thanks to Pharr, Jakob and Humphreys, Physically Based Rendering, 4th ed., section 9.3,
 // https://pbr-book.org/4ed/Reflection_Models/Specular_Reflection_and_Transmission:
@@ -49,12 +49,8 @@ float ComputeMaterialAlpha(MaterialModel model, float roughness, float conductor
 }
 
 // Paired with reference_bsdf.cpp. The PDF sums every lobe, including after sampling.
-float4 EvaluateProjectBrdf(float3 color,
-                          float roughness,
-                          float3 weights,
-                          float3 powers,
-                          float viewCosine,
-                          float lightCosine)
+float4
+EvaluateProjectBrdf(float3 color, float roughness, float3 weights, float3 powers, float viewCosine, float lightCosine)
 {
     float viewLightCosine = min(1, viewCosine * lightCosine);
     float clampedLightCosine = min(1, lightCosine);
@@ -68,11 +64,11 @@ float4 EvaluateProjectBrdf(float3 color,
 }
 
 float3 SampleProjectBrdfDirection(float roughness,
-                                 float3 weights,
-                                 float3 powers,
-                                 float3 normalWorld,
-                                 float3 viewWorld,
-                                 float3 samples)
+                                  float3 weights,
+                                  float3 powers,
+                                  float3 normalWorld,
+                                  float3 viewWorld,
+                                  float3 samples)
 {
     if (dot(normalWorld, viewWorld) <= 0)
         return 0;

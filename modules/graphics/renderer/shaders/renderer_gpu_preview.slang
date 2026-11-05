@@ -1156,11 +1156,17 @@ float3 Integrate(uint pixel, uint sample)
                                 Random01(pixel, sample, dimension + 5));
         float3 outgoingDirectionWorld =
             model == MaterialModel::ProjectBrdf
-                ? SampleProjectBrdfDirection(roughness, etaAndModel.xyz, extinctionAndAlpha.xyz,
-                                             normalWorld, viewDirectionWorld, samples)
-                : SampleScatteringBsdf(normalWorld, viewDirectionWorld,
+                ? SampleProjectBrdfDirection(roughness,
+                                             etaAndModel.xyz,
+                                             extinctionAndAlpha.xyz,
+                                             normalWorld,
+                                             viewDirectionWorld,
+                                             samples)
+                : SampleScatteringBsdf(normalWorld,
+                                       viewDirectionWorld,
                                        ComputeMaterialAlpha(model, roughness, extinctionAndAlpha.w),
-                                       ComputeMaterialSpecularProbability(model, metallic), samples);
+                                       ComputeMaterialSpecularProbability(model, metallic),
+                                       samples);
         if (dot(normalWorld, outgoingDirectionWorld) <= 0 || dot(scatteringNormalWorld, outgoingDirectionWorld) <= 0)
             break;
         float3 value;
