@@ -10,7 +10,11 @@
 
 #include "diagnostic.h"
 
+#include <bit>
 #include <span>
+
+#include <windows.h>
+#undef CreateWindow
 
 using ludus::foundation::float32;
 using ludus::foundation::StaticArray;
@@ -24,6 +28,17 @@ namespace platform = ludus::platform;
 
 static_assert(LUDUS_BUILD_FLAVOR_ID == LUDUS_EXPECTED_SDK_FLAVOR_ID);
 static_assert(LUDUS_ENABLE_ASSERTS == LUDUS_EXPECTED_SDK_ASSERTS);
+
+namespace
+{
+uint32 ReadD3D12SdkVersion(HMODULE module)
+{
+    LUDUS_REQUIRE(module != nullptr);
+    const uint32* versionOrNull = std::bit_cast<const uint32*>(GetProcAddress(module, "D3D12SDKVersion"));
+    LUDUS_REQUIRE(versionOrNull != nullptr);
+    return *versionOrNull;
+}
+} // namespace
 
 int main()
 {
@@ -48,6 +63,13 @@ int main()
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
     LUDUS_REQUIRE(rhi::CreateDevice({}, extent, {}, device, surface) == rhi::DeviceStatus::Ready);
+    const HMODULE processOrNull = GetModuleHandleW(nullptr);
+    LUDUS_REQUIRE(processOrNull != nullptr);
+    LUDUS_REQUIRE(GetProcAddress(processOrNull, "D3D12SDKPath") != nullptr);
+    const uint32 requestedVersion = ReadD3D12SdkVersion(processOrNull);
+    LUDUS_REQUIRE(requestedVersion > 0);
+    // The Windows loader can use a newer system core in place of the app-local core.
+    LUDUS_REQUIRE(ReadD3D12SdkVersion(GetModuleHandleW(L"D3D12Core.dll")) >= requestedVersion);
     rhi::MeasurementAdapter adapter;
     LUDUS_REQUIRE(rhi::GetMeasurementAdapter(device, adapter) == rhi::RasterStatus::Ready);
     LUDUS_REQUIRE(adapter.SoftwareKnown == true && adapter.Software == true);

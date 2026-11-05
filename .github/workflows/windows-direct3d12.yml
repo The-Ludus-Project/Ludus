@@ -26,6 +26,7 @@ on:
       - 'cmake/EngineOptions.cmake'
       - 'cmake/EngineWindowsMsvc.cmake'
       - 'cmake/EngineWindowsSdk.cmake'
+      - 'cmake/*D3D12Agility*'
       - 'cmake/LudusWindowsSdk.cmake.in'
       - 'cmake/LudusConfig.cmake.in'
       - 'cmake/LudusSdkManifest.json.in'
