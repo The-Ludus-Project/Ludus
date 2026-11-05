@@ -39,7 +39,8 @@ struct EmitterChord
 /// LineVisibility between functions lost its intervals on Metal in this merged kernel (PL1).
 struct LineProposal
 {
-    LightSample PointSample;
+    IncidentLightSample PointSample;
+    float SelectionPmf;
     EmitterChord Chord;
     float EmitterAreaWorld;
     float VisibleLengthWorld;
@@ -111,7 +112,7 @@ float2 GetChordBarycentric(EmitterChord chord, float t)
 }
 
 /// Select a light, propose a point on it and, for a mesh light, build its U chord, find the chord's
-/// visible intervals and draw a chord parameter uniformly by length over them. Reads dimensions
+/// visible intervals and draw a chord parameter uniformly by length over them. Reserves dimensions
 /// firstDimension to firstDimension + 3, and positionDimension, at explicit addresses. Consumes one
 /// line query for a mesh light unless the receiver lies in the emitter's plane, the chord is too short
 /// to query (IsEmitterChordQueryable) or the receiver sees the whole chord below its horizon (all
@@ -131,10 +132,9 @@ bool ProposeLineU(SceneContext scene,
     SelectedLight selected = SelectLight(scene, launch, firstDimension);
     if (selected.HasSample == false)
         return false;
-    float3 shapeSample = float3(SampleSceneRandom(launch, firstDimension + 1),
-                                SampleSceneRandom(launch, firstDimension + 2),
-                                SampleSceneRandom(launch, firstDimension + 3));
-    outProposal.PointSample = SampleIncidentLight(scene, selected, receiver, shapeSample);
+    outProposal.PointSample =
+        SampleIncidentLight(scene, selected.LightIndex, receiver, launch, firstDimension + 1, queries);
+    outProposal.SelectionPmf = selected.SelectionPmf;
     if (outProposal.PointSample.HasSample == false)
         return false;
     outProposal.HasProposal = true;
@@ -227,12 +227,12 @@ float3 EstimateLineProposal(SceneContext scene,
 {
     if (proposal.HasProposal == false)
         return float3(0);
-    LightSample light = proposal.PointSample;
+    IncidentLightSample light = proposal.PointSample;
     float3 bsdfValue;
     float bsdfDensity;
     if (proposal.IsMeshChord == false)
     {
-        float lightDensity = light.SelectionPmf * light.ConditionalPdf;
+        float lightDensity = proposal.SelectionPmf * light.ConditionalProbability;
         float cosSurface = dot(shadingNormalWorld, light.DirectionWorld);
         if (lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false || cosSurface <= 0)
             return float3(0);
@@ -266,7 +266,7 @@ float3 EstimateLineProposal(SceneContext scene,
         return float3(0);
     if (proposal.HasMaskedOccluders == true)
     {
-        LightSample confirmation = (LightSample)0;
+        IncidentLightSample confirmation = (IncidentLightSample)0;
         confirmation.TriangleIndex = endpoint.TriangleIndex;
         confirmation.Barycentric = endpoint.Barycentric;
         confirmation.PositionWorld = endpoint.PositionWorld;
@@ -278,7 +278,7 @@ float3 EstimateLineProposal(SceneContext scene,
             return float3(0);
     }
     // Joint area density P(light) * c / (A_light * L_visible), in solid angle d^2 / |cos_light|.
-    float densitySolidAngle = light.SelectionPmf * proposal.Chord.LengthWorld /
+    float densitySolidAngle = proposal.SelectionPmf * proposal.Chord.LengthWorld /
                               (proposal.EmitterAreaWorld * proposal.VisibleLengthWorld) * distanceWorld *
                               distanceWorld / cosLight;
     if (isfinite(densitySolidAngle) == false || densitySolidAngle <= 0)

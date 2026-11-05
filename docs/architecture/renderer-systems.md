@@ -1432,13 +1432,12 @@ Record any intentionally mixed approximation in the capture's rendering profile.
 
 ### Unified light discovery and incident sampling
 
-**Status: proposed.** Scene shaders already enumerate analytic lights, mesh
-emitters and the environment through `GetLightCount` and `GetLightInfo`.
-Today the default incident sampler recomputes the uniform source probability,
-and the mesh-hit and environment PDF helpers assume that same uniform selection.
-A graph that changes how it chooses a light must also replace the PDF used when
-a BSDF ray reaches it. Callers also supply a `float3` even when the selected light
-requires no random coordinates. The proposed contract separates these decisions.
+Scene shaders enumerate analytic lights, mesh emitters and the environment through
+`GetLightCount` and `GetLightInfo`. Built-in templates using the default incident
+proposal use addressed kind-owned draws and combine the source PMF with the
+conditional probability when weighting the estimate. Authored shaders can use
+the existing explicit-coordinate API. The CPU oracle and GPU reference keep
+their matched named proposals and random addresses.
 
 #### Scene ownership and source identity
 

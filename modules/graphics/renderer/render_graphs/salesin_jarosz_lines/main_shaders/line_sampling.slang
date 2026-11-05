@@ -59,7 +59,8 @@ struct EmitterChord
 /// LineVisibility between functions lost its intervals on Metal in merged kernels (PL1).
 struct LineProposal
 {
-    LightSample PointSample;
+    IncidentLightSample PointSample;
+    float SelectionPmf;
     EmitterChord Chord;
     float EmitterAreaWorld;
     float VisibleLengthWorld;
@@ -154,16 +155,8 @@ float3 GetLineAlongWorld(TriangleData triangle, LineDirection direction)
     return direction == LineDirection::U ? alongUWorld : cross(triangle.GeometricNormalWorld, alongUWorld);
 }
 
-/// Probability with which SelectLight chose one light. Selection is uniform, as in
-/// EvaluateLightSelectionPmf and EvaluateLightPdfSolidAngle.
-float GetUniformLightSelectionPmf(SceneContext scene)
-{
-    uint count = GetLightCount(scene);
-    return count > 0 ? 1.0 / float(count) : 0;
-}
-
 /// Joint density P(light) * c / (A_light * L_visible) of a mesh line sample (design D6 step 6), in
-/// solid angle at the receiver: times distance^2 / |cos_light|, as EvaluateLightPdfSolidAngle
+/// solid angle at the receiver: times distance^2 / |cos_light|, as EvaluateIncidentLightPdfSolidAngle
 /// converts area density. Zero for any nonpositive or nonfinite input or result.
 float ComputeLineDensitySolidAngle(float selectionPmf,
                                    float chordLengthWorld,
@@ -181,7 +174,7 @@ float ComputeLineDensitySolidAngle(float selectionPmf,
 
 /// Select a light, propose a point on it and, for a mesh light, build its chord in direction
 /// LineDirection::U or LineDirection::V, find the chord's visible intervals and draw a chord parameter
-/// uniformly by length over them. Reads dimensions firstDimension to firstDimension + 3, and
+/// uniformly by length over them. Reserves dimensions firstDimension to firstDimension + 3, and
 /// positionDimension, at explicit addresses. Consumes one line query for a mesh light unless the
 /// receiver lies in the emitter's plane, the chord is too short to query (IsEmitterChordQueryable) or
 /// the receiver sees the whole chord below its horizon (all contribute zero). A failed line query
@@ -201,10 +194,9 @@ bool FindLineProposal(SceneContext scene,
     SelectedLight selected = SelectLight(scene, launch, firstDimension);
     if (selected.HasSample == false)
         return false;
-    float3 shapeSample = float3(SampleSceneRandom(launch, firstDimension + 1),
-                                SampleSceneRandom(launch, firstDimension + 2),
-                                SampleSceneRandom(launch, firstDimension + 3));
-    outProposal.PointSample = SampleIncidentLight(scene, selected, receiver, shapeSample);
+    outProposal.PointSample =
+        SampleIncidentLight(scene, selected.LightIndex, receiver, launch, firstDimension + 1, queries);
+    outProposal.SelectionPmf = selected.SelectionPmf;
     if (outProposal.PointSample.HasSample == false)
         return false;
     outProposal.HasProposal = true;
@@ -347,12 +339,12 @@ bool EvaluateLineProposal(SceneContext scene,
     outValue.TriangleIndex = SCENE_INVALID_INDEX;
     if (proposal.HasProposal == false)
         return false;
-    LightSample light = proposal.PointSample;
+    IncidentLightSample light = proposal.PointSample;
     float3 bsdfValue;
     float bsdfDensity;
     if (proposal.IsMeshChord == false)
     {
-        float lightDensity = light.SelectionPmf * light.ConditionalPdf;
+        float lightDensity = proposal.SelectionPmf * light.ConditionalProbability;
         float cosSurface = dot(shadingNormalWorld, light.DirectionWorld);
         if (lightDensity <= 0 || any(light.IncidentCoefficient > 0) == false || cosSurface <= 0)
             return false;
@@ -362,7 +354,7 @@ bool EvaluateLineProposal(SceneContext scene,
         outValue.IntegrandValue = bsdfValue * light.IncidentCoefficient * cosSurface;
         outValue.DirectionWorld = light.DirectionWorld;
         outValue.Density = lightDensity;
-        outValue.BsdfDensity = light.IsDiscrete == true ? 0 : bsdfDensity;
+        outValue.BsdfDensity = light.Measure == IncidentLightMeasure::Discrete ? 0 : bsdfDensity;
         return true;
     }
     if (proposal.VisibleLengthWorld <= 0)
@@ -389,7 +381,7 @@ bool EvaluateLineProposal(SceneContext scene,
         return false;
     if (proposal.HasMaskedOccluders == true)
     {
-        LightSample confirmation = (LightSample)0;
+        IncidentLightSample confirmation = (IncidentLightSample)0;
         confirmation.TriangleIndex = endpoint.TriangleIndex;
         confirmation.Barycentric = endpoint.Barycentric;
         confirmation.PositionWorld = endpoint.PositionWorld;
@@ -400,7 +392,7 @@ bool EvaluateLineProposal(SceneContext scene,
         if (TestVisibility(scene, queries, receiver, confirmation) != SceneQuery::Miss)
             return false;
     }
-    outValue.Density = ComputeLineDensitySolidAngle(light.SelectionPmf,
+    outValue.Density = ComputeLineDensitySolidAngle(proposal.SelectionPmf,
                                                     proposal.Chord.LengthWorld,
                                                     proposal.EmitterAreaWorld,
                                                     proposal.VisibleLengthWorld,
@@ -461,7 +453,8 @@ float FindLineDensity(SceneContext scene,
     }
     if (isVisible == false)
         return 0;
-    return ComputeLineDensitySolidAngle(GetUniformLightSelectionPmf(scene),
+    float selectionPmf = EvaluateLightSelectionPmf(scene, GetSurfaceLightIndex(scene, emitter));
+    return ComputeLineDensitySolidAngle(selectionPmf,
                                         chord.LengthWorld,
                                         GetEmitter(scene, emitter.EmitterIndex).z,
                                         visibility.VisibleLengthWorld,

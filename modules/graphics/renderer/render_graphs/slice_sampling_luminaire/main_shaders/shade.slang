@@ -182,7 +182,7 @@ float3 SampleLuminaire(SceneContext scene,
     if (cosSurface <= 0 || any(bsdfValue > 0) == false)
         return float3(0);
     // The panel is not scene geometry: trace to the exact panel point, which TestVisibility does not offset.
-    LightSample shadowRay = (LightSample)0;
+    IncidentLightSample shadowRay = (IncidentLightSample)0;
     shadowRay.TriangleIndex = SCENE_INVALID_INDEX;
     shadowRay.PositionWorld = light.PositionWorld;
     shadowRay.DirectionWorld = light.DirectionWorld;

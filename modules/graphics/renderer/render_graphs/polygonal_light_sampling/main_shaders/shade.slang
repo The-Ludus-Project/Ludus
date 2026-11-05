@@ -145,7 +145,7 @@ struct ShadingPoint
     float3 emission = EvaluateEmission(scene, emitterHit, -lightSample.DirectionWorld);
     if (any(emission > 0) == false)
         return float3(0);
-    LightSample shadowRay = (LightSample)0;
+    IncidentLightSample shadowRay = (IncidentLightSample)0;
     shadowRay.TriangleIndex = triangle.TriangleIndex;
     shadowRay.Barycentric = lightSample.Barycentric;
     shadowRay.PositionWorld = emitterHit.PositionWorld;

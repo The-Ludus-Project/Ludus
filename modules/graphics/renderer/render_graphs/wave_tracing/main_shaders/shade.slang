@@ -26,7 +26,7 @@ CoatingRandomContext MakeWaveMaterialRandom(RayLaunch launch, uint depth)
 }
 float EvaluateOpticalVisibility(SceneContext scene,
                                 SurfaceHit receiver,
-                                LightSample light,
+                                IncidentLightSample light,
                                 inout RayQueryContext queries)
 {
     if (light.HasFiniteEndpoint == false)
@@ -108,11 +108,13 @@ float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQu
         SelectedLight selected = SelectLight(scene, launch, dimension);
         if (selected.HasSample == true)
         {
-            float3 shapeSample = float3(SampleSceneRandom(launch, dimension + WAVE_LIGHT_SHAPE_FIRST),
-                                        SampleSceneRandom(launch, dimension + WAVE_LIGHT_SHAPE_FIRST + 1),
-                                        SampleSceneRandom(launch, dimension + WAVE_LIGHT_SHAPE_FIRST + 2));
-            LightSample light = SampleIncidentLight(scene, selected, hit, shapeSample);
-            float probability = light.SelectionPmf * light.ConditionalPdf;
+            IncidentLightSample light = SampleIncidentLight(scene,
+                                                            selected.LightIndex,
+                                                            hit,
+                                                            launch,
+                                                            dimension + WAVE_LIGHT_SHAPE_FIRST,
+                                                            queries);
+            float probability = selected.SelectionPmf * light.ConditionalProbability;
             float cosine = dot(shadingNormalWorld, light.DirectionWorld);
             if (isDielectric == false && light.HasSample == true && probability > 0 && cosine > 0 &&
                 dot(geometricNormalWorld, light.DirectionWorld) > 0 && any(light.IncidentCoefficient > 0) == true)
