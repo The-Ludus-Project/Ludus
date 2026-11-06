@@ -17,7 +17,8 @@ inline constexpr foundation::usize MAX_SOURCE_BYTES = foundation::usize{4} * 102
 inline constexpr foundation::usize MAX_ARTIFACT_BYTES = foundation::usize{2} * 1024 * 1024;
 /// Maximum framed JSON request/response bytes; includes escaped sources and hex artifacts.
 inline constexpr foundation::usize MAX_MESSAGE_BYTES = foundation::usize{16} * 1024 * 1024;
-/// Wire schema version; incompatible workers are rejected.
+/// Wire schema version; incompatible workers are rejected. Optional request fields (the LUSL
+/// options and `debug_information`) were added without a new version.
 inline constexpr foundation::uint32 PROTOCOL_VERSION = 1;
 /// Maximum retained compiler diagnostic bytes, including warnings.
 inline constexpr foundation::usize MAX_DIAGNOSTIC_BYTES = foundation::usize{64} * 1024;
@@ -95,6 +96,15 @@ struct Request final
     LanguageStyle Style = LanguageStyle::Strict; ///< Style setting of a `.lusl` Source.
     /// Development bounds checks for a `.lusl` Source; release builds leave this false.
     bool ShouldCheckBounds = false;
+    /// @brief Emit the target's standard debug information, for Slang and `.lusl` Sources alike.
+    ///
+    /// SPIR-V gains NonSemantic.Shader.DebugInfo.100 records that embed each source file's text and
+    /// map instructions to its lines; Metal gains a `#line` directive per statement. For a `.lusl`
+    /// Source both name LUSL files and lines, through the generated module's `#line` directives.
+    /// WGSL carries no line information either way. The artifact bytes differ from a request
+    /// without it, so a caller that sets it must include it in its build identity. See "Debug
+    /// views" in docs/modules/tooling/shader-language.md for each target's qualification.
+    bool ShouldEmitDebugInformation = false;
 };
 /// Owned compilation output; caller storage remains independent of compiler/client lifetime.
 struct Result final

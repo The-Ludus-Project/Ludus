@@ -366,11 +366,15 @@ struct Compiler::State final
     Slang::ComPtr<slang::ISession> Session;
     PathText Source;
     SessionProfile Profile = SessionProfile::Portable;
+    /// The session emits debug information. Its loaded modules keep the level they were compiled
+    /// with, so a request with the other level needs a session of its own.
+    bool HasDebugInformation = false;
 
     Status Capture(const Request& request) noexcept
     {
         const SessionProfile profile = GetSessionProfile(request.OutputTarget);
-        if (Session.get() != nullptr && Profile == profile && Source.GetView() == GetText(request.Source) &&
+        if (Session.get() != nullptr && Profile == profile &&
+            HasDebugInformation == request.ShouldEmitDebugInformation && Source.GetView() == GetText(request.Source) &&
             Filesystem->Matches(request) == true)
         {
             return Status::Ready;
@@ -431,7 +435,17 @@ struct Compiler::State final
         description.targetCount =
             profile == SessionProfile::Portable ? static_cast<SlangInt>(PORTABLE_TARGET_COUNT) : 1;
         description.fileSystem = Filesystem.get();
+        slang::CompilerOptionEntry debugInformation{};
+        debugInformation.name = slang::CompilerOptionName::DebugInformation;
+        debugInformation.value.kind = slang::CompilerOptionValueKind::Int;
+        debugInformation.value.intValue0 = SLANG_DEBUG_INFO_LEVEL_STANDARD;
+        if (request.ShouldEmitDebugInformation == true)
+        {
+            description.compilerOptionEntries = &debugInformation;
+            description.compilerOptionEntryCount = 1;
+        }
         Profile = profile;
+        HasDebugInformation = request.ShouldEmitDebugInformation;
         return SLANG_SUCCEEDED(Global->createSession(description, Session.writeRef())) ? Status::Ready
                                                                                        : Status::Unavailable;
     }

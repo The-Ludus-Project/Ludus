@@ -135,6 +135,8 @@ bool EncodeRequest(const Request& request, Array<uint8>& outBytes) noexcept
     writer.Raw(",\"style\":");
     writer.Integer(static_cast<uint8>(request.Style));
     writer.Raw(request.ShouldCheckBounds == true ? ",\"bounds_checks\":true" : ",\"bounds_checks\":false");
+    writer.Raw(request.ShouldEmitDebugInformation == true ? ",\"debug_information\":true"
+                                                          : ",\"debug_information\":false");
     writer.Raw(",\"configuration\":[");
     for (usize i = 0; i < request.Configuration.GetSize(); ++i)
     {
