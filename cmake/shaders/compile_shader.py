@@ -447,6 +447,7 @@ def compile_dxil(args, lock):
             header += f' graphics::rhi::ShaderDescription result; result.Stage = graphics::rhi::ShaderStage::{stage.title()};\n'
             header += f' result.UniformSize = {sizes[stage]}; result.Dxil = {stage.upper()}_DXIL; result.DxilEntry = "{entries[stage]}";\n return result;\n}}\n'
     header += '}\n'
+    pin = lock['dxc']
     manifest = {'compiler': lock['slang'], 'dxc': {'version': pin['version'], 'sha256': pin['sha256']},
                 'commands': commands, 'uniform_sizes': sizes, 'interfaces': interfaces, 'dxil_entries': entries, 'profiles': {'dxil': 'sm_6_0'},
                 'sha256': {f'{args.name}.{stage}.dxil': hashlib.sha256(containers[stage]).hexdigest()
