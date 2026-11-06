@@ -874,7 +874,10 @@ with optional tooling absent.
   descriptor passing and generation leases) to Windows, with D6d; the installed
   Behavior SDK, player and script debugging on Windows; Windows `Ludus::ShaderDevelopment` delivery and render-graph package DXIL;
   the tools-only worker install; and the embedded editors, which arrive with the
-  D6d editor port.
+  D6d editor port. Runtime render-graph packages can now carry DXIL stages
+  (`ShaderTarget::Dxil`), and Renderer passes their bytes to the Direct3D 12 shader
+  description. Compiling graph stages to DXIL and admitting graphs on Direct3D 12
+  are the next steps.
 - **D6d (editor):** port Qt host integration and hosted-window transport plus
   D3D12 native interop/shared presentation with explicit handle ownership,
   adapter identity, producer/consumer synchronization and teardown fencing.

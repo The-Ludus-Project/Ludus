@@ -59,7 +59,7 @@ inline constexpr foundation::uint32 MAX_RAY_BUFFER_BYTES = 256 * 1024 * 1024;
 /// Number of shader stages (vertex and fragment) of one technique.
 inline constexpr foundation::usize TECHNIQUE_STAGE_COUNT = 2;
 /// Number of artifact targets a generation may carry.
-inline constexpr foundation::usize SHADER_TARGET_COUNT = 4;
+inline constexpr foundation::usize SHADER_TARGET_COUNT = 5;
 /// Largest logical float32 uniform value table supplied by one draw item.
 inline constexpr foundation::usize MAX_UNIFORM_VALUES = 64;
 /// Largest number of uniform bindings across every technique of one plan.
@@ -170,6 +170,9 @@ enum class ShaderTarget : foundation::uint32
     Spirv,  ///< SPIR-V words; the byte length is a multiple of four.
     Wgsl,   ///< WGSL source text.
     GlslEs, ///< GLSL ES 3.00 source text.
+    /// Direct3D 12 DXIL container bytes (shader model 6.0), signed by the pinned DXC. The
+    /// stage record layout is unchanged; readers that predate this target reject it.
+    Dxil,
 };
 /// Shader stages that read one uniform binding.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.

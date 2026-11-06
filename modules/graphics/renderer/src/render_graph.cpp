@@ -22,6 +22,7 @@
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/lifetime.h>
 
+#include <cstring>
 #include <new>
 
 // Thanks to Donald Revie, "Designing a Data-Driven Renderer", GPU Pro 3,
@@ -57,7 +58,7 @@ constexpr usize MAX_COMPONENTS = 4;
 constexpr usize MAX_TECHNIQUE_UNIFORM_BYTES = format::UNIFORM_SLOT_COUNT * format::MAX_UNIFORM_BLOCK_BYTES;
 constexpr usize NO_SET = ~usize{0};
 constexpr uint32 MAX_TECHNIQUE = static_cast<uint32>(format::TECHNIQUE_COUNT - 1);
-constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::GlslEs);
+constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::Dxil);
 bool IsAccepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;
@@ -128,8 +129,8 @@ format::ShaderTarget GetTarget(rhi::Backend backend) noexcept
             return format::ShaderTarget::Wgsl;
         case rhi::Backend::WebGL2:
             return format::ShaderTarget::GlslEs;
-        // The authored package format has no DXIL target. Preparation rejects it below.
         case rhi::Backend::Direct3D12:
+            return format::ShaderTarget::Dxil;
         case rhi::Backend::Vulkan:
             break;
     }
@@ -154,7 +155,7 @@ bool HasShaderArtifact(const rhi::RasterShaderDescription& description) noexcept
 {
     const rhi::ShaderDescription& artifact = description.Artifact;
     return artifact.Wgsl.empty() == false || artifact.Msl.empty() == false || artifact.Spirv.empty() == false ||
-           artifact.GlslEs.empty() == false;
+           artifact.GlslEs.empty() == false || artifact.Dxil.empty() == false;
 }
 bool IsReadByStage(format::Visibility stages, rhi::ShaderStage stage) noexcept
 {
@@ -223,7 +224,9 @@ bool AreArtifactsEqual(const rhi::ShaderDescription& left, const rhi::ShaderDesc
 {
     if (left.Wgsl != right.Wgsl || left.Msl != right.Msl || left.GlslEs != right.GlslEs ||
         left.WgslEntry != right.WgslEntry || left.MslEntry != right.MslEntry || left.GlslEsEntry != right.GlslEsEntry ||
-        left.SpirvEntry != right.SpirvEntry || left.Spirv.size() != right.Spirv.size())
+        left.SpirvEntry != right.SpirvEntry || left.Spirv.size() != right.Spirv.size() ||
+        left.DxilEntry != right.DxilEntry || left.Dxil.size() != right.Dxil.size() ||
+        (left.Dxil.empty() == false && std::memcmp(left.Dxil.data(), right.Dxil.data(), left.Dxil.size()) != 0))
     {
         return false;
     }
@@ -2040,16 +2043,13 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     const bool hasForwardProfile = programs.ForwardVertex.Inputs.empty() == false;
     for (const rhi::RasterShaderDescription* stage : forwardStages)
     {
-        const bool hasArtifact = stage->Artifact.Wgsl.empty() == false || stage->Artifact.Msl.empty() == false ||
-                                 stage->Artifact.Spirv.empty() == false || stage->Artifact.GlslEs.empty() == false;
+        const bool hasArtifact = HasShaderArtifact(*stage);
         if (hasArtifact != hasForwardProfile)
         {
             return Status::InvalidDescription;
         }
     }
-    const bool hasDepthArtifact =
-        programs.ForwardDepth.Artifact.Wgsl.empty() == false || programs.ForwardDepth.Artifact.Msl.empty() == false ||
-        programs.ForwardDepth.Artifact.Spirv.empty() == false || programs.ForwardDepth.Artifact.GlslEs.empty() == false;
+    const bool hasDepthArtifact = HasShaderArtifact(programs.ForwardDepth);
     if (hasDepthArtifact != programs.HasClusteredForward ||
         (programs.HasClusteredForward == true && hasForwardProfile == false))
     {
@@ -2232,6 +2232,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     }
     if (information.Startup.SelectedBackend == rhi::Backend::Direct3D12)
     {
+        // Packages can carry DXIL, but graph stages are not yet compiled to it (D6c), and
+        // Direct3D 12 graph execution is not yet qualified.
         return Status::Unsupported;
     }
     const format::ShaderTarget target = GetTarget(information.Startup.SelectedBackend);

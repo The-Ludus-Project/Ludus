@@ -523,6 +523,18 @@ class ExecutionTests(unittest.TestCase):
             execution.lower_plan(package, 'Default')
 
 
+class ShaderTargetMirrorTests(unittest.TestCase):
+    def test_target_codes_mirror_the_runtime_shader_target_enum(self):
+        header = (ROOT / 'modules/content/render_graph_format/include/ludus/content/render_graph_format/plan.h').read_text()
+        body = re.search(r'enum class ShaderTarget : foundation::uint32\s*\{(.*?)\};', header, re.S).group(1)
+        names = re.findall(r'^\s*(\w+),', body, re.M)
+        by_code = [execution.TARGET_NAMES[target] for target, _ in
+                   sorted(execution.TARGET_CODES.items(), key=lambda item: item[1])]
+        self.assertEqual(by_code, names)
+        self.assertEqual(set(execution.TARGET_FIELDS), set(execution.TARGET_CODES))
+        self.assertEqual(execution.TARGET_CODES['dxil'], 4)
+
+
 class ResourceNameTests(unittest.TestCase):
     def test_names_list_exactly_the_lowered_resources(self):
         # A per-pixel Buffer, such as a template's hit record, is a runtime resource record and must be named, or

@@ -320,7 +320,7 @@ def _cpu_vertex_interface(schema, stages):
     return {'vertex_schema': schema, 'inputs': inputs}
 
 
-TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
+TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs', 'dxil': 'Dxil'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
 # Editor-only diagnostic ray path capture generation; same layout, refused by runtime decoding.
@@ -347,8 +347,9 @@ MAX_PASS_NAME_BYTES = 127
 IDENTITY_BYTES = 32
 MAX_RUNTIME_BYTES = 16 * 1024 * 1024
 MAX_ENTRY_BYTES = 63
-TARGET_CODES = {'metal': 0, 'spirv': 1, 'wgsl': 2, 'glsl': 3}
-TARGET_NAMES = {'metal': 'Metal', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
+# render_graph_format::ShaderTarget; DXIL (4) carries signed container bytes, not text.
+TARGET_CODES = {'metal': 0, 'spirv': 1, 'wgsl': 2, 'glsl': 3, 'dxil': 4}
+TARGET_NAMES = {'metal': 'Metal', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs', 'dxil': 'Dxil'}
 FORMAT_CODES = {'Float32': 0, 'Float2': 1, 'Float3': 2, 'Float4': 3}
 
 
@@ -545,6 +546,8 @@ def _runtime_contents(path, configuration):
         artifact = build.read(path / 'programs' / program['key'] / artifact_name, 2 * 1024 * 1024)
         if target == 'spirv':
             build.require(len(artifact) % 4 == 0, 'Package', 'PROGRAM_' + str(ordinal), 'SPIR-V word size mismatch')
+        elif target == 'dxil':
+            build.require(artifact[:4] == b'DXBC', 'Package', 'PROGRAM_' + str(ordinal), 'DXIL artifact is not a container')
         else:
             artifact.decode('utf-8')
         entry = descriptor['entry']
@@ -710,6 +713,12 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
             for i in range(0, len(words), 8):
                 lines.append('        ' + ', '.join(hex(w) for w in words[i:i + 8]) + ',')
             lines += ['    },', '};']
+        elif key[2] == 'dxil':
+            # A DXIL container is binary; emit its exact bytes like ludus_compile_shader's *_DXIL arrays.
+            lines += [f'alignas(4) inline constexpr foundation::uint8 {label}[] = {{']
+            for i in range(0, len(artifact), 16):
+                lines.append('    ' + ', '.join(f'0x{b:02x}U' for b in artifact[i:i + 16]) + ',')
+            lines += ['};']
         else:
             text = artifact.decode('utf-8')
             delimiter = 'RG' + str(ordinal)
@@ -794,7 +803,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
             for key in sorted(keys, key=lambda k: TARGET_CODES[k[2]]):
                 label, item = artifact_labels[key]
                 field = TARGET_FIELDS[key[2]]
-                lines += [f'    result.{member}.Artifact.{field} = ' + (label + '.AsSpan();' if key[2] == 'spirv' else label + ';'),
+                value = label + '.AsSpan();' if key[2] == 'spirv' else label + ';'
+                lines += [f'    result.{member}.Artifact.{field} = ' + value,
                           f'    result.{member}.Artifact.{field}Entry = ' + json.dumps(item['entry']) + ';']
                 for slot, block in item['blocks']:
                     lines.append(f'    result.{member}.UniformBlocks[{slot}] = ' + json.dumps(block) + ';')
