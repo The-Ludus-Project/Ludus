@@ -19,6 +19,14 @@ SOURCE = WORK / "source"
 FIXTURES = ROOT / "tools/luau-probe/fixtures"
 PIN_PATH = ROOT / "config/luau_toolchain.json"
 PIN = json.loads(PIN_PATH.read_text())
+# Windows host tools are .exe files in the virtual environment's Scripts directory.
+WINDOWS = platform.system() == "Windows"
+EXECUTABLE_SUFFIX = ".exe" if WINDOWS else ""
+
+
+def host_compiler() -> Path:
+    """The paired offline compiler built by bootstrap for this host."""
+    return WORK / "host-compiler" / f"luau-compile{EXECUTABLE_SUFFIX}"
 
 
 def require(condition: bool, message: str) -> None:
@@ -114,7 +122,7 @@ def source_entries() -> dict[str, bytes]:
 
 
 def host_tool(name: str) -> str:
-    path = ROOT / "out/host-tools/venv/bin" / name
+    path = ROOT / "out/host-tools/venv" / ("Scripts" if WINDOWS else "bin") / f"{name}{EXECUTABLE_SUFFIX}"
     require(path.is_file(), "Prepare pinned host tools with init.sh before this command")
     return str(path)
 
@@ -122,6 +130,9 @@ def host_tool(name: str) -> str:
 
 def host_compiler_options() -> list[str]:
     """Use init's pinned shims, including its macOS SDK/libc++ pairing."""
+    if WINDOWS:
+        # The selected MSVC developer environment provides cl, as for the engine (D0).
+        return ["-DCMAKE_CXX_COMPILER=cl", "-DCMAKE_C_COMPILER=cl"]
     tools = ROOT / "out/host-tools"
     options = []
     for language, executable in (("CXX", "clang++"), ("C", "clang")):
@@ -178,12 +189,12 @@ def bootstrap() -> None:
     run([host_tool("cmake"), "--build", str(build), "--target", "Luau.Compile.CLI", "-j", "2"])
     (WORK / "compiler-manifest.json").write_text(json.dumps({
         "pin_sha256": sha(PIN_PATH.read_bytes()),
-        "compiler_sha256": sha((build / "luau-compile").read_bytes()),
+        "compiler_sha256": sha(host_compiler().read_bytes()),
     }, indent=2) + "\n")
 
 
 def cook() -> None:
-    compiler = WORK / "host-compiler/luau-compile"
+    compiler = host_compiler()
     require(compiler.is_file(), "Run scripts/luau-probe bootstrap first")
     compiler_evidence = json.loads((WORK / "compiler-manifest.json").read_text())
     require(compiler_evidence["pin_sha256"] == sha(PIN_PATH.read_bytes()), "Stale host compiler pin; bootstrap again")

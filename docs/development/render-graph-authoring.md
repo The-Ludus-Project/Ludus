@@ -7156,6 +7156,13 @@ What each fixture establishes:
   number of words, or a vertex stage without its fragment stage for that target, is
   rejected as malformed. A role the generation does not carry stays empty, as it
   does in a compiled header.
+- DXIL decoding: a generation may also carry Direct3D 12 DXIL stages (target 4,
+  `ShaderTarget::Dxil`). Their container bytes, which include zero and non-UTF-8
+  bytes, reach `ShaderDescription::Dxil` and `DxilEntry` unchanged and are never
+  read as text. An unknown target past DXIL is rejected as malformed. The cooker
+  writes DXIL stages as bytes and requires a `DXBC` container. Graph stages are not
+  compiled to DXIL yet, and Renderer still reports `Unsupported` for render graphs
+  on Direct3D 12.
 - The cooked-fixture `[render-graph][activation]` test decodes the CMake-cooked
   `rg2_surface.lurgrt` and compares it with its compiled header: plan records,
   CPU interface identity and every stage artifact (SPIR-V words, Metal/WGSL/GLSL

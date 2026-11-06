@@ -3,9 +3,14 @@
 Loading never configures, builds, cooks, downloads or rewrites project settings.
 The Editor adapter owns subprocess cancellation; this module supplies only paths.
 """
+import os
 from pathlib import Path
 import re
 from . import behavior_cook as cook
+
+
+# Installed host tools carry the host executable suffix (.exe on Windows).
+TOOL_SUFFIX = '.exe' if os.name == 'nt' else ''
 
 
 def load(project):
@@ -29,7 +34,8 @@ def arguments(project, build, sdk):
     value = load(project)
     resource = Path(sdk)/'share/Ludus/behavior'
     tools = {'contract':value['contract'],'package':value['package'],'output':Path(build)/value['name'],
-             'profile':resource/'profile.json','compiler':resource/'bin/luau-compile','analyzer':resource/'bin/luau-analyze'}
+             'profile':resource/'profile.json','compiler':resource/('bin/luau-compile'+TOOL_SUFFIX),
+             'analyzer':resource/('bin/luau-analyze'+TOOL_SUFFIX)}
     cook.require((resource/'behavior_cook.py').is_file() and (resource/'behavior_graph.py').is_file(), 'Behavior SDK cook modules missing')
     for key in ('profile','compiler','analyzer'):
         cook.require(tools[key].is_file(), 'Behavior SDK host tools missing; explicitly install/prepare the optional component')

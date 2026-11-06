@@ -1,11 +1,12 @@
 """Exercise the shared producer/consumer gate; these are policy tests, not device evidence."""
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-CMAKE = ROOT / 'out/host-tools/venv/bin/cmake'
+CMAKE = ROOT / ('out/host-tools/venv/Scripts/cmake.exe' if sys.platform == 'win32' else 'out/host-tools/venv/bin/cmake')
 
 
 class Profiles(unittest.TestCase):
@@ -41,8 +42,20 @@ message(STATUS "PROFILE=${{profile}}")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('PROFILE=Emscripten-wasm32', result.stdout)
 
+    def test_windows_msvc_qualification_profile(self):
+        for architecture in ('AMD64', 'x86_64'):
+            with self.subTest(architecture=architecture):
+                result = self.gate('Windows', architecture, compiler='MSVC', version='19.44.35217.0')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('PROFILE=Windows-x86_64', result.stdout)
+        for compiler, version in (('Clang', '23.1.3'), ('MSVC', '19.43.34808.0'), ('MSVC', '19.440.0')):
+            with self.subTest(compiler=compiler, version=version):
+                result = self.gate('Windows', 'AMD64', compiler=compiler, version=version)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('interpreter profile', result.stderr)
+
     def test_unimplemented_engine_targets_fail_closed(self):
-        for system, architecture in (('Windows', 'x86_64'), ('Android', 'arm64'), ('iOS', 'arm64')):
+        for system, architecture in (('Windows', 'arm64'), ('Android', 'arm64'), ('iOS', 'arm64')):
             with self.subTest(system=system):
                 result = self.gate(system, architecture)
                 self.assertNotEqual(result.returncode, 0)

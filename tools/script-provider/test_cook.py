@@ -11,6 +11,8 @@ ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'scripts/python'))
 from ludus_tools import behavior_cook as cook
 FIXTURE=Path(__file__).with_name('fixtures')
+# The paired host tools are .exe files on Windows.
+SUFFIX='.exe' if sys.platform=='win32' else ''
 class CookTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
@@ -55,8 +57,8 @@ class CookTests(unittest.TestCase):
         self.assertNotIn('lua.h',header);self.assertNotIn('lua_State',header)
         self.assertIn('RequestSignal: (boolean)',definitions)
     def test_cook_cache_dependency_invalidation_and_failed_publication(self):
-        compiler=ROOT/'out/luau-probe/host-compiler/luau-compile'
-        analyzer=compiler.with_name('luau-analyze')
+        compiler=ROOT/'out/luau-probe/host-compiler'/('luau-compile'+SUFFIX)
+        analyzer=compiler.with_name('luau-analyze'+SUFFIX)
         if not compiler.is_file() or not analyzer.is_file():self.skipTest('explicit paired tool preparation required')
         profile={'version':1,'profile':cook.sha((ROOT/'config/luau_toolchain.json').read_bytes()),'compiler':cook.sha(compiler.read_bytes()),'analyzer':cook.sha(analyzer.read_bytes())}
         profile_path=self.root/'profile.json';profile_path.write_text(json.dumps(profile))
@@ -78,8 +80,8 @@ class CookTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'paired host tools'):cook.cook(*args)
         self.assertEqual(before,{name:(output/name).read_bytes() for name in before})
     def test_long_string_imports_match_the_paired_compiler(self):
-        compiler=ROOT/'out/luau-probe/host-compiler/luau-compile'
-        analyzer=compiler.with_name('luau-analyze')
+        compiler=ROOT/'out/luau-probe/host-compiler'/('luau-compile'+SUFFIX)
+        analyzer=compiler.with_name('luau-analyze'+SUFFIX)
         if not compiler.is_file() or not analyzer.is_file():self.skipTest('explicit paired tool preparation required')
         profile={'version':1,'profile':cook.sha((ROOT/'config/luau_toolchain.json').read_bytes()),'compiler':cook.sha(compiler.read_bytes()),'analyzer':cook.sha(analyzer.read_bytes())}
         profile_path=self.root/'profile.json';profile_path.write_text(json.dumps(profile))
@@ -93,8 +95,8 @@ class CookTests(unittest.TestCase):
                 destination=cook.cook(self.root/'contract.json',self.root/'package.json',self.root/'cooked',profile_path,compiler,analyzer)
                 self.assertTrue((destination/'behavior.lupack').is_file())
     def test_project_sequences_share_cooker_and_ignore_layout(self):
-        compiler=ROOT/'out/luau-probe/host-compiler/luau-compile'
-        analyzer=compiler.with_name('luau-analyze')
+        compiler=ROOT/'out/luau-probe/host-compiler'/('luau-compile'+SUFFIX)
+        analyzer=compiler.with_name('luau-analyze'+SUFFIX)
         if not compiler.is_file() or not analyzer.is_file():self.skipTest('explicit paired tool preparation required')
         sample=ROOT/'examples/scripted-game/behaviors'
         for name in ('contract.json','package.json','encounter.json','encounter.luau'):

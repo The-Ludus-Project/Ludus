@@ -7,13 +7,20 @@ if(NOT behavior_tools_result EQUAL 0)
 endif()
 file(SHA256 "${PROJECT_SOURCE_DIR}/config/luau_toolchain.json" behavior_profile)
 set(behavior_tools "${PROJECT_SOURCE_DIR}/out/luau-probe/host-compiler")
-foreach(tool luau-compile luau-analyze)
-    if(NOT EXISTS "${behavior_tools}/${tool}")
+# Host tools: the bootstrap builds them for the build host (.exe on Windows).
+set(behavior_tool_suffix "")
+if(CMAKE_HOST_WIN32)
+    set(behavior_tool_suffix ".exe")
+endif()
+set(behavior_compile "${behavior_tools}/luau-compile${behavior_tool_suffix}")
+set(behavior_analyze "${behavior_tools}/luau-analyze${behavior_tool_suffix}")
+foreach(tool IN ITEMS "${behavior_compile}" "${behavior_analyze}")
+    if(NOT EXISTS "${tool}")
         message(FATAL_ERROR "Prepare the paired behavior tools explicitly with scripts/script-provider bootstrap")
     endif()
 endforeach()
-file(SHA256 "${behavior_tools}/luau-compile" behavior_compiler)
-file(SHA256 "${behavior_tools}/luau-analyze" behavior_analyzer)
+file(SHA256 "${behavior_compile}" behavior_compiler)
+file(SHA256 "${behavior_analyze}" behavior_analyzer)
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/profile.json"
     "{\"version\":1,\"profile\":\"${behavior_profile}\",\"compiler\":\"${behavior_compiler}\",\"analyzer\":\"${behavior_analyzer}\"}\n")
 add_library(ludus_runtime_behavior STATIC src/behavior.cpp)
@@ -59,7 +66,7 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/profile.json"
     "${PROJECT_SOURCE_DIR}/out/luau-probe/source/LICENSE.txt"
     "${PROJECT_SOURCE_DIR}/out/luau-probe/source/lua_LICENSE.txt"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/Ludus/behavior")
-install(PROGRAMS "${behavior_tools}/luau-compile" "${behavior_tools}/luau-analyze"
+install(PROGRAMS "${behavior_compile}" "${behavior_analyze}"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/Ludus/behavior/bin")
 install(FILES "${PROJECT_SOURCE_DIR}/cmake/LudusBehavior.cmake"
     "${PROJECT_SOURCE_DIR}/cmake/LudusBehaviorProfile.cmake"
