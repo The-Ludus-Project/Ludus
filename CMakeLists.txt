@@ -447,10 +447,8 @@ else()
     endif()
 
     # Reference GameHost executable (project-live-reload). Built alongside the
-    # smoke apps; it links Ludus::GameHost and no Qt.
-    if(NOT WIN32)
-        add_subdirectory(apps/game_host)
-    endif()
+    # smoke apps; it links Ludus::GameHost and no Qt. Windows hosts it too (D6c).
+    add_subdirectory(apps/game_host)
 
     if(LUDUS_BUILD_TESTS)
         enable_testing()
