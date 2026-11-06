@@ -567,7 +567,7 @@ cmake --build out/build/windows-mingw-check --target ludus_platform ludus_graphi
 | D5a | Windows host services and Foundation validation | Native input, entropy, files/persistence/watch tests; diagnostics and Foundation runtime evidence |
 | D5b | GPU measurement and debugging | Timestamp/pass-scope tests; PIX capture/markers and DRED failure diagnostics documented |
 | D6a | Renderer, content and playable runtime | Shared authored project renders, accepts input, loads/saves and shuts down on a physical Windows GPU |
-| D6b | Installed SDK, projects and IDE journeys | Clean installed consumer; VS Code/Ninja and Visual Studio/MSBuild configure/build/test/debug; setup repair journeys |
+| D6b (Development MSVC WARP verified) | Installed SDK, projects and IDE journeys | Clean installed consumer; VS Code/Ninja and Visual Studio/MSBuild configure/build/test/debug; setup repair journeys. Runtime SDK consumers and IDE journeys passed at `29ea91b6` ([run 42164873456](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456)); other runtime SDK flavors and interactive IDE sessions pending |
 | D6c | Shader/script authoring, worker and live reload | Embedded/external edit-save-compile-reload; diagnostics, conflicts and failed replacement tests |
 | D6d | Interactive Windows editor and hosted viewport | Current project World/camera, navigation/edit/resize; GPU producer/consumer ownership and pending/failure publication tests |
 | D7 | Profile qualification and continuous validation | All required coverage rows verified at one candidate commit; hardware, lifecycle, performance and both build workflows recorded |
@@ -819,7 +819,8 @@ with optional tooling absent.
 
   Debug, Profile and Release runtime SDKs remain open, as do interactive IDE
   sessions on a developer machine. The runtime SDK omits shader file delivery
-  (D6c) and the POSIX-only development diagnostic session.
+  (D6c), the POSIX-only development diagnostic session and the scene cooker,
+  whose Python-number emulation needs a 128-bit integer that MSVC lacks.
 - **D6c (authoring):** port the shader worker's process/IPC/deployment and
   Slang/DXC dependencies, file watching, game DLL loading/reload, process-tree
   cleanup and matching symbol validation. Qualify script compilation/runtime,
@@ -897,7 +898,7 @@ these rows remain pending.
 | Gameplay / physics | unassigned | unreviewed | D6a required-profile audit | pending | none |
 | Audio | unassigned | unreviewed | D6a playback/device/failure evidence for required profiles | pending | none |
 | Networking | unassigned | unreviewed | D6a transport/reconnect evidence for required profiles | pending | none |
-| SDK / project setup / VS Code / Visual Studio | D0, D6b | Development runtime SDK; IDE journeys in CI | Debug/Profile/Release runtime SDKs; interactive IDE sessions | pending | Windows Runtime SDK and MSBuild lanes |
+| SDK / project setup / VS Code / Visual Studio | D0, D6b | Development runtime SDK; IDE journeys in CI | Debug/Profile/Release runtime SDKs; interactive IDE sessions | pending | `29ea91b6`, [Windows lanes](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456) |
 | Embedded/external shader/script authoring | unassigned | needs port | D6c worker/IPC/watch/reload and diagnostic acceptance | pending | none |
 | Editor / hosted viewport | unassigned | needs port | D6d GPU sharing, transport and interactive publication | pending | none |
 | Optional ray / interop extensions / upscaling | unassigned | unreviewed | Separate feature-parity profiles and hardware acceptance | pending | none |
