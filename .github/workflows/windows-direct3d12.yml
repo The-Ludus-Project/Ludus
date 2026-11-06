@@ -107,6 +107,19 @@ jobs:
           }
           ctest --preset windows-msvc-runtime --tests-regex $suite
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime tests failed' }
+      - name: Install and verify the tools-only Windows shader worker
+        if: matrix.generator == 'Ninja'
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          # D6c: the standalone worker prefix carries Slang, the pinned DXC and their licenses.
+          cmake --preset windows-msvc-development -B out/build/windows-shader-worker -DLUDUS_SHADER_WORKER_ONLY=ON -DLUDUS_BUILD_TESTS=OFF -DLUDUS_WARNINGS_AS_ERRORS=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Tools-only worker configure failed' }
+          cmake --build out/build/windows-shader-worker
+          if ($LASTEXITCODE -ne 0) { throw 'Tools-only worker build failed' }
+          cmake --install out/build/windows-shader-worker --prefix "$PWD/out/install/windows-shader-worker"
+          if ($LASTEXITCODE -ne 0) { throw 'Tools-only worker install failed' }
+          python tools/shader-worker/verify_install.py "$PWD/out/install/windows-shader-worker"
+          if ($LASTEXITCODE -ne 0) { throw 'Installed worker verification failed' }
       - name: Install, relocate and consume the Windows runtime SDK
         if: matrix.generator == 'Runtime SDK'
         env:
