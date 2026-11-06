@@ -35,7 +35,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        generator: [Ninja, MSBuild]
+        # Runtime SDK installs the Ninja runtime closure and consumes it with both generators.
+        generator: [Ninja, MSBuild, Runtime SDK]
     defaults:
       run:
         shell: pwsh
@@ -100,7 +101,24 @@ jobs:
           }
           ctest --preset windows-msvc-runtime --tests-regex $suite
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime tests failed' }
+      - name: Install, relocate and consume the Windows runtime SDK
+        if: matrix.generator == 'Runtime SDK'
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          $env:LUDUS_WINDOWS_DEPENDENCIES = "$PWD/out/windows-msvc-probe/runtime-sdk-dependencies"
+          conan export third_party/harfbuzz
+          if ($LASTEXITCODE -ne 0) { throw 'HarfBuzz recipe export failed' }
+          conan install --requires=harfbuzz/14.5.1 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host build_type=RelWithDebInfo --settings:build build_type=Release --build=missing -o 'freetype/*:shared=False' -o 'freetype/*:with_png=False' -o 'freetype/*:with_zlib=False' -o 'freetype/*:with_brotli=False' -o 'freetype/*:with_bzip2=False' -g CMakeDeps --output-folder $env:LUDUS_WINDOWS_DEPENDENCIES
+          if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK dependencies failed to install' }
+          $python = "$PWD/out/host-tools/venv/Scripts/python.exe"
+          & $python scripts/python/engine.py install-sdk windows-msvc-runtime-sdk
+          if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK install failed' }
+          & $python tests/sdk_consumer/windows/verify_runtime_sdk.py "$PWD/out/windows-msvc-probe"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows runtime SDK consumers failed' }
       - name: Prepare Catch2 for the four RHI build flavors
+        if: matrix.generator != 'Runtime SDK'
         run: |
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           $dependencyConfigurations = @('Debug', 'RelWithDebInfo', 'Release')
@@ -109,6 +127,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Catch2 $configuration setup failed" }
           }
       - name: Build and test primitives, Foundation host services and the Win32/D3D12 closure
+        if: matrix.generator != 'Runtime SDK'
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts/python
         run: |
@@ -262,6 +281,14 @@ jobs:
         run: |
           & out/host-tools/venv/Scripts/python.exe tests/sdk_consumer/windows/verify_project_setup.py "$PWD/out/windows-msvc-probe"
           if ($LASTEXITCODE -ne 0) { throw 'Windows MSVC project setup verification failed' }
+      - name: Navigate, debug, diagnose, install and switch an IDE project
+        if: matrix.generator == 'MSBuild'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/python
+          PYTHONUTF8: "1"
+        run: |
+          & out/host-tools/venv/Scripts/python.exe tests/sdk_consumer/windows/verify_ide_journeys.py "$PWD/out/windows-msvc-probe"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows IDE journeys failed' }
       - name: Preserve candidate identities and test logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -275,6 +302,7 @@ jobs:
             out/windows-msvc-probe/incremental/**/*.d
             out/windows-msvc-probe/incremental/**/manifest.json
             out/windows-msvc-probe/**/Testing/Temporary/
+            out/build/windows-msvc-runtime-sdk/install_manifest.txt
           if-no-files-found: warn
           retention-days: 14
   windows:

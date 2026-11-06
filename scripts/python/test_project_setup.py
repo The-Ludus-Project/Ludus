@@ -128,7 +128,15 @@ class ProjectSetupTests(unittest.TestCase):
         self.repair()
         self.assertEqual(before, self.snapshot())
         self.assertIn(custom, setup.read_object(self.project / "CMakeUserPresets.json")["buildPresets"])
-        self.assertEqual(8, setup.read_object(self.project / ".vscode/settings.json")["editor.tabSize"])
+        settings = setup.read_object(self.project / ".vscode/settings.json")
+        self.assertEqual(8, settings["editor.tabSize"])
+        self.assertEqual("ms-vscode.cmake-tools", settings["C_Cpp.default.configurationProvider"])
+        # A user's own IntelliSense provider survives repair.
+        setup.write_object(self.project / ".vscode/settings.json",
+                           dict(settings, **{"C_Cpp.default.configurationProvider": "llvm-vs-code-extensions.clangd"}))
+        self.repair()
+        self.assertEqual("llvm-vs-code-extensions.clangd",
+                         setup.read_object(self.project / ".vscode/settings.json")["C_Cpp.default.configurationProvider"])
         self.assertTrue(any("--fresh" in a for a in self.calls))
         self.assertTrue(any(Path(a[0]).name == "ctest" for a in self.calls))
 
@@ -273,7 +281,7 @@ class ProjectSetupTests(unittest.TestCase):
 
     def test_invalid_settings_and_custom_collision_are_preserved(self):
         path = self.project / ".vscode/settings.json"
-        path.parent.mkdir()
+        path.parent.mkdir(exist_ok=True)
         path.write_text("{broken")
         before = self.snapshot()
         with self.assertRaises(ToolingError):

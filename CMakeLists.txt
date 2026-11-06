@@ -368,7 +368,11 @@ add_subdirectory(modules/content/procedural/environment)
 # importers) and MikkTSpace (their tangent generation).
 add_subdirectory(third_party/stb)
 add_subdirectory(third_party/mikktspace)
-add_subdirectory(modules/content/scene_cook)
+# The cooker's Python-number emulation uses __int128, which MSVC lacks, and its
+# file operations are POSIX-only; the Windows runtime closure omits it (D6a/D6b).
+if(NOT WIN32)
+    add_subdirectory(modules/content/scene_cook)
+endif()
 # Cooked curves/surfaces geometry codecs, loading and publication (G5).
 add_subdirectory(modules/geometry/content)
 add_subdirectory(modules/audio/content)
@@ -421,7 +425,13 @@ else()
 
     # Startup-only development diagnostic integration (depends on Base; Base does
     # not depend on it). Provides InitializeDiagnosticSession and the Python helper.
-    add_subdirectory(tools/diagnostics)
+    # Its report transport uses POSIX sockets, so Windows builds it only on request
+    # (for example through the smoke apps) and the installed runtime SDK omits it.
+    if(WIN32)
+        add_subdirectory(tools/diagnostics EXCLUDE_FROM_ALL)
+    else()
+        add_subdirectory(tools/diagnostics)
+    endif()
 
     if(LUDUS_BUILD_SMOKE_APP)
         add_subdirectory(apps/smoke)
@@ -526,7 +536,7 @@ write_basic_package_version_file(
 # Public exported components (one per installed Ludus:: module target).
 foreach(_component
     FoundationBase FoundationMemory FoundationHash FoundationIdentity FoundationStrings FoundationContainers FoundationThreading FoundationFilesystem FoundationParsing FoundationParsingJson FoundationMath FoundationGeometry FoundationTime FoundationLogging ShaderCompilerClient ShaderLanguage
-    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource StringDictionaryFormat StringDictionary StringDictionaryWriter SceneCook AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer GameApi PhysicsFluid Ui Localization)
+    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource StringDictionaryFormat StringDictionary StringDictionaryWriter AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer GameApi PhysicsFluid Ui Localization)
     ludus_sdk_register_component(${_component})
     ludus_sdk_register_feature(${_component})
 endforeach()
@@ -542,15 +552,26 @@ if(LUDUS_BUILD_UNICODE)
     ludus_sdk_register_dependency(ICU4C "78.3" "Unicode-3.0" bundled)
 endif()
 if(NOT EMSCRIPTEN)
-    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText Text ShaderDevelopment)
+    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText Text)
         ludus_sdk_register_component(${_component})
         ludus_sdk_register_feature(${_component})
     endforeach()
+    # Shader file delivery is native Linux/macOS only until the Windows worker
+    # port (D6c); the manifest must list only exported components.
+    if(TARGET Ludus::ShaderDevelopment)
+        ludus_sdk_register_component(ShaderDevelopment)
+        ludus_sdk_register_feature(ShaderDevelopment)
+    endif()
 else()
     foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText)
         ludus_sdk_register_component(${_component})
         ludus_sdk_register_feature(${_component})
     endforeach()
+endif()
+
+if(TARGET Ludus::SceneCook)
+    ludus_sdk_register_component(SceneCook)
+    ludus_sdk_register_feature(SceneCook)
 endif()
 
 if(TARGET Ludus::GameHost)

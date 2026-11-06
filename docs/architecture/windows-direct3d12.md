@@ -567,7 +567,7 @@ cmake --build out/build/windows-mingw-check --target ludus_platform ludus_graphi
 | D5a | Windows host services and Foundation validation | Native input, entropy, files/persistence/watch tests; diagnostics and Foundation runtime evidence |
 | D5b | GPU measurement and debugging | Timestamp/pass-scope tests; PIX capture/markers and DRED failure diagnostics documented |
 | D6a | Renderer, content and playable runtime | Shared authored project renders, accepts input, loads/saves and shuts down on a physical Windows GPU |
-| D6b | Installed SDK, projects and IDE journeys | Clean installed consumer; VS Code/Ninja and Visual Studio/MSBuild configure/build/test/debug; setup repair journeys |
+| D6b (Development MSVC WARP verified) | Installed SDK, projects and IDE journeys | Clean installed consumer; VS Code/Ninja and Visual Studio/MSBuild configure/build/test/debug; setup repair journeys. Runtime SDK consumers and IDE journeys passed at `29ea91b6` ([run 42164873456](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456)); other runtime SDK flavors and interactive IDE sessions pending |
 | D6c | Shader/script authoring, worker and live reload | Embedded/external edit-save-compile-reload; diagnostics, conflicts and failed replacement tests |
 | D6d | Interactive Windows editor and hosted viewport | Current project World/camera, navigation/edit/resize; GPU producer/consumer ownership and pending/failure publication tests |
 | D7 | Profile qualification and continuous validation | All required coverage rows verified at one candidate commit; hardware, lifecycle, performance and both build workflows recorded |
@@ -795,6 +795,32 @@ with optional tooling absent.
   breakpoint/step debugging, launch, test, install and configuration switching.
   Cover fresh clones, missing presets, moved tools/SDKs and repeated explicit
   repair; preserve custom settings and keep project loading read-only.
+
+  The `windows-msvc-runtime-sdk` preset installs the D6a runtime closure as a
+  relocatable Development SDK. It bundles FreeType and HarfBuzz and the renderer
+  shader recipes; the [project guide](../development/project-sdk-workflow.md#windows-runtime-sdk)
+  gives the install steps. The Windows workflow's Runtime SDK lane moves the
+  prefix and builds an external consumer with Ninja and MSBuild. The consumer
+  compiles a built-in recipe to DXIL, prepares the renderer and a mesh on WARP
+  and loads Text. A CLI project linking the runtime modules is then repaired and
+  run with both generators.
+
+  Template version 7 projects make the game the Visual Studio startup project,
+  carry a portable VS Code `cppvsdbg` launch configuration and install the game
+  with its Agility runtime. Repair routes VS Code's C/C++ navigation through CMake
+  Tools unless the user chose another provider. The MSBuild lane exercises the
+  [IDE journeys](../development/project-sdk-workflow.md#vs-code-and-visual-studio-on-windows)
+  on the relocated Debug and Development SDKs with both generators. It covers
+  the File API code model, the solution's startup project and debugger directory,
+  `cdb` source breakpoints, step out/over and locals, MSVC diagnostic locations,
+  install, launch and configuration switching. The D0 setup journeys still cover
+  fresh clones, missing and stale presets, moved SDKs and tools, repeated repair
+  and custom settings.
+
+  Debug, Profile and Release runtime SDKs remain open, as do interactive IDE
+  sessions on a developer machine. The runtime SDK omits shader file delivery
+  (D6c), the POSIX-only development diagnostic session and the scene cooker,
+  whose Python-number emulation needs a 128-bit integer that MSVC lacks.
 - **D6c (authoring):** port the shader worker's process/IPC/deployment and
   Slang/DXC dependencies, file watching, game DLL loading/reload, process-tree
   cleanup and matching symbol validation. Qualify script compilation/runtime,
@@ -872,7 +898,7 @@ these rows remain pending.
 | Gameplay / physics | unassigned | unreviewed | D6a required-profile audit | pending | none |
 | Audio | unassigned | unreviewed | D6a playback/device/failure evidence for required profiles | pending | none |
 | Networking | unassigned | unreviewed | D6a transport/reconnect evidence for required profiles | pending | none |
-| SDK / project setup / VS Code / Visual Studio | unassigned | needs port | D0 generator foundation; D6b installed consumers and IDE journeys | pending | none |
+| SDK / project setup / VS Code / Visual Studio | D0, D6b | Development runtime SDK; IDE journeys in CI | Debug/Profile/Release runtime SDKs; interactive IDE sessions | [PR #1016](https://github.com/The-Ludus-Project/Ludus/pull/1016) | `29ea91b6`, [Windows lanes](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456) |
 | Embedded/external shader/script authoring | unassigned | needs port | D6c worker/IPC/watch/reload and diagnostic acceptance | pending | none |
 | Editor / hosted viewport | unassigned | needs port | D6d GPU sharing, transport and interactive publication | pending | none |
 | Optional ray / interop extensions / upscaling | unassigned | unreviewed | Separate feature-parity profiles and hardware acceptance | pending | none |

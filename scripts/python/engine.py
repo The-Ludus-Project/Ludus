@@ -2485,28 +2485,6 @@ def verify_sdk_install(root: Path, prefix: Path, build_dir: Path) -> None:
     print(f"Installed SDK artifacts and assertion policy verified: {prefix}")
 
 
-def _conan_package_dirs(conan_dir: Path) -> dict:
-    """Discover each dependency's Conan package root from CMakeDeps data files.
-
-    CMakeDeps emits ``<pkg>-release-*-data.cmake`` (and config files) that set
-    ``<pkg>_PACKAGE_FOLDER_<CONFIG> "<abs package root>"``. We read those to learn
-    where each dependency's lib/include/cmake files live, without hard-coding the
-    Conan cache layout.
-    """
-    package_dirs: dict = {}
-    if not conan_dir.is_dir():
-        return package_dirs
-    pattern = re.compile(r'set\(([A-Za-z0-9_]+)_PACKAGE_FOLDER_[A-Z]+\s+"([^"]+)"')
-    for data_file in conan_dir.rglob("*-data.cmake"):
-        text = data_file.read_text(encoding="utf-8")
-        for match in pattern.finditer(text):
-            name = match.group(1).lower()
-            folder = Path(match.group(2))
-            if folder.is_dir():
-                package_dirs.setdefault(name, folder)
-    return package_dirs
-
-
 def bundle_sdk_dependencies(root: Path, preset: str, prefix: Path) -> None:
     """Copy the redistributable dependency closure into the installed prefix and
     rewrite absolute producer paths so the SDK relocates (P02)."""
@@ -2517,7 +2495,7 @@ def bundle_sdk_dependencies(root: Path, preset: str, prefix: Path) -> None:
         from ludus_tools import bundle_deps
 
     conan_dir = root / "out" / "conan" / preset
-    package_dirs = _conan_package_dirs(conan_dir)
+    package_dirs = bundle_deps.conan_package_dirs(conan_dir)
     # Absolute producer roots that must never survive into the relocated bundle.
     producer_roots = [str(root), str(root / "out"), str(conan_dir)]
     for folder in package_dirs.values():
@@ -2540,9 +2518,105 @@ def command_bundle_sdk_dependencies(args: argparse.Namespace) -> int:
     return 0
 
 
+WINDOWS_RUNTIME_SDK_PRESET = "windows-msvc-runtime-sdk"
+# The Windows runtime closure links only FreeType and HarfBuzz from Conan.
+WINDOWS_RUNTIME_SDK_DEPENDENCIES = ("freetype", "harfbuzz")
+
+
+def windows_runtime_sdk_artifacts(prefix: Path) -> list[Path]:
+    """Files a consumer of the installed Windows runtime SDK needs (D6b)."""
+    package = prefix / "lib" / "cmake" / "Ludus"
+    include = prefix / "include" / "ludus"
+    return [
+        include / "foundation" / "base" / "version.hpp",
+        include / "graphics" / "rhi" / "rhi.h",
+        include / "graphics" / "renderer" / "renderer.hpp",
+        include / "text" / "font_system.h",
+        include / "runtime" / "resources" / "manager.h",
+        prefix / "lib" / "ludus_foundation_base.lib",
+        prefix / "lib" / "ludus_graphics_rhi.lib",
+        prefix / "lib" / "ludus_graphics_renderer.lib",
+        prefix / "lib" / "ludus_text.lib",
+        prefix / "lib" / "ludus_runtime_game_host.lib",
+        package / "LudusConfig.cmake",
+        package / "LudusTargets.cmake",
+        package / "LudusWindowsSdk.cmake",
+        package / "LudusShaders.cmake",
+        package / "LudusRendererShaders.cmake",
+        package / "shaders" / "compile_shader.py",
+        package / "shaders" / "recipes.json",
+        package / "shaders" / "shader_toolchain.json",
+        package / "agility" / "D3D12Core.dll",
+        package / "dependencies" / "cmake" / "freetype-config.cmake",
+        package / "dependencies" / "cmake" / "harfbuzz-config.cmake",
+        prefix / "share" / "Ludus" / "LudusSdkManifest.json",
+        prefix / "share" / "Ludus" / "licenses" / "THIRD_PARTY_NOTICES.md",
+    ]
+
+
+def install_windows_runtime_sdk(root: Path, preset: str) -> int:
+    """Build, install and bundle the MSVC/Ninja runtime SDK from a developer shell.
+
+    The Visual Studio solution installs the four-flavor Foundation/Input/Platform/RHI
+    closure with ``cmake --install --config``; this path installs the wider
+    runtime closure (renderer, content, text, UI, static GameHost) for
+    Development. Conan dependencies come from ``LUDUS_WINDOWS_DEPENDENCIES``.
+    """
+    if preset != WINDOWS_RUNTIME_SDK_PRESET:
+        raise EngineError(f"Windows install-sdk supports {WINDOWS_RUNTIME_SDK_PRESET}; install the Visual Studio "
+                          "closure with: cmake --install out/build/windows-msvc-visual-studio --config <flavor>")
+    if os.name != "nt":
+        raise EngineError(f"{preset} must be installed on a Windows host")
+    dependencies_value = os.environ.get("LUDUS_WINDOWS_DEPENDENCIES", "")
+    dependencies = Path(dependencies_value)
+    if dependencies_value == "" or (dependencies / "freetype-config.cmake").is_file() == False:
+        raise EngineError("Set LUDUS_WINDOWS_DEPENDENCIES to the RelWithDebInfo CMakeDeps folder containing "
+                          "FreeType and HarfBuzz (see docs/development/project-sdk-workflow.md)")
+    from ludus_tools import bundle_deps
+
+    env = os.environ.copy()
+    env["PATH"] = str(venv_bin_dir(root)) + os.pathsep + env.get("PATH", "")
+    cmake_command = cmake(root) if cmake(root).is_file() else Path("cmake")
+    build_dir = root / "out" / "build" / preset
+    prefix = root / "out" / "install" / preset
+    run([cmake_command, "--preset", preset], cwd=root, env=env)
+    # Keep going after a failure so one build reports every module that does not compile.
+    run([cmake_command, "--build", "--preset", preset, "--", "-k", "0"], cwd=root, env=env)
+    # An SDK prefix holds one installed configuration; start from an empty one.
+    if prefix.exists():
+        shutil.rmtree(prefix)
+    run([cmake_command, "--install", build_dir, "--prefix", prefix], cwd=root, env=env)
+
+    package_dirs = bundle_deps.conan_package_dirs(dependencies)
+    bundled = bundle_deps.bundle_from_conan(prefix=prefix, generators_dir=dependencies, package_dirs=package_dirs,
+                                            dependencies=WINDOWS_RUNTIME_SDK_DEPENDENCIES)
+    print(f"Bundled SDK dependencies: {', '.join(bundled) if bundled else '(none found)'}")
+    if sorted(bundled) != sorted(WINDOWS_RUNTIME_SDK_DEPENDENCIES):
+        raise EngineError("FreeType and HarfBuzz packages are missing from LUDUS_WINDOWS_DEPENDENCIES")
+    producer_roots = [str(root), str(dependencies), *(str(folder) for folder in package_dirs.values())]
+    leaks = bundle_deps.audit_no_producer_paths(prefix, producer_roots)
+    for package_file in (prefix / "lib" / "cmake" / "Ludus").glob("*.cmake"):
+        text = package_file.read_text(encoding="utf-8")
+        leaks.extend(f"{package_file}: {spelling}" for spelling in bundle_deps.path_spellings(root)
+                     if spelling in text)
+    if leaks:
+        for leak in leaks:
+            print(f"Leaked producer path in installed SDK: {leak}")
+        raise EngineError("installed SDK metadata leaks a producer path")
+    missing = [path for path in windows_runtime_sdk_artifacts(prefix) if path.exists() == False]
+    if missing:
+        for path in missing:
+            print(f"Missing installed SDK artifact: {path}")
+        raise EngineError("installed SDK is incomplete")
+    print(f"Installed the Windows runtime SDK at {prefix}")
+    return 0
+
+
 def command_install_sdk(args: argparse.Namespace) -> int:
     root = repo_root()
     preset = args.preset
+    if preset.startswith("windows-msvc-"):
+        return install_windows_runtime_sdk(root, preset)
     ensure_bootstrap_for_preset(root, preset)
     cmake_configure(root, preset)
     cmake_build(root, preset)

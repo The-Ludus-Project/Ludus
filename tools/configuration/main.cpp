@@ -1,3 +1,4 @@
+#include <ludus/foundation/base/config.h>
 #include <ludus/foundation/config/json.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
@@ -6,18 +7,52 @@
 #include <cerrno>
 #include <string_view>
 
-#include <unistd.h>
+#if defined(LUDUS_PLATFORM_WINDOWS)
+#    include <fcntl.h>
+#    include <io.h>
+#else
+#    include <unistd.h>
+#endif
 
 namespace
 {
 using namespace ludus::foundation;
 constexpr logging::LogCategory kConfigurationLog{"Configuration"};
+#if defined(LUDUS_PLATFORM_WINDOWS)
+constexpr int32 STANDARD_INPUT = 0;
+constexpr int32 STANDARD_OUTPUT = 1;
+/// The CRT transfers at most this many bytes per call.
+constexpr usize MAX_TRANSFER_BYTES = 0x7FFFFFFF;
+#endif
+
+/// Writes part of the bytes to standard output: the byte count, or negative on failure.
+isize WriteStandardOutput(const uint8* bytes, usize count) noexcept
+{
+#if defined(LUDUS_PLATFORM_WINDOWS)
+    const usize bounded = count < MAX_TRANSFER_BYTES ? count : MAX_TRANSFER_BYTES;
+    return ::_write(STANDARD_OUTPUT, bytes, static_cast<unsigned int>(bounded));
+#else
+    return ::write(STDOUT_FILENO, bytes, count);
+#endif
+}
+
+/// Reads part of standard input: the byte count, zero at the end, or negative on failure.
+isize ReadStandardInput(uint8* bytes, usize count) noexcept
+{
+#if defined(LUDUS_PLATFORM_WINDOWS)
+    const usize bounded = count < MAX_TRANSFER_BYTES ? count : MAX_TRANSFER_BYTES;
+    return ::_read(STANDARD_INPUT, bytes, static_cast<unsigned int>(bounded));
+#else
+    return ::read(STDIN_FILENO, bytes, count);
+#endif
+}
+
 bool Write(std::span<const uint8> bytes) noexcept
 {
     usize offset = 0;
     while (offset < bytes.size())
     {
-        const auto count = ::write(STDOUT_FILENO, bytes.data() + offset, bytes.size() - offset);
+        const isize count = WriteStandardOutput(bytes.data() + offset, bytes.size() - offset);
         if (count < 0 && errno == EINTR)
         {
             continue;
@@ -40,6 +75,11 @@ int main(int argc, char** argv)
     logConfig.EnableFile = false;
     logConfig.Mode = logging::LogMode::Synchronous;
     (void)logging::LogSystem::Initialize(logConfig);
+#if defined(LUDUS_PLATFORM_WINDOWS)
+    // Bundles and schemas are byte streams; text mode would translate line endings.
+    (void)::_setmode(STANDARD_INPUT, _O_BINARY);
+    (void)::_setmode(STANDARD_OUTPUT, _O_BINARY);
+#endif
     struct Shutdown final
     {
         ~Shutdown() noexcept
@@ -84,7 +124,7 @@ int main(int argc, char** argv)
         usize size = 0;
         while (size < sizeof(bytes))
         {
-            const auto count = ::read(STDIN_FILENO, bytes + size, sizeof(bytes) - size);
+            const isize count = ReadStandardInput(bytes + size, sizeof(bytes) - size);
             if (count < 0 && errno == EINTR)
             {
                 continue;

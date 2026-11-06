@@ -345,15 +345,22 @@ void EnableDebugLayer() noexcept
     return true;
 }
 
-/// Prefers the highest-performance hardware adapter with a WARP fallback.
 /// Test builds can select WARP explicitly to keep CI independent of host adapters.
-[[nodiscard]] bool SelectAdapter() noexcept
+/// A function, not a constant, so builds without test readback have no constant loop
+/// condition (MSVC C4127 under /W4 /WX).
+[[nodiscard]] bool IsWarpRequired() noexcept
 {
 #if defined(LUDUS_RHI_TEST_READBACK)
-    const bool shouldUseWarp = ::GetEnvironmentVariableW(L"LUDUS_TEST_REQUIRE_WARP", nullptr, 0) != 0;
+    return ::GetEnvironmentVariableW(L"LUDUS_TEST_REQUIRE_WARP", nullptr, 0) != 0;
 #else
-    constexpr bool shouldUseWarp = false;
+    return false;
 #endif
+}
+
+/// Prefers the highest-performance hardware adapter with a WARP fallback.
+[[nodiscard]] bool SelectAdapter() noexcept
+{
+    const bool shouldUseWarp = IsWarpRequired();
     for (UINT index = 0; shouldUseWarp == false; ++index)
     {
         IDXGIAdapter1* adapterOrNull = nullptr;

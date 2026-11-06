@@ -11,9 +11,13 @@ Templates are addressed by ``(id, version)`` which is recorded in the project
 descriptor's ``template`` object so later template versions never silently
 overwrite user-owned game code (design "Project creation and Editor workflow").
 
-The only bundled template initially is ``minimal`` (version 6): a single native
+The only bundled template initially is ``minimal`` (version 7): a single native
 application target that queries the public engine version
 using public headers only — no new engine subsystem, no scene/ECS/hot reload.
+Version 7 adds IDE launch, debugging and install rules: Visual Studio starts the
+target from the project directory, the tracked VS Code launch configuration
+debugs the CMake Tools launch target, and ``cmake --install`` copies the
+executable with any SDK runtime it needs (the Direct3D 12 Agility runtime).
 Placeholders are substituted by exact key, never by executing template content,
 so a file name or value can never trigger an arbitrary command.
 """
@@ -123,6 +127,18 @@ if(NOT COMMAND ludus_apply_app_policy)
     message(FATAL_ERROR "The selected SDK lacks the supported Ludus application policy helper")
 endif()
 ludus_apply_app_policy({{ TARGET }})
+
+# Visual Studio starts and debugs this target (F5) in the project directory.
+# VS Code's tracked launch.json debugs the CMake Tools launch target there too.
+set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT {{ TARGET }})
+set_target_properties({{ TARGET }} PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# Install the game and any SDK runtime it loads beside the executable.
+include(GNUInstallDirs)
+install(TARGETS {{ TARGET }} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" BUNDLE DESTINATION .)
+if(COMMAND ludus_install_d3d12_agility_runtime)
+    ludus_install_d3d12_agility_runtime({{ TARGET }} "${CMAKE_INSTALL_BINDIR}")
+endif()
 
 if(BUILD_TESTING)
     add_test(NAME version_query COMMAND $<TARGET_FILE:{{ TARGET }}>)
@@ -322,6 +338,27 @@ int main()
 .DS_Store
 """,
         ),
+        TemplateFile(
+            ".vscode/launch.json",
+            # Portable: CMake Tools resolves the selected preset's executable, so
+            # the file holds no machine paths and stays tracked.
+            json.dumps({
+                "version": "0.2.0",
+                "configurations": [{
+                    "name": "Ludus: Debug launch target (Windows)",
+                    "type": "cppvsdbg",
+                    "request": "launch",
+                    "program": "${command:cmake.launchTargetPath}",
+                    "args": [],
+                    "cwd": "${workspaceFolder}",
+                    "console": "integratedTerminal",
+                }],
+            }, indent=2) + "\n",
+        ),
+        TemplateFile(
+            ".vscode/extensions.json",
+            json.dumps({"recommendations": ["ms-vscode.cmake-tools", "ms-vscode.cpptools"]}, indent=2) + "\n",
+        ),
         TemplateFile("assets/.keep", ""),
         TemplateFile("config/.keep", ""),
         TemplateFile(
@@ -329,7 +366,7 @@ int main()
             "",
         ),
     ]
-    return Template(id="minimal", version=6, files=files)
+    return Template(id="minimal", version=7, files=files)
 
 
 _TEMPLATES: dict[str, Template] = {t.id: t for t in (_minimal_template(),)}

@@ -552,6 +552,9 @@ def _repair_project(path, paths, descriptor, source, tooling_root, sdk, web_sdk,
             setup_path.unlink(missing_ok=True)
         write_object(source / "CMakeUserPresets.json", local)
         ide["cmake.useCMakePresets"] = "always"
+        # C/C++ navigation and diagnostics follow the selected preset's code model,
+        # for both Ninja and Visual Studio trees. A user's own choice is kept.
+        ide.setdefault("C_Cpp.default.configurationProvider", "ms-vscode.cmake-tools")
         # Machine CMake paths belong to ignored presets, not tracked IDE files.
         ide.pop("cmake.cmakePath", None)
         write_object(source / ".vscode/settings.json", ide)

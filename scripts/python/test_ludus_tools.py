@@ -517,6 +517,40 @@ class BundleDeps(unittest.TestCase):
         self.assertIn("/home/runner/.conan2/p/freetf0add/p", roots)
         self.assertIn("/w/out/conan/b/harfb12/p", roots)
 
+    def test_find_producer_roots_keeps_windows_drive_letters(self) -> None:
+        text = 'set(freetype_PACKAGE_FOLDER_RELWITHDEBINFO "C:/Users/runner/.conan2/p/b/freet12ab/p")\n'
+        self.assertEqual(self.bundle_deps.find_producer_roots(text), ["C:/Users/runner/.conan2/p/b/freet12ab/p"])
+
+    def test_path_spellings_cover_native_and_cmake_separators(self) -> None:
+        self.assertEqual(self.bundle_deps.path_spellings("C:\\deps\\p"), ["C:\\deps\\p", "C:/deps/p"])
+        self.assertEqual(self.bundle_deps.path_spellings("/deps/p"), ["/deps/p"])
+
+    def test_windows_spelled_package_roots_are_rewritten_and_audited(self) -> None:
+        # CMakeDeps writes forward slashes on Windows; Path uses backslashes there.
+        native = "C:\\cache\\p\\freet12ab\\p"
+        text = 'set(freetype_INCLUDE "C:/cache/p/freet12ab/p/include")\n'
+        replacements = self.bundle_deps._spelled_replacements(native, "${CMAKE_CURRENT_LIST_DIR}/../packages/freetype")
+        self.assertEqual(self.bundle_deps.rewrite_producer_paths(text, replacements),
+                         'set(freetype_INCLUDE "${CMAKE_CURRENT_LIST_DIR}/../packages/freetype/include")\n')
+        with tempfile.TemporaryDirectory() as td:
+            cmake_dir = Path(td) / "lib" / "cmake" / "Ludus" / "dependencies" / "cmake"
+            cmake_dir.mkdir(parents=True)
+            (cmake_dir / "freetype-config.cmake").write_text(text)
+            self.assertEqual(len(self.bundle_deps.audit_no_producer_paths(Path(td), [native])), 1)
+
+    def test_conan_package_dirs_reads_cmakedeps_data_files(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            package = root / "cache" / "freetype"
+            package.mkdir(parents=True)
+            generators = root / "deps"
+            generators.mkdir()
+            (generators / "freetype-relwithdebinfo-x86_64-data.cmake").write_text(
+                f'set(freetype_PACKAGE_FOLDER_RELWITHDEBINFO "{package.as_posix()}")\n'
+                'set(missing_PACKAGE_FOLDER_RELWITHDEBINFO "/no/such/package")\n')
+            self.assertEqual(self.bundle_deps.conan_package_dirs(generators), {"freetype": package})
+            self.assertEqual(self.bundle_deps.conan_package_dirs(root / "absent"), {})
+
     def test_bundle_from_conan_layout_and_audit(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
