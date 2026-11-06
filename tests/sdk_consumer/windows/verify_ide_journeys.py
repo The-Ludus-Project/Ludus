@@ -63,6 +63,8 @@ def line_of(marker):
 
 
 CMAKE = ROOT / "out/host-tools/venv/Scripts/cmake.exe"
+# Project type GUID of a Visual Studio solution folder such as CMakePredefinedTargets.
+SOLUTION_FOLDER = "2150E333-8FDC-42A3-9474-1A3956D46DE8"
 
 
 def run(*arguments, cwd=ROOT, fails=False, contains=(), timeout=1800):
@@ -122,8 +124,10 @@ def verify_navigation(project, profile, sdk):
 def verify_visual_studio_launch(project, profile):
     tree = project / "out/build" / profile
     (solution,) = tree.glob("*.sln")
-    projects = re.findall(r'^Project\("\{[^}]+\}"\) = "([^"]+)"', solution.read_text(encoding="utf-8-sig"),
-                          re.MULTILINE)
+    # Visual Studio starts the first project entry; solution folders are not projects.
+    entries = re.findall(r'^Project\("\{([^}]+)\}"\) = "([^"]+)"', solution.read_text(encoding="utf-8-sig"),
+                         re.MULTILINE)
+    projects = [name for kind, name in entries if kind.upper() != SOLUTION_FOLDER]
     require(projects and projects[0] == TARGET, f"F5 would start {projects[:1]}, not {TARGET}")
     settings = (tree / f"{TARGET}.vcxproj").read_text(encoding="utf-8-sig")
     directory = re.search(r"<LocalDebuggerWorkingDirectory>([^<]+)</LocalDebuggerWorkingDirectory>", settings)
