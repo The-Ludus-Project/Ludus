@@ -130,9 +130,10 @@ def verify_visual_studio_launch(project, profile):
     projects = [name for kind, name in entries if kind.upper() != SOLUTION_FOLDER]
     require(projects and projects[0] == TARGET, f"F5 would start {projects[:1]}, not {TARGET}")
     settings = (tree / f"{TARGET}.vcxproj").read_text(encoding="utf-8-sig")
-    directory = re.search(r"<LocalDebuggerWorkingDirectory>([^<]+)</LocalDebuggerWorkingDirectory>", settings)
-    require(directory is not None and same_path(directory.group(1), project),
-            "The Visual Studio debugger does not start in the project directory")
+    # CMake writes one element per configuration, with a Condition attribute.
+    directories = re.findall(r"<LocalDebuggerWorkingDirectory[^>]*>([^<]+)</LocalDebuggerWorkingDirectory>", settings)
+    require(directories and all(same_path(directory, project) for directory in directories),
+            f"The Visual Studio debugger does not start in {project}: {directories}")
     print(f"{profile}: F5 starts {TARGET} in {project}", flush=True)
 
 
