@@ -7,6 +7,7 @@
  * released on the thread that allocated them (stb decodes synchronously). */
 #include "stb_image_config.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 
 /* max_align_t-sized header keeps the payload suitably aligned for any type. */

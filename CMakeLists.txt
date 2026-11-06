@@ -368,7 +368,11 @@ add_subdirectory(modules/content/procedural/environment)
 # importers) and MikkTSpace (their tangent generation).
 add_subdirectory(third_party/stb)
 add_subdirectory(third_party/mikktspace)
-add_subdirectory(modules/content/scene_cook)
+# The cooker's Python-number emulation uses __int128, which MSVC lacks, and its
+# file operations are POSIX-only; the Windows runtime closure omits it (D6a/D6b).
+if(NOT WIN32)
+    add_subdirectory(modules/content/scene_cook)
+endif()
 # Cooked curves/surfaces geometry codecs, loading and publication (G5).
 add_subdirectory(modules/geometry/content)
 add_subdirectory(modules/audio/content)
@@ -532,7 +536,7 @@ write_basic_package_version_file(
 # Public exported components (one per installed Ludus:: module target).
 foreach(_component
     FoundationBase FoundationMemory FoundationHash FoundationIdentity FoundationStrings FoundationContainers FoundationThreading FoundationFilesystem FoundationParsing FoundationParsingJson FoundationMath FoundationGeometry FoundationTime FoundationLogging ShaderCompilerClient ShaderLanguage
-    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource StringDictionaryFormat StringDictionary StringDictionaryWriter SceneCook AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer GameApi PhysicsFluid Ui Localization)
+    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource StringDictionaryFormat StringDictionary StringDictionaryWriter AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer GameApi PhysicsFluid Ui Localization)
     ludus_sdk_register_component(${_component})
     ludus_sdk_register_feature(${_component})
 endforeach()
@@ -563,6 +567,11 @@ else()
         ludus_sdk_register_component(${_component})
         ludus_sdk_register_feature(${_component})
     endforeach()
+endif()
+
+if(TARGET Ludus::SceneCook)
+    ludus_sdk_register_component(SceneCook)
+    ludus_sdk_register_feature(SceneCook)
 endif()
 
 if(TARGET Ludus::GameHost)
