@@ -118,6 +118,45 @@ CompareDisplayImages(const QImage& reference,
                      QImage& outDifference,
                      QString& outError);
 
+/// Largest accepted |candidate / reference - 1| of a significant column's summed radiance.
+inline constexpr foundation::float64 REFERENCE_COLUMN_TOLERANCE = 0.05;
+/// A column is significant when its summed reference radiance reaches this fraction of the largest column's.
+inline constexpr foundation::float64 REFERENCE_COLUMN_SIGNIFICANCE = 0.01;
+
+/// Column-profile comparison of a linear candidate with a linear reference. Each image column's RGB-mean radiance is
+/// summed over the rows both images sampled, so Monte Carlo noise averages out along the column. It suits scenes
+/// that vary little along the image's vertical axis, such as the edge-diffraction test scenes, whose oracle
+/// references (tests/scenes/diffraction/references) a renderer's diffraction should reproduce column by column.
+struct ColumnComparison final
+{
+    foundation::uint32 SignificantColumns =
+        0;                              ///< Columns that hold at least REFERENCE_COLUMN_SIGNIFICANCE of the light.
+    foundation::uint32 WorstColumn = 0; ///< The significant column whose ratio is furthest from one.
+    foundation::float64 WorstColumnRatio = 1; ///< Candidate over reference sum of that column.
+    foundation::float64 TotalRatio = 1;       ///< Candidate over reference sum of every compared pixel.
+    /// Every significant column within REFERENCE_COLUMN_TOLERANCE.
+    bool IsWithinTolerance = false;
+};
+
+/// Compare a render graph capture with linear reference pixels column by column.
+/// @param reference Width * Height top-left pixels, borrowed for the call.
+/// @param capture Width * Height top-left graph capture pixels, borrowed for the call.
+/// @return False with outError (outputs unchanged) for mismatched sizes or a reference without light in any compared
+/// pixel.
+[[nodiscard]] bool
+CompareColumnProfiles(foundation::BorrowedView<const graphics::renderer::ReferencePixel> reference,
+                      foundation::BorrowedView<const graphics::renderer::RenderGraphCapturePixel> capture,
+                      foundation::uint32 width,
+                      foundation::uint32 height,
+                      ColumnComparison& outComparison,
+                      QString& outError);
+
+/// Machine-readable record of a column comparison, with field names matching ColumnComparison.
+[[nodiscard]] QJsonObject MakeColumnComparisonJson(const ColumnComparison& comparison);
+
+/// One-line verdict, for example "Columns pass: worst 0.983 at column 125 of 230 within ±5%".
+[[nodiscard]] QString DescribeColumnComparison(const ColumnComparison& comparison);
+
 /// Machine-readable record of a comparison, with field names matching ReferenceComparison.
 [[nodiscard]] QJsonObject MakeReferenceComparisonJson(const ReferenceComparison& comparison);
 

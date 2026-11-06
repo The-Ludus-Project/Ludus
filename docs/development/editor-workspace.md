@@ -2098,6 +2098,16 @@ choice applies to every traversal and is recorded in the `LUHDR01` flags, as
 `center_rays` in the `scripts/reference-hdr` manifest and as `centerRays` in a
 saved comparison.
 
+**Optical wavelength** renders RT1's optical transport instead of geometric light
+transport: scalar wave coupling on light connections, at the wavelength you enter in
+millimetres. **Off (geometric)**, the default, keeps ordinary transport. The
+[diffraction test scenes](../architecture/scene-source-format.md#diffraction-references)
+use 5 mm. Optical transport needs the GPU compute or CPU oracle traversal, so entering a
+wavelength while **Native ray queries** is selected switches **Traversal** to GPU compute,
+or to the CPU oracle without compute support, and says so in the status line. The
+wavelength is recorded in the saved `LUHDR01` capture and applies to the RT1 baseline of
+**Compare graphs…** too.
+
 No traversal falls back to another. Work runs on the editor's GUI thread
 in short slices, so large images at high sample counts take minutes with the CPU
 oracle. GPU compute advances the whole image by one sample per dispatch and copies
@@ -2263,13 +2273,30 @@ renders one baseline and then runs each candidate with a private producer. The
 selected row shows the baseline, candidate, signed difference and metrics side
 by side. A graph whose output extent differs from the frozen extent fails its
 row. Choose an export with view scale one to compare it at the same resolution.
-For a pre-rendered baseline, choose **Choose display baseline…**. Its dimensions
-set the capture extent and the comparison uses sRGB display values. For a saved
-linear baseline, use the offline command below.
+To compare with a file instead of rendering RT1, choose **Choose baseline…**:
+
+- A **linear** `.luhdr` capture, such as a saved Reference capture or an
+  [edge-diffraction reference](../architecture/scene-source-format.md#diffraction-references),
+  sets the extent and the camera. Every candidate renders the file's view, whatever the
+  viewport shows, so the comparison cannot be misaligned. The window shows the file's
+  extent and optical wavelength when you choose it. The comparison uses scene-linear values, and each
+  accumulating graph also gets a **column verdict**: each image column's radiance is
+  summed over its rows, and the row passes when every column that carries at least 1% of
+  the brightest column's light is within ±5% of the baseline. The metrics column shows
+  **columns pass** or **columns FAIL**, and the details name the worst column and its
+  ratio. Summing along columns averages Monte Carlo noise in scenes that vary little
+  along the image's vertical axis, such as the diffraction test scenes.
+- A **display** image (PNG, JPEG or WebP) sets the extent, and the comparison uses
+  sRGB display values from the viewport's camera.
+
+**Use RT1** returns to rendering the baseline.
 
 The new results folder contains the baseline, individual PNGs and linear
 captures when available, and `comparison.json` with the frozen scene and camera,
-graph routes, actual sample evidence and metrics. Each render, difference and
+graph routes, actual sample evidence and metrics. A supplied linear baseline is
+copied as `baseline.luhdr` beside its display image `baseline.png`; the manifest
+records its kind and optical wavelength, and each row's column verdict under
+`columns`. Each render, difference and
 linear capture shares a filename stem with the row number, graph, configuration
 and output. For example, row 1 of SliceSampling's Default configuration can
 produce `01-SliceSampling--Default--color.png` and

@@ -16,6 +16,7 @@
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
 #include "internal/reference_capture_window.h"
+#include "internal/reference_hdr_file.h"
 #include "internal/render_graph_defaults.h"
 #include "internal/render_graph_library_capture.h"
 #include "internal/render_graph_navigation.h"
@@ -33,6 +34,7 @@
 #include "internal/world_demo_adapter.h"
 #include "internal/world_graph_view.h"
 #include "internal/world_workspace.h"
+#include "reference_hdr_test_support.h"
 #include "renderer_composite.h"
 
 #include <ludus/foundation/base/types.h>
@@ -42,6 +44,7 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/identity/uuid.hpp>
+#include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -73,6 +76,7 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QFile>
@@ -2651,10 +2655,28 @@ TEST_CASE("Reference capture window names the viewport's render graph and follow
     REQUIRE(problem != nullptr);
     CHECK(capture->isEnabled() == true);
     CHECK(problem->isVisible() == false);
+    // Optical wavelength is off by default. A wavelength moves Native ray queries, which has no optical transport,
+    // to a traversal that has it instead of failing at Capture.
+    QDoubleSpinBox* optical = window->findChild<QDoubleSpinBox*>(QStringLiteral("referenceOpticalWavelength"));
+    REQUIRE(optical != nullptr);
+    CHECK(optical->value() == 0);
+    CHECK(optical->text() == QStringLiteral("Off (geometric)"));
+    CHECK(optical->isEnabled() == true);
+    QComboBox* referenceTraversal = window->findChild<QComboBox*>(QStringLiteral("referenceTraversal"));
+    REQUIRE(referenceTraversal != nullptr);
+    const int32 initialTraversal = referenceTraversal->currentIndex();
+    constexpr int32 NATIVE_QUERIES = static_cast<int32>(renderer::ReferenceTraversal::NativeQueries);
+    referenceTraversal->setCurrentIndex(NATIVE_QUERIES);
+    optical->setValue(5);
+    CHECK(referenceTraversal->currentIndex() != NATIVE_QUERIES);
+    optical->setValue(0);
+    referenceTraversal->setCurrentIndex(initialTraversal);
     source->setCurrentIndex(CAPTURE_SOURCE_GRAPH_INDEX);
     CHECK(capture->isEnabled() == false);
     CHECK(problem->isVisible() == true);
     CHECK(problem->text().contains(window->GetGraphCaptureProblem()) == true);
+    // Like depth and traversal, the wavelength describes RT1 and is disabled for the Render graph source.
+    CHECK(optical->isEnabled() == false);
     // Force raster is explained the same way and clears again when it is turned off.
     workspace.GetPreviewOrNull()->SetForceRaster(true);
     CHECK(window->GetGraphCaptureProblem().startsWith(QStringLiteral("Force raster")) == true);
@@ -2790,6 +2812,7 @@ TEST_CASE("Reference capture window offers the render graph source once the view
                              {},
                              candidates,
                              baseline,
+                             nullptr,
                              QStringLiteral("external.png"),
                              results.path(),
                              error) == true);
@@ -2825,6 +2848,107 @@ TEST_CASE("Reference capture window offers the render graph source once the view
     const QImage second(QDir(results.path()).filePath(secondName));
     REQUIRE(first.isNull() == false);
     CHECK(first == second);
+
+    // A linear baseline sets the extent and the camera: the run renders the file's view, not the live viewport's.
+    {
+        constexpr int32 LINEAR_WIDTH = 48;
+        constexpr int32 LINEAR_HEIGHT = 32;
+        tests::TestReferenceHdr description;
+        description.Extent = QSize(LINEAR_WIDTH, LINEAR_HEIGHT);
+        description.Flags =
+            tests::TEST_HDR_CPU_ORACLE_FLAG | tests::TEST_HDR_REVERSE_Z_FLAG | tests::TEST_HDR_OPTICAL_FLAG;
+        description.OpticalWavelengthWorld = 0.005F;
+        description.CameraPosition = {3, 1, 4};
+        math::Matrix4 worldToView;
+        math::Matrix4 viewToClip;
+        REQUIRE(math::TryLookAt(description.CameraPosition, {0, 0, 0}, {0, 1, 0}, worldToView) ==
+                math::MathStatus::Success);
+        constexpr float32 FOV_RADIANS = 0.8F;
+        REQUIRE(math::TryPerspectiveReverseZ(FOV_RADIANS,
+                                             static_cast<float32>(LINEAR_WIDTH) / static_cast<float32>(LINEAR_HEIGHT),
+                                             0.01F,
+                                             1000,
+                                             viewToClip) == math::MathStatus::Success);
+        description.WorldToClip = viewToClip * worldToView;
+        description.Grey = 0.5F;
+        QTemporaryDir linearResults;
+        REQUIRE(linearResults.isValid() == true);
+        const QString baselinePath = QDir(linearResults.path()).filePath(QStringLiteral("oracle.luhdr"));
+        REQUIRE(tests::WriteTestReferenceHdr(baselinePath, tests::MakeTestReferenceHdr(description)) == true);
+        ReferenceHdrFile linearBaseline;
+        REQUIRE(ReadReferenceHdrFile(baselinePath, linearBaseline, error) == true);
+        QTemporaryDir linearRun;
+        REQUIRE(linearRun.isValid() == true);
+        GraphComparisonRun linearComparison;
+        REQUIRE(linearComparison.Start(world.GetRenderPreview(),
+                                       workspace,
+                                       {},
+                                       {viewportCandidate},
+                                       {},
+                                       &linearBaseline,
+                                       baselinePath,
+                                       linearRun.path(),
+                                       error) == true);
+        timer.restart();
+        while (linearComparison.IsRunning() == true && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            linearComparison.Service();
+            QTest::qWait(1);
+        }
+        INFO(linearComparison.GetStatus().toStdString());
+        REQUIRE(linearComparison.IsRunning() == false);
+        REQUIRE(linearComparison.GetResults().size() == 1);
+        const QJsonObject row = linearComparison.GetResults().at(0).toObject();
+        INFO(QJsonDocument(row).toJson().toStdString());
+        CHECK(row.value(QStringLiteral("state")).toString() == QStringLiteral("complete"));
+        CHECK(row.value(QStringLiteral("metrics")).toObject().isEmpty() == false);
+        const QDir linearDirectory(linearRun.path());
+        CHECK(QImage(linearDirectory.filePath(QStringLiteral("baseline.png"))).size() == description.Extent);
+        CHECK(QFile::exists(linearDirectory.filePath(QStringLiteral("baseline.luhdr"))) == true);
+        QFile manifestFile(linearDirectory.filePath(QStringLiteral("comparison.json")));
+        REQUIRE(manifestFile.open(QIODevice::ReadOnly) == true);
+        const QJsonObject manifest = QJsonDocument::fromJson(manifestFile.readAll()).object();
+        CHECK(manifest.value(QStringLiteral("width")).toInt() == LINEAR_WIDTH);
+        CHECK(manifest.value(QStringLiteral("height")).toInt() == LINEAR_HEIGHT);
+        const QJsonObject linearManifestBaseline = manifest.value(QStringLiteral("baseline")).toObject();
+        CHECK(linearManifestBaseline.value(QStringLiteral("kind")).toString() == QStringLiteral("linear"));
+        CHECK(linearManifestBaseline.value(QStringLiteral("opticalWavelengthWorld")).toDouble() ==
+              Catch::Approx(0.005).epsilon(1e-6));
+        // The run renders the file's view in its own (conventional) depth convention: every world point lands on
+        // the same pixel, and its reverse-Z depth d becomes 1 - d.
+        const QJsonArray worldToClip = manifest.value(QStringLiteral("worldToClip")).toArray();
+        REQUIRE(worldToClip.size() == 16);
+        const auto projectPoint = [](const auto& element, const math::Vector3& point) {
+            StaticArray<float64, 4> clip{};
+            for (usize index = 0; index < 4; ++index)
+            {
+                clip[index] = element(0, index) * static_cast<float64>(point.X) +
+                              element(1, index) * static_cast<float64>(point.Y) +
+                              element(2, index) * static_cast<float64>(point.Z) + element(3, index);
+            }
+            return clip;
+        };
+        const auto runElement = [&](usize column, usize index) {
+            return worldToClip.at(static_cast<qsizetype>(column * 4 + index)).toDouble();
+        };
+        const auto fileElement = [&](usize column, usize index) {
+            const math::Vector4& values = description.WorldToClip.Columns[column];
+            const StaticArray<float32, 4> elements{{values.X, values.Y, values.Z, values.W}};
+            return static_cast<float64>(elements[index]);
+        };
+        for (const math::Vector3& point : {math::Vector3{0, 0, 0}, math::Vector3{0.5F, 0.25F, -0.3F}})
+        {
+            const StaticArray<float64, 4> fromRun = projectPoint(runElement, point);
+            const StaticArray<float64, 4> fromFile = projectPoint(fileElement, point);
+            CHECK(fromRun[0] / fromRun[3] == Catch::Approx(fromFile[0] / fromFile[3]).margin(1e-5));
+            CHECK(fromRun[1] / fromRun[3] == Catch::Approx(fromFile[1] / fromFile[3]).margin(1e-5));
+            CHECK(fromRun[2] / fromRun[3] == Catch::Approx(1 - fromFile[2] / fromFile[3]).margin(1e-5));
+        }
+        const QJsonArray cameraPosition = manifest.value(QStringLiteral("cameraPosition")).toArray();
+        REQUIRE(cameraPosition.size() == 3);
+        CHECK(cameraPosition.at(0).toDouble() == 3);
+        CHECK(cameraPosition.at(2).toDouble() == 4);
+    }
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();

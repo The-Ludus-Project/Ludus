@@ -2,6 +2,7 @@
 
 #include "internal/captured_image_view.h"
 #include "internal/reference_capture_window.h"
+#include "internal/reference_hdr_file.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
@@ -76,6 +77,12 @@ void ConfigureBudget(QSpinBox& inoutControl, uint32 maximum, uint32 value)
     inoutControl.setValue(static_cast<int32>(value));
 }
 
+/// Whether a chosen baseline is a linear LUHDR01 capture rather than a display image.
+bool IsLinearBaselinePath(const QString& path)
+{
+    return QFileInfo(path).suffix().compare(QStringLiteral("luhdr"), Qt::CaseInsensitive) == 0;
+}
+
 QImage ReadDisplayBaseline(const QString& path, QString& outError)
 {
     QImageReader reader(path);
@@ -126,7 +133,7 @@ GraphComparisonWindow::GraphComparisonWindow(RenderPreview& inoutPreview,
       mGraphBounces(new QSpinBox(this)), mReferenceSamples(new QSpinBox(this)), mReferenceDepth(new QSpinBox(this)),
       mReferenceTraversal(new QComboBox(this)), mAdd(new QPushButton(QStringLiteral("Add graph"), this)),
       mRemove(new QPushButton(QStringLiteral("Remove selected"), this)),
-      mChoose(new QPushButton(QStringLiteral("Choose display baseline…"), this)),
+      mChoose(new QPushButton(QStringLiteral("Choose baseline…"), this)),
       mUseRt1(new QPushButton(QStringLiteral("Use RT1"), this)),
       mStart(new QPushButton(QStringLiteral("Run and save…"), this)),
       mStop(new QPushButton(QStringLiteral("Stop"), this)),
@@ -151,6 +158,14 @@ GraphComparisonWindow::GraphComparisonWindow(RenderPreview& inoutPreview,
     ConfigureBudget(*mReferenceSamples, MAXIMUM_REFERENCE_SAMPLES, reference.Samples);
     ConfigureBudget(*mReferenceDepth, MAXIMUM_REFERENCE_DEPTH, reference.MaxDepth);
     mReferenceTraversal->setObjectName(QStringLiteral("graphComparisonReferenceTraversal"));
+    mChoose->setObjectName(QStringLiteral("graphComparisonChooseBaseline"));
+    mChoose->setToolTip(QStringLiteral(
+        "Compare against a file instead of rendering RT1. A linear .luhdr capture, such as a saved Reference capture "
+        "or "
+        "an edge-diffraction reference from tests/scenes/diffraction/references, sets the extent and the camera: every "
+        "candidate renders the file's view, and graph captures also get a column-profile verdict. A PNG, JPEG or WebP "
+        "image is compared in sRGB display values at its extent, from the viewport's camera."));
+    mBaselineLabel->setObjectName(QStringLiteral("graphComparisonBaseline"));
     PopulateReferenceTraversalChoices(*mReferenceTraversal, reference.Traversal);
     updateTraversalAvailability();
 
@@ -331,16 +346,46 @@ void GraphComparisonWindow::addCandidate()
 
 void GraphComparisonWindow::selectBaseline()
 {
-    const QString path = QFileDialog::getOpenFileName(this,
-                                                      QStringLiteral("Choose display baseline"),
-                                                      {},
-                                                      QStringLiteral("Display images (*.png *.jpg *.jpeg *.webp)"));
-    if (path.isEmpty() == false)
+    const QString path = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Choose baseline"),
+        {},
+        QStringLiteral("Baselines (*.luhdr *.png *.jpg *.jpeg *.webp);;Linear captures (*.luhdr);;"
+                       "Display images (*.png *.jpg *.jpeg *.webp)"));
+    if (path.isEmpty() == true)
+    {
+        return;
+    }
+    if (IsLinearBaselinePath(path) == true)
+    {
+        // Read it now, so a wrong file is reported where it was chosen rather than at Run.
+        ReferenceHdrFile file;
+        QString error;
+        if (ReadReferenceHdrFile(path, file, error) == false)
+        {
+            mStatus->setText(error);
+            return;
+        }
+        mBaselinePath = path;
+        constexpr float64 MILLIMETRES_PER_METRE = 1000;
+        const QString wavelength =
+            file.OpticalWavelengthWorld > 0
+                ? QStringLiteral(" · optical %1 mm")
+                      .arg(static_cast<float64>(file.OpticalWavelengthWorld) * MILLIMETRES_PER_METRE)
+                : QString{};
+        mBaselineLabel->setText(QStringLiteral("Supplied linear baseline · %1 · %2 x %3%4 · candidates render its "
+                                               "camera")
+                                    .arg(QFileInfo(path).fileName())
+                                    .arg(file.Extent.width())
+                                    .arg(file.Extent.height())
+                                    .arg(wavelength));
+    }
+    else
     {
         mBaselinePath = path;
         mBaselineLabel->setText(QStringLiteral("Supplied sRGB baseline · %1").arg(QFileInfo(path).fileName()));
-        setRunning(false);
     }
+    setRunning(false);
 }
 
 void GraphComparisonWindow::start()
@@ -352,7 +397,17 @@ void GraphComparisonWindow::start()
     }
     QString error;
     QImage baseline;
-    if (mBaselinePath.isEmpty() == false)
+    ReferenceHdrFile linearBaseline;
+    const bool hasLinearBaseline = mBaselinePath.isEmpty() == false && IsLinearBaselinePath(mBaselinePath) == true;
+    if (hasLinearBaseline == true)
+    {
+        if (ReadReferenceHdrFile(mBaselinePath, linearBaseline, error) == false)
+        {
+            mStatus->setText(error);
+            return;
+        }
+    }
+    else if (mBaselinePath.isEmpty() == false)
     {
         baseline = ReadDisplayBaseline(mBaselinePath, error);
         if (baseline.isNull() == true)
@@ -412,8 +467,15 @@ void GraphComparisonWindow::start()
     mSettings.MaxDepth = static_cast<uint32>(mReferenceDepth->value());
     updateTraversalAvailability();
     mSettings.Traversal = static_cast<graphics::renderer::ReferenceTraversal>(mReferenceTraversal->currentIndex());
-    if (mRun.Start(*mPreview, *mWorkspace, mSettings, candidates, baseline, mBaselinePath, directory.path(), error) ==
-        false)
+    if (mRun.Start(*mPreview,
+                   *mWorkspace,
+                   mSettings,
+                   candidates,
+                   baseline,
+                   hasLinearBaseline == true ? &linearBaseline : nullptr,
+                   mBaselinePath,
+                   directory.path(),
+                   error) == false)
     {
         mStatus->setText(error);
         return;
@@ -459,7 +521,14 @@ void GraphComparisonWindow::refresh()
         const QJsonObject metrics = result.value(QStringLiteral("metrics")).toObject();
         if (metricsOrNull != nullptr && metrics.isEmpty() == false)
         {
-            metricsOrNull->setText(QStringLiteral("%1 · %2")
+            const QJsonObject columns = result.value(QStringLiteral("columns")).toObject();
+            const QString verdict = columns.isEmpty() == true
+                                        ? QString{}
+                                        : (columns.value(QStringLiteral("isWithinTolerance")).toBool() == true
+                                               ? QStringLiteral("columns pass · ")
+                                               : QStringLiteral("columns FAIL · "));
+            metricsOrNull->setText(QStringLiteral("%1%2 · %3")
+                                       .arg(verdict)
                                        .arg(metrics.value(QStringLiteral("rootMeanSquareError")).toDouble())
                                        .arg(metrics.value(QStringLiteral("space")).toString()));
         }
@@ -500,8 +569,10 @@ void GraphComparisonWindow::showSelection()
     mCandidateView->SetImage(image.isEmpty() == true ? QImage{} : QImage(directory.filePath(image)));
     mDifferenceView->SetImage(difference.isEmpty() == true ? QImage{} : QImage(directory.filePath(difference)));
     QStringList detail;
-    for (const QString& field : {QStringLiteral("summary"),
+    for (const QString& field : {QStringLiteral("columnSummary"),
+                                 QStringLiteral("summary"),
                                  QStringLiteral("message"),
+                                 QStringLiteral("columnError"),
                                  QStringLiteral("exportError"),
                                  QStringLiteral("comparisonError"),
                                  QStringLiteral("differenceError")})

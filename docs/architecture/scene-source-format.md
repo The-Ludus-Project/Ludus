@@ -127,37 +127,57 @@ The oracle's tests check the following. Run them with `ludus_renderer_tests "[ed
 - Conserved power through the slit.
 - Agreement of absorbing UTD, unpolarized UTD and Kirchhoff within 0.03 near the slit's beam.
 
-#### Compare a renderer with the reference
+#### Compare a renderer with the reference in the Editor
 
-The comparison works on LUHDR01 captures, the linear HDR files that reference captures save. It compares each image
-column summed over every row. The scenes vary little along y, so Monte Carlo noise averages out and a column's ratio
-measures the renderer's diffraction. A capture passes when its camera and wavelength match the reference's and every
-significant column agrees within the tolerance. A column is significant when it holds at least 1% of the largest
-column's light.
+`tests/scenes/diffraction/references` holds the oracle's references, so the comparison needs no terminal. Each is a
+240 × 160 `LUHDR01` image from the scene's camera at the design wavelength:
 
-1. **Capture the scene.** Import it into a new project: in the Editor with **Import scene…** and **Save World**, or
-   headlessly with the hidden `[.prepare-full-sponza]` editor test. That test takes
-   `LUDUS_FULL_SPONZA_PROJECT=<new project directory>` and `LUDUS_FULL_SPONZA_ENTRY=<scene file>` and saves the World
-   as `assets/sponza.world.json`. Then capture the World from the scene's camera, at pixel centres and with optical
-   transport at the design wavelength. From a build tree:
+| File | Model |
+| --- | --- |
+| `single-edge-utd-absorbing.luhdr` | Absorbing first-order UTD |
+| `single-slit-utd-absorbing.luhdr` | Absorbing first-order UTD |
+| `slit-partial-occluder-utd-absorbing.luhdr` | Absorbing first-order UTD |
+| `single-slit-geometric.luhdr` | Geometric optics, the control |
 
-   ```bash
-   QT_QPA_PLATFORM=offscreen LUDUS_REFERENCE_TEST_PROJECT=<project> LUDUS_REFERENCE_TEST_WORLD=sponza LUDUS_REFERENCE_TEST_TRAVERSAL=2 LUDUS_REFERENCE_TEST_AUTHORED_CAMERA=1 LUDUS_REFERENCE_TEST_CENTER_RAYS=1 LUDUS_REFERENCE_TEST_EXTENT=480x320 LUDUS_REFERENCE_TEST_SAMPLES=256 LUDUS_REFERENCE_TEST_OPTICAL_WAVELENGTH=0.005 LUDUS_REFERENCE_TEST_OUTPUT=<directory> apps/editor/ludus_editor_tests "[.supplied-reference-capture]"
-   ```
+Beside each, `<name>-profile.csv` lists the centre row's and each column's mean radiance, readable without the Editor.
 
-   Omit `LUDUS_REFERENCE_TEST_OPTICAL_WAVELENGTH` for a geometric capture. A render graph's own capture works as
-   well, if it saves LUHDR01 from the scene's camera.
+To check a render graph's diffraction:
 
-2. **Compare it.** This renders the reference at the capture's extent and wavelength and compares:
+1. **Import the scene.** In a project, choose **World → New World…**, then **Import scene…**, and pick, for example,
+   `tests/scenes/diffraction/single-edge.luscene.json`. Choose **Import previewed scene**, then **Save World**.
+2. **Select your graph** in the World viewport's toolbar, with the output that accumulates its linear radiance.
+3. **Open the comparison.** Choose **Reference…** in the viewport toolbar, then **Compare graphs…**. Add your graph
+   with **Add graph** and keep its mode **Accumulate**.
+4. **Choose the baseline.** Choose **Choose baseline…** and pick
+   `tests/scenes/diffraction/references/single-edge-utd-absorbing.luhdr`. The window shows the file's extent and
+   wavelength. Every candidate renders the file's camera at its 240 × 160 extent, wherever the viewport looks; render
+   your graph at the 5 mm design wavelength and at view scale one.
+5. **Run.** Choose **Run and save…**. The row's metrics read **columns pass** or **columns FAIL**, and its details name
+   the worst column and its ratio. The images show the baseline, your render and their signed difference.
 
-   ```bash
-   LUDUS_DIFFRACTION_SCENE=<ludus>/tests/scenes/diffraction/single-slit.luscene.json LUDUS_DIFFRACTION_CAPTURE=<capture.luhdr> LUDUS_DIFFRACTION_OUTPUT=<directory> modules/graphics/renderer/ludus_renderer_tests "[.diffraction-compare]"
-   ```
+The column verdict sums each image column's radiance over its rows. The scenes vary little along y, so Monte Carlo
+noise averages out and a column's ratio measures the renderer's diffraction. A row passes when every column that
+holds at least 1% of the brightest column's light is within ±5% of the reference. Work through the scenes in order:
+the single edge tests the coefficient, the slit two interfering edges, and the partial occluder path visibility.
 
-   It prints the camera and wavelength checks, the worst column's ratio, the total ratio and the per-pixel relative
-   L1. It fails unless the capture passes. `<directory>` receives the reference and `comparison-profile.csv`, one
-   line per column: the wall x, the centre row's and the column's mean radiance for the reference and the capture,
-   and the ratio of the column sums.
+To check the comparison itself, compare a geometric graph (any path-tracing template) with
+`single-slit-geometric.luhdr`: it must pass. An RT1 capture taken with **Reference…** at an **Optical wavelength** is
+saved with **Save…** as `LUHDR01`. Compare it with the command below; Compare graphs compares render graphs.
+
+#### Compare from the command line
+
+The same comparison runs headlessly, for automation. It renders the reference at the capture's extent and
+wavelength, unless `LUDUS_DIFFRACTION_REFERENCE` names a checked-in one, and compares:
+
+```bash
+LUDUS_DIFFRACTION_SCENE=<ludus>/tests/scenes/diffraction/single-slit.luscene.json LUDUS_DIFFRACTION_CAPTURE=<capture.luhdr> LUDUS_DIFFRACTION_OUTPUT=<directory> modules/graphics/renderer/ludus_renderer_tests "[.diffraction-compare]"
+```
+
+It prints the camera and wavelength checks, the worst column's ratio, the total ratio and the per-pixel relative L1,
+and fails unless the capture passes. The camera check compares where points around the camera land on screen, so a
+capture in either depth convention and with any near plane passes when it shows the same view. `<directory>`
+receives `comparison-profile.csv`, one line per column: the wall x, the centre row's and the column's mean radiance
+for the reference and the capture, and the ratio of the column sums.
 
 The comparison reads these optional variables:
 
@@ -170,11 +190,17 @@ The comparison reads these optional variables:
 | `LUDUS_DIFFRACTION_WORKERS` | 8 | Threads that render the reference. |
 | `LUDUS_DIFFRACTION_REFERENCE` | — | A reference `.luhdr` to reuse instead of rendering one. |
 
-`ludus_renderer_tests "[.diffraction-reference]"` writes a reference on its own. It takes `LUDUS_DIFFRACTION_SCENE`,
-`LUDUS_DIFFRACTION_OUTPUT` and the variables above, plus `LUDUS_DIFFRACTION_EXTENT` (default `480x320`). It writes
-`reference-<model>.luhdr` and `reference-<model>-profile.csv`. A UTD reference of 480 × 320 pixels takes a few minutes
-on eight threads in a debug build. The reference's flags mark the CPU oracle, centre rays and reverse-Z depth, so
-`scripts/compare-render` and the editor's comparison read it like any capture.
+A headless capture of an imported World takes `LUDUS_REFERENCE_TEST_OPTICAL_WAVELENGTH=<metres>` and
+`LUDUS_REFERENCE_TEST_CENTER_RAYS=1` in the hidden `[.supplied-reference-capture]` editor test, with
+`LUDUS_REFERENCE_TEST_AUTHORED_CAMERA=1` for the scene's camera.
+
+`ludus_renderer_tests "[.diffraction-reference]"` writes a reference. It takes `LUDUS_DIFFRACTION_SCENE`,
+`LUDUS_DIFFRACTION_OUTPUT`, the variables above and `LUDUS_DIFFRACTION_EXTENT` (default `480x320`), and writes
+`<scene>-<model>.luhdr` and `<scene>-<model>-profile.csv`. The checked-in references are regenerated with
+`LUDUS_DIFFRACTION_EXTENT=240x160` and `LUDUS_DIFFRACTION_OUTPUT=tests/scenes/diffraction/references`; a test
+checks them against the oracle pixel for pixel. A 240 × 160 UTD reference takes under a minute and a half on eight
+threads in a debug build. The reference's flags mark the CPU oracle, centre rays and reverse-Z depth, so
+`scripts/compare-render` reads it like any capture.
 
 #### What the wall shows
 

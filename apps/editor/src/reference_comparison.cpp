@@ -326,6 +326,117 @@ bool CompareDisplayImages(const QImage& reference,
                                 outError);
 }
 
+namespace
+{
+/// The mean of a colour's R, G and B, in float64.
+[[nodiscard]] float64 ComputeChannelMean(math::Vector3 colour) noexcept
+{
+    constexpr float64 CHANNELS = 3;
+    return (static_cast<float64>(colour.X) + static_cast<float64>(colour.Y) + static_cast<float64>(colour.Z)) /
+           CHANNELS;
+}
+} // namespace
+
+bool CompareColumnProfiles(BorrowedView<const renderer::ReferencePixel> reference,
+                           BorrowedView<const renderer::RenderGraphCapturePixel> capture,
+                           uint32 width,
+                           uint32 height,
+                           ColumnComparison& outComparison,
+                           QString& outError)
+{
+    const usize pixels = static_cast<usize>(width) * height;
+    if (width == 0 || reference.GetSize() != pixels || capture.GetSize() != pixels)
+    {
+        outError = QStringLiteral("The baseline and the capture differ in size. Render the candidate at the baseline's "
+                                  "extent.");
+        return false;
+    }
+    // First pass: the largest column, which sets the significance threshold.
+    float64 largest = 0;
+    for (uint32 column = 0; column < width; ++column)
+    {
+        float64 sum = 0;
+        for (uint32 row = 0; row < height; ++row)
+        {
+            const usize pixel = static_cast<usize>(row) * width + column;
+            if (reference[pixel].Samples > 0 && capture[pixel].Samples > 0)
+            {
+                sum += ComputeChannelMean(reference[pixel].Radiance);
+            }
+        }
+        largest = math::Max(largest, sum);
+    }
+    if (largest <= 0)
+    {
+        outError = QStringLiteral("No pixel sampled by both images carries baseline light. Check that the baseline "
+                                  "and the candidate show the same scene.");
+        return false;
+    }
+    ColumnComparison comparison;
+    float64 referenceTotal = 0;
+    float64 captureTotal = 0;
+    float64 worstError = -1;
+    for (uint32 column = 0; column < width; ++column)
+    {
+        float64 referenceSum = 0;
+        float64 captureSum = 0;
+        for (uint32 row = 0; row < height; ++row)
+        {
+            const usize pixel = static_cast<usize>(row) * width + column;
+            if (reference[pixel].Samples == 0 || capture[pixel].Samples == 0)
+            {
+                continue;
+            }
+            referenceSum += ComputeChannelMean(reference[pixel].Radiance);
+            captureSum += ComputeChannelMean(capture[pixel].Mean);
+        }
+        referenceTotal += referenceSum;
+        captureTotal += captureSum;
+        if (referenceSum < REFERENCE_COLUMN_SIGNIFICANCE * largest)
+        {
+            continue;
+        }
+        ++comparison.SignificantColumns;
+        const float64 ratio = captureSum / referenceSum;
+        if (math::Abs(ratio - 1) > worstError)
+        {
+            worstError = math::Abs(ratio - 1);
+            comparison.WorstColumn = column;
+            comparison.WorstColumnRatio = ratio;
+        }
+    }
+    comparison.TotalRatio = captureTotal / referenceTotal;
+    comparison.IsWithinTolerance = worstError <= REFERENCE_COLUMN_TOLERANCE;
+    outComparison = comparison;
+    return true;
+}
+
+QJsonObject MakeColumnComparisonJson(const ColumnComparison& comparison)
+{
+    return QJsonObject{
+        {QStringLiteral("significantColumns"), static_cast<qint64>(comparison.SignificantColumns)},
+        {QStringLiteral("worstColumn"), static_cast<qint64>(comparison.WorstColumn)},
+        {QStringLiteral("worstColumnRatio"), comparison.WorstColumnRatio},
+        {QStringLiteral("totalRatio"), comparison.TotalRatio},
+        {QStringLiteral("isWithinTolerance"), comparison.IsWithinTolerance},
+        {QStringLiteral("tolerance"), REFERENCE_COLUMN_TOLERANCE},
+        {QStringLiteral("significance"), REFERENCE_COLUMN_SIGNIFICANCE},
+    };
+}
+
+QString DescribeColumnComparison(const ColumnComparison& comparison)
+{
+    constexpr int32 RATIO_DIGITS = 3;
+    constexpr float64 PERCENT = 100;
+    return QStringLiteral("Columns %1: worst %2 at column %3 of %4 significant, within ±%5% passes · total %6")
+        .arg(comparison.IsWithinTolerance == true ? QStringLiteral("pass") : QStringLiteral("FAIL"))
+        .arg(comparison.WorstColumnRatio, 0, 'f', RATIO_DIGITS)
+        .arg(comparison.WorstColumn)
+        .arg(comparison.SignificantColumns)
+        .arg(REFERENCE_COLUMN_TOLERANCE * PERCENT)
+        .arg(comparison.TotalRatio, 0, 'f', RATIO_DIGITS);
+}
+
 QJsonObject MakeReferenceComparisonJson(const ReferenceComparison& comparison)
 {
     QJsonObject json{

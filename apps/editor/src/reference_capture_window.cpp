@@ -31,6 +31,7 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -59,6 +60,14 @@ namespace renderer = graphics::renderer;
 constexpr int32 CPU_ORACLE_INDEX = static_cast<int32>(renderer::ReferenceTraversal::CpuOracle);
 constexpr int32 NATIVE_QUERIES_INDEX = static_cast<int32>(renderer::ReferenceTraversal::NativeQueries);
 constexpr int32 GPU_COMPUTE_INDEX = static_cast<int32>(renderer::ReferenceTraversal::GpuCompute);
+/// The Optical wavelength field works in millimetres; the renderer takes metres.
+constexpr float64 MILLIMETRES_PER_METRE = 1000;
+/// One nanometre is the renderer's shortest optical wavelength; six decimals of a millimetre show it.
+constexpr int32 OPTICAL_WAVELENGTH_DECIMALS = 6;
+/// Longest wavelength the field offers: a metre, far beyond any test scene.
+constexpr float64 MAXIMUM_OPTICAL_WAVELENGTH_MILLIMETRES = 1000;
+/// Arrow-key step of the field.
+constexpr float64 OPTICAL_WAVELENGTH_STEP_MILLIMETRES = 0.5;
 constexpr float64 MILLISECONDS_PER_SECOND = 1000;
 
 bool WriteAtomically(const QString& path, const QByteArray& bytes, QString& outError)
@@ -135,6 +144,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     : QWidget(parentOrNull, Qt::Window), mPreview(preview), mLongSide(new QSpinBox(this)), mSamples(new QSpinBox(this)),
       mMaxDepth(new QSpinBox(this)), mTraversal(new QComboBox(this)),
       mCenterRays(new QCheckBox(QStringLiteral("Trace pixel centres"), this)),
+      mOpticalWavelength(new QDoubleSpinBox(this)),
       mCompare(new QCheckBox(QStringLiteral("Compare with the viewport's render graph output"), this)),
       mCaptureButton(new QPushButton(QStringLiteral("Capture viewport"), this)),
       mStopButton(new QPushButton(QStringLiteral("Stop"), this)),
@@ -171,6 +181,18 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mCenterRays->setToolTip(QStringLiteral("Trace each camera ray through its pixel's centre, as a render graph does, "
                                            "instead of a random point in the pixel. Edges then alias as the graph's "
                                            "do, so a comparison measures shading rather than antialiasing."));
+    mOpticalWavelength->setObjectName(QStringLiteral("referenceOpticalWavelength"));
+    mOpticalWavelength->setDecimals(OPTICAL_WAVELENGTH_DECIMALS);
+    mOpticalWavelength->setRange(0, MAXIMUM_OPTICAL_WAVELENGTH_MILLIMETRES);
+    mOpticalWavelength->setSingleStep(OPTICAL_WAVELENGTH_STEP_MILLIMETRES);
+    mOpticalWavelength->setValue(0);
+    mOpticalWavelength->setSuffix(QStringLiteral(" mm"));
+    mOpticalWavelength->setSpecialValueText(QStringLiteral("Off (geometric)"));
+    mOpticalWavelength->setToolTip(
+        QStringLiteral("Render RT1's optical transport at this wavelength instead of geometric light transport: scalar "
+                       "wave coupling on light connections. The edge-diffraction test scenes use 5 mm. It needs the "
+                       "GPU compute or CPU oracle traversal; choosing a wavelength switches Native ray queries to one "
+                       "of them. The wavelength is recorded in the saved LUHDR01 capture."));
     mCompare->setObjectName(QStringLiteral("referenceCompare"));
     mCompare->setChecked(true);
     mSource->setObjectName(QStringLiteral("referenceSource"));
@@ -206,6 +228,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     form->addRow(QStringLiteral("Max depth"), mMaxDepth);
     form->addRow(QStringLiteral("Traversal"), mTraversal);
     form->addRow(mCenterRays);
+    form->addRow(QStringLiteral("Optical wavelength"), mOpticalWavelength);
     form->addRow(mCompare);
 
     mCaptureButton->setObjectName(QStringLiteral("referenceCapture"));
@@ -287,6 +310,21 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
         updateStatus();
     });
     connect(mTraversal, &QComboBox::activated, this, [this]() { mHasSelectedTraversal = true; });
+    // Optical transport has no native-query implementation, so choosing a wavelength moves the traversal to the
+    // nearest one that has it rather than failing at Capture.
+    connect(mOpticalWavelength, &QDoubleSpinBox::valueChanged, this, [this](float64 millimetres) {
+        if (millimetres <= 0 || mTraversal->currentIndex() != NATIVE_QUERIES_INDEX)
+        {
+            return;
+        }
+        const QStandardItemModel* modelOrNull = qobject_cast<const QStandardItemModel*>(mTraversal->model());
+        const bool isComputeAvailable = modelOrNull != nullptr && modelOrNull->item(GPU_COMPUTE_INDEX) != nullptr &&
+                                        modelOrNull->item(GPU_COMPUTE_INDEX)->isEnabled() == true;
+        mTraversal->setCurrentIndex(isComputeAvailable == true ? GPU_COMPUTE_INDEX : CPU_ORACLE_INDEX);
+        mStatus->setText(QStringLiteral("Optical transport needs GPU compute or the CPU oracle; switched Traversal to "
+                                        "%1.")
+                             .arg(mTraversal->currentText()));
+    });
     if (mPreview.isNull() == false)
     {
         connect(mPreview, &RenderPreview::Changed, this, &ReferenceCaptureWindow::updateTraversalAvailability);
@@ -541,6 +579,7 @@ void ReferenceCaptureWindow::openGraphComparison()
     settings.MaxDepth = static_cast<uint32>(mMaxDepth->value());
     settings.Traversal = static_cast<renderer::ReferenceTraversal>(mTraversal->currentIndex());
     settings.ShouldCenterRays = mCenterRays->isChecked();
+    settings.OpticalWavelengthWorld = static_cast<float32>(mOpticalWavelength->value() / MILLIMETRES_PER_METRE);
     mGraphComparison = new GraphComparisonWindow(*mPreview, *mProjectWorkspace, settings, mHasSelectedTraversal, this);
     connect(mGraphComparison, &QObject::destroyed, this, [this]() {
         mGraphComparison.clear();
@@ -931,6 +970,7 @@ bool ReferenceCaptureWindow::StartCapture()
     settings.MaxDepth = static_cast<uint32>(mMaxDepth->value());
     settings.Traversal = static_cast<renderer::ReferenceTraversal>(mTraversal->currentIndex());
     settings.ShouldCenterRays = mCenterRays->isChecked();
+    settings.OpticalWavelengthWorld = static_cast<float32>(mOpticalWavelength->value() / MILLIMETRES_PER_METRE);
     const QSize requestedExtent = ComputeReferenceExtent(mPreview->GetDrawableSize(), settings.LongSide);
     QSize extent = requestedExtent;
     mIsComparing = mIsComparisonAvailable == true && mCompare->isChecked() == true;
@@ -976,13 +1016,16 @@ bool ReferenceCaptureWindow::StartCapture()
         updateStatus();
         return false;
     }
-    mMessage = QStringLiteral("%1 × %2, %3 requested samples/pixel, depth %4, %5%6.")
+    mMessage = QStringLiteral("%1 × %2, %3 requested samples/pixel, depth %4, %5%6%7.")
                    .arg(extent.width())
                    .arg(extent.height())
                    .arg(settings.Samples)
                    .arg(settings.MaxDepth)
                    .arg(DescribeReferenceTraversal(settings.Traversal))
-                   .arg(settings.ShouldCenterRays == true ? QStringLiteral(", pixel centres") : QString{});
+                   .arg(settings.ShouldCenterRays == true ? QStringLiteral(", pixel centres") : QString{})
+                   .arg(settings.OpticalWavelengthWorld > 0
+                            ? QStringLiteral(", optical %1 mm").arg(mOpticalWavelength->value())
+                            : QString{});
     mProgress->setRange(0, mSamples->value());
     mProgress->setValue(0);
     mCaptureTimer.start();
@@ -1297,6 +1340,7 @@ void ReferenceCaptureWindow::updateControls()
     mMaxDepth->setEnabled(isRunning == false && isReference == true);
     mTraversal->setEnabled(isRunning == false && isReference == true);
     mCenterRays->setEnabled(isRunning == false && isReference == true);
+    mOpticalWavelength->setEnabled(isRunning == false && isReference == true);
     mCompare->setEnabled(isRunning == false && isReference == true && mIsComparisonAvailable == true);
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mCompareGraphsOrNull->setEnabled(isRunning == false && mIsComparisonAvailable == true);

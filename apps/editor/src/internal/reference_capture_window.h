@@ -20,6 +20,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QLabel;
 class QProgressBar;
 class QPushButton;
@@ -232,6 +233,8 @@ private:
     QSpinBox* const mMaxDepth;
     QComboBox* const mTraversal;
     QCheckBox* const mCenterRays;
+    /// Optical transport wavelength in millimetres; zero renders geometric transport.
+    QDoubleSpinBox* const mOpticalWavelength;
     QCheckBox* const mCompare;
     QPushButton* const mCaptureButton;
     QPushButton* const mStopButton;

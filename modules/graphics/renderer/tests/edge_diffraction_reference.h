@@ -77,7 +77,8 @@ struct DiffractionTolerance final
     foundation::float64 ColumnRatio = 0.05;
     /// A column is significant when its summed reference radiance is at least this fraction of the largest column's.
     foundation::float64 SignificantFraction = 0.01;
-    /// The largest accepted relative difference of the cameras' matrices and positions.
+    /// The largest accepted difference of where points around the camera land in normalized device coordinates
+    /// (about 0.01 of a pixel at 480 pixels). The depth convention and the near and far planes may differ.
     foundation::float64 Camera = 1e-4;
 };
 

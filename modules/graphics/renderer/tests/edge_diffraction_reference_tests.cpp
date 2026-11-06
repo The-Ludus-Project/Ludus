@@ -250,6 +250,17 @@ TEST_CASE("Diffraction comparison catches wrong brightness, camera, wavelength a
     CHECK(comparison.HasMatchingCamera == false);
     CHECK(comparison.IsPassing == false);
 
+    // The editor's view of the same camera: conventional depth (z' = w - z) and its own near plane. The same points
+    // land on the same pixels, so the camera matches.
+    testing::DiffractionCapture conventional = CopyCapture(reference);
+    for (math::Vector4& column : conventional.WorldToClip.Columns)
+    {
+        column.Z = column.W - column.Z * 0.5F;
+    }
+    REQUIRE(testing::TryCompareDiffractionCapture(reference, conventional, {}, comparison) == true);
+    CHECK(comparison.HasMatchingCamera == true);
+    CHECK(comparison.IsPassing == true);
+
     testing::DiffractionCapture otherWavelength = CopyCapture(reference);
     otherWavelength.OpticalWavelengthWorld = 0.004F;
     REQUIRE(testing::TryCompareDiffractionCapture(reference, otherWavelength, {}, comparison) == true);
@@ -267,12 +278,76 @@ TEST_CASE("Diffraction comparison catches wrong brightness, camera, wavelength a
     CHECK(math::Abs(comparison.WorstColumnRatio - 1) > 0.5);
 }
 
+TEST_CASE("Checked-in diffraction references match the oracle", "[edge-diffraction]")
+{
+    // tests/scenes/diffraction/references holds the oracle's references, so the editor can compare with them without
+    // a terminal. Each must still be what the oracle renders: spot-check pixels across the image against it.
+    struct CheckedInReference final
+    {
+        std::string_view Scene;
+        std::string_view Model;
+        testing::DiffractionModel Value = testing::DiffractionModel::UtdAbsorbing;
+    };
+    constexpr usize REFERENCE_COUNT = 4;
+    constexpr StaticArray<CheckedInReference, REFERENCE_COUNT> REFERENCES{{
+        { .Scene = "single-edge", .Model = "utd-absorbing", .Value = testing::DiffractionModel::UtdAbsorbing },
+        { .Scene = "single-slit", .Model = "utd-absorbing", .Value = testing::DiffractionModel::UtdAbsorbing },
+        {
+            .Scene = "slit-partial-occluder",
+            .Model = "utd-absorbing",
+            .Value = testing::DiffractionModel::UtdAbsorbing,
+        },
+        { .Scene = "single-slit", .Model = "geometric", .Value = testing::DiffractionModel::Geometric },
+    }};
+    constexpr uint32 REFERENCE_WIDTH = 240;
+    constexpr uint32 REFERENCE_HEIGHT = 160;
+    // Pixels on the centre row across the beam, its fringes and the shadow, and two off the centre row.
+    constexpr usize SAMPLE_COUNT = 7;
+    constexpr StaticArray<uint32, SAMPLE_COUNT> SAMPLE_COLUMNS{{10, 60, 100, 118, 125, 170, 230}};
+    constexpr StaticArray<uint32, SAMPLE_COUNT> SAMPLE_ROWS{{80, 80, 80, 80, 3, 150, 80}};
+    for (const CheckedInReference& expected : REFERENCES)
+    {
+        const std::string path = std::string(LUDUS_TEST_SCENES_DIR) + "/diffraction/references/" +
+                                 std::string(expected.Scene) + "-" + std::string(expected.Model) + ".luhdr";
+        INFO(path);
+        Array<uint8> bytes;
+        REQUIRE(testing::TryReadDiffractionFile(path, bytes) == true);
+        testing::DiffractionCapture reference;
+        REQUIRE(testing::TryDecodeLuhdr(bytes.AsSpan(), reference) == true);
+        CHECK(reference.Width == REFERENCE_WIDTH);
+        CHECK(reference.Height == REFERENCE_HEIGHT);
+        const bool isOptical = expected.Value != testing::DiffractionModel::Geometric;
+        CHECK(reference.OpticalWavelengthWorld == (isOptical == true ? static_cast<float32>(DESIGN_WAVELENGTH) : 0.0F));
+        const testing::EdgeDiffractionScene scene =
+            LoadScene(GetTestScenePath(std::string(expected.Scene) + ".luscene.json"));
+        testing::DiffractionSettings settings;
+        settings.Model = expected.Value;
+        for (usize i = 0; i < SAMPLE_COUNT; ++i)
+        {
+            math::Vector3d wallWorld{};
+            REQUIRE(testing::TryFindDiffractionWallPoint(scene,
+                                                         SAMPLE_COLUMNS[i],
+                                                         SAMPLE_ROWS[i],
+                                                         REFERENCE_WIDTH,
+                                                         REFERENCE_HEIGHT,
+                                                         wallWorld) == true);
+            float64 radiance = 0;
+            REQUIRE(testing::TryComputeDiffractionWallRadiance(scene, settings, wallWorld, radiance) == true);
+            const float32 stored =
+                reference.Radiance[(static_cast<usize>(SAMPLE_ROWS[i]) * REFERENCE_WIDTH + SAMPLE_COLUMNS[i]) * 3];
+            INFO("column " << SAMPLE_COLUMNS[i] << " row " << SAMPLE_ROWS[i] << ": file " << stored << ", oracle "
+                           << radiance);
+            CHECK(stored == static_cast<float32>(radiance));
+        }
+    }
+}
+
 TEST_CASE("Write a diffraction scene's reference image", "[.diffraction-reference]")
 {
     // LUDUS_DIFFRACTION_SCENE=<scene .luscene.json> LUDUS_DIFFRACTION_OUTPUT=<existing directory>, optionally
     // LUDUS_DIFFRACTION_MODEL (utd-absorbing), LUDUS_DIFFRACTION_WAVELENGTH (0.005 m), LUDUS_DIFFRACTION_EXTENT
     // (480x320), LUDUS_DIFFRACTION_LIGHT_NODES (6) and LUDUS_DIFFRACTION_WORKERS (8). Writes
-    // reference-<model>.luhdr and reference-<model>-profile.csv.
+    // <scene>-<model>.luhdr and <scene>-<model>-profile.csv.
     const std::string_view scenePath = GetEnvironment("LUDUS_DIFFRACTION_SCENE");
     const std::string_view output = GetEnvironment("LUDUS_DIFFRACTION_OUTPUT");
     if (scenePath.empty() == true || output.empty() == true)
@@ -294,7 +369,13 @@ TEST_CASE("Write a diffraction scene's reference image", "[.diffraction-referenc
     REQUIRE(testing::TryRenderDiffractionReference(scene, settings, extent, workers, reference) == true);
     Array<uint8> bytes;
     REQUIRE(testing::TryEncodeLuhdr(reference, bytes) == true);
-    const std::string stem = "reference-" + std::string(model.Name);
+    // <scene>-<model>, so that a reference written into tests/scenes/diffraction/references keeps its scene's name.
+    const std::string_view sceneName = scenePath.substr(scenePath.rfind('/') + 1);
+    constexpr std::string_view SCENE_EXTENSION = ".luscene.json";
+    const std::string_view sceneStem = sceneName.ends_with(SCENE_EXTENSION) == true
+                                           ? sceneName.substr(0, sceneName.size() - SCENE_EXTENSION.size())
+                                           : sceneName;
+    const std::string stem = std::string(sceneStem) + "-" + std::string(model.Name);
     WriteOutput(output, stem + ".luhdr", bytes.AsSpan());
     Array<uint8> profile;
     REQUIRE(testing::TryWriteDiffractionProfile(scene, reference, nullptr, profile) == true);

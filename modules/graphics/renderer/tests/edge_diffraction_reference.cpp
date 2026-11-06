@@ -120,6 +120,39 @@ void SetMatrixElement(math::Matrix4& inoutMatrix, usize index, float32 value) no
 
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
+/// Points around a camera, metres from it, whose screen positions identify its view; a capture and its reference
+/// show the same view when every one lands on the same normalized device coordinates. Points behind a camera
+/// project too (with negative w), so the set needs no knowledge of the view direction.
+constexpr StaticArray<math::Vector3, 6> CAMERA_PROBE_OFFSETS{{
+    {1, 0.25F, 0.5F},
+    {-1, 0.5F, -0.25F},
+    {0.25F, 1, -0.5F},
+    {0.5F, -1, 0.25F},
+    {-0.25F, 0.5F, 1},
+    {0.5F, 0.25F, -1},
+}};
+/// |w| below this leaves a probe too close to the camera plane to compare.
+constexpr float64 MINIMUM_PROBE_W = 1e-6;
+
+/// The normalized device x and y of a world point. Returns false when it lies on the camera plane.
+// A matrix and a point in, two coordinates out.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+[[nodiscard]] bool
+TryProjectToScreen(const math::Matrix4& worldToClip, math::Vector3 pointWorld, float64& outX, float64& outY) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    const math::Vector4 clip = worldToClip.Columns[0] * pointWorld.X + worldToClip.Columns[1] * pointWorld.Y +
+                               worldToClip.Columns[2] * pointWorld.Z + worldToClip.Columns[3];
+    const float64 w = static_cast<float64>(clip.W);
+    if (math::Abs(w) < MINIMUM_PROBE_W)
+    {
+        return false;
+    }
+    outX = static_cast<float64>(clip.X) / w;
+    outY = static_cast<float64>(clip.Y) / w;
+    return true;
+}
+
 /// The RGB mean of a pixel.
 [[nodiscard]] float64 GetPixelRadiance(const DiffractionCapture& capture, usize pixel) noexcept
 {
@@ -474,12 +507,21 @@ bool TryCompareDiffractionCapture(const DiffractionCapture& reference,
         IsClose(reference.CameraPositionWorld.X, capture.CameraPositionWorld.X, tolerance.Camera) == true &&
         IsClose(reference.CameraPositionWorld.Y, capture.CameraPositionWorld.Y, tolerance.Camera) == true &&
         IsClose(reference.CameraPositionWorld.Z, capture.CameraPositionWorld.Z, tolerance.Camera) == true;
-    for (usize i = 0; i < MATRIX_ELEMENTS; ++i)
+    // Near and far planes and the depth convention differ between producers (the editor's viewport moves its near
+    // plane with the orbit distance), so compare where points around the camera land on screen, not the matrices.
+    for (const math::Vector3& offset : CAMERA_PROBE_OFFSETS)
     {
-        comparison.HasMatchingCamera =
-            comparison.HasMatchingCamera == true && IsClose(GetMatrixElement(reference.WorldToClip, i),
-                                                            GetMatrixElement(capture.WorldToClip, i),
-                                                            tolerance.Camera) == true;
+        const math::Vector3 pointWorld = reference.CameraPositionWorld + offset;
+        float64 referenceX = 0;
+        float64 referenceY = 0;
+        float64 captureX = 0;
+        float64 captureY = 0;
+        const bool isProjected =
+            TryProjectToScreen(reference.WorldToClip, pointWorld, referenceX, referenceY) == true &&
+            TryProjectToScreen(capture.WorldToClip, pointWorld, captureX, captureY) == true;
+        comparison.HasMatchingCamera = comparison.HasMatchingCamera == true && isProjected == true &&
+                                       math::Abs(referenceX - captureX) <= tolerance.Camera &&
+                                       math::Abs(referenceY - captureY) <= tolerance.Camera;
     }
     comparison.HasMatchingWavelength =
         reference.OpticalWavelengthWorld == capture.OpticalWavelengthWorld ||

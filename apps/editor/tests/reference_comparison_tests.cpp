@@ -1,8 +1,10 @@
 #include "internal/reference_comparison.h"
+#include "internal/reference_hdr_file.h"
 #include "internal/render_scene.h"
 #include "internal/texture_inspection.h"
 #include "internal/viewport_raster_capture.h"
 #include "internal/viewport_reference_capture.h"
+#include "reference_hdr_test_support.h"
 #include "viewport_fixture.h"
 
 #include <ludus/foundation/base/types.h>
@@ -479,4 +481,136 @@ TEST_CASE("Display comparison uses supplied sRGB values and masks missing graph 
     CHECK(comparison.ComparedPixels == 1);
     CHECK(comparison.MeanAbsoluteError == 0);
     CHECK(difference.pixelColor(0, 0).red() == 64);
+}
+
+TEST_CASE("Linear baselines read back from LUHDR01 files with their camera", "[editor][reference-comparison]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    tests::TestReferenceHdr description;
+    description.Extent = QSize(5, 3);
+    description.Flags = tests::TEST_HDR_CPU_ORACLE_FLAG | tests::TEST_HDR_REVERSE_Z_FLAG | tests::TEST_HDR_OPTICAL_FLAG;
+    description.OpticalWavelengthWorld = 0.005F;
+    description.WorldToClip.Columns[0] = {1, 2, 3, 4};
+    description.WorldToClip.Columns[3] = {5, 6, 7, 8};
+    description.CameraPosition = {0, 0, -0.1F};
+    description.Grey = 0.25F;
+    description.ColumnSlope = 0.5F;
+    const QString path = QDir(directory.path()).filePath(QStringLiteral("baseline.luhdr"));
+    REQUIRE(tests::WriteTestReferenceHdr(path, tests::MakeTestReferenceHdr(description)) == true);
+
+    ReferenceHdrFile file;
+    QString error;
+    REQUIRE(ReadReferenceHdrFile(path, file, error) == true);
+    CHECK(file.Extent == description.Extent);
+    CHECK(file.OpticalWavelengthWorld == 0.005F);
+    CHECK(file.View.Depth == renderer::DepthConvention::ReverseZ);
+    CHECK(file.View.InfiniteFar == false);
+    CHECK(file.View.OrthographicCamera == false);
+    CHECK(file.View.WorldToClip.Columns[0] == description.WorldToClip.Columns[0]);
+    CHECK(file.View.WorldToClip.Columns[3] == description.WorldToClip.Columns[3]);
+    CHECK(file.View.CameraPosition == description.CameraPosition);
+    REQUIRE(file.Pixels.GetSize() == 15);
+    CHECK(file.Pixels[4].Radiance.X == 0.25F + 0.5F * 4);
+    CHECK(file.Pixels[4].Samples == 1);
+    CHECK(file.Info.Width == 5);
+    CHECK(file.Info.MinimumSamples == 1);
+    CHECK(file.Info.Complete == true);
+    const QImage display = MakeReferenceHdrDisplayImage(file);
+    CHECK(display.size() == description.Extent);
+
+    // Another format, a truncated file and negative radiance are refused with the next step.
+    const QString other = QDir(directory.path()).filePath(QStringLiteral("other.luhdr"));
+    REQUIRE(tests::WriteTestReferenceHdr(other, QByteArray(300, 'x')) == true);
+    CHECK(ReadReferenceHdrFile(other, file, error) == false);
+    CHECK(error.contains(QStringLiteral("not a LUHDR01 capture")) == true);
+    QByteArray truncated = tests::MakeTestReferenceHdr(description);
+    truncated.chop(1);
+    REQUIRE(tests::WriteTestReferenceHdr(other, truncated) == true);
+    CHECK(ReadReferenceHdrFile(other, file, error) == false);
+    CHECK(error.contains(QStringLiteral("truncated")) == true);
+    tests::TestReferenceHdr negative = description;
+    negative.Grey = -1;
+    REQUIRE(tests::WriteTestReferenceHdr(other, tests::MakeTestReferenceHdr(negative)) == true);
+    CHECK(ReadReferenceHdrFile(other, file, error) == false);
+    CHECK(error.contains(QStringLiteral("negative radiance")) == true);
+}
+
+TEST_CASE("Column profiles pass within the tolerance and name the worst column", "[editor][reference-comparison]")
+{
+    constexpr uint32 WIDTH = 6;
+    constexpr uint32 HEIGHT = 4;
+    constexpr usize PIXELS = static_cast<usize>(WIDTH) * HEIGHT;
+    // Columns 0 to 4 carry light; column 5 holds 0.1% of the brightest column's, below the significance threshold.
+    constexpr StaticArray<float32, WIDTH> COLUMN_RADIANCE{{1, 2, 3, 4, 5, 0.005F}};
+    Array<renderer::ReferencePixel> reference;
+    Array<renderer::RenderGraphCapturePixel> capture;
+    REQUIRE(reference.TryResize(PIXELS) == true);
+    REQUIRE(capture.TryResize(PIXELS) == true);
+    const auto fill = [&](float32 scale, uint32 changedColumn, float32 changedScale) {
+        for (usize pixel = 0; pixel < PIXELS; ++pixel)
+        {
+            const usize column = pixel % WIDTH;
+            const float32 value = COLUMN_RADIANCE[column];
+            reference[pixel].Radiance = {value, value, value};
+            reference[pixel].Samples = 1;
+            const float32 factor = column == changedColumn ? changedScale : scale;
+            const float32 scaled = value * factor;
+            capture[pixel].Mean = {scaled, scaled, scaled};
+            capture[pixel].Samples = 1;
+        }
+    };
+    ColumnComparison comparison;
+    QString error;
+    // Every column 2% bright passes.
+    fill(1.02F, WIDTH, 1);
+    REQUIRE(CompareColumnProfiles({reference.GetData(), reference.GetSize()},
+                                  {capture.GetData(), capture.GetSize()},
+                                  WIDTH,
+                                  HEIGHT,
+                                  comparison,
+                                  error) == true);
+    CHECK(comparison.IsWithinTolerance == true);
+    CHECK(comparison.SignificantColumns == 5);
+    CHECK(comparison.WorstColumnRatio == Catch::Approx(1.02).epsilon(1e-5));
+    CHECK(comparison.TotalRatio == Catch::Approx(1.02).epsilon(1e-5));
+    // One significant column 10% bright fails and is named.
+    fill(1, 3, 1.1F);
+    REQUIRE(CompareColumnProfiles({reference.GetData(), reference.GetSize()},
+                                  {capture.GetData(), capture.GetSize()},
+                                  WIDTH,
+                                  HEIGHT,
+                                  comparison,
+                                  error) == true);
+    CHECK(comparison.IsWithinTolerance == false);
+    CHECK(comparison.WorstColumn == 3);
+    CHECK(comparison.WorstColumnRatio == Catch::Approx(1.1).epsilon(1e-5));
+    CHECK(DescribeColumnComparison(comparison).startsWith(QStringLiteral("Columns FAIL")) == true);
+    // A tenfold error in the insignificant column does not fail the comparison.
+    fill(1, 5, 10);
+    REQUIRE(CompareColumnProfiles({reference.GetData(), reference.GetSize()},
+                                  {capture.GetData(), capture.GetSize()},
+                                  WIDTH,
+                                  HEIGHT,
+                                  comparison,
+                                  error) == true);
+    CHECK(comparison.IsWithinTolerance == true);
+    // Pixels without candidate samples are left out of both sums.
+    fill(1, WIDTH, 1);
+    capture[0].Samples = 0;
+    capture[0].Mean = {100, 100, 100};
+    REQUIRE(CompareColumnProfiles({reference.GetData(), reference.GetSize()},
+                                  {capture.GetData(), capture.GetSize()},
+                                  WIDTH,
+                                  HEIGHT,
+                                  comparison,
+                                  error) == true);
+    CHECK(comparison.WorstColumnRatio == Catch::Approx(1));
+    // Mismatched sizes are refused.
+    CHECK(CompareColumnProfiles({reference.GetData(), reference.GetSize()},
+                                {capture.GetData(), PIXELS - 1},
+                                WIDTH,
+                                HEIGHT,
+                                comparison,
+                                error) == false);
 }

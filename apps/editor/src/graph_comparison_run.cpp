@@ -91,6 +91,61 @@ bool HasReferenceSamples(BorrowedView<const renderer::ReferencePixel> pixels)
     }
     return false;
 }
+/// Element i (0 to 3) of a vector.
+[[nodiscard]] float32 GetVectorElement(const math::Vector4& vector, usize i) noexcept
+{
+    switch (i)
+    {
+        case 0:
+            return vector.X;
+        case 1:
+            return vector.Y;
+        case 2:
+            return vector.Z;
+        default:
+            return vector.W;
+    }
+}
+
+/// Row r of a column-major matrix.
+[[nodiscard]] math::Vector4 GetMatrixRow(const math::Matrix4& matrix, usize row) noexcept
+{
+    constexpr usize TRANSLATION_COLUMN = 3;
+    return {GetVectorElement(matrix.Columns[0], row),
+            GetVectorElement(matrix.Columns[1], row),
+            GetVectorElement(matrix.Columns[2], row),
+            GetVectorElement(matrix.Columns[TRANSLATION_COLUMN], row)};
+}
+
+/// The same projection in another depth convention. Clip depth z/w is d in one convention and 1 - d in the other, so
+/// the depth row becomes the w row minus itself; x, y and w are unchanged.
+[[nodiscard]] math::Matrix4 ConvertDepthConvention(const math::Matrix4& worldToClip,
+                                                   renderer::DepthConvention from,
+                                                   renderer::DepthConvention to) noexcept
+{
+    if (from == to)
+    {
+        return worldToClip;
+    }
+    math::Matrix4 converted = worldToClip;
+    for (math::Vector4& column : converted.Columns)
+    {
+        column.Z = column.W - column.Z;
+    }
+    return converted;
+}
+
+/// The world direction into the scene of a world-to-clip matrix: the w row's direction for a perspective camera (clip
+/// w is the distance along it), the depth row's for an orthographic one (conventional depth grows along it).
+[[nodiscard]] math::Vector3
+ComputeViewForward(const math::Matrix4& worldToClip, bool isOrthographic, renderer::DepthConvention depth) noexcept
+{
+    constexpr usize DEPTH_ROW = 2;
+    constexpr usize W_ROW = 3;
+    const math::Vector4 row = GetMatrixRow(worldToClip, isOrthographic == true ? DEPTH_ROW : W_ROW);
+    const float32 sign = isOrthographic == true && depth == renderer::DepthConvention::ReverseZ ? -1.0F : 1.0F;
+    return math::Vector3{row.X, row.Y, row.Z} * sign;
+}
 } // namespace
 
 GraphComparisonRun::~GraphComparisonRun()
@@ -103,10 +158,13 @@ bool GraphComparisonRun::Start(RenderPreview& inoutPreview,
                                const ViewportReferenceSettings& settings,
                                const QVector<GraphComparisonCandidate>& candidates,
                                const QImage& displayBaseline,
+                               const ReferenceHdrFile* linearBaselineOrNull,
                                const QString& baselineSource,
                                const QString& directory,
                                QString& outError)
 {
+    const bool hasLinearBaseline = linearBaselineOrNull != nullptr;
+    const bool hasSuppliedBaseline = hasLinearBaseline == true || displayBaseline.isNull() == false;
     RenderGraphPreview* graphOrNull = inoutWorkspace.GetPreviewOrNull();
     if (IsRunning() == true || inoutPreview.HasDevice() == false || graphOrNull == nullptr ||
         candidates.isEmpty() == true)
@@ -120,9 +178,13 @@ bool GraphComparisonRun::Start(RenderPreview& inoutPreview,
     {
         return false;
     }
-    const QSize extent = displayBaseline.isNull() == true
-                             ? ComputeReferenceExtent(inoutPreview.GetDrawableSize(), settings.LongSide)
-                             : displayBaseline.size();
+    QSize extent = displayBaseline.isNull() == true
+                       ? ComputeReferenceExtent(inoutPreview.GetDrawableSize(), settings.LongSide)
+                       : displayBaseline.size();
+    if (hasLinearBaseline == true)
+    {
+        extent = linearBaselineOrNull->Extent;
+    }
     if (extent.isEmpty() == true)
     {
         outError =
@@ -138,7 +200,31 @@ bool GraphComparisonRun::Start(RenderPreview& inoutPreview,
         return false;
     }
     view.WorldGrid.IsVisible = false;
-    if (displayBaseline.isNull() == true)
+    if (hasLinearBaseline == true)
+    {
+        // Adopt the baseline's camera: the candidates render exactly the view the baseline shows, in the run's own
+        // depth convention.
+        const renderer::ViewDescription& baselineView = linearBaselineOrNull->View;
+        view.WorldToClip = ConvertDepthConvention(baselineView.WorldToClip, baselineView.Depth, view.Depth);
+        view.CameraPosition = baselineView.CameraPosition;
+        view.OrthographicCamera = baselineView.OrthographicCamera;
+        view.CameraForward = ComputeViewForward(view.WorldToClip, view.OrthographicCamera, view.Depth);
+        const QDir results(directory);
+        if (WritePngAtomically(results.filePath(QStringLiteral("baseline.png")),
+                               MakeReferenceHdrDisplayImage(*linearBaselineOrNull),
+                               outError) == false)
+        {
+            return false;
+        }
+        const QString copy = results.filePath(QStringLiteral("baseline.luhdr"));
+        if (QFile::exists(copy) == true || QFile::copy(baselineSource, copy) == false)
+        {
+            outError = QStringLiteral("Could not copy the baseline into %1. Choose a writable results folder.")
+                           .arg(QDir::toNativeSeparators(directory));
+            return false;
+        }
+    }
+    else if (displayBaseline.isNull() == true)
     {
         if (mReference.Start(inoutPreview.GetDevice(),
                              inoutPreview.GetSurface(),
@@ -190,17 +276,35 @@ bool GraphComparisonRun::Start(RenderPreview& inoutPreview,
         }
     }
     mDisplayBaseline = displayBaseline;
+    mHasLinearBaseline = hasLinearBaseline;
+    mBaselineWavelengthWorld = hasLinearBaseline == true ? linearBaselineOrNull->OpticalWavelengthWorld : 0.0F;
     mBaselineSource = baselineSource;
-    mBaselineState = displayBaseline.isNull() == true ? QStringLiteral("rendering") : QStringLiteral("supplied");
+    mBaselineState = hasSuppliedBaseline == true ? QStringLiteral("supplied") : QStringLiteral("rendering");
     mBaselineError.clear();
     mDirectory = directory;
     mReferenceInfo = {};
     mReferencePixels = {};
+    if (hasLinearBaseline == true)
+    {
+        mReferenceInfo = linearBaselineOrNull->Info;
+        const usize pixelCount = linearBaselineOrNull->Pixels.GetSize();
+        if (mReferencePixels.TryResize(pixelCount) == false)
+        {
+            outError = QStringLiteral("Could not allocate the baseline. Close other captures and try again.");
+            return false;
+        }
+        for (usize i = 0; i < pixelCount; ++i)
+        {
+            mReferencePixels[i] = linearBaselineOrNull->Pixels[i];
+        }
+    }
     mResults = {};
     mCandidateIndex = 0;
     mHasRequestedCandidate = false;
-    mPhase = displayBaseline.isNull() == true ? Phase::Reference : Phase::NextCandidate;
-    mStatus = QStringLiteral("Frozen World and camera at %1.").arg(DescribeExtent(extent));
+    mPhase = hasSuppliedBaseline == true ? Phase::NextCandidate : Phase::Reference;
+    mStatus = hasLinearBaseline == true
+                  ? QStringLiteral("Frozen World with the baseline's camera at %1.").arg(DescribeExtent(extent))
+                  : QStringLiteral("Frozen World and camera at %1.").arg(DescribeExtent(extent));
     writeManifest(QStringLiteral("running"));
     mPreview = &inoutPreview;
     mPreview->BeginGpuCapture();
@@ -534,6 +638,21 @@ void GraphComparisonRun::finishCandidate(const QString& state, const QString& me
                                                           difference,
                                                           error);
         }
+        if (hasMetrics == true && mHasLinearBaseline == true && candidate.IsDisplayFrame == false)
+        {
+            ColumnComparison columns;
+            QString columnError;
+            if (CompareColumnProfiles(reference, mGraph.GetPixels(), graph.Width, graph.Height, columns, columnError) ==
+                true)
+            {
+                result.insert(QStringLiteral("columns"), MakeColumnComparisonJson(columns));
+                result.insert(QStringLiteral("columnSummary"), DescribeColumnComparison(columns));
+            }
+            else
+            {
+                result.insert(QStringLiteral("columnError"), columnError);
+            }
+        }
         if (hasMetrics == true)
         {
             result.insert(QStringLiteral("metrics"), MakeReferenceComparisonJson(comparison));
@@ -589,6 +708,8 @@ void GraphComparisonRun::finishRun(const QString& state, const QString& message)
     }
     mStatus = QStringLiteral("%1 Results: %2").arg(message, QDir::toNativeSeparators(mDirectory));
     writeManifest(state);
+    // The final manifest above still records the linear baseline; the next Start sets it again.
+    mHasLinearBaseline = false;
     mScene = {};
 }
 
@@ -610,8 +731,19 @@ void GraphComparisonRun::writeManifest(const QString& state)
         {QStringLiteral("state"), mBaselineState},
         {QStringLiteral("error"), mBaselineError},
     };
+    if (mHasLinearBaseline == true)
+    {
+        baseline.insert(QStringLiteral("kind"), QStringLiteral("linear"));
+        baseline.insert(QStringLiteral("opticalWavelengthWorld"), static_cast<float64>(mBaselineWavelengthWorld));
+        baseline.insert(QStringLiteral("minimumSamples"), static_cast<qint64>(mReferenceInfo.MinimumSamples));
+    }
+    else if (mDisplayBaseline.isNull() == false || mBaselineSource.isEmpty() == false)
+    {
+        baseline.insert(QStringLiteral("kind"), QStringLiteral("display"));
+    }
     if (mBaselineSource.isEmpty() == true)
     {
+        baseline.insert(QStringLiteral("kind"), QStringLiteral("rt1"));
         baseline.insert(QStringLiteral("requestedSamples"), static_cast<qint64>(mSettings.Samples));
         baseline.insert(QStringLiteral("minimumSamples"), static_cast<qint64>(mReferenceInfo.MinimumSamples));
         baseline.insert(QStringLiteral("maxDepth"), static_cast<qint64>(mSettings.MaxDepth));

@@ -713,6 +713,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/viewport_reference_capture.h
     src/reference_comparison.cpp
     src/internal/reference_comparison.h
+    src/reference_hdr_file.cpp
+    src/internal/reference_hdr_file.h
     src/reference_capture_window.cpp
     src/internal/reference_capture_window.h
     src/captured_image_view.cpp

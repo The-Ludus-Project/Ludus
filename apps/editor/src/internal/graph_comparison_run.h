@@ -4,6 +4,7 @@
 
 #include <ludus/foundation/containers/array.hpp>
 
+#include "internal/reference_hdr_file.h"
 #include "internal/render_graph_library_capture.h"
 #include "internal/render_scene.h"
 #include "internal/viewport_graph_capture.h"
@@ -36,11 +37,16 @@ class GraphComparisonRun final
 {
 public:
     ~GraphComparisonRun();
+    /// Freeze the World and start the run. The baseline is RT1, rendered from the viewport's camera, unless one is
+    /// supplied: a display image (compared in sRGB at its extent) or a linear LUHDR01 file. A linear baseline sets the
+    /// extent and the camera: every candidate renders the file's view, so the comparison cannot be misaligned, and
+    /// graph captures also get a column-profile verdict (ColumnComparison). baselineSource names the supplied file.
     [[nodiscard]] bool Start(RenderPreview& inoutPreview,
                              RendererWorkspace& inoutWorkspace,
                              const ViewportReferenceSettings& settings,
                              const QVector<GraphComparisonCandidate>& candidates,
                              const QImage& displayBaseline,
+                             const ReferenceHdrFile* linearBaselineOrNull,
                              const QString& baselineSource,
                              const QString& directory,
                              QString& outError);
@@ -86,6 +92,9 @@ private:
     QVector<GraphComparisonCandidate> mCandidates;
     QString mBaselineSource;
     QImage mDisplayBaseline;
+    /// The run compares with a supplied linear baseline, whose camera it adopted.
+    bool mHasLinearBaseline = false;
+    foundation::float32 mBaselineWavelengthWorld = 0;
     foundation::Array<graphics::renderer::ReferencePixel> mReferencePixels;
     graphics::renderer::ReferenceCaptureInfo mReferenceInfo{};
     ViewportReferenceCapture mReference;
