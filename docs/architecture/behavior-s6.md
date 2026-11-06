@@ -2,8 +2,9 @@
 
 **S6 is in progress.** This slice implements shared target admission, a production
 provider safety suite, and recorded native/Node/Chromium evidence. It does not
-complete the six-platform milestone. Windows, Android and iOS need engine
-backends; physical-device qualification and broader browser coverage are pending.
+complete the six-platform milestone. Windows x86_64 builds with MSVC and runs the
+provider suite in CI; Windows arm64, Android and iOS need engine backends;
+physical-device qualification and broader browser coverage are pending.
 [S4](behavior-s4.md) defines the installed contract/cooker, and [S5](behavior-s5.md)
 defines the Editor and GameHost workflow. S7 remains representative project,
 performance, designer and release acceptance.
@@ -23,11 +24,14 @@ that it has run on a device.
 | Linux x86_64 / arm64, Clang 23 | Qualification builds | Native production-provider suite, ASan/UBSan, relocated SDK and extracted player; CI currently exercises x86_64 |
 | macOS x86_64 / arm64, upstream Clang 23 | Qualification builds, one architecture per SDK | Native production-provider suite, ASan/UBSan, relocated SDK and extracted Mach-O player; macOS CI records its actual CPU |
 | Web wasm32, pinned Emscripten LLVM 22 | Qualification builds | Development/Release Node and headless Chromium execution of the same hashed Wasm; physical browsers/devices and additional browser engines pending |
-| Windows x86_64 / arm64 | Rejected: engine backend pending | Native Foundation/backend build and execution, SDK/player, sanitizer and debugger acceptance pending |
+| Windows x86_64, MSVC 19.44 (toolset 14.44) | Qualification builds | MSVC Ninja lane: production-provider suite, allocation sweeps, allocator contract, acceptance consumer and paired cooker on the Windows host. Installed SDK/player, debugger acceptance and physical hardware pending; MSVC has no ASan/UBSan profile here |
+| Windows arm64 | Rejected: engine backend pending | Native engine profile, SDK/player and device execution pending |
 | Android arm64 | Rejected: engine backend pending | NDK/native engine profile, physical device execution and packaging pending |
 | iOS arm64 | Rejected: engine backend pending | Apple mobile engine profile, signed physical-device execution and packaging pending |
 
-Other systems, compilers, compiler majors, architectures, 32-bit native targets,
+A profile names a Clang major (`compiler_major`) or another compiler's ID and version
+prefix (`compiler` and `compiler_version`); Windows x86_64 accepts only MSVC 19.44,
+the D0 toolset. Other systems, compilers, compiler majors, architectures, 32-bit native targets,
 wasm64, and macOS universal SDKs are rejected. The pinned Web SDK remains separate
 from reference Clang 23. A policy update requires both implementation review and
 new execution evidence; adding a name to this table is insufficient.
@@ -113,6 +117,13 @@ The production boundary was reviewed with these rules:
 | Debug frames, locals and breakpoints | Borrowed VM information is copied into bounded native snapshots; no language callback, getter or formatter executes during inspection; native snapshot owners stay outside protected dispatch |
 | Entity and state userdata | Payloads are copied POD identities/facades with no native owning destructor; generations and live facade validity are checked at use |
 | Host service calls | Synchronous, bounded, noexcept; recursive Load/Invoke/Close/debug operations reject entry while the runtime is active; a service must not invoke raw VM APIs or escape its own native resources |
+
+On Windows x64, MSVC's `longjmp` unwinds the jump region with the system unwinder.
+Frames compiled without C++ exceptions (`/EHs-c-`, as all engine and VM code is) run
+no destructors, which matches the rule above that locals in the region are trivially
+destructible. A frame compiled with exceptions enabled could run destructors during
+the jump. Service callbacks therefore keep the same rule even in test executables,
+which enable exceptions only for Catch2.
 
 ASan/UBSan and allocation sweeps supplement this lifetime audit. They cannot prove
 the C++ rules for nonlocal jumps. Any new C callback, upstream update or userdata

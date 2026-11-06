@@ -30,10 +30,18 @@ namespace ludus::runtime::scripting
 namespace
 {
 constexpr usize ALIGNMENT = 16;
+#if defined(LUDUS_COMPILER_MSVC)
+#    pragma warning(push)
+// C4324 describes the deliberate padding that keeps every VM block 16-byte aligned after its header.
+#    pragma warning(disable : 4324)
+#endif
 struct alignas(ALIGNMENT) Allocation
 {
     usize Bytes;
 };
+#if defined(LUDUS_COMPILER_MSVC)
+#    pragma warning(pop)
+#endif
 static_assert(sizeof(Allocation) == ALIGNMENT);
 static_assert(std::is_trivially_destructible_v<Allocation>);
 static_assert(std::is_trivially_copyable_v<Allocation>);
