@@ -8866,11 +8866,15 @@ After preparing the pinned tools, select the host's native preset. For example:
 ```bash
 cmake --preset macos-clang-development -B out/build/shader-worker \
   -DLUDUS_SHADER_WORKER_ONLY=ON -DLUDUS_BUILD_TESTS=OFF
-cmake --build out/build/shader-worker --target ludus-shader-worker
+cmake --build out/build/shader-worker
 cmake --install out/build/shader-worker --prefix "$PWD/out/shader-sdk"
+python3 tools/shader-worker/verify_install.py out/shader-sdk
 ```
 
-Use `linux-clang-development` on Linux. `LUDUS_SLANG_ROOT` selects an already
+Use `linux-clang-development` on Linux and `windows-msvc-development` on Windows.
+Build the whole tools-only tree before installing; it also installs `luslc`. Install
+into a new, empty prefix. `verify_install.py` checks the installed worker's version,
+runtime libraries and licenses, and compiles one request through its endpoint. `LUDUS_SLANG_ROOT` selects an already
 verified Slang distribution; default is `out/shader-tools/slang`. Configuration
 and compilation perform no tool downloads. The tools-only closure contains Base,
 Memory, Hash, Strings, Containers, Filesystem and Parsing, plus the compiler and
@@ -8982,9 +8986,12 @@ creation times guard against a reused parent process identifier. In `--stdio`
 mode the standard handles are often anonymous pipes, which cannot time out; the
 worker serves them until the owner closes its input.
 
-Current limits: `LUDUS_SHADER_WORKER_ONLY` remains Linux and macOS. Render-graph
-packages cannot be built through the Windows worker until graph DXIL profiles
-exist. The editor's embedded editors and live viewport arrive with the Windows
+The tools-only install works on Windows too. `windows-msvc-development` with
+`LUDUS_SHADER_WORKER_ONLY=ON` installs the worker, `luslc`, Slang, DXC and their
+licenses, as described in [Build and run the headless compiler](#build-and-run-the-headless-compiler).
+
+Current limits: render-graph packages cannot be built through the Windows worker
+until graph DXIL profiles exist. The editor's embedded editors and live viewport arrive with the Windows
 editor port. The Windows lane runs `ludus_shader_compiler_tests` and
 `ludus_shader_worker_protocol`. They cover DXIL compilation with include edits,
 syntax and missing-entry diagnostics, stale identities and client cancellation.
