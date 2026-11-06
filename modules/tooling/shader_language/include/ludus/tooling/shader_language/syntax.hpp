@@ -46,7 +46,8 @@ enum class SyntaxKind : foundation::uint8
     EnumDeclaration,
     /// One enumerator. Token: the name. Children: the value expression?.
     Enumerator,
-    /// `extern slang "path" { ... }`. Token: the path string. Children: the declarations.
+    /// `extern slang "path" { ... }`. Token: the path string. Children: the declarations. In
+    /// `extern slang { ... }`, whose definitions the including Slang code provides, Token is `slang`.
     ExternSlangBlock,
     /// `static_assert(condition, "message");`. Token: `static_assert`. Children: the condition and the
     /// message StringLiteral.

@@ -1,0 +1,41 @@
+// LUSL declarations of the Ray/Color render-graph callback data. The render-graph ray wrapper
+// defines these types before it includes any callback (ray_shader.slang, or scene_shader.slang for
+// scene-interface graphs), so the block names no file and the generated module includes nothing.
+//
+// RayLaunch declares the members every wrapper provides. Scene-interface wrappers add more, such as
+// SampleIndex; LUSL cannot read those, and `= 0` or a designated initializer of RayLaunch sets
+// only the members declared here. Declarations generated from Slang reflection replace this file
+// in L3 (docs/architecture/shading-language.md#slang-interoperability).
+#pragma once
+
+extern slang
+{
+    /// A ray segment; distances are along DirectionWorld.
+    struct Ray
+    {
+        float32x3 OriginWorld;
+        float32 MinDistanceWorld;
+        float32x3 DirectionWorld;
+        float32 MaxDistanceWorld;
+    };
+
+    /// The invocation a ray-generation callback runs for.
+    struct RayLaunch
+    {
+        uint32x2 PositionPixel;
+        uint32x2 ExtentPixel;
+        Ray CameraRay;
+    };
+
+    /// The closest surface a camera or bounce ray hit.
+    struct RayHit
+    {
+        Ray IncomingRay;
+        float32x3 PositionWorld;
+        float32 DistanceWorld;
+        float32x3 NormalWorld;
+        uint32 Primitive;
+        float32x2 Barycentric;
+        float32x4 Color;
+    };
+};

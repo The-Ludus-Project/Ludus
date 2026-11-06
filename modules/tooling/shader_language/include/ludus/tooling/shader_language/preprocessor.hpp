@@ -36,6 +36,13 @@ struct PreprocessRequest final
     foundation::BorrowedView<const char> Source;
     /// Selected configuration values; at most MAX_CONFIGURATION_VALUES.
     foundation::BorrowedView<const ConfigurationValue> Configuration;
+    /// @brief Snapshot directories searched last by `#include` and `extern slang`, in order; at most
+    /// MAX_INCLUDE_DIRECTORIES.
+    ///
+    /// A path is looked up beside the naming file, then from the snapshot root, then below each
+    /// directory here, such as the `_ludus_ray` directory where render-graph builds stage SDK
+    /// headers. Each entry is a snapshot path without a trailing `/`.
+    foundation::BorrowedView<const foundation::BorrowedView<const char>> IncludeDirectories;
 };
 
 /// @brief Output of Preprocess.

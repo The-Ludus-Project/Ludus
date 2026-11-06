@@ -10,6 +10,7 @@ function(_ludus_render_graph_helper_files out)
     set(helper_files compile_shader.py compile_raster.py compile_graph_stage.py compile_metal_ray.py native_worker.py
         recipes.json renderer_lit.slang renderer_environment_layout.h renderer_gpu_preview_layout.h native_metal_ray.slang
         renderer_surface_functions.slang material_scattering.slang coated_diffuse.slang dielectric.slang coated_diffuse_layout.h material.h scene_shader.slang stochastic_reuse.slang scene_payload.slang visibility_buffer.slang ray_shader.slang
+        ray_shader.luslh math.luslh
         wave_scene_layout.h wave_scene_queries.slang wave_connection_layout.h wave_connection.slang wave_reference_scene.slang elliptical_cone.slang
         ray_triangle_loop.slang ray_line_visibility.slang ray_bvh_nodes.slang ray_bvh_traversal.slang renderer_reference_layout.h scene_data.h
         scene_shader_layout.h lighting_layout.h deferred_layout.h deferred_binding_slots.inc
@@ -66,6 +67,12 @@ endfunction()
 # CAPTURE_PROFILE_PACKAGE links the ray kernels with scene_interface.capture_visibility_queries and
 # cooks the frame-capture-only <NAME>.lurgcp, setting <NAME>_CAPTURE_PROFILE_PACKAGE in the caller's
 # scope; only RenderGraphPackage::DecodeCaptureProfile admits it.
+# Style setting of LUSL program sources: strict (errors, the default), warn or off. It is
+# project-wide: a game project sets it once, in its CMakeLists.txt or presets. The engine
+# repository always builds strict.
+set(LUDUS_LUSL_STYLE strict CACHE STRING "LUSL style setting for render-graph programs: strict, warn or off")
+set_property(CACHE LUDUS_LUSL_STYLE PROPERTY STRINGS strict warn off)
+
 function(ludus_compile_render_graph)
     cmake_parse_arguments(PARSE_ARGV 0 GRAPH "RUNTIME_PACKAGE;RAY_PATH_CAPTURE;RAY_PATH_CAPTURE_PACKAGE;CAPTURE_PROFILE_PACKAGE"
         "TARGET;NAME;MANIFEST;ROOT;CONFIGURATION" "")
@@ -115,6 +122,19 @@ function(ludus_compile_render_graph)
             list(APPEND tools "${LUDUS_SHADER_WORKER_EXECUTABLE}")
         endif()
     endif()
+    # luslc lowers .lusl program sources: the build tree's target, else the installed SDK's.
+    if(TARGET luslc)
+        list(APPEND arguments --luslc "$<TARGET_FILE:luslc>")
+        list(APPEND tools luslc)
+    elseif(EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../bin/luslc${CMAKE_EXECUTABLE_SUFFIX}")
+        get_filename_component(luslc "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../bin/luslc${CMAKE_EXECUTABLE_SUFFIX}" ABSOLUTE)
+        list(APPEND arguments --luslc "${luslc}")
+        list(APPEND tools "${luslc}")
+    endif()
+    if(NOT LUDUS_LUSL_STYLE MATCHES "^(strict|warn|off)$")
+        message(FATAL_ERROR "LUDUS_LUSL_STYLE is '${LUDUS_LUSL_STYLE}'; set it to strict, warn or off")
+    endif()
+    list(APPEND arguments --lusl-style "${LUDUS_LUSL_STYLE}")
     if(LUDUS_SPIRV_VALIDATOR)
         list(APPEND arguments --validator "${LUDUS_SPIRV_VALIDATOR}")
         list(APPEND tools "${LUDUS_SPIRV_VALIDATOR}")

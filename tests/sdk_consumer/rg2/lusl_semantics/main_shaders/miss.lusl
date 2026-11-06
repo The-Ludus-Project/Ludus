@@ -1,0 +1,44 @@
+// GPU evidence for LUSL's defined behavior (docs/architecture/shading-language.md#defined-behavior).
+// Each channel of the miss color is 1 when one rule holds on the GPU: red for signed wrapping,
+// green for the zero rule, blue for masked shift counts. The values derive from the ray, so the
+// checks run on the device instead of in constant folding.
+#include "ray_shader.luslh"
+
+static const uint32 TAP_COUNT = 4;
+static const int32 LARGEST = 2147483647;
+static const int32 SMALLEST = -2147483647 - 1;
+static const uint32 SHIFT_COUNT = 33;
+
+struct Taps
+{
+    float32 Weights[TAP_COUNT];
+    uint32 Count = 7;
+    float32x3 Bias;
+};
+
+float32x3 ShadeMiss(in Ray ray)
+{
+    int32 zero = int32(ray.MinDistanceWorld * 0.0);
+    int32 largest = LARGEST + zero;
+    int32 smallest = SMALLEST + zero;
+    int32 sum = largest + 1;
+    int32 product = largest * 2;
+    int32 difference = smallest - 1;
+    int32 negated = -smallest;
+    int32 counter = largest;
+    counter++;
+    bool isWrapping = sum == SMALLEST && product == -2 && difference == LARGEST && negated == SMALLEST &&
+        counter == SMALLEST;
+
+    Taps taps = 0;
+    bool isZero = taps.Count == 0 && taps.Bias.x == 0.0 && taps.Bias.y == 0.0 && taps.Bias.z == 0.0;
+    for (uint32 i = 0; i < TAP_COUNT; i++)
+    {
+        isZero = isZero == true && taps.Weights[i] == 0.0;
+    }
+
+    uint32 count = SHIFT_COUNT + uint32(zero);
+    bool isMasked = (uint32(1) << count) == 2 && (uint32(4) >> count) == 2;
+
+    return float32x3(isWrapping == true ? 1.0 : 0.0, isZero == true ? 1.0 : 0.0, isMasked == true ? 1.0 : 0.0);
+}

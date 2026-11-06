@@ -1,0 +1,7 @@
+// The camera ray of each pixel; the LUSL port of ../../raytracing/main_shaders/generate.slang.
+#include "ray_shader.luslh"
+
+Ray GenerateRay(in RayLaunch launch)
+{
+    return launch.CameraRay;
+}

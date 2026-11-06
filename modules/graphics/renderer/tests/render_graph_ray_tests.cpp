@@ -348,6 +348,100 @@ TEST_CASE("Authored ray graph shades World triangles and preserves the drawable 
     CHECK(fixture.Pixels[center + 2] == expected);
 }
 
+namespace
+{
+/// Frames RenderRayFrames reads: the red triangle, the triangle moved off center, and back in green.
+constexpr usize COMPARED_RAY_FRAMES = 3;
+/// How far the second frame moves the triangle; the center pixel then sees the miss color.
+constexpr float32 COMPARED_RAY_TRANSLATION = 0.75F;
+
+/// Render COMPARED_RAY_FRAMES frames of the first ray test's scene with one cooked package and
+/// append their readbacks to outPixels. Each call owns its device and graph, so packages never
+/// share prepared state.
+void RenderRayFrames(const PackageLocation& location, Array<uint8>& outPixels)
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, plan, decoded);
+    const uint64 started = time::NowTicks();
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - started < 10 * time::NANOSECONDS_PER_SECOND)
+    {
+        status = fixture.Graph.Poll();
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    fixture.Cameras[0].OrthographicCamera = true;
+    for (usize frame = 0; frame < COMPARED_RAY_FRAMES; ++frame)
+    {
+        if (frame == 1)
+        {
+            fixture.Items[0].MeshToWorld.Translation.X = COMPARED_RAY_TRANSLATION;
+        }
+        if (frame == 2)
+        {
+            fixture.Items[0].MeshToWorld.Translation.X = 0;
+            fixture.Items[0].Material.Color = {0, 1, 0, 1};
+        }
+        renderer::RenderGraphReport report;
+        rhi::RasterStatus result = fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                                        {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                                        {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                                        frame + 1,
+                                                        renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                        report);
+        const uint64 beginning = time::NowTicks();
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
+        {
+            result = fixture.Graph.Poll();
+        }
+        REQUIRE(result == rhi::RasterStatus::Ready);
+        ReadGraphFrame(fixture);
+        for (const uint8 value : fixture.Pixels)
+        {
+            REQUIRE(outPixels.TryAdd(value) == true);
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("LUSL ray callbacks render the same pixels as their Slang originals", "[render-graph][gpu][ray-pipeline]")
+{
+    // rg2_raytracing_lusl is rg2_raytracing with its generation, miss and closest-hit callbacks
+    // ported to LUSL (docs/architecture/shading-language.md#testing, differential evidence).
+    Array<uint8> slang;
+    Array<uint8> lusl;
+    RenderRayFrames({LUDUS_RG3_RAYTRACING_DIRECTORY, "rg2_raytracing.lurgrt"}, slang);
+    RenderRayFrames({LUDUS_RG3_RAYTRACING_LUSL_DIRECTORY, "rg2_raytracing_lusl.lurgrt"}, lusl);
+    REQUIRE(slang.GetSize() == COMPARED_RAY_FRAMES * PIXEL_BYTES);
+    REQUIRE(lusl.GetSize() == slang.GetSize());
+    usize differing = 0;
+    for (usize i = 0; i < slang.GetSize(); ++i)
+    {
+        differing += slang[i] != lusl[i] ? 1 : 0;
+    }
+    CHECK(differing == 0);
+    // The frames show the hit color, the miss color and the recolored hit, so equality is not vacuous.
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    CHECK(lusl[center] == 255);
+    CHECK(lusl[PIXEL_BYTES + center + 2] == 255);
+    CHECK(lusl[2 * PIXEL_BYTES + center + 1] == 255);
+}
+
+TEST_CASE("LUSL's defined behavior holds on the GPU", "[render-graph][gpu][ray-pipeline]")
+{
+    // The miss callback of rg2_lusl_semantics colors each channel by one rule: red for signed
+    // wrapping of +, -, *, negation and ++, green for the zero rule, blue for masked shift counts.
+    // On Metal the wrapping goes through unsigned arithmetic (docs/architecture/shading-language.md).
+    Array<uint8> pixels;
+    RenderRayFrames({LUDUS_RG3_LUSL_SEMANTICS_DIRECTORY, "rg2_lusl_semantics.lurgrt"}, pixels);
+    const usize corner = GetPixel(0, 0);
+    CHECK(pixels[corner] == 255);
+    CHECK(pixels[corner + 1] == 255);
+    CHECK(pixels[corner + 2] == 255);
+}
+
 TEST_CASE("Shared alpha masks agree between CPU queries and GPU graph traversal", "[render-graph][gpu][scene-mask]")
 {
     bool shouldUseNativeQueries = false;

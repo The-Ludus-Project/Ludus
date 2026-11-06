@@ -15,6 +15,8 @@ namespace ludus::tooling::shader_language
 inline constexpr foundation::usize MAX_FILE_TOKENS = foundation::usize{1} << 20;
 /// Most tokens in one preprocessed translation unit.
 inline constexpr foundation::usize MAX_OUTPUT_TOKENS = foundation::usize{1} << 20;
+/// Most PreprocessRequest::IncludeDirectories.
+inline constexpr foundation::usize MAX_INCLUDE_DIRECTORIES = 8;
 /// Deepest `#include` nesting; the root file is depth one.
 inline constexpr foundation::usize MAX_INCLUDE_DEPTH = 32;
 /// Deepest nesting of `#if` groups in one translation unit.

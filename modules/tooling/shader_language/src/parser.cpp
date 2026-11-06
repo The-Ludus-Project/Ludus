@@ -795,15 +795,26 @@ private:
             reportExpected("'slang' after 'extern'");
             return node;
         }
-        ++mPosition;
-        const Token* pathOrNull = getTokenOrNull(0);
-        if (pathOrNull == nullptr || pathOrNull->Kind != TokenKind::String)
+        const Token* pathOrNull = getTokenOrNull(1);
+        if (pathOrNull != nullptr && pathOrNull->Kind == TokenKind::Punctuator &&
+            pathOrNull->Symbol == Punctuator::LeftBrace)
         {
-            reportExpected("the quoted path of the Slang file");
-            return node;
+            // `extern slang { ... }`: the including Slang code, such as a render-graph wrapper,
+            // provides the definitions, so no file is named.
+            setToken(node, mPosition);
+            ++mPosition;
         }
-        setToken(node, mPosition);
-        ++mPosition;
+        else
+        {
+            ++mPosition;
+            if (pathOrNull == nullptr || pathOrNull->Kind != TokenKind::String)
+            {
+                reportExpected("the quoted path of the Slang file, or '{'");
+                return node;
+            }
+            setToken(node, mPosition);
+            ++mPosition;
+        }
         if (attributes.IsEmpty() == false)
         {
             report(DiagnosticCode::UnexpectedToken, ComposeMessage("'extern slang' blocks take no attributes"));

@@ -178,9 +178,24 @@ private:
     [[nodiscard]] bool validateRequest() noexcept
     {
         if (mRequest.Files.IsValid() == false || mRequest.Source.IsValid() == false ||
-            mRequest.Configuration.IsValid() == false)
+            mRequest.Configuration.IsValid() == false || mRequest.IncludeDirectories.IsValid() == false)
         {
             return rejectRequest(internal::ComposeMessage("a request view is invalid"));
+        }
+        if (mRequest.IncludeDirectories.GetSize() > MAX_INCLUDE_DIRECTORIES)
+        {
+            return rejectRequest(internal::ComposeMessage("a request names at most ",
+                                                          foundation::uint64{MAX_INCLUDE_DIRECTORIES},
+                                                          " include directories"));
+        }
+        for (usize i = 0; i < mRequest.IncludeDirectories.GetSize(); ++i)
+        {
+            const foundation::BorrowedView<const char> directory = mRequest.IncludeDirectories[i];
+            if (directory.IsValid() == false || internal::IsSnapshotPath(GetView(directory)) == false)
+            {
+                return rejectRequest(
+                    internal::ComposeMessage("'", GetView(directory), "' is not a snapshot directory path"));
+            }
         }
         const usize fileCount = mRequest.Files.GetSize();
         if (fileCount == 0 || fileCount > shader_compiler::MAX_SOURCE_FILES)
@@ -1044,21 +1059,6 @@ private:
         return false;
     }
 
-    /// @brief Resolve `path` against the directory of `base` and look the result up.
-    /// @return Ok with `outIndex` set when found, NotFound for a valid path with no file, or the resolution failure.
-    [[nodiscard]] internal::IncludePathOutcome
-    findInclude(std::string_view base, std::string_view path, uint16& outIndex) noexcept
-    {
-        const internal::IncludePathOutcome resolved = internal::ResolveIncludePath(base, path, mPathScratch);
-        if (resolved != internal::IncludePathOutcome::Ok)
-        {
-            return resolved;
-        }
-        return findFile(std::string_view(mPathScratch.GetData(), mPathScratch.GetSize()), outIndex) == true
-                   ? internal::IncludePathOutcome::Ok
-                   : internal::IncludePathOutcome::NotFound;
-    }
-
     void handleInclude(const DirectiveLine& line) noexcept
     {
         const Token& directive = line.Get(1);
@@ -1074,31 +1074,22 @@ private:
         const std::string_view path = quoted.substr(1, quoted.size() - 2);
         const std::string_view includingFile = GetView(mRequest.Files[line.FileIndex].Path);
         uint16 fileIndex = 0;
-        // Search beside the including file first, then from the snapshot root.
-        const internal::IncludePathOutcome beside = findInclude(includingFile, path, fileIndex);
-        internal::IncludePathOutcome fromRoot = internal::IncludePathOutcome::Invalid;
-        bool isFound = beside == internal::IncludePathOutcome::Ok;
-        if (isFound == false && beside != internal::IncludePathOutcome::OutOfMemory)
-        {
-            fromRoot = findInclude(std::string_view{}, path, fileIndex);
-            isFound = fromRoot == internal::IncludePathOutcome::Ok;
-        }
-        if (beside == internal::IncludePathOutcome::OutOfMemory ||
-            fromRoot == internal::IncludePathOutcome::OutOfMemory)
+        const internal::IncludePathOutcome found =
+            internal::FindSnapshotFile(mRequest, includingFile, path, mPathScratch, fileIndex);
+        if (found == internal::IncludePathOutcome::OutOfMemory)
         {
             mSink.ReportOutOfMemory();
             return;
         }
-        if (isFound == false)
+        if (found == internal::IncludePathOutcome::Invalid)
         {
-            if (beside == internal::IncludePathOutcome::Invalid && fromRoot == internal::IncludePathOutcome::Invalid)
-            {
-                report(
-                    DiagnosticCode::InvalidIncludePath,
-                    pathToken,
-                    internal::ComposeMessage("'", path, "' must be relative, use '/', and stay inside the snapshot"));
-                return;
-            }
+            report(DiagnosticCode::InvalidIncludePath,
+                   pathToken,
+                   internal::ComposeMessage("'", path, "' must be relative, use '/', and stay inside the snapshot"));
+            return;
+        }
+        if (found == internal::IncludePathOutcome::NotFound)
+        {
             report(DiagnosticCode::IncludeNotFound,
                    pathToken,
                    internal::ComposeMessage("no snapshot file matches '", path, "'"));
