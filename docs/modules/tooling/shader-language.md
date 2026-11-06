@@ -876,6 +876,34 @@ defines them before it includes a callback, so the header uses a path-less
 scene-interface wrappers add more, such as `SampleIndex`, which LUSL cannot read
 yet.
 
+`scene_shader.luslh` declares the [shared scene shader interface](../../architecture/shared-scene-shader-contract.md)
+for scene-interface ray callbacks, in a path-less block, because the scene ray
+wrapper includes `scene_shader.slang` before any callback:
+- the enums `SceneQuery`, `SceneLightKind`, `SceneMaterialKind`, `MaterialModel`,
+  `IncidentLightMeasure` and `LightSelectionPolicy`;
+- `Ray`, the scene `RayLaunch` (with the camera and sampling state),
+  `SceneContext`, `RayQueryContext`, `SurfaceHit`, `MaterialSample`,
+  `LightInfo`, `SelectedLight`, `LightSample`, `IncidentLightSample` and
+  `SceneInfo`;
+- the public operations, from `TraceClosest`, `TestVisibility`,
+  `MakeCameraRay` and `SpawnSurfaceRay` to `EvaluateMaterial`, `SelectLight`,
+  `SampleIncidentLight` and every `SampleSceneRandom` overload;
+- the failure reasons as LUSL constants (`SCENE_FAILURE_AUTHORED_FIRST`, ...).
+
+It includes `math.luslh`. A scene-interface program includes
+`scene_payload.luslh`, which adds the default `ScenePayload` and
+`TraceAndShade`; a graph with an authored payload source declares its own
+`ScenePayload` and `TraceAndShade` in a path-less block instead:
+
+```c
+#include "scene_payload.luslh"
+
+void ShadeMiss(in SceneContext scene, in Ray ray, inout RayQueryContext inoutQueries, inout ScenePayload inoutPayload)
+{
+    inoutPayload.Radiance = EvaluateEnvironment(scene, ray.DirectionWorld);
+}
+```
+
 **How the headers are generated.** Each header has a template beside it,
 `<name>.luslh.in`: the header with its `extern slang` blocks written as
 directives.
@@ -895,10 +923,18 @@ directives.
 
 - `@extern "file.slang"` opens a block that names the file; `@extern from
   "file.slang"` opens a path-less block and only reflects the file.
-- `@declare` names functions (every overload), structs and `static const`
-  constants of that file, in the order to declare them. Comments and blank
-  lines, such as a doc comment before a `@declare`, are copied. `@end` closes
-  the block.
+- `@declare` names functions (every overload), structs, enums and
+  `static const` constants of that file, in the order to declare them.
+  Comments, blank lines and hand-written declarations, such as `TraceAndShade`
+  which the scene wrapper defines, are copied. `@end` closes the block.
+- `@search "directory"` adds a directory that includes resolve in, by file
+  name, as the render-graph build stages its flat helper directory.
+- `@prelude <Slang text>` places text before the reflected file, reproducing
+  what a wrapper declares first: `scene_shader.slang` reads uniforms that the
+  ray wrapper's `renderer_gpu_preview.slang` declares.
+- `@macro uint32 NAME = MACRO from "file"` emits a LUSL constant with the
+  value of a C macro, reflected through a probe module. The LUSL name must
+  differ from the macro's, which the generated Slang would expand.
 - `tools/lusl-declarations` loads the Slang file through
   `shader_compiler::Compiler::ReflectDeclarations`, which walks Slang's
   declaration reflection: return and parameter types with `in`/`out`/`inout`,
@@ -914,11 +950,8 @@ directives.
 
   ```bash
   python3 cmake/shaders/generate_luslh.py --tool out/build/<preset>/tools/lusl-declarations/lusl-declarations \
-      modules/foundation/math/shaders/math.luslh.in modules/graphics/renderer/shaders/ray_shader.luslh.in
+      modules/foundation/math/shaders/math.luslh.in modules/graphics/renderer/shaders/*.luslh.in
   ```
-
-The scene queries (`TraceClosest`, `TestVisibility`, ...) are generic Slang
-functions; they get LUSL declarations once the generator can spell generics.
 
 ## Interfaces and templates
 
@@ -1161,11 +1194,11 @@ float32x3 ShadeMiss(in Ray ray)
   that bind one id to two schemas are a build error. The header is not part of
   the package; the lowered module's bytes are.
 - **Current limits:**
-  - Ray callbacks use the [ray callback declarations](#sdk-declarations), or
-    declare more in their own path-less `extern slang` block. Scene-interface
-    callbacks cannot be written in LUSL yet: `SceneContext` and the scene
-    queries are generic Slang declarations. Ray storage declarations are
-    checked by build-tool tests; no GPU fixture reads them from LUSL yet.
+  - Ray callbacks use the [ray callback declarations](#sdk-declarations):
+    `ray_shader.luslh` for the Ray/Color profile, `scene_payload.luslh` (with
+    `scene_shader.luslh`) for scene-interface techniques. Ray storage
+    declarations are checked by build-tool tests; no GPU fixture reads them
+    from LUSL yet.
   - Configuration values do not reach LUSL programs from the render graph yet,
     and render-graph builds emit no development bounds checks.
 - **Evidence:**
@@ -1186,6 +1219,11 @@ float32x3 ShadeMiss(in Ray ray)
 
     A GPU test compares every pixel of three frames, and checks that the first
     frame shows each material and the miss color.
+  - `rg2_traversal_parity_lusl` is `rg2_traversal_parity` with its
+    scene-interface callbacks in LUSL, against the generated scene
+    declarations. A GPU test renders a room with nested blocks through both
+    packages; every pixel encodes exact hit, secondary-hit and visibility
+    outcomes, and the images are identical.
   - `rg2_bound_lusl` is the L3 acceptance graph. It is the raster graph
     `rg2_bound` with its vertex, color and depth callbacks ported to LUSL,
     reading `graph_schemas.luslh`. A GPU test renders both packages with two

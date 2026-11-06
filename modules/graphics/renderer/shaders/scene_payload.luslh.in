@@ -1,0 +1,13 @@
+// LUSL declarations of the default scene payload (scene_payload.slang) and of TraceAndShade, which
+// the scene ray wrapper defines for the graph's payload type. A graph with an authored payload
+// source declares its own ScenePayload and TraceAndShade the same way, in a path-less block.
+#pragma once
+#include "scene_shader.luslh"
+
+@extern from "scene_payload.slang"
+/// Default shader-local state shared by a ray pipeline's callbacks.
+@declare ScenePayload
+
+/// Trace `ray` and run the linked closest-hit or miss callback on `payload`.
+SceneQuery TraceAndShade(in SceneContext scene, inout RayQueryContext queries, in Ray ray, inout ScenePayload payload);
+@end

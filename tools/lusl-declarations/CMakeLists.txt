@@ -17,6 +17,8 @@ if(LUDUS_BUILD_TESTS)
     add_test(NAME lusl_declarations_tests COMMAND "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/cmake/shaders/generate_luslh.py" --check --tool "$<TARGET_FILE:lusl-declarations>"
         "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/math.luslh.in"
-        "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/ray_shader.luslh.in")
+        "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/ray_shader.luslh.in"
+        "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/scene_shader.luslh.in"
+        "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/scene_payload.luslh.in")
     set_tests_properties(lusl_declarations_tests PROPERTIES LABELS "unit;shader;tooling" TIMEOUT 120)
 endif()

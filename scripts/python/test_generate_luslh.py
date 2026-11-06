@@ -30,15 +30,29 @@ RECORDS = '\n'.join([
     'parameter\tinoutHigh\tinout\tuint32',
     'function\tUseTexture\tfloat32x4',
     'parameter\timage\tin\t?Texture2D<float4>',
+    'enum\tMode\tuint32',
+    'enumerator\tOff\t0',
+    'enumerator\tOn\t7',
     'function\tLong\tfloat32x3',
     *[f'parameter\tveryLongParameterName{i}\tin\tfloat32x3' for i in range(4)],
 ])
 FAKE_TOOL = textwrap.dedent('''\
     #!{python}
-    import sys
+    import pathlib, sys
     arguments = sys.argv[1:]
-    sys.stdout.write({records!r} + '\\n')
-    sys.stderr.write(' '.join(arguments))
+    root = pathlib.Path(arguments[arguments.index('--root') + 1])
+    source = arguments[arguments.index('--source') + 1]
+    probe = (root / source).read_text().splitlines() if source == '_lusl_macro_probe.slang' else []
+    constants = [line for line in probe if '_luslMacro' in line]
+    if constants:
+        # One record per probe constant, valued by its macro's position in the probe.
+        sys.stdout.write(''.join(f'constant\\t_luslMacro{{i}}\\tuint32\\t{{64 + i}}\\n' for i in range(len(constants))))
+    else:
+        sys.stdout.write({records!r} + '\\n')
+    if probe:
+        sys.stderr.write('probe:' + '|'.join(probe))
+    staged = sorted(p.name for p in root.iterdir())
+    sys.stderr.write(' '.join(staged))
 ''')
 
 
@@ -85,7 +99,9 @@ class GenerateLuslhTests(unittest.TestCase):
     def test_template_errors_name_the_line(self):
         cases = {
             '@declare PI\n': 'inside an @extern block',
-            '@extern "math.slang"\n@declare Missing\n@end\n': 'declares no function, struct or constant Missing',
+            '@extern "math.slang"\n@declare Missing\n@end\n': 'declares no function, struct, enum or constant Missing',
+            '@macro uint32 SAME = SAME from "math.slang"\n': 'differently from the macro',
+            '@extern "elsewhere.slang"\n@end\n': 'not in the template directory or a @search directory',
             '@extern "math.slang"\n@declare PI PI\n@end\n': 'declared twice',
             '@extern "math.slang"\n@declare UseTexture\n@end\n': 'LUSL cannot declare yet',
             '@extern "math.slang"\n@declare PI\n': 'has no @end',
@@ -96,6 +112,36 @@ class GenerateLuslhTests(unittest.TestCase):
                 with self.assertRaises(generate_luslh.TemplateError) as failure:
                     self.expand(body)
                 self.assertIn(message, str(failure.exception))
+
+    def test_enums_macros_and_search_directories(self):
+        (self.root / 'sdk').mkdir()
+        (self.root / 'sdk' / 'layout.h').write_text('#define LAYOUT_FIRST 64u\n')
+        (self.root / 'detail.slang').write_text('#include "layout.h"\n')
+        text = self.expand('@search "sdk"\n@macro uint32 FIRST = LAYOUT_FIRST from "math.slang"\n'
+                           '@macro uint32 SECOND = LAYOUT_SECOND from "math.slang"\n'
+                           '@extern from "math.slang"\n@declare Mode\n'
+                           'void Hand(in uint32 value);\n@end\n')
+        # Probe constants are numbered in macro-name order.
+        self.assertIn('static const uint32 FIRST = 64;\nstatic const uint32 SECOND = 65;\n', text)
+        self.assertIn('    enum class Mode : uint32\n    {\n        Off = 0,\n        On = 7,\n    };\n', text)
+        # Hand-written lines in a block are copied, for functions that generated wrappers define.
+        self.assertIn('    void Hand(in uint32 value);\n};\n', text)
+        (self.root / 'staged').mkdir()
+        staged = generate_luslh.stage([self.root, self.root / 'sdk'], 'math.slang', self.root / 'staged')
+        self.assertEqual(staged, ['detail.slang', 'layout.h', 'math.slang'])
+
+    def test_prelude_precedes_the_reflected_file(self):
+        (self.root / 'uniforms.slang').write_text('')
+        template = self.root / 'math.luslh.in'
+        template.write_text('@prelude #define MODE 1\n@prelude #include "uniforms.slang"\n'
+                            '@extern from "math.slang"\n@declare PI\n@end\n')
+        roots = [self.root]
+        with tempfile.TemporaryDirectory() as directory:
+            staged = generate_luslh.stage(roots, 'math.slang', Path(directory), ['uniforms.slang'])
+        self.assertIn('uniforms.slang', staged)
+        text = generate_luslh.expand(template, self.tool)
+        self.assertIn('extern slang\n{\n    static const float32 PI;\n};\n', text)
+        self.assertNotIn('@prelude', text)
 
     def test_check_reports_stale_headers(self):
         template = self.root / 'math.luslh.in'

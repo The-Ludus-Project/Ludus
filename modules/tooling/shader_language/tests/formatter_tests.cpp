@@ -151,6 +151,15 @@ TEST_CASE("LUSL formatter puts a multiline initializer's brace on its own line",
                      "Outer o =\n{\n    .Inner =\n    {\n        .A = 1,\n    },\n};\n");
 }
 
+TEST_CASE("LUSL formatter starts each enumerator on its own line", "[shader-language][formatter]")
+{
+    constexpr std::string_view LAYOUT = "enum class Mode : uint32\n{\n    Off = 0,\n    On = 1,\n    Auto = "
+                                        "2,\n};\nuint32 x = Pick(1,\n                2);\n";
+    RequireFormatted("enum class Mode : uint32\n{\nOff = 0,\nOn = 1,\n    Auto = 2,\n};\nuint32 x = Pick(1,\n2);\n",
+                     LAYOUT);
+    RequireFormatted(LAYOUT, LAYOUT);
+}
+
 TEST_CASE("LUSL formatter keeps comments, blank lines and directives", "[shader-language][formatter]")
 {
     RequireFormatted("// header\n\n\n\nx = 1; /* a */ // b\n", "// header\n\nx = 1; /* a */ // b\n");

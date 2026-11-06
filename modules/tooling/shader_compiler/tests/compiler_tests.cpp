@@ -338,10 +338,16 @@ TEST_CASE("Native shader compiler reflects module declarations for LUSL headers"
     files[0] = {View("library.slang"), View(R"(#include "detail.slang"
 static const float PI = 3.14159265f;
 static const uint COUNT = 4u;
+enum Mode : uint
+{
+    Off = 0,
+    On = 7,
+};
 struct Pair
 {
     uint2 First;
     float Values[4];
+    Mode State;
 };
 bool IsFinite(float value) { return value == value; }
 bool IsFinite(float3 value) { return all(value == value); }
@@ -381,7 +387,21 @@ T Echo<T>(T value) { return value; }
     CHECK(piOrNull->Type.Shape == compiler::ReflectedShape::Scalar);
     const compiler::ReflectedDeclaration* pairOrNull = find("Pair", 0);
     REQUIRE(pairOrNull != nullptr);
-    REQUIRE(pairOrNull->MemberCount == 2);
+    REQUIRE(pairOrNull->MemberCount == 3);
+    const compiler::ReflectedMember& state = result.Members[pairOrNull->FirstMember + 2];
+    CHECK(state.Type.Shape == compiler::ReflectedShape::Enum);
+    CHECK(text(state.Type.Name) == "Mode");
+    const compiler::ReflectedDeclaration* modeOrNull = find("Mode", 0);
+    REQUIRE(modeOrNull != nullptr);
+    CHECK(modeOrNull->Kind == compiler::DeclarationKind::Enum);
+    REQUIRE(modeOrNull->MemberCount == 2);
+    CHECK(text(result.Members[modeOrNull->FirstMember + 1].Name) == "On");
+    CHECK(result.Members[modeOrNull->FirstMember + 1].HasValue == true);
+    CHECK(result.Members[modeOrNull->FirstMember + 1].Value == 7);
+    const compiler::ReflectedDeclaration* countOrNull = find("COUNT", 0);
+    REQUIRE(countOrNull != nullptr);
+    CHECK(countOrNull->HasValue == true);
+    CHECK(countOrNull->Value == 4);
     const compiler::ReflectedMember& first = result.Members[pairOrNull->FirstMember];
     CHECK(text(first.Name) == "First");
     CHECK(first.Type.Shape == compiler::ReflectedShape::Vector);

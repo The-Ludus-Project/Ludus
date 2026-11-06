@@ -38,8 +38,8 @@ constexpr uint64 DECIMAL_BASE = 10;
 const std::string_view USAGE =
     "usage: lusl-declarations --root DIR --source FILE [--file FILE]...\n"
     "Reflects the Slang module FILE and prints one tab-separated record per line:\n"
-    "  constant NAME TYPE | struct NAME | field NAME TYPE | function NAME RETURN_TYPE |\n"
-    "  parameter NAME in|out|inout TYPE\n"
+    "  constant NAME TYPE [VALUE] | struct NAME | field NAME TYPE | enum NAME TYPE |\n"
+    "  enumerator NAME [VALUE] | function NAME RETURN_TYPE | parameter NAME in|out|inout TYPE\n"
     "Types are spelled as LUSL (float32x3, uint32[4], StructName); '?' prefixes a type LUSL cannot\n"
     "spell. FILE paths are '/'-separated and relative to DIR; --file adds the files Slang may include.\n";
 
@@ -160,6 +160,7 @@ void AppendType(const compiler::DeclarationResult& result, const compiler::Refle
             inoutOutput.AppendUnsigned(type.Columns);
             break;
         case compiler::ReflectedShape::Struct:
+        case compiler::ReflectedShape::Enum:
             inoutOutput.Append(GetText(result, type.Name));
             break;
         case compiler::ReflectedShape::Unsupported:
@@ -237,6 +238,18 @@ private:
     Array<Entry> mFiles;
 };
 
+void AppendSigned(int64 value, Output& inoutOutput) noexcept
+{
+    if (value < 0)
+    {
+        inoutOutput.Append("-");
+        // Negate in uint64 so the most negative value is exact.
+        inoutOutput.AppendUnsigned(uint64{0} - static_cast<uint64>(value));
+        return;
+    }
+    inoutOutput.AppendUnsigned(static_cast<uint64>(value));
+}
+
 void PrintRecords(const compiler::DeclarationResult& result, Output& inoutOutput) noexcept
 {
     for (const compiler::ReflectedDeclaration& declaration : result.Declarations)
@@ -245,6 +258,18 @@ void PrintRecords(const compiler::DeclarationResult& result, Output& inoutOutput
         {
             case compiler::DeclarationKind::Constant:
                 inoutOutput.Append("constant\t");
+                inoutOutput.Append(GetText(result, declaration.Name));
+                inoutOutput.Append("\t");
+                AppendType(result, declaration.Type, inoutOutput);
+                if (declaration.HasValue == true)
+                {
+                    inoutOutput.Append("\t");
+                    AppendSigned(declaration.Value, inoutOutput);
+                }
+                inoutOutput.Append("\n");
+                break;
+            case compiler::DeclarationKind::Enum:
+                inoutOutput.Append("enum\t");
                 inoutOutput.Append(GetText(result, declaration.Name));
                 inoutOutput.Append("\t");
                 AppendType(result, declaration.Type, inoutOutput);
@@ -266,6 +291,18 @@ void PrintRecords(const compiler::DeclarationResult& result, Output& inoutOutput
         for (uint32 i = 0; i < declaration.MemberCount; ++i)
         {
             const compiler::ReflectedMember& member = result.Members[declaration.FirstMember + i];
+            if (declaration.Kind == compiler::DeclarationKind::Enum)
+            {
+                inoutOutput.Append("enumerator\t");
+                inoutOutput.Append(GetText(result, member.Name));
+                inoutOutput.Append("\t");
+                if (member.HasValue == true)
+                {
+                    AppendSigned(member.Value, inoutOutput);
+                }
+                inoutOutput.Append("\n");
+                continue;
+            }
             const bool isField = declaration.Kind == compiler::DeclarationKind::Struct;
             inoutOutput.Append(isField == true ? "field\t" : "parameter\t");
             inoutOutput.Append(GetText(result, member.Name));
