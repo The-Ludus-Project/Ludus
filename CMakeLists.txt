@@ -565,8 +565,8 @@ if(NOT EMSCRIPTEN)
         ludus_sdk_register_component(${_component})
         ludus_sdk_register_feature(${_component})
     endforeach()
-    # Shader file delivery is native Linux/macOS only until the Windows worker
-    # port (D6c); the manifest must list only exported components.
+    # Shader file delivery is native (Linux, macOS and Windows since D6c); the
+    # manifest must list only exported components.
     if(TARGET Ludus::ShaderDevelopment)
         ludus_sdk_register_component(ShaderDevelopment)
         ludus_sdk_register_feature(ShaderDevelopment)

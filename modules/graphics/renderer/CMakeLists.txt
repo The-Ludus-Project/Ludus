@@ -424,6 +424,7 @@ if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND 
     ludus_compile_renderer_shaders(TARGET ludus_render_graph_dxil_tests SHADERS renderer_composite)
     ludus_apply_project_defaults(ludus_render_graph_dxil_tests)
     ludus_enable_test_exceptions(ludus_render_graph_dxil_tests)
+    ludus_configure_win32_target(ludus_render_graph_dxil_tests)
     set(RG2_TEST_PROFILES "[\"dxil\"]")
     foreach(kind surface bound)
         set(staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-dxil-inputs/${kind}")
@@ -431,8 +432,19 @@ if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND 
         ludus_compile_render_graph(TARGET ludus_render_graph_dxil_tests NAME rg2_dxil_${kind}
             MANIFEST "${staged}/main.lushader.json" RUNTIME_PACKAGE)
     endforeach()
+    # The same surface graph with a green color callback: an interface-compatible reload candidate.
+    set(green "${CMAKE_CURRENT_BINARY_DIR}/rg2-dxil-inputs/surface_green")
+    ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/surface" "${green}")
+    file(READ "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/surface/main_shaders/color.slang" color_source)
+    string(REPLACE "return value.Color;" "return float4(0, 1, 0, 1);" color_source "${color_source}")
+    file(WRITE "${green}/main_shaders/color.slang" "${color_source}")
+    ludus_compile_render_graph(TARGET ludus_render_graph_dxil_tests NAME rg2_dxil_surface_green
+        MANIFEST "${green}/main.lushader.json" RUNTIME_PACKAGE)
+    target_link_libraries(ludus_render_graph_dxil_tests PRIVATE Ludus::ShaderDevelopment Ludus::FoundationFilesystem
+        Ludus::FoundationTime)
     target_compile_definitions(ludus_render_graph_dxil_tests PRIVATE
         LUDUS_RG2_DXIL_SURFACE_PACKAGE="${rg2_dxil_surface_RUNTIME_PACKAGE}"
+        LUDUS_RG2_DXIL_SURFACE_GREEN_PACKAGE="${rg2_dxil_surface_green_RUNTIME_PACKAGE}"
         LUDUS_RG2_DXIL_BOUND_PACKAGE="${rg2_dxil_bound_RUNTIME_PACKAGE}")
     add_test(NAME ludus_render_graph_dxil_tests COMMAND ludus_render_graph_dxil_tests)
     set_tests_properties(ludus_render_graph_dxil_tests PROPERTIES LABELS "unit;render-graph;dxil;gpu" TIMEOUT 120)

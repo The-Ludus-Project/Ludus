@@ -9043,6 +9043,15 @@ are asynchronous. A newer publication cancels/drains the old read before its
 buffer is reused. Failed reads/decodes never stage a partial generation. Inspect
 `ReloadReport` separately from the activation report and presented image.
 
+`Ludus::ShaderDevelopment` also builds on Windows, where the producer publishes DXIL
+generations. On the Windows lane, `ludus_render_graph_dxil_tests` covers it on
+Direct3D 12 (WARP):
+
+- It publishes the DXIL `surface` generation, stages and activates it, and draws red.
+- A truncated publication then fails delivery while the red frame stays drawable.
+- A generation whose color callback was edited to green replaces it through the
+  file watcher.
+
 Applications needing direct source compilation can link
 `Ludus::ShaderCompilerClient`. `Client::Submit` copies an immutable set of relative
 source paths/texts plus target/stage/entry and a caller-owned request identity;
