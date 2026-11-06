@@ -141,6 +141,15 @@ class RenderGraphLanguageTests(unittest.TestCase):
         self.assertIn('increase budgets.specializations to at least 3', message)
         self.assertIn('main_shaders/miss.lusl has the most', message)
 
+    def test_report_parser_keeps_graph_records_only(self):
+        report = language._parse_report('binding\tmain.lusl:1\timage\tTexture2D\t0\n'
+                                        'vertex-input\tmain.lusl:3\tinput.Uv\t1\n'
+                                        'groupshared-clear\tmain.lusl:2\tmain.lusl:3\t64\n', build, 'main.lusl')
+        self.assertEqual(report['specializations'], [])
+        self.assertEqual(report['groupshared_clears'][0]['bytes'], 64)
+        with self.assertRaises(ToolingError):
+            language._parse_report('surprise\tx\n', build, 'main.lusl')
+
     def test_manifest_budget_of_specializations_is_optional_and_positive(self):
         manifest = {'version': 1, 'id': 'Graph', 'profiles': ['spirv'], 'schemas': [], 'programs': [],
                     'techniques': [], 'budgets': {'configurations': 1, 'programs': 1}}

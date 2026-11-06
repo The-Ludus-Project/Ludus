@@ -107,6 +107,26 @@ class LuslcTests(unittest.TestCase):
             self.assertEqual(invalid.returncode, 2)
             self.assertIn("from 1 to 256", invalid.stderr)
 
+    def test_report_lists_bindings_and_vertex_inputs(self):
+        self.write(
+            "composite.lusl",
+            "Texture2D<float32x4> image;\nSamplerState imageSampler;\n"
+            "struct Varying\n{\n    float32x4 Position : ClipPosition;\n    float32x2 Uv;\n};\n"
+            "[stage(vertex)]\nVarying VertexMain(in float32x4 positionUv)\n{\n"
+            "    Varying output = { .Position = positionUv, .Uv = positionUv.zw };\n    return output;\n}\n",
+        )
+        report = self.root / "report.txt"
+        result = run("lower", "composite.lusl", "--report", str(report), root=self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            report.read_text(encoding="utf-8").splitlines(),
+            [
+                "binding\tcomposite.lusl:1\timage\tTexture2D\t0",
+                "binding\tcomposite.lusl:2\timageSampler\tSamplerState\t1",
+                "vertex-input\tcomposite.lusl:9\tpositionUv\t0",
+            ],
+        )
+
     def test_format_check_and_write(self):
         self.write("format.lusl", "static const uint32 COUNT=4;\n")
         self.assertEqual(run("format", "--check", "format.lusl", root=self.root).returncode, 1)

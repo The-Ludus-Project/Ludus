@@ -84,6 +84,32 @@ struct GroupsharedClearRecord final
     foundation::uint64 Bytes = 0;
 };
 
+/// @brief One resource binding and the slot the compiler assigned it, for the slot table.
+struct BindingRecord final
+{
+    /// The resource variable's declaration.
+    SourceLocation Variable;
+    /// The variable's name, as host code names the binding.
+    TypeNameText Name;
+    /// Resource kind.
+    ResourceKind Kind = ResourceKind::Texture2D;
+    /// Binding slot in group zero, assigned in declaration order.
+    foundation::uint32 Slot = 0;
+};
+
+/// @brief One vertex input attribute and its assigned location.
+struct VertexInputRecord final
+{
+    /// The vertex entry point's declaration.
+    SourceLocation Entry;
+    /// The parameter or struct field's declaration.
+    SourceLocation Declaration;
+    /// `parameter` or `parameter.Field`.
+    TypeNameText Name;
+    /// Vertex attribute location, assigned in declaration order.
+    foundation::uint32 Location = 0;
+};
+
 /// @brief Output of EmitSlang.
 ///
 /// On Ready, `Text` is one complete Slang module. On any other outcome `Text`, `SourceMap` and
@@ -103,6 +129,10 @@ struct EmitResult final
     foundation::Array<SpecializationRecord> Specializations;
     /// Every cooperative `groupshared` clear, by entry point.
     foundation::Array<GroupsharedClearRecord> GroupsharedClears;
+    /// The slot table: every resource binding, in slot order.
+    foundation::Array<BindingRecord> Bindings;
+    /// Every vertex entry point's attributes, in location order per entry point.
+    foundation::Array<VertexInputRecord> VertexInputs;
     /// Reported problems in the order found; at most MAX_DIAGNOSTICS.
     foundation::Array<Diagnostic> Diagnostics;
     /// Number of diagnostics found after `Diagnostics` reached MAX_DIAGNOSTICS.

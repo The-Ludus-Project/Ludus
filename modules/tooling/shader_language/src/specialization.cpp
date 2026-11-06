@@ -53,7 +53,8 @@ bool MakeSpecializedModel(const SemanticModel& model, uint32 index, SemanticMode
         CopyArray(model.TypeArguments, outModel.TypeArguments) == false ||
         CopyArray(model.TypeParameters, outModel.TypeParameters) == false ||
         CopyArray(model.Conformances, outModel.Conformances) == false ||
-        CopyArray(model.Specializations, outModel.Specializations) == false)
+        CopyArray(model.Specializations, outModel.Specializations) == false ||
+        CopyArray(model.Bindings, outModel.Bindings) == false)
     {
         return false;
     }

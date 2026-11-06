@@ -1,0 +1,29 @@
+// The LUSL port of ../shaders/renderer_composite.slang: linear target composition with
+// top-left UVs. Its bindings and locations are assigned by the LUSL compiler, and a GPU test
+// compares its pixels with the Slang original (docs/architecture/shading-language.md).
+Texture2D<float32x4> image;
+SamplerState imageSampler;
+
+struct CompositeInput
+{
+    float32x4 PositionUv;
+};
+
+struct CompositeVarying
+{
+    float32x4 Position : ClipPosition;
+    float32x2 Uv;
+};
+
+[stage(vertex)]
+CompositeVarying VertexMain(in CompositeInput input)
+{
+    CompositeVarying output = { .Position = float32x4(input.PositionUv.xy, 0.0, 1.0), .Uv = input.PositionUv.zw };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 FragmentMain(in CompositeVarying input)
+{
+    return image.Sample(imageSampler, input.Uv);
+}

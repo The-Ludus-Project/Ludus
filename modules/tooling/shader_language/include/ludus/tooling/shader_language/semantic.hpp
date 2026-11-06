@@ -18,6 +18,8 @@ namespace ludus::tooling::shader_language
 inline constexpr foundation::uint32 NO_TYPE = 0xffffffffU;
 /// Symbol index that names no symbol.
 inline constexpr foundation::uint32 NO_SYMBOL = 0xffffffffU;
+/// Symbol::Location and Symbol::Slot of a symbol that has none.
+inline constexpr foundation::uint32 NO_LOCATION = 0xffffffffU;
 
 /// Category of a semantic type.
 enum class TypeKind : foundation::uint8
@@ -48,6 +50,45 @@ enum class TypeKind : foundation::uint8
     /// A template type parameter; SemanticType::Symbol names it. Its constraints are the
     /// SemanticModel::Conformances whose Type it is.
     TypeParameter,
+    /// A shader resource handle; SemanticType::Resource says which, and SemanticType::Element is
+    /// its element type (NO_TYPE for a sampler).
+    Resource,
+};
+
+/// @brief A kind of shader resource; see "Resources and bindings" in docs/architecture/shading-language.md.
+enum class ResourceKind : foundation::uint8
+{
+    Texture2D,          ///< `Texture2D<T>`: sampled and loaded.
+    RWTexture2D,        ///< `RWTexture2D<T>`: read and written by pixel.
+    Sampler,            ///< `SamplerState`.
+    ConstantBuffer,     ///< `ConstantBuffer<S>`: uniform values of a struct.
+    StructuredBuffer,   ///< `StructuredBuffer<T>`: read by index.
+    RWStructuredBuffer, ///< `RWStructuredBuffer<T>`: read and written by index.
+};
+
+/// The pipeline stage an entry point runs in.
+enum class EntryStage : foundation::uint8
+{
+    None,     ///< Not an entry point.
+    Compute,  ///< `[stage(compute)]`.
+    Vertex,   ///< `[stage(vertex)]`.
+    Fragment, ///< `[stage(fragment)]`.
+};
+
+/// @brief What a vertex or fragment entry point's parameter or struct field carries.
+///
+/// Locations of attributes, varyings and targets are assigned by rule; see Symbol::Location.
+enum class StageValue : foundation::uint8
+{
+    None,          ///< Not part of a stage interface.
+    Attribute,     ///< A vertex input attribute.
+    Varying,       ///< A stage-interface field other than the clip position.
+    ClipPosition,  ///< The stage interface's `: ClipPosition` field.
+    Target,        ///< A fragment color target.
+    Depth,         ///< A fragment output's `: Depth` field.
+    VertexIndex,   ///< A vertex entry point's `: VertexIndex` parameter.
+    InstanceIndex, ///< A vertex entry point's `: InstanceIndex` parameter.
+    FrontFacing,   ///< A fragment entry point's `: FrontFacing` parameter.
 };
 
 /// Element type of a scalar, vector or matrix, and the underlying type of an enum.
@@ -82,6 +123,8 @@ struct SemanticType final
     foundation::uint32 Count = 0;
     /// Declaring symbol of a Struct or Enum.
     foundation::uint32 Symbol = NO_SYMBOL;
+    /// Kind of a Resource.
+    ResourceKind Resource = ResourceKind::Texture2D;
 };
 
 /// What a symbol declares.
@@ -167,6 +210,16 @@ struct Symbol final
     foundation::uint32 FirstTypeParameter = 0;
     /// Number of type parameters; zero for a function that is not a template.
     foundation::uint32 TypeParameterCount = 0;
+    /// Stage of an entry point function.
+    EntryStage Stage = EntryStage::None;
+    /// What a stage-interface parameter or field carries.
+    StageValue Value = StageValue::None;
+    /// Location of an Attribute, Varying or Target, assigned in declaration order; NO_LOCATION
+    /// otherwise.
+    foundation::uint32 Location = NO_LOCATION;
+    /// Binding slot of a resource variable, assigned in declaration order; NO_LOCATION for
+    /// variables that are not bindings, including `extern slang` resources.
+    foundation::uint32 Slot = NO_LOCATION;
 };
 
 /// @brief One concrete instance of a specialized template.
@@ -219,6 +272,9 @@ enum class CallKind : foundation::uint8
     Construction,
     /// An explicit conversion of one value, such as `float32(count)` or `Mode(word)`.
     Conversion,
+    /// An operation of a resource, such as `image.Sample(imageSampler, uv)`; lowered to the Slang
+    /// method of that name.
+    ResourceMethod,
 };
 
 /// The value of an integer or boolean constant expression, as SemanticModel records it per node.
@@ -271,6 +327,8 @@ struct SemanticModel final
     foundation::Array<Conformance> Conformances;
     /// Instances of specialized templates, in the order calls first required them.
     foundation::Array<Specialization> Specializations;
+    /// Resource variables that are bindings, in slot order: entry `k` has Symbol::Slot `k`.
+    foundation::Array<foundation::uint32> Bindings;
     /// NodeTypes of each specialization's nodes; see Specialization::FirstFact.
     foundation::Array<foundation::uint32> SpecializedNodeTypes;
     /// NodeSymbols of each specialization's nodes.

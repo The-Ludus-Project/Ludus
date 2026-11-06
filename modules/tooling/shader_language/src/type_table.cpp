@@ -186,6 +186,57 @@ TypeOutcome TypeTable::TryGetArray(uint32 element, uint32 count, uint32& outType
     return TypeOutcome::Ok;
 }
 
+TypeOutcome TypeTable::TryGetResource(ResourceKind kind, uint32 element, uint32& outType) noexcept
+{
+    for (uint32 i = BUILTIN_TYPE_COUNT; i < mTypes.GetSize(); ++i)
+    {
+        const SemanticType& existing = mTypes[i];
+        if (existing.Kind == TypeKind::Resource && existing.Resource == kind && existing.Element == element)
+        {
+            outType = i;
+            return TypeOutcome::Ok;
+        }
+    }
+    if (mTypes.GetSize() >= MAX_SEMANTIC_TYPES)
+    {
+        return TypeOutcome::Limit;
+    }
+    SemanticType resource;
+    resource.Kind = TypeKind::Resource;
+    resource.Resource = kind;
+    resource.Element = element;
+    if (mTypes.TryAdd(resource) == false)
+    {
+        return TypeOutcome::OutOfMemory;
+    }
+    outType = static_cast<uint32>(mTypes.GetSize() - 1);
+    return TypeOutcome::Ok;
+}
+
+const ResourceSpelling* FindResourceSpellingOrNull(std::string_view name) noexcept
+{
+    for (const ResourceSpelling& spelling : RESOURCE_SPELLINGS)
+    {
+        if (spelling.Name == name)
+        {
+            return &spelling;
+        }
+    }
+    return nullptr;
+}
+
+std::string_view GetResourceName(ResourceKind kind) noexcept
+{
+    for (const ResourceSpelling& spelling : RESOURCE_SPELLINGS)
+    {
+        if (spelling.Kind == kind)
+        {
+            return spelling.Name;
+        }
+    }
+    return {};
+}
+
 TypeOutcome TypeTable::TryGetNamed(TypeKind kind, ScalarKind underlying, uint32 symbol, uint32& outType) noexcept
 {
     for (uint32 i = BUILTIN_TYPE_COUNT; i < mTypes.GetSize(); ++i)

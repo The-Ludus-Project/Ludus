@@ -144,10 +144,13 @@ def schema_header(source, programs, schemas, build):
 
 def _parse_report(text, build, source):
     """The records luslc wrote with --report: tab-separated `specialization` and
-    `groupshared-clear` lines."""
+    `groupshared-clear` lines. Graph programs receive their bindings, so `binding` and
+    `vertex-input` lines of standalone shaders are not kept."""
     report = {'specializations': [], 'groupshared_clears': []}
     for line in text.splitlines():
         fields = line.split('\t')
+        if fields[0] in ('binding', 'vertex-input'):
+            continue
         if fields[0] == 'specialization' and len(fields) == 4:
             report['specializations'].append({'template': fields[1], 'name': fields[2], 'generated': fields[3]})
         elif fields[0] == 'groupshared-clear' and len(fields) == 4 and fields[3].isdigit():

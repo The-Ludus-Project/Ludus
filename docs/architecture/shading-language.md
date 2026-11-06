@@ -27,9 +27,13 @@ L3 is in progress:
   output (`graph_schemas.luslh`), read-only `extern slang` uniforms, and a
   ported raster graph whose pixels match its Slang original on the GPU.
 
-Not yet done from L3: standalone vertex and fragment entry points with the
-binding model, and `.luslh` declarations generated from Slang reflection. L4
-is not implemented.
+- L3b: resource types, vertex and fragment entry points, automatic binding
+  slots and stage locations, the reported slot table with generated C++
+  constants, `.lusl` sources in `ludus_compile_shader`, and a composite shader
+  whose pixels match its Slang original on the GPU.
+
+Not yet done from L3: `.luslh` declarations generated from Slang reflection.
+L4 is not implemented.
 
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
@@ -454,25 +458,63 @@ float32x3 ShadeWithFog(in M material, in SurfaceHit hit, in FogParameters fog)
   `[stage(compute), threads(TILE_WIDTH, TILE_HEIGHT, 1)]`. System values are
   parameter semantics, for example
   `in uint32x3 dispatchThread : DispatchThreadId`.
-- **Vertex and fragment stages** arrive in L3, with the binding model.
+- **Vertex and fragment entry points** (L3) take `[stage(vertex)]` and
+  `[stage(fragment)]`. Their interfaces are laid out by rule, never by
+  hand-written locations:
+  - **Vertex inputs** are the `in` parameters of a vertex entry point: numeric
+    scalars and vectors, or structs of them. They take locations from 0 in
+    declaration order, struct fields flattened in field order. `VertexIndex`
+    and `InstanceIndex` parameter semantics are system values and take no
+    location.
+  - **The stage interface** is the struct a vertex entry point returns and a
+    fragment entry point reads. Exactly one field is `float32x4 name :
+    ClipPosition`. The other fields take locations from 0 in field order;
+    integer fields are interpolated flat automatically. In one module, every
+    fragment entry point reads the struct the vertex entry points return.
+  - **Fragment outputs**: a scalar or vector return is color target 0; a struct
+    return writes targets from 0 in field order, plus at most one `float32
+    name : Depth` field. `void` writes no color. A `bool` parameter with
+    `: FrontFacing` is a system value.
+  - A struct has one role: vertex input, stage interface or fragment output.
 - **Ray tracing** uses the shared scene shader API (`TraceClosest`,
   `TestVisibility`, ...) through its LUSL declarations. Native ray queries keep
   their existing out-of-line requirements on Metal.
 
 ### Resources and bindings
 
-L1 adds no binding syntax:
+- **Render-graph programs receive their bindings.** The graph build generates
+  binding, schema and entry wrappers; LUSL code reads them through generated
+  `extern slang` declarations (`graph_schemas.luslh`, `ray_shader.luslh`).
+- **Standalone shaders declare resources and the compiler binds them (L3).**
+  The resource types are `Texture2D<T>`, `RWTexture2D<T>`, `SamplerState`,
+  `ConstantBuffer<S>`, `StructuredBuffer<T>` and `RWStructuredBuffer<T>`.
+  A top-level variable of one of these types, without `static`, `const`,
+  `groupshared` or an initializer, is a binding:
 
-- **Bindings come from the render graph.** Its build already generates binding,
-  schema and entry wrappers.
-- **LUSL code receives typed contexts.** `SceneContext`, `RayLaunch` and
-  generated schema structs arrive through their LUSL declarations.
-- **A standalone binding model is an L3 design.** Its constraints are already
-  known:
-  - emit bindings in ascending slot order, because Slang numbers Metal buffers
-    by declaration order;
-  - keep the RHI shader boundary's interface annotations;
-  - no bindless until the RHI provides it.
+  ```c
+  Texture2D<float32x4> image;    // slot 0
+  SamplerState imageSampler;     // slot 1
+  ```
+
+  - **Slots are assigned, never written.** One counter numbers the module's
+    bindings from 0 in declaration order, after includes are expanded, across
+    all resource kinds. That matches the RHI's single group-zero slot space,
+    and the emitted bindings are in ascending slot order, which Metal's
+    declaration-order numbering needs. Lowering writes each slot through the
+    RHI boundary's annotations: `[[vk::binding(n, 0)]]` and the HLSL
+    `register` of the same number.
+  - **The slot table is an output.** The compiler reports each binding's name,
+    kind and slot, and each vertex input's location. Host code uses the
+    generated constants, never a literal. Adding or reordering a declaration
+    renumbers later slots, which changes the shader's build identity like any
+    other edit.
+  - **Resources are handles, not values.** They can be read through their
+    operations and passed as `in` arguments. They cannot be locals, fields,
+    array elements, return values, `out`/`inout` arguments, assigned or
+    zeroed.
+  - **No manual slots and no bindless.** An explicit-slot escape hatch is added
+    only when an interop case needs it; existing fixed Slang layouts stay
+    behind `extern slang`. Binding arrays wait for the RHI.
 - **The schema stays authoritative.** Generated schemas remain the single source
   of host/shader layout. LUSL does not become a second schema owner. The schema
   generator gains a LUSL declaration output instead.

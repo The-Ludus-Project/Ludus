@@ -1280,6 +1280,18 @@ private:
             return node;
         }
         parseArraySizes(node);
+        // A struct field may name what it carries in a stage interface: `float32x4 Position :
+        // ClipPosition;`.
+        if (scope == DeclarationScope::Struct && consumePunctuator(Punctuator::Colon) == true)
+        {
+            const uint32 semantic = createNode(SyntaxKind::Semantic);
+            if (parseDeclaredName(semantic) == false)
+            {
+                return node;
+            }
+            finish(semantic);
+            addChild(node, semantic);
+        }
         if (consumePunctuator(Punctuator::Equal) == true)
         {
             if (isWord("void") == true)
