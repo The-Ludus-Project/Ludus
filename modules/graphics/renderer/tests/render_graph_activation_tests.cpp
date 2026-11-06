@@ -344,6 +344,26 @@ Array<uint8> MakeMultiTargetPackageBytes(std::string_view vertexSpirv, bool hasF
     writer.WritePadded(PackageOptions{}.PassName);
     return Move(writer.Bytes);
 }
+/// DXIL-like container bytes: binary, with zero and non-UTF-8 bytes, never decoded as text.
+constexpr std::string_view DXIL_BYTES{"DXBC\0\xff\x80\x01binary container", 24};
+/// A color generation carrying WGSL and DXIL stages; vertexTarget names the DXIL vertex record's target.
+Array<uint8> MakeDxilPackageBytes(uint32 vertexTarget)
+{
+    PackageWriter writer;
+    WritePlan(writer, {}, 4);
+    WriteStage(writer, format::StageRole::ColorVertex, format::ShaderTarget::Wgsl, VERTEX_TEXT, "VertexMain");
+    WriteStage(writer,
+               format::StageRole::ColorVertex,
+               static_cast<format::ShaderTarget>(vertexTarget),
+               DXIL_BYTES,
+               "VertexMain");
+    WriteStage(writer, format::StageRole::ColorFragment, format::ShaderTarget::Wgsl, FRAGMENT_TEXT, "FragmentMain");
+    WriteStage(writer, format::StageRole::ColorFragment, format::ShaderTarget::Dxil, DXIL_BYTES, "FragmentMain");
+    writer.WriteSceneResources(format::PACKAGE_VERSION);
+    writer.WriteWord(static_cast<uint32>(PackageOptions{}.PassName.size()));
+    writer.WritePadded(PackageOptions{}.PassName);
+    return Move(writer.Bytes);
+}
 core::UniquePtr<renderer::RenderGraphPackage> MakePackage(const PackageOptions& options)
 {
     const Array<uint8> bytes = MakePackageBytes(options);
@@ -605,6 +625,36 @@ TEST_CASE("RG3 runtime packages decode SPIR-V words little-endian beside every t
     CHECK(programs.DepthVertex.Artifact.Spirv.empty() == true);
     CHECK(programs.DepthVertex.Inputs.empty() == true);
     CHECK(programs.DepthFragment.Artifact.Stage == rhi::ShaderStage::Vertex);
+}
+
+TEST_CASE("RG3 runtime packages carry DXIL containers as bytes for Direct3D 12", "[render-graph][activation]")
+{
+    const Array<uint8> package = MakeDxilPackageBytes(static_cast<uint32>(format::ShaderTarget::Dxil));
+    Array<uint8> copy;
+    for (const uint8 value : package)
+    {
+        copy.Add(value);
+    }
+    renderer::RenderGraphPackage decoded;
+    REQUIRE(decoded.Decode({copy.GetData(), copy.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+    // The package owns its bytes: the caller's buffer may change after decoding.
+    for (usize i = 0; i < copy.GetSize(); ++i)
+    {
+        copy[i] = 0;
+    }
+    const renderer::RenderGraphPrograms programs = decoded.GetPrograms({}, {});
+    for (const rhi::RasterShaderDescription* description : {&programs.ColorVertex, &programs.ColorFragment})
+    {
+        const rhi::ShaderDescription& artifact = description->Artifact;
+        REQUIRE(artifact.Dxil.size() == DXIL_BYTES.size());
+        CHECK(std::memcmp(artifact.Dxil.data(), DXIL_BYTES.data(), DXIL_BYTES.size()) == 0);
+    }
+    CHECK(programs.ColorVertex.Artifact.DxilEntry == "VertexMain");
+    CHECK(programs.ColorFragment.Artifact.DxilEntry == "FragmentMain");
+    CHECK(programs.ColorVertex.Artifact.Wgsl == VERTEX_TEXT);
+    // A target past DXIL is not a known representation.
+    CHECK(DecodeBytes(MakeDxilPackageBytes(static_cast<uint32>(format::ShaderTarget::Dxil) + 1)) ==
+          renderer::RenderGraphPackageStatus::Malformed);
 }
 
 TEST_CASE("RG3 SPIR-V artifacts reject partial words and unpaired stages", "[render-graph][activation]")

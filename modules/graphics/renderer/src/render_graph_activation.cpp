@@ -32,7 +32,7 @@ namespace
 constexpr uint32 MAX_ASPECT = static_cast<uint32>(format::Aspect::Buffer);
 constexpr uint32 MAX_TECHNIQUE = static_cast<uint32>(format::TECHNIQUE_COUNT - 1);
 constexpr uint32 MAX_VISIBILITY = static_cast<uint32>(format::Visibility::Both);
-constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::GlslEs);
+constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::Dxil);
 constexpr uint32 MAX_LOAD = static_cast<uint32>(format::Load::Discard);
 constexpr uint32 MAX_STORE = static_cast<uint32>(format::Store::Discard);
 static_assert(static_cast<uint32>(format::RayTraversal::NativeQuery) == LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY &&
@@ -142,6 +142,8 @@ struct RenderGraphPackage::State final
         std::string_view Entry;
         std::string_view Text;
         Array<uint32> Words;
+        /// DXIL container bytes, borrowed from the package like Text.
+        std::span<const uint8> Binary;
         /// GLSL ES uniform block names by binding number; empty for other targets.
         StaticArray<std::string_view, rhi::RASTER_BINDING_COUNT> Blocks{};
         StaticArray<std::string_view, rhi::RASTER_BINDING_COUNT> TextureNames{};
@@ -408,6 +410,10 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             {
                 static_cast<void>(TryReadLittleEndian(artifact.subspan(word * sizeof(uint32)), view.Words[word]));
             }
+        }
+        else if (target == static_cast<uint32>(format::ShaderTarget::Dxil))
+        {
+            view.Binary = artifact;
         }
         else
         {
@@ -1334,6 +1340,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         const State::StageView& spirv = views[static_cast<usize>(format::ShaderTarget::Spirv)];
         const State::StageView& wgsl = views[static_cast<usize>(format::ShaderTarget::Wgsl)];
         const State::StageView& glsl = views[static_cast<usize>(format::ShaderTarget::GlslEs)];
+        const State::StageView& dxil = views[static_cast<usize>(format::ShaderTarget::Dxil)];
         for (usize slot = 0; slot < rhi::RASTER_BINDING_COUNT; ++slot)
         {
             description.TextureNames[slot] = glsl.TextureNames[slot];
@@ -1353,6 +1360,11 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         {
             description.Artifact.Wgsl = wgsl.Text;
             description.Artifact.WgslEntry = wgsl.Entry;
+        }
+        if (dxil.IsPresent == true)
+        {
+            description.Artifact.Dxil = dxil.Binary;
+            description.Artifact.DxilEntry = dxil.Entry;
         }
         if (glsl.IsPresent == true)
         {
