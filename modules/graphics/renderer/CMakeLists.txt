@@ -409,13 +409,16 @@ if(TARGET ludus_renderer_render_tests)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_authored renderer_authored_shadow renderer_clustered_authored renderer_clustered_authored_shadow)
 endif()
 
-# Windows: rg2 graphs authored for the dxil profile compile through the pinned DXC and cook
-# into runtime packages whose stages decode to signed DXIL (D6c). Drawing them is separate.
+# Windows: rg2 graphs authored for the dxil profile compile through the pinned DXC, cook into
+# runtime packages whose stages decode to signed DXIL, and draw on Direct3D 12 (D6c).
 if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND LUDUS_SLANG_COMPILER)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_render_graph_dxil_tests tests/render_graph_dxil_tests.cpp)
     target_link_libraries(ludus_render_graph_dxil_tests PRIVATE Ludus::GraphicsRenderer Ludus::FoundationContainers
-        Catch2::Catch2WithMain)
+        Ludus::FoundationMath Catch2::Catch2WithMain)
+    # Headless readback of the drawn frame and the renderer-owned composite stages.
+    target_include_directories(ludus_render_graph_dxil_tests PRIVATE ../rhi/src)
+    ludus_compile_renderer_shaders(TARGET ludus_render_graph_dxil_tests SHADERS renderer_composite)
     ludus_apply_project_defaults(ludus_render_graph_dxil_tests)
     ludus_enable_test_exceptions(ludus_render_graph_dxil_tests)
     set(RG2_TEST_PROFILES "[\"dxil\"]")
@@ -429,7 +432,7 @@ if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND 
         LUDUS_RG2_DXIL_SURFACE_PACKAGE="${rg2_dxil_surface_RUNTIME_PACKAGE}"
         LUDUS_RG2_DXIL_BOUND_PACKAGE="${rg2_dxil_bound_RUNTIME_PACKAGE}")
     add_test(NAME ludus_render_graph_dxil_tests COMMAND ludus_render_graph_dxil_tests)
-    set_tests_properties(ludus_render_graph_dxil_tests PROPERTIES LABELS "unit;render-graph;dxil" TIMEOUT 60)
+    set_tests_properties(ludus_render_graph_dxil_tests PROPERTIES LABELS "unit;render-graph;dxil;gpu" TIMEOUT 120)
 endif()
 
 if(TARGET ludus_renderer_render_tests)

@@ -1,11 +1,18 @@
-// Windows render-graph DXIL build evidence (D6c): rg2 graphs authored for the dxil profile
-// compile through the pinned DXC, cook into runtime packages and decode into Direct3D 12
-// shader descriptions. Pipeline creation and drawing on Direct3D 12 are separate.
+// Windows render-graph DXIL evidence (D6c): rg2 graphs authored for the dxil profile compile
+// through the pinned DXC, cook into runtime packages and decode into Direct3D 12 shader
+// descriptions, and the compiled graph draws extracted geometry on Direct3D 12 (WARP in CI).
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/matrix.hpp>
+#include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
+#include <ludus/graphics/renderer/views.hpp>
+#include <ludus/graphics/rhi/device.h>
 
+#include "internal/readback.h"
+#include "renderer_composite.h"
 #include "rg2_dxil_bound.h"
 #include "rg2_dxil_surface.h"
 
@@ -19,8 +26,68 @@ using namespace ludus::foundation;
 namespace renderer = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
 namespace packages = ludus::render_graph_packages;
+namespace shaders = ludus::shaders;
 namespace
 {
+constexpr uint32 WIDTH = 96;
+constexpr uint32 HEIGHT = 64;
+constexpr usize PIXEL_BYTES = static_cast<usize>(WIDTH) * HEIGHT * 4;
+constexpr usize VERTEX_COUNT = 3;
+constexpr usize INDEX_COUNT = 3;
+constexpr usize TABLE_COUNT = 1;
+struct RhiGuard final
+{
+    RhiGuard() noexcept
+    {
+        rhi::Shutdown();
+    }
+    ~RhiGuard() noexcept
+    {
+        rhi::Shutdown();
+    }
+};
+/// One red triangle drawn headlessly through a render graph, as the portable RG2 GPU suite does.
+struct GraphGpuFixture final
+{
+    RhiGuard Session;
+    rhi::DeviceHandle Device{};
+    rhi::SurfaceHandle Surface{};
+    renderer::RenderGraph Graph;
+    StaticArray<math::Vector3, VERTEX_COUNT> Positions{{{-.5F, -.5F, .5F}, {.5F, -.5F, .5F}, {0, .5F, .5F}}};
+    StaticArray<uint32, INDEX_COUNT> Indices{{0, 1, 2}};
+    StaticArray<renderer::RenderGraphMesh, TABLE_COUNT> Meshes{};
+    StaticArray<renderer::RenderGraphItem, TABLE_COUNT> Items{};
+    StaticArray<renderer::ViewDescription, TABLE_COUNT> Cameras{};
+    StaticArray<uint8, PIXEL_BYTES> Pixels{};
+    GraphGpuFixture()
+    {
+        rhi::DeviceDescription description;
+        description.Required.PortableRaster = true;
+        rhi::StartupInfo failure;
+        const rhi::DeviceStatus started =
+            rhi::CreateDevice({}, { .Width = WIDTH, .Height = HEIGHT }, description, Device, Surface, &failure);
+        REQUIRE(started == rhi::DeviceStatus::Ready);
+        Meshes[0].Geometry = {Positions.GetData(), Positions.GetSize(), Indices.GetData(), Indices.GetSize()};
+        Items[0].SourceId = 1;
+        Items[0].Material.Color = {1, 0, 0, 1};
+    }
+    void Update(uint64 revision)
+    {
+        renderer::RenderGraphReport report;
+        REQUIRE(Graph.Update({Meshes.GetData(), Meshes.GetSize()},
+                             {Items.GetData(), Items.GetSize()},
+                             {Cameras.GetData(), Cameras.GetSize()},
+                             revision,
+                             renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                             report) == rhi::RasterStatus::Ready);
+    }
+    void Render()
+    {
+        rhi::SubmissionToken completion;
+        REQUIRE(Graph.Render(Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(Pixels.AsSpan()) == true);
+    }
+};
 // DXBC header: code, 16-byte hash, version and total size; unsigned output has a constant hash.
 bool IsSignedDxil(std::span<const uint8> bytes)
 {
@@ -73,4 +140,29 @@ TEST_CASE("Render graphs built for the dxil profile cook signed DXIL stages", "[
     // The compiled headers carry the same plans; their programs need the composite stages.
     CHECK(packages::rg2_dxil_surface::MakePlan().Passes.GetSize() != 0);
     CHECK(packages::rg2_dxil_bound::MakePlan().Passes.GetSize() != 0);
+}
+
+TEST_CASE("A DXIL render graph draws extracted geometry on Direct3D 12 and follows edits", "[render-graph][dxil][gpu]")
+{
+    GraphGpuFixture fixture;
+    REQUIRE(fixture.Graph.Initialize(fixture.Device,
+                                     packages::rg2_dxil_surface::MakePlan(),
+                                     packages::rg2_dxil_surface::MakePrograms(
+                                         shaders::renderer_composite::Vertex(),
+                                         shaders::renderer_composite::Fragment())) == rhi::RasterStatus::Ready);
+    fixture.Update(1);
+    fixture.Render();
+    const usize centerPixel = (usize{32} * WIDTH + 48) * 4;
+    CHECK(fixture.Pixels[centerPixel] == 255);
+    CHECK(fixture.Pixels[centerPixel + 1] == 0);
+    // Moving the instance and then the camera moves the triangle off and back over the center.
+    fixture.Items[0].MeshToWorld.Translation.X = 1;
+    fixture.Update(2);
+    fixture.Render();
+    CHECK(fixture.Pixels[centerPixel] == 0);
+    fixture.Cameras[0].WorldToClip.Columns[3].X = -1;
+    fixture.Update(3);
+    fixture.Render();
+    CHECK(fixture.Pixels[centerPixel] == 255);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 3);
 }
