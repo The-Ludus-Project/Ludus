@@ -436,6 +436,258 @@ struct Compiler::State final
                                                                                        : Status::Unavailable;
     }
 };
+namespace
+{
+/// @brief Builds DeclarationResult records from Slang's declaration reflection.
+///
+/// Thanks to the Slang team, "Reflection API" (Slang User Guide, chapter 9,
+/// https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/09-reflection.html),
+/// whose DeclReflection walk this follows.
+class DeclarationReflector final
+{
+public:
+    explicit DeclarationReflector(DeclarationResult& outResult) noexcept : mResult(outResult) {}
+
+    /// Add the module-level declarations below `parent`; false when a limit or allocation fails.
+    [[nodiscard]] bool AddChildren(slang::DeclReflection* parent) noexcept
+    {
+        const uint32 count = parent->getChildrenCount();
+        for (uint32 i = 0; i < count; ++i)
+        {
+            slang::DeclReflection* childOrNull = parent->getChild(i);
+            if (childOrNull != nullptr && addDeclaration(childOrNull) == false)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+private:
+    [[nodiscard]] bool addDeclaration(slang::DeclReflection* declaration) noexcept
+    {
+        switch (declaration->getKind())
+        {
+            case slang::DeclReflection::Kind::Func: {
+                slang::FunctionReflection* functionOrNull = declaration->asFunction();
+                if (functionOrNull == nullptr)
+                {
+                    return true;
+                }
+                ReflectedDeclaration record;
+                record.Kind = DeclarationKind::Function;
+                if (appendText(functionOrNull->getName(), record.Name) == false ||
+                    reflectType(functionOrNull->getReturnType(), record.Type) == false)
+                {
+                    return false;
+                }
+                record.FirstMember = static_cast<uint32>(mResult.Members.GetSize());
+                for (uint32 i = 0; i < functionOrNull->getParameterCount(); ++i)
+                {
+                    slang::VariableReflection* parameterOrNull = functionOrNull->getParameterByIndex(i);
+                    if (parameterOrNull == nullptr)
+                    {
+                        continue;
+                    }
+                    ReflectedMember member;
+                    member.Direction =
+                        parameterOrNull->findModifier(slang::Modifier::InOut) != nullptr ? ReflectedDirection::Inout
+                        : parameterOrNull->findModifier(slang::Modifier::Out) != nullptr ? ReflectedDirection::Out
+                                                                                         : ReflectedDirection::In;
+                    if (addMember(parameterOrNull, member) == false)
+                    {
+                        return false;
+                    }
+                    ++record.MemberCount;
+                }
+                return addRecord(record);
+            }
+            case slang::DeclReflection::Kind::Struct: {
+                slang::TypeReflection* typeOrNull = declaration->getType();
+                if (typeOrNull == nullptr)
+                {
+                    return true;
+                }
+                ReflectedDeclaration record;
+                record.Kind = DeclarationKind::Struct;
+                if (appendText(typeOrNull->getName(), record.Name) == false)
+                {
+                    return false;
+                }
+                record.Type.Shape = ReflectedShape::Struct;
+                record.Type.Name = record.Name;
+                record.FirstMember = static_cast<uint32>(mResult.Members.GetSize());
+                for (uint32 i = 0; i < typeOrNull->getFieldCount(); ++i)
+                {
+                    slang::VariableReflection* fieldOrNull = typeOrNull->getFieldByIndex(i);
+                    if (fieldOrNull == nullptr || fieldOrNull->findModifier(slang::Modifier::Static) != nullptr)
+                    {
+                        continue;
+                    }
+                    ReflectedMember member;
+                    if (addMember(fieldOrNull, member) == false)
+                    {
+                        return false;
+                    }
+                    ++record.MemberCount;
+                }
+                return addRecord(record);
+            }
+            case slang::DeclReflection::Kind::Variable: {
+                slang::VariableReflection* variableOrNull = declaration->asVariable();
+                if (variableOrNull == nullptr || variableOrNull->findModifier(slang::Modifier::Static) == nullptr ||
+                    variableOrNull->findModifier(slang::Modifier::Const) == nullptr)
+                {
+                    return true;
+                }
+                ReflectedDeclaration record;
+                record.Kind = DeclarationKind::Constant;
+                if (appendText(variableOrNull->getName(), record.Name) == false ||
+                    reflectType(variableOrNull->getType(), record.Type) == false)
+                {
+                    return false;
+                }
+                record.FirstMember = static_cast<uint32>(mResult.Members.GetSize());
+                return addRecord(record);
+            }
+            case slang::DeclReflection::Kind::Namespace:
+                return AddChildren(declaration);
+            default:
+                // Generics, enums and declarations Slang does not reflect have no LUSL extern form yet.
+                return true;
+        }
+    }
+
+    [[nodiscard]] bool addRecord(const ReflectedDeclaration& record) noexcept
+    {
+        return mResult.Declarations.GetSize() < MAX_REFLECTED_DECLARATIONS &&
+               mResult.Declarations.TryAdd(record) == true;
+    }
+
+    [[nodiscard]] bool addMember(slang::VariableReflection* variable, ReflectedMember& inoutMember) noexcept
+    {
+        return appendText(variable->getName(), inoutMember.Name) == true &&
+               reflectType(variable->getType(), inoutMember.Type) == true &&
+               mResult.Members.GetSize() < MAX_REFLECTED_MEMBERS && mResult.Members.TryAdd(inoutMember) == true;
+    }
+
+    [[nodiscard]] bool appendText(const char* textOrNull, ReflectedText& outText) noexcept
+    {
+        const std::string_view text = textOrNull == nullptr ? std::string_view{} : std::string_view(textOrNull);
+        outText.Offset = static_cast<uint32>(mResult.Text.GetSize());
+        outText.Size = static_cast<uint32>(text.size());
+        return mResult.Text.TryAddRange(std::span<const char>(text.data(), text.size())) == true;
+    }
+
+    [[nodiscard]] static bool mapScalar(slang::TypeReflection::ScalarType scalar, ReflectedScalar& outScalar) noexcept
+    {
+        switch (scalar)
+        {
+            case slang::TypeReflection::ScalarType::Bool:
+                outScalar = ReflectedScalar::Bool;
+                return true;
+            case slang::TypeReflection::ScalarType::Int16:
+                outScalar = ReflectedScalar::Int16;
+                return true;
+            case slang::TypeReflection::ScalarType::UInt16:
+                outScalar = ReflectedScalar::Uint16;
+                return true;
+            case slang::TypeReflection::ScalarType::Int32:
+                outScalar = ReflectedScalar::Int32;
+                return true;
+            case slang::TypeReflection::ScalarType::UInt32:
+                outScalar = ReflectedScalar::Uint32;
+                return true;
+            case slang::TypeReflection::ScalarType::Int64:
+                outScalar = ReflectedScalar::Int64;
+                return true;
+            case slang::TypeReflection::ScalarType::UInt64:
+                outScalar = ReflectedScalar::Uint64;
+                return true;
+            case slang::TypeReflection::ScalarType::Float16:
+                outScalar = ReflectedScalar::Float16;
+                return true;
+            case slang::TypeReflection::ScalarType::Float32:
+                outScalar = ReflectedScalar::Float32;
+                return true;
+            case slang::TypeReflection::ScalarType::Float64:
+                outScalar = ReflectedScalar::Float64;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// The scalar element of a scalar, vector or matrix type.
+    [[nodiscard]] static slang::TypeReflection::ScalarType getElementScalar(slang::TypeReflection* type) noexcept
+    {
+        while (type != nullptr && (type->getKind() == slang::TypeReflection::Kind::Vector ||
+                                   type->getKind() == slang::TypeReflection::Kind::Matrix))
+        {
+            type = type->getElementType();
+        }
+        return type == nullptr ? slang::TypeReflection::ScalarType::None : type->getScalarType();
+    }
+
+    [[nodiscard]] bool reflectType(slang::TypeReflection* typeOrNull, ReflectedType& outType) noexcept
+    {
+        outType = ReflectedType{};
+        if (typeOrNull == nullptr)
+        {
+            return true;
+        }
+        slang::TypeReflection* type = typeOrNull;
+        if (type->getKind() == slang::TypeReflection::Kind::Array)
+        {
+            outType.ArrayCount = static_cast<uint32>(type->getElementCount());
+            type = type->getElementType();
+            if (type == nullptr || type->getKind() == slang::TypeReflection::Kind::Array || outType.ArrayCount == 0)
+            {
+                outType.ArrayCount = 0;
+                return appendText(typeOrNull->getName(), outType.Name);
+            }
+        }
+        const slang::TypeReflection::Kind kind = type->getKind();
+        if (kind == slang::TypeReflection::Kind::Scalar || kind == slang::TypeReflection::Kind::Vector ||
+            kind == slang::TypeReflection::Kind::Matrix)
+        {
+            const slang::TypeReflection::ScalarType scalar = getElementScalar(type);
+            if (kind == slang::TypeReflection::Kind::Scalar && scalar == slang::TypeReflection::ScalarType::Void)
+            {
+                outType.Shape = ReflectedShape::Void;
+                return true;
+            }
+            if (mapScalar(scalar, outType.Scalar) == true)
+            {
+                outType.Shape = kind == slang::TypeReflection::Kind::Scalar   ? ReflectedShape::Scalar
+                                : kind == slang::TypeReflection::Kind::Vector ? ReflectedShape::Vector
+                                                                              : ReflectedShape::Matrix;
+                outType.Rows = static_cast<uint8>(kind == slang::TypeReflection::Kind::Vector ? type->getElementCount()
+                                                  : kind == slang::TypeReflection::Kind::Matrix ? type->getRowCount()
+                                                                                                : 1);
+                outType.Columns =
+                    static_cast<uint8>(kind == slang::TypeReflection::Kind::Matrix ? type->getColumnCount() : 1);
+                return true;
+            }
+        }
+        if (kind == slang::TypeReflection::Kind::Struct)
+        {
+            outType.Shape = ReflectedShape::Struct;
+            return appendText(type->getName(), outType.Name);
+        }
+        const char* nameOrNull = type->getName();
+        if (nameOrNull != nullptr && std::string_view(nameOrNull) == "void")
+        {
+            outType.Shape = ReflectedShape::Void;
+            return true;
+        }
+        return appendText(nameOrNull, outType.Name);
+    }
+
+    DeclarationResult& mResult;
+};
+} // namespace
+
 Compiler::Compiler() noexcept = default;
 Compiler::~Compiler() noexcept = default;
 Status Compiler::Initialize() noexcept
@@ -504,6 +756,71 @@ Status Compiler::Compile(const Request& request, Result& outResult) noexcept
     static_cast<void>(compileSlang(lowering.GetSlangRequest(), outResult));
     lowering.Finish(request, outResult);
     outResult.Identity = request.Identity;
+    return outResult.Outcome;
+}
+Status Compiler::ReflectDeclarations(const Request& request, DeclarationResult& outResult) noexcept
+{
+    outResult = DeclarationResult{};
+    if (mState.Get() == nullptr)
+    {
+        outResult.Outcome = Status::Unavailable;
+        return outResult.Outcome;
+    }
+    if (internal::IsValid(request) == false || internal::IsLanguageSource(GetText(request.Source)) == true)
+    {
+        return outResult.Outcome;
+    }
+    State& state = *mState;
+    outResult.Outcome = state.Capture(request);
+    if (outResult.Outcome != Status::Ready)
+    {
+        return outResult.Outcome;
+    }
+    std::string_view sourceText;
+    for (usize i = 0; i < request.Files.GetSize(); ++i)
+    {
+        if (GetText(request.Files[i].Path) == GetText(request.Source))
+        {
+            sourceText = GetText(request.Files[i].Text);
+        }
+    }
+    // Slang reads the module text from a terminated copy; the snapshot holds the same bytes.
+    Array<char> source;
+    if (source.TryAddRange(std::span<const char>(sourceText.data(), sourceText.size())) == false ||
+        source.TryAdd('\0') == false)
+    {
+        outResult.Outcome = Status::OutOfMemory;
+        return outResult.Outcome;
+    }
+    outResult.Outcome = Status::CompileFailed;
+    Slang::ComPtr<slang::IBlob> diagnostics;
+    slang::IModule* moduleOrNull = state.Session->loadModuleFromSourceString("ludus_reflected_declarations",
+                                                                             state.Source.GetData(),
+                                                                             source.GetData(),
+                                                                             diagnostics.writeRef());
+    if (diagnostics.get() != nullptr)
+    {
+        const usize count =
+            diagnostics->getBufferSize() < MAX_DIAGNOSTIC_BYTES ? diagnostics->getBufferSize() : MAX_DIAGNOSTIC_BYTES;
+        static_cast<void>(CopyBytes(diagnostics->getBufferPointer(), count, outResult.Diagnostics));
+    }
+    slang::DeclReflection* rootOrNull = moduleOrNull == nullptr ? nullptr : moduleOrNull->getModuleReflection();
+    if (rootOrNull == nullptr)
+    {
+        return outResult.Outcome;
+    }
+    DeclarationReflector reflector(outResult);
+    if (reflector.AddChildren(rootOrNull) == false)
+    {
+        outResult.Declarations.Clear();
+        outResult.Members.Clear();
+        outResult.Text.Clear();
+        outResult.Outcome = Status::InvalidRequest;
+        return outResult.Outcome;
+    }
+    // A later snapshot replaces the session; the module name is reused within this one.
+    state.Session.setNull();
+    outResult.Outcome = Status::Ready;
     return outResult.Outcome;
 }
 Status Compiler::compileSlang(const Request& request, Result& outResult) noexcept
