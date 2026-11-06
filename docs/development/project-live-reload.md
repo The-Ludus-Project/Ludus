@@ -2,9 +2,10 @@
 
 Supported hosts are Linux x64 and macOS arm64/x64 with pinned Clang 23 and a
 matching Debug or Development SDK. CMake resolves the module's actual artifact;
-Linux uses ELF and macOS uses thin Mach-O. Windows DLL loading remains a separate
-backend and is not implemented. macOS requires the pinned compiler's sibling
-`dsymutil`; automatic setup does not install a different LLVM toolchain.
+Linux uses ELF and macOS uses thin Mach-O. macOS requires the pinned compiler's
+sibling `dsymutil`; automatic setup does not install a different LLVM toolchain.
+Windows hosts load and reload gameplay DLLs and check their PDBs, but the editor
+cannot start live play there yet; see [Windows DLLs and PDBs](#windows-dlls-and-pdbs).
 
 The editor reads project metadata without loading game code or preparing a
 build. It reports missing/stale CMake setup through the shared setup validator.
@@ -80,6 +81,43 @@ system process API, blocks reload and suspends heartbeat/query timeout budgets.
 Continue the process before reloading. Per-thread non-stop debugging is outside
 this acceptance profile. Release signing/notarization and hardened-runtime
 library validation are outside this local development host.
+
+## Windows DLLs and PDBs
+
+The GameHost loader opens a generation with `LoadLibraryExW`. The module's
+dependencies resolve from its own directory and the system directories, never from
+the current directory or `PATH`, and a missing dependency fails the load without a
+system dialog. Generation paths are UTF-8 and drive-absolute; relative,
+drive-relative and UNC paths are refused. A gameplay DLL exports only the
+`LudusGetGameApi` entry, which `LUDUS_GAME_API_EXPORT` marks `__declspec(dllexport)`
+on Windows.
+
+Windows locks a loaded DLL, so every generation must be a new file in its leased
+directory, as on the other hosts. Closing the last reference unmaps the image and
+releases the file. A reload that fails before commit leaves the previous
+generation running with its state unchanged. The same holds when retirement is
+uncertain: that generation stays pinned and gameplay stops until restart.
+
+A generation's symbols are its detached PDB. `scripts/python/play_windows.py` reads
+the DLL's single CodeView `RSDS` record and compares its GUID and age with the PDB's
+info stream GUID and DBI stream age. By default the PDB is the `.pdb` beside the
+DLL. A missing, foreign or stale PDB is rejected. The reader is bounded and never
+loads the image.
+
+Limits: Windows has no supervisor transport yet, so `--control-fd` and editor
+startup (`AwaitLoad`) return `ProtocolError`, and the editor cannot build or publish
+Windows generations. Standalone runs (`--module`) and in-process sessions load,
+reload and retire DLLs. In the MSVC Ninja lane, `ludus_game_host_loader_tests`,
+`ludus_game_host_reload_tests` and `ludus_game_host_windows_symbols` cover:
+
+- the single export
+- path rules
+- unmapping and file release
+- failure injection at each reload stage
+- work-lease draining
+- uncertain retirement
+- 150 distinct generations with bounded loaded modules and working set
+- matching and swapped PDBs
 
 ## Play and change code
 

@@ -106,8 +106,12 @@ def native_identity(path: Path, symbols: Path | None = None) -> dict[str, Any]:
     if sys.platform == "darwin":
         from play_macos import identity
         return identity(path, symbols)
+    if sys.platform == "win32":
+        # The DLL/executable and its detached PDB; see play_windows.identity.
+        from play_windows import identity
+        return identity(path, symbols)
     if sys.platform != "linux":
-        raise ProbeError("native live editing supports Linux and macOS")
+        raise ProbeError("native live editing supports Linux, macOS and Windows artifacts")
     result = elf_identity(path)
     return {**result, "matching_symbols": True,
             "artifact_type": "module" if result["elf_type"] == 3 else "host"}

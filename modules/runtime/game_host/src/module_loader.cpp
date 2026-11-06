@@ -1,11 +1,16 @@
 #include "internal/module_loader.h"
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/static_array.hpp>
 
 #include <cstring>
 #include <utility>
 
-#include <dlfcn.h>
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#    include <windows.h>
+#else
+#    include <dlfcn.h>
+#endif
 
 namespace ludus::runtime::game_host
 {
@@ -17,6 +22,97 @@ using game_api::GetGameApiFn;
 using game_api::Status;
 using ludus::foundation::uint8;
 using ludus::foundation::usize;
+
+/// Longest module path accepted, in UTF-8 bytes.
+constexpr usize MAX_MODULE_PATH_BYTES = 4096;
+
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+// Thanks to Microsoft, "LoadLibraryExW" and "Dynamic-Link Library Search Order" (Win32
+// documentation, https://learn.microsoft.com/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw,
+// https://learn.microsoft.com/windows/win32/dlls/dynamic-link-library-search-order):
+// a generation's dependencies resolve beside it and in system directories, never from the
+// current directory or PATH. A DLL exports only what it names, as hidden visibility does on
+// ELF/Mach-O, and the loader keeps each generation's image and exports under its own handle.
+// Windows locks a loaded DLL, so every generation is a distinct file in its leased directory.
+
+// Drive-absolute paths only ("C:\..." or "C:/..."); relative and UNC names are refused.
+[[nodiscard]] bool IsAbsoluteModulePath(std::string_view path) noexcept
+{
+    constexpr usize DRIVE_PREFIX_BYTES = 3;
+    if (path.size() < DRIVE_PREFIX_BYTES)
+    {
+        return false;
+    }
+    const char drive = path[0];
+    const bool isLetter = (drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z');
+    return isLetter == true && path[1] == ':' && (path[2] == '\\' || path[2] == '/');
+}
+[[nodiscard]] void* OpenLibrary(const std::string& path) noexcept
+{
+    constexpr usize MAX_WIDE_PATH = MAX_MODULE_PATH_BYTES + 1;
+    ludus::foundation::StaticArray<wchar_t, MAX_WIDE_PATH> widePath{};
+    const int count = ::MultiByteToWideChar(CP_UTF8,
+                                            MB_ERR_INVALID_CHARS,
+                                            path.data(),
+                                            static_cast<int>(path.size()),
+                                            widePath.GetData(),
+                                            static_cast<int>(MAX_MODULE_PATH_BYTES));
+    if (count <= 0)
+    {
+        return nullptr;
+    }
+    widePath[static_cast<usize>(count)] = L'\0';
+    // LoadLibraryExW requires backslashes in a fully qualified path; CMake spells forward ones.
+    for (int i = 0; i < count; ++i)
+    {
+        if (widePath[static_cast<usize>(i)] == L'/')
+        {
+            widePath[static_cast<usize>(i)] = L'\\';
+        }
+    }
+    // A missing dependency must fail the load, never open a system error dialog.
+    DWORD previousMode = 0;
+    const bool hasMode = ::SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &previousMode) != FALSE;
+    HMODULE module = ::LoadLibraryExW(widePath.GetData(),
+                                      nullptr,
+                                      LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (hasMode == true)
+    {
+        (void)::SetThreadErrorMode(previousMode, nullptr);
+    }
+    return static_cast<void*>(module);
+}
+[[nodiscard]] void* FindEntry(void* handle) noexcept
+{
+    // GetProcAddress returns a generic FARPROC; the entry's signature is fixed by the ABI.
+    return reinterpret_cast<void*>(::GetProcAddress(static_cast<HMODULE>(handle), LUDUS_GAME_ENTRY_SYMBOL));
+}
+[[nodiscard]] bool CloseLibrary(void* handle) noexcept
+{
+    return ::FreeLibrary(static_cast<HMODULE>(handle)) != FALSE;
+}
+#else
+[[nodiscard]] bool IsAbsoluteModulePath(std::string_view path) noexcept
+{
+    return path.empty() == false && path.front() == '/';
+}
+[[nodiscard]] void* OpenLibrary(const std::string& path) noexcept
+{
+    // Immediate resolution + local scope: no lazy binding surprises, and the
+    // module does not export its symbols into the global namespace. We also
+    // ask for a fresh mapping (NODELETE is intentionally NOT set so a close can
+    // retire the generation when the OS chooses to unmap).
+    return ::dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+}
+[[nodiscard]] void* FindEntry(void* handle) noexcept
+{
+    return ::dlsym(handle, LUDUS_GAME_ENTRY_SYMBOL);
+}
+[[nodiscard]] bool CloseLibrary(void* handle) noexcept
+{
+    return ::dlclose(handle) == 0;
+}
+#endif
 
 // Minimum usable table size: everything through the mandatory Update entry.
 // A module reporting a smaller table cannot provide the mandatory operations.
@@ -150,7 +246,7 @@ bool LoadedModule::Close() noexcept
         // destroyed all module instances/candidates first. A dlclose error is
         // surfaced so the caller can require a restart rather than assume the
         // image was retired.
-        ok = (::dlclose(Handle_) == 0);
+        ok = CloseLibrary(Handle_);
         if (ok == false)
         {
             Pinned_ = true;
@@ -176,30 +272,27 @@ LoadStatus LoadModule(std::string_view path,
         return LoadStatus::MetadataInconsistent;
     }
 
-    if (path.size() > 4096 || path.find('\0') != std::string_view::npos || path.empty() || path.front() != '/')
+    if (path.size() > MAX_MODULE_PATH_BYTES || path.find('\0') != std::string_view::npos ||
+        IsAbsoluteModulePath(path) == false)
     {
         // Load only from an absolute canonical path inside a leased generation.
         return LoadStatus::PathInvalid;
     }
 
-    // Null-terminate the path for dlopen without heap churn beyond the string.
+    // Null-terminate the path for the native loader without heap churn beyond the string.
     const std::string pathZ(path);
 
-    // Immediate resolution + local scope: no lazy binding surprises, and the
-    // module does not export its symbols into the global namespace. We also
-    // ask for a fresh mapping (NODELETE is intentionally NOT set so a close can
-    // retire the generation when the OS chooses to unmap).
-    void* handle = ::dlopen(pathZ.c_str(), RTLD_NOW | RTLD_LOCAL);
+    void* handle = OpenLibrary(pathZ);
     if (handle == nullptr)
     {
         return LoadStatus::DlopenFailed;
     }
 
     // Resolve exactly the one public entry symbol.
-    void* symbol = ::dlsym(handle, LUDUS_GAME_ENTRY_SYMBOL);
+    void* symbol = FindEntry(handle);
     if (symbol == nullptr)
     {
-        ::dlclose(handle);
+        (void)CloseLibrary(handle);
         return LoadStatus::EntryMissing;
     }
 
@@ -214,7 +307,7 @@ LoadStatus LoadModule(std::string_view path,
     const Status fillStatus = entry(hostAbiMajor, hostAbiMinor, &table);
     if (fillStatus != Status::Ok)
     {
-        ::dlclose(handle);
+        (void)CloseLibrary(handle);
         return LoadStatus::AbiRejected;
     }
 
@@ -223,14 +316,14 @@ LoadStatus LoadModule(std::string_view path,
     if (table.AbiMajor != hostAbiMajor || table.AbiMinor > hostAbiMinor || table.StructSize < kMinTableSize ||
         table.StructSize > sizeof(GameApiTable))
     {
-        ::dlclose(handle);
+        (void)CloseLibrary(handle);
         return LoadStatus::AbiRejected;
     }
     // The mandatory callbacks must be present and within the negotiated size.
     if (FieldWithin(table.StructSize, &GameApiTable::Update) == false || table.Query == nullptr ||
         table.Create == nullptr || table.Destroy == nullptr || table.Update == nullptr)
     {
-        ::dlclose(handle);
+        (void)CloseLibrary(handle);
         return LoadStatus::AbiRejected;
     }
 
@@ -240,7 +333,7 @@ LoadStatus LoadModule(std::string_view path,
     const Status queryStatus = table.Query(&metadata);
     if (queryStatus != Status::Ok)
     {
-        ::dlclose(handle);
+        (void)CloseLibrary(handle);
         return LoadStatus::QueryFailed;
     }
     // Query must agree with the table on ABI, report a consistent metadata size,
@@ -249,7 +342,7 @@ LoadStatus LoadModule(std::string_view path,
         metadata.AbiMinor != table.AbiMinor || metadata.IdentityLength > game_api::kIdentityMax ||
         metadata.Reserved != 0 || table.Reserved != 0 || (metadata.Capabilities & ~uint32{15}) != 0)
     {
-        ::dlclose(handle);
+        (void)CloseLibrary(handle);
         return LoadStatus::MetadataInconsistent;
     }
     // Every advertised capability must have all its callbacks present and
@@ -263,7 +356,7 @@ LoadStatus LoadModule(std::string_view path,
     {
         if (game_api::HasCapability(metadata.Capabilities, cap) && CapabilityComplete(table, cap) == false)
         {
-            ::dlclose(handle);
+            (void)CloseLibrary(handle);
             return LoadStatus::MetadataInconsistent;
         }
     }
@@ -272,7 +365,7 @@ LoadStatus LoadModule(std::string_view path,
     // (SDK variant / compiler / target / ABI). No Create is attempted.
     if (IdentityMatches(metadata, hostIdentity) == false)
     {
-        ::dlclose(handle);
+        (void)CloseLibrary(handle);
         return LoadStatus::IdentityRejected;
     }
 
