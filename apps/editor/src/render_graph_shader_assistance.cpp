@@ -316,21 +316,34 @@ void RenderGraphShaderAssistance::publish()
     const QString path = QFileInfo(uri.toLocalFile()).canonicalFilePath();
     const QString temporary = QFileInfo(mTemporary.path()).canonicalFilePath() + QLatin1Char('/');
     const QString server = mResult.value(QStringLiteral("server")).toString();
+    // LUSL sources are served by `luslc lsp` from the project SDK, Slang sources by slangd.
+    const bool isLusl = mResult.value(QStringLiteral("language")).toString() == QStringLiteral("lusl");
     if (mResult.value(QStringLiteral("version")).toInt() != 1 || uri.isLocalFile() == false ||
         path.startsWith(temporary) == false)
     {
         mAssistance.Cancel();
-        setStatus(
-            QStringLiteral("Shader assistance needs a readable generated context and executable slangd beside the "
-                           "selected slangc. Repair project tools or the compiler override, then retry."));
+        setStatus(isLusl == true
+                      ? QStringLiteral("LUSL assistance needs a readable generated context. Repair project tools, then "
+                                       "retry.")
+                      : QStringLiteral("Shader assistance needs a readable generated context and executable slangd "
+                                       "beside the selected slangc. Repair project tools or the compiler override, "
+                                       "then retry."));
         return;
     }
     if (QFileInfo(server).isExecutable() == false)
     {
         mAssistance.Cancel();
-        setStatus(QStringLiteral("Missing executable slangd beside the selected slangc. Repair project shader tools "
-                                 "or the compiler override, then Retry assistance."));
+        setStatus(isLusl == true
+                      ? QStringLiteral("Missing executable luslc in the project SDK's bin directory. Repair project "
+                                       "tools or set LUDUS_LUSLC, then Retry assistance.")
+                      : QStringLiteral("Missing executable slangd beside the selected slangc. Repair project shader "
+                                       "tools or the compiler override, then Retry assistance."));
         return;
+    }
+    QStringList serverArguments;
+    for (const QJsonValue& argument : mResult.value(QStringLiteral("server_arguments")).toArray())
+    {
+        serverArguments.append(argument.toString());
     }
     QString prefix = mResult.value(QStringLiteral("prefix")).toString();
     QString suffix = mResult.value(QStringLiteral("suffix")).toString();
@@ -383,7 +396,7 @@ void RenderGraphShaderAssistance::publish()
                            uri.toString(),
                            prefix,
                            suffix,
-                           {},
+                           serverArguments,
                            navigationSources);
 }
 } // namespace ludus::editor

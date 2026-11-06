@@ -506,7 +506,16 @@ def cmd_render_graph(args) -> int:
                                      context=args.context, root=args.root)
             if args.project:
                 options['cancel']()  # Recheck the SDK selection after context generation too.
-            payload['server'] = str(Path(compiler).with_name('slangd.exe' if os.name == 'nt' else 'slangd'))
+            if payload.get('language') == 'lusl':
+                # LUSL sources are served by the LUSL language server, not slangd.
+                from .render_graph_language import find_luslc
+                luslc = find_luslc(helper)
+                if luslc is None:
+                    raise ToolingError("MissingTools", "LUSL assistance needs luslc: use an SDK that installs "
+                                       "bin/luslc, or set LUDUS_LUSLC to its path.")
+                payload['server'] = str(luslc)
+            else:
+                payload['server'] = str(Path(compiler).with_name('slangd.exe' if os.name == 'nt' else 'slangd'))
             human = _json.dumps(payload, indent=2)
     elif args.graph_action in ("new-build", "build", "verify-package", "emit-runtime", "cook-runtime", "ray-path-capture",
                                "capture-profile", "capture-library"):

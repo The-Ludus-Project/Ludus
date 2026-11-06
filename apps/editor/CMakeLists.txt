@@ -509,6 +509,7 @@ add_library(ludus_editor_code STATIC
     src/internal/code_multi_cursor.h src/code_multi_cursor.cpp
     src/internal/code_document_controller.h src/code_document_controller.cpp
     src/internal/code_formatter.h src/code_formatter.cpp
+    src/internal/lusl_formatting.h src/lusl_formatting.cpp
     src/internal/slang_language_service.h src/slang_language_service.cpp
     src/internal/code_assistance.h src/code_assistance.cpp)
 file(READ "${PROJECT_SOURCE_DIR}/config/tool_versions.json" editor_tool_versions)
@@ -526,6 +527,8 @@ target_include_directories(ludus_editor_code PRIVATE src)
 target_compile_definitions(ludus_editor_code PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
 target_link_libraries(ludus_editor_code PUBLIC Qt6::Widgets Ludus::FoundationContainers
     PRIVATE Ludus::FoundationBase Ludus::FoundationProfiling Ludus::FoundationStrings)
+# LUSL coloring and formatting use the LUSL compiler library in process, natively and in the browser.
+target_link_libraries(ludus_editor_code PRIVATE Ludus::ShaderLanguage)
 if(NOT EMSCRIPTEN)
     target_link_libraries(ludus_editor_code PRIVATE Qt6::Concurrent)
 endif()

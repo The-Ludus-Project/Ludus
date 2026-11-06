@@ -81,6 +81,11 @@ constexpr CodeLanguagePair SLANG_AUTO_CLOSING[] = {
     { .Open = '"', .Close = '"' },
 };
 
+constexpr BorrowedView<const char> LUSL_SUFFIXES[] = {
+    Literal(".lusl"),
+    Literal(".luslh"),
+};
+
 constexpr CodeLanguagePair SLANG_SURROUNDING[] = {
     { .Open = '(', .Close = ')' },
     { .Open = '[', .Close = ']' },
@@ -105,6 +110,7 @@ const CodeLanguageDescriptor TABLE[] = {
         .SurroundingPairs = {},
         .HasLexicalColoring = false,
         .HasStructuralEditing = false,
+        .HasLanguageService = false,
     },
     CodeLanguageDescriptor
     {
@@ -118,9 +124,30 @@ const CodeLanguageDescriptor TABLE[] = {
         .SurroundingPairs = BorrowedView<const CodeLanguagePair>(SLANG_SURROUNDING),
         .HasLexicalColoring = true,
         .HasStructuralEditing = true,
+        .HasLanguageService = true,
+    },
+    // LUSL is C-like: the Slang pairs, comments and structural editing apply unchanged.
+    CodeLanguageDescriptor
+    {
+        .Language = CodeLanguage::Lusl,
+        .Identifier = Literal("lusl"),
+        .DisplayName = Literal("LUSL"),
+        .SuffixPatterns = BorrowedView<const BorrowedView<const char>>(LUSL_SUFFIXES),
+        .LineComment = Literal("//"),
+        .BracketPairs = BorrowedView<const CodeLanguagePair>(SLANG_BRACKETS),
+        .AutoClosingPairs = BorrowedView<const CodeLanguagePair>(SLANG_AUTO_CLOSING),
+        .SurroundingPairs = BorrowedView<const CodeLanguagePair>(SLANG_SURROUNDING),
+        .HasLexicalColoring = true,
+        .HasStructuralEditing = true,
+        .HasLanguageService = true,
     },
 };
 } // namespace
+
+bool HasCodeLanguageService(CodeLanguage language) noexcept
+{
+    return CodeLanguageRegistry::Get().Describe(language).HasLanguageService;
+}
 
 CodeLanguageRegistry::CodeLanguageRegistry() noexcept : mDescriptors(BorrowedView<const CodeLanguageDescriptor>(TABLE))
 {

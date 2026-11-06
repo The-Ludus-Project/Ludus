@@ -4,15 +4,18 @@
 #include "internal/code_edit_set.h"
 #include "internal/code_editor_panel.h"
 #include "internal/code_formatter.h"
+#include "internal/code_language_registry.h"
 #include "internal/code_navigation.h"
 #include "internal/code_text.h"
 #include "internal/document_history.h"
+#include "internal/lusl_formatting.h"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#include <QColor>
 #include <QDialog>
 #include <QDir>
 #include <QFile>
@@ -24,7 +27,9 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextBlock>
 #include <QTextDocument>
+#include <QTextLayout>
 #include <QTimer>
 #include <QUrl>
 
@@ -1004,3 +1009,69 @@ TEST_CASE("Native Slang resolves authored symbols references and generated API d
     CHECK(host.CanUndo() == false);
 }
 #endif
+
+namespace
+{
+/// The foreground of the character at `position` in the editor's document, as its highlighter set it.
+QColor GetForeground(const CodeEditor& editor, int position)
+{
+    const QTextBlock block = editor.document()->findBlock(position);
+    const int offset = position - block.position();
+    for (const QTextLayout::FormatRange& range : block.layout()->formats())
+    {
+        if (offset >= range.start && offset < range.start + range.length)
+        {
+            return range.format.foreground().color();
+        }
+    }
+    return {};
+}
+} // namespace
+
+TEST_CASE("LUSL sources color their keywords and fixed-width types", "[editor][text][lusl]")
+{
+    CodeEditor editor;
+    editor.setPlainText(QStringLiteral("concept Opaque<T> = true;\nstruct Light\n{\n    float32x3 Color;\n};\n"));
+    editor.SetLanguage(CodeLanguage::Lusl);
+    const QString text = editor.toPlainText();
+    const QColor conceptKeyword = GetForeground(editor, static_cast<int>(text.indexOf(QStringLiteral("concept"))));
+    const QColor structure = GetForeground(editor, static_cast<int>(text.indexOf(QStringLiteral("struct"))));
+    const QColor vector = GetForeground(editor, static_cast<int>(text.indexOf(QStringLiteral("float32x3"))));
+    const QColor light = GetForeground(editor, static_cast<int>(text.indexOf(QStringLiteral("Light"))));
+    // `concept` is a LUSL keyword the Slang lexer does not know.
+    CHECK(conceptKeyword.isValid() == true);
+    CHECK(conceptKeyword == structure);
+    CHECK(vector.isValid() == true);
+    CHECK(vector != structure);
+    // A name after `struct` is a declared type.
+    CHECK(light == vector);
+    editor.SetLanguage(CodeLanguage::Slang);
+    CHECK(GetForeground(editor, static_cast<int>(text.indexOf(QStringLiteral("concept")))) != structure);
+}
+
+TEST_CASE("LUSL formats in process as one undoable edit", "[editor][text][lusl]")
+{
+    CodeEditor editor;
+    MemoryCodeDocument document(QByteArrayLiteral("static const uint32 COUNT=4;\n"));
+    CodeDocumentController controller(editor);
+    controller.Bind(&document);
+    editor.SetLanguage(CodeLanguage::Lusl);
+    QObject::connect(&editor, &CodeEditor::UndoRequested, &controller, [&]() {
+        if (document.Undo() == true)
+        {
+            controller.Synchronize();
+            controller.RestoreSelection(document.GetState().Selection);
+        }
+    });
+    CHECK(FormatLuslDocument(controller) == QStringLiteral("Source formatted; Save publishes the draft."));
+    CHECK(document.GetState().Text == QByteArrayLiteral("static const uint32 COUNT = 4;\n"));
+    CHECK(editor.toPlainText() == QStringLiteral("static const uint32 COUNT = 4;\n"));
+    CHECK(FormatLuslDocument(controller) == QStringLiteral("Source is already formatted."));
+    editor.Undo();
+    CHECK(document.GetState().Text == QByteArrayLiteral("static const uint32 COUNT=4;\n"));
+
+    MemoryCodeDocument broken(QByteArrayLiteral("/* unterminated\n"));
+    controller.Bind(&broken);
+    CHECK(FormatLuslDocument(controller).contains(QStringLiteral("source was retained")) == true);
+    CHECK(broken.GetState().Text == QByteArrayLiteral("/* unterminated\n"));
+}

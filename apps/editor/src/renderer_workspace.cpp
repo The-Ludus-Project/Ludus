@@ -15,6 +15,7 @@
 #include "internal/code_navigation.h"
 #include "internal/error_list.h"
 #include "internal/item_selection.h"
+#include "internal/lusl_formatting.h"
 #include "internal/path_text.h"
 #include "internal/render_graph_comments.h"
 #include "internal/render_graph_diagnostics.h"
@@ -1356,6 +1357,12 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mSource, &CodeEditor::RedoRequested, this, &RendererWorkspace::Redo);
     connect(mSourceController, &CodeDocumentController::Failed, mStatus, &QLabel::setText);
     connect(mSource, &CodeEditor::FormatRequested, this, [this]() {
+        if (mSource->GetLanguage() == CodeLanguage::Lusl)
+        {
+            // LUSL formats in process with the compiler library's formatter.
+            mStatus->setText(FormatLuslDocument(*mSourceController));
+            return;
+        }
         const QString sourcePath = QDir(mDocument.GetPackageRoot()).filePath(mSourceFile->currentText());
         const bool hasStarted = mSourceFormatter->Start(MakeShaderFormatter(FindShaderFormatter(), sourcePath));
         mStatus->setText(mSourceFormatter->GetMessage());
@@ -1366,7 +1373,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     });
     connect(mSourceFormatter, &CodeFormatter::Finished, this, [this](bool, const QString& message) {
         mStatus->setText(message);
-        mSource->SetCanFormat(CodeFormatter::IsAvailable() == true && mSource->GetLanguage() == CodeLanguage::Slang);
+        mSource->SetCanFormat(canFormatSource());
     });
     connect(mSource, &CodeEditor::ChooseFormatterRequested, this, [this]() {
         const QString program =
@@ -3903,6 +3910,14 @@ void RendererWorkspace::renderSourceStatus()
                     GetRenderProblem());
 }
 
+bool RendererWorkspace::canFormatSource() const
+{
+    // LUSL formats in process; Slang needs the clang-format process and no run in progress.
+    return mSource->GetLanguage() == CodeLanguage::Lusl ||
+           (CodeFormatter::IsAvailable() == true && mSourceFormatter->IsRunning() == false &&
+            mSource->GetLanguage() == CodeLanguage::Slang);
+}
+
 void RendererWorkspace::renderSource()
 {
     const QString file = mSourceFile->currentText();
@@ -3921,8 +3936,7 @@ void RendererWorkspace::renderSource()
         foundation::BorrowedView<const char>(fileUtf8.constData(), static_cast<foundation::usize>(fileUtf8.size()))));
     mSource->GetNavigation().EndSource();
     mSource->setEnabled(file.isEmpty() == false);
-    mSource->SetCanFormat(CodeFormatter::IsAvailable() == true && mSourceFormatter->IsRunning() == false &&
-                          mSource->GetLanguage() == CodeLanguage::Slang);
+    mSource->SetCanFormat(canFormatSource());
     updateSourceInterfaceVisibility();
     QMap<QString, QByteArray> sources;
     for (const QString& draftFile : mDocument.GetFiles())

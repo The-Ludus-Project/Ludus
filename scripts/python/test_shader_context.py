@@ -18,6 +18,15 @@ from ludus_tools.shader_context import export_context, capture_draft, MAX_DRAFT_
 from ludus_tools.errors import ToolingError
 
 
+# A stand-in luslc for prepare_sources: writes an empty module and report.
+FAKE_LUSLC = """#!{python}
+import pathlib, sys
+arguments = sys.argv[1:]
+pathlib.Path(arguments[arguments.index('--output') + 1]).write_text('// lowered\\n')
+pathlib.Path(arguments[arguments.index('--report') + 1]).write_text('')
+"""
+
+
 class ShaderContextTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -160,6 +169,34 @@ class ShaderContextTests(unittest.TestCase):
                 with capture_draft(io.BytesIO(b'x' * 9), stage):
                     self.fail('oversized wire accepted')
         self.assertFalse(stage.exists())
+
+    @unittest.skipIf(os.name == 'nt', 'the stand-in luslc is a POSIX script')
+    def test_lusl_source_exports_a_language_server_context(self):
+        luslc = self.root / 'luslc'
+        luslc.write_text(FAKE_LUSLC.format(python=__import__('sys').executable))
+        luslc.chmod(0o755)
+        source = 'main_shaders/color.lusl'
+        (self.manifest.parent / source).write_text('#include "graph_schemas.luslh"\n', encoding='utf-8')
+        manifest = json.loads(self.manifest.read_text(encoding='utf-8'))
+        for program in manifest['programs']:
+            if program['source'] == self.source:
+                program['source'] = source
+        self.manifest.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+        with patch.dict(os.environ, {'LUDUS_LUSLC': str(luslc)}):
+            payload = export_context(self.manifest, self.output, source, helper=self.helper)
+        self.assertEqual(payload['language'], 'lusl')
+        self.assertEqual((payload['prefix'], payload['suffix']), ('', ''))
+        staged = Path(unquote(urlparse(payload['uri']).path))
+        self.assertEqual(staged.read_text(encoding='utf-8'), '#include "graph_schemas.luslh"\n')
+        directory = Path(payload['server_arguments'][2])
+        self.assertEqual(payload['server_arguments'][:2], ['lsp', '--root'])
+        self.assertEqual(staged, directory / source)
+        self.assertIn('_ludus_graph', payload['server_arguments'])
+        header = (directory / '_ludus_graph' / 'graph_schemas.luslh').read_text(encoding='utf-8')
+        self.assertIn('struct RasterVarying', header)
+        files = {entry['file'] for entry in payload['navigation_sources']}
+        self.assertIn(source, files)
+        self.assertEqual(payload['contexts'][0]['programs'], ['Color'])
 
     def test_context_cleanup_only_removes_previous_owned_contexts(self):
         first = self.export()

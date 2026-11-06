@@ -64,7 +64,13 @@ struct CodeLanguageDescriptor final
     /// True when the language participates in auto-closing and smart indent,
     /// matching the current Slang-only behavior in the view.
     bool HasStructuralEditing = false;
+    /// True when a language server serves completion, signatures and navigation
+    /// for the language: slangd for Slang, `luslc lsp` for LUSL.
+    bool HasLanguageService = false;
 };
+
+/// True when `language` has a language server for completion and navigation.
+[[nodiscard]] bool HasCodeLanguageService(CodeLanguage language) noexcept;
 
 /// The compiled-in language table. It replaces the hard-coded CodeLanguage
 /// switch selectors with one lookup table, without changing behavior: the only

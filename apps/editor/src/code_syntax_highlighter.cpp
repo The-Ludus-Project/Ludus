@@ -2,13 +2,16 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/tooling/shader_language/syntax.hpp>
+
 #include <QColor>
 #include <QPalette>
 #include <QStringView>
 
 // Thanks to The Qt Company, "QSyntaxHighlighter", Qt GUI documentation,
 // highlightBlock/previousBlockState: incremental multiline lexical state.
-// This lexer supplies Slang coloring only, not semantic shader information.
+// This lexer supplies Slang and LUSL coloring only, not semantic shader information;
+// LUSL keywords come from the LUSL compiler library itself.
 // https://doc.qt.io/qt-6/qsyntaxhighlighter.html
 // Function, constant and user-type colors are same-line token heuristics: a
 // name before "(" is a function, an all-capitals name is a macro or constant,
@@ -45,6 +48,14 @@ constexpr QStringView TYPES = u"void bool int uint int8_t uint8_t int16_t uint16
                               u"half float double vector matrix SamplerState SamplerComparisonState Texture1D "
                               u"Texture2D Texture3D TextureCube RWTexture2D StructuredBuffer RWStructuredBuffer "
                               u"ByteAddressBuffer RWByteAddressBuffer ConstantBuffer RaytracingAccelerationStructure";
+
+/// LUSL resource and void types; scalar, vector and matrix types are spelled by IsLuslNumericType.
+constexpr QStringView LUSL_TYPES =
+    u"void Texture2D RWTexture2D SamplerState ConstantBuffer StructuredBuffer RWStructuredBuffer";
+/// LUSL keywords whose next name declares a type.
+constexpr QStringView LUSL_TYPE_DECLARATION_KEYWORDS = u"struct interface enum extension concept";
+/// LUSL's fixed-width scalar spellings (docs/modules/tooling/shader-language.md).
+constexpr QStringView LUSL_SCALARS = u"bool int16 uint16 int32 uint32 int64 uint64 float16 float32 float64";
 
 bool ContainsWord(QStringView words, QStringView word)
 {
@@ -120,6 +131,53 @@ bool IsNumericType(QStringView word)
     }
     return false;
 }
+bool IsDimension(QChar character)
+{
+    return character >= QLatin1Char('1') && character <= QLatin1Char('4');
+}
+
+/// `float32`, `uint32x2`, `float32x4x4`: a LUSL scalar, vector or matrix.
+bool IsLuslNumericType(QStringView word)
+{
+    constexpr isize VECTOR_SUFFIX_LENGTH = 2;
+    constexpr isize MATRIX_SUFFIX_LENGTH = 4;
+    isize start = 0;
+    while (start < LUSL_SCALARS.size())
+    {
+        const isize separator = LUSL_SCALARS.indexOf(QLatin1Char(' '), start);
+        const isize end = separator < 0 ? LUSL_SCALARS.size() : separator;
+        const QStringView scalar = LUSL_SCALARS.sliced(start, end - start);
+        start = end + 1;
+        if (word.startsWith(scalar) == false)
+        {
+            continue;
+        }
+        const QStringView suffix = word.sliced(scalar.size());
+        const bool isVector = suffix.size() == VECTOR_SUFFIX_LENGTH && suffix.at(0) == QLatin1Char('x') &&
+                              IsDimension(suffix.at(1)) == true;
+        const bool isMatrix = suffix.size() == MATRIX_SUFFIX_LENGTH && suffix.at(0) == QLatin1Char('x') &&
+                              IsDimension(suffix.at(1)) == true && suffix.at(2) == QLatin1Char('x') &&
+                              IsDimension(suffix.at(3)) == true;
+        if (suffix.isEmpty() == true || isVector == true || isMatrix == true)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsLuslKeyword(QStringView word)
+{
+    const foundation::BorrowedView<const std::string_view> keywords = tooling::shader_language::GetKeywords();
+    for (usize i = 0; i < keywords.GetSize(); ++i)
+    {
+        if (word == QLatin1StringView(keywords[i].data(), static_cast<isize>(keywords[i].size())))
+        {
+            return true;
+        }
+    }
+    return false;
+}
 } // namespace
 
 bool IsLightCodePalette(const QPalette& palette)
@@ -176,6 +234,19 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
         return;
     }
     const QStringView view(text);
+    const bool isLusl = mLanguage == CodeLanguage::Lusl;
+    const auto isKeyword = [isLusl](QStringView word) { // ludus-style: inferred-type: lambda closure
+        return isLusl == true ? IsLuslKeyword(word) : ContainsWord(KEYWORDS, word);
+    };
+    const auto declaresType = [isLusl](QStringView word) { // ludus-style: inferred-type: lambda closure
+        return ContainsWord(isLusl == true ? LUSL_TYPE_DECLARATION_KEYWORDS : TYPE_DECLARATION_KEYWORDS, word);
+    };
+    const auto isType = [isLusl](QStringView word) { // ludus-style: inferred-type: lambda closure
+        // LUSL also accepts the Slang aliases (`float3`), which IsNumericType spells.
+        return isLusl == true ? ContainsWord(LUSL_TYPES, word) == true || IsLuslNumericType(word) == true ||
+                                    IsNumericType(word) == true
+                              : ContainsWord(TYPES, word) == true || IsNumericType(word) == true;
+    };
     isize position = 0;
     bool isBlockComment = previousBlockState() == BLOCK_COMMENT_STATE;
     bool isTypeNameExpected = false;
@@ -244,13 +315,13 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
             const int32 wordLength = static_cast<int32>(position - start);
             const bool isDeclaredTypeName = isTypeNameExpected;
             isTypeNameExpected = false;
-            if (ContainsWord(KEYWORDS, word) == true)
+            if (isKeyword(word) == true)
             {
                 setFormat(wordStart, wordLength, mKeywordFormat);
-                isTypeNameExpected = ContainsWord(TYPE_DECLARATION_KEYWORDS, word);
+                isTypeNameExpected = declaresType(word);
                 continue;
             }
-            if (isDeclaredTypeName == true || ContainsWord(TYPES, word) == true || IsNumericType(word) == true)
+            if (isDeclaredTypeName == true || isType(word) == true)
             {
                 setFormat(wordStart, wordLength, mTypeFormat);
                 continue;
@@ -275,7 +346,7 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
                     ++nextEnd;
                 }
                 // "Name name" declares a variable, parameter or member of type Name.
-                if (ContainsWord(KEYWORDS, view.sliced(nextTokenStart, nextEnd - nextTokenStart)) == false)
+                if (isKeyword(view.sliced(nextTokenStart, nextEnd - nextTokenStart)) == false)
                 {
                     setFormat(wordStart, wordLength, mTypeFormat);
                 }
