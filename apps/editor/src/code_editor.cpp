@@ -535,7 +535,7 @@ void CodeEditor::SetLanguage(CodeLanguage language)
         if (action->objectName() == QStringLiteral("codeEditorComplete") ||
             action->objectName() == QStringLiteral("codeEditorSignature"))
         {
-            action->setEnabled(language == CodeLanguage::Slang);
+            action->setEnabled(HasCodeLanguageService(language));
         }
     }
     mHighlighter->SetLanguage(language);
@@ -1501,7 +1501,7 @@ void CodeEditor::GoToLine(int32 line, int32 column)
 
 QTextCursor CodeEditor::getDefinitionLinkAt(const QPoint& position) const
 {
-    if (mLanguage != CodeLanguage::Slang)
+    if (HasCodeLanguageService(mLanguage) == false)
     {
         return {};
     }
@@ -1661,7 +1661,7 @@ void CodeEditor::keyPressEvent(QKeyEvent* event)
         // Measure keypress-to-paint only for edits that will repaint the view.
         mLatencyProbe.MarkKeyHandled();
     }
-    if (didChange == true && mLanguage == CodeLanguage::Slang && event->text().size() == 1 &&
+    if (didChange == true && HasCodeLanguageService(mLanguage) == true && event->text().size() == 1 &&
         (event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) == Qt::NoModifier)
     {
         const QChar typed = event->text().at(0);
@@ -1702,7 +1702,7 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
         event->accept();
         return;
     }
-    if (mLanguage == CodeLanguage::Slang && isReadOnly() == false && event->key() == Qt::Key_Space &&
+    if (HasCodeLanguageService(mLanguage) == true && isReadOnly() == false && event->key() == Qt::Key_Space &&
         (event->modifiers() == ASSISTANCE_MODIFIER || event->modifiers() == (ASSISTANCE_MODIFIER | Qt::ShiftModifier)))
     {
         Q_EMIT AssistanceRequested(event->modifiers().testFlag(Qt::ShiftModifier));

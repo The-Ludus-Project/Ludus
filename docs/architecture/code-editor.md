@@ -243,6 +243,7 @@ First languages:
 | Language | Grammar | Language server | Formatter | Debugger |
 | --- | --- | --- | --- | --- |
 | Slang (`.slang`, `.slangh`) | `tree-sitter-slang` | `slangd` from the project's Slang SDK | clang-format (existing profile) | — (GPU debugging stays in [graphics debugging](graphics-debugging.md)) |
+| LUSL (`.lusl`, `.luslh`) | Lexical today, from the LUSL compiler's keyword table; a grammar follows the tree-sitter ADR | `luslc lsp` from the project SDK | In-process `FormatSource` | — |
 | Luau (`.luau`) | `tree-sitter-luau` | `luau-lsp` with `contract.d.luau` | StyLua | Luau adapter over GameHost |
 | C and C++ | `tree-sitter-c`, `tree-sitter-cpp` | clangd from the pinned LLVM | clang-format | `lldb-dap` from the pinned LLVM |
 | JSON (`.json`, `.luscene.json`, manifests) | `tree-sitter-json` | In-process checks against Ludus schemas | Built-in, stable key order preserved | — |

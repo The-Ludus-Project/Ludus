@@ -13,6 +13,7 @@ import re
 import shutil
 
 from . import render_graph_build as build
+from . import render_graph_language as language
 
 INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]+"([^"\n]+)"[^\n]*(?:\n|$)', re.M)
 MAX_CONTEXT_BYTES = build.MAX_BYTES * 2
@@ -70,6 +71,71 @@ def find_includes(text):
     return INCLUDE.finditer(masked)
 
 
+def _own_directory(directory, output):
+    """Create or reuse `directory` below `output` as a shader-assistance context, and remove the
+    previous contexts this helper created. Never removes unrelated output or follows symlinks."""
+    if directory.exists():
+        build.require(not directory.is_symlink() and (directory / CONTEXT_OWNER_FILE).is_file() and
+                      (directory / CONTEXT_OWNER_FILE).read_bytes() == CONTEXT_OWNER,
+                      'Source', str(directory), 'context output directory is not owned by shader assistance')
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / CONTEXT_OWNER_FILE).write_bytes(CONTEXT_OWNER)
+    for previous in output.iterdir():
+        owner = previous / CONTEXT_OWNER_FILE
+        if (previous != directory and not previous.is_symlink() and previous.is_dir() and
+                previous.name.startswith(CONTEXT_DIRECTORY_PREFIX) and owner.is_file() and
+                not owner.is_symlink() and owner.read_bytes() == CONTEXT_OWNER):
+            shutil.rmtree(previous, ignore_errors=True)
+
+
+def export_language_context(manifest, output, source, *, helper, context=None, root=None):
+    """Stage the files a LUSL program source reads, for `luslc lsp`.
+
+    LUSL has no generated wrapper around the editable text: the language server checks the
+    source itself, with the files lowering reads beside it (its headers, the SDK headers below
+    `_ludus_ray` and the generated `_ludus_graph/graph_schemas.luslh`). The context's URI is the
+    staged source; prefix and suffix are empty.
+    """
+    snapshot, value, schemas, programs, _, _, _, _, _, _, _ = build.prepare_sources(manifest, helper, root=root)
+    snapshot.path(source)
+    output = Path(output).resolve()
+    build.require(not snapshot.root.is_relative_to(output) and not output.is_relative_to(snapshot.root),
+                  'Source', str(output), 'language output must be separate from source snapshot')
+    candidates = [{'id': identity, 'stage': program['stage'],
+                   'programs': [p['id'] for p in value['programs'] if p.get('language_source', p['source']) == source]}
+                  for identity, program in sorted(programs.items()) if program.get('language_source') == source]
+    build.require(candidates, 'Source', source, 'no executable program context includes this source; assign it to a graph pipeline')
+    selected = context or candidates[0]['id']
+    build.require(any(item['id'] == selected for item in candidates), 'Source', selected, 'context no longer includes this source')
+    files = language._collect(snapshot, Path(helper).resolve(), build, source)
+    include_directories = [language.SDK_DIRECTORY]
+    header = language.schema_header(source, programs, schemas, build)
+    if header is not None:
+        files[language.GRAPH_DIRECTORY + '/' + language.SCHEMA_HEADER] = header
+        include_directories.append(language.GRAPH_DIRECTORY)
+    build.require(sum(len(data) for data in files.values()) <= MAX_CONTEXT_BYTES, 'Capacity', source,
+                  'language translation unit exceeds limit')
+    snapshot.verify()
+    directory = output / (CONTEXT_DIRECTORY_PREFIX + build.identity({'program': programs[selected],
+                                                                     'files': {p: build.digest(d) for p, d in files.items() if p != source}}))
+    _own_directory(directory, output)
+    destination = build.Snapshot(directory)
+    for relative, data in files.items():
+        path = destination.path(relative)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    arguments = ['lsp', '--root', str(directory)]
+    for include in include_directories:
+        arguments += ['--include-directory', include]
+    return {'version': 1, 'language': 'lusl', 'contexts': candidates, 'context': selected,
+            'profiles': value['profiles'], 'manifest': Path(manifest).resolve().relative_to(snapshot.root).as_posix(),
+            'uri': destination.path(source).as_uri(), 'prefix': '', 'suffix': '', 'server_arguments': arguments,
+            'navigation_sources': [{'uri': destination.path(relative).as_uri(),
+                                    'file': relative if snapshot.files.get(relative) == data else '',
+                                    'sha256': build.digest(data)}
+                                   for relative, data in sorted(files.items())]}
+
+
 def export_context(manifest, output, source, *, helper, context=None, root=None):
     """Stage one exact compiler context and expose a single editable source span.
 
@@ -79,6 +145,8 @@ def export_context(manifest, output, source, *, helper, context=None, root=None)
     absolute paths inside this snapshot. No compiler/tool process or project write.
     Unmappable compatibility rewrites/repeated source occurrences fail explicitly.
     """
+    if language.is_language_source(source):
+        return export_language_context(manifest, output, source, helper=helper, context=context, root=root)
     snapshot, value, schemas, programs, _, _, closures, _, _, _, _ = build.prepare_sources(manifest, helper, root=root)
     snapshot.path(source)
     build.require(source in snapshot.files, 'Source', source, 'source is outside the selected build closure')

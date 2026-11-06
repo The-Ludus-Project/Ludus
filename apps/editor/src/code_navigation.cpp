@@ -1,6 +1,7 @@
 #include "internal/code_navigation.h"
 
 #include "internal/code_editor.h"
+#include "internal/code_language_registry.h"
 #include "internal/mouse_history_buttons.h"
 
 #include <QAction>
@@ -127,9 +128,9 @@ void CodeNavigation::RefreshActions()
     mFiles->setEnabled(mFilesAvailable.isEmpty() == false);
     for (qsizetype index = FIRST_SEMANTIC_ACTION; index < mActions.size(); ++index)
     {
-        mActions.at(index)->setEnabled(mEditor.GetLanguage() == CodeLanguage::Slang);
+        mActions.at(index)->setEnabled(HasCodeLanguageService(mEditor.GetLanguage()));
     }
-    mReferences->setEnabled(mEditor.GetLanguage() == CodeLanguage::Slang && mCanFindReferences == true);
+    mReferences->setEnabled(HasCodeLanguageService(mEditor.GetLanguage()) == true && mCanFindReferences == true);
     mReferences->setToolTip(
         mCanFindReferences == true
             ? QStringLiteral("Find references in the selected compiler context.")

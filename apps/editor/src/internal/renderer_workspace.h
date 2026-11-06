@@ -493,6 +493,8 @@ private:
     void openNodeShader(const QString& shaderId, QWidget* editor);
     void renderEdges();
     void renderSource();
+    /// True when the Source pane's language can be formatted now: LUSL in process, Slang by clang-format.
+    [[nodiscard]] bool canFormatSource() const;
     void restoreSourceHistory();
     void renderStatus();
     void updateActions();

@@ -1,5 +1,6 @@
 #include "internal/code_assistance.h"
 
+#include "internal/code_language_registry.h"
 #include "internal/code_text.h"
 
 #include <QDateTime>
@@ -180,7 +181,8 @@ void CodeAssistance::Request(bool isSignature)
     Cancel();
     mShouldTrackSignature = false;
     mShouldTrackCompletion = false;
-    if (mEditor.GetLanguage() != CodeLanguage::Slang || mDocument.IsBound() == false || mEditor.isReadOnly() == true)
+    if (HasCodeLanguageService(mEditor.GetLanguage()) == false || mDocument.IsBound() == false ||
+        mEditor.isReadOnly() == true)
     {
         return;
     }
@@ -199,7 +201,7 @@ void CodeAssistance::Request(bool isSignature)
 void CodeAssistance::RequestNavigation(CodeNavigationKind kind)
 {
     Cancel();
-    if (mEditor.GetLanguage() != CodeLanguage::Slang || mDocument.IsBound() == false)
+    if (HasCodeLanguageService(mEditor.GetLanguage()) == false || mDocument.IsBound() == false)
     {
         return;
     }
@@ -230,7 +232,7 @@ bool CodeAssistance::isCurrent() const
 {
     return mHasIntent == true && mRequestedContext == mContext && mCapture.Identity == mDocument.Capture().Identity &&
            mEditor.textCursor().position() == mCaret && mEditor.textCursor().anchor() == mAnchor &&
-           mEditor.GetLanguage() == CodeLanguage::Slang;
+           HasCodeLanguageService(mEditor.GetLanguage()) == true;
 }
 
 void CodeAssistance::requestCurrent()

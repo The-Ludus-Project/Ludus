@@ -42,6 +42,8 @@ enum class CodeLanguage : foundation::uint8
 {
     PlainText,
     Slang,
+    /// The Ludus Shading Language (`.lusl`, `.luslh`); docs/modules/tooling/shader-language.md.
+    Lusl,
 };
 
 enum class CodeEditKind : foundation::uint8

@@ -854,6 +854,23 @@ luslc lsp --root shaders --include-directory _ludus_ray
   symbols, member and name completion, formatting, unknown requests and the
   exit status.
 
+**In the editor.** The code editor registers LUSL (`.lusl`, `.luslh`; a
+generated `.lusl.slang` module stays Slang):
+- **Coloring** uses the LUSL compiler's keyword table, the fixed-width scalar,
+  vector and matrix spellings (`float32x3`, `float32x4x4`) and the resource
+  types. Brackets, comments, auto-closing pairs and smart indentation work as
+  for Slang.
+- **Format Document** runs the LUSL formatter in process as one undoable edit;
+  a source that does not lex is retained, with the reason in the status bar.
+- **Completion, signature help and Go to Definition** in a render-graph
+  program's LUSL source use `luslc lsp`. `ludus render-graph shader-context`
+  stages what the program's lowering reads (the source, its headers, the SDK
+  headers below `_ludus_ray` and the generated `_ludus_graph/graph_schemas.luslh`)
+  and returns `luslc lsp --root <context> --include-directory ...` as the server
+  for the editor to start. The editor edits the source itself, with no wrapper
+  around it. `luslc` comes from the project SDK's `bin` directory or
+  `LUDUS_LUSLC`; a missing executable is reported with that repair.
+
 ## LUSL in compiler requests
 
 `ShaderCompiler` accepts a `.lusl` root. When `Request::Source` ends in
