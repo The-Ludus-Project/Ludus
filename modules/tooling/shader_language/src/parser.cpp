@@ -1386,6 +1386,11 @@ private:
                                                                   : ParameterDirection::Inout;
             ++mPosition;
         }
+        if (isWord("uniform") == true)
+        {
+            mTree.Nodes[node].IsUniform = true;
+            ++mPosition;
+        }
         addChild(node, parseType());
         if (parseDeclaredName(node) == false)
         {

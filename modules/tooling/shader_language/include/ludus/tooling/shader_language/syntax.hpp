@@ -35,7 +35,7 @@ enum class SyntaxKind : foundation::uint8
     /// the body Block? (absent for a declaration that ends in `;`).
     FunctionDeclaration,
     /// Function parameter. Token: the name. Children: Type, ArraySize*, Semantic?, default value?.
-    /// SyntaxNode::Direction says `in`, `out` or `inout`.
+    /// SyntaxNode::Direction says `in`, `out` or `inout`, and SyntaxNode::IsUniform marks `uniform`.
     Parameter,
     /// System-value annotation such as `: DispatchThreadId`. Token: the semantic name.
     Semantic,
@@ -195,6 +195,8 @@ struct SyntaxNode final
     bool IsGroupshared = false;
     /// `if constexpr` on an IfStatement.
     bool IsConstexpr = false;
+    /// `uniform` on a Parameter.
+    bool IsUniform = false;
     /// The principal token SyntaxKind names, or NO_TOKEN.
     foundation::uint32 Token = NO_TOKEN;
     /// First token of the node.

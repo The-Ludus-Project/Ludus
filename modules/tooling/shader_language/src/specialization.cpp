@@ -38,6 +38,35 @@ void Overlay(const Array<Element>& facts, const Specialization& specialization, 
 }
 } // namespace
 
+// A symbol index and a type-argument index: separate index spaces whose names say which is which.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+uint32 ResolveSpecialization(const SemanticModel& model, uint32 function, uint32 firstTypeArgument) noexcept
+{
+    if (function >= model.Symbols.GetSize())
+    {
+        return function;
+    }
+    const Symbol& declared = model.Symbols[function];
+    if (declared.IsSpecialized == false || firstTypeArgument == NO_SYMBOL)
+    {
+        return function;
+    }
+    for (const Specialization& specialization : model.Specializations)
+    {
+        bool isSame = specialization.Template == function;
+        for (uint32 i = 0; i < declared.TypeParameterCount && isSame == true; ++i)
+        {
+            isSame =
+                model.TypeArguments[specialization.FirstTypeArgument + i] == model.TypeArguments[firstTypeArgument + i];
+        }
+        if (isSame == true)
+        {
+            return specialization.Function;
+        }
+    }
+    return function;
+}
+
 bool MakeSpecializedModel(const SemanticModel& model, uint32 index, SemanticModel& outModel) noexcept
 {
     outModel = SemanticModel{};

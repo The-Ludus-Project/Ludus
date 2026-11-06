@@ -181,6 +181,9 @@ struct Symbol final
     bool IsMutating = false;
     /// True for a `groupshared` variable.
     bool IsGroupshared = false;
+    /// True for a parameter declared `uniform`: every invocation that makes a call passes the same
+    /// value, so the body may decide on it before a derivative operation.
+    bool IsUniform = false;
     /// True for a function parameter with a default value.
     bool HasDefault = false;
     /// True when IntegerValue holds the value of an integer or enumerator constant.
@@ -383,7 +386,11 @@ struct CheckOptions final
 /// When those pass, flow and style rules run: definite assignment (`= void` opts out), `out`
 /// parameters written before every return, a return on every path, no recursion, `groupshared`
 /// declared `= 0` or `= void`, `switch` cases that end explicitly, then the naming and bare-`bool`
-/// style rules as `options.Style` says. Diagnostics carry a DiagnosticFix where a repair is safe.
+/// style rules as `options.Style` says. When the flow rules pass, the uniformity rules reject
+/// derivative operations (`Sample`, `ddx`, `ddy`, and calls of functions that perform them) in
+/// non-uniform control flow and varying arguments of `uniform` parameters
+/// (docs/architecture/shading-language.md, "Uniformity"). Diagnostics carry a DiagnosticFix where
+/// a repair is safe.
 ///
 /// Deterministic and reentrant; keeps no state between calls.
 /// @param request The request given to Preprocess; its file texts must still be alive.

@@ -36,6 +36,20 @@ struct AnalysisInputs final
 [[nodiscard]] bool
 MakeSpecializedModel(const SemanticModel& model, foundation::uint32 index, SemanticModel& outModel) noexcept;
 
+/// @brief Report uniformity errors: derivative operations (`Sample`, `ddx`, `ddy`) and calls of
+/// functions that perform them in non-uniform control flow, and varying arguments of `uniform`
+/// parameters. Specializations are analyzed with their own facts.
+/// @pre The model checked and passed the flow rules without errors.
+/// @return False when allocation failed.
+[[nodiscard]] bool AnalyzeUniformity(const AnalysisInputs& inputs, DiagnosticSink& inoutSink) noexcept;
+
+/// @brief The function a call of `function` with the type arguments at `firstTypeArgument` (in
+/// `model.TypeArguments`, NO_SYMBOL for none) reaches: its specialization's for a specialized
+/// template, otherwise `function` itself.
+[[nodiscard]] foundation::uint32 ResolveSpecialization(const SemanticModel& model,
+                                                       foundation::uint32 function,
+                                                       foundation::uint32 firstTypeArgument) noexcept;
+
 /// @brief Report style findings (naming, bare `bool` operands) as `setting` says.
 /// @pre The model checked without errors.
 /// @return False when allocation failed.
