@@ -7,14 +7,17 @@
  * released on the thread that allocated them (stb decodes synchronously). */
 #include "stb_image_config.h"
 
-#include <stddef.h>
 #include <stdlib.h>
 
-/* max_align_t-sized header keeps the payload suitably aligned for any type. */
+/* A header as aligned as the strictest fundamental type keeps the payload suitably
+ * aligned for any type. MSVC's C library declares max_align_t only for C++, so the
+ * union lists those types itself; their alignment equals max_align_t's elsewhere. */
 typedef union LudusStbiHeader
 {
     size_t Size;
-    max_align_t Alignment;
+    long double LongDoubleAlignment;
+    long long IntegerAlignment;
+    void* PointerAlignment;
 } LudusStbiHeader;
 
 static _Thread_local size_t ludus_stbi_live_bytes = 0;
