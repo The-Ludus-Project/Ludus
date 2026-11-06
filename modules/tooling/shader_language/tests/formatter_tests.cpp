@@ -146,6 +146,18 @@ TEST_CASE("LUSL formatter keeps comments, blank lines and directives", "[shader-
     RequireFormatted("", "");
 }
 
+TEST_CASE("LUSL formatter survives a case label left open across its switch", "[shader-language][formatter]")
+{
+    // Found by the front-end fuzzer: the label's ':' arrives after the switch body has closed.
+    Status status = Status::InvalidRequest;
+    const std::string_view source = "switch (x) { case } : y;\ncase ; = } ;\n";
+    const std::string formatted = FormatText(source, status);
+    CHECK(status == Status::Ready);
+    CHECK(SpellTokens(formatted) == SpellTokens(source));
+    Status again = Status::InvalidRequest;
+    CHECK(FormatText(formatted, again) == formatted);
+}
+
 TEST_CASE("LUSL formatter rejects sources it cannot lex", "[shader-language][formatter]")
 {
     Status status = Status::Ready;

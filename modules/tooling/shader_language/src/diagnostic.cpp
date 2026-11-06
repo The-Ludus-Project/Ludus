@@ -189,6 +189,20 @@ std::string_view GetDiagnosticCodeName(DiagnosticCode code) noexcept
             return "undefined-function";
         case DiagnosticCode::CheckerLimit:
             return "checker-limit";
+        case DiagnosticCode::UseBeforeAssignment:
+            return "use-before-assignment";
+        case DiagnosticCode::OutParameterNotAssigned:
+            return "out-parameter-not-assigned";
+        case DiagnosticCode::MissingReturn:
+            return "missing-return";
+        case DiagnosticCode::Recursion:
+            return "recursion";
+        case DiagnosticCode::GroupsharedInitializer:
+            return "groupshared-initializer";
+        case DiagnosticCode::NamingStyle:
+            return "naming-style";
+        case DiagnosticCode::BareBoolOperand:
+            return "bare-bool-operand";
     }
     return {};
 }
@@ -240,7 +254,20 @@ void DiagnosticSink::ReportError(DiagnosticCode code,
                                  const SourceLocation& expansionLocation,
                                  const DiagnosticMessage& message) noexcept
 {
-    ++mErrorCount;
+    Report(Severity::Error, code, location, expansionLocation, message, DiagnosticFix{});
+}
+
+void DiagnosticSink::Report(Severity level,
+                            DiagnosticCode code,
+                            const SourceLocation& location,
+                            const SourceLocation& expansionLocation,
+                            const DiagnosticMessage& message,
+                            const DiagnosticFix& fix) noexcept
+{
+    if (level == Severity::Error)
+    {
+        ++mErrorCount;
+    }
     if (mDiagnostics.GetSize() >= MAX_DIAGNOSTICS)
     {
         ++mDroppedCount;
@@ -248,10 +275,11 @@ void DiagnosticSink::ReportError(DiagnosticCode code,
     }
     Diagnostic diagnostic;
     diagnostic.Code = code;
-    diagnostic.Level = Severity::Error;
+    diagnostic.Level = level;
     diagnostic.Location = location;
     diagnostic.ExpansionLocation = expansionLocation;
     diagnostic.Message = message;
+    diagnostic.Fix = fix;
     if (mDiagnostics.TryAdd(diagnostic) == false)
     {
         mHasOutOfMemory = true;

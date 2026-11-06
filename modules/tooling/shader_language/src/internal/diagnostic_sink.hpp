@@ -54,6 +54,14 @@ public:
                      const SourceLocation& expansionLocation,
                      const DiagnosticMessage& message) noexcept;
 
+    /// Record a diagnostic of `level` with an optional fix; only errors fail the request.
+    void Report(Severity level,
+                DiagnosticCode code,
+                const SourceLocation& location,
+                const SourceLocation& expansionLocation,
+                const DiagnosticMessage& message,
+                const DiagnosticFix& fix) noexcept;
+
     /// True once any error was reported, including dropped ones.
     [[nodiscard]] bool HasErrors() const noexcept
     {

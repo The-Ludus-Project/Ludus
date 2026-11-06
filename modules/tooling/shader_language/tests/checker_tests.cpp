@@ -40,7 +40,7 @@ extern slang "scene.slang"
 void RequireValid(const std::string& body)
 {
     const CheckedSource checked(std::string(PRELUDE) +
-                                "void F(float32 x, int32 i, uint32 u, float32x3 v, bool b, Hit h)\n{\n" + body +
+                                "void F(float32 x, int32 i, uint32 u, float32x3 v, bool isOn, Hit h)\n{\n" + body +
                                 "\n}\n");
     INFO(body << "\n" << checked.DescribeDiagnostics());
     REQUIRE(checked.GetParseStatus() == Status::Ready);
@@ -51,7 +51,7 @@ void RequireValid(const std::string& body)
 void RequireError(const std::string& body, DiagnosticCode code)
 {
     const CheckedSource checked(std::string(PRELUDE) +
-                                "void F(float32 x, int32 i, uint32 u, float32x3 v, bool b, Hit h)\n{\n" + body +
+                                "void F(float32 x, int32 i, uint32 u, float32x3 v, bool isOn, Hit h)\n{\n" + body +
                                 "\n}\n");
     INFO(body << "\n" << checked.DescribeDiagnostics());
     REQUIRE(checked.GetParseStatus() == Status::Ready);
@@ -122,7 +122,7 @@ TEST_CASE("LUSL checker has no implicit conversions", "[shader-language][checker
     RequireValid("float32 a = float32(i); int32 c = int32(x); uint32 d = uint32(Mode::On); Mode m = Mode(u);");
     RequireValid("float32x3 a = float32x3(int32x3(1, 2, 3)); uint32x3 c = uint32x3(v);");
     RequireError("bool a = bool(i);", DiagnosticCode::InvalidConstruction);
-    RequireError("int32 a = int32(b);", DiagnosticCode::InvalidConstruction);
+    RequireError("int32 a = int32(isOn);", DiagnosticCode::InvalidConstruction);
 }
 
 TEST_CASE("LUSL checker zero-fills any type from the literal 0", "[shader-language][checker]")
@@ -136,14 +136,14 @@ TEST_CASE("LUSL checker zero-fills any type from the literal 0", "[shader-langua
 TEST_CASE("LUSL checker types operators", "[shader-language][checker]")
 {
     RequireValid("float32x3 a = v * x; float32x3 c = x * v + v; float32x3 d = v * 2; float32x3 e = -v;");
-    RequireValid("bool f = x < 1 && b == true; boolx3 g = v == v; uint32 k = u << 2 | 1; int32 m = ~i;");
+    RequireValid("bool isF = x < 1 && isOn == true; boolx3 g = v == v; uint32 k = u << 2 | 1; int32 m = ~i;");
     RequireValid("float32x4x4 n = 0; float32x4 p = n * float32x4(v, 1.0); float32x4x4 q = n * n * 2;");
     RequireError("float32x3 a = v + float32x4(0, 0, 0, 0);", DiagnosticCode::InvalidOperands);
     RequireError("float32x4x4 n = 0; float32x4 p = float32x4(v, 1.0) * n;", DiagnosticCode::InvalidOperands);
-    RequireError("bool a = i && b;", DiagnosticCode::InvalidOperands);
+    RequireError("bool a = i && isOn;", DiagnosticCode::InvalidOperands);
     RequireError("float32 a = x & x;", DiagnosticCode::InvalidOperands);
     RequireError("float32 a = x + i;", DiagnosticCode::InvalidOperands);
-    RequireError("bool a = b < b;", DiagnosticCode::InvalidOperands);
+    RequireError("bool a = isOn < isOn;", DiagnosticCode::InvalidOperands);
     RequireError("float32 a = ~x;", DiagnosticCode::InvalidOperands);
 }
 
@@ -152,7 +152,7 @@ TEST_CASE("LUSL checker requires bool conditions", "[shader-language][checker]")
     RequireError("if (i) {}", DiagnosticCode::NonBoolCondition);
     RequireError("while (1) {}", DiagnosticCode::NonBoolCondition);
     RequireError("float32 a = i ? 1 : 2;", DiagnosticCode::NonBoolCondition);
-    RequireValid("if (i != 0) {} while (b == true) { break; } for (uint32 k = 0; k < COUNT; k++) {}");
+    RequireValid("if (i != 0) {} while (isOn == true) { break; } for (uint32 k = 0; k < COUNT; k++) {}");
 }
 
 TEST_CASE("LUSL checker folds integer constants exactly", "[shader-language][checker]")
@@ -226,7 +226,8 @@ float32 Mix(in float32 low, in float32 high, in float32 weight) { return low + (
                          DiagnosticCode::UnknownNamedArgument);
     RequireTopLevelError(functions + "void G(float32 x) { float32 a = Mix(x, 1.0, low = 0.5); }\n",
                          DiagnosticCode::DuplicateArgument);
-    RequireTopLevelError(functions + "void G(bool b) { float32 a = Scale(b); }\n", DiagnosticCode::NoMatchingOverload);
+    RequireTopLevelError(functions + "void G(bool isOn) { float32 a = Scale(isOn); }\n",
+                         DiagnosticCode::NoMatchingOverload);
     RequireTopLevelError("float32 One(in float32 a) { return a; }\nvoid G(int32 i) { float32 a = One(i); }\n",
                          DiagnosticCode::TypeMismatch);
     RequireTopLevelError("void G(float32 x) { x(); }\n", DiagnosticCode::NotCallable);
@@ -235,7 +236,7 @@ float32 Mix(in float32 low, in float32 high, in float32 weight) { return low + (
 TEST_CASE("LUSL checker matches call marks and rejects aliasing", "[shader-language][checker]")
 {
     const std::string functions = R"(void Store(in float32 value, out float32 outValue) { outValue = value; }
-void Swap(inout float32 a, inout float32 b) { float32 t = a; a = b; b = t; }
+void Swap(inout float32 inoutA, inout float32 inoutB) { float32 t = inoutA; inoutA = inoutB; inoutB = t; }
 void Fill(out float32x3 outA, out float32x3 outB) { outA = 0; outB = 0; }
 )";
     RequireTopLevelValid(functions +
@@ -256,11 +257,11 @@ void Fill(out float32x3 outA, out float32x3 outB) { outA = 0; outB = 0; }
     RequireTopLevelError(functions + "void G(float32x3 v) { Swap(inout v.x, inout v.x); }\n",
                          DiagnosticCode::AliasedArguments);
     RequireTopLevelError(
-        "void Pair(out float32 a, out float32 c) { a = 0; c = 0; }\nvoid G(uint32 i, uint32 j)\n{\n    "
+        "void Pair(out float32 outA, out float32 outC) { outA = 0; outC = 0; }\nvoid G(uint32 i, uint32 j)\n{\n    "
         "float32 w[COUNT] = 0;\n    Pair(out w[i], out w[j]);\n}\n",
         DiagnosticCode::AliasedArguments);
     RequireTopLevelValid(
-        "void Pair(out float32 a, out float32 c) { a = 0; c = 0; }\nvoid G()\n{\n    float32 w[COUNT] = "
+        "void Pair(out float32 outA, out float32 outC) { outA = 0; outC = 0; }\nvoid G()\n{\n    float32 w[COUNT] = "
         "0;\n    Pair(out w[0], out w[1]);\n}\n");
 }
 
@@ -268,7 +269,7 @@ TEST_CASE("LUSL checker resolves built-in functions", "[shader-language][checker
 {
     RequireValid("float32 a = dot(v, v); float32x3 c = normalize(v); float32 d = max(x, 0); float32x3 e = lerp(v, v, "
                  "0.5); float32x3 f2 = max(v, 0); float32x3 g2 = clamp(v, x, 1.0);");
-    RequireValid("float32x3 f = cross(v, v); uint32 g = asuint(x); float32 k = asfloat(u); bool m = any(v == v);");
+    RequireValid("float32x3 f = cross(v, v); uint32 g = asuint(x); float32 k = asfloat(u); bool isAny = any(v == v);");
     RequireValid("float32 n = length(v); int32 p = clamp(i, 0, 7); uint32 q = countbits(u); float32 r = sqrt(2);");
     RequireError("float32 a = normalize(x);", DiagnosticCode::NoMatchingOverload);
     RequireError("float32 a = dot(v, x);", DiagnosticCode::TypeMismatch);
@@ -324,7 +325,7 @@ TEST_CASE("LUSL checker checks top-level declarations", "[shader-language][check
     RequireTopLevelError("static const float32 NONE;\n", DiagnosticCode::NotConstant);
     RequireTopLevelError("float32 Compute() { return 1; }\nstatic const float32 RUNTIME = Compute();\n",
                          DiagnosticCode::NotConstant);
-    RequireTopLevelValid("groupshared float32 tile[COUNT];\nstatic const float32x3 UP = float32x3(0, 1, 0);\n");
+    RequireTopLevelValid("groupshared float32 tile[COUNT] = 0;\nstatic const float32x3 UP = float32x3(0, 1, 0);\n");
     RequireTopLevelError("void Later();\n", DiagnosticCode::UndefinedFunction);
     RequireTopLevelValid("float32 Later(float32 x);\nvoid G() { float32 a = Later(1.0); }\nfloat32 Later(float32 x) { "
                          "return x; }\n");
@@ -352,8 +353,8 @@ TEST_CASE("LUSL checker checks entry points and attributes", "[shader-language][
     RequireTopLevelError("[stage(compute), threads(8, 8, 1)]\nfloat32 Main() { return 0; }\n",
                          DiagnosticCode::InvalidReturn);
     RequireTopLevelError("[shiny] void G() {}\n", DiagnosticCode::InvalidAttribute);
-    RequireError("[unroll] if (b == true) {}", DiagnosticCode::InvalidAttribute);
-    RequireValid("[unroll(COUNT)] for (uint32 k = 0; k < COUNT; k++) {} [branch] if (b == true) {}");
+    RequireError("[unroll] if (isOn == true) {}", DiagnosticCode::InvalidAttribute);
+    RequireValid("[unroll(COUNT)] for (uint32 k = 0; k < COUNT; k++) {} [branch] if (isOn == true) {}");
 }
 
 TEST_CASE("LUSL checker records types, symbols and bindings", "[shader-language][checker]")

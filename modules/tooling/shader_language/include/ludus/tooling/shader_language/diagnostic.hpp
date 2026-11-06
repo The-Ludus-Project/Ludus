@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/strings/static_string.hpp>
 #include <ludus/tooling/shader_language/limits.hpp>
 
@@ -15,8 +16,8 @@ namespace ludus::tooling::shader_language
 ///
 /// Values never change meaning once released; retired codes are not reused. Codes 1-99 are
 /// language rules shared by every stage, 100-199 are lexical, 200-299 are preprocessor, 300-399
-/// are syntax, 400-499 are formatter and 500-599 are
-/// semantic diagnostics. docs/modules/tooling/shader-language.md lists every code.
+/// are syntax, 400-499 are formatter, 500-599 are
+/// semantic and 600-699 are style diagnostics. docs/modules/tooling/shader-language.md lists every code.
 // NOLINTNEXTLINE(performance-enum-size): codes have four digits; later stages exceed 255.
 enum class DiagnosticCode : foundation::uint16
 {
@@ -209,6 +210,23 @@ enum class DiagnosticCode : foundation::uint16
     UndefinedFunction = 534,
     /// More types or symbols than the checker allows.
     CheckerLimit = 535,
+    /// A variable is read on a path where it may not have been assigned; initialize it with `= 0`,
+    /// or declare it `= void` when a later write is certain.
+    UseBeforeAssignment = 541,
+    /// An `out` parameter may be unwritten when the function returns.
+    OutParameterNotAssigned = 542,
+    /// A function with a return type can reach its end without returning a value.
+    MissingReturn = 543,
+    /// A function calls itself, directly or through other functions; GPU code has no call stack.
+    Recursion = 544,
+    /// A `groupshared` variable is not declared `= 0` or `= void`.
+    GroupsharedInitializer = 545,
+
+    /// A name breaks the naming rules: PascalCase types, functions and fields, lowerCamelCase
+    /// parameters and locals, `out`/`inout` prefixes, UPPER_CASE constants, question-like booleans.
+    NamingStyle = 601,
+    /// A `bool` value used directly as a condition or `&&`/`||` operand; compare with `== true`.
+    BareBoolOperand = 602,
 };
 
 /// @brief Return the stable kebab-case name of a code, such as `unknown-directive`.
@@ -255,6 +273,40 @@ struct SourceLocation final
 /// Bounded diagnostic text; MAX_DIAGNOSTIC_MESSAGE_BYTES bytes at most.
 using DiagnosticMessage = foundation::StaticString<MAX_DIAGNOSTIC_MESSAGE_BYTES>;
 
+/// Most text edits in one DiagnosticFix.
+inline constexpr foundation::usize MAX_FIX_EDITS = 2;
+/// Longest text one TextEdit inserts, in bytes.
+inline constexpr foundation::usize MAX_FIX_TEXT_BYTES = 160;
+/// Text inserted by a TextEdit.
+using FixText = foundation::StaticString<MAX_FIX_TEXT_BYTES>;
+
+/// @brief One replacement in a request file: remove `RemovedBytes` bytes at `ByteOffset`, then
+/// insert `Inserted` there.
+struct TextEdit final
+{
+    /// Index of the file in the request; edits never target configuration values.
+    foundation::uint16 FileIndex = NO_SOURCE;
+    /// Byte offset in that file's text.
+    foundation::uint32 ByteOffset = 0;
+    /// Bytes to remove at ByteOffset; zero for an insertion.
+    foundation::uint32 RemovedBytes = 0;
+    /// Text to insert at ByteOffset.
+    FixText Inserted;
+};
+
+/// @brief A suggested repair of a diagnostic, as edits to the request's files.
+///
+/// Edits of one fix never overlap. Apply them from the highest ByteOffset down, so earlier offsets
+/// stay valid. A fix is offered only where the affected tokens are spelled in a file, not produced
+/// by a macro expansion or a configuration value.
+struct DiagnosticFix final
+{
+    /// Number of valid entries in Edits; zero when the diagnostic has no fix.
+    foundation::usize EditCount = 0;
+    /// The edits.
+    foundation::StaticArray<TextEdit, MAX_FIX_EDITS> Edits{};
+};
+
 /// @brief One reported problem.
 ///
 /// A diagnostic about a token produced by macro expansion carries two locations: `Location` is
@@ -272,5 +324,7 @@ struct Diagnostic final
     SourceLocation ExpansionLocation;
     /// Human-readable explanation, clipped to its capacity.
     DiagnosticMessage Message;
+    /// A suggested repair; Fix.EditCount is zero when none is safe to offer.
+    DiagnosticFix Fix;
 };
 } // namespace ludus::tooling::shader_language
