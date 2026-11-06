@@ -423,7 +423,10 @@ private:
         {
             return false;
         }
-        return previous.Symbol == Punctuator::Semicolon || previous.Symbol == Punctuator::LeftBrace ||
+        // The `{` of an initializer list opens members, not statements.
+        const bool isBlockStart = previous.Symbol == Punctuator::LeftBrace &&
+                                  (mBrackets.IsEmpty() == true || mBrackets.GetLast().IsBlock == true);
+        return previous.Symbol == Punctuator::Semicolon || isBlockStart == true ||
                previous.Symbol == Punctuator::RightBrace || mPreviousCode == mLastLabelColon ||
                mPreviousCode == mLastAttributeClose || mIsGeneric[mPreviousCode] == TEMPLATE_HEADER_CLOSE;
     }
@@ -692,10 +695,16 @@ private:
             mIsInCaseLabel = false;
         }
 
+        // A multiline initializer after `=` puts its `{` on its own line, at the indentation of the
+        // line holding the `=`, as the repository's C++ initializer rule does.
+        const bool isMultilineInitializer = isPunctuator(index, Punctuator::LeftBrace) == true &&
+                                            isBlockOpen == false && mPreviousCode != NO_TOKEN_INDEX &&
+                                            isPunctuator(mPreviousCode, Punctuator::Equal) == true &&
+                                            isFollowedOnLaterLine(index) == true;
         // A token starts a line after a forced break, at a block brace, or where the author broke it.
-        bool isNewLine =
-            mPreviousToken != NO_TOKEN_INDEX && isTrailingComment == false &&
-            (mHasForcedBreak == true || isBlockOpen == true || isBlockClose == true || isOriginalBreak == true);
+        bool isNewLine = mPreviousToken != NO_TOKEN_INDEX && isTrailingComment == false &&
+                         (mHasForcedBreak == true || isBlockOpen == true || isBlockClose == true ||
+                          isOriginalBreak == true || isMultilineInitializer == true);
         // A '#' outside a directive must not start a line, where it would become one.
         if (isNewLine == true && isOriginalBreak == false &&
             (isPunctuator(index, Punctuator::Hash) == true || isPunctuator(index, Punctuator::HashHash) == true))
@@ -721,7 +730,10 @@ private:
         }
         if (isNewLine == true)
         {
-            startLine(token, getLineIndent(index, isBlockOpen, isBlockClose, isCaseLabelStart));
+            const usize indent = isMultilineInitializer == true
+                                     ? getCurrentLineIndent()
+                                     : getLineIndent(index, isBlockOpen, isBlockClose, isCaseLabelStart);
+            startLine(token, indent);
         }
         else if (needsSpace(index) == true || isJoinSafe(index) == false)
         {
@@ -778,6 +790,13 @@ private:
         mIsPreviousPrefix = isIncrement == true && isUnary == true;
         mPreviousToken = index;
         mPreviousCode = index;
+    }
+
+    /// True when the next code token after `index` starts on a later source line.
+    [[nodiscard]] bool isFollowedOnLaterLine(usize index) const noexcept
+    {
+        const usize next = getNextCode(index);
+        return next < mTokens.GetSize() && mTokens[next].Location.Line > mEndLines[index];
     }
 
     [[nodiscard]] bool isInsideParentheses() const noexcept

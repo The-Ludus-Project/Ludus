@@ -272,3 +272,39 @@ TEST_CASE("LUSL formats template headers as their own line", "[shader-language][
     CHECK(std::string(result.Text.GetData(), result.Text.GetSize()) ==
           "template <Material M>\nfloat32 Shade(in M material)\n{\n    return 1.0;\n}\n");
 }
+
+TEST_CASE("LUSL extern slang variables are read-only uniforms", "[shader-language][interfaces]")
+{
+    const CheckedSource checked(R"(extern slang
+{
+    struct Material
+    {
+        float32x3 Tint;
+        float32 Gain;
+    };
+    Material material;
+};
+void Scale(inout float32 value)
+{
+    value = value * 2.0;
+}
+float32 Read()
+{
+    Material copy = material;
+    copy.Gain = 2.0;
+    return copy.Gain * material.Gain;
+}
+void Write()
+{
+    material.Gain = 2.0;
+    material = 0;
+    Scale(inout material.Gain);
+}
+)");
+    // Reads and copies are fine; assignments and inout arguments are not.
+    CHECK(checked.CountDiagnostics(DiagnosticCode::NotAssignable) == 3);
+    const language::Diagnostic* writeOrNull = checked.FindDiagnosticOrNull(DiagnosticCode::NotAssignable);
+    REQUIRE(writeOrNull != nullptr);
+    CHECK(std::string_view(writeOrNull->Message.GetView()).find("copy it into a local variable") !=
+          std::string_view::npos);
+}

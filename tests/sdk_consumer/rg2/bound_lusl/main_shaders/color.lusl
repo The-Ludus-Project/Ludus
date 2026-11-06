@@ -1,0 +1,8 @@
+// The per-draw material color; the LUSL port of ../../bound/main_shaders/color.slang.
+#include "graph_schemas.luslh"
+
+float32x4 PSMain(in RasterVarying value)
+{
+    // Per-draw material values arrive through the generated binding, not a shader permutation.
+    return float32x4(material.Tint * material.Gain, 1.0);
+}

@@ -5406,6 +5406,19 @@ private:
                     return false;
                 }
                 const Symbol& declared = mModel.Symbols[symbol];
+                // A variable of an extern slang block is a uniform the including Slang code declares,
+                // such as a render-graph binding: read-only like a ConstantBuffer.
+                if (declared.Kind == SymbolKind::Variable && declared.IsExtern == true &&
+                    declared.IsGroupshared == false && declared.IsConstant == false)
+                {
+                    report(DiagnosticCode::NotAssignable,
+                           node,
+                           ComposeMessage("'",
+                                          spellNode(node),
+                                          "' is a uniform declared by Slang and is read-only; copy it into a local "
+                                          "variable to change the value"));
+                    return false;
+                }
                 if (declared.Kind == SymbolKind::Parameter ||
                     (declared.Kind == SymbolKind::Variable && declared.IsConstant == false))
                 {

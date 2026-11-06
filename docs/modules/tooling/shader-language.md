@@ -307,6 +307,18 @@ style: four-space indentation, braces on their own lines, indented `case`
 labels, single spaces around binary operators, `{ .A = a }` initializers, and
 directives indented after `#` by their conditional depth.
 
+An initializer list that spans lines follows the repository's C++ rule. `=`
+ends the line, and `{` and `};` align with the statement. Members are indented
+one level, one per line, as written:
+
+```c
+RasterVarying result =
+{
+    .PositionClip = positionClip,
+    .Color = value.Color,
+};
+```
+
 **Only whitespace changes.**
 - The formatter works on the unpreprocessed tokens and comments, not the syntax
   tree. Macros, conditional groups and comments therefore survive.
@@ -373,6 +385,10 @@ bool CheckShade(const language::PreprocessRequest& request, const language::Prep
 - **`extern slang { ... }`**, without a path, declares what the including Slang
   code provides, such as the types a render-graph wrapper defines before it
   includes a callback. Lowering writes no `#include` for it.
+- **Variables in `extern slang` blocks** (`Material material;`) are uniforms
+  the Slang side declares, such as render-graph bindings. They are read-only:
+  assigning one, a field or element of one, or passing it as `out` or `inout`
+  is `not-assignable`. Copy it into a local to change the value.
 - **Extern structs and the zero rule:** `= 0` and designated initializers of an
   extern struct set only the fields LUSL declares. Declare every field when
   either is used.
@@ -946,11 +962,32 @@ float32x3 ShadeMiss(in Ray ray)
   A game project sets it once, in its `CMakeLists.txt` before compiling graphs or
   in its presets. `ludus_tools` builds outside CMake read the `LUDUS_LUSL_STYLE`
   environment variable. The engine repository always builds `strict`.
+- **Schema declarations.** The schema generator has a LUSL output. For each LUSL
+  source that a `vertex` or `fragment` program names, the build writes
+  `graph_schemas.luslh` below the `_ludus_graph` include directory. It holds a
+  path-less `extern slang` block with:
+  - the schemas those programs read and write, as structs in name order;
+  - their bindings, as read-only variables, in name order.
+
+  ```c
+  #include "graph_schemas.luslh"
+
+  float32x4 PSMain(in RasterVarying value)
+  {
+      return float32x4(material.Tint * material.Gain, 1.0);
+  }
+  ```
+
+  For the `rg2/bound` manifest, the header declares `Material`, `RasterVarying`
+  and `RendererStatic`, then `Material material;`. The generated raster wrapper
+  declares the same structs and bindings in Slang before it includes the
+  lowered module, so the header itself emits nothing. Programs of one source
+  that bind one id to two schemas are a build error. The header is not part of
+  the package; the lowered module's bytes are.
 - **Current limits:**
-  - LUSL programs that need wrapper types use the
-    [ray callback declarations](#sdk-declarations), or declare them in their
-    own path-less `extern slang` block. Raster schema structs have no SDK
-    declarations yet; the schema generator gains a LUSL output in L3.
+  - Ray callbacks use the [ray callback declarations](#sdk-declarations), or
+    declare more in their own path-less `extern slang` block. Their manifest
+    bindings get no generated declarations yet.
   - Configuration values do not reach LUSL programs from the render graph yet,
     and render-graph builds emit no development bounds checks.
 - **Evidence:**
@@ -971,6 +1008,10 @@ float32x3 ShadeMiss(in Ray ray)
 
     A GPU test compares every pixel of three frames, and checks that the first
     frame shows each material and the miss color.
+  - `rg2_bound_lusl` is the L3 acceptance graph. It is the raster graph
+    `rg2_bound` with its vertex, color and depth callbacks ported to LUSL,
+    reading `graph_schemas.luslh`. A GPU test renders both packages with two
+    draws of different material values and compares every pixel.
 
 ## Tests and fuzzing
 

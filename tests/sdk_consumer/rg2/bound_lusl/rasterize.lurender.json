@@ -1,0 +1,123 @@
+{
+  "configurations": [
+    {
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "draw.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "draw.view"
+        },
+        {
+          "from": "input.depth",
+          "to": "draw.depth"
+        },
+        {
+          "from": "input.color",
+          "to": "draw.color"
+        }
+      ],
+      "id": "ColorAndDepth",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "depth",
+          "type": "DepthTexture"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "nodes": [
+        {
+          "color_load": "Clear",
+          "color_store": "Store",
+          "depth_load": "Clear",
+          "depth_store": "Store",
+          "id": "draw",
+          "kind": "Raster",
+          "material": "DefaultOpaque",
+          "mode": "ColorAndDepth",
+          "vertex_layout": "RendererStatic"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "depth",
+          "required": false,
+          "source": "draw.depth",
+          "type": "DepthTexture"
+        },
+        {
+          "id": "color",
+          "required": false,
+          "source": "draw.color",
+          "type": "ColorTexture"
+        }
+      ]
+    },
+    {
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "draw.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "draw.view"
+        },
+        {
+          "from": "input.depth",
+          "to": "draw.depth"
+        }
+      ],
+      "id": "DepthOnly",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "depth",
+          "type": "DepthTexture"
+        }
+      ],
+      "nodes": [
+        {
+          "depth_load": "Clear",
+          "depth_store": "Store",
+          "id": "draw",
+          "kind": "Raster",
+          "material": "DefaultOpaque",
+          "mode": "DepthOnly",
+          "vertex_layout": "RendererStatic"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "depth",
+          "required": true,
+          "source": "draw.depth",
+          "type": "DepthTexture"
+        }
+      ]
+    }
+  ],
+  "default": "ColorAndDepth",
+  "id": "RasterizeGraph",
+  "version": 1
+}
