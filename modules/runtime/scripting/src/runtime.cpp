@@ -138,6 +138,7 @@ CallContext& GetCallContext(lua_State* state) noexcept
     return *static_cast<CallContext*>(lua_callbacks(state)->userdata);
 }
 
+// luaL_error never returns: it records the message and jumps to the protected call.
 void Reject(lua_State* state, uint32 reason, const char* message) noexcept
 {
     GetCallContext(state).NativeStatus = reason;
@@ -278,7 +279,6 @@ int32 Runtime::Import(lua_State* state) noexcept
         }
     }
     Reject(state, 7, "undeclared or unavailable import");
-    return 0;
 }
 
 int32 Runtime::PrepareThread(lua_State* state) noexcept
