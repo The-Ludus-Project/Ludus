@@ -40,6 +40,14 @@ inline constexpr foundation::usize MAX_SYNTAX_NODES = foundation::usize{1} << 21
 /// Deepest nesting of statements and expressions the parser accepts. The parser recurses once per
 /// level, so this bound also keeps the browser build within its stack.
 inline constexpr foundation::usize MAX_SYNTAX_DEPTH = 64;
+/// Most interned types in one semantic model, built-in types included.
+inline constexpr foundation::usize MAX_SEMANTIC_TYPES = foundation::usize{1} << 16;
+/// Most symbols in one semantic model, built-in functions included.
+inline constexpr foundation::usize MAX_SYMBOLS = foundation::usize{1} << 20;
+/// Most parameters of one function, and most arguments of one call.
+inline constexpr foundation::usize MAX_FUNCTION_PARAMETERS = 64;
+/// Most elements of one array dimension.
+inline constexpr foundation::usize MAX_ARRAY_LENGTH = foundation::usize{1} << 20;
 /// Most diagnostics retained for one request; later ones are counted as dropped.
 inline constexpr foundation::usize MAX_DIAGNOSTICS = 256;
 /// Longest retained diagnostic message, in bytes; longer messages are clipped.

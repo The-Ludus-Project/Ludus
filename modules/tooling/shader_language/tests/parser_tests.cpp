@@ -191,6 +191,15 @@ TEST_CASE("LUSL parser recovers and reports independent errors", "[shader-langua
     CHECK(parsed.Dump().find("(expression-statement (call-expression (name Good)))") != std::string::npos);
 }
 
+TEST_CASE("LUSL parser skips the rest of a call after an argument error", "[shader-language][parser]")
+{
+    const ParsedSource parsed("void F()\n{\n    G(a = 1, 2, (3));\n    H();\n}\n");
+    CHECK(parsed.GetStatus() == Status::Failed);
+    REQUIRE(parsed.GetTree().Diagnostics.GetSize() == 1);
+    CHECK(parsed.GetTree().Diagnostics[0].Code == DiagnosticCode::PositionalAfterNamed);
+    CHECK(parsed.Dump().find("(expression-statement (call-expression (name H)))") != std::string::npos);
+}
+
 TEST_CASE("LUSL parser records token ranges and locations", "[shader-language][parser]")
 {
     const ParsedSource parsed("\nvoid F()\n{\n    float32 x = 1;\n}\n");

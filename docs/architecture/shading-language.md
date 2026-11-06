@@ -1,10 +1,11 @@
 # Ludus Shading Language (LUSL)
 
 Status: proposed, November 4, 2026; the design's open questions were resolved the
-same day (see [resolved questions](#resolved-questions)). L1a (the preprocessor)
-and L1b (the parser and formatter) are implemented in `Ludus::ShaderLanguage`;
-see the [module guide](../modules/tooling/shader-language.md) for their exact
-behavior and limits. The rest of L1 and later phases are not implemented.
+same day (see [resolved questions](#resolved-questions)). L1a (the preprocessor),
+L1b (the parser and formatter) and L1c-1 (types, names and calls) are
+implemented in `Ludus::ShaderLanguage`; see the
+[module guide](../modules/tooling/shader-language.md) for their exact behavior
+and limits. The rest of L1 and later phases are not implemented.
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
 

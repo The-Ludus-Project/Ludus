@@ -1,8 +1,10 @@
 # Ludus::ShaderLanguage: the LUSL front end (docs/architecture/shading-language.md). L1a provides
-# the preprocessor and L1b the parser; later stages lower LUSL to Slang for Ludus::ShaderCompiler.
+# the preprocessor, L1b the parser and L1c the semantic checker; later stages lower LUSL to Slang for Ludus::ShaderCompiler.
 add_library(ludus_shader_language STATIC
-    src/condition.cpp src/diagnostic.cpp src/formatter.cpp src/hide_set.cpp src/include_path.cpp src/lexer.cpp
-    src/macro_expander.cpp src/macro_table.cpp src/parser.cpp src/preprocessor.cpp src/token_text.cpp)
+    src/access_path.cpp src/call_binding.cpp src/checker.cpp src/condition.cpp src/diagnostic.cpp src/formatter.cpp
+    src/hide_set.cpp src/include_path.cpp src/intrinsics.cpp src/lexer.cpp
+    src/macro_expander.cpp src/macro_table.cpp src/parser.cpp src/preprocessor.cpp src/scope_table.cpp src/token_text.cpp
+    src/type_table.cpp)
 add_library(Ludus::ShaderLanguage ALIAS ludus_shader_language)
 set_target_properties(ludus_shader_language PROPERTIES EXPORT_NAME ShaderLanguage)
 target_compile_features(ludus_shader_language PUBLIC cxx_std_23)
@@ -11,6 +13,7 @@ target_sources(ludus_shader_language PUBLIC FILE_SET public_headers TYPE HEADERS
     include/ludus/tooling/shader_language/formatter.hpp
     include/ludus/tooling/shader_language/limits.hpp
     include/ludus/tooling/shader_language/preprocessor.hpp
+    include/ludus/tooling/shader_language/semantic.hpp
     include/ludus/tooling/shader_language/status.hpp
     include/ludus/tooling/shader_language/syntax.hpp
     include/ludus/tooling/shader_language/token.hpp)
@@ -25,7 +28,7 @@ install(TARGETS ludus_shader_language EXPORT LudusTargets ARCHIVE DESTINATION "$
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_shader_language_tests
-        tests/formatter_tests.cpp tests/lexer_tests.cpp tests/parser_tests.cpp tests/preprocessor_tests.cpp
+        tests/checker_tests.cpp tests/formatter_tests.cpp tests/lexer_tests.cpp tests/parser_tests.cpp tests/preprocessor_tests.cpp
         tests/preprocessor_randomized_tests.cpp)
     # Lexer tests reach the internal lexer directly.
     target_include_directories(ludus_shader_language_tests PRIVATE src)

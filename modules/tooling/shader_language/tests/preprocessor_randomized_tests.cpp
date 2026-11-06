@@ -2,6 +2,7 @@
 // diagnostic bound, and must give the same result twice. The libFuzzer target
 // (front_end_fuzzer.cpp) explores further when LUDUS_BUILD_SHADER_LANGUAGE_FUZZERS is on.
 
+#include "checker_test_support.hpp"
 #include "formatter_test_support.hpp"
 #include "preprocessor_test_support.hpp"
 #include "syntax_test_support.hpp"
@@ -172,5 +173,36 @@ TEST_CASE("LUSL parser survives random token sequences deterministically", "[sha
         CHECK((first.GetStatus() == Status::Ready || first.GetStatus() == Status::Failed) == true);
         CHECK(first.GetTree().Diagnostics.GetSize() <= MAX_DIAGNOSTICS);
         CHECK(first.Dump() == second.Dump());
+    }
+}
+
+TEST_CASE("LUSL checker survives random token sequences deterministically", "[shader-language][checker][random]")
+{
+    ludus::foundation::math::RandomStream random;
+    REQUIRE(random.TryReseed(0x43484b31U, 1) == true);
+    // Wrap fragments in a function so more of them reach the checker.
+    constexpr std::string_view PREFIX = "struct S { uint32 A; };\nenum class E : uint32 { X };\nvoid F(float32 x, "
+                                        "uint32 u, float32x3 v)\n{\n";
+    for (uint32 i = 0; i < CASE_COUNT; ++i)
+    {
+        std::string text(PREFIX);
+        const uint32 count = random.NextUInt32() % MAX_FRAGMENTS;
+        for (uint32 k = 0; k < count; ++k)
+        {
+            text += CODE_FRAGMENTS[random.NextUInt32() % CODE_FRAGMENT_COUNT];
+            text += ' ';
+        }
+        text += "\n}\n";
+        const ludus::tooling::shader_language::test::CheckedSource first(text);
+        const ludus::tooling::shader_language::test::CheckedSource second(text);
+        INFO("case " << i << "\ninput:\n" << text);
+        if (first.GetParseStatus() != Status::Ready)
+        {
+            CHECK(first.GetStatus() == Status::InvalidRequest);
+            continue;
+        }
+        CHECK((first.GetStatus() == Status::Ready || first.GetStatus() == Status::Failed) == true);
+        CHECK(first.GetModel().Diagnostics.GetSize() <= MAX_DIAGNOSTICS);
+        CHECK(first.DescribeDiagnostics() == second.DescribeDiagnostics());
     }
 }

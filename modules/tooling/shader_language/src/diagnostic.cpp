@@ -119,6 +119,76 @@ std::string_view GetDiagnosticCodeName(DiagnosticCode code) noexcept
             return "syntax-depth-limit";
         case DiagnosticCode::FormattedSourceLimit:
             return "formatted-source-limit";
+        case DiagnosticCode::UnknownName:
+            return "unknown-name";
+        case DiagnosticCode::UnknownType:
+            return "unknown-type";
+        case DiagnosticCode::Redeclaration:
+            return "redeclaration";
+        case DiagnosticCode::TypeMismatch:
+            return "type-mismatch";
+        case DiagnosticCode::ConstantOutOfRange:
+            return "constant-out-of-range";
+        case DiagnosticCode::InvalidLiteral:
+            return "invalid-literal";
+        case DiagnosticCode::InvalidOperands:
+            return "invalid-operands";
+        case DiagnosticCode::NonBoolCondition:
+            return "non-bool-condition";
+        case DiagnosticCode::NotAssignable:
+            return "not-assignable";
+        case DiagnosticCode::NoMatchingOverload:
+            return "no-matching-overload";
+        case DiagnosticCode::AmbiguousCall:
+            return "ambiguous-call";
+        case DiagnosticCode::UnknownNamedArgument:
+            return "unknown-named-argument";
+        case DiagnosticCode::DuplicateArgument:
+            return "duplicate-argument";
+        case DiagnosticCode::MissingArgument:
+            return "missing-argument";
+        case DiagnosticCode::DirectionMismatch:
+            return "direction-mismatch";
+        case DiagnosticCode::AliasedArguments:
+            return "aliased-arguments";
+        case DiagnosticCode::ArraySizeLiteral:
+            return "array-size-literal";
+        case DiagnosticCode::NotConstant:
+            return "not-constant";
+        case DiagnosticCode::InvalidArraySize:
+            return "invalid-array-size";
+        case DiagnosticCode::UnknownMember:
+            return "unknown-member";
+        case DiagnosticCode::InvalidInitializer:
+            return "invalid-initializer";
+        case DiagnosticCode::InvalidZeroInitializer:
+            return "invalid-zero-initializer";
+        case DiagnosticCode::InvalidReturn:
+            return "invalid-return";
+        case DiagnosticCode::InvalidTopLevelVariable:
+            return "invalid-top-level-variable";
+        case DiagnosticCode::StaticAssertFailed:
+            return "static-assert-failed";
+        case DiagnosticCode::InvalidAttribute:
+            return "invalid-attribute";
+        case DiagnosticCode::InvalidSemantic:
+            return "invalid-semantic";
+        case DiagnosticCode::InvalidSwitch:
+            return "invalid-switch";
+        case DiagnosticCode::ConstantOverflow:
+            return "constant-overflow";
+        case DiagnosticCode::NotCallable:
+            return "not-callable";
+        case DiagnosticCode::UnsupportedConstruct:
+            return "unsupported-construct";
+        case DiagnosticCode::VoidValue:
+            return "void-value";
+        case DiagnosticCode::InvalidConstruction:
+            return "invalid-construction";
+        case DiagnosticCode::UndefinedFunction:
+            return "undefined-function";
+        case DiagnosticCode::CheckerLimit:
+            return "checker-limit";
     }
     return {};
 }
