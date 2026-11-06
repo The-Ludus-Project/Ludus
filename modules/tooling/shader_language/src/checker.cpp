@@ -206,7 +206,7 @@ public:
         if (mSink.HasErrors() == false && mSink.HasOutOfMemory() == false && mIsFatal == false)
         {
             const internal::AnalysisInputs inputs{mRequest, mInput, mTree, mModel};
-            if (internal::AnalyzeFlow(inputs, mSink) == false)
+            if (internal::AnalyzeFlow(inputs, mSink) == false || internal::AnalyzeSpaces(inputs, mSink) == false)
             {
                 mSink.ReportOutOfMemory();
             }
@@ -2359,15 +2359,76 @@ private:
             report(DiagnosticCode::UnknownType, node, ComposeMessage("'", name, "' is not a type"));
             type = TypeTable::ERROR_TYPE;
         }
-        if (firstChild(node) != NO_NODE && isError(type) == false)
+        if (firstChild(node) != NO_NODE && isError(type) == false && resolveSpaces(node, type) == false)
         {
             report(DiagnosticCode::UnsupportedConstruct,
                    node,
-                   ComposeMessage("only resource types take type arguments; '", name, "' does not"));
+                   ComposeMessage("only resource types, and floating-point vectors and matrices with spaces, take "
+                                  "type arguments; '",
+                                  name,
+                                  "' does not"));
             type = TypeTable::ERROR_TYPE;
         }
         mModel.NodeTypes[node] = type;
         return type;
+    }
+
+    /// Declare `space Name;`.
+    void checkSpace(uint32 node) noexcept
+    {
+        const uint32 symbol = createSymbol(SymbolKind::Space, getNode(node).Token, node);
+        if (symbol != NO_SYMBOL)
+        {
+            (void)bindSymbol(symbol);
+        }
+    }
+
+    /// @brief Resolve the spaces of `float32x3<World>` or `float32x4x4<World, Clip>` to the space
+    /// symbols, recorded as the NodeSymbols of the argument Type nodes.
+    /// @return False when `type` takes no spaces; true otherwise, after reporting bad arguments.
+    [[nodiscard]] bool resolveSpaces(uint32 node, uint32 type) noexcept
+    {
+        const SemanticType& shape = getType(type);
+        const bool isFloat = shape.Scalar == ScalarKind::Float16 || shape.Scalar == ScalarKind::Float32 ||
+                             shape.Scalar == ScalarKind::Float64;
+        const bool isVector = shape.Kind == TypeKind::Vector && isFloat == true;
+        const bool isMatrix = shape.Kind == TypeKind::Matrix && isFloat == true;
+        if (isVector == false && isMatrix == false)
+        {
+            return false;
+        }
+        uint32 count = 0;
+        for (uint32 argument = firstChild(node); argument != NO_NODE; argument = nextSibling(argument))
+        {
+            ++count;
+            const std::string_view spaceName = getKind(argument) == SyntaxKind::Type ? spellNode(argument) : "";
+            const uint32 symbol = spaceName.empty() == true ? ScopeTable::UNBOUND : mScopes.Find(spaceName);
+            if (symbol == ScopeTable::UNBOUND || mModel.Symbols[symbol].Kind != SymbolKind::Space ||
+                firstChild(argument) != NO_NODE)
+            {
+                report(DiagnosticCode::InvalidSpace,
+                       argument,
+                       spaceName.empty() == true
+                           ? ComposeMessage("a space argument is a space name, as in float32x3<World>")
+                           : ComposeMessage("'",
+                                            spaceName,
+                                            "' is not a space; declare it at the top level with 'space ",
+                                            spaceName,
+                                            ";'"));
+                continue;
+            }
+            mModel.NodeSymbols[argument] = symbol;
+        }
+        const uint32 expected = isVector == true ? 1 : 2;
+        if (count != expected)
+        {
+            report(DiagnosticCode::InvalidSpace,
+                   node,
+                   isVector == true ? ComposeMessage("a vector names one space, as in float32x3<World>")
+                                    : ComposeMessage("a matrix names its source and destination spaces, as in "
+                                                     "float32x4x4<World, Clip>"));
+        }
+        return true;
     }
 
     /// @brief The resource type `node` spells, such as `Texture2D<float32x4>`.
@@ -2600,6 +2661,9 @@ private:
                 return;
             case SyntaxKind::StaticAssert:
                 checkStaticAssert(node);
+                return;
+            case SyntaxKind::SpaceDeclaration:
+                checkSpace(node);
                 return;
             case SyntaxKind::InterfaceDeclaration:
                 checkInterface(node);
@@ -4747,6 +4811,15 @@ private:
             case SymbolKind::Function:
             case SymbolKind::Intrinsic:
                 report(DiagnosticCode::TypeMismatch, node, ComposeMessage("'", name, "' is a function; call it"));
+                return TypeTable::ERROR_TYPE;
+            case SymbolKind::Space:
+                report(DiagnosticCode::TypeMismatch,
+                       node,
+                       ComposeMessage("'",
+                                      name,
+                                      "' is a coordinate space; name it in a type, as in float32x3<",
+                                      name,
+                                      ">"));
                 return TypeTable::ERROR_TYPE;
             default:
                 report(DiagnosticCode::TypeMismatch, node, ComposeMessage("'", name, "' is a type, not a value"));

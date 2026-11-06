@@ -155,6 +155,9 @@ enum class SymbolKind : foundation::uint8
     /// A `concept`; its type parameters are TypeParameterCount symbols from FirstTypeParameter, and
     /// Declaration is the ConceptDeclaration whose last child is the constraint.
     Concept,
+    /// A coordinate space from `space Name;`. The spaces a vector or matrix type names are the
+    /// NodeSymbols of its Type node's children; types themselves carry no space.
+    Space,
 };
 
 /// @brief A declared entity.

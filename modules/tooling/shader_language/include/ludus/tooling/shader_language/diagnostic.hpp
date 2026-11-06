@@ -244,6 +244,12 @@ enum class DiagnosticCode : foundation::uint16
     NonUniformArgument = 553,
     /// `uniform` on an `out` or `inout` parameter, or on an entry point's parameter.
     InvalidUniformParameter = 554,
+    /// Values of different coordinate spaces combined, assigned, passed or returned, or a matrix
+    /// applied to a value outside its source space.
+    SpaceMismatch = 555,
+    /// A space argument that names no `space`, a wrong number of them, or spaces on a type other
+    /// than a floating-point vector or matrix.
+    InvalidSpace = 556,
 
     /// A name breaks the naming rules: PascalCase types, functions and fields, lowerCamelCase
     /// parameters and locals, `out`/`inout` prefixes, UPPER_CASE constants, question-like booleans.

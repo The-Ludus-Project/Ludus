@@ -691,6 +691,11 @@ private:
         {
             return parseStaticAssert();
         }
+        if (scope == DeclarationScope::TopLevel && isWord("space") == true && isName(1) == true &&
+            isPunctuator(Punctuator::Semicolon, 2) == true)
+        {
+            return parseSpace(attributes);
+        }
         if (isDeclarationStart() == false)
         {
             reportExpected("a declaration");
@@ -1106,6 +1111,23 @@ private:
         }
         (void)expect(Punctuator::RightBrace, "'}' to close the 'extern slang' block");
         (void)consumePunctuator(Punctuator::Semicolon);
+        finish(node);
+        return node;
+    }
+
+    /// `space Name;`; the caller saw the name and the `;`.
+    [[nodiscard]] uint32 parseSpace(const Array<uint32>& attributes) noexcept
+    {
+        if (attributes.IsEmpty() == false)
+        {
+            report(DiagnosticCode::UnsupportedConstruct, ComposeMessage("a space declaration takes no attributes"));
+        }
+        const uint32 node = createNode(SyntaxKind::SpaceDeclaration);
+        ++mPosition;
+        if (parseDeclaredName(node) == true)
+        {
+            (void)expect(Punctuator::Semicolon, "';' after the space name");
+        }
         finish(node);
         return node;
     }
@@ -2234,6 +2256,8 @@ std::string_view GetSyntaxKindName(SyntaxKind kind) noexcept
             return "concept-application";
         case SyntaxKind::StaticAssert:
             return "static-assert";
+        case SyntaxKind::SpaceDeclaration:
+            return "space-declaration";
         case SyntaxKind::Attribute:
             return "attribute";
         case SyntaxKind::Type:

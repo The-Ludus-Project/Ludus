@@ -997,6 +997,10 @@ private:
                 inoutLine.Append("concept ");
                 inoutLine.Append(name);
                 return;
+            case language::SymbolKind::Space:
+                inoutLine.Append("space ");
+                inoutLine.Append(name);
+                return;
             case language::SymbolKind::Enumerator: {
                 inoutLine.Append(spellToken(mAnalysis.Model.Symbols[declared.Parent].NameToken));
                 inoutLine.Append("::");
