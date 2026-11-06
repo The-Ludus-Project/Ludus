@@ -207,6 +207,8 @@ std::string_view GetDiagnosticCodeName(DiagnosticCode code) noexcept
             return "template-deduction";
         case DiagnosticCode::InvalidConstraint:
             return "invalid-constraint";
+        case DiagnosticCode::SpecializationBudget:
+            return "specialization-budget";
         case DiagnosticCode::NamingStyle:
             return "naming-style";
         case DiagnosticCode::BareBoolOperand:

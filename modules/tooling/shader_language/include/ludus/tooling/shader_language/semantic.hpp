@@ -306,6 +306,10 @@ struct CheckOptions final
 {
     /// How style rules report; language rules are errors regardless.
     StyleSetting Style = StyleSetting::Strict;
+    /// Most template specializations the translation unit may create. Values above
+    /// MAX_SPECIALIZATIONS mean MAX_SPECIALIZATIONS. A call that needs one more is a
+    /// `specialization-budget` error, so a package keeps its compile cost within what it declared.
+    foundation::usize SpecializationBudget = MAX_SPECIALIZATIONS;
 };
 
 /// @brief Check the types, names and calls of a parsed translation unit.

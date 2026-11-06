@@ -582,6 +582,18 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_lusl_semantics_RUNTIME_PACKAGE PARENT_PATH lusl_semantics_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_LUSL_SEMANTICS_DIRECTORY="${lusl_semantics_package_directory}")
+    # The L2 material permutation, written with Slang interfaces and with LUSL concepts; the test
+    # compares their pixels.
+    foreach(permutation IN ITEMS material_permutation material_permutation_lusl)
+        string(TOUPPER "${permutation}" permutation_macro)
+        set(permutation_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${permutation}")
+        ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/${permutation}" "${permutation_staged}")
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_${permutation}
+            MANIFEST "${permutation_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET rg2_${permutation}_RUNTIME_PACKAGE PARENT_PATH permutation_package_directory)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            LUDUS_RG3_${permutation_macro}_DIRECTORY="${permutation_package_directory}")
+    endforeach()
     set(visibility_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/visibility")
     set(visibility_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/visibility")
     ludus_stage_render_graph_fixture("${visibility_source}" "${visibility_staged}")

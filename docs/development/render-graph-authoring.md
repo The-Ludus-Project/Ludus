@@ -8840,7 +8840,9 @@ Unsupported or not established:
 A program's `source` may name a `.lusl` file instead of a `.slang` one. The build
 lowers it with `luslc` and compiles the generated Slang module in its place; see
 [Render-graph programs](../modules/tooling/shader-language.md#render-graph-programs)
-for the SDK headers, the `LUDUS_LUSL_STYLE` style setting and the current limits.
+for the SDK headers, the `LUDUS_LUSL_STYLE` style setting, the optional
+`budgets.specializations` budget, the LUSL section of `build-report.json` and
+the current limits.
 
 ## Native shader worker and live development builds
 

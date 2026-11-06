@@ -1,0 +1,7 @@
+// Blue where no surface is hit; the LUSL port of ../../raytracing/main_shaders/miss.slang.
+#include "ray_shader.luslh"
+
+float32x3 ShadeMiss(in Ray ray)
+{
+    return float32x3(0, 0, 1);
+}

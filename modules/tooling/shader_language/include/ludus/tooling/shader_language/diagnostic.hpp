@@ -231,6 +231,8 @@ enum class DiagnosticCode : foundation::uint16
     /// A malformed concept or constraint, an `if constexpr` condition that is not a constant
     /// constraint, or overloads whose constraints do not order.
     InvalidConstraint = 549,
+    /// A template call that needs more specializations than CheckOptions::SpecializationBudget allows.
+    SpecializationBudget = 550,
 
     /// A name breaks the naming rules: PascalCase types, functions and fields, lowerCamelCase
     /// parameters and locals, `out`/`inout` prefixes, UPPER_CASE constants, question-like booleans.

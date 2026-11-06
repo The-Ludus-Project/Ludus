@@ -79,6 +79,34 @@ class LuslcTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('#include "../_sdk/ray.slang"', result.stdout)
 
+    def test_specialization_budget_and_report(self):
+        self.write(
+            "shade.lusl",
+            "interface Material\n{\n    static const uint32 LOBE_COUNT;\n};\n"
+            "concept Opaque<T> = (T : Material) && (T::LOBE_COUNT == 1);\n"
+            "struct Plastic : Material\n{\n    static const uint32 LOBE_COUNT = 1;\n};\n"
+            "struct Stone : Material\n{\n    static const uint32 LOBE_COUNT = 1;\n};\n"
+            "template <Opaque M>\nuint32 Count(in M material)\n{\n    return M::LOBE_COUNT;\n}\n"
+            "uint32 Use(in Plastic plastic, in Stone stone)\n{\n    return Count(plastic) + Count(stone);\n}\n",
+        )
+        report = self.root / "report.txt"
+        result = run("lower", "shade.lusl", "--report", str(report), "--max-specializations", "2", root=self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            report.read_text(encoding="utf-8").splitlines(),
+            [
+                "specialization\tshade.lusl:15\tCount<Plastic>\t_luslSpecialization0_Count",
+                "specialization\tshade.lusl:15\tCount<Stone>\t_luslSpecialization1_Count",
+            ],
+        )
+        over = run("check", "shade.lusl", "--max-specializations", "1", root=self.root)
+        self.assertEqual(over.returncode, 1)
+        self.assertIn("error LUSL0550 specialization-budget:", over.stderr)
+        for budget in ("0", "257", "two"):
+            invalid = run("check", "shade.lusl", "--max-specializations", budget, root=self.root)
+            self.assertEqual(invalid.returncode, 2)
+            self.assertIn("from 1 to 256", invalid.stderr)
+
     def test_format_check_and_write(self):
         self.write("format.lusl", "static const uint32 COUNT=4;\n")
         self.assertEqual(run("format", "--check", "format.lusl", root=self.root).returncode, 1)

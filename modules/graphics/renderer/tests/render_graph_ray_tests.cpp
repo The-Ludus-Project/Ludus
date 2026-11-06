@@ -429,6 +429,57 @@ TEST_CASE("LUSL ray callbacks render the same pixels as their Slang originals", 
     CHECK(lusl[2 * PIXEL_BYTES + center + 1] == 255);
 }
 
+TEST_CASE("A LUSL material permutation renders the same pixels as its Slang-interface version",
+          "[render-graph][gpu][ray-pipeline]")
+{
+    // The closest-hit callbacks shade Plastic, CarPaint and Velvet bands of each triangle: LUSL
+    // with concepts, overload ordering and if constexpr, Slang with interfaces and generics
+    // (docs/architecture/shading-language.md#delivery-plan, L2 acceptance).
+    Array<uint8> slang;
+    Array<uint8> lusl;
+    RenderRayFrames({LUDUS_RG3_MATERIAL_PERMUTATION_DIRECTORY, "rg2_material_permutation.lurgrt"}, slang);
+    RenderRayFrames({LUDUS_RG3_MATERIAL_PERMUTATION_LUSL_DIRECTORY, "rg2_material_permutation_lusl.lurgrt"}, lusl);
+    REQUIRE(slang.GetSize() == COMPARED_RAY_FRAMES * PIXEL_BYTES);
+    REQUIRE(lusl.GetSize() == slang.GetSize());
+    usize differing = 0;
+    for (usize i = 0; i < slang.GetSize(); ++i)
+    {
+        differing += slang[i] != lusl[i] ? 1 : 0;
+    }
+    CHECK(differing == 0);
+    // Equality is not vacuous: the first frame shades the red triangle with every material, and
+    // the channels tell them apart. Plastic is fogged toward blue (B > G > 0); CarPaint and Velvet
+    // leave G == B, CarPaint with red well above green, Velvet with red near green (near-normal
+    // view); the miss color is pure blue.
+    constexpr int32 LAYERED_RED_MARGIN = 64;
+    usize plastic = 0;
+    usize paint = 0;
+    usize velvet = 0;
+    usize miss = 0;
+    for (usize i = 0; i < PIXEL_BYTES; i += 4)
+    {
+        const int32 red = lusl[i];
+        const int32 green = lusl[i + 1];
+        const int32 blue = lusl[i + 2];
+        if (red == 0 && green == 0 && blue == 255)
+        {
+            ++miss;
+        }
+        else if (blue > green && green > 0)
+        {
+            ++plastic;
+        }
+        else if (blue == green && green > 0)
+        {
+            ++(red - green > LAYERED_RED_MARGIN ? paint : velvet);
+        }
+    }
+    CHECK(plastic > 0);
+    CHECK(paint > 0);
+    CHECK(velvet > 0);
+    CHECK(miss > 0);
+}
+
 TEST_CASE("LUSL's defined behavior holds on the GPU", "[render-graph][gpu][ray-pipeline]")
 {
     // The miss callback of rg2_lusl_semantics colors each channel by one rule: red for signed

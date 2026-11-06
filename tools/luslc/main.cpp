@@ -54,12 +54,14 @@ using PathText = StaticString<filesystem::MAX_PATH_BYTES>;
 
 const std::string_view USAGE =
     "usage: luslc check  [--root DIR] [--include-directory DIR]... [--style strict|warn|off]\n"
-    "                    [--define NAME=VALUE]... SOURCE\n"
+    "                    [--define NAME=VALUE]... [--max-specializations N] SOURCE\n"
     "       luslc lower  [--root DIR] [--include-directory DIR]... [--style strict|warn|off]\n"
-    "                    [--define NAME=VALUE]... [--bounds-checks] [--output FILE] SOURCE\n"
+    "                    [--define NAME=VALUE]... [--max-specializations N] [--bounds-checks]\n"
+    "                    [--output FILE] [--report FILE] SOURCE\n"
     "       luslc format [--root DIR] [--check | --write] FILE...\n"
     "SOURCE, FILE and --include-directory are '/'-separated paths relative to --root (default: the\n"
-    "current directory).\n";
+    "current directory). --max-specializations is the specialization budget, 1 to 256 (default 256).\n"
+    "--report writes the specializations and groupshared clears of the lowered module.\n";
 
 /// Write part of `bytes` to a standard stream: the byte count, or negative on failure.
 isize WriteDescriptor(int32 descriptor, const char* bytes, usize count) noexcept
@@ -391,6 +393,7 @@ struct Options final
     std::string_view Command;
     std::string_view Root = ".";
     std::string_view Output;
+    std::string_view Report;
     language::LoweringOptions Lowering;
     bool ShouldCheck = false;
     bool ShouldWrite = false;
@@ -422,6 +425,30 @@ struct Options final
     return false;
 }
 
+/// A decimal budget from 1 to MAX_SPECIALIZATIONS.
+[[nodiscard]] bool ParseBudget(std::string_view text, usize& outBudget) noexcept
+{
+    usize value = 0;
+    for (const char character : text)
+    {
+        if (character < '0' || character > '9')
+        {
+            return false;
+        }
+        value = value * DECIMAL_BASE + static_cast<usize>(character - '0');
+        if (value > language::MAX_SPECIALIZATIONS)
+        {
+            return false;
+        }
+    }
+    if (text.empty() == true || value == 0)
+    {
+        return false;
+    }
+    outBudget = value;
+    return true;
+}
+
 [[nodiscard]] bool ParseArguments(int argumentCount, char** arguments, Options& outOptions) noexcept
 {
     if (argumentCount < 2)
@@ -442,6 +469,24 @@ struct Options final
         {
             ++i;
             outOptions.Output = arguments[i];
+        }
+        else if (argument == "--report" && hasValue == true)
+        {
+            ++i;
+            outOptions.Report = arguments[i];
+        }
+        else if (argument == "--max-specializations" && hasValue == true)
+        {
+            ++i;
+            if (ParseBudget(arguments[i], outOptions.Lowering.Check.SpecializationBudget) == false)
+            {
+                Line line;
+                line.Append("luslc: --max-specializations takes a whole number from 1 to ");
+                line.AppendUnsigned(language::MAX_SPECIALIZATIONS);
+                line.Append(", the engine limit\n");
+                WriteError(line.GetView());
+                return false;
+            }
         }
         else if (argument == "--style" && hasValue == true)
         {
@@ -528,6 +573,55 @@ struct Options final
     return published.Published == true;
 }
 
+[[nodiscard]] bool AppendText(std::string_view text, Array<char>& inoutText) noexcept
+{
+    return inoutText.TryAddRange(std::span<const char>(text.data(), text.size())) == true;
+}
+
+/// Append `path:line` of `location`, or `<configuration>:line`.
+[[nodiscard]] bool
+AppendLocation(const Snapshot& snapshot, const language::SourceLocation& location, Array<char>& inoutText) noexcept
+{
+    Line line;
+    line.Append(location.FileIndex == language::CONFIGURATION_SOURCE ? std::string_view("<configuration>")
+                                                                     : snapshot.GetPath(location.FileIndex));
+    line.Append(":");
+    line.AppendUnsigned(location.Line);
+    return AppendText(line.GetView(), inoutText);
+}
+
+/// The build report of a lowered module, one tab-separated record per line:
+/// `specialization <template location> <name> <generated name>` and
+/// `groupshared-clear <entry location> <variable location> <unpadded bytes>`.
+[[nodiscard]] bool
+ComposeReport(const Snapshot& snapshot, const language::LoweringResult& result, Array<char>& outText) noexcept
+{
+    outText.Clear();
+    for (const language::SpecializationRecord& record : result.Specializations)
+    {
+        if (AppendText("specialization\t", outText) == false ||
+            AppendLocation(snapshot, record.Template, outText) == false || AppendText("\t", outText) == false ||
+            AppendText(record.Name.GetView(), outText) == false || AppendText("\t", outText) == false ||
+            AppendText(record.GeneratedName.GetView(), outText) == false || AppendText("\n", outText) == false)
+        {
+            return false;
+        }
+    }
+    for (const language::GroupsharedClearRecord& record : result.GroupsharedClears)
+    {
+        Line bytes;
+        bytes.AppendUnsigned(record.Bytes);
+        if (AppendText("groupshared-clear\t", outText) == false ||
+            AppendLocation(snapshot, record.Entry, outText) == false || AppendText("\t", outText) == false ||
+            AppendLocation(snapshot, record.Variable, outText) == false || AppendText("\t", outText) == false ||
+            AppendText(bytes.GetView(), outText) == false || AppendText("\n", outText) == false)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 int RunLowering(const Options& options, const filesystem::Directory& root) noexcept
 {
     Snapshot snapshot;
@@ -565,6 +659,15 @@ int RunLowering(const Options& options, const filesystem::Directory& root) noexc
     if (options.Command == "check")
     {
         return EXIT_OK;
+    }
+    if (options.Report.empty() == false)
+    {
+        Array<char> report;
+        if (ComposeReport(snapshot, result, report) == false || WriteFile(options.Report, report) == false)
+        {
+            WriteError("luslc: the report file cannot be written\n");
+            return EXIT_FAILED;
+        }
     }
     const std::string_view text(result.Text.GetData(), result.Text.GetSize());
     if (options.Output.empty() == true)
