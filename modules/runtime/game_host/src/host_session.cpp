@@ -1,6 +1,7 @@
 #include "internal/host_session.h"
 #include "internal/frame_presenter.h"
 
+#include "internal/control_channel.h"
 #include "internal/identity.h"
 
 #include <ludus/foundation/base/core.h>
@@ -8,13 +9,8 @@
 #include <ludus/runtime/game_api/frame_clear.h>
 
 #include <array>
-#include <cerrno>
 #include <chrono>
 #include <string>
-
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 namespace ludus::runtime::game_host
 {
@@ -23,6 +19,10 @@ namespace
 LUDUS_DEFINE_LOG_CATEGORY(LOG_SESSION, "GameHost");
 /// Longest script debugger request payload forwarded to a game, in bytes.
 constexpr usize MAX_SCRIPT_DEBUG_PAYLOAD_BYTES = 4096;
+/// Control bytes read per frame; larger commands continue on later frames.
+constexpr usize MAX_CONTROL_READ_BYTES = 4096;
+/// The process identifier fills the upper half of a session identity.
+constexpr uint32 SESSION_PROCESS_SHIFT_BITS = 32;
 
 using game_api::ByteSpan;
 using game_api::ByteView;
@@ -107,7 +107,7 @@ HostSession::HostSession(uint64 projectId, uint64 gameId, int32 controlFd, uint6
     : ProjectId_(projectId), GameId_(gameId), ProjectEpoch_(projectEpoch), ControlFd_(controlFd)
 {
     SessionId_ = static_cast<uint64>(std::chrono::steady_clock::now().time_since_epoch().count()) ^
-                 (static_cast<uint64>(::getpid()) << 32);
+                 (control_channel::GetCurrentProcessIdentifier() << SESSION_PROCESS_SHIFT_BITS);
     if (SessionId_ == 0)
     {
         SessionId_ = 1;
@@ -218,29 +218,21 @@ void HostSession::FlushOutput() noexcept
     while (Output_.IsEmpty() == false && ChannelFailed_ == false)
     {
         OutputFrame& frame = Output_.GetFirst();
-        const ssize_t n = ::send(ControlFd_,
-                                 frame.Bytes.GetData() + frame.Offset,
-                                 frame.Bytes.GetSize() - frame.Offset,
-                                 MSG_DONTWAIT | MSG_NOSIGNAL);
-        if (n < 0)
+        usize sent = 0;
+        const control_channel::TransferStatus status = control_channel::Send(ControlFd_,
+                                                                             frame.Bytes.GetData() + frame.Offset,
+                                                                             frame.Bytes.GetSize() - frame.Offset,
+                                                                             sent);
+        if (status == control_channel::TransferStatus::WouldBlock)
         {
-            if (errno == EINTR)
-            {
-                continue;
-            }
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                return;
-            }
+            return;
+        }
+        if (status != control_channel::TransferStatus::Transferred)
+        {
             ChannelFailed_ = true;
             StopLatched_ = true;
             return;
         }
-        if (n == 0)
-        {
-            return;
-        }
-        const usize sent = static_cast<usize>(n);
         frame.Offset += sent;
         OutputBytes_ -= sent;
         if (frame.Offset == frame.Bytes.GetSize())
@@ -452,25 +444,19 @@ bool HostSession::PumpControl() noexcept
     {
         return true;
     }
-    // Non-blocking poll so the frame loop is never starved.
-    pollfd pfd = {};
-    pfd.fd = ControlFd_;
-    pfd.events = POLLIN;
-    const int ready = ::poll(&pfd, 1, 0);
-    if (ready > 0 && (pfd.revents & (POLLIN | POLLHUP)) != 0)
+    std::array<ludus::foundation::uint8, MAX_CONTROL_READ_BYTES> buffer = {};
+    usize received = 0;
+    const control_channel::TransferStatus status =
+        control_channel::Receive(ControlFd_, buffer.data(), buffer.size(), received);
+    if (status == control_channel::TransferStatus::Closed)
     {
-        std::array<ludus::foundation::uint8, 4096> buffer = {};
-        const ssize_t n = ::recv(ControlFd_, buffer.data(), buffer.size(), MSG_DONTWAIT);
-        if (n == 0)
-        {
-            // EOF cancels the session (design 10); it does not reconnect.
-            LUDUS_LOG_INFO(LOG_SESSION, "control EOF: ending session");
-            return false;
-        }
-        if (n > 0)
-        {
-            Reader_.Append(buffer.data(), static_cast<usize>(n));
-        }
+        // EOF cancels the session (design 10); it does not reconnect.
+        LUDUS_LOG_INFO(LOG_SESSION, "control EOF: ending session");
+        return false;
+    }
+    if (status == control_channel::TransferStatus::Transferred)
+    {
+        Reader_.Append(buffer.data(), received);
     }
     std::string payload;
     while (Reader_.Next(payload))
@@ -1335,8 +1321,7 @@ RunResult HostSession::RunLoop(uint64 maxFrames, FramePresenter* presenter) noex
         FlushOutput();
         if (Output_.IsEmpty() == false)
         {
-            pollfd pfd = {ControlFd_, POLLOUT, 0};
-            (void)::poll(&pfd, 1, 2);
+            control_channel::WaitWritable(ControlFd_, 2);
         }
     }
 

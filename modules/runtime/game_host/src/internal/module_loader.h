@@ -4,13 +4,15 @@
 //
 // Loads a gameplay module from an absolute canonical path inside a leased
 // generation directory. On Linux and macOS it uses dlopen with immediate resolution and
-// local scope (RTLD_NOW | RTLD_LOCAL), resolves exactly one public entry symbol
+// local scope (RTLD_NOW | RTLD_LOCAL); on Windows, LoadLibraryExW with dependencies
+// resolved beside the module and in system directories (D6c). It resolves exactly one
+// public entry symbol
 // (LudusGetGameApi), negotiates the common ABI table size, fills a host-owned
 // table and validates the module's embedded Query identity against the host
 // identity BEFORE any Create. Two generations (A and B) can be loaded
 // concurrently from distinct paths; each has its own handle and symbol scope.
 //
-// RTLD_LOCAL is a scoping choice, not isolation (design 5): the loader never
+// RTLD_LOCAL (or a separate DLL handle) is a scoping choice, not isolation (design 5): the loader never
 // claims OS unmapping as proof of retirement. Load/Query failures are ordinary
 // explicit errors, distinct from native crashes which are host failures.
 

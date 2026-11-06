@@ -12,6 +12,7 @@
 // Reads back the active property buffer before/after to prove state equality,
 // not just a ReloadFailed/ReloadOk message.
 
+#include "fixture_environment.h"
 #include "internal/host_session.h"
 #include "internal/identity.h"
 
@@ -29,9 +30,16 @@
 #include <fstream>
 #include <unordered_set>
 
-#include <sys/wait.h>
-#include <unistd.h>
 #include <utility>
+
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#    include <windows.h>
+
+#    include <psapi.h>
+#else
+#    include <sys/wait.h>
+#    include <unistd.h>
+#endif
 
 using namespace ludus::runtime::game_host;
 using ludus::foundation::uint32;
@@ -39,6 +47,7 @@ using ludus::foundation::uint64;
 using ludus::foundation::uint8;
 using ludus::foundation::usize;
 using ludus::runtime::game_api::PropertyValue;
+using ludus::runtime::game_host::tests::SetFixtureFailure;
 
 namespace
 {
@@ -158,14 +167,14 @@ TEST_CASE("reload rejects a live module worker until its thread is joined", "[re
 {
     HostSession session(1, 1, -1);
     REQUIRE(session.LoadInitial(LUDUS_FIXTURE_A_PATH));
-    REQUIRE(::setenv("LUDUS_FIXTURE_FAIL", "work_pending", 1) == 0);
+    REQUIRE(SetFixtureFailure("work_pending"));
     session.AdvanceOneFrame();
     CHECK(session.OutstandingWorkLeases() == 1);
     CHECK(session.ReloadTo(LUDUS_FIXTURE_B_PATH, 2) == protocol::CommandStatus::Busy);
     CHECK(session.ActiveGeneration() == 1);
     CHECK(session.State() == PlayState::Running);
     CHECK(session.OutstandingWorkLeases() == 1);
-    REQUIRE(::unsetenv("LUDUS_FIXTURE_FAIL") == 0);
+    REQUIRE(SetFixtureFailure(nullptr));
     REQUIRE(session.ReloadTo(LUDUS_FIXTURE_B_PATH, 2) == protocol::CommandStatus::Ok);
     REQUIRE(session.ActiveGeneration() == 2);
     REQUIRE(session.OutstandingWorkLeases() == 0);
@@ -173,16 +182,15 @@ TEST_CASE("reload rejects a live module worker until its thread is joined", "[re
 
 TEST_CASE("Stop retains code and instance when a module worker cannot drain", "[reload][services]")
 {
-#if defined(LUDUS_PLATFORM_MACOS)
-    SKIP("This acceptance test inspects Linux /proc mappings and RSS");
-#endif
+#if LUDUS_TARGET_OS != LUDUS_OS_LINUX
+    SKIP("This acceptance test forks and inspects Linux /proc mappings");
+#else
     const auto child = ::fork();
     REQUIRE(child >= 0);
     if (child == 0)
     {
         HostSession session(1, 1, -1);
-        if (session.LoadInitial(LUDUS_FIXTURE_A_PATH) == false ||
-            ::setenv("LUDUS_FIXTURE_FAIL", "work_pending", 1) != 0)
+        if (session.LoadInitial(LUDUS_FIXTURE_A_PATH) == false || SetFixtureFailure("work_pending") == false)
         {
             ::_exit(1);
         }
@@ -204,6 +212,7 @@ TEST_CASE("Stop retains code and instance when a module worker cannot drain", "[
     REQUIRE(::waitpid(child, &status, 0) == child);
     REQUIRE(WIFEXITED(status));
     REQUIRE(WEXITSTATUS(status) == 0);
+#endif
 }
 
 TEST_CASE("candidate rejects malformed tagged checkpoints before promotion", "[reload][checkpoint]")
@@ -320,9 +329,9 @@ TEST_CASE("pre-commit failure at each stage preserves A and its state", "[reload
         const usize beforeSize = session.ReadActiveProperties(before.data(), before.size());
         const auto bouncesBefore = BouncesFrom(before.data(), beforeSize);
 
-        ::setenv("LUDUS_FIXTURE_FAIL", stage, 1);
+        (void)SetFixtureFailure(stage);
         const auto status = session.ReloadTo(LUDUS_FIXTURE_B_PATH, 2);
-        ::unsetenv("LUDUS_FIXTURE_FAIL");
+        (void)SetFixtureFailure(nullptr);
 
         INFO("stage=" << stage);
         REQUIRE(status != protocol::CommandStatus::Ok);
@@ -394,9 +403,9 @@ TEST_CASE("rejected reload preserves A pause state and continued simulation", "[
     std::array<ludus::foundation::uint8, 4096> before = {};
     const usize beforeSize = session.CaptureCheckpoint(before.data(), before.size());
 
-    ::setenv("LUDUS_FIXTURE_FAIL", "validate", 1);
+    (void)SetFixtureFailure("validate");
     const auto status = session.ReloadTo(LUDUS_FIXTURE_B_PATH, 2);
-    ::unsetenv("LUDUS_FIXTURE_FAIL");
+    (void)SetFixtureFailure(nullptr);
     REQUIRE(status != protocol::CommandStatus::Ok);
     REQUIRE(session.ActiveGeneration() == 1);
 
@@ -414,12 +423,22 @@ TEST_CASE("rejected reload preserves A pause state and continued simulation", "[
 
 TEST_CASE("100 distinct successful generations bound allocations mappings and RSS", "[reload][stress]")
 {
-#if defined(LUDUS_PLATFORM_MACOS)
-    SKIP("This acceptance test inspects Linux /proc mappings and RSS");
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
+    SKIP("This acceptance test inspects Linux /proc mappings and RSS, or Windows loaded modules");
 #endif
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    // Windows: a fresh directory, loaded-module lookups by path and the working set.
+    const std::filesystem::path created =
+        std::filesystem::temp_directory_path() / ("ludus-reload-stress-" + std::to_string(::GetCurrentProcessId()));
+    std::filesystem::remove_all(created);
+    REQUIRE(std::filesystem::create_directories(created));
+    constexpr const char* MODULE_EXTENSION = ".dll";
+#else
     char pattern[] = "/tmp/ludus-reload-stress-XXXXXX";
     const char* created = ::mkdtemp(pattern);
     REQUIRE(created != nullptr);
+    constexpr const char* MODULE_EXTENSION = ".so";
+#endif
     struct Generations
     {
         std::filesystem::path Root;
@@ -430,10 +449,29 @@ TEST_CASE("100 distinct successful generations bound allocations mappings and RS
         }
     } generations{created};
     const auto modulePath = [&](int index) {
-        const auto path = generations.Root / ("generation-" + std::to_string(index) + ".so");
+        const std::filesystem::path path =
+            generations.Root / ("generation-" + std::to_string(index) + MODULE_EXTENSION);
         std::filesystem::copy_file(index % 2 == 0 ? LUDUS_FIXTURE_A_PATH : LUDUS_FIXTURE_B_PATH, path);
-        return path.string();
+        // LoadModule takes UTF-8 paths.
+        const std::u8string utf8 = path.u8string();
+        return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
     };
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    const auto residentBytes = []() {
+        PROCESS_MEMORY_COUNTERS counters = {};
+        counters.cb = sizeof(counters);
+        REQUIRE(::GetProcessMemoryInfo(::GetCurrentProcess(), &counters, sizeof(counters)) != FALSE);
+        return static_cast<uint64>(counters.WorkingSetSize);
+    };
+    const auto mappedGenerations = [&]() {
+        usize mapped = 0;
+        for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(generations.Root))
+        {
+            mapped += ::GetModuleHandleW(entry.path().wstring().c_str()) != nullptr ? 1 : 0;
+        }
+        return mapped;
+    };
+#else
     const auto residentBytes = []() {
         std::ifstream statm("/proc/self/statm");
         uint64 virtualPages = 0;
@@ -459,6 +497,7 @@ TEST_CASE("100 distinct successful generations bound allocations mappings and RS
         }
         return paths.size();
     };
+#endif
     HostSession session(1, 1, -1);
     REQUIRE(session.LoadInitial(modulePath(0)));
     const uint64 baselineRss = residentBytes();
@@ -481,7 +520,7 @@ TEST_CASE("100 distinct successful generations bound allocations mappings and RS
         const bool inject = i % 3 == 0;
         if (inject)
         {
-            ::setenv("LUDUS_FIXTURE_FAIL", "validate", 1);
+            (void)SetFixtureFailure("validate");
         }
         // Every attempt has a never-reused path/inode. Reopening two images
         // cannot establish a bound on accumulated loader/ASan registrations.
@@ -490,7 +529,7 @@ TEST_CASE("100 distinct successful generations bound allocations mappings and RS
         const auto status = session.ReloadTo(path, static_cast<uint64>(i) + 1);
         const auto micros =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - begin).count();
-        ::unsetenv("LUDUS_FIXTURE_FAIL");
+        (void)SetFixtureFailure(nullptr);
         if (inject)
         {
             REQUIRE(status == protocol::CommandStatus::ReloadRejected);
@@ -530,9 +569,9 @@ TEST_CASE("uncertain old retirement pins services and blocks further gameplay", 
     REQUIRE(session.LoadInitial(LUDUS_FIXTURE_A_PATH));
     session.AdvanceOneFrame();
     const auto ticks = session.SimTicks();
-    ::setenv("LUDUS_FIXTURE_FAIL", "retire", 1);
+    (void)SetFixtureFailure("retire");
     const auto outcome = session.ReloadTo(LUDUS_FIXTURE_B_PATH, 2);
-    ::unsetenv("LUDUS_FIXTURE_FAIL");
+    (void)SetFixtureFailure(nullptr);
     REQUIRE(outcome == protocol::CommandStatus::RestartRequired);
     REQUIRE(session.State() == PlayState::CleanupUnknown);
     session.AdvanceOneFrame();

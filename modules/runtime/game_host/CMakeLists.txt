@@ -60,12 +60,17 @@ target_sources(ludus_runtime_game_host
             include/ludus/runtime/game_host/protocol.h
 )
 
+# Dynamic modules load and reload on every native host. Only the supervisor transport is
+# platform-specific; Windows has none yet (D6c), so its sessions run standalone.
+target_sources(ludus_runtime_game_host PRIVATE
+    src/host_session.cpp src/property_exchange.cpp src/module_loader.cpp src/timing_telemetry.cpp
+    src/internal/control_channel.h src/internal/host_session.h src/internal/module_loader.h
+    src/internal/timing_telemetry.h)
 if(WIN32)
     ludus_configure_win32_target(ludus_runtime_game_host)
+    target_sources(ludus_runtime_game_host PRIVATE src/control_channel_windows.cpp)
 else()
-    target_sources(ludus_runtime_game_host PRIVATE
-        src/host_session.cpp src/property_exchange.cpp src/module_loader.cpp src/timing_telemetry.cpp
-        src/internal/host_session.h src/internal/module_loader.h src/internal/timing_telemetry.h)
+    target_sources(ludus_runtime_game_host PRIVATE src/control_channel_posix.cpp)
 endif()
 
 target_include_directories(ludus_runtime_game_host
@@ -113,10 +118,24 @@ endif()
 # L0 two-generation feasibility: build two tiny gameplay fixture modules (A and
 # B) as MODULE libraries, plus a module that exports no entry and one with a
 # wrong identity, then prove concurrent load, hidden symbols, correct code
-# dispatch, and rejection of missing/incompatible modules.
-if(LUDUS_BUILD_TESTS AND NOT WIN32)
+# dispatch, and rejection of missing/incompatible modules. Windows builds them
+# as DLLs (D6c); the socketpair session and process journeys stay Linux/macOS.
+if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     find_package(Threads REQUIRED)
+    # Fixture images keep full symbols in every policy profile: -g on ELF/Mach-O; on
+    # Windows, debug records in the objects and a linked PDB beside each DLL.
+    function(_ludus_game_fixture_symbols target)
+        if(MSVC)
+            set_target_properties(${target} PROPERTIES MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+            target_link_options(${target} PRIVATE /DEBUG)
+        else()
+            target_compile_options(${target} PRIVATE -g)
+        endif()
+        if(WIN32)
+            ludus_configure_win32_target(${target})
+        endif()
+    endfunction()
 
     # Fixture module A and B share one source but differ by a compile define, so
     # each has its own code and the test can prove A and B run their own copy.
@@ -130,7 +149,7 @@ if(LUDUS_BUILD_TESTS AND NOT WIN32)
         # Publication acceptance verifies embedded symbols in every policy
         # profile, including optimized Release. Keep the full acceptance there;
         # these test-only images retain symbols without changing optimization.
-        target_compile_options(ludus_game_fixture_${variant} PRIVATE -g)
+        _ludus_game_fixture_symbols(ludus_game_fixture_${variant})
         set_target_properties(ludus_game_fixture_${variant} PROPERTIES
             PREFIX "" OUTPUT_NAME "game_fixture_${variant}"
             C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
@@ -143,6 +162,7 @@ if(LUDUS_BUILD_TESTS AND NOT WIN32)
         LUDUS_FIXTURE_VARIANT=A
         LUDUS_FIXTURE_IDENTITY="wrong-sdk-identity-should-be-rejected")
     ludus_apply_project_defaults(ludus_game_fixture_badid)
+    _ludus_game_fixture_symbols(ludus_game_fixture_badid)
     set_target_properties(ludus_game_fixture_badid PROPERTIES
         PREFIX "" OUTPUT_NAME "game_fixture_badid"
         C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
@@ -150,6 +170,7 @@ if(LUDUS_BUILD_TESTS AND NOT WIN32)
     # A module that exports no entry symbol (EntryMissing).
     add_library(ludus_game_fixture_noentry MODULE tests/fixture_noentry.cpp)
     ludus_apply_project_defaults(ludus_game_fixture_noentry)
+    _ludus_game_fixture_symbols(ludus_game_fixture_noentry)
     set_target_properties(ludus_game_fixture_noentry PROPERTIES
         PREFIX "" OUTPUT_NAME "game_fixture_noentry"
         C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
@@ -160,6 +181,9 @@ if(LUDUS_BUILD_TESTS AND NOT WIN32)
         Ludus::GameHost Ludus::GameApi Ludus::FoundationLogging Catch2::Catch2WithMain ${CMAKE_DL_LIBS})
     ludus_apply_project_defaults(ludus_game_host_loader_tests)
     ludus_enable_test_exceptions(ludus_game_host_loader_tests)
+    if(WIN32)
+        ludus_configure_win32_target(ludus_game_host_loader_tests)
+    endif()
     add_dependencies(ludus_game_host_loader_tests
         ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid ludus_game_fixture_noentry)
     target_compile_definitions(ludus_game_host_loader_tests PRIVATE
@@ -188,20 +212,23 @@ if(LUDUS_BUILD_TESTS AND NOT WIN32)
     add_test(NAME ludus_game_host_timing_tests COMMAND ludus_game_host_timing_tests)
     set_tests_properties(ludus_game_host_timing_tests PROPERTIES TIMEOUT 60 LABELS "unit;runtime;timing")
 
-    add_executable(ludus_game_host_session_tests tests/session_tests.cpp)
-    target_include_directories(ludus_game_host_session_tests PRIVATE src "${LUDUS_GAME_HOST_GENERATED_INCLUDE_DIR}")
-    target_link_libraries(ludus_game_host_session_tests PRIVATE
-        Ludus::GameHost Ludus::GameApi Ludus::FoundationContainers Ludus::FoundationLogging Ludus::FoundationTime
-        Ludus::PlatformPacing Catch2::Catch2WithMain Threads::Threads ${CMAKE_DL_LIBS})
-    ludus_apply_project_defaults(ludus_game_host_session_tests)
-    ludus_enable_test_exceptions(ludus_game_host_session_tests)
-    add_dependencies(ludus_game_host_session_tests ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid)
-    target_compile_definitions(ludus_game_host_session_tests PRIVATE
-        LUDUS_FIXTURE_A_PATH="$<TARGET_FILE:ludus_game_fixture_A>"
-        LUDUS_FIXTURE_B_PATH="$<TARGET_FILE:ludus_game_fixture_B>"
-        LUDUS_FIXTURE_BADID_PATH="$<TARGET_FILE:ludus_game_fixture_badid>")
-    add_test(NAME ludus_game_host_session_tests COMMAND ludus_game_host_session_tests)
-    set_tests_properties(ludus_game_host_session_tests PROPERTIES TIMEOUT 120 LABELS "unit;runtime;session;reload")
+    # Socketpair supervisor sessions run on Linux and macOS only.
+    if(NOT WIN32)
+        add_executable(ludus_game_host_session_tests tests/session_tests.cpp)
+        target_include_directories(ludus_game_host_session_tests PRIVATE src "${LUDUS_GAME_HOST_GENERATED_INCLUDE_DIR}")
+        target_link_libraries(ludus_game_host_session_tests PRIVATE
+            Ludus::GameHost Ludus::GameApi Ludus::FoundationContainers Ludus::FoundationLogging Ludus::FoundationTime
+            Ludus::PlatformPacing Catch2::Catch2WithMain Threads::Threads ${CMAKE_DL_LIBS})
+        ludus_apply_project_defaults(ludus_game_host_session_tests)
+        ludus_enable_test_exceptions(ludus_game_host_session_tests)
+        add_dependencies(ludus_game_host_session_tests ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid)
+        target_compile_definitions(ludus_game_host_session_tests PRIVATE
+            LUDUS_FIXTURE_A_PATH="$<TARGET_FILE:ludus_game_fixture_A>"
+            LUDUS_FIXTURE_B_PATH="$<TARGET_FILE:ludus_game_fixture_B>"
+            LUDUS_FIXTURE_BADID_PATH="$<TARGET_FILE:ludus_game_fixture_badid>")
+        add_test(NAME ludus_game_host_session_tests COMMAND ludus_game_host_session_tests)
+        set_tests_properties(ludus_game_host_session_tests PROPERTIES TIMEOUT 120 LABELS "unit;runtime;session;reload")
+    endif()
 
     add_executable(ludus_game_host_reload_tests tests/reload_tests.cpp)
     target_include_directories(ludus_game_host_reload_tests PRIVATE src "${LUDUS_GAME_HOST_GENERATED_INCLUDE_DIR}")
@@ -210,6 +237,9 @@ if(LUDUS_BUILD_TESTS AND NOT WIN32)
         Ludus::PlatformPacing Catch2::Catch2WithMain ${CMAKE_DL_LIBS})
     ludus_apply_project_defaults(ludus_game_host_reload_tests)
     ludus_enable_test_exceptions(ludus_game_host_reload_tests)
+    if(WIN32)
+        ludus_configure_win32_target(ludus_game_host_reload_tests)
+    endif()
     add_dependencies(ludus_game_host_reload_tests ludus_game_fixture_A ludus_game_fixture_B)
     target_compile_definitions(ludus_game_host_reload_tests PRIVATE
         LUDUS_FIXTURE_A_PATH="$<TARGET_FILE:ludus_game_fixture_A>"
@@ -225,6 +255,15 @@ if(LUDUS_BUILD_TESTS AND NOT WIN32)
     find_package(Python3 3.10 COMPONENTS Interpreter)
     if(NOT Python3_Interpreter_FOUND)
         message(FATAL_ERROR "Native play-supervisor acceptance requires Python 3.10+")
+    endif()
+    if(MSVC)
+        # The live-play symbol check accepts a DLL only with the PDB its CodeView GUID/age names.
+        add_test(NAME ludus_game_host_windows_symbols
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/windows_symbols_acceptance.py"
+                --a "$<TARGET_FILE:ludus_game_fixture_A>" --a-pdb "$<TARGET_PDB_FILE:ludus_game_fixture_A>"
+                --b "$<TARGET_FILE:ludus_game_fixture_B>" --b-pdb "$<TARGET_PDB_FILE:ludus_game_fixture_B>")
+        set_tests_properties(ludus_game_host_windows_symbols PROPERTIES
+            TIMEOUT 60 LABELS "runtime;reload;symbols")
     endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE)
         add_test(NAME ludus_game_host_configuration_acceptance

@@ -2,10 +2,9 @@
 
 #include <ludus/foundation/base/config.h>
 
-#if LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
-#    include "internal/frame_presenter.h"
-#    include "internal/host_session.h"
-#endif
+#include "internal/control_channel.h"
+#include "internal/frame_presenter.h"
+#include "internal/host_session.h"
 #include "internal/identity.h"
 
 namespace ludus::runtime::game_host
@@ -27,11 +26,6 @@ uint32 HostAbiMinor() noexcept
 
 RunResult InspectModule(std::string_view path, game_api::GameMetadata& metadata) noexcept
 {
-#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
-    (void)path;
-    (void)metadata;
-    return RunResult::ModuleLoadFailed;
-#else
     LoadedModule module;
     const auto loaded = LoadModule(path, 1, CurrentHostIdentity(), CurrentAbiMajor(), CurrentAbiMinor(), module);
     if (loaded != LoadStatus::Ok)
@@ -41,7 +35,6 @@ RunResult InspectModule(std::string_view path, game_api::GameMetadata& metadata)
     }
     metadata = module.Metadata();
     return module.Close() ? RunResult::Ok : RunResult::Internal;
-#endif
 }
 
 RunResult Run(const HostConfig& config) noexcept
@@ -56,9 +49,12 @@ RunResult Run(const HostConfig& config) noexcept
         return RunResult::BadArguments;
     }
 
-#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
-    return RunResult::ModuleLoadFailed;
-#else
+    if (control_channel::IsSupported() == false && (config.ControlFd >= 0 || config.AwaitLoad == true))
+    {
+        // No supervisor transport on this platform yet (Windows, D6c), as for RunStatic:
+        // never treat a number as a channel the host cannot speak on.
+        return RunResult::ProtocolError;
+    }
     FramePresenter presenter;
     const auto started = presenter.Start(config.Mode);
     if (started != RunResult::Ok)
@@ -75,6 +71,5 @@ RunResult Run(const HostConfig& config) noexcept
         return session.InitialFailure();
     }
     return session.RunLoop(config.MaxFrames, &presenter);
-#endif
 }
 } // namespace ludus::runtime::game_host

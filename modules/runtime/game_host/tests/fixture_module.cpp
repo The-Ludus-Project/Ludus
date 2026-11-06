@@ -24,8 +24,15 @@
 #include <cstring>
 #include <new>
 
-#include <pthread.h>
-#include <unistd.h>
+#include <ludus/foundation/base/config.h>
+
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#    include <windows.h>
+#else
+#    include <pthread.h>
+#    include <time.h>
+#    include <unistd.h>
+#endif
 
 #ifndef LUDUS_FIXTURE_VARIANT
 #    define LUDUS_FIXTURE_VARIANT A
@@ -101,20 +108,64 @@ struct SimState
     bool Paused = false;
     bool HostAllocated = false;
     const HostServices* Services = nullptr;
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    HANDLE Worker = nullptr;
+#else
     pthread_t Worker = {};
+#endif
     std::atomic<bool> WorkerExit{false};
     bool WorkerLive = false;
 };
+
+void SleepOneMillisecond() noexcept
+{
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    ::Sleep(1);
+#else
+    const timespec delay = {0, 1000000};
+    (void)::nanosleep(&delay, nullptr);
+#endif
+}
 
 void* DeferredWork(void* argument) noexcept
 {
     auto* state = static_cast<SimState*>(argument);
     while (state->WorkerExit.load(std::memory_order_acquire) == false)
     {
-        const timespec delay = {0, 1000000};
-        (void)::nanosleep(&delay, nullptr);
+        SleepOneMillisecond();
     }
     return nullptr;
+}
+
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+DWORD WINAPI DeferredWorkEntry(LPVOID argument) noexcept
+{
+    (void)DeferredWork(argument);
+    return 0;
+}
+#endif
+
+// The module-owned worker the work-lease tests drain before a reload may commit.
+[[nodiscard]] bool StartWorker(SimState* state) noexcept
+{
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    state->Worker = ::CreateThread(nullptr, 0, &DeferredWorkEntry, state, 0, nullptr);
+    return state->Worker != nullptr;
+#else
+    return ::pthread_create(&state->Worker, nullptr, &DeferredWork, state) == 0;
+#endif
+}
+
+[[nodiscard]] bool JoinWorker(SimState* state) noexcept
+{
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    const bool isJoined = ::WaitForSingleObject(state->Worker, INFINITE) == WAIT_OBJECT_0;
+    (void)::CloseHandle(state->Worker);
+    state->Worker = nullptr;
+    return isJoined;
+#else
+    return ::pthread_join(state->Worker, nullptr) == 0;
+#endif
 }
 
 bool JoinWork(SimState* state) noexcept
@@ -124,7 +175,7 @@ bool JoinWork(SimState* state) noexcept
         return true;
     }
     state->WorkerExit.store(true, std::memory_order_release);
-    if (::pthread_join(state->Worker, nullptr) != 0)
+    if (JoinWorker(state) == false)
     {
         return false;
     }
@@ -314,7 +365,11 @@ Status FixtureUpdate(GameInstance* instance, const FrameInput* input, RenderPara
     {
         for (;;)
         {
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+            ::Sleep(INFINITE);
+#else
             (void)::pause();
+#endif
         }
     }
     SimState* state = AsState(instance);
@@ -332,7 +387,7 @@ Status FixtureUpdate(GameInstance* instance, const FrameInput* input, RenderPara
             return Status::Internal;
         }
         state->WorkerExit.store(false, std::memory_order_release);
-        if (::pthread_create(&state->Worker, nullptr, &DeferredWork, state) != 0)
+        if (StartWorker(state) == false)
         {
             (void)services->ReleaseWorkLease(services->Context);
             return Status::Internal;

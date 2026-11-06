@@ -75,11 +75,12 @@ struct HostConfig final
 
     /// @brief Absolute canonical path inside a leased generation directory.
     ///
-    /// Used only for DynamicModule. Empty for Static.
+    /// UTF-8; drive-absolute (`C:\...`) on Windows. Each generation is a distinct file, since Windows locks a loaded
+    /// DLL. Used only for DynamicModule. Empty for Static.
     std::string_view ModulePath;
 
     /// @brief Protocol socket file descriptor inherited from the supervisor, or -1 to
-    /// run without a control channel (legacy Run / local smoke).
+    /// run without a control channel (legacy Run / local smoke). Linux and macOS only.
     int32 ControlFd = -1;
 
     /// Project/game identity passed through to the module's Create.
@@ -99,7 +100,8 @@ struct HostConfig final
 /// @brief Run one host session to completion.
 ///
 /// Owns engine init/shutdown, window + RHI (for Windowed), the gameplay module lifecycle and, when a ControlFd is
-/// set, the play protocol loop. On Windows, dynamic module runs return ModuleLoadFailed.
+/// set, the play protocol loop. Windows sessions load and reload modules but have no supervisor transport yet:
+/// a ControlFd or AwaitLoad there returns ProtocolError before any module is loaded.
 [[nodiscard]] RunResult Run(const HostConfig& config) noexcept;
 
 /// @brief Entry signature of a statically linked gameplay implementation.
@@ -124,7 +126,8 @@ using StaticEntryFn = game_api::GetGameApiFn;
 
 /// @brief Explicit metadata probe in a separate host process; validates the ABI and
 /// SDK identity without creating an instance or starting a graphics session.
-/// Returns ModuleLoadFailed and preserves metadata on Windows.
+/// Returns ModuleLoadFailed for a missing or unloadable module and IncompatibleModule for a rejected one; metadata
+/// is written only on Ok.
 [[nodiscard]] RunResult InspectModule(std::string_view path, game_api::GameMetadata& metadata) noexcept;
 
 /// @brief The host's own ABI identity string (the compatibility key it stamps and compares against a module's

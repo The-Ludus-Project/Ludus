@@ -568,7 +568,7 @@ cmake --build out/build/windows-mingw-check --target ludus_platform ludus_graphi
 | D5b | GPU measurement and debugging | Timestamp/pass-scope tests; PIX capture/markers and DRED failure diagnostics documented |
 | D6a | Renderer, content and playable runtime | Shared authored project renders, accepts input, loads/saves and shuts down on a physical Windows GPU |
 | D6b (Development MSVC WARP verified) | Installed SDK, projects and IDE journeys | Clean installed consumer; VS Code/Ninja and Visual Studio/MSBuild configure/build/test/debug; setup repair journeys. Runtime SDK consumers and IDE journeys passed at `29ea91b6` ([run 42164873456](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456)); other runtime SDK flavors and interactive IDE sessions pending |
-| D6c (worker slice in progress) | Shader/script authoring, worker and live reload | Embedded/external edit-save-compile-reload; diagnostics, conflicts and failed replacement tests. The named-pipe shader worker emits signed DXIL; its compiler and protocol tests run in the MSVC Ninja lane. GameHost DLL reload, scripting, file delivery and embedded editors remain open |
+| D6c (in progress) | Shader/script authoring, worker and live reload | Embedded/external edit-save-compile-reload; diagnostics, conflicts and failed replacement tests. The named-pipe shader worker emits signed DXIL, and GameHost loads, reloads and retires DLLs whose PDBs match; their suites run in the MSVC Ninja lane. Supervisor transport, scripting, file delivery and embedded editors remain open |
 | D6d | Interactive Windows editor and hosted viewport | Current project World/camera, navigation/edit/resize; GPU producer/consumer ownership and pending/failure publication tests |
 | D7 | Profile qualification and continuous validation | All required coverage rows verified at one candidate commit; hardware, lifecycle, performance and both build workflows recorded |
 | D8 | Release packaging and distribution | Clean-machine install/launch, upgrades/data preservation, dependency/license inventory and matching symbols |
@@ -785,8 +785,8 @@ with optional tooling absent.
   audio processing modules. The World sample has no network transport, scripted
   behavior, device audio playback, font overlay or fluid gameplay. Windows
   audio device/worker qualification, Luau admission, native scene-cooker file
-  operations and authored render-graph package DXIL remain open. Dynamic GameHost
-  loading and supervisor transport are tracked under D6c and D6d. The Windows
+  operations and authored render-graph package DXIL remain open. D6c adds dynamic
+  GameHost loading; supervisor transport is tracked under D6c and D6d. The Windows
   Ninja CI test uses WARP. D6a physical-GPU exit evidence remains pending.
 
 - **D6b (SDK/IDEs):** install/export the SDK and shader helpers, then build an
@@ -845,8 +845,19 @@ with optional tooling absent.
   rejection, client cancellation and stale identities, malformed frames, duplicate
   endpoints, stop during a compile, owner exit and worker exit.
 
-  Still open in D6c: GameHost DLL loading, reload and matching symbol validation;
-  the supervised session transport; Luau compilation, runtime and debugging under
+  The second slice loads gameplay DLLs. GameHost opens each generation with
+  `LoadLibraryExW`, restricted to the module's directory and the system
+  directories, and the entry is the DLL's only export. `HostSession` reloads, rejects
+  and retires generations on Windows, and closing the last reference unmaps a
+  generation and releases its file. `play_windows.py` accepts a DLL only with the
+  PDB whose GUID and age its CodeView record names. The
+  [live-editing guide](../development/project-live-reload.md#windows-dlls-and-pdbs)
+  covers the rules and limits. The MSVC Ninja lane runs the loader, reload,
+  protocol and timing suites. It also runs `ludus_game_host_windows_symbols` on the
+  linked fixture PDBs.
+
+  Still open in D6c: the supervised session transport, which also gates
+  editor-driven Windows live play; Luau compilation, runtime and debugging under
   MSVC; Windows `Ludus::ShaderDevelopment` delivery and render-graph package DXIL;
   the tools-only worker install; and the embedded editors, which arrive with the
   D6d editor port.
@@ -914,13 +925,13 @@ these rows remain pending.
 | Renderer / graph | D6a | World raster source preset | Run on a physical GPU; add DXIL for authored graph packages | pending | Packed World and renderer pixel tests |
 | Text / localization / UI | D6a | Source targets in runtime preset | Validate MSVC shaping, atlas, localization and UI tests | pending | Windows runtime CI targets |
 | Content / resources | D6a | Packed room loader and Content saves | Qualify native scene cooker and runtime on Windows | pending | Packed/loose replay and bounded publication tests |
-| Runtime / game host | D6a | Standalone static host source target | Validate startup and shutdown; D6c DLL reload and symbols | pending | Static lifecycle test |
+| Runtime / game host | D6a, D6c | Static host; DLL load, reload and PDB checks | Supervisor transport for editor-driven play (D6c/D6d) | pending | Static lifecycle, loader, reload and PDB tests in the MSVC Ninja lane |
 | Behavior / scripting | unassigned | unreviewed | D0 compiler admission; D6a runtime; D6c authoring/reload | pending | none |
 | Gameplay / physics | unassigned | unreviewed | D6a required-profile audit | pending | none |
 | Audio | unassigned | unreviewed | D6a playback/device/failure evidence for required profiles | pending | none |
 | Networking | unassigned | unreviewed | D6a transport/reconnect evidence for required profiles | pending | none |
 | SDK / project setup / VS Code / Visual Studio | D0, D6b | Development runtime SDK; IDE journeys in CI | Debug/Profile/Release runtime SDKs; interactive IDE sessions | [PR #1016](https://github.com/The-Ludus-Project/Ludus/pull/1016) | `29ea91b6`, [Windows lanes](https://github.com/The-Ludus-Project/Ludus/actions/runs/42164873456) |
-| Embedded/external shader/script authoring | D6c | Named-pipe shader worker with DXIL | GameHost DLL reload and symbols, Luau, shader file delivery, graph DXIL; editors with D6d | pending | `ludus_shader_compiler_tests`, `ludus_shader_worker_protocol` in the MSVC Ninja lane |
+| Embedded/external shader/script authoring | D6c | Named-pipe shader worker with DXIL | Luau, shader file delivery, graph DXIL; editors with D6d | [PR #1018](https://github.com/The-Ludus-Project/Ludus/pull/1018) | `ludus_shader_compiler_tests`, `ludus_shader_worker_protocol` in the MSVC Ninja lane |
 | Editor / hosted viewport | unassigned | needs port | D6d GPU sharing, transport and interactive publication | pending | none |
 | Optional ray / interop extensions / upscaling | unassigned | unreviewed | Separate feature-parity profiles and hardware acceptance | pending | none |
 | Qualification / CI / documentation | D1, D2; D7 pending | in progress | Clang lane gates promotion today; D7 qualifies MSVC profiles | PR #573; PR #586 | Historical D1/D2 evidence above |
