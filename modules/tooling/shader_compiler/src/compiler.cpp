@@ -1,6 +1,7 @@
 #include <ludus/tooling/shader_compiler/compiler.hpp>
 
 #include "codec.hpp"
+#include "language_source.hpp"
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/compiler.h>
@@ -491,6 +492,22 @@ Status Compiler::Compile(const Request& request, Result& outResult) noexcept
     {
         return outResult.Outcome;
     }
+    if (internal::IsLanguageSource(GetText(request.Source)) == false)
+    {
+        return compileSlang(request, outResult);
+    }
+    internal::LanguageLowering lowering;
+    if (lowering.Lower(request, outResult) == false)
+    {
+        return outResult.Outcome;
+    }
+    static_cast<void>(compileSlang(lowering.GetSlangRequest(), outResult));
+    lowering.Finish(request, outResult);
+    outResult.Identity = request.Identity;
+    return outResult.Outcome;
+}
+Status Compiler::compileSlang(const Request& request, Result& outResult) noexcept
+{
 #if LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
     if (request.OutputTarget == Target::Dxil)
     {

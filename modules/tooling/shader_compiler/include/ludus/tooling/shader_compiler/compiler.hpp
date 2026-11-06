@@ -58,7 +58,24 @@ enum class Status : foundation::uint8
 struct SourceFile final
 {
     foundation::BorrowedView<const char> Path; ///< Unique relative UTF-8 path, without NUL/dot/parent components.
-    foundation::BorrowedView<const char> Text; ///< UTF-8 Slang source, without embedded NUL.
+    foundation::BorrowedView<const char> Text; ///< UTF-8 Slang or LUSL source, without embedded NUL.
+};
+/// @brief One selected render-graph configuration value, visible to a LUSL source as an object-like
+/// macro (docs/modules/tooling/shader-language.md). Slang sources do not read them.
+///
+/// The LUSL preprocessor owns the admission rules: unique identifier names and the bounds of
+/// `shader_language::MAX_CONFIGURATION_VALUES` and `shader_language::MAX_CONFIGURATION_TEXT_BYTES`.
+struct ConfigurationValue final
+{
+    foundation::BorrowedView<const char> Name;  ///< Macro name, an identifier.
+    foundation::BorrowedView<const char> Value; ///< Replacement text, lexed as LUSL tokens; may be empty.
+};
+/// How a LUSL source reports style findings (naming and bare `bool` operands).
+enum class LanguageStyle : foundation::uint8
+{
+    Strict, ///< Style findings are errors; the engine repository and the default for game projects.
+    Warn,   ///< Style findings are warnings.
+    Off,    ///< Style findings are not reported.
 };
 /// An immutable compilation snapshot and explicit entry selection.
 struct Request final
@@ -69,6 +86,15 @@ struct Request final
     foundation::BorrowedView<const char> Entry;       ///< Entry-point identifier.
     Target OutputTarget = Target::Spirv;              ///< Requested portable artifact.
     Stage EntryStage = Stage::Vertex;                 ///< Stage used to check an unannotated entry.
+    /// @brief Configuration values for a `.lusl` Source; ignored for Slang sources.
+    ///
+    /// A Source ending in `.lusl` is lowered to Slang first, with the same library `luslc` uses; the
+    /// generated module takes the path `Source + ".slang"` in the compiled snapshot, replacing any
+    /// file there. The fields below apply only to such a Source.
+    foundation::BorrowedView<const ConfigurationValue> Configuration;
+    LanguageStyle Style = LanguageStyle::Strict; ///< Style setting of a `.lusl` Source.
+    /// Development bounds checks for a `.lusl` Source; release builds leave this false.
+    bool ShouldCheckBounds = false;
 };
 /// Owned compilation output; caller storage remains independent of compiler/client lifetime.
 struct Result final
@@ -81,6 +107,12 @@ struct Result final
     foundation::Array<foundation::uint8>
         SourceReadMask; ///< One 0/1 byte per request file on Ready, recording actual compiler reads.
     foundation::Array<foundation::uint8> Diagnostics; ///< Bounded UTF-8 diagnostic bytes, including warnings.
+    /// One 0/1 byte per request configuration value on Ready, set when a `.lusl` Source read it;
+    /// empty for Slang sources. Build identity records the values read.
+    foundation::Array<foundation::uint8> ConfigurationReadMask;
+    /// The Slang module generated from a `.lusl` Source on Ready, for read-only display and build
+    /// identity; empty for Slang sources.
+    foundation::Array<char> GeneratedSource;
 };
 /// Optional native compiler library. Does not initialize an engine, editor, device or window.
 /// Single-thread-affine: all operations and destruction use its creating thread.
@@ -100,12 +132,18 @@ public:
     /// executable's directory, where `dxil.dll` must sit to sign DXIL output.
     [[nodiscard]] Status Initialize() noexcept;
     /// Synchronously compile captured sources, with no disk reads through the Slang filesystem.
+    /// A `.lusl` Source is first lowered to Slang (see Request::Configuration); LUSL diagnostics use
+    /// Slang's `path(line,column): error LUSL0504: message` form, and the generated module's
+    /// `#line` directives make Slang's own diagnostics name LUSL lines.
     /// @param request Input views remain alive only for this call; source bytes are copied.
     /// @param outResult Replaced with complete output/status/diagnostics. Failures expose no artifacts.
     /// @return The same status stored in outResult. May allocate; never call on a rendering thread.
     [[nodiscard]] Status Compile(const Request& request, Result& outResult) noexcept;
 
 private:
+    /// Compile a validated request whose Source is Slang.
+    [[nodiscard]] Status compileSlang(const Request& request, Result& outResult) noexcept;
+
     struct State;
     foundation::core::UniquePtr<State> mState;
 };

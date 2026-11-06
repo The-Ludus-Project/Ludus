@@ -3,11 +3,13 @@
 Status: proposed, November 4, 2026; the design's open questions were resolved the
 same day (see [resolved questions](#resolved-questions)). L1a (the preprocessor),
 L1b (the parser and formatter), L1c (the semantic checker, with flow rules,
-style rules and fixes) and L1d (the IR, the Slang emitter and `luslc`) are
-implemented in `Ludus::ShaderLanguage`; see the
+style rules and fixes), L1d (the IR, the Slang emitter and `luslc`) and L1e-1
+(`.lusl` sources in `ShaderCompiler` and the worker, FoundationMath
+declarations) are implemented; see the
 [module guide](../modules/tooling/shader-language.md) for their exact behavior
-and limits. L1e (the `ShaderCompiler` and render-graph integration, SDK
-declarations and a ported shader) and later phases are not implemented.
+and limits. L1e-2 (render-graph programs in LUSL, the scene API declarations,
+the style-setting key and a ported shader) and later phases are not
+implemented.
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
 
@@ -461,7 +463,7 @@ Slang text, so Slang declarations reach LUSL through `extern slang` blocks in
 `.luslh` files:
 
 ```c
-// ludus/foundation/math.luslh
+// math.luslh, installed beside math.slang
 extern slang "math.slang"
 {
     static const float32 PI;

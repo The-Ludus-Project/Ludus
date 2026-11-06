@@ -10,11 +10,13 @@ language and the delivery plan. This page covers what is implemented:
 - semantic checking: types, names and calls (L1c-1), then flow rules, style
   rules and fixes (L1c-2); see [Checking](#checking);
 - lowering to one Slang module (L1d); see [Lowering to Slang](#lowering-to-slang);
-- the `luslc` command-line compiler (L1d); see [luslc](#luslc).
+- the `luslc` command-line compiler (L1d); see [luslc](#luslc);
+- `.lusl` sources in `ShaderCompiler` requests and the native worker, and SDK
+  declarations of FoundationMath (L1e-1); see
+  [LUSL in compiler requests](#lusl-in-compiler-requests) and
+  [SDK declarations](#sdk-declarations).
 
-`ShaderCompiler` does not accept `.lusl` files yet; the render graph reaches
-LUSL in L1e. Until then, lower a module with `luslc` or `LowerToSlang` and
-compile the generated Slang.
+Render-graph programs written in LUSL arrive in L1e-2.
 
 Link `Ludus::ShaderLanguage` and include
 `ludus/tooling/shader_language/preprocessor.hpp`. The library builds for native
@@ -646,6 +648,56 @@ luslc format --root shaders --check main/shade.lusl main/common.luslh
 - **Exit codes:** 0 on success, 1 when a stage fails or a file cannot be read or
   written, 2 for a usage error.
 
+## LUSL in compiler requests
+
+`ShaderCompiler` accepts a `.lusl` root. When `Request::Source` ends in
+`.lusl`, `Compiler::Compile` lowers it with `LowerToSlang` before Slang sees
+anything. The native worker does the same for requests it receives.
+
+- **Snapshot.** Slang compiles the generated module at
+  `Request::Source + ".slang"`, beside the source, so its `#include`
+  directives resolve. A file already at that path in the snapshot is replaced.
+- **LUSL fields of `Request`** apply only to a `.lusl` Source:
+  - `Configuration`: the selected configuration values, visible as macros.
+    `shader_language::ConfigurationValue` is the same record.
+  - `Style`: the [style setting](#style-rules), `LanguageStyle::Strict` by default.
+  - `ShouldCheckBounds`: [development bounds checks](#development-bounds-checks).
+- **Results:**
+  - `SourceReadMask` has one byte per request file. It counts the files that
+    either the LUSL preprocessor or Slang read, so build identity tracks LUSL
+    headers and the Slang files their `extern slang` blocks name.
+  - `ConfigurationReadMask` records which configuration values the source read.
+  - `GeneratedSource` holds the generated module, for read-only display and
+    build identity.
+- **Diagnostics** take Slang's form: `shaders/shade.lusl(5,16): error LUSL0504:
+  expected uint32, found float32`. Existing consumers of compiler diagnostics,
+  such as the editor's shader overlay, read them unchanged. LUSL warnings come
+  before Slang's diagnostics, and Slang's diagnostics name LUSL lines through
+  `#line`.
+- **Failures.** If lowering fails, Slang does not run, and the result carries the
+  LUSL errors with `CompileFailed`, or `InvalidRequest` for a malformed LUSL
+  request such as an invalid configuration name.
+- **Wire format.** The worker protocol carries the same fields as optional JSON
+  members: `configuration` as `[name, value]` pairs, `style` and
+  `bounds_checks` in requests; `configuration_read_mask` and
+  `generated_source` in replies. Slang requests omit them.
+- **Worker identity.** The worker's implementation identity hashes the LUSL
+  sources too, so build keys that record the worker change with the LUSL
+  compiler.
+
+## SDK declarations
+
+`math.luslh` declares FoundationMath's `math.slang` for LUSL:
+- its constants, such as `PI` and `RANDOM_MAX_DIMENSION`;
+- `RandomAddress`;
+- its functions, from `ComputeErrorFunction` to `ApplyNormalWorld`.
+
+It is installed beside `math.slang` in `lib/cmake/Ludus/shaders`. Declarations
+keep their Slang names and parameter names, so named arguments use the Slang
+parameter names: `MakeRandomAddress(scope = id.xy, event = 0, dimension = 1)`.
+A target test calls every declaration and compiles the module for SPIR-V, WGSL
+and Metal.
+
 ## Tests and fuzzing
 
 `ludus_shader_language_tests` (CTest labels `unit;shader;tooling`) covers:
@@ -669,10 +721,16 @@ checker over token mixtures.
 
 `ludus_shader_language_target_tests` compiles lowered modules with the pinned
 Slang through `ShaderCompiler`, for SPIR-V, ray-query SPIR-V, WGSL and Metal,
-with and without bounds checks. It also checks that Slang diagnostics name LUSL
-lines, and how the portable set treats 16-bit integers. It is built when the
-native compiler library is (`LUDUS_BUILD_SHADER_WORKER=ON`). `luslc_tests`
-runs `luslc` on temporary snapshots.
+with and without bounds checks. It also checks:
+- that Slang diagnostics name LUSL lines;
+- how the portable set treats 16-bit integers;
+- `.lusl` requests: read masks, configuration values, diagnostics and the style
+  setting;
+- the [SDK declarations](#sdk-declarations).
+
+It is built when the native compiler library is (`LUDUS_BUILD_SHADER_WORKER=ON`).
+`luslc_tests` runs `luslc` on temporary snapshots, and the worker protocol test
+sends a `.lusl` request through a running worker.
 
 For coverage-guided fuzzing with native Clang, configure with
 `-DLUDUS_BUILD_SHADER_LANGUAGE_FUZZERS=ON` and run `ludus_shader_language_fuzzer`.

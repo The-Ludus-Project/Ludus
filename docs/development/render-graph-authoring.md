@@ -8858,7 +8858,9 @@ Use `linux-clang-development` on Linux. `LUDUS_SLANG_ROOT` selects an already
 verified Slang distribution; default is `out/shader-tools/slang`. Configuration
 and compilation perform no tool downloads. The tools-only closure contains Base,
 Memory, Hash, Strings, Containers, Filesystem and Parsing, plus the compiler and
-client; it does not configure Qt, Platform, RHI, audio or game modules. A full SDK
+client, and the LUSL front end with `luslc`, which the worker uses for `.lusl`
+sources ([LUSL in compiler requests](../modules/tooling/shader-language.md#lusl-in-compiler-requests));
+it does not configure Qt, Platform, RHI, audio or game modules. A full SDK
 can instead enable `LUDUS_BUILD_SHADER_WORKER=ON`. Native editor builds with 3D
 preview enable the worker automatically.
 

@@ -17,15 +17,10 @@ namespace ludus::tooling::shader_language
 {
 /// @brief One selected render-graph configuration value, visible to LUSL as an object-like macro.
 ///
-/// Configuration values are the only macros that come from outside the source. Sources cannot
-/// `#define` or `#undef` them.
-struct ConfigurationValue final
-{
-    /// Macro name: an identifier, unique in the request, at most MAX_CONFIGURATION_TEXT_BYTES bytes.
-    foundation::BorrowedView<const char> Name;
-    /// Replacement text, lexed as LUSL tokens; may be empty. At most MAX_CONFIGURATION_TEXT_BYTES bytes.
-    foundation::BorrowedView<const char> Value;
-};
+/// The same record a `shader_compiler::Request` carries. Configuration values are the only macros
+/// that come from outside the source; sources cannot `#define` or `#undef` them. A name is an
+/// identifier, unique in the request; names and values are at most MAX_CONFIGURATION_TEXT_BYTES bytes.
+using ConfigurationValue = shader_compiler::ConfigurationValue;
 
 /// @brief An immutable source snapshot and the root file to preprocess.
 ///

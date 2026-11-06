@@ -72,9 +72,20 @@ if(LUDUS_BUILD_SHADER_WORKER)
         endforeach()
     endif()
     set(worker_identity "")
-    foreach(source src/compiler.cpp src/process.cpp src/codec.cpp src/codec.hpp include/ludus/tooling/shader_compiler/compiler.hpp)
+    foreach(source src/compiler.cpp src/language_source.cpp src/language_source.hpp src/process.cpp src/codec.cpp
+            src/codec.hpp include/ludus/tooling/shader_compiler/compiler.hpp)
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
         file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${source}" source_hash)
+        string(APPEND worker_identity "${source_hash}")
+    endforeach()
+    # The LUSL compiler is part of the worker, so its sources join the identity that build keys record.
+    file(GLOB_RECURSE language_sources LIST_DIRECTORIES false
+        "${PROJECT_SOURCE_DIR}/modules/tooling/shader_language/src/*"
+        "${PROJECT_SOURCE_DIR}/modules/tooling/shader_language/include/*")
+    list(SORT language_sources)
+    foreach(source IN LISTS language_sources)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${source}")
+        file(SHA256 "${source}" source_hash)
         string(APPEND worker_identity "${source_hash}")
     endforeach()
     string(SHA256 worker_identity "${worker_identity}")
@@ -105,18 +116,21 @@ if(LUDUS_BUILD_SHADER_WORKER)
     # A Windows DLL would need an explicit export boundary; the worker and its tests link the
     # compiler statically there and load Slang from the executable's directory.
     if(WIN32)
-        add_library(ludus_shader_compiler STATIC src/compiler.cpp src/process.cpp)
+        add_library(ludus_shader_compiler STATIC src/compiler.cpp src/language_source.cpp src/process.cpp)
         ludus_configure_win32_target(ludus_shader_compiler)
     else()
-        add_library(ludus_shader_compiler SHARED src/compiler.cpp src/process.cpp)
+        add_library(ludus_shader_compiler SHARED src/compiler.cpp src/language_source.cpp src/process.cpp)
         install(TARGETS ludus_shader_compiler EXPORT LudusTargets
             LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
     endif()
     add_library(Ludus::ShaderCompiler ALIAS ludus_shader_compiler)
     set_target_properties(ludus_shader_compiler PROPERTIES EXPORT_NAME ShaderCompiler INSTALL_RPATH "$ORIGIN/ludus-shader-tools")
     target_include_directories(ludus_shader_compiler SYSTEM PRIVATE "${slang_include}")
+    # LUSL sources are lowered in process by the same library luslc uses; it is added after this
+    # directory, and its CMakeLists makes it position-independent for this shared library.
     target_link_libraries(ludus_shader_compiler PUBLIC Ludus::ShaderCompilerClient
-        PRIVATE Ludus::FoundationStrings Ludus::FoundationFilesystem Ludus::FoundationParsingJson "${slang_link_library}")
+        PRIVATE Ludus::FoundationStrings Ludus::FoundationFilesystem Ludus::FoundationParsingJson Ludus::ShaderLanguage
+        "${slang_link_library}")
     target_compile_definitions(ludus_shader_compiler PRIVATE LUDUS_SLANG_VERSION="${slang_version}"
         LUDUS_WORKER_IDENTITY="${worker_identity}" LUDUS_SLANG_LIBRARY_HASH="${slang_library_hash}"
         LUDUS_SLANG_INVENTORY_HASH="${runtime_inventory_hash}")
