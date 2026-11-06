@@ -15,8 +15,8 @@ MANIFEST = ROOT / "tools/script-interaction/interaction.json"
 GENERATOR = ROOT / "tools/script-cook/generate.py"
 S0 = runpy.run_path(str(ROOT / "scripts/luau-probe"), run_name="s0_tool")
 require, sha, run, host_tool = (S0[key] for key in ("require", "sha", "run", "host_tool"))
-COMPILER = ROOT / "out/luau-probe/host-compiler/luau-compile"
-ANALYZER = COMPILER.with_name("luau-analyze")
+COMPILER = S0["host_compiler"]()
+ANALYZER = COMPILER.with_name(f"luau-analyze{S0['EXECUTABLE_SUFFIX']}")
 
 
 def inputs():

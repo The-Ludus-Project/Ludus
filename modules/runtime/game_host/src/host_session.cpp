@@ -116,6 +116,13 @@ HostSession::HostSession(uint64 projectId, uint64 gameId, int32 controlFd, uint6
     // fatal here: queueing retries growth and latches a channel failure.
     (void)Output_.TryEnsureCapacity(protocol::kMaxPendingCommands + 2);
     (void)Results_.TryEnsureCapacity(protocol::kMaxRetainedResults);
+    if (ControlFd_ >= 0 && control_channel::Open(ControlFd_) == false)
+    {
+        // An unusable inherited channel ends the session like a send failure would.
+        LUDUS_LOG_ERROR(LOG_SESSION, "control channel could not be prepared for nonblocking use");
+        ChannelFailed_ = true;
+        StopLatched_ = true;
+    }
 }
 
 HostSession::~HostSession() noexcept
