@@ -507,6 +507,9 @@ is unavailable and checks that normal exit handlers were bypassed. The filesyste
 probe terminates the writer before and after atomic publication on the runner's
 filesystem, then checks the accepted bytes and retries. This exercises process
 interruption separately from storage power loss.
+The Ninja job's runtime build also enables `LUDUS_BUILD_SHADER_WORKER`. It runs
+the DXIL compiler tests and the named-pipe
+[Windows worker](render-graph-authoring.md#windows-worker) protocol journey (D6c).
 The `windows-msvc-Ninja` and `windows-msvc-MSBuild` artifacts record the build
 configuration and test logs. The historical Clang/WARP job still runs. The MSBuild job also installs all
 four SDKs from the solution, relocates their prefixes and configures a separate

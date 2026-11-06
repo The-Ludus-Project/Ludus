@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Exercise the real native worker, client, CLI package publication and source failures."""
+"""Exercise the real native worker, client, CLI package publication and source failures.
+
+Windows workers serve a named pipe and emit DXIL; there the protocol, DXIL, stop and
+recovery checks run, while render-graph package publication waits for graph DXIL (D6a).
+"""
 import argparse
 import importlib.util
 import json
 import os
 from pathlib import Path
 import signal
-import socket
 import shutil
 import struct
 import subprocess
@@ -33,11 +36,44 @@ void ComputeMain(uint3 id : SV_DispatchThreadID, RWStructuredBuffer<float> value
 }
 '''
 STOP_SECONDS = 5
+IS_WINDOWS = sys.platform == 'win32'
+PIPE_PREFIX = '\\\\.\\pipe\\'
+# Wire status values of ludus::tooling::shader_compiler::Status and Target.
+STATUS_READY = 0
+STATUS_INVALID_REQUEST = 2
+STATUS_COMPILE_FAILED = 3
+TARGET_DXIL = 4
+STAGE_FRAGMENT = 1
+STAGE_COMPUTE = 2
+
+
+def load_native_client():
+    spec = importlib.util.spec_from_file_location('native_worker', ROOT / 'cmake/shaders/native_worker.py')
+    native = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(native)
+    return native
+
+
+NATIVE = load_native_client()
+
+
+def endpoint_exists(endpoint):
+    if IS_WINDOWS:
+        # Listing the pipe namespace never connects, so it cannot occupy a listening instance.
+        return str(endpoint)[len(PIPE_PREFIX):] in os.listdir(PIPE_PREFIX)
+    return Path(endpoint).exists()
+
+
+def wait_until_absent(endpoint):
+    deadline = time.monotonic() + STOP_SECONDS
+    while endpoint_exists(endpoint) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return not endpoint_exists(endpoint)
 
 
 def wait_for_endpoint(process, endpoint):
     deadline = time.monotonic() + 10
-    while not endpoint.exists():
+    while not endpoint_exists(endpoint):
         if process.poll() is not None or time.monotonic() >= deadline:
             raise RuntimeError('Native worker failed to start')
         time.sleep(0.01)
@@ -47,14 +83,30 @@ def send_slow_request(endpoint):
     """Start a long compile and return the open connection without waiting for its reply."""
     payload = json.dumps({'version': 1, 'identity': 1, 'source': 'slow.slang', 'entry': 'ComputeMain',
                           'stage': 2, 'target': 2, 'files': {'slow.slang': SLOW_SOURCE}}).encode('utf-8')
-    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    peer.connect(str(endpoint))
+    peer = NATIVE.connect(endpoint)
     peer.sendall(struct.pack('<I', len(payload)) + payload)
     time.sleep(1)
     return peer
 
 
 def is_running(pid):
+    if IS_WINDOWS:
+        # os.kill(pid, 0) would terminate the process on Windows; query it instead.
+        import ctypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        kernel.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+        kernel.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+        kernel.WaitForSingleObject.restype = ctypes.c_uint32
+        kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+        synchronize, query_limited_information, wait_timeout = 0x00100000, 0x1000, 0x102
+        handle = kernel.OpenProcess(synchronize | query_limited_information, 0, pid)
+        if not handle:
+            return False
+        try:
+            return kernel.WaitForSingleObject(handle, 0) == wait_timeout
+        finally:
+            kernel.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -62,9 +114,9 @@ def is_running(pid):
     return True
 
 
-def check_stops_during_compile(worker, root):
-    """SIGTERM and the death of an owner each stop a worker inside a compile that would not finish soon."""
-    endpoint = root / 'terminated.sock'
+def check_stops_during_compile(worker, make_endpoint):
+    """A stop request and the death of an owner each stop a worker inside a compile that would not finish soon."""
+    endpoint = make_endpoint('terminated')
     process = subprocess.Popen([str(worker), '--serve', str(endpoint)])
     try:
         wait_for_endpoint(process, endpoint)
@@ -72,20 +124,23 @@ def check_stops_during_compile(worker, root):
             assert process.poll() is None
             process.terminate()
             process.wait(timeout=STOP_SECONDS)
-        assert not endpoint.exists()
+        assert wait_until_absent(endpoint)
     finally:
         if process.poll() is None:
             process.kill()
             process.wait()
-    # The owner is killed outright, so nothing forwards SIGTERM to its worker.
-    endpoint = root / 'orphaned.sock'
+    # The owner is killed outright, so nothing forwards SIGTERM or a console event to its worker.
+    endpoint = make_endpoint('orphaned')
     launcher = 'import subprocess, sys, time; print(subprocess.Popen(sys.argv[1:]).pid, flush=True); time.sleep(600)'
-    owner = subprocess.Popen([sys.executable, '-c', launcher, str(worker), '--serve', str(endpoint), '--stop-with-parent'],
+    # A Windows virtual environment's python.exe is a redirector that runs the interpreter as
+    # its child; run the base interpreter so the killed owner is the worker's parent.
+    python = getattr(sys, '_base_executable', sys.executable) if IS_WINDOWS else sys.executable
+    owner = subprocess.Popen([python, '-c', launcher, str(worker), '--serve', str(endpoint), '--stop-with-parent'],
                              stdout=subprocess.PIPE, text=True)
     pid = int(owner.stdout.readline())
     try:
         deadline = time.monotonic() + 10
-        while not endpoint.exists():
+        while not endpoint_exists(endpoint):
             if not is_running(pid) or time.monotonic() >= deadline:
                 raise RuntimeError('Owned native worker failed to start')
             time.sleep(0.01)
@@ -97,14 +152,105 @@ def check_stops_during_compile(worker, root):
             while is_running(pid) and time.monotonic() < deadline:
                 time.sleep(0.05)
             assert not is_running(pid), 'Worker outlived its killed owner'
-        assert not endpoint.exists()
+        assert wait_until_absent(endpoint)
     finally:
         owner.stdout.close()
         if owner.poll() is None:
             owner.kill()
             owner.wait()
         if is_running(pid):
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, signal.SIGTERM if IS_WINDOWS else signal.SIGKILL)
+
+
+def check_protocol_recovery(endpoint):
+    """Truncated/oversized frames and abandoned clients cannot poison the worker."""
+    for data in (struct.pack('<I', 17 * 1024 * 1024), struct.pack('<I', 20) + b'{'):
+        with NATIVE.connect(endpoint) as peer:
+            peer.sendall(data)
+    assert NATIVE.exchange(endpoint, {'version': 99, 'identity': 10})['status'] == STATUS_INVALID_REQUEST
+
+
+def is_signed_dxil(artifact):
+    # DXBC header: code, 16-byte hash, version and total size. Unsigned output has a constant hash.
+    return (len(artifact) >= 32 and artifact[:4] == b'DXBC' and
+            struct.unpack_from('<I', artifact, 24)[0] == len(artifact) and len(set(artifact[4:20])) > 1)
+
+
+def check_dxil(endpoint):
+    """Edit/save/compile through the worker: success, include edits, syntax and interface errors."""
+    files = {'root.slang': '#include "color.slang"\n'
+                           '[shader("fragment")] float4 FragmentMain() : SV_Target { return GetColor(); }\n',
+             'color.slang': 'float4 GetColor() { return float4(1, 0, 0, 1); }\n',
+             'unused.slang': '// not included\n'}
+    request = {'version': 1, 'identity': 21, 'source': 'root.slang', 'entry': 'FragmentMain',
+               'stage': STAGE_FRAGMENT, 'target': TARGET_DXIL, 'files': files}
+    first = NATIVE.exchange(endpoint, request)
+    assert first['status'] == STATUS_READY, first.get('diagnostics')
+    artifact = bytes.fromhex(first['artifact'])
+    assert is_signed_dxil(artifact)
+    assert bytes.fromhex(first['source_read_mask']) == b'\x01\x01\x00'
+    entry = json.loads(bytes.fromhex(first['reflection']))['entryPoints'][0]
+    assert entry['name'] == 'FragmentMain' and entry['stage'] == 'fragment'
+    files['color.slang'] = 'float4 GetColor() { return float4(0, 1, 0, 1); }\n'
+    edited = NATIVE.exchange(endpoint, dict(request, identity=22))
+    assert edited['status'] == STATUS_READY and edited['identity'] == 22
+    assert is_signed_dxil(bytes.fromhex(edited['artifact'])) and bytes.fromhex(edited['artifact']) != artifact
+    files['color.slang'] = 'float4 GetColor() { return }\n'
+    broken = NATIVE.exchange(endpoint, dict(request, identity=23))
+    assert broken['status'] == STATUS_COMPILE_FAILED and broken['artifact'] == ''
+    assert 'color.slang' in broken['diagnostics'], broken['diagnostics']
+    files['color.slang'] = 'float4 GetColor() { return float4(1, 0, 0, 1); }\n'
+    missing = NATIVE.exchange(endpoint, dict(request, identity=24, entry='MissingMain'))
+    assert missing['status'] == STATUS_COMPILE_FAILED and missing['artifact'] == ''
+    compute = {'kernel.slang': '#ifndef LUDUS_DXIL\n#error expected DXIL\n#endif\n'
+                               'RWStructuredBuffer<float> Values;\n'
+                               '[numthreads(1, 1, 1)] void ComputeMain() { Values[0] = 1; }\n'}
+    kernel = NATIVE.exchange(endpoint, dict(request, identity=25, source='kernel.slang', entry='ComputeMain',
+                                            stage=STAGE_COMPUTE, files=compute))
+    assert kernel['status'] == STATUS_READY, kernel.get('diagnostics')
+    assert is_signed_dxil(bytes.fromhex(kernel['artifact']))
+
+
+def run_windows(args):
+    """Named-pipe worker: client, protocol, DXIL, recovery, stop and worker-exit journeys."""
+    worker = args.worker.resolve()
+    prefix = PIPE_PREFIX + 'ludus-shader-test-{}-'.format(os.getpid())
+    endpoint = prefix + 'compiler'
+    assert not endpoint_exists(endpoint)
+    process = subprocess.Popen([str(worker), '--serve', endpoint])
+    try:
+        wait_for_endpoint(process, endpoint)
+        environment = dict(os.environ, LUDUS_TEST_SHADER_SOCKET=endpoint)
+        subprocess.run([str(args.client.resolve()), '[shader][client]'], env=environment, check=True)
+        reply = NATIVE.exchange(endpoint, {'version': 1, 'identity': 9})
+        assert reply['status'] == STATUS_INVALID_REQUEST and reply['identity'] == 9
+        assert len(reply['implementation']) == 64
+        duplicate = subprocess.run([str(worker), '--serve', endpoint], timeout=10)
+        assert duplicate.returncode != 0
+        for invalid in ('C:\\worker.sock', PIPE_PREFIX, '\\\\server\\pipe\\worker'):
+            assert subprocess.run([str(worker), '--serve', invalid], timeout=10).returncode == 2
+        check_dxil(endpoint)
+        check_protocol_recovery(endpoint)
+        check_stops_during_compile(worker, lambda name: prefix + name)
+        # A worker that exits fails the next exchange; the caller keeps its published state.
+        process.terminate()
+        process.wait(timeout=10)
+        assert wait_until_absent(endpoint)
+        try:
+            NATIVE.exchange(endpoint, {'version': 1, 'identity': 11})
+        except (OSError, RuntimeError):
+            pass
+        else:
+            raise AssertionError('Unavailable worker was accepted')
+        print('Named-pipe client, DXIL, protocol recovery, stop and worker exit passed.')
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
 
 
 def main():
@@ -118,6 +264,9 @@ def main():
     parser.add_argument('--validator', type=Path, default=ROOT / 'out/shader-tools/spirv-tools/usr/bin/spirv-val')
     parser.add_argument('--spirv-cross', type=Path, default=ROOT / 'out/shader-tools/spirv-cross/bin/spirv-cross')
     args = parser.parse_args()
+    if IS_WINDOWS:
+        run_windows(args)
+        return
     with tempfile.TemporaryDirectory(prefix='ludus-shader-', dir='/tmp') as directory:
         root = Path(directory)
         endpoint = root / 'compiler.sock'
@@ -130,21 +279,14 @@ def main():
                 time.sleep(0.01)
             environment = dict(os.environ, LUDUS_TEST_SHADER_SOCKET=str(endpoint))
             subprocess.run([str(args.client.resolve()), '[shader][client]'], env=environment, check=True)
-            spec = importlib.util.spec_from_file_location('native_worker', ROOT / 'cmake/shaders/native_worker.py')
-            native = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(native)
+            native = NATIVE
             reply = native.exchange(str(endpoint), {'version': 1, 'identity': 9})
             assert reply['status'] == 2 and reply['identity'] == 9
             assert len(reply['implementation']) == 64
             duplicate = subprocess.run([str(args.worker.resolve()), '--serve', str(endpoint)], timeout=10)
             assert duplicate.returncode != 0
-            check_stops_during_compile(args.worker.resolve(), root)
-            # Truncated/oversized frames and abandoned clients cannot poison the worker.
-            for data in (struct.pack('<I', 17 * 1024 * 1024), struct.pack('<I', 20) + b'{'):
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
-                    peer.connect(str(endpoint))
-                    peer.sendall(data)
-            assert native.exchange(str(endpoint), {'version': 99, 'identity': 10})['status'] == 2
+            check_stops_during_compile(args.worker.resolve(), lambda name: root / (name + '.sock'))
+            check_protocol_recovery(str(endpoint))
             # Exercise the canonical renderer recipe owner through real CMake,
             # including shared include roots and independently checked reflection.
             recipes = root / 'recipes'

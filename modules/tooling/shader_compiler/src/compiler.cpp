@@ -2,7 +2,9 @@
 
 #include "codec.hpp"
 
+#include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/compiler.h>
+#include <ludus/foundation/base/config.h>
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
@@ -11,10 +13,15 @@
 
 #include <cstring>
 #include <new>
+#include <span>
 #include <string_view>
 
 #include <slang-com-ptr.h>
 #include <slang.h>
+
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#    include <windows.h>
+#endif
 
 // Thanks to the Slang authors, "Using the Slang Compilation API", sections
 // "About Sessions" and "Load Modules", https://docs.shader-slang.org/en/latest/compilation-api.html.
@@ -24,12 +31,102 @@
 // route slangc uses. Loading the same source with ISession::loadModule made Slang
 // 2026.1.2 spin forever in its entry-point parameter transform for render-graph
 // wrappers (TransformParamsToConstRefContext), while slangc finished in seconds.
+//
+// Thanks to the Slang team, "Supported Compilation Targets" (DXIL through DXC),
+// https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/09-targets.html:
+// Slang emits HLSL and has the pinned DXC compile it; dxil.dll beside dxcompiler.dll signs it.
+// The DXIL session mirrors cmake/shaders/compile_shader.py (sm_6_0, LUDUS_DXIL=1).
 namespace ludus::tooling::shader_compiler
 {
 using namespace foundation;
 namespace
 {
-constexpr usize TARGET_COUNT = 3;
+// Portable sessions hold SPIR-V 1.3, WGSL and Metal; Target values index them directly.
+constexpr usize PORTABLE_TARGET_COUNT = 3;
+// DXBC container header: four-byte code, 16-byte hash, version, total size and part count.
+constexpr usize DXIL_CONTAINER_HEADER_BYTES = 32;
+constexpr usize DXIL_HASH_OFFSET = 4;
+constexpr usize DXIL_HASH_BYTES = 16;
+constexpr usize DXIL_SIZE_OFFSET = 24;
+constexpr std::string_view DXIL_CONTAINER_CODE = "DXBC";
+constexpr std::string_view UNSIGNED_DXIL_DIAGNOSTIC =
+    "DXC produced an unsigned DXIL container; place the pinned dxil.dll beside dxcompiler.dll";
+// One session per profile: a request for another profile replaces the cached session.
+enum class SessionProfile : uint8
+{
+    Portable, ///< SPIR-V 1.3, WGSL and Metal from one snapshot.
+    RayQuery, ///< SPIR-V 1.5 compute with spvRayQueryKHR.
+    Dxil,     ///< Direct3D 12 DXIL shader model 6.0 through DXC.
+};
+SessionProfile GetSessionProfile(Target target) noexcept
+{
+    if (target == Target::SpirvRayQuery)
+    {
+        return SessionProfile::RayQuery;
+    }
+    return target == Target::Dxil ? SessionProfile::Dxil : SessionProfile::Portable;
+}
+// Unsigned output carries a zero or constant "bypass" hash, which retail Direct3D 12
+// runtimes reject; the same check guards offline builds (compile_shader.py dxil_container).
+bool IsSignedDxilContainer(const void* bytes, usize size) noexcept
+{
+    const std::span<const uint8> data{static_cast<const uint8*>(bytes), size};
+    uint32 containerSize = 0;
+    if (size < DXIL_CONTAINER_HEADER_BYTES ||
+        std::memcmp(data.data(), DXIL_CONTAINER_CODE.data(), DXIL_CONTAINER_CODE.size()) != 0 ||
+        TryReadLittleEndian<uint32>(data.subspan(DXIL_SIZE_OFFSET), containerSize) == false || containerSize != size)
+    {
+        return false;
+    }
+    for (usize i = 1; i < DXIL_HASH_BYTES; ++i)
+    {
+        if (data[DXIL_HASH_OFFSET + i] != data[DXIL_HASH_OFFSET])
+        {
+            return true;
+        }
+    }
+    return false;
+}
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+// Windows extended-length paths are limited to 32767 UTF-16 code units.
+constexpr usize MAX_EXECUTABLE_PATH_CHARACTERS = 32768;
+// The worker deploys the pinned dxcompiler.dll and dxil.dll beside its executable. Naming that
+// directory keeps an unrelated DXC on PATH or in the system directory out of the compiler.
+bool GetExecutableDirectory(StaticString<filesystem::MAX_PATH_BYTES>& outDirectory) noexcept
+{
+    Array<wchar_t> path;
+    if (path.TryResize(MAX_EXECUTABLE_PATH_CHARACTERS) == false)
+    {
+        return false;
+    }
+    const DWORD length = ::GetModuleFileNameW(nullptr, path.GetData(), static_cast<DWORD>(path.GetSize()));
+    if (length == 0 || length >= path.GetSize())
+    {
+        return false;
+    }
+    DWORD directoryLength = length;
+    while (directoryLength != 0 && path[directoryLength - 1] != L'\\' && path[directoryLength - 1] != L'/')
+    {
+        --directoryLength;
+    }
+    if (directoryLength < 2)
+    {
+        return false;
+    }
+    // Drop the trailing separator; Slang joins the library name itself.
+    --directoryLength;
+    StaticArray<char, filesystem::MAX_PATH_BYTES + 1> bytes{};
+    const int32 count = ::WideCharToMultiByte(CP_UTF8,
+                                              WC_ERR_INVALID_CHARS,
+                                              path.GetData(),
+                                              static_cast<int32>(directoryLength),
+                                              bytes.GetData(),
+                                              static_cast<int32>(filesystem::MAX_PATH_BYTES),
+                                              nullptr,
+                                              nullptr);
+    return count > 0 && outDirectory.TryAssign({bytes.GetData(), static_cast<usize>(count)}) == StringStatus::Ok;
+}
+#endif
 using PathText = StaticString<filesystem::MAX_PATH_BYTES>;
 using EntryText = StaticString<MAX_ENTRY_BYTES>;
 std::string_view GetText(BorrowedView<const char> value) noexcept
@@ -267,13 +364,13 @@ struct Compiler::State final
     Slang::ComPtr<SnapshotFilesystem> Filesystem;
     Slang::ComPtr<slang::ISession> Session;
     PathText Source;
-    bool HasNativeRayQueries = false;
+    SessionProfile Profile = SessionProfile::Portable;
 
     Status Capture(const Request& request) noexcept
     {
-        const bool hasNativeRayQueries = request.OutputTarget == Target::SpirvRayQuery;
-        if (Session.get() != nullptr && HasNativeRayQueries == hasNativeRayQueries &&
-            Source.GetView() == GetText(request.Source) && Filesystem->Matches(request) == true)
+        const SessionProfile profile = GetSessionProfile(request.OutputTarget);
+        if (Session.get() != nullptr && Profile == profile && Source.GetView() == GetText(request.Source) &&
+            Filesystem->Matches(request) == true)
         {
             return Status::Ready;
         }
@@ -305,7 +402,8 @@ struct Compiler::State final
             file.Blob->Bytes[request.Files[i].Text.GetSize()] = '\0';
         }
         static_cast<void>(Source.TryAssign(GetText(request.Source)));
-        StaticArray<slang::TargetDesc, TARGET_COUNT> targets{};
+        const bool hasNativeRayQueries = profile == SessionProfile::RayQuery;
+        StaticArray<slang::TargetDesc, PORTABLE_TARGET_COUNT> targets{};
         targets[0].format = SLANG_SPIRV;
         targets[0].profile = Global->findProfile(hasNativeRayQueries == true ? "spirv_1_5" : "spirv_1_3");
         slang::CompilerOptionEntry capability{};
@@ -318,11 +416,21 @@ struct Compiler::State final
         targets[1].profile = Global->findProfile("sm_6_0");
         targets[2].format = SLANG_METAL;
         targets[2].profile = Global->findProfile("sm_6_0");
+        const slang::PreprocessorMacroDesc dxilMacro{"LUDUS_DXIL", "1"};
         slang::SessionDesc description;
+        if (profile == SessionProfile::Dxil)
+        {
+            targets[0] = slang::TargetDesc{};
+            targets[0].format = SLANG_DXIL;
+            targets[0].profile = Global->findProfile("sm_6_0");
+            description.preprocessorMacros = &dxilMacro;
+            description.preprocessorMacroCount = 1;
+        }
         description.targets = targets.GetData();
-        description.targetCount = hasNativeRayQueries == true ? 1 : static_cast<SlangInt>(TARGET_COUNT);
+        description.targetCount =
+            profile == SessionProfile::Portable ? static_cast<SlangInt>(PORTABLE_TARGET_COUNT) : 1;
         description.fileSystem = Filesystem.get();
-        HasNativeRayQueries = hasNativeRayQueries;
+        Profile = profile;
         return SLANG_SUCCEEDED(Global->createSession(description, Session.writeRef())) ? Status::Ready
                                                                                        : Status::Unavailable;
     }
@@ -353,6 +461,20 @@ Status Compiler::Initialize() noexcept
     {
         return Status::Unavailable;
     }
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    // DXIL is the Windows worker's native output. Refuse a compiler that cannot reach the pinned
+    // DXC deployed beside the executable rather than failing each Direct3D 12 request later.
+    PathText directory;
+    if (GetExecutableDirectory(directory) == false)
+    {
+        return Status::Unavailable;
+    }
+    state->Global->setDownstreamCompilerPath(SLANG_PASS_THROUGH_DXC, directory.GetData());
+    if (SLANG_FAILED(state->Global->checkPassThroughSupport(SLANG_PASS_THROUGH_DXC)))
+    {
+        return Status::Unavailable;
+    }
+#endif
     mState = Move(state);
     return Status::Ready;
 }
@@ -369,6 +491,14 @@ Status Compiler::Compile(const Request& request, Result& outResult) noexcept
     {
         return outResult.Outcome;
     }
+#if LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
+    if (request.OutputTarget == Target::Dxil)
+    {
+        // The pinned DXC and its signing validator are Windows libraries.
+        outResult.Outcome = Status::Unavailable;
+        return outResult.Outcome;
+    }
+#endif
     State& state = *mState;
     outResult.Outcome = state.Capture(request);
     if (outResult.Outcome != Status::Ready)
@@ -419,8 +549,9 @@ Status Compiler::Compile(const Request& request, Result& outResult) noexcept
     {
         return outResult.Outcome;
     }
-    const SlangInt target =
-        request.OutputTarget == Target::SpirvRayQuery ? 0 : static_cast<SlangInt>(request.OutputTarget);
+    const SlangInt target = GetSessionProfile(request.OutputTarget) == SessionProfile::Portable
+                                ? static_cast<SlangInt>(request.OutputTarget)
+                                : 0;
     slang::ProgramLayout* layoutOrNull = linked->getLayout(target, diagnostics.writeRef());
     captureDiagnostics();
     Slang::ComPtr<slang::IBlob> reflection;
@@ -438,6 +569,14 @@ Status Compiler::Compile(const Request& request, Result& outResult) noexcept
     if (artifact->getBufferSize() > MAX_ARTIFACT_BYTES || reflection->getBufferSize() > MAX_ARTIFACT_BYTES)
     {
         outResult.Outcome = Status::InvalidRequest;
+        return outResult.Outcome;
+    }
+    if (request.OutputTarget == Target::Dxil &&
+        IsSignedDxilContainer(artifact->getBufferPointer(), artifact->getBufferSize()) == false)
+    {
+        static_cast<void>(
+            CopyBytes(UNSIGNED_DXIL_DIAGNOSTIC.data(), UNSIGNED_DXIL_DIAGNOSTIC.size(), outResult.Diagnostics));
+        outResult.Outcome = Status::Unavailable;
         return outResult.Outcome;
     }
     Slang::ComPtr<slang::IMetadata> metadata;

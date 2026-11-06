@@ -1,5 +1,6 @@
 #include <ludus/tooling/shader_compiler/compiler.hpp>
 
+#include <ludus/foundation/base/config.h>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <catch2/catch_test_macros.hpp>
@@ -206,6 +207,103 @@ TEST_CASE("Native shader compiler separates portable and ray query session profi
         REQUIRE(result.Artifact.GetSize() > 7);
         CHECK(result.Artifact[5] == (target == compiler::Target::SpirvRayQuery ? 5 : 3));
     }
+}
+
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+namespace
+{
+bool IsSignedDxil(const compiler::Result& result)
+{
+    // DXBC header: code, 16-byte hash, version and total size; unsigned output has a constant hash.
+    constexpr usize HEADER_BYTES = 32;
+    constexpr usize HASH_OFFSET = 4;
+    constexpr usize HASH_BYTES = 16;
+    constexpr usize SIZE_OFFSET = 24;
+    if (result.Artifact.GetSize() < HEADER_BYTES || std::memcmp(result.Artifact.GetData(), "DXBC", HASH_OFFSET) != 0)
+    {
+        return false;
+    }
+    uint32 size = 0;
+    std::memcpy(&size, result.Artifact.GetData() + SIZE_OFFSET, sizeof(size));
+    bool isConstant = true;
+    for (usize i = 1; i < HASH_BYTES; ++i)
+    {
+        isConstant = isConstant == true && result.Artifact[HASH_OFFSET + i] == result.Artifact[HASH_OFFSET];
+    }
+    return size == result.Artifact.GetSize() && isConstant == false;
+}
+} // namespace
+TEST_CASE("Native shader compiler emits signed DXIL and reports DXIL diagnostics", "[shader][compiler][dxil]")
+{
+    compiler::Compiler worker;
+    REQUIRE(worker.Initialize() == compiler::Status::Ready);
+    Fixture fixture;
+    fixture.Request.OutputTarget = compiler::Target::Dxil;
+    compiler::Result first;
+    REQUIRE(worker.Compile(fixture.Request, first) == compiler::Status::Ready);
+    CHECK(IsSignedDxil(first) == true);
+    CHECK(first.Reflection.IsEmpty() == false);
+    REQUIRE(first.SourceReadMask.GetSize() == FILE_COUNT);
+    CHECK(first.SourceReadMask[1] == 1);
+    // An include edit replaces the snapshot and changes the container.
+    fixture.Files[1].Text = View("float4 GetColor() { return float4(0,1,0,1); }");
+    compiler::Result edited;
+    REQUIRE(worker.Compile(fixture.Request, edited) == compiler::Status::Ready);
+    CHECK(IsSignedDxil(edited) == true);
+    CHECK(std::string_view(reinterpret_cast<const char*>(first.Artifact.GetData()), first.Artifact.GetSize()) !=
+          std::string_view(reinterpret_cast<const char*>(edited.Artifact.GetData()), edited.Artifact.GetSize()));
+    // Syntax errors and a missing entry are diagnosed without publishing an artifact.
+    fixture.Files[1].Text = View("float4 GetColor() { return }");
+    REQUIRE(worker.Compile(fixture.Request, edited) == compiler::Status::CompileFailed);
+    CHECK(edited.Artifact.IsEmpty() == true);
+    CHECK(edited.Diagnostics.IsEmpty() == false);
+    fixture.Files[1].Text = View("float4 GetColor() { return float4(1,0,0,1); }");
+    fixture.Request.Entry = View("MissingMain");
+    REQUIRE(worker.Compile(fixture.Request, edited) == compiler::Status::CompileFailed);
+    CHECK(edited.Artifact.IsEmpty() == true);
+    // DXIL sources see LUDUS_DXIL as offline builds do; portable targets in the same compiler do not.
+    fixture.Files[0].Text = View("#ifndef LUDUS_DXIL\n#error expected DXIL\n#endif\n"
+                                 "[numthreads(1,1,1)] void ComputeMain() {}");
+    fixture.Request.Entry = View("ComputeMain");
+    fixture.Request.EntryStage = compiler::Stage::Compute;
+    REQUIRE(worker.Compile(fixture.Request, edited) == compiler::Status::Ready);
+    CHECK(IsSignedDxil(edited) == true);
+    fixture.Request.OutputTarget = compiler::Target::Spirv;
+    CHECK(worker.Compile(fixture.Request, edited) == compiler::Status::CompileFailed);
+}
+#else
+TEST_CASE("Native shader compiler reports DXIL as unavailable off Windows", "[shader][compiler][dxil]")
+{
+    compiler::Compiler worker;
+    REQUIRE(worker.Initialize() == compiler::Status::Ready);
+    Fixture fixture;
+    fixture.Request.OutputTarget = compiler::Target::Dxil;
+    compiler::Result result;
+    CHECK(worker.Compile(fixture.Request, result) == compiler::Status::Unavailable);
+    CHECK(result.Artifact.IsEmpty() == true);
+    fixture.Request.OutputTarget = compiler::Target::Wgsl;
+    CHECK(worker.Compile(fixture.Request, result) == compiler::Status::Ready);
+}
+#endif
+
+TEST_CASE("Native shader client rejects malformed endpoints and never waits for a missing worker", "[shader][client]")
+{
+    compiler::Client client;
+    Fixture fixture;
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    // Only local pipe names are endpoints; a missing pipe is reported without waiting.
+    CHECK(client.Submit(View("C:\\worker.sock"), fixture.Request) == compiler::Status::InvalidRequest);
+    CHECK(client.Submit(View("\\\\server\\pipe\\worker"), fixture.Request) == compiler::Status::InvalidRequest);
+    CHECK(client.Submit(View("\\\\.\\pipe\\"), fixture.Request) == compiler::Status::InvalidRequest);
+    CHECK(client.Submit(View("\\\\.\\pipe\\ludus-missing-shader-worker"), fixture.Request) ==
+          compiler::Status::Unavailable);
+#else
+    CHECK(client.Submit(View("/nonexistent/ludus-missing-shader-worker.sock"), fixture.Request) ==
+          compiler::Status::Unavailable);
+#endif
+    CHECK(client.Submit({"", 0}, fixture.Request) == compiler::Status::InvalidRequest);
+    compiler::Result result;
+    CHECK(client.Poll(result) == compiler::Status::InvalidState);
 }
 
 TEST_CASE("Native shader client copies requests and supports cancellation and recovery",

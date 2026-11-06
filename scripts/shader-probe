@@ -82,6 +82,15 @@ def bootstrap_windows() -> None:
     extract_zip(TOOLS / "dxc.zip", TOOLS / "dxc", dxc["archive_directory"] + "/")
     for path, key in ((TOOLS / "dxc/dxcompiler.dll", "dxcompiler_sha256"), (TOOLS / "dxc/dxil.dll", "dxil_sha256")):
         require(digest(path) == dxc[key], f"DXC pin differs: {path}")
+    # Root license texts travel with dxcompiler.dll and dxil.dll wherever a worker deploys them.
+    licenses = TOOLS / "dxc/licenses"
+    licenses.mkdir()
+    with zipfile.ZipFile(TOOLS / "dxc.zip") as contents:
+        for member in contents.infolist():
+            name = member.filename.replace("\\", "/")
+            if not member.is_dir() and "/" not in name and name.upper().startswith(("LICENSE", "LICENCE")):
+                (licenses / name).write_bytes(contents.read(member))
+    require(any(licenses.iterdir()), "DXC archive carries no license texts")
     require(run([str(TOOLS / "slang/bin/slangc.exe"), "-version"]).strip() == LOCK["slang"]["version"],
             "Slang version differs from pin")
 
