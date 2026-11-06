@@ -356,17 +356,22 @@ def depfile_dependencies(path):
     return parts[1].strip()
 
 
+def require_pinned_dxc(dxc_path, lock):
+    """Require the pinned dxcompiler.dll and the dxil.dll that signs its output."""
+    if not dxc_path:
+        raise RuntimeError('DXIL builds require --dxc-path')
+    pin = lock['dxc']
+    for library, key in (('dxcompiler.dll', 'dxcompiler_sha256'), ('dxil.dll', 'dxil_sha256')):
+        if hashlib.sha256((Path(dxc_path) / library).read_bytes()).hexdigest() != pin[key]:
+            raise RuntimeError(f'{library} differs from SDK pin')
+
+
 def compile_dxil(args, lock):
     # Thanks to the Slang team, "Supported Compilation Targets" (DXIL through DXC),
     # User Guide: https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/09-targets.html
     # Slang emits HLSL and has the pinned DXC compile and sign it. Reflect this
     # target independently: register b0, space 0 is the root constant buffer view.
-    if not args.dxc_path:
-        raise RuntimeError('DXIL builds require --dxc-path')
-    pin = lock['dxc']
-    for library, key in (('dxcompiler.dll', 'dxcompiler_sha256'), ('dxil.dll', 'dxil_sha256')):
-        if hashlib.sha256((Path(args.dxc_path) / library).read_bytes()).hexdigest() != pin[key]:
-            raise RuntimeError(f'{library} differs from SDK pin')
+    require_pinned_dxc(args.dxc_path, lock)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     extra = [part for path in args.include for part in ('-I', path)] + ['-D' + value for value in args.define]
@@ -442,6 +447,7 @@ def compile_dxil(args, lock):
             header += f' graphics::rhi::ShaderDescription result; result.Stage = graphics::rhi::ShaderStage::{stage.title()};\n'
             header += f' result.UniformSize = {sizes[stage]}; result.Dxil = {stage.upper()}_DXIL; result.DxilEntry = "{entries[stage]}";\n return result;\n}}\n'
     header += '}\n'
+    pin = lock['dxc']
     manifest = {'compiler': lock['slang'], 'dxc': {'version': pin['version'], 'sha256': pin['sha256']},
                 'commands': commands, 'uniform_sizes': sizes, 'interfaces': interfaces, 'dxil_entries': entries, 'profiles': {'dxil': 'sm_6_0'},
                 'sha256': {f'{args.name}.{stage}.dxil': hashlib.sha256(containers[stage]).hexdigest()
@@ -485,7 +491,7 @@ def main():
     parser.add_argument('--spirv-cross-lock')
     parser.add_argument("--graph-forward-material", action="store_true", help="Admit the verified renderer forward material resource interface")
     parser.add_argument("--graph-stage", choices=("vertex", "fragment", "compute"))
-    parser.add_argument("--graph-target", choices=("spirv", "wgsl", "metal", "glsl"))
+    parser.add_argument("--graph-target", choices=("spirv", "wgsl", "metal", "glsl", "dxil"))
     args = parser.parse_args()
     if args.graph_forward_material and args.graph_stage not in ('vertex', 'fragment'):
         raise RuntimeError('Forward material resources require a closed generated raster graph stage')

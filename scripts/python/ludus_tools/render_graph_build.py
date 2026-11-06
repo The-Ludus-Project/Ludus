@@ -33,7 +33,8 @@ from . import render_graph_language as language
 from . import render_graph_buffers as buffers
 
 VERSION = 1
-TARGETS = ('spirv', 'wgsl', 'metal', 'glsl')
+# DXIL (Direct3D 12) stages compile only on a Windows host with the pinned DXC (--dxc-path).
+TARGETS = ('spirv', 'wgsl', 'metal', 'glsl', 'dxil')
 SHAPES = {'Float32': ('float', 1), 'Float2': ('float2', 2), 'Float3': ('float3', 3), 'Float4': ('float4', 4)}
 STORAGE_SHAPES = {**SHAPES, **{name + suffix: (spelling + (suffix if suffix != '32' else ''), int(suffix) if suffix != '32' else 1)
     for name, spelling in (('UInt', 'uint'), ('Int', 'int')) for suffix in ('32', '2', '3', '4')}}
@@ -244,7 +245,7 @@ def validate_manifest(value):
     render_graph_settings.validate(value.get('settings', []), sys.modules[__name__])
     require(type(value['version']) is int and value['version'] == VERSION, 'Schema', 'manifest', 'version 1 required')
     name(value['id'], 'manifest id')
-    bounded_list(value['profiles'], 4, 'profiles')
+    bounded_list(value['profiles'], len(TARGETS), 'profiles')
     for target in value['profiles']:
         enum(target, TARGETS, 'profile')
     require(value['profiles'] and len(set(value['profiles'])) == len(value['profiles']), 'Schema', 'profiles', 'nonempty unique targets required')
@@ -608,7 +609,7 @@ class ToolFileHashes:
             return result
 
 
-def tool_identity(helper, compiler, validator, cross, *, worker_socket=None, hash_file=file_hash, luslc=None):
+def tool_identity(helper, compiler, validator, cross, *, worker_socket=None, hash_file=file_hash, luslc=None, dxc=None):
     """Hash required helpers/tools; the native client belongs only to worker builds."""
     paths = {f'helper/{p}': helper / p for p in HELPERS}
     if worker_socket:
@@ -635,6 +636,10 @@ def tool_identity(helper, compiler, validator, cross, *, worker_socket=None, has
         paths['tool/luslc'] = Path(luslc).resolve()
     if validator:
         paths['tool/spirv-val'] = Path(validator).resolve()
+    if dxc:
+        # DXIL stage identities include the compiler and the validator that signs its output.
+        for library in ('dxcompiler.dll', 'dxil.dll'):
+            paths['tool/' + library] = (Path(dxc) / library).resolve()
     if cross:
         paths['tool/spirv-cross'] = Path(cross).resolve()
         paths['tool/spirv-cross.build.json'] = Path(str(Path(cross).resolve()) + '.build.json')
@@ -918,6 +923,8 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
         command += ['--worker-socket', worker_socket, '--worker-identity', worker_identity]
     if 'tool/spirv-val' in tools:
         command += ['--validator', str(tools['tool/spirv-val'])]
+    if target == 'dxil':
+        command += ['--dxc-path', str(tools['tool/dxcompiler.dll'].parent)]
     if target == 'glsl' or (target == 'metal' and (program.get('native_ray_queries') or program.get('software_ray_queries'))):
         command += ['--spirv-cross', str(tools['tool/spirv-cross']), '--spirv-cross-lock', str(helper / 'spirv_cross_toolchain.json')]
     try:
@@ -1113,7 +1120,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
 
 
 def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None,
-                  ray_path_capture=False, capture_profile=False, luslc=None, lusl_style=None):
+                  ray_path_capture=False, capture_profile=False, luslc=None, lusl_style=None, dxc=None):
     """Build every authored technique/profile and atomically publish current.json.
 
     Sources/tools must remain identical to their captured snapshot at publication.
@@ -1130,6 +1137,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     cook_capture_profile, never cook_runtime.
     luslc lowers `.lusl` program sources (default: $LUDUS_LUSLC, then the SDK's bin/luslc), and
     lusl_style is their style setting, strict unless $LUDUS_LUSL_STYLE says otherwise.
+    dxc names the directory holding the pinned dxcompiler.dll and dxil.dll; a dxil profile
+    requires it and a Windows host.
     """
     started = time.monotonic()
     manifest = Path(manifest).resolve()
@@ -1142,9 +1151,11 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     manifest_label = manifest.relative_to(snapshot.root).as_posix()
     worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
     hash_file = ToolFileHashes()
+    require('dxil' not in value['profiles'] or dxc, 'Tools', 'profiles', 'dxil requires --dxc-path')
     tool_hashes, tool_paths = tool_identity(helper, compiler, validator, spirv_cross,
                                            worker_socket=worker_socket, hash_file=hash_file,
-                                           luslc=snapshot.language_tool)
+                                           luslc=snapshot.language_tool,
+                                           dxc=dxc if 'dxil' in value['profiles'] else None)
     worker_identity = None
     if worker_socket:
         import importlib.util
@@ -1200,7 +1211,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                 'sources': {p: digest(snapshot.files[p]) for p in closure}, 'wrapper': shader_source(program, schemas),
                                 'tools': {k: h for k, h in tool_hashes.items()
                                           if k not in ('generator/render_graph.py', 'generator/render_graph_options.py', 'generator/render_graph_pipeline.py', 'generator/render_graph_compute.py', 'generator/render_graph_diagnostics.py', 'generator/render_graph_upscale.py', 'generator/render_graph_sizes.py')
-                                          and not (target in ('metal', 'wgsl') and k == 'tool/spirv-val')
+                                          and not (target in ('metal', 'wgsl', 'dxil') and k == 'tool/spirv-val')
+                                          and not (target != 'dxil' and k in ('tool/dxcompiler.dll', 'tool/dxil.dll'))
                                           and not (target != 'glsl' and not (program.get('native_ray_queries') or program.get('software_ray_queries')) and ('spirv-cross' in k or k.endswith('spirv_cross_toolchain.json')))}}
                     key = identity(key_data)
                     saved = cache / key

@@ -87,7 +87,7 @@ def compile_stage(endpoint, args, lock, artifact, reflection, depfile):
             files[path.relative_to(root).as_posix()] = path.read_text(encoding='utf-8')
     request = {'version': 1, 'identity': 1, 'source': Path(args.source).name, 'entry': args.name,
                'stage': {'vertex': 0, 'fragment': 1, 'compute': 2}[args.graph_stage],
-               'target': {'spirv': 0, 'glsl': 0, 'wgsl': 1, 'metal': 2}[args.graph_target], 'files': files}
+               'target': {'spirv': 0, 'glsl': 0, 'wgsl': 1, 'metal': 2, 'dxil': 4}[args.graph_target], 'files': files}
     if getattr(args, 'graph_software_rays', False):
         request['target'] = 0  # Ordinary SPIR-V compute; no ray capability.
     if getattr(args, 'native_ray_queries', False):

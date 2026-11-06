@@ -412,6 +412,29 @@ if(TARGET ludus_renderer_render_tests)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_authored renderer_authored_shadow renderer_clustered_authored renderer_clustered_authored_shadow)
 endif()
 
+# Windows: rg2 graphs authored for the dxil profile compile through the pinned DXC and cook
+# into runtime packages whose stages decode to signed DXIL (D6c). Drawing them is separate.
+if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND LUDUS_SLANG_COMPILER)
+    find_package(Catch2 3 REQUIRED CONFIG)
+    add_executable(ludus_render_graph_dxil_tests tests/render_graph_dxil_tests.cpp)
+    target_link_libraries(ludus_render_graph_dxil_tests PRIVATE Ludus::GraphicsRenderer Ludus::FoundationContainers
+        Catch2::Catch2WithMain)
+    ludus_apply_project_defaults(ludus_render_graph_dxil_tests)
+    ludus_enable_test_exceptions(ludus_render_graph_dxil_tests)
+    set(RG2_TEST_PROFILES "[\"dxil\"]")
+    foreach(kind surface bound)
+        set(staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-dxil-inputs/${kind}")
+        ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/${kind}" "${staged}")
+        ludus_compile_render_graph(TARGET ludus_render_graph_dxil_tests NAME rg2_dxil_${kind}
+            MANIFEST "${staged}/main.lushader.json" RUNTIME_PACKAGE)
+    endforeach()
+    target_compile_definitions(ludus_render_graph_dxil_tests PRIVATE
+        LUDUS_RG2_DXIL_SURFACE_PACKAGE="${rg2_dxil_surface_RUNTIME_PACKAGE}"
+        LUDUS_RG2_DXIL_BOUND_PACKAGE="${rg2_dxil_bound_RUNTIME_PACKAGE}")
+    add_test(NAME ludus_render_graph_dxil_tests COMMAND ludus_render_graph_dxil_tests)
+    set_tests_properties(ludus_render_graph_dxil_tests PROPERTIES LABELS "unit;render-graph;dxil" TIMEOUT 60)
+endif()
+
 if(TARGET ludus_renderer_render_tests)
     set(RG2_TEST_PROFILES "[\"spirv\", \"wgsl\"]")
     if(APPLE)

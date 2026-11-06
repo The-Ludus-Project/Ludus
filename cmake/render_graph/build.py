@@ -13,6 +13,7 @@ def main():
     parser.add_argument('--worker-socket')
     parser.add_argument('--validator')
     parser.add_argument('--spirv-cross')
+    parser.add_argument('--dxc-path')
     parser.add_argument('--runtime-package')
     parser.add_argument('--ray-path-capture', action='store_true')
     parser.add_argument('--ray-path-capture-package')
@@ -25,7 +26,7 @@ def main():
         report = render_graph_build.build_package(args.manifest, args.output, root=args.root,
                     helper=args.helper, compiler=args.compiler, validator=args.validator, spirv_cross=args.spirv_cross, worker_socket=args.worker_socket,
                     ray_path_capture=args.ray_path_capture, capture_profile=args.capture_profile,
-                    luslc=args.luslc, lusl_style=args.lusl_style)
+                    luslc=args.luslc, lusl_style=args.lusl_style, dxc=args.dxc_path)
         render_graph_execution.emit_runtime(report['package'], args.header,
                     configuration=args.configuration, name=args.name)
         if args.runtime_package:

@@ -178,6 +178,34 @@ class BuildTests(unittest.TestCase):
         self.assertIn('PipelineReadiness', package['checks_pending'])
         self.assertEqual(len({p['key'] for p in package['programs'] if p['id'] == 'Geometry'}), 2)
 
+    def test_dxil_profile_requires_the_pinned_dxc_and_passes_it_only_to_dxil_stages(self):
+        self.edit(lambda value: value.update(profiles=['wgsl', 'dxil']))
+        with self.assertRaisesRegex(ToolingError, 'dxil requires --dxc-path'):
+            self.run_build()
+        dxc = self.root / 'dxc'
+        dxc.mkdir()
+        for library in ('dxcompiler.dll', 'dxil.dll'):
+            (dxc / library).write_text(library)
+        commands = []
+        actual = self.stage
+
+        def record(command, cancel):
+            commands.append(command)
+            actual(command, cancel)
+        with patch.object(build, 'run_stage', record):
+            first = self.run_build(dxc=dxc)
+            self.assertEqual(first['cache_misses'], 6)
+            stages = {}
+            for command in commands:
+                stages.setdefault(command[command.index('--graph-target') + 1], []).append(command)
+            for command in stages['dxil']:
+                self.assertEqual(Path(command[command.index('--dxc-path') + 1]), dxc.resolve())
+            self.assertTrue(all('--dxc-path' not in command for command in stages['wgsl']))
+            # A different signing validator changes only the DXIL stage identities.
+            (dxc / 'dxil.dll').write_text('another validator')
+            second = self.run_build(dxc=dxc)
+        self.assertEqual((second['cache_hits'], second['cache_misses']), (3, 3))
+
     def test_offline_build_needs_no_native_client_and_ignores_unused_client_changes(self):
         self.assertFalse((self.helper / build.NATIVE_WORKER_HELPER).exists())
         first = self.run_build()

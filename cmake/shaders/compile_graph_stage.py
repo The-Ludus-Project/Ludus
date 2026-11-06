@@ -237,6 +237,14 @@ def compile_graph_stage(args, lock):
     if native_rays and (stage != 'compute' or target not in ('spirv', 'metal')):
         raise RuntimeError('Hardware ray queries require a native Metal or Vulkan compute target')
     metal = target == 'metal'
+    dxil = target == 'dxil'
+    if dxil:
+        # Direct3D 12 graph stages are ordinary raster/compute programs; ray traversal
+        # needs a ray backend the D3D12 RHI does not provide.
+        if translated_compute or native_pipeline:
+            raise RuntimeError('DXIL graph stages exclude hardware and software ray traversal')
+        from compile_shader import require_pinned_dxc
+        require_pinned_dxc(getattr(args, 'dxc_path', None), lock)
     slang_target = 'spirv' if target == 'glsl' or translated_compute else target
     if target in ('spirv', 'glsl') or (native_rays and args.validator):
         if not args.validator or hashlib.sha256(Path(args.validator).read_bytes()).hexdigest() != lock['spirv_tools']['val_sha256']:
@@ -249,7 +257,7 @@ def compile_graph_stage(args, lock):
         build = json.loads(Path(str(tool) + '.build.json').read_text())
         if any(build.get(k) != pin[k] for k in ('tag', 'commit', 'source_sha256')) or build.get('binary_sha256') != hashlib.sha256(tool.read_bytes()).hexdigest():
             raise RuntimeError('RG1 SPIRV-Cross identity differs from SDK pin')
-    artifact = output / ('artifact.' + {'spirv': 'spv', 'wgsl': 'wgsl', 'metal': 'metal', 'glsl': 'essl'}[target])
+    artifact = output / ('artifact.' + {'spirv': 'spv', 'wgsl': 'wgsl', 'metal': 'metal', 'glsl': 'essl', 'dxil': 'dxil'}[target])
     intermediate = output / 'intermediate.spv' if target == 'glsl' or (translated_compute and metal) else artifact
     reflection, depfile = output / 'reflection.json', output / 'stage.d'
     profile = ('spirv_1_5' if native_rays else 'spirv_1_3') if slang_target == 'spirv' else 'sm_6_0'
@@ -258,6 +266,10 @@ def compile_graph_stage(args, lock):
                '-reflection-json', str(reflection), '-depfile', str(depfile)]
     if native_rays:
         command += ['-capability', 'spvRayQueryKHR']
+    if dxil:
+        # As ludus_compile_shader's DXIL stages: LUDUS_DXIL selects D3D12 spellings, and
+        # dxil.dll beside the pinned dxcompiler.dll signs the container.
+        command += ['-D', 'LUDUS_DXIL=1', '-dxc-path', args.dxc_path]
     if getattr(args, 'worker_socket', None) and not native_pipeline:
         from native_worker import compile_stage
         compile_stage(args.worker_socket, args, lock, intermediate, reflection, depfile)
@@ -272,7 +284,8 @@ def compile_graph_stage(args, lock):
         code, document = legalize(artifact.read_text(), document, Path(args.source).parent / '_ludus_ray/metal_ray_pipeline_layout.h', json.loads(args.native_ray_storage))
         artifact.write_text(code)
         reflection.write_text(json.dumps(document))
-    interface = raster_interface(document, stage, metal and not translated_compute and not native_pipeline, structured_records=translated_compute or native_pipeline)
+    interface = raster_interface(document, stage, metal and not translated_compute and not native_pipeline,
+                                 structured_records=translated_compute or native_pipeline, dxil=dxil)
     if translated_compute:
         from compile_raster import verify_storage_record_strides
         verify_storage_record_strides(intermediate.read_bytes(), interface)
@@ -286,6 +299,11 @@ def compile_graph_stage(args, lock):
         run([args.validator, '--target-env', 'vulkan1.2' if native_rays else 'vulkan1.1', str(intermediate)])
     if target == 'spirv':
         emitted = entry(artifact)
+    elif dxil:
+        # Reject an unsigned or truncated container; Direct3D 12 checks the PSV0 entry name.
+        from compile_shader import dxil_container
+        dxil_container(artifact)
+        emitted = args.name
     elif target == 'wgsl':
         code = wgsl_contract(artifact.read_text(), interface, stage)
         names = re.findall(r'@' + stage + r'\s+(?:@workgroup_size\([^)]*\)\s+)?fn\s+(\w+)', code)
