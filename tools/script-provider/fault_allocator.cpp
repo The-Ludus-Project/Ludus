@@ -1,7 +1,13 @@
 #include "fault_allocator.h"
 
+#include <ludus/foundation/base/config.h>
+
 #include <cstdlib>
 #include <new>
+
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#    include <malloc.h>
+#endif
 
 namespace
 {
@@ -52,10 +58,19 @@ void* operator new(ludus::foundation::usize bytes, std::align_val_t alignment, c
     {
         return nullptr;
     }
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    // The MSVC runtime has no std::aligned_alloc; its aligned heap needs _aligned_free.
+    return ::_aligned_malloc((bytes + align - 1) & ~(align - 1), align);
+#else
     return std::aligned_alloc(align, (bytes + align - 1) & ~(align - 1));
+#endif
 }
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
 void operator delete(void* block, std::align_val_t) noexcept
 {
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    ::_aligned_free(block);
+#else
     std::free(block);
+#endif
 }

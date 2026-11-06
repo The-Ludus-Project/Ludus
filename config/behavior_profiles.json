@@ -5,7 +5,8 @@
     {"system": "Linux", "architectures": ["x86_64", "arm64"], "compiler_major": 23, "admission": "qualification"},
     {"system": "Darwin", "architectures": ["x86_64", "arm64"], "compiler_major": 23, "admission": "qualification"},
     {"system": "Emscripten", "architectures": ["wasm32"], "compiler_major": 22, "admission": "qualification"},
-    {"system": "Windows", "architectures": ["x86_64", "arm64"], "compiler_major": 23, "admission": "pending-engine-backend"},
+    {"system": "Windows", "architectures": ["x86_64"], "compiler": "MSVC", "compiler_version": "19.44", "admission": "qualification"},
+    {"system": "Windows", "architectures": ["arm64"], "compiler_major": 23, "admission": "pending-engine-backend"},
     {"system": "Android", "architectures": ["arm64"], "compiler_major": 23, "admission": "pending-engine-backend"},
     {"system": "iOS", "architectures": ["arm64"], "compiler_major": 23, "admission": "pending-engine-backend"}
   ]

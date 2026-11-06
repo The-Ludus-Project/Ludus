@@ -84,22 +84,28 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'HarfBuzz recipe export failed' }
           conan install --requires=harfbuzz/14.5.1 --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host build_type=RelWithDebInfo --settings:build build_type=Release --build=missing -o 'freetype/*:shared=False' -o 'freetype/*:with_png=False' -o 'freetype/*:with_zlib=False' -o 'freetype/*:with_brotli=False' -o 'freetype/*:with_bzip2=False' -g CMakeDeps --output-folder $env:LUDUS_WINDOWS_DEPENDENCIES
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime dependencies failed to install' }
+          # D6c: the paired Luau host tools build with cl; Behavior cooks its fixtures with them.
+          python scripts/script-provider bootstrap
+          if ($LASTEXITCODE -ne 0) { throw 'Luau host tool bootstrap failed' }
+          python scripts/script-provider cook
+          if ($LASTEXITCODE -ne 0) { throw 'Behavior fixture cook failed' }
           # D6c: the named-pipe shader worker emits signed DXIL through the pinned DXC, and
           # GameHost loads, reloads and retires gameplay DLLs with matching PDBs.
-          cmake --preset windows-msvc-runtime -DLUDUS_BUILD_SHADER_WORKER=ON
+          cmake --preset windows-msvc-runtime -DLUDUS_BUILD_SHADER_WORKER=ON -DLUDUS_BUILD_BEHAVIOR=ON -DLUDUS_BUILD_BEHAVIOR_ACCEPTANCE=ON
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime configure failed' }
           $targets = @('ludus_world_demo', 'ludus_world_frame_renderer_tests', 'ludus_world_demo_tests',
             'ludus_content_tests', 'ludus_resources_tests', 'ludus_static_game_host_tests',
             'ludus_text_tests', 'ludus_graphics_text_tests', 'ludus_localization_tests', 'ludus_ui_tests',
             'ludus_audio_tests', 'ludus_network_core_tests', 'ludus_physics_fluid_tests', 'ludus_platform_pacing_tests',
             'ludus-shader-worker', 'ludus_shader_compiler_tests',
+            'ludus_behavior_tests', 'ludus_behavior_acceptance', 'ludus_behavior_safety', 'ludus_behavior_allocator_contract',
             'ludus_game_host_loader_tests', 'ludus_game_host_reload_tests', 'ludus_game_host_protocol_tests',
             'ludus_game_host_timing_tests')
           cmake --build --preset windows-msvc-runtime --target @targets -- -k 0
           if ($LASTEXITCODE -ne 0) { throw 'Windows runtime build failed' }
           $testNames = @($targets | Where-Object { $_ -notin @('ludus_world_demo', 'ludus_world_frame_renderer_tests', 'ludus-shader-worker') })
           $testNames += @('ludus_world_packed_room_d3d12', 'ludus_world_frame_renderer_pixels', 'ludus_shader_worker_protocol',
-            'ludus_game_host_windows_symbols')
+            'ludus_game_host_windows_symbols', 'ludus_behavior_cook', 'ludus_behavior_profiles', 'ludus_behavior_evidence')
           $suite = '^(' + ($testNames -join '|') + ')$'
           $tests = ctest --preset windows-msvc-runtime --show-only=json-v1 --tests-regex $suite | ConvertFrom-Json
           foreach ($name in $testNames) {
