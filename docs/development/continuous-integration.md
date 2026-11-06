@@ -386,8 +386,10 @@ before 22.1.3 could not; see [macOS sanitizer runtimes](building.md#macos-saniti
 [Windows Direct3D 12 bring-up](../architecture/windows-direct3d12.md): the Win32
 Platform backend and the Direct3D 12 RHI backend. Every batch calls it, and
 promotion requires it. Like the other native platform suites, it does not run
-on integration pull requests, including Windows port changes: its MSVC Ninja and
-MSBuild matrices take 15–30 minutes per push, and the batch qualifies the combined
+on integration pull requests, including Windows port changes: its MSVC Ninja,
+MSBuild and Runtime SDK lanes take 15–30 minutes per push. The Runtime SDK lane
+installs and consumes the Development runtime SDK, and the MSBuild lane also runs
+the project IDE journeys. The batch qualifies the combined
 `develop` changes before `main` advances. A Windows compile or runtime regression
 can therefore enter `develop`; the failed batch rejects it, and a focused fix or
 revert follows the [recovery](#recover-a-failed-batch) process. When a Windows

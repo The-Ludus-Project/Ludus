@@ -38,6 +38,27 @@ class Templates(unittest.TestCase):
         self.assertIn("linux-clang-release", by["CMakePresets.json"])
         self.assertNotIn("{{", by["CMakeLists.txt"])
 
+    def test_minimal_template_launches_debugs_and_installs_from_ides(self) -> None:
+        files = templates.render_files(
+            templates.get_template("minimal"),
+            templates.ProjectInputs(name="My Game", target="my_game", engine_version="0.1.0", components=[]),
+        )
+        by = {f.relpath: f.content for f in files}
+        cmake = by["CMakeLists.txt"]
+        self.assertIn("set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT my_game)", cmake)
+        self.assertIn('VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"', cmake)
+        self.assertIn('install(TARGETS my_game RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" BUNDLE DESTINATION .)', cmake)
+        self.assertIn('ludus_install_d3d12_agility_runtime(my_game "${CMAKE_INSTALL_BINDIR}")', cmake)
+        # The tracked launch configuration holds no machine path: CMake Tools
+        # resolves the selected preset's executable.
+        launch = json.loads(by[".vscode/launch.json"])
+        (configuration,) = launch["configurations"]
+        self.assertEqual(configuration["type"], "cppvsdbg")
+        self.assertEqual(configuration["program"], "${command:cmake.launchTargetPath}")
+        self.assertEqual(configuration["cwd"], "${workspaceFolder}")
+        self.assertIn("ms-vscode.cmake-tools", json.loads(by[".vscode/extensions.json"])["recommendations"])
+        self.assertNotIn("/.vscode/launch.json", by[".gitignore"])
+
     def test_unknown_placeholder_rejected(self) -> None:
         tmpl = templates.Template("x", 1, [templates.TemplateFile("f.txt", "{{ NOPE }}")])
         with self.assertRaises(ToolingError):

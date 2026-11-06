@@ -17,7 +17,9 @@ continues to honor an explicit shell `SDKROOT` override.
 > Debug/Development/Release SDK identities. The installed macOS CLI has native
 > Apple silicon acceptance; Intel identity/architecture selection is covered by
 > unit tests and still needs native Intel acceptance. [Windows MSVC project setup](#windows-msvc-projects)
-> covers the installed Foundation, Input, Platform, and RHI SDK. General scene authoring
+> covers the installed Foundation, Input, Platform, and RHI SDK in four flavors and the
+> [Development runtime SDK](#windows-runtime-sdk), with
+> [VS Code and Visual Studio](#vs-code-and-visual-studio-on-windows) journeys. General scene authoring
 > requires separate acceptance. [Browser releases](editor-game-releases.md) and
 > [native live editing](project-live-reload.md) have their own implemented scope;
 > an embedded viewport remains future work.
@@ -299,10 +301,95 @@ or replacing the tooling, run repair with the new paths. Repair preserves
 other flavors, custom presets, and unrelated IDE settings. For Win32 and
 D3D12 applications, select the installed `Platform` and `GraphicsRhi`
 components. Repair prepares Slang and DXC for projects using
-`ludus_compile_shader`. The Windows workflow uses a local SDK prefix and covers
-the installed Foundation, Input, Platform, and RHI closure. Editor and GameHost
-integration, browser setup, and release automation have separate acceptance
-requirements.
+`ludus_compile_shader`. The Windows workflow uses a local SDK prefix. The
+Visual Studio solution installs the Foundation, Input, Platform, and RHI closure
+in all four flavors; the runtime SDK below adds the renderer and content closure
+for Development. Editor hosting, dynamic GameHost loading, browser setup, and
+release automation have separate acceptance requirements.
+
+### Windows runtime SDK
+
+The `windows-msvc-runtime-sdk` preset builds and installs the runtime closure
+that the [Windows World player](../examples/world-demo.md#windows-direct3d-12)
+uses: Renderer, GraphicsText and Text, Content and Resources, World, camera and
+sequencer, UI, localization, audio processing, fluid, networking wire formats
+and the static GameHost. Install it from the same developer shell after
+preparing the RelWithDebInfo FreeType and HarfBuzz packages:
+
+```powershell
+$env:LUDUS_WINDOWS_DEPENDENCIES = "$tools/out/windows-msvc/runtime-sdk-dependencies"
+conan export third_party/harfbuzz
+conan install --requires=harfbuzz/14.5.1 --lockfile conan.lock --lockfile-partial `
+  --profile:host config/conan/profiles/windows-msvc-probe-x86_64 `
+  --profile:build config/conan/profiles/windows-msvc-probe-x86_64 `
+  --settings:host build_type=RelWithDebInfo --settings:build build_type=Release --build=missing `
+  -o 'freetype/*:shared=False' -o 'freetype/*:with_png=False' -o 'freetype/*:with_zlib=False' `
+  -o 'freetype/*:with_brotli=False' -o 'freetype/*:with_bzip2=False' `
+  -g CMakeDeps --output-folder $env:LUDUS_WINDOWS_DEPENDENCIES
+python scripts/shader-probe bootstrap
+./scripts/install-sdk.ps1 windows-msvc-runtime-sdk
+```
+
+The result in `out/install/windows-msvc-runtime-sdk` is a relocatable
+Development SDK built as `RelWithDebInfo`. FreeType and HarfBuzz are bundled
+under `lib/cmake/Ludus/dependencies`, and install rejects metadata that still
+names the checkout or the Conan cache. `ludus_compile_renderer_shaders` compiles
+the built-in renderer recipes to DXIL with the pinned Slang and DXC. Select the
+prefix with `--sdk` for the `windows-msvc-development` or
+`windows-msvc-visual-studio-development` profile, and list the modules you link
+in `--components`.
+
+Debug, Profile and Release runtime SDKs are not installed yet. The runtime SDK
+omits shader file delivery (`ShaderDevelopment`), the development diagnostic
+session, Behavior, Unicode and the OIDN denoiser.
+
+### VS Code and Visual Studio on Windows
+
+Start both IDEs from the x64 developer shell so they inherit MSVC 14.44 and
+Windows SDK 10.0.26100.0. Repair the profiles you use first; it writes the
+`ludus-local-windows-msvc-*` presets and generates each solution.
+
+**VS Code.** Open the project folder and install the recommended CMake Tools
+and C/C++ extensions. Repair sets `cmake.useCMakePresets` to `always` and,
+unless you chose another provider, routes C/C++ navigation through CMake Tools,
+so the language service uses each preset's code model and SDK headers. Select a
+`ludus-local-windows-msvc-*` configure preset, then build and test from CMake
+Tools. MSVC reports `file(line): error Cnnnn`, which CMake Tools shows in the
+Problems panel. The tracked `.vscode/launch.json` configuration
+**Ludus: Debug launch target (Windows)** debugs the selected launch target with
+`cppvsdbg` in the project directory, so breakpoints, stepping and locals work
+with F5. Its program comes from CMake Tools, so the file holds no machine paths.
+
+**Visual Studio.** Open
+`out/build/windows-msvc-visual-studio-<flavor>/<Project>.sln`. The game is the
+startup project and starts in the project directory, so F5 builds and debugs it.
+Each solution has the single configuration its SDK accepts.
+
+**Install.** Run **CMake: Install**, build the solution's `INSTALL` project, or
+use CMake directly. The game goes to `bin`, with the Agility runtime it loads in
+`bin/D3D12`:
+
+```powershell
+cmake --install "$project/out/build/windows-msvc-debug" --prefix "$project/out/install/debug"
+cmake --install "$project/out/build/windows-msvc-visual-studio-debug" --config Debug --prefix "$project/out/install/vs-debug"
+```
+
+To switch configurations, repair each profile once, then change the CMake Tools
+preset or open the other solution. Each profile has its own build tree, so
+switching does not invalidate the others.
+
+Projects created from template version 7 contain the launch configuration,
+startup project and install rules. Repair does not add them to older projects;
+copy them from a newly created project if you want them.
+
+The Windows workflow exercises these journeys with the relocated SDKs. It
+creates a project with the shipped CLI and repairs the Debug and Development
+profiles with Ninja and MSBuild. It then checks the code model's SDK include
+directory and the solution's startup project. It sets a source-line breakpoint,
+steps out and over, and reads locals with `cdb`, which uses the same debugger
+engine as Visual Studio and `cppvsdbg`. It checks the reported location of a
+compiler error, then installs and launches the game. Interactive IDE sessions
+on a developer machine are not automated.
 
 ## Check and repair project setup
 

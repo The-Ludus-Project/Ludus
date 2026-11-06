@@ -37,6 +37,25 @@ function(ludus_enable_d3d12_agility target_name)
         "${runtime}" "${runtime}/LICENSE.txt")
 endfunction()
 
+# Install the Agility runtime that ludus_enable_d3d12_agility stages for an
+# executable, so the installed program loads the same D3D12Core.dll. The
+# destination is the executable's install directory (the D3D12 folder is added).
+#   ludus_install_d3d12_agility_runtime(<executable> <destination> [COMPONENT <component>])
+function(ludus_install_d3d12_agility_runtime target_name destination)
+    cmake_parse_arguments(PARSE_ARGV 2 _ludus_agility "" "COMPONENT" "")
+    get_target_property(target_type ${target_name} TYPE)
+    if(_ludus_agility_UNPARSED_ARGUMENTS OR NOT target_type STREQUAL "EXECUTABLE")
+        message(FATAL_ERROR "ludus_install_d3d12_agility_runtime requires an executable and a destination")
+    endif()
+    set(component)
+    if(_ludus_agility_COMPONENT)
+        set(component COMPONENT "${_ludus_agility_COMPONENT}")
+    endif()
+    set(runtime "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/agility")
+    install(FILES "${runtime}/D3D12Core.dll" "${runtime}/d3d12SDKLayers.dll" "${runtime}/LICENSE.txt"
+        DESTINATION "${destination}/D3D12" ${component})
+endfunction()
+
 function(ludus_configure_windows_sdk_targets)
     # A single-config source SDK already exports its flavor definition and uses
     # the actual CMake configuration name. Only the solution needs adjustment.

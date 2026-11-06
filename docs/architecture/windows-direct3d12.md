@@ -795,6 +795,31 @@ with optional tooling absent.
   breakpoint/step debugging, launch, test, install and configuration switching.
   Cover fresh clones, missing presets, moved tools/SDKs and repeated explicit
   repair; preserve custom settings and keep project loading read-only.
+
+  The `windows-msvc-runtime-sdk` preset installs the D6a runtime closure as a
+  relocatable Development SDK. It bundles FreeType and HarfBuzz and the renderer
+  shader recipes; the [project guide](../development/project-sdk-workflow.md#windows-runtime-sdk)
+  gives the install steps. The Windows workflow's Runtime SDK lane moves the
+  prefix and builds an external consumer with Ninja and MSBuild. The consumer
+  compiles a built-in recipe to DXIL, prepares the renderer and a mesh on WARP
+  and loads Text. A CLI project linking the runtime modules is then repaired and
+  run with both generators.
+
+  Template version 7 projects make the game the Visual Studio startup project,
+  carry a portable VS Code `cppvsdbg` launch configuration and install the game
+  with its Agility runtime. Repair routes VS Code's C/C++ navigation through CMake
+  Tools unless the user chose another provider. The MSBuild lane exercises the
+  [IDE journeys](../development/project-sdk-workflow.md#vs-code-and-visual-studio-on-windows)
+  on the relocated Debug and Development SDKs with both generators. It covers
+  the File API code model, the solution's startup project and debugger directory,
+  `cdb` source breakpoints, step out/over and locals, MSVC diagnostic locations,
+  install, launch and configuration switching. The D0 setup journeys still cover
+  fresh clones, missing and stale presets, moved SDKs and tools, repeated repair
+  and custom settings.
+
+  Debug, Profile and Release runtime SDKs remain open, as do interactive IDE
+  sessions on a developer machine. The runtime SDK omits shader file delivery
+  (D6c) and the POSIX-only development diagnostic session.
 - **D6c (authoring):** port the shader worker's process/IPC/deployment and
   Slang/DXC dependencies, file watching, game DLL loading/reload, process-tree
   cleanup and matching symbol validation. Qualify script compilation/runtime,
@@ -872,7 +897,7 @@ these rows remain pending.
 | Gameplay / physics | unassigned | unreviewed | D6a required-profile audit | pending | none |
 | Audio | unassigned | unreviewed | D6a playback/device/failure evidence for required profiles | pending | none |
 | Networking | unassigned | unreviewed | D6a transport/reconnect evidence for required profiles | pending | none |
-| SDK / project setup / VS Code / Visual Studio | unassigned | needs port | D0 generator foundation; D6b installed consumers and IDE journeys | pending | none |
+| SDK / project setup / VS Code / Visual Studio | D0, D6b | Development runtime SDK; IDE journeys in CI | Debug/Profile/Release runtime SDKs; interactive IDE sessions | pending | Windows Runtime SDK and MSBuild lanes |
 | Embedded/external shader/script authoring | unassigned | needs port | D6c worker/IPC/watch/reload and diagnostic acceptance | pending | none |
 | Editor / hosted viewport | unassigned | needs port | D6d GPU sharing, transport and interactive publication | pending | none |
 | Optional ray / interop extensions / upscaling | unassigned | unreviewed | Separate feature-parity profiles and hardware acceptance | pending | none |

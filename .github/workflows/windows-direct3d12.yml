@@ -281,6 +281,14 @@ jobs:
         run: |
           & out/host-tools/venv/Scripts/python.exe tests/sdk_consumer/windows/verify_project_setup.py "$PWD/out/windows-msvc-probe"
           if ($LASTEXITCODE -ne 0) { throw 'Windows MSVC project setup verification failed' }
+      - name: Navigate, debug, diagnose, install and switch an IDE project
+        if: matrix.generator == 'MSBuild'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/python
+          PYTHONUTF8: "1"
+        run: |
+          & out/host-tools/venv/Scripts/python.exe tests/sdk_consumer/windows/verify_ide_journeys.py "$PWD/out/windows-msvc-probe"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows IDE journeys failed' }
       - name: Preserve candidate identities and test logs
         if: always()
         uses: actions/upload-artifact@v4
