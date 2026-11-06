@@ -8,9 +8,13 @@ language and the delivery plan. This page covers what is implemented:
 - the parser and the source formatter (L1b; see [Parsing](#parsing) and
   [Formatting](#formatting));
 - semantic checking: types, names and calls (L1c-1), then flow rules, style
-  rules and fixes (L1c-2); see [Checking](#checking).
+  rules and fixes (L1c-2); see [Checking](#checking);
+- lowering to one Slang module (L1d); see [Lowering to Slang](#lowering-to-slang);
+- the `luslc` command-line compiler (L1d); see [luslc](#luslc).
 
-Lowering to Slang and `luslc` arrive in later L1 changes, and `ShaderCompiler` does not accept `.lusl` files yet.
+`ShaderCompiler` does not accept `.lusl` files yet; the render graph reaches
+LUSL in L1e. Until then, lower a module with `luslc` or `LowerToSlang` and
+compile the generated Slang.
 
 Link `Ludus::ShaderLanguage` and include
 `ludus/tooling/shader_language/preprocessor.hpp`. The library builds for native
@@ -123,6 +127,8 @@ Macro expansion follows Dave Prosser's
 | `MAX_ARRAY_LENGTH` | 1,048,576 | Elements of one array dimension |
 | `MAX_DIAGNOSTICS` | 256 | Retained diagnostics; later ones are counted |
 | `MAX_DIAGNOSTIC_MESSAGE_BYTES` | 256 | One message; longer ones are clipped |
+| `MAX_IR_NODES` | 4,194,304 | Lowered IR nodes; fallthrough copies make it exceed `MAX_SYNTAX_NODES` |
+| `MAX_GENERATED_HELPERS` | 65,536 | Generated Slang helpers per translation unit |
 
 Exceeding a limit is a diagnostic and a failed result, never truncated output.
 The values will be measured against built-in content once shaders are ported in
@@ -229,8 +235,11 @@ the name.
 | LUSL0543 | `missing-return` | A function with a return type can reach its end |
 | LUSL0544 | `recursion` | A function calls itself, directly or indirectly |
 | LUSL0545 | `groupshared-initializer` | A `groupshared` variable not declared `= 0` or `= void` |
+| LUSL0546 | `reserved-name` | A name the generated Slang cannot declare: a Slang keyword such as `let` or `this`, or a name starting with `_lusl` or `__` |
 | LUSL0601 | `naming-style` | A name that breaks the naming rules (style) |
 | LUSL0602 | `bare-bool-operand` | A `bool` used directly as a condition or `&&`/`||` operand (style) |
+| LUSL0701 | `extern-slang-not-found` | The file an `extern slang` block names is not in the snapshot |
+| LUSL0702 | `lowering-limit` | The generated Slang would exceed `shader_compiler::MAX_SOURCE_BYTES`, or lowering exceeds `MAX_IR_NODES` or `MAX_GENERATED_HELPERS` |
 
 ## Parsing
 
@@ -347,6 +356,10 @@ bool CheckShade(const language::PreprocessRequest& request, const language::Prep
 - **`extern slang "path" { ... }`** declares Slang functions, constants and
   structs. `struct Name;` declares an opaque type that LUSL can pass around but
   not look inside or zero.
+- **Reserved names:** declarations keep their names in the generated Slang, so
+  a LUSL name cannot be a word Slang reserves (`let`, `var`, `this`, `import`,
+  `typealias`, ...) or start with `_lusl`, which generated helpers use, or
+  `__`. Names inside `extern slang` blocks are exempt.
 
 ### Types, constants and conversions
 
@@ -382,6 +395,9 @@ bool CheckShade(const language::PreprocessRequest& request, const language::Prep
   binds once, and unbound parameters need defaults.
 - **Overload choice:** among the overloads that accept the arguments, the one
   needing the fewest constant adaptations wins. A tie is an ambiguity error.
+  Overloads must differ in parameter types: two that differ only in
+  directions are a redeclaration, because call-site marks do not take part in
+  the choice.
 - **Writable arguments:** an `out` or `inout` parameter needs the matching mark
   on its argument (`out radiance`), and an input parameter takes no mark. A
   marked argument must be assignable.
@@ -453,8 +469,8 @@ paths. Flow rules are skipped after a type error, so they never cascade from one
   GPU code has no call stack.
 - **`groupshared`** variables are declared `= 0` or `= void`.
 
-Not yet enforced: bounds checks on dynamic indices in development builds and
-the `groupshared` clear itself, which belong to the Slang lowering (L1d).
+Bounds checks on runtime indices and the `groupshared` clear itself are
+emitted by the [lowering](#lowering-to-slang).
 
 ### Style rules
 
@@ -500,6 +516,136 @@ A `Diagnostic` may carry a `DiagnosticFix`:
 Capability-gated types (`float16`, `int16`, 64-bit types) are accepted here;
 target profiles gate them when LUSL lowers to Slang.
 
+## Lowering to Slang
+
+`EmitSlang` (in `emitter.hpp`) lowers a checked translation unit to one Slang
+module. `LowerToSlang` (in `pipeline.hpp`) runs every stage from a snapshot:
+
+```cpp
+#include <ludus/tooling/shader_language/pipeline.hpp>
+
+bool LowerShade(const language::PreprocessRequest& request, language::LoweringResult& outResult) noexcept
+{
+    language::LoweringOptions options;
+    options.Emit.ShouldCheckBounds = true; // development build
+    return language::LowerToSlang(request, options, outResult) == language::Status::Ready;
+}
+```
+
+`LowerToSlang` runs Preprocess, Parse, Check and EmitSlang, and stops after the
+first stage that fails; warnings do not stop it. The result owns its text, the
+source map, the bounds-check sites, the read masks and every stage's
+diagnostics.
+
+The generated module belongs beside its source: `main_shaders/shade.lusl`
+lowers to `main_shaders/shade.lusl.slang` (`GENERATED_SLANG_SUFFIX`). Add it
+to the snapshot under that path and compile it with `ShaderCompiler`.
+
+Lowering works in two steps:
+- **Lowering** resolves every rule into a typed, target-independent IR.
+- **The emitter** spells that IR as Slang.
+
+The IR is internal. It is the seam for direct backends later.
+
+### What lowering does
+
+| LUSL | Generated Slang |
+| --- | --- |
+| Types | Fixed-width scalars become Slang scalars (`uint32` is `uint`, `int64` is `int64_t`, `float16` is `half`); vectors and matrices use the short names (`float3`, `uint4x4`) where Slang has them, otherwise `vector<T, N>` and `matrix<T, R, C>` |
+| Untyped constants | Spelled in the type the checker gave them: `4u`, `0.5f`, `9000000000ll`, `2.0h`, `0.1l`; integer and bool constant expressions are emitted as their exact folded value |
+| The literal `0` | An explicit zero: `float3(0.0f)`, or a generated `_luslZeroN()` that zeroes every field and element |
+| Designated initializers | A generated `_luslInitN(...)` that takes the written fields in written order; omitted fields take their default or zero |
+| Named arguments and defaults | Positional arguments with defaults filled in. When the written order differs from parameter order and an argument calls a function, a generated adapter `_luslCallN` takes them in written order, so they are evaluated as written |
+| `M * v`, `A * B` on matrices | `mul(M, v)`, `mul(A, B)` |
+| Signed `+`, `-`, `*`, negation, compound assignment, `++`, `--` | A generated `_luslWrapN` helper whose `__target_switch` writes the operation directly, and through unsigned arithmetic on Metal ([signed overflow](../../architecture/shading-language.md#signed-overflow)) |
+| Shifts by a runtime count | The count masked to the operand's width: `value << (count & 31u)` |
+| `[[fallthrough]]` | The next case's statements are copied into the case, each case's statements in their own block, so no target needs switch fallthrough |
+| `groupshared T name = 0;` | Every compute entry point that reaches the variable, through any calls, clears it first: each thread zeroes a strided slice of its elements, then `GroupMemoryBarrierWithGroupSync()`. The entry point reuses its `GroupIndex` parameter, or gains a hidden `SV_GroupIndex` one. `= void` variables are not cleared |
+| Fields inside methods | `this.Field`, `this.Method(...)` |
+| `[stage(compute), threads(x, y, z)]` | `[shader("compute")]`, `[numthreads(x, y, z)]`; semantics become `SV_DispatchThreadID`, `SV_GroupThreadID`, `SV_GroupID` and `SV_GroupIndex` |
+| `extern slang "path"` | `#include` of the resolved snapshot file, relative to the generated module: beside the declaring file first, then from the snapshot root; each file once. A missing file is `extern-slang-not-found` |
+| `static_assert` | Nothing; the checker evaluated it |
+
+Declarations keep their LUSL names, so Slang code can include the generated
+module and call them. Generated helpers start with `_lusl`, which the checker
+reserves, and are numbered in first-use order. Equal inputs give
+byte-identical text on every host.
+
+### Development bounds checks
+
+With `EmitOptions::ShouldCheckBounds`, every runtime index into a fixed-size
+array, vector or matrix goes through a generated `_luslCheckIndexN`:
+- an index inside the object is used as is;
+- an index outside it is clamped to the last element, and the access's
+  failure code is latched in `FAILURE_CODE_VARIABLE` (`_luslFailureCode`), a
+  private per-invocation `uint`.
+
+The first failure is kept; zero means no check failed. `EmitResult::BoundsChecks`
+maps each failure code to its index expression. Constant indices are checked by
+the checker in every build, and release builds emit no checks. Reporting the
+latched code through the render graph's invocation failure arrives with the
+render-graph integration in L1e.
+
+### Line mapping
+
+The generated text carries `#line` directives, so Slang's diagnostics, and
+debuggers that read them, name LUSL lines. A directive is written only where the
+generated line would not already count to the right LUSL line. Code that a
+macro produced maps to the macro's outermost use. `EmitResult::SourceMap` also
+lists the generated line and the LUSL line and column of every declaration and
+statement.
+
+### Targets
+
+`ShaderCompiler` checks one module against every portable target at once:
+SPIR-V, WGSL and Metal. A type that one of them lacks therefore fails them all.
+For example, WGSL has no 16-bit or 64-bit integers, so `int16` and `int64`
+values fail the portable set, and the Slang diagnostic names the type.
+
+### Current limits
+
+- **Floating constant expressions** such as `0.1 * 3.0` are evaluated in the
+  target type when the shader runs. Only integer and bool constants are folded
+  exactly.
+- **GPU readback tests are not written yet.** Zeroed memory, wrapping on every
+  target, bounds-check failures and the Metal loop measurement arrive with the
+  render-graph integration in L1e. Until then, emitted modules are checked by
+  compiling them for every target.
+
+## luslc
+
+`luslc` (`tools/luslc`) is the command-line front of the same library:
+
+```bash
+luslc check  --root shaders main/shade.lusl
+luslc lower  --root shaders --define SHADOW_MODE=2 --bounds-checks --output out/shade.lusl.slang main/shade.lusl
+luslc format --root shaders --check main/shade.lusl main/common.luslh
+```
+
+- **Snapshot.** Paths are `/`-separated and relative to `--root`, which
+  defaults to the current directory. `luslc` reads the root file, then every
+  file that `#include` and `extern slang` name, transitively. Each name is
+  resolved beside the naming file, then from the root, as the preprocessor
+  resolves it. The scan is lexical, so it may read files that a conditional
+  group never uses. The snapshot keeps `ShaderCompiler`'s limits: 64 files and
+  4 MiB.
+- **Options:**
+  - `--define NAME=VALUE` passes a configuration value; repeat it for more.
+  - `--style strict|warn|off` selects the [style setting](#style-rules).
+  - `--bounds-checks` emits [development bounds checks](#development-bounds-checks).
+- **`check`** reports diagnostics only.
+- **`lower`** writes the Slang module to `--output`, or to standard output.
+  The output file is replaced atomically.
+- **`format`** formats each file:
+  - by default it prints the result;
+  - `--check` fails for files that would change;
+  - `--write` rewrites them in place.
+- **Diagnostics** go to standard error, one per line:
+  `main/shade.lusl:4:16: error LUSL0504 type-mismatch: ...`. Diagnostics from
+  a macro also name the macro's use.
+- **Exit codes:** 0 on success, 1 when a stage fails or a file cannot be read or
+  written, 2 for a usage error.
+
 ## Tests and fuzzing
 
 `ludus_shader_language_tests` (CTest labels `unit;shader;tooling`) covers:
@@ -514,12 +660,22 @@ target profiles gate them when LUSL lowers to Slang.
 - each flow and style rule, the style setting, and every fix applied to the
   source and checked again;
 - the formatter's golden layout, token preservation and idempotence;
+- every lowering rule as generated Slang text, the source map and bounds-check
+  sites, `extern slang` includes, and lowering failures;
 - limits and determinism.
 
 Seeded random tests run the preprocessor, the parser, the formatter and the
 checker over token mixtures.
 
+`ludus_shader_language_target_tests` compiles lowered modules with the pinned
+Slang through `ShaderCompiler`, for SPIR-V, ray-query SPIR-V, WGSL and Metal,
+with and without bounds checks. It also checks that Slang diagnostics name LUSL
+lines, and how the portable set treats 16-bit integers. It is built when the
+native compiler library is (`LUDUS_BUILD_SHADER_WORKER=ON`). `luslc_tests`
+runs `luslc` on temporary snapshots.
+
 For coverage-guided fuzzing with native Clang, configure with
 `-DLUDUS_BUILD_SHADER_LANGUAGE_FUZZERS=ON` and run `ludus_shader_language_fuzzer`.
 - Its input is split at the first zero byte into a root module and one header.
-- It preprocesses, parses and checks the snapshot, and formats the root.
+- It preprocesses, parses and checks the snapshot with style rules off, lowers
+  it with and without bounds checks, and formats the root.

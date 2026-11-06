@@ -52,4 +52,10 @@ inline constexpr foundation::usize MAX_ARRAY_LENGTH = foundation::usize{1} << 20
 inline constexpr foundation::usize MAX_DIAGNOSTICS = 256;
 /// Longest retained diagnostic message, in bytes; longer messages are clipped.
 inline constexpr foundation::usize MAX_DIAGNOSTIC_MESSAGE_BYTES = 256;
+/// Most lowered IR nodes for one translation unit. Lowering duplicates the statements of cases
+/// that fall through, so this exceeds MAX_SYNTAX_NODES.
+inline constexpr foundation::usize MAX_IR_NODES = foundation::usize{1} << 22;
+/// Most generated Slang helpers (zero values, initializers, wrapping operations, call adapters)
+/// for one translation unit.
+inline constexpr foundation::usize MAX_GENERATED_HELPERS = foundation::usize{1} << 16;
 } // namespace ludus::tooling::shader_language

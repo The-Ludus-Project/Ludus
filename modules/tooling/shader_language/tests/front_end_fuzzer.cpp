@@ -1,8 +1,10 @@
-// libFuzzer entry point: the preprocessor, parser, checker and formatter must accept or reject any input
-// without crashing. The input is split at the first zero byte into a root module and one header it
-// may include; the root is also formatted.
+// libFuzzer entry point: the preprocessor, parser, checker, Slang lowering and formatter must accept
+// or reject any input without crashing. The input is split at the first zero byte into a root module
+// and one header it may include; the root is also formatted. Style rules are off, so inputs that
+// only break naming still reach lowering, which runs with and without bounds checks.
 
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/tooling/shader_language/emitter.hpp>
 #include <ludus/tooling/shader_language/formatter.hpp>
 #include <ludus/tooling/shader_language/preprocessor.hpp>
 #include <ludus/tooling/shader_language/semantic.hpp>
@@ -49,8 +51,17 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8* data, usize size)
         shader_language::SyntaxTree tree;
         if (shader_language::Parse(request, result, tree) == shader_language::Status::Ready)
         {
+            shader_language::CheckOptions checkOptions;
+            checkOptions.Style = shader_language::StyleSetting::Off;
             shader_language::SemanticModel model;
-            (void)shader_language::Check(request, result, tree, model);
+            if (shader_language::Check(request, result, tree, checkOptions, model) == shader_language::Status::Ready)
+            {
+                shader_language::EmitOptions emitOptions;
+                shader_language::EmitResult emitted;
+                (void)shader_language::EmitSlang(request, result, tree, model, emitOptions, emitted);
+                emitOptions.ShouldCheckBounds = true;
+                (void)shader_language::EmitSlang(request, result, tree, model, emitOptions, emitted);
+            }
         }
     }
     shader_language::FormatResult formatted;
