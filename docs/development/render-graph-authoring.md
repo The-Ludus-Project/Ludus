@@ -7160,9 +7160,8 @@ What each fixture establishes:
   `ShaderTarget::Dxil`). Their container bytes, which include zero and non-UTF-8
   bytes, reach `ShaderDescription::Dxil` and `DxilEntry` unchanged and are never
   read as text. An unknown target past DXIL is rejected as malformed. The cooker
-  writes DXIL stages as bytes and requires a `DXBC` container. Renderer still
-  reports `Unsupported` for render graphs on Direct3D 12 until graph execution is
-  qualified there.
+  writes DXIL stages as bytes and requires a `DXBC` container. On Direct3D 12,
+  Renderer prepares a graph from its DXIL stages, as it does from SPIR-V on Vulkan.
 - DXIL builds: a manifest may list the `dxil` profile. Its stages compile on a
   Windows host through the pinned DXC: shader model 6.0, `LUDUS_DXIL` defined, and
   a container that `dxil.dll` must sign. Pass the directory holding the pinned
@@ -7175,7 +7174,10 @@ What each fixture establishes:
   only in compute. Ray traversal programs are refused for `dxil`. On the Windows
   lane, `ludus_render_graph_dxil_tests` builds the rg2 `surface` and `bound`
   fixtures for `dxil`, cooks them, and checks that each color stage decodes to a
-  signed DXIL container with its entry.
+  signed DXIL container with its entry. It then draws the compiled `surface` graph
+  headlessly on Direct3D 12 (WARP in CI). Its pixels follow instance and camera
+  edits, as in the portable RG2 GPU suite. Graphs whose stages need ray traversal,
+  depth sampling, descriptor arrays or fragment storage do not build for `dxil`.
 - The cooked-fixture `[render-graph][activation]` test decodes the CMake-cooked
   `rg2_surface.lurgrt` and compares it with its compiled header: plan records,
   CPU interface identity and every stage artifact (SPIR-V words, Metal/WGSL/GLSL

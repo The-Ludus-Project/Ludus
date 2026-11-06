@@ -2230,12 +2230,6 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     {
         return Status::NotReady;
     }
-    if (information.Startup.SelectedBackend == rhi::Backend::Direct3D12)
-    {
-        // Packages can carry DXIL, but graph stages are not yet compiled to it (D6c), and
-        // Direct3D 12 graph execution is not yet qualified.
-        return Status::Unsupported;
-    }
     const format::ShaderTarget target = GetTarget(information.Startup.SelectedBackend);
     status = ValidateTargetUniforms(plan, target);
     if (status != Status::Ready)

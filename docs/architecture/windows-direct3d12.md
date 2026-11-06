@@ -881,8 +881,10 @@ with optional tooling absent.
   their bytes to the Direct3D 12 shader description. Graph manifests may list the
   `dxil` profile: stages compile through the pinned DXC with `--dxc-path`, and
   `ludus_render_graph_dxil_tests` builds and cooks rg2 fixtures for it in the
-  Windows lane. Admitting graphs on Direct3D 12 (pipeline creation, drawing and the
-  rg2 GPU suites) is next.
+  Windows lane. Renderer now prepares render graphs on Direct3D 12; the same test
+  draws the rg2 `surface` graph on WARP and checks its pixels across instance and
+  camera edits. The remaining rg2 GPU suites, depth views and graph hot reload on
+  Windows are still open.
 - **D6d (editor):** port Qt host integration and hosted-window transport plus
   D3D12 native interop/shared presentation with explicit handle ownership,
   adapter identity, producer/consumer synchronization and teardown fencing.
