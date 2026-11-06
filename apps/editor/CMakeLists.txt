@@ -1166,6 +1166,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/external_code_editor_tests.cpp
         tests/live_journey_tests.cpp
         tests/macos_journey_tests.cpp
+        tests/native_session_listener.cpp
         # MainWindow compiles here without the application's crash capture; see ludus_editor_application.
         src/main_window.cpp)
     # Keep the small software rasterizer only as an independent test oracle.

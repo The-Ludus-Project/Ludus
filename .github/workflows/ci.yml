@@ -278,6 +278,7 @@ jobs:
           LUDUS_RG1_HELPER: ${{ github.workspace }}/out/install/macos-clang-development/lib/cmake/Ludus/shaders
         run: PYTHONPATH=scripts/python out/host-tools/venv/bin/python -m unittest test_render_graph_ray test_render_graph_compute test_render_graph_build -v
       - name: Verify signed macOS game release packages
+        timeout-minutes: 30
         env:
           QT_QPA_PLATFORM: cocoa
         run: |
@@ -290,21 +291,25 @@ jobs:
       - name: Qualify relocated Behavior SDK and extracted macOS player
         run: out/host-tools/venv/bin/python tools/script-provider/verify_consumer.py out/install/macos-clang-development
       - name: Verify native Cocoa Editor project lifecycle
+        timeout-minutes: 15
         env:
           QT_QPA_PLATFORM: cocoa
         run: |
           LUDUS_SETUP_TEST_SDK="$PWD/out/install/macos-clang-development" out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.macos-journey]'
       - name: Verify native Cocoa Editor live play and hot reload
+        timeout-minutes: 15
         env:
           QT_QPA_PLATFORM: cocoa
         run: |
           LUDUS_SDK_PREFIX="$PWD/out/install/macos-clang-development" out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.live-journey]'
       - name: Verify native World renderer and camera authoring
+        timeout-minutes: 15
         env:
           QT_QPA_PLATFORM: cocoa
         run: out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.render-native],[.level-native]'
 
       - name: Verify Play in the World viewport
+        timeout-minutes: 15
         env:
           QT_QPA_PLATFORM: cocoa
         run: out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.play-native]'
