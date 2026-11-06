@@ -155,6 +155,50 @@ class RenderGraphLanguageTests(unittest.TestCase):
             build.validate_manifest(manifest)
         self.assertNotIn('budget specializations', str(later.exception))
 
+    def test_raster_sources_read_a_generated_schema_header(self):
+        schemas = {
+            'RendererStatic': {'id': 'RendererStatic', 'role': 'Vertex',
+                               'fields': [{'id': 'PositionMesh', 'type': 'Float3'}, {'id': 'Index', 'type': 'UInt32'}]},
+            'RasterVarying': {'id': 'RasterVarying', 'role': 'Varying',
+                              'fields': [{'id': 'PositionClip', 'type': 'Float4'}, {'id': 'Cell', 'type': 'Int2'}]},
+            'Material': {'id': 'Material', 'role': 'Uniform',
+                         'fields': [{'id': 'Tint', 'type': 'Float3'}, {'id': 'Gain', 'type': 'Float32'}]},
+            'Unused': {'id': 'Unused', 'role': 'Uniform', 'fields': [{'id': 'X', 'type': 'Float32'}]},
+        }
+        programs = {
+            'Geometry': {'source': 'main_shaders/raster.lusl', 'stage': 'vertex', 'input': 'RendererStatic',
+                         'output': 'RasterVarying', 'bindings': []},
+            'Color': {'source': 'main_shaders/raster.lusl', 'stage': 'fragment', 'input': 'RasterVarying',
+                      'output': 'Color', 'bindings': [{'id': 'material', 'schema': 'Material', 'slot': 0}]},
+            'Miss': {'source': 'main_shaders/miss.lusl', 'stage': 'miss', 'input': 'Ray', 'output': 'Color',
+                     'bindings': []},
+        }
+        header = language.schema_header('main_shaders/raster.lusl', programs, schemas, build).decode()
+        self.assertIn('extern slang\n{\n', header)
+        self.assertIn('    struct Material\n    {\n        float32x3 Tint;\n        float32 Gain;\n    };', header)
+        self.assertIn('        uint32 Index;', header)
+        self.assertIn('        int32x2 Cell;', header)
+        self.assertIn('    Material material;', header)
+        self.assertNotIn('Unused', header)
+        # Structs come in name order, then the bindings.
+        self.assertLess(header.index('struct Material'), header.index('struct RasterVarying'))
+        self.assertLess(header.index('struct RendererStatic'), header.index('Material material;'))
+        self.assertIsNone(language.schema_header('main_shaders/miss.lusl', programs, schemas, build))
+        # Lowering passes the header and its include directory to luslc only for raster sources.
+        self.write('main_shaders/raster.lusl', '#include "graph_schemas.luslh"\n')
+        self.write('main_shaders/miss.lusl', '')
+        snapshot, _ = self.lower(programs, schemas=schemas)
+        raster = snapshot.files['main_shaders/raster.lusl.slang'].decode()
+        self.assertIn('"_ludus_graph/graph_schemas.luslh"', raster)
+        self.assertIn('"--include-directory", "_ludus_graph"', raster)
+        self.assertNotIn('_ludus_graph', snapshot.files['main_shaders/miss.lusl.slang'].decode())
+        # One source cannot bind one id to two schemas.
+        programs['Other'] = {'source': 'main_shaders/raster.lusl', 'stage': 'fragment', 'input': 'RasterVarying',
+                             'output': 'Depth', 'bindings': [{'id': 'material', 'schema': 'Unused', 'slot': 0}]}
+        with self.assertRaises(ToolingError) as conflict:
+            language.schema_header('main_shaders/raster.lusl', programs, schemas, build)
+        self.assertIn("bind 'material' to Material and Unused", str(conflict.exception))
+
     def test_generated_module_cannot_replace_an_authored_file(self):
         self.write('main_shaders/miss.lusl', '')
         self.write('main_shaders/miss.lusl.slang', '// authored\n')

@@ -1,0 +1,17 @@
+// The clip-space position and color of each vertex; the LUSL port of
+// ../../bound/main_shaders/geometry.slang.
+#include "graph_schemas.luslh"
+
+RasterVarying VSMain(in RendererStatic value)
+{
+    float32x4 positionMesh = float32x4(value.PositionMesh, 1.0);
+    RasterVarying result =
+    {
+        .PositionClip = float32x4(dot(value.MeshToClipRow0, positionMesh),
+                                  dot(value.MeshToClipRow1, positionMesh),
+                                  dot(value.MeshToClipRow2, positionMesh),
+                                  dot(value.MeshToClipRow3, positionMesh)),
+        .Color = value.Color,
+    };
+    return result;
+}

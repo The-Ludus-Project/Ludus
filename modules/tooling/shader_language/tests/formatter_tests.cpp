@@ -136,6 +136,21 @@ TEST_CASE("LUSL formatter spaces operators by role", "[shader-language][formatte
     RequireFormatted("i ++;-- j;", "i++;\n--j;\n");
 }
 
+TEST_CASE("LUSL formatter puts a multiline initializer's brace on its own line", "[shader-language][formatter]")
+{
+    // The repository's initializer rule: `=` ends the line, `{` and `};` align with the statement,
+    // members are indented one level, and one-line lists stay on one line.
+    constexpr std::string_view LAYOUT =
+        "void F()\n{\n    Pair p =\n    {\n        .A = 1,\n        .B = 2,\n    };\n}\n";
+    RequireFormatted("void F()\n{\nPair p = {\n.A = 1,\n.B = 2,\n};\n}\n", LAYOUT);
+    RequireFormatted("void F()\n{\n    Pair p =\n        {\n    .A = 1,\n            .B = 2,\n        };\n}\n", LAYOUT);
+    RequireFormatted(LAYOUT, LAYOUT);
+    RequireFormatted("Pair p = {.A = 1, .B = 2};", "Pair p = { .A = 1, .B = 2 };\n");
+    // Nested lists follow the same rule at their own member's indentation.
+    RequireFormatted("Outer o = {\n.Inner = {\n.A = 1,\n},\n};\n",
+                     "Outer o =\n{\n    .Inner =\n    {\n        .A = 1,\n    },\n};\n");
+}
+
 TEST_CASE("LUSL formatter keeps comments, blank lines and directives", "[shader-language][formatter]")
 {
     RequireFormatted("// header\n\n\n\nx = 1; /* a */ // b\n", "// header\n\nx = 1; /* a */ // b\n");

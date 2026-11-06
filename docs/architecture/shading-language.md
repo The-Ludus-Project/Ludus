@@ -22,7 +22,14 @@ L2 is implemented:
   material-permutation sample, whose pixels match its Slang-interface version
   on the GPU.
 
-L3 and later phases are not implemented.
+L3 is in progress:
+- L3a: raster render-graph callbacks in LUSL, the schema generator's LUSL
+  output (`graph_schemas.luslh`), read-only `extern slang` uniforms, and a
+  ported raster graph whose pixels match its Slang original on the GPU.
+
+Not yet done from L3: standalone vertex and fragment entry points with the
+binding model, and `.luslh` declarations generated from Slang reflection. L4
+is not implemented.
 
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.

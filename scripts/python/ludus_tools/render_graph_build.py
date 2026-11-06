@@ -971,7 +971,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
     # LUSL programs name their generated Slang module from here on.
     snapshot.language_tool, snapshot.language_reports = language.lower_sources(
         snapshot, programs, helper, sys.modules[__name__], luslc=luslc, style=lusl_style,
-        specialization_budget=value['budgets'].get('specializations'))
+        specialization_budget=value['budgets'].get('specializations'), schemas=schemas)
     visibility_helper = helper / 'visibility_buffer.slang'
     if visibility_helper.is_file():
         snapshot.capture('_ludus_visibility.slang', read(visibility_helper), external=visibility_helper)

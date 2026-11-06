@@ -123,6 +123,8 @@ struct PackageLocation final
 };
 constexpr PackageLocation SURFACE_PACKAGE{LUDUS_RG3_SURFACE_DIRECTORY, "rg2_surface.lurgrt"};
 constexpr PackageLocation BOUND_PACKAGE{LUDUS_RG3_BOUND_DIRECTORY, "rg2_bound.lurgrt"};
+/// rg2_bound with its vertex, color and depth callbacks written in LUSL.
+constexpr PackageLocation BOUND_LUSL_PACKAGE{LUDUS_RG3_BOUND_LUSL_DIRECTORY, "rg2_bound_lusl.lurgrt"};
 core::UniquePtr<renderer::RenderGraphPackage> LoadPackage(const PackageLocation& location)
 {
     filesystem::Directory directory;
@@ -610,6 +612,21 @@ renderer::RenderGraphPrograms MakeBoundPrograms()
     return packages::rg2_bound::MakePrograms(shaders::renderer_composite::Vertex(),
                                              shaders::renderer_composite::Fragment());
 }
+/// Render the bound scene once with the cooked package at `location`.
+void RenderBoundPackage(const PackageLocation& location, StaticArray<uint8, PIXEL_BYTES>& outPixels)
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
+    REQUIRE(fixture.Graph.Initialize(
+                fixture.Device,
+                package->GetPlan(),
+                package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment())) ==
+            rhi::RasterStatus::Ready);
+    BoundScene scene{fixture.Items[0]};
+    REQUIRE(scene.Update(fixture.Graph, fixture, 1) == rhi::RasterStatus::Ready);
+    fixture.Render();
+    outPixels = fixture.Pixels;
+}
 } // namespace
 TEST_CASE("RG2 bound uniforms render per-draw material values without shader permutations", "[render-graph][gpu]")
 {
@@ -633,6 +650,28 @@ TEST_CASE("RG2 bound uniforms render per-draw material values without shader per
     CHECK(fixture.Pixels[left] >= 127);
     CHECK(fixture.Pixels[left] <= 128);
     CHECK(fixture.Pixels[right + 1] >= 127);
+}
+TEST_CASE("LUSL raster callbacks render the same pixels as their Slang originals", "[render-graph][gpu]")
+{
+    // rg2_bound_lusl is rg2_bound with its vertex, color and depth callbacks ported to LUSL; they
+    // read the schemas and the material binding through the generated graph_schemas.luslh
+    // (docs/architecture/shading-language.md#delivery-plan, L3 acceptance).
+    StaticArray<uint8, PIXEL_BYTES> slang{};
+    StaticArray<uint8, PIXEL_BYTES> lusl{};
+    RenderBoundPackage(BOUND_PACKAGE, slang);
+    RenderBoundPackage(BOUND_LUSL_PACKAGE, lusl);
+    usize differing = 0;
+    for (usize i = 0; i < PIXEL_BYTES; ++i)
+    {
+        differing += slang[i] != lusl[i] ? 1 : 0;
+    }
+    CHECK(differing == 0);
+    // The two draws carry different material values, so equality is not vacuous.
+    const usize left = GetPixel(24, 32);
+    const usize right = GetPixel(72, 32);
+    CHECK(lusl[left] == 255);
+    CHECK(lusl[right + 1] >= 127);
+    CHECK(lusl[right + 1] <= 128);
 }
 TEST_CASE("RG3 bound runtime generation carries the compiled uniform tables and renders the same pixels",
           "[render-graph][gpu][activation]")

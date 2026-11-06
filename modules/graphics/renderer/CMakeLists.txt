@@ -414,8 +414,9 @@ if(TARGET ludus_renderer_render_tests)
     if(APPLE)
         set(RG2_TEST_PROFILES "[\"metal\", \"wgsl\"]")
     endif()
-    # bound: per-draw uniform values; masked_color/masked_depth: authored masked coverage parity.
-    foreach(kind surface offscreen depth bound masked_color masked_depth independent)
+    # bound: per-draw uniform values; bound_lusl: the same graph with LUSL callbacks;
+    # masked_color/masked_depth: authored masked coverage parity.
+    foreach(kind surface offscreen depth bound bound_lusl masked_color masked_depth independent)
         set(input "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/${kind}")
         set(staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${kind}")
         ludus_stage_render_graph_fixture("${input}" "${staged}")
@@ -484,10 +485,12 @@ if(TARGET ludus_renderer_render_tests)
     # RG3 loads the same cooked surface generation at runtime and compares pixels with its header.
     cmake_path(GET rg2_surface_RUNTIME_PACKAGE PARENT_PATH rg3_surface_directory)
     cmake_path(GET rg2_bound_RUNTIME_PACKAGE PARENT_PATH rg3_bound_directory)
+    cmake_path(GET rg2_bound_lusl_RUNTIME_PACKAGE PARENT_PATH rg3_bound_lusl_directory)
     # RG4 rewrites the offscreen generation into its scratch-transient pooling workload.
     cmake_path(GET rg2_offscreen_RUNTIME_PACKAGE PARENT_PATH rg3_offscreen_directory)
     target_compile_definitions(ludus_renderer_render_tests PRIVATE
         LUDUS_RG3_SURFACE_DIRECTORY="${rg3_surface_directory}" LUDUS_RG3_BOUND_DIRECTORY="${rg3_bound_directory}"
+        LUDUS_RG3_BOUND_LUSL_DIRECTORY="${rg3_bound_lusl_directory}"
         LUDUS_RG3_OFFSCREEN_DIRECTORY="${rg3_offscreen_directory}")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::FoundationFilesystem Ludus::ShaderDevelopment)
     # The reload journey builds SPIR-V/WGSL/Metal graph packages; Windows graph DXIL is open (D6a).
