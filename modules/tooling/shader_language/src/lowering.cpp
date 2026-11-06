@@ -501,7 +501,10 @@ private:
     {
         const uint32 symbol = symbolOf(declaration);
         const SyntaxNode& syntax = getSyntax(declaration);
-        const IrKind kind = syntax.IsGroupshared == true ? IrKind::Groupshared : IrKind::Constant;
+        const bool isResource = getType(getSymbol(symbol).Type).Kind == TypeKind::Resource;
+        const IrKind kind = isResource == true             ? IrKind::Resource
+                            : syntax.IsGroupshared == true ? IrKind::Groupshared
+                                                           : IrKind::Constant;
         const uint32 node = addChild(parent, kind, declaration);
         if (node == NO_IR)
         {
@@ -802,7 +805,7 @@ private:
             return;
         }
         mReturnType = getSymbol(symbol).Type;
-        if ((at(node).Flags & IR_ENTRY) != 0)
+        if ((at(node).Flags & IR_ENTRY) != 0 && getSymbol(symbol).Stage == EntryStage::Compute)
         {
             IrThreadGroup group;
             group.X = clampThreads(threads[0]);
@@ -1551,6 +1554,16 @@ private:
             return NO_IR;
         }
         at(access).Type = type;
+        const uint32 objectType = getModel().NodeTypes[object];
+        if (objectType != NO_TYPE && getType(objectType).Kind == TypeKind::Resource)
+        {
+            // Resource elements are not bounds-checked; out-of-range buffer reads follow the target's
+            // robustness rules.
+            appendChild(access, lowerValue(object, NO_TYPE));
+            const bool isBuffer = getType(objectType).Resource != ResourceKind::RWTexture2D;
+            appendChild(access, lowerValue(index, isBuffer == true ? getScalarType(ScalarKind::Uint32) : NO_TYPE));
+            return access;
+        }
         if (mOptions.ShouldCheckBounds == true && isConstant(index) == false)
         {
             const SemanticType& indexShape = getType(resolveType(index, getScalarType(ScalarKind::Uint32)));
@@ -1741,6 +1754,28 @@ private:
                 return lowerPositional(node, IrKind::Construct, type, getElementScalar(type));
             case CallKind::Conversion:
                 return lowerPositional(node, IrKind::Convert, type, NO_TYPE);
+            case CallKind::ResourceMethod: {
+                // The only untyped argument a resource operation takes is SampleLevel's float level.
+                const uint32 result =
+                    lowerPositional(node, IrKind::ResourceMethodCall, type, getScalarType(ScalarKind::Float32));
+                if (result == NO_IR)
+                {
+                    return NO_IR;
+                }
+                const uint32 object = lowerValue(firstChild(callee), NO_TYPE);
+                if (object == NO_IR)
+                {
+                    return NO_IR;
+                }
+                at(object).NextSibling = at(result).FirstChild;
+                at(result).FirstChild = object;
+                if (at(result).LastChild == NO_IR)
+                {
+                    at(result).LastChild = object;
+                }
+                at(result).Token = getSyntax(callee).Token;
+                return result;
+            }
             case CallKind::Function:
             case CallKind::Method:
                 break;

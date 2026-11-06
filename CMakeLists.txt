@@ -234,8 +234,8 @@ include(EngineTestDiagnostics)
 
 add_subdirectory(modules/foundation/base)
 if(LUDUS_SHADER_WORKER_ONLY)
-    if(EMSCRIPTEN OR NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$")
-        message(FATAL_ERROR "The shader worker requires a native Linux/macOS host")
+    if(EMSCRIPTEN OR NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin|Windows)$")
+        message(FATAL_ERROR "The shader worker requires a native Linux, macOS or Windows host")
     endif()
     set(LUDUS_BUILD_SHADER_WORKER ON)
     add_subdirectory(modules/foundation/memory)
@@ -249,6 +249,7 @@ if(LUDUS_SHADER_WORKER_ONLY)
     # The worker lowers LUSL sources in process; luslc shares that library.
     add_subdirectory(modules/tooling/shader_language)
     add_subdirectory(tools/luslc)
+    add_subdirectory(tools/lusl-declarations)
     configure_package_config_file("${PROJECT_SOURCE_DIR}/cmake/LudusShaderToolsConfig.cmake.in"
         "${PROJECT_BINARY_DIR}/LudusShaderToolsConfig.cmake"
         INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/LudusShaderTools")
@@ -334,6 +335,10 @@ add_subdirectory(modules/tooling/shader_compiler)
 add_subdirectory(modules/tooling/shader_language)
 if(NOT EMSCRIPTEN)
     add_subdirectory(tools/luslc)
+endif()
+# The SDK .luslh generator needs the Slang-linked compiler of shader-worker builds.
+if(TARGET ludus_shader_compiler)
+    add_subdirectory(tools/lusl-declarations)
 endif()
 add_subdirectory(modules/foundation/reflection)
 add_subdirectory(modules/foundation/serialization)
@@ -725,7 +730,7 @@ if(TARGET Ludus::GameHost AND NOT WIN32)
     install(FILES apps/game_host/main.cpp
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus" RENAME LudusGameHostMain.cpp)
 endif()
-install(FILES modules/graphics/rhi/shaders/metal_ray_pipeline_layout.h modules/graphics/renderer/shaders/native_metal_ray.slang modules/graphics/rhi/shaders/raster_bindings.slang modules/graphics/rhi/shaders/runtime_bindings.slang modules/graphics/rhi/shaders/ray_query.slang cmake/shaders/compile_ray.py cmake/shaders/compile_shader.py cmake/shaders/compile_raster.py cmake/shaders/compile_graph_stage.py cmake/shaders/compile_metal_ray.py cmake/shaders/native_worker.py cmake/shaders/cook_texture.py config/shader_toolchain.json config/spirv_cross_toolchain.json DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES modules/graphics/rhi/shaders/metal_ray_pipeline_layout.h modules/graphics/renderer/shaders/native_metal_ray.slang modules/graphics/rhi/shaders/raster_bindings.slang modules/graphics/rhi/shaders/runtime_bindings.slang modules/graphics/rhi/shaders/ray_query.slang cmake/shaders/compile_ray.py cmake/shaders/compile_shader.py cmake/shaders/lower_lusl.py cmake/shaders/compile_raster.py cmake/shaders/compile_graph_stage.py cmake/shaders/compile_metal_ray.py cmake/shaders/native_worker.py cmake/shaders/cook_texture.py config/shader_toolchain.json config/spirv_cross_toolchain.json DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 
 install(FILES third_party/xxhash/LICENSE DESTINATION "${CMAKE_INSTALL_DATADIR}/${LUDUS_ENGINE_PACKAGE_NAME}/licenses" RENAME xxhash-LICENSE)
 

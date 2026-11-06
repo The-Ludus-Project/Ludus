@@ -1280,6 +1280,18 @@ private:
             return node;
         }
         parseArraySizes(node);
+        // A struct field may name what it carries in a stage interface: `float32x4 Position :
+        // ClipPosition;`.
+        if (scope == DeclarationScope::Struct && consumePunctuator(Punctuator::Colon) == true)
+        {
+            const uint32 semantic = createNode(SyntaxKind::Semantic);
+            if (parseDeclaredName(semantic) == false)
+            {
+                return node;
+            }
+            finish(semantic);
+            addChild(node, semantic);
+        }
         if (consumePunctuator(Punctuator::Equal) == true)
         {
             if (isWord("void") == true)
@@ -2168,6 +2180,11 @@ Status Parse(const PreprocessRequest& request, const PreprocessResult& preproces
     outTree = SyntaxTree{};
     Parser parser(request, preprocessed, outTree);
     return parser.Run();
+}
+
+foundation::BorrowedView<const std::string_view> GetKeywords() noexcept
+{
+    return foundation::BorrowedView<const std::string_view>(internal::KEYWORDS.GetData(), internal::KEYWORDS.GetSize());
 }
 
 std::string_view GetSyntaxKindName(SyntaxKind kind) noexcept

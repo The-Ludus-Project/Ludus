@@ -1,3 +1,5 @@
+// Generated from math.luslh.in by cmake/shaders/generate_luslh.py from Slang reflection;
+// edit the template, not this file.
 // LUSL declarations of FoundationMath's shader library (math.slang), for LUSL modules. Each
 // declaration mirrors the Slang one; names and parameter names are unchanged, so named arguments
 // use the Slang parameter names. docs/modules/tooling/shader-language.md lists the SDK headers.

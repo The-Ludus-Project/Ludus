@@ -1,11 +1,12 @@
+// Generated from ray_shader.luslh.in by cmake/shaders/generate_luslh.py from Slang reflection;
+// edit the template, not this file.
 // LUSL declarations of the Ray/Color render-graph callback data. The render-graph ray wrapper
 // defines these types before it includes any callback (ray_shader.slang, or scene_shader.slang for
 // scene-interface graphs), so the block names no file and the generated module includes nothing.
 //
-// RayLaunch declares the members every wrapper provides. Scene-interface wrappers add more, such as
-// SampleIndex; LUSL cannot read those, and `= 0` or a designated initializer of RayLaunch sets
-// only the members declared here. Declarations generated from Slang reflection replace this file
-// in L3 (docs/architecture/shading-language.md#slang-interoperability).
+// RayLaunch declares the members every wrapper provides, as ray_shader.slang defines them.
+// Scene-interface wrappers add more, such as SampleIndex; LUSL cannot read those, and `= 0` or a
+// designated initializer of RayLaunch sets only the members declared here.
 #pragma once
 
 extern slang

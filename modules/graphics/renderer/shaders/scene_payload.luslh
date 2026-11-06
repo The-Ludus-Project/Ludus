@@ -1,0 +1,19 @@
+// Generated from scene_payload.luslh.in by cmake/shaders/generate_luslh.py from Slang reflection;
+// edit the template, not this file.
+// LUSL declarations of the default scene payload (scene_payload.slang) and of TraceAndShade, which
+// the scene ray wrapper defines for the graph's payload type. A graph with an authored payload
+// source declares its own ScenePayload and TraceAndShade the same way, in a path-less block.
+#pragma once
+#include "scene_shader.luslh"
+
+extern slang
+{
+    /// Default shader-local state shared by a ray pipeline's callbacks.
+    struct ScenePayload
+    {
+        float32x3 Radiance;
+    };
+
+    /// Trace `ray` and run the linked closest-hit or miss callback on `payload`.
+    SceneQuery TraceAndShade(in SceneContext scene, inout RayQueryContext queries, in Ray ray, inout ScenePayload payload);
+};

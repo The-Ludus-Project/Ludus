@@ -105,6 +105,45 @@ function(ludus_compile_shader)
     if(LUDUS_VISUAL_STUDIO_MULTI_CONFIG)
         string(APPEND output "/$<CONFIG>")
     endif()
+    # A LUSL source is lowered first; its module is compiled as the Slang source, and the LUSL
+    # compiler's slot table becomes <NAME>_slots.h (docs/modules/tooling/shader-language.md).
+    if(source MATCHES "\\.lusl$")
+        set(luslc)
+        set(luslc_depends)
+        if(TARGET luslc)
+            set(luslc "$<TARGET_FILE:luslc>")
+            set(luslc_depends luslc)
+        elseif(EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../bin/luslc${CMAKE_EXECUTABLE_SUFFIX}")
+            get_filename_component(luslc "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../bin/luslc${CMAKE_EXECUTABLE_SUFFIX}" ABSOLUTE)
+            set(luslc_depends "${luslc}")
+        else()
+            message(FATAL_ERROR "ludus_compile_shader: ${SH_SOURCE} is LUSL, which needs luslc; build with an SDK that installs bin/luslc")
+        endif()
+        get_filename_component(lusl_root "${source}" DIRECTORY)
+        get_filename_component(lusl_name "${source}" NAME)
+        set(lusl_includes)
+        foreach(path IN LISTS SH_INCLUDES)
+            get_filename_component(path "${path}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+            file(RELATIVE_PATH relative "${lusl_root}" "${path}")
+            if(relative MATCHES "^\\.\\.")
+                message(FATAL_ERROR "ludus_compile_shader: LUSL include ${path} must be below ${lusl_root}")
+            endif()
+            list(APPEND lusl_includes --include-directory "${relative}")
+        endforeach()
+        set(lowered "${output}/${SH_NAME}.lusl.slang")
+        add_custom_command(
+            OUTPUT "${lowered}"
+            BYPRODUCTS "${output}/${SH_NAME}_slots.h"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/lower_lusl.py"
+                    --luslc "${luslc}" --root "${lusl_root}" --source "${lusl_name}" --name "${SH_NAME}"
+                    --output "${lowered}" --slots "${output}/${SH_NAME}_slots.h" --depfile "${output}/lusl.d"
+                    ${lusl_includes}
+            DEPENDS "${source}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/lower_lusl.py" ${luslc_depends}
+            DEPFILE "${output}/lusl.d"
+            VERBATIM
+        )
+        set(source "${lowered}")
+    endif()
     # Raster and compute builds define over-long shader text in a compiled companion source
     # rather than a header string literal that C++ compilers need not accept. DXIL headers
     # (Windows) embed binary words only.

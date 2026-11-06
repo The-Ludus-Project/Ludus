@@ -114,6 +114,111 @@ struct Result final
     /// identity; empty for Slang sources.
     foundation::Array<char> GeneratedSource;
 };
+/// Most declarations and members one ReflectDeclarations call reports.
+inline constexpr foundation::usize MAX_REFLECTED_DECLARATIONS = 1024;
+/// Most parameters and fields one ReflectDeclarations call reports.
+inline constexpr foundation::usize MAX_REFLECTED_MEMBERS = 8192;
+
+/// What a reflected module-level declaration is.
+enum class DeclarationKind : foundation::uint8
+{
+    Function, ///< A non-generic function; one record per overload.
+    Struct,   ///< A struct; its members are its instance fields.
+    Constant, ///< A `static const` variable.
+    Enum,     ///< An enum; its members are its enumerators, with values.
+};
+
+/// Shape of a reflected type.
+enum class ReflectedShape : foundation::uint8
+{
+    Void,        ///< `void`, a return type only.
+    Scalar,      ///< A scalar of ReflectedType::Scalar.
+    Vector,      ///< ReflectedType::Rows components.
+    Matrix,      ///< ReflectedType::Rows by ReflectedType::Columns.
+    Struct,      ///< The struct ReflectedType::Name names.
+    Enum,        ///< The enum ReflectedType::Name names.
+    Unsupported, ///< Resources, generics and other types a LUSL declaration cannot spell.
+};
+
+/// Element type of a reflected scalar, vector or matrix.
+enum class ReflectedScalar : foundation::uint8
+{
+    Bool,    ///< `bool`.
+    Int16,   ///< `int16_t`; LUSL `int16`.
+    Uint16,  ///< `uint16_t`; LUSL `uint16`.
+    Int32,   ///< `int`; LUSL `int32`.
+    Uint32,  ///< `uint`; LUSL `uint32`.
+    Int64,   ///< `int64_t`; LUSL `int64`.
+    Uint64,  ///< `uint64_t`; LUSL `uint64`.
+    Float16, ///< `half`; LUSL `float16`.
+    Float32, ///< `float`; LUSL `float32`.
+    Float64, ///< `double`; LUSL `float64`.
+};
+
+/// Direction of a reflected parameter.
+enum class ReflectedDirection : foundation::uint8
+{
+    In,    ///< Read only; Slang's default.
+    Out,   ///< Written only.
+    Inout, ///< Read and written.
+};
+
+/// A span of DeclarationResult::Text.
+struct ReflectedText final
+{
+    foundation::uint32 Offset = 0; ///< First byte.
+    foundation::uint32 Size = 0;   ///< Byte count.
+};
+
+/// @brief A type as Slang reflection reports it.
+struct ReflectedType final
+{
+    ReflectedShape Shape = ReflectedShape::Unsupported; ///< Category.
+    ReflectedScalar Scalar = ReflectedScalar::Float32;  ///< Element of a Scalar, Vector or Matrix.
+    foundation::uint8 Rows = 1;                         ///< Components of a Vector; rows of a Matrix.
+    foundation::uint8 Columns = 1;                      ///< Columns of a Matrix.
+    /// Element count of a one-dimensional array of this type; zero when the type is not an array.
+    foundation::uint32 ArrayCount = 0;
+    /// Name of a Struct or Enum; Slang's spelling of an Unsupported type.
+    ReflectedText Name;
+};
+
+/// @brief A parameter of a reflected function, or a field of a reflected struct.
+struct ReflectedMember final
+{
+    ReflectedText Name;                                    ///< Parameter or field name.
+    ReflectedType Type;                                    ///< Its type.
+    ReflectedDirection Direction = ReflectedDirection::In; ///< A parameter's direction; In for fields.
+    bool HasValue = false;                                 ///< True for an enumerator with a known value.
+    foundation::int64 Value = 0;                           ///< An enumerator's value.
+};
+
+/// @brief One module-level declaration, in Slang's declaration order.
+struct ReflectedDeclaration final
+{
+    DeclarationKind Kind = DeclarationKind::Function; ///< Category.
+    ReflectedText Name;                               ///< Declared name.
+    ReflectedType Type;                               ///< Return type of a Function, type of a Constant.
+    foundation::uint32 FirstMember = 0;               ///< First of its members in DeclarationResult::Members.
+    foundation::uint32 MemberCount = 0;               ///< Parameters of a Function, fields of a Struct.
+    bool HasValue = false;                            ///< True for a Constant with a known integer value.
+    foundation::int64 Value = 0;                      ///< A Constant's integer value.
+};
+
+/// @brief Output of Compiler::ReflectDeclarations.
+struct DeclarationResult final
+{
+    Status Outcome = Status::InvalidRequest; ///< Final outcome.
+    /// Every function, struct, enum and `static const` the module declares at module level, including
+    /// the declarations of the files it includes; generic declarations are skipped. Empty unless Ready.
+    foundation::Array<ReflectedDeclaration> Declarations;
+    /// Parameters and fields; see ReflectedDeclaration::FirstMember.
+    foundation::Array<ReflectedMember> Members;
+    /// UTF-8 names that ReflectedText spans index.
+    foundation::Array<char> Text;
+    foundation::Array<foundation::uint8> Diagnostics; ///< Bounded UTF-8 Slang diagnostics.
+};
+
 /// Optional native compiler library. Does not initialize an engine, editor, device or window.
 /// Single-thread-affine: all operations and destruction use its creating thread.
 /// One global Slang session survives requests. Only the latest identical source snapshot
@@ -139,6 +244,16 @@ public:
     /// @param outResult Replaced with complete output/status/diagnostics. Failures expose no artifacts.
     /// @return The same status stored in outResult. May allocate; never call on a rendering thread.
     [[nodiscard]] Status Compile(const Request& request, Result& outResult) noexcept;
+    /// @brief Load request.Source as a Slang module and report its module-level declarations,
+    /// for generating LUSL `extern slang` declarations from Slang reflection.
+    ///
+    /// Reads only the captured snapshot, like Compile. request.Entry, OutputTarget and EntryStage
+    /// are not used, but must be valid. A `.lusl` Source is an InvalidRequest.
+    /// @param request The snapshot and the Slang source to reflect.
+    /// @param outResult Replaced; declarations are reported only on Ready. CompileFailed when Slang
+    /// rejects the module, InvalidRequest beyond MAX_REFLECTED_DECLARATIONS or MAX_REFLECTED_MEMBERS.
+    /// @return The same status stored in outResult. May allocate; never call on a rendering thread.
+    [[nodiscard]] Status ReflectDeclarations(const Request& request, DeclarationResult& outResult) noexcept;
 
 private:
     /// Compile a validated request whose Source is Slang.

@@ -58,6 +58,8 @@ enum class IrKind : foundation::uint8
     Constant,
     /// A `groupshared` variable. Symbol and Type.
     Groupshared,
+    /// A resource binding. Symbol and Type; the symbol's Slot is its binding.
+    Resource,
     /// A function or method definition, or an interface requirement without a body. Symbol: the
     /// function; a template function's type parameters are its SemanticModel::TypeParameters. Value:
     /// the IrModule::ThreadGroups entry of an entry point. Flags: IR_ENTRY, IR_NOINLINE, IR_FORCEINLINE, IR_MUTATING,
@@ -156,6 +158,9 @@ enum class IrKind : foundation::uint8
     AdaptedCall,
     /// A built-in function. Symbol: the intrinsic. Children: the arguments.
     IntrinsicCall,
+    /// An operation of a resource, such as `image.Sample(imageSampler, uv)`. Token: the operation
+    /// name. Children: the resource, then the arguments.
+    ResourceMethodCall,
     /// A vector or matrix construction. Type. Children: the components.
     Construct,
     /// An explicit conversion. Type. Children: the value.

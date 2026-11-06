@@ -1,0 +1,49 @@
+// The LUSL port of ../../traversal_parity/main_shaders/callbacks.slang: each pixel encodes exact
+// query outcomes. Red is the camera ray's packed triangle plus one, green is a secondary surface
+// query's triangle plus one, and blue is a visibility query's outcome; zero means a miss in red and
+// green. A GPU test compares the image with the Slang original's.
+#include "scene_payload.luslh"
+
+static const float32x3 SECONDARY_DIRECTION_WORLD = float32x3(0.267261, 0.534522, 0.801784);
+static const float32x3 VISIBILITY_DIRECTION_WORLD = float32x3(-0.301511, 0.301511, 0.904534);
+static const float32 SECONDARY_DISTANCE_WORLD = 100.0;
+// Off-center, with x - y and x + y not integers, so no camera ray lies exactly on a room corner
+// line of the symmetric test view.
+static const float32x2 SUBPIXEL_SAMPLE = float32x2(0.3125, 0.5625);
+static const uint32 IDENTITY_MASK = 255;
+static const float32 CHANNEL_MAXIMUM = 255.0;
+static const float32 VISIBLE_LEVEL = 255.0;
+static const float32 OCCLUDED_LEVEL = 128.0;
+
+float32 EncodeIdentity(in SceneQuery status, in SurfaceHit hit)
+{
+    return status == SceneQuery::Surface ? float32((hit.TriangleIndex + 1) & IDENTITY_MASK) / CHANNEL_MAXIMUM : 0.0;
+}
+
+float32x3 GenerateRay(in SceneContext scene, in RayLaunch launch, inout RayQueryContext inoutQueries)
+{
+    ScenePayload payload = 0;
+    TraceAndShade(scene, inout inoutQueries, MakeCameraRay(launch, SUBPIXEL_SAMPLE), inout payload);
+    return payload.Radiance;
+}
+
+void ShadeMiss(in SceneContext scene, in Ray ray, inout RayQueryContext inoutQueries, inout ScenePayload inoutPayload)
+{
+    inoutPayload.Radiance = float32x3(0.0);
+}
+
+void ShadeClosest(in SceneContext scene, in SurfaceHit hit, inout RayQueryContext inoutQueries, inout ScenePayload inoutPayload)
+{
+    SurfaceHit secondary = void;
+    SceneQuery secondaryStatus = TraceClosest(scene,
+                                              inout inoutQueries,
+                                              SpawnSurfaceRay(hit, SECONDARY_DIRECTION_WORLD, SECONDARY_DISTANCE_WORLD),
+                                              out secondary);
+    LightSample light = 0;
+    light.HasSample = true;
+    light.DirectionWorld = VISIBILITY_DIRECTION_WORLD;
+    SceneQuery visibility = TestVisibility(scene, inout inoutQueries, hit, light);
+    inoutPayload.Radiance = float32x3(EncodeIdentity(SceneQuery::Surface, hit),
+                                      EncodeIdentity(secondaryStatus, secondary),
+                                      (visibility == SceneQuery::Miss ? VISIBLE_LEVEL : OCCLUDED_LEVEL) / CHANNEL_MAXIMUM);
+}

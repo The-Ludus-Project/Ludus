@@ -233,6 +233,10 @@ enum class DiagnosticCode : foundation::uint16
     InvalidConstraint = 549,
     /// A template call that needs more specializations than CheckOptions::SpecializationBudget allows.
     SpecializationBudget = 550,
+    /// A vertex or fragment entry point whose inputs, stage interface or outputs break the layout
+    /// rules: attribute and varying types, one clip position, one stage-interface struct per module,
+    /// one role per struct.
+    InvalidStageInterface = 551,
 
     /// A name breaks the naming rules: PascalCase types, functions and fields, lowerCamelCase
     /// parameters and locals, `out`/`inout` prefixes, UPPER_CASE constants, question-like booleans.
