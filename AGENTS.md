@@ -66,6 +66,13 @@ that violates it.
   to exactly the validated commit, with an explicit lease and no history rewrite.
   Failed/cancelled validation leaves `main` unchanged. Never bypass promotion or
   represent acceptance into `develop` as full platform qualification.
+- While the latest validated batch is red, the **Develop health** check admits
+  only documentation-only changes and proven fixes. An agent fixing a failed
+  batch job declares `Batch-Fix: <failed batch job>` in the PR description,
+  merges current `develop`, dispatches the job's workflow on its branch and
+  re-runs the check. Do not declare jobs the change does not fix, edit a job to
+  manufacture evidence, or set `DEVELOP_HEALTH_WAIVER`; waivers are the
+  maintainer's. See `docs/development/continuous-integration.md#develop-health`.
 - Request a manual batch only when the maintainer needs earlier qualification;
   retry an unchanged failed candidate only after investigating the failure. See
   `docs/development/continuous-integration.md` for setup, promotion and recovery.

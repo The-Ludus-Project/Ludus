@@ -72,6 +72,30 @@ jobs:
       - uses: ./.github/actions/change-scope
         id: scope
 
+  develop-health:
+    # While develop's latest validated batch is red, admit only fixes proven on
+    # the PR head (docs/development/continuous-integration.md#develop-health).
+    # It reads completed batch runs, so it needs no coordinator state on main.
+    if: github.event_name == 'pull_request' && github.base_ref == 'develop'
+    name: Develop health
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.batch_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Admit only proven fixes while the latest batch is red
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEVELOP_HEALTH_WAIVER: ${{ vars.DEVELOP_HEALTH_WAIVER }}
+        run: python3 scripts/python/develop_health.py gate
+
   mcmc-vulkan-parity:
     if: github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true
     name: MH and Jump Restore Vulkan parity
@@ -639,7 +663,7 @@ jobs:
         timeout-minutes: 10
         run: xvfb-run -a env LUDUS_TEST_GUI=1 python3 -m unittest discover -s scripts/python -p 'test_init*.py' -v
       - name: Test CI initialization and analysis contracts
-        run: PYTHONPATH=scripts/python python3 -m unittest test_ci test_batch_ci test_quality test_ray_reference test_runtime_profile -v
+        run: PYTHONPATH=scripts/python python3 -m unittest test_ci test_batch_ci test_develop_health test_quality test_ray_reference test_runtime_profile -v
       - name: Live reload tooling tests
         run: |
           python3 -m unittest discover -s scripts/python -p 'test_play*.py' -v
