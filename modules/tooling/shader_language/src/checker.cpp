@@ -61,6 +61,12 @@ constexpr usize MAX_SWIZZLE_COMPONENTS = 4;
 constexpr usize THREAD_GROUP_DIMENSIONS = 3;
 /// Most interfaces one conformance search visits, bases included.
 constexpr usize MAX_VISITED_INTERFACES = 64;
+/// Most atoms of one normalized constraint; clauses are bit sets over them.
+constexpr usize MAX_CONSTRAINT_ATOMS = 64;
+/// Most clauses of one normal form; larger constraints do not order.
+constexpr usize MAX_CONSTRAINT_CLAUSES = 64;
+/// Specialization index that names none.
+constexpr uint32 NO_INDEX = 0xffffffffU;
 
 /// Inclusive range of an integer scalar kind; false for kinds whose range exceeds int64.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a minimum and maximum pair, in that order.
@@ -182,6 +188,11 @@ public:
             mSink.ReportOutOfMemory();
             return finish();
         }
+        if (collectSpecializedNames() == false)
+        {
+            mSink.ReportOutOfMemory();
+            return finish();
+        }
         for (uint32 declaration = firstChild(0); declaration != NO_NODE && mIsFatal == false;
              declaration = nextSibling(declaration))
         {
@@ -189,6 +200,7 @@ public:
         }
         reportUndefinedFunctions();
         verifyConformances();
+        checkSpecializations();
         // Flow and style rules read a complete, consistent model, so they run only after it checks.
         if (mSink.HasErrors() == false && mSink.HasOutOfMemory() == false && mIsFatal == false)
         {
@@ -197,6 +209,18 @@ public:
                 internal::CheckStyle(inputs, mOptions.Style, mSink) == false)
             {
                 mSink.ReportOutOfMemory();
+            }
+            for (uint32 index = 0; index < mModel.Specializations.GetSize() && mSink.HasOutOfMemory() == false; ++index)
+            {
+                SemanticModel specialized;
+                const internal::AnalysisInputs specializedInputs{mRequest, mInput, mTree, specialized};
+                if (internal::MakeSpecializedModel(mModel, index, specialized) == false ||
+                    internal::AnalyzeSpecializationFlow(specializedInputs,
+                                                        mModel.Specializations[index].FirstNode,
+                                                        mSink) == false)
+                {
+                    mSink.ReportOutOfMemory();
+                }
             }
         }
         return finish();
@@ -899,7 +923,19 @@ private:
             getSymbol(parameter).Type = type;
             mModel.NodeTypes[child] = type;
             const uint32 constraint = firstChild(child);
-            if (constraint != NO_NODE)
+            const uint32 conceptSymbol = constraint == NO_NODE ? NO_SYMBOL : findConcept(spellNode(constraint));
+            if (conceptSymbol != NO_SYMBOL)
+            {
+                // `template <Layered M>` applies a one-parameter concept to M; it states no conformance.
+                mModel.NodeSymbols[constraint] = conceptSymbol;
+                if (getSymbol(conceptSymbol).TypeParameterCount != 1)
+                {
+                    report(DiagnosticCode::InvalidConstraint,
+                           constraint,
+                           ComposeMessage("a template parameter's concept takes exactly one type"));
+                }
+            }
+            else if (constraint != NO_NODE)
             {
                 const uint32 interfaceSymbol = resolveInterface(constraint);
                 if (interfaceSymbol != NO_SYMBOL)
@@ -912,6 +948,13 @@ private:
         {
             mTemplateParameters.Clear();
             return;
+        }
+        for (uint32 child = firstChild(node); child != NO_NODE; child = nextSibling(child))
+        {
+            if (getKind(child) == SyntaxKind::RequiresClause)
+            {
+                validateConstraint(firstChild(child), 0);
+            }
         }
         const uint32 symbol = checkFunctionSignature(function, NO_SYMBOL);
         if (symbol != NO_SYMBOL)
@@ -943,9 +986,1181 @@ private:
                        function,
                        ComposeMessage("templates are defined where declared"));
             }
+            declared.IsSpecialized = isSpecializedName(spell(declared.NameToken));
+            TemplateRecord record;
+            record.Function = symbol;
+            record.Node = node;
+            if (mTemplates.TryAdd(record) == false)
+            {
+                mSink.ReportOutOfMemory();
+                mIsFatal = true;
+                return;
+            }
         }
-        checkFunctionBody(function, symbol);
+        // A specialized template's body is checked once per concrete instance, so a discarded
+        // `if constexpr` branch is never type-checked.
+        if (symbol == NO_SYMBOL || getSymbol(symbol).IsSpecialized == false)
+        {
+            checkFunctionBody(function, symbol);
+        }
         mTemplateParameters.Clear();
+    }
+
+    // ----- Concepts and constraints --------------------------------------------------------------
+
+    /// A template function and the TemplateDeclaration that declares it.
+    struct TemplateRecord final
+    {
+        uint32 Function = NO_SYMBOL;
+        uint32 Node = NO_NODE;
+    };
+    /// A type a specialization or constraint evaluation binds a template parameter to.
+    struct Binding final
+    {
+        uint32 Parameter = NO_SYMBOL;
+        uint32 Type = NO_TYPE;
+    };
+
+    /// The concept named `name`, or NO_SYMBOL.
+    [[nodiscard]] uint32 findConcept(std::string_view name) const noexcept
+    {
+        const uint32 symbol = mScopes.Find(name);
+        return symbol != ScopeTable::UNBOUND && mModel.Symbols[symbol].Kind == SymbolKind::Concept ? symbol : NO_SYMBOL;
+    }
+
+    /// The type a specialization binds template parameter `parameter` to, or NO_TYPE.
+    [[nodiscard]] uint32 findBinding(uint32 parameter) const noexcept
+    {
+        if (parameter == NO_SYMBOL)
+        {
+            return NO_TYPE;
+        }
+        for (usize i = mBindings.GetSize(); i > 0; --i)
+        {
+            if (mBindings[i - 1].Parameter == parameter)
+            {
+                return mBindings[i - 1].Type;
+            }
+        }
+        return NO_TYPE;
+    }
+
+    void checkConcept(uint32 node) noexcept
+    {
+        const uint32 symbol = createSymbol(SymbolKind::Concept, getNode(node).Token, node);
+        if (symbol == NO_SYMBOL)
+        {
+            return;
+        }
+        Symbol& declared = getSymbol(symbol);
+        declared.FirstTypeParameter = static_cast<uint32>(mModel.TypeParameters.GetSize());
+        uint32 constraint = NO_NODE;
+        for (uint32 child = firstChild(node); child != NO_NODE && mIsFatal == false; child = nextSibling(child))
+        {
+            if (getKind(child) != SyntaxKind::TemplateParameter)
+            {
+                constraint = child;
+                continue;
+            }
+            const uint32 parameter = createSymbol(SymbolKind::TypeParameter, getNode(child).Token, child);
+            uint32 type = NO_TYPE;
+            if (parameter == NO_SYMBOL ||
+                mTypes.TryGetNamed(TypeKind::TypeParameter, ScalarKind::Bool, parameter, type) !=
+                    internal::TypeOutcome::Ok ||
+                mModel.TypeParameters.TryAdd(parameter) == false || mTemplateParameters.TryAdd(parameter) == false)
+            {
+                mSink.ReportOutOfMemory();
+                mIsFatal = true;
+                return;
+            }
+            getSymbol(parameter).Type = type;
+            getSymbol(parameter).Parent = symbol;
+            ++getSymbol(symbol).TypeParameterCount;
+        }
+        if (getSymbol(symbol).TypeParameterCount > MAX_TEMPLATE_PARAMETERS)
+        {
+            report(DiagnosticCode::CheckerLimit,
+                   node,
+                   ComposeMessage("a concept takes at most ", uint64{MAX_TEMPLATE_PARAMETERS}, " types"));
+        }
+        validateConstraint(constraint, 0);
+        mTemplateParameters.Clear();
+        (void)bindSymbol(symbol);
+    }
+
+    /// Check that a constraint uses only what evaluation understands: conformance tests, concept
+    /// applications, constants, `T::NAME`, and integer and bool operators. Names are resolved
+    /// when the constraint is evaluated, where a missing member makes it false.
+    void validateConstraint(uint32 node, usize depth) noexcept
+    {
+        if (node == NO_NODE || depth > MAX_SYNTAX_DEPTH)
+        {
+            return;
+        }
+        switch (getKind(node))
+        {
+            case SyntaxKind::NumberLiteral:
+                (void)checkExpression(node, NO_TYPE);
+                return;
+            case SyntaxKind::BooleanLiteral:
+            case SyntaxKind::Name:
+            case SyntaxKind::ScopeExpression:
+                return;
+            case SyntaxKind::ConformanceTest: {
+                const uint32 interfaceNode = nextSibling(firstChild(node));
+                const uint32 interfaceSymbol = resolveInterface(interfaceNode);
+                mModel.NodeSymbols[node] = interfaceSymbol;
+                return;
+            }
+            case SyntaxKind::ConceptApplication: {
+                const uint32 conceptSymbol = findConcept(spellNode(node));
+                uint32 count = 0;
+                for (uint32 argument = firstChild(node); argument != NO_NODE; argument = nextSibling(argument))
+                {
+                    ++count;
+                }
+                if (conceptSymbol == NO_SYMBOL || getSymbol(conceptSymbol).TypeParameterCount != count)
+                {
+                    report(DiagnosticCode::InvalidConstraint,
+                           node,
+                           ComposeMessage("'", spellNode(node), "' is not a concept of ", uint64{count}, " types"));
+                    return;
+                }
+                mModel.NodeSymbols[node] = conceptSymbol;
+                return;
+            }
+            case SyntaxKind::ParenthesizedExpression:
+            case SyntaxKind::UnaryExpression:
+            case SyntaxKind::BinaryExpression:
+                for (uint32 child = firstChild(node); child != NO_NODE; child = nextSibling(child))
+                {
+                    validateConstraint(child, depth + 1);
+                }
+                return;
+            default:
+                report(
+                    DiagnosticCode::InvalidConstraint,
+                    node,
+                    ComposeMessage("a constraint combines conformance tests (T : Interface), concepts, constants and "
+                                   "T::NAME with operators"));
+                return;
+        }
+    }
+
+    /// Outcome of evaluating a constraint or one of its parts.
+    struct ConstraintValue final
+    {
+        /// False when evaluation failed, as for a member the bound type lacks; the part is then false.
+        bool IsKnown = false;
+        foundation::int64 Value = 0;
+    };
+
+    /// Resolve a Type node under the current bindings without reporting; NO_TYPE when unknown.
+    [[nodiscard]] uint32 resolveTypeQuietly(uint32 node) const noexcept
+    {
+        if (node == NO_NODE)
+        {
+            return NO_TYPE;
+        }
+        const std::string_view name = spellNode(node);
+        const uint32 parameter = findTemplateParameter(name);
+        const uint32 bound = findBinding(parameter);
+        if (bound != NO_TYPE)
+        {
+            return bound;
+        }
+        if (parameter != NO_SYMBOL)
+        {
+            return mModel.Symbols[parameter].Type;
+        }
+        const uint32 builtin = mTypes.FindBuiltin(name);
+        if (builtin != NO_TYPE)
+        {
+            return builtin;
+        }
+        const uint32 symbol = mScopes.Find(name);
+        if (symbol != ScopeTable::UNBOUND &&
+            (mModel.Symbols[symbol].Kind == SymbolKind::Struct || mModel.Symbols[symbol].Kind == SymbolKind::Enum ||
+             mModel.Symbols[symbol].Kind == SymbolKind::Interface))
+        {
+            return mModel.Symbols[symbol].Type;
+        }
+        return NO_TYPE;
+    }
+
+    /// Evaluate a constraint expression under the current bindings.
+    [[nodiscard]] ConstraintValue evaluateConstraint(uint32 node, usize depth) noexcept
+    {
+        ConstraintValue result;
+        if (node == NO_NODE || depth > MAX_CONSTRAINT_DEPTH + MAX_SYNTAX_DEPTH)
+        {
+            return result;
+        }
+        switch (getKind(node))
+        {
+            case SyntaxKind::BooleanLiteral:
+                result.IsKnown = true;
+                result.Value = spellNode(node) == "true" ? 1 : 0;
+                return result;
+            case SyntaxKind::NumberLiteral: {
+                const IntegerConstant constant = mModel.NodeIntegerConstants[node];
+                result.IsKnown = constant.IsKnown;
+                result.Value = constant.Value;
+                return result;
+            }
+            case SyntaxKind::Name: {
+                const uint32 symbol = mScopes.Find(spellNode(node));
+                if (symbol != ScopeTable::UNBOUND && mModel.Symbols[symbol].HasIntegerValue == true)
+                {
+                    result.IsKnown = true;
+                    result.Value = mModel.Symbols[symbol].IntegerValue;
+                }
+                return result;
+            }
+            case SyntaxKind::ScopeExpression: {
+                const uint32 left = firstChild(node);
+                const uint32 right = left == NO_NODE ? NO_NODE : nextSibling(left);
+                const uint32 owner = resolveTypeQuietly(left);
+                if (right == NO_NODE || owner == NO_TYPE)
+                {
+                    return result;
+                }
+                uint32 constant = NO_SYMBOL;
+                const SemanticType& shape = getType(owner);
+                if (shape.Kind == TypeKind::Struct)
+                {
+                    constant = findStructMember(shape.Symbol, spellNode(right), SymbolKind::Variable);
+                }
+                else if (shape.Kind == TypeKind::Enum)
+                {
+                    constant = findMember(shape.Symbol, spellNode(right), SymbolKind::Enumerator);
+                }
+                if (constant != NO_SYMBOL && mModel.Symbols[constant].HasIntegerValue == true)
+                {
+                    result.IsKnown = true;
+                    result.Value = mModel.Symbols[constant].IntegerValue;
+                }
+                return result;
+            }
+            case SyntaxKind::ConformanceTest: {
+                const uint32 type = resolveTypeQuietly(firstChild(node));
+                const uint32 interfaceSymbol = mModel.NodeSymbols[node];
+                if (type != NO_TYPE && interfaceSymbol != NO_SYMBOL)
+                {
+                    result.IsKnown = true;
+                    result.Value = conformsTo(type, interfaceSymbol) == true ? 1 : 0;
+                }
+                return result;
+            }
+            case SyntaxKind::ConceptApplication:
+                return evaluateConceptApplication(node, depth);
+            case SyntaxKind::ParenthesizedExpression:
+                return evaluateConstraint(firstChild(node), depth + 1);
+            case SyntaxKind::UnaryExpression: {
+                const ConstraintValue operand = evaluateConstraint(firstChild(node), depth + 1);
+                const std::string_view operation = spellNode(node);
+                if (operand.IsKnown == true && (operation == "-" || operation == "+" || operation == "~"))
+                {
+                    result.IsKnown = true;
+                    result.Value =
+                        operation == "-" ? -operand.Value : (operation == "~" ? ~operand.Value : operand.Value);
+                }
+                return result;
+            }
+            case SyntaxKind::BinaryExpression:
+                return evaluateBinaryConstraint(node, depth);
+            default:
+                return result;
+        }
+    }
+
+    [[nodiscard]] ConstraintValue evaluateBinaryConstraint(uint32 node, usize depth) noexcept
+    {
+        ConstraintValue result;
+        const uint32 left = firstChild(node);
+        const uint32 right = left == NO_NODE ? NO_NODE : nextSibling(left);
+        const std::string_view operation = spellNode(node);
+        const ConstraintValue a = evaluateConstraint(left, depth + 1);
+        // A part that failed is false, so `(T : Material) && (T::LOBE_COUNT == 1)` is false rather than
+        // an error for a type without LOBE_COUNT; `&&` and `||` do not evaluate what they skip.
+        if (operation == "&&" || operation == "||")
+        {
+            const bool isLeftTrue = a.IsKnown == true && a.Value != 0;
+            result.IsKnown = true;
+            if ((operation == "&&" && isLeftTrue == false) || (operation == "||" && isLeftTrue == true))
+            {
+                result.Value = isLeftTrue == true ? 1 : 0;
+                return result;
+            }
+            const ConstraintValue b = evaluateConstraint(right, depth + 1);
+            result.Value = b.IsKnown == true && b.Value != 0 ? 1 : 0;
+            return result;
+        }
+        const ConstraintValue b = evaluateConstraint(right, depth + 1);
+        if (a.IsKnown == false || b.IsKnown == false)
+        {
+            // Comparisons of failed parts are false as a whole.
+            result.IsKnown = operation == "==" || operation == "!=" || operation == "<" || operation == "<=" ||
+                             operation == ">" || operation == ">=";
+            return result;
+        }
+        result.IsKnown = true;
+        if (operation == "==")
+        {
+            result.Value = a.Value == b.Value ? 1 : 0;
+        }
+        else if (operation == "!=")
+        {
+            result.Value = a.Value != b.Value ? 1 : 0;
+        }
+        else if (operation == "<")
+        {
+            result.Value = a.Value < b.Value ? 1 : 0;
+        }
+        else if (operation == "<=")
+        {
+            result.Value = a.Value <= b.Value ? 1 : 0;
+        }
+        else if (operation == ">")
+        {
+            result.Value = a.Value > b.Value ? 1 : 0;
+        }
+        else if (operation == ">=")
+        {
+            result.Value = a.Value >= b.Value ? 1 : 0;
+        }
+        else
+        {
+            // Overflow, like any other failure, leaves the part unknown.
+            bool isComputed = false;
+            if (operation == "+")
+            {
+                isComputed = foundation::core::TryAdd(a.Value, b.Value, result.Value);
+            }
+            else if (operation == "-")
+            {
+                isComputed = foundation::core::TrySubtract(a.Value, b.Value, result.Value);
+            }
+            else if (operation == "*")
+            {
+                isComputed = foundation::core::TryMultiply(a.Value, b.Value, result.Value);
+            }
+            result.IsKnown = isComputed;
+        }
+        return result;
+    }
+
+    /// Bind a concept's parameters to the application's types and evaluate its constraint.
+    [[nodiscard]] ConstraintValue evaluateConceptApplication(uint32 node, usize depth) noexcept
+    {
+        ConstraintValue result;
+        const uint32 conceptSymbol =
+            mModel.NodeSymbols[node] != NO_SYMBOL ? mModel.NodeSymbols[node] : findConcept(spellNode(node));
+        if (conceptSymbol == NO_SYMBOL || depth > MAX_CONSTRAINT_DEPTH ||
+            mModel.Symbols[conceptSymbol].Kind != SymbolKind::Concept)
+        {
+            return result;
+        }
+        const Symbol& declared = mModel.Symbols[conceptSymbol];
+        foundation::StaticArray<uint32, MAX_TEMPLATE_PARAMETERS> types{};
+        uint32 count = 0;
+        for (uint32 argument = firstChild(node); argument != NO_NODE && count < MAX_TEMPLATE_PARAMETERS;
+             argument = nextSibling(argument))
+        {
+            types[count] = resolveTypeQuietly(argument);
+            if (types[count] == NO_TYPE)
+            {
+                return result;
+            }
+            ++count;
+        }
+        if (count != declared.TypeParameterCount)
+        {
+            return result;
+        }
+        return evaluateConcept(conceptSymbol, types, depth);
+    }
+
+    /// Evaluate `concept` for `types`, one per concept parameter.
+    [[nodiscard]] ConstraintValue evaluateConcept(uint32 conceptSymbol,
+                                                  const foundation::StaticArray<uint32, MAX_TEMPLATE_PARAMETERS>& types,
+                                                  usize depth) noexcept
+    {
+        const Symbol& declared = mModel.Symbols[conceptSymbol];
+        const usize mark = mBindings.GetSize();
+        for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+        {
+            Binding binding;
+            binding.Parameter = mModel.TypeParameters[declared.FirstTypeParameter + i];
+            binding.Type = types[i];
+            if (mBindings.TryAdd(binding) == false)
+            {
+                mSink.ReportOutOfMemory();
+                mIsFatal = true;
+                return ConstraintValue{};
+            }
+        }
+        // Concept parameters are names inside the concept's own constraint only.
+        Array<uint32> outer = foundation::Move(mTemplateParameters);
+        mTemplateParameters.Clear();
+        for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+        {
+            (void)mTemplateParameters.TryAdd(mModel.TypeParameters[declared.FirstTypeParameter + i]);
+        }
+        uint32 constraint = NO_NODE;
+        for (uint32 child = firstChild(declared.Declaration); child != NO_NODE; child = nextSibling(child))
+        {
+            constraint = child;
+        }
+        const ConstraintValue result = evaluateConstraint(constraint, depth + 1);
+        mTemplateParameters = foundation::Move(outer);
+        while (mBindings.GetSize() > mark)
+        {
+            mBindings.RemoveLast();
+        }
+        ConstraintValue truth;
+        truth.IsKnown = true;
+        truth.Value = result.IsKnown == true && result.Value != 0 ? 1 : 0;
+        return truth;
+    }
+
+    /// The template record of template function `function`, or nullptr.
+    [[nodiscard]] const TemplateRecord* findTemplateOrNull(uint32 function) const noexcept
+    {
+        for (const TemplateRecord& record : mTemplates)
+        {
+            if (record.Function == function)
+            {
+                return &record;
+            }
+        }
+        return nullptr;
+    }
+
+    /// True when the concept constraints and the `requires` clause of template `function` hold for
+    /// `typeArguments`.
+    [[nodiscard]] bool
+    satisfiesConcepts(uint32 function,
+                      const foundation::StaticArray<uint32, MAX_TEMPLATE_PARAMETERS>& typeArguments) noexcept
+    {
+        const TemplateRecord* recordOrNull = findTemplateOrNull(function);
+        if (recordOrNull == nullptr)
+        {
+            return true;
+        }
+        const Symbol& declared = mModel.Symbols[function];
+        const usize mark = mBindings.GetSize();
+        for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+        {
+            Binding binding;
+            binding.Parameter = mModel.TypeParameters[declared.FirstTypeParameter + i];
+            binding.Type = typeArguments[i];
+            if (mBindings.TryAdd(binding) == false)
+            {
+                mSink.ReportOutOfMemory();
+                mIsFatal = true;
+                return false;
+            }
+        }
+        Array<uint32> outer = foundation::Move(mTemplateParameters);
+        mTemplateParameters.Clear();
+        for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+        {
+            (void)mTemplateParameters.TryAdd(mModel.TypeParameters[declared.FirstTypeParameter + i]);
+        }
+        bool isSatisfied = true;
+        uint32 position = 0;
+        for (uint32 child = firstChild(recordOrNull->Node); child != NO_NODE && isSatisfied == true;
+             child = nextSibling(child))
+        {
+            if (getKind(child) == SyntaxKind::TemplateParameter)
+            {
+                const uint32 constraint = firstChild(child);
+                const uint32 conceptSymbol = constraint == NO_NODE ? NO_SYMBOL : mModel.NodeSymbols[constraint];
+                if (conceptSymbol != NO_SYMBOL && mModel.Symbols[conceptSymbol].Kind == SymbolKind::Concept)
+                {
+                    foundation::StaticArray<uint32, MAX_TEMPLATE_PARAMETERS> types{};
+                    types[0] = typeArguments[position];
+                    const ConstraintValue value = evaluateConcept(conceptSymbol, types, 0);
+                    isSatisfied = value.Value != 0;
+                }
+                ++position;
+            }
+            else if (getKind(child) == SyntaxKind::RequiresClause)
+            {
+                const ConstraintValue value = evaluateConstraint(firstChild(child), 0);
+                isSatisfied = value.IsKnown == true && value.Value != 0;
+            }
+        }
+        mTemplateParameters = foundation::Move(outer);
+        while (mBindings.GetSize() > mark)
+        {
+            mBindings.RemoveLast();
+        }
+        return isSatisfied;
+    }
+
+    // ----- Constraint ordering -------------------------------------------------------------------
+
+    /// One atomic constraint of a normalized template constraint.
+    struct ConstraintAtom final
+    {
+        /// True for `T : Interface`; false for any other expression, identified by its node.
+        bool IsConformance = false;
+        /// The template parameter position a conformance tests.
+        uint32 Position = 0;
+        /// The interface of a conformance, or the node of an expression atom.
+        uint32 Subject = NO_SYMBOL;
+        /// For an expression atom, the template position of each concept parameter it reads.
+        foundation::StaticArray<uint32, MAX_TEMPLATE_PARAMETERS> Mapping{};
+    };
+
+    /// A normalized constraint: atoms and the disjunctive and conjunctive normal forms over them.
+    struct NormalizedConstraint final
+    {
+        Array<ConstraintAtom> Atoms;
+        /// Each clause is a bit set over Atoms.
+        Array<foundation::uint64> Disjuncts;
+        Array<foundation::uint64> Conjuncts;
+        bool IsTooLarge = false;
+    };
+
+    /// Normalize expression `node` with concept parameters mapped to template positions; the
+    /// disjunctive and conjunctive forms are produced into `outDnf` and `outCnf`.
+    void normalize(uint32 node,
+                   const foundation::StaticArray<uint32, MAX_TEMPLATE_PARAMETERS>& mapping,
+                   uint32 conceptOwner,
+                   NormalizedConstraint& inoutResult,
+                   Array<foundation::uint64>& outDnf,
+                   Array<foundation::uint64>& outCnf,
+                   usize depth) noexcept
+    {
+        outDnf.Clear();
+        outCnf.Clear();
+        if (node == NO_NODE || depth > MAX_CONSTRAINT_DEPTH + MAX_SYNTAX_DEPTH || inoutResult.IsTooLarge == true)
+        {
+            inoutResult.IsTooLarge = true;
+            return;
+        }
+        const SyntaxKind kind = getKind(node);
+        if (kind == SyntaxKind::ParenthesizedExpression)
+        {
+            normalize(firstChild(node), mapping, conceptOwner, inoutResult, outDnf, outCnf, depth + 1);
+            return;
+        }
+        if (kind == SyntaxKind::BinaryExpression && (spellNode(node) == "&&" || spellNode(node) == "||"))
+        {
+            Array<foundation::uint64> leftDnf;
+            Array<foundation::uint64> leftCnf;
+            Array<foundation::uint64> rightDnf;
+            Array<foundation::uint64> rightCnf;
+            const uint32 left = firstChild(node);
+            normalize(left, mapping, conceptOwner, inoutResult, leftDnf, leftCnf, depth + 1);
+            normalize(nextSibling(left), mapping, conceptOwner, inoutResult, rightDnf, rightCnf, depth + 1);
+            const bool isAnd = spellNode(node) == "&&";
+            // AND: DNF is the product of the DNFs, CNF the union of the CNFs; OR is the dual.
+            combineProduct(isAnd == true ? leftDnf : leftCnf,
+                           isAnd == true ? rightDnf : rightCnf,
+                           isAnd == true ? outDnf : outCnf,
+                           inoutResult);
+            combineUnion(isAnd == true ? leftCnf : leftDnf,
+                         isAnd == true ? rightCnf : rightDnf,
+                         isAnd == true ? outCnf : outDnf,
+                         inoutResult);
+            return;
+        }
+        if (kind == SyntaxKind::ConceptApplication && mModel.NodeSymbols[node] != NO_SYMBOL)
+        {
+            // Expand the concept with its parameters mapped through the arguments.
+            const uint32 conceptSymbol = mModel.NodeSymbols[node];
+            const Symbol& declared = mModel.Symbols[conceptSymbol];
+            foundation::StaticArray<uint32, MAX_TEMPLATE_PARAMETERS> inner{};
+            uint32 count = 0;
+            bool isMapped = true;
+            for (uint32 argument = firstChild(node); argument != NO_NODE && count < MAX_TEMPLATE_PARAMETERS;
+                 argument = nextSibling(argument))
+            {
+                inner[count] = mapPosition(argument, mapping, conceptOwner);
+                isMapped = isMapped == true && inner[count] != internal::NO_TYPE_PARAMETER;
+                ++count;
+            }
+            if (isMapped == true && count == declared.TypeParameterCount)
+            {
+                uint32 constraint = NO_NODE;
+                for (uint32 child = firstChild(declared.Declaration); child != NO_NODE; child = nextSibling(child))
+                {
+                    constraint = child;
+                }
+                normalize(constraint, inner, conceptSymbol, inoutResult, outDnf, outCnf, depth + 1);
+                return;
+            }
+        }
+        ConstraintAtom atom;
+        if (kind == SyntaxKind::ConformanceTest && mModel.NodeSymbols[node] != NO_SYMBOL)
+        {
+            const uint32 position = mapPosition(firstChild(node), mapping, conceptOwner);
+            if (position != internal::NO_TYPE_PARAMETER)
+            {
+                atom.IsConformance = true;
+                atom.Position = position;
+                atom.Subject = mModel.NodeSymbols[node];
+            }
+        }
+        if (atom.IsConformance == false)
+        {
+            atom.Subject = node;
+            atom.Mapping = mapping;
+        }
+        addAtomClause(atom, inoutResult, outDnf, outCnf);
+    }
+
+    /// The template position a concept argument or conformance subject names, or NO_TYPE_PARAMETER.
+    [[nodiscard]] uint32 mapPosition(uint32 typeNode,
+                                     const foundation::StaticArray<uint32, MAX_TEMPLATE_PARAMETERS>& mapping,
+                                     uint32 conceptOwner) const noexcept
+    {
+        const std::string_view name = spellNode(typeNode);
+        const Symbol& owner = mModel.Symbols[conceptOwner];
+        for (uint32 i = 0; i < owner.TypeParameterCount; ++i)
+        {
+            if (getSymbolName(mModel.TypeParameters[owner.FirstTypeParameter + i]) == name)
+            {
+                return mapping[i];
+            }
+        }
+        return internal::NO_TYPE_PARAMETER;
+    }
+
+    void addAtomClause(const ConstraintAtom& atom,
+                       NormalizedConstraint& inoutResult,
+                       Array<foundation::uint64>& outDnf,
+                       Array<foundation::uint64>& outCnf) noexcept
+    {
+        if (inoutResult.Atoms.GetSize() >= MAX_CONSTRAINT_ATOMS)
+        {
+            inoutResult.IsTooLarge = true;
+            return;
+        }
+        const foundation::uint64 bit = foundation::uint64{1} << inoutResult.Atoms.GetSize();
+        if (inoutResult.Atoms.TryAdd(atom) == false || outDnf.TryAdd(bit) == false || outCnf.TryAdd(bit) == false)
+        {
+            inoutResult.IsTooLarge = true;
+        }
+    }
+
+    static void combineUnion(const Array<foundation::uint64>& left,
+                             const Array<foundation::uint64>& right,
+                             Array<foundation::uint64>& outClauses,
+                             NormalizedConstraint& inoutResult) noexcept
+    {
+        for (const foundation::uint64 clause : left)
+        {
+            if (outClauses.GetSize() >= MAX_CONSTRAINT_CLAUSES || outClauses.TryAdd(clause) == false)
+            {
+                inoutResult.IsTooLarge = true;
+                return;
+            }
+        }
+        for (const foundation::uint64 clause : right)
+        {
+            if (outClauses.GetSize() >= MAX_CONSTRAINT_CLAUSES || outClauses.TryAdd(clause) == false)
+            {
+                inoutResult.IsTooLarge = true;
+                return;
+            }
+        }
+    }
+
+    static void combineProduct(const Array<foundation::uint64>& left,
+                               const Array<foundation::uint64>& right,
+                               Array<foundation::uint64>& outClauses,
+                               NormalizedConstraint& inoutResult) noexcept
+    {
+        for (const foundation::uint64 a : left)
+        {
+            for (const foundation::uint64 b : right)
+            {
+                if (outClauses.GetSize() >= MAX_CONSTRAINT_CLAUSES || outClauses.TryAdd(a | b) == false)
+                {
+                    inoutResult.IsTooLarge = true;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Normalize the whole constraint of template `function`: its interface and concept
+    /// constraints and its `requires` clause, conjoined.
+    void normalizeTemplate(uint32 function, NormalizedConstraint& outResult) noexcept
+    {
+        outResult = NormalizedConstraint{};
+        Array<foundation::uint64> dnf;
+        Array<foundation::uint64> cnf;
+        // An empty constraint is true: one empty disjunct, no conjuncts.
+        if (dnf.TryAdd(0) == false)
+        {
+            outResult.IsTooLarge = true;
+            return;
+        }
+        const Symbol& declared = mModel.Symbols[function];
+        const TemplateRecord* recordOrNull = findTemplateOrNull(function);
+        const auto conjoin = [&](const Array<foundation::uint64>& partDnf,
+                                 const Array<foundation::uint64>& partCnf) noexcept {
+            Array<foundation::uint64> productDnf;
+            combineProduct(dnf, partDnf, productDnf, outResult);
+            dnf = foundation::Move(productDnf);
+            combineUnion(Array<foundation::uint64>{}, partCnf, cnf, outResult);
+        };
+        for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+        {
+            const uint32 type = mModel.Symbols[mModel.TypeParameters[declared.FirstTypeParameter + i]].Type;
+            for (const Conformance& conformance : mModel.Conformances)
+            {
+                if (conformance.Type != type)
+                {
+                    continue;
+                }
+                ConstraintAtom atom;
+                atom.IsConformance = true;
+                atom.Position = i;
+                atom.Subject = conformance.Interface;
+                Array<foundation::uint64> partDnf;
+                Array<foundation::uint64> partCnf;
+                addAtomClause(atom, outResult, partDnf, partCnf);
+                conjoin(partDnf, partCnf);
+            }
+        }
+        if (recordOrNull != nullptr)
+        {
+            foundation::StaticArray<uint32, MAX_TEMPLATE_PARAMETERS> identity{};
+            for (uint32 i = 0; i < MAX_TEMPLATE_PARAMETERS; ++i)
+            {
+                identity[i] = i;
+            }
+            uint32 position = 0;
+            for (uint32 child = firstChild(recordOrNull->Node); child != NO_NODE; child = nextSibling(child))
+            {
+                Array<foundation::uint64> partDnf;
+                Array<foundation::uint64> partCnf;
+                if (getKind(child) == SyntaxKind::TemplateParameter)
+                {
+                    const uint32 constraint = firstChild(child);
+                    const uint32 conceptSymbol = constraint == NO_NODE ? NO_SYMBOL : mModel.NodeSymbols[constraint];
+                    if (conceptSymbol != NO_SYMBOL && mModel.Symbols[conceptSymbol].Kind == SymbolKind::Concept)
+                    {
+                        foundation::StaticArray<uint32, MAX_TEMPLATE_PARAMETERS> inner{};
+                        inner[0] = position;
+                        uint32 body = NO_NODE;
+                        for (uint32 part = firstChild(mModel.Symbols[conceptSymbol].Declaration); part != NO_NODE;
+                             part = nextSibling(part))
+                        {
+                            body = part;
+                        }
+                        normalize(body, inner, conceptSymbol, outResult, partDnf, partCnf, 0);
+                        conjoin(partDnf, partCnf);
+                    }
+                    ++position;
+                }
+                else if (getKind(child) == SyntaxKind::RequiresClause)
+                {
+                    normalize(firstChild(child), identity, function, outResult, partDnf, partCnf, 0);
+                    conjoin(partDnf, partCnf);
+                }
+            }
+        }
+        outResult.Disjuncts = foundation::Move(dnf);
+        outResult.Conjuncts = foundation::Move(cnf);
+    }
+
+    /// True when atom `a` implies atom `b`: the same expression, or conformance to an interface
+    /// that inherits the other.
+    [[nodiscard]] bool implies(const ConstraintAtom& a, const ConstraintAtom& b) const noexcept
+    {
+        if (a.IsConformance != b.IsConformance)
+        {
+            return false;
+        }
+        if (a.IsConformance == true)
+        {
+            return a.Position == b.Position &&
+                   (a.Subject == b.Subject || conformsTo(mModel.Symbols[a.Subject].Type, b.Subject) == true);
+        }
+        if (a.Subject != b.Subject)
+        {
+            return false;
+        }
+        for (uint32 i = 0; i < MAX_TEMPLATE_PARAMETERS; ++i)
+        {
+            if (a.Mapping[i] != b.Mapping[i])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// C++20 subsumption ([temp.constr.order]): every disjunct of `p` has an atom implying an atom
+    /// of every conjunct of `q`.
+    [[nodiscard]] bool subsumes(const NormalizedConstraint& p, const NormalizedConstraint& q) const noexcept
+    {
+        if (p.IsTooLarge == true || q.IsTooLarge == true)
+        {
+            return false;
+        }
+        for (const foundation::uint64 disjunct : p.Disjuncts)
+        {
+            for (const foundation::uint64 conjunct : q.Conjuncts)
+            {
+                bool isCovered = false;
+                for (usize a = 0; a < p.Atoms.GetSize() && isCovered == false; ++a)
+                {
+                    if ((disjunct & (foundation::uint64{1} << a)) == 0)
+                    {
+                        continue;
+                    }
+                    for (usize b = 0; b < q.Atoms.GetSize() && isCovered == false; ++b)
+                    {
+                        isCovered =
+                            (conjunct & (foundation::uint64{1} << b)) != 0 && implies(p.Atoms[a], q.Atoms[b]) == true;
+                    }
+                }
+                if (isCovered == false)
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /// Among `candidates` of equal cost, the one whose constraints subsume every other's while no
+    /// other's subsume it; NO_SYMBOL when no candidate is most constrained.
+    [[nodiscard]] uint32 pickMostConstrained(const Array<uint32>& candidates) noexcept
+    {
+        Array<NormalizedConstraint> forms;
+        if (forms.TryResize(candidates.GetSize()) == false)
+        {
+            mSink.ReportOutOfMemory();
+            mIsFatal = true;
+            return NO_SYMBOL;
+        }
+        for (usize i = 0; i < candidates.GetSize(); ++i)
+        {
+            normalizeTemplate(candidates[i], forms[i]);
+        }
+        for (usize i = 0; i < candidates.GetSize(); ++i)
+        {
+            bool isBest = true;
+            for (usize j = 0; j < candidates.GetSize() && isBest == true; ++j)
+            {
+                isBest = i == j || (subsumes(forms[i], forms[j]) == true && subsumes(forms[j], forms[i]) == false);
+            }
+            if (isBest == true)
+            {
+                return candidates[i];
+            }
+        }
+        return NO_SYMBOL;
+    }
+
+    // ----- Specialization ------------------------------------------------------------------------
+
+    /// Record the names of templates that are specialized per concrete type: those with concept or
+    /// `requires` constraints or `if constexpr`, then, transitively, templates that call one by name.
+    [[nodiscard]] bool collectSpecializedNames() noexcept
+    {
+        Array<std::string_view> concepts;
+        for (uint32 declaration = firstChild(0); declaration != NO_NODE; declaration = nextSibling(declaration))
+        {
+            if (getKind(declaration) == SyntaxKind::ConceptDeclaration &&
+                concepts.TryAdd(spellNode(declaration)) == false)
+            {
+                return false;
+            }
+        }
+        bool isChanged = true;
+        while (isChanged == true)
+        {
+            isChanged = false;
+            for (uint32 declaration = firstChild(0); declaration != NO_NODE; declaration = nextSibling(declaration))
+            {
+                if (getKind(declaration) != SyntaxKind::TemplateDeclaration)
+                {
+                    continue;
+                }
+                uint32 function = NO_NODE;
+                bool isSpecialized = false;
+                for (uint32 child = firstChild(declaration); child != NO_NODE; child = nextSibling(child))
+                {
+                    if (getKind(child) == SyntaxKind::RequiresClause)
+                    {
+                        isSpecialized = true;
+                    }
+                    else if (getKind(child) == SyntaxKind::TemplateParameter && firstChild(child) != NO_NODE)
+                    {
+                        for (const std::string_view conceptSymbol : concepts)
+                        {
+                            isSpecialized = isSpecialized == true || spellNode(firstChild(child)) == conceptSymbol;
+                        }
+                    }
+                    else if (getKind(child) == SyntaxKind::FunctionDeclaration)
+                    {
+                        function = child;
+                    }
+                }
+                if (function == NO_NODE || isSpecializedName(spellNode(function)) == true)
+                {
+                    continue;
+                }
+                isSpecialized = isSpecialized == true || containsSpecializedUse(function) == true;
+                if (isSpecialized == true)
+                {
+                    if (mSpecializedNames.TryAdd(spellNode(function)) == false)
+                    {
+                        return false;
+                    }
+                    isChanged = true;
+                }
+            }
+        }
+        return true;
+    }
+
+    /// True when the subtree at `node` has an `if constexpr` or calls a specialized name.
+    [[nodiscard]] bool containsSpecializedUse(uint32 node) const noexcept
+    {
+        const uint32 last = getLastDescendant(node);
+        for (uint32 i = node; i <= last && i < mTree.Nodes.GetSize(); ++i)
+        {
+            const SyntaxNode& syntax = getNode(i);
+            if (syntax.Kind == SyntaxKind::IfStatement && syntax.IsConstexpr == true)
+            {
+                return true;
+            }
+            if (syntax.Kind == SyntaxKind::CallExpression && syntax.FirstChild != NO_NODE &&
+                getKind(syntax.FirstChild) == SyntaxKind::Name &&
+                isSpecializedName(spellNode(syntax.FirstChild)) == true)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool isSpecializedName(std::string_view name) const noexcept
+    {
+        for (const std::string_view specialized : mSpecializedNames)
+        {
+            if (specialized == name)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// The last node of the subtree at `node`. The parser creates a subtree's nodes in one run, so
+    /// the subtree is the index range from `node` to this.
+    [[nodiscard]] uint32 getLastDescendant(uint32 node) const noexcept
+    {
+        uint32 last = node;
+        uint32 current = node;
+        while (current != NO_NODE)
+        {
+            last = current > last ? current : last;
+            uint32 child = getNode(current).FirstChild;
+            uint32 lastChild = NO_NODE;
+            while (child != NO_NODE)
+            {
+                lastChild = child;
+                child = getNode(child).NextSibling;
+            }
+            current = lastChild;
+        }
+        return last;
+    }
+
+    /// The specialization of `function` for `typeArguments`, created and queued on first use.
+    [[nodiscard]] uint32
+    requireSpecialization(uint32 node,
+                          uint32 function,
+                          const foundation::StaticArray<uint32, MAX_TEMPLATE_PARAMETERS>& typeArguments) noexcept
+    {
+        const Symbol& declared = mModel.Symbols[function];
+        for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+        {
+            const TypeKind kind = getType(typeArguments[i]).Kind;
+            if (kind == TypeKind::TypeParameter || kind == TypeKind::Error)
+            {
+                if (kind == TypeKind::TypeParameter)
+                {
+                    report(DiagnosticCode::InvalidConstraint,
+                           node,
+                           ComposeMessage("'",
+                                          getSymbolName(function),
+                                          "' is specialized per type; call it with concrete types"));
+                }
+                return NO_INDEX;
+            }
+        }
+        for (uint32 index = 0; index < mModel.Specializations.GetSize(); ++index)
+        {
+            const Specialization& existing = mModel.Specializations[index];
+            bool isSame = existing.Template == function;
+            for (uint32 i = 0; i < declared.TypeParameterCount && isSame == true; ++i)
+            {
+                isSame = mModel.TypeArguments[existing.FirstTypeArgument + i] == typeArguments[i];
+            }
+            if (isSame == true)
+            {
+                return index;
+            }
+        }
+        if (mModel.Specializations.GetSize() >= MAX_SPECIALIZATIONS)
+        {
+            report(DiagnosticCode::CheckerLimit,
+                   node,
+                   ComposeMessage("more than ", uint64{MAX_SPECIALIZATIONS}, " template specializations"));
+            mIsFatal = true;
+            return NO_INDEX;
+        }
+        Specialization specialization;
+        specialization.Template = function;
+        specialization.FirstTypeArgument = static_cast<uint32>(mModel.TypeArguments.GetSize());
+        specialization.FirstNode = declared.Declaration;
+        specialization.NodeCount = getLastDescendant(declared.Declaration) - declared.Declaration + 1;
+        for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+        {
+            if (mModel.TypeArguments.TryAdd(typeArguments[i]) == false)
+            {
+                mSink.ReportOutOfMemory();
+                mIsFatal = true;
+                return NO_INDEX;
+            }
+        }
+        if (mModel.Specializations.TryAdd(specialization) == false)
+        {
+            mSink.ReportOutOfMemory();
+            mIsFatal = true;
+            return NO_INDEX;
+        }
+        return static_cast<uint32>(mModel.Specializations.GetSize() - 1);
+    }
+
+    /// Check each queued specialization; checking one may queue more.
+    void checkSpecializations() noexcept
+    {
+        for (uint32 index = 0; index < mModel.Specializations.GetSize() && mIsFatal == false; ++index)
+        {
+            checkSpecialization(index);
+        }
+    }
+
+    /// Copy `count` entries of `source` from `first` onto the end of `inoutTarget`.
+    template <typename Element>
+    [[nodiscard]] static bool
+    appendRange(const Array<Element>& source, uint32 first, uint32 count, Array<Element>& inoutTarget) noexcept
+    {
+        if (inoutTarget.TryEnsureCapacity(inoutTarget.GetSize() + count) == false)
+        {
+            return false;
+        }
+        for (uint32 i = 0; i < count; ++i)
+        {
+            inoutTarget.Add(source[first + i]);
+        }
+        return true;
+    }
+
+    template <typename Element>
+    static void restoreRange(const Array<Element>& saved, uint32 first, Array<Element>& inoutTarget) noexcept
+    {
+        for (uint32 i = 0; i < saved.GetSize(); ++i)
+        {
+            inoutTarget[first + i] = saved[i];
+        }
+    }
+
+    template <typename Element>
+    static void resetRange(uint32 first, uint32 count, const Element& value, Array<Element>& inoutTarget) noexcept
+    {
+        for (uint32 i = 0; i < count; ++i)
+        {
+            inoutTarget[first + i] = value;
+        }
+    }
+
+    /// Check the template of specialization `index` with its type parameters bound to the
+    /// specialization's types, storing the facts of its nodes in the Specialized* arrays and
+    /// leaving the template's own facts unchanged.
+    void checkSpecialization(uint32 index) noexcept
+    {
+        const Specialization specialization = mModel.Specializations[index];
+        const uint32 first = specialization.FirstNode;
+        const uint32 count = specialization.NodeCount;
+        Array<uint32> savedTypes;
+        Array<uint32> savedSymbols;
+        Array<uint32> savedParameters;
+        Array<CallKind> savedCallKinds;
+        Array<IntegerConstant> savedConstants;
+        Array<uint32> savedTypeArguments;
+        if (appendRange(mModel.NodeTypes, first, count, savedTypes) == false ||
+            appendRange(mModel.NodeSymbols, first, count, savedSymbols) == false ||
+            appendRange(mModel.NodeParameters, first, count, savedParameters) == false ||
+            appendRange(mModel.NodeCallKinds, first, count, savedCallKinds) == false ||
+            appendRange(mModel.NodeIntegerConstants, first, count, savedConstants) == false ||
+            appendRange(mModel.NodeTypeArguments, first, count, savedTypeArguments) == false)
+        {
+            mSink.ReportOutOfMemory();
+            mIsFatal = true;
+            return;
+        }
+        resetRange(first, count, NO_TYPE, mModel.NodeTypes);
+        resetRange(first, count, NO_SYMBOL, mModel.NodeSymbols);
+        resetRange(first, count, NO_SYMBOL, mModel.NodeParameters);
+        resetRange(first, count, CallKind::None, mModel.NodeCallKinds);
+        resetRange(first, count, IntegerConstant{}, mModel.NodeIntegerConstants);
+        resetRange(first, count, NO_SYMBOL, mModel.NodeTypeArguments);
+        const Symbol& declared = mModel.Symbols[specialization.Template];
+        for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+        {
+            Binding binding;
+            binding.Parameter = mModel.TypeParameters[declared.FirstTypeParameter + i];
+            binding.Type = mModel.TypeArguments[specialization.FirstTypeArgument + i];
+            if (mBindings.TryAdd(binding) == false || mTemplateParameters.TryAdd(binding.Parameter) == false)
+            {
+                mSink.ReportOutOfMemory();
+                mIsFatal = true;
+                return;
+            }
+        }
+        mIsSpecializing = true;
+        const uint32 function = checkFunctionSignature(first, NO_SYMBOL);
+        if (function != NO_SYMBOL)
+        {
+            mModel.Specializations[index].Function = function;
+            checkFunctionBody(first, function);
+        }
+        mIsSpecializing = false;
+        mBindings.Clear();
+        mTemplateParameters.Clear();
+        mModel.Specializations[index].FirstFact = static_cast<uint32>(mModel.SpecializedNodeTypes.GetSize());
+        if (appendRange(mModel.NodeTypes, first, count, mModel.SpecializedNodeTypes) == false ||
+            appendRange(mModel.NodeSymbols, first, count, mModel.SpecializedNodeSymbols) == false ||
+            appendRange(mModel.NodeParameters, first, count, mModel.SpecializedNodeParameters) == false ||
+            appendRange(mModel.NodeCallKinds, first, count, mModel.SpecializedNodeCallKinds) == false ||
+            appendRange(mModel.NodeIntegerConstants, first, count, mModel.SpecializedNodeIntegerConstants) == false ||
+            appendRange(mModel.NodeTypeArguments, first, count, mModel.SpecializedNodeTypeArguments) == false)
+        {
+            mSink.ReportOutOfMemory();
+            mIsFatal = true;
+        }
+        restoreRange(savedTypes, first, mModel.NodeTypes);
+        restoreRange(savedSymbols, first, mModel.NodeSymbols);
+        restoreRange(savedParameters, first, mModel.NodeParameters);
+        restoreRange(savedCallKinds, first, mModel.NodeCallKinds);
+        restoreRange(savedConstants, first, mModel.NodeIntegerConstants);
+        restoreRange(savedTypeArguments, first, mModel.NodeTypeArguments);
     }
 
     /// True when some parameter of `function` has exactly type `type`.
@@ -1082,6 +2297,12 @@ private:
         if (type == NO_TYPE)
         {
             const uint32 parameter = findTemplateParameter(name);
+            const uint32 bound = findBinding(parameter);
+            if (bound != NO_TYPE)
+            {
+                mModel.NodeTypes[node] = bound;
+                return bound;
+            }
             const uint32 symbol = parameter != NO_SYMBOL ? parameter : mScopes.Find(name);
             const bool isNamedType =
                 symbol != ScopeTable::UNBOUND &&
@@ -1215,6 +2436,9 @@ private:
                 return;
             case SyntaxKind::TemplateDeclaration:
                 checkTemplate(node);
+                return;
+            case SyntaxKind::ConceptDeclaration:
+                checkConcept(node);
                 return;
             default:
                 (void)isMember;
@@ -1723,6 +2947,11 @@ private:
         {
             report(DiagnosticCode::InvalidAttribute, node, ComposeMessage("entry points cannot be templates"));
         }
+        if (mIsSpecializing == true)
+        {
+            // A specialization is reached through its template; its name is never looked up.
+            return symbol;
+        }
         return registerFunction(symbol, structSymbol);
     }
 
@@ -2171,6 +3400,11 @@ private:
             case SyntaxKind::IfStatement: {
                 checkStatementAttributes(node);
                 const uint32 condition = skipAttributes(firstChild(node));
+                if (getNode(node).IsConstexpr == true)
+                {
+                    checkConstexprIf(node, condition);
+                    return;
+                }
                 requireCondition(condition);
                 const uint32 whenTrue = condition == NO_NODE ? NO_NODE : nextSibling(condition);
                 if (whenTrue != NO_NODE)
@@ -2234,6 +3468,33 @@ private:
                 return;
             default:
                 return;
+        }
+    }
+
+    /// `if constexpr`: the condition is a constant bool, and only the branch it selects is checked;
+    /// the other keeps its syntax checks only.
+    void checkConstexprIf(uint32 node, uint32 condition) noexcept
+    {
+        const uint32 type = checkExpression(condition, NO_TYPE);
+        const IntegerConstant value = getConstant(condition);
+        if (isError(type) == true)
+        {
+            return;
+        }
+        if (isBoolScalar(type) == false || value.IsKnown == false)
+        {
+            report(DiagnosticCode::InvalidConstraint,
+                   condition,
+                   ComposeMessage("an 'if constexpr' condition is a constant bool, such as Concept<T> == true"));
+            return;
+        }
+        setConstant(node, value.Value);
+        const uint32 whenTrue = nextSibling(condition);
+        const uint32 whenFalse = whenTrue == NO_NODE ? NO_NODE : nextSibling(whenTrue);
+        const uint32 taken = value.Value != 0 ? whenTrue : whenFalse;
+        if (taken != NO_NODE)
+        {
+            checkScopedStatement(taken);
         }
     }
 
@@ -2475,6 +3736,14 @@ private:
                 return setType(node, checkIndex(node));
             case SyntaxKind::InitializerList:
                 return setType(node, checkInitializerList(node, expected));
+            case SyntaxKind::ConformanceTest:
+            case SyntaxKind::ConceptApplication: {
+                // A constant bool: true when the types satisfy the test or concept.
+                validateConstraint(node, 0);
+                const ConstraintValue value = evaluateConstraint(node, 0);
+                setConstant(node, value.IsKnown == true && value.Value != 0 ? 1 : 0);
+                return setType(node, mTypes.GetScalar(ScalarKind::Bool));
+            }
             default:
                 return setType(node, TypeTable::ERROR_TYPE);
         }
@@ -2772,7 +4041,13 @@ private:
             return TypeTable::ERROR_TYPE;
         }
         const uint32 parameter = findTemplateParameter(spellNode(left));
-        const uint32 owner = parameter != NO_SYMBOL ? parameter : mScopes.Find(spellNode(left));
+        const uint32 bound = findBinding(parameter);
+        uint32 owner = parameter != NO_SYMBOL ? parameter : mScopes.Find(spellNode(left));
+        if (bound != NO_TYPE && getType(bound).Kind == TypeKind::Struct)
+        {
+            // A specialization reads the bound struct's constant, a known value.
+            owner = getType(bound).Symbol;
+        }
         if (owner != ScopeTable::UNBOUND && (mModel.Symbols[owner].Kind == SymbolKind::Struct ||
                                              mModel.Symbols[owner].Kind == SymbolKind::TypeParameter))
         {
@@ -3713,6 +4988,8 @@ private:
         uint32 ties = 0;
         uint32 candidateCount = 0;
         bool isConstraintFailure = false;
+        Array<uint32> tied;
+        Array<internal::BindingResult> tiedBindings;
         internal::BindingResult bestBinding;
         internal::BindingResult lastFailure;
         foundation::StaticArray<internal::ParameterFacts, MAX_FUNCTION_PARAMETERS> parameters{};
@@ -3747,7 +5024,8 @@ private:
                 isConstraintFailure = true;
                 continue;
             }
-            // Fewer constant adaptations win; at equal adaptations a function beats a template.
+            // Fewer constant adaptations win; at equal adaptations a function beats a template, and
+            // among templates the most constrained wins.
             const uint32 rank = binding.ConversionCount * 2 + (function.TypeParameterCount > 0 ? 1 : 0);
             if (best == NO_SYMBOL || rank < bestConversions)
             {
@@ -3755,10 +5033,18 @@ private:
                 bestConversions = rank;
                 bestBinding = binding;
                 ties = 0;
+                tied.Clear();
+                tiedBindings.Clear();
             }
             else if (rank == bestConversions)
             {
                 ++ties;
+            }
+            if (rank == bestConversions && (tied.TryAdd(candidate) == false || tiedBindings.TryAdd(binding) == false))
+            {
+                mSink.ReportOutOfMemory();
+                mIsFatal = true;
+                return TypeTable::ERROR_TYPE;
             }
         }
         const std::string_view name = getSymbolName(head);
@@ -3790,6 +5076,28 @@ private:
             }
             return TypeTable::ERROR_TYPE;
         }
+        if (ties > 0 && mModel.Symbols[best].TypeParameterCount > 0)
+        {
+            const uint32 winner = pickMostConstrained(tied);
+            for (usize i = 0; i < tied.GetSize() && winner != NO_SYMBOL; ++i)
+            {
+                if (tied[i] == winner)
+                {
+                    best = winner;
+                    bestBinding = tiedBindings[i];
+                    ties = 0;
+                }
+            }
+            if (ties > 0)
+            {
+                report(DiagnosticCode::InvalidConstraint,
+                       node,
+                       ComposeMessage("several templates '",
+                                      name,
+                                      "' accept these arguments and neither's constraints subsume the other's"));
+                return TypeTable::ERROR_TYPE;
+            }
+        }
         if (ties > 0)
         {
             report(DiagnosticCode::AmbiguousCall,
@@ -3801,6 +5109,10 @@ private:
         }
         const Symbol& function = mModel.Symbols[best];
         mModel.NodeSymbols[node] = best;
+        if (function.IsSpecialized == true)
+        {
+            (void)requireSpecialization(node, best, bestBinding.TypeArguments);
+        }
         if (function.TypeParameterCount > 0)
         {
             mModel.NodeTypeArguments[node] = static_cast<uint32>(mModel.TypeArguments.GetSize());
@@ -3860,7 +5172,7 @@ private:
 
     /// True when every template argument of `binding` was deduced and conforms to the interfaces
     /// its parameter's constraints name.
-    [[nodiscard]] bool satisfiesConstraints(uint32 function, const internal::BindingResult& binding) const noexcept
+    [[nodiscard]] bool satisfiesConstraints(uint32 function, const internal::BindingResult& binding) noexcept
     {
         const Symbol& declared = mModel.Symbols[function];
         for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
@@ -3880,7 +5192,7 @@ private:
                 }
             }
         }
-        return true;
+        return declared.TypeParameterCount == 0 || satisfiesConcepts(function, binding.TypeArguments) == true;
     }
 
     void reportBindingFailure(uint32 node,
@@ -4242,6 +5554,12 @@ private:
     Array<uint32> mTemplateParameters;
     /// Every extension so far, in declaration order.
     Array<uint32> mExtensions;
+    Array<TemplateRecord> mTemplates;
+    Array<Binding> mBindings;
+    /// Names of templates that are specialized; see Symbol::IsSpecialized.
+    Array<std::string_view> mSpecializedNames;
+    /// True while a specialization is checked.
+    bool mIsSpecializing = false;
     /// The next Members slot that checkStruct reserved for a method of the struct being checked.
     uint32 mNextMethodSlot = 0;
     bool mIsInExtern = false;

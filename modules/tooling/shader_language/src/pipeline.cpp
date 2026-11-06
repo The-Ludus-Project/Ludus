@@ -59,6 +59,8 @@ LowerToSlang(const PreprocessRequest& request, const LoweringOptions& options, L
                 outResult.Text = foundation::Move(emitted.Text);
                 outResult.SourceMap = foundation::Move(emitted.SourceMap);
                 outResult.BoundsChecks = foundation::Move(emitted.BoundsChecks);
+                outResult.Specializations = foundation::Move(emitted.Specializations);
+                outResult.GroupsharedClears = foundation::Move(emitted.GroupsharedClears);
             }
         }
     }
@@ -68,6 +70,8 @@ LowerToSlang(const PreprocessRequest& request, const LoweringOptions& options, L
         outResult.Text.Clear();
         outResult.SourceMap.Clear();
         outResult.BoundsChecks.Clear();
+        outResult.Specializations.Clear();
+        outResult.GroupsharedClears.Clear();
     }
     return outResult.Outcome;
 }

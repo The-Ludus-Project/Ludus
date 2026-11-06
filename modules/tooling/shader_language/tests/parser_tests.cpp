@@ -168,7 +168,7 @@ TEST_CASE("LUSL parser enforces LUSL syntax rules", "[shader-language][parser]")
     RequireSyntaxError("void F() { ; }", DiagnosticCode::ExpressionWithoutEffect);
     RequireSyntaxError("void F() { G(a = 1, 2); }", DiagnosticCode::PositionalAfterNamed);
     RequireSyntaxError("enum Mode : uint32 { A };", DiagnosticCode::UnscopedEnum);
-    RequireSyntaxError("concept Opaque<T> = true;", DiagnosticCode::LaterPhaseConstruct);
+    RequireSyntaxError("dynamic Material other;", DiagnosticCode::LaterPhaseConstruct);
     RequireSyntaxError("dynamic Material m;", DiagnosticCode::LaterPhaseConstruct);
     RequireSyntaxError("template <Material M> struct Holder { };", DiagnosticCode::LaterPhaseConstruct);
     RequireSyntaxError("float32 return = 1;", DiagnosticCode::KeywordAsName);

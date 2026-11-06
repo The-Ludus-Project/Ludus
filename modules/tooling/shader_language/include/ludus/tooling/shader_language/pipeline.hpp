@@ -37,6 +37,10 @@ struct LoweringResult final
     foundation::Array<SourceMapEntry> SourceMap;
     /// See EmitResult::BoundsChecks.
     foundation::Array<BoundsCheckSite> BoundsChecks;
+    /// See EmitResult::Specializations.
+    foundation::Array<SpecializationRecord> Specializations;
+    /// See EmitResult::GroupsharedClears.
+    foundation::Array<GroupsharedClearRecord> GroupsharedClears;
     /// The preprocessor's file read mask; see PreprocessResult::SourceReadMask.
     foundation::Array<foundation::uint8> SourceReadMask;
     /// The preprocessor's configuration read mask; see PreprocessResult::ConfigurationReadMask.

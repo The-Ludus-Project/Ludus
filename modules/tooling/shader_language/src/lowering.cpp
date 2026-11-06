@@ -37,7 +37,7 @@ public:
              const EmitOptions& options,
              DiagnosticSink& inoutSink,
              IrModule& outModule) noexcept
-        : mInputs(inputs), mOptions(options), mSink(inoutSink), mModule(outModule)
+        : mInputs(inputs), mOptions(options), mSink(inoutSink), mModule(outModule), mModel(&inputs.Model)
     {
     }
 
@@ -54,10 +54,60 @@ public:
         {
             lowerDeclaration(declaration, 0);
         }
+        lowerSpecializations();
     }
 
 private:
     // ----- Syntax and model access ---------------------------------------------------------------
+
+    /// The model whose per-node facts lowering reads: the checked model, or while a specialization
+    /// is lowered, its view from MakeSpecializedModel.
+    [[nodiscard]] const SemanticModel& getModel() const noexcept
+    {
+        return *mModel;
+    }
+
+    /// Lower each specialization as a function of its own, from the specialization's facts.
+    void lowerSpecializations() noexcept
+    {
+        for (uint32 index = 0; index < mInputs.Model.Specializations.GetSize() && mIsFatal == false; ++index)
+        {
+            SemanticModel specialized;
+            if (MakeSpecializedModel(mInputs.Model, index, specialized) == false)
+            {
+                failOutOfMemory();
+                return;
+            }
+            mModel = &specialized;
+            lowerFunction(mInputs.Model.Specializations[index].FirstNode, 0);
+            mModel = &mInputs.Model;
+        }
+    }
+
+    /// The function a call of template `function` with the type arguments at `firstTypeArgument`
+    /// reaches: its specialization's, or `function` itself when it is not specialized.
+    [[nodiscard]] uint32 resolveSpecialization(uint32 function, uint32 firstTypeArgument) const noexcept
+    {
+        const Symbol& declared = mInputs.Model.Symbols[function];
+        if (declared.IsSpecialized == false || firstTypeArgument == NO_SYMBOL)
+        {
+            return function;
+        }
+        for (const Specialization& specialization : mInputs.Model.Specializations)
+        {
+            bool isSame = specialization.Template == function;
+            for (uint32 i = 0; i < declared.TypeParameterCount && isSame == true; ++i)
+            {
+                isSame = mInputs.Model.TypeArguments[specialization.FirstTypeArgument + i] ==
+                         getModel().TypeArguments[firstTypeArgument + i];
+            }
+            if (isSame == true)
+            {
+                return specialization.Function;
+            }
+        }
+        return function;
+    }
 
     [[nodiscard]] const SyntaxNode& getSyntax(uint32 node) const noexcept
     {
@@ -104,22 +154,22 @@ private:
 
     [[nodiscard]] const SemanticType& getType(uint32 type) const noexcept
     {
-        return mInputs.Model.Types[type];
+        return getModel().Types[type];
     }
 
     [[nodiscard]] const Symbol& getSymbol(uint32 symbol) const noexcept
     {
-        return mInputs.Model.Symbols[symbol];
+        return getModel().Symbols[symbol];
     }
 
     [[nodiscard]] uint32 typeOf(uint32 node) const noexcept
     {
-        return mInputs.Model.NodeTypes[node];
+        return getModel().NodeTypes[node];
     }
 
     [[nodiscard]] uint32 symbolOf(uint32 node) const noexcept
     {
-        return mInputs.Model.NodeSymbols[node];
+        return getModel().NodeSymbols[node];
     }
 
     [[nodiscard]] bool isUntyped(uint32 type) const noexcept
@@ -152,7 +202,7 @@ private:
 
     void findScalarTypes() noexcept
     {
-        for (uint32 type = 0; type < mInputs.Model.Types.GetSize(); ++type)
+        for (uint32 type = 0; type < getModel().Types.GetSize(); ++type)
         {
             const SemanticType& shape = getType(type);
             const uint32 kind = static_cast<uint32>(shape.Scalar);
@@ -355,7 +405,7 @@ private:
             const Symbol& declared = getSymbol(shape.Symbol);
             for (uint32 i = 0; i < declared.MemberCount; ++i)
             {
-                const Symbol& member = getSymbol(mInputs.Model.Members[declared.FirstMember + i]);
+                const Symbol& member = getSymbol(getModel().Members[declared.FirstMember + i]);
                 if (member.Kind == SymbolKind::Field && requireZero(member.Type, origin) == false)
                 {
                     return false;
@@ -428,7 +478,9 @@ private:
             case SyntaxKind::TemplateDeclaration:
                 for (uint32 child = firstChild(declaration); child != NO_NODE; child = nextSibling(child))
                 {
-                    if (getKind(child) == SyntaxKind::FunctionDeclaration)
+                    // A specialized template lowers through its specializations instead.
+                    if (getKind(child) == SyntaxKind::FunctionDeclaration && symbolOf(child) != NO_SYMBOL &&
+                        getSymbol(symbolOf(child)).IsSpecialized == false)
                     {
                         lowerFunction(child, parent);
                     }
@@ -477,7 +529,7 @@ private:
         const Symbol& declared = getSymbol(symbol);
         for (uint32 i = 0; i < declared.MemberCount; ++i)
         {
-            const uint32 enumerator = mInputs.Model.Members[declared.FirstMember + i];
+            const uint32 enumerator = getModel().Members[declared.FirstMember + i];
             const uint32 child = addChild(node, IrKind::Enumerator, getSymbol(enumerator).Declaration);
             if (child == NO_IR)
             {
@@ -636,7 +688,7 @@ private:
                      argument != NO_NODE && dimension < THREAD_GROUP_DIMENSIONS;
                      argument = nextSibling(argument))
                 {
-                    outThreads[dimension] = mInputs.Model.NodeIntegerConstants[argument].Value;
+                    outThreads[dimension] = getModel().NodeIntegerConstants[argument].Value;
                     ++dimension;
                 }
             }
@@ -792,7 +844,7 @@ private:
         Array<uint8> isReferenced;
         Array<uint32> pending;
         Array<uint32> stack;
-        const usize symbolCount = mInputs.Model.Symbols.GetSize();
+        const usize symbolCount = getModel().Symbols.GetSize();
         if (isVisited.TryResize(symbolCount, 0) == false || isReferenced.TryResize(symbolCount, 0) == false ||
             pending.TryAdd(entry) == false)
         {
@@ -819,7 +871,7 @@ private:
                 const uint32 node = stack.GetLast();
                 stack.RemoveLast();
                 const uint32 symbol = symbolOf(node);
-                const CallKind call = mInputs.Model.NodeCallKinds[node];
+                const CallKind call = getModel().NodeCallKinds[node];
                 if (getKind(node) == SyntaxKind::Name && symbol != NO_SYMBOL)
                 {
                     isReferenced[symbol] = 1;
@@ -913,7 +965,7 @@ private:
                 const uint32 count = firstChild(attribute);
                 if (count != NO_NODE)
                 {
-                    outUnrollCount = mInputs.Model.NodeIntegerConstants[count].Value;
+                    outUnrollCount = getModel().NodeIntegerConstants[count].Value;
                 }
             }
             else if (name == "loop")
@@ -976,6 +1028,20 @@ private:
                 lowerIncrement(statement, parent);
                 return;
             case SyntaxKind::IfStatement: {
+                if (getSyntax(statement).IsConstexpr == true)
+                {
+                    // Only the branch the condition selected was checked; it is the whole statement.
+                    const uint32 condition = skipAttributes(firstChild(statement));
+                    const uint32 whenTrue = nextSibling(condition);
+                    const uint32 whenFalse = whenTrue == NO_NODE ? NO_NODE : nextSibling(whenTrue);
+                    const uint32 taken = getModel().NodeIntegerConstants[statement].Value != 0 ? whenTrue : whenFalse;
+                    if (taken != NO_NODE)
+                    {
+                        const uint32 block = addChild(parent, IrKind::Block, taken);
+                        lowerStatement(taken, block);
+                    }
+                    return;
+                }
                 int64 unroll = 0;
                 const uint32 node = addChild(parent, IrKind::If, statement);
                 if (node == NO_IR)
@@ -1127,7 +1193,7 @@ private:
 
     [[nodiscard]] bool isConstant(uint32 node) const noexcept
     {
-        return mInputs.Model.NodeIntegerConstants[node].IsKnown == true;
+        return getModel().NodeIntegerConstants[node].IsKnown == true;
     }
 
     void lowerAssignment(uint32 statement, uint32 parent) noexcept
@@ -1287,7 +1353,7 @@ private:
             return zero;
         }
         // Constant integer and bool expressions are emitted as their exact folded value.
-        const IntegerConstant constant = mInputs.Model.NodeIntegerConstants[node];
+        const IntegerConstant constant = getModel().NodeIntegerConstants[node];
         if (constant.IsKnown == true && shape.Kind == TypeKind::Scalar && kind != SyntaxKind::Name &&
             kind != SyntaxKind::ScopeExpression)
         {
@@ -1553,7 +1619,7 @@ private:
         const Symbol& declared = getSymbol(getType(type).Symbol);
         for (uint32 i = 0; i < declared.MemberCount; ++i)
         {
-            const Symbol& member = getSymbol(mInputs.Model.Members[declared.FirstMember + i]);
+            const Symbol& member = getSymbol(getModel().Members[declared.FirstMember + i]);
             if (member.Kind == SymbolKind::Field && member.HasDefault == false &&
                 requireZero(member.Type, origin) == false)
             {
@@ -1577,7 +1643,7 @@ private:
         const Symbol& declared = getSymbol(getType(type).Symbol);
         for (uint32 i = 0; i < declared.MemberCount && mIsFatal == false; ++i)
         {
-            const uint32 field = mInputs.Model.Members[declared.FirstMember + i];
+            const uint32 field = getModel().Members[declared.FirstMember + i];
             const Symbol& member = getSymbol(field);
             if (member.Kind != SymbolKind::Field)
             {
@@ -1632,7 +1698,7 @@ private:
         {
             const uint32 current = mStack.GetLast();
             mStack.RemoveLast();
-            const CallKind call = mInputs.Model.NodeCallKinds[current];
+            const CallKind call = getModel().NodeCallKinds[current];
             if (call == CallKind::Function || call == CallKind::Method)
             {
                 return true;
@@ -1663,7 +1729,7 @@ private:
 
     [[nodiscard]] uint32 lowerCall(uint32 node, uint32 type) noexcept
     {
-        const CallKind call = mInputs.Model.NodeCallKinds[node];
+        const CallKind call = getModel().NodeCallKinds[node];
         const uint32 callee = firstChild(node);
         switch (call)
         {
@@ -1679,7 +1745,8 @@ private:
             default:
                 return NO_IR;
         }
-        const uint32 function = symbolOf(node);
+        // A specialized template is reached through the specialization for these type arguments.
+        const uint32 function = resolveSpecialization(symbolOf(node), getModel().NodeTypeArguments[node]);
         const Symbol& declared = getSymbol(function);
         const uint32 object = getKind(callee) == SyntaxKind::MemberExpression ? firstChild(callee) : NO_NODE;
         const bool isImplicitThis = call == CallKind::Method && object == NO_NODE;
@@ -1688,7 +1755,7 @@ private:
         bool hasCall = false;
         for (uint32 argument = nextSibling(callee); argument != NO_NODE; argument = nextSibling(argument))
         {
-            const uint32 position = mInputs.Model.NodeParameters[argument];
+            const uint32 position = getModel().NodeParameters[argument];
             isReordered = isReordered == true || (written.IsEmpty() == false && position < written.GetLast());
             hasCall = hasCall == true || containsCall(firstChild(argument)) == true;
             if (written.TryAdd(position) == false)
@@ -1708,7 +1775,7 @@ private:
         }
         at(result).Type = type;
         at(result).Symbol = function;
-        at(result).Value = static_cast<int64>(mInputs.Model.NodeTypeArguments[node]);
+        at(result).Value = static_cast<int64>(getModel().NodeTypeArguments[node]);
         if (isImplicitThis == true)
         {
             at(result).Flags |= IR_IMPLICIT_THIS;
@@ -1719,11 +1786,11 @@ private:
         }
         for (uint32 position = 0; position < declared.MemberCount && mIsFatal == false; ++position)
         {
-            const uint32 parameter = mInputs.Model.Members[declared.FirstMember + position];
+            const uint32 parameter = getModel().Members[declared.FirstMember + position];
             uint32 value = NO_NODE;
             for (uint32 argument = nextSibling(callee); argument != NO_NODE; argument = nextSibling(argument))
             {
-                if (mInputs.Model.NodeParameters[argument] == position)
+                if (getModel().NodeParameters[argument] == position)
                 {
                     value = firstChild(argument);
                 }
@@ -1773,7 +1840,7 @@ private:
         at(result).Type = type;
         at(result).Symbol = function;
         at(result).Index = helperIndex;
-        at(result).Value = static_cast<int64>(mInputs.Model.NodeTypeArguments[node]);
+        at(result).Value = static_cast<int64>(getModel().NodeTypeArguments[node]);
         if (isImplicitThis == true)
         {
             at(result).Flags |= IR_IMPLICIT_THIS;
@@ -1786,9 +1853,9 @@ private:
         for (uint32 argument = nextSibling(firstChild(node)); argument != NO_NODE && mIsFatal == false;
              argument = nextSibling(argument))
         {
-            const uint32 position = mInputs.Model.NodeParameters[argument];
+            const uint32 position = getModel().NodeParameters[argument];
             appendChild(result,
-                        lowerArgument(firstChild(argument), mInputs.Model.Members[declared.FirstMember + position]));
+                        lowerArgument(firstChild(argument), getModel().Members[declared.FirstMember + position]));
         }
         if (mModule.Helpers[helperIndex].Body == NO_IR)
         {
@@ -1819,7 +1886,7 @@ private:
         const IrHelper helper = mModule.Helpers[helperIndex];
         for (uint32 position = 0; position < declared.MemberCount && mIsFatal == false; ++position)
         {
-            const uint32 parameter = mInputs.Model.Members[declared.FirstMember + position];
+            const uint32 parameter = getModel().Members[declared.FirstMember + position];
             uint32 written = NO_INDEX;
             for (uint32 k = 0; k < helper.FieldCount; ++k)
             {
@@ -1884,6 +1951,7 @@ private:
     Array<uint32> mClearedGroupshared;
     Array<uint32> mStack;
     Array<char> mPathScratch;
+    const SemanticModel* mModel;
     uint32 mReturnType = NO_TYPE;
     bool mIsFatal = false;
 };

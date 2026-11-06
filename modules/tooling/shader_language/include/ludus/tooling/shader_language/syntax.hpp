@@ -59,9 +59,14 @@ enum class SyntaxKind : foundation::uint8
     /// `: A, B` after a struct, interface or extension name. Token: `:`. Children: one Type per
     /// interface.
     BaseList,
-    /// `template <...>` before a function. Token: `template`. Children: TemplateParameter*, then the
-    /// FunctionDeclaration.
+    /// `template <...>` before a function. Token: `template`. Children: TemplateParameter*, then
+    /// RequiresClause?, then the FunctionDeclaration.
     TemplateDeclaration,
+    /// `requires expression` after template parameters. Token: `requires`. Children: the constraint.
+    RequiresClause,
+    /// `concept Name<T, ...> = constraint;`. Token: the name. Children: TemplateParameter* (each a
+    /// `typename` parameter), then the constraint expression.
+    ConceptDeclaration,
     /// One template parameter: `Interface Name`, or `typename Name` without a constraint. Token: the
     /// name. Children: the constraint Type, absent for `typename`.
     TemplateParameter,
@@ -87,6 +92,7 @@ enum class SyntaxKind : foundation::uint8
     /// `target++;`, `++target;` and the `--` forms. Token: the operator. Children: target.
     IncrementStatement,
     /// Children: Attribute*, condition, the statement when true, the `else` statement?.
+    /// SyntaxNode::IsConstexpr marks `if constexpr`.
     IfStatement,
     /// Children: Attribute*, initializer statement, condition, increment statement, body; an absent
     /// part is Empty.
@@ -136,6 +142,12 @@ enum class SyntaxKind : foundation::uint8
     Argument,
     /// `object.member`. Token: the member name. Children: the object.
     MemberExpression,
+    /// `(Type : Interface)`, true when the type conforms. Token: `:`. Children: the Type, the
+    /// interface Type.
+    ConformanceTest,
+    /// `Concept<Type, ...>`, the value of a concept for type arguments. Token: the concept name.
+    /// Children: the argument Types.
+    ConceptApplication,
     /// `object[index]`. Children: object, index.
     IndexExpression,
     /// Designated initializer `{ .A = a, .B = b }`. Token: `{`. Children: FieldInitializer*.
@@ -180,6 +192,8 @@ struct SyntaxNode final
     bool IsConst = false;
     /// `groupshared` on a VariableDeclaration.
     bool IsGroupshared = false;
+    /// `if constexpr` on an IfStatement.
+    bool IsConstexpr = false;
     /// The principal token SyntaxKind names, or NO_TOKEN.
     foundation::uint32 Token = NO_TOKEN;
     /// First token of the node.
@@ -213,8 +227,8 @@ struct SyntaxTree final
 ///
 /// The grammar enforces LUSL's syntactic rules: one declarator per declaration, assignment and
 /// `++`/`--` only as statements, no unary `!`, no C casts, positional arguments before named ones,
-/// and only calls as expression statements. Constructs of later phases (`concept`, `requires`,
-/// `dynamic`) are reported as such. After an error the parser skips to the next statement or
+/// and only calls as expression statements. Constructs of later phases (`dynamic` dispatch,
+/// generic structs) are reported as such. After an error the parser skips to the next statement or
 /// declaration and continues, so one request reports several independent errors.
 ///
 /// Deterministic and reentrant; keeps no state between calls.

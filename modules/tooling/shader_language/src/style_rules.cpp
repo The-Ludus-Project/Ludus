@@ -235,6 +235,7 @@ private:
             case SymbolKind::Enumerator:
             case SymbolKind::Interface:
             case SymbolKind::TypeParameter:
+            case SymbolKind::Concept:
                 if (IsPascal(name) == false)
                 {
                     reportName(symbol, "PascalCase", MakePascal(name));

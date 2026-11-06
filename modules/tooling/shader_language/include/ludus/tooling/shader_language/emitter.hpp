@@ -62,6 +62,28 @@ struct BoundsCheckSite final
     SourceLocation Location;
 };
 
+/// @brief One specialized copy of a template, for the build report.
+struct SpecializationRecord final
+{
+    /// The template's declaration.
+    SourceLocation Template;
+    /// The template and its type arguments, such as `Shade<CarPaint>`; long names are clipped.
+    TypeNameText Name;
+    /// Name of the generated Slang function.
+    TypeNameText GeneratedName;
+};
+
+/// @brief A `groupshared` variable that a compute entry point clears, for the build report.
+struct GroupsharedClearRecord final
+{
+    /// The entry point's declaration.
+    SourceLocation Entry;
+    /// The variable's declaration.
+    SourceLocation Variable;
+    /// Unpadded bytes of the variable: each scalar at its own width, without layout padding.
+    foundation::uint64 Bytes = 0;
+};
+
 /// @brief Output of EmitSlang.
 ///
 /// On Ready, `Text` is one complete Slang module. On any other outcome `Text`, `SourceMap` and
@@ -77,6 +99,10 @@ struct EmitResult final
     foundation::Array<SourceMapEntry> SourceMap;
     /// Checked accesses in failure-code order; empty unless EmitOptions::ShouldCheckBounds.
     foundation::Array<BoundsCheckSite> BoundsChecks;
+    /// Every template specialization the module contains; each counts toward MAX_SPECIALIZATIONS.
+    foundation::Array<SpecializationRecord> Specializations;
+    /// Every cooperative `groupshared` clear, by entry point.
+    foundation::Array<GroupsharedClearRecord> GroupsharedClears;
     /// Reported problems in the order found; at most MAX_DIAGNOSTICS.
     foundation::Array<Diagnostic> Diagnostics;
     /// Number of diagnostics found after `Diagnostics` reached MAX_DIAGNOSTICS.

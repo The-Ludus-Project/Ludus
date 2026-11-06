@@ -107,8 +107,11 @@ enum class SymbolKind : foundation::uint8
     Interface,
     /// An `extension` of a struct; its members are the methods and constants it adds.
     Extension,
-    /// A template type parameter of a function.
+    /// A template type parameter of a function or concept.
     TypeParameter,
+    /// A `concept`; its type parameters are TypeParameterCount symbols from FirstTypeParameter, and
+    /// Declaration is the ConceptDeclaration whose last child is the constraint.
+    Concept,
 };
 
 /// @brief A declared entity.
@@ -141,6 +144,10 @@ struct Symbol final
     bool HasIntegerValue = false;
     /// True for a function with a body.
     bool IsDefined = false;
+    /// True for a template that is specialized per concrete type rather than lowered to a Slang
+    /// generic: it has concept or `requires` constraints, uses `if constexpr`, or calls such a
+    /// template. Its body is checked once per SemanticModel::Specializations entry.
+    bool IsSpecialized = false;
     /// The declaring syntax node, or NO_NODE for built-ins.
     foundation::uint32 Declaration = NO_NODE;
     /// The name token in the preprocessed tokens, or NO_TOKEN for built-ins.
@@ -160,6 +167,27 @@ struct Symbol final
     foundation::uint32 FirstTypeParameter = 0;
     /// Number of type parameters; zero for a function that is not a template.
     foundation::uint32 TypeParameterCount = 0;
+};
+
+/// @brief One concrete instance of a specialized template.
+///
+/// The template's syntax nodes [FirstNode, FirstNode + NodeCount) are checked again with its type
+/// parameters bound to TypeArguments, and the facts of that check are stored in the Specialized*
+/// arrays of the model from FirstFact on, in node order.
+struct Specialization final
+{
+    /// The template function symbol.
+    foundation::uint32 Template = NO_SYMBOL;
+    /// The function symbol the instance declares, with concrete parameter types.
+    foundation::uint32 Function = NO_SYMBOL;
+    /// First of the template's TypeParameterCount type arguments in SemanticModel::TypeArguments.
+    foundation::uint32 FirstTypeArgument = 0;
+    /// First syntax node of the template's FunctionDeclaration subtree.
+    foundation::uint32 FirstNode = NO_NODE;
+    /// Number of nodes in that subtree.
+    foundation::uint32 NodeCount = 0;
+    /// First entry of this instance in the Specialized* arrays.
+    foundation::uint32 FirstFact = 0;
 };
 
 /// @brief A type that conforms to an interface.
@@ -241,6 +269,21 @@ struct SemanticModel final
     foundation::Array<foundation::uint32> TypeParameters;
     /// Every stated conformance, in declaration order.
     foundation::Array<Conformance> Conformances;
+    /// Instances of specialized templates, in the order calls first required them.
+    foundation::Array<Specialization> Specializations;
+    /// NodeTypes of each specialization's nodes; see Specialization::FirstFact.
+    foundation::Array<foundation::uint32> SpecializedNodeTypes;
+    /// NodeSymbols of each specialization's nodes.
+    foundation::Array<foundation::uint32> SpecializedNodeSymbols;
+    /// NodeParameters of each specialization's nodes.
+    foundation::Array<foundation::uint32> SpecializedNodeParameters;
+    /// NodeCallKinds of each specialization's nodes.
+    foundation::Array<CallKind> SpecializedNodeCallKinds;
+    /// NodeIntegerConstants of each specialization's nodes; an `if constexpr` node holds its
+    /// condition's value.
+    foundation::Array<IntegerConstant> SpecializedNodeIntegerConstants;
+    /// NodeTypeArguments of each specialization's nodes.
+    foundation::Array<foundation::uint32> SpecializedNodeTypeArguments;
     /// Reported problems in the order found; at most MAX_DIAGNOSTICS.
     foundation::Array<Diagnostic> Diagnostics;
     /// Number of diagnostics found after `Diagnostics` reached MAX_DIAGNOSTICS.

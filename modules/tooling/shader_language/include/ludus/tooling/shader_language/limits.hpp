@@ -50,6 +50,11 @@ inline constexpr foundation::usize MAX_SYMBOLS = foundation::usize{1} << 20;
 inline constexpr foundation::usize MAX_FUNCTION_PARAMETERS = 64;
 /// Most type parameters of one template.
 inline constexpr foundation::usize MAX_TEMPLATE_PARAMETERS = 8;
+/// Most specializations of templates in one translation unit; each is a generated function, so
+/// the budget bounds the generated code (docs/architecture/shading-language.md).
+inline constexpr foundation::usize MAX_SPECIALIZATIONS = 256;
+/// Deepest nesting of concept applications while a constraint is evaluated.
+inline constexpr foundation::usize MAX_CONSTRAINT_DEPTH = 32;
 /// Most elements of one array dimension.
 inline constexpr foundation::usize MAX_ARRAY_LENGTH = foundation::usize{1} << 20;
 /// Most diagnostics retained for one request; later ones are counted as dropped.

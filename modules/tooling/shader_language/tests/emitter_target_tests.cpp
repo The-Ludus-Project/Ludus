@@ -552,3 +552,107 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
         CHECK(generated.find("float3 Shade<M : Material>(M material, float3 normalWorld)") != std::string::npos);
     }
 }
+
+TEST_CASE("Lowered LUSL concepts and specializations compile for every portable target",
+          "[shader-language][emitter-targets]")
+{
+    // The design's material example: concepts, constraint ordering, if constexpr and static_assert.
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add(std::string(ROOT), R"(interface Material
+{
+    static const uint32 LOBE_COUNT;
+    float32x3 Evaluate(in float32x3 normalWorld, in float32x3 lightWorld);
+};
+
+interface ClearcoatMaterial : Material
+{
+    float32x3 EvaluateClearcoat(in float32x3 normalWorld);
+};
+
+struct CarPaint : ClearcoatMaterial
+{
+    static const uint32 LOBE_COUNT = 3;
+    float32x3 Albedo;
+    float32x3 Evaluate(in float32x3 normalWorld, in float32x3 lightWorld)
+    {
+        return Albedo * dot(normalWorld, lightWorld);
+    }
+    float32x3 EvaluateClearcoat(in float32x3 normalWorld)
+    {
+        return normalWorld * 0.5;
+    }
+};
+
+struct Plastic : Material
+{
+    static const uint32 LOBE_COUNT = 1;
+    float32 Roughness;
+    float32x3 Evaluate(in float32x3 normalWorld, in float32x3 lightWorld)
+    {
+        return float32x3(Roughness);
+    }
+};
+
+concept Opaque<T> = (T : Material) && (T::LOBE_COUNT == 1);
+concept Layered<T> = (T : ClearcoatMaterial) && (T::LOBE_COUNT > 1);
+
+static_assert(Layered<CarPaint> == true, "CarPaint must stay layered");
+static_assert(Opaque<CarPaint> == false, "CarPaint is not opaque");
+static_assert(Opaque<Plastic> == true, "Plastic is opaque");
+
+struct FogParameters
+{
+    float32 Density;
+};
+
+float32x3 ApplyFog(in float32x3 color, in FogParameters fog)
+{
+    return color * (1.0 - fog.Density);
+}
+
+template <Material M>
+float32x3 Shade(in M material, in float32x3 normalWorld)
+{
+    return material.Evaluate(normalWorld, normalWorld);
+}
+
+template <Layered M>
+float32x3 Shade(in M material, in float32x3 normalWorld)
+{
+    return material.Evaluate(normalWorld, normalWorld) + material.EvaluateClearcoat(normalWorld);
+}
+
+template <Material M>
+float32x3 ShadeWithFog(in M material, in float32x3 normalWorld, in FogParameters fog)
+{
+    float32x3 color = Shade(material = material, normalWorld = normalWorld);
+    if constexpr (Opaque<M> == true)
+    {
+        color = ApplyFog(color = color, fog = fog);
+    }
+    return color;
+}
+
+groupshared float32x3 result = 0;
+
+[stage(compute), threads(1, 1, 1)]
+void Main(in uint32x3 dispatchThread : DispatchThreadId)
+{
+    CarPaint paint = { .Albedo = float32x3(1.0) };
+    Plastic plastic = { .Roughness = 0.5 };
+    FogParameters fog = { .Density = 0.25 };
+    float32x3 normalWorld = float32x3(0.0, 0.0, 1.0);
+    result = ShadeWithFog(paint, normalWorld, fog) + ShadeWithFog(plastic, normalWorld, fog);
+}
+)");
+    compiler::Request options;
+    for (const compiler::Target target : {compiler::Target::Spirv, compiler::Target::Wgsl, compiler::Target::Metal})
+    {
+        options.OutputTarget = target;
+        compiler::Result result;
+        const compiler::Status status = CompileLanguage(slang, files, options, result);
+        INFO("target " << static_cast<int>(target) << "\n" << GetDiagnostics(result));
+        CHECK(status == compiler::Status::Ready);
+    }
+}
