@@ -4,6 +4,7 @@
 #include <ludus/tooling/shader_language/limits.hpp>
 
 #include "internal/array_growth.hpp"
+#include "internal/include_path.hpp"
 #include "internal/ir.hpp"
 #include "internal/slang_names.hpp"
 #include "internal/type_table.hpp"
@@ -511,10 +512,16 @@ private:
         }
     }
 
-    /// Resolve `extern slang "path"` to a request file: beside the declaring file, then from the
-    /// snapshot root, as LUSL's own includes resolve.
+    /// Resolve `extern slang "path"` to a request file with the search `#include` uses: beside the
+    /// declaring file, from the snapshot root, then below each include directory.
     void lowerExternBlock(uint32 declaration) noexcept
     {
+        const uint32 token = getSyntax(declaration).Token;
+        // `extern slang { ... }` names no file: the including Slang code provides its definitions.
+        if (token == NO_TOKEN || mInputs.Preprocessed.Tokens[token].Kind != TokenKind::String)
+        {
+            return;
+        }
         const std::string_view quoted = spellNode(declaration);
         if (quoted.size() < 2)
         {
@@ -522,36 +529,25 @@ private:
         }
         const std::string_view path = quoted.substr(1, quoted.size() - 2);
         const SourceLocation location = locate(declaration);
-        std::string_view directory;
-        if (location.FileIndex < mInputs.Request.Files.GetSize())
-        {
-            const std::string_view declaringPath = ViewText(mInputs.Request.Files[location.FileIndex].Path);
-            const usize slash = declaringPath.rfind('/');
-            directory = slash == std::string_view::npos ? std::string_view{} : declaringPath.substr(0, slash + 1);
-        }
+        const std::string_view declaringPath = location.FileIndex < mInputs.Request.Files.GetSize()
+                                                   ? ViewText(mInputs.Request.Files[location.FileIndex].Path)
+                                                   : std::string_view{};
         uint16 found = NO_SOURCE;
-        for (usize file = 0; file < mInputs.Request.Files.GetSize() && found == NO_SOURCE; ++file)
+        const IncludePathOutcome outcome = FindSnapshotFile(mInputs.Request, declaringPath, path, mPathScratch, found);
+        if (outcome == IncludePathOutcome::OutOfMemory)
         {
-            const std::string_view candidatePath = ViewText(mInputs.Request.Files[file].Path);
-            if (candidatePath.size() == directory.size() + path.size() &&
-                candidatePath.starts_with(directory) == true && candidatePath.ends_with(path) == true)
-            {
-                found = static_cast<uint16>(file);
-            }
+            failOutOfMemory();
+            return;
         }
-        for (usize file = 0; file < mInputs.Request.Files.GetSize() && found == NO_SOURCE; ++file)
-        {
-            if (ViewText(mInputs.Request.Files[file].Path) == path)
-            {
-                found = static_cast<uint16>(file);
-            }
-        }
-        if (found == NO_SOURCE)
+        if (outcome != IncludePathOutcome::Ok)
         {
             mSink.ReportError(DiagnosticCode::ExternSlangNotFound,
                               location,
                               SourceLocation{},
-                              ComposeMessage("'", path, "' is not in the snapshot, beside this file or at its root"));
+                              ComposeMessage("'",
+                                             path,
+                                             "' is not in the snapshot: not beside this file, at its root or in an "
+                                             "include directory"));
             return;
         }
         for (const uint16 existing : mModule.Includes)
@@ -1829,6 +1825,7 @@ private:
     }};
     Array<uint32> mClearedGroupshared;
     Array<uint32> mStack;
+    Array<char> mPathScratch;
     uint32 mReturnType = NO_TYPE;
     bool mIsFatal = false;
 };

@@ -101,6 +101,83 @@ ResolveIncludePath(std::string_view includingFile, std::string_view path, founda
     return joined;
 }
 
+namespace
+{
+[[nodiscard]] std::string_view ViewOf(const foundation::BorrowedView<const char>& view) noexcept
+{
+    return view.IsValid() == true ? std::string_view(view.GetDataOrNull(), view.GetSize()) : std::string_view{};
+}
+
+/// Look `inoutPath` up in the request: Ok with `outIndex`, or NotFound.
+[[nodiscard]] IncludePathOutcome
+LookUp(const PreprocessRequest& request, const foundation::Array<char>& path, foundation::uint16& outIndex) noexcept
+{
+    const std::string_view text(path.GetData(), path.GetSize());
+    for (usize i = 0; i < request.Files.GetSize(); ++i)
+    {
+        if (ViewOf(request.Files[i].Path) == text)
+        {
+            outIndex = static_cast<foundation::uint16>(i);
+            return IncludePathOutcome::Ok;
+        }
+    }
+    return IncludePathOutcome::NotFound;
+}
+
+/// Combine the outcomes of two candidates: a hit or an allocation failure decides; NotFound beats
+/// Invalid, so a path that is valid somewhere is reported as missing rather than malformed.
+[[nodiscard]] IncludePathOutcome Combine(IncludePathOutcome first, IncludePathOutcome second) noexcept
+{
+    if (first == IncludePathOutcome::NotFound || second == IncludePathOutcome::NotFound)
+    {
+        return IncludePathOutcome::NotFound;
+    }
+    return second;
+}
+} // namespace
+
+IncludePathOutcome FindSnapshotFile(const PreprocessRequest& request,
+                                    std::string_view includingFile,
+                                    std::string_view path,
+                                    foundation::Array<char>& inoutScratch,
+                                    foundation::uint16& outIndex) noexcept
+{
+    IncludePathOutcome outcome = IncludePathOutcome::Invalid;
+    const usize candidateCount = 2 + request.IncludeDirectories.GetSize();
+    for (usize candidate = 0; candidate < candidateCount; ++candidate)
+    {
+        IncludePathOutcome resolved = IncludePathOutcome::Ok;
+        if (candidate == 0)
+        {
+            resolved = ResolveIncludePath(includingFile, path, inoutScratch);
+        }
+        else if (candidate == 1)
+        {
+            resolved = ResolveIncludePath(std::string_view{}, path, inoutScratch);
+        }
+        else
+        {
+            // Join below the directory: resolve against a file name inside it.
+            inoutScratch.Clear();
+            resolved = AppendComponents(ViewOf(request.IncludeDirectories[candidate - 2]), false, inoutScratch);
+            if (resolved == IncludePathOutcome::Ok)
+            {
+                resolved = AppendComponents(path, false, inoutScratch);
+            }
+        }
+        if (resolved == IncludePathOutcome::OutOfMemory)
+        {
+            return resolved;
+        }
+        if (resolved == IncludePathOutcome::Ok && LookUp(request, inoutScratch, outIndex) == IncludePathOutcome::Ok)
+        {
+            return IncludePathOutcome::Ok;
+        }
+        outcome = Combine(outcome, resolved == IncludePathOutcome::Ok ? IncludePathOutcome::NotFound : resolved);
+    }
+    return outcome;
+}
+
 bool IsSnapshotPath(std::string_view path) noexcept
 {
     if (path.empty() == true || path.front() == '/' || path.find('\\') != std::string_view::npos ||

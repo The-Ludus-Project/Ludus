@@ -1,15 +1,19 @@
 # Ludus Shading Language (LUSL)
 
 Status: proposed, November 4, 2026; the design's open questions were resolved the
-same day (see [resolved questions](#resolved-questions)). L1a (the preprocessor),
-L1b (the parser and formatter), L1c (the semantic checker, with flow rules,
-style rules and fixes), L1d (the IR, the Slang emitter and `luslc`) and L1e-1
-(`.lusl` sources in `ShaderCompiler` and the worker, FoundationMath
-declarations) are implemented; see the
-[module guide](../modules/tooling/shader-language.md) for their exact behavior
-and limits. L1e-2 (render-graph programs in LUSL, the scene API declarations,
-the style-setting key and a ported shader) and later phases are not
-implemented.
+same day (see [resolved questions](#resolved-questions)). L1 is implemented in
+`Ludus::ShaderLanguage`, `luslc`, `ShaderCompiler` and the render-graph build:
+the preprocessor (L1a), parser and formatter (L1b), checker (L1c), IR, Slang
+emitter and `luslc` (L1d), `.lusl` sources in compiler requests (L1e-1), and
+render-graph programs with a ported shader (L1e-2). The
+[module guide](../modules/tooling/shader-language.md) describes their exact
+behavior and limits. Still open from L1:
+- reporting development bounds-check failures through the render graph;
+- the Metal loop code-generation measurement;
+- configuration values for render-graph programs.
+
+L2 and later phases are not implemented.
+
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
 

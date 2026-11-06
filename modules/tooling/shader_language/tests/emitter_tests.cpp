@@ -1,5 +1,6 @@
 #include "preprocessor_test_support.hpp"
 
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/tooling/shader_language/pipeline.hpp>
 
 #include <catch2/catch_test_macros.hpp>
@@ -498,4 +499,39 @@ TEST_CASE("LUSL EmitSlang rejects inputs that did not check", "[shader-language]
                               language::EmitOptions{},
                               result) == language::Status::InvalidRequest);
     CHECK(result.Text.IsEmpty() == true);
+}
+
+TEST_CASE("LUSL include directories serve #include and extern slang", "[shader-language][emitter]")
+{
+    Snapshot snapshot;
+    snapshot.AddFile("main_shaders/miss.lusl",
+                     "#include \"ray.luslh\"\nfloat32x3 ShadeMiss(in Ray ray)\n{\n    return ray.DirectionWorld;\n}\n");
+    snapshot.AddFile(
+        "_sdk/ray.luslh",
+        "#pragma once\nextern slang \"ray.slang\"\n{\n    struct Ray\n    {\n        float32x3 DirectionWorld;\n"
+        "    };\n};\n");
+    snapshot.AddFile("_sdk/ray.slang", "struct Ray { float3 DirectionWorld; };\n");
+    (void)snapshot.Run("main_shaders/miss.lusl");
+    language::PreprocessRequest request = snapshot.GetRequest();
+    const std::string_view directory = "_sdk";
+    const foundation::StaticArray<foundation::BorrowedView<const char>, 1> directories = {{
+        {directory.data(), directory.size()},
+    }};
+    language::LoweringResult result;
+    // Without the directory the header is not found.
+    CHECK(language::LowerToSlang(request, language::LoweringOptions{}, result) == language::Status::Failed);
+    request.IncludeDirectories =
+        foundation::BorrowedView<const foundation::BorrowedView<const char>>(directories.GetData(), 1);
+    REQUIRE(language::LowerToSlang(request, language::LoweringOptions{}, result) == language::Status::Ready);
+    const std::string text(result.Text.GetData(), result.Text.GetSize());
+    // The extern file is found beside its header, and included relative to the generated module.
+    CHECK(Contains(text, "#include \"../_sdk/ray.slang\"\n"));
+
+    const std::string_view invalid = "../outside";
+    const foundation::StaticArray<foundation::BorrowedView<const char>, 1> invalidDirectories = {{
+        {invalid.data(), invalid.size()},
+    }};
+    request.IncludeDirectories =
+        foundation::BorrowedView<const foundation::BorrowedView<const char>>(invalidDirectories.GetData(), 1);
+    CHECK(language::LowerToSlang(request, language::LoweringOptions{}, result) == language::Status::InvalidRequest);
 }

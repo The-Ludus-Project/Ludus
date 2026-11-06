@@ -1,0 +1,7 @@
+// The surface color; the LUSL port of ../../raytracing/main_shaders/closest.slang.
+#include "ray_shader.luslh"
+
+float32x3 ShadeClosest(in RayHit hit)
+{
+    return hit.Color.xyz;
+}

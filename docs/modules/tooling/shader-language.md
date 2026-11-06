@@ -14,9 +14,9 @@ language and the delivery plan. This page covers what is implemented:
 - `.lusl` sources in `ShaderCompiler` requests and the native worker, and SDK
   declarations of FoundationMath (L1e-1); see
   [LUSL in compiler requests](#lusl-in-compiler-requests) and
-  [SDK declarations](#sdk-declarations).
-
-Render-graph programs written in LUSL arrive in L1e-2.
+  [SDK declarations](#sdk-declarations);
+- render-graph programs written in LUSL, include directories and the ray
+  callback declarations (L1e-2); see [Render-graph programs](#render-graph-programs).
 
 Link `Ludus::ShaderLanguage` and include
 `ludus/tooling/shader_language/preprocessor.hpp`. The library builds for native
@@ -77,7 +77,7 @@ keep no state.
 
 | Directive | Behavior |
 | --- | --- |
-| `#include "path"` | Searches beside the including file, then from the snapshot root. Accepts only `.luslh` headers; Slang code is declared with `extern slang` instead. Paths cannot be absolute, use `\`, or leave the root. No `<path>` form |
+| `#include "path"` | Searches beside the including file, from the snapshot root, then below each `PreprocessRequest::IncludeDirectories` entry. Accepts only `.luslh` headers; Slang code is declared with `extern slang` instead. Paths cannot be absolute, use `\`, or leave the root. No `<path>` form |
 | `#pragma once` | The only pragma; others are errors |
 | `#define`, `#undef` | Object-like and function-like macros with C rescanning, `#` and `##`. Identical redefinitions are allowed. Not variadic |
 | `#if`, `#elif` | int64 integer constant expressions with decimal and `0x` literals, `true`, `false` and `defined` |
@@ -111,6 +111,7 @@ Macro expansion follows Dave Prosser's
 | --- | --- | --- |
 | `MAX_FILE_TOKENS` | 1,048,576 | Tokens lexed from one file or configuration value |
 | `MAX_OUTPUT_TOKENS` | 1,048,576 | Tokens in one translation unit |
+| `MAX_INCLUDE_DIRECTORIES` | 8 | `PreprocessRequest::IncludeDirectories` |
 | `MAX_INCLUDE_DEPTH` | 32 | Include nesting, counting the root |
 | `MAX_CONDITIONAL_DEPTH` | 64 | `#if` nesting |
 | `MAX_CONDITION_NESTING` | 64 | Nesting inside one condition |
@@ -358,6 +359,12 @@ bool CheckShade(const language::PreprocessRequest& request, const language::Prep
 - **`extern slang "path" { ... }`** declares Slang functions, constants and
   structs. `struct Name;` declares an opaque type that LUSL can pass around but
   not look inside or zero.
+- **`extern slang { ... }`**, without a path, declares what the including Slang
+  code provides, such as the types a render-graph wrapper defines before it
+  includes a callback. Lowering writes no `#include` for it.
+- **Extern structs and the zero rule:** `= 0` and designated initializers of an
+  extern struct set only the fields LUSL declares. Declare every field when
+  either is used.
 - **Reserved names:** declarations keep their names in the generated Slang, so
   a LUSL name cannot be a word Slang reserves (`let`, `var`, `this`, `import`,
   `typealias`, ...) or start with `_lusl`, which generated helpers use, or
@@ -565,7 +572,7 @@ The IR is internal. It is the seam for direct backends later.
 | `groupshared T name = 0;` | Every compute entry point that reaches the variable, through any calls, clears it first: each thread zeroes a strided slice of its elements, then `GroupMemoryBarrierWithGroupSync()`. The entry point reuses its `GroupIndex` parameter, or gains a hidden `SV_GroupIndex` one. `= void` variables are not cleared |
 | Fields inside methods | `this.Field`, `this.Method(...)` |
 | `[stage(compute), threads(x, y, z)]` | `[shader("compute")]`, `[numthreads(x, y, z)]`; semantics become `SV_DispatchThreadID`, `SV_GroupThreadID`, `SV_GroupID` and `SV_GroupIndex` |
-| `extern slang "path"` | `#include` of the resolved snapshot file, relative to the generated module: beside the declaring file first, then from the snapshot root; each file once. A missing file is `extern-slang-not-found` |
+| `extern slang "path"` | `#include` of the resolved snapshot file, relative to the generated module. The file is searched as `#include` searches: beside the declaring file, from the snapshot root, then below each include directory. Each file is included once; a missing file is `extern-slang-not-found`. `extern slang { ... }` writes nothing |
 | `static_assert` | Nothing; the checker evaluated it |
 
 Declarations keep their LUSL names, so Slang code can include the generated
@@ -609,10 +616,10 @@ values fail the portable set, and the Slang diagnostic names the type.
 - **Floating constant expressions** such as `0.1 * 3.0` are evaluated in the
   target type when the shader runs. Only integer and bool constants are folded
   exactly.
-- **GPU readback tests are not written yet.** Zeroed memory, wrapping on every
-  target, bounds-check failures and the Metal loop measurement arrive with the
-  render-graph integration in L1e. Until then, emitted modules are checked by
-  compiling them for every target.
+- **GPU readback** covers wrapping, the zero rule and shift masks through a
+  render graph (see [Render-graph programs](#render-graph-programs)). Not yet
+  covered: bounds-check failures, which need the render graph to report
+  `FAILURE_CODE_VARIABLE`, and the Metal loop code-generation measurement.
 
 ## luslc
 
@@ -632,6 +639,8 @@ luslc format --root shaders --check main/shade.lusl main/common.luslh
   group never uses. The snapshot keeps `ShaderCompiler`'s limits: 64 files and
   4 MiB.
 - **Options:**
+  - `--include-directory DIR` adds an include directory, relative to `--root`;
+    repeat it for more.
   - `--define NAME=VALUE` passes a configuration value; repeat it for more.
   - `--style strict|warn|off` selects the [style setting](#style-rules).
   - `--bounds-checks` emits [development bounds checks](#development-bounds-checks).
@@ -698,6 +707,75 @@ parameter names: `MakeRandomAddress(scope = id.xy, event = 0, dimension = 1)`.
 A target test calls every declaration and compiles the module for SPIR-V, WGSL
 and Metal.
 
+`ray_shader.luslh` declares the ray callback types `Ray`, `RayLaunch` and
+`RayHit` for [render-graph programs](#render-graph-programs). The ray wrapper
+defines them before it includes a callback, so the header uses a path-less
+`extern slang` block. `RayLaunch` declares the members every wrapper provides;
+scene-interface wrappers add more, such as `SampleIndex`, which LUSL cannot read
+yet. The scene queries (`TraceClosest`, `TestVisibility`, ...) get declarations
+generated from Slang reflection in L3.
+
+## Render-graph programs
+
+A render-graph program's `source` may name a `.lusl` file:
+
+```json
+{
+  "id": "Miss",
+  "stage": "miss",
+  "source": "main_shaders/miss.lusl",
+  "function": "ShadeMiss",
+  "input": "Ray",
+  "output": "Color",
+  "bindings": []
+}
+```
+
+```c
+#include "ray_shader.luslh"
+
+float32x3 ShadeMiss(in Ray ray)
+{
+    return float32x3(0, 0, 1);
+}
+```
+
+- **Lowering.** The build lowers each `.lusl` source once with `luslc`, from
+  the same captured snapshot as the rest of the build
+  (`scripts/python/ludus_tools/render_graph_language.py`). SDK headers resolve
+  from `_ludus_ray`, where ray builds stage engine helpers. The generated module
+  joins the snapshot at `<source>.slang`, and the program names it from then on,
+  so wrappers, closures, caches and diagnostics treat it as authored Slang.
+  Slang diagnostics name LUSL lines through `#line`.
+- **Finding `luslc`.**
+  - Build-tree graphs use the `luslc` target.
+  - Installed SDKs use their `bin/luslc`.
+  - `LUDUS_LUSLC` overrides both, for example for the CLI or editor live builds.
+  - A graph without LUSL programs needs no `luslc`.
+- **Build identity.** The generated module's bytes are part of each program's
+  source closure. Packages with LUSL programs also record the `luslc` executable
+  and the lowering module, so a new compiler rebuilds them.
+- **Style setting.** The project-wide key is the CMake cache variable
+  `LUDUS_LUSL_STYLE`, with the values `strict` (the default), `warn` and `off`.
+  A game project sets it once, in its `CMakeLists.txt` before compiling graphs or
+  in its presets. `ludus_tools` builds outside CMake read the `LUDUS_LUSL_STYLE`
+  environment variable. The engine repository always builds `strict`.
+- **Current limits:**
+  - LUSL programs that need wrapper types use the
+    [ray callback declarations](#sdk-declarations), or declare them in their
+    own path-less `extern slang` block. Raster schema structs have no SDK
+    declarations yet; the schema generator gains a LUSL output in L3.
+  - Configuration values do not reach LUSL programs from the render graph yet,
+    and render-graph builds emit no development bounds checks.
+- **Evidence:**
+  - `rg2_raytracing_lusl` is `rg2_raytracing` with its generation, miss and
+    closest-hit callbacks ported to LUSL. A GPU test renders both packages and
+    compares every pixel of three frames.
+  - `rg2_lusl_semantics` colors its miss pixels with checks computed on the
+    GPU: wrapping of signed `+`, `-`, `*`, negation and `++`, the zero rule on a
+    struct with an array and a defaulted field, and masked shift counts.
+    On Metal this exercises the unsigned-arithmetic rewrite.
+
 ## Tests and fuzzing
 
 `ludus_shader_language_tests` (CTest labels `unit;shader;tooling`) covers:
@@ -729,8 +807,11 @@ with and without bounds checks. It also checks:
 - the [SDK declarations](#sdk-declarations).
 
 It is built when the native compiler library is (`LUDUS_BUILD_SHADER_WORKER=ON`).
-`luslc_tests` runs `luslc` on temporary snapshots, and the worker protocol test
-sends a `.lusl` request through a running worker.
+`luslc_tests` runs `luslc` on temporary snapshots and checks that every `.lusl`
+and `.luslh` file in the repository is formatted. The worker protocol test
+sends a `.lusl` request through a running worker. `test_render_graph_language.py`
+covers render-graph lowering with a stand-in `luslc`. The GPU tests of
+`ludus_render_graph_ray_tests` cover ported pixels and defined behavior.
 
 For coverage-guided fuzzing with native Clang, configure with
 `-DLUDUS_BUILD_SHADER_LANGUAGE_FUZZERS=ON` and run `ludus_shader_language_fuzzer`.

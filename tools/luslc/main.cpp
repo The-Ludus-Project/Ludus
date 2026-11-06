@@ -53,11 +53,13 @@ constexpr usize MAX_DEFINES = language::MAX_CONFIGURATION_VALUES;
 using PathText = StaticString<filesystem::MAX_PATH_BYTES>;
 
 const std::string_view USAGE =
-    "usage: luslc check  [--root DIR] [--style strict|warn|off] [--define NAME=VALUE]... SOURCE\n"
-    "       luslc lower  [--root DIR] [--style strict|warn|off] [--define NAME=VALUE]... [--bounds-checks]\n"
-    "                    [--output FILE] SOURCE\n"
+    "usage: luslc check  [--root DIR] [--include-directory DIR]... [--style strict|warn|off]\n"
+    "                    [--define NAME=VALUE]... SOURCE\n"
+    "       luslc lower  [--root DIR] [--include-directory DIR]... [--style strict|warn|off]\n"
+    "                    [--define NAME=VALUE]... [--bounds-checks] [--output FILE] SOURCE\n"
     "       luslc format [--root DIR] [--check | --write] FILE...\n"
-    "SOURCE and FILE are '/'-separated paths relative to --root (default: the current directory).\n";
+    "SOURCE, FILE and --include-directory are '/'-separated paths relative to --root (default: the\n"
+    "current directory).\n";
 
 /// Write part of `bytes` to a standard stream: the byte count, or negative on failure.
 isize WriteDescriptor(int32 descriptor, const char* bytes, usize count) noexcept
@@ -215,8 +217,10 @@ public:
 
     /// Add the files that `#include` and `extern slang` name in each file, transitively. The scan is
     /// lexical, so it may add files that conditional groups or comments never use; that only makes
-    /// the snapshot larger. Resolution follows the preprocessor: beside the naming file, then root.
-    [[nodiscard]] bool AddDependencies(const filesystem::Directory& root) noexcept
+    /// the snapshot larger. Resolution follows the preprocessor: beside the naming file, from the
+    /// root, then below each include directory.
+    [[nodiscard]] bool AddDependencies(const filesystem::Directory& root,
+                                       BorrowedView<const BorrowedView<const char>> includeDirectories) noexcept
     {
         for (usize index = 0; index < mFiles.GetSize(); ++index)
         {
@@ -249,6 +253,16 @@ public:
                 if (TryAdd(root, name, false) == false)
                 {
                     return false;
+                }
+                for (usize i = 0; i < includeDirectories.GetSize(); ++i)
+                {
+                    PathText below;
+                    if (below.TryAssign(ViewText(includeDirectories[i])) == StringStatus::Ok &&
+                        below.TryAppend("/") == StringStatus::Ok && below.TryAppend(name) == StringStatus::Ok &&
+                        TryAdd(root, below.GetView(), false) == false)
+                    {
+                        return false;
+                    }
                 }
             }
         }
@@ -384,6 +398,8 @@ struct Options final
     usize DefineCount = 0;
     StaticArray<std::string_view, compiler::MAX_SOURCE_FILES> Paths{};
     usize PathCount = 0;
+    StaticArray<BorrowedView<const char>, language::MAX_INCLUDE_DIRECTORIES> IncludeDirectories{};
+    usize IncludeDirectoryCount = 0;
 };
 
 [[nodiscard]] bool ParseStyle(std::string_view text, language::StyleSetting& outStyle) noexcept
@@ -449,6 +465,16 @@ struct Options final
             value.Value = MakeView(define.substr(equals + 1));
             ++outOptions.DefineCount;
         }
+        else if (argument == "--include-directory" && hasValue == true)
+        {
+            ++i;
+            if (outOptions.IncludeDirectoryCount >= language::MAX_INCLUDE_DIRECTORIES)
+            {
+                return false;
+            }
+            outOptions.IncludeDirectories[outOptions.IncludeDirectoryCount] = MakeView(arguments[i]);
+            ++outOptions.IncludeDirectoryCount;
+        }
         else if (argument == "--bounds-checks")
         {
             outOptions.Lowering.Emit.ShouldCheckBounds = true;
@@ -505,8 +531,10 @@ struct Options final
 int RunLowering(const Options& options, const filesystem::Directory& root) noexcept
 {
     Snapshot snapshot;
+    const BorrowedView<const BorrowedView<const char>> includeDirectories(options.IncludeDirectories.GetData(),
+                                                                          options.IncludeDirectoryCount);
     if (snapshot.Initialize() == false || snapshot.TryAdd(root, options.Paths[0], true) == false ||
-        snapshot.AddDependencies(root) == false)
+        snapshot.AddDependencies(root, includeDirectories) == false)
     {
         return EXIT_FAILED;
     }
@@ -515,6 +543,7 @@ int RunLowering(const Options& options, const filesystem::Directory& root) noexc
     request.Source = MakeView(options.Paths[0]);
     request.Configuration =
         BorrowedView<const language::ConfigurationValue>(options.Defines.GetData(), options.DefineCount);
+    request.IncludeDirectories = includeDirectories;
     language::LoweringResult result;
     const language::Status outcome = language::LowerToSlang(request, options.Lowering, result);
     for (const language::Diagnostic& diagnostic : result.Diagnostics)

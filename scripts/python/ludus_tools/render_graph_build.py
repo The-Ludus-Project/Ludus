@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import posixpath
 import re
 import shutil
 import subprocess
@@ -28,6 +29,7 @@ from . import render_graph_diagnostics as diagnostics
 from . import render_graph_ray as ray
 from . import render_graph_compute as compute
 from . import render_graph_forward as forward
+from . import render_graph_language as language
 from . import render_graph_buffers as buffers
 
 VERSION = 1
@@ -137,6 +139,9 @@ class Snapshot:
         self.root = Path(root).resolve()
         self.files = {}
         self.external = {}
+        # Slang modules lowered from LUSL during this build; they have no file to re-read.
+        self.generated = set()
+        self.language_tool = None
         self.total = 0
 
     def path(self, relative):
@@ -154,7 +159,7 @@ class Snapshot:
             self.capture(relative, read(self.path(relative)))
         return self.files[relative]
 
-    def capture(self, relative, data, *, external=None):
+    def capture(self, relative, data, *, external=None, generated=False):
         """Admit an authored source or SDK helper before mutating the bounded snapshot."""
         require(relative not in self.files, 'Source', relative, 'source already captured')
         require(len(data) <= MAX_FILE, 'Capacity', relative,
@@ -171,6 +176,8 @@ class Snapshot:
         self.total = total
         if external is not None:
             self.external[relative] = external
+        if generated:
+            self.generated.add(relative)
 
     def shader_closure(self, relative, active=(), visited=None):
         if visited is None:
@@ -195,7 +202,11 @@ class Snapshot:
         # Restrict source discovery to literal local includes. Conditional includes
         # are conservatively captured, so a disabled dependency still invalidates.
         text = re.sub(r'/\*.*?\*/|//[^\n]*', '', text, flags=re.S)
-        require(not re.search(r'\b(?:import|__include|__import)\b|^\s*#\s*(?:line|include_next)\b', text, re.M),
+        # A module lowered from LUSL maps its lines back with #line and includes SDK files through
+        # `..`; authored Slang keeps the stricter grammar.
+        is_generated = relative in self.generated
+        remapping = r'^\s*#\s*include_next\b' if is_generated else r'^\s*#\s*(?:line|include_next)\b'
+        require(not re.search(r'\b(?:import|__include|__import)\b|' + remapping, text, re.M),
                 'Source', relative, 'RG1 uses literal local includes; module imports and source remapping are unsupported')
         include_lines = re.findall(r'^\s*#\s*include\b([^\n]*)', text, re.M)
         closure = {relative}
@@ -203,7 +214,14 @@ class Snapshot:
             match = re.fullmatch(r'\s*"([^"\n]+)"\s*', line)
             require(match is not None, 'Source', relative, 'only literal quoted includes are supported')
             child = (Path(relative).parent / match[1]).as_posix()
-            self.path(child)
+            if is_generated:
+                child = posixpath.normpath(child)
+                if child.startswith(language.SDK_DIRECTORY + '/'):
+                    # An SDK helper: ray builds stage it with its own includes and key all helpers.
+                    closure.add(child)
+                    continue
+            if child not in self.files:
+                self.path(child)
             closure.update(self.shader_closure(child, (*active, relative), visited))
         require(not re.search(r'#\s*include\s*\\', text), 'Source', relative, 'continued include directives unsupported')
         visited.add(relative)
@@ -211,6 +229,8 @@ class Snapshot:
 
     def verify(self):
         for relative, data in self.files.items():
+            if relative in self.generated:
+                continue
             require(read(self.external.get(relative, self.path(relative))) == data, 'Stale', relative, 'source changed during build; prior package retained')
 
 
@@ -584,7 +604,7 @@ class ToolFileHashes:
             return result
 
 
-def tool_identity(helper, compiler, validator, cross, *, worker_socket=None, hash_file=file_hash):
+def tool_identity(helper, compiler, validator, cross, *, worker_socket=None, hash_file=file_hash, luslc=None):
     """Hash required helpers/tools; the native client belongs only to worker builds."""
     paths = {f'helper/{p}': helper / p for p in HELPERS}
     if worker_socket:
@@ -605,6 +625,10 @@ def tool_identity(helper, compiler, validator, cross, *, worker_socket=None, has
     paths['generator/render_graph_compute.py'] = Path(compute.__file__)
     paths['generator/render_graph_forward.py'] = Path(forward.__file__)
     paths['tool/slangc'] = Path(compiler).resolve()
+    if luslc:
+        # Packages with LUSL programs also record the compiler that lowered them.
+        paths['generator/render_graph_language.py'] = Path(language.__file__)
+        paths['tool/luslc'] = Path(luslc).resolve()
     if validator:
         paths['tool/spirv-val'] = Path(validator).resolve()
     if cross:
@@ -924,7 +948,8 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     return output, result
 
 
-def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capture_profile=False):
+def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capture_profile=False, luslc=None,
+                    lusl_style='strict'):
     """Capture and lower the same immutable shader contexts for compilation and editing.
 
     No compiler execution or output publication. Returns package metadata, exact
@@ -939,6 +964,9 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
     value = document(snapshot.load(manifest_label), manifest_label)
     schemas, programs, techniques, counts = validate_manifest(value)
     helper = Path(helper).resolve()
+    # LUSL programs name their generated Slang module from here on.
+    snapshot.language_tool = language.lower_sources(snapshot, programs, helper, sys.modules[__name__],
+                                                    luslc=luslc, style=lusl_style)
     visibility_helper = helper / 'visibility_buffer.slang'
     if visibility_helper.is_file():
         snapshot.capture('_ludus_visibility.slang', read(visibility_helper), external=visibility_helper)
@@ -1080,7 +1108,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
 
 
 def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None,
-                  ray_path_capture=False, capture_profile=False):
+                  ray_path_capture=False, capture_profile=False, luslc=None, lusl_style=None):
     """Build every authored technique/profile and atomically publish current.json.
 
     Sources/tools must remain identical to their captured snapshot at publication.
@@ -1095,18 +1123,23 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     capture_profile links every ray kernel with scene_interface.capture_visibility_queries
     in place of visibility_queries, for a frame capture's private graph; cook it with
     cook_capture_profile, never cook_runtime.
+    luslc lowers `.lusl` program sources (default: $LUDUS_LUSLC, then the SDK's bin/luslc), and
+    lusl_style is their style setting, strict unless $LUDUS_LUSL_STYLE says otherwise.
     """
     started = time.monotonic()
     manifest = Path(manifest).resolve()
     helper = Path(helper).resolve()
+    lusl_style = lusl_style or os.environ.get('LUDUS_LUSL_STYLE') or 'strict'
     snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path, ray_profiles = prepare_sources(
-        manifest, helper, root=root, ray_path_capture=ray_path_capture, capture_profile=capture_profile)
+        manifest, helper, root=root, ray_path_capture=ray_path_capture, capture_profile=capture_profile, luslc=luslc,
+        lusl_style=lusl_style)
     authored_programs_by_identity = {program['id']: program for program in value['programs']}
     manifest_label = manifest.relative_to(snapshot.root).as_posix()
     worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
     hash_file = ToolFileHashes()
     tool_hashes, tool_paths = tool_identity(helper, compiler, validator, spirv_cross,
-                                           worker_socket=worker_socket, hash_file=hash_file)
+                                           worker_socket=worker_socket, hash_file=hash_file,
+                                           luslc=snapshot.language_tool)
     worker_identity = None
     if worker_socket:
         import importlib.util

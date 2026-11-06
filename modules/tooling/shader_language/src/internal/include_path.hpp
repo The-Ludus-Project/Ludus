@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/tooling/shader_language/preprocessor.hpp>
 
 #include <string_view>
 
@@ -24,6 +25,20 @@ enum class IncludePathOutcome : foundation::uint8
 /// @param outPath Receives the `/`-separated normalized path.
 [[nodiscard]] IncludePathOutcome
 ResolveIncludePath(std::string_view includingFile, std::string_view path, foundation::Array<char>& outPath) noexcept;
+
+/// @brief Find the snapshot file that `path`, named in `includingFile`, refers to.
+///
+/// The search order shared by `#include` and `extern slang`: beside `includingFile`, from the
+/// snapshot root, then below each of `request.IncludeDirectories`.
+/// @param inoutScratch Working storage; receives the last candidate path.
+/// @param outIndex Receives the request file index on Ok.
+/// @return Ok, NotFound when no candidate names a file, Invalid when no candidate is a valid
+/// path, or OutOfMemory.
+[[nodiscard]] IncludePathOutcome FindSnapshotFile(const PreprocessRequest& request,
+                                                  std::string_view includingFile,
+                                                  std::string_view path,
+                                                  foundation::Array<char>& inoutScratch,
+                                                  foundation::uint16& outIndex) noexcept;
 
 /// True when `path` is a valid snapshot path: nonempty, relative, `/`-separated, without a
 /// backslash, zero byte, or empty, `.` or `..` component.

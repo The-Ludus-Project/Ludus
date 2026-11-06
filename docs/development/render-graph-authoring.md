@@ -8835,6 +8835,13 @@ Unsupported or not established:
 - Idle entries are bounded by count, not bytes: a large-extent workload retains
   correspondingly more memory until it is trimmed.
 
+## Programs written in LUSL
+
+A program's `source` may name a `.lusl` file instead of a `.slang` one. The build
+lowers it with `luslc` and compiles the generated Slang module in its place; see
+[Render-graph programs](../modules/tooling/shader-language.md#render-graph-programs)
+for the SDK headers, the `LUDUS_LUSL_STYLE` style setting and the current limits.
+
 ## Native shader worker and live development builds
 
 Shader iteration is a development capability shared by the editor, standalone

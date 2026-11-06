@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 LUSLC = None
+REPOSITORY = None
 
 
 def run(*arguments, root):
@@ -69,12 +70,34 @@ class LuslcTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("SELECTED", result.stdout)
 
+    def test_include_directory(self):
+        self.write("_sdk/ray.luslh", '#pragma once\nextern slang "ray.slang"\n{\n    struct Ray;\n};\n')
+        self.write("_sdk/ray.slang", "struct Ray { float3 DirectionWorld; };\n")
+        self.write("main/miss.lusl", '#include "ray.luslh"\nvoid Use(in Ray ray)\n{\n}\n')
+        self.assertEqual(run("check", "main/miss.lusl", root=self.root).returncode, 1)
+        result = run("lower", "main/miss.lusl", "--include-directory", "_sdk", root=self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('#include "../_sdk/ray.slang"', result.stdout)
+
     def test_format_check_and_write(self):
         self.write("format.lusl", "static const uint32 COUNT=4;\n")
         self.assertEqual(run("format", "--check", "format.lusl", root=self.root).returncode, 1)
         self.assertEqual(run("format", "--write", "format.lusl", root=self.root).returncode, 0)
         self.assertEqual((self.root / "format.lusl").read_text(encoding="utf-8"), "static const uint32 COUNT = 4;\n")
         self.assertEqual(run("format", "--check", "format.lusl", root=self.root).returncode, 0)
+
+    def test_repository_sources_are_formatted(self):
+        """Every .lusl and .luslh file in the repository keeps the formatter's layout."""
+        if REPOSITORY is None:
+            self.skipTest("pass --repository to check the repository's LUSL sources")
+        root = pathlib.Path(REPOSITORY)
+        sources = sorted(path.relative_to(root).as_posix() for suffix in ("*.lusl", "*.luslh")
+                         for path in root.rglob(suffix)
+                         if "out" not in path.relative_to(root).parts and ".git" not in path.relative_to(root).parts)
+        self.assertTrue(sources)
+        result = subprocess.run([LUSLC, "format", "--check", "--root", str(root), *sources],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_usage(self):
         result = subprocess.run([LUSLC], capture_output=True, text=True, check=False)
@@ -83,11 +106,13 @@ class LuslcTests(unittest.TestCase):
 
 
 def main():
-    global LUSLC
+    global LUSLC, REPOSITORY
     parser = argparse.ArgumentParser()
     parser.add_argument("--luslc", required=True)
+    parser.add_argument("--repository")
     arguments, remaining = parser.parse_known_args()
     LUSLC = arguments.luslc
+    REPOSITORY = arguments.repository
     unittest.main(argv=[sys.argv[0], *remaining])
 
 

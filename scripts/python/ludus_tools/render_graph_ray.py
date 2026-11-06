@@ -510,6 +510,7 @@ def stage_helpers(snapshot, helper, roots, build):
     left to the compiler, which reports them; authored sources are never followed here.
     """
     pending = list(roots)
+    staged = set()
     while pending:
         filename = pending.pop(0)
         data = build.read(helper / filename)
@@ -517,11 +518,15 @@ def stage_helpers(snapshot, helper, roots, build):
         if relative in snapshot.files:
             build.require(snapshot.external.get(relative) == helper / filename and snapshot.files[relative] == data,
                           'Source', relative, 'reserved engine ray helper path')
-            continue
-        snapshot.capture(relative, data, external=helper / filename)
+            # LUSL lowering may have captured a helper without its includes; stage those too.
+            if relative in staged:
+                continue
+        else:
+            snapshot.capture(relative, data, external=helper / filename)
+        staged.add(relative)
         text = data.decode('utf-8', 'replace') if isinstance(data, bytes) else data
         pending += [name for name in HELPER_INCLUDE.findall(text)
-                    if '_ludus_ray/' + name not in snapshot.files and (helper / name).is_file()]
+                    if '_ludus_ray/' + name not in staged and (helper / name).is_file()]
 
 
 def capture_program_closure(program, snapshot, build):
