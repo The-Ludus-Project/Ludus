@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -91,7 +92,8 @@ class CookTests(unittest.TestCase):
             with self.subTest(literal=literal,short=short):
                 expression='require '+literal if short else 'require('+literal+')'
                 self.assertEqual(cook.imports(expression),[(asset,expression.index(literal),len(expression)-(0 if short else 1))])
-                (self.root/'door.luau').write_text(original.replace('require("'+asset+'")',expression))
+                # Keep the literal's own line ending; text mode would add a carriage return on Windows.
+                (self.root/'door.luau').write_text(original.replace('require("'+asset+'")',expression),newline='')
                 destination=cook.cook(self.root/'contract.json',self.root/'package.json',self.root/'cooked',profile_path,compiler,analyzer)
                 self.assertTrue((destination/'behavior.lupack').is_file())
     def test_project_sequences_share_cooker_and_ignore_layout(self):
@@ -144,8 +146,9 @@ class CookTests(unittest.TestCase):
             sidecar.write_text(json.dumps(data))
             with self.assertRaises(ValueError):behavior_workspace.load(self.root)
     def test_cli_reports_controlled_manifest_errors(self):
-        program=ROOT/'scripts/ludus'
-        result=subprocess.run([str(program),'scripts','cook','--contract',str(self.root/'contract.json'),'--package',str(self.root/'package.json'),'--output',str(self.root/'cooked'),'--profile',str(self.root/'absent.json'),'--compiler',str(self.root/'absent-compiler'),'--analyzer',str(self.root/'absent-analyzer')],capture_output=True,text=True)
+        # The same entry point as scripts/ludus, which is a bash wrapper Windows cannot execute.
+        environment=dict(os.environ,PYTHONPATH=str(ROOT/'scripts/python'))
+        result=subprocess.run([sys.executable,'-m','ludus_tools','scripts','cook','--contract',str(self.root/'contract.json'),'--package',str(self.root/'package.json'),'--output',str(self.root/'cooked'),'--profile',str(self.root/'absent.json'),'--compiler',str(self.root/'absent-compiler'),'--analyzer',str(self.root/'absent-analyzer')],capture_output=True,text=True,env=environment)
         self.assertNotEqual(result.returncode,0)
         self.assertNotIn('Traceback',result.stderr)
 if __name__=='__main__':unittest.main()
