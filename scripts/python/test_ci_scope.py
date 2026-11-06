@@ -302,6 +302,17 @@ class RequiredGateTests(unittest.TestCase):
             with self.subTest(workflow=name):
                 self.assertNotRegex(root.joinpath(name).read_text(), r"--parallel \d")
 
+    def test_linux_sanitizer_suite_runs_one_case_per_core(self):
+        # The full sanitizer suite was serial for 95 min; keep it parallel at the
+        # job's runner-core count rather than a literal that can outgrow the runner.
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        sanitizers = workflow.split("\n  sanitizers:\n", 1)[1].split("\n  scripting-qualification:\n", 1)[0]
+        suite = re.findall(r"(?m)^ +run: (out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan [^\n]*)$",
+                           sanitizers)
+        full = [command for command in suite if "--label-regex" not in command and "-R " not in command]
+        self.assertEqual(len(full), 1, suite)
+        self.assertIn('--parallel "$CMAKE_BUILD_PARALLEL_LEVEL"', full[0])
+
     def test_full_validation_is_owned_by_the_batch_scheduler(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
         for path in root.glob("*.yml"):

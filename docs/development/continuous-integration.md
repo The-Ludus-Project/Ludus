@@ -639,6 +639,18 @@ The offscreen editor suite runs as four serial Catch2 shards and the canvas
 configuration suite as two. Declaration order gives each case exactly one shard;
 the existing 600- and 180-second deadlines apply per shard. CTest resource locking
 keeps those GPU and shader-worker owners serial even under a parallel CTest run.
+
+The Linux ASan/UBSan job runs its full CTest suite with one test per runner core
+(`--parallel "$CMAKE_BUILD_PARALLEL_LEVEL"`). Serially, that suite took about
+95 minutes, 83% of it in render-graph, renderer and wave-graph cases on lavapipe.
+Tests that assert wall-clock bounds or record timing evidence are `RUN_SERIAL`, so
+parallel load cannot change their result: the code editor's linear-work and
+search ceilings, hosted-surface frame pacing, and game-host reload latency. A new
+test with such a bound must be `RUN_SERIAL` too; tests that share a device or
+worker owner use `RESOURCE_LOCK`, as the Editor shards do. Other CTest steps
+remain serial. The scheduled batch runs the workflow definitions on `main`, so
+this takes effect after the first promotion that includes it.
+
 The `ludus_editor_tests` build entry point also builds every executable target
 ending in `_tests` in the editor's own CMake directory, including optional preview
 suites. A real-CMake contract regression checks optional suites enabled and

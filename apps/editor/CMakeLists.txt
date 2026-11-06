@@ -1057,8 +1057,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_apply_project_defaults(ludus_code_editor_tests)
     ludus_enable_test_exceptions(ludus_code_editor_tests)
     add_test(NAME ludus_code_editor_tests COMMAND ludus_code_editor_tests)
+    # Linear-work and search cases assert wall-clock ceilings; keep them off a
+    # runner shared with parallel CTest GPU cases.
     set_tests_properties(ludus_code_editor_tests PROPERTIES LABELS "unit;editor;text" TIMEOUT 30
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" RUN_SERIAL TRUE)
     # Replay the content suite through the browser's single-owner scheduler as
     # well as the normal native worker. No Qt/Wasm-private APIs enter this target.
     add_executable(ludus_editor_browser_content_tests tests/content_browser_tests.cpp src/content_jobs.cpp)

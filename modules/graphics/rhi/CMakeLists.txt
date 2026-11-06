@@ -224,7 +224,8 @@ if(LUDUS_BUILD_TESTS AND APPLE)
     ludus_configure_cocoa_target(ludus_rhi_hosted_surface_tests)
     ludus_enable_test_exceptions(ludus_rhi_hosted_surface_tests)
     add_test(NAME ludus_rhi_hosted_surface_tests COMMAND ludus_rhi_hosted_surface_tests)
-    set_tests_properties(ludus_rhi_hosted_surface_tests PROPERTIES LABELS "rhi;gpu;macos" TIMEOUT 120)
+    # Frame pacing asserts a bounded skipped interval; run without parallel CTest load.
+    set_tests_properties(ludus_rhi_hosted_surface_tests PROPERTIES LABELS "rhi;gpu;macos" TIMEOUT 120 RUN_SERIAL TRUE)
 endif()
 
 if(LUDUS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT EMSCRIPTEN)
@@ -244,8 +245,9 @@ if(LUDUS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT EMSCRIPTEN)
     # src/catch2/catch_session.cpp), and CMake 3.29 SKIP_RETURN_CODE for reporting
     # that as Skipped rather than Failed:
     # https://cmake.org/cmake/help/v3.29/prop_test/SKIP_RETURN_CODE.html
+    # Frame pacing asserts a bounded skipped interval; run without parallel CTest load.
     set_tests_properties(ludus_rhi_hosted_surface_tests PROPERTIES
-        LABELS "rhi;gpu;linux" TIMEOUT 120 SKIP_RETURN_CODE 4)
+        LABELS "rhi;gpu;linux" TIMEOUT 120 SKIP_RETURN_CODE 4 RUN_SERIAL TRUE)
 endif()
 
 if(TARGET ludus_rhi_render_tests)
