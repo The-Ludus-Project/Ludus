@@ -14,12 +14,9 @@ from typing import Any
 
 from editor_tool import OwnedProcess
 from play_documents import decode
+from play_errors import ProbeError  # noqa: F401  (re-exported for callers)
 
 
-class ProbeError(ValueError):
-    def __init__(self, message: str, *, cleanup_confirmed: bool = True):
-        super().__init__(message)
-        self.cleanup_confirmed = cleanup_confirmed
 
 
 def elf_identity(path: Path, *, require_symbols: bool = True) -> dict[str, Any]:

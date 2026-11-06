@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / "scripts/python"))
 sys.dont_write_bytecode = True
 
-from play_probe import ProbeError  # noqa: E402
+from play_errors import ProbeError  # noqa: E402
 import play_windows  # noqa: E402
 
 

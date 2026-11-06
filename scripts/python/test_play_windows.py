@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.dont_write_bytecode = True
 
 import play_windows  # noqa: E402
-from play_probe import ProbeError, native_identity  # noqa: E402
+from play_errors import ProbeError  # noqa: E402
 
 GUID = bytes(range(1, 17))
 OTHER_GUID = bytes(range(17, 33))
@@ -123,6 +123,10 @@ class WindowsSymbolTests(unittest.TestCase):
             play_windows.pdb_identity(self.write("short.pdb", truncated))
 
     def test_native_identity_selects_the_windows_reader(self):
+        try:
+            from play_probe import native_identity
+        except ModuleNotFoundError as error:  # editor_tool needs POSIX fcntl
+            self.skipTest(str(error))
         module = self.write("game.dll", make_pe())
         self.write("game.pdb", make_pdb())
         with patch.object(sys, "platform", "win32"):

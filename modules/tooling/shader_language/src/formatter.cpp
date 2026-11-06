@@ -440,14 +440,15 @@ private:
 
     [[nodiscard]] usize getContinuationIndent() const noexcept
     {
-        for (usize i = mBrackets.GetSize(); i > 0; --i)
+        // Only the innermost bracket decides; a block resets to statement indentation.
+        // (A loop that always exits on its first pass is unreachable code to MSVC C4702.)
+        if (mBrackets.IsEmpty() == false)
         {
-            const OpenBracket& bracket = mBrackets[i - 1];
-            if (bracket.IsBlock == true)
+            const OpenBracket& bracket = mBrackets[mBrackets.GetSize() - 1];
+            if (bracket.IsBlock == false)
             {
-                break;
+                return bracket.HasContentAfter == true ? bracket.AlignColumn : bracket.LineIndent + CONTINUATION_WIDTH;
             }
-            return bracket.HasContentAfter == true ? bracket.AlignColumn : bracket.LineIndent + CONTINUATION_WIDTH;
         }
         return getStatementIndent(false) + CONTINUATION_WIDTH;
     }

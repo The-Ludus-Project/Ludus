@@ -42,7 +42,7 @@ NIL_STREAM_SIZE = 0xFFFFFFFF
 
 
 def _error(message: str):
-    from play_probe import ProbeError
+    from play_errors import ProbeError
     return ProbeError(message)
 
 
