@@ -5,6 +5,8 @@
 #include <ludus/tooling/shader_language/semantic.hpp>
 #include <ludus/tooling/shader_language/syntax.hpp>
 
+#include <ludus/foundation/containers/static_array.hpp>
+
 #include <string>
 
 namespace ludus::tooling::shader_language::test
@@ -13,12 +15,66 @@ namespace ludus::tooling::shader_language::test
 class CheckedSource final
 {
 public:
-    explicit CheckedSource(std::string text)
+    explicit CheckedSource(std::string text, const CheckOptions& options = CheckOptions{}) : mText(text)
     {
         mSnapshot.AddFile("main.lusl", std::move(text));
         mPreprocessStatus = mSnapshot.Run();
         mParseStatus = Parse(mSnapshot.GetRequest(), mSnapshot.GetResult(), mTree);
-        mStatus = Check(mSnapshot.GetRequest(), mSnapshot.GetResult(), mTree, mModel);
+        mStatus = Check(mSnapshot.GetRequest(), mSnapshot.GetResult(), mTree, options, mModel);
+    }
+
+    /// The first diagnostic with `code` from parsing or checking, or null.
+    [[nodiscard]] const Diagnostic* FindDiagnosticOrNull(DiagnosticCode code) const
+    {
+        for (const Diagnostic& diagnostic : mTree.Diagnostics)
+        {
+            if (diagnostic.Code == code)
+            {
+                return &diagnostic;
+            }
+        }
+        for (const Diagnostic& diagnostic : mModel.Diagnostics)
+        {
+            if (diagnostic.Code == code)
+            {
+                return &diagnostic;
+            }
+        }
+        return nullptr;
+    }
+
+    /// Number of diagnostics with `code`.
+    [[nodiscard]] foundation::usize CountDiagnostics(DiagnosticCode code) const
+    {
+        foundation::usize count = 0;
+        for (const Diagnostic& diagnostic : mModel.Diagnostics)
+        {
+            count += diagnostic.Code == code ? 1 : 0;
+        }
+        return count;
+    }
+
+    /// The source with `fix` applied, highest offset first.
+    [[nodiscard]] std::string ApplyFix(const DiagnosticFix& fix) const
+    {
+        std::string text = mText;
+        foundation::StaticArray<bool, MAX_FIX_EDITS> isApplied{};
+        for (foundation::usize round = 0; round < fix.EditCount; ++round)
+        {
+            foundation::usize best = fix.EditCount;
+            for (foundation::usize i = 0; i < fix.EditCount; ++i)
+            {
+                if (isApplied[i] == false &&
+                    (best == fix.EditCount || fix.Edits[i].ByteOffset > fix.Edits[best].ByteOffset))
+                {
+                    best = i;
+                }
+            }
+            const TextEdit& edit = fix.Edits[best];
+            text.replace(edit.ByteOffset, edit.RemovedBytes, std::string(edit.Inserted.GetView()));
+            isApplied[best] = true;
+        }
+        return text;
     }
 
     [[nodiscard]] Status GetStatus() const
@@ -109,6 +165,7 @@ public:
     }
 
 private:
+    std::string mText;
     Snapshot mSnapshot;
     SyntaxTree mTree;
     SemanticModel mModel;

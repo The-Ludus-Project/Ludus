@@ -7,6 +7,7 @@
 #include <ludus/tooling/shader_language/limits.hpp>
 
 #include "internal/diagnostic_sink.hpp"
+#include "internal/fix_builder.hpp"
 #include "internal/keywords.hpp"
 
 namespace ludus::tooling::shader_language
@@ -225,6 +226,11 @@ private:
     /// Report at the current token; suppressed while recovering from an earlier error.
     void report(DiagnosticCode code, const DiagnosticMessage& message) noexcept
     {
+        reportWithFix(code, message, DiagnosticFix{});
+    }
+
+    void reportWithFix(DiagnosticCode code, const DiagnosticMessage& message, const DiagnosticFix& fix) noexcept
+    {
         if (mIsRecovering == true)
         {
             return;
@@ -233,11 +239,120 @@ private:
         const usize index = isAtEnd() == true && mPosition != 0 ? mPosition - 1 : mPosition;
         if (index >= mInput.Tokens.GetSize())
         {
-            mSink.ReportError(code, SourceLocation{}, SourceLocation{}, message);
+            mSink.Report(Severity::Error, code, SourceLocation{}, SourceLocation{}, message, fix);
             return;
         }
         const Token& token = mInput.Tokens[index];
-        mSink.ReportError(code, token.Location, getExpansionLocation(token), message);
+        mSink.Report(Severity::Error, code, token.Location, getExpansionLocation(token), message, fix);
+    }
+
+    /// Index just past a balanced bracket group that opens at `open`, or NO_TOKEN when unbalanced.
+    [[nodiscard]] usize skipBalanced(usize open) const noexcept
+    {
+        usize nesting = 0;
+        for (usize i = open; i < mInput.Tokens.GetSize(); ++i)
+        {
+            const Token& token = mInput.Tokens[i];
+            if (token.Kind != TokenKind::Punctuator)
+            {
+                continue;
+            }
+            if (token.Symbol == Punctuator::LeftParenthesis || token.Symbol == Punctuator::LeftBracket)
+            {
+                ++nesting;
+            }
+            else if (token.Symbol == Punctuator::RightParenthesis || token.Symbol == Punctuator::RightBracket)
+            {
+                --nesting;
+                if (nesting == 0)
+                {
+                    return i + 1;
+                }
+            }
+        }
+        return NO_TOKEN;
+    }
+
+    /// @brief The fix that rewrites `!operand` at `bang` as `operand == false`.
+    ///
+    /// The operand is the postfix expression after `!`. Parentheses are added unless the operand is
+    /// followed by a token that binds more loosely than `==`.
+    [[nodiscard]] DiagnosticFix makeLogicalNotFix(usize bang) const noexcept
+    {
+        usize end = bang + 1;
+        if (end >= mInput.Tokens.GetSize())
+        {
+            return DiagnosticFix{};
+        }
+        const Token& first = mInput.Tokens[end];
+        if (first.Kind == TokenKind::Identifier || first.Kind == TokenKind::Number)
+        {
+            ++end;
+        }
+        else if (first.Kind == TokenKind::Punctuator && first.Symbol == Punctuator::LeftParenthesis)
+        {
+            end = skipBalanced(end);
+        }
+        else
+        {
+            return DiagnosticFix{};
+        }
+        while (end != NO_TOKEN && end < mInput.Tokens.GetSize())
+        {
+            const Token& next = mInput.Tokens[end];
+            const bool isMember = next.Kind == TokenKind::Punctuator &&
+                                  (next.Symbol == Punctuator::Period || next.Symbol == Punctuator::ColonColon) &&
+                                  end + 1 < mInput.Tokens.GetSize() &&
+                                  mInput.Tokens[end + 1].Kind == TokenKind::Identifier;
+            if (isMember == true)
+            {
+                end += 2;
+                continue;
+            }
+            if (next.Kind == TokenKind::Punctuator &&
+                (next.Symbol == Punctuator::LeftParenthesis || next.Symbol == Punctuator::LeftBracket))
+            {
+                end = skipBalanced(end);
+                continue;
+            }
+            break;
+        }
+        if (end == NO_TOKEN)
+        {
+            return DiagnosticFix{};
+        }
+        bool isLooseContext = end >= mInput.Tokens.GetSize();
+        if (isLooseContext == false && mInput.Tokens[end].Kind == TokenKind::Punctuator)
+        {
+            switch (mInput.Tokens[end].Symbol)
+            {
+                case Punctuator::RightParenthesis:
+                case Punctuator::RightBracket:
+                case Punctuator::RightBrace:
+                case Punctuator::Semicolon:
+                case Punctuator::Comma:
+                case Punctuator::AmpersandAmpersand:
+                case Punctuator::PipePipe:
+                case Punctuator::Question:
+                case Punctuator::Colon:
+                    isLooseContext = true;
+                    break;
+                default:
+                    break;
+            }
+        }
+        internal::FixBuilder fix(mRequest, mInput);
+        if (isLooseContext == true)
+        {
+            fix.Remove(static_cast<uint32>(bang));
+            fix.InsertAfter(static_cast<uint32>(end - 1), " == false");
+        }
+        else
+        {
+            fix.Replace(static_cast<uint32>(bang), "(");
+            fix.InsertAfter(static_cast<uint32>(end - 1), " == false)");
+        }
+        return fix.GetFix();
     }
 
     void reportExpected(std::string_view expected) noexcept
@@ -1506,7 +1621,9 @@ private:
         uint32 result = NO_NODE;
         if (isPunctuator(Punctuator::Exclamation) == true)
         {
-            report(DiagnosticCode::LogicalNot, ComposeMessage("LUSL has no '!'; compare with '== false'"));
+            reportWithFix(DiagnosticCode::LogicalNot,
+                          ComposeMessage("LUSL has no '!'; compare with '== false'"),
+                          makeLogicalNotFix(mPosition));
             result = createErrorNode();
         }
         else if (isPunctuator(Punctuator::PlusPlus) == true || isPunctuator(Punctuator::MinusMinus) == true)

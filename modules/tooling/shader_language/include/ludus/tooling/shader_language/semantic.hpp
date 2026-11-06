@@ -206,6 +206,24 @@ struct SemanticModel final
     foundation::usize DroppedDiagnosticCount = 0;
 };
 
+/// How LUSL style rules (naming and bare `bool` operands) report.
+enum class StyleSetting : foundation::uint8
+{
+    /// Style findings are errors. Always used for the engine repository; the default.
+    Strict,
+    /// Style findings are warnings.
+    Warn,
+    /// Style findings are not reported.
+    Off,
+};
+
+/// Options of Check.
+struct CheckOptions final
+{
+    /// How style rules report; language rules are errors regardless.
+    StyleSetting Style = StyleSetting::Strict;
+};
+
 /// @brief Check the types, names and calls of a parsed translation unit.
 ///
 /// Resolves names in C order (a name is visible after its declaration), interns types, gives every
@@ -214,16 +232,28 @@ struct SemanticModel final
 /// no implicit conversions except untyped constants that fit their target, the literal `0`
 /// zero-filling any non-opaque type, matched `out`/`inout` marks, no aliasing between writable
 /// arguments, named arguments with defaults, designated initializers, named array sizes and
-/// `bool` conditions. Flow rules (definite assignment, `= void`, returns on every path) and style
-/// rules arrive in a later stage.
+/// `bool` conditions.
+///
+/// When those pass, flow and style rules run: definite assignment (`= void` opts out), `out`
+/// parameters written before every return, a return on every path, no recursion, `groupshared`
+/// declared `= 0` or `= void`, `switch` cases that end explicitly, then the naming and bare-`bool`
+/// style rules as `options.Style` says. Diagnostics carry a DiagnosticFix where a repair is safe.
 ///
 /// Deterministic and reentrant; keeps no state between calls.
 /// @param request The request given to Preprocess; its file texts must still be alive.
 /// @param preprocessed The Ready Preprocess result the tree was parsed from.
 /// @param tree A Ready result of Parse for `preprocessed`.
+/// @param options Style setting.
 /// @param outModel Receives the model; any previous contents are replaced.
 /// @return The same value as `outModel.Outcome`; InvalidRequest when `preprocessed` or `tree` is not
-/// Ready.
+/// Ready. Style warnings alone leave the outcome Ready.
+[[nodiscard]] Status Check(const PreprocessRequest& request,
+                           const PreprocessResult& preprocessed,
+                           const SyntaxTree& tree,
+                           const CheckOptions& options,
+                           SemanticModel& outModel) noexcept;
+
+/// @brief Check with the default options (strict style).
 [[nodiscard]] Status Check(const PreprocessRequest& request,
                            const PreprocessResult& preprocessed,
                            const SyntaxTree& tree,

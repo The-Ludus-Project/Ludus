@@ -7,10 +7,10 @@ language and the delivery plan. This page covers what is implemented:
 - the preprocessor (L1a);
 - the parser and the source formatter (L1b; see [Parsing](#parsing) and
   [Formatting](#formatting));
-- the first half of semantic checking (L1c-1; see [Checking](#checking)).
+- semantic checking: types, names and calls (L1c-1), then flow rules, style
+  rules and fixes (L1c-2); see [Checking](#checking).
 
-Flow analysis, the style rules, lowering to Slang and `luslc` arrive in later
-L1 changes, and `ShaderCompiler` does not accept `.lusl` files yet.
+Lowering to Slang and `luslc` arrive in later L1 changes, and `ShaderCompiler` does not accept `.lusl` files yet.
 
 Link `Ludus::ShaderLanguage` and include
 `ludus/tooling/shader_language/preprocessor.hpp`. The library builds for native
@@ -224,6 +224,13 @@ the name.
 | LUSL0533 | `invalid-construction` | A construction or conversion with the wrong arguments |
 | LUSL0534 | `undefined-function` | A function declared but never defined |
 | LUSL0535 | `checker-limit` | Too many types, symbols or arguments |
+| LUSL0541 | `use-before-assignment` | A variable read, or written in part, before it is assigned on every path |
+| LUSL0542 | `out-parameter-not-assigned` | An `out` parameter may be unwritten at a return |
+| LUSL0543 | `missing-return` | A function with a return type can reach its end |
+| LUSL0544 | `recursion` | A function calls itself, directly or indirectly |
+| LUSL0545 | `groupshared-initializer` | A `groupshared` variable not declared `= 0` or `= void` |
+| LUSL0601 | `naming-style` | A name that breaks the naming rules (style) |
+| LUSL0602 | `bare-bool-operand` | A `bool` used directly as a condition or `&&`/`||` operand (style) |
 
 ## Parsing
 
@@ -297,7 +304,7 @@ directives indented after `#` by their conditional depth.
 ## Checking
 
 `Check` (in `semantic.hpp`) takes the Ready preprocessing and parsing results
-and produces a `SemanticModel`:
+and optional `CheckOptions`, and produces a `SemanticModel`:
 
 - **interned types**;
 - **symbols**: variables, parameters, functions, structs, fields, enums,
@@ -426,16 +433,69 @@ In the two-, three-operand element-wise rows, a scalar may stand beside vectors:
 - Case labels are distinct constants.
 - `[[fallthrough]]` ends a case.
 
-### Not checked yet
+### Flow rules
 
-These rules arrive with the second half of the checker (L1c-2):
-- definite assignment and `= void`;
-- `out` parameters written before every return;
-- missing returns;
-- recursion;
-- the `groupshared` `= 0` or `= void` requirement;
-- the style rules and their `strict`/`warn`/`off` setting;
-- automatic fixes attached to diagnostics.
+When types, names and calls check without errors, `Check` analyzes each function's
+paths. Flow rules are skipped after a type error, so they never cascade from one.
+
+- **Definite assignment.** A local declared without an initializer must be
+  written on every path before it is read. Writing part of it (`v.x = 1`) or
+  passing it `inout` counts as a read. An `out` argument writes it. A loop may
+  run zero times, unless its condition is constant `true`. `T value = void;`
+  opts out: such a variable is not tracked.
+- **`out` parameters** must be written on every path before each `return` and
+  before the end of the function. `discard` ends a path without writing them.
+- **Returns.** A function with a return type must not reach its end. An
+  infinite `while (true)` loop without `break` does not reach it.
+- **Case endings.** Every `switch` case except the last ends in `break`,
+  `return` or `[[fallthrough]]`.
+- **Recursion** is rejected, direct or through other functions and methods;
+  GPU code has no call stack.
+- **`groupshared`** variables are declared `= 0` or `= void`.
+
+Not yet enforced: bounds checks on dynamic indices in development builds and
+the `groupshared` clear itself, which belong to the Slang lowering (L1d).
+
+### Style rules
+
+Style rules report as `CheckOptions::Style` says:
+- `StyleSetting::Strict` (the default, used by the engine repository): errors.
+- `Warn`: warnings, and the result stays Ready.
+- `Off`: not reported.
+
+Language rules do not depend on the setting. Declarations in `extern slang`
+blocks are exempt, because they mirror Slang names.
+
+| Name | Rule |
+| --- | --- |
+| Structs, enums, enumerators, functions, methods, fields | PascalCase |
+| Parameters, locals, `groupshared` variables | lowerCamelCase |
+| `out` and `inout` parameters | `out` or `inout` then PascalCase: `outRadiance`, `inoutSeed` |
+| `static const` constants | UPPER_CASE |
+| `bool` fields, parameters and locals | A question: `IsVisible`, `isVisible`, `outIsVisible`, also with Has, Should or Can |
+
+Naming diagnostics suggest a conforming name; renaming is left to the author
+because it changes every use. A `bool` value used directly as a condition or as
+an `&&`/`||` operand is reported too: write `isVisible == true`.
+
+### Fixes
+
+A `Diagnostic` may carry a `DiagnosticFix`:
+- **What it is:** up to `MAX_FIX_EDITS` text edits to the request's files. Apply
+  them from the highest byte offset down.
+- **When it is offered:** only when the affected tokens are spelled in a file,
+  not produced by a macro or a configuration value, and when the repair keeps
+  the expression's grouping.
+
+| Diagnostic | Fix |
+| --- | --- |
+| `logical-not` | `!x` becomes `x == false`, parenthesized where the context binds tighter than `==` |
+| `type-mismatch` with an explicit conversion available | Wrap the value: `float32(i)`, `float32x3(1.0)` |
+| `non-bool-condition` on a numeric scalar | Append ` != 0` when the condition binds tighter than `!=` |
+| `direction-mismatch` | Insert, change or remove the `out`/`inout` mark |
+| `use-before-assignment` | Initialize the declaration with ` = 0` |
+| `groupshared-initializer` without an initializer | Append ` = 0` |
+| `bare-bool-operand` | Append ` == true` |
 
 Capability-gated types (`float16`, `int16`, 64-bit types) are accepted here;
 target profiles gate them when LUSL lowers to Slang.
@@ -451,6 +511,8 @@ target profiles gate them when LUSL lowers to Slang.
   error recovery;
 - each checker rule with a failing case, and the model's types, symbols,
   bindings and constants;
+- each flow and style rule, the style setting, and every fix applied to the
+  source and checked again;
 - the formatter's golden layout, token preservation and idempotence;
 - limits and determinism.
 

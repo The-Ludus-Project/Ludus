@@ -756,7 +756,11 @@ private:
         if (index == mLastLabelColon)
         {
             mHasForcedBreak = true;
-            mBrackets.GetLast().IsInCaseBody = true;
+            // A label left open across the switch's `}` has no switch body to mark.
+            if (mBrackets.IsEmpty() == false && mBrackets.GetLast().IsSwitchBody == true)
+            {
+                mBrackets.GetLast().IsInCaseBody = true;
+            }
         }
         const bool isSign =
             isPunctuator(index, Punctuator::Minus) == true || isPunctuator(index, Punctuator::Plus) == true ||

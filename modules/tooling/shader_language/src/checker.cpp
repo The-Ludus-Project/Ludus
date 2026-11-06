@@ -12,8 +12,10 @@
 #include <ludus/tooling/shader_language/limits.hpp>
 
 #include "internal/access_path.hpp"
+#include "internal/analysis.hpp"
 #include "internal/call_binding.hpp"
 #include "internal/diagnostic_sink.hpp"
+#include "internal/fix_builder.hpp"
 #include "internal/intrinsics.hpp"
 #include "internal/scope_table.hpp"
 #include "internal/type_table.hpp"
@@ -147,8 +149,9 @@ public:
     Checker(const PreprocessRequest& request,
             const PreprocessResult& preprocessed,
             const SyntaxTree& tree,
+            const CheckOptions& options,
             SemanticModel& outModel) noexcept
-        : mRequest(request), mInput(preprocessed), mTree(tree), mModel(outModel),
+        : mRequest(request), mInput(preprocessed), mTree(tree), mOptions(options), mModel(outModel),
           mSink(outModel.Diagnostics, outModel.DroppedDiagnosticCount), mTypes(outModel.Types)
     {
     }
@@ -181,6 +184,16 @@ public:
             checkDeclaration(declaration, false);
         }
         reportUndefinedFunctions();
+        // Flow and style rules read a complete, consistent model, so they run only after it checks.
+        if (mSink.HasErrors() == false && mSink.HasOutOfMemory() == false && mIsFatal == false)
+        {
+            const internal::AnalysisInputs inputs{mRequest, mInput, mTree, mModel};
+            if (internal::AnalyzeFlow(inputs, mSink) == false ||
+                internal::CheckStyle(inputs, mOptions.Style, mSink) == false)
+            {
+                mSink.ReportOutOfMemory();
+            }
+        }
         return finish();
     }
 
@@ -233,11 +246,14 @@ private:
 
     // ----- Diagnostics ---------------------------------------------------------------------------
 
-    void reportAtToken(DiagnosticCode code, uint32 token, const DiagnosticMessage& message) noexcept
+    void reportAtToken(DiagnosticCode code,
+                       uint32 token,
+                       const DiagnosticMessage& message,
+                       const DiagnosticFix& fix = DiagnosticFix{}) noexcept
     {
         if (token == NO_TOKEN || token >= mInput.Tokens.GetSize())
         {
-            mSink.ReportError(code, SourceLocation{}, SourceLocation{}, message);
+            mSink.Report(Severity::Error, code, SourceLocation{}, SourceLocation{}, message, fix);
             return;
         }
         const Token& spelled = mInput.Tokens[token];
@@ -246,13 +262,43 @@ private:
         {
             expansion = mInput.Expansions[spelled.ExpansionIndex];
         }
-        mSink.ReportError(code, spelled.Location, expansion, message);
+        mSink.Report(Severity::Error, code, spelled.Location, expansion, message, fix);
     }
 
-    void report(DiagnosticCode code, uint32 node, const DiagnosticMessage& message) noexcept
+    void report(DiagnosticCode code,
+                uint32 node,
+                const DiagnosticMessage& message,
+                const DiagnosticFix& fix = DiagnosticFix{}) noexcept
     {
         const SyntaxNode& syntax = getNode(node);
-        reportAtToken(code, syntax.Token != NO_TOKEN ? syntax.Token : syntax.FirstToken, message);
+        reportAtToken(code, syntax.Token != NO_TOKEN ? syntax.Token : syntax.FirstToken, message, fix);
+    }
+
+    /// The fix that wraps expression `node` as `typeName(...)`.
+    [[nodiscard]] DiagnosticFix makeWrapFix(uint32 node, std::string_view typeName) const noexcept
+    {
+        FixText opening;
+        if (opening.TryAssign(typeName) != foundation::StringStatus::Ok ||
+            opening.TryAppend("(") != foundation::StringStatus::Ok)
+        {
+            return DiagnosticFix{};
+        }
+        internal::FixBuilder fix(mRequest, mInput);
+        fix.InsertBefore(getNode(node).FirstToken, opening.GetView());
+        fix.InsertAfter(getNode(node).LastToken, ")");
+        return fix.GetFix();
+    }
+
+    /// True when an explicit conversion from `found` to `expected` exists: both numeric with one shape.
+    [[nodiscard]] bool hasExplicitConversion(uint32 expected, uint32 found) const noexcept
+    {
+        const SemanticType& to = mTypes.Get(expected);
+        const SemanticType& from = mTypes.Get(found);
+        const bool isNumericShape =
+            (to.Kind == TypeKind::Scalar || to.Kind == TypeKind::Vector || to.Kind == TypeKind::Matrix) &&
+            to.Scalar != ScalarKind::Bool;
+        return isNumericShape == true && from.Kind == to.Kind && from.Rows == to.Rows && from.Columns == to.Columns &&
+               from.Scalar != ScalarKind::Bool;
     }
 
     [[nodiscard]] TypeNameText nameOf(uint32 type) const noexcept
@@ -264,6 +310,9 @@ private:
     {
         const TypeNameText expectedName = nameOf(expected);
         const TypeNameText foundName = nameOf(found);
+        const DiagnosticFix fix = hasExplicitConversion(expected, found) == true
+                                      ? makeWrapFix(node, expectedName.GetView())
+                                      : DiagnosticFix{};
         report(DiagnosticCode::TypeMismatch,
                node,
                ComposeMessage("expected ",
@@ -272,7 +321,8 @@ private:
                               foundName.GetView(),
                               "; LUSL has no implicit conversions, so write ",
                               expectedName.GetView(),
-                              "(value)"));
+                              "(value)"),
+               fix);
     }
 
     // ----- Symbols -------------------------------------------------------------------------------
@@ -1479,8 +1529,37 @@ private:
                    condition,
                    ComposeMessage("conditions are bool, not ",
                                   found.GetView(),
-                                  "; compare explicitly, for example 'value != 0'"));
+                                  "; compare explicitly, for example 'value != 0'"),
+                   makeNotZeroFix(condition, type));
         }
+    }
+
+    /// The fix that appends ` != 0` to a numeric scalar condition whose operators bind tighter than `!=`.
+    [[nodiscard]] DiagnosticFix makeNotZeroFix(uint32 condition, uint32 type) const noexcept
+    {
+        const SemanticType& shape = getType(type);
+        if (shape.Kind != TypeKind::Scalar && isUntyped(type) == false)
+        {
+            return DiagnosticFix{};
+        }
+        const SyntaxKind kind = getKind(condition);
+        bool isTight = kind == SyntaxKind::Name || kind == SyntaxKind::MemberExpression ||
+                       kind == SyntaxKind::CallExpression || kind == SyntaxKind::IndexExpression ||
+                       kind == SyntaxKind::ParenthesizedExpression || kind == SyntaxKind::UnaryExpression ||
+                       kind == SyntaxKind::NumberLiteral;
+        if (kind == SyntaxKind::BinaryExpression)
+        {
+            const std::string_view operation = spellNode(condition);
+            isTight = operation == "+" || operation == "-" || operation == "*" || operation == "/" ||
+                      operation == "%" || operation == "<<" || operation == ">>";
+        }
+        if (isTight == false)
+        {
+            return DiagnosticFix{};
+        }
+        internal::FixBuilder fix(mRequest, mInput);
+        fix.InsertAfter(getNode(condition).LastToken, " != 0");
+        return fix.GetFix();
     }
 
     void checkStatement(uint32 node) noexcept
@@ -1868,7 +1947,8 @@ private:
                                           goalName.GetView(),
                                           " implicitly; write ",
                                           goalName.GetView(),
-                                          "(value)"));
+                                          "(value)"),
+                           makeWrapFix(node, goalName.GetView()));
                     return false;
                 }
                 reportMismatch(node, target, source);
@@ -3192,9 +3272,23 @@ private:
         const bool isWritableParameter =
             parameter.Direction == ParameterDirection::Out || parameter.Direction == ParameterDirection::Inout;
         const std::string_view parameterName = spell(parameter.NameToken);
+        const uint32 valueToken = getNode(firstChild(argument)).FirstToken;
+        const uint32 markToken = mark == ParameterDirection::Unmarked || valueToken == 0 ? NO_TOKEN : valueToken - 1;
         if (isWritableParameter == true && mark != parameter.Direction)
         {
             const std::string_view keyword = parameter.Direction == ParameterDirection::Out ? "out" : "inout";
+            internal::FixBuilder fix(mRequest, mInput);
+            if (markToken == NO_TOKEN)
+            {
+                FixText inserted;
+                (void)inserted.TryAssign(keyword);
+                (void)inserted.TryAppend(" ");
+                fix.InsertBefore(valueToken, inserted.GetView());
+            }
+            else
+            {
+                fix.Replace(markToken, keyword);
+            }
             report(DiagnosticCode::DirectionMismatch,
                    argument,
                    ComposeMessage("parameter '",
@@ -3203,14 +3297,18 @@ private:
                                   keyword,
                                   "; mark the argument '",
                                   keyword,
-                                  " value'"));
+                                  " value'"),
+                   fix.GetFix());
             return;
         }
         if (isWritableParameter == false && mark != ParameterDirection::Unmarked)
         {
+            internal::FixBuilder fix(mRequest, mInput);
+            fix.Remove(markToken);
             report(DiagnosticCode::DirectionMismatch,
                    argument,
-                   ComposeMessage("parameter '", parameterName, "' is an input; remove the mark"));
+                   ComposeMessage("parameter '", parameterName, "' is an input; remove the mark"),
+                   fix.GetFix());
             return;
         }
         if (isWritableParameter == false)
@@ -3422,6 +3520,7 @@ private:
     const PreprocessRequest& mRequest;
     const PreprocessResult& mInput;
     const SyntaxTree& mTree;
+    CheckOptions mOptions;
     SemanticModel& mModel;
     internal::DiagnosticSink mSink;
     TypeTable mTypes;
@@ -3439,11 +3538,20 @@ private:
 Status Check(const PreprocessRequest& request,
              const PreprocessResult& preprocessed,
              const SyntaxTree& tree,
+             const CheckOptions& options,
              SemanticModel& outModel) noexcept
 {
     outModel = SemanticModel{};
-    Checker checker(request, preprocessed, tree, outModel);
+    Checker checker(request, preprocessed, tree, options, outModel);
     return checker.Run();
+}
+
+Status Check(const PreprocessRequest& request,
+             const PreprocessResult& preprocessed,
+             const SyntaxTree& tree,
+             SemanticModel& outModel) noexcept
+{
+    return Check(request, preprocessed, tree, CheckOptions{}, outModel);
 }
 
 TypeNameText FormatTypeName(const SemanticModel& model,
