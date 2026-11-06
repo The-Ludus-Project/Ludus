@@ -205,6 +205,8 @@ std::string_view GetDiagnosticCodeName(DiagnosticCode code) noexcept
             return "missing-requirement";
         case DiagnosticCode::TemplateDeduction:
             return "template-deduction";
+        case DiagnosticCode::InvalidConstraint:
+            return "invalid-constraint";
         case DiagnosticCode::NamingStyle:
             return "naming-style";
         case DiagnosticCode::BareBoolOperand:

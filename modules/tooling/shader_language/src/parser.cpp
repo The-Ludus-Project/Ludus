@@ -640,9 +640,7 @@ private:
             if (isWord(keyword) == true)
             {
                 report(DiagnosticCode::LaterPhaseConstruct,
-                       ComposeMessage("'",
-                                      keyword,
-                                      "' arrives in a later LUSL phase: concepts in L2b, dynamic dispatch in L4"));
+                       ComposeMessage("'", keyword, "' arrives in a later LUSL phase: dynamic dispatch in L4"));
                 return true;
             }
         }
@@ -676,6 +674,10 @@ private:
         if (isWord("template") == true && scope == DeclarationScope::TopLevel)
         {
             return parseTemplate(attributes);
+        }
+        if (isWord("concept") == true && scope == DeclarationScope::TopLevel)
+        {
+            return parseConcept(attributes);
         }
         if (isWord("enum") == true)
         {
@@ -920,6 +922,19 @@ private:
         {
             return node;
         }
+        if (isWord("requires") == true)
+        {
+            const uint32 clause = createNode(SyntaxKind::RequiresClause);
+            setToken(clause, mPosition);
+            ++mPosition;
+            addChild(clause, parseExpression());
+            finish(clause);
+            addChild(node, clause);
+            if (mIsRecovering == true)
+            {
+                return node;
+            }
+        }
         Array<uint32> functionAttributes;
         parseAttributes(functionAttributes);
         for (const uint32 attribute : attributes)
@@ -938,6 +953,102 @@ private:
             return node;
         }
         addChild(node, parseVariableOrFunction(functionAttributes, DeclarationScope::TopLevel));
+        finish(node);
+        return node;
+    }
+
+    [[nodiscard]] uint32 parseConcept(const Array<uint32>& attributes) noexcept
+    {
+        const uint32 node = createNode(SyntaxKind::ConceptDeclaration);
+        ++mPosition;
+        if (attributes.IsEmpty() == false)
+        {
+            report(DiagnosticCode::UnexpectedToken, ComposeMessage("concepts take no attributes"));
+            return node;
+        }
+        if (parseDeclaredName(node) == false || expect(Punctuator::Less, "'<' after the concept name") == false)
+        {
+            return node;
+        }
+        do
+        {
+            const uint32 parameter = createNode(SyntaxKind::TemplateParameter);
+            if (parseDeclaredName(parameter) == false)
+            {
+                return node;
+            }
+            finish(parameter);
+            addChild(node, parameter);
+        } while (consumePunctuator(Punctuator::Comma) == true);
+        if (expect(Punctuator::Greater, "'>' to close the concept parameters") == false ||
+            expect(Punctuator::Equal, "'=' before the concept's constraint") == false)
+        {
+            return node;
+        }
+        addChild(node, parseExpression());
+        if (mIsRecovering == false)
+        {
+            (void)expect(Punctuator::Semicolon, "';' after the concept");
+        }
+        finish(node);
+        return node;
+    }
+
+    /// True at `Name<Type, ...>` followed by a token that cannot continue a comparison, which
+    /// spells a concept application rather than `Name < a > b`.
+    [[nodiscard]] bool isConceptApplication() const noexcept
+    {
+        if (isName() == false || isPunctuator(Punctuator::Less, 1) == false)
+        {
+            return false;
+        }
+        usize offset = 2;
+        bool hasType = false;
+        while (true)
+        {
+            const Token* tokenOrNull = getTokenOrNull(offset);
+            if (tokenOrNull == nullptr)
+            {
+                return false;
+            }
+            if (tokenOrNull->Kind == TokenKind::Identifier)
+            {
+                hasType = true;
+            }
+            else if (tokenOrNull->Kind == TokenKind::Punctuator && tokenOrNull->Symbol == Punctuator::Greater)
+            {
+                break;
+            }
+            else if (tokenOrNull->Kind != TokenKind::Punctuator ||
+                     (tokenOrNull->Symbol != Punctuator::Comma && tokenOrNull->Symbol != Punctuator::ColonColon))
+            {
+                return false;
+            }
+            ++offset;
+        }
+        const Token* followingOrNull = getTokenOrNull(offset + 1);
+        const bool isOperandNext =
+            followingOrNull != nullptr &&
+            (followingOrNull->Kind == TokenKind::Identifier || followingOrNull->Kind == TokenKind::Number ||
+             (followingOrNull->Kind == TokenKind::Punctuator &&
+              followingOrNull->Symbol == Punctuator::LeftParenthesis));
+        return hasType == true && isOperandNext == false;
+    }
+
+    [[nodiscard]] uint32 parseConceptApplication() noexcept
+    {
+        const uint32 node = createNode(SyntaxKind::ConceptApplication);
+        setToken(node, mPosition);
+        mPosition += 2;
+        do
+        {
+            addChild(node, parseType());
+            if (mIsRecovering == true)
+            {
+                return node;
+            }
+        } while (consumePunctuator(Punctuator::Comma) == true);
+        (void)expect(Punctuator::Greater, "'>' to close the concept arguments");
         finish(node);
         return node;
     }
@@ -1578,6 +1689,11 @@ private:
     {
         const uint32 node = createNode(SyntaxKind::IfStatement);
         ++mPosition;
+        if (isWord("constexpr") == true)
+        {
+            mTree.Nodes[node].IsConstexpr = true;
+            ++mPosition;
+        }
         addChildren(node, attributes);
         addChild(node, parseCondition("if"));
         if (mIsRecovering == true)
@@ -1835,6 +1951,10 @@ private:
             reportExpected("an expression");
             return createErrorNode();
         }
+        if (isConceptApplication() == true)
+        {
+            return parseConceptApplication();
+        }
         if (isName() == true)
         {
             return createTokenNode(SyntaxKind::Name);
@@ -1850,6 +1970,22 @@ private:
         if (isWord("true") == true || isWord("false") == true)
         {
             return createTokenNode(SyntaxKind::BooleanLiteral);
+        }
+        if (isPunctuator(Punctuator::LeftParenthesis) == true && isName(1) == true &&
+            isPunctuator(Punctuator::Colon, 2) == true)
+        {
+            // `(Type : Interface)`, a conformance test.
+            const uint32 node = createNode(SyntaxKind::ConformanceTest);
+            ++mPosition;
+            addChild(node, parseType());
+            setToken(node, mPosition);
+            if (expect(Punctuator::Colon, "':' in a conformance test") == true)
+            {
+                addChild(node, parseType());
+                (void)expect(Punctuator::RightParenthesis, "')' after the conformance test");
+            }
+            finish(node);
+            return node;
         }
         if (isPunctuator(Punctuator::LeftParenthesis) == true)
         {
@@ -2066,6 +2202,14 @@ std::string_view GetSyntaxKindName(SyntaxKind kind) noexcept
             return "template-declaration";
         case SyntaxKind::TemplateParameter:
             return "template-parameter";
+        case SyntaxKind::RequiresClause:
+            return "requires-clause";
+        case SyntaxKind::ConceptDeclaration:
+            return "concept-declaration";
+        case SyntaxKind::ConformanceTest:
+            return "conformance-test";
+        case SyntaxKind::ConceptApplication:
+            return "concept-application";
         case SyntaxKind::StaticAssert:
             return "static-assert";
         case SyntaxKind::Attribute:

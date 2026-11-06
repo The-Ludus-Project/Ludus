@@ -68,6 +68,19 @@ public:
         return mIsOutOfMemory == false;
     }
 
+    /// Analyze one specialization's function; recursion is checked on templates, not instances.
+    [[nodiscard]] bool RunFunction(uint32 functionNode) noexcept
+    {
+        const SemanticModel& model = mInputs.Model;
+        if (mTrackedOfSymbol.TryResize(model.Symbols.GetSize(), UNTRACKED) == false ||
+            mIsReported.TryResize(model.Symbols.GetSize(), 0) == false)
+        {
+            return false;
+        }
+        analyzeFunction(functionNode);
+        return mIsOutOfMemory == false;
+    }
+
 private:
     // ----- Tree access ---------------------------------------------------------------------------
 
@@ -240,9 +253,15 @@ private:
             case SyntaxKind::FunctionDeclaration:
                 analyzeFunction(node);
                 return;
+            case SyntaxKind::TemplateDeclaration:
+                if (isSpecializedTemplate(node) == true)
+                {
+                    // Analyzed once per specialization, whose facts the template's nodes lack.
+                    return;
+                }
+                [[fallthrough]];
             case SyntaxKind::StructDeclaration:
             case SyntaxKind::ExtensionDeclaration:
-            case SyntaxKind::TemplateDeclaration:
                 // Methods, extension methods and the templated function have bodies; interface
                 // requirements do not.
                 for (uint32 member = firstChild(node); member != NO_NODE; member = nextSibling(member))
@@ -260,6 +279,19 @@ private:
                 // `extern slang` blocks declare no bodies; other declarations have no flow.
                 return;
         }
+    }
+
+    [[nodiscard]] bool isSpecializedTemplate(uint32 node) const noexcept
+    {
+        for (uint32 child = firstChild(node); child != NO_NODE; child = nextSibling(child))
+        {
+            if (getKind(child) == SyntaxKind::FunctionDeclaration)
+            {
+                const uint32 symbol = getSymbol(child);
+                return symbol != NO_SYMBOL && mInputs.Model.Symbols[symbol].IsSpecialized == true;
+            }
+        }
+        return false;
     }
 
     [[nodiscard]] uint32 getInitializer(uint32 declaration) const noexcept
@@ -505,6 +537,13 @@ private:
         const uint32 condition = skipAttributes(firstChild(node));
         const uint32 whenTrue = condition == NO_NODE ? NO_NODE : nextSibling(condition);
         const uint32 whenFalse = whenTrue == NO_NODE ? NO_NODE : nextSibling(whenTrue);
+        if (getNode(node).IsConstexpr == true)
+        {
+            // Only the selected branch was checked, and only it runs.
+            const bool isTrue = mInputs.Model.NodeIntegerConstants[node].Value != 0;
+            visitStatement(isTrue == true ? whenTrue : whenFalse, inoutState);
+            return;
+        }
         visitExpression(condition, inoutState);
         FlowState trueState;
         copyState(inoutState, trueState);
@@ -972,5 +1011,11 @@ bool AnalyzeFlow(const AnalysisInputs& inputs, DiagnosticSink& inoutSink) noexce
 {
     FlowAnalyzer analyzer(inputs, inoutSink);
     return analyzer.Run();
+}
+
+bool AnalyzeSpecializationFlow(const AnalysisInputs& inputs, uint32 functionNode, DiagnosticSink& inoutSink) noexcept
+{
+    FlowAnalyzer analyzer(inputs, inoutSink);
+    return analyzer.RunFunction(functionNode);
 }
 } // namespace ludus::tooling::shader_language::internal

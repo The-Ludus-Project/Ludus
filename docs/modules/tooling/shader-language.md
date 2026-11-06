@@ -18,7 +18,9 @@ language and the delivery plan. This page covers what is implemented:
 - render-graph programs written in LUSL, include directories and the ray
   callback declarations (L1e-2); see [Render-graph programs](#render-graph-programs);
 - interfaces, extensions, struct constants and interface-constrained templates
-  (L2a); see [Interfaces and templates](#interfaces-and-templates).
+  (L2a); see [Interfaces and templates](#interfaces-and-templates);
+- concepts, `requires`, `if constexpr`, constraint ordering and specialization
+  (L2b); see [Concepts and specialization](#concepts-and-specialization).
 
 Link `Ludus::ShaderLanguage` and include
 `ludus/tooling/shader_language/preprocessor.hpp`. The library builds for native
@@ -129,7 +131,9 @@ Macro expansion follows Dave Prosser's
 | `MAX_SEMANTIC_TYPES` | 65,536 | Interned types, built-ins included |
 | `MAX_SYMBOLS` | 1,048,576 | Symbols, built-in functions included |
 | `MAX_FUNCTION_PARAMETERS` | 64 | Parameters of a function and arguments of a call |
-| `MAX_TEMPLATE_PARAMETERS` | 8 | Type parameters of one template |
+| `MAX_TEMPLATE_PARAMETERS` | 8 | Type parameters of one template or concept |
+| `MAX_SPECIALIZATIONS` | 256 | Template specializations per translation unit |
+| `MAX_CONSTRAINT_DEPTH` | 32 | Nested concept applications while a constraint is evaluated |
 | `MAX_ARRAY_LENGTH` | 1,048,576 | Elements of one array dimension |
 | `MAX_DIAGNOSTICS` | 256 | Retained diagnostics; later ones are counted |
 | `MAX_DIAGNOSTIC_MESSAGE_BYTES` | 256 | One message; longer ones are clipped |
@@ -192,7 +196,7 @@ the name.
 | LUSL0301 | `unexpected-token` | A token the grammar does not allow; the message says what was expected |
 | LUSL0302 | `assignment-in-expression` | Assignment, compound assignment, `++` or `--` inside an expression |
 | LUSL0303 | `multiple-declarators` | More than one variable in one declaration |
-| LUSL0304 | `later-phase-construct` | `concept`, `requires`, `dynamic` and generic structs, which later phases add |
+| LUSL0304 | `later-phase-construct` | `dynamic` dispatch and generic structs, which later phases add |
 | LUSL0305 | `keyword-as-name` | A keyword where a name is required |
 | LUSL0306 | `c-style-cast` | `(Type)value`; write `Type(value)` |
 | LUSL0307 | `expression-without-effect` | A statement that is not a call, assignment or `++`/`--`, or an empty `;` |
@@ -244,6 +248,7 @@ the name.
 | LUSL0546 | `reserved-name` | A name the generated Slang cannot declare: a Slang keyword such as `let` or `this`, or a name starting with `_lusl` or `__` |
 | LUSL0547 | `missing-requirement` | A struct or extension does not provide a method or constant an interface it conforms to requires |
 | LUSL0548 | `template-deduction` | A template parameter that no parameter's type names, or call arguments that do not satisfy the template's constraints |
+| LUSL0549 | `invalid-constraint` | A malformed concept or constraint, an `if constexpr` condition that is not a constant bool, templates whose constraints do not order, or a specialized template called with template parameters |
 | LUSL0601 | `naming-style` | A name that breaks the naming rules (style) |
 | LUSL0602 | `bare-bool-operand` | A `bool` used directly as a condition or `&&`/`||` operand (style) |
 | LUSL0701 | `extern-slang-not-found` | The file an `extern slang` block names is not in the snapshot |
@@ -270,7 +275,7 @@ The grammar covers L1 LUSL:
 
 | Area | What parses |
 | --- | --- |
-| Declarations | Variables with `static`, `const` or `groupshared`, arrays and `= void`; functions with `in`, `out` and `inout` parameters, semantics and defaults; `struct` with fields, `static const` members, methods and a base list (`struct Paint : Material`); `interface` with method and constant requirements; `extension Type : Interface { ... }`; `template <Interface T>` and `template <typename T>` functions; `enum class` with an underlying type; `extern slang "path" { ... }`; `static_assert`; attribute lists such as `[stage(compute), threads(8, 8, 1)]` |
+| Declarations | Variables with `static`, `const` or `groupshared`, arrays and `= void`; functions with `in`, `out` and `inout` parameters, semantics and defaults; `struct` with fields, `static const` members, methods and a base list (`struct Paint : Material`); `interface` with method and constant requirements; `extension Type : Interface { ... }`; `template <Interface T>`, `template <Concept T>` and `template <typename T> requires constraint` functions; `concept Name<T> = constraint;`; `if constexpr`; conformance tests `(T : Interface)` and concept applications `Concept<T>`; `enum class` with an underlying type; `extern slang "path" { ... }`; `static_assert`; attribute lists such as `[stage(compute), threads(8, 8, 1)]` |
 | Types | Names, scoped names (`A::B`) and type arguments (`Texture2D<float32x4>`, `Outer<Inner<T>>`) |
 | Statements | Blocks, assignments and compound assignments, `++` and `--`, call statements, `if`/`else`, `for`, `while`, `do`/`while`, `switch` with `case`, `default` and `[[fallthrough]]`, `break`, `continue`, `return`, `discard` |
 | Expressions | C precedence, `?:`, unary `+ - ~`, calls, member access, indexing, scoped names, named arguments (`ray = r`), call-site marks (`out radiance`), designated initializers (`{ .A = a, .B = b }`) |
@@ -284,8 +289,7 @@ Parsing enforces LUSL's syntactic rules:
 - positional arguments before named ones;
 - only calls, assignments and `++`/`--` as statements.
 
-Concepts, `requires` clauses and generic structs are reported as later-phase
-constructs.
+`dynamic` dispatch and generic structs are reported as later-phase constructs.
 After an error the parser skips to the next statement or declaration and
 continues, so one request reports several independent errors. A Failed tree is
 still published, with Error nodes where tokens were skipped, for editors; later
@@ -725,7 +729,7 @@ generated from Slang reflection in L3.
 
 L2a adds the nominal half of the [hybrid design](../../architecture/shading-language.md#interfaces-concepts-and-templates):
 interfaces, conformance, extensions and templates constrained by interfaces.
-Concepts, `requires`, `if constexpr` and constraint ordering arrive in L2b.
+Concepts and specialization follow in [the next section](#concepts-and-specialization).
 
 ```c
 interface Material
@@ -791,6 +795,81 @@ float32x3 Shade(in M material, in float32x3 normalWorld)
   their deduced arguments explicitly (`Shade<CarPaint>(paint, normalWorld)`).
   `M::NAME` becomes `M.NAME`. Call adapters for reordered named arguments
   become generic too.
+
+## Concepts and specialization
+
+L2b adds the structural half: concepts, `requires`, `if constexpr`, ordering
+by constraints, and one specialized copy per concrete type.
+
+```c
+concept Opaque<T> = (T : Material) && (T::LOBE_COUNT == 1);
+concept Layered<T> = (T : ClearcoatMaterial) && (T::LOBE_COUNT > 1);
+
+static_assert(Layered<CarPaint> == true, "CarPaint must stay layered");
+
+template <Material M>
+float32x3 Shade(in M material, in float32x3 normalWorld) { /* general path */ }
+
+template <Layered M> // Layered implies Material, so this overload is more constrained and wins
+float32x3 Shade(in M material, in float32x3 normalWorld) { /* layered path */ }
+
+template <Material M>
+float32x3 ShadeWithFog(in M material, in float32x3 normalWorld, in FogParameters fog)
+{
+    float32x3 color = Shade(material = material, normalWorld = normalWorld);
+    if constexpr (Opaque<M> == true)
+    {
+        color = ApplyFog(color = color, fog = fog);
+    }
+    return color;
+}
+```
+
+- **Concepts** are compile-time booleans over type parameters. A constraint
+  combines:
+  - conformance tests `(T : Interface)`;
+  - concept applications `Concept<T>`;
+  - integer and bool constants;
+  - `T::NAME` constants;
+  - `&&`, `||`, comparisons and integer arithmetic.
+
+  Concepts declare no members. Members stay in interfaces.
+- **Evaluation** happens for concrete types.
+  - A part that cannot be evaluated is false, not an error. For example,
+    `Opaque<Stone>` is false for a struct without `LOBE_COUNT`, as with
+    substitution failure in C++.
+  - `&&` and `||` skip their right side once the left side decides.
+- **Using concepts:**
+  - `template <Concept T>` applies a one-type concept to a parameter.
+  - `template <typename T> requires constraint` constrains any parameters.
+  - `static_assert` and `if constexpr` read concepts as constant bools.
+- **Overload choice.** Among templates that accept the arguments equally well,
+  the most constrained one wins, by C++20's ordering by constraints over
+  normalized atomic constraints ([temp.constr.order]).
+  - Concept applications expand to their constraints.
+  - A conformance to an interface implies conformance to its bases, which is how
+    `Layered` subsumes `Material`.
+  - Other atoms are identical only when they are the same expression of the
+    same concept.
+  - If neither template's constraints subsume the other's, the call is an
+    `invalid-constraint` error; the compiler never picks silently.
+- **`if constexpr`** takes a constant bool. Only the branch it selects is
+  type-checked, analyzed and lowered; the other gets its syntax checked only.
+- **Specialization.** Which templates become a Slang generic and which get one
+  copy per concrete type:
+  - **Slang generic:** a template constrained only by interfaces, without
+    `if constexpr`, and calling no specialized template by name.
+  - **Specialized:** every other template. Each concrete set of type arguments
+    that a call reaches gets its own copy, checked with the parameters bound to
+    those types. Flow rules run on each copy.
+
+  A specialized template calls others with concrete types, so a call from a
+  generic template is an error. Copies are named `_luslSpecialization<k>_Name`
+  in first-use order. Each one counts toward `MAX_SPECIALIZATIONS`.
+- **Build report.** `EmitResult` (and `LoweringResult`) lists:
+  - `Specializations`, such as `Shade<CarPaint>` with its generated name;
+  - `GroupsharedClears`, with each cleared variable's unpadded bytes per entry
+    point.
 
 ## Render-graph programs
 

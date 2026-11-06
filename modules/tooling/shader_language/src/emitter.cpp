@@ -55,6 +55,8 @@ Status EmitSlang(const PreprocessRequest& request,
         outResult.Text.Clear();
         outResult.SourceMap.Clear();
         outResult.BoundsChecks.Clear();
+        outResult.Specializations.Clear();
+        outResult.GroupsharedClears.Clear();
     }
     return outResult.Outcome;
 }

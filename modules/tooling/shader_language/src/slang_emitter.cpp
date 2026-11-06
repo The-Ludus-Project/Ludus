@@ -30,6 +30,8 @@ constexpr uint64 DECIMAL_BASE = 10;
 /// Magnitudes of INT32_MIN and INT64_MIN, which have no literal of their own type.
 constexpr uint64 INT32_MAGNITUDE_LIMIT = uint64{1} << 31U;
 constexpr uint64 INT64_MAGNITUDE_LIMIT = uint64{1} << 63U;
+/// Bits per byte, for the unpadded sizes of the build report.
+constexpr uint64 BITS_PER_BYTE = 8;
 /// Bit widths of the integer scalars, for shift masks.
 constexpr uint32 INT16_BITS = 16;
 constexpr uint32 INT32_BITS = 32;
@@ -223,6 +225,7 @@ private:
                 SourceLocation{},
                 ComposeMessage("the generated Slang exceeds ", uint64{shader_compiler::MAX_SOURCE_BYTES}, " bytes"));
         }
+        recordSpecializations();
         for (usize i = 0; i < mModule.BoundsChecks.GetSize(); ++i)
         {
             BoundsCheckSite site;
@@ -233,6 +236,112 @@ private:
                 mSink.ReportOutOfMemory();
                 return;
             }
+        }
+    }
+
+    /// Name each specialization for the build report: `Template<Type, ...>` and its Slang name.
+    void recordSpecializations() noexcept
+    {
+        for (uint32 index = 0; index < mInputs.Model.Specializations.GetSize(); ++index)
+        {
+            const Specialization& specialization = mInputs.Model.Specializations[index];
+            const Symbol& declared = getSymbol(specialization.Template);
+            SpecializationRecord record;
+            record.Template = locateSymbol(specialization.Template);
+            (void)record.Name.TryAssign(getName(specialization.Template));
+            (void)record.Name.TryAppend("<");
+            for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+            {
+                const TypeNameText argument =
+                    FormatTypeName(mInputs.Model,
+                                   mInputs.Model.TypeArguments[specialization.FirstTypeArgument + i],
+                                   mInputs.Request,
+                                   mInputs.Preprocessed);
+                (void)record.Name.TryAppend(i == 0 ? "" : ", ");
+                (void)record.Name.TryAppend(argument.GetView());
+            }
+            (void)record.Name.TryAppend(">");
+            (void)record.GeneratedName.TryAssign("_luslSpecialization");
+            appendNumber(record.GeneratedName, index);
+            (void)record.GeneratedName.TryAppend("_");
+            (void)record.GeneratedName.TryAppend(getName(specialization.Template));
+            if (mResult.Specializations.TryAdd(record) == false)
+            {
+                mSink.ReportOutOfMemory();
+                return;
+            }
+        }
+    }
+
+    static void appendNumber(TypeNameText& inoutText, uint64 value) noexcept
+    {
+        foundation::StaticArray<char, MAX_DECIMAL_DIGITS> digits{};
+        usize count = 0;
+        do
+        {
+            digits[MAX_DECIMAL_DIGITS - 1 - count] = static_cast<char>('0' + static_cast<char>(value % DECIMAL_BASE));
+            value /= DECIMAL_BASE;
+            ++count;
+        } while (value != 0 && count < MAX_DECIMAL_DIGITS);
+        (void)inoutText.TryAppend(std::string_view(digits.GetData() + (MAX_DECIMAL_DIGITS - count), count));
+    }
+
+    /// The location of `symbol`'s name token, mapped to the outermost macro use.
+    [[nodiscard]] SourceLocation locateSymbol(uint32 symbol) const noexcept
+    {
+        const uint32 token = getSymbol(symbol).NameToken;
+        if (token == NO_TOKEN || token >= mInputs.Preprocessed.Tokens.GetSize())
+        {
+            return SourceLocation{};
+        }
+        const Token& spelled = mInputs.Preprocessed.Tokens[token];
+        if (spelled.ExpansionIndex != NO_EXPANSION &&
+            spelled.ExpansionIndex < mInputs.Preprocessed.Expansions.GetSize())
+        {
+            return mInputs.Preprocessed.Expansions[spelled.ExpansionIndex];
+        }
+        return spelled.Location;
+    }
+
+    /// Unpadded bytes of a value of `type`: scalars at their width, without layout padding.
+    [[nodiscard]] uint64 getUnpaddedBytes(uint32 type) const noexcept
+    {
+        const SemanticType& shape = getType(type);
+        switch (shape.Kind)
+        {
+            case TypeKind::Scalar:
+            case TypeKind::Vector:
+            case TypeKind::Matrix: {
+                uint64 width = INT32_BITS / BITS_PER_BYTE;
+                if (shape.Scalar == ScalarKind::Int16 || shape.Scalar == ScalarKind::Uint16 ||
+                    shape.Scalar == ScalarKind::Float16)
+                {
+                    width = INT16_BITS / BITS_PER_BYTE;
+                }
+                else if (shape.Scalar == ScalarKind::Int64 || shape.Scalar == ScalarKind::Uint64 ||
+                         shape.Scalar == ScalarKind::Float64)
+                {
+                    width = INT64_BITS / BITS_PER_BYTE;
+                }
+                return width * shape.Rows * shape.Columns;
+            }
+            case TypeKind::Array:
+                return getUnpaddedBytes(shape.Element) * shape.Count;
+            case TypeKind::Struct: {
+                const Symbol& declared = getSymbol(shape.Symbol);
+                uint64 bytes = 0;
+                for (uint32 i = 0; i < declared.MemberCount; ++i)
+                {
+                    const uint32 member = mInputs.Model.Members[declared.FirstMember + i];
+                    if (member != NO_SYMBOL && getSymbol(member).Kind == SymbolKind::Field)
+                    {
+                        bytes += getUnpaddedBytes(getSymbol(member).Type);
+                    }
+                }
+                return bytes;
+            }
+            default:
+                return 0;
         }
     }
 
@@ -1071,6 +1180,17 @@ private:
 
     void writeFunctionName(uint32 symbol) noexcept
     {
+        // A specialization is named after its template and its index, deterministic and unique.
+        for (uint32 index = 0; index < mInputs.Model.Specializations.GetSize(); ++index)
+        {
+            if (mInputs.Model.Specializations[index].Function == symbol)
+            {
+                write("_luslSpecialization");
+                writeUnsigned(index);
+                write("_");
+                break;
+            }
+        }
         write(getName(symbol));
     }
 
@@ -1266,6 +1386,7 @@ private:
     void writeFunction(uint32 item) noexcept
     {
         const IrNode& node = at(item);
+        mCurrentEntry = node.Location;
         mapLine(node.Location);
         if ((node.Flags & IR_ENTRY) != 0)
         {
@@ -1642,6 +1763,15 @@ private:
         const IrNode& node = at(statement);
         const uint32 type = node.Type;
         const std::string_view name = getName(node.Symbol);
+        GroupsharedClearRecord record;
+        record.Entry = mCurrentEntry;
+        record.Variable = locateSymbol(node.Symbol);
+        record.Bytes = getUnpaddedBytes(type);
+        if (mResult.GroupsharedClears.TryAdd(record) == false)
+        {
+            mSink.ReportOutOfMemory();
+            return;
+        }
         uint64 total = 1;
         for (uint32 dimension = type; getType(dimension).Kind == TypeKind::Array;
              dimension = getType(dimension).Element)
@@ -1951,6 +2081,8 @@ private:
     TextWriter mWriter;
     Array<foundation::uint8> mIsAliasNeeded;
     uint32 mIndent = 0;
+    /// The function being written, whose clears the report attributes to it.
+    SourceLocation mCurrentEntry;
     bool mIsMapped = false;
     uint16 mMappedFile = NO_SOURCE;
     uint32 mMappedLine = 0;

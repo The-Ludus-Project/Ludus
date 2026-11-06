@@ -228,6 +228,9 @@ enum class DiagnosticCode : foundation::uint16
     MissingRequirement = 547,
     /// A template call whose type arguments cannot be deduced, or that violate their constraints.
     TemplateDeduction = 548,
+    /// A malformed concept or constraint, an `if constexpr` condition that is not a constant
+    /// constraint, or overloads whose constraints do not order.
+    InvalidConstraint = 549,
 
     /// A name breaks the naming rules: PascalCase types, functions and fields, lowerCamelCase
     /// parameters and locals, `out`/`inout` prefixes, UPPER_CASE constants, question-like booleans.
