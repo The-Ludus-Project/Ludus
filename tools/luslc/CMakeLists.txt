@@ -1,7 +1,8 @@
 # luslc: command-line checking, lowering and formatting of LUSL sources over Ludus::ShaderLanguage
 # (docs/modules/tooling/shader-language.md#luslc).
-add_executable(luslc main.cpp)
-target_link_libraries(luslc PRIVATE Ludus::ShaderLanguage Ludus::FoundationFilesystem Ludus::FoundationStrings)
+add_executable(luslc main.cpp language_server.cpp)
+target_link_libraries(luslc PRIVATE Ludus::ShaderLanguage Ludus::FoundationFilesystem Ludus::FoundationStrings
+    Ludus::FoundationParsingJson)
 ludus_apply_project_defaults(luslc)
 install(TARGETS luslc RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 if(LUDUS_BUILD_TESTS)

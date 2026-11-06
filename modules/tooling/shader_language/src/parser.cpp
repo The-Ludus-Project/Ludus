@@ -2182,6 +2182,11 @@ Status Parse(const PreprocessRequest& request, const PreprocessResult& preproces
     return parser.Run();
 }
 
+foundation::BorrowedView<const std::string_view> GetKeywords() noexcept
+{
+    return foundation::BorrowedView<const std::string_view>(internal::KEYWORDS.GetData(), internal::KEYWORDS.GetSize());
+}
+
 std::string_view GetSyntaxKindName(SyntaxKind kind) noexcept
 {
     switch (kind)

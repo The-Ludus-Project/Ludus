@@ -1,6 +1,7 @@
 """Tests of the luslc command-line compiler (docs/modules/tooling/shader-language.md#luslc)."""
 
 import argparse
+import json
 import pathlib
 import subprocess
 import sys
@@ -151,6 +152,152 @@ class LuslcTests(unittest.TestCase):
         result = subprocess.run([LUSLC], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 2)
         self.assertIn("usage: luslc", result.stderr)
+
+
+class LanguageServer:
+    """A minimal LSP client: framed JSON-RPC over the server's standard input and output."""
+
+    def __init__(self, root):
+        self.process = subprocess.Popen([LUSLC, "lsp", "--root", str(root)], stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.next_id = 0
+        self.notifications = []
+
+    def send(self, message):
+        body = json.dumps({"jsonrpc": "2.0", **message}).encode("utf-8")
+        self.process.stdin.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+        self.process.stdin.flush()
+
+    def receive(self):
+        length = None
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                raise AssertionError("the language server closed its output")
+            if line in (b"\r\n", b"\n"):
+                break
+            name, _, value = line.decode("ascii").partition(":")
+            if name.strip().lower() == "content-length":
+                length = int(value.strip())
+        return json.loads(self.process.stdout.read(length))
+
+    def request(self, method, params):
+        self.next_id += 1
+        self.send({"id": self.next_id, "method": method, "params": params})
+        while True:
+            message = self.receive()
+            if message.get("id") == self.next_id:
+                return message
+            self.notifications.append(message)
+
+    def notify(self, method, params):
+        self.send({"method": method, "params": params})
+
+    def diagnostics(self):
+        """The next publishDiagnostics notification."""
+        while True:
+            message = self.notifications.pop(0) if self.notifications else self.receive()
+            if message.get("method") == "textDocument/publishDiagnostics":
+                return message["params"]
+
+    def close(self):
+        self.request("shutdown", None)
+        self.notify("exit", None)
+        return self.process.wait(timeout=10)
+
+
+class LanguageServerTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.directory.name).resolve()
+        (self.root / "common.luslh").write_text(
+            "#pragma once\nstruct Light\n{\n    float32x3 Color;\n    float32 Power;\n};\n"
+            "float32 Scale(in float32 value)\n{\n    return value * 2.0;\n}\n", encoding="utf-8")
+        self.server = LanguageServer(self.root)
+        self.addCleanup(self.directory.cleanup)
+
+    def tearDown(self):
+        if self.server.process.poll() is None:
+            self.server.process.kill()
+            self.server.process.wait()
+        self.server.process.stdin.close()
+        self.server.process.stdout.close()
+        self.server.process.stderr.close()
+
+    def test_serves_diagnostics_navigation_formatting_and_completion(self):
+        server = self.server
+        initialized = server.request("initialize", {"processId": None, "rootUri": self.root.as_uri(),
+                                                    "capabilities": {}})
+        capabilities = initialized["result"]["capabilities"]
+        self.assertEqual(capabilities["textDocumentSync"]["change"], 2)
+        for provider in ("definitionProvider", "hoverProvider", "documentSymbolProvider",
+                         "documentFormattingProvider"):
+            self.assertTrue(capabilities[provider], provider)
+        server.notify("initialized", {})
+
+        uri = (self.root / "main.lusl").as_uri()
+        text = ('#include "common.luslh"\n'
+                "float32 Shade(in Light light)\n{\n    uint32 power = light.Power;\n    return Scale(light.Power);\n}\n")
+        server.notify("textDocument/didOpen", {"textDocument": {"uri": uri, "languageId": "lusl", "version": 1,
+                                                                "text": text}})
+        published = server.diagnostics()
+        self.assertEqual(published["uri"], uri)
+        self.assertEqual(len(published["diagnostics"]), 1)
+        mismatch = published["diagnostics"][0]
+        self.assertEqual(mismatch["code"], "LUSL0504")
+        self.assertEqual(mismatch["severity"], 1)
+        self.assertEqual(mismatch["range"]["start"]["line"], 3)
+        self.assertIn("type-mismatch", mismatch["message"])
+
+        # An incremental edit replaces `uint32` with `float32` on line 3.
+        server.notify("textDocument/didChange", {
+            "textDocument": {"uri": uri, "version": 2},
+            "contentChanges": [{"range": {"start": {"line": 3, "character": 4}, "end": {"line": 3, "character": 10}},
+                                "text": "float32"}]})
+        self.assertEqual(server.diagnostics()["diagnostics"], [])
+
+        # Scale is defined in the included header.
+        definition = server.request("textDocument/definition", {"textDocument": {"uri": uri},
+                                                                 "position": {"line": 4, "character": 12}})
+        self.assertEqual(definition["result"]["uri"], (self.root / "common.luslh").as_uri())
+        self.assertEqual(definition["result"]["range"]["start"], {"line": 6, "character": 8})
+
+        hover = server.request("textDocument/hover", {"textDocument": {"uri": uri},
+                                                       "position": {"line": 3, "character": 13}})
+        self.assertIn("float32 power", hover["result"]["contents"]["value"])
+        called = server.request("textDocument/hover", {"textDocument": {"uri": uri},
+                                                        "position": {"line": 4, "character": 13}})
+        self.assertIn("float32 Scale(in float32 value)", called["result"]["contents"]["value"])
+
+        symbols = server.request("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
+        self.assertEqual([symbol["name"] for symbol in symbols["result"]], ["Shade"])
+
+        completion = server.request("textDocument/completion", {"textDocument": {"uri": uri},
+                                                                 "position": {"line": 4, "character": 23}})
+        labels = {item["label"] for item in completion["result"]}
+        self.assertEqual(labels, {"Color", "Power"})
+        names = server.request("textDocument/completion", {"textDocument": {"uri": uri},
+                                                            "position": {"line": 4, "character": 4}})
+        labels = {item["label"] for item in names["result"]}
+        self.assertTrue({"Scale", "Light", "return", "float32x3", "Texture2D"} <= labels)
+
+        server.notify("textDocument/didChange", {
+            "textDocument": {"uri": uri, "version": 3},
+            "contentChanges": [{"text": "static const uint32 COUNT=4;\n"}]})
+        server.diagnostics()
+        formatting = server.request("textDocument/formatting", {"textDocument": {"uri": uri},
+                                                                 "options": {"tabSize": 4, "insertSpaces": True}})
+        self.assertEqual(formatting["result"][0]["newText"], "static const uint32 COUNT = 4;\n")
+
+        unknown = server.request("textDocument/rename", {"textDocument": {"uri": uri}})
+        self.assertEqual(unknown["error"]["code"], -32601)
+        server.notify("textDocument/didClose", {"textDocument": {"uri": uri}})
+        self.assertEqual(server.diagnostics()["diagnostics"], [])
+        self.assertEqual(server.close(), 0)
+
+    def test_exit_without_shutdown_fails(self):
+        self.server.notify("exit", None)
+        self.assertEqual(self.server.process.wait(timeout=10), 1)
 
 
 def main():

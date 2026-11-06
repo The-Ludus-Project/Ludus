@@ -816,6 +816,44 @@ luslc format --root shaders --check main/shade.lusl main/common.luslh
 - **Exit codes:** 0 on success, 1 when a stage fails or a file cannot be read or
   written, 2 for a usage error.
 
+## Language server
+
+`luslc lsp` serves the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/)
+on standard input and output, over the same library the compilers use:
+
+```bash
+luslc lsp --root shaders --include-directory _ludus_ray
+```
+
+- **Workspace.** `--root` names the workspace; without it the server takes the
+  client's `rootUri` from `initialize`. `--include-directory` and `--style`
+  work as for `luslc check`.
+- **Synchronization.** Documents open and change incrementally (UTF-16
+  positions). Every change checks the document again, with the other open
+  documents in place of their files on disk, and publishes its diagnostics:
+  each carries its `LUSL0504`-style code, severity and the diagnostic name.
+  Problems in an included file appear on the document's first line, naming the
+  file and line.
+- **Requests:**
+
+  | Request | Result |
+  | --- | --- |
+  | `textDocument/definition` | The declaration of the name under the cursor, also in included files |
+  | `textDocument/hover` | The declaration (`float32 Scale(in float32 value)`, `float32 power`) or the expression's type |
+  | `textDocument/documentSymbol` | Module-level declarations, with struct, enum and interface members |
+  | `textDocument/formatting` | One edit with the [formatter](#formatting)'s layout, or none |
+  | `textDocument/completion` | After `.`, the fields and methods of the struct; otherwise keywords, built-in and resource types, and the module's names |
+
+  Other requests answer `MethodNotFound`. `shutdown` then `exit` ends the
+  server with status 0; `exit` alone, or the end of input, with 1.
+- **Limits.** Messages are bounded by twice `shader_compiler::MAX_SOURCE_BYTES`,
+  and the snapshot keeps the compiler's file and byte limits. Built-in
+  functions have no declaration to navigate to.
+- **Evidence.** `luslc_tests` drives the server as a client would: diagnostics
+  after opening, an incremental fix, definition in an included header, hover,
+  symbols, member and name completion, formatting, unknown requests and the
+  exit status.
+
 ## LUSL in compiler requests
 
 `ShaderCompiler` accepts a `.lusl` root. When `Request::Source` ends in

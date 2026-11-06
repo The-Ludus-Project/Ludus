@@ -41,8 +41,16 @@ L3 is in progress:
   constants, and scene-interface callbacks in LUSL whose query outcomes match
   their Slang originals on the GPU.
 
-L3 is complete; a GPU fixture for LUSL ray storage remains open. L4 is not
-implemented.
+L3 is complete; a GPU fixture for LUSL ray storage remains open.
+
+L4 is in progress:
+- L4a: the language server, `luslc lsp`: diagnostics on every change,
+  definition, hover, document symbols, formatting and completion over the
+  compiler library.
+
+Not yet done from L4: the editor's LUSL language record and client profile,
+the tree-sitter grammar, uniformity qualifiers, coordinate-space types,
+debug-view qualification and the dynamic dispatch evaluation.
 
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
