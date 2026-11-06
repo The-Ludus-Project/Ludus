@@ -2580,7 +2580,8 @@ def install_windows_runtime_sdk(root: Path, preset: str) -> int:
     build_dir = root / "out" / "build" / preset
     prefix = root / "out" / "install" / preset
     run([cmake_command, "--preset", preset], cwd=root, env=env)
-    run([cmake_command, "--build", "--preset", preset], cwd=root, env=env)
+    # Keep going after a failure so one build reports every module that does not compile.
+    run([cmake_command, "--build", "--preset", preset, "--", "-k", "0"], cwd=root, env=env)
     # An SDK prefix holds one installed configuration; start from an empty one.
     if prefix.exists():
         shutil.rmtree(prefix)
