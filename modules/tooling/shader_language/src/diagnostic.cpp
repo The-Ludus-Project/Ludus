@@ -199,10 +199,16 @@ std::string_view GetDiagnosticCodeName(DiagnosticCode code) noexcept
             return "recursion";
         case DiagnosticCode::GroupsharedInitializer:
             return "groupshared-initializer";
+        case DiagnosticCode::ReservedName:
+            return "reserved-name";
         case DiagnosticCode::NamingStyle:
             return "naming-style";
         case DiagnosticCode::BareBoolOperand:
             return "bare-bool-operand";
+        case DiagnosticCode::ExternSlangNotFound:
+            return "extern-slang-not-found";
+        case DiagnosticCode::LoweringLimit:
+            return "lowering-limit";
     }
     return {};
 }

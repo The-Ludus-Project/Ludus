@@ -2,10 +2,12 @@
 
 Status: proposed, November 4, 2026; the design's open questions were resolved the
 same day (see [resolved questions](#resolved-questions)). L1a (the preprocessor),
-L1b (the parser and formatter) and L1c (the semantic checker, with flow rules,
-style rules and fixes) are implemented in `Ludus::ShaderLanguage`; see the
+L1b (the parser and formatter), L1c (the semantic checker, with flow rules,
+style rules and fixes) and L1d (the IR, the Slang emitter and `luslc`) are
+implemented in `Ludus::ShaderLanguage`; see the
 [module guide](../modules/tooling/shader-language.md) for their exact behavior
-and limits. The rest of L1 and later phases are not implemented.
+and limits. L1e (the `ShaderCompiler` and render-graph integration, SDK
+declarations and a ported shader) and later phases are not implemented.
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
 
@@ -296,8 +298,8 @@ Declarations without an initializer:
   compute entry point that reaches the declaration. Each thread clears a strided
   slice, then a group barrier runs before any user code.
 - That needs a constant thread-group size.
-- The build report shows the cleared bytes per entry point, so the cost is
-  visible.
+- L1 emits the clear. The build report of the cleared bytes per entry point,
+  which makes the cost visible, arrives in L2.
 
 ### Functions, parameters and calls
 
@@ -477,8 +479,8 @@ extern slang "math.slang"
     FoundationMath. A test calls every declaration on every target.
   - L3 generates them deterministically from Slang reflection at SDK build time.
 - **Slang can use LUSL too.** A `.slang` file can include the generated Slang
-  of a LUSL module. Public LUSL declarations keep their names; only overloads
-  and specializations get derived names.
+  of a LUSL module. Public LUSL declarations, overloads included, keep their
+  names; only specializations and generated helpers get derived names.
 
 ### Defined behavior
 
@@ -618,8 +620,9 @@ Style rules follow a style setting:
 
 - **Byte-identical output.** The same snapshot, configuration values and
   compiler version produce the same Slang and source map, on every host.
-- **Stable derived names.** Overload and specialization names come from
-  declaration order and type names, never from addresses or hash-map order.
+- **Stable derived names.** Specialization and helper names come from
+  declaration and first-use order and type names, never from addresses or
+  hash-map order.
 - **Build key additions.** The render-graph build key gains the LUSL compiler
   version, the hash of the emitted Slang, and the configuration macros each
   file read. Moving a node or editing runtime values still rebuilds nothing.
@@ -645,7 +648,7 @@ Style rules follow a style setting:
 | --- | --- | --- |
 | L0 | This design and ADR 0027 | Reviewed and accepted into `develop` |
 | L1 | `Ludus::ShaderLanguage` and `luslc`: preprocessor (with `#` and `##`), parser, types and their aliases, untyped literals, the zero rule, definite assignment, `in`/`out`/`inout` with call-site marks, named arguments, designated initializers, `extern slang`, signed-overflow lowering, development bounds checks, style rules and setting, Slang emitter, source map, formatter; authored render-graph functions and compute entry points | Golden, diagnostic, target, signed-overflow, bounds-check, style-setting, determinism and fuzz tests; one built-in graph shader ported with identical pixels |
-| L2 | Interfaces, concepts, templates, `if constexpr`, constraint ordering, specialization budget report, `groupshared` clear | A material-permutation sample matches its Slang-interface version |
+| L2 | Interfaces, concepts, templates, `if constexpr`, constraint ordering, specialization budget report, `groupshared` clear report | A material-permutation sample matches its Slang-interface version |
 | L3 | Vertex and fragment stages, the standalone binding model, `.luslh` generated from Slang reflection, LUSL output from the schema generator | A raster graph ported with identical pixels |
 | L4 | Language server, tree-sitter grammar, uniformity qualifiers, coordinate-space types, debug-view qualification, dynamic dispatch evaluation | Code editor acceptance for LUSL |
 

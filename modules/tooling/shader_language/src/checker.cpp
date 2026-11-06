@@ -18,6 +18,7 @@
 #include "internal/fix_builder.hpp"
 #include "internal/intrinsics.hpp"
 #include "internal/scope_table.hpp"
+#include "internal/slang_names.hpp"
 #include "internal/type_table.hpp"
 
 namespace ludus::tooling::shader_language
@@ -352,6 +353,14 @@ private:
         if (declaration != NO_NODE)
         {
             mModel.NodeSymbols[declaration] = index;
+        }
+        // Extern declarations mirror Slang names, which are valid Slang by definition.
+        if (mIsInExtern == false && nameToken != NO_TOKEN && internal::IsReservedSlangName(spell(nameToken)) == true)
+        {
+            reportAtToken(
+                DiagnosticCode::ReservedName,
+                nameToken,
+                ComposeMessage("'", spell(nameToken), "' is reserved in the generated Slang; choose another name"));
         }
         return index;
     }
@@ -933,6 +942,15 @@ private:
             }
         }
         mIncompleteStruct = NO_SYMBOL;
+        // A struct's members are contiguous in Members, but method parameters are appended while
+        // signatures are checked, so reserve one slot per method after the fields now.
+        mNextMethodSlot = static_cast<uint32>(mModel.Members.GetSize());
+        if (mModel.Members.TryResize(mModel.Members.GetSize() + methods.GetSize(), NO_SYMBOL) == false)
+        {
+            mSink.ReportOutOfMemory();
+            mIsFatal = true;
+            return;
+        }
         // Pass 2: method signatures, so any method may call any other.
         Array<uint32> methodSymbols;
         for (const uint32 method : methods)
@@ -1104,7 +1122,9 @@ private:
         return signature;
     }
 
-    [[nodiscard]] bool areSameParameters(uint32 left, uint32 right) const noexcept
+    /// True when two functions take the same parameter types; with `isDirectionCompared`, also
+    /// the same directions.
+    [[nodiscard]] bool areSameParameters(uint32 left, uint32 right, bool isDirectionCompared) const noexcept
     {
         const Symbol& a = mModel.Symbols[left];
         const Symbol& b = mModel.Symbols[right];
@@ -1116,7 +1136,7 @@ private:
         {
             const Symbol& p = mModel.Symbols[mModel.Members[a.FirstMember + i]];
             const Symbol& q = mModel.Symbols[mModel.Members[b.FirstMember + i]];
-            if (p.Type != q.Type || p.Direction != q.Direction)
+            if (p.Type != q.Type || (isDirectionCompared == true && p.Direction != q.Direction))
             {
                 return false;
             }
@@ -1272,9 +1292,20 @@ private:
         {
             for (uint32 candidate = head; candidate != NO_SYMBOL; candidate = mNextOverloads[candidate])
             {
-                if (areSameParameters(candidate, symbol) == false)
+                if (areSameParameters(candidate, symbol, false) == false)
                 {
                     continue;
+                }
+                // Overload choice ignores call-site marks, so such overloads could never be called.
+                if (areSameParameters(candidate, symbol, true) == false)
+                {
+                    reportAtToken(DiagnosticCode::Redeclaration,
+                                  getSymbol(symbol).NameToken,
+                                  ComposeMessage("'",
+                                                 name,
+                                                 "' has an overload with these parameter types; overloads cannot "
+                                                 "differ only in parameter directions"));
+                    return NO_SYMBOL;
                 }
                 Symbol& earlier = getSymbol(candidate);
                 if (earlier.IsDefined == false && getSymbol(symbol).IsDefined == true &&
@@ -1309,10 +1340,9 @@ private:
                               ComposeMessage("'", name, "' is already a field of this struct"));
                 return NO_SYMBOL;
             }
-            if (addMember(symbol) == false)
-            {
-                return NO_SYMBOL;
-            }
+            // checkStruct reserved this method's slot after the fields.
+            mModel.Members[mNextMethodSlot] = symbol;
+            ++mNextMethodSlot;
             ++getSymbol(structSymbol).MemberCount;
             return symbol;
         }
@@ -3529,6 +3559,8 @@ private:
     FunctionContext mFunction;
     uint32 mIntrinsicCount = 0;
     uint32 mIncompleteStruct = NO_SYMBOL;
+    /// The next Members slot that checkStruct reserved for a method of the struct being checked.
+    uint32 mNextMethodSlot = 0;
     bool mIsInExtern = false;
     bool mIsFatal = false;
 };

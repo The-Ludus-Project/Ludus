@@ -16,8 +16,8 @@ namespace ludus::tooling::shader_language
 ///
 /// Values never change meaning once released; retired codes are not reused. Codes 1-99 are
 /// language rules shared by every stage, 100-199 are lexical, 200-299 are preprocessor, 300-399
-/// are syntax, 400-499 are formatter, 500-599 are
-/// semantic and 600-699 are style diagnostics. docs/modules/tooling/shader-language.md lists every code.
+/// are syntax, 400-499 are formatter, 500-599 are semantic, 600-699 are style and 700-799 are
+/// lowering diagnostics. docs/modules/tooling/shader-language.md lists every code.
 // NOLINTNEXTLINE(performance-enum-size): codes have four digits; later stages exceed 255.
 enum class DiagnosticCode : foundation::uint16
 {
@@ -221,12 +221,21 @@ enum class DiagnosticCode : foundation::uint16
     Recursion = 544,
     /// A `groupshared` variable is not declared `= 0` or `= void`.
     GroupsharedInitializer = 545,
+    /// A name that the generated Slang cannot use: a Slang keyword, or a name starting with the
+    /// `_lusl` prefix reserved for generated code.
+    ReservedName = 546,
 
     /// A name breaks the naming rules: PascalCase types, functions and fields, lowerCamelCase
     /// parameters and locals, `out`/`inout` prefixes, UPPER_CASE constants, question-like booleans.
     NamingStyle = 601,
     /// A `bool` value used directly as a condition or `&&`/`||` operand; compare with `== true`.
     BareBoolOperand = 602,
+
+    /// The Slang file named by `extern slang` is not in the request's snapshot.
+    ExternSlangNotFound = 701,
+    /// The generated Slang would exceed `shader_compiler::MAX_SOURCE_BYTES`, or lowering needs more
+    /// generated helpers than MAX_GENERATED_HELPERS.
+    LoweringLimit = 702,
 };
 
 /// @brief Return the stable kebab-case name of a code, such as `unknown-directive`.
