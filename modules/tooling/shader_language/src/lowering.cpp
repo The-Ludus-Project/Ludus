@@ -84,31 +84,6 @@ private:
         }
     }
 
-    /// The function a call of template `function` with the type arguments at `firstTypeArgument`
-    /// reaches: its specialization's, or `function` itself when it is not specialized.
-    [[nodiscard]] uint32 resolveSpecialization(uint32 function, uint32 firstTypeArgument) const noexcept
-    {
-        const Symbol& declared = mInputs.Model.Symbols[function];
-        if (declared.IsSpecialized == false || firstTypeArgument == NO_SYMBOL)
-        {
-            return function;
-        }
-        for (const Specialization& specialization : mInputs.Model.Specializations)
-        {
-            bool isSame = specialization.Template == function;
-            for (uint32 i = 0; i < declared.TypeParameterCount && isSame == true; ++i)
-            {
-                isSame = mInputs.Model.TypeArguments[specialization.FirstTypeArgument + i] ==
-                         getModel().TypeArguments[firstTypeArgument + i];
-            }
-            if (isSame == true)
-            {
-                return specialization.Function;
-            }
-        }
-        return function;
-    }
-
     [[nodiscard]] const SyntaxNode& getSyntax(uint32 node) const noexcept
     {
         return mInputs.Tree.Nodes[node];
@@ -1783,7 +1758,8 @@ private:
                 return NO_IR;
         }
         // A specialized template is reached through the specialization for these type arguments.
-        const uint32 function = resolveSpecialization(symbolOf(node), getModel().NodeTypeArguments[node]);
+        const uint32 function =
+            ResolveSpecialization(mInputs.Model, symbolOf(node), getModel().NodeTypeArguments[node]);
         const Symbol& declared = getSymbol(function);
         const uint32 object = getKind(callee) == SyntaxKind::MemberExpression ? firstChild(callee) : NO_NODE;
         const bool isImplicitThis = call == CallKind::Method && object == NO_NODE;

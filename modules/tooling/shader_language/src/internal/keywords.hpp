@@ -9,7 +9,7 @@
 namespace ludus::tooling::shader_language::internal
 {
 /// Number of LUSL keywords, including those reserved for later phases.
-inline constexpr foundation::usize KEYWORD_COUNT = 38;
+inline constexpr foundation::usize KEYWORD_COUNT = 39;
 /// Number of keywords that begin later-phase constructs.
 inline constexpr foundation::usize LATER_PHASE_KEYWORD_COUNT = 1;
 
@@ -19,7 +19,7 @@ inline constexpr foundation::StaticArray<std::string_view, KEYWORD_COUNT> KEYWOR
     "dynamic", "else",      "enum",     "extension", "extern",  "false",    "for",     "goto",    "groupshared",
     "if",      "in",        "inout",    "interface", "out",     "requires", "return",  "static",  "static_assert",
     "struct",  "switch",    "template", "true",      "typedef", "typename", "union",   "void",    "while",
-    "sizeof",  "constexpr",
+    "sizeof",  "constexpr", "uniform",
 }};
 
 /// Keywords whose constructs arrive in later phases: dynamic dispatch (L4).

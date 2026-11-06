@@ -211,6 +211,12 @@ std::string_view GetDiagnosticCodeName(DiagnosticCode code) noexcept
             return "specialization-budget";
         case DiagnosticCode::InvalidStageInterface:
             return "invalid-stage-interface";
+        case DiagnosticCode::NonUniformDerivative:
+            return "non-uniform-derivative";
+        case DiagnosticCode::NonUniformArgument:
+            return "non-uniform-argument";
+        case DiagnosticCode::InvalidUniformParameter:
+            return "invalid-uniform-parameter";
         case DiagnosticCode::NamingStyle:
             return "naming-style";
         case DiagnosticCode::BareBoolOperand:

@@ -206,8 +206,13 @@ public:
         if (mSink.HasErrors() == false && mSink.HasOutOfMemory() == false && mIsFatal == false)
         {
             const internal::AnalysisInputs inputs{mRequest, mInput, mTree, mModel};
-            if (internal::AnalyzeFlow(inputs, mSink) == false ||
-                internal::CheckStyle(inputs, mOptions.Style, mSink) == false)
+            if (internal::AnalyzeFlow(inputs, mSink) == false)
+            {
+                mSink.ReportOutOfMemory();
+            }
+            // Style findings do not stop the uniformity rules; flow errors do.
+            const bool isFlowClean = mSink.HasErrors() == false;
+            if (internal::CheckStyle(inputs, mOptions.Style, mSink) == false)
             {
                 mSink.ReportOutOfMemory();
             }
@@ -222,6 +227,12 @@ public:
                 {
                     mSink.ReportOutOfMemory();
                 }
+            }
+            // Uniformity reads summaries of every function, so it runs once the flow rules hold.
+            if (isFlowClean == true && mSink.HasOutOfMemory() == false &&
+                internal::AnalyzeUniformity(inputs, mSink) == false)
+            {
+                mSink.ReportOutOfMemory();
             }
         }
         return finish();
@@ -3495,9 +3506,33 @@ private:
         declared.Parent = function;
         declared.HasDefault = defaultValue != NO_NODE;
         declared.Value = value;
+        declared.IsUniform = syntax.IsUniform == true && checkUniformParameter(node, stage) == true;
         ++getSymbol(function).MemberCount;
         mModel.NodeTypes[node] = type;
         (void)bindSymbol(symbol);
+    }
+
+    /// True when `uniform` may qualify parameter `node`: an `in` parameter of an ordinary function.
+    [[nodiscard]] bool checkUniformParameter(uint32 node, EntryStage stage) noexcept
+    {
+        const SyntaxNode& syntax = getNode(node);
+        if (syntax.Direction == ParameterDirection::Out || syntax.Direction == ParameterDirection::Inout)
+        {
+            report(DiagnosticCode::InvalidUniformParameter,
+                   node,
+                   ComposeMessage("'uniform' applies to 'in' parameters only; remove it, or pass the value 'in "
+                                  "uniform' and return the result"));
+            return false;
+        }
+        if (stage != EntryStage::None)
+        {
+            report(DiagnosticCode::InvalidUniformParameter,
+                   node,
+                   ComposeMessage("an entry point's inputs have fixed uniformity; remove 'uniform', and read "
+                                  "values every invocation shares from a ConstantBuffer"));
+            return false;
+        }
+        return true;
     }
 
     /// @brief Check a parameter's semantic for an entry point of `stage`.

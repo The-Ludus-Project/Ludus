@@ -237,6 +237,13 @@ enum class DiagnosticCode : foundation::uint16
     /// rules: attribute and varying types, one clip position, one stage-interface struct per module,
     /// one role per struct.
     InvalidStageInterface = 551,
+    /// A derivative operation (`Sample`, `ddx`, `ddy`), or a call of a function that performs one,
+    /// in non-uniform control flow.
+    NonUniformDerivative = 552,
+    /// A varying argument for a `uniform` parameter.
+    NonUniformArgument = 553,
+    /// `uniform` on an `out` or `inout` parameter, or on an entry point's parameter.
+    InvalidUniformParameter = 554,
 
     /// A name breaks the naming rules: PascalCase types, functions and fields, lowerCamelCase
     /// parameters and locals, `out`/`inout` prefixes, UPPER_CASE constants, question-like booleans.

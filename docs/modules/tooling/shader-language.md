@@ -253,6 +253,9 @@ the name.
 | LUSL0549 | `invalid-constraint` | A malformed concept or constraint, an `if constexpr` condition that is not a constant bool, templates whose constraints do not order, or a specialized template called with template parameters |
 | LUSL0550 | `specialization-budget` | A call needs more template specializations than `CheckOptions::SpecializationBudget` allows; the message names the template and both repairs |
 | LUSL0551 | `invalid-stage-interface` | A vertex or fragment entry point whose attributes, stage interface or outputs break the layout rules, such as a missing `: ClipPosition`, two stage-interface structs in one module, or one struct in two roles |
+| LUSL0552 | `non-uniform-derivative` | `Sample`, `ddx`, `ddy`, or a call of a function that performs one, in non-uniform control flow; the message names the deciding line, the varying value and the repair |
+| LUSL0553 | `non-uniform-argument` | A varying argument for a `uniform` parameter |
+| LUSL0554 | `invalid-uniform-parameter` | `uniform` on an `out` or `inout` parameter, or on an entry point's parameter |
 | LUSL0601 | `naming-style` | A name that breaks the naming rules (style) |
 | LUSL0602 | `bare-bool-operand` | A `bool` used directly as a condition or `&&`/`||` operand (style) |
 | LUSL0701 | `extern-slang-not-found` | The file an `extern slang` block names is not in the snapshot |
@@ -514,6 +517,59 @@ paths. Flow rules are skipped after a type error, so they never cascade from one
 
 Bounds checks on runtime indices and the `groupshared` clear itself are
 emitted by the [lowering](#lowering-to-slang).
+
+### Uniformity rules
+
+When the flow rules pass, `Check` applies the
+[uniformity design](../../architecture/shading-language.md#uniformity).
+Implicit-derivative operations (`Texture2D.Sample`, `ddx` and `ddy`) must run
+in uniform control flow, which WGSL requires and the other targets assume:
+
+```c
+float32x4 Shade(in uniform uint32 mode, in float32x2 uv)
+{
+    if (mode == 1) // `mode` is uniform, so the flow stays uniform
+    {
+        return image.Sample(imageSampler, uv);
+    }
+    return float32x4(0.0);
+}
+
+[stage(fragment)]
+float32x4 FragmentMain(in Interpolated input)
+{
+    float32x4 color = Shade(settings.Mode, input.Uv); // a ConstantBuffer field is uniform
+    if (input.Uv.x > 0.5) // an entry-point input varies
+    {
+        color = image.Sample(imageSampler, input.Uv); // error LUSL0552
+    }
+    return color;
+}
+```
+
+- **Varying values.** These vary:
+  - entry-point inputs, except the compute `GroupId`;
+  - reads of writable resources and of `groupshared` memory;
+  - mutable globals and a method's own fields;
+  - parameters of ordinary functions not declared `uniform`;
+  - results of functions that read any of these;
+  - a variable assigned a varying value, or assigned in more divergent flow
+    than its declaration's.
+
+  Constants, `ConstantBuffer` fields, `extern slang` uniforms and resource
+  handles are uniform.
+- **Non-uniform flow** starts at an `if`, loop, `switch`, `?:`, `&&` or `||`
+  that decides on a varying value. After a `return` in non-uniform flow, the
+  rest of the function is non-uniform. After a varying `break` or `continue`,
+  the whole loop or `switch` body is. `discard` does not change uniformity.
+- **Calls.** A function that samples or takes a derivative, directly or
+  through its callees, makes each of its calls a derivative operation. An
+  argument for a `uniform` parameter must be uniform (LUSL0553). `uniform`
+  qualifies only `in` parameters of ordinary functions (LUSL0554), and
+  lowering erases it.
+- **Scope.** Specializations are checked with their own types, and each error
+  is reported once per source position. Calls through an interface requirement
+  inside a Slang generic are not followed; the target compiler validates them.
 
 ### Style rules
 

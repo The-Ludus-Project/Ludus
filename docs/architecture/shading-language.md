@@ -50,10 +50,13 @@ L4 is in progress:
 - L4b: the code editor's LUSL language: coloring from the compiler's keyword
   table, structural editing, in-process formatting, and completion and
   navigation of render-graph LUSL sources through `luslc lsp`.
+- L4c: [uniformity](#uniformity): derivative operations in non-uniform control
+  flow are errors on their LUSL lines, functions carry the requirement to their
+  calls, and `uniform` parameters take only uniform arguments.
 
 Not yet done from L4: the tree-sitter grammar (with its dependency ADR),
-uniformity qualifiers, coordinate-space types, debug-view qualification and the
-dynamic dispatch evaluation.
+coordinate-space types, debug-view qualification and the dynamic dispatch
+evaluation.
 
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
@@ -500,6 +503,58 @@ float32x3 ShadeWithFog(in M material, in SurfaceHit hit, in FogParameters fog)
   `TestVisibility`, ...) through its LUSL declarations. Native ray queries keep
   their existing out-of-line requirements on Metal.
 
+### Uniformity
+
+Implicit-derivative operations (`Texture2D.Sample`, `ddx`, `ddy`) compare values
+across neighboring invocations. They are defined only in **uniform control
+flow**, where every invocation of the group takes the same path. WGSL rejects
+them anywhere else, and the other targets give undefined results. LUSL checks
+the rule itself (L4c), so the error names a LUSL line rather than a line of
+generated WGSL.
+
+- **Varying values** differ between invocations. These are varying:
+  - entry-point inputs, except the compute `GroupId`;
+  - reads of `RWTexture2D`, `RWStructuredBuffer` and `groupshared` memory;
+  - mutable globals;
+  - the parameters of ordinary functions, unless they are declared `uniform`;
+  - the fields of a method's own struct;
+  - any value computed from a varying value;
+  - a variable assigned a varying value, or assigned in more divergent control
+    flow than its declaration's, anywhere in its function.
+
+  Constants, literals, `ConstantBuffer` fields, `extern slang` uniforms, reads
+  of read-only resources at uniform coordinates, and `uniform` parameters are
+  uniform.
+- **Non-uniform control flow** starts where an `if`, `switch`, loop, `?:`, `&&`
+  or `||` decides on a varying value. It continues for the rest of the function
+  after a `return` in non-uniform flow, and for a whole loop or `switch` body
+  after a `break` or `continue` in non-uniform flow. Control flow reconverges
+  after the statement. `discard` demotes the invocation to a helper, as in
+  WGSL, so derivatives after it stay defined.
+- **Functions carry the requirement.** A function that performs a derivative
+  operation, or calls one that does, needs uniform control flow at each of its
+  call sites. The compiler infers this from the bodies; recursion is already
+  rejected, so the inference is finite.
+- **`uniform` parameters** make the contract explicit. `in uniform T name` (or
+  `uniform T name`) declares that every invocation passes the same value. In
+  the body the parameter is uniform, so the function can branch on it and still
+  sample. At each call the argument must be uniform. `uniform` applies only to
+  `in` parameters of ordinary functions; entry-point inputs have fixed
+  uniformity. Lowering erases the qualifier, because Slang's own `uniform`
+  means a constant-buffer parameter.
+- **Errors name the cause and the repair.** A derivative operation, or a call
+  to a function that needs uniform control flow, in non-uniform flow names the
+  deciding condition's line and the varying value it reads. It proposes moving
+  the operation before the branch, or `SampleLevel` with an explicit level.
+  A varying argument to a `uniform` parameter names the value it reads. It
+  proposes passing a uniform value or removing `uniform` from the parameter.
+- **The analysis is conservative.** It tracks each variable once per function,
+  not per path, so a variable that ever holds a varying value is varying
+  everywhere in its function. It follows calls of LUSL functions and of
+  specializations. A call through an interface requirement inside a Slang
+  generic is not followed, because the implementation is chosen later; the
+  target compiler still validates those calls.
+
 ### Resources and bindings
 
 - **Render-graph programs receive their bindings.** The graph build generates
@@ -776,3 +831,8 @@ is implemented.
 - ECMA-334 C# Language Specification, "Definite assignment" and output
   parameters. The definite-assignment analysis and the `out` marker at call
   sites.
+- Alan Baker, Mehmet Oguz Derin and David Neto (editors), *WebGPU Shading
+  Language*, W3C, ["Uniformity Analysis"](https://www.w3.org/TR/WGSL/#uniformity).
+  The rules for uniform control flow, derivative operations and `discard` as
+  demotion. LUSL declares `uniform` parameters instead of inferring
+  per-parameter requirements.
