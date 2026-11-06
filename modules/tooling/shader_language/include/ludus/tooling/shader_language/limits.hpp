@@ -48,6 +48,8 @@ inline constexpr foundation::usize MAX_SEMANTIC_TYPES = foundation::usize{1} << 
 inline constexpr foundation::usize MAX_SYMBOLS = foundation::usize{1} << 20;
 /// Most parameters of one function, and most arguments of one call.
 inline constexpr foundation::usize MAX_FUNCTION_PARAMETERS = 64;
+/// Most type parameters of one template.
+inline constexpr foundation::usize MAX_TEMPLATE_PARAMETERS = 8;
 /// Most elements of one array dimension.
 inline constexpr foundation::usize MAX_ARRAY_LENGTH = foundation::usize{1} << 20;
 /// Most diagnostics retained for one request; later ones are counted as dropped.

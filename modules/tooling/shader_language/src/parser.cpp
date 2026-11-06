@@ -640,7 +640,9 @@ private:
             if (isWord(keyword) == true)
             {
                 report(DiagnosticCode::LaterPhaseConstruct,
-                       ComposeMessage("'", keyword, "' arrives with interfaces, concepts and templates in LUSL L2"));
+                       ComposeMessage("'",
+                                      keyword,
+                                      "' arrives in a later LUSL phase: concepts in L2b, dynamic dispatch in L4"));
                 return true;
             }
         }
@@ -662,6 +664,18 @@ private:
         if (isWord("struct") == true)
         {
             return parseStruct(attributes);
+        }
+        if (isWord("interface") == true && scope == DeclarationScope::TopLevel)
+        {
+            return parseInterface(attributes);
+        }
+        if (isWord("extension") == true && scope == DeclarationScope::TopLevel)
+        {
+            return parseExtension(attributes);
+        }
+        if (isWord("template") == true && scope == DeclarationScope::TopLevel)
+        {
+            return parseTemplate(attributes);
         }
         if (isWord("enum") == true)
         {
@@ -692,10 +706,8 @@ private:
             return node;
         }
         addChildren(node, attributes);
-        if (isPunctuator(Punctuator::Colon) == true)
+        if (isPunctuator(Punctuator::Colon) == true && parseBaseList(node) == false)
         {
-            report(DiagnosticCode::LaterPhaseConstruct,
-                   ComposeMessage("interface conformance arrives with interfaces in LUSL L2"));
             return node;
         }
         if (consumePunctuator(Punctuator::Semicolon) == true)
@@ -782,6 +794,150 @@ private:
         {
             (void)expect(Punctuator::Semicolon, "';' after the enum");
         }
+        finish(node);
+        return node;
+    }
+
+    /// Parse `: A, B` into a BaseList child of `node`; false after a syntax error.
+    [[nodiscard]] bool parseBaseList(uint32 node) noexcept
+    {
+        const uint32 list = createNode(SyntaxKind::BaseList);
+        setToken(list, mPosition);
+        ++mPosition;
+        do
+        {
+            addChild(list, parseType());
+            if (mIsRecovering == true || mIsFatal == true)
+            {
+                return false;
+            }
+        } while (consumePunctuator(Punctuator::Comma) == true);
+        finish(list);
+        addChild(node, list);
+        return true;
+    }
+
+    /// Parse `{ members }` of an interface or extension into `node`, then the closing `;`.
+    void parseMemberBlock(uint32 node, DeclarationScope scope, std::string_view what) noexcept
+    {
+        if (expect(Punctuator::LeftBrace, "'{' to open the members") == false)
+        {
+            return;
+        }
+        while (mIsFatal == false && isAtEnd() == false && isPunctuator(Punctuator::RightBrace) == false)
+        {
+            const usize before = mPosition;
+            addChild(node, parseDeclaration(scope));
+            if (mIsRecovering == true)
+            {
+                synchronizeStatement();
+            }
+            if (mPosition == before)
+            {
+                ++mPosition;
+            }
+        }
+        if (expect(Punctuator::RightBrace, what) == true)
+        {
+            (void)consumePunctuator(Punctuator::Semicolon);
+        }
+    }
+
+    [[nodiscard]] uint32 parseInterface(const Array<uint32>& attributes) noexcept
+    {
+        const uint32 node = createNode(SyntaxKind::InterfaceDeclaration);
+        ++mPosition;
+        if (parseDeclaredName(node) == false)
+        {
+            return node;
+        }
+        addChildren(node, attributes);
+        if (isPunctuator(Punctuator::Colon) == true && parseBaseList(node) == false)
+        {
+            return node;
+        }
+        parseMemberBlock(node, DeclarationScope::Struct, "'}' to close the interface");
+        finish(node);
+        return node;
+    }
+
+    [[nodiscard]] uint32 parseExtension(const Array<uint32>& attributes) noexcept
+    {
+        const uint32 node = createNode(SyntaxKind::ExtensionDeclaration);
+        setToken(node, mPosition);
+        ++mPosition;
+        if (attributes.IsEmpty() == false)
+        {
+            report(DiagnosticCode::UnexpectedToken, ComposeMessage("extensions take no attributes"));
+            return node;
+        }
+        addChild(node, parseType());
+        if (mIsRecovering == true)
+        {
+            return node;
+        }
+        if (isPunctuator(Punctuator::Colon) == true && parseBaseList(node) == false)
+        {
+            return node;
+        }
+        parseMemberBlock(node, DeclarationScope::Struct, "'}' to close the extension");
+        finish(node);
+        return node;
+    }
+
+    [[nodiscard]] uint32 parseTemplate(const Array<uint32>& attributes) noexcept
+    {
+        const uint32 node = createNode(SyntaxKind::TemplateDeclaration);
+        setToken(node, mPosition);
+        ++mPosition;
+        if (expect(Punctuator::Less, "'<' after 'template'") == false)
+        {
+            return node;
+        }
+        do
+        {
+            const uint32 parameter = createNode(SyntaxKind::TemplateParameter);
+            if (isWord("typename") == true)
+            {
+                ++mPosition;
+            }
+            else
+            {
+                addChild(parameter, parseType());
+                if (mIsRecovering == true)
+                {
+                    return node;
+                }
+            }
+            if (parseDeclaredName(parameter) == false)
+            {
+                return node;
+            }
+            finish(parameter);
+            addChild(node, parameter);
+        } while (consumePunctuator(Punctuator::Comma) == true);
+        if (expect(Punctuator::Greater, "'>' to close the template parameters") == false)
+        {
+            return node;
+        }
+        Array<uint32> functionAttributes;
+        parseAttributes(functionAttributes);
+        for (const uint32 attribute : attributes)
+        {
+            if (functionAttributes.TryAdd(attribute) == false)
+            {
+                mSink.ReportOutOfMemory();
+                mIsFatal = true;
+                return node;
+            }
+        }
+        if (isWord("struct") == true || isDeclarationStart() == false)
+        {
+            report(DiagnosticCode::LaterPhaseConstruct,
+                   ComposeMessage("templates declare functions; generic structs arrive in a later LUSL phase"));
+            return node;
+        }
+        addChild(node, parseVariableOrFunction(functionAttributes, DeclarationScope::TopLevel));
         finish(node);
         return node;
     }
@@ -1900,6 +2056,16 @@ std::string_view GetSyntaxKindName(SyntaxKind kind) noexcept
             return "enumerator";
         case SyntaxKind::ExternSlangBlock:
             return "extern-slang-block";
+        case SyntaxKind::InterfaceDeclaration:
+            return "interface-declaration";
+        case SyntaxKind::ExtensionDeclaration:
+            return "extension-declaration";
+        case SyntaxKind::BaseList:
+            return "base-list";
+        case SyntaxKind::TemplateDeclaration:
+            return "template-declaration";
+        case SyntaxKind::TemplateParameter:
+            return "template-parameter";
         case SyntaxKind::StaticAssert:
             return "static-assert";
         case SyntaxKind::Attribute:

@@ -12,7 +12,10 @@ behavior and limits. Still open from L1:
 - the Metal loop code-generation measurement;
 - configuration values for render-graph programs.
 
-L2 and later phases are not implemented.
+L2a (interfaces, conformance, extensions, struct constants and
+interface-constrained templates lowered to Slang generics) is implemented.
+Concepts, `requires`, `if constexpr`, constraint ordering and specialization
+(L2b) and later phases are not.
 
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.

@@ -42,6 +42,12 @@ enum class TypeKind : foundation::uint8
     UntypedInteger,
     /// A floating literal or floating constant expression that has not met a target type yet.
     UntypedFloat,
+    /// An interface; SemanticType::Symbol names it. Interfaces constrain template parameters and
+    /// are not value types.
+    Interface,
+    /// A template type parameter; SemanticType::Symbol names it. Its constraints are the
+    /// SemanticModel::Conformances whose Type it is.
+    TypeParameter,
 };
 
 /// Element type of a scalar, vector or matrix, and the underlying type of an enum.
@@ -97,13 +103,21 @@ enum class SymbolKind : foundation::uint8
     Enum,
     /// An enumerator.
     Enumerator,
+    /// An `interface`; its members are its method and constant requirements.
+    Interface,
+    /// An `extension` of a struct; its members are the methods and constants it adds.
+    Extension,
+    /// A template type parameter of a function.
+    TypeParameter,
 };
 
 /// @brief A declared entity.
 ///
-/// A function's parameters, a struct's fields and methods, and an enum's enumerators are its
-/// members: MemberCount symbol indices starting at FirstMember in SemanticModel::Members, in
-/// declaration order.
+/// A function's parameters; a struct's fields, constants and methods; an interface's requirements;
+/// an extension's methods and constants; and an enum's enumerators are its members: MemberCount
+/// symbol indices starting at FirstMember in SemanticModel::Members, in declaration order. A
+/// template function's type parameters are TypeParameterCount symbols starting at
+/// FirstTypeParameter in SemanticModel::TypeParameters.
 struct Symbol final
 {
     /// What the symbol declares.
@@ -142,6 +156,24 @@ struct Symbol final
     foundation::uint32 MemberCount = 0;
     /// Value of an integer constant or enumerator.
     foundation::int64 IntegerValue = 0;
+    /// First type parameter of a template function in SemanticModel::TypeParameters.
+    foundation::uint32 FirstTypeParameter = 0;
+    /// Number of type parameters; zero for a function that is not a template.
+    foundation::uint32 TypeParameterCount = 0;
+};
+
+/// @brief A type that conforms to an interface.
+///
+/// Recorded for a struct's base list, an extension, an interface's base interfaces and a template
+/// parameter's constraint. Conformance is transitive through interface bases.
+struct Conformance final
+{
+    /// The conforming struct, interface or type parameter type.
+    foundation::uint32 Type = NO_TYPE;
+    /// The interface symbol it conforms to.
+    foundation::uint32 Interface = NO_SYMBOL;
+    /// The declaration that states it: a struct, interface, extension or template parameter node.
+    foundation::uint32 Declaration = NO_NODE;
 };
 
 /// How a CallExpression is lowered.
@@ -200,6 +232,15 @@ struct SemanticModel final
     /// Value of each integer or boolean constant expression node. Untyped integer arithmetic is
     /// exact (`1 / 2` is 0), so later stages emit these values rather than the expression.
     foundation::Array<IntegerConstant> NodeIntegerConstants;
+    /// For a call of a template function, the first of its deduced type arguments in
+    /// TypeArguments, one per type parameter; NO_SYMBOL for other nodes.
+    foundation::Array<foundation::uint32> NodeTypeArguments;
+    /// Deduced type arguments of template calls; see NodeTypeArguments.
+    foundation::Array<foundation::uint32> TypeArguments;
+    /// Type parameter symbols of template functions; see Symbol::FirstTypeParameter.
+    foundation::Array<foundation::uint32> TypeParameters;
+    /// Every stated conformance, in declaration order.
+    foundation::Array<Conformance> Conformances;
     /// Reported problems in the order found; at most MAX_DIAGNOSTICS.
     foundation::Array<Diagnostic> Diagnostics;
     /// Number of diagnostics found after `Diagnostics` reached MAX_DIAGNOSTICS.

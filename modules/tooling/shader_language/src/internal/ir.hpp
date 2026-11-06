@@ -25,6 +25,10 @@
 /// indices into the SemanticModel the IR was lowered from.
 namespace ludus::tooling::shader_language::internal
 {
+/// IrNode::Value of a call inside a generic call adapter, whose type arguments are the adapter's
+/// own type parameters.
+inline constexpr foundation::int64 ADAPTER_TYPE_ARGUMENTS = -2;
+
 /// IR index that names no node.
 inline constexpr foundation::uint32 NO_IR = 0xffffffffU;
 /// IrNode::Index of a node without a helper, failure code or ordinal.
@@ -35,8 +39,15 @@ enum class IrKind : foundation::uint8
 {
     /// Root. Children: the module items in source order; IrModule::Includes lists the includes.
     Module,
-    /// A struct. Symbol: the struct. Children: Field*, then Function* (methods).
+    /// A struct. Symbol: the struct. Children: Field* and Constant* in source order, then Function*
+    /// (methods). Its interfaces are the SemanticModel::Conformances its declaration states.
     Struct,
+    /// An interface. Symbol: the interface. Children: Constant* without initializers and Function*
+    /// without bodies, the requirements.
+    Interface,
+    /// An extension. Symbol: the extension, whose Parent is the struct. Children: Constant* and
+    /// Function*.
+    Extension,
     /// A struct field. Symbol: the field. Type: its type.
     Field,
     /// An enum. Symbol: the enum. Children: Enumerator*.
@@ -47,9 +58,10 @@ enum class IrKind : foundation::uint8
     Constant,
     /// A `groupshared` variable. Symbol and Type.
     Groupshared,
-    /// A function or method definition. Symbol: the function. Value: the IrModule::ThreadGroups
-    /// entry of an entry point. Flags: IR_ENTRY, IR_NOINLINE, IR_FORCEINLINE, IR_MUTATING, IR_HIDDEN_GROUP_INDEX.
-    /// Children: Parameter*, then the body Block.
+    /// A function or method definition, or an interface requirement without a body. Symbol: the
+    /// function; a template function's type parameters are its SemanticModel::TypeParameters. Value:
+    /// the IrModule::ThreadGroups entry of an entry point. Flags: IR_ENTRY, IR_NOINLINE, IR_FORCEINLINE, IR_MUTATING,
+    /// IR_HIDDEN_GROUP_INDEX. Children: Parameter*, then the body Block.
     Function,
     /// A parameter. Symbol and Type; Direction. Index: the system-value semantic for entry points.
     Parameter,
@@ -110,6 +122,9 @@ enum class IrKind : foundation::uint8
     ThisField,
     /// An enumerator, `Enum::Name`. Symbol.
     EnumeratorReference,
+    /// A constant member of a struct or a template parameter's constraint, `Owner::NAME`. Symbol: the
+    /// constant. Index: the owner struct or type parameter symbol.
+    TypeConstant,
     /// `object.field`. Symbol: the field. Children: object.
     Member,
     /// `object.xyz`. Token: the swizzle. Children: object.
@@ -128,8 +143,9 @@ enum class IrKind : foundation::uint8
     WrappedOperation,
     /// `condition ? a : b`. Children: condition, a, b.
     Conditional,
-    /// A call of a LUSL or extern function. Symbol: the function. Children: Argument* in parameter
-    /// order, defaults included.
+    /// A call of a LUSL or extern function. Symbol: the function. Value: for a template function,
+    /// the first of its type arguments in SemanticModel::TypeArguments, or ADAPTER_TYPE_ARGUMENTS in
+    /// a generic adapter's body. Children: Argument* in parameter order, defaults included.
     Call,
     /// A method call. Symbol: the method. Flags: IR_IMPLICIT_THIS. Children: the object unless
     /// implicit, then Argument* in parameter order.

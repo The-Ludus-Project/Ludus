@@ -803,6 +803,7 @@ private:
         writeType(function.Type);
         write(" ");
         writeHelperName(helper);
+        writeTypeParameters(entry.Symbol);
         write("(");
         for (uint32 k = 0; k < entry.FieldCount; ++k)
         {
@@ -932,6 +933,8 @@ private:
                 return;
             case TypeKind::Struct:
             case TypeKind::Enum:
+            case TypeKind::Interface:
+            case TypeKind::TypeParameter:
                 write(getName(shape.Symbol));
                 return;
             default:
@@ -1077,7 +1080,9 @@ private:
         switch (node.Kind)
         {
             case IrKind::Struct:
-                writeStruct(item);
+            case IrKind::Interface:
+            case IrKind::Extension:
+                writeAggregate(item);
                 return;
             case IrKind::Enum:
                 writeEnum(item);
@@ -1106,22 +1111,50 @@ private:
         }
     }
 
-    void writeStruct(uint32 item) noexcept
+    /// Write ` : A, B` for the conformances that declaration `declaration` states for `type`.
+    void writeBases(uint32 type, uint32 declaration) noexcept
     {
-        mapLine(at(item).Location);
-        write("struct ");
-        write(getName(at(item).Symbol));
+        bool isFirst = true;
+        for (const Conformance& conformance : mInputs.Model.Conformances)
+        {
+            if (conformance.Type != type || conformance.Declaration != declaration)
+            {
+                continue;
+            }
+            write(isFirst == true ? " : " : ", ");
+            write(getName(conformance.Interface));
+            isFirst = false;
+        }
+    }
+
+    /// A struct, interface or extension with its constants, fields and methods.
+    void writeAggregate(uint32 item) noexcept
+    {
+        const IrNode& node = at(item);
+        const Symbol& declared = getSymbol(node.Symbol);
+        mapLine(node.Location);
+        write(node.Kind == IrKind::Interface ? "interface "
+                                             : (node.Kind == IrKind::Extension ? "extension " : "struct "));
+        write(getName(node.Kind == IrKind::Extension ? declared.Parent : node.Symbol));
+        writeBases(node.Type, declared.Declaration);
         newline();
         write("{");
         newline();
         ++mIndent;
-        for (uint32 member = at(item).FirstChild; member != NO_IR; member = at(member).NextSibling)
+        for (uint32 member = node.FirstChild; member != NO_IR; member = at(member).NextSibling)
         {
-            if (at(member).Kind == IrKind::Field)
+            const IrNode& child = at(member);
+            if (child.Kind == IrKind::Field || child.Kind == IrKind::Constant)
             {
-                mapLine(at(member).Location);
+                mapLine(child.Location);
                 writeIndent();
-                writeDeclaration(at(member).Type, getName(at(member).Symbol));
+                write(child.Kind == IrKind::Constant ? "static const " : "");
+                writeDeclaration(child.Type, getName(child.Symbol));
+                if (child.FirstChild != NO_IR)
+                {
+                    write(" = ");
+                    writeExpression(child.FirstChild, true);
+                }
                 write(";");
                 newline();
             }
@@ -1133,6 +1166,58 @@ private:
         --mIndent;
         write("};");
         newline();
+    }
+
+    /// Write `<T : A & B, U>` for a template function.
+    void writeTypeParameters(uint32 function) noexcept
+    {
+        const Symbol& declared = getSymbol(function);
+        if (declared.TypeParameterCount == 0)
+        {
+            return;
+        }
+        write("<");
+        for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+        {
+            const uint32 parameter = mInputs.Model.TypeParameters[declared.FirstTypeParameter + i];
+            write(i == 0 ? "" : ", ");
+            write(getName(parameter));
+            bool isFirst = true;
+            for (const Conformance& conformance : mInputs.Model.Conformances)
+            {
+                if (conformance.Type == getSymbol(parameter).Type)
+                {
+                    write(isFirst == true ? " : " : " & ");
+                    write(getName(conformance.Interface));
+                    isFirst = false;
+                }
+            }
+        }
+        write(">");
+    }
+
+    /// Write the type arguments of a call of template `function`, recorded at `first`.
+    void writeTypeArguments(uint32 function, int64 first) noexcept
+    {
+        const Symbol& declared = getSymbol(function);
+        if (declared.TypeParameterCount == 0)
+        {
+            return;
+        }
+        write("<");
+        for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+        {
+            write(i == 0 ? "" : ", ");
+            if (first == ADAPTER_TYPE_ARGUMENTS)
+            {
+                write(getName(mInputs.Model.TypeParameters[declared.FirstTypeParameter + i]));
+            }
+            else if (first >= 0 && static_cast<usize>(first) + i < mInputs.Model.TypeArguments.GetSize())
+            {
+                writeType(mInputs.Model.TypeArguments[static_cast<usize>(first) + i]);
+            }
+        }
+        write(">");
     }
 
     void writeEnum(uint32 item) noexcept
@@ -1220,6 +1305,7 @@ private:
         writeType(node.Type);
         write(" ");
         writeFunctionName(node.Symbol);
+        writeTypeParameters(node.Symbol);
         write("(");
         bool isFirst = true;
         uint32 body = NO_IR;
@@ -1247,6 +1333,13 @@ private:
             write("uint _luslGroupIndex : SV_GroupIndex");
         }
         write(")");
+        if (body == NO_IR)
+        {
+            // An interface requirement.
+            write(";");
+            newline();
+            return;
+        }
         newline();
         writeBlock(body);
     }
@@ -1693,6 +1786,11 @@ private:
                 write("::");
                 write(getName(node.Symbol));
                 return;
+            case IrKind::TypeConstant:
+                write(getName(node.Index));
+                write(".");
+                write(getName(node.Symbol));
+                return;
             case IrKind::Member:
                 writeExpression(node.FirstChild, false);
                 write(".");
@@ -1755,6 +1853,7 @@ private:
             }
             case IrKind::Call:
                 writeFunctionName(node.Symbol);
+                writeTypeArguments(node.Symbol, node.Value);
                 write("(");
                 writeArguments(node.FirstChild);
                 write(")");
@@ -1807,6 +1906,7 @@ private:
         {
             writeFunctionName(node.Symbol);
         }
+        writeTypeArguments(node.Symbol, node.Value);
         write("(");
         writeArguments(argument);
         write(")");

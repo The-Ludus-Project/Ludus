@@ -224,6 +224,10 @@ enum class DiagnosticCode : foundation::uint16
     /// A name that the generated Slang cannot use: a Slang keyword, or a name starting with the
     /// `_lusl` prefix reserved for generated code.
     ReservedName = 546,
+    /// A struct or extension that does not provide a requirement of an interface it conforms to.
+    MissingRequirement = 547,
+    /// A template call whose type arguments cannot be deduced, or that violate their constraints.
+    TemplateDeduction = 548,
 
     /// A name breaks the naming rules: PascalCase types, functions and fields, lowerCamelCase
     /// parameters and locals, `out`/`inout` prefixes, UPPER_CASE constants, question-like booleans.
