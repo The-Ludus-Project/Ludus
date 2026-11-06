@@ -104,11 +104,22 @@ info stream GUID and DBI stream age. By default the PDB is the `.pdb` beside the
 DLL. A missing, foreign or stale PDB is rejected. The reader is bounded and never
 loads the image.
 
-Limits: Windows has no supervisor transport yet, so `--control-fd` and editor
-startup (`AwaitLoad`) return `ProtocolError`, and the editor cannot build or publish
-Windows generations. Standalone runs (`--module`) and in-process sessions load,
-reload and retire DLLs. In the MSVC Ninja lane, `ludus_game_host_loader_tests`,
-`ludus_game_host_reload_tests` and `ludus_game_host_windows_symbols` cover:
+A supervisor controls a Windows host over a connected loopback stream socket. That
+is what Python's `socket.socketpair()` returns on Windows. Pass one end's handle as
+`--control-fd`, and let the host inherit exactly that handle, for example through
+`subprocess.STARTUPINFO(lpAttributeList={"handle_list": [...]})`. The host starts
+Winsock, puts the socket in nonblocking mode and never closes it. The framing and
+commands are the same as on Linux and macOS. Closing the supervisor's end, including
+a reset, ends the session.
+
+Limits: the editor still cannot build, publish or supervise Windows generations. Its
+live-play tooling (`play_tool.py`, `editor_tool.py`) depends on POSIX process groups,
+descriptor passing and lease locks, which arrive with the Windows editor (D6d).
+Standalone runs (`--module`), in-process sessions and a supervisor that speaks the
+protocol directly load, reload and retire DLLs. In the MSVC Ninja lane,
+`ludus_game_host_loader_tests`, `ludus_game_host_reload_tests`,
+`ludus_game_host_session_tests`, `ludus_game_host_windows_supervisor` and
+`ludus_game_host_windows_symbols` cover:
 
 - the single export
 - path rules
@@ -117,6 +128,11 @@ reload and retire DLLs. In the MSVC Ninja lane, `ludus_game_host_loader_tests`,
 - work-lease draining
 - uncertain retirement
 - 150 distinct generations with bounded loaded modules and working set
+- the session protocol over a loopback pair: startup, pause, step, reload,
+  properties, duplicate and stale commands, and Stop
+- a real host process over an inherited socket: Hello, Load, Status, a committed
+  and a rejected reload, and Stop; a closed supervisor end that stops the host;
+  and a killed host that ends the supervisor's stream
 - matching and swapped PDBs
 
 ## Play and change code

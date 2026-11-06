@@ -1,6 +1,7 @@
 // Host session + protocol end-to-end acceptance (tasks.md L1/L3, design 7/10).
 //
-// Drives a real HostSession over a socketpair: Hello/ready events, Pause/Step/
+// Drives a real HostSession over a socket pair (loopback TCP on Windows, as a Python
+// supervisor's socketpair is there): Hello/ready events, Pause/Step/
 // Resume/Status, a full reload transaction (Validate..Done phases) that migrates
 // A's checkpoint into B preserving simulation state, and Stop ending the session
 // with retired instances and zero leaked host allocations. Reload runs on a
@@ -9,6 +10,7 @@
 #include "internal/host_session.h"
 #include "internal/protocol_codec.h"
 #include "internal/timing_telemetry.h"
+#include "test_socket.h"
 
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/containers/array.hpp>
@@ -23,16 +25,13 @@
 #include <thread>
 #include <utility>
 
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
 using namespace ludus::runtime::game_host;
 using ludus::foundation::Array;
 using protocol::CommandKind;
 using protocol::EncodeFrame;
 using protocol::FrameReader;
 using protocol::Message;
+using namespace ludus::runtime::game_host::tests;
 
 namespace
 {
@@ -49,7 +48,7 @@ public:
     {
         if (Thread_.joinable())
         {
-            (void)::shutdown(Fd_, SHUT_RDWR);
+            ShutdownSocket(Fd_);
             Thread_.join();
         }
     }
@@ -84,7 +83,7 @@ void SendCommand(int fd, const Message& m)
     std::size_t written = 0;
     while (written < frame.GetSize())
     {
-        const ssize_t n = ::write(fd, frame.GetData() + written, frame.GetSize() - written);
+        const isize n = WriteSocket(fd, frame.GetData() + written, frame.GetSize() - written);
         REQUIRE(n > 0);
         written += static_cast<std::size_t>(n);
     }
@@ -100,14 +99,10 @@ Array<Message> DrainEvents(int fd, FrameReader& reader, int budgetMs)
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budgetMs);
     while (std::chrono::steady_clock::now() < deadline)
     {
-        pollfd pfd = {};
-        pfd.fd = fd;
-        pfd.events = POLLIN;
-        const int ready = ::poll(&pfd, 1, 5);
-        if (ready > 0 && (pfd.revents & POLLIN) != 0)
+        if (WaitReadable(fd, 5) == true)
         {
             std::array<ludus::foundation::uint8, 4096> buf = {};
-            const ssize_t n = ::read(fd, buf.data(), buf.size());
+            const isize n = ReadSocket(fd, buf.data(), buf.size());
             if (n > 0)
             {
                 reader.Append(buf.data(), static_cast<ludus::foundation::usize>(n));
@@ -215,7 +210,7 @@ Array<Message> AwaitEvent(int fd, FrameReader& reader, const char* event)
 TEST_CASE("initial gameplay waits for Hello and the selected Load", "[session][startup]")
 {
     int sockets[2] = {-1, -1};
-    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    REQUIRE(MakeSocketPair(sockets));
     FrameReader reader;
     HostSession session(0x11, 0x22, sockets[1]);
     REQUIRE(session.PrepareInitialLoad(LUDUS_FIXTURE_A_PATH, 42, {}));
@@ -256,14 +251,14 @@ TEST_CASE("initial gameplay waits for Hello and the selected Load", "[session][s
     worker.join();
     CHECK(result == RunResult::Ok);
     CHECK(session.ActiveGeneration() == 42);
-    (void)::close(sockets[0]);
-    (void)::close(sockets[1]);
+    CloseSocket(sockets[0]);
+    CloseSocket(sockets[1]);
 }
 
 TEST_CASE("session performs a full reload transaction over the protocol", "[session]")
 {
     int sv[2] = {-1, -1};
-    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    REQUIRE(MakeSocketPair(sv));
     const int editorEnd = sv[0];
     const int hostEnd = sv[1];
     FrameReader reader;
@@ -318,14 +313,14 @@ TEST_CASE("session performs a full reload transaction over the protocol", "[sess
     hostThread.join();
     REQUIRE(result == RunResult::Ok);
 
-    ::close(editorEnd);
-    ::close(hostEnd);
+    CloseSocket(editorEnd);
+    CloseSocket(hostEnd);
 }
 
 TEST_CASE("property batches are conditional, atomic and replayable across reload", "[session][properties]")
 {
     int sv[2] = {-1, -1};
-    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    REQUIRE(MakeSocketPair(sv));
     FrameReader reader;
     HostSession session(0x11, 0x22, sv[1]);
     REQUIRE(session.LoadInitial(LUDUS_FIXTURE_A_PATH));
@@ -466,8 +461,8 @@ TEST_CASE("property batches are conditional, atomic and replayable across reload
     (void)AwaitEvent(sv[0], reader, "SessionEnded");
     worker.join();
     CHECK(result == RunResult::Ok);
-    ::close(sv[0]);
-    ::close(sv[1]);
+    CloseSocket(sv[0]);
+    CloseSocket(sv[1]);
 }
 
 namespace
@@ -493,7 +488,7 @@ bool LatestStatusUint(const Array<Message>& events, const char* field, ludus::fo
 TEST_CASE("pause then step advances exactly one simulation tick (no catch-up)", "[session][pause]")
 {
     int sv[2] = {-1, -1};
-    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    REQUIRE(MakeSocketPair(sv));
     const int editorEnd = sv[0];
     const int hostEnd = sv[1];
     FrameReader reader;
@@ -565,14 +560,14 @@ TEST_CASE("pause then step advances exactly one simulation tick (no catch-up)", 
     (void)AwaitEvent(editorEnd, reader, "SessionEnded");
     hostThread.join();
     REQUIRE(result == RunResult::Ok);
-    ::close(editorEnd);
-    ::close(hostEnd);
+    CloseSocket(editorEnd);
+    CloseSocket(hostEnd);
 }
 
 TEST_CASE("reload to an incompatible module keeps the session alive", "[session]")
 {
     int sv[2] = {-1, -1};
-    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    REQUIRE(MakeSocketPair(sv));
     const int editorEnd = sv[0];
     const int hostEnd = sv[1];
     FrameReader reader;
@@ -604,14 +599,14 @@ TEST_CASE("reload to an incompatible module keeps the session alive", "[session]
     (void)AwaitEvent(editorEnd, reader, "SessionEnded");
     hostThread.join();
     REQUIRE(result == RunResult::Ok);
-    ::close(editorEnd);
-    ::close(hostEnd);
+    CloseSocket(editorEnd);
+    CloseSocket(hostEnd);
 }
 
 TEST_CASE("duplicate Step is applied once and acknowledged IDs are never replayed", "[session][protocol]")
 {
     int sv[2] = {-1, -1};
-    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    REQUIRE(MakeSocketPair(sv));
     const int editorEnd = sv[0];
     HostSession session(1, 1, sv[1]);
     REQUIRE(session.LoadInitial(LUDUS_FIXTURE_A_PATH));
@@ -660,14 +655,17 @@ TEST_CASE("duplicate Step is applied once and acknowledged IDs are never replaye
     SendCommand(editorEnd, stop);
     (void)AwaitEvent(editorEnd, reader, "SessionEnded");
     worker.join();
-    ::close(editorEnd);
-    ::close(sv[1]);
+    CloseSocket(editorEnd);
+    CloseSocket(sv[1]);
 }
 
 TEST_CASE("Status reports runtime-computed frame timing", "[session][timing]")
 {
     ludus::foundation::StaticArray<ludus::foundation::int32, 2> sockets{-1, -1};
-    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets.GetData()) == 0);
+    int32 pair[2] = {-1, -1};
+    REQUIRE(MakeSocketPair(pair));
+    sockets[0] = pair[0];
+    sockets[1] = pair[1];
     const ludus::foundation::int32 editorEnd = sockets[0];
     HostSession session(1, 1, sockets[1]);
     REQUIRE(session.LoadInitial(LUDUS_FIXTURE_A_PATH));
@@ -717,19 +715,18 @@ TEST_CASE("Status reports runtime-computed frame timing", "[session][timing]")
     SendCommand(editorEnd, stop);
     (void)AwaitEvent(editorEnd, reader, "SessionEnded");
     worker.join();
-    ::close(editorEnd);
-    ::close(sockets[1]);
+    CloseSocket(editorEnd);
+    CloseSocket(sockets[1]);
 }
 
 TEST_CASE("Stop is bounded under output backpressure without corrupting frames", "[session][backpressure]")
 {
-#if defined(LUDUS_PLATFORM_MACOS)
-    SKIP("The Linux socket-buffer saturation fixture has not been ported to macOS");
+#if LUDUS_TARGET_OS != LUDUS_OS_LINUX
+    SKIP("The Linux socket-buffer saturation fixture has not been ported to macOS or Windows");
 #endif
     int sv[2] = {-1, -1};
-    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
-    int smallBuffer = 1024;
-    REQUIRE(::setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &smallBuffer, sizeof(smallBuffer)) == 0);
+    REQUIRE(MakeSocketPair(sv));
+    REQUIRE(SetSendBuffer(sv[1], 1024));
     const int editorEnd = sv[0];
     HostSession session(1, 1, sv[1]);
     REQUIRE(session.LoadInitial(LUDUS_FIXTURE_A_PATH));
@@ -754,6 +751,6 @@ TEST_CASE("Stop is bounded under output backpressure without corrupting frames",
     CHECK_FALSE(reader.Failed());
     CHECK(HasEvent(ending, "SessionEnded"));
     CHECK(result == RunResult::Ok);
-    ::close(editorEnd);
-    ::close(sv[1]);
+    CloseSocket(editorEnd);
+    CloseSocket(sv[1]);
 }

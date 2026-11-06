@@ -16,6 +16,11 @@ bool IsSupported() noexcept
 {
     return true;
 }
+bool Open(int32 channel) noexcept
+{
+    // Every transfer passes MSG_DONTWAIT, so the inherited descriptor keeps its mode.
+    return channel >= 0;
+}
 TransferStatus Send(int32 channel, const uint8* bytes, usize size, usize& outCount) noexcept
 {
     outCount = 0;
