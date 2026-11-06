@@ -75,7 +75,7 @@ struct CallContext
 using Setup = int32 (*)(lua_State*) noexcept;
 [[nodiscard]] CallContext& GetCallContext(lua_State* state) noexcept;
 // Records a contract violation before entering protected VM error recovery.
-void Reject(lua_State* state, uint32 reason, const char* message) noexcept;
+[[noreturn]] void Reject(lua_State* state, uint32 reason, const char* message) noexcept;
 
 class Runtime final
 {
