@@ -1027,8 +1027,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mCustomize, &QAction::triggered, this, [this]() { static_cast<void>(CustomizeBuiltIn()); });
     connect(mTree, &QWidget::customContextMenuRequested, this, [this](const QPoint& position) {
         QTreeWidgetItem* itemOrNull = mTree->itemAt(position);
+        bool isConfigurationContext = false;
         if (itemOrNull != nullptr)
         {
+            isConfigurationContext = itemOrNull->data(0, CONFIGURATION_ROLE).toString().isEmpty() == false &&
+                                     itemOrNull->data(0, NODE_ROLE).toString().isEmpty() == true;
             mTree->setCurrentItem(itemOrNull,
                                   0,
                                   itemOrNull->isSelected() == true ? QItemSelectionModel::NoUpdate
@@ -1039,7 +1042,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             mSelectedNode.clear();
             mSelectedNodes.clear();
         }
-        showNodeContextMenu(mTree->viewport()->mapToGlobal(position), mSelectedNodes.isEmpty() == false);
+        showNodeContextMenu(mTree->viewport()->mapToGlobal(position),
+                            mSelectedNodes.isEmpty() == false,
+                            isConfigurationContext);
     });
     connect(&mCreation, &RenderGraphCreation::Finished, this, [this]() {
         updateActions();
@@ -4493,7 +4498,9 @@ void RendererWorkspace::makeSceneCompute()
                          .arg(mSelectedNode));
 }
 
-void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool isNodeContext)
+void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition,
+                                            bool isNodeContext,
+                                            bool isConfigurationContext)
 {
     QMenu menu(this);
     menu.setObjectName(isNodeContext == true ? QStringLiteral("renderGraphNodeMenu")
@@ -4558,14 +4565,28 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool i
         connect(removeConfiguration, &QAction::triggered, this, [this]() {
             static_cast<void>(RemoveSelectedConfiguration());
         });
-        QJsonObject selectedGraph;
-        QAction* duplicateGraph = menu.addAction(QStringLiteral("Duplicate Graph..."));
-        duplicateGraph->setObjectName(QStringLiteral("renderGraphDuplicateGraph"));
-        duplicateGraph->setToolTip(QStringLiteral("Copy this graph file and all its configurations as a new graph in "
-                                                  "the package."));
-        duplicateGraph->setEnabled(CanCreateSubgraph() == true &&
-                                   mDocument.GetGraph(mSelectedFile, selectedGraph) == true);
-        connect(duplicateGraph, &QAction::triggered, this, &RendererWorkspace::promptDuplicateGraph);
+        if (isConfigurationContext == true)
+        {
+            // A configuration row in the graph tree duplicates that configuration; the file row keeps the
+            // whole-graph copy.
+            QAction* duplicateSelected = menu.addAction(QStringLiteral("Duplicate Configuration..."));
+            duplicateSelected->setObjectName(QStringLiteral("renderGraphDuplicateSelectedConfiguration"));
+            duplicateSelected->setToolTip(QStringLiteral("Copy this configuration as a new configuration in the same "
+                                                         "graph file."));
+            duplicateSelected->setEnabled(CanCreateSubgraph() == true && selectedConfiguration().isEmpty() == false);
+            connect(duplicateSelected, &QAction::triggered, this, &RendererWorkspace::promptDuplicateConfiguration);
+        }
+        else
+        {
+            QJsonObject selectedGraph;
+            QAction* duplicateGraph = menu.addAction(QStringLiteral("Duplicate Graph..."));
+            duplicateGraph->setObjectName(QStringLiteral("renderGraphDuplicateGraph"));
+            duplicateGraph->setToolTip(QStringLiteral("Copy this graph file and all its configurations as a new graph "
+                                                      "in the package."));
+            duplicateGraph->setEnabled(CanCreateSubgraph() == true &&
+                                       mDocument.GetGraph(mSelectedFile, selectedGraph) == true);
+            connect(duplicateGraph, &QAction::triggered, this, &RendererWorkspace::promptDuplicateGraph);
+        }
         menu.addSeparator();
     }
     if (isNodeContext == true)
