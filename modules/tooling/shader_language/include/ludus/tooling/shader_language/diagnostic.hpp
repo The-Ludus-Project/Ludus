@@ -15,7 +15,8 @@ namespace ludus::tooling::shader_language
 ///
 /// Values never change meaning once released; retired codes are not reused. Codes 1-99 are
 /// language rules shared by every stage, 100-199 are lexical, 200-299 are preprocessor, 300-399
-/// are syntax and 400-499 are formatter diagnostics. docs/modules/tooling/shader-language.md lists every code.
+/// are syntax, 400-499 are formatter and 500-599 are
+/// semantic diagnostics. docs/modules/tooling/shader-language.md lists every code.
 // NOLINTNEXTLINE(performance-enum-size): codes have four digits; later stages exceed 255.
 enum class DiagnosticCode : foundation::uint16
 {
@@ -137,6 +138,77 @@ enum class DiagnosticCode : foundation::uint16
 
     /// The formatted text would exceed `shader_compiler::MAX_SOURCE_BYTES`.
     FormattedSourceLimit = 401,
+
+    /// A name that no visible declaration declares.
+    UnknownName = 501,
+    /// A type name that is neither built in nor declared.
+    UnknownType = 502,
+    /// A name declared twice in one scope, or a function signature defined twice.
+    Redeclaration = 503,
+    /// A value of one type where another is required; LUSL has no implicit conversions.
+    TypeMismatch = 504,
+    /// An untyped constant that its target type cannot represent exactly.
+    ConstantOutOfRange = 505,
+    /// A number that is not a decimal, hexadecimal or floating literal, or has a suffix.
+    InvalidLiteral = 506,
+    /// An operator applied to types it is not defined for.
+    InvalidOperands = 507,
+    /// An `if`, loop or `?:` condition that is not a `bool` scalar.
+    NonBoolCondition = 508,
+    /// Assignment, `++`, `--` or an `out`/`inout` argument whose target is not a variable.
+    NotAssignable = 509,
+    /// No function overload accepts the arguments.
+    NoMatchingOverload = 510,
+    /// More than one overload accepts the arguments equally well.
+    AmbiguousCall = 511,
+    /// A named argument that matches no parameter.
+    UnknownNamedArgument = 512,
+    /// A parameter bound by two arguments.
+    DuplicateArgument = 513,
+    /// A parameter without a default that no argument binds.
+    MissingArgument = 514,
+    /// An `out` or `inout` mark that does not match its parameter.
+    DirectionMismatch = 515,
+    /// Two writable arguments of one call that may refer to overlapping storage.
+    AliasedArguments = 516,
+    /// An array size written as a literal; name the size with a constant.
+    ArraySizeLiteral = 517,
+    /// A value that must be a constant expression is not one.
+    NotConstant = 518,
+    /// An array size that is not a positive integer constant within limits.
+    InvalidArraySize = 519,
+    /// A field, method or swizzle that the type does not have.
+    UnknownMember = 520,
+    /// A designated initializer without a struct target, or with an unknown or repeated field.
+    InvalidInitializer = 521,
+    /// `= 0` on a type that has no zero value, such as an opaque `extern slang` type.
+    InvalidZeroInitializer = 522,
+    /// A `return` whose value does not match the function, or `break`/`continue` outside a loop.
+    InvalidReturn = 523,
+    /// A top-level variable that is neither `static const` nor `groupshared`.
+    InvalidTopLevelVariable = 524,
+    /// A `static_assert` whose condition is false.
+    StaticAssertFailed = 525,
+    /// An unknown attribute, or one with the wrong arguments or target.
+    InvalidAttribute = 526,
+    /// An unknown system-value semantic, or one on the wrong parameter type.
+    InvalidSemantic = 527,
+    /// A switch selector that is not an integer or enum, or a repeated or non-constant label.
+    InvalidSwitch = 528,
+    /// Constant arithmetic that overflows or divides by zero.
+    ConstantOverflow = 529,
+    /// A call of something that is not a function or type.
+    NotCallable = 530,
+    /// A construct that a later LUSL phase supports, such as members of generic resource types.
+    UnsupportedConstruct = 531,
+    /// The result of a `void` call used as a value.
+    VoidValue = 532,
+    /// A vector, matrix, scalar or enum construction with the wrong arguments.
+    InvalidConstruction = 533,
+    /// A LUSL function declared without a body and never defined.
+    UndefinedFunction = 534,
+    /// More types or symbols than the checker allows.
+    CheckerLimit = 535,
 };
 
 /// @brief Return the stable kebab-case name of a code, such as `unknown-directive`.

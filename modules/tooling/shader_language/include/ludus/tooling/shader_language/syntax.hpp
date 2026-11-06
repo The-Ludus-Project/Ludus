@@ -39,7 +39,8 @@ enum class SyntaxKind : foundation::uint8
     /// System-value annotation such as `: DispatchThreadId`. Token: the semantic name.
     Semantic,
     /// `struct Name { ... };`. Token: the name. Children: Attribute*, then VariableDeclaration and
-    /// FunctionDeclaration members.
+    /// FunctionDeclaration members. `struct Name;` declares an opaque `extern slang` type: the
+    /// token after the name is `;` and there are no members.
     StructDeclaration,
     /// `enum class Name : Type { ... };`. Token: the name. Children: the underlying Type, Enumerator*.
     EnumDeclaration,

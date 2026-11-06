@@ -401,11 +401,13 @@ private:
                 else if (token.Symbol == Punctuator::RightBrace || token.Symbol == Punctuator::RightParenthesis ||
                          token.Symbol == Punctuator::RightBracket)
                 {
-                    if (nesting == 0)
+                    // Only a `}` closes the enclosing block; an unmatched `)` or `]` belongs to the
+                    // statement being skipped.
+                    if (nesting == 0 && token.Symbol == Punctuator::RightBrace)
                     {
                         break;
                     }
-                    --nesting;
+                    nesting = nesting > 0 ? nesting - 1 : 0;
                 }
             }
             ++mPosition;
@@ -579,6 +581,12 @@ private:
         {
             report(DiagnosticCode::LaterPhaseConstruct,
                    ComposeMessage("interface conformance arrives with interfaces in LUSL L2"));
+            return node;
+        }
+        if (consumePunctuator(Punctuator::Semicolon) == true)
+        {
+            // An opaque declaration; the checker accepts it only in an `extern slang` block.
+            finish(node);
             return node;
         }
         if (expect(Punctuator::LeftBrace, "'{' after the struct name") == false)

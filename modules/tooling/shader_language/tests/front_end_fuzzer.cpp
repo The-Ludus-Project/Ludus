@@ -1,10 +1,11 @@
-// libFuzzer entry point: the preprocessor, parser and formatter must accept or reject any input
+// libFuzzer entry point: the preprocessor, parser, checker and formatter must accept or reject any input
 // without crashing. The input is split at the first zero byte into a root module and one header it
 // may include; the root is also formatted.
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/tooling/shader_language/formatter.hpp>
 #include <ludus/tooling/shader_language/preprocessor.hpp>
+#include <ludus/tooling/shader_language/semantic.hpp>
 #include <ludus/tooling/shader_language/syntax.hpp>
 
 #include <string_view>
@@ -46,7 +47,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8* data, usize size)
     if (shader_language::Preprocess(request, result) == shader_language::Status::Ready)
     {
         shader_language::SyntaxTree tree;
-        (void)shader_language::Parse(request, result, tree);
+        if (shader_language::Parse(request, result, tree) == shader_language::Status::Ready)
+        {
+            shader_language::SemanticModel model;
+            (void)shader_language::Check(request, result, tree, model);
+        }
     }
     shader_language::FormatResult formatted;
     (void)shader_language::FormatSource(root, formatted);
