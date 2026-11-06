@@ -356,17 +356,22 @@ def depfile_dependencies(path):
     return parts[1].strip()
 
 
+def require_pinned_dxc(dxc_path, lock):
+    """Require the pinned dxcompiler.dll and the dxil.dll that signs its output."""
+    if not dxc_path:
+        raise RuntimeError('DXIL builds require --dxc-path')
+    pin = lock['dxc']
+    for library, key in (('dxcompiler.dll', 'dxcompiler_sha256'), ('dxil.dll', 'dxil_sha256')):
+        if hashlib.sha256((Path(dxc_path) / library).read_bytes()).hexdigest() != pin[key]:
+            raise RuntimeError(f'{library} differs from SDK pin')
+
+
 def compile_dxil(args, lock):
     # Thanks to the Slang team, "Supported Compilation Targets" (DXIL through DXC),
     # User Guide: https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/09-targets.html
     # Slang emits HLSL and has the pinned DXC compile and sign it. Reflect this
     # target independently: register b0, space 0 is the root constant buffer view.
-    if not args.dxc_path:
-        raise RuntimeError('DXIL builds require --dxc-path')
-    pin = lock['dxc']
-    for library, key in (('dxcompiler.dll', 'dxcompiler_sha256'), ('dxil.dll', 'dxil_sha256')):
-        if hashlib.sha256((Path(args.dxc_path) / library).read_bytes()).hexdigest() != pin[key]:
-            raise RuntimeError(f'{library} differs from SDK pin')
+    require_pinned_dxc(args.dxc_path, lock)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     extra = [part for path in args.include for part in ('-I', path)] + ['-D' + value for value in args.define]

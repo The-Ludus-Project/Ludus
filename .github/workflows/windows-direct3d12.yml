@@ -92,7 +92,7 @@ jobs:
             'ludus_content_tests', 'ludus_resources_tests', 'ludus_static_game_host_tests',
             'ludus_text_tests', 'ludus_graphics_text_tests', 'ludus_localization_tests', 'ludus_ui_tests',
             'ludus_audio_tests', 'ludus_network_core_tests', 'ludus_physics_fluid_tests', 'ludus_platform_pacing_tests',
-            'ludus-shader-worker', 'ludus_shader_compiler_tests',
+            'ludus-shader-worker', 'ludus_shader_compiler_tests', 'ludus_render_graph_dxil_tests',
             'ludus_game_host_loader_tests', 'ludus_game_host_reload_tests', 'ludus_game_host_protocol_tests',
             'ludus_game_host_timing_tests')
           cmake --build --preset windows-msvc-runtime --target @targets -- -k 0

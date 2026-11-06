@@ -7160,9 +7160,22 @@ What each fixture establishes:
   `ShaderTarget::Dxil`). Their container bytes, which include zero and non-UTF-8
   bytes, reach `ShaderDescription::Dxil` and `DxilEntry` unchanged and are never
   read as text. An unknown target past DXIL is rejected as malformed. The cooker
-  writes DXIL stages as bytes and requires a `DXBC` container. Graph stages are not
-  compiled to DXIL yet, and Renderer still reports `Unsupported` for render graphs
-  on Direct3D 12.
+  writes DXIL stages as bytes and requires a `DXBC` container. Renderer still
+  reports `Unsupported` for render graphs on Direct3D 12 until graph execution is
+  qualified there.
+- DXIL builds: a manifest may list the `dxil` profile. Its stages compile on a
+  Windows host through the pinned DXC: shader model 6.0, `LUDUS_DXIL` defined, and
+  a container that `dxil.dll` must sign. Pass the directory holding the pinned
+  `dxcompiler.dll` and `dxil.dll` as `--dxc-path`; `ludus_compile_render_graph`
+  passes `LUDUS_DXC_DIRECTORY` there automatically on Windows. Without it a
+  `dxil` build stops with `dxil requires --dxc-path`. The two libraries join each
+  DXIL stage's cache identity only, so changing them recompiles DXIL alone. DXIL
+  stages accept the bindings the Direct3D 12 raster profile allows: one resource
+  per binding, uniform buffers and sampled textures in raster stages, and storage
+  only in compute. Ray traversal programs are refused for `dxil`. On the Windows
+  lane, `ludus_render_graph_dxil_tests` builds the rg2 `surface` and `bound`
+  fixtures for `dxil`, cooks them, and checks that each color stage decodes to a
+  signed DXIL container with its entry.
 - The cooked-fixture `[render-graph][activation]` test decodes the CMake-cooked
   `rg2_surface.lurgrt` and compares it with its compiled header: plan records,
   CPU interface identity and every stage artifact (SPIR-V words, Metal/WGSL/GLSL

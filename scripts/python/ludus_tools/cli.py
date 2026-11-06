@@ -474,7 +474,8 @@ def cmd_render_graph(args) -> int:
         try:
             render_graph_reload.watch(args.manifest, args.output, args.runtime_package, emit_event,
                 configuration=args.configuration, helper=args.helper, compiler=args.compiler,
-                validator=args.validator, spirv_cross=args.spirv_cross, root=args.root, worker_socket=args.worker_socket)
+                validator=args.validator, spirv_cross=args.spirv_cross, root=args.root, worker_socket=args.worker_socket,
+                dxc=args.dxc_path)
         except KeyboardInterrupt:
             pass
         return EXIT_OK
@@ -527,6 +528,8 @@ def cmd_render_graph(args) -> int:
         else:
             options = dict(helper=args.helper, compiler=args.compiler, validator=args.validator,
                            spirv_cross=args.spirv_cross, root=args.root, worker_socket=args.worker_socket)
+            if getattr(args, 'dxc_path', None):
+                options['dxc'] = args.dxc_path
             toolchain = None
             is_generation_rebuild = args.graph_action in ("ray-path-capture", "capture-profile", "capture-library")
             manifest = None if is_generation_rebuild else args.manifest
@@ -675,6 +678,7 @@ def build_parser() -> argparse.ArgumentParser:
             build_graph.add_argument("--store", help="SDK store (default: LUDUS_SDK_STORE or user data directory)")
         build_graph.add_argument("--validator", help="pinned spirv-val; required for spirv/glsl")
         build_graph.add_argument("--spirv-cross", help="verified SPIRV-Cross; required for glsl")
+        build_graph.add_argument("--dxc-path", help="directory of the pinned dxcompiler.dll and dxil.dll; required for dxil")
         build_graph.add_argument("--worker-socket", help="existing headless native shader worker endpoint")
         build_graph.set_defaults(func=cmd_render_graph)
         build_graph.add_argument("--runtime-package", help="atomically cook/publish a reloadable .lurgrt generation")
