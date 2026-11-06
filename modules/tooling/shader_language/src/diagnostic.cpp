@@ -201,6 +201,10 @@ std::string_view GetDiagnosticCodeName(DiagnosticCode code) noexcept
             return "groupshared-initializer";
         case DiagnosticCode::ReservedName:
             return "reserved-name";
+        case DiagnosticCode::MissingRequirement:
+            return "missing-requirement";
+        case DiagnosticCode::TemplateDeduction:
+            return "template-deduction";
         case DiagnosticCode::NamingStyle:
             return "naming-style";
         case DiagnosticCode::BareBoolOperand:

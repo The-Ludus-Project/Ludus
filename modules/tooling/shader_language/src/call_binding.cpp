@@ -38,6 +38,10 @@ bool BindArguments(foundation::BorrowedView<const ArgumentFacts> arguments,
                    BindingResult& outResult) noexcept
 {
     outResult = BindingResult{};
+    for (uint32& typeArgument : outResult.TypeArguments)
+    {
+        typeArgument = NO_TYPE;
+    }
     foundation::StaticArray<bool, MAX_FUNCTION_PARAMETERS> isBound{};
     uint32 positional = 0;
     for (usize i = 0; i < arguments.GetSize(); ++i)
@@ -91,6 +95,22 @@ bool BindArguments(foundation::BorrowedView<const ArgumentFacts> arguments,
                 outResult.FailingArgument = static_cast<uint32>(i);
                 return false;
             }
+            continue;
+        }
+        if (target.TypeParameter != NO_TYPE_PARAMETER && target.TypeParameter < MAX_TEMPLATE_PARAMETERS)
+        {
+            // A template parameter takes the argument's type: a concrete value of one type, the same
+            // for every argument it types. Untyped constants have no type to deduce.
+            const TypeKind kind = types.Get(argument.Type).Kind;
+            uint32& deduced = outResult.TypeArguments[target.TypeParameter];
+            if (kind == TypeKind::UntypedInteger || kind == TypeKind::UntypedFloat ||
+                (deduced != NO_TYPE && deduced != argument.Type))
+            {
+                outResult.Failure = BindingFailure::TypeMismatch;
+                outResult.FailingArgument = static_cast<uint32>(i);
+                return false;
+            }
+            deduced = argument.Type;
             continue;
         }
         if (IsImplicitlyConvertible(types, argument.Type, target.Type) == false)

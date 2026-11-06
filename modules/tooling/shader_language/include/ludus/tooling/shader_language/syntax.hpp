@@ -38,9 +38,9 @@ enum class SyntaxKind : foundation::uint8
     Parameter,
     /// System-value annotation such as `: DispatchThreadId`. Token: the semantic name.
     Semantic,
-    /// `struct Name { ... };`. Token: the name. Children: Attribute*, then VariableDeclaration and
-    /// FunctionDeclaration members. `struct Name;` declares an opaque `extern slang` type: the
-    /// token after the name is `;` and there are no members.
+    /// `struct Name : Interface, ... { ... };`. Token: the name. Children: Attribute*, BaseList?, then
+    /// VariableDeclaration (fields and `static const` members) and FunctionDeclaration members. `struct Name;` declares
+    /// an opaque `extern slang` type: the token after the name is `;` and there are no members.
     StructDeclaration,
     /// `enum class Name : Type { ... };`. Token: the name. Children: the underlying Type, Enumerator*.
     EnumDeclaration,
@@ -49,6 +49,22 @@ enum class SyntaxKind : foundation::uint8
     /// `extern slang "path" { ... }`. Token: the path string. Children: the declarations. In
     /// `extern slang { ... }`, whose definitions the including Slang code provides, Token is `slang`.
     ExternSlangBlock,
+    /// `interface Name : Base, ... { requirements };`. Token: the name. Children: Attribute*,
+    /// BaseList?, then FunctionDeclaration requirements without bodies and `static const`
+    /// VariableDeclaration requirements without initializers.
+    InterfaceDeclaration,
+    /// `extension Type : Interface, ... { members };`. Token: `extension`. Children: the extended Type,
+    /// BaseList?, then FunctionDeclaration and `static const` VariableDeclaration members.
+    ExtensionDeclaration,
+    /// `: A, B` after a struct, interface or extension name. Token: `:`. Children: one Type per
+    /// interface.
+    BaseList,
+    /// `template <...>` before a function. Token: `template`. Children: TemplateParameter*, then the
+    /// FunctionDeclaration.
+    TemplateDeclaration,
+    /// One template parameter: `Interface Name`, or `typename Name` without a constraint. Token: the
+    /// name. Children: the constraint Type, absent for `typename`.
+    TemplateParameter,
     /// `static_assert(condition, "message");`. Token: `static_assert`. Children: the condition and the
     /// message StringLiteral.
     StaticAssert,
@@ -197,8 +213,8 @@ struct SyntaxTree final
 ///
 /// The grammar enforces LUSL's syntactic rules: one declarator per declaration, assignment and
 /// `++`/`--` only as statements, no unary `!`, no C casts, positional arguments before named ones,
-/// and only calls as expression statements. Constructs of later phases (`interface`, `concept`,
-/// `template`, ...) are reported as such. After an error the parser skips to the next statement or
+/// and only calls as expression statements. Constructs of later phases (`concept`, `requires`,
+/// `dynamic`) are reported as such. After an error the parser skips to the next statement or
 /// declaration and continues, so one request reports several independent errors.
 ///
 /// Deterministic and reentrant; keeps no state between calls.

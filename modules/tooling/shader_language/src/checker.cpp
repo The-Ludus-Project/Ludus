@@ -59,6 +59,8 @@ constexpr uint64 HEXADECIMAL_LETTER_VALUE = 10;
 constexpr usize MAX_SWIZZLE_COMPONENTS = 4;
 /// Arguments of `[threads(x, y, z)]`.
 constexpr usize THREAD_GROUP_DIMENSIONS = 3;
+/// Most interfaces one conformance search visits, bases included.
+constexpr usize MAX_VISITED_INTERFACES = 64;
 
 /// Inclusive range of an integer scalar kind; false for kinds whose range exceeds int64.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a minimum and maximum pair, in that order.
@@ -174,7 +176,8 @@ public:
             mModel.NodeSymbols.TryResize(nodeCount, NO_SYMBOL) == false ||
             mModel.NodeParameters.TryResize(nodeCount, NO_SYMBOL) == false ||
             mModel.NodeCallKinds.TryResize(nodeCount, CallKind::None) == false ||
-            mModel.NodeIntegerConstants.TryResize(nodeCount) == false || declareIntrinsics() == false)
+            mModel.NodeIntegerConstants.TryResize(nodeCount) == false ||
+            mModel.NodeTypeArguments.TryResize(nodeCount, NO_SYMBOL) == false || declareIntrinsics() == false)
         {
             mSink.ReportOutOfMemory();
             return finish();
@@ -185,6 +188,7 @@ public:
             checkDeclaration(declaration, false);
         }
         reportUndefinedFunctions();
+        verifyConformances();
         // Flow and style rules read a complete, consistent model, so they run only after it checks.
         if (mSink.HasErrors() == false && mSink.HasOutOfMemory() == false && mIsFatal == false)
         {
@@ -503,6 +507,545 @@ private:
         return shape.Kind == TypeKind::Struct && mModel.Symbols[shape.Symbol].IsOpaque == true;
     }
 
+    /// An interface is a constraint, not a value type: report it at `node` and return the error type.
+    [[nodiscard]] uint32 rejectInterfaceValue(uint32 type, uint32 node) noexcept
+    {
+        if (type == NO_TYPE || getType(type).Kind != TypeKind::Interface)
+        {
+            return type;
+        }
+        const TypeNameText typeName = nameOf(type);
+        report(DiagnosticCode::TypeMismatch,
+               node,
+               ComposeMessage("'",
+                              typeName.GetView(),
+                              "' is an interface; constrain a template parameter with it: template <",
+                              typeName.GetView(),
+                              " T>"));
+        return TypeTable::ERROR_TYPE;
+    }
+
+    // ----- Interfaces, extensions and templates --------------------------------------------------
+
+    /// The active template parameter named `name`, or NO_SYMBOL.
+    [[nodiscard]] uint32 findTemplateParameter(std::string_view name) const noexcept
+    {
+        for (const uint32 parameter : mTemplateParameters)
+        {
+            if (getSymbolName(parameter) == name)
+            {
+                return parameter;
+            }
+        }
+        return NO_SYMBOL;
+    }
+
+    /// A member of struct `structSymbol` or of one of its extensions, or NO_SYMBOL.
+    [[nodiscard]] uint32 findStructMember(uint32 structSymbol, std::string_view name, SymbolKind kind) const noexcept
+    {
+        const uint32 member = findMember(structSymbol, name, kind);
+        if (member != NO_SYMBOL)
+        {
+            return member;
+        }
+        for (const uint32 extension : mExtensions)
+        {
+            if (mModel.Symbols[extension].Parent == structSymbol)
+            {
+                const uint32 added = findMember(extension, name, kind);
+                if (added != NO_SYMBOL)
+                {
+                    return added;
+                }
+            }
+        }
+        return NO_SYMBOL;
+    }
+
+    /// Visit the interfaces `type` conforms to, bases included; stops when `visit` returns true.
+    template <typename Visitor>
+    [[nodiscard]] bool visitInterfaces(uint32 type, Visitor&& visit) const noexcept
+    {
+        foundation::StaticArray<uint32, MAX_VISITED_INTERFACES> pending{};
+        usize pendingCount = 0;
+        pending[pendingCount] = type;
+        ++pendingCount;
+        usize visited = 0;
+        while (pendingCount > 0 && visited < MAX_VISITED_INTERFACES)
+        {
+            --pendingCount;
+            const uint32 current = pending[pendingCount];
+            ++visited;
+            for (const Conformance& conformance : mModel.Conformances)
+            {
+                if (conformance.Type != current)
+                {
+                    continue;
+                }
+                if (visit(conformance.Interface) == true)
+                {
+                    return true;
+                }
+                if (pendingCount < MAX_VISITED_INTERFACES)
+                {
+                    pending[pendingCount] = mModel.Symbols[conformance.Interface].Type;
+                    ++pendingCount;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// True when `type` conforms to interface `interfaceSymbol`, directly or through bases.
+    [[nodiscard]] bool conformsTo(uint32 type, uint32 interfaceSymbol) const noexcept
+    {
+        return visitInterfaces(type, [interfaceSymbol](uint32 found) noexcept { return found == interfaceSymbol; });
+    }
+
+    /// The requirement `name` of kind `kind` that the constraints of type parameter `type` declare.
+    [[nodiscard]] uint32 findConstraintMember(uint32 type, std::string_view name, SymbolKind kind) const noexcept
+    {
+        uint32 member = NO_SYMBOL;
+        (void)visitInterfaces(type, [&](uint32 interfaceSymbol) noexcept {
+            member = findMember(interfaceSymbol, name, kind);
+            return member != NO_SYMBOL;
+        });
+        return member;
+    }
+
+    /// Resolve a Type node that must name an interface; NO_SYMBOL after reporting otherwise.
+    [[nodiscard]] uint32 resolveInterface(uint32 node) noexcept
+    {
+        const uint32 type = resolveType(node);
+        if (isError(type) == true)
+        {
+            return NO_SYMBOL;
+        }
+        if (getType(type).Kind != TypeKind::Interface)
+        {
+            const TypeNameText typeName = nameOf(type);
+            report(DiagnosticCode::TypeMismatch,
+                   node,
+                   ComposeMessage("'", typeName.GetView(), "' is not an interface"));
+            return NO_SYMBOL;
+        }
+        return getType(type).Symbol;
+    }
+
+    void addConformance(uint32 type, uint32 interfaceSymbol, uint32 declaration) noexcept
+    {
+        Conformance conformance;
+        conformance.Type = type;
+        conformance.Interface = interfaceSymbol;
+        conformance.Declaration = declaration;
+        if (mModel.Conformances.TryAdd(conformance) == false)
+        {
+            mSink.ReportOutOfMemory();
+            mIsFatal = true;
+        }
+    }
+
+    /// Record the conformances a BaseList child of `node` states for `type`.
+    void checkBaseList(uint32 node, uint32 type) noexcept
+    {
+        for (uint32 child = firstChild(node); child != NO_NODE; child = nextSibling(child))
+        {
+            if (getKind(child) != SyntaxKind::BaseList)
+            {
+                continue;
+            }
+            for (uint32 base = firstChild(child); base != NO_NODE && mIsFatal == false; base = nextSibling(base))
+            {
+                const uint32 interfaceSymbol = resolveInterface(base);
+                if (interfaceSymbol != NO_SYMBOL)
+                {
+                    addConformance(type, interfaceSymbol, node);
+                }
+            }
+        }
+    }
+
+    /// Check the constant and method members of a struct, interface or extension `owner`. Constants
+    /// and fields are members first; method slots follow, so a struct's members stay contiguous.
+    void checkMembers(uint32 owner, uint32 node, bool isInterface) noexcept
+    {
+        Array<uint32> methods;
+        for (uint32 member = skipAttributes(firstChild(node)); member != NO_NODE && mIsFatal == false;
+             member = nextSibling(member))
+        {
+            if (getKind(member) == SyntaxKind::FunctionDeclaration)
+            {
+                if (methods.TryAdd(member) == false)
+                {
+                    mSink.ReportOutOfMemory();
+                    mIsFatal = true;
+                }
+                continue;
+            }
+            if (getKind(member) != SyntaxKind::VariableDeclaration)
+            {
+                continue;
+            }
+            const SyntaxNode& syntax = getNode(member);
+            if (syntax.IsStatic == true && syntax.IsConst == true)
+            {
+                checkMemberConstant(owner, member, isInterface);
+            }
+            else if (mModel.Symbols[owner].Kind == SymbolKind::Struct)
+            {
+                checkField(owner, member);
+            }
+            else
+            {
+                report(
+                    DiagnosticCode::UnsupportedConstruct,
+                    member,
+                    ComposeMessage("interfaces and extensions declare methods and 'static const' members, not fields"));
+            }
+        }
+        mIncompleteStruct = NO_SYMBOL;
+        // A struct's members are contiguous in Members, but method parameters are appended while
+        // signatures are checked, so reserve one slot per method after the other members now.
+        mNextMethodSlot = static_cast<uint32>(mModel.Members.GetSize());
+        if (mModel.Members.TryResize(mModel.Members.GetSize() + methods.GetSize(), NO_SYMBOL) == false)
+        {
+            mSink.ReportOutOfMemory();
+            mIsFatal = true;
+            return;
+        }
+        Array<uint32> methodSymbols;
+        for (const uint32 method : methods)
+        {
+            if (methodSymbols.TryAdd(checkFunctionSignature(method, owner)) == false)
+            {
+                mSink.ReportOutOfMemory();
+                mIsFatal = true;
+                return;
+            }
+        }
+        if (isInterface == true)
+        {
+            return;
+        }
+        for (usize i = 0; i < methods.GetSize(); ++i)
+        {
+            checkFunctionBody(methods[i], methodSymbols[i]);
+        }
+    }
+
+    /// A `static const` member of a struct or extension, or a constant requirement of an interface.
+    void checkMemberConstant(uint32 owner, uint32 node, bool isRequirement) noexcept
+    {
+        const SyntaxNode& syntax = getNode(node);
+        rejectAttributes(node, "constants");
+        const uint32 typeNode = firstChild(node);
+        uint32 type = rejectInterfaceValue(applyArraySizes(resolveType(typeNode), nextSibling(typeNode)), typeNode);
+        uint32 initializer = nextSibling(typeNode);
+        while (initializer != NO_NODE && getKind(initializer) == SyntaxKind::ArraySize)
+        {
+            initializer = nextSibling(initializer);
+        }
+        IntegerConstant value;
+        if (isRequirement == true && initializer != NO_NODE)
+        {
+            report(DiagnosticCode::InvalidInitializer,
+                   initializer,
+                   ComposeMessage("an interface requires the constant; conforming types give its value"));
+        }
+        else if (isRequirement == false && mIsInExtern == false)
+        {
+            if (initializer == NO_NODE || getKind(initializer) == SyntaxKind::VoidInitializer)
+            {
+                report(DiagnosticCode::NotConstant, node, ComposeMessage("a 'static const' member needs a value"));
+            }
+            else
+            {
+                (void)checkExpression(initializer, type);
+                (void)coerce(initializer, type, true);
+                if (isConstantExpression(initializer) == false)
+                {
+                    report(DiagnosticCode::NotConstant,
+                           initializer,
+                           ComposeMessage("a 'static const' member needs a constant value"));
+                }
+                value = mModel.NodeIntegerConstants[initializer];
+            }
+        }
+        if (findMember(owner, spell(syntax.Token), SymbolKind::Variable) != NO_SYMBOL ||
+            findMember(owner, spell(syntax.Token), SymbolKind::Field) != NO_SYMBOL)
+        {
+            report(DiagnosticCode::Redeclaration,
+                   node,
+                   ComposeMessage("'", spell(syntax.Token), "' is already a member"));
+        }
+        const uint32 constant = createSymbol(SymbolKind::Variable, syntax.Token, node);
+        if (constant == NO_SYMBOL || addMember(constant) == false)
+        {
+            return;
+        }
+        Symbol& declared = getSymbol(constant);
+        declared.Type = type;
+        declared.IsConstant = true;
+        declared.Parent = owner;
+        if (value.IsKnown == true)
+        {
+            declared.HasIntegerValue = true;
+            declared.IntegerValue = value.Value;
+        }
+        ++getSymbol(owner).MemberCount;
+        mModel.NodeTypes[node] = type;
+    }
+
+    void checkInterface(uint32 node) noexcept
+    {
+        rejectAttributes(node, "interfaces");
+        const uint32 symbol = createSymbol(SymbolKind::Interface, getNode(node).Token, node);
+        if (symbol == NO_SYMBOL)
+        {
+            return;
+        }
+        uint32 type = NO_TYPE;
+        const internal::TypeOutcome outcome = mTypes.TryGetNamed(TypeKind::Interface, ScalarKind::Bool, symbol, type);
+        if (outcome != internal::TypeOutcome::Ok)
+        {
+            (void)failType(outcome, node);
+            return;
+        }
+        getSymbol(symbol).Type = type;
+        mModel.NodeTypes[node] = type;
+        if (bindSymbol(symbol) == false)
+        {
+            return;
+        }
+        checkBaseList(node, type);
+        getSymbol(symbol).FirstMember = static_cast<uint32>(mModel.Members.GetSize());
+        checkMembers(symbol, node, true);
+    }
+
+    void checkExtension(uint32 node) noexcept
+    {
+        const uint32 typeNode = firstChild(node);
+        const uint32 type = resolveType(typeNode);
+        if (isError(type) == true)
+        {
+            return;
+        }
+        if (getType(type).Kind != TypeKind::Struct)
+        {
+            const TypeNameText typeName = nameOf(type);
+            report(DiagnosticCode::TypeMismatch,
+                   typeNode,
+                   ComposeMessage("extensions extend structs; '", typeName.GetView(), "' is not a struct"));
+            return;
+        }
+        // The extension is named by its struct, so generated code and diagnostics spell that name.
+        const uint32 symbol = createSymbol(SymbolKind::Extension, getNode(typeNode).Token, node);
+        if (symbol == NO_SYMBOL || mExtensions.TryAdd(symbol) == false)
+        {
+            if (symbol != NO_SYMBOL)
+            {
+                mSink.ReportOutOfMemory();
+                mIsFatal = true;
+            }
+            return;
+        }
+        getSymbol(symbol).Type = type;
+        getSymbol(symbol).Parent = getType(type).Symbol;
+        mModel.NodeTypes[node] = type;
+        checkBaseList(node, type);
+        getSymbol(symbol).FirstMember = static_cast<uint32>(mModel.Members.GetSize());
+        checkMembers(symbol, node, false);
+    }
+
+    void checkTemplate(uint32 node) noexcept
+    {
+        Array<uint32> parameters;
+        uint32 function = NO_NODE;
+        for (uint32 child = firstChild(node); child != NO_NODE && mIsFatal == false; child = nextSibling(child))
+        {
+            if (getKind(child) == SyntaxKind::FunctionDeclaration)
+            {
+                function = child;
+                continue;
+            }
+            if (getKind(child) != SyntaxKind::TemplateParameter)
+            {
+                continue;
+            }
+            if (parameters.GetSize() >= MAX_TEMPLATE_PARAMETERS)
+            {
+                report(DiagnosticCode::CheckerLimit,
+                       child,
+                       ComposeMessage("a template takes at most ", uint64{MAX_TEMPLATE_PARAMETERS}, " parameters"));
+                return;
+            }
+            if (findTemplateParameter(spellNode(child)) != NO_SYMBOL)
+            {
+                report(DiagnosticCode::Redeclaration,
+                       child,
+                       ComposeMessage("'", spellNode(child), "' is already a parameter of this template"));
+            }
+            const uint32 parameter = createSymbol(SymbolKind::TypeParameter, getNode(child).Token, child);
+            uint32 type = NO_TYPE;
+            if (parameter == NO_SYMBOL ||
+                mTypes.TryGetNamed(TypeKind::TypeParameter, ScalarKind::Bool, parameter, type) !=
+                    internal::TypeOutcome::Ok ||
+                parameters.TryAdd(parameter) == false || mTemplateParameters.TryAdd(parameter) == false)
+            {
+                mSink.ReportOutOfMemory();
+                mIsFatal = true;
+                return;
+            }
+            getSymbol(parameter).Type = type;
+            mModel.NodeTypes[child] = type;
+            const uint32 constraint = firstChild(child);
+            if (constraint != NO_NODE)
+            {
+                const uint32 interfaceSymbol = resolveInterface(constraint);
+                if (interfaceSymbol != NO_SYMBOL)
+                {
+                    addConformance(type, interfaceSymbol, child);
+                }
+            }
+        }
+        if (function == NO_NODE)
+        {
+            mTemplateParameters.Clear();
+            return;
+        }
+        const uint32 symbol = checkFunctionSignature(function, NO_SYMBOL);
+        if (symbol != NO_SYMBOL)
+        {
+            Symbol& declared = getSymbol(symbol);
+            declared.FirstTypeParameter = static_cast<uint32>(mModel.TypeParameters.GetSize());
+            declared.TypeParameterCount = static_cast<uint32>(parameters.GetSize());
+            for (const uint32 parameter : parameters)
+            {
+                if (mModel.TypeParameters.TryAdd(parameter) == false)
+                {
+                    mSink.ReportOutOfMemory();
+                    mIsFatal = true;
+                    return;
+                }
+                getSymbol(parameter).Parent = symbol;
+                if (isDeducible(symbol, getSymbol(parameter).Type) == false)
+                {
+                    report(DiagnosticCode::TemplateDeduction,
+                           getSymbol(parameter).Declaration,
+                           ComposeMessage("'",
+                                          getSymbolName(parameter),
+                                          "' must be the type of a parameter, so calls can deduce it"));
+                }
+            }
+            if (declared.IsDefined == false)
+            {
+                report(DiagnosticCode::UndefinedFunction,
+                       function,
+                       ComposeMessage("templates are defined where declared"));
+            }
+        }
+        checkFunctionBody(function, symbol);
+        mTemplateParameters.Clear();
+    }
+
+    /// True when some parameter of `function` has exactly type `type`.
+    [[nodiscard]] bool isDeducible(uint32 function, uint32 type) const noexcept
+    {
+        const Symbol& declared = mModel.Symbols[function];
+        for (uint32 i = 0; i < declared.MemberCount; ++i)
+        {
+            if (mModel.Symbols[mModel.Members[declared.FirstMember + i]].Type == type)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// `type` with the type parameters of `function` replaced by `typeArguments`.
+    [[nodiscard]] uint32
+    substitute(uint32 type,
+               uint32 function,
+               const foundation::StaticArray<uint32, MAX_TEMPLATE_PARAMETERS>& typeArguments) const noexcept
+    {
+        const Symbol& declared = mModel.Symbols[function];
+        for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+        {
+            if (mModel.Symbols[mModel.TypeParameters[declared.FirstTypeParameter + i]].Type == type)
+            {
+                return typeArguments[i];
+            }
+        }
+        return type;
+    }
+
+    /// True when two functions have equal parameter types, directions and return types.
+    [[nodiscard]] bool haveSameSignature(uint32 left, uint32 right) const noexcept
+    {
+        return mModel.Symbols[left].Type == mModel.Symbols[right].Type && areSameParameters(left, right, true) == true;
+    }
+
+    /// Report every requirement that a struct's interfaces declare and the struct does not provide.
+    void verifyConformances() noexcept
+    {
+        for (const Conformance& conformance : mModel.Conformances)
+        {
+            const SemanticType& shape = getType(conformance.Type);
+            if (shape.Kind != TypeKind::Struct || mModel.Symbols[shape.Symbol].IsExtern == true)
+            {
+                // Slang checks extern structs; interfaces and parameters have no members to verify.
+                continue;
+            }
+            verifyRequirements(shape.Symbol, conformance.Interface, conformance.Declaration);
+            (void)visitInterfaces(mModel.Symbols[conformance.Interface].Type, [&](uint32 base) noexcept {
+                verifyRequirements(shape.Symbol, base, conformance.Declaration);
+                return false;
+            });
+        }
+    }
+
+    void verifyRequirements(uint32 structSymbol, uint32 interfaceSymbol, uint32 declaration) noexcept
+    {
+        const Symbol& interfaceDeclared = mModel.Symbols[interfaceSymbol];
+        for (uint32 i = 0; i < interfaceDeclared.MemberCount; ++i)
+        {
+            const uint32 requirement = mModel.Members[interfaceDeclared.FirstMember + i];
+            if (requirement == NO_SYMBOL)
+            {
+                continue;
+            }
+            const Symbol& required = mModel.Symbols[requirement];
+            const std::string_view name = getSymbolName(requirement);
+            bool isProvided = false;
+            if (required.Kind == SymbolKind::Function)
+            {
+                for (uint32 candidate = findStructMember(structSymbol, name, SymbolKind::Function);
+                     candidate != NO_SYMBOL && isProvided == false;
+                     candidate = mNextOverloads[candidate])
+                {
+                    isProvided = haveSameSignature(candidate, requirement);
+                }
+            }
+            else
+            {
+                const uint32 constant = findStructMember(structSymbol, name, SymbolKind::Variable);
+                isProvided = constant != NO_SYMBOL && mModel.Symbols[constant].Type == required.Type;
+            }
+            if (isProvided == false)
+            {
+                report(DiagnosticCode::MissingRequirement,
+                       declaration,
+                       ComposeMessage("'",
+                                      getSymbolName(structSymbol),
+                                      "' does not provide '",
+                                      name,
+                                      "' as '",
+                                      getSymbolName(interfaceSymbol),
+                                      "' declares it"));
+            }
+        }
+    }
+
     [[nodiscard]] uint32 failType(internal::TypeOutcome outcome, uint32 node) noexcept
     {
         if (outcome == internal::TypeOutcome::OutOfMemory)
@@ -538,9 +1081,14 @@ private:
         }
         if (type == NO_TYPE)
         {
-            const uint32 symbol = mScopes.Find(name);
-            if (symbol != ScopeTable::UNBOUND &&
-                (mModel.Symbols[symbol].Kind == SymbolKind::Struct || mModel.Symbols[symbol].Kind == SymbolKind::Enum))
+            const uint32 parameter = findTemplateParameter(name);
+            const uint32 symbol = parameter != NO_SYMBOL ? parameter : mScopes.Find(name);
+            const bool isNamedType =
+                symbol != ScopeTable::UNBOUND &&
+                (mModel.Symbols[symbol].Kind == SymbolKind::Struct || mModel.Symbols[symbol].Kind == SymbolKind::Enum ||
+                 mModel.Symbols[symbol].Kind == SymbolKind::Interface ||
+                 mModel.Symbols[symbol].Kind == SymbolKind::TypeParameter);
+            if (isNamedType == true)
             {
                 type = mModel.Symbols[symbol].Type;
                 mModel.NodeSymbols[node] = symbol;
@@ -659,6 +1207,15 @@ private:
             case SyntaxKind::StaticAssert:
                 checkStaticAssert(node);
                 return;
+            case SyntaxKind::InterfaceDeclaration:
+                checkInterface(node);
+                return;
+            case SyntaxKind::ExtensionDeclaration:
+                checkExtension(node);
+                return;
+            case SyntaxKind::TemplateDeclaration:
+                checkTemplate(node);
+                return;
             default:
                 (void)isMember;
                 return;
@@ -707,7 +1264,7 @@ private:
         const SyntaxNode& syntax = getNode(node);
         rejectAttributes(node, "variables");
         const uint32 typeNode = skipAttributes(firstChild(node));
-        uint32 type = applyArraySizes(resolveType(typeNode), nextSibling(typeNode));
+        uint32 type = rejectInterfaceValue(applyArraySizes(resolveType(typeNode), nextSibling(typeNode)), typeNode);
         uint32 initializer = nextSibling(typeNode);
         while (initializer != NO_NODE && getKind(initializer) == SyntaxKind::ArraySize)
         {
@@ -920,53 +1477,12 @@ private:
         {
             return;
         }
-        // Pass 1: fields, so methods can read them; the struct is incomplete until it ends.
+        checkBaseList(node, type);
+        // Pass 1: fields and constants, so methods can read them; the struct is incomplete until it
+        // ends. Pass 2: method signatures, so any method may call any other. Pass 3: method bodies.
         mIncompleteStruct = symbol;
         getSymbol(symbol).FirstMember = static_cast<uint32>(mModel.Members.GetSize());
-        Array<uint32> methods;
-        for (uint32 member = skipAttributes(firstChild(node)); member != NO_NODE && mIsFatal == false;
-             member = nextSibling(member))
-        {
-            if (getKind(member) == SyntaxKind::FunctionDeclaration)
-            {
-                if (methods.TryAdd(member) == false)
-                {
-                    mSink.ReportOutOfMemory();
-                    mIsFatal = true;
-                }
-                continue;
-            }
-            if (getKind(member) == SyntaxKind::VariableDeclaration)
-            {
-                checkField(symbol, member);
-            }
-        }
-        mIncompleteStruct = NO_SYMBOL;
-        // A struct's members are contiguous in Members, but method parameters are appended while
-        // signatures are checked, so reserve one slot per method after the fields now.
-        mNextMethodSlot = static_cast<uint32>(mModel.Members.GetSize());
-        if (mModel.Members.TryResize(mModel.Members.GetSize() + methods.GetSize(), NO_SYMBOL) == false)
-        {
-            mSink.ReportOutOfMemory();
-            mIsFatal = true;
-            return;
-        }
-        // Pass 2: method signatures, so any method may call any other.
-        Array<uint32> methodSymbols;
-        for (const uint32 method : methods)
-        {
-            if (methodSymbols.TryAdd(checkFunctionSignature(method, symbol)) == false)
-            {
-                mSink.ReportOutOfMemory();
-                mIsFatal = true;
-                return;
-            }
-        }
-        // Pass 3: method bodies, with the struct's fields and methods in scope.
-        for (usize i = 0; i < methods.GetSize(); ++i)
-        {
-            checkFunctionBody(methods[i], methodSymbols[i]);
-        }
+        checkMembers(symbol, node, false);
     }
 
     [[nodiscard]] uint32 findMember(uint32 structSymbol, std::string_view name, SymbolKind kind) const noexcept
@@ -975,7 +1491,7 @@ private:
         for (uint32 i = 0; i < declared.MemberCount; ++i)
         {
             const uint32 member = mModel.Members[declared.FirstMember + i];
-            if (mModel.Symbols[member].Kind == kind && getSymbolName(member) == name)
+            if (member != NO_SYMBOL && mModel.Symbols[member].Kind == kind && getSymbolName(member) == name)
             {
                 return member;
             }
@@ -989,12 +1505,14 @@ private:
         rejectAttributes(node, "fields");
         if (syntax.IsStatic == true || syntax.IsConst == true || syntax.IsGroupshared == true)
         {
-            report(DiagnosticCode::UnsupportedConstruct,
-                   node,
-                   ComposeMessage("struct fields take no 'static', 'const' or 'groupshared'"));
+            report(
+                DiagnosticCode::UnsupportedConstruct,
+                node,
+                ComposeMessage("struct fields take no 'static', 'const' or 'groupshared'; write 'static const' for a "
+                               "constant member"));
         }
         const uint32 typeNode = firstChild(node);
-        uint32 type = applyArraySizes(resolveType(typeNode), nextSibling(typeNode));
+        uint32 type = rejectInterfaceValue(applyArraySizes(resolveType(typeNode), nextSibling(typeNode)), typeNode);
         if (isError(type) == false && getType(type).Kind == TypeKind::Struct &&
             getType(type).Symbol == mIncompleteStruct)
         {
@@ -1151,7 +1669,7 @@ private:
         const SyntaxNode& syntax = getNode(node);
         const Signature signature = checkFunctionAttributes(node, structSymbol);
         const uint32 returnNode = skipAttributes(firstChild(node));
-        const uint32 returnType = resolveType(returnNode);
+        const uint32 returnType = rejectInterfaceValue(resolveType(returnNode), returnNode);
         const uint32 symbol = createSymbol(SymbolKind::Function, syntax.Token, node);
         if (symbol == NO_SYMBOL)
         {
@@ -1189,9 +1707,21 @@ private:
                    body,
                    ComposeMessage("'extern slang' functions are declared without a body"));
         }
-        if (body == NO_NODE && mIsInExtern == false && structSymbol != NO_SYMBOL)
+        const bool isRequirement =
+            structSymbol != NO_SYMBOL && mModel.Symbols[structSymbol].Kind == SymbolKind::Interface;
+        if (body == NO_NODE && mIsInExtern == false && structSymbol != NO_SYMBOL && isRequirement == false)
         {
             report(DiagnosticCode::UndefinedFunction, node, ComposeMessage("methods are defined in their struct"));
+        }
+        if (body != NO_NODE && isRequirement == true)
+        {
+            report(DiagnosticCode::InvalidInitializer,
+                   body,
+                   ComposeMessage("interface methods are requirements without a body; conforming types define them"));
+        }
+        if (signature.IsEntry == true && mTemplateParameters.IsEmpty() == false)
+        {
+            report(DiagnosticCode::InvalidAttribute, node, ComposeMessage("entry points cannot be templates"));
         }
         return registerFunction(symbol, structSymbol);
     }
@@ -1257,10 +1787,33 @@ private:
     /// Bind the fields and methods of `structSymbol` in the current scope, for method bodies.
     void bindStructMembers(uint32 structSymbol) noexcept
     {
+        // An extension's methods see the struct's members and those of its earlier extensions.
+        if (mModel.Symbols[structSymbol].Kind == SymbolKind::Extension)
+        {
+            const uint32 extended = mModel.Symbols[structSymbol].Parent;
+            bindOwnMembers(extended);
+            for (const uint32 extension : mExtensions)
+            {
+                if (mModel.Symbols[extension].Parent == extended && mIsFatal == false)
+                {
+                    bindOwnMembers(extension);
+                }
+            }
+            return;
+        }
+        bindOwnMembers(structSymbol);
+    }
+
+    void bindOwnMembers(uint32 structSymbol) noexcept
+    {
         const Symbol& declared = mModel.Symbols[structSymbol];
         for (uint32 i = 0; i < declared.MemberCount; ++i)
         {
             const uint32 member = mModel.Members[declared.FirstMember + i];
+            if (member == NO_SYMBOL)
+            {
+                continue;
+            }
             uint32 previous = ScopeTable::UNBOUND;
             const internal::ScopeOutcome outcome = mScopes.TryBind(getSymbolName(member), member, previous);
             if (outcome != internal::ScopeOutcome::Ok)
@@ -1367,7 +1920,7 @@ private:
     {
         const SyntaxNode& syntax = getNode(node);
         const uint32 typeNode = firstChild(node);
-        uint32 type = applyArraySizes(resolveType(typeNode), nextSibling(typeNode));
+        uint32 type = rejectInterfaceValue(applyArraySizes(resolveType(typeNode), nextSibling(typeNode)), typeNode);
         if (type == TypeTable::VOID_TYPE)
         {
             report(DiagnosticCode::UnknownType, typeNode, ComposeMessage("a parameter cannot be void"));
@@ -1952,6 +2505,13 @@ private:
         if (isZeroAllowed == true && isZeroLiteral(node) == true && target != TypeTable::VOID_TYPE)
         {
             // The zero rule: the literal 0 zero-fills any type that has a zero value.
+            if (getType(target).Kind == TypeKind::TypeParameter)
+            {
+                report(DiagnosticCode::InvalidZeroInitializer,
+                       node,
+                       ComposeMessage("a template parameter's type is not known here, so it has no zero value"));
+                return false;
+            }
             if (isOpaque(target) == true)
             {
                 report(DiagnosticCode::InvalidZeroInitializer,
@@ -2211,7 +2771,13 @@ private:
                    ComposeMessage("'::' names enumerators of an enum class"));
             return TypeTable::ERROR_TYPE;
         }
-        const uint32 owner = mScopes.Find(spellNode(left));
+        const uint32 parameter = findTemplateParameter(spellNode(left));
+        const uint32 owner = parameter != NO_SYMBOL ? parameter : mScopes.Find(spellNode(left));
+        if (owner != ScopeTable::UNBOUND && (mModel.Symbols[owner].Kind == SymbolKind::Struct ||
+                                             mModel.Symbols[owner].Kind == SymbolKind::TypeParameter))
+        {
+            return checkTypeConstant(node, left, right, owner);
+        }
         if (owner == ScopeTable::UNBOUND || mModel.Symbols[owner].Kind != SymbolKind::Enum)
         {
             report(DiagnosticCode::UnknownName,
@@ -2237,6 +2803,33 @@ private:
                right,
                ComposeMessage("'", spellNode(left), "' has no enumerator '", spellNode(right), "'"));
         return TypeTable::ERROR_TYPE;
+    }
+
+    /// `Struct::NAME` or `T::NAME`: a constant member of a struct, or a constant requirement of a
+    /// template parameter's constraints.
+    [[nodiscard]] uint32 checkTypeConstant(uint32 node, uint32 left, uint32 right, uint32 owner) noexcept
+    {
+        mModel.NodeSymbols[left] = owner;
+        const Symbol& declared = mModel.Symbols[owner];
+        const uint32 constant = declared.Kind == SymbolKind::Struct
+                                    ? findStructMember(owner, spellNode(right), SymbolKind::Variable)
+                                    : findConstraintMember(declared.Type, spellNode(right), SymbolKind::Variable);
+        if (constant == NO_SYMBOL)
+        {
+            report(DiagnosticCode::UnknownMember,
+                   right,
+                   ComposeMessage("'", spellNode(left), "' has no constant '", spellNode(right), "'"));
+            return TypeTable::ERROR_TYPE;
+        }
+        mModel.NodeSymbols[node] = constant;
+        mModel.NodeSymbols[right] = constant;
+        const Symbol& value = mModel.Symbols[constant];
+        if (value.HasIntegerValue == true)
+        {
+            setConstant(node, value.IntegerValue);
+        }
+        (void)setType(right, value.Type);
+        return value.Type;
     }
 
     [[nodiscard]] uint32 checkUnary(uint32 node) noexcept
@@ -2633,11 +3226,18 @@ private:
                 mModel.NodeSymbols[node] = field;
                 return mModel.Symbols[field].Type;
             }
-            if (findMember(shape.Symbol, name, SymbolKind::Function) != NO_SYMBOL)
+            if (findStructMember(shape.Symbol, name, SymbolKind::Function) != NO_SYMBOL)
             {
                 report(DiagnosticCode::TypeMismatch, node, ComposeMessage("'", name, "' is a method; call it"));
                 return TypeTable::ERROR_TYPE;
             }
+        }
+        if (shape.Kind == TypeKind::TypeParameter)
+        {
+            report(DiagnosticCode::UnknownMember,
+                   node,
+                   ComposeMessage("a template parameter offers only the methods and constants of its constraints"));
+            return TypeTable::ERROR_TYPE;
         }
         if (shape.Kind == TypeKind::Scalar || shape.Kind == TypeKind::Vector)
         {
@@ -2852,9 +3452,16 @@ private:
                 return TypeTable::ERROR_TYPE;
             }
             const SemanticType& shape = getType(objectType);
-            const uint32 method = shape.Kind == TypeKind::Struct && isOpaque(objectType) == false
-                                      ? findMember(shape.Symbol, spellNode(callee), SymbolKind::Function)
-                                      : NO_SYMBOL;
+            uint32 method = NO_SYMBOL;
+            if (shape.Kind == TypeKind::Struct && isOpaque(objectType) == false)
+            {
+                method = findStructMember(shape.Symbol, spellNode(callee), SymbolKind::Function);
+            }
+            else if (shape.Kind == TypeKind::TypeParameter)
+            {
+                // A template parameter offers the methods its constraints require.
+                method = findConstraintMember(objectType, spellNode(callee), SymbolKind::Function);
+            }
             if (method == NO_SYMBOL)
             {
                 const TypeNameText typeName = nameOf(objectType);
@@ -3105,6 +3712,7 @@ private:
         uint32 bestConversions = 0;
         uint32 ties = 0;
         uint32 candidateCount = 0;
+        bool isConstraintFailure = false;
         internal::BindingResult bestBinding;
         internal::BindingResult lastFailure;
         foundation::StaticArray<internal::ParameterFacts, MAX_FUNCTION_PARAMETERS> parameters{};
@@ -3121,6 +3729,7 @@ private:
                 parameters[p].HasDefault = declared.HasDefault;
                 parameters[p].CanTakeInitializer =
                     getType(declared.Type).Kind == TypeKind::Struct && isOpaque(declared.Type) == false;
+                parameters[p].TypeParameter = findTypeParameterPosition(candidate, declared.Type);
             }
             internal::BindingResult binding;
             const bool isViable = internal::BindArguments(
@@ -3133,19 +3742,36 @@ private:
                 lastFailure = binding;
                 continue;
             }
-            if (best == NO_SYMBOL || binding.ConversionCount < bestConversions)
+            if (satisfiesConstraints(candidate, binding) == false)
+            {
+                isConstraintFailure = true;
+                continue;
+            }
+            // Fewer constant adaptations win; at equal adaptations a function beats a template.
+            const uint32 rank = binding.ConversionCount * 2 + (function.TypeParameterCount > 0 ? 1 : 0);
+            if (best == NO_SYMBOL || rank < bestConversions)
             {
                 best = candidate;
-                bestConversions = binding.ConversionCount;
+                bestConversions = rank;
                 bestBinding = binding;
                 ties = 0;
             }
-            else if (binding.ConversionCount == bestConversions)
+            else if (rank == bestConversions)
             {
                 ++ties;
             }
         }
         const std::string_view name = getSymbolName(head);
+        if (best == NO_SYMBOL && isConstraintFailure == true)
+        {
+            report(DiagnosticCode::TemplateDeduction,
+                   node,
+                   ComposeMessage("the arguments of '",
+                                  name,
+                                  "' do not satisfy its template constraints: each type must conform to the interfaces "
+                                  "its parameter names"));
+            return TypeTable::ERROR_TYPE;
+        }
         if (best == NO_SYMBOL)
         {
             if (candidateCount == 1)
@@ -3175,6 +3801,19 @@ private:
         }
         const Symbol& function = mModel.Symbols[best];
         mModel.NodeSymbols[node] = best;
+        if (function.TypeParameterCount > 0)
+        {
+            mModel.NodeTypeArguments[node] = static_cast<uint32>(mModel.TypeArguments.GetSize());
+            for (uint32 i = 0; i < function.TypeParameterCount; ++i)
+            {
+                if (mModel.TypeArguments.TryAdd(bestBinding.TypeArguments[i]) == false)
+                {
+                    mSink.ReportOutOfMemory();
+                    mIsFatal = true;
+                    return TypeTable::ERROR_TYPE;
+                }
+            }
+        }
         mModel.NodeCallKinds[node] = function.Parent != NO_SYMBOL ? CallKind::Method : CallKind::Function;
         if (object != NO_NODE)
         {
@@ -3189,19 +3828,59 @@ private:
             const uint32 position = bestBinding.ParameterOfArgument[i];
             const Symbol& parameter = mModel.Symbols[mModel.Members[function.FirstMember + position]];
             mModel.NodeParameters[argument] = position;
+            const uint32 parameterType = substitute(parameter.Type, best, bestBinding.TypeArguments);
             if (getKind(value) == SyntaxKind::InitializerList)
             {
-                (void)checkExpression(value, parameter.Type);
+                (void)checkExpression(value, parameterType);
             }
             else
             {
-                (void)coerce(value, parameter.Type, false);
+                (void)coerce(value, parameterType, false);
             }
-            (void)setType(argument, parameter.Type);
+            (void)setType(argument, parameterType);
             checkArgumentDirection(argument, parameter, writable);
         }
         checkAliasing(writable);
-        return function.Type;
+        return substitute(function.Type, best, bestBinding.TypeArguments);
+    }
+
+    /// The position of template parameter type `type` among `function`'s, or NO_TYPE_PARAMETER.
+    [[nodiscard]] uint32 findTypeParameterPosition(uint32 function, uint32 type) const noexcept
+    {
+        const Symbol& declared = mModel.Symbols[function];
+        for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+        {
+            if (mModel.Symbols[mModel.TypeParameters[declared.FirstTypeParameter + i]].Type == type)
+            {
+                return i;
+            }
+        }
+        return internal::NO_TYPE_PARAMETER;
+    }
+
+    /// True when every template argument of `binding` was deduced and conforms to the interfaces
+    /// its parameter's constraints name.
+    [[nodiscard]] bool satisfiesConstraints(uint32 function, const internal::BindingResult& binding) const noexcept
+    {
+        const Symbol& declared = mModel.Symbols[function];
+        for (uint32 i = 0; i < declared.TypeParameterCount; ++i)
+        {
+            const uint32 argument = binding.TypeArguments[i];
+            if (argument == NO_TYPE)
+            {
+                return false;
+            }
+            const uint32 parameterType = mModel.Symbols[mModel.TypeParameters[declared.FirstTypeParameter + i]].Type;
+            for (const Conformance& conformance : mModel.Conformances)
+            {
+                if (conformance.Type == parameterType && isError(argument) == false &&
+                    conformsTo(argument, conformance.Interface) == false)
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     void reportBindingFailure(uint32 node,
@@ -3559,6 +4238,10 @@ private:
     FunctionContext mFunction;
     uint32 mIntrinsicCount = 0;
     uint32 mIncompleteStruct = NO_SYMBOL;
+    /// Type parameters of the template being checked, which type and scope names see first.
+    Array<uint32> mTemplateParameters;
+    /// Every extension so far, in declaration order.
+    Array<uint32> mExtensions;
     /// The next Members slot that checkStruct reserved for a method of the struct being checked.
     uint32 mNextMethodSlot = 0;
     bool mIsInExtern = false;
@@ -3657,6 +4340,8 @@ TypeNameText FormatTypeName(const SemanticModel& model,
             break;
         case TypeKind::Struct:
         case TypeKind::Enum:
+        case TypeKind::Interface:
+        case TypeKind::TypeParameter:
         case TypeKind::Array:
             if (shape.Symbol < model.Symbols.GetSize() &&
                 model.Symbols[shape.Symbol].NameToken < preprocessed.Tokens.GetSize())

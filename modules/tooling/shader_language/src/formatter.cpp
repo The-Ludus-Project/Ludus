@@ -250,6 +250,11 @@ private:
                         mIsGeneric[k] = 1;
                     }
                 }
+                // The `>` of `template <...>` ends a header; the declaration starts a new line.
+                if (spell(open - 1) == "template")
+                {
+                    mIsGeneric[index] = TEMPLATE_HEADER_CLOSE;
+                }
                 open = index;
             }
         }
@@ -420,7 +425,7 @@ private:
         }
         return previous.Symbol == Punctuator::Semicolon || previous.Symbol == Punctuator::LeftBrace ||
                previous.Symbol == Punctuator::RightBrace || mPreviousCode == mLastLabelColon ||
-               mPreviousCode == mLastAttributeClose;
+               mPreviousCode == mLastAttributeClose || mIsGeneric[mPreviousCode] == TEMPLATE_HEADER_CLOSE;
     }
 
     /// Start a new output line for `token` at `indent` columns.
@@ -868,6 +873,8 @@ private:
     }
 
     static constexpr usize NO_TOKEN_INDEX = ~usize{0};
+    /// mIsGeneric value of the `>` that closes a `template <...>` header.
+    static constexpr foundation::uint8 TEMPLATE_HEADER_CLOSE = 2;
 
     std::string_view mText;
     FormatResult& mResult;

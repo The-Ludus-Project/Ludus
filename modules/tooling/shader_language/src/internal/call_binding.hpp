@@ -22,6 +22,9 @@ struct ArgumentFacts final
     foundation::uint32 Type = NO_TYPE;
 };
 
+/// ParameterFacts::TypeParameter of a parameter whose type is not a template parameter.
+inline constexpr foundation::uint32 NO_TYPE_PARAMETER = 0xffffffffU;
+
 /// One parameter of a candidate function.
 struct ParameterFacts final
 {
@@ -30,6 +33,9 @@ struct ParameterFacts final
     bool HasDefault = false;
     /// True when the parameter type is a struct that a designated initializer can build.
     bool CanTakeInitializer = false;
+    /// Position of the candidate's template parameter that is this parameter's type, or
+    /// NO_TYPE_PARAMETER; such a parameter deduces that template argument.
+    foundation::uint32 TypeParameter = NO_TYPE_PARAMETER;
 };
 
 /// Why a candidate does not accept the arguments.
@@ -53,6 +59,8 @@ struct BindingResult final
     foundation::uint32 ConversionCount = 0;
     /// Parameter index each argument binds to.
     foundation::StaticArray<foundation::uint32, MAX_FUNCTION_PARAMETERS> ParameterOfArgument{};
+    /// Deduced template arguments, NO_TYPE where no argument deduced one.
+    foundation::StaticArray<foundation::uint32, MAX_TEMPLATE_PARAMETERS> TypeArguments{};
 };
 
 /// True when a value of `from` may initialize `to` without an explicit conversion.

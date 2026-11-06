@@ -16,7 +16,9 @@ language and the delivery plan. This page covers what is implemented:
   [LUSL in compiler requests](#lusl-in-compiler-requests) and
   [SDK declarations](#sdk-declarations);
 - render-graph programs written in LUSL, include directories and the ray
-  callback declarations (L1e-2); see [Render-graph programs](#render-graph-programs).
+  callback declarations (L1e-2); see [Render-graph programs](#render-graph-programs);
+- interfaces, extensions, struct constants and interface-constrained templates
+  (L2a); see [Interfaces and templates](#interfaces-and-templates).
 
 Link `Ludus::ShaderLanguage` and include
 `ludus/tooling/shader_language/preprocessor.hpp`. The library builds for native
@@ -127,6 +129,7 @@ Macro expansion follows Dave Prosser's
 | `MAX_SEMANTIC_TYPES` | 65,536 | Interned types, built-ins included |
 | `MAX_SYMBOLS` | 1,048,576 | Symbols, built-in functions included |
 | `MAX_FUNCTION_PARAMETERS` | 64 | Parameters of a function and arguments of a call |
+| `MAX_TEMPLATE_PARAMETERS` | 8 | Type parameters of one template |
 | `MAX_ARRAY_LENGTH` | 1,048,576 | Elements of one array dimension |
 | `MAX_DIAGNOSTICS` | 256 | Retained diagnostics; later ones are counted |
 | `MAX_DIAGNOSTIC_MESSAGE_BYTES` | 256 | One message; longer ones are clipped |
@@ -189,7 +192,7 @@ the name.
 | LUSL0301 | `unexpected-token` | A token the grammar does not allow; the message says what was expected |
 | LUSL0302 | `assignment-in-expression` | Assignment, compound assignment, `++` or `--` inside an expression |
 | LUSL0303 | `multiple-declarators` | More than one variable in one declaration |
-| LUSL0304 | `later-phase-construct` | `interface`, `concept`, `template` and other L2 constructs |
+| LUSL0304 | `later-phase-construct` | `concept`, `requires`, `dynamic` and generic structs, which later phases add |
 | LUSL0305 | `keyword-as-name` | A keyword where a name is required |
 | LUSL0306 | `c-style-cast` | `(Type)value`; write `Type(value)` |
 | LUSL0307 | `expression-without-effect` | A statement that is not a call, assignment or `++`/`--`, or an empty `;` |
@@ -239,6 +242,8 @@ the name.
 | LUSL0544 | `recursion` | A function calls itself, directly or indirectly |
 | LUSL0545 | `groupshared-initializer` | A `groupshared` variable not declared `= 0` or `= void` |
 | LUSL0546 | `reserved-name` | A name the generated Slang cannot declare: a Slang keyword such as `let` or `this`, or a name starting with `_lusl` or `__` |
+| LUSL0547 | `missing-requirement` | A struct or extension does not provide a method or constant an interface it conforms to requires |
+| LUSL0548 | `template-deduction` | A template parameter that no parameter's type names, or call arguments that do not satisfy the template's constraints |
 | LUSL0601 | `naming-style` | A name that breaks the naming rules (style) |
 | LUSL0602 | `bare-bool-operand` | A `bool` used directly as a condition or `&&`/`||` operand (style) |
 | LUSL0701 | `extern-slang-not-found` | The file an `extern slang` block names is not in the snapshot |
@@ -265,7 +270,7 @@ The grammar covers L1 LUSL:
 
 | Area | What parses |
 | --- | --- |
-| Declarations | Variables with `static`, `const` or `groupshared`, arrays and `= void`; functions with `in`, `out` and `inout` parameters, semantics and defaults; `struct` with fields and methods; `enum class` with an underlying type; `extern slang "path" { ... }`; `static_assert`; attribute lists such as `[stage(compute), threads(8, 8, 1)]` |
+| Declarations | Variables with `static`, `const` or `groupshared`, arrays and `= void`; functions with `in`, `out` and `inout` parameters, semantics and defaults; `struct` with fields, `static const` members, methods and a base list (`struct Paint : Material`); `interface` with method and constant requirements; `extension Type : Interface { ... }`; `template <Interface T>` and `template <typename T>` functions; `enum class` with an underlying type; `extern slang "path" { ... }`; `static_assert`; attribute lists such as `[stage(compute), threads(8, 8, 1)]` |
 | Types | Names, scoped names (`A::B`) and type arguments (`Texture2D<float32x4>`, `Outer<Inner<T>>`) |
 | Statements | Blocks, assignments and compound assignments, `++` and `--`, call statements, `if`/`else`, `for`, `while`, `do`/`while`, `switch` with `case`, `default` and `[[fallthrough]]`, `break`, `continue`, `return`, `discard` |
 | Expressions | C precedence, `?:`, unary `+ - ~`, calls, member access, indexing, scoped names, named arguments (`ray = r`), call-site marks (`out radiance`), designated initializers (`{ .A = a, .B = b }`) |
@@ -279,7 +284,8 @@ Parsing enforces LUSL's syntactic rules:
 - positional arguments before named ones;
 - only calls, assignments and `++`/`--` as statements.
 
-Interfaces, concepts and templates (L2) are reported as later-phase constructs.
+Concepts, `requires` clauses and generic structs are reported as later-phase
+constructs.
 After an error the parser skips to the next statement or declaration and
 continues, so one request reports several independent errors. A Failed tree is
 still published, with Error nodes where tokens were skipped, for editors; later
@@ -714,6 +720,77 @@ defines them before it includes a callback, so the header uses a path-less
 scene-interface wrappers add more, such as `SampleIndex`, which LUSL cannot read
 yet. The scene queries (`TraceClosest`, `TestVisibility`, ...) get declarations
 generated from Slang reflection in L3.
+
+## Interfaces and templates
+
+L2a adds the nominal half of the [hybrid design](../../architecture/shading-language.md#interfaces-concepts-and-templates):
+interfaces, conformance, extensions and templates constrained by interfaces.
+Concepts, `requires`, `if constexpr` and constraint ordering arrive in L2b.
+
+```c
+interface Material
+{
+    static const uint32 LOBE_COUNT;
+    float32x3 Evaluate(in float32x3 normalWorld, in float32x3 lightWorld);
+};
+
+struct CarPaint : Material
+{
+    static const uint32 LOBE_COUNT = 3;
+    float32x3 Albedo;
+    float32x3 Evaluate(in float32x3 normalWorld, in float32x3 lightWorld)
+    {
+        return Albedo * dot(normalWorld, lightWorld);
+    }
+};
+
+extension FoundationGgx : Material // an extern slang struct
+{
+    static const uint32 LOBE_COUNT = 1;
+    float32x3 Evaluate(in float32x3 normalWorld, in float32x3 lightWorld)
+    {
+        return float32x3(Roughness);
+    }
+};
+
+template <Material M>
+float32x3 Shade(in M material, in float32x3 normalWorld)
+{
+    return material.Evaluate(normalWorld, lightWorld = normalWorld) * float32(M::LOBE_COUNT);
+}
+```
+
+- **Interfaces** declare method requirements without bodies and `static const`
+  requirements without values. They inherit other interfaces with a base list.
+  An interface is a constraint, not a value type: a parameter or variable of
+  interface type is an error that suggests a template parameter.
+- **Conformance** is explicit. A struct names its interfaces in its base list,
+  and an `extension` adds conformances and members to an existing struct,
+  including an `extern slang` one. The checker verifies that each requirement,
+  including those of base interfaces, is provided:
+  - a method with the same name, parameter types, directions and return type;
+  - a constant with the same name and type.
+
+  Requirements of `extern slang` structs are left to Slang.
+- **Struct constants:** `static const` members with constant values, read as
+  `CarPaint::LOBE_COUNT`, or by name inside the struct's methods.
+- **Templates** take interface-constrained parameters (`template <Material M>`) or
+  unconstrained ones (`template <typename T>`) and declare one function.
+  - Calls deduce every template argument from the arguments.
+  - Each template parameter must be the type of some parameter.
+  - A deduced type must conform to its constraints, through base interfaces too.
+  - Inside the template, a value of type `M` offers the methods its constraints
+    require, and `M::NAME` reads a constant requirement. Fields, `= 0` and
+    designated initializers are not available for `M`, since its type is not
+    known there.
+  - At equal cost a function is preferred to a template.
+  - Templates cannot be entry points.
+- **Lowering.** Interfaces, base lists and extensions lower 1:1 to Slang
+  `interface`, `struct Name : I` and `extension`. Templates lower to Slang
+  generics (`float3 Shade<M : Material>(M material, ...)`), and calls pass
+  their deduced arguments explicitly (`Shade<CarPaint>(paint, normalWorld)`).
+  `M::NAME` becomes `M.NAME`. Call adapters for reordered named arguments
+  become generic too.
 
 ## Render-graph programs
 

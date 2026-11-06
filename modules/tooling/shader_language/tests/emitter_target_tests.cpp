@@ -466,3 +466,89 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
         CHECK(status == compiler::Status::Ready);
     }
 }
+
+TEST_CASE("Lowered LUSL interfaces and templates compile for every portable target",
+          "[shader-language][emitter-targets]")
+{
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add("shaders/ggx.slang", "struct FoundationGgx { float Roughness; };\n");
+    files.Add(std::string(ROOT), R"(extern slang "ggx.slang"
+{
+    struct FoundationGgx
+    {
+        float32 Roughness;
+    };
+};
+
+interface Material
+{
+    static const uint32 LOBE_COUNT;
+    float32x3 Evaluate(in float32x3 normalWorld, in float32x3 viewWorld, in float32x3 lightWorld);
+};
+
+interface ClearcoatMaterial : Material
+{
+    float32x3 EvaluateClearcoat(in float32x3 normalWorld, in float32x3 viewWorld);
+};
+
+struct CarPaint : ClearcoatMaterial
+{
+    static const uint32 LOBE_COUNT = 3;
+    float32x3 Albedo;
+    float32x3 Evaluate(in float32x3 normalWorld, in float32x3 viewWorld, in float32x3 lightWorld)
+    {
+        return Albedo * dot(normalWorld, lightWorld) * float32(LOBE_COUNT);
+    }
+    float32x3 EvaluateClearcoat(in float32x3 normalWorld, in float32x3 viewWorld)
+    {
+        return float32x3(dot(normalWorld, viewWorld));
+    }
+};
+
+extension FoundationGgx : Material
+{
+    static const uint32 LOBE_COUNT = 1;
+    float32x3 Evaluate(in float32x3 normalWorld, in float32x3 viewWorld, in float32x3 lightWorld)
+    {
+        return float32x3(Roughness);
+    }
+};
+
+template <Material M>
+float32x3 Shade(in M material, in float32x3 normalWorld)
+{
+    float32x3 color = material.Evaluate(normalWorld, normalWorld, lightWorld = normalWorld);
+    return color * float32(M::LOBE_COUNT);
+}
+
+template <ClearcoatMaterial M>
+float32x3 ShadeClearcoat(in M material, in float32x3 normalWorld)
+{
+    return Shade(material, normalWorld) + material.EvaluateClearcoat(normalWorld, normalWorld);
+}
+
+groupshared float32x3 result = 0;
+
+[stage(compute), threads(1, 1, 1)]
+void Main(in uint32x3 dispatchThread : DispatchThreadId)
+{
+    CarPaint paint = { .Albedo = float32x3(1.0) };
+    FoundationGgx ggx = { .Roughness = 0.5 };
+    float32x3 normalWorld = float32x3(0.0, 0.0, 1.0);
+    result = Shade(material = paint, normalWorld = normalWorld) + Shade(ggx, normalWorld) +
+             ShadeClearcoat(paint, normalWorld) + float32x3(float32(CarPaint::LOBE_COUNT));
+}
+)");
+    compiler::Request options;
+    for (const compiler::Target target : {compiler::Target::Spirv, compiler::Target::Wgsl, compiler::Target::Metal})
+    {
+        options.OutputTarget = target;
+        compiler::Result result;
+        const compiler::Status status = CompileLanguage(slang, files, options, result);
+        INFO("target " << static_cast<int>(target) << "\n" << GetDiagnostics(result));
+        CHECK(status == compiler::Status::Ready);
+        const std::string generated(result.GeneratedSource.GetData(), result.GeneratedSource.GetSize());
+        CHECK(generated.find("float3 Shade<M : Material>(M material, float3 normalWorld)") != std::string::npos);
+    }
+}

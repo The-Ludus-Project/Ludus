@@ -241,6 +241,10 @@ private:
                 analyzeFunction(node);
                 return;
             case SyntaxKind::StructDeclaration:
+            case SyntaxKind::ExtensionDeclaration:
+            case SyntaxKind::TemplateDeclaration:
+                // Methods, extension methods and the templated function have bodies; interface
+                // requirements do not.
                 for (uint32 member = firstChild(node); member != NO_NODE; member = nextSibling(member))
                 {
                     if (getKind(member) == SyntaxKind::FunctionDeclaration)

@@ -419,6 +419,21 @@ private:
             case SyntaxKind::StructDeclaration:
                 lowerStruct(declaration, parent);
                 return;
+            case SyntaxKind::InterfaceDeclaration:
+                lowerMembers(declaration, addAggregate(IrKind::Interface, declaration, parent));
+                return;
+            case SyntaxKind::ExtensionDeclaration:
+                lowerMembers(declaration, addAggregate(IrKind::Extension, declaration, parent));
+                return;
+            case SyntaxKind::TemplateDeclaration:
+                for (uint32 child = firstChild(declaration); child != NO_NODE; child = nextSibling(child))
+                {
+                    if (getKind(child) == SyntaxKind::FunctionDeclaration)
+                    {
+                        lowerFunction(child, parent);
+                    }
+                }
+                return;
             case SyntaxKind::EnumDeclaration:
                 lowerEnum(declaration, parent);
                 return;
@@ -473,6 +488,22 @@ private:
         }
     }
 
+    [[nodiscard]] uint32 addAggregate(IrKind kind, uint32 declaration, uint32 parent) noexcept
+    {
+        const uint32 symbol = symbolOf(declaration);
+        if (symbol == NO_SYMBOL)
+        {
+            return NO_IR;
+        }
+        const uint32 node = addChild(parent, kind, declaration);
+        if (node != NO_IR)
+        {
+            at(node).Symbol = symbol;
+            at(node).Type = getSymbol(symbol).Type;
+        }
+        return node;
+    }
+
     void lowerStruct(uint32 declaration, uint32 parent) noexcept
     {
         const uint32 symbol = symbolOf(declaration);
@@ -480,27 +511,36 @@ private:
         {
             return;
         }
-        const uint32 node = addChild(parent, IrKind::Struct, declaration);
+        lowerMembers(declaration, addAggregate(IrKind::Struct, declaration, parent));
+    }
+
+    /// Lower the fields and constants, then the methods, of a struct, interface or extension.
+    void lowerMembers(uint32 declaration, uint32 node) noexcept
+    {
         if (node == NO_IR)
         {
             return;
         }
-        at(node).Symbol = symbol;
-        at(node).Type = getSymbol(symbol).Type;
         for (uint32 member = skipAttributes(firstChild(declaration)); member != NO_NODE && mIsFatal == false;
              member = nextSibling(member))
         {
-            if (getKind(member) != SyntaxKind::VariableDeclaration)
+            if (getKind(member) != SyntaxKind::VariableDeclaration || symbolOf(member) == NO_SYMBOL)
             {
                 continue;
             }
-            const uint32 field = addChild(node, IrKind::Field, member);
-            if (field == NO_IR)
+            const bool isConstant = getSymbol(symbolOf(member)).Kind == SymbolKind::Variable;
+            const uint32 child = addChild(node, isConstant == true ? IrKind::Constant : IrKind::Field, member);
+            if (child == NO_IR)
             {
                 return;
             }
-            at(field).Symbol = symbolOf(member);
-            at(field).Type = typeOf(member);
+            at(child).Symbol = symbolOf(member);
+            at(child).Type = typeOf(member);
+            const uint32 initializer = findInitializer(member);
+            if (isConstant == true && initializer != NO_NODE)
+            {
+                appendChild(child, lowerValue(initializer, at(child).Type));
+            }
         }
         for (uint32 member = skipAttributes(firstChild(declaration)); member != NO_NODE && mIsFatal == false;
              member = nextSibling(member))
@@ -650,7 +690,14 @@ private:
     {
         const uint32 body = findBody(declaration);
         const uint32 symbol = symbolOf(declaration);
-        if (body == NO_NODE || symbol == NO_SYMBOL || getSymbol(symbol).IsExtern == true)
+        if (symbol == NO_SYMBOL || getSymbol(symbol).IsExtern == true)
+        {
+            return;
+        }
+        // Interface requirements are declared without a body; any other function needs one here.
+        const uint32 owner = getSymbol(symbol).Parent;
+        const bool isRequirement = owner != NO_SYMBOL && getSymbol(owner).Kind == SymbolKind::Interface;
+        if (body == NO_NODE && isRequirement == false)
         {
             return;
         }
@@ -692,6 +739,10 @@ private:
             {
                 groupIndexParameter = symbolOf(child);
             }
+        }
+        if (body == NO_NODE)
+        {
+            return;
         }
         const uint32 block = addChild(node, IrKind::Block, body);
         if (block == NO_IR)
@@ -1262,11 +1313,15 @@ private:
             case SyntaxKind::Name:
                 return lowerName(node, type);
             case SyntaxKind::ScopeExpression: {
-                const uint32 reference = addNode(IrKind::EnumeratorReference, node);
+                const uint32 symbol = symbolOf(node);
+                const bool isEnumerator = symbol != NO_SYMBOL && getSymbol(symbol).Kind == SymbolKind::Enumerator;
+                const uint32 reference =
+                    addNode(isEnumerator == true ? IrKind::EnumeratorReference : IrKind::TypeConstant, node);
                 if (reference != NO_IR)
                 {
-                    at(reference).Symbol = symbolOf(node);
+                    at(reference).Symbol = symbol;
                     at(reference).Type = type;
+                    at(reference).Index = symbolOf(firstChild(node));
                 }
                 return reference;
             }
@@ -1653,6 +1708,7 @@ private:
         }
         at(result).Type = type;
         at(result).Symbol = function;
+        at(result).Value = static_cast<int64>(mInputs.Model.NodeTypeArguments[node]);
         if (isImplicitThis == true)
         {
             at(result).Flags |= IR_IMPLICIT_THIS;
@@ -1717,6 +1773,7 @@ private:
         at(result).Type = type;
         at(result).Symbol = function;
         at(result).Index = helperIndex;
+        at(result).Value = static_cast<int64>(mInputs.Model.NodeTypeArguments[node]);
         if (isImplicitThis == true)
         {
             at(result).Flags |= IR_IMPLICIT_THIS;
@@ -1754,6 +1811,7 @@ private:
         mModule.Helpers[helperIndex].Body = body;
         at(body).Symbol = function;
         at(body).Type = declared.Type;
+        at(body).Value = ADAPTER_TYPE_ARGUMENTS;
         if (isMethod == true)
         {
             at(body).Flags |= IR_IMPLICIT_THIS;
