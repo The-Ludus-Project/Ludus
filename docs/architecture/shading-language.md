@@ -2,8 +2,8 @@
 
 Status: proposed, November 4, 2026; the design's open questions were resolved the
 same day (see [resolved questions](#resolved-questions)). L1a (the preprocessor),
-L1b (the parser and formatter) and L1c-1 (types, names and calls) are
-implemented in `Ludus::ShaderLanguage`; see the
+L1b (the parser and formatter) and L1c (the semantic checker, with flow rules,
+style rules and fixes) are implemented in `Ludus::ShaderLanguage`; see the
 [module guide](../modules/tooling/shader-language.md) for their exact behavior
 and limits. The rest of L1 and later phases are not implemented.
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
@@ -603,7 +603,8 @@ Style rules follow a style setting:
 | `off` | Style findings are not reported | Game projects that choose it |
 
 - **The setting is project-wide.** It lives in the game project's
-  configuration; L1 defines the key.
+  configuration and reaches the compiler as `CheckOptions::Style`; L1e defines
+  the configuration key.
 - **No per-file switch.** Code borrowed from another engine or library
   normally stays in Slang or GLSL. It reaches LUSL through
   [`extern slang`](#slang-interoperability) instead of being relaxed in place.
