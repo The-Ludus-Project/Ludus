@@ -1,8 +1,10 @@
 // Seeded robustness test: random token soups with directives must never crash, must keep the
 // diagnostic bound, and must give the same result twice. The libFuzzer target
-// (preprocessor_fuzzer.cpp) explores further when LUDUS_BUILD_SHADER_LANGUAGE_FUZZERS is on.
+// (front_end_fuzzer.cpp) explores further when LUDUS_BUILD_SHADER_LANGUAGE_FUZZERS is on.
 
+#include "formatter_test_support.hpp"
 #include "preprocessor_test_support.hpp"
+#include "syntax_test_support.hpp"
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/random.hpp>
@@ -103,5 +105,72 @@ TEST_CASE("LUSL preprocessor survives random sources deterministically", "[shade
         CHECK(first.GetResult().Diagnostics.GetSize() <= MAX_DIAGNOSTICS);
         CHECK(first.GetText() == second.GetText());
         CHECK(first.GetResult().Diagnostics.GetSize() == second.GetResult().Diagnostics.GetSize());
+    }
+}
+
+namespace
+{
+/// Number of fragments in CODE_FRAGMENTS.
+constexpr usize CODE_FRAGMENT_COUNT = 40;
+
+constexpr ludus::foundation::StaticArray<std::string_view, CODE_FRAGMENT_COUNT> CODE_FRAGMENTS = {{
+    "{",       "}",        ";",      "if",         "(",  ")",      "else",
+    "for",     "switch",   "case",   ":",          "x",  "=",      "+",
+    "-",       "1",        "// c\n", "/* c */",    "\n", "\n\n\n", "#define A 1\n",
+    "#if A\n", "#endif\n", "<",      ">",          ",",  "[",      "]",
+    "do",      "while",    "return", ".",          "::", "\"s\"",  "default",
+    "++",      "Type",     "struct", "/* a\nb */", "  ",
+}};
+} // namespace
+
+TEST_CASE("LUSL formatter only changes whitespace and is idempotent on random input",
+          "[shader-language][formatter][random]")
+{
+    ludus::foundation::math::RandomStream random;
+    REQUIRE(random.TryReseed(0x464d5431U, 1) == true);
+    for (uint32 i = 0; i < CASE_COUNT; ++i)
+    {
+        std::string text;
+        const uint32 count = random.NextUInt32() % MAX_FRAGMENTS;
+        for (uint32 k = 0; k < count; ++k)
+        {
+            text += CODE_FRAGMENTS[random.NextUInt32() % CODE_FRAGMENT_COUNT];
+            text += ' ';
+        }
+        Status status = Status::InvalidRequest;
+        const std::string formatted = ludus::tooling::shader_language::test::FormatText(text, status);
+        INFO("case " << i << "\ninput:\n" << text << "\nformatted:\n" << formatted);
+        REQUIRE(status == Status::Ready);
+        CHECK(ludus::tooling::shader_language::test::SpellTokens(formatted) ==
+              ludus::tooling::shader_language::test::SpellTokens(text));
+        Status again = Status::InvalidRequest;
+        CHECK(ludus::tooling::shader_language::test::FormatText(formatted, again) == formatted);
+    }
+}
+
+TEST_CASE("LUSL parser survives random token sequences deterministically", "[shader-language][parser][random]")
+{
+    ludus::foundation::math::RandomStream random;
+    REQUIRE(random.TryReseed(0x50415253U, 1) == true);
+    for (uint32 i = 0; i < CASE_COUNT; ++i)
+    {
+        std::string text;
+        const uint32 count = random.NextUInt32() % MAX_FRAGMENTS;
+        for (uint32 k = 0; k < count; ++k)
+        {
+            text += CODE_FRAGMENTS[random.NextUInt32() % CODE_FRAGMENT_COUNT];
+            text += ' ';
+        }
+        const ludus::tooling::shader_language::test::ParsedSource first(text);
+        const ludus::tooling::shader_language::test::ParsedSource second(text);
+        INFO("case " << i << "\ninput:\n" << text);
+        if (first.GetPreprocessStatus() != Status::Ready)
+        {
+            CHECK(first.GetStatus() == Status::InvalidRequest);
+            continue;
+        }
+        CHECK((first.GetStatus() == Status::Ready || first.GetStatus() == Status::Failed) == true);
+        CHECK(first.GetTree().Diagnostics.GetSize() <= MAX_DIAGNOSTICS);
+        CHECK(first.Dump() == second.Dump());
     }
 }

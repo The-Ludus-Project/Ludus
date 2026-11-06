@@ -26,6 +26,8 @@ struct LexInput final
     foundation::uint32 SpellingBase = 0;
     /// Offset of `Text` from the start of the located source, added to every ByteOffset.
     foundation::uint32 LocationBase = 0;
+    /// True to emit TokenKind::Comment tokens instead of dropping comments; the formatter needs them.
+    bool ShouldKeepComments = false;
 };
 
 /// Result of LexText.
@@ -41,7 +43,8 @@ enum class LexOutcome : foundation::uint8
     TokenLimit,
 };
 
-/// @brief Append the tokens of `input.Text` to `inoutTokens`, dropping whitespace and comments.
+/// @brief Append the tokens of `input.Text` to `inoutTokens`, dropping whitespace and, unless
+/// `input.ShouldKeepComments`, comments.
 ///
 /// A backslash immediately before a line break joins the lines. Reports lexical errors to
 /// `inoutSink` and keeps lexing after them.

@@ -138,20 +138,30 @@ public:
                 ++mPosition;
                 continue;
             }
-            if (current == '/' && peek(1) == '/')
+            if (current == '/' && (peek(1) == '/' || peek(1) == '*'))
             {
-                while (mPosition < text.size() && text[mPosition] != '\n')
+                const usize start = mPosition;
+                const SourceLocation location = locate(start);
+                if (peek(1) == '/')
                 {
-                    ++mPosition;
+                    while (mPosition < text.size() && text[mPosition] != '\n')
+                    {
+                        ++mPosition;
+                    }
                 }
-                mHasSpace = true;
-                continue;
-            }
-            if (current == '/' && peek(1) == '*')
-            {
-                if (skipBlockComment() == false)
+                else if (skipBlockComment() == false)
                 {
                     return finish();
+                }
+                mHasSpace = true;
+                if (mInput.ShouldKeepComments == true)
+                {
+                    const LexOutcome commentOutcome =
+                        emitLocated(TokenKind::Comment, Punctuator::None, start, location);
+                    if (commentOutcome != LexOutcome::Complete)
+                    {
+                        return commentOutcome;
+                    }
                 }
                 continue;
             }
@@ -377,6 +387,12 @@ private:
 
     [[nodiscard]] LexOutcome emit(TokenKind kind, Punctuator symbol, usize start) noexcept
     {
+        return emitLocated(kind, symbol, start, locate(start));
+    }
+
+    [[nodiscard]] LexOutcome
+    emitLocated(TokenKind kind, Punctuator symbol, usize start, const SourceLocation& location) noexcept
+    {
         if (mTokens.GetSize() - mFirstToken >= MAX_FILE_TOKENS)
         {
             reportAt(DiagnosticCode::FileTokenLimit,
@@ -392,7 +408,7 @@ private:
         token.IsSynthesized = mInput.IsSynthesized;
         token.SpellingOffset = mInput.SpellingBase + static_cast<uint32>(start);
         token.SpellingSize = static_cast<uint32>(mPosition - start);
-        token.Location = locate(start);
+        token.Location = location;
         if (mTokens.TryAdd(token) == false)
         {
             mSink.ReportOutOfMemory();

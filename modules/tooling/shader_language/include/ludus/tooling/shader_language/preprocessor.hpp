@@ -6,6 +6,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/tooling/shader_compiler/compiler.hpp>
 #include <ludus/tooling/shader_language/diagnostic.hpp>
+#include <ludus/tooling/shader_language/status.hpp>
 #include <ludus/tooling/shader_language/token.hpp>
 
 #include <string_view>
@@ -40,19 +41,6 @@ struct PreprocessRequest final
     foundation::BorrowedView<const char> Source;
     /// Selected configuration values; at most MAX_CONFIGURATION_VALUES.
     foundation::BorrowedView<const ConfigurationValue> Configuration;
-};
-
-/// Outcome of a front-end stage.
-enum class Status : foundation::uint8
-{
-    /// The stage succeeded; its output is complete. Warnings may be present.
-    Ready,
-    /// The source has errors; the diagnostics say which. No output tokens are published.
-    Failed,
-    /// The request itself is malformed; a DiagnosticCode::InvalidRequest diagnostic says why.
-    InvalidRequest,
-    /// Allocation failed. Diagnostics may be incomplete.
-    OutOfMemory,
 };
 
 /// @brief Output of Preprocess.

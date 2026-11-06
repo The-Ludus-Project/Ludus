@@ -35,6 +35,11 @@ inline constexpr foundation::usize MAX_SYNTHESIZED_BYTES = foundation::usize{1} 
 inline constexpr foundation::usize MAX_CONFIGURATION_VALUES = 256;
 /// Longest configuration value name or value text, in bytes.
 inline constexpr foundation::usize MAX_CONFIGURATION_TEXT_BYTES = 1024;
+/// Most syntax tree nodes produced by parsing one translation unit.
+inline constexpr foundation::usize MAX_SYNTAX_NODES = foundation::usize{1} << 21;
+/// Deepest nesting of statements and expressions the parser accepts. The parser recurses once per
+/// level, so this bound also keeps the browser build within its stack.
+inline constexpr foundation::usize MAX_SYNTAX_DEPTH = 64;
 /// Most diagnostics retained for one request; later ones are counted as dropped.
 inline constexpr foundation::usize MAX_DIAGNOSTICS = 256;
 /// Longest retained diagnostic message, in bytes; longer messages are clipped.

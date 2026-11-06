@@ -95,6 +95,30 @@ std::string_view GetDiagnosticCodeName(DiagnosticCode code) noexcept
             return "macro-limit";
         case DiagnosticCode::DefinedFromExpansion:
             return "defined-from-expansion";
+        case DiagnosticCode::UnexpectedToken:
+            return "unexpected-token";
+        case DiagnosticCode::AssignmentInExpression:
+            return "assignment-in-expression";
+        case DiagnosticCode::MultipleDeclarators:
+            return "multiple-declarators";
+        case DiagnosticCode::LaterPhaseConstruct:
+            return "later-phase-construct";
+        case DiagnosticCode::KeywordAsName:
+            return "keyword-as-name";
+        case DiagnosticCode::CStyleCast:
+            return "c-style-cast";
+        case DiagnosticCode::ExpressionWithoutEffect:
+            return "expression-without-effect";
+        case DiagnosticCode::PositionalAfterNamed:
+            return "positional-after-named";
+        case DiagnosticCode::UnscopedEnum:
+            return "unscoped-enum";
+        case DiagnosticCode::SyntaxNodeLimit:
+            return "syntax-node-limit";
+        case DiagnosticCode::SyntaxDepthLimit:
+            return "syntax-depth-limit";
+        case DiagnosticCode::FormattedSourceLimit:
+            return "formatted-source-limit";
     }
     return {};
 }
