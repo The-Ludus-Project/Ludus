@@ -93,6 +93,7 @@ target_sources(
             include/ludus/foundation/base/types.h
             include/ludus/foundation/base/parse_number.hpp
             include/ludus/foundation/base/checked_integer.hpp
+            include/ludus/foundation/base/int128.hpp
             include/ludus/foundation/base/byte_order.hpp
             include/ludus/foundation/base/version.hpp
             "${LUDUS_FOUNDATION_BASE_GENERATED_INCLUDE_DIR}/ludus/foundation/base/build_metadata.hpp"
@@ -142,7 +143,7 @@ if(LUDUS_BUILD_TESTS)
     add_executable(ludus_foundation_base_tests)
     target_sources(ludus_foundation_base_tests PRIVATE
         tests/version_tests.cpp tests/assert_tests.cpp tests/assert_format_tests.cpp
-        tests/parse_number_tests.cpp tests/checked_integer_tests.cpp tests/byte_order_tests.cpp tests/control_codec_tests.cpp
+        tests/parse_number_tests.cpp tests/checked_integer_tests.cpp tests/int128_tests.cpp tests/byte_order_tests.cpp tests/control_codec_tests.cpp
         tests/pointer_tests.cpp)
     target_include_directories(ludus_foundation_base_tests PRIVATE src)
     target_link_libraries(
