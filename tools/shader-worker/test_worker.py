@@ -194,6 +194,17 @@ def check_lusl(endpoint):
     assert 'generated_source' not in failed
     bad_style = NATIVE.exchange(endpoint, dict(request, identity=33, style=9))
     assert bad_style['status'] == STATUS_INVALID_REQUEST
+    # Debug information crosses the protocol; SPIR-V then imports the debug instruction set and
+    # embeds the LUSL text, and a release request after it gets none.
+    debug_set = b'NonSemantic.Shader.DebugInfo.100'
+    debug = NATIVE.exchange(endpoint, dict(request, identity=34, debug_information=True))
+    assert debug['status'] == STATUS_READY, debug['diagnostics']
+    debug_artifact = bytes.fromhex(debug['artifact'])
+    assert debug_set in debug_artifact and b'[stage(compute), threads(1, 1, 1)]' in debug_artifact
+    release = NATIVE.exchange(endpoint, dict(request, identity=35, debug_information=False))
+    assert release['status'] == STATUS_READY and debug_set not in bytes.fromhex(release['artifact'])
+    bad_debug = NATIVE.exchange(endpoint, dict(request, identity=36, debug_information=1))
+    assert bad_debug['status'] == STATUS_INVALID_REQUEST
 
 
 def is_signed_dxil(artifact):

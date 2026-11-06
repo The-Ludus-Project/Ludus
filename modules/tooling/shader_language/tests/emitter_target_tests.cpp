@@ -9,6 +9,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstring>
 #include <span>
 #include <string>
 #include <string_view>
@@ -767,4 +768,228 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
         INFO("target " << static_cast<int>(target) << "\n" << diagnostics);
         CHECK(status == compiler::Status::Ready);
     }
+}
+
+namespace
+{
+/// Opcodes and NonSemantic.Shader.DebugInfo.100 instructions the debug-view test reads.
+constexpr foundation::uint32 SPIRV_HEADER_WORDS = 5;
+constexpr foundation::uint32 SPIRV_OPCODE_MASK = 0xffffU;
+constexpr foundation::uint32 SPIRV_WORD_COUNT_SHIFT = 16;
+constexpr foundation::uint32 OP_STRING = 7;
+constexpr foundation::uint32 OP_EXT_INST_IMPORT = 11;
+constexpr foundation::uint32 OP_EXT_INST = 12;
+constexpr foundation::uint32 OP_CONSTANT = 43;
+constexpr foundation::uint32 DEBUG_SOURCE = 35;
+constexpr foundation::uint32 DEBUG_LINE = 103;
+constexpr std::string_view DEBUG_INFO_SET = "NonSemantic.Shader.DebugInfo.100";
+
+/// What a SPIR-V module's debug records say about one source file.
+struct SpirvDebugView final
+{
+    bool HasDebugInfo = false;
+    /// Text a DebugSource embeds for the file.
+    std::string Text;
+    /// Lines DebugLine records attribute to the file.
+    foundation::Array<foundation::uint32> Lines;
+};
+
+/// Read the debug records of `artifact` that name a file whose path ends in `fileSuffix`.
+SpirvDebugView ReadSpirvDebugView(const foundation::Array<foundation::uint8>& artifact, std::string_view fileSuffix)
+{
+    const foundation::usize wordCount = artifact.GetSize() / sizeof(foundation::uint32);
+    foundation::Array<foundation::uint32> words;
+    for (foundation::usize i = 0; i < wordCount; ++i)
+    {
+        foundation::uint32 word = 0;
+        std::memcpy(&word, artifact.GetData() + (i * sizeof(foundation::uint32)), sizeof(foundation::uint32));
+        words.Add(word);
+    }
+    const auto readString = [&words](foundation::usize first, foundation::usize end) {
+        std::string text;
+        for (foundation::usize i = first; i < end; ++i)
+        {
+            for (foundation::usize byte = 0; byte < sizeof(foundation::uint32); ++byte)
+            {
+                const char character = static_cast<char>((words[i] >> (byte * 8)) & 0xffU);
+                if (character == '\0')
+                {
+                    return text;
+                }
+                text += character;
+            }
+        }
+        return text;
+    };
+    // SPIR-V result ids are dense, so each table is indexed by id.
+    const foundation::uint32 bound = words.GetSize() > 3 ? words[3] : 0;
+    foundation::Array<std::string> strings;
+    foundation::Array<foundation::uint32> constants;
+    foundation::Array<foundation::uint8> isMatchingSource;
+    REQUIRE(strings.TryResize(bound) == true);
+    REQUIRE(constants.TryResize(bound, 0) == true);
+    REQUIRE(isMatchingSource.TryResize(bound, 0) == true);
+    const auto isId = [bound](foundation::uint32 id) { return id < bound; };
+    foundation::uint32 debugSet = 0;
+    SpirvDebugView view;
+    for (foundation::usize position = SPIRV_HEADER_WORDS; position < words.GetSize();)
+    {
+        const foundation::uint32 opcode = words[position] & SPIRV_OPCODE_MASK;
+        const foundation::uint32 length = words[position] >> SPIRV_WORD_COUNT_SHIFT;
+        REQUIRE(length != 0);
+        const foundation::usize end = position + length;
+        REQUIRE(end <= words.GetSize());
+        if (opcode == OP_STRING && isId(words[position + 1]) == true)
+        {
+            strings[words[position + 1]] = readString(position + 2, end);
+        }
+        else if (opcode == OP_EXT_INST_IMPORT && readString(position + 2, end) == DEBUG_INFO_SET)
+        {
+            debugSet = words[position + 1];
+            view.HasDebugInfo = true;
+        }
+        else if (opcode == OP_CONSTANT && length > 3 && isId(words[position + 2]) == true)
+        {
+            constants[words[position + 2]] = words[position + 3];
+        }
+        else if (opcode == OP_EXT_INST && length > 6 && words[position + 3] == debugSet && debugSet != 0 &&
+                 isId(words[position + 2]) == true && isId(words[position + 5]) == true &&
+                 isId(words[position + 6]) == true)
+        {
+            const foundation::uint32 instruction = words[position + 4];
+            const std::string& file = strings[words[position + 5]];
+            if (instruction == DEBUG_SOURCE && file.size() >= fileSuffix.size() &&
+                file.compare(file.size() - fileSuffix.size(), fileSuffix.size(), fileSuffix) == 0)
+            {
+                isMatchingSource[words[position + 2]] = 1;
+                view.Text = strings[words[position + 6]];
+            }
+            else if (instruction == DEBUG_LINE && isMatchingSource[words[position + 5]] == 1)
+            {
+                view.Lines.Add(constants[words[position + 6]]);
+            }
+        }
+        position = end;
+    }
+    return view;
+}
+
+/// The LUSL lines `#line` directives give the lines of C-like `text` from `marker` on: a directive
+/// numbers the next line, and each later line counts one more.
+foundation::Array<foundation::uint32> ReadLineDirectives(const std::string& text, std::string_view marker)
+{
+    foundation::Array<foundation::uint32> lines;
+    const std::string_view directive = "#line ";
+    foundation::usize position = text.find(marker);
+    foundation::uint32 current = 0;
+    while (position != std::string::npos && position < text.size())
+    {
+        const foundation::usize end = text.find('\n', position);
+        const std::string line = text.substr(position, end == std::string::npos ? std::string::npos : end - position);
+        if (line.compare(0, directive.size(), directive) == 0)
+        {
+            current = static_cast<foundation::uint32>(std::stoul(line.substr(directive.size())));
+        }
+        else
+        {
+            if (line.find_first_not_of(' ') != std::string::npos && current != 0)
+            {
+                lines.Add(current);
+            }
+            current = current == 0 ? 0 : current + 1;
+        }
+        position = end == std::string::npos ? end : end + 1;
+    }
+    return lines;
+}
+
+bool HasLine(const foundation::Array<foundation::uint32>& lines, foundation::uint32 line)
+{
+    for (const foundation::uint32 recorded : lines)
+    {
+        if (recorded == line)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool HasLine(const SpirvDebugView& view, foundation::uint32 line)
+{
+    return HasLine(view.Lines, line);
+}
+} // namespace
+
+TEST_CASE("LUSL debug views name LUSL files and lines on each target", "[shader-language][emitter-targets]")
+{
+    // The statement lines of this kernel are the qualification evidence for each target's debug
+    // view (docs/modules/tooling/shader-language.md#debug-views).
+    constexpr foundation::uint32 LOAD_LINE = 9;
+    constexpr foundation::uint32 SCALE_LINE = 10;
+    constexpr foundation::uint32 STORE_LINE = 11;
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add(std::string(ROOT), R"(RWStructuredBuffer<float32> values;
+float32 Scale(in float32 value)
+{
+    return value * 2.0;
+}
+[stage(compute), threads(8, 1, 1)]
+void Main(in uint32x3 dispatchThread : DispatchThreadId)
+{
+    float32 value = values[dispatchThread.x];
+    value = Scale(value) + 1.0;
+    values[dispatchThread.x] = value;
+}
+)");
+    compiler::Request options;
+    // A release artifact carries no debug records, also after a debug compilation in the same
+    // session.
+    options.OutputTarget = compiler::Target::Spirv;
+    compiler::Result before;
+    REQUIRE(CompileLanguage(slang, files, options, before) == compiler::Status::Ready);
+    CHECK(ReadSpirvDebugView(before.Artifact, "main.lusl").HasDebugInfo == false);
+
+    options.ShouldEmitDebugInformation = true;
+    for (const compiler::Target target : {compiler::Target::Spirv, compiler::Target::SpirvRayQuery})
+    {
+        options.OutputTarget = target;
+        compiler::Result result;
+        INFO("target " << static_cast<int>(target));
+        REQUIRE(CompileLanguage(slang, files, options, result) == compiler::Status::Ready);
+        INFO(GetDiagnostics(result));
+        const SpirvDebugView view = ReadSpirvDebugView(result.Artifact, "main.lusl");
+        CHECK(view.HasDebugInfo == true);
+        // The debugger shows the LUSL text, not the generated module, at the LUSL statement lines.
+        CHECK(view.Text.find("[stage(compute), threads(8, 1, 1)]") != std::string::npos);
+        CHECK(view.Text.find("Generated from") == std::string::npos);
+        CHECK(HasLine(view, STORE_LINE) == true);
+    }
+
+    options.OutputTarget = compiler::Target::Metal;
+    compiler::Result metal;
+    REQUIRE(CompileLanguage(slang, files, options, metal) == compiler::Status::Ready);
+    const std::string metalText(reinterpret_cast<const char*>(metal.Artifact.GetData()), metal.Artifact.GetSize());
+    INFO(metalText);
+    CHECK(metalText.find("main.lusl\"") != std::string::npos);
+    const foundation::Array<foundation::uint32> metalLines = ReadLineDirectives(metalText, "[[kernel]]");
+    CHECK(HasLine(metalLines, LOAD_LINE) == true);
+    CHECK(HasLine(metalLines, SCALE_LINE) == true);
+    CHECK(HasLine(metalLines, STORE_LINE) == true);
+
+    // WGSL has no line directive, and the pinned Slang emits no line information into it; the
+    // debug view is not available, which docs record. Requesting debug information still compiles.
+    options.OutputTarget = compiler::Target::Wgsl;
+    compiler::Result wgsl;
+    REQUIRE(CompileLanguage(slang, files, options, wgsl) == compiler::Status::Ready);
+    const std::string wgslText(reinterpret_cast<const char*>(wgsl.Artifact.GetData()), wgsl.Artifact.GetSize());
+    CHECK(wgslText.find("main.lusl") == std::string::npos);
+
+    options.ShouldEmitDebugInformation = false;
+    options.OutputTarget = compiler::Target::Spirv;
+    compiler::Result release;
+    REQUIRE(CompileLanguage(slang, files, options, release) == compiler::Status::Ready);
+    CHECK(ReadSpirvDebugView(release.Artifact, "main.lusl").HasDebugInfo == false);
+    CHECK(release.Artifact.GetSize() == before.Artifact.GetSize());
 }

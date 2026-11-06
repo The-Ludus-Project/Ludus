@@ -852,6 +852,29 @@ SPIR-V, WGSL and Metal. A type that one of them lacks therefore fails them all.
 For example, WGSL has no 16-bit or 64-bit integers, so `int16` and `int64`
 values fail the portable set, and the Slang diagnostic names the type.
 
+### Debug views
+
+The emitted module's `#line` directives map each declaration and statement to
+its LUSL line ([Line mapping](#line-mapping)). Slang diagnostics use them on
+every target. Whether a *debugger* also shows LUSL depends on the target's
+debug information, which `ShaderCompiler` emits when
+`Request::ShouldEmitDebugInformation` is set. Each target is qualified by the
+test "LUSL debug views name LUSL files and lines on each target":
+
+| Target | Debug view | Evidence |
+| --- | --- | --- |
+| SPIR-V | Qualified | NonSemantic.Shader.DebugInfo.100: the `DebugSource` for the `.lusl` file embeds the LUSL text (not the generated module), and `DebugLine` records name LUSL statement lines |
+| SPIR-V with ray queries | Qualified | The same records in the compute-only ray-query profile |
+| Metal | Qualified | The MSL carries `#line` directives that name the `.lusl` file and give each statement its LUSL line |
+| WGSL | Not available | WGSL has no line directive, and the pinned Slang writes no line information or source map into it. Browser validation errors name WGSL lines. LUSL reports its own errors on LUSL lines first, such as the [uniformity rules](#uniformity-rules) WGSL enforces |
+| DXIL | Not yet qualified | Needs Windows evidence of the DXC debug parts; the option is passed through unchanged |
+
+Qualification checks the artifacts; no interactive frame-debugger session is
+part of it. Without the option, SPIR-V carries no debug records, and Metal
+keeps only function-level `#line` directives. The option changes artifact bytes, so a
+caller that sets it must include it in its build identity. Render-graph
+builds do not set it yet.
+
 ### Current limits
 
 - **Floating constant expressions** such as `0.1 * 3.0` are evaluated in the
@@ -975,6 +998,11 @@ anything. The native worker does the same for requests it receives.
     `shader_language::ConfigurationValue` is the same record.
   - `Style`: the [style setting](#style-rules), `LanguageStyle::Strict` by default.
   - `ShouldCheckBounds`: [development bounds checks](#development-bounds-checks).
+- **`ShouldEmitDebugInformation`** applies to Slang and LUSL sources alike. It
+  asks for each target's standard debug information; see
+  [Debug views](#debug-views). Sessions are cached per debug level, so a
+  release artifact is the same bytes whether or not a debug compilation ran
+  before it.
 - **Results:**
   - `SourceReadMask` has one byte per request file. It counts the files that
     either the LUSL preprocessor or Slang read, so build identity tracks LUSL
@@ -993,7 +1021,8 @@ anything. The native worker does the same for requests it receives.
 - **Wire format.** The worker protocol carries the same fields as optional JSON
   members: `configuration` as `[name, value]` pairs, `style` and
   `bounds_checks` in requests; `configuration_read_mask` and
-  `generated_source` in replies. Slang requests omit them.
+  `generated_source` in replies. Slang requests omit them. `debug_information`
+  is an optional boolean for every request.
 - **Worker identity.** The worker's implementation identity hashes the LUSL
   sources too, so build keys that record the worker change with the LUSL
   compiler.

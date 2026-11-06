@@ -57,9 +57,13 @@ L4 is in progress:
 - L4d: [coordinate-space types](#matrices-and-coordinate-spaces):
   `space` declarations, vectors and matrices that name their spaces, and errors
   where values of two spaces meet.
+- L4e: debug-view qualification per target, behind
+  `Request::ShouldEmitDebugInformation`, and the
+  [dynamic dispatch evaluation](#interfaces-concepts-and-templates), which keeps
+  `dynamic` reserved.
 
-Not yet done from L4: the tree-sitter grammar (with its dependency ADR),
-debug-view qualification and the dynamic dispatch evaluation.
+Not yet done from L4: the tree-sitter grammar, which waits for
+[ADR 0026](../decisions/0026-tree-sitter-syntax-dependency.md) to be accepted.
 
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
@@ -504,8 +508,31 @@ float32x3 ShadeWithFog(in M material, in SurfaceHit hit, in FogParameters fog)
   - Every specialization counts toward that budget and appears in the build
     report.
   - LUSL never creates a configuration the author did not list.
-- **Runtime dispatch** (a `dynamic Material` parameter) is deferred until Slang
-  dynamic dispatch is qualified on every target profile.
+- **Runtime dispatch** (a `dynamic Material` parameter) stays deferred, and
+  `dynamic` stays reserved. The L4e evaluation of Slang dynamic dispatch, with
+  the pinned Slang 2026.1.2, found:
+  - **It compiles on every portable target.** A non-generic function taking an
+    `[anyValueSize(N)]` interface, with objects from `createDynamicObject`,
+    compiles for SPIR-V, WGSL, Metal and HLSL. It lowers to a `switch` over a
+    type id that calls each conforming type's methods.
+  - **It needs a closed, numbered type list.** Slang rejects the program
+    ("No type conformances are found") unless each implementation is linked as
+    a type conformance, such as `-conformance Plastic:IMaterial=0`, whose
+    sequential id is the runtime type id. That is the same closed set the
+    package closure already lists for specialization.
+  - **Payloads are bounded and untyped.** Each object travels as `anyValueSize`
+    bytes, so a material's fields would cross the buffer boundary without the
+    render graph's schema checks.
+  - **The cost is a branch per call.** Specialization (L2) compiles the same
+    closed set to one direct call per configuration, with no runtime type id.
+
+  `dynamic` therefore earns its place only when a renderer feature must choose
+  materials per pixel or per hit among more types than its configurations can
+  enumerate. Three prerequisites come first:
+  1. type-conformance lists in `ShaderCompiler` requests, derived from the
+     package closure;
+  2. payload layouts generated from the schema;
+  3. GPU parity tests per target.
 
 ### Entry points and authored functions
 
@@ -743,7 +770,13 @@ Signed `+`, `-` and `*` wrap on every target, as unsigned arithmetic does:
   diagnostics and the editor's quick fixes.
 - **Debugging:** the emitted Slang carries `#line` directives, so Slang
   diagnostics, debug information and frame-debugger source views point at LUSL
-  lines. Each target's debug view is qualified separately.
+  lines. Each target's debug view is qualified separately (L4e):
+  - SPIR-V (with and without ray queries) and Metal are qualified;
+  - WGSL has no line information to qualify;
+  - DXIL waits for Windows evidence.
+
+  The [module guide](../modules/tooling/shader-language.md#debug-views)
+  records the evidence.
 - **Editor:**
   - a language registry record for `.lusl` and `.luslh`;
   - a Ludus-owned tree-sitter grammar under the

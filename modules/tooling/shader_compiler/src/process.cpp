@@ -74,14 +74,17 @@ bool Process(Compiler& inoutCompiler, BorrowedView<const uint8> bytes, Array<uin
         // LUSL options are optional, so Slang requests may omit them.
         const parsing::JsonValue style = root.Get("style");
         const parsing::JsonValue boundsChecks = root.Get("bounds_checks");
+        const parsing::JsonValue debugInformation = root.Get("debug_information");
         const parsing::JsonValue values = root.Get("configuration");
         uint64 styleValue = 0;
         bool shouldCheckBounds = false;
+        bool shouldEmitDebugInformation = false;
         usize valueCount = 0;
         isValid = isValid == true &&
                   (style.Valid() == false ||
                    (style.Integer(styleValue) == true && styleValue <= static_cast<uint8>(LanguageStyle::Off))) &&
                   (boundsChecks.Valid() == false || boundsChecks.Boolean(shouldCheckBounds) == true) &&
+                  (debugInformation.Valid() == false || debugInformation.Boolean(shouldEmitDebugInformation) == true) &&
                   (values.Valid() == false ||
                    (values.Array() == true && values.Count() <= shader_language::MAX_CONFIGURATION_VALUES));
         if (isValid == true && values.Valid() == true)
@@ -106,6 +109,7 @@ bool Process(Compiler& inoutCompiler, BorrowedView<const uint8> bytes, Array<uin
             request.Configuration = {configuration.GetData(), valueCount};
             request.Style = static_cast<LanguageStyle>(styleValue);
             request.ShouldCheckBounds = shouldCheckBounds;
+            request.ShouldEmitDebugInformation = shouldEmitDebugInformation;
             request.Files = {sources.GetData(), files.MemberCount()};
             request.Source = {source.data(), source.size()};
             request.Entry = {entry.data(), entry.size()};
