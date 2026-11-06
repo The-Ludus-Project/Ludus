@@ -24,6 +24,11 @@ target_link_libraries(ludus_shader_language
     PUBLIC Ludus::FoundationContainers Ludus::FoundationStrings Ludus::ShaderCompilerClient
     PRIVATE Ludus::FoundationMemory)
 ludus_apply_project_defaults(ludus_shader_language)
+# The optional native compiler library lowers LUSL in process; as a shared library it needs its
+# static closure position-independent (Windows links it statically).
+if(TARGET ludus_shader_compiler AND NOT WIN32)
+    set_target_properties(ludus_shader_language PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
 install(TARGETS ludus_shader_language EXPORT LudusTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
@@ -61,7 +66,10 @@ endif()
 if(LUDUS_BUILD_TESTS AND TARGET ludus_shader_compiler)
     add_executable(ludus_shader_language_target_tests tests/emitter_target_tests.cpp)
     target_link_libraries(ludus_shader_language_target_tests PRIVATE
-        Ludus::ShaderLanguage Ludus::ShaderCompiler Catch2::Catch2WithMain)
+        Ludus::ShaderLanguage Ludus::ShaderCompiler Ludus::FoundationFilesystem Catch2::Catch2WithMain)
+    # The SDK's LUSL declarations are compiled against the Slang files they declare.
+    target_compile_definitions(ludus_shader_language_target_tests PRIVATE
+        LUDUS_MATH_SHADER_DIRECTORY="${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders")
     ludus_apply_project_defaults(ludus_shader_language_target_tests)
     ludus_enable_test_exceptions(ludus_shader_language_target_tests)
     if(WIN32)

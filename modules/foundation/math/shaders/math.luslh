@@ -1,0 +1,46 @@
+// LUSL declarations of FoundationMath's shader library (math.slang), for LUSL modules. Each
+// declaration mirrors the Slang one; names and parameter names are unchanged, so named arguments
+// use the Slang parameter names. docs/modules/tooling/shader-language.md lists the SDK headers.
+#pragma once
+
+extern slang "math.slang"
+{
+    static const float32 PI;
+    static const uint32 FLOAT_EXPONENT_BITS;
+    static const uint32 RANDOM_ADDRESS_LAYOUT_VERSION;
+    static const uint32 RANDOM_BOUNDED_MAPPING_VERSION;
+    static const uint32 RANDOM_MAX_DIMENSION;
+    static const uint32 RANDOM_ATTEMPT_COUNT;
+
+    /// One addressed draw of the counter-based random generator.
+    struct RandomAddress
+    {
+        uint32x2 Scope;
+        uint32 Event;
+        uint32 Dimension;
+    };
+
+    float32 ComputeErrorFunction(in float32 value);
+    bool IsFiniteBits(in float32 value);
+    bool IsFiniteBits(in float32x3 value);
+    float32x3 NormalizeOrZero(in float32x3 v);
+    bool HasPositiveComponent(in float32x3 v);
+    float32 ComputeArctangent(in float32 x);
+    float32 ComputeStandardNormalQuantile(in float32 probability);
+    float32 DecodeSrgb(in float32 value);
+    void MultiplyWide(in uint32 a, in uint32 b, out uint32 outLow, out uint32 outHigh);
+    RandomAddress MakeRandomAddress(in uint32x2 scope, in uint32 event, in uint32 dimension);
+    bool IsRandomAddressInRange(in RandomAddress address);
+    uint32x4 Philox4x32(in uint32x4 counter, in uint32x2 key);
+    uint32x4 PackRandomCounter(in RandomAddress address, in uint32 attempt);
+    uint32 SampleRandomUInt32(in uint32x2 key, in RandomAddress address);
+    float32 RandomFloat01(in uint32 bits);
+    float32 SampleRandomFloat01(in uint32x2 key, in RandomAddress address);
+    bool TrySampleRandomBounded(in uint32x2 key, in RandomAddress address, in uint32 bound, out uint32 outValue);
+    float32x3 ApplyNormalWorld(in float32x3 normalWorld,
+                               in float32x3 normalTangent,
+                               in float32x3 edgeUWorld,
+                               in float32x3 edgeVWorld,
+                               in float32x2 edgeUUv,
+                               in float32x2 edgeVUv);
+};

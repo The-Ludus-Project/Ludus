@@ -2,11 +2,14 @@
 // portable target (docs/architecture/shading-language.md#testing).
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/tooling/shader_compiler/compiler.hpp>
 #include <ludus/tooling/shader_language/pipeline.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -284,5 +287,182 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
         CHECK(CompileFor(slang, files, target, diagnostics) == compiler::Status::CompileFailed);
         INFO(diagnostics);
         CHECK(diagnostics.find("'int16_t' is not supported by the WGSL backend") != std::string::npos);
+    }
+}
+
+namespace
+{
+/// Compile ROOT as a `.lusl` Source through ShaderCompiler, which lowers it first.
+compiler::Status CompileLanguage(compiler::Compiler& inoutSlang,
+                                 const Files& files,
+                                 const compiler::Request& options,
+                                 compiler::Result& outResult)
+{
+    const foundation::Array<compiler::SourceFile> views = files.GetViews();
+    compiler::Request request = options;
+    request.Files = foundation::BorrowedView<const compiler::SourceFile>(views.GetData(), views.GetSize());
+    request.Source = foundation::BorrowedView<const char>(ROOT.data(), ROOT.size());
+    request.Entry = foundation::BorrowedView<const char>(ENTRY.data(), ENTRY.size());
+    request.EntryStage = compiler::Stage::Compute;
+    return inoutSlang.Compile(request, outResult);
+}
+
+std::string GetDiagnostics(const compiler::Result& result)
+{
+    return std::string(reinterpret_cast<const char*>(result.Diagnostics.GetData()), result.Diagnostics.GetSize());
+}
+} // namespace
+
+TEST_CASE("ShaderCompiler lowers a .lusl source before Slang", "[shader-language][emitter-targets]")
+{
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add("shaders/unused.slang", "float Unused() { return 0.0f; }\n");
+    files.Add("shaders/math.slang", "float Twice(float x) { return x * 2.0f; }\n");
+    files.Add("shaders/math.luslh",
+              "#pragma once\nextern slang \"math.slang\"\n{\n    float32 Twice(in float32 x);\n};\n");
+    // A stale generated module in the snapshot is replaced.
+    files.Add(std::string(GENERATED), "this does not compile\n");
+    files.Add(std::string(ROOT), R"(#include "math.luslh"
+groupshared float32 result = 0;
+[stage(compute), threads(1, 1, 1)]
+void Main(in uint32x3 dispatchThread : DispatchThreadId)
+{
+#if MODE == 2
+    result = Twice(float32(dispatchThread.x));
+#endif
+}
+)");
+    const std::string_view modeName = "MODE";
+    const std::string_view modeValue = "2";
+    const std::string_view unusedName = "UNUSED";
+    const std::string_view unusedValue = "1";
+    const foundation::StaticArray<compiler::ConfigurationValue, 2> configuration = {{
+        {{modeName.data(), modeName.size()}, {modeValue.data(), modeValue.size()}},
+        {{unusedName.data(), unusedName.size()}, {unusedValue.data(), unusedValue.size()}},
+    }};
+    compiler::Request options;
+    options.Configuration = foundation::BorrowedView<const compiler::ConfigurationValue>(configuration.GetData(), 2);
+    for (const compiler::Target target : {compiler::Target::Spirv, compiler::Target::Wgsl, compiler::Target::Metal})
+    {
+        options.OutputTarget = target;
+        compiler::Result result;
+        INFO("target " << static_cast<int>(target));
+        REQUIRE(CompileLanguage(slang, files, options, result) == compiler::Status::Ready);
+        INFO(GetDiagnostics(result));
+        CHECK(result.Artifact.IsEmpty() == false);
+        const std::string generated(result.GeneratedSource.GetData(), result.GeneratedSource.GetSize());
+        CHECK(generated.find("#include \"math.slang\"") != std::string::npos);
+        // One mask byte per request file: the unused Slang file and the stale module stay unread.
+        REQUIRE(result.SourceReadMask.GetSize() == 5);
+        CHECK(result.SourceReadMask[0] == 0);
+        CHECK(result.SourceReadMask[1] == 1);
+        CHECK(result.SourceReadMask[2] == 1);
+        CHECK(result.SourceReadMask[3] == 0);
+        CHECK(result.SourceReadMask[4] == 1);
+        REQUIRE(result.ConfigurationReadMask.GetSize() == 2);
+        CHECK(result.ConfigurationReadMask[0] == 1);
+        CHECK(result.ConfigurationReadMask[1] == 0);
+    }
+}
+
+TEST_CASE("ShaderCompiler reports LUSL diagnostics in Slang's form", "[shader-language][emitter-targets]")
+{
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add(std::string(ROOT), R"([stage(compute), threads(1, 1, 1)]
+void Main(in uint32x3 dispatchThread : DispatchThreadId)
+{
+    float32 x = 1;
+    uint32 y = x;
+}
+)");
+    compiler::Request options;
+    compiler::Result failed;
+    CHECK(CompileLanguage(slang, files, options, failed) == compiler::Status::CompileFailed);
+    CHECK(failed.Artifact.IsEmpty() == true);
+    CHECK(GetDiagnostics(failed).find("shaders/main.lusl(5,16): error LUSL0504: expected uint32, found float32") !=
+          std::string::npos);
+
+    // Style findings follow the request's style setting.
+    Files styled;
+    styled.Add(std::string(ROOT), R"(static const uint32 count = 4;
+[stage(compute), threads(1, 1, 1)]
+void Main(in uint32x3 dispatchThread : DispatchThreadId)
+{
+}
+)");
+    compiler::Result strict;
+    CHECK(CompileLanguage(slang, styled, options, strict) == compiler::Status::CompileFailed);
+    CHECK(GetDiagnostics(strict).find("shaders/main.lusl(1,21): error LUSL0601") != std::string::npos);
+    options.Style = compiler::LanguageStyle::Warn;
+    compiler::Result warned;
+    CHECK(CompileLanguage(slang, styled, options, warned) == compiler::Status::Ready);
+    CHECK(GetDiagnostics(warned).find("shaders/main.lusl(1,21): warning LUSL0601") != std::string::npos);
+    options.Style = compiler::LanguageStyle::Off;
+    compiler::Result quiet;
+    CHECK(CompileLanguage(slang, styled, options, quiet) == compiler::Status::Ready);
+    CHECK(GetDiagnostics(quiet).find("LUSL") == std::string::npos);
+}
+
+namespace
+{
+/// The text of `name` in FoundationMath's shader directory.
+std::string ReadMathShader(std::string_view name)
+{
+    foundation::filesystem::Directory directory;
+    REQUIRE(directory.Open(LUDUS_MATH_SHADER_DIRECTORY).Succeeded() == true);
+    foundation::filesystem::File file;
+    REQUIRE(directory.OpenRead(name, file).Succeeded() == true);
+    std::string text(static_cast<foundation::usize>(file.Size()), '\0');
+    const foundation::filesystem::ReadResult read =
+        file.ReadAt(0, std::span<foundation::uint8>(reinterpret_cast<foundation::uint8*>(text.data()), text.size()));
+    REQUIRE(read.Outcome.Succeeded() == true);
+    return text;
+}
+} // namespace
+
+TEST_CASE("The SDK math declarations match math.slang on every target", "[shader-language][emitter-targets]")
+{
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add("shaders/math.slang", ReadMathShader("math.slang"));
+    files.Add("shaders/math.luslh", ReadMathShader("math.luslh"));
+    // Every declaration is called, so Slang checks each against its definition.
+    files.Add(std::string(ROOT), R"(#include "math.luslh"
+groupshared float32 result = 0;
+[stage(compute), threads(1, 1, 1)]
+void Main(in uint32x3 dispatchThread : DispatchThreadId)
+{
+    uint32 low;
+    uint32 high;
+    MultiplyWide(dispatchThread.x, FLOAT_EXPONENT_BITS, out low, out high);
+    RandomAddress address = MakeRandomAddress(scope = dispatchThread.xy, event = RANDOM_ADDRESS_LAYOUT_VERSION,
+                                              dimension = RANDOM_MAX_DIMENSION);
+    uint32 bounded;
+    bool isBounded = TrySampleRandomBounded(dispatchThread.xy, address,
+                                            RANDOM_ATTEMPT_COUNT + RANDOM_BOUNDED_MAPPING_VERSION, out bounded);
+    float32x3 normal = ApplyNormalWorld(NormalizeOrZero(float32x3(1.0)), float32x3(0.0, 0.0, 1.0),
+                                        float32x3(1.0, 0.0, 0.0), float32x3(0.0, 1.0, 0.0), float32x2(1.0, 0.0),
+                                        float32x2(0.0, 1.0));
+    float32 total = PI + ComputeErrorFunction(0.5) + ComputeArctangent(1.0) + ComputeStandardNormalQuantile(0.25) +
+                    DecodeSrgb(0.5) + RandomFloat01(low ^ high) + SampleRandomFloat01(dispatchThread.xy, address);
+    total += float32(Philox4x32(PackRandomCounter(address, 0), dispatchThread.xy).x) +
+             float32(SampleRandomUInt32(dispatchThread.xy, address)) + normal.x + float32(bounded);
+    if (IsFiniteBits(total) == true && IsFiniteBits(normal) == true && HasPositiveComponent(normal) == true &&
+        isBounded == true && IsRandomAddressInRange(address) == true)
+    {
+        result = total;
+    }
+}
+)");
+    compiler::Request options;
+    for (const compiler::Target target : {compiler::Target::Spirv, compiler::Target::Wgsl, compiler::Target::Metal})
+    {
+        options.OutputTarget = target;
+        compiler::Result result;
+        const compiler::Status status = CompileLanguage(slang, files, options, result);
+        INFO("target " << static_cast<int>(target) << "\n" << GetDiagnostics(result));
+        CHECK(status == compiler::Status::Ready);
     }
 }

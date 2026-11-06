@@ -246,6 +246,9 @@ if(LUDUS_SHADER_WORKER_ONLY)
     add_subdirectory(third_party/yyjson)
     add_subdirectory(modules/foundation/parsing)
     add_subdirectory(modules/tooling/shader_compiler)
+    # The worker lowers LUSL sources in process; luslc shares that library.
+    add_subdirectory(modules/tooling/shader_language)
+    add_subdirectory(tools/luslc)
     configure_package_config_file("${PROJECT_SOURCE_DIR}/cmake/LudusShaderToolsConfig.cmake.in"
         "${PROJECT_BINARY_DIR}/LudusShaderToolsConfig.cmake"
         INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/LudusShaderTools")

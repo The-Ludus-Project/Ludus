@@ -64,9 +64,21 @@ bool IsValid(const Request& request) noexcept
         filesystem::ValidPath(GetText(request.Source)) == false ||
         static_cast<uint8>(request.OutputTarget) > static_cast<uint8>(Target::Dxil) ||
         (request.OutputTarget == Target::SpirvRayQuery && request.EntryStage != Stage::Compute) ||
-        static_cast<uint8>(request.EntryStage) > static_cast<uint8>(Stage::Compute))
+        static_cast<uint8>(request.EntryStage) > static_cast<uint8>(Stage::Compute) ||
+        static_cast<uint8>(request.Style) > static_cast<uint8>(LanguageStyle::Off) ||
+        (request.Configuration.IsValid() == false && request.Configuration.GetSize() != 0))
     {
         return false;
+    }
+    // The LUSL preprocessor owns the remaining configuration rules; only views are checked here.
+    for (usize i = 0; i < request.Configuration.GetSize(); ++i)
+    {
+        const ConfigurationValue& value = request.Configuration[i];
+        if ((value.Name.IsValid() == false && value.Name.GetSize() != 0) ||
+            (value.Value.IsValid() == false && value.Value.GetSize() != 0))
+        {
+            return false;
+        }
     }
     for (usize i = 0; i < request.Entry.GetSize(); ++i)
     {
@@ -120,6 +132,19 @@ bool EncodeRequest(const Request& request, Array<uint8>& outBytes) noexcept
     writer.Integer(static_cast<uint8>(request.OutputTarget));
     writer.Raw(",\"stage\":");
     writer.Integer(static_cast<uint8>(request.EntryStage));
+    writer.Raw(",\"style\":");
+    writer.Integer(static_cast<uint8>(request.Style));
+    writer.Raw(request.ShouldCheckBounds == true ? ",\"bounds_checks\":true" : ",\"bounds_checks\":false");
+    writer.Raw(",\"configuration\":[");
+    for (usize i = 0; i < request.Configuration.GetSize(); ++i)
+    {
+        writer.Raw(i == 0 ? "[" : ",[");
+        writer.String(GetText(request.Configuration[i].Name));
+        writer.Raw(",");
+        writer.String(GetText(request.Configuration[i].Value));
+        writer.Raw("]");
+    }
+    writer.Raw("]");
     writer.Raw(",\"files\":{");
     for (usize i = 0; i < request.Files.GetSize(); ++i)
     {
@@ -185,6 +210,28 @@ bool DecodeResult(BorrowedView<const uint8> bytes, Result& outResult) noexcept
     if (diagnostics.empty() == false)
     {
         std::memcpy(result.Diagnostics.GetData(), diagnostics.data(), diagnostics.size());
+    }
+    // LUSL fields are absent from replies about Slang sources.
+    const parsing::JsonValue configurationMask = root.Get("configuration_read_mask");
+    const parsing::JsonValue generated = root.Get("generated_source");
+    std::string_view generatedText;
+    if ((configurationMask.Valid() == true && ReadHex(configurationMask, result.ConfigurationReadMask) == false) ||
+        (generated.Valid() == true &&
+         (generated.String(generatedText) == false || generatedText.size() > MAX_SOURCE_BYTES ||
+          result.GeneratedSource.TryResize(generatedText.size()) == false)))
+    {
+        return false;
+    }
+    for (const uint8 value : result.ConfigurationReadMask)
+    {
+        if (value > 1)
+        {
+            return false;
+        }
+    }
+    if (generatedText.empty() == false)
+    {
+        std::memcpy(result.GeneratedSource.GetData(), generatedText.data(), generatedText.size());
     }
     outResult = Move(result);
     return true;

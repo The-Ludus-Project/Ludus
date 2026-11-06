@@ -170,6 +170,32 @@ def check_protocol_recovery(endpoint):
     assert NATIVE.exchange(endpoint, {'version': 99, 'identity': 10})['status'] == STATUS_INVALID_REQUEST
 
 
+LUSL_SOURCE = '''groupshared float32 result = 0;
+[stage(compute), threads(1, 1, 1)]
+void Main(in uint32x3 dispatchThread : DispatchThreadId)
+{
+    result = float32(dispatchThread.x) * float32(SCALE);
+}
+'''
+
+
+def check_lusl(endpoint):
+    """A .lusl source crosses the protocol with its configuration values and style setting."""
+    request = {'version': 1, 'identity': 31, 'source': 'shade.lusl', 'entry': 'Main', 'stage': 2, 'target': 0,
+               'style': 0, 'bounds_checks': True, 'configuration': [['SCALE', '2'], ['UNUSED', '1']],
+               'files': {'shade.lusl': LUSL_SOURCE}}
+    reply = NATIVE.exchange(endpoint, request)
+    assert reply['status'] == STATUS_READY, reply['diagnostics']
+    assert reply['configuration_read_mask'] == '0100'
+    assert reply['generated_source'].startswith('// Generated from shade.lusl')
+    failed = NATIVE.exchange(endpoint, dict(request, identity=32, configuration=[]))
+    assert failed['status'] == STATUS_COMPILE_FAILED
+    assert 'shade.lusl(5,' in failed['diagnostics'] and 'error LUSL' in failed['diagnostics']
+    assert 'generated_source' not in failed
+    bad_style = NATIVE.exchange(endpoint, dict(request, identity=33, style=9))
+    assert bad_style['status'] == STATUS_INVALID_REQUEST
+
+
 def is_signed_dxil(artifact):
     # DXBC header: code, 16-byte hash, version and total size. Unsigned output has a constant hash.
     return (len(artifact) >= 32 and artifact[:4] == b'DXBC' and
@@ -287,6 +313,7 @@ def main():
             assert duplicate.returncode != 0
             check_stops_during_compile(args.worker.resolve(), lambda name: root / (name + '.sock'))
             check_protocol_recovery(str(endpoint))
+            check_lusl(str(endpoint))
             # Exercise the canonical renderer recipe owner through real CMake,
             # including shared include roots and independently checked reflection.
             recipes = root / 'recipes'

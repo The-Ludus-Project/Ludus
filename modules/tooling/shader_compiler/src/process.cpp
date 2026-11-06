@@ -1,5 +1,7 @@
 #include "codec.hpp"
 
+#include <ludus/tooling/shader_language/limits.hpp>
+
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/parsing/json.hpp>
 
@@ -46,6 +48,7 @@ bool Process(Compiler& inoutCompiler, BorrowedView<const uint8> bytes, Array<uin
         std::string_view source;
         std::string_view entry;
         StaticArray<SourceFile, MAX_SOURCE_FILES> sources{};
+        StaticArray<ConfigurationValue, shader_language::MAX_CONFIGURATION_VALUES> configuration{};
         bool isValid = root.Get("identity").Integer(request.Identity);
         result.Identity = request.Identity;
         isValid = isValid == true && root.Get("version").Integer(version) == true && version == PROTOCOL_VERSION &&
@@ -68,8 +71,41 @@ bool Process(Compiler& inoutCompiler, BorrowedView<const uint8> bytes, Array<uin
                 sources[i] = {{path.data(), path.size()}, {text.data(), text.size()}};
             }
         }
+        // LUSL options are optional, so Slang requests may omit them.
+        const parsing::JsonValue style = root.Get("style");
+        const parsing::JsonValue boundsChecks = root.Get("bounds_checks");
+        const parsing::JsonValue values = root.Get("configuration");
+        uint64 styleValue = 0;
+        bool shouldCheckBounds = false;
+        usize valueCount = 0;
+        isValid = isValid == true &&
+                  (style.Valid() == false ||
+                   (style.Integer(styleValue) == true && styleValue <= static_cast<uint8>(LanguageStyle::Off))) &&
+                  (boundsChecks.Valid() == false || boundsChecks.Boolean(shouldCheckBounds) == true) &&
+                  (values.Valid() == false ||
+                   (values.Array() == true && values.Count() <= shader_language::MAX_CONFIGURATION_VALUES));
+        if (isValid == true && values.Valid() == true)
+        {
+            valueCount = values.Count();
+            for (usize i = 0; i < valueCount; ++i)
+            {
+                const parsing::JsonValue pair = values.At(i);
+                std::string_view name;
+                std::string_view text;
+                if (pair.Array() == false || pair.Count() != 2 || pair.At(0).String(name) == false ||
+                    pair.At(1).String(text) == false)
+                {
+                    isValid = false;
+                    break;
+                }
+                configuration[i] = {{name.data(), name.size()}, {text.data(), text.size()}};
+            }
+        }
         if (isValid == true)
         {
+            request.Configuration = {configuration.GetData(), valueCount};
+            request.Style = static_cast<LanguageStyle>(styleValue);
+            request.ShouldCheckBounds = shouldCheckBounds;
             request.Files = {sources.GetData(), files.MemberCount()};
             request.Source = {source.data(), source.size()};
             request.Entry = {entry.data(), entry.size()};
@@ -99,6 +135,13 @@ bool Process(Compiler& inoutCompiler, BorrowedView<const uint8> bytes, Array<uin
     WriteHex(writer, result.SourceReadMask);
     writer.Raw(",\"diagnostics\":");
     writer.String({reinterpret_cast<const char*>(result.Diagnostics.GetData()), result.Diagnostics.GetSize()});
+    if (result.ConfigurationReadMask.IsEmpty() == false || result.GeneratedSource.IsEmpty() == false)
+    {
+        writer.Raw(",\"configuration_read_mask\":");
+        WriteHex(writer, result.ConfigurationReadMask);
+        writer.Raw(",\"generated_source\":");
+        writer.String({result.GeneratedSource.GetData(), result.GeneratedSource.GetSize()});
+    }
     writer.Raw("}");
     std::span<const uint8> output;
     return writer.Finish(output) == parsing::ParseStatus::Ok && outBytes.TryResize(output.size()) == true;
