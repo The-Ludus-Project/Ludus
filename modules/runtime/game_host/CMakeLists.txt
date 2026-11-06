@@ -61,7 +61,7 @@ target_sources(ludus_runtime_game_host
 )
 
 # Dynamic modules load and reload on every native host. Only the supervisor transport is
-# platform-specific; Windows has none yet (D6c), so its sessions run standalone.
+# platform-specific: a Unix socket descriptor, or an inherited Winsock socket (D6c).
 target_sources(ludus_runtime_game_host PRIVATE
     src/host_session.cpp src/property_exchange.cpp src/module_loader.cpp src/timing_telemetry.cpp
     src/internal/control_channel.h src/internal/host_session.h src/internal/module_loader.h
@@ -69,6 +69,7 @@ target_sources(ludus_runtime_game_host PRIVATE
 if(WIN32)
     ludus_configure_win32_target(ludus_runtime_game_host)
     target_sources(ludus_runtime_game_host PRIVATE src/control_channel_windows.cpp)
+    target_link_libraries(ludus_runtime_game_host PRIVATE ws2_32)
 else()
     target_sources(ludus_runtime_game_host PRIVATE src/control_channel_posix.cpp)
 endif()
@@ -212,23 +213,25 @@ if(LUDUS_BUILD_TESTS)
     add_test(NAME ludus_game_host_timing_tests COMMAND ludus_game_host_timing_tests)
     set_tests_properties(ludus_game_host_timing_tests PROPERTIES TIMEOUT 60 LABELS "unit;runtime;timing")
 
-    # Socketpair supervisor sessions run on Linux and macOS only.
-    if(NOT WIN32)
-        add_executable(ludus_game_host_session_tests tests/session_tests.cpp)
-        target_include_directories(ludus_game_host_session_tests PRIVATE src "${LUDUS_GAME_HOST_GENERATED_INCLUDE_DIR}")
-        target_link_libraries(ludus_game_host_session_tests PRIVATE
-            Ludus::GameHost Ludus::GameApi Ludus::FoundationContainers Ludus::FoundationLogging Ludus::FoundationTime
-            Ludus::PlatformPacing Catch2::Catch2WithMain Threads::Threads ${CMAKE_DL_LIBS})
-        ludus_apply_project_defaults(ludus_game_host_session_tests)
-        ludus_enable_test_exceptions(ludus_game_host_session_tests)
-        add_dependencies(ludus_game_host_session_tests ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid)
-        target_compile_definitions(ludus_game_host_session_tests PRIVATE
-            LUDUS_FIXTURE_A_PATH="$<TARGET_FILE:ludus_game_fixture_A>"
-            LUDUS_FIXTURE_B_PATH="$<TARGET_FILE:ludus_game_fixture_B>"
-            LUDUS_FIXTURE_BADID_PATH="$<TARGET_FILE:ludus_game_fixture_badid>")
-        add_test(NAME ludus_game_host_session_tests COMMAND ludus_game_host_session_tests)
-        set_tests_properties(ludus_game_host_session_tests PROPERTIES TIMEOUT 120 LABELS "unit;runtime;session;reload")
+    add_executable(ludus_game_host_session_tests tests/session_tests.cpp)
+    target_include_directories(ludus_game_host_session_tests PRIVATE src "${LUDUS_GAME_HOST_GENERATED_INCLUDE_DIR}")
+    target_link_libraries(ludus_game_host_session_tests PRIVATE
+        Ludus::GameHost Ludus::GameApi Ludus::FoundationContainers Ludus::FoundationLogging Ludus::FoundationTime
+        Ludus::PlatformPacing Catch2::Catch2WithMain Threads::Threads ${CMAKE_DL_LIBS})
+    ludus_apply_project_defaults(ludus_game_host_session_tests)
+    ludus_enable_test_exceptions(ludus_game_host_session_tests)
+    if(WIN32)
+        # Windows sessions speak over a loopback stream pair, as a Python supervisor's is.
+        ludus_configure_win32_target(ludus_game_host_session_tests)
+        target_link_libraries(ludus_game_host_session_tests PRIVATE ws2_32)
     endif()
+    add_dependencies(ludus_game_host_session_tests ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid)
+    target_compile_definitions(ludus_game_host_session_tests PRIVATE
+        LUDUS_FIXTURE_A_PATH="$<TARGET_FILE:ludus_game_fixture_A>"
+        LUDUS_FIXTURE_B_PATH="$<TARGET_FILE:ludus_game_fixture_B>"
+        LUDUS_FIXTURE_BADID_PATH="$<TARGET_FILE:ludus_game_fixture_badid>")
+    add_test(NAME ludus_game_host_session_tests COMMAND ludus_game_host_session_tests)
+    set_tests_properties(ludus_game_host_session_tests PROPERTIES TIMEOUT 120 LABELS "unit;runtime;session;reload")
 
     add_executable(ludus_game_host_reload_tests tests/reload_tests.cpp)
     target_include_directories(ludus_game_host_reload_tests PRIVATE src "${LUDUS_GAME_HOST_GENERATED_INCLUDE_DIR}")
@@ -255,6 +258,16 @@ if(LUDUS_BUILD_TESTS)
     find_package(Python3 3.10 COMPONENTS Interpreter)
     if(NOT Python3_Interpreter_FOUND)
         message(FATAL_ERROR "Native play-supervisor acceptance requires Python 3.10+")
+    endif()
+    if(WIN32)
+        # A real host process over an inherited loopback control socket (D6c).
+        add_test(NAME ludus_game_host_windows_supervisor
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/windows_supervisor_acceptance.py"
+                --host "$<TARGET_FILE:ludus_game_host_app>"
+                --a "$<TARGET_FILE:ludus_game_fixture_A>" --b "$<TARGET_FILE:ludus_game_fixture_B>"
+                --incompatible "$<TARGET_FILE:ludus_game_fixture_badid>")
+        set_tests_properties(ludus_game_host_windows_supervisor PROPERTIES
+            TIMEOUT 120 LABELS "runtime;session;supervisor;reload")
     endif()
     if(MSVC)
         # The live-play symbol check accepts a DLL only with the PDB its CodeView GUID/age names.

@@ -51,8 +51,7 @@ RunResult Run(const HostConfig& config) noexcept
 
     if (control_channel::IsSupported() == false && (config.ControlFd >= 0 || config.AwaitLoad == true))
     {
-        // No supervisor transport on this platform yet (Windows, D6c), as for RunStatic:
-        // never treat a number as a channel the host cannot speak on.
+        // Never treat a number as a channel the host cannot speak on.
         return RunResult::ProtocolError;
     }
     FramePresenter presenter;

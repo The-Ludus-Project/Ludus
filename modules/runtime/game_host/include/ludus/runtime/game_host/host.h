@@ -79,8 +79,10 @@ struct HostConfig final
     /// DLL. Used only for DynamicModule. Empty for Static.
     std::string_view ModulePath;
 
-    /// @brief Protocol socket file descriptor inherited from the supervisor, or -1 to
-    /// run without a control channel (legacy Run / local smoke). Linux and macOS only.
+    /// @brief Protocol stream socket inherited from the supervisor, or -1 to run without a
+    /// control channel (legacy Run / local smoke). A Unix-domain socket descriptor on Linux and
+    /// macOS; on Windows, the numeric value of an inherited Winsock SOCKET handle of a connected
+    /// stream pair. The host makes it nonblocking and never closes it.
     int32 ControlFd = -1;
 
     /// Project/game identity passed through to the module's Create.
@@ -100,8 +102,7 @@ struct HostConfig final
 /// @brief Run one host session to completion.
 ///
 /// Owns engine init/shutdown, window + RHI (for Windowed), the gameplay module lifecycle and, when a ControlFd is
-/// set, the play protocol loop. Windows sessions load and reload modules but have no supervisor transport yet:
-/// a ControlFd or AwaitLoad there returns ProtocolError before any module is loaded.
+/// set, the play protocol loop.
 [[nodiscard]] RunResult Run(const HostConfig& config) noexcept;
 
 /// @brief Entry signature of a statically linked gameplay implementation.

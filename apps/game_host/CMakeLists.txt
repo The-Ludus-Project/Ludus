@@ -13,7 +13,13 @@ if(LUDUS_BUILD_TESTS)
     # The real publisher validates a symbol-bearing host alongside its module.
     # Assertion-policy Release still runs that full acceptance, so keep the
     # thin reference entry's symbols without altering Release optimization.
-    target_compile_options(ludus_game_host_app PRIVATE -g)
+    if(MSVC)
+        # Windows keeps the host's symbols in a linked PDB, as for the fixture modules.
+        set_target_properties(ludus_game_host_app PROPERTIES MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+        target_link_options(ludus_game_host_app PRIVATE /DEBUG)
+    else()
+        target_compile_options(ludus_game_host_app PRIVATE -g)
+    endif()
 endif()
 
 # Do NOT export the host's whole symbol table. The gameplay module calls back

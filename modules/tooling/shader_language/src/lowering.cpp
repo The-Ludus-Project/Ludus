@@ -815,8 +815,10 @@ private:
             }
             at(node).Value = static_cast<int64>(mModule.ThreadGroups.GetSize() - 1);
             const foundation::uint64 total = foundation::uint64{group.X} * group.Y;
+            // Compare in uint64: MSVC rejects the signed/unsigned comparison (C4018).
+            constexpr foundation::uint64 MAX_THREAD_COUNT = static_cast<foundation::uint64>(MAX_THREAD_GROUP_DIMENSION);
             const foundation::uint64 threadCount =
-                total > MAX_THREAD_GROUP_DIMENSION / group.Z ? MAX_THREAD_GROUP_DIMENSION : total * group.Z;
+                total > MAX_THREAD_COUNT / group.Z ? MAX_THREAD_COUNT : total * group.Z;
             lowerGroupsharedClears(symbol, node, block, groupIndexParameter, static_cast<uint32>(threadCount));
         }
         for (uint32 statement = firstChild(body); statement != NO_NODE && mIsFatal == false;
