@@ -46,12 +46,15 @@ HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', '
 # Artifact, source-byte and package bounds independently constrain admitted work.
 # The shipped catalog already declares 144 programs (576 artifacts at four profiles).
 # Keep room for several libraries without asking authors to delete built-in content.
-LIMITS = {'configurations': 8, 'programs': None, 'artifacts': 1024, 'pipelines': 64}
+LIMITS = {'configurations': 8, 'programs': None, 'artifacts': 1024, 'pipelines': 64, 'specializations': None}
 # The author chooses these counts. Artifacts (programs x profiles) and pipelines
 # (raster recipes x profiles) follow from the manifest, so they have no authored
 # budget that could drift from it; only the engine ceilings above bound them.
 AUTHORED_BUDGETS = ('configurations', 'programs')
 DERIVED_BUDGETS = ('artifacts', 'pipelines')
+# Optional authored budgets. budgets.specializations bounds the LUSL template specializations
+# of the whole package; luslc owns its upper limit (MAX_SPECIALIZATIONS).
+OPTIONAL_BUDGETS = ('specializations',)
 MAX_FILE = 128 * 1024
 MAX_BYTES = 4 * 1024 * 1024
 # A package combines independent stage closures, graph metadata and SDK helpers.
@@ -142,6 +145,7 @@ class Snapshot:
         # Slang modules lowered from LUSL during this build; they have no file to re-read.
         self.generated = set()
         self.language_tool = None
+        self.language_reports = {}
         self.total = 0
 
     def path(self, relative):
@@ -246,7 +250,7 @@ def validate_manifest(value):
     require(value['profiles'] and len(set(value['profiles'])) == len(value['profiles']), 'Schema', 'profiles', 'nonempty unique targets required')
     # Manifests written before the derived counts accepted their own budgets; those
     # legacy values are validated for type and otherwise ignored.
-    keys(value['budgets'], AUTHORED_BUDGETS, 'budgets', DERIVED_BUDGETS)
+    keys(value['budgets'], AUTHORED_BUDGETS, 'budgets', DERIVED_BUDGETS + OPTIONAL_BUDGETS)
     for key, maximum in LIMITS.items():
         if key not in value['budgets']:
             continue
@@ -965,8 +969,9 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
     schemas, programs, techniques, counts = validate_manifest(value)
     helper = Path(helper).resolve()
     # LUSL programs name their generated Slang module from here on.
-    snapshot.language_tool = language.lower_sources(snapshot, programs, helper, sys.modules[__name__],
-                                                    luslc=luslc, style=lusl_style)
+    snapshot.language_tool, snapshot.language_reports = language.lower_sources(
+        snapshot, programs, helper, sys.modules[__name__], luslc=luslc, style=lusl_style,
+        specialization_budget=value['budgets'].get('specializations'))
     visibility_helper = helper / 'visibility_buffer.slang'
     if visibility_helper.is_file():
         snapshot.capture('_ludus_visibility.slang', read(visibility_helper), external=visibility_helper)
@@ -1341,6 +1346,9 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             warnings = reasonless_failure_diagnostics(closures, snapshot)
             if warnings:
                 report['diagnostics'] = warnings
+            # LUSL specializations and groupshared clears, recomputed by every build.
+            if snapshot.language_reports:
+                report['lusl'] = snapshot.language_reports
             atomic(output / 'build-report.json', encoded(report))
             # The activation pointer is the sole last write. Failure to write
             # diagnostics cannot publish a partially successful build.

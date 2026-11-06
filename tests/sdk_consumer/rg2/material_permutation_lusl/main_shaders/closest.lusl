@@ -1,0 +1,117 @@
+// A material permutation written with LUSL concepts; the Slang-interface version of the same
+// shading is ../../material_permutation/main_shaders/closest.slang, and a GPU test compares their
+// pixels (docs/architecture/shading-language.md#delivery-plan, L2 acceptance).
+//
+// Each hit picks one of three materials by its first barycentric coordinate. Overload ordering
+// shades CarPaint with its clearcoat, and `if constexpr` adds fog to single-lobe materials only.
+#include "ray_shader.luslh"
+
+/// Hits whose first barycentric coordinate is below this are Plastic.
+static const float32 PLASTIC_BAND = 0.3333;
+/// Hits below this, and not Plastic, are CarPaint; the rest are Velvet.
+static const float32 CAR_PAINT_BAND = 0.6667;
+/// Fog weight per world unit of hit distance.
+static const float32 FOG_DENSITY = 0.125;
+static const float32x3 FOG_COLOR = float32x3(0.5, 0.5, 0.75);
+/// Exponent and weight of the clearcoat highlight.
+static const float32 CLEARCOAT_EXPONENT = 8.0;
+static const float32 CLEARCOAT_WEIGHT = 0.25;
+
+interface Material
+{
+    static const uint32 LOBE_COUNT;
+    float32x3 Evaluate(in float32 cosine);
+};
+
+interface ClearcoatMaterial : Material
+{
+    float32x3 EvaluateClearcoat(in float32 cosine);
+};
+
+concept Opaque<T> = (T : Material) && (T::LOBE_COUNT == 1);
+concept Layered<T> = (T : ClearcoatMaterial) && (T::LOBE_COUNT > 1);
+
+struct Plastic : Material
+{
+    static const uint32 LOBE_COUNT = 1;
+    float32x3 Albedo;
+
+    float32x3 Evaluate(in float32 cosine)
+    {
+        return Albedo * cosine;
+    }
+};
+
+struct CarPaint : ClearcoatMaterial
+{
+    static const uint32 LOBE_COUNT = 2;
+    float32x3 Albedo;
+
+    float32x3 Evaluate(in float32 cosine)
+    {
+        return Albedo * (cosine * 0.5);
+    }
+
+    float32x3 EvaluateClearcoat(in float32 cosine)
+    {
+        return float32x3(pow(cosine, CLEARCOAT_EXPONENT) * CLEARCOAT_WEIGHT);
+    }
+};
+
+struct Velvet : Material
+{
+    static const uint32 LOBE_COUNT = 2;
+    float32x3 Albedo;
+
+    float32x3 Evaluate(in float32 cosine)
+    {
+        return Albedo * (1.0 - cosine) + float32x3(cosine);
+    }
+};
+
+static_assert(Opaque<Plastic> == true, "Plastic is the single-lobe material");
+static_assert(Layered<CarPaint> == true, "CarPaint is the layered material");
+static_assert(Opaque<Velvet> == false && Layered<Velvet> == false, "Velvet takes the general path");
+
+/// The general path: the lobes averaged.
+template <Material M>
+float32x3 Shade(in M material, in float32 cosine)
+{
+    return material.Evaluate(cosine) / float32(M::LOBE_COUNT);
+}
+
+/// Layered implies Material, so this overload is more constrained and wins for CarPaint.
+template <Layered M>
+float32x3 Shade(in M material, in float32 cosine)
+{
+    return material.Evaluate(cosine) + material.EvaluateClearcoat(cosine);
+}
+
+template <Material M>
+float32x3 ShadeWithFog(in M material, in float32 cosine, in float32 distanceWorld)
+{
+    float32x3 color = Shade(material = material, cosine = cosine);
+    if constexpr (Opaque<M> == true)
+    {
+        color = lerp(color, FOG_COLOR, saturate(distanceWorld * FOG_DENSITY));
+    }
+    return color;
+}
+
+float32x3 ShadeClosest(in RayHit hit)
+{
+    float32 cosine = abs(dot(hit.NormalWorld, hit.IncomingRay.DirectionWorld));
+    float32x3 albedo = hit.Color.xyz;
+    if (hit.Barycentric.x < PLASTIC_BAND)
+    {
+        Plastic plastic = { .Albedo = albedo };
+        return ShadeWithFog(plastic, cosine, hit.DistanceWorld);
+    }
+    if (hit.Barycentric.x < CAR_PAINT_BAND)
+    {
+        CarPaint paint = { .Albedo = albedo };
+        return ShadeWithFog(paint, cosine, hit.DistanceWorld);
+    }
+    Velvet velvet = { .Albedo = albedo };
+    return ShadeWithFog(velvet, cosine, hit.DistanceWorld);
+}

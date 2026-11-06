@@ -249,6 +249,7 @@ the name.
 | LUSL0547 | `missing-requirement` | A struct or extension does not provide a method or constant an interface it conforms to requires |
 | LUSL0548 | `template-deduction` | A template parameter that no parameter's type names, or call arguments that do not satisfy the template's constraints |
 | LUSL0549 | `invalid-constraint` | A malformed concept or constraint, an `if constexpr` condition that is not a constant bool, templates whose constraints do not order, or a specialized template called with template parameters |
+| LUSL0550 | `specialization-budget` | A call needs more template specializations than `CheckOptions::SpecializationBudget` allows; the message names the template and both repairs |
 | LUSL0601 | `naming-style` | A name that breaks the naming rules (style) |
 | LUSL0602 | `bare-bool-operand` | A `bool` used directly as a condition or `&&`/`||` operand (style) |
 | LUSL0701 | `extern-slang-not-found` | The file an `extern slang` block names is not in the snapshot |
@@ -654,6 +655,12 @@ luslc format --root shaders --check main/shade.lusl main/common.luslh
   - `--define NAME=VALUE` passes a configuration value; repeat it for more.
   - `--style strict|warn|off` selects the [style setting](#style-rules).
   - `--bounds-checks` emits [development bounds checks](#development-bounds-checks).
+  - `--max-specializations N` sets the [specialization budget](#concepts-and-specialization),
+    from 1 to 256 (the default).
+  - `--report FILE` (`lower` only) writes the build report of the lowered module,
+    one tab-separated record per line:
+    `specialization <template file:line> <Shade<CarPaint>> <generated name>` and
+    `groupshared-clear <entry file:line> <variable file:line> <unpadded bytes>`.
 - **`check`** reports diagnostics only.
 - **`lower`** writes the Slang module to `--output`, or to standard output.
   The output file is replaced atomically.
@@ -866,6 +873,12 @@ float32x3 ShadeWithFog(in M material, in float32x3 normalWorld, in FogParameters
   A specialized template calls others with concrete types, so a call from a
   generic template is an error. Copies are named `_luslSpecialization<k>_Name`
   in first-use order. Each one counts toward `MAX_SPECIALIZATIONS`.
+- **Budget.** `CheckOptions::SpecializationBudget` (default and maximum
+  `MAX_SPECIALIZATIONS`) caps the copies of one translation unit, so a package
+  keeps the compile cost it declared. The call that needs one more is a
+  `specialization-budget` error. Its message offers two repairs: raise the
+  budget, or constrain the template by interfaces only, so it lowers to one
+  Slang generic.
 - **Build report.** `EmitResult` (and `LoweringResult`) lists:
   - `Specializations`, such as `Shade<CarPaint>` with its generated name;
   - `GroupsharedClears`, with each cleared variable's unpadded bytes per entry
@@ -911,6 +924,23 @@ float32x3 ShadeMiss(in Ray ray)
 - **Build identity.** The generated module's bytes are part of each program's
   source closure. Packages with LUSL programs also record the `luslc` executable
   and the lowering module, so a new compiler rebuilds them.
+- **Specialization budget.** A package may declare `budgets.specializations`
+  in its build manifest, beside `budgets.programs`:
+
+  ```json
+  "budgets": { "configurations": 8, "programs": 16, "specializations": 8 }
+  ```
+
+  It bounds the template specializations of all the package's LUSL sources
+  together. Each source is lowered with that budget, and the build then rejects
+  a package whose sources need more in total. The message names the count, the
+  required budget and the source with the most. Without the key, each source
+  keeps the engine limit of 256. `luslc` owns that limit, so a larger value is
+  a `luslc` usage error that names it.
+- **Build report.** `build-report.json` gains a `lusl` object, keyed by source,
+  with each source's `specializations` (template location, name and generated
+  name) and `groupshared_clears` (entry point, variable and unpadded bytes).
+  Every build lowers again, so cache hits report them too.
 - **Style setting.** The project-wide key is the CMake cache variable
   `LUDUS_LUSL_STYLE`, with the values `strict` (the default), `warn` and `off`.
   A game project sets it once, in its `CMakeLists.txt` before compiling graphs or
@@ -931,6 +961,16 @@ float32x3 ShadeMiss(in Ray ray)
     GPU: wrapping of signed `+`, `-`, `*`, negation and `++`, the zero rule on a
     struct with an array and a defaulted field, and masked shift counts.
     On Metal this exercises the unsigned-arithmetic rewrite.
+  - `rg2_material_permutation_lusl` and `rg2_material_permutation` are the L2
+    acceptance sample. Their closest-hit callback shades the bands of each
+    triangle as Plastic, CarPaint and Velvet:
+    - the LUSL version uses concepts, overload ordering and `if constexpr`, with
+      `budgets.specializations` declared;
+    - the Slang version uses Slang interfaces and generics, with the
+      permutation spelled out by hand.
+
+    A GPU test compares every pixel of three frames, and checks that the first
+    frame shows each material and the miss color.
 
 ## Tests and fuzzing
 

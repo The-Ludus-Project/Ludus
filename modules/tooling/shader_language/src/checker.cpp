@@ -2016,6 +2016,23 @@ private:
                 return index;
             }
         }
+        if (mModel.Specializations.GetSize() >= mOptions.SpecializationBudget &&
+            mOptions.SpecializationBudget < MAX_SPECIALIZATIONS)
+        {
+            report(DiagnosticCode::SpecializationBudget,
+                   node,
+                   ComposeMessage("'",
+                                  getSymbolName(function),
+                                  "' needs specialization ",
+                                  uint64{mModel.Specializations.GetSize() + 1},
+                                  ", over the budget of ",
+                                  uint64{mOptions.SpecializationBudget},
+                                  "; raise budgets.specializations (at most ",
+                                  uint64{MAX_SPECIALIZATIONS},
+                                  ") or constrain it by interfaces only, which lowers to one Slang generic"));
+            mIsFatal = true;
+            return NO_INDEX;
+        }
         if (mModel.Specializations.GetSize() >= MAX_SPECIALIZATIONS)
         {
             report(DiagnosticCode::CheckerLimit,

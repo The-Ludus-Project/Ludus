@@ -266,3 +266,38 @@ void Main(in uint32 groupIndex : GroupIndex)
     CHECK(result.GroupsharedClears[0].Bytes == 64);
     CHECK(result.GroupsharedClears[0].Variable.Line > 0);
 }
+
+TEST_CASE("LUSL keeps specializations within the budget", "[shader-language][concepts]")
+{
+    const std::string source = std::string(MATERIALS) + R"(template <Layered M>
+float32x3 Shade(in M material)
+{
+    return material.EvaluateClearcoat(float32x3(1.0));
+}
+template <Opaque M>
+float32x3 Shade(in M material)
+{
+    return material.Evaluate(float32x3(1.0));
+}
+float32x3 Use(in CarPaint paint, in Plastic plastic)
+{
+    return Shade(paint) + Shade(plastic);
+}
+)";
+    language::CheckOptions options;
+    options.SpecializationBudget = 2;
+    const CheckedSource fits(source, options);
+    INFO(fits.DescribeDiagnostics());
+    CHECK(fits.GetStatus() == language::Status::Ready);
+    CHECK(fits.GetModel().Specializations.GetSize() == 2);
+
+    options.SpecializationBudget = 1;
+    const CheckedSource over(source, options);
+    const language::Diagnostic* budgetOrNull = over.FindDiagnosticOrNull(DiagnosticCode::SpecializationBudget);
+    REQUIRE(budgetOrNull != nullptr);
+    // The message names the template, the count, the budget and both repairs.
+    const std::string_view message = budgetOrNull->Message.GetView();
+    CHECK(message.find("'Shade' needs specialization 2, over the budget of 1") != std::string_view::npos);
+    CHECK(message.find("budgets.specializations") != std::string_view::npos);
+    CHECK(message.find("interfaces only") != std::string_view::npos);
+}

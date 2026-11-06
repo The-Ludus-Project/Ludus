@@ -14,18 +14,26 @@ from ludus_tools import render_graph_build as build  # noqa: E402
 from ludus_tools import render_graph_language as language  # noqa: E402
 from ludus_tools.errors import ToolingError  # noqa: E402
 
-# A stand-in luslc that records its arguments and the files of its snapshot, then writes a module.
+# A stand-in luslc that records its arguments and the files of its snapshot, then writes a module
+# and a report with one specialization per `template` line of the source.
 FAKE_LUSLC = textwrap.dedent('''\
     #!{python}
     import json, pathlib, sys
     arguments = sys.argv[1:]
     root = pathlib.Path(arguments[arguments.index('--root') + 1])
     output = pathlib.Path(arguments[arguments.index('--output') + 1])
+    report = pathlib.Path(arguments[arguments.index('--report') + 1])
     if 'fail' in arguments[-1]:
         sys.stderr.write(arguments[-1] + '(3,5): error LUSL0504 type-mismatch: expected uint32\\n')
         sys.exit(1)
     files = sorted(p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file())
     output.write_text('// lowered ' + json.dumps({{'arguments': arguments, 'files': files}}) + '\\n')
+    source = (root / arguments[-1]).read_text()
+    lines = [f'specialization\\t{{arguments[-1]}}:1\\tShade<T{{i}}>\\t_luslSpecialization{{i}}_Shade'
+             for i in range(source.count('template'))]
+    if 'groupshared' in source:
+        lines.append(f'groupshared-clear\\t{{arguments[-1]}}:2\\t{{arguments[-1]}}:3\\t1024')
+    report.write_text(''.join(line + '\\n' for line in lines))
 ''')
 
 
@@ -55,7 +63,8 @@ class RenderGraphLanguageTests(unittest.TestCase):
 
     def lower(self, programs, **options):
         snapshot = build.Snapshot(self.root)
-        tool = language.lower_sources(snapshot, programs, self.helper, build, luslc=self.luslc, **options)
+        tool, reports = language.lower_sources(snapshot, programs, self.helper, build, luslc=self.luslc, **options)
+        self.reports = reports
         return snapshot, tool
 
     def test_lowers_each_source_once_and_points_programs_at_the_module(self):
@@ -87,7 +96,7 @@ class RenderGraphLanguageTests(unittest.TestCase):
     def test_graphs_without_lusl_need_no_luslc(self):
         snapshot = build.Snapshot(self.root)
         programs = {'Color': {'source': 'main_shaders/color.slang'}}
-        self.assertIsNone(language.lower_sources(snapshot, programs, self.helper, build, luslc=None))
+        self.assertEqual(language.lower_sources(snapshot, programs, self.helper, build, luslc=None), (None, {}))
         self.assertEqual(snapshot.files, {})
 
     def test_reports_luslc_failures_missing_tools_and_bad_styles(self):
@@ -108,6 +117,43 @@ class RenderGraphLanguageTests(unittest.TestCase):
             if previous is not None:
                 os.environ['LUDUS_LUSLC'] = previous
         self.assertIn('need luslc', str(missing.exception))
+
+    def test_reports_specializations_and_checks_the_package_budget(self):
+        self.write('main_shaders/miss.lusl', 'template\ntemplate\ngroupshared\n')
+        self.write('main_shaders/closest.lusl', 'template\n')
+        programs = {'Miss': {'source': 'main_shaders/miss.lusl'}, 'Closest': {'source': 'main_shaders/closest.lusl'}}
+        snapshot, _ = self.lower(programs)
+        self.assertNotIn('--max-specializations', snapshot.files['main_shaders/miss.lusl.slang'].decode())
+        self.assertEqual([record['name'] for record in self.reports['main_shaders/miss.lusl']['specializations']],
+                         ['Shade<T0>', 'Shade<T1>'])
+        self.assertEqual(self.reports['main_shaders/miss.lusl']['groupshared_clears'],
+                         [{'entry': 'main_shaders/miss.lusl:2', 'variable': 'main_shaders/miss.lusl:3', 'bytes': 1024}])
+        self.assertEqual(len(self.reports['main_shaders/closest.lusl']['specializations']), 1)
+        programs = {'Miss': {'source': 'main_shaders/miss.lusl'}, 'Closest': {'source': 'main_shaders/closest.lusl'}}
+        snapshot, _ = self.lower(programs, specialization_budget=3)
+        self.assertIn('"--max-specializations", "3"', snapshot.files['main_shaders/miss.lusl.slang'].decode())
+        # Each source fits on its own; together they need one more than the package declares.
+        programs = {'Miss': {'source': 'main_shaders/miss.lusl'}, 'Closest': {'source': 'main_shaders/closest.lusl'}}
+        with self.assertRaises(ToolingError) as budget:
+            self.lower(programs, specialization_budget=2)
+        message = str(budget.exception)
+        self.assertIn('need 3 template specializations together', message)
+        self.assertIn('increase budgets.specializations to at least 3', message)
+        self.assertIn('main_shaders/miss.lusl has the most', message)
+
+    def test_manifest_budget_of_specializations_is_optional_and_positive(self):
+        manifest = {'version': 1, 'id': 'Graph', 'profiles': ['spirv'], 'schemas': [], 'programs': [],
+                    'techniques': [], 'budgets': {'configurations': 1, 'programs': 1}}
+        for budget in (0, -1, 'many'):
+            manifest['budgets']['specializations'] = budget
+            with self.assertRaises(ToolingError) as invalid:
+                build.validate_manifest(manifest)
+            self.assertIn('budget specializations', str(invalid.exception))
+        # A positive budget passes the budget checks and fails later, on the empty programs.
+        manifest['budgets']['specializations'] = 4
+        with self.assertRaises(ToolingError) as later:
+            build.validate_manifest(manifest)
+        self.assertNotIn('budget specializations', str(later.exception))
 
     def test_generated_module_cannot_replace_an_authored_file(self):
         self.write('main_shaders/miss.lusl', '')
