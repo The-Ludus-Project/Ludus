@@ -41,6 +41,10 @@ struct LoweringResult final
     foundation::Array<SpecializationRecord> Specializations;
     /// See EmitResult::GroupsharedClears.
     foundation::Array<GroupsharedClearRecord> GroupsharedClears;
+    /// See EmitResult::Bindings.
+    foundation::Array<BindingRecord> Bindings;
+    /// See EmitResult::VertexInputs.
+    foundation::Array<VertexInputRecord> VertexInputs;
     /// The preprocessor's file read mask; see PreprocessResult::SourceReadMask.
     foundation::Array<foundation::uint8> SourceReadMask;
     /// The preprocessor's configuration read mask; see PreprocessResult::ConfigurationReadMask.

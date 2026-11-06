@@ -331,6 +331,9 @@ if(TARGET ludus_rhi_render_tests)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_reference renderer_reference_reduce)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_flat)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_composite)
+    # The composite shader in LUSL, with compiler-assigned bindings; the test compares its pixels.
+    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME lusl_composite
+        SOURCE tests/lusl_composite.lusl RASTER VERTEX VertexMain FRAGMENT FragmentMain)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_overlay)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_selection_mask renderer_selection_outline)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_grid)

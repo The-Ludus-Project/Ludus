@@ -59,6 +59,9 @@ public:
     /// Intern an array of `count` `element` values.
     [[nodiscard]] TypeOutcome
     TryGetArray(foundation::uint32 element, foundation::uint32 count, foundation::uint32& outType) noexcept;
+    /// Intern the resource type of `kind` with `element` (NO_TYPE for a sampler).
+    [[nodiscard]] TypeOutcome
+    TryGetResource(ResourceKind kind, foundation::uint32 element, foundation::uint32& outType) noexcept;
     /// Intern the struct or enum type that `symbol` declares.
     [[nodiscard]] TypeOutcome
     TryGetNamed(TypeKind kind, ScalarKind underlying, foundation::uint32 symbol, foundation::uint32& outType) noexcept;
@@ -87,6 +90,37 @@ private:
 {
     return kind == ScalarKind::Int16 || kind == ScalarKind::Int32 || kind == ScalarKind::Int64 ||
            IsFloatScalar(kind) == true;
+}
+
+/// @brief A resource type name, as LUSL spells it.
+struct ResourceSpelling final
+{
+    std::string_view Name;
+    ResourceKind Kind = ResourceKind::Texture2D;
+    /// True when the name takes one type argument.
+    bool HasElement = true;
+};
+
+/// Every resource type name.
+inline constexpr ResourceSpelling RESOURCE_SPELLINGS[] = {
+    { .Name = "Texture2D", .Kind = ResourceKind::Texture2D, .HasElement = true },
+    { .Name = "RWTexture2D", .Kind = ResourceKind::RWTexture2D, .HasElement = true },
+    { .Name = "SamplerState", .Kind = ResourceKind::Sampler, .HasElement = false },
+    { .Name = "ConstantBuffer", .Kind = ResourceKind::ConstantBuffer, .HasElement = true },
+    { .Name = "StructuredBuffer", .Kind = ResourceKind::StructuredBuffer, .HasElement = true },
+    { .Name = "RWStructuredBuffer", .Kind = ResourceKind::RWStructuredBuffer, .HasElement = true },
+};
+
+/// The spelling of `name` when it names a resource type, or nullptr.
+[[nodiscard]] const ResourceSpelling* FindResourceSpellingOrNull(std::string_view name) noexcept;
+
+/// The LUSL (and Slang) name of a resource kind, such as `Texture2D`.
+[[nodiscard]] std::string_view GetResourceName(ResourceKind kind) noexcept;
+
+/// True for resources that shaders write: RWTexture2D and RWStructuredBuffer.
+[[nodiscard]] constexpr bool IsWritableResource(ResourceKind kind) noexcept
+{
+    return kind == ResourceKind::RWTexture2D || kind == ResourceKind::RWStructuredBuffer;
 }
 
 /// Fixed-width spelling of a scalar, such as `uint32`.

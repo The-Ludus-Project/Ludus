@@ -78,16 +78,20 @@ std::string LowerInto(Files& inoutFiles, bool shouldCheckBounds)
     return text;
 }
 
-compiler::Status
-CompileFor(compiler::Compiler& inoutSlang, const Files& files, compiler::Target target, std::string& outDiagnostics)
+compiler::Status CompileFor(compiler::Compiler& inoutSlang,
+                            const Files& files,
+                            compiler::Target target,
+                            std::string& outDiagnostics,
+                            std::string_view entry = ENTRY,
+                            compiler::Stage stage = compiler::Stage::Compute)
 {
     const foundation::Array<compiler::SourceFile> views = files.GetViews();
     compiler::Request request;
     request.Files = foundation::BorrowedView<const compiler::SourceFile>(views.GetData(), views.GetSize());
     request.Source = foundation::BorrowedView<const char>(GENERATED.data(), GENERATED.size());
-    request.Entry = foundation::BorrowedView<const char>(ENTRY.data(), ENTRY.size());
+    request.Entry = foundation::BorrowedView<const char>(entry.data(), entry.size());
     request.OutputTarget = target;
-    request.EntryStage = compiler::Stage::Compute;
+    request.EntryStage = stage;
     compiler::Result result;
     const compiler::Status status = inoutSlang.Compile(request, result);
     outDiagnostics.assign(reinterpret_cast<const char*>(result.Diagnostics.GetData()), result.Diagnostics.GetSize());
@@ -653,6 +657,114 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
         compiler::Result result;
         const compiler::Status status = CompileLanguage(slang, files, options, result);
         INFO("target " << static_cast<int>(target) << "\n" << GetDiagnostics(result));
+        CHECK(status == compiler::Status::Ready);
+    }
+}
+
+TEST_CASE("Lowered LUSL raster stages and bindings compile for every portable target",
+          "[shader-language][emitter-targets]")
+{
+    // Every resource kind, automatic slots and locations, system values, an integer varying and a
+    // fragment output with depth (docs/architecture/shading-language.md#resources-and-bindings).
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add(std::string(ROOT), R"(struct Material
+{
+    float32x4 Tint;
+    float32 Gain;
+};
+struct SampleRecord
+{
+    float32x4 Value;
+};
+ConstantBuffer<Material> material;
+Texture2D<float32x4> albedo;
+SamplerState albedoSampler;
+StructuredBuffer<SampleRecord> samples;
+struct VertexInput
+{
+    float32x3 PositionMesh;
+    float32x2 Uv;
+};
+struct Varying
+{
+    float32x4 PositionClip : ClipPosition;
+    float32x2 Uv;
+    uint32 Index;
+};
+struct FragmentOutput
+{
+    float32x4 Color;
+    float32x4 Normal;
+    float32 Depth : Depth;
+};
+[stage(vertex)]
+Varying VertexMain(in VertexInput input, in float32 scale, in uint32 vertexIndex : VertexIndex,
+                   in uint32 instanceIndex : InstanceIndex)
+{
+    Varying output = {
+        .PositionClip = float32x4(input.PositionMesh * scale, 1.0),
+        .Uv = input.Uv,
+        .Index = vertexIndex + instanceIndex,
+    };
+    return output;
+}
+float32x4 Shade(in Texture2D<float32x4> image, in SamplerState imageSampler, in float32x2 uv)
+{
+    return image.Sample(imageSampler, uv) + image.SampleLevel(imageSampler, uv, 0.0) +
+           image.Load(int32x3(0, 0, 0));
+}
+[stage(fragment)]
+FragmentOutput FragmentMain(in Varying input, in bool isFrontFacing : FrontFacing)
+{
+    float32x4 color = Shade(albedo, albedoSampler, input.Uv) * material.Tint * material.Gain;
+    FragmentOutput output = {
+        .Color = isFrontFacing == true ? color : samples[input.Index].Value,
+        .Normal = float32x4(0.0),
+        .Depth = input.PositionClip.z,
+    };
+    return output;
+}
+)");
+    (void)LowerInto(files, false);
+    // Ray-query SPIR-V is a compute-only profile; raster stages compile for the other three.
+    for (const compiler::Target target : {compiler::Target::Spirv, compiler::Target::Wgsl, compiler::Target::Metal})
+    {
+        for (const bool isVertex : {true, false})
+        {
+            std::string diagnostics;
+            const compiler::Status status =
+                CompileFor(slang,
+                           files,
+                           target,
+                           diagnostics,
+                           isVertex == true ? std::string_view("VertexMain") : std::string_view("FragmentMain"),
+                           isVertex == true ? compiler::Stage::Vertex : compiler::Stage::Fragment);
+            INFO("target " << static_cast<int>(target) << ", vertex " << isVertex << "\n" << diagnostics);
+            CHECK(status == compiler::Status::Ready);
+            CHECK(diagnostics.find("warning") == std::string::npos);
+        }
+    }
+
+    // Writable resources in a compute entry point.
+    Files compute;
+    compute.Add(std::string(ROOT), R"(StructuredBuffer<float32x4> source;
+RWStructuredBuffer<float32x4> destination;
+RWTexture2D<float32x4> image;
+[stage(compute), threads(8, 1, 1)]
+void Main(in uint32x3 dispatchThread : DispatchThreadId)
+{
+    destination[dispatchThread.x] = source[dispatchThread.x] * 2.0;
+    image[dispatchThread.xy] = image[dispatchThread.xy] + destination[0];
+}
+)");
+    (void)LowerInto(compute, false);
+    for (const compiler::Target target :
+         {compiler::Target::Spirv, compiler::Target::SpirvRayQuery, compiler::Target::Wgsl, compiler::Target::Metal})
+    {
+        std::string diagnostics;
+        const compiler::Status status = CompileFor(slang, compute, target, diagnostics);
+        INFO("target " << static_cast<int>(target) << "\n" << diagnostics);
         CHECK(status == compiler::Status::Ready);
     }
 }

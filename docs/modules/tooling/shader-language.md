@@ -134,6 +134,8 @@ Macro expansion follows Dave Prosser's
 | `MAX_TEMPLATE_PARAMETERS` | 8 | Type parameters of one template or concept |
 | `MAX_SPECIALIZATIONS` | 256 | Template specializations per translation unit |
 | `MAX_CONSTRAINT_DEPTH` | 32 | Nested concept applications while a constraint is evaluated |
+| `MAX_BINDINGS` | 64 | Resource bindings per translation unit; RHI pipeline layouts admit fewer (`rhi::RASTER_BINDING_COUNT`) |
+| `MAX_STAGE_LOCATIONS` | 32 | Vertex attributes, stage-interface varyings or color targets of one entry point |
 | `MAX_ARRAY_LENGTH` | 1,048,576 | Elements of one array dimension |
 | `MAX_DIAGNOSTICS` | 256 | Retained diagnostics; later ones are counted |
 | `MAX_DIAGNOSTIC_MESSAGE_BYTES` | 256 | One message; longer ones are clipped |
@@ -250,6 +252,7 @@ the name.
 | LUSL0548 | `template-deduction` | A template parameter that no parameter's type names, or call arguments that do not satisfy the template's constraints |
 | LUSL0549 | `invalid-constraint` | A malformed concept or constraint, an `if constexpr` condition that is not a constant bool, templates whose constraints do not order, or a specialized template called with template parameters |
 | LUSL0550 | `specialization-budget` | A call needs more template specializations than `CheckOptions::SpecializationBudget` allows; the message names the template and both repairs |
+| LUSL0551 | `invalid-stage-interface` | A vertex or fragment entry point whose attributes, stage interface or outputs break the layout rules, such as a missing `: ClipPosition`, two stage-interface structs in one module, or one struct in two roles |
 | LUSL0601 | `naming-style` | A name that breaks the naming rules (style) |
 | LUSL0602 | `bare-bool-operand` | A `bool` used directly as a condition or `&&`/`||` operand (style) |
 | LUSL0701 | `extern-slang-not-found` | The file an `extern slang` block names is not in the snapshot |
@@ -376,9 +379,9 @@ bool CheckShade(const language::PreprocessRequest& request, const language::Prep
   contain itself.
 - **`enum class`:** the underlying type is an integer scalar. Enumerators number
   from zero or take constant values, and are named as `Mode::On`.
-- **Top-level variables** are `static const` (with a constant initializer) or
-  `groupshared`. Other globals come from render-graph bindings or `extern slang`
-  blocks.
+- **Top-level variables** are `static const` (with a constant initializer),
+  `groupshared`, or [resource bindings](#resources-and-bindings). Other globals
+  come from render-graph bindings or `extern slang` blocks.
 - **`extern slang "path" { ... }`** declares Slang functions, constants and
   structs. `struct Name;` declares an opaque type that LUSL can pass around but
   not look inside or zero.
@@ -474,6 +477,10 @@ In the two-, three-operand element-wise rows, a scalar may stand beside vectors:
   - `GroupIndex` (`uint32`).
 - Semantics appear on entry point parameters only.
 
+**Vertex and fragment entry points** are marked `[stage(vertex)]` and
+`[stage(fragment)]` and are free functions. Their interfaces are laid out by
+rule; see [Resources and bindings](#resources-and-bindings).
+
 **Other attributes:**
 - Functions also take `[noinline]` and `[forceinline]`; methods take
   `[mutating]`.
@@ -551,6 +558,123 @@ A `Diagnostic` may carry a `DiagnosticFix`:
 
 Capability-gated types (`float16`, `int16`, 64-bit types) are accepted here;
 target profiles gate them when LUSL lowers to Slang.
+
+## Resources and bindings
+
+Standalone shaders declare their resources; the compiler assigns their slots and
+their stage locations ([design](../../architecture/shading-language.md#resources-and-bindings)).
+`modules/graphics/renderer/tests/lusl_composite.lusl` is the composite shader
+written this way:
+
+```c
+Texture2D<float32x4> image;    // slot 0
+SamplerState imageSampler;     // slot 1
+
+struct CompositeInput
+{
+    float32x4 PositionUv;      // vertex input location 0
+};
+
+struct CompositeVarying
+{
+    float32x4 Position : ClipPosition;
+    float32x2 Uv;              // varying location 0
+};
+
+[stage(vertex)]
+CompositeVarying VertexMain(in CompositeInput input)
+{
+    CompositeVarying output = { .Position = float32x4(input.PositionUv.xy, 0.0, 1.0), .Uv = input.PositionUv.zw };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 FragmentMain(in CompositeVarying input)
+{
+    return image.Sample(imageSampler, input.Uv);
+}
+```
+
+**Resource types and operations**
+
+| Type | Element | Operations |
+| --- | --- | --- |
+| `Texture2D<T>` | `float32`, `int32` or `uint32` scalar or vector | `Sample(sampler, uv)`, `SampleLevel(sampler, uv, level)`, `Load(int32x3)` |
+| `RWTexture2D<T>` | as `Texture2D` | `texture[uint32x2]`, read and written |
+| `SamplerState` | none | an argument of `Sample` and `SampleLevel` |
+| `ConstantBuffer<S>` | a struct without `bool` | `buffer.Field`, read-only |
+| `StructuredBuffer<T>` | a value type without `bool` | `buffer[uint32]`, read-only |
+| `RWStructuredBuffer<T>` | a value type without `bool` | `buffer[uint32]`, read and written |
+
+- A top-level variable of a resource type, without modifiers or an initializer,
+  is a binding. Resources in `extern slang` blocks are the including Slang
+  code's bindings and take no slot.
+- Resources are handles. They can be passed as `in` arguments to LUSL
+  functions. They cannot be locals, fields, array elements, return values,
+  `out`/`inout` arguments, entry point parameters, assigned or zeroed.
+- Resource indices are not bounds-checked; out-of-range buffer reads follow the
+  target's robustness rules.
+
+**Slots.** One counter numbers the bindings from 0 in declaration order, after
+includes are expanded, across all kinds. Lowering writes each through the RHI
+boundary's annotations: `[[vk::binding(n, 0)]] Texture2D<float4> image :
+register(t0);`. There is no syntax for a manual slot.
+
+**Stage interfaces.**
+- **Vertex inputs** are a vertex entry point's `in` parameters: `float32`,
+  `int32` and `uint32` scalars and vectors, or structs of them. They take
+  locations from 0 in declaration order, struct fields flattened. `: VertexIndex`
+  and `: InstanceIndex` (`uint32`) are system values.
+- **The stage interface** is the struct a vertex entry point returns and a
+  fragment entry point reads. It has exactly one `float32x4 name : ClipPosition`
+  field. The other fields take locations from 0 in field order; integer fields
+  are interpolated flat. All vertex and fragment entry points of a module use
+  one stage-interface struct.
+- **Fragment outputs**: a scalar or vector return is color target 0
+  (`SV_Target0`). A struct return writes targets from 0 in field order, plus at
+  most one `float32 name : Depth` field. `void` writes no color. `: FrontFacing`
+  (`bool`) is a fragment system value.
+- A struct has one role: vertex input, stage interface or fragment output.
+- Locations lower to `[[vk::location(n)]]` with `TEXCOORDn` semantics; every
+  backend matches attributes by location.
+
+**The slot table.** `EmitResult::Bindings` lists each binding's name, kind and
+slot, and `EmitResult::VertexInputs` each vertex input's name and location.
+`luslc lower --report` writes them as `binding` and `vertex-input` lines.
+
+**Building standalone shaders.** `ludus_compile_shader` accepts a `.lusl`
+`SOURCE`:
+
+```cmake
+ludus_compile_shader(TARGET my_game NAME composite
+    SOURCE shaders/composite.lusl RASTER VERTEX VertexMain FRAGMENT FragmentMain)
+```
+
+- Pass `RASTER` for vertex and fragment shaders with resources, so the
+  generated header carries the reflected binding table the RHI layout needs.
+- `cmake/shaders/lower_lusl.py` lowers it with `luslc` (the build tree's target
+  or the SDK's `bin/luslc`), and the generated module is compiled like a Slang
+  source. `INCLUDES` below the source's directory become LUSL include
+  directories. A depfile lists every file the lowering may read.
+- `<NAME>_slots.h` is generated beside `<NAME>.h`. Host code binds by these
+  constants, never by a literal:
+
+  ```cpp
+  #include "composite_slots.h"
+
+  static_assert(ludus::shaders::composite::slots::IMAGE_SAMPLER == 1);
+  static_assert(ludus::shaders::composite::locations::INPUT_POSITION_UV == 0);
+  ```
+
+  Names are the LUSL names in upper snake case: `imageSampler` becomes
+  `IMAGE_SAMPLER`, `input.PositionUv` becomes `INPUT_POSITION_UV`.
+- **Evidence:** a GPU test composites `rg2_bound` with the LUSL composite and
+  with `renderer_composite.slang`, compares every pixel, and checks the slot
+  constants against the reflected bindings.
+
+**Current limits.** No binding arrays (bindless), cube or 3D textures,
+`GetDimensions`, atomics or manual slots yet. Render-graph programs keep
+receiving their bindings from the graph.
 
 ## Lowering to Slang
 
@@ -675,8 +799,10 @@ luslc format --root shaders --check main/shade.lusl main/common.luslh
     from 1 to 256 (the default).
   - `--report FILE` (`lower` only) writes the build report of the lowered module,
     one tab-separated record per line:
-    `specialization <template file:line> <Shade<CarPaint>> <generated name>` and
-    `groupshared-clear <entry file:line> <variable file:line> <unpadded bytes>`.
+    `specialization <template file:line> <Shade<CarPaint>> <generated name>`,
+    `groupshared-clear <entry file:line> <variable file:line> <unpadded bytes>`,
+    `binding <variable file:line> <name> <kind> <slot>` and
+    `vertex-input <entry file:line> <name> <location>`.
 - **`check`** reports diagnostics only.
 - **`lower`** writes the Slang module to `--output`, or to standard output.
   The output file is replaced atomically.
@@ -1029,6 +1155,8 @@ float32x3 ShadeMiss(in Ray ray)
 - the formatter's golden layout, token preservation and idempotence;
 - every lowering rule as generated Slang text, the source map and bounds-check
   sites, `extern slang` includes, and lowering failures;
+- resource rules, slot and location assignment, stage-interface errors and the
+  slot table (`binding_tests.cpp`);
 - limits and determinism.
 
 Seeded random tests run the preprocessor, the parser, the formatter and the

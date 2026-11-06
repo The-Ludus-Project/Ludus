@@ -55,6 +55,11 @@ inline constexpr foundation::usize MAX_TEMPLATE_PARAMETERS = 8;
 inline constexpr foundation::usize MAX_SPECIALIZATIONS = 256;
 /// Deepest nesting of concept applications while a constraint is evaluated.
 inline constexpr foundation::usize MAX_CONSTRAINT_DEPTH = 32;
+/// Resource bindings of one translation unit. The RHI admits fewer per pipeline layout
+/// (graphics::rhi::RASTER_BINDING_COUNT); pipeline creation enforces that limit.
+inline constexpr foundation::usize MAX_BINDINGS = 64;
+/// Vertex input attributes, stage-interface varyings or color targets of one entry point.
+inline constexpr foundation::usize MAX_STAGE_LOCATIONS = 32;
 /// Most elements of one array dimension.
 inline constexpr foundation::usize MAX_ARRAY_LENGTH = foundation::usize{1} << 20;
 /// Most diagnostics retained for one request; later ones are counted as dropped.

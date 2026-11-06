@@ -635,6 +635,8 @@ jobs:
       - name: Test render-graph build, staging and template tooling
         # Every suite, so new ones join; compiler cases skip here and run in the macOS batch job.
         run: PYTHONPATH=scripts/python python3 -m unittest discover -s scripts/python -p 'test_render_graph*.py' -v
+      - name: Test the standalone LUSL shader lowering helper
+        run: python3 -m unittest discover -s scripts/python -p 'test_lower_lusl.py' -v
       - name: Validate workflow syntax before admitting a candidate
         run: out/host-tools/bin/actionlint -shellcheck= -pyflakes=
       - name: Review Python and workflow correctness baseline

@@ -61,7 +61,8 @@ const std::string_view USAGE =
     "       luslc format [--root DIR] [--check | --write] FILE...\n"
     "SOURCE, FILE and --include-directory are '/'-separated paths relative to --root (default: the\n"
     "current directory). --max-specializations is the specialization budget, 1 to 256 (default 256).\n"
-    "--report writes the specializations and groupshared clears of the lowered module.\n";
+    "--report writes the specializations, groupshared clears, bindings and vertex inputs of the\n"
+    "lowered module.\n";
 
 /// Write part of `bytes` to a standard stream: the byte count, or negative on failure.
 isize WriteDescriptor(int32 descriptor, const char* bytes, usize count) noexcept
@@ -590,9 +591,32 @@ AppendLocation(const Snapshot& snapshot, const language::SourceLocation& locatio
     return AppendText(line.GetView(), inoutText);
 }
 
+/// Spelling of a resource kind in the report.
+[[nodiscard]] std::string_view GetResourceKindName(language::ResourceKind kind) noexcept
+{
+    switch (kind)
+    {
+        case language::ResourceKind::Texture2D:
+            return "Texture2D";
+        case language::ResourceKind::RWTexture2D:
+            return "RWTexture2D";
+        case language::ResourceKind::Sampler:
+            return "SamplerState";
+        case language::ResourceKind::ConstantBuffer:
+            return "ConstantBuffer";
+        case language::ResourceKind::StructuredBuffer:
+            return "StructuredBuffer";
+        case language::ResourceKind::RWStructuredBuffer:
+            return "RWStructuredBuffer";
+    }
+    return {};
+}
+
 /// The build report of a lowered module, one tab-separated record per line:
-/// `specialization <template location> <name> <generated name>` and
-/// `groupshared-clear <entry location> <variable location> <unpadded bytes>`.
+/// `specialization <template location> <name> <generated name>`,
+/// `groupshared-clear <entry location> <variable location> <unpadded bytes>`,
+/// `binding <variable location> <name> <kind> <slot>` and
+/// `vertex-input <entry location> <name> <location>`.
 [[nodiscard]] bool
 ComposeReport(const Snapshot& snapshot, const language::LoweringResult& result, Array<char>& outText) noexcept
 {
@@ -603,6 +627,31 @@ ComposeReport(const Snapshot& snapshot, const language::LoweringResult& result, 
             AppendLocation(snapshot, record.Template, outText) == false || AppendText("\t", outText) == false ||
             AppendText(record.Name.GetView(), outText) == false || AppendText("\t", outText) == false ||
             AppendText(record.GeneratedName.GetView(), outText) == false || AppendText("\n", outText) == false)
+        {
+            return false;
+        }
+    }
+    for (const language::BindingRecord& record : result.Bindings)
+    {
+        Line slot;
+        slot.AppendUnsigned(record.Slot);
+        if (AppendText("binding\t", outText) == false || AppendLocation(snapshot, record.Variable, outText) == false ||
+            AppendText("\t", outText) == false || AppendText(record.Name.GetView(), outText) == false ||
+            AppendText("\t", outText) == false || AppendText(GetResourceKindName(record.Kind), outText) == false ||
+            AppendText("\t", outText) == false || AppendText(slot.GetView(), outText) == false ||
+            AppendText("\n", outText) == false)
+        {
+            return false;
+        }
+    }
+    for (const language::VertexInputRecord& record : result.VertexInputs)
+    {
+        Line location;
+        location.AppendUnsigned(record.Location);
+        if (AppendText("vertex-input\t", outText) == false ||
+            AppendLocation(snapshot, record.Entry, outText) == false || AppendText("\t", outText) == false ||
+            AppendText(record.Name.GetView(), outText) == false || AppendText("\t", outText) == false ||
+            AppendText(location.GetView(), outText) == false || AppendText("\n", outText) == false)
         {
             return false;
         }
