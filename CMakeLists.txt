@@ -421,7 +421,13 @@ else()
 
     # Startup-only development diagnostic integration (depends on Base; Base does
     # not depend on it). Provides InitializeDiagnosticSession and the Python helper.
-    add_subdirectory(tools/diagnostics)
+    # Its report transport uses POSIX sockets, so Windows builds it only on request
+    # (for example through the smoke apps) and the installed runtime SDK omits it.
+    if(WIN32)
+        add_subdirectory(tools/diagnostics EXCLUDE_FROM_ALL)
+    else()
+        add_subdirectory(tools/diagnostics)
+    endif()
 
     if(LUDUS_BUILD_SMOKE_APP)
         add_subdirectory(apps/smoke)
@@ -542,10 +548,16 @@ if(LUDUS_BUILD_UNICODE)
     ludus_sdk_register_dependency(ICU4C "78.3" "Unicode-3.0" bundled)
 endif()
 if(NOT EMSCRIPTEN)
-    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText Text ShaderDevelopment)
+    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText Text)
         ludus_sdk_register_component(${_component})
         ludus_sdk_register_feature(${_component})
     endforeach()
+    # Shader file delivery is native Linux/macOS only until the Windows worker
+    # port (D6c); the manifest must list only exported components.
+    if(TARGET Ludus::ShaderDevelopment)
+        ludus_sdk_register_component(ShaderDevelopment)
+        ludus_sdk_register_feature(ShaderDevelopment)
+    endif()
 else()
     foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText)
         ludus_sdk_register_component(${_component})

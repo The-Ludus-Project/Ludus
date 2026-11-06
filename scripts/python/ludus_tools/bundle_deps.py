@@ -63,6 +63,22 @@ _EXCLUDED_GENERATOR_SUBSTRINGS = (
 _SELF_DIR = "${CMAKE_CURRENT_LIST_DIR}"
 
 
+def path_spellings(path: Path | str) -> list[str]:
+    """Return the spellings of ``path`` that generated CMake files may contain.
+
+    CMakeDeps writes forward slashes on every host, while ``str(Path)`` uses the
+    native separator. On Windows both spellings must be rewritten and audited.
+    """
+    native = str(path)
+    # Spelled out rather than PurePath.as_posix(), which keeps backslashes on POSIX hosts.
+    portable = native.replace("\\", "/")
+    return list(dict.fromkeys(spelling for spelling in (native, portable) if spelling))
+
+
+def _spelled_replacements(root: Path | str, replacement: str) -> list[tuple[str, str]]:
+    return [(spelling, replacement) for spelling in path_spellings(root)]
+
+
 def rewrite_producer_paths(text: str, replacements: list[tuple[str, str]]) -> str:
     """Replace each absolute producer root with its bundled replacement token.
 
@@ -83,9 +99,10 @@ def find_producer_roots(text: str) -> list[str]:
     by the audit so a leaked path is reported precisely.
     """
     roots: set[str] = set()
-    for m in re.finditer(r"(/[^\s\"';]*?/p/[0-9a-z]+/p)(?=/|\"|'|\s|$)", text):
+    # An optional drive letter keeps Windows roots (C:/Users/.../p/<folder>/p) whole.
+    for m in re.finditer(r"((?:[A-Za-z]:)?/[^\s\"';]*?/p/[0-9a-z]+/p)(?=/|\"|'|\s|$)", text):
         roots.add(m.group(1))
-    for m in re.finditer(r"(/[^\s\"';]*?/b/[0-9a-z]+/p)(?=/|\"|'|\s|$)", text):
+    for m in re.finditer(r"((?:[A-Za-z]:)?/[^\s\"';]*?/b/[0-9a-z]+/p)(?=/|\"|'|\s|$)", text):
         roots.add(m.group(1))
     return sorted(roots)
 
@@ -129,6 +146,28 @@ def _rewrite_cmake_files_in(root: Path, replacements: list[tuple[str, str]]) -> 
             cmake_file.write_text(new, encoding="utf-8")
             rewritten += 1
     return rewritten
+
+
+def conan_package_dirs(generators_dir: Path) -> dict[str, Path]:
+    """Discover each dependency's Conan package root from CMakeDeps data files.
+
+    CMakeDeps emits ``<pkg>-<config>-*-data.cmake`` files that set
+    ``<pkg>_PACKAGE_FOLDER_<CONFIG> "<abs package root>"``. Reading them finds
+    each dependency's lib/include/cmake files without hard-coding the Conan
+    cache layout. Roots that no longer exist are skipped.
+    """
+    package_dirs: dict[str, Path] = {}
+    generators_dir = Path(generators_dir)
+    if not generators_dir.is_dir():
+        return package_dirs
+    pattern = re.compile(r'set\(([A-Za-z0-9_]+)_PACKAGE_FOLDER_[A-Z]+\s+"([^"]+)"')
+    for data_file in sorted(generators_dir.rglob("*-data.cmake")):
+        text = data_file.read_text(encoding="utf-8")
+        for match in pattern.finditer(text):
+            folder = Path(match.group(2))
+            if folder.is_dir():
+                package_dirs.setdefault(match.group(1).lower(), folder)
+    return package_dirs
 
 
 def bundle_from_conan(
@@ -199,20 +238,20 @@ def bundle_from_conan(
             bundled.append(name)
         # The generator cmake files sit in dependencies/cmake/, so the bundled
         # package is at ../packages/<name> relative to a generator cmake file.
-        package_replacements.append((str(Path(src)), f"{_SELF_DIR}/../packages/{name}"))
+        package_replacements.extend(_spelled_replacements(src, f"{_SELF_DIR}/../packages/{name}"))
 
     # 3) Rewrite producer paths in the copied generator CMake files: the
     #    generators folder itself and every package root -> bundled locations.
     generator_replacements = list(package_replacements)
     if generators_dir:
-        generator_replacements.append((str(generators_dir), _SELF_DIR))
+        generator_replacements.extend(_spelled_replacements(generators_dir, _SELF_DIR))
     _rewrite_cmake_files_in(cmake_dst, generator_replacements)
 
     # 4) Rewrite any absolute self-references inside the copied package trees
     #    (e.g. build modules that embed their own package root).
     for name in bundled:
         src = package_dirs[name]
-        _rewrite_cmake_files_in(packages_dst / name, [(str(Path(src)), _SELF_DIR)])
+        _rewrite_cmake_files_in(packages_dst / name, _spelled_replacements(src, _SELF_DIR))
 
     # 5) Final pass: a kept generator file can still reference an absolute Conan
     #    package root that step 2 did not copy (e.g. a transitive, header-only
@@ -281,7 +320,7 @@ def audit_no_producer_paths(prefix: Path, producer_roots: Iterable[str]) -> list
     the bundled dependency CMake files. Empty means clean."""
     dep_root = Path(prefix) / "lib" / "cmake" / "Ludus" / "dependencies"
     leaks: list[str] = []
-    roots = [r for r in producer_roots if r]
+    roots = list(dict.fromkeys(spelling for r in producer_roots if r for spelling in path_spellings(r)))
     if not dep_root.is_dir():
         return leaks
     for cmake_file in dep_root.rglob("*.cmake"):

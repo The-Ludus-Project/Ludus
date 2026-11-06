@@ -67,6 +67,17 @@
       }
     },
     {
+      "name": "windows-msvc-runtime-sdk",
+      "displayName": "Windows MSVC Runtime SDK (Ninja)",
+      "inherits": "windows-msvc-runtime",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        "LUDUS_BUILD_TESTS": "OFF",
+        "LUDUS_BUILD_WORLD_DEMO": "OFF",
+        "LUDUS_BUILD_SMOKE_APP": "OFF"
+      }
+    },
+    {
       "name": "windows-msvc-profile",
       "displayName": "Windows MSVC Profile (Ninja)",
       "inherits": "windows-msvc-ninja-base",
@@ -89,6 +100,15 @@
     {
       "name": "windows-msvc-runtime",
       "configurePreset": "windows-msvc-runtime",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-runtime-sdk",
+      "configurePreset": "windows-msvc-runtime-sdk",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
