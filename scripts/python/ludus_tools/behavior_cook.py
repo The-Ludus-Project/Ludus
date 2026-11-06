@@ -362,11 +362,15 @@ def cook(contract_path, package_path, output, profile_path, compiler, analyzer):
                 view=program['text']
                 for asset, start, end in reversed(imports(view)):
                     view=view[:start]+'\"./'+asset+'\"'+view[end:]
-                (analysis/(program['asset']+'.luau')).write_text(definitions+view.removeprefix('--!strict\n'))
+                # Exact text on every host: newline translation would change long-string literals.
+                (analysis/(program['asset']+'.luau')).write_text(definitions+view.removeprefix('--!strict\n'),newline='')
             for program in programs:
                 source = sources / (program['asset']+'.luau')
-                source.write_text(definitions + program['text'].removeprefix('--!strict\n'))
-                subprocess.run([str(analyzer), '--mode=strict', str(analysis/source.name)], check=True, capture_output=True, timeout=30)
+                source.write_text(definitions + program['text'].removeprefix('--!strict\n'), newline='')
+                # Run beside the analysis copies: relative './asset' requires resolve there, also
+                # when the output lies on another Windows drive than the working directory.
+                subprocess.run([str(analyzer), '--mode=strict', source.name], check=True, capture_output=True, timeout=30,
+                               cwd=analysis)
                 code = subprocess.run([str(compiler), '--binary','-O1','-g2',str(source)], check=True, capture_output=True, timeout=30).stdout
                 require(code and code[0]!=0 and len(code)<=262144, 'paired compilation failed')
                 dependency_ids = [int(i,16) for i in program['imports']]

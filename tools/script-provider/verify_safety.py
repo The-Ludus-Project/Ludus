@@ -35,6 +35,8 @@ def inspect_output(output):
     target = targets[0]
     admitted = {(system, arch, '64') for system in ('Linux', 'macOS') for arch in ('x86_64', 'arm64')}
     admitted.add(('Emscripten', 'wasm32', '32'))
+    # config/behavior_profiles.json admits Windows x86_64 with MSVC 19.44.
+    admitted.add(('Windows', 'x86_64', '64'))
     if (target[1], target[2], target[3]) not in admitted:
         raise ValueError('unadmitted compiled target identity')
     points = re.findall(r'S6 METRIC (\S+)-allocation-points=(\d+)', output)
