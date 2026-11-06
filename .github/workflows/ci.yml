@@ -1111,10 +1111,13 @@ jobs:
             out/behavior-s7-sanitized/current.json
             out/behavior-s7-sanitized/run-*/evidence.json
           if-no-files-found: error
+      # Serial execution took 95 min, 83% of it in render-graph/renderer cases on
+      # lavapipe. Run one case per runner core; tests that share
+      # a GPU/worker owner keep it through RESOURCE_LOCK (for example the Editor shards).
       - name: Test with sanitizers
         env:
           LUDUS_RELOAD_METRICS: ${{ runner.temp }}/live-reload-asan-ubsan.jsonl
-        run: out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --no-tests=error
+        run: out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --parallel "$CMAKE_BUILD_PARALLEL_LEVEL" --no-tests=error
       - name: Upload sanitizer reload measurements
         if: always()
         uses: actions/upload-artifact@v4

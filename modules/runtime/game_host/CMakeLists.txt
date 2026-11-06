@@ -215,7 +215,9 @@ if(LUDUS_BUILD_TESTS AND NOT WIN32)
         LUDUS_FIXTURE_A_PATH="$<TARGET_FILE:ludus_game_fixture_A>"
         LUDUS_FIXTURE_B_PATH="$<TARGET_FILE:ludus_game_fixture_B>")
     add_test(NAME ludus_game_host_reload_tests COMMAND ludus_game_host_reload_tests)
-    set_tests_properties(ludus_game_host_reload_tests PROPERTIES TIMEOUT 180 LABELS "unit;runtime;reload;stress")
+    # Reload latency evidence (LUDUS_RELOAD_METRICS) must not include parallel CTest load.
+    set_tests_properties(ludus_game_host_reload_tests PROPERTIES TIMEOUT 180 LABELS "unit;runtime;reload;stress"
+        RUN_SERIAL TRUE)
 
     # Debug-only native source stepping acceptance. Release/ASan run all
     # runtime regressions; this journey requires usable Debug source/locals.
