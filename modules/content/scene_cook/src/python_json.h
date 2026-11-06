@@ -10,8 +10,10 @@
 
 #include "python_compat.h"
 
-#include <ludus/content/content.h>
+#include <ludus/foundation/base/int128.hpp>
 #include <ludus/foundation/containers/array.hpp>
+
+#include <ludus/content/content.h>
 
 #include <span>
 #include <string_view>
@@ -122,11 +124,11 @@ struct PythonNumber final
 {
     bool IsFloat = false;
     /// The integer overflowed 128 bits; Float then holds the nearest float64.
-    __int128 Integer = 0;
+    foundation::Int128 Integer;
     float64 Float = 0.0;
     [[nodiscard]] float64 ToFloat() const noexcept
     {
-        return IsFloat ? Float : static_cast<float64>(Integer);
+        return IsFloat == true ? Float : foundation::ConvertToFloat64(Integer);
     }
 };
 /// Number view of an int, float or bool node; false for other kinds.
@@ -147,7 +149,7 @@ public:
 
 private:
     bool mIsFloat = false;
-    __int128 mInteger = 0;
+    foundation::Int128 mInteger;
     float64 mFloat = 0.0;
     float64 mCompensation = 0.0;
 };

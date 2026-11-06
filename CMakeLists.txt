@@ -379,8 +379,8 @@ add_subdirectory(modules/content/procedural/environment)
 # importers) and MikkTSpace (their tangent generation).
 add_subdirectory(third_party/stb)
 add_subdirectory(third_party/mikktspace)
-# The cooker's Python-number emulation uses __int128, which MSVC lacks, and its
-# file operations are POSIX-only; the Windows runtime closure omits it (D6a/D6b).
+# The cooker's file operations are POSIX-only; the Windows runtime closure omits
+# it until they have a Win32 implementation (D6a/D6b).
 if(NOT WIN32)
     add_subdirectory(modules/content/scene_cook)
 endif()

@@ -114,6 +114,27 @@ bool, Unicode characters, enums, and floating-point types are excluded.
   primitive registry or redundant short aliases are introduced. Constants and
   signed bounds are not repeated throughout the public API.
 
+### Portable 128-bit integer
+
+`int128.hpp` is an explicitly included `Int128` value type for exact
+intermediates wider than 64 bits. MSVC has no native 128-bit integer, so a
+compiler extension such as `__int128` would keep a module off Windows. `Int128`
+stores two's-complement high and low words and exposes no wrapping operators:
+`TryAdd`, `TrySubtract` and `TryMultiply` overloads follow the checked contract
+above, failing without changing the output. `TryIntegerCast` narrows to any
+integer alias only when the value fits. Comparisons are exact.
+
+Float conversion is defined because its current caller, the scene cooker's
+Python-number emulation, needs the native type's behavior. `ConvertToFloat64`
+returns the nearest binary64, ties to even, under the default rounding mode.
+`TryTruncateToInt128` truncates toward zero and rejects NaN, infinities and
+values outside [-2^127, 2^127 - 1]. Every operation is constexpr and portable;
+the product of two 64-bit words uses Knuth's schoolbook multiplication on
+32-bit digits (The Art of Computer Programming, Volume 2, section 4.3.1,
+Algorithm M). Fixed vectors and compile-time checks run on every compiler. On
+Clang and GCC a seeded sweep of edge and random words also compares every
+operation with `__int128` and the compiler-rt conversions.
+
 Representative integration: protocol framing uses checked queue-size addition
 before accepting input (preventing size wrap), checked length conversion, and
 explicit little-endian prefixes. Keep its existing byte format and limits.
@@ -147,7 +168,7 @@ Numerical conversion APIs must separately specify range, exactness and rounding.
 | Choice | Assessment |
 | --- | --- |
 | Wrapper class for every scalar | Adds operator/conversion surface and debugging friction while changing source/ABI compatibility. No current domain requirement warrants it. |
-| Handwritten signed overflow formulas or a widened 128-bit intermediate | More edge-case code or a nonstandard width. Supported LLVM builtins define every input result and map to native instructions. |
+| Handwritten signed overflow formulas or a widened 128-bit intermediate | More edge-case code or a nonstandard width. Bounds checks before the operation define every input result. A caller that needs 128-bit values uses the portable `Int128`, not the `__int128` extension. |
 | Implicit saturation/wrap in checked APIs | Would conceal invalid sizes or change algorithms. Checked failure is explicit; PRNG/hash wrap stays local and deliberate. |
 | One universal numeric utility header | Would charge all translation units for optional span/range facilities. Preserve the existing include boundary. |
 | Reinterpreting a byte buffer as an integer pointer | Alignment, aliasing and host-endian hazards. Bounded byte accesses optimize well without these assumptions. |

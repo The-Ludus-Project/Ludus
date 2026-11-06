@@ -344,7 +344,7 @@ WriteCanonical(const JsonTree& tree, JsonIndex node, Array<uint8>& outBytes, Fai
 [[nodiscard]] PythonNumber MakeNumber(int64 value) noexcept
 {
     PythonNumber number;
-    number.Integer = value;
+    number.Integer = foundation::Int128(value);
     return number;
 }
 
@@ -360,7 +360,7 @@ WriteCanonical(const JsonTree& tree, JsonIndex node, Array<uint8>& outBytes, Fai
     {
         return MakeNumber(math::Abs(value.Float) + 0.0);
     }
-    return value.Integer < 0 ? SubtractPython(MakeNumber(int64{0}), value) : value;
+    return value.Integer.IsNegative() == true ? SubtractPython(MakeNumber(int64{0}), value) : value;
 }
 
 [[nodiscard]] bool IsAuthoredNumber(const JsonTree& tree, JsonIndex node, PythonNumber& outValue) noexcept

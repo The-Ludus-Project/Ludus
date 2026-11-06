@@ -15,7 +15,7 @@ constexpr float64 INFINITE_FLOAT = std::numeric_limits<float64>::infinity();
 constexpr usize MAX_JSON_NESTING = 900;
 constexpr float64 TWO_POW_127 = 170141183460469231731687303715884105728.0;
 
-[[nodiscard]] PythonNumber MakeInteger(__int128 value) noexcept
+[[nodiscard]] PythonNumber MakeInteger(foundation::Int128 value) noexcept
 {
     PythonNumber number;
     number.Integer = value;
@@ -32,7 +32,7 @@ constexpr float64 TWO_POW_127 = 170141183460469231731687303715884105728.0;
 
 /// Exact Python comparison of an int with a float: -1, 0 or 1; 2 when unordered (NaN).
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-[[nodiscard]] int CompareIntegerFloat(__int128 integer, float64 value) noexcept
+[[nodiscard]] int CompareIntegerFloat(foundation::Int128 integer, float64 value) noexcept
 {
     if (math::IsNaN(value))
     {
@@ -51,7 +51,9 @@ constexpr float64 TWO_POW_127 = 170141183460469231731687303715884105728.0;
     {
         return 1;
     }
-    const __int128 truncated = static_cast<__int128>(floor);
+    // floor is integral and inside [-2^127, 2^127), so truncation is exact.
+    foundation::Int128 truncated;
+    (void)foundation::TryTruncateToInt128(floor, truncated);
     if (integer < truncated)
     {
         return -1;
@@ -1156,10 +1158,10 @@ bool GetPythonNumber(const JsonTree& tree, JsonIndex node, PythonNumber& outNumb
     switch (value.Kind)
     {
         case JsonKind::Boolean:
-            outNumber = MakeInteger(value.IsTrue ? 1 : 0);
+            outNumber = MakeInteger(foundation::Int128(value.IsTrue == true ? 1 : 0));
             return true;
         case JsonKind::Integer:
-            outNumber = MakeInteger(value.Integer);
+            outNumber = MakeInteger(foundation::Int128(value.Integer));
             return true;
         case JsonKind::Float:
             outNumber = MakeFloat(value.Float);
@@ -1173,8 +1175,8 @@ PythonNumber AddPython(PythonNumber left, PythonNumber right) noexcept
 {
     if (left.IsFloat == false && right.IsFloat == false)
     {
-        __int128 result = 0;
-        if (__builtin_add_overflow(left.Integer, right.Integer, &result) == false)
+        foundation::Int128 result;
+        if (foundation::TryAdd(left.Integer, right.Integer, result) == true)
         {
             return MakeInteger(result);
         }
@@ -1186,8 +1188,8 @@ PythonNumber SubtractPython(PythonNumber left, PythonNumber right) noexcept
 {
     if (left.IsFloat == false && right.IsFloat == false)
     {
-        __int128 result = 0;
-        if (__builtin_sub_overflow(left.Integer, right.Integer, &result) == false)
+        foundation::Int128 result;
+        if (foundation::TrySubtract(left.Integer, right.Integer, result) == true)
         {
             return MakeInteger(result);
         }
@@ -1199,8 +1201,8 @@ PythonNumber MultiplyPython(PythonNumber left, PythonNumber right) noexcept
 {
     if (left.IsFloat == false && right.IsFloat == false)
     {
-        __int128 result = 0;
-        if (__builtin_mul_overflow(left.Integer, right.Integer, &result) == false)
+        foundation::Int128 result;
+        if (foundation::TryMultiply(left.Integer, right.Integer, result) == true)
         {
             return MakeInteger(result);
         }
@@ -1230,15 +1232,15 @@ void PythonSum::Add(PythonNumber value) noexcept
     {
         if (value.IsFloat == false)
         {
-            __int128 result = 0;
-            if (__builtin_add_overflow(mInteger, value.Integer, &result) == false)
+            foundation::Int128 result;
+            if (foundation::TryAdd(mInteger, value.Integer, result) == true)
             {
                 mInteger = result;
                 return;
             }
         }
         // int + item through the generic path, then the float loop.
-        mFloat = static_cast<float64>(mInteger) + value.ToFloat();
+        mFloat = foundation::ConvertToFloat64(mInteger) + value.ToFloat();
         mIsFloat = true;
         mCompensation = 0.0;
         return;
@@ -1258,7 +1260,7 @@ void PythonSum::Add(PythonNumber value) noexcept
         mFloat = total;
         return;
     }
-    mFloat += static_cast<float64>(value.Integer);
+    mFloat += foundation::ConvertToFloat64(value.Integer);
 }
 
 PythonNumber PythonSum::GetResult() const noexcept
@@ -1277,9 +1279,10 @@ PythonNumber PythonSum::GetResult() const noexcept
 
 JsonIndex AddPythonNumber(JsonTree& inoutTree, PythonNumber value) noexcept
 {
-    if (value.IsFloat == false && value.Integer >= INT64_MIN && value.Integer <= INT64_MAX)
+    int64 integer = 0;
+    if (value.IsFloat == false && foundation::TryIntegerCast(value.Integer, integer) == true)
     {
-        return inoutTree.AddInteger(static_cast<int64>(value.Integer));
+        return inoutTree.AddInteger(integer);
     }
     return inoutTree.AddFloat(value.ToFloat());
 }

@@ -820,8 +820,9 @@ with optional tooling absent.
   Debug, Profile and Release runtime SDKs remain open, as do interactive IDE
   sessions on a developer machine. The runtime SDK now includes shader file
   delivery (`Ludus::ShaderDevelopment`, D6c). It omits the POSIX-only development
-  diagnostic session and the scene cooker,
-  whose Python-number emulation needs a 128-bit integer that MSVC lacks.
+  diagnostic session and the scene cooker. The cooker's Python-number emulation
+  now uses the portable FoundationBase `Int128`; its file operations remain
+  POSIX-only.
 - **D6c (authoring):** port the shader worker's process/IPC/deployment and
   Slang/DXC dependencies, file watching, game DLL loading/reload, process-tree
   cleanup and matching symbol validation. Qualify script compilation/runtime,
