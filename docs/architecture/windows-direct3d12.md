@@ -818,8 +818,9 @@ with optional tooling absent.
   and custom settings.
 
   Debug, Profile and Release runtime SDKs remain open, as do interactive IDE
-  sessions on a developer machine. The runtime SDK omits shader file delivery
-  (D6c), the POSIX-only development diagnostic session and the scene cooker,
+  sessions on a developer machine. The runtime SDK now includes shader file
+  delivery (`Ludus::ShaderDevelopment`, D6c). It omits the POSIX-only development
+  diagnostic session and the scene cooker,
   whose Python-number emulation needs a 128-bit integer that MSVC lacks.
 - **D6c (authoring):** port the shader worker's process/IPC/deployment and
   Slang/DXC dependencies, file watching, game DLL loading/reload, process-tree
@@ -883,8 +884,10 @@ with optional tooling absent.
   `ludus_render_graph_dxil_tests` builds and cooks rg2 fixtures for it in the
   Windows lane. Renderer now prepares render graphs on Direct3D 12; the same test
   draws the rg2 `surface` graph on WARP and checks its pixels across instance and
-  camera edits. The remaining rg2 GPU suites, depth views and graph hot reload on
-  Windows are still open.
+  camera edits. `Ludus::ShaderDevelopment` builds on Windows too: the same test
+  reloads an edited DXIL generation through the file watcher, keeping the drawable
+  frame across a truncated publication. The remaining rg2 GPU suites, depth views
+  and producer-driven Windows rebuilds are still open.
 - **D6d (editor):** port Qt host integration and hosted-window transport plus
   D3D12 native interop/shared presentation with explicit handle ownership,
   adapter identity, producer/consumer synchronization and teardown fencing.
