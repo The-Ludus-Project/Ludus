@@ -47,6 +47,18 @@ def inspect_output(output):
             'allocation_points': {key: int(value) for key, value in metrics.items()}}
 
 
+def exception_free(entry):
+    """The last exception-model flag disables exceptions: -fno-exceptions, or MSVC /EHs-c-."""
+    if 'command' in entry:
+        # MSVC command lines keep Windows backslashes, which POSIX splitting would consume.
+        flags = shlex.split(entry['command'], posix='cl.exe' not in entry['command'].lower() and '\\' not in entry['command'])
+    else:
+        flags = entry['arguments']
+    flags = [flag.strip('"') for flag in flags]
+    models = [flag for flag in flags if flag in ('-fexceptions', '-fno-exceptions') or re.fullmatch(r'[/-]EH[a-z-]*', flag)]
+    return bool(models) and models[-1] in ('-fno-exceptions', '/EHs-c-', '-EHs-c-')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build', type=Path, required=True)
@@ -66,14 +78,15 @@ def main():
     commands = json.loads((build/'compile_commands.json').read_text())
     groups = ('/modules/runtime/behavior/', '/modules/runtime/scripting/',
               '/out/luau-probe/source/VM/', '/out/luau-probe/source/Common/')
+    # Windows compile databases spell paths with backslashes.
+    for entry in commands:
+        entry['file'] = entry['file'].replace('\\', '/')
     for group in groups:
         if not any(group in entry['file'] for entry in commands):
             raise ValueError('missing production compile commands: '+group)
     owned = [entry for entry in commands if any(part in entry['file'] for part in groups)]
     for entry in owned:
-        flags = shlex.split(entry['command']) if 'command' in entry else entry['arguments']
-        exception_flags = [flag for flag in flags if flag in ('-fexceptions', '-fno-exceptions')]
-        if not exception_flags or exception_flags[-1] != '-fno-exceptions':
+        if not exception_free(entry):
             raise ValueError('production interpreter must be exception-free: ' + entry['file'])
     sources = [ROOT/'config/luau_toolchain.json', ROOT/'config/behavior_profiles.json',
                ROOT/'scripts/luau-probe', ROOT/'scripts/script-provider',
