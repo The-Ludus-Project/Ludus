@@ -14,8 +14,8 @@ namespace ludus::tooling::shader_language
 /// @brief Stable LUSL diagnostic code, displayed as `LUSL` followed by four digits (`LUSL0201`).
 ///
 /// Values never change meaning once released; retired codes are not reused. Codes 1-99 are
-/// language rules shared by every stage, 100-199 are lexical and 200-299 are preprocessor
-/// diagnostics. docs/modules/tooling/shader-language.md lists every code.
+/// language rules shared by every stage, 100-199 are lexical, 200-299 are preprocessor, 300-399
+/// are syntax and 400-499 are formatter diagnostics. docs/modules/tooling/shader-language.md lists every code.
 // NOLINTNEXTLINE(performance-enum-size): codes have four digits; later stages exceed 255.
 enum class DiagnosticCode : foundation::uint16
 {
@@ -111,6 +111,32 @@ enum class DiagnosticCode : foundation::uint16
     MacroLimit = 232,
     /// `defined` appears in an `#if` expression as a result of macro expansion.
     DefinedFromExpansion = 233,
+
+    /// A token that the grammar does not allow here; the message names what was expected.
+    UnexpectedToken = 301,
+    /// `=` or a compound assignment inside an expression. Assignment is a statement in LUSL.
+    AssignmentInExpression = 302,
+    /// A declaration with more than one declarator, such as `float32 a, b;`.
+    MultipleDeclarators = 303,
+    /// A construct of a later LUSL phase, such as `interface`, `concept` or `template` (L2).
+    LaterPhaseConstruct = 304,
+    /// A keyword used where a name is required.
+    KeywordAsName = 305,
+    /// A C cast such as `(float32)value`; LUSL converts with `float32(value)`.
+    CStyleCast = 306,
+    /// An expression statement that is not a call, such as `a + b;`, has no effect.
+    ExpressionWithoutEffect = 307,
+    /// A positional argument follows a named argument.
+    PositionalAfterNamed = 308,
+    /// `enum` without `class`; LUSL enums are scoped.
+    UnscopedEnum = 309,
+    /// The source exceeds MAX_SYNTAX_NODES nodes.
+    SyntaxNodeLimit = 310,
+    /// Statements or expressions nest deeper than MAX_SYNTAX_DEPTH.
+    SyntaxDepthLimit = 311,
+
+    /// The formatted text would exceed `shader_compiler::MAX_SOURCE_BYTES`.
+    FormattedSourceLimit = 401,
 };
 
 /// @brief Return the stable kebab-case name of a code, such as `unknown-directive`.

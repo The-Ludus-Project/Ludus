@@ -2,9 +2,14 @@
 
 `Ludus::ShaderLanguage` is the compiler front end of LUSL, the Ludus Shading
 Language. The [LUSL design](../../architecture/shading-language.md) owns the
-language and the delivery plan. This page covers what is implemented: the
-preprocessor (L1a). Parsing, checking and lowering to Slang arrive in later L1
-changes, and `ShaderCompiler` does not accept `.lusl` files yet.
+language and the delivery plan. This page covers what is implemented:
+
+- the preprocessor (L1a);
+- the parser and the source formatter (L1b; see [Parsing](#parsing) and
+  [Formatting](#formatting)).
+
+Semantic checking and lowering to Slang arrive in later L1 changes, and
+`ShaderCompiler` does not accept `.lusl` files yet.
 
 Link `Ludus::ShaderLanguage` and include
 `ludus/tooling/shader_language/preprocessor.hpp`. The library builds for native
@@ -109,6 +114,8 @@ Macro expansion follows Dave Prosser's
 | `MAX_SYNTHESIZED_BYTES` | 1 MiB | Spellings made by `#`, `##` and configuration values |
 | `MAX_CONFIGURATION_VALUES` | 256 | Values per request |
 | `MAX_CONFIGURATION_TEXT_BYTES` | 1,024 | One configuration name or value |
+| `MAX_SYNTAX_NODES` | 2,097,152 | Syntax tree nodes per translation unit |
+| `MAX_SYNTAX_DEPTH` | 64 | Statement and expression nesting in the parser; keeps the browser build within its stack |
 | `MAX_DIAGNOSTICS` | 256 | Retained diagnostics; later ones are counted |
 | `MAX_DIAGNOSTIC_MESSAGE_BYTES` | 256 | One message; longer ones are clipped |
 
@@ -165,15 +172,104 @@ the name.
 | LUSL0231 | `output-token-limit` | `MAX_OUTPUT_TOKENS` exceeded |
 | LUSL0232 | `macro-limit` | Too many macro names or parameters |
 | LUSL0233 | `defined-from-expansion` | A macro produced `defined` in a condition |
+| LUSL0301 | `unexpected-token` | A token the grammar does not allow; the message says what was expected |
+| LUSL0302 | `assignment-in-expression` | Assignment, compound assignment, `++` or `--` inside an expression |
+| LUSL0303 | `multiple-declarators` | More than one variable in one declaration |
+| LUSL0304 | `later-phase-construct` | `interface`, `concept`, `template` and other L2 constructs |
+| LUSL0305 | `keyword-as-name` | A keyword where a name is required |
+| LUSL0306 | `c-style-cast` | `(Type)value`; write `Type(value)` |
+| LUSL0307 | `expression-without-effect` | A statement that is not a call, assignment or `++`/`--`, or an empty `;` |
+| LUSL0308 | `positional-after-named` | A positional argument after a named one |
+| LUSL0309 | `unscoped-enum` | `enum` without `class` |
+| LUSL0310 | `syntax-node-limit` | `MAX_SYNTAX_NODES` exceeded |
+| LUSL0311 | `syntax-depth-limit` | `MAX_SYNTAX_DEPTH` exceeded |
+| LUSL0401 | `formatted-source-limit` | The formatted text would exceed `shader_compiler::MAX_SOURCE_BYTES` |
+
+## Parsing
+
+`Parse` (in `syntax.hpp`) turns a Ready preprocessing result into a syntax tree.
+Each node has a `SyntaxKind`, its principal token, the range of tokens it
+covers, and its children. The header documents every kind's children and their
+order; later stages rely on that order.
+
+```cpp
+#include <ludus/tooling/shader_language/syntax.hpp>
+
+bool ParseShade(const language::PreprocessRequest& request, const language::PreprocessResult& preprocessed,
+                language::SyntaxTree& outTree) noexcept
+{
+    return language::Parse(request, preprocessed, outTree) == language::Status::Ready;
+}
+```
+
+The grammar covers L1 LUSL:
+
+| Area | What parses |
+| --- | --- |
+| Declarations | Variables with `static`, `const` or `groupshared`, arrays and `= void`; functions with `in`, `out` and `inout` parameters, semantics and defaults; `struct` with fields and methods; `enum class` with an underlying type; `extern slang "path" { ... }`; `static_assert`; attribute lists such as `[stage(compute), threads(8, 8, 1)]` |
+| Types | Names, scoped names (`A::B`) and type arguments (`Texture2D<float32x4>`, `Outer<Inner<T>>`) |
+| Statements | Blocks, assignments and compound assignments, `++` and `--`, call statements, `if`/`else`, `for`, `while`, `do`/`while`, `switch` with `case`, `default` and `[[fallthrough]]`, `break`, `continue`, `return`, `discard` |
+| Expressions | C precedence, `?:`, unary `+ - ~`, calls, member access, indexing, scoped names, named arguments (`ray = r`), call-site marks (`out radiance`), designated initializers (`{ .A = a, .B = b }`) |
+
+Parsing enforces LUSL's syntactic rules:
+
+- one declarator per declaration;
+- assignment, `++` and `--` only as statements, so `if (a = b)` cannot compile;
+- no unary `!`;
+- no C casts;
+- positional arguments before named ones;
+- only calls, assignments and `++`/`--` as statements.
+
+Interfaces, concepts and templates (L2) are reported as later-phase constructs.
+After an error the parser skips to the next statement or declaration and
+continues, so one request reports several independent errors. A Failed tree is
+still published, with Error nodes where tokens were skipped, for editors; later
+stages consume only a Ready tree.
+
+Types, names, literal values and the remaining rules (conversions, the zero
+rule, definite assignment, named-argument binding, style rules) belong to the
+checker (L1c).
+
+## Formatting
+
+`FormatSource` (in `formatter.hpp`) formats one source file in the repository's
+style: four-space indentation, braces on their own lines, indented `case`
+labels, single spaces around binary operators, `{ .A = a }` initializers, and
+directives indented after `#` by their conditional depth.
+
+**Only whitespace changes.**
+- The formatter works on the unpreprocessed tokens and comments, not the syntax
+  tree. Macros, conditional groups and comments therefore survive.
+- Lexing the output gives the same tokens and comments, in order, as lexing the
+  input.
+- Formatting the output again changes nothing.
+- Where removing a space would fuse two tokens (`. 1`, `- -`, `/ /`), the space
+  stays.
+- Tests check these properties on fixed and random sources.
+
+**Current limits.**
+- Line breaks inside a statement are kept as written, with continuation lines
+  aligned after their open bracket. Long lines are not wrapped.
+- Directive lines are kept as written after the `#`.
+- A source that does not lex, such as one with an unterminated comment, is not
+  formatted.
 
 ## Tests and fuzzing
 
-`ludus_shader_language_tests` (CTest labels `unit;shader;tooling`) covers the
-lexer, every directive, the C rescanning rules, `#` and `##` with placemarkers,
-conditions, configuration values, includes, request validation, limits and
-determinism. It also runs a seeded random test over directive and token soups.
+`ludus_shader_language_tests` (CTest labels `unit;shader;tooling`) covers:
+
+- the lexer;
+- every directive, the C rescanning rules, and `#` and `##` with placemarkers;
+- conditions, configuration values, includes and request validation;
+- every grammar construct as a golden tree, the parser's syntax rules, and
+  error recovery;
+- the formatter's golden layout, token preservation and idempotence;
+- limits and determinism.
+
+Seeded random tests run the preprocessor, the parser and the formatter over
+token mixtures.
 
 For coverage-guided fuzzing with native Clang, configure with
-`-DLUDUS_BUILD_SHADER_LANGUAGE_FUZZERS=ON` and run
-`ludus_shader_language_preprocessor_fuzzer`. Its input is split at the first zero
-byte into a root module and one header.
+`-DLUDUS_BUILD_SHADER_LANGUAGE_FUZZERS=ON` and run `ludus_shader_language_fuzzer`.
+- Its input is split at the first zero byte into a root module and one header.
+- It preprocesses and parses the snapshot, and formats the root.

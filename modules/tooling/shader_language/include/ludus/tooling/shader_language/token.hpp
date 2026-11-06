@@ -20,6 +20,9 @@ enum class TokenKind : foundation::uint8
     String,
     /// An operator or separator; Token::Symbol says which.
     Punctuator,
+    /// A `//` or `/* */` comment, including its delimiters. Only FormatSource lexes comments;
+    /// preprocessed and parsed tokens never contain them.
+    Comment,
 };
 
 /// Operator or separator spelled by a Punctuator token. Lexing takes the longest match.

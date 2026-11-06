@@ -1,10 +1,10 @@
 # Ludus Shading Language (LUSL)
 
 Status: proposed, November 4, 2026; the design's open questions were resolved the
-same day (see [resolved questions](#resolved-questions)). L1a, the preprocessor,
-is implemented in `Ludus::ShaderLanguage`; see the
-[module guide](../modules/tooling/shader-language.md) for its exact behavior and
-limits. The rest of L1 and later phases are not implemented.
+same day (see [resolved questions](#resolved-questions)). L1a (the preprocessor)
+and L1b (the parser and formatter) are implemented in `Ludus::ShaderLanguage`;
+see the [module guide](../modules/tooling/shader-language.md) for their exact
+behavior and limits. The rest of L1 and later phases are not implemented.
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
 
@@ -547,10 +547,13 @@ Signed `+`, `-` and `*` wrap on every target, as unsigned arithmetic does:
 
 ## Tooling
 
-- **Formatter:** `luslc --format` is a canonical AST formatter that keeps the
-  repository's initializer-brace rules. `scripts/check --format` and
-  `source_policy.py` cover `.lusl` and `.luslh`. Checks the compiler enforces
-  are not repeated lexically.
+- **Formatter:** `luslc --format` formats in the repository's style.
+  - It works on tokens and comments before preprocessing, like clang-format, so
+    macros, conditional groups and comments survive. A formatter driven by the
+    syntax tree could not keep them.
+  - It changes only whitespace.
+  - `scripts/check --format` and `source_policy.py` cover `.lusl` and `.luslh`.
+    Checks the compiler enforces are not repeated lexically.
 - **Naming and bare `bool` operands** are [style rules](#style-rules), checked
   by the compiler.
 - **Diagnostics are structured.** Each carries file, line, column, stable code
