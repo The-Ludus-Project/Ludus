@@ -256,6 +256,8 @@ the name.
 | LUSL0552 | `non-uniform-derivative` | `Sample`, `ddx`, `ddy`, or a call of a function that performs one, in non-uniform control flow; the message names the deciding line, the varying value and the repair |
 | LUSL0553 | `non-uniform-argument` | A varying argument for a `uniform` parameter |
 | LUSL0554 | `invalid-uniform-parameter` | `uniform` on an `out` or `inout` parameter, or on an entry point's parameter |
+| LUSL0555 | `space-mismatch` | Values of two coordinate spaces combined, assigned, passed or returned, or a matrix applied outside its source space; the message names both spaces and the matrix that would fix it |
+| LUSL0556 | `invalid-space` | A space argument that names no `space`, the wrong number of spaces, or spaces on a type that is not a floating-point vector or matrix |
 | LUSL0601 | `naming-style` | A name that breaks the naming rules (style) |
 | LUSL0602 | `bare-bool-operand` | A `bool` used directly as a condition or `&&`/`||` operand (style) |
 | LUSL0701 | `extern-slang-not-found` | The file an `extern slang` block names is not in the snapshot |
@@ -517,6 +519,38 @@ paths. Flow rules are skipped after a type error, so they never cascade from one
 
 Bounds checks on runtime indices and the `groupshared` clear itself are
 emitted by the [lowering](#lowering-to-slang).
+
+### Coordinate spaces
+
+The checker applies the
+[coordinate-space design](../../architecture/shading-language.md#matrices-and-coordinate-spaces).
+Spaces are declared once and named by vector and matrix types:
+
+```c
+space Object;
+space World;
+space Clip;
+
+float32x4<Clip> Project(in float32x4x4<Object, World> objectToWorld,
+                        in float32x4x4<World, Clip> worldToClip,
+                        in float32x3<Object> positionObject)
+{
+    float32x4<World> positionWorld = objectToWorld * float32x4(positionObject, 1.0);
+    return worldToClip * float32x4(positionObject, 1.0); // error LUSL0555
+}
+```
+
+The error reads: `'*' applies a matrix from World to Clip to a vector in Object;
+use a matrix from Object, or transform the operand to World first`.
+
+- `space Name;` is a top-level declaration. Space names are PascalCase, and
+  `space` stays usable as an ordinary name elsewhere.
+- Only floating-point vectors (one space) and matrices (source, then
+  destination) take spaces. Any other use is LUSL0556.
+- Untagged values combine with tagged ones freely, and tags never change the
+  emitted Slang. Each mismatch is reported once, including in specialized
+  templates.
+- Interface-qualified calls and `extern slang` declarations carry no spaces.
 
 ### Uniformity rules
 

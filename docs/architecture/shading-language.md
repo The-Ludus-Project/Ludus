@@ -54,9 +54,12 @@ L4 is in progress:
   flow are errors on their LUSL lines, functions carry the requirement to their
   calls, and `uniform` parameters take only uniform arguments.
 
+- L4d: [coordinate-space types](#matrices-and-coordinate-spaces):
+  `space` declarations, vectors and matrices that name their spaces, and errors
+  where values of two spaces meet.
+
 Not yet done from L4: the tree-sitter grammar (with its dependency ADR),
-coordinate-space types, debug-view qualification and the dynamic dispatch
-evaluation.
+debug-view qualification and the dynamic dispatch evaluation.
 
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
@@ -266,7 +269,39 @@ LUSL keeps a C preprocessor, run before parsing:
 - **Component-wise products** stay as `*` between vectors.
   `MultiplyComponents(a, b)` spells the rare component-wise matrix product.
 - **Space suffixes** (`PositionWorld`, `WorldToClip`) follow the existing naming
-  rules. Distinct coordinate-space types are a candidate for L4.
+  rules.
+- **Coordinate-space types (L4d)** let the compiler check those suffixes'
+  meaning:
+
+  ```c
+  space World;
+  space Clip;
+
+  float32x4<Clip> Project(in float32x4x4<World, Clip> worldToClip,
+                          in float32x4<World> positionWorld)
+  {
+      return worldToClip * positionWorld;
+  }
+  ```
+
+  - `space Name;` declares a space at the top level. `space` is contextual, so
+    existing names stay valid.
+  - A floating-point vector names one space (`float32x3<World>`). A matrix
+    names its source and destination spaces (`float32x4x4<World, Clip>`), in
+    the order of the `WorldToClip` naming rule.
+  - `M * v` needs `v` in `M`'s source space and gives `M`'s destination space.
+    `A * B` needs `B`'s destination to be `A`'s source.
+  - Values of two different spaces may not meet in an operator, an
+    intrinsic, an assignment, an initializer, an argument or a return.
+  - Spaces propagate through swizzles, fields, array elements, arithmetic,
+    `?:`, constructions such as `float32x4(positionWorld, 1.0)`, vector and
+    matrix intrinsics, and returns. `transpose` swaps a matrix's spaces.
+  - **A value without a space adopts its context's space.** Untagged code
+    therefore checks as before, and authors tag the values they care about.
+    Moving a value to another space takes a matrix, never a cast.
+  - The row-vector product `v * M` is not modeled.
+  - Spaces are compile-time only: lowering erases them, so layouts, build
+    identity and generated Slang do not change.
 
 ### Conversions and literals
 

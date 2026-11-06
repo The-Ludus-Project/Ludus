@@ -85,18 +85,6 @@ struct FunctionSummary final
     Varying Produced;
 };
 
-/// Body::Specialization of a body the checked model describes.
-constexpr uint32 NO_SPECIALIZATION = 0xffffffffU;
-
-/// One function body and the model whose facts describe it.
-struct Body final
-{
-    /// The specialization whose facts describe the body, or NO_SPECIALIZATION.
-    uint32 Specialization = NO_SPECIALIZATION;
-    uint32 Node = NO_NODE;
-    uint32 Function = NO_SYMBOL;
-};
-
 /// How a body is analyzed.
 enum class Mode : uint8
 {
@@ -127,7 +115,8 @@ public:
         {
             return false;
         }
-        if (collectBodies() == false)
+        if (CollectFunctionBodies(mInputs.Tree, model, mBodies) == false ||
+            MakeSpecializedModels(model, mSpecializedModels) == false)
         {
             return false;
         }
@@ -136,7 +125,7 @@ public:
         for (usize round = 0; round < maximumRounds && mIsOutOfMemory == false; ++round)
         {
             mHasSummaryChanged = false;
-            for (const Body& body : mBodies)
+            for (const FunctionBody& body : mBodies)
             {
                 analyzeBody(body, Mode::Summarize);
             }
@@ -227,89 +216,6 @@ private:
 
     // ----- Bodies --------------------------------------------------------------------------------
 
-    [[nodiscard]] bool addBody(uint32 specialization, uint32 node, uint32 function) noexcept
-    {
-        bool hasBody = false;
-        for (uint32 child = firstChild(node); child != NO_NODE; child = nextSibling(child))
-        {
-            hasBody = hasBody == true || getKind(child) == SyntaxKind::Block;
-        }
-        if (hasBody == false || function == NO_SYMBOL)
-        {
-            return true;
-        }
-        return mBodies.TryAdd(Body{specialization, node, function});
-    }
-
-    [[nodiscard]] bool isSpecializedTemplate(uint32 node) const noexcept
-    {
-        for (uint32 child = firstChild(node); child != NO_NODE; child = nextSibling(child))
-        {
-            if (getKind(child) == SyntaxKind::FunctionDeclaration)
-            {
-                const uint32 symbol = mInputs.Model.NodeSymbols[child];
-                return symbol != NO_SYMBOL && mInputs.Model.Symbols[symbol].IsSpecialized == true;
-            }
-        }
-        return false;
-    }
-
-    /// Gather the function bodies: plain functions, methods, generic templates, then each
-    /// specialization with its own facts.
-    [[nodiscard]] bool collectBodies() noexcept
-    {
-        const SemanticModel& model = mInputs.Model;
-        for (uint32 node = firstChild(0); node != NO_NODE; node = nextSibling(node))
-        {
-            const SyntaxKind kind = getKind(node);
-            if (kind == SyntaxKind::FunctionDeclaration)
-            {
-                if (addBody(NO_SPECIALIZATION, node, model.NodeSymbols[node]) == false)
-                {
-                    return false;
-                }
-                continue;
-            }
-            const bool isSpecialized = kind == SyntaxKind::TemplateDeclaration && isSpecializedTemplate(node) == true;
-            if ((kind != SyntaxKind::TemplateDeclaration && kind != SyntaxKind::StructDeclaration &&
-                 kind != SyntaxKind::ExtensionDeclaration) ||
-                isSpecialized == true)
-            {
-                continue;
-            }
-            for (uint32 member = firstChild(node); member != NO_NODE; member = nextSibling(member))
-            {
-                if (getKind(member) == SyntaxKind::FunctionDeclaration &&
-                    addBody(NO_SPECIALIZATION, member, model.NodeSymbols[member]) == false)
-                {
-                    return false;
-                }
-            }
-        }
-        if (mSpecializedModels.TryEnsureCapacity(model.Specializations.GetSize()) == false)
-        {
-            return false;
-        }
-        for (uint32 index = 0; index < model.Specializations.GetSize(); ++index)
-        {
-            SemanticModel specialized;
-            if (MakeSpecializedModel(model, index, specialized) == false)
-            {
-                return false;
-            }
-            mSpecializedModels.Add(foundation::Move(specialized));
-        }
-        for (uint32 index = 0; index < model.Specializations.GetSize(); ++index)
-        {
-            const Specialization& specialization = model.Specializations[index];
-            if (addBody(index, specialization.FirstNode, specialization.Function) == false)
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
     // ----- Per-body state ------------------------------------------------------------------------
 
     void resetBody() noexcept
@@ -377,7 +283,7 @@ private:
         return false;
     }
 
-    void initializeParameters(const Body& body, Mode mode) noexcept
+    void initializeParameters(const FunctionBody& body, Mode mode) noexcept
     {
         const Symbol& function = getModel().Symbols[body.Function];
         for (uint32 i = 0; i < function.MemberCount; ++i)
@@ -400,7 +306,7 @@ private:
         }
     }
 
-    void analyzeBody(const Body& body, Mode mode) noexcept
+    void analyzeBody(const FunctionBody& body, Mode mode) noexcept
     {
         mModelOrNull =
             body.Specialization == NO_SPECIALIZATION ? &mInputs.Model : &mSpecializedModels[body.Specialization];
@@ -447,7 +353,7 @@ private:
         visitStatement(block);
     }
 
-    void summarize(const Body& body) noexcept
+    void summarize(const FunctionBody& body) noexcept
     {
         FunctionSummary& summary = mSummaries[body.Function];
         Varying produced = mReturned;
@@ -1101,7 +1007,7 @@ private:
 
     const AnalysisInputs& mInputs;
     DiagnosticSink& mSink;
-    Array<Body> mBodies;
+    Array<FunctionBody> mBodies;
     Array<SemanticModel> mSpecializedModels;
     Array<FunctionSummary> mSummaries;
     Array<Varying> mVarying;

@@ -236,6 +236,7 @@ private:
             case SymbolKind::Interface:
             case SymbolKind::TypeParameter:
             case SymbolKind::Concept:
+            case SymbolKind::Space:
                 if (IsPascal(name) == false)
                 {
                     reportName(symbol, "PascalCase", MakePascal(name));

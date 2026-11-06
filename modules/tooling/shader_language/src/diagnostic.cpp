@@ -217,6 +217,10 @@ std::string_view GetDiagnosticCodeName(DiagnosticCode code) noexcept
             return "non-uniform-argument";
         case DiagnosticCode::InvalidUniformParameter:
             return "invalid-uniform-parameter";
+        case DiagnosticCode::SpaceMismatch:
+            return "space-mismatch";
+        case DiagnosticCode::InvalidSpace:
+            return "invalid-space";
         case DiagnosticCode::NamingStyle:
             return "naming-style";
         case DiagnosticCode::BareBoolOperand:

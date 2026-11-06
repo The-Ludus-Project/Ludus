@@ -74,12 +74,16 @@ enum class SyntaxKind : foundation::uint8
     /// `static_assert(condition, "message");`. Token: `static_assert`. Children: the condition and the
     /// message StringLiteral.
     StaticAssert,
+    /// `space Name;`, a coordinate space that vector and matrix types name, as in
+    /// `float32x3<World>`. `space` is contextual: it begins a declaration only before a name and `;`.
+    /// Token: the name.
+    SpaceDeclaration,
     /// `[name]` or `[name(arguments)]`. Token: the name. Children: the argument expressions.
     Attribute,
 
-    /// A type name, possibly scoped (`A::B`) and generic (`Texture2D<float32x4>`). Token: the last
-    /// name; FirstToken to LastToken spell it. Children: the generic arguments, each a Type or an
-    /// expression.
+    /// A type name, possibly scoped (`A::B`) and generic (`Texture2D<float32x4>`, or the spaces of
+    /// `float32x4x4<World, Clip>`). Token: the last name; FirstToken to LastToken spell it.
+    /// Children: the generic arguments, each a Type or an expression.
     Type,
     /// `[size]` after a declared name. Children: the size expression.
     ArraySize,
