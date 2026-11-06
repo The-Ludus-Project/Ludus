@@ -548,12 +548,54 @@ private:
                     return false;
                 }
                 record.FirstMember = static_cast<uint32>(mResult.Members.GetSize());
+                int64_t value = 0;
+                record.HasValue = variableOrNull->hasDefaultValue() == true &&
+                                  SLANG_SUCCEEDED(variableOrNull->getDefaultValueInt(&value));
+                record.Value = value;
+                return addRecord(record);
+            }
+            case slang::DeclReflection::Kind::Enum: {
+                slang::TypeReflection* typeOrNull = declaration->getType();
+                if (typeOrNull == nullptr)
+                {
+                    return true;
+                }
+                ReflectedDeclaration record;
+                record.Kind = DeclarationKind::Enum;
+                if (appendText(typeOrNull->getName(), record.Name) == false)
+                {
+                    return false;
+                }
+                // Slang enums are 32-bit unless declared otherwise; the reflection API reports no tag type.
+                record.Type.Shape = ReflectedShape::Scalar;
+                record.Type.Scalar = ReflectedScalar::Uint32;
+                record.FirstMember = static_cast<uint32>(mResult.Members.GetSize());
+                // Slang reflects an enum's cases as the fields of its type.
+                for (uint32 i = 0; i < typeOrNull->getFieldCount(); ++i)
+                {
+                    slang::VariableReflection* enumeratorOrNull = typeOrNull->getFieldByIndex(i);
+                    if (enumeratorOrNull == nullptr)
+                    {
+                        continue;
+                    }
+                    ReflectedMember member;
+                    int64_t value = 0;
+                    member.HasValue = enumeratorOrNull->hasDefaultValue() == true &&
+                                      SLANG_SUCCEEDED(enumeratorOrNull->getDefaultValueInt(&value));
+                    member.Value = value;
+                    if (appendText(enumeratorOrNull->getName(), member.Name) == false ||
+                        mResult.Members.GetSize() >= MAX_REFLECTED_MEMBERS || mResult.Members.TryAdd(member) == false)
+                    {
+                        return false;
+                    }
+                    ++record.MemberCount;
+                }
                 return addRecord(record);
             }
             case slang::DeclReflection::Kind::Namespace:
                 return AddChildren(declaration);
             default:
-                // Generics, enums and declarations Slang does not reflect have no LUSL extern form yet.
+                // Generics and declarations Slang does not reflect have no LUSL extern form yet.
                 return true;
         }
     }
@@ -670,9 +712,9 @@ private:
                 return true;
             }
         }
-        if (kind == slang::TypeReflection::Kind::Struct)
+        if (kind == slang::TypeReflection::Kind::Struct || kind == slang::TypeReflection::Kind::Enum)
         {
-            outType.Shape = ReflectedShape::Struct;
+            outType.Shape = kind == slang::TypeReflection::Kind::Struct ? ReflectedShape::Struct : ReflectedShape::Enum;
             return appendText(type->getName(), outType.Name);
         }
         const char* nameOrNull = type->getName();

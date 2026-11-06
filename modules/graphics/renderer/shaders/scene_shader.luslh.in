@@ -1,0 +1,52 @@
+// LUSL declarations of the shared scene shader interface (scene_shader.slang), for render-graph
+// callbacks of scene-interface techniques. The scene ray wrapper includes scene_shader.slang before
+// any callback, so the block names no file. Programs include this header instead of
+// ray_shader.luslh: under the scene interface, RayLaunch carries the camera and sampling state.
+// docs/architecture/shared-scene-shader-contract.md owns the operations' contracts.
+#pragma once
+#include "math.luslh"
+@search "../../../foundation/geometry/shaders"
+@search "../../../foundation/geometry/include/ludus/foundation/geometry/detail"
+@search "../../../content/scene_format/include/ludus/content/scene_format"
+@search "../../../content/render_graph_format/include/ludus/content/render_graph_format"
+@search "../../../content/render_graph_format/include/ludus/content/render_graph_format/detail"
+@search "../../../foundation/math/shaders"
+@search "../../rhi/shaders"
+@search "../include/ludus/graphics/renderer"
+@search "../include/ludus/graphics/renderer/detail"
+@prelude float3 EvaluateGraphRay(uint pixel);
+@prelude #define LUDUS_RENDER_GRAPH_RAY_PIPELINE 1
+@prelude #define LUDUS_SCENE_RAY_INTERFACE 1
+@prelude #include "renderer_gpu_preview.slang"
+
+/// Failure reasons of FailSceneQuery (scene_shader_layout.h); authored reasons start at
+/// SCENE_FAILURE_AUTHORED_FIRST.
+@macro uint32 SCENE_FAILURE_UNSPECIFIED = LUDUS_SCENE_FAILURE_UNSPECIFIED from "scene_shader.slang"
+@macro uint32 SCENE_FAILURE_RANDOM_EXHAUSTED = LUDUS_SCENE_FAILURE_RANDOM_EXHAUSTED from "scene_shader.slang"
+@macro uint32 SCENE_FAILURE_AUTHORED_FIRST = LUDUS_SCENE_FAILURE_AUTHORED_FIRST from "scene_shader.slang"
+@macro uint32 SCENE_FAILURE_REASON_COUNT = LUDUS_SCENE_FAILURE_REASON_COUNT from "scene_shader.slang"
+
+@extern from "scene_shader.slang"
+@declare SCENE_INTERFACE_VERSION SCENE_INVALID_INDEX
+
+/// Outcome of TraceClosest, TestVisibility and TraceAndShade.
+@declare SceneQuery
+@declare SceneLightKind SceneMaterialKind MaterialModel IncidentLightMeasure LightSelectionPolicy
+
+/// A ray segment; distances are along DirectionWorld.
+@declare Ray
+/// The invocation a ray-generation callback runs for, with its camera and sampling state.
+@declare RayLaunch
+/// The scene a callback reads; pass it unchanged to the scene operations.
+@declare SceneContext
+/// Renderer-initialized invocation state; forward the same value through all callbacks.
+@declare RayQueryContext
+@declare SurfaceHit MaterialSample LightInfo SelectedLight LightSample IncidentLightSample SceneInfo
+
+@declare FailSceneQuery MakeCameraRay SpawnSurfaceRay TraceClosest TestVisibility
+@declare EvaluateMaterial EvaluateEmission EvaluateEnvironment
+@declare GetSceneInfo GetLightCount GetLightInfo SelectLight SampleIncidentLight GetSurfaceHit
+@declare EvaluateLightPdfSolidAngle EvaluateEnvironmentPdfSolidAngle EvaluateLightSelectionPmf
+@declare GetSurfaceLightIndex GetEnvironmentLightIndex EvaluateIncidentLightPdfSolidAngle
+@declare EvaluateIncidentEnvironmentPdfSolidAngle SampleSceneRandom PixelRandomAddress
+@end

@@ -125,6 +125,7 @@ enum class DeclarationKind : foundation::uint8
     Function, ///< A non-generic function; one record per overload.
     Struct,   ///< A struct; its members are its instance fields.
     Constant, ///< A `static const` variable.
+    Enum,     ///< An enum; its members are its enumerators, with values.
 };
 
 /// Shape of a reflected type.
@@ -135,6 +136,7 @@ enum class ReflectedShape : foundation::uint8
     Vector,      ///< ReflectedType::Rows components.
     Matrix,      ///< ReflectedType::Rows by ReflectedType::Columns.
     Struct,      ///< The struct ReflectedType::Name names.
+    Enum,        ///< The enum ReflectedType::Name names.
     Unsupported, ///< Resources, generics and other types a LUSL declaration cannot spell.
 };
 
@@ -177,7 +179,7 @@ struct ReflectedType final
     foundation::uint8 Columns = 1;                      ///< Columns of a Matrix.
     /// Element count of a one-dimensional array of this type; zero when the type is not an array.
     foundation::uint32 ArrayCount = 0;
-    /// Struct name of a Struct; Slang's spelling of an Unsupported type.
+    /// Name of a Struct or Enum; Slang's spelling of an Unsupported type.
     ReflectedText Name;
 };
 
@@ -187,6 +189,8 @@ struct ReflectedMember final
     ReflectedText Name;                                    ///< Parameter or field name.
     ReflectedType Type;                                    ///< Its type.
     ReflectedDirection Direction = ReflectedDirection::In; ///< A parameter's direction; In for fields.
+    bool HasValue = false;                                 ///< True for an enumerator with a known value.
+    foundation::int64 Value = 0;                           ///< An enumerator's value.
 };
 
 /// @brief One module-level declaration, in Slang's declaration order.
@@ -197,13 +201,15 @@ struct ReflectedDeclaration final
     ReflectedType Type;                               ///< Return type of a Function, type of a Constant.
     foundation::uint32 FirstMember = 0;               ///< First of its members in DeclarationResult::Members.
     foundation::uint32 MemberCount = 0;               ///< Parameters of a Function, fields of a Struct.
+    bool HasValue = false;                            ///< True for a Constant with a known integer value.
+    foundation::int64 Value = 0;                      ///< A Constant's integer value.
 };
 
 /// @brief Output of Compiler::ReflectDeclarations.
 struct DeclarationResult final
 {
     Status Outcome = Status::InvalidRequest; ///< Final outcome.
-    /// Every function, struct and `static const` the module declares at module level, including
+    /// Every function, struct, enum and `static const` the module declares at module level, including
     /// the declarations of the files it includes; generic declarations are skipped. Empty unless Ready.
     foundation::Array<ReflectedDeclaration> Declarations;
     /// Parameters and fields; see ReflectedDeclaration::FirstMember.

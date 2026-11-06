@@ -36,9 +36,13 @@ L3 is in progress:
   (`lusl-declarations`, `generate_luslh.py`, `ShaderCompiler::ReflectDeclarations`),
   and generated declarations of ray-callback storage bindings.
 
-Not yet done from L3: declarations of generic Slang functions, which the scene
-interface (`SceneContext`, `TraceClosest`, ...) needs, and a GPU fixture for
-LUSL ray storage. L4 is not implemented.
+- L3d: the shared scene shader interface for LUSL (`scene_shader.luslh`,
+  `scene_payload.luslh`), generated with enums, wrapper preludes and macro
+  constants, and scene-interface callbacks in LUSL whose query outcomes match
+  their Slang originals on the GPU.
+
+L3 is complete; a GPU fixture for LUSL ray storage remains open. L4 is not
+implemented.
 
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.

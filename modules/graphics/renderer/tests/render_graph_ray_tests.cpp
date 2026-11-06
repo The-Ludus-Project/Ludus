@@ -3295,6 +3295,42 @@ TEST_CASE("Compute BVH traversal reports the same hits and visibility as the oth
     CHECK(differences <= static_cast<usize>(WIDTH) * HEIGHT / DIFFERING_PIXEL_DIVISOR);
 }
 
+TEST_CASE("LUSL scene-interface callbacks report the same query outcomes as their Slang originals",
+          "[render-graph][gpu][ray-traversal]")
+{
+    // rg2_traversal_parity_lusl ports the traversal parity callbacks to LUSL against the scene
+    // declarations generated from Slang reflection (scene_shader.luslh, scene_payload.luslh). Both
+    // packages use the triangle loop, so every encoded hit and visibility outcome must agree.
+    GraphGpuFixture fixture(false, false);
+    const core::UniquePtr<renderer::RenderGraphPackage> slangPackage =
+        LoadPackage({LUDUS_RG3_TRAVERSAL_PARITY_TRIANGLELOOP_DIRECTORY, "rg2_traversal_parity_triangleloop.lurgrt"});
+    const core::UniquePtr<renderer::RenderGraphPackage> luslPackage =
+        LoadPackage({LUDUS_RG3_TRAVERSAL_PARITY_LUSL_DIRECTORY, "rg2_traversal_parity_lusl.lurgrt"});
+    REQUIRE(luslPackage->GetPlan().Passes[0].Traversal == format::RayTraversal::TriangleLoop);
+    const CornellBox room;
+    const StaticArray<renderer::RenderGraphItem, TRAVERSAL_ITEM_COUNT> items = MakeTraversalItems(room);
+    renderer::RenderGraph slangGraph;
+    const uint32 luslOutput = PrepareRoomGraph(fixture.Graph, fixture, *luslPackage, room, items, TRAVERSAL_ITEM_COUNT);
+    const uint32 slangOutput = PrepareRoomGraph(slangGraph, fixture, *slangPackage, room, items, TRAVERSAL_ITEM_COUNT);
+    Array<uint8> lusl;
+    Array<uint8> slang;
+    RenderExport(fixture.Graph, fixture, luslOutput, {}, lusl);
+    RenderExport(slangGraph, fixture, slangOutput, {}, slang);
+    REQUIRE(lusl.GetSize() == slang.GetSize());
+    REQUIRE(CountFailurePixels(lusl) == 0);
+    CHECK(CountDifferentPixels(lusl, slang, 0) == 0);
+    usize primaryHits = 0;
+    usize secondaryHits = 0;
+    for (usize address = 0; address + 3 < lusl.GetSize(); address += 4)
+    {
+        primaryHits += lusl[address] != 0 ? 1 : 0;
+        secondaryHits += lusl[address + 1] != 0 ? 1 : 0;
+    }
+    // Hits, secondary hits and both visibility outcomes appear, so equality covers each query.
+    CHECK(primaryHits > lusl.GetSize() / 8);
+    CHECK(secondaryHits > 0);
+}
+
 TEST_CASE("Compute BVH hits on the edge opposite a triangle's first corner reload as valid surface points",
           "[render-graph][gpu][ray-traversal]")
 {

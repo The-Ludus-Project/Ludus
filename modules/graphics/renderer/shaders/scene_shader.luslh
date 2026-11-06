@@ -1,0 +1,267 @@
+// Generated from scene_shader.luslh.in by cmake/shaders/generate_luslh.py from Slang reflection;
+// edit the template, not this file.
+// LUSL declarations of the shared scene shader interface (scene_shader.slang), for render-graph
+// callbacks of scene-interface techniques. The scene ray wrapper includes scene_shader.slang before
+// any callback, so the block names no file. Programs include this header instead of
+// ray_shader.luslh: under the scene interface, RayLaunch carries the camera and sampling state.
+// docs/architecture/shared-scene-shader-contract.md owns the operations' contracts.
+#pragma once
+#include "math.luslh"
+
+/// Failure reasons of FailSceneQuery (scene_shader_layout.h); authored reasons start at
+/// SCENE_FAILURE_AUTHORED_FIRST.
+static const uint32 SCENE_FAILURE_UNSPECIFIED = 0;
+static const uint32 SCENE_FAILURE_RANDOM_EXHAUSTED = 8;
+static const uint32 SCENE_FAILURE_AUTHORED_FIRST = 32;
+static const uint32 SCENE_FAILURE_REASON_COUNT = 64;
+
+extern slang
+{
+    static const uint32 SCENE_INTERFACE_VERSION;
+    static const uint32 SCENE_INVALID_INDEX;
+
+    /// Outcome of TraceClosest, TestVisibility and TraceAndShade.
+    enum class SceneQuery : uint32
+    {
+        Miss = 0,
+        Surface = 1,
+        Failure = 2,
+    };
+    enum class SceneLightKind : uint32
+    {
+        Directional = 0,
+        Point = 1,
+        Spot = 2,
+        Mesh = 3,
+        Environment = 4,
+    };
+    enum class SceneMaterialKind : uint32
+    {
+        Assigned = 0,
+        Default = 1,
+        Error = 2,
+    };
+    enum class MaterialModel : uint32
+    {
+        MetallicRoughness = 0,
+        Diffuse = 1,
+        Conductor = 2,
+        CoatedDiffuse = 3,
+        Dielectric = 4,
+        ThinDielectric = 5,
+        DiffuseConductorMix = 6,
+        ProjectBrdf = 8,
+    };
+    enum class IncidentLightMeasure : uint32
+    {
+        SolidAngle = 0,
+        Discrete = 1,
+    };
+    enum class LightSelectionPolicy : uint32
+    {
+        Uniform = 0,
+        MeshPower = 1,
+        NonMesh = 2,
+    };
+
+    /// A ray segment; distances are along DirectionWorld.
+    struct Ray
+    {
+        float32x3 OriginWorld;
+        float32 MinDistanceWorld;
+        float32x3 DirectionWorld;
+        float32 MaxDistanceWorld;
+    };
+    /// The invocation a ray-generation callback runs for, with its camera and sampling state.
+    struct RayLaunch
+    {
+        uint32x2 PositionPixel;
+        uint32x2 ExtentPixel;
+        Ray CameraRay;
+        float32x4x4 CameraClipToWorld;
+        float32x3 CameraPositionWorld;
+        bool IsOrthographic;
+        bool IsFullImageDispatch;
+        uint32 SampleIndex;
+        uint32x2 Seed;
+    };
+    /// The scene a callback reads; pass it unchanged to the scene operations.
+    struct SceneContext
+    {
+        uint32 Version;
+        uint32x2 Generation;
+    };
+    /// Renderer-initialized invocation state; forward the same value through all callbacks.
+    struct RayQueryContext
+    {
+        uint32 SurfaceQueries;
+        uint32 VisibilityQueries;
+        uint32 LineQueries;
+        uint32 MaximumSurfaceQueries;
+        uint32 MaximumVisibilityQueries;
+        uint32 MaximumLineQueries;
+        bool HasFailed;
+        uint32x2 RandomSeed;
+        uint32 RandomPixel;
+        uint32 RandomSampleIndex;
+        uint32 NextRandomDimension;
+        uint32 FailureReason;
+    };
+    struct SurfaceHit
+    {
+        Ray IncomingRay;
+        float32x3 PositionWorld;
+        float32 DistanceWorld;
+        float32x3 PositionErrorWorld;
+        float32x3 GeometricNormalWorld;
+        float32x3 ShadingNormalWorld;
+        float32x4 TangentWorld;
+        uint32 TriangleIndex;
+        uint32 Primitive;
+        uint32 InstanceIndex;
+        uint32 MaterialIndex;
+        uint32 SourceMaterialIndex;
+        uint32 MaterialSlot;
+        SceneMaterialKind MaterialKind;
+        uint32 EmitterIndex;
+        uint32x2 SourceId;
+        float32x2 Barycentric;
+        float32x2 TexcoordUv;
+        bool IsFrontFace;
+        bool IsValid;
+    };
+    struct MaterialSample
+    {
+        MaterialModel Model;
+        float32x3 Eta;
+        float32x3 K;
+        float32 AlphaU;
+        float32 AlphaV;
+        float32 CoatingEta;
+        float32 CoatingThickness;
+        float32x3 BaseColor;
+        float32 Metallic;
+        float32 Roughness;
+        float32x3 Emission;
+        float32x3 ShadingNormalWorld;
+        bool IsEmissionTwoSided;
+        float32x4 TexcoordTransformUv;
+        float32 NormalScaleTangent;
+        bool HasColorMap;
+        bool HasSurfaceMap;
+        bool HasEmissionMap;
+        bool IsValid;
+    };
+    struct LightInfo
+    {
+        uint32 EmitterIndex;
+        SceneLightKind Kind;
+        uint32 Index;
+        uint32 MaterialSlot;
+        uint32x2 SourceId;
+        float32x3 Intensity;
+        float32x3 PositionWorld;
+        float32x3 DirectionWorld;
+        float32 RangeWorld;
+        float32 InnerCos;
+        float32 OuterCos;
+        bool IsValid;
+    };
+    struct SelectedLight
+    {
+        uint32 LightIndex;
+        float32 SelectionPmf;
+        bool HasSample;
+    };
+    struct LightSample
+    {
+        uint32 LightIndex;
+        uint32 TriangleIndex;
+        float32x2 Barycentric;
+        float32x3 DirectionWorld;
+        float32x3 IncidentCoefficient;
+        float32 SelectionPmf;
+        float32 ConditionalPdf;
+        float32x3 PositionWorld;
+        float32 DistanceWorld;
+        bool IsDiscrete;
+        bool HasFiniteEndpoint;
+        bool HasSample;
+    };
+    struct IncidentLightSample
+    {
+        uint32 TriangleIndex;
+        float32x2 Barycentric;
+        float32x3 DirectionWorld;
+        float32x3 IncidentCoefficient;
+        float32 ConditionalProbability;
+        float32x3 PositionWorld;
+        float32 DistanceWorld;
+        IncidentLightMeasure Measure;
+        bool HasFiniteEndpoint;
+        bool HasSample;
+    };
+    struct SceneInfo
+    {
+        uint32x2 Generation;
+        uint32 Version;
+        uint32 TriangleCount;
+        uint32 MaterialCount;
+        uint32 LightCount;
+        uint32 EmitterCount;
+    };
+
+    void FailSceneQuery(inout RayQueryContext queries, in uint32 reason);
+    Ray MakeCameraRay(in RayLaunch launch, in float32x2 samplePixel);
+    Ray SpawnSurfaceRay(in SurfaceHit hit, in float32x3 directionWorld, in float32 maximumDistanceWorld);
+    SceneQuery TraceClosest(in SceneContext scene, inout RayQueryContext queries, in Ray ray, out SurfaceHit outHit);
+    SceneQuery TestVisibility(in SceneContext scene,
+                              inout RayQueryContext queries,
+                              in SurfaceHit receiver,
+                              in IncidentLightSample light);
+    SceneQuery TestVisibility(in SceneContext scene,
+                              inout RayQueryContext queries,
+                              in SurfaceHit receiver,
+                              in LightSample light);
+    MaterialSample EvaluateMaterial(in SceneContext scene, in SurfaceHit hit);
+    float32x3 EvaluateEmission(in SceneContext scene, in SurfaceHit hit, in float32x3 directionAwayWorld);
+    float32x3 EvaluateEnvironment(in SceneContext scene, in float32x3 directionWorld);
+    SceneInfo GetSceneInfo(in SceneContext scene);
+    uint32 GetLightCount(in SceneContext scene);
+    LightInfo GetLightInfo(in SceneContext scene, in uint32 lightIndex);
+    SelectedLight SelectLight(in SceneContext scene, inout RayQueryContext queries);
+    SelectedLight SelectLight(in SceneContext scene, in RayLaunch launch, in uint32 dimension);
+    LightSample SampleIncidentLight(in SceneContext scene,
+                                    in SelectedLight selected,
+                                    in SurfaceHit receiver,
+                                    in float32x3 shapeSample);
+    IncidentLightSample SampleIncidentLight(in SceneContext scene,
+                                            in uint32 lightIndex,
+                                            in SurfaceHit receiver,
+                                            in uint32x2 seed,
+                                            in RandomAddress firstAddress,
+                                            inout RayQueryContext inoutQueries);
+    IncidentLightSample SampleIncidentLight(in SceneContext scene,
+                                            in uint32 lightIndex,
+                                            in SurfaceHit receiver,
+                                            in RayLaunch launch,
+                                            in uint32 firstDimension,
+                                            inout RayQueryContext inoutQueries);
+    SurfaceHit GetSurfaceHit(in SceneContext scene, in uint32 triangleIndex, in float32x2 barycentric);
+    float32 EvaluateLightPdfSolidAngle(in SceneContext scene,
+                                       in float32x3 receiverPositionWorld,
+                                       in SurfaceHit endpoint);
+    float32 EvaluateEnvironmentPdfSolidAngle(in SceneContext scene, in float32x3 directionWorld);
+    float32 EvaluateLightSelectionPmf(in SceneContext scene, in uint32 lightIndex);
+    float32 EvaluateLightSelectionPmf(in SceneContext scene, in uint32 lightIndex, in LightSelectionPolicy policy);
+    uint32 GetSurfaceLightIndex(in SceneContext scene, in SurfaceHit endpoint);
+    uint32 GetEnvironmentLightIndex(in SceneContext scene);
+    float32 EvaluateIncidentLightPdfSolidAngle(in SceneContext scene,
+                                               in float32x3 receiverPositionWorld,
+                                               in SurfaceHit endpoint);
+    float32 EvaluateIncidentEnvironmentPdfSolidAngle(in SceneContext scene);
+    float32 SampleSceneRandom(in RayLaunch launch, in uint32 dimension);
+    float32 SampleSceneRandom(inout RayQueryContext queries);
+    uint32 SampleSceneRandom(inout RayQueryContext queries, in uint32 minimumInclusive, in uint32 maximumExclusive);
+    RandomAddress PixelRandomAddress(in uint32 pixel, in uint32 sample, in uint32 dimension);
+};
