@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/tooling/shader_language/diagnostic.hpp>
 #include <ludus/tooling/shader_language/preprocessor.hpp>
 #include <ludus/tooling/shader_language/status.hpp>
@@ -238,6 +239,11 @@ struct SyntaxTree final
 /// @return The same value as `outTree.Outcome`; InvalidRequest when `preprocessed` is not Ready.
 [[nodiscard]] Status
 Parse(const PreprocessRequest& request, const PreprocessResult& preprocessed, SyntaxTree& outTree) noexcept;
+
+/// @brief Every LUSL keyword, including those reserved for later phases, in a stable order.
+///
+/// Editors use it for completion and highlighting; the views point to static storage.
+[[nodiscard]] foundation::BorrowedView<const std::string_view> GetKeywords() noexcept;
 
 /// @brief Return the stable kebab-case name of a node kind, such as `variable-declaration`.
 /// @return An empty view for a value outside the enumerators.
