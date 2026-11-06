@@ -946,6 +946,84 @@ TEST_CASE("Canvas menu duplicates the selected configuration and graph through n
     }
 }
 
+TEST_CASE("Source tree configuration rows offer Duplicate Configuration instead of Duplicate Graph",
+          "[editor][render-graph][duplicate][selection]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenSelectionPackage(workspace, project);
+    QTreeWidget* tree = workspace.findChild<QTreeWidget*>(QStringLiteral("renderGraphTree"));
+    REQUIRE(tree != nullptr);
+    QTreeWidgetItem* fileOrNull = nullptr;
+    for (int32 i = 0; i < tree->topLevelItemCount(); ++i)
+    {
+        if (tree->topLevelItem(i)->data(0, Qt::UserRole).toString() == LIBRARY)
+        {
+            fileOrNull = tree->topLevelItem(i);
+        }
+    }
+    REQUIRE(fileOrNull != nullptr);
+    QTreeWidgetItem* configurationOrNull = nullptr;
+    for (int32 i = 0; i < fileOrNull->childCount(); ++i)
+    {
+        if (fileOrNull->child(i)->data(0, Qt::UserRole + 1).toString() == DEFAULT)
+        {
+            configurationOrNull = fileOrNull->child(i);
+        }
+    }
+    REQUIRE(configurationOrNull != nullptr);
+    tree->expandAll();
+    const QByteArray library = workspace.GetDocument().GetDraft(LIBRARY);
+    SECTION("graph file row")
+    {
+        bool hasDuplicateGraph = false;
+        bool hasDuplicateSelectedConfiguration = true;
+        QTimer::singleShot(0, &workspace, [&workspace, &hasDuplicateGraph, &hasDuplicateSelectedConfiguration]() {
+            QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("renderGraphBackgroundMenu"));
+            REQUIRE(menuOrNull != nullptr);
+            hasDuplicateGraph = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphDuplicateGraph")) != nullptr;
+            hasDuplicateSelectedConfiguration =
+                menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphDuplicateSelectedConfiguration")) != nullptr;
+            menuOrNull->close();
+        });
+        Q_EMIT tree->customContextMenuRequested(tree->visualItemRect(fileOrNull).center());
+        CHECK(hasDuplicateGraph == true);
+        CHECK(hasDuplicateSelectedConfiguration == false);
+    }
+    SECTION("configuration row")
+    {
+        bool hasDuplicateGraph = true;
+        QString label;
+        QTimer::singleShot(0, &workspace, [&workspace, &hasDuplicateGraph, &label]() {
+            QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("renderGraphBackgroundMenu"));
+            REQUIRE(menuOrNull != nullptr);
+            hasDuplicateGraph = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphDuplicateGraph")) != nullptr;
+            QAction* duplicateOrNull =
+                menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphDuplicateSelectedConfiguration"));
+            REQUIRE(duplicateOrNull != nullptr);
+            REQUIRE(duplicateOrNull->isEnabled() == true);
+            label = duplicateOrNull->text();
+            QTimer::singleShot(0, &workspace, [&workspace]() {
+                QInputDialog* dialogOrNull = workspace.findChild<QInputDialog*>();
+                REQUIRE(dialogOrNull != nullptr);
+                CHECK(dialogOrNull->textValue() == QStringLiteral("DefaultCopy"));
+                dialogOrNull->accept();
+            });
+            menuOrNull->close();
+            duplicateOrNull->trigger();
+        });
+        Q_EMIT tree->customContextMenuRequested(tree->visualItemRect(configurationOrNull).center());
+        CHECK(hasDuplicateGraph == false);
+        CHECK(label == QStringLiteral("Duplicate Configuration..."));
+        CHECK(workspace.GetCanvas().GetFile() == LIBRARY);
+        CHECK(workspace.GetCanvas().GetConfiguration() == QStringLiteral("DefaultCopy"));
+        CHECK(workspace.GetCanvas().GetNodeCount() == 3);
+        CHECK(workspace.GetDocument().GetRevision() == 1);
+        workspace.Undo();
+        CHECK(workspace.GetDocument().GetDraft(LIBRARY) == library);
+    }
+}
+
 TEST_CASE("graph connections highlight selection and port hover without editing the draft",
           "[editor][render-graph][usability]")
 {

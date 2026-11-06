@@ -504,7 +504,7 @@ private:
     void replaceSelectedNode(const QJsonObject& node);
     void editConfigurationInterface();
     void addNode();
-    void showNodeContextMenu(const QPoint& globalPosition, bool isNodeContext);
+    void showNodeContextMenu(const QPoint& globalPosition, bool isNodeContext, bool isConfigurationContext = false);
     void setupGraphSelection();
     void syncTreeSelection();
     void syncCanvasSelection(const QStringList& nodes);
