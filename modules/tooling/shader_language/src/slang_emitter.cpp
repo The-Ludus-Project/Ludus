@@ -226,6 +226,7 @@ private:
                 ComposeMessage("the generated Slang exceeds ", uint64{shader_compiler::MAX_SOURCE_BYTES}, " bytes"));
         }
         recordSpecializations();
+        recordInterfaces();
         for (usize i = 0; i < mModule.BoundsChecks.GetSize(); ++i)
         {
             BoundsCheckSite site;
@@ -270,6 +271,76 @@ private:
                 mSink.ReportOutOfMemory();
                 return;
             }
+        }
+    }
+
+    /// The slot table and the vertex inputs, from the checker's layout.
+    void recordInterfaces() noexcept
+    {
+        for (const uint32 symbol : mInputs.Model.Bindings)
+        {
+            const Symbol& declared = getSymbol(symbol);
+            BindingRecord record;
+            record.Variable = locateSymbol(symbol);
+            (void)record.Name.TryAssign(getName(symbol));
+            record.Kind = getType(declared.Type).Resource;
+            record.Slot = declared.Slot;
+            if (mResult.Bindings.TryAdd(record) == false)
+            {
+                mSink.ReportOutOfMemory();
+                return;
+            }
+        }
+        for (uint32 function = 0; function < mInputs.Model.Symbols.GetSize(); ++function)
+        {
+            const Symbol& entry = getSymbol(function);
+            if (entry.Kind != SymbolKind::Function || entry.Stage != EntryStage::Vertex ||
+                entry.Declaration == NO_NODE || mInputs.Model.NodeSymbols[entry.Declaration] != function)
+            {
+                continue;
+            }
+            for (uint32 i = 0; i < entry.MemberCount; ++i)
+            {
+                const uint32 parameter = mInputs.Model.Members[entry.FirstMember + i];
+                const Symbol& input = getSymbol(parameter);
+                if (input.Value == StageValue::Attribute)
+                {
+                    recordVertexInput(function, parameter, parameter, NO_SYMBOL);
+                    continue;
+                }
+                const SemanticType& shape = getType(input.Type);
+                if (input.Value != StageValue::None || shape.Kind != TypeKind::Struct)
+                {
+                    continue;
+                }
+                const Symbol& structure = getSymbol(shape.Symbol);
+                for (uint32 k = 0; k < structure.MemberCount; ++k)
+                {
+                    const uint32 field = mInputs.Model.Members[structure.FirstMember + k];
+                    if (getSymbol(field).Value == StageValue::Attribute)
+                    {
+                        recordVertexInput(function, field, parameter, field);
+                    }
+                }
+            }
+        }
+    }
+
+    void recordVertexInput(uint32 entry, uint32 attribute, uint32 parameter, uint32 fieldOrNone) noexcept
+    {
+        VertexInputRecord record;
+        record.Entry = locateSymbol(entry);
+        record.Declaration = locateSymbol(attribute);
+        (void)record.Name.TryAssign(getName(parameter));
+        if (fieldOrNone != NO_SYMBOL)
+        {
+            (void)record.Name.TryAppend(".");
+            (void)record.Name.TryAppend(getName(fieldOrNone));
+        }
+        record.Location = getSymbol(attribute).Location;
+        if (mResult.VertexInputs.TryAdd(record) == false)
+        {
+            mSink.ReportOutOfMemory();
         }
     }
 
@@ -419,6 +490,24 @@ private:
             writeRelativePath(rootDirectory, getFilePath(include));
             write("\"\n");
         }
+        if (usesVertexIndex() == true)
+        {
+            // As modules/graphics/rhi/shaders/raster_bindings.slang spells LUDUS_SHADER_VERTEX_ID.
+            write("#if defined(LUDUS_DXIL)\n#define _LUSL_VERTEX_INDEX SV_VertexID\n#else\n"
+                  "#define _LUSL_VERTEX_INDEX SV_VulkanVertexID\n#endif\n");
+        }
+    }
+
+    [[nodiscard]] bool usesVertexIndex() const noexcept
+    {
+        for (const Symbol& declared : mInputs.Model.Symbols)
+        {
+            if (declared.Value == StageValue::VertexIndex)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// Write `path` relative to `directory`, both snapshot-relative.
@@ -1046,6 +1135,15 @@ private:
             case TypeKind::TypeParameter:
                 write(getName(shape.Symbol));
                 return;
+            case TypeKind::Resource:
+                write(internal::GetResourceName(shape.Resource));
+                if (shape.Element != NO_TYPE)
+                {
+                    write("<");
+                    writeType(shape.Element);
+                    write(">");
+                }
+                return;
             default:
                 write("int");
                 return;
@@ -1223,10 +1321,107 @@ private:
                 write(";");
                 newline();
                 return;
+            case IrKind::Resource:
+                writeResource(node);
+                return;
             case IrKind::Function:
                 writeFunction(item);
                 return;
             default:
+                return;
+        }
+    }
+
+    /// @brief A resource binding at its assigned slot, through the RHI shader boundary's
+    /// annotations: `[[vk::binding(n, 0)]]` and the HLSL register of the same number, which native
+    /// Metal reflection follows (modules/graphics/rhi/shaders/raster_bindings.slang).
+    void writeResource(const IrNode& node) noexcept
+    {
+        const Symbol& declared = getSymbol(node.Symbol);
+        mapLine(node.Location);
+        write("[[vk::binding(");
+        writeUnsigned(declared.Slot);
+        write(", 0)]] ");
+        writeType(node.Type);
+        write(" ");
+        write(getName(node.Symbol));
+        write(" : register(");
+        switch (getType(node.Type).Resource)
+        {
+            case ResourceKind::Texture2D:
+            case ResourceKind::StructuredBuffer:
+                write("t");
+                break;
+            case ResourceKind::RWTexture2D:
+            case ResourceKind::RWStructuredBuffer:
+                write("u");
+                break;
+            case ResourceKind::Sampler:
+                write("s");
+                break;
+            case ResourceKind::ConstantBuffer:
+                write("b");
+                break;
+        }
+        writeUnsigned(declared.Slot);
+        write(");");
+        newline();
+    }
+
+    /// True for a stage value of integer type, which is interpolated flat.
+    [[nodiscard]] bool isIntegerValue(uint32 type) const noexcept
+    {
+        const SemanticType& shape = getType(type);
+        return shape.Scalar == ScalarKind::Int32 || shape.Scalar == ScalarKind::Uint32;
+    }
+
+    /// The annotations that precede a stage-interface field or parameter: its location and, for
+    /// an integer varying, flat interpolation.
+    void writeStagePrefix(const Symbol& declared) noexcept
+    {
+        if (declared.Value == StageValue::Attribute || declared.Value == StageValue::Varying)
+        {
+            write("[[vk::location(");
+            writeUnsigned(declared.Location);
+            write(")]] ");
+        }
+        if (declared.Value == StageValue::Varying && isIntegerValue(declared.Type) == true)
+        {
+            write("nointerpolation ");
+        }
+    }
+
+    /// The semantic that follows a stage-interface field or parameter.
+    void writeStageSuffix(const Symbol& declared) noexcept
+    {
+        switch (declared.Value)
+        {
+            case StageValue::Attribute:
+            case StageValue::Varying:
+                write(" : TEXCOORD");
+                writeUnsigned(declared.Location);
+                return;
+            case StageValue::ClipPosition:
+                write(" : SV_Position");
+                return;
+            case StageValue::Target:
+                write(" : SV_Target");
+                writeUnsigned(declared.Location);
+                return;
+            case StageValue::Depth:
+                write(" : SV_Depth");
+                return;
+            case StageValue::VertexIndex:
+                // The RHI's non-indexed vertex index: SV_VulkanVertexID, or SV_VertexID for DXIL.
+                write(" : _LUSL_VERTEX_INDEX");
+                return;
+            case StageValue::InstanceIndex:
+                write(" : SV_InstanceID");
+                return;
+            case StageValue::FrontFacing:
+                write(" : SV_IsFrontFace");
+                return;
+            case StageValue::None:
                 return;
         }
     }
@@ -1269,7 +1464,9 @@ private:
                 mapLine(child.Location);
                 writeIndent();
                 write(child.Kind == IrKind::Constant ? "static const " : "");
+                writeStagePrefix(getSymbol(child.Symbol));
                 writeDeclaration(child.Type, getName(child.Symbol));
+                writeStageSuffix(getSymbol(child.Symbol));
                 if (child.FirstChild != NO_IR)
                 {
                     write(" = ");
@@ -1388,7 +1585,14 @@ private:
         const IrNode& node = at(item);
         mCurrentEntry = node.Location;
         mapLine(node.Location);
-        if ((node.Flags & IR_ENTRY) != 0)
+        const EntryStage stage = (node.Flags & IR_ENTRY) != 0 ? getSymbol(node.Symbol).Stage : EntryStage::None;
+        if (stage == EntryStage::Vertex || stage == EntryStage::Fragment)
+        {
+            writeIndent();
+            write(stage == EntryStage::Vertex ? "[shader(\"vertex\")]" : "[shader(\"fragment\")]");
+            newline();
+        }
+        if (stage == EntryStage::Compute)
         {
             const IrThreadGroup& group = mModule.ThreadGroups[static_cast<usize>(node.Value)];
             writeIndent();
@@ -1440,7 +1644,9 @@ private:
             write(isFirst == true ? "" : ", ");
             isFirst = false;
             writeDirection(at(child).Direction);
+            writeStagePrefix(getSymbol(at(child).Symbol));
             writeDeclaration(at(child).Type, getName(at(child).Symbol));
+            writeStageSuffix(getSymbol(at(child).Symbol));
             const std::string_view semantic = getSemanticSpelling(at(child).Index);
             if (semantic.empty() == false)
             {
@@ -1454,6 +1660,12 @@ private:
             write("uint _luslGroupIndex : SV_GroupIndex");
         }
         write(")");
+        const SemanticType& returnShape = getType(node.Type);
+        if (stage == EntryStage::Fragment &&
+            (returnShape.Kind == TypeKind::Scalar || returnShape.Kind == TypeKind::Vector))
+        {
+            write(" : SV_Target0");
+        }
         if (body == NO_IR)
         {
             // An interface requirement.
@@ -1996,6 +2208,14 @@ private:
                 write(getName(node.Symbol));
                 write("(");
                 writeArguments(node.FirstChild);
+                write(")");
+                return;
+            case IrKind::ResourceMethodCall:
+                writeExpression(node.FirstChild, false);
+                write(".");
+                write(spellToken(node.Token));
+                write("(");
+                writeArguments(at(node.FirstChild).NextSibling);
                 write(")");
                 return;
             case IrKind::Construct:

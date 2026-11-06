@@ -873,13 +873,16 @@ with optional tooling absent.
   Still open in D6c: porting the editor's live-play tooling (process groups,
   descriptor passing and generation leases) to Windows, with D6d; the installed
   Behavior SDK, player and script debugging on Windows; Windows `Ludus::ShaderDevelopment` delivery and render-graph package DXIL;
-  the tools-only worker install; and the embedded editors, which arrive with the
-  D6d editor port. Runtime render-graph packages can now carry DXIL stages
-  (`ShaderTarget::Dxil`), and Renderer passes their bytes to the Direct3D 12 shader
-  description. Graph manifests may list the `dxil` profile: stages compile through
-  the pinned DXC with `--dxc-path`, and `ludus_render_graph_dxil_tests` builds and
-  cooks rg2 fixtures for it in the Windows lane. Admitting graphs on Direct3D 12
-  (pipeline creation, drawing and the rg2 GPU suites) is next.
+  and the embedded editors, which arrive with the D6d editor port. The tools-only
+  worker install (`LUDUS_SHADER_WORKER_ONLY`) now runs on Windows. The Ninja lane
+  installs it and checks it with `tools/shader-worker/verify_install.py`, which
+  includes a signed DXIL compile through the installed worker. Runtime render-graph
+  packages can now carry DXIL stages (`ShaderTarget::Dxil`), and Renderer passes
+  their bytes to the Direct3D 12 shader description. Graph manifests may list the
+  `dxil` profile: stages compile through the pinned DXC with `--dxc-path`, and
+  `ludus_render_graph_dxil_tests` builds and cooks rg2 fixtures for it in the
+  Windows lane. Admitting graphs on Direct3D 12 (pipeline creation, drawing and the
+  rg2 GPU suites) is next.
 - **D6d (editor):** port Qt host integration and hosted-window transport plus
   D3D12 native interop/shared presentation with explicit handle ownership,
   adapter identity, producer/consumer synchronization and teardown fencing.

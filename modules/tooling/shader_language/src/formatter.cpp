@@ -41,6 +41,8 @@ struct OpenBracket final
     bool IsInCaseBody = false;
     /// The body of a `do` loop, whose `}` stays on the line of `while`.
     bool IsDoBody = false;
+    /// The body of an `enum`, whose enumerators each start a line like statements.
+    bool IsEnumBody = false;
     /// A `[` that starts an attribute list at a statement boundary.
     bool IsAttribute = false;
     /// Output column just after the bracket.
@@ -426,6 +428,12 @@ private:
         // The `{` of an initializer list opens members, not statements.
         const bool isBlockStart = previous.Symbol == Punctuator::LeftBrace &&
                                   (mBrackets.IsEmpty() == true || mBrackets.GetLast().IsBlock == true);
+        // An enumerator after `,` starts its own line, as the first one does.
+        if (previous.Symbol == Punctuator::Comma && mBrackets.IsEmpty() == false &&
+            mBrackets.GetLast().IsEnumBody == true)
+        {
+            return true;
+        }
         return previous.Symbol == Punctuator::Semicolon || isBlockStart == true ||
                previous.Symbol == Punctuator::RightBrace || mPreviousCode == mLastLabelColon ||
                mPreviousCode == mLastAttributeClose || mIsGeneric[mPreviousCode] == TEMPLATE_HEADER_CLOSE;
@@ -770,6 +778,7 @@ private:
         if (isPunctuator(index, Punctuator::Semicolon) == true && isInsideParentheses() == false)
         {
             mHasForcedBreak = true;
+            mIsEnumPending = false;
         }
         if (index == mLastLabelColon)
         {
@@ -827,6 +836,10 @@ private:
                 {
                     mIsDoPending = true;
                 }
+                else if (word == "enum")
+                {
+                    mIsEnumPending = true;
+                }
             }
             return;
         }
@@ -845,8 +858,10 @@ private:
                 {
                     bracket.IsSwitchBody = mIsSwitchPending;
                     bracket.IsDoBody = mIsDoPending;
+                    bracket.IsEnumBody = mIsEnumPending;
                     mIsSwitchPending = false;
                     mIsDoPending = false;
+                    mIsEnumPending = false;
                     mHasForcedBreak = true;
                     mIsBlockJustOpened = true;
                 }
@@ -921,6 +936,8 @@ private:
     bool mIsClosedDoBody = false;
     bool mIsSwitchPending = false;
     bool mIsDoPending = false;
+    /// An `enum` keyword was seen; the next block brace opens its body.
+    bool mIsEnumPending = false;
     bool mIsInCaseLabel = false;
     bool mIsPreviousUnary = false;
     bool mIsPreviousPrefix = false;

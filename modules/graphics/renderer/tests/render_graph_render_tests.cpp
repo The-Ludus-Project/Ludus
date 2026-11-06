@@ -2,6 +2,8 @@
 #include "../src/internal/render_graph_metalfx.h"
 #include "../src/internal/render_graph_upscale.h"
 #include "internal/readback.h"
+#include "lusl_composite.h"
+#include "lusl_composite_slots.h"
 #include "renderer_composite.h"
 #include "rg2_bound.h"
 #include "rg2_depth.h"
@@ -612,15 +614,18 @@ renderer::RenderGraphPrograms MakeBoundPrograms()
     return packages::rg2_bound::MakePrograms(shaders::renderer_composite::Vertex(),
                                              shaders::renderer_composite::Fragment());
 }
-/// Render the bound scene once with the cooked package at `location`.
-void RenderBoundPackage(const PackageLocation& location, StaticArray<uint8, PIXEL_BYTES>& outPixels)
+/// Render the bound scene once with the cooked package at `location`, composited by the
+/// `composite` stages.
+void RenderBoundPackage(const PackageLocation& location,
+                        const rhi::RasterShaderDescription& compositeVertex,
+                        const rhi::RasterShaderDescription& compositeFragment,
+                        StaticArray<uint8, PIXEL_BYTES>& outPixels)
 {
     GraphGpuFixture fixture;
     const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
-    REQUIRE(fixture.Graph.Initialize(
-                fixture.Device,
-                package->GetPlan(),
-                package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment())) ==
+    REQUIRE(fixture.Graph.Initialize(fixture.Device,
+                                     package->GetPlan(),
+                                     package->GetPrograms(compositeVertex, compositeFragment)) ==
             rhi::RasterStatus::Ready);
     BoundScene scene{fixture.Items[0]};
     REQUIRE(scene.Update(fixture.Graph, fixture, 1) == rhi::RasterStatus::Ready);
@@ -658,8 +663,14 @@ TEST_CASE("LUSL raster callbacks render the same pixels as their Slang originals
     // (docs/architecture/shading-language.md#delivery-plan, L3 acceptance).
     StaticArray<uint8, PIXEL_BYTES> slang{};
     StaticArray<uint8, PIXEL_BYTES> lusl{};
-    RenderBoundPackage(BOUND_PACKAGE, slang);
-    RenderBoundPackage(BOUND_LUSL_PACKAGE, lusl);
+    RenderBoundPackage(BOUND_PACKAGE,
+                       shaders::renderer_composite::Vertex(),
+                       shaders::renderer_composite::Fragment(),
+                       slang);
+    RenderBoundPackage(BOUND_LUSL_PACKAGE,
+                       shaders::renderer_composite::Vertex(),
+                       shaders::renderer_composite::Fragment(),
+                       lusl);
     usize differing = 0;
     for (usize i = 0; i < PIXEL_BYTES; ++i)
     {
@@ -672,6 +683,35 @@ TEST_CASE("LUSL raster callbacks render the same pixels as their Slang originals
     CHECK(lusl[left] == 255);
     CHECK(lusl[right + 1] >= 127);
     CHECK(lusl[right + 1] <= 128);
+}
+TEST_CASE("A LUSL composite shader with compiler-assigned bindings renders the same pixels", "[render-graph][gpu]")
+{
+    // lusl_composite.lusl declares the texture and sampler of renderer_composite.slang without
+    // slots; the LUSL compiler numbers them in declaration order and reports the table that
+    // lusl_composite_slots.h spells (docs/architecture/shading-language.md#resources-and-bindings).
+    static_assert(shaders::lusl_composite::slots::IMAGE == 0);
+    static_assert(shaders::lusl_composite::slots::IMAGE_SAMPLER == 1);
+    static_assert(shaders::lusl_composite::locations::INPUT_POSITION_UV == 0);
+    const rhi::RasterShaderDescription fragment = shaders::lusl_composite::Fragment();
+    REQUIRE(fragment.Bindings.size() == 2);
+    CHECK(fragment.Bindings[0].Binding == shaders::lusl_composite::slots::IMAGE);
+    CHECK(fragment.Bindings[0].Kind == rhi::RasterBindingKind::Texture2D);
+    CHECK(fragment.Bindings[1].Binding == shaders::lusl_composite::slots::IMAGE_SAMPLER);
+    CHECK(fragment.Bindings[1].Kind == rhi::RasterBindingKind::Sampler);
+    StaticArray<uint8, PIXEL_BYTES> slang{};
+    StaticArray<uint8, PIXEL_BYTES> lusl{};
+    RenderBoundPackage(BOUND_PACKAGE,
+                       shaders::renderer_composite::Vertex(),
+                       shaders::renderer_composite::Fragment(),
+                       slang);
+    RenderBoundPackage(BOUND_PACKAGE, shaders::lusl_composite::Vertex(), fragment, lusl);
+    usize differing = 0;
+    for (usize i = 0; i < PIXEL_BYTES; ++i)
+    {
+        differing += slang[i] != lusl[i] ? 1 : 0;
+    }
+    CHECK(differing == 0);
+    CHECK(lusl[GetPixel(24, 32)] == 255);
 }
 TEST_CASE("RG3 bound runtime generation carries the compiled uniform tables and renders the same pixels",
           "[render-graph][gpu][activation]")

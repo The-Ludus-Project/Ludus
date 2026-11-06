@@ -14,6 +14,9 @@
 #include <ludus/tooling/shader_language/limits.hpp>
 #include <ludus/tooling/shader_language/pipeline.hpp>
 
+#include "language_server.hpp"
+#include "support.hpp"
+
 #include <cerrno>
 #include <span>
 #include <string_view>
@@ -27,30 +30,15 @@
 
 namespace
 {
-using namespace ludus::foundation;
-namespace language = ludus::tooling::shader_language;
-namespace compiler = ludus::tooling::shader_compiler;
+using namespace ludus::tools::luslc;
 
 /// Process exit codes.
 constexpr int EXIT_OK = 0;
 constexpr int EXIT_FAILED = 1;
 constexpr int EXIT_USAGE = 2;
 
-constexpr int32 STANDARD_OUTPUT = 1;
-constexpr int32 STANDARD_ERROR = 2;
-#if defined(LUDUS_PLATFORM_WINDOWS)
-/// The CRT transfers at most this many bytes per call.
-constexpr usize MAX_TRANSFER_BYTES = 0x7FFFFFFF;
-#endif
-/// Digits of a displayed diagnostic code, as in `LUSL0504`.
-constexpr usize DIAGNOSTIC_CODE_DIGITS = 4;
-/// Decimal digits of the largest uint64.
-constexpr usize MAX_DECIMAL_DIGITS = 20;
-constexpr uint64 DECIMAL_BASE = 10;
 /// Most `--define` values; the preprocessor admits no more.
 constexpr usize MAX_DEFINES = language::MAX_CONFIGURATION_VALUES;
-
-using PathText = StaticString<filesystem::MAX_PATH_BYTES>;
 
 const std::string_view USAGE =
     "usage: luslc check  [--root DIR] [--include-directory DIR]... [--style strict|warn|off]\n"
@@ -59,339 +47,18 @@ const std::string_view USAGE =
     "                    [--define NAME=VALUE]... [--max-specializations N] [--bounds-checks]\n"
     "                    [--output FILE] [--report FILE] SOURCE\n"
     "       luslc format [--root DIR] [--check | --write] FILE...\n"
+    "       luslc lsp    [--root DIR] [--include-directory DIR]... [--style strict|warn|off]\n"
     "SOURCE, FILE and --include-directory are '/'-separated paths relative to --root (default: the\n"
     "current directory). --max-specializations is the specialization budget, 1 to 256 (default 256).\n"
-    "--report writes the specializations and groupshared clears of the lowered module.\n";
-
-/// Write part of `bytes` to a standard stream: the byte count, or negative on failure.
-isize WriteDescriptor(int32 descriptor, const char* bytes, usize count) noexcept
-{
-#if defined(LUDUS_PLATFORM_WINDOWS)
-    const usize bounded = count < MAX_TRANSFER_BYTES ? count : MAX_TRANSFER_BYTES;
-    return ::_write(descriptor, bytes, static_cast<unsigned int>(bounded));
-#else
-    return ::write(descriptor, bytes, count);
-#endif
-}
-
-bool WriteAll(int32 descriptor, std::string_view text) noexcept
-{
-    usize offset = 0;
-    while (offset < text.size())
-    {
-        const isize count = WriteDescriptor(descriptor, text.data() + offset, text.size() - offset);
-        if (count < 0 && errno == EINTR)
-        {
-            continue;
-        }
-        if (count <= 0)
-        {
-            return false;
-        }
-        offset += static_cast<usize>(count);
-    }
-    return true;
-}
-
-void WriteError(std::string_view text) noexcept
-{
-    (void)WriteAll(STANDARD_ERROR, text);
-}
-
-/// A bounded line of diagnostic output.
-class Line final
-{
-public:
-    void Append(std::string_view text) noexcept
-    {
-        (void)mText.TryAppend(text);
-    }
-
-    void AppendUnsigned(uint64 value, usize minimumDigits = 1) noexcept
-    {
-        StaticArray<char, MAX_DECIMAL_DIGITS> digits{};
-        usize count = 0;
-        do
-        {
-            digits[MAX_DECIMAL_DIGITS - 1 - count] = static_cast<char>('0' + static_cast<char>(value % DECIMAL_BASE));
-            value /= DECIMAL_BASE;
-            ++count;
-        } while ((value != 0 || count < minimumDigits) && count < MAX_DECIMAL_DIGITS);
-        Append(std::string_view(digits.GetData() + (MAX_DECIMAL_DIGITS - count), count));
-    }
-
-    [[nodiscard]] std::string_view GetView() const noexcept
-    {
-        return mText.GetView();
-    }
-
-private:
-    StaticString<language::MAX_DIAGNOSTIC_MESSAGE_BYTES + filesystem::MAX_PATH_BYTES * 2> mText;
-};
-
-/// A view of `text` for request fields; BorrowedView carries the size, so no terminator is needed.
-[[nodiscard]] BorrowedView<const char> MakeView(std::string_view text) noexcept
-{
-    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage): the view carries the size.
-    return BorrowedView<const char>(text.data(), text.size());
-}
-
-[[nodiscard]] std::string_view ViewText(const BorrowedView<const char>& view) noexcept
-{
-    return view.IsValid() == true ? std::string_view(view.GetDataOrNull(), view.GetSize()) : std::string_view{};
-}
-
-/// A source snapshot read from disk: file texts and paths in storage reserved once, so the views
-/// in Files stay valid.
-class Snapshot final
-{
-public:
-    [[nodiscard]] bool Initialize() noexcept
-    {
-        return mText.TryEnsureCapacity(compiler::MAX_SOURCE_BYTES) == true &&
-               mPaths.TryEnsureCapacity(compiler::MAX_SOURCE_FILES) == true &&
-               mFiles.TryEnsureCapacity(compiler::MAX_SOURCE_FILES) == true;
-    }
-
-    /// Read `path` relative to `root` unless already present. Returns false and explains why when
-    /// the file exists but cannot be admitted; a missing file is reported only when `isRequired`.
-    [[nodiscard]] bool TryAdd(const filesystem::Directory& root, std::string_view path, bool isRequired) noexcept
-    {
-        for (const PathText& existing : mPaths)
-        {
-            if (existing.GetView() == path)
-            {
-                return true;
-            }
-        }
-        if (filesystem::ValidPath(path) == false)
-        {
-            if (isRequired == true)
-            {
-                reportFile(path, "is not a valid relative '/'-separated path");
-            }
-            return isRequired == false;
-        }
-        filesystem::File file;
-        const filesystem::Result opened = root.OpenRead(path, file);
-        if (opened.Succeeded() == false)
-        {
-            if (isRequired == true || opened.Code != filesystem::Status::NotFound)
-            {
-                reportFile(path, "cannot be opened");
-                return false;
-            }
-            return true;
-        }
-        const uint64 size = file.Size();
-        if (mFiles.GetSize() >= compiler::MAX_SOURCE_FILES || size > compiler::MAX_SOURCE_BYTES - mText.GetSize())
-        {
-            reportFile(path, "does not fit the snapshot limits of the shader compiler");
-            return false;
-        }
-        const usize offset = mText.GetSize();
-        if (mText.TryResize(offset + static_cast<usize>(size)) == false)
-        {
-            reportFile(path, "cannot be read: out of memory");
-            return false;
-        }
-        const filesystem::ReadResult read =
-            file.ReadAt(0,
-                        std::span<uint8>(reinterpret_cast<uint8*>(mText.GetData() + offset), static_cast<usize>(size)));
-        if (read.Outcome.Succeeded() == false || read.BytesRead != size)
-        {
-            reportFile(path, "cannot be read");
-            return false;
-        }
-        PathText stored;
-        (void)stored.TryAssign(path);
-        mPaths.Add(stored);
-        compiler::SourceFile source;
-        source.Text = BorrowedView<const char>(mText.GetData() + offset, static_cast<usize>(size));
-        mFiles.Add(source);
-        // Views into mPaths are refreshed after every addition; mPaths never reallocates.
-        for (usize i = 0; i < mFiles.GetSize(); ++i)
-        {
-            mFiles[i].Path = MakeView(mPaths[i].GetView());
-        }
-        return true;
-    }
-
-    /// Add the files that `#include` and `extern slang` name in each file, transitively. The scan is
-    /// lexical, so it may add files that conditional groups or comments never use; that only makes
-    /// the snapshot larger. Resolution follows the preprocessor: beside the naming file, from the
-    /// root, then below each include directory.
-    [[nodiscard]] bool AddDependencies(const filesystem::Directory& root,
-                                       BorrowedView<const BorrowedView<const char>> includeDirectories) noexcept
-    {
-        for (usize index = 0; index < mFiles.GetSize(); ++index)
-        {
-            const std::string_view text = ViewText(mFiles[index].Text);
-            const std::string_view path = mPaths[index].GetView();
-            const usize slash = path.rfind('/');
-            const std::string_view directory =
-                slash == std::string_view::npos ? std::string_view{} : path.substr(0, slash + 1);
-            usize position = 0;
-            while (position < text.size())
-            {
-                const usize quote = findNamedPath(text, position);
-                if (quote == std::string_view::npos)
-                {
-                    break;
-                }
-                const usize end = text.find('"', quote + 1);
-                if (end == std::string_view::npos)
-                {
-                    break;
-                }
-                const std::string_view name = text.substr(quote + 1, end - quote - 1);
-                position = end + 1;
-                PathText beside;
-                if (beside.TryAssign(directory) == StringStatus::Ok && beside.TryAppend(name) == StringStatus::Ok &&
-                    TryAdd(root, beside.GetView(), false) == false)
-                {
-                    return false;
-                }
-                if (TryAdd(root, name, false) == false)
-                {
-                    return false;
-                }
-                for (usize i = 0; i < includeDirectories.GetSize(); ++i)
-                {
-                    PathText below;
-                    if (below.TryAssign(ViewText(includeDirectories[i])) == StringStatus::Ok &&
-                        below.TryAppend("/") == StringStatus::Ok && below.TryAppend(name) == StringStatus::Ok &&
-                        TryAdd(root, below.GetView(), false) == false)
-                    {
-                        return false;
-                    }
-                }
-            }
-        }
-        return true;
-    }
-
-    [[nodiscard]] BorrowedView<const compiler::SourceFile> GetFiles() const noexcept
-    {
-        return BorrowedView<const compiler::SourceFile>(mFiles.GetData(), mFiles.GetSize());
-    }
-
-    [[nodiscard]] std::string_view GetPath(usize file) const noexcept
-    {
-        return file < mPaths.GetSize() ? mPaths[file].GetView() : std::string_view{};
-    }
-
-private:
-    /// The position of the opening quote after the next `#include` or `extern slang` at or after
-    /// `position`, or npos.
-    [[nodiscard]] static usize findNamedPath(std::string_view text, usize position) noexcept
-    {
-        constexpr std::string_view INCLUDE = "include";
-        constexpr std::string_view EXTERN = "extern";
-        constexpr std::string_view SLANG = "slang";
-        while (position < text.size())
-        {
-            const usize include = text.find(INCLUDE, position);
-            const usize external = text.find(EXTERN, position);
-            const usize next = include < external ? include : external;
-            if (next == std::string_view::npos)
-            {
-                return std::string_view::npos;
-            }
-            usize cursor = next + (next == include ? INCLUDE.size() : EXTERN.size());
-            cursor = skipSpaces(text, cursor);
-            if (next == external)
-            {
-                if (text.substr(cursor, SLANG.size()) != SLANG)
-                {
-                    position = next + 1;
-                    continue;
-                }
-                cursor = skipSpaces(text, cursor + SLANG.size());
-            }
-            if (cursor < text.size() && text[cursor] == '"')
-            {
-                return cursor;
-            }
-            position = next + 1;
-        }
-        return std::string_view::npos;
-    }
-
-    [[nodiscard]] static usize skipSpaces(std::string_view text, usize position) noexcept
-    {
-        while (position < text.size() && (text[position] == ' ' || text[position] == '\t'))
-        {
-            ++position;
-        }
-        return position;
-    }
-
-    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a path, then the sentence about it.
-    static void reportFile(std::string_view path, std::string_view reason) noexcept
-    {
-        Line line;
-        line.Append("luslc: '");
-        line.Append(path);
-        line.Append("' ");
-        line.Append(reason);
-        line.Append("\n");
-        WriteError(line.GetView());
-    }
-
-    Array<char> mText;
-    Array<PathText> mPaths;
-    Array<compiler::SourceFile> mFiles;
-};
-
-/// Print one diagnostic as `path:line:column: error LUSL0504 type-mismatch: message`.
-void PrintDiagnostic(const Snapshot& snapshot, const language::Diagnostic& diagnostic) noexcept
-{
-    Line line;
-    const language::SourceLocation& location = diagnostic.Location;
-    if (location.FileIndex == language::CONFIGURATION_SOURCE)
-    {
-        line.Append("<configuration>:");
-        line.AppendUnsigned(location.Line);
-        line.Append(": ");
-    }
-    else if (location.IsValid() == true)
-    {
-        line.Append(snapshot.GetPath(location.FileIndex));
-        line.Append(":");
-        line.AppendUnsigned(location.Line);
-        line.Append(":");
-        line.AppendUnsigned(location.Column);
-        line.Append(": ");
-    }
-    else
-    {
-        line.Append("luslc: ");
-    }
-    line.Append(diagnostic.Level == language::Severity::Error ? "error" : "warning");
-    line.Append(" LUSL");
-    line.AppendUnsigned(static_cast<uint64>(diagnostic.Code), DIAGNOSTIC_CODE_DIGITS);
-    line.Append(" ");
-    line.Append(language::GetDiagnosticCodeName(diagnostic.Code));
-    line.Append(": ");
-    line.Append(diagnostic.Message.GetView());
-    const language::SourceLocation& expansion = diagnostic.ExpansionLocation;
-    if (expansion.IsValid() == true && expansion.FileIndex != language::CONFIGURATION_SOURCE)
-    {
-        line.Append(" (in a macro used at ");
-        line.Append(snapshot.GetPath(expansion.FileIndex));
-        line.Append(":");
-        line.AppendUnsigned(expansion.Line);
-        line.Append(")");
-    }
-    line.Append("\n");
-    WriteError(line.GetView());
-}
+    "--report writes the specializations, groupshared clears, bindings and vertex inputs of the\n"
+    "lowered module. lsp serves the Language Server Protocol on standard input and output; without\n"
+    "--root it uses the client's workspace root.\n";
 
 struct Options final
 {
     std::string_view Command;
     std::string_view Root = ".";
+    bool HasRoot = false;
     std::string_view Output;
     std::string_view Report;
     language::LoweringOptions Lowering;
@@ -464,6 +131,7 @@ struct Options final
         {
             ++i;
             outOptions.Root = arguments[i];
+            outOptions.HasRoot = true;
         }
         else if (argument == "--output" && hasValue == true)
         {
@@ -542,7 +210,8 @@ struct Options final
             return false;
         }
     }
-    return outOptions.PathCount > 0 && (outOptions.ShouldCheck == false || outOptions.ShouldWrite == false);
+    const bool hasPaths = outOptions.Command == "lsp" ? outOptions.PathCount == 0 : outOptions.PathCount > 0;
+    return hasPaths == true && (outOptions.ShouldCheck == false || outOptions.ShouldWrite == false);
 }
 
 /// Publish `text` at native path `path`, replacing it atomically.
@@ -590,9 +259,32 @@ AppendLocation(const Snapshot& snapshot, const language::SourceLocation& locatio
     return AppendText(line.GetView(), inoutText);
 }
 
+/// Spelling of a resource kind in the report.
+[[nodiscard]] std::string_view GetResourceKindName(language::ResourceKind kind) noexcept
+{
+    switch (kind)
+    {
+        case language::ResourceKind::Texture2D:
+            return "Texture2D";
+        case language::ResourceKind::RWTexture2D:
+            return "RWTexture2D";
+        case language::ResourceKind::Sampler:
+            return "SamplerState";
+        case language::ResourceKind::ConstantBuffer:
+            return "ConstantBuffer";
+        case language::ResourceKind::StructuredBuffer:
+            return "StructuredBuffer";
+        case language::ResourceKind::RWStructuredBuffer:
+            return "RWStructuredBuffer";
+    }
+    return {};
+}
+
 /// The build report of a lowered module, one tab-separated record per line:
-/// `specialization <template location> <name> <generated name>` and
-/// `groupshared-clear <entry location> <variable location> <unpadded bytes>`.
+/// `specialization <template location> <name> <generated name>`,
+/// `groupshared-clear <entry location> <variable location> <unpadded bytes>`,
+/// `binding <variable location> <name> <kind> <slot>` and
+/// `vertex-input <entry location> <name> <location>`.
 [[nodiscard]] bool
 ComposeReport(const Snapshot& snapshot, const language::LoweringResult& result, Array<char>& outText) noexcept
 {
@@ -603,6 +295,31 @@ ComposeReport(const Snapshot& snapshot, const language::LoweringResult& result, 
             AppendLocation(snapshot, record.Template, outText) == false || AppendText("\t", outText) == false ||
             AppendText(record.Name.GetView(), outText) == false || AppendText("\t", outText) == false ||
             AppendText(record.GeneratedName.GetView(), outText) == false || AppendText("\n", outText) == false)
+        {
+            return false;
+        }
+    }
+    for (const language::BindingRecord& record : result.Bindings)
+    {
+        Line slot;
+        slot.AppendUnsigned(record.Slot);
+        if (AppendText("binding\t", outText) == false || AppendLocation(snapshot, record.Variable, outText) == false ||
+            AppendText("\t", outText) == false || AppendText(record.Name.GetView(), outText) == false ||
+            AppendText("\t", outText) == false || AppendText(GetResourceKindName(record.Kind), outText) == false ||
+            AppendText("\t", outText) == false || AppendText(slot.GetView(), outText) == false ||
+            AppendText("\n", outText) == false)
+        {
+            return false;
+        }
+    }
+    for (const language::VertexInputRecord& record : result.VertexInputs)
+    {
+        Line location;
+        location.AppendUnsigned(record.Location);
+        if (AppendText("vertex-input\t", outText) == false ||
+            AppendLocation(snapshot, record.Entry, outText) == false || AppendText("\t", outText) == false ||
+            AppendText(record.Name.GetView(), outText) == false || AppendText("\t", outText) == false ||
+            AppendText(location.GetView(), outText) == false || AppendText("\n", outText) == false)
         {
             return false;
         }
@@ -749,12 +466,22 @@ int main(int argc, char** argv)
 #endif
     Options options;
     const bool isValid = ParseArguments(argc, argv, options) == true &&
-                         (options.Command == "format" || options.PathCount == 1) &&
-                         (options.Command == "check" || options.Command == "lower" || options.Command == "format");
+                         (options.Command == "format" || options.Command == "lsp" || options.PathCount == 1) &&
+                         (options.Command == "check" || options.Command == "lower" || options.Command == "format" ||
+                          options.Command == "lsp");
     if (isValid == false)
     {
         WriteError(USAGE);
         return EXIT_USAGE;
+    }
+    if (options.Command == "lsp")
+    {
+        LanguageServerOptions server;
+        server.Root = options.HasRoot == true ? options.Root : std::string_view{};
+        server.IncludeDirectories = BorrowedView<const BorrowedView<const char>>(options.IncludeDirectories.GetData(),
+                                                                                 options.IncludeDirectoryCount);
+        server.Style = options.Lowering.Check.Style;
+        return RunLanguageServer(server);
     }
     filesystem::Directory root;
     if (root.Open(options.Root).Succeeded() == false)

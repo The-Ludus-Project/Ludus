@@ -201,6 +201,7 @@ public:
         reportUndefinedFunctions();
         verifyConformances();
         checkSpecializations();
+        layoutStageInterfaces();
         // Flow and style rules read a complete, consistent model, so they run only after it checks.
         if (mSink.HasErrors() == false && mSink.HasOutOfMemory() == false && mIsFatal == false)
         {
@@ -2313,6 +2314,16 @@ private:
         }
         if (type == NO_TYPE)
         {
+            const internal::ResourceSpelling* resourceOrNull = internal::FindResourceSpellingOrNull(name);
+            if (resourceOrNull != nullptr)
+            {
+                type = resolveResourceType(node, *resourceOrNull);
+                mModel.NodeTypes[node] = type;
+                return type;
+            }
+        }
+        if (type == NO_TYPE)
+        {
             const uint32 parameter = findTemplateParameter(name);
             const uint32 bound = findBinding(parameter);
             if (bound != NO_TYPE)
@@ -2341,11 +2352,137 @@ private:
         {
             report(DiagnosticCode::UnsupportedConstruct,
                    node,
-                   ComposeMessage("type arguments arrive with templates (L2) and the binding model (L3)"));
+                   ComposeMessage("only resource types take type arguments; '", name, "' does not"));
             type = TypeTable::ERROR_TYPE;
         }
         mModel.NodeTypes[node] = type;
         return type;
+    }
+
+    /// @brief The resource type `node` spells, such as `Texture2D<float32x4>`.
+    ///
+    /// Textures hold 32-bit numeric scalars or vectors, constant buffers hold a struct, and
+    /// structured buffers hold any value type without `bool` (docs/architecture/shading-language.md).
+    [[nodiscard]] uint32 resolveResourceType(uint32 node, const internal::ResourceSpelling& spelling) noexcept
+    {
+        const uint32 argument = firstChild(node);
+        const bool hasOneArgument = argument != NO_NODE && nextSibling(argument) == NO_NODE;
+        if (spelling.HasElement != hasOneArgument || (argument != NO_NODE && getKind(argument) != SyntaxKind::Type))
+        {
+            report(DiagnosticCode::UnknownType,
+                   node,
+                   spelling.HasElement == true
+                       ? ComposeMessage("'", spelling.Name, "' takes one element type, as in ", spelling.Name, "<T>")
+                       : ComposeMessage("'", spelling.Name, "' takes no type arguments"));
+            return TypeTable::ERROR_TYPE;
+        }
+        uint32 element = NO_TYPE;
+        if (argument != NO_NODE)
+        {
+            element = resolveType(argument);
+            if (isError(element) == true)
+            {
+                return TypeTable::ERROR_TYPE;
+            }
+            const SemanticType& shape = getType(element);
+            bool isValid = false;
+            std::string_view requirement;
+            switch (spelling.Kind)
+            {
+                case ResourceKind::Texture2D:
+                case ResourceKind::RWTexture2D:
+                    isValid = (shape.Kind == TypeKind::Scalar || shape.Kind == TypeKind::Vector) &&
+                              (shape.Scalar == ScalarKind::Float32 || shape.Scalar == ScalarKind::Int32 ||
+                               shape.Scalar == ScalarKind::Uint32);
+                    requirement = "a float32, int32 or uint32 scalar or vector";
+                    break;
+                case ResourceKind::ConstantBuffer:
+                    isValid =
+                        shape.Kind == TypeKind::Struct && isOpaque(element) == false && containsBool(element) == false;
+                    requirement = "a struct without bool fields";
+                    break;
+                case ResourceKind::StructuredBuffer:
+                case ResourceKind::RWStructuredBuffer:
+                    isValid = shape.Kind != TypeKind::Interface && shape.Kind != TypeKind::TypeParameter &&
+                              shape.Kind != TypeKind::Resource && shape.Kind != TypeKind::Void &&
+                              isOpaque(element) == false && containsBool(element) == false;
+                    requirement = "a value type without bool";
+                    break;
+                case ResourceKind::Sampler:
+                    break;
+            }
+            if (isValid == false)
+            {
+                const TypeNameText found = nameOf(element);
+                report(DiagnosticCode::TypeMismatch,
+                       argument,
+                       ComposeMessage("the element of ",
+                                      spelling.Name,
+                                      " is ",
+                                      requirement,
+                                      ", not ",
+                                      found.GetView(),
+                                      "; bool has no buffer layout, use uint32"));
+                return TypeTable::ERROR_TYPE;
+            }
+        }
+        uint32 type = NO_TYPE;
+        const internal::TypeOutcome outcome = mTypes.TryGetResource(spelling.Kind, element, type);
+        if (outcome != internal::TypeOutcome::Ok)
+        {
+            return failType(outcome, node);
+        }
+        return type;
+    }
+
+    /// True when `type` is, or contains, a `bool`.
+    [[nodiscard]] bool containsBool(uint32 type) const noexcept
+    {
+        const SemanticType& shape = getType(type);
+        switch (shape.Kind)
+        {
+            case TypeKind::Scalar:
+            case TypeKind::Vector:
+            case TypeKind::Matrix:
+                return shape.Scalar == ScalarKind::Bool;
+            case TypeKind::Array:
+                return containsBool(shape.Element);
+            case TypeKind::Struct: {
+                const Symbol& declared = mModel.Symbols[shape.Symbol];
+                for (uint32 i = 0; i < declared.MemberCount; ++i)
+                {
+                    const Symbol& member = mModel.Symbols[mModel.Members[declared.FirstMember + i]];
+                    if (member.Kind == SymbolKind::Field && containsBool(member.Type) == true)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            default:
+                return false;
+        }
+    }
+
+    [[nodiscard]] bool isResource(uint32 type) const noexcept
+    {
+        return type != NO_TYPE && type < mModel.Types.GetSize() && getType(type).Kind == TypeKind::Resource;
+    }
+
+    /// Report `what` and return the error type when `type` is a resource; resources are handles
+    /// declared at top level, not values.
+    [[nodiscard]] uint32 rejectResourceValue(uint32 type, uint32 node, std::string_view what) noexcept
+    {
+        if (isResource(type) == false)
+        {
+            return type;
+        }
+        report(DiagnosticCode::TypeMismatch,
+               node,
+               ComposeMessage(what,
+                              " cannot be a resource; declare resources at top level and pass them as 'in' "
+                              "parameters"));
+        return TypeTable::ERROR_TYPE;
     }
 
     /// Apply the ArraySize children that follow `child` to `element`, outermost first.
@@ -2405,6 +2542,14 @@ private:
         }
         if (isError(element) == true)
         {
+            return TypeTable::ERROR_TYPE;
+        }
+        if (dimensionCount > 0 && isResource(element) == true)
+        {
+            report(DiagnosticCode::TypeMismatch,
+                   child == NO_NODE ? 0 : child,
+                   ComposeMessage("resources cannot form arrays; binding arrays wait for the RHI, so declare one "
+                                  "resource per binding"));
             return TypeTable::ERROR_TYPE;
         }
         uint32 type = element;
@@ -2489,14 +2634,36 @@ private:
     {
         const SyntaxNode& syntax = getNode(node);
         const bool isStaticConstant = syntax.IsStatic == true && syntax.IsConst == true;
-        if (isStaticConstant == false && syntax.IsGroupshared == false && mIsInExtern == false)
+        const bool isResourceDeclaration =
+            internal::FindResourceSpellingOrNull(spellNode(skipAttributes(firstChild(node)))) != nullptr;
+        if (isStaticConstant == false && syntax.IsGroupshared == false && mIsInExtern == false &&
+            isResourceDeclaration == false)
         {
             report(DiagnosticCode::InvalidTopLevelVariable,
                    node,
-                   ComposeMessage("top-level variables are 'static const' or 'groupshared'; resources come from "
-                                  "render-graph bindings or 'extern slang' declarations"));
+                   ComposeMessage("top-level variables are 'static const', 'groupshared' or resources such as "
+                                  "Texture2D<float32x4>; other values come from bindings or 'extern slang'"));
         }
         checkVariable(node, true);
+    }
+
+    /// Give resource variable `symbol` the next binding slot.
+    void assignSlot(uint32 symbol, uint32 node) noexcept
+    {
+        if (mModel.Bindings.GetSize() >= MAX_BINDINGS)
+        {
+            report(DiagnosticCode::CheckerLimit,
+                   node,
+                   ComposeMessage("more than ", uint64{MAX_BINDINGS}, " resource bindings"));
+            return;
+        }
+        if (mModel.Bindings.TryAdd(symbol) == false)
+        {
+            mSink.ReportOutOfMemory();
+            mIsFatal = true;
+            return;
+        }
+        getSymbol(symbol).Slot = static_cast<uint32>(mModel.Bindings.GetSize() - 1);
     }
 
     /// Check a variable declaration and bind its name in the current scope.
@@ -2515,6 +2682,29 @@ private:
         {
             report(DiagnosticCode::UnknownType, node, ComposeMessage("a variable cannot be void"));
             type = TypeTable::ERROR_TYPE;
+        }
+        const bool isResourceVariable = isResource(type);
+        if (isResourceVariable == true && isGlobal == false)
+        {
+            report(DiagnosticCode::TypeMismatch,
+                   node,
+                   ComposeMessage("resources are declared at top level, where they become bindings; pass them "
+                                  "to functions as 'in' parameters"));
+            type = TypeTable::ERROR_TYPE;
+        }
+        else if (isResourceVariable == true &&
+                 (syntax.IsStatic == true || syntax.IsConst == true || syntax.IsGroupshared == true))
+        {
+            report(DiagnosticCode::InvalidTopLevelVariable,
+                   node,
+                   ComposeMessage("a resource binding takes no 'static', 'const' or 'groupshared'"));
+        }
+        if (isResourceVariable == true && initializer != NO_NODE)
+        {
+            report(DiagnosticCode::InvalidInitializer,
+                   initializer,
+                   ComposeMessage("a resource binding takes no initializer; the host binds it to its slot"));
+            initializer = NO_NODE;
         }
         if (syntax.IsGroupshared == true && isGlobal == false)
         {
@@ -2556,6 +2746,10 @@ private:
         declared.Type = type;
         declared.IsConstant = isConstant;
         declared.IsGroupshared = syntax.IsGroupshared;
+        if (isResourceVariable == true && isGlobal == true && mIsInExtern == false && mIsSpecializing == false)
+        {
+            assignSlot(symbol, node);
+        }
         if (isConstant == true && value.IsKnown == true)
         {
             declared.HasIntegerValue = true;
@@ -2740,6 +2934,45 @@ private:
         return NO_SYMBOL;
     }
 
+    /// The stage value a field semantic names: `: ClipPosition` on a float32x4, `: Depth` on a
+    /// float32.
+    [[nodiscard]] StageValue checkFieldSemantic(uint32 semantic, uint32 type) noexcept
+    {
+        const std::string_view name = spellNode(semantic);
+        StageValue value = StageValue::None;
+        uint32 expected = NO_TYPE;
+        constexpr uint32 POSITION_COMPONENTS = 4;
+        if (name == "ClipPosition")
+        {
+            value = StageValue::ClipPosition;
+            expected = mTypes.GetVector(ScalarKind::Float32, POSITION_COMPONENTS);
+        }
+        else if (name == "Depth")
+        {
+            value = StageValue::Depth;
+            expected = mTypes.GetScalar(ScalarKind::Float32);
+        }
+        else
+        {
+            report(DiagnosticCode::InvalidSemantic,
+                   semantic,
+                   ComposeMessage("'",
+                                  name,
+                                  "' is not a field semantic; fields take ': ClipPosition' or ': Depth', and other "
+                                  "locations are assigned in field order"));
+            return StageValue::None;
+        }
+        if (isError(type) == false && type != expected)
+        {
+            const TypeNameText expectedName = nameOf(expected);
+            report(DiagnosticCode::InvalidSemantic,
+                   semantic,
+                   ComposeMessage("': ", name, "' is a ", expectedName.GetView(), " field"));
+            return StageValue::None;
+        }
+        return value;
+    }
+
     void checkField(uint32 structSymbol, uint32 node) noexcept
     {
         const SyntaxNode& syntax = getNode(node);
@@ -2754,6 +2987,7 @@ private:
         }
         const uint32 typeNode = firstChild(node);
         uint32 type = rejectInterfaceValue(applyArraySizes(resolveType(typeNode), nextSibling(typeNode)), typeNode);
+        type = rejectResourceValue(type, typeNode, "a struct field");
         if (isError(type) == false && getType(type).Kind == TypeKind::Struct &&
             getType(type).Symbol == mIncompleteStruct)
         {
@@ -2763,6 +2997,12 @@ private:
         uint32 initializer = nextSibling(typeNode);
         while (initializer != NO_NODE && getKind(initializer) == SyntaxKind::ArraySize)
         {
+            initializer = nextSibling(initializer);
+        }
+        StageValue value = StageValue::None;
+        if (initializer != NO_NODE && getKind(initializer) == SyntaxKind::Semantic)
+        {
+            value = checkFieldSemantic(initializer, type);
             initializer = nextSibling(initializer);
         }
         if (initializer != NO_NODE)
@@ -2797,6 +3037,7 @@ private:
         getSymbol(field).Type = type;
         getSymbol(field).Parent = structSymbol;
         getSymbol(field).HasDefault = initializer != NO_NODE;
+        getSymbol(field).Value = value;
         ++getSymbol(structSymbol).MemberCount;
         mModel.NodeTypes[node] = type;
     }
@@ -2808,6 +3049,7 @@ private:
         uint32 ReturnType = NO_TYPE;
         bool IsEntry = false;
         bool IsMutating = false;
+        EntryStage Stage = EntryStage::None;
     };
 
     [[nodiscard]] Signature checkFunctionAttributes(uint32 node, uint32 structSymbol) noexcept
@@ -2826,11 +3068,27 @@ private:
             if (name == "stage")
             {
                 const uint32 argument = firstChild(attribute);
-                if (argumentCount != 1 || getKind(argument) != SyntaxKind::Name || spellNode(argument) != "compute")
+                const std::string_view stage = argumentCount == 1 && getKind(argument) == SyntaxKind::Name
+                                                   ? spellNode(argument)
+                                                   : std::string_view{};
+                if (stage == "compute")
+                {
+                    signature.Stage = EntryStage::Compute;
+                }
+                else if (stage == "vertex")
+                {
+                    signature.Stage = EntryStage::Vertex;
+                }
+                else if (stage == "fragment")
+                {
+                    signature.Stage = EntryStage::Fragment;
+                }
+                else
                 {
                     report(DiagnosticCode::InvalidAttribute,
                            attribute,
-                           ComposeMessage("L1 entry points are '[stage(compute)]'; raster stages arrive in L3"));
+                           ComposeMessage("entry points are '[stage(compute)]', '[stage(vertex)]' or "
+                                          "'[stage(fragment)]'"));
                 }
                 signature.IsEntry = true;
             }
@@ -2872,11 +3130,18 @@ private:
                        ComposeMessage("'", name, "' is not a function attribute"));
             }
         }
-        if (signature.IsEntry != hasThreads)
+        const bool isCompute = signature.Stage == EntryStage::Compute;
+        if (isCompute != hasThreads && (signature.Stage == EntryStage::None || isCompute == true))
         {
             report(DiagnosticCode::InvalidAttribute,
                    node,
                    ComposeMessage("compute entry points need both '[stage(compute)]' and '[threads(x, y, z)]'"));
+        }
+        else if (hasThreads == true && isCompute == false)
+        {
+            report(DiagnosticCode::InvalidAttribute,
+                   node,
+                   ComposeMessage("'[threads(x, y, z)]' applies to compute entry points only"));
         }
         return signature;
     }
@@ -2910,7 +3175,9 @@ private:
         const SyntaxNode& syntax = getNode(node);
         const Signature signature = checkFunctionAttributes(node, structSymbol);
         const uint32 returnNode = skipAttributes(firstChild(node));
-        const uint32 returnType = rejectInterfaceValue(resolveType(returnNode), returnNode);
+        const uint32 returnType = rejectResourceValue(rejectInterfaceValue(resolveType(returnNode), returnNode),
+                                                      returnNode,
+                                                      "a return value");
         const uint32 symbol = createSymbol(SymbolKind::Function, syntax.Token, node);
         if (symbol == NO_SYMBOL)
         {
@@ -2919,6 +3186,7 @@ private:
         getSymbol(symbol).Type = returnType;
         getSymbol(symbol).Parent = structSymbol;
         getSymbol(symbol).IsMutating = signature.IsMutating;
+        getSymbol(symbol).Stage = signature.Stage;
         // Parameters are checked in their own scope to catch repeated names, then unbound until
         // the body is checked, so the function name binds in the enclosing scope.
         if (enterScope() == false)
@@ -2934,12 +3202,16 @@ private:
                 body = child;
                 break;
             }
-            checkParameter(symbol, child, signature.IsEntry);
+            checkParameter(symbol, child, signature.Stage);
         }
         mScopes.Leave();
-        if (signature.IsEntry == true && returnType != TypeTable::VOID_TYPE)
+        if (signature.Stage == EntryStage::Compute && returnType != TypeTable::VOID_TYPE)
         {
             report(DiagnosticCode::InvalidReturn, returnNode, ComposeMessage("compute entry points return void"));
+        }
+        if (signature.IsEntry == true && structSymbol != NO_SYMBOL)
+        {
+            report(DiagnosticCode::InvalidAttribute, node, ComposeMessage("entry points are free functions"));
         }
         getSymbol(symbol).IsDefined = body != NO_NODE;
         if (body != NO_NODE && mIsInExtern == true)
@@ -3162,11 +3434,21 @@ private:
         return symbol;
     }
 
-    void checkParameter(uint32 function, uint32 node, bool isEntry) noexcept
+    void checkParameter(uint32 function, uint32 node, EntryStage stage) noexcept
     {
         const SyntaxNode& syntax = getNode(node);
         const uint32 typeNode = firstChild(node);
         uint32 type = rejectInterfaceValue(applyArraySizes(resolveType(typeNode), nextSibling(typeNode)), typeNode);
+        if (isResource(type) == true && (stage != EntryStage::None || syntax.Direction == ParameterDirection::Out ||
+                                         syntax.Direction == ParameterDirection::Inout))
+        {
+            report(DiagnosticCode::TypeMismatch,
+                   typeNode,
+                   stage != EntryStage::None
+                       ? ComposeMessage("entry points read resources as top-level bindings, not parameters")
+                       : ComposeMessage("resources are passed as 'in' parameters; they cannot be written"));
+            type = TypeTable::ERROR_TYPE;
+        }
         if (type == TypeTable::VOID_TYPE)
         {
             report(DiagnosticCode::UnknownType, typeNode, ComposeMessage("a parameter cannot be void"));
@@ -3183,7 +3465,7 @@ private:
             semantic = child;
             child = nextSibling(child);
         }
-        checkSemantic(node, semantic, type, isEntry);
+        const StageValue value = checkSemantic(node, semantic, type, stage);
         const uint32 defaultValue = child;
         if (defaultValue != NO_NODE)
         {
@@ -3212,50 +3494,86 @@ private:
         declared.Direction = syntax.Direction;
         declared.Parent = function;
         declared.HasDefault = defaultValue != NO_NODE;
+        declared.Value = value;
         ++getSymbol(function).MemberCount;
         mModel.NodeTypes[node] = type;
         (void)bindSymbol(symbol);
     }
 
-    void checkSemantic(uint32 parameter, uint32 semantic, uint32 type, bool isEntry) noexcept
+    /// @brief Check a parameter's semantic for an entry point of `stage`.
+    ///
+    /// Compute parameters need a system value. Vertex and fragment parameters take one only for
+    /// system values (`VertexIndex`, `InstanceIndex`, `FrontFacing`); their other inputs are
+    /// attributes or the stage interface, laid out by layoutStageInterfaces. Returns what a
+    /// vertex or fragment system-value parameter carries.
+    [[nodiscard]] StageValue checkSemantic(uint32 parameter, uint32 semantic, uint32 type, EntryStage stage) noexcept
     {
+        const bool isWritten = getNode(parameter).Direction == ParameterDirection::Out ||
+                               getNode(parameter).Direction == ParameterDirection::Inout;
         if (semantic == NO_NODE)
         {
-            if (isEntry == true)
+            if (stage == EntryStage::Compute)
             {
                 report(DiagnosticCode::InvalidSemantic,
                        parameter,
                        ComposeMessage("compute entry point parameters need a system-value semantic"));
             }
-            return;
+            else if (stage != EntryStage::None && isWritten == true)
+            {
+                report(DiagnosticCode::InvalidSemantic,
+                       parameter,
+                       ComposeMessage("entry point parameters are inputs; return the outputs"));
+            }
+            return StageValue::None;
         }
-        if (isEntry == false)
+        if (stage == EntryStage::None)
         {
             report(DiagnosticCode::InvalidSemantic,
                    semantic,
                    ComposeMessage("semantics apply to entry point parameters only"));
-            return;
+            return StageValue::None;
         }
         const std::string_view name = spellNode(semantic);
         uint32 expected = NO_TYPE;
+        StageValue value = StageValue::None;
         constexpr uint32 THREAD_ID_COMPONENTS = 3;
-        if (name == "DispatchThreadId" || name == "GroupThreadId" || name == "GroupId")
+        std::string_view choices;
+        switch (stage)
         {
-            expected = mTypes.GetVector(ScalarKind::Uint32, THREAD_ID_COMPONENTS);
-        }
-        else if (name == "GroupIndex")
-        {
-            expected = mTypes.GetScalar(ScalarKind::Uint32);
+            case EntryStage::Compute:
+                if (name == "DispatchThreadId" || name == "GroupThreadId" || name == "GroupId")
+                {
+                    expected = mTypes.GetVector(ScalarKind::Uint32, THREAD_ID_COMPONENTS);
+                }
+                else if (name == "GroupIndex")
+                {
+                    expected = mTypes.GetScalar(ScalarKind::Uint32);
+                }
+                choices = "a compute semantic; use DispatchThreadId, GroupThreadId, GroupId or GroupIndex";
+                break;
+            case EntryStage::Vertex:
+                if (name == "VertexIndex" || name == "InstanceIndex")
+                {
+                    expected = mTypes.GetScalar(ScalarKind::Uint32);
+                    value = name == "VertexIndex" ? StageValue::VertexIndex : StageValue::InstanceIndex;
+                }
+                choices = "a vertex semantic; use VertexIndex or InstanceIndex, and leave attributes without one";
+                break;
+            case EntryStage::Fragment:
+                if (name == "FrontFacing")
+                {
+                    expected = mTypes.GetScalar(ScalarKind::Bool);
+                    value = StageValue::FrontFacing;
+                }
+                choices = "a fragment semantic; use FrontFacing, and read the stage interface without one";
+                break;
+            case EntryStage::None:
+                break;
         }
         if (expected == NO_TYPE)
         {
-            report(DiagnosticCode::InvalidSemantic,
-                   semantic,
-                   ComposeMessage("'",
-                                  name,
-                                  "' is not a compute semantic; use DispatchThreadId, GroupThreadId, GroupId or "
-                                  "GroupIndex"));
-            return;
+            report(DiagnosticCode::InvalidSemantic, semantic, ComposeMessage("'", name, "' is not ", choices));
+            return StageValue::None;
         }
         if (isError(type) == false && type != expected)
         {
@@ -3264,10 +3582,365 @@ private:
                    semantic,
                    ComposeMessage("'", name, "' has type ", expectedName.GetView()));
         }
-        if (getNode(parameter).Direction == ParameterDirection::Out ||
-            getNode(parameter).Direction == ParameterDirection::Inout)
+        if (isWritten == true)
         {
             report(DiagnosticCode::InvalidSemantic, semantic, ComposeMessage("system values are inputs"));
+        }
+        return value;
+    }
+
+    // ----- Stage interfaces ----------------------------------------------------------------------
+
+    /// What a struct is in the stage interfaces of a module.
+    enum class StructRole : foundation::uint8
+    {
+        VertexInput,
+        StageInterface,
+        FragmentOutput,
+    };
+
+    struct StructRoleRecord final
+    {
+        uint32 Struct = NO_SYMBOL;
+        StructRole Role = StructRole::VertexInput;
+    };
+
+    /// True for the values a stage interface carries: 32-bit float or integer scalars and vectors.
+    [[nodiscard]] bool isStageValueType(uint32 type) const noexcept
+    {
+        const SemanticType& shape = getType(type);
+        return (shape.Kind == TypeKind::Scalar || shape.Kind == TypeKind::Vector) &&
+               (shape.Scalar == ScalarKind::Float32 || shape.Scalar == ScalarKind::Int32 ||
+                shape.Scalar == ScalarKind::Uint32);
+    }
+
+    [[nodiscard]] static std::string_view describeRole(StructRole role) noexcept
+    {
+        switch (role)
+        {
+            case StructRole::VertexInput:
+                return "vertex input";
+            case StructRole::StageInterface:
+                return "stage interface";
+            case StructRole::FragmentOutput:
+                return "fragment output";
+        }
+        return {};
+    }
+
+    /// Record that `structSymbol` plays `role`; false (reported) when it already plays another.
+    [[nodiscard]] bool claimRole(uint32 structSymbol, StructRole role, uint32 node, bool& outIsNew) noexcept
+    {
+        outIsNew = true;
+        for (const StructRoleRecord& record : mStructRoles)
+        {
+            if (record.Struct != structSymbol)
+            {
+                continue;
+            }
+            outIsNew = false;
+            if (record.Role != role)
+            {
+                report(DiagnosticCode::InvalidStageInterface,
+                       node,
+                       ComposeMessage("'",
+                                      getSymbolName(structSymbol),
+                                      "' is already a ",
+                                      describeRole(record.Role),
+                                      " struct; a struct has one role, so declare another struct for the ",
+                                      describeRole(role)));
+                return false;
+            }
+            return true;
+        }
+        StructRoleRecord record;
+        record.Struct = structSymbol;
+        record.Role = role;
+        if (mStructRoles.TryAdd(record) == false)
+        {
+            mSink.ReportOutOfMemory();
+            mIsFatal = true;
+            return false;
+        }
+        return true;
+    }
+
+    /// Give `symbol` the next location, reporting when MAX_STAGE_LOCATIONS are taken.
+    [[nodiscard]] bool assignLocation(uint32 symbol, StageValue value, uint32& inoutNext, uint32 node) noexcept
+    {
+        if (inoutNext >= MAX_STAGE_LOCATIONS)
+        {
+            report(DiagnosticCode::InvalidStageInterface,
+                   node,
+                   ComposeMessage("more than ", uint64{MAX_STAGE_LOCATIONS}, " locations in one stage interface"));
+            return false;
+        }
+        Symbol& declared = getSymbol(symbol);
+        if (declared.Location != NO_LOCATION && declared.Location != inoutNext)
+        {
+            report(DiagnosticCode::InvalidStageInterface,
+                   node,
+                   ComposeMessage("'",
+                                  getSymbolName(declared.Parent),
+                                  "' would take different locations in two entry points; declare it as their "
+                                  "first input, or use one struct per entry point"));
+            return false;
+        }
+        declared.Value = value;
+        declared.Location = inoutNext;
+        ++inoutNext;
+        return true;
+    }
+
+    /// Lay out the vertex inputs of vertex entry point `function`: attributes take locations from 0
+    /// in declaration order, struct fields flattened.
+    void layoutVertexInputs(uint32 function) noexcept
+    {
+        const Symbol& declared = mModel.Symbols[function];
+        uint32 next = 0;
+        for (uint32 i = 0; i < declared.MemberCount && mIsFatal == false; ++i)
+        {
+            const uint32 parameter = mModel.Members[declared.FirstMember + i];
+            const Symbol& input = mModel.Symbols[parameter];
+            if (input.Value != StageValue::None || isError(input.Type) == true)
+            {
+                continue;
+            }
+            const SemanticType& shape = getType(input.Type);
+            if (isStageValueType(input.Type) == true)
+            {
+                (void)assignLocation(parameter, StageValue::Attribute, next, input.Declaration);
+                continue;
+            }
+            bool isNew = false;
+            if (shape.Kind != TypeKind::Struct || isOpaque(input.Type) == true ||
+                mModel.Symbols[shape.Symbol].IsExtern == true)
+            {
+                const TypeNameText found = nameOf(input.Type);
+                report(DiagnosticCode::InvalidStageInterface,
+                       input.Declaration,
+                       ComposeMessage("a vertex attribute is a 32-bit numeric scalar or vector, or a LUSL struct of "
+                                      "them, not ",
+                                      found.GetView()));
+                continue;
+            }
+            if (claimRole(shape.Symbol, StructRole::VertexInput, input.Declaration, isNew) == false)
+            {
+                continue;
+            }
+            const Symbol& structure = mModel.Symbols[shape.Symbol];
+            for (uint32 k = 0; k < structure.MemberCount; ++k)
+            {
+                const uint32 field = mModel.Members[structure.FirstMember + k];
+                const Symbol& member = mModel.Symbols[field];
+                if (member.Kind != SymbolKind::Field)
+                {
+                    continue;
+                }
+                if (isStageValueType(member.Type) == false || member.Value == StageValue::ClipPosition ||
+                    member.Value == StageValue::Depth)
+                {
+                    report(DiagnosticCode::InvalidStageInterface,
+                           member.Declaration,
+                           ComposeMessage("vertex input fields are 32-bit numeric scalars or vectors without "
+                                          "semantics"));
+                    continue;
+                }
+                (void)assignLocation(field, StageValue::Attribute, next, input.Declaration);
+            }
+        }
+    }
+
+    /// Lay out stage-interface struct `type`: one `: ClipPosition` field, and varyings from 0 in
+    /// field order. Returns false when `type` is not a valid stage interface.
+    [[nodiscard]] bool layoutInterface(uint32 type, uint32 node) noexcept
+    {
+        const SemanticType& shape = getType(type);
+        if (shape.Kind != TypeKind::Struct || isOpaque(type) == true || mModel.Symbols[shape.Symbol].IsExtern == true)
+        {
+            const TypeNameText found = nameOf(type);
+            report(DiagnosticCode::InvalidStageInterface,
+                   node,
+                   ComposeMessage("the stage interface is a LUSL struct with a 'float32x4 name : ClipPosition' "
+                                  "field, not ",
+                                  found.GetView()));
+            return false;
+        }
+        bool isNew = false;
+        if (claimRole(shape.Symbol, StructRole::StageInterface, node, isNew) == false)
+        {
+            return false;
+        }
+        if (isNew == false)
+        {
+            return true;
+        }
+        const Symbol& structure = mModel.Symbols[shape.Symbol];
+        uint32 next = 0;
+        uint32 positionCount = 0;
+        for (uint32 k = 0; k < structure.MemberCount; ++k)
+        {
+            const uint32 field = mModel.Members[structure.FirstMember + k];
+            const Symbol& member = mModel.Symbols[field];
+            if (member.Kind != SymbolKind::Field)
+            {
+                continue;
+            }
+            if (member.Value == StageValue::ClipPosition)
+            {
+                ++positionCount;
+                continue;
+            }
+            if (member.Value == StageValue::Depth || isStageValueType(member.Type) == false)
+            {
+                report(DiagnosticCode::InvalidStageInterface,
+                       member.Declaration,
+                       ComposeMessage("stage-interface fields are 32-bit numeric scalars or vectors; ': Depth' "
+                                      "belongs to a fragment output"));
+                continue;
+            }
+            (void)assignLocation(field, StageValue::Varying, next, member.Declaration);
+        }
+        if (positionCount != 1)
+        {
+            report(DiagnosticCode::InvalidStageInterface,
+                   structure.Declaration,
+                   ComposeMessage("a stage interface has exactly one 'float32x4 name : ClipPosition' field, not ",
+                                  uint64{positionCount}));
+            return false;
+        }
+        return true;
+    }
+
+    /// Lay out the output of fragment entry point `function`: a scalar or vector is target 0; a
+    /// struct writes targets from 0 in field order and at most one `: Depth` field.
+    void layoutFragmentOutput(uint32 function) noexcept
+    {
+        const Symbol& declared = mModel.Symbols[function];
+        const uint32 type = declared.Type;
+        if (type == TypeTable::VOID_TYPE || isError(type) == true || isStageValueType(type) == true)
+        {
+            return;
+        }
+        const SemanticType& shape = getType(type);
+        const uint32 returnNode = skipAttributes(firstChild(declared.Declaration));
+        bool isNew = false;
+        if (shape.Kind != TypeKind::Struct || isOpaque(type) == true || mModel.Symbols[shape.Symbol].IsExtern == true)
+        {
+            const TypeNameText found = nameOf(type);
+            report(DiagnosticCode::InvalidStageInterface,
+                   returnNode,
+                   ComposeMessage("a fragment entry point returns void, a 32-bit numeric scalar or vector, or a "
+                                  "LUSL struct of targets, not ",
+                                  found.GetView()));
+            return;
+        }
+        if (claimRole(shape.Symbol, StructRole::FragmentOutput, returnNode, isNew) == false || isNew == false)
+        {
+            return;
+        }
+        const Symbol& structure = mModel.Symbols[shape.Symbol];
+        uint32 next = 0;
+        uint32 depthCount = 0;
+        for (uint32 k = 0; k < structure.MemberCount; ++k)
+        {
+            const uint32 field = mModel.Members[structure.FirstMember + k];
+            const Symbol& member = mModel.Symbols[field];
+            if (member.Kind != SymbolKind::Field)
+            {
+                continue;
+            }
+            if (member.Value == StageValue::Depth)
+            {
+                ++depthCount;
+                continue;
+            }
+            if (member.Value == StageValue::ClipPosition || isStageValueType(member.Type) == false)
+            {
+                report(DiagnosticCode::InvalidStageInterface,
+                       member.Declaration,
+                       ComposeMessage("fragment output fields are 32-bit numeric scalars or vectors, plus at most "
+                                      "one 'float32 name : Depth'"));
+                continue;
+            }
+            (void)assignLocation(field, StageValue::Target, next, member.Declaration);
+        }
+        if (depthCount > 1)
+        {
+            report(DiagnosticCode::InvalidStageInterface,
+                   structure.Declaration,
+                   ComposeMessage("a fragment output has at most one ': Depth' field"));
+        }
+    }
+
+    /// Lay out every vertex and fragment entry point's interface, and require one stage-interface
+    /// struct per module, so the locations the vertex stage writes are the ones the fragment stage
+    /// reads.
+    void layoutStageInterfaces() noexcept
+    {
+        uint32 moduleInterface = NO_TYPE;
+        const auto useInterface = [this, &moduleInterface](uint32 type,
+                                                           uint32 node) { // ludus-style: inferred-type: lambda closure
+            if (layoutInterface(type, node) == false)
+            {
+                return;
+            }
+            if (moduleInterface == NO_TYPE)
+            {
+                moduleInterface = type;
+                return;
+            }
+            if (type != moduleInterface)
+            {
+                const TypeNameText first = nameOf(moduleInterface);
+                const TypeNameText found = nameOf(type);
+                report(DiagnosticCode::InvalidStageInterface,
+                       node,
+                       ComposeMessage("the module's stage interface is ",
+                                      first.GetView(),
+                                      ", so this entry point cannot use ",
+                                      found.GetView(),
+                                      "; one struct carries the vertex outputs to the fragment inputs"));
+            }
+        };
+        for (uint32 symbol = mIntrinsicCount; symbol < mModel.Symbols.GetSize() && mIsFatal == false; ++symbol)
+        {
+            const Symbol& declared = mModel.Symbols[symbol];
+            if (declared.Kind != SymbolKind::Function || declared.Declaration == NO_NODE ||
+                (declared.Stage != EntryStage::Vertex && declared.Stage != EntryStage::Fragment))
+            {
+                continue;
+            }
+            const uint32 returnNode = skipAttributes(firstChild(declared.Declaration));
+            if (declared.Stage == EntryStage::Vertex)
+            {
+                layoutVertexInputs(symbol);
+                if (isError(declared.Type) == false)
+                {
+                    useInterface(declared.Type, returnNode);
+                }
+                continue;
+            }
+            uint32 interfaceCount = 0;
+            for (uint32 i = 0; i < declared.MemberCount; ++i)
+            {
+                const Symbol& input = mModel.Symbols[mModel.Members[declared.FirstMember + i]];
+                if (input.Value != StageValue::None || isError(input.Type) == true)
+                {
+                    continue;
+                }
+                ++interfaceCount;
+                if (interfaceCount > 1)
+                {
+                    report(DiagnosticCode::InvalidStageInterface,
+                           input.Declaration,
+                           ComposeMessage("a fragment entry point reads one stage-interface struct, plus system "
+                                          "values such as ': FrontFacing'"));
+                    continue;
+                }
+                useInterface(input.Type, input.Declaration);
+            }
+            layoutFragmentOutput(symbol);
         }
     }
 
@@ -4503,6 +5176,22 @@ private:
         }
         const std::string_view name = spellNode(node);
         const SemanticType& shape = getType(type);
+        if (shape.Kind == TypeKind::Resource)
+        {
+            const uint32 fieldOrNone = shape.Resource == ResourceKind::ConstantBuffer
+                                           ? findMember(getType(shape.Element).Symbol, name, SymbolKind::Field)
+                                           : NO_SYMBOL;
+            if (fieldOrNone != NO_SYMBOL)
+            {
+                mModel.NodeSymbols[node] = fieldOrNone;
+                return mModel.Symbols[fieldOrNone].Type;
+            }
+            const TypeNameText typeName = nameOf(type);
+            report(DiagnosticCode::UnknownMember,
+                   node,
+                   ComposeMessage(typeName.GetView(), " has no field '", name, "'"));
+            return TypeTable::ERROR_TYPE;
+        }
         if (shape.Kind == TypeKind::Struct)
         {
             if (isOpaque(type) == true)
@@ -4547,6 +5236,40 @@ private:
         return TypeTable::ERROR_TYPE;
     }
 
+    /// `buffer[i]` with a uint32 index, or `texture[pixel]` of an RWTexture2D with a uint32x2 one.
+    [[nodiscard]] uint32 checkResourceIndex(uint32 node, uint32 type, uint32 index, uint32 indexType) noexcept
+    {
+        const SemanticType& shape = getType(type);
+        constexpr uint32 PIXEL_COMPONENTS = 2;
+        uint32 expected = NO_TYPE;
+        if (shape.Resource == ResourceKind::StructuredBuffer || shape.Resource == ResourceKind::RWStructuredBuffer)
+        {
+            expected = mTypes.GetScalar(ScalarKind::Uint32);
+        }
+        else if (shape.Resource == ResourceKind::RWTexture2D)
+        {
+            expected = mTypes.GetVector(ScalarKind::Uint32, PIXEL_COMPONENTS);
+        }
+        if (expected == NO_TYPE)
+        {
+            const TypeNameText found = nameOf(type);
+            report(DiagnosticCode::InvalidOperands,
+                   node,
+                   ComposeMessage(found.GetView(),
+                                  " cannot be indexed; read a Texture2D with Load or Sample, and a ConstantBuffer by "
+                                  "field"));
+            return TypeTable::ERROR_TYPE;
+        }
+        if (isUntyped(indexType) == true || indexType != expected)
+        {
+            if (coerce(index, expected, false) == false)
+            {
+                return TypeTable::ERROR_TYPE;
+            }
+        }
+        return shape.Element;
+    }
+
     [[nodiscard]] uint32 checkIndex(uint32 node) noexcept
     {
         const uint32 object = firstChild(node);
@@ -4556,6 +5279,10 @@ private:
         if (isError(type) == true || isError(indexType) == true)
         {
             return TypeTable::ERROR_TYPE;
+        }
+        if (isResource(type) == true)
+        {
+            return checkResourceIndex(node, type, index, indexType);
         }
         const SemanticType& indexShape = getType(indexType);
         const bool isIntegerIndex =
@@ -4744,6 +5471,10 @@ private:
                 return TypeTable::ERROR_TYPE;
             }
             const SemanticType& shape = getType(objectType);
+            if (shape.Kind == TypeKind::Resource)
+            {
+                return checkResourceMethod(node, callee, objectType, arguments, facts);
+            }
             uint32 method = NO_SYMBOL;
             if (shape.Kind == TypeKind::Struct && isOpaque(objectType) == false)
             {
@@ -4768,6 +5499,89 @@ private:
                callee == NO_NODE ? node : callee,
                ComposeMessage("this is not a function"));
         return TypeTable::ERROR_TYPE;
+    }
+
+    /// @brief The operations of a resource: `Sample(sampler, uv)`, `SampleLevel(sampler, uv, level)`
+    /// and `Load(pixel)` of a Texture2D. Arguments are positional.
+    [[nodiscard]] uint32 checkResourceMethod(uint32 node,
+                                             uint32 callee,
+                                             uint32 objectType,
+                                             const Array<uint32>& arguments,
+                                             const Array<internal::ArgumentFacts>& facts) noexcept
+    {
+        const SemanticType& shape = getType(objectType);
+        const std::string_view name = spellNode(callee);
+        constexpr uint32 UV_COMPONENTS = 2;
+        constexpr uint32 LOAD_COMPONENTS = 3;
+        /// Arguments of Sample (sampler, uv) and SampleLevel (sampler, uv, level).
+        constexpr usize SAMPLE_ARGUMENTS = 2;
+        constexpr usize SAMPLE_LEVEL_ARGUMENTS = 3;
+        constexpr usize MAX_RESOURCE_ARGUMENTS = SAMPLE_LEVEL_ARGUMENTS;
+        uint32 sampler = NO_TYPE;
+        const internal::TypeOutcome outcome = mTypes.TryGetResource(ResourceKind::Sampler, NO_TYPE, sampler);
+        if (outcome != internal::TypeOutcome::Ok)
+        {
+            return failType(outcome, node);
+        }
+        foundation::StaticArray<uint32, MAX_RESOURCE_ARGUMENTS> expected{};
+        usize count = 0;
+        const bool isTexture = shape.Resource == ResourceKind::Texture2D;
+        if (isTexture == true && (name == "Sample" || name == "SampleLevel"))
+        {
+            expected[0] = sampler;
+            expected[1] = mTypes.GetVector(ScalarKind::Float32, UV_COMPONENTS);
+            expected[2] = mTypes.GetScalar(ScalarKind::Float32);
+            count = name == "Sample" ? SAMPLE_ARGUMENTS : SAMPLE_LEVEL_ARGUMENTS;
+        }
+        else if (isTexture == true && name == "Load")
+        {
+            expected[0] = mTypes.GetVector(ScalarKind::Int32, LOAD_COMPONENTS);
+            count = 1;
+        }
+        else
+        {
+            const TypeNameText typeName = nameOf(objectType);
+            report(DiagnosticCode::UnknownMember,
+                   callee,
+                   ComposeMessage(typeName.GetView(),
+                                  " has no operation '",
+                                  name,
+                                  "'; a Texture2D offers Sample, SampleLevel and Load, buffers and RWTexture2D are "
+                                  "indexed"));
+            return TypeTable::ERROR_TYPE;
+        }
+        if (rejectMarks(node, arguments, "resource operations") == false)
+        {
+            return TypeTable::ERROR_TYPE;
+        }
+        if (arguments.GetSize() != count)
+        {
+            report(DiagnosticCode::NoMatchingOverload,
+                   node,
+                   ComposeMessage("'", name, "' takes ", uint64{count}, " arguments"));
+            return TypeTable::ERROR_TYPE;
+        }
+        bool isValid = true;
+        for (usize i = 0; i < count; ++i)
+        {
+            const uint32 value = firstChild(arguments[i]);
+            const bool isSamplerMismatch =
+                isError(facts[i].Type) == false && expected[i] == sampler && facts[i].Type != sampler;
+            if (isSamplerMismatch == true)
+            {
+                // A sampler has no conversion, so name it rather than suggest one.
+                reportMismatch(value, sampler, facts[i].Type);
+            }
+            const bool isArgumentValid = isError(facts[i].Type) == false && isSamplerMismatch == false &&
+                                         coerce(value, expected[i], false) == true;
+            isValid = isValid == true && isArgumentValid == true;
+        }
+        if (isValid == false)
+        {
+            return TypeTable::ERROR_TYPE;
+        }
+        mModel.NodeCallKinds[node] = CallKind::ResourceMethod;
+        return shape.Element;
     }
 
     [[nodiscard]] bool rejectMarks(uint32 node, const Array<uint32>& arguments, std::string_view what) noexcept
@@ -5406,6 +6220,16 @@ private:
                     return false;
                 }
                 const Symbol& declared = mModel.Symbols[symbol];
+                if (isResource(declared.Type) == true)
+                {
+                    report(DiagnosticCode::NotAssignable,
+                           node,
+                           ComposeMessage("'",
+                                          spellNode(node),
+                                          "' is a resource binding and cannot be assigned; write the elements of an "
+                                          "RWStructuredBuffer or RWTexture2D"));
+                    return false;
+                }
                 // A variable of an extern slang block is a uniform the including Slang code declares,
                 // such as a render-graph binding: read-only like a ConstantBuffer.
                 if (declared.Kind == SymbolKind::Variable && declared.IsExtern == true &&
@@ -5454,10 +6278,35 @@ private:
                         return false;
                     }
                 }
-                return requireAssignable(firstChild(node));
+                const uint32 base = firstChild(node);
+                if (isResource(mModel.NodeTypes[base]) == true)
+                {
+                    report(DiagnosticCode::NotAssignable,
+                           node,
+                           ComposeMessage("ConstantBuffer values are uniforms and read-only; copy them into a local "
+                                          "variable to change them"));
+                    return false;
+                }
+                return requireAssignable(base);
             }
-            case SyntaxKind::IndexExpression:
-                return requireAssignable(firstChild(node));
+            case SyntaxKind::IndexExpression: {
+                const uint32 base = firstChild(node);
+                const uint32 baseType = mModel.NodeTypes[base];
+                if (isResource(baseType) == true)
+                {
+                    if (internal::IsWritableResource(getType(baseType).Resource) == true)
+                    {
+                        return true;
+                    }
+                    const TypeNameText found = nameOf(baseType);
+                    report(DiagnosticCode::NotAssignable,
+                           node,
+                           ComposeMessage(found.GetView(),
+                                          " is read-only; declare it as RWStructuredBuffer to write its elements"));
+                    return false;
+                }
+                return requireAssignable(base);
+            }
             default:
                 report(DiagnosticCode::NotAssignable,
                        node,
@@ -5585,6 +6434,8 @@ private:
     /// Every extension so far, in declaration order.
     Array<uint32> mExtensions;
     Array<TemplateRecord> mTemplates;
+    /// The role of each struct that a vertex or fragment entry point uses.
+    Array<StructRoleRecord> mStructRoles;
     Array<Binding> mBindings;
     /// Names of templates that are specialized; see Symbol::IsSpecialized.
     Array<std::string_view> mSpecializedNames;
@@ -5685,6 +6536,16 @@ TypeNameText FormatTypeName(const SemanticModel& model,
             appendNumber(shape.Rows);
             append("x");
             appendNumber(shape.Columns);
+            break;
+        case TypeKind::Resource:
+            append(internal::GetResourceName(shape.Resource));
+            if (shape.Element != NO_TYPE)
+            {
+                const TypeNameText element = FormatTypeName(model, shape.Element, request, preprocessed);
+                append("<");
+                append(element.GetView());
+                append(">");
+            }
             break;
         case TypeKind::Struct:
         case TypeKind::Enum:

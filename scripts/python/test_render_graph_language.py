@@ -141,6 +141,15 @@ class RenderGraphLanguageTests(unittest.TestCase):
         self.assertIn('increase budgets.specializations to at least 3', message)
         self.assertIn('main_shaders/miss.lusl has the most', message)
 
+    def test_report_parser_keeps_graph_records_only(self):
+        report = language._parse_report('binding\tmain.lusl:1\timage\tTexture2D\t0\n'
+                                        'vertex-input\tmain.lusl:3\tinput.Uv\t1\n'
+                                        'groupshared-clear\tmain.lusl:2\tmain.lusl:3\t64\n', build, 'main.lusl')
+        self.assertEqual(report['specializations'], [])
+        self.assertEqual(report['groupshared_clears'][0]['bytes'], 64)
+        with self.assertRaises(ToolingError):
+            language._parse_report('surprise\tx\n', build, 'main.lusl')
+
     def test_manifest_budget_of_specializations_is_optional_and_positive(self):
         manifest = {'version': 1, 'id': 'Graph', 'profiles': ['spirv'], 'schemas': [], 'programs': [],
                     'techniques': [], 'budgets': {'configurations': 1, 'programs': 1}}
@@ -197,7 +206,26 @@ class RenderGraphLanguageTests(unittest.TestCase):
                              'output': 'Depth', 'bindings': [{'id': 'material', 'schema': 'Unused', 'slot': 0}]}
         with self.assertRaises(ToolingError) as conflict:
             language.schema_header('main_shaders/raster.lusl', programs, schemas, build)
-        self.assertIn("bind 'material' to Material and Unused", str(conflict.exception))
+        self.assertIn("bind 'material' as Material and Unused", str(conflict.exception))
+
+    def test_ray_callbacks_read_their_bindings_as_structured_buffers(self):
+        schemas = {'Reservoir': {'id': 'Reservoir', 'role': 'Storage',
+                                 'fields': [{'id': 'Sample', 'type': 'Float4'}, {'id': 'Count', 'type': 'UInt32'}]}}
+        programs = {
+            'Generate': {'source': 'main_shaders/generate.lusl', 'stage': 'ray_generation', 'input': 'RayLaunch',
+                         'output': 'Ray', 'bindings': [{'id': 'ReservoirA', 'schema': 'Reservoir', 'slot': 6,
+                                                        'access': 'ReadWrite'},
+                                                       {'id': 'History', 'schema': 'Reservoir', 'slot': 7,
+                                                        'access': 'Read'}]},
+            'Miss': {'source': 'main_shaders/miss.lusl', 'stage': 'miss', 'input': 'Ray', 'output': 'Color',
+                     'bindings': []},
+        }
+        header = language.schema_header('main_shaders/generate.lusl', programs, schemas, build).decode()
+        self.assertIn('    struct Reservoir\n    {\n        float32x4 Sample;\n        uint32 Count;\n    };', header)
+        self.assertIn('    StructuredBuffer<Reservoir> History;', header)
+        self.assertIn('    RWStructuredBuffer<Reservoir> ReservoirA;', header)
+        # Ray inputs and outputs come from ray_shader.luslh, so a callback without bindings has no header.
+        self.assertIsNone(language.schema_header('main_shaders/miss.lusl', programs, schemas, build))
 
     def test_generated_module_cannot_replace_an_authored_file(self):
         self.write('main_shaders/miss.lusl', '')
