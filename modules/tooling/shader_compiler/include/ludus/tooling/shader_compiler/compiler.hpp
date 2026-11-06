@@ -30,6 +30,10 @@ enum class Target : foundation::uint8
     Wgsl,          ///< WebGPU WGSL.
     Metal,         ///< Metal shading language source.
     SpirvRayQuery, ///< Vulkan SPIR-V 1.5 compute with spvRayQueryKHR; rejects raster stages.
+    /// Direct3D 12 DXIL (shader model 6.0) compiled and signed by the pinned DXC, with
+    /// `LUDUS_DXIL` defined to 1 as for offline builds. Only Windows compilers produce it;
+    /// other hosts return Unavailable. An unsigned container is never published.
+    Dxil,
 };
 /// Shader entry-point stage.
 enum class Stage : foundation::uint8
@@ -92,6 +96,8 @@ public:
     /// Initialize the pinned Slang API. Repeated initialization returns InvalidState.
     /// Returns Unavailable when the pinned version or its SPIR-V optimizer library cannot be
     /// loaded; Slang would otherwise emit unoptimized SPIR-V that differs from slangc's output.
+    /// On Windows it also returns Unavailable unless the pinned `dxcompiler.dll` loads from the
+    /// executable's directory, where `dxil.dll` must sit to sign DXIL output.
     [[nodiscard]] Status Initialize() noexcept;
     /// Synchronously compile captured sources, with no disk reads through the Slang filesystem.
     /// @param request Input views remain alive only for this call; source bytes are copied.
@@ -103,7 +109,8 @@ private:
     struct State;
     foundation::core::UniquePtr<State> mState;
 };
-/// Headless Linux/macOS IPC client. No Slang library is linked into this target.
+/// Headless native IPC client: a private Unix socket on Linux/macOS and a local named pipe
+/// on Windows. No Slang library is linked into this target; other platforms are Unavailable.
 /// Not thread-safe; Submit copies its snapshot, Poll never waits for compiler completion.
 /// Callers keep drawing their active generation until a Ready result is validated and staged.
 class Client final
@@ -113,14 +120,17 @@ public:
     ~Client() noexcept;                        ///< Cancel pending I/O and release owned buffers.
     Client(const Client&) = delete;            ///< Transport ownership is unique.
     Client& operator=(const Client&) = delete; ///< Transport ownership is unique.
-    /// Connect to an existing worker's private Unix socket and enqueue one copied request.
-    /// @param endpoint Native socket pathname, without NUL, shorter than the platform socket limit.
+    /// Connect to an existing worker's endpoint and enqueue one copied request.
+    /// Connection never waits: a missing or fully occupied worker returns Unavailable.
+    /// @param endpoint UTF-8 endpoint without NUL: a socket pathname shorter than the platform
+    /// socket limit on Linux/macOS, or a local pipe name starting with `\\.\pipe\` on Windows.
     /// @param request Complete source snapshot and identity; copied before Submit returns.
     /// @return Pending on admission; InvalidState when another request is active.
     [[nodiscard]] Status Submit(foundation::BorrowedView<const char> endpoint, const Request& request) noexcept;
     /// Advance nonblocking I/O. Pending preserves outResult; completion replaces it and returns idle.
     [[nodiscard]] Status Poll(Result& outResult) noexcept;
     /// Discard pending work locally. The worker may finish it, but its result cannot publish here.
+    /// On Windows this waits only for the cancelled native I/O to release the client's buffers.
     void Cancel() noexcept;
 
 private:

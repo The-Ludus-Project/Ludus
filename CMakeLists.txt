@@ -580,9 +580,17 @@ if(TARGET Ludus::GameHost)
 endif()
 
 if(LUDUS_BUILD_SHADER_WORKER)
-    ludus_sdk_register_component(ShaderCompiler)
-    ludus_sdk_register_feature(ShaderCompiler)
+    # Windows links the compiler library statically into the worker and its tests; only the
+    # worker executable and its Slang/DXC runtime install there (D6c).
+    if(NOT WIN32)
+        ludus_sdk_register_component(ShaderCompiler)
+        ludus_sdk_register_feature(ShaderCompiler)
+    endif()
     ludus_sdk_register_dependency(Slang "2026.1.2" "Apache-2.0-WITH-LLVM-exception" bundled)
+    if(WIN32)
+        # dxcompiler.dll is NCSA and MIT; dxil.dll ships under Microsoft's DXC license terms.
+        ludus_sdk_register_dependency(DirectXShaderCompiler "1.9.2609" "NCSA AND MIT AND LicenseRef-Microsoft-DXIL" bundled)
+    endif()
 endif()
 
 # Redistributable static link-closure dependencies. These are the libraries the

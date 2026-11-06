@@ -1,10 +1,12 @@
 """Bounded client of the headless native Slang worker; no engine/editor startup."""
 import json
 import hashlib
+import os
 from pathlib import Path, PurePosixPath
 import re
 import socket
 import struct
+import time
 
 MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 # The worker's request limits (MAX_SOURCE_FILES and MAX_SOURCE_BYTES in
@@ -13,6 +15,56 @@ MAX_SOURCE_FILES = 64
 MAX_SOURCE_BYTES = 4 * 1024 * 1024
 DEFINES_ROOT = '__ludus_defines.slang'
 INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s+"([^"\n]+)"', re.M)
+# Windows workers listen on a local named pipe; elsewhere the endpoint is a Unix socket path.
+PIPE_PREFIX = '\\\\.\\pipe\\'
+# ERROR_PIPE_BUSY: every listening instance is serving, as a full Unix listen backlog would be.
+PIPE_BUSY = 231
+
+
+class PipeStream:
+    """Blocking named-pipe client with the socket calls exchange needs."""
+
+    def __init__(self, endpoint, timeout):
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                self._file = open(endpoint, 'r+b', buffering=0)
+                return
+            except OSError as error:
+                if getattr(error, 'winerror', None) != PIPE_BUSY or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+
+    def sendall(self, data):
+        view = memoryview(data)
+        while view:
+            view = view[self._file.write(view):]
+
+    def recv(self, count):
+        return self._file.read(count) or b''
+
+    def close(self):
+        self._file.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exception):
+        self.close()
+
+
+def connect(endpoint, timeout=120):
+    """Open one worker connection; a pipe waits only for a free instance, not for replies."""
+    if os.name == 'nt' and str(endpoint).startswith(PIPE_PREFIX):
+        return PipeStream(str(endpoint), timeout)
+    stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        stream.settimeout(timeout)
+        stream.connect(str(endpoint))
+    except OSError:
+        stream.close()
+        raise
+    return stream
 
 
 def receive(stream, count):
@@ -63,9 +115,7 @@ def exchange(endpoint, request):
     payload = json.dumps(request).encode('utf-8')
     if len(payload) > MAX_MESSAGE_BYTES:
         raise RuntimeError('Native shader snapshot exceeds protocol limit')
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
-        stream.settimeout(120)
-        stream.connect(endpoint)
+    with connect(endpoint) as stream:
         stream.sendall(struct.pack('<I', len(payload)) + payload)
         size, = struct.unpack('<I', receive(stream, 4))
         if size == 0 or size > MAX_MESSAGE_BYTES:

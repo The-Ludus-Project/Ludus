@@ -490,7 +490,8 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_SURFACE_DIRECTORY="${rg3_surface_directory}" LUDUS_RG3_BOUND_DIRECTORY="${rg3_bound_directory}"
         LUDUS_RG3_OFFSCREEN_DIRECTORY="${rg3_offscreen_directory}")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::FoundationFilesystem Ludus::ShaderDevelopment)
-    if(TARGET ludus-shader-worker)
+    # The reload journey builds SPIR-V/WGSL/Metal graph packages; Windows graph DXIL is open (D6a).
+    if(TARGET ludus-shader-worker AND NOT WIN32)
         add_test(NAME ludus_shader_reload_gpu COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tools/shader-worker/test_worker.py"
             --worker "$<TARGET_FILE:ludus-shader-worker>" --client "$<TARGET_FILE:ludus_shader_compiler_tests>"

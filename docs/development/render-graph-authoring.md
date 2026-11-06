@@ -8862,11 +8862,12 @@ client; it does not configure Qt, Platform, RHI, audio or game modules. A full S
 can instead enable `LUDUS_BUILD_SHADER_WORKER=ON`. Native editor builds with 3D
 preview enable the worker automatically.
 
-The worker/API library supports native Linux and macOS. The pinned upstream macOS
-Slang API library requires macOS 15; the compiler target advertises that deployment
-minimum. Browser builds can consume cooked generations, but cannot run this native
-worker or Unix-socket client. Existing offline helpers remain available, including
-the older multi-entry fullscreen compatibility path.
+The worker/API library supports native Linux, macOS and Windows. The pinned upstream
+macOS Slang API library requires macOS 15; the compiler target advertises that
+deployment minimum. Windows uses a named pipe instead of a Unix socket; see
+[Windows worker](#windows-worker). Browser builds can consume cooked generations, but
+cannot run this native worker or its client. Existing offline helpers remain
+available, including the older multi-entry fullscreen compatibility path.
 
 Create a private directory for the socket, then keep the worker running:
 
@@ -8921,6 +8922,57 @@ tracks the launching thread, so start such a worker from a thread that lives as
 long as its owner. After a crash, use a new private
 endpoint or explicitly remove the abandoned socket after confirming no worker
 owns it. Clients never silently switch to an offline compiler after worker failure.
+
+### Windows worker
+
+On a Windows host, bootstrap the pinned tools with `python scripts/shader-probe
+bootstrap`, then add the worker to the MSVC runtime preset. The worker builds only
+on a Windows host because it loads the pinned DXC:
+
+```powershell
+cmake --preset windows-msvc-runtime -DLUDUS_BUILD_SHADER_WORKER=ON
+cmake --build --preset windows-msvc-runtime --target ludus-shader-worker
+.\out\build\windows-msvc-runtime\modules\tooling\shader_compiler\ludus-shader-worker.exe --serve \\.\pipe\ludus-shader-$PID
+```
+
+The endpoint is a local pipe name, `\\.\pipe\<name>`; remote and file-system
+names are rejected. The pipe grants access only to the user who started the worker
+and refuses remote clients. A name another process already owns is refused, as an
+occupied socket is elsewhere. Sixteen listening instances act as the connection
+backlog. Requests are still compiled one at a time, and a connection that makes no
+progress for 30 seconds is dropped. A client finding every instance busy gets
+`Unavailable` from `ludus::tooling::shader_compiler::Client` at once. The Python
+helpers retry until a free instance appears. Pass the same pipe name wherever a
+socket path is accepted on other hosts: `--worker-socket` and
+`LUDUS_SHADER_WORKER_SOCKET`.
+
+Requests may select `Target::Dxil` (wire value 4). The worker compiles it as the
+offline Windows build does: shader model 6.0, with `LUDUS_DXIL` defined to 1. The
+pinned `dxil.dll` signs every container; an unsigned container is reported as
+`Unavailable` and never returned. The build verifies `dxcompiler.dll` and
+`dxil.dll` against `config/shader_toolchain.json` and copies them beside the
+worker with the Slang runtime libraries. Their hashes join the worker identity.
+`cmake --install` puts the worker and these libraries in `bin`. The DXC license
+texts go in `share/ludus-shader-tools/licenses/dxc`. The worker refuses to start
+when DXC cannot be loaded from its own directory. Other hosts report DXIL
+requests as `Unavailable`.
+
+Ctrl-C, Ctrl-Break and closing the console stop the worker at once, even during a
+compile. `--stop-with-parent` registers a wait on the launching process and stops
+the worker when that process exits, including `TerminateProcess`. The process
+creation times guard against a reused parent process identifier. In `--stdio`
+mode the standard handles are often anonymous pipes, which cannot time out; the
+worker serves them until the owner closes its input.
+
+Current limits: `LUDUS_SHADER_WORKER_ONLY` remains Linux and macOS. Render-graph
+packages cannot be built through the Windows worker until graph DXIL profiles
+exist. The editor's embedded editors and live viewport arrive with the Windows
+editor port. The Windows lane runs `ludus_shader_compiler_tests` and
+`ludus_shader_worker_protocol`. They cover DXIL compilation with include edits,
+syntax and missing-entry diagnostics, stale identities and client cancellation.
+They also cover malformed frames, occupied and invalid endpoints, stop during a
+compile, owner exit and worker exit. See the
+[Windows D6c milestone](../architecture/windows-direct3d12.md#d6-deliver-runtime-and-developer-workflows).
 
 ### Editor and game clients
 
