@@ -855,6 +855,9 @@ anything. The native worker does the same for requests it receives.
 
 ## SDK declarations
 
+The SDK's `.luslh` headers are generated from Slang reflection, so they cannot
+drift from the Slang they declare.
+
 `math.luslh` declares FoundationMath's `math.slang` for LUSL:
 - its constants, such as `PI` and `RANDOM_MAX_DIMENSION`;
 - `RandomAddress`;
@@ -871,8 +874,51 @@ and Metal.
 defines them before it includes a callback, so the header uses a path-less
 `extern slang` block. `RayLaunch` declares the members every wrapper provides;
 scene-interface wrappers add more, such as `SampleIndex`, which LUSL cannot read
-yet. The scene queries (`TraceClosest`, `TestVisibility`, ...) get declarations
-generated from Slang reflection in L3.
+yet.
+
+**How the headers are generated.** Each header has a template beside it,
+`<name>.luslh.in`: the header with its `extern slang` blocks written as
+directives.
+
+```c
+// LUSL declarations of FoundationMath's shader library (math.slang) ...
+#pragma once
+
+@extern "math.slang"
+@declare PI FLOAT_EXPONENT_BITS RANDOM_MAX_DIMENSION
+
+/// One addressed draw of the counter-based random generator.
+@declare RandomAddress
+@declare ComputeErrorFunction IsFiniteBits MultiplyWide
+@end
+```
+
+- `@extern "file.slang"` opens a block that names the file; `@extern from
+  "file.slang"` opens a path-less block and only reflects the file.
+- `@declare` names functions (every overload), structs and `static const`
+  constants of that file, in the order to declare them. Comments and blank
+  lines, such as a doc comment before a `@declare`, are copied. `@end` closes
+  the block.
+- `tools/lusl-declarations` loads the Slang file through
+  `shader_compiler::Compiler::ReflectDeclarations`, which walks Slang's
+  declaration reflection: return and parameter types with `in`/`out`/`inout`,
+  struct fields, and constant types, spelled as LUSL. Generic declarations are
+  skipped.
+- `cmake/shaders/generate_luslh.py` expands the templates and wraps long
+  signatures one parameter per line. A name the file does not declare, a
+  resource or other type LUSL cannot spell, or an array (LUSL needs a named
+  size) is an error that names the template line.
+- The generated headers are checked in and installed as before. The CTest
+  `lusl_declarations_tests` (shader-worker builds, which link Slang) regenerates
+  them and fails when one is stale, printing the command that rewrites them:
+
+  ```bash
+  python3 cmake/shaders/generate_luslh.py --tool out/build/<preset>/tools/lusl-declarations/lusl-declarations \
+      modules/foundation/math/shaders/math.luslh.in modules/graphics/renderer/shaders/ray_shader.luslh.in
+  ```
+
+The scene queries (`TraceClosest`, `TestVisibility`, ...) are generic Slang
+functions; they get LUSL declarations once the generator can spell generics.
 
 ## Interfaces and templates
 
@@ -1089,11 +1135,15 @@ float32x3 ShadeMiss(in Ray ray)
   in its presets. `ludus_tools` builds outside CMake read the `LUDUS_LUSL_STYLE`
   environment variable. The engine repository always builds `strict`.
 - **Schema declarations.** The schema generator has a LUSL output. For each LUSL
-  source that a `vertex` or `fragment` program names, the build writes
+  source that a `vertex`, `fragment` or ray program names, the build writes
   `graph_schemas.luslh` below the `_ludus_graph` include directory. It holds a
   path-less `extern slang` block with:
-  - the schemas those programs read and write, as structs in name order;
-  - their bindings, as read-only variables, in name order.
+  - the schemas those programs read and write, as structs in name order (ray
+    callbacks read `Ray`, `RayLaunch` and `RayHit` from `ray_shader.luslh`
+    instead);
+  - their bindings, in name order: raster bindings as read-only uniform
+    structs, ray bindings as `StructuredBuffer<S>` (`"access": "Read"`) or
+    `RWStructuredBuffer<S>`, the structured buffers the ray wrapper declares.
 
   ```c
   #include "graph_schemas.luslh"
@@ -1112,8 +1162,10 @@ float32x3 ShadeMiss(in Ray ray)
   the package; the lowered module's bytes are.
 - **Current limits:**
   - Ray callbacks use the [ray callback declarations](#sdk-declarations), or
-    declare more in their own path-less `extern slang` block. Their manifest
-    bindings get no generated declarations yet.
+    declare more in their own path-less `extern slang` block. Scene-interface
+    callbacks cannot be written in LUSL yet: `SceneContext` and the scene
+    queries are generic Slang declarations. Ray storage declarations are
+    checked by build-tool tests; no GPU fixture reads them from LUSL yet.
   - Configuration values do not reach LUSL programs from the render graph yet,
     and render-graph builds emit no development bounds checks.
 - **Evidence:**

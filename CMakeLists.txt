@@ -249,6 +249,7 @@ if(LUDUS_SHADER_WORKER_ONLY)
     # The worker lowers LUSL sources in process; luslc shares that library.
     add_subdirectory(modules/tooling/shader_language)
     add_subdirectory(tools/luslc)
+    add_subdirectory(tools/lusl-declarations)
     configure_package_config_file("${PROJECT_SOURCE_DIR}/cmake/LudusShaderToolsConfig.cmake.in"
         "${PROJECT_BINARY_DIR}/LudusShaderToolsConfig.cmake"
         INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/LudusShaderTools")
@@ -334,6 +335,10 @@ add_subdirectory(modules/tooling/shader_compiler)
 add_subdirectory(modules/tooling/shader_language)
 if(NOT EMSCRIPTEN)
     add_subdirectory(tools/luslc)
+endif()
+# The SDK .luslh generator needs the Slang-linked compiler of shader-worker builds.
+if(TARGET ludus_shader_compiler)
+    add_subdirectory(tools/lusl-declarations)
 endif()
 add_subdirectory(modules/foundation/reflection)
 add_subdirectory(modules/foundation/serialization)

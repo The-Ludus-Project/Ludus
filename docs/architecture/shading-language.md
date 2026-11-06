@@ -32,8 +32,13 @@ L3 is in progress:
   constants, `.lusl` sources in `ludus_compile_shader`, and a composite shader
   whose pixels match its Slang original on the GPU.
 
-Not yet done from L3: `.luslh` declarations generated from Slang reflection.
-L4 is not implemented.
+- L3c: the SDK's `.luslh` headers generated from Slang reflection
+  (`lusl-declarations`, `generate_luslh.py`, `ShaderCompiler::ReflectDeclarations`),
+  and generated declarations of ray-callback storage bindings.
+
+Not yet done from L3: declarations of generic Slang functions, which the scene
+interface (`SceneContext`, `TraceClosest`, ...) needs, and a GPU fixture for
+LUSL ray storage. L4 is not implemented.
 
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
@@ -542,7 +547,9 @@ extern slang "math.slang"
 - **SDK declarations:**
   - L1 ships hand-written `.luslh` files for the shared scene API and
     FoundationMath. A test calls every declaration on every target.
-  - L3 generates them deterministically from Slang reflection at SDK build time.
+  - L3 generates them deterministically from Slang reflection: templates name
+    the declarations, the shader-worker build's Slang reflection spells them,
+    and a test rejects a checked-in header that differs from its generation.
 - **Slang can use LUSL too.** A `.slang` file can include the generated Slang
   of a LUSL module. Public LUSL declarations, overloads included, keep their
   names; only specializations and generated helpers get derived names.
