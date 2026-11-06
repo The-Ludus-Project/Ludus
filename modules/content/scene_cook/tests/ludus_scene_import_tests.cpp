@@ -129,49 +129,59 @@ TEST_CASE("Ludus scene import cooks the engine's occlusion test scenes", "[scene
     }
 }
 
-TEST_CASE("Ludus scene import cooks the engine's single-slit diffraction scene", "[scene_cook][ludus-scene]")
+TEST_CASE("Ludus scene import cooks the engine's diffraction scenes", "[scene_cook][ludus-scene]")
 {
-    const std::string entry = GetTestScene("diffraction/single-slit.luscene.json").string();
-    BestEffortResult result;
-    CookError error;
-    REQUIRE(ImportSceneBestEffort(entry, {}, result, error) == true);
-    CHECK(result.Format == SceneSourceFormat::LudusScene);
-    CHECK(result.Summary.Errors == 0);
-    CHECK(result.Summary.SourceAreaLights == 1);
-    // The light's black surface becomes LUSCN's white rough emitter surface.
-    CHECK(ReportHasCode(result, codes::MATERIAL_APPROXIMATED) == true);
-
-    ludus::resources::SceneDefinition decoded;
-    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
-            ludus::resources::Status::Ok);
-    // The camera stands between the jaws (z in [-0.02, 0]) and the wall (z = -1), facing the wall.
-    CHECK(decoded.Eye == math::Vector3{0, 0, -0.1F});
-    CHECK(decoded.Target == math::Vector3{0, 0, -1});
-
-    usize emitters = 0;
-    usize triangles = 0;
-    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    // Wall and light quads plus closed prisms of six quads each: one jaw, two jaws, and two jaws and the rod.
+    constexpr usize SCENE_COUNT = 3;
+    constexpr ludus::foundation::StaticArray<ExpectedScene, SCENE_COUNT> SCENES{{
+        { .File = "diffraction/single-edge.luscene.json", .Triangles = 16 },
+        { .File = "diffraction/single-slit.luscene.json", .Triangles = 28 },
+        { .File = "diffraction/slit-partial-occluder.luscene.json", .Triangles = 40 },
+    }};
+    for (const ExpectedScene& expected : SCENES)
     {
-        const ludus::resources::SceneMesh& mesh = decoded.Meshes[object.Mesh];
-        triangles += mesh.Indices.GetSize() / 3;
-        const ludus::resources::SceneMaterial& material = decoded.Materials[object.Material];
-        if (material.Emission.X == 0.0F)
+        INFO(expected.File);
+        const std::string entry = GetTestScene(expected.File).string();
+        BestEffortResult result;
+        CookError error;
+        REQUIRE(ImportSceneBestEffort(entry, {}, result, error) == true);
+        CHECK(result.Format == SceneSourceFormat::LudusScene);
+        CHECK(result.Summary.Errors == 0);
+        CHECK(result.Summary.SourceAreaLights == 1);
+        // The light's black surface becomes LUSCN's white rough emitter surface.
+        CHECK(ReportHasCode(result, codes::MATERIAL_APPROXIMATED) == true);
+
+        ludus::resources::SceneDefinition decoded;
+        REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+                ludus::resources::Status::Ok);
+        // The camera stands between the jaws (z in [-0.02, 0]) and the wall (z = -1), facing the wall.
+        CHECK(decoded.Eye == math::Vector3{0, 0, -0.1F});
+        CHECK(decoded.Target == math::Vector3{0, 0, -1});
+
+        usize emitters = 0;
+        usize triangles = 0;
+        for (const ludus::resources::SceneObject& object : decoded.Objects)
         {
-            continue;
+            const ludus::resources::SceneMesh& mesh = decoded.Meshes[object.Mesh];
+            triangles += mesh.Indices.GetSize() / 3;
+            const ludus::resources::SceneMaterial& material = decoded.Materials[object.Material];
+            if (material.Emission.X == 0.0F)
+            {
+                continue;
+            }
+            ++emitters;
+            // The cooked format's largest radiance, so the small coherent-enough light still lights the wall.
+            CHECK(material.Emission == math::Vector3{10000, 10000, 10000});
+            CHECK(material.IsEmissionTwoSided == false);
+            // The one-sided light faces the obstacles and the wall behind them, towards -z.
+            for (const math::Vector3& normal : mesh.Normals)
+            {
+                CHECK(normal == math::Vector3{0, 0, -1});
+            }
         }
-        ++emitters;
-        // The cooked format's largest radiance, so the small coherent-enough light still lights the wall.
-        CHECK(material.Emission == math::Vector3{10000, 10000, 10000});
-        CHECK(material.IsEmissionTwoSided == false);
-        // The one-sided light faces the jaws and the wall behind them, towards -z.
-        for (const math::Vector3& normal : mesh.Normals)
-        {
-            CHECK(normal == math::Vector3{0, 0, -1});
-        }
+        CHECK(emitters == 1);
+        CHECK(triangles == expected.Triangles);
     }
-    CHECK(emitters == 1);
-    // Wall and light quads plus two closed jaws of six quads each.
-    CHECK(triangles == 28);
 }
 
 TEST_CASE("Ludus scene import keeps materials and reports invalid documents", "[scene_cook][ludus-scene]")

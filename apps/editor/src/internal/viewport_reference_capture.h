@@ -76,6 +76,10 @@ struct ViewportReferenceSettings final
     /// graph's camera rays do. The image then estimates centre rays rather than pixel footprints, so edges alias
     /// as the graph's do and a comparison measures shading alone. Recorded in the LUHDR01 flags.
     bool ShouldCenterRays = false;
+    /// Zero renders geometric transport. A positive wavelength in metres renders the reference's optical transport
+    /// (ReferenceCaptureDescription::OpticalWavelengthWorld): scalar wave coupling on light connections, recorded in
+    /// the LUHDR01 header. It requires the CpuOracle or GpuCompute traversal; Start reports the renderer's refusal.
+    foundation::float32 OpticalWavelengthWorld = 0;
 };
 
 /// Progress of one ViewportReferenceCapture.

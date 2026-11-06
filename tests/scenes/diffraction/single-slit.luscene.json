@@ -2,7 +2,7 @@
   "format": "ludus.scene",
   "version": 1,
   "name": "Single slit",
-  "description": "Single slit for edge diffraction (UTD). A 3 cm one-sided square light (radiance 10000) at z = 0.5 faces two black jaws 5 cm apart. Each jaw is a closed 2 cm slab spanning y in [-1.5, 1.5] whose slit edge is a 30 degree wedge: a flat face at z = 0 towards the light and a bevel towards the wall, so the edge's exterior angle is 330 degrees (UTD n = 11/6) and the bevel stays in shadow. A white Lambertian wall at z = -1 receives the light. Geometric optics gives a fully lit 9 cm strip inside a 21 cm penumbra and darkness beyond; diffraction adds fringes and light inside the geometric shadow. At a design wavelength of 5 mm the Fresnel number is 1.5 and the light's transverse coherence width at the slit is 1.7 slit widths; scale all lengths with the wavelength. The camera stands between the jaws and the wall, facing the wall.",
+  "description": "Single slit for edge diffraction (UTD), the second scene of the diffraction set. A 3 cm one-sided square light (radiance 10000) at z = 0.5 faces two black jaws 5 cm apart. Each jaw is a closed 2 cm slab spanning y in [-1.5, 1.5] whose slit edge is a 30 degree wedge: a flat face at z = 0 towards the light and a bevel towards the wall, so the edge's exterior angle is 330 degrees (UTD n = 11/6) and the bevel stays in shadow. A white Lambertian wall at z = -1 receives the light. Geometric optics gives a fully lit 9 cm strip inside a 21 cm penumbra and darkness beyond; diffraction adds fringes and light inside the geometric shadow. At a design wavelength of 5 mm the Fresnel number is 1.5 and the light's transverse coherence width at the slit is 1.7 slit widths; scale all lengths with the wavelength. The camera stands between the jaws and the wall, facing the wall.",
   "camera": {
     "eye": [0, 0, -0.1],
     "target": [0, 0, -1],
@@ -10,9 +10,25 @@
     "vertical_fov_degrees": 47.92497794915637
   },
   "materials": [
-    {"name": "White wall", "model": "diffuse", "base_color": [0.8, 0.8, 0.8]},
-    {"name": "Black jaw", "model": "diffuse", "base_color": [0, 0, 0]},
-    {"name": "Light", "model": "diffuse", "base_color": [0, 0, 0], "emission": {"radiance": [10000, 10000, 10000], "two_sided": false}}
+    {
+      "name": "White wall",
+      "model": "diffuse",
+      "base_color": [0.8, 0.8, 0.8]
+    },
+    {
+      "name": "Black",
+      "model": "diffuse",
+      "base_color": [0, 0, 0]
+    },
+    {
+      "name": "Light",
+      "model": "diffuse",
+      "base_color": [0, 0, 0],
+      "emission": {
+        "radiance": [10000, 10000, 10000],
+        "two_sided": false
+      }
+    }
   ],
   "objects": [
     {
@@ -30,7 +46,7 @@
     },
     {
       "name": "Right jaw",
-      "material": "Black jaw",
+      "material": "Black",
       "positions": [
         [0.025, -1.5, 0],
         [1.5, -1.5, 0],
@@ -52,7 +68,7 @@
     },
     {
       "name": "Left jaw",
-      "material": "Black jaw",
+      "material": "Black",
       "positions": [
         [-0.025, -1.5, 0],
         [-1.5, -1.5, 0],

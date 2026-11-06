@@ -720,6 +720,11 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
         settings.Samples = requestedSamples > 0 ? static_cast<uint32>(requestedSamples) : DEFAULT_SUPPLIED_SAMPLES;
         settings.MaxDepth = requestedDepth > 0 ? static_cast<uint32>(requestedDepth) : DEFAULT_SUPPLIED_DEPTH;
         settings.Traversal = traversal;
+        // LUDUS_REFERENCE_TEST_OPTICAL_WAVELENGTH=<metres> renders optical transport, for example 0.005 for the
+        // diffraction test scenes; LUDUS_REFERENCE_TEST_CENTER_RAYS=1 traces pixel centres, as their oracle references
+        // do.
+        settings.OpticalWavelengthWorld = qEnvironmentVariable("LUDUS_REFERENCE_TEST_OPTICAL_WAVELENGTH").toFloat();
+        settings.ShouldCenterRays = qEnvironmentVariableIntValue("LUDUS_REFERENCE_TEST_CENTER_RAYS") == 1;
         ViewportReferenceCapture capture;
         REQUIRE(capture.Start(preview.GetDevice(), preview.GetSurface(), scene, view, extent, settings, error) == true);
         const ViewportReferencePhase phase = RunToEnd(capture, SUPPLIED_CAPTURE_TIMEOUT_MILLISECONDS);

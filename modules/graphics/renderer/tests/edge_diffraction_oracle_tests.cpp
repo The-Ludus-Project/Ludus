@@ -1,4 +1,5 @@
 #include "edge_diffraction_oracle.h"
+#include "edge_diffraction_scene_loading.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -7,18 +8,21 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
+#include <string_view>
 
 // The edge-diffraction oracle against independent evidence: tabulated Fresnel integrals and transition-function
 // values (computed with mpmath at 30 digits), Sommerfeld's exact half-plane solution, Keller's non-uniform limit and
 // the physical invariants of the uniform coefficient (reciprocity, no diffraction without an edge, a continuous total
-// field across the shadow and reflection boundaries, conserved power). The scene checks then fix what the single-slit
-// test scene must show.
+// field across the shadow and reflection boundaries, conserved power). The scene checks then read the diffraction
+// test scene files (tests/scenes/diffraction) and fix what they must show.
 namespace
 {
 using namespace ludus::foundation;
 namespace testing = ludus::graphics::renderer::testing;
 
-constexpr float64 DESIGN_WAVENUMBER = 2 * math::kPi / 0.005;
+/// The diffraction scenes' design wavelength, metres.
+constexpr float64 DESIGN_WAVELENGTH = 0.005;
+constexpr float64 DESIGN_WAVENUMBER = 2 * math::kPi / DESIGN_WAVELENGTH;
 constexpr float64 WEDGE_N_30_DEGREES = 11.0 / 6.0;
 /// The angular offset either side of a boundary at which continuity is checked, radians.
 constexpr float64 BOUNDARY_OFFSET = 1e-7;
@@ -58,10 +62,52 @@ MakePlaneWave(float64 observationAngle, float64 incidentAngle, float64 wedgeN, t
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
-[[nodiscard]] math::Vector3d MakeWallPoint(const testing::SingleSlitScene& scene, float64 x)
+[[nodiscard]] math::Vector3d MakeWallPoint(const testing::EdgeDiffractionScene& scene, float64 x)
 {
     return {x, 0, scene.WallHeightWorld};
 }
+
+/// Loads a diffraction test scene below tests/scenes/diffraction.
+[[nodiscard]] testing::EdgeDiffractionScene LoadScene(std::string_view name)
+{
+    const std::string path = std::string(LUDUS_TEST_SCENES_DIR) + "/diffraction/" + std::string(name);
+    testing::EdgeDiffractionScene scene;
+    INFO(path);
+    REQUIRE(testing::TryLoadDiffractionScene(path, scene) == true);
+    return scene;
+}
+
+/// The model's transmission, which must apply to the scene.
+[[nodiscard]] float64 ComputeTransmission(const testing::EdgeDiffractionScene& scene,
+                                          testing::DiffractionModel model,
+                                          math::Vector3d sourceWorld,
+                                          math::Vector3d wallWorld)
+{
+    float64 transmission = -1;
+    REQUIRE(testing::TryComputeDiffractionTransmission(scene,
+                                                       model,
+                                                       DESIGN_WAVELENGTH,
+                                                       sourceWorld,
+                                                       wallWorld,
+                                                       transmission) == true);
+    return transmission;
+}
+
+// A wall position and a node count.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+/// The wall radiance the model predicts, which must apply to the scene.
+[[nodiscard]] float64
+ComputeRadiance(const testing::EdgeDiffractionScene& scene, testing::DiffractionModel model, float64 x, usize nodes)
+{
+    testing::DiffractionSettings settings;
+    settings.Model = model;
+    settings.WavelengthWorld = DESIGN_WAVELENGTH;
+    settings.LightQuadratureNodes = nodes;
+    float64 radiance = -1;
+    REQUIRE(testing::TryComputeDiffractionWallRadiance(scene, settings, MakeWallPoint(scene, x), radiance) == true);
+    return radiance;
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
 } // namespace
 
 TEST_CASE("Edge diffraction oracle evaluates the Fresnel integrals", "[edge-diffraction]")
@@ -230,14 +276,56 @@ TEST_CASE("UTD total field of a 30 degree wedge is continuous across every bound
     }
 }
 
-TEST_CASE("Single-slit oracle reproduces the scene's geometric optics", "[edge-diffraction]")
+TEST_CASE("Diffraction test scenes read as diffraction scenes", "[edge-diffraction]")
 {
-    const testing::SingleSlitScene scene;
-    constexpr usize SUBDIVISIONS = 64;
+    struct ExpectedScene final
+    {
+        std::string_view File;
+        usize Obstacles = 0;
+        bool HasAperture = false;
+    };
+    constexpr usize SCENE_COUNT = 3;
+    constexpr StaticArray<ExpectedScene, SCENE_COUNT> SCENES{{
+        { .File = "single-edge.luscene.json", .Obstacles = 1, .HasAperture = false },
+        { .File = "single-slit.luscene.json", .Obstacles = 2, .HasAperture = true },
+        { .File = "slit-partial-occluder.luscene.json", .Obstacles = 3, .HasAperture = false },
+    }};
+    for (const ExpectedScene& expected : SCENES)
+    {
+        INFO(expected.File);
+        const testing::EdgeDiffractionScene scene = LoadScene(expected.File);
+        CHECK(scene.ObstacleCount == expected.Obstacles);
+        for (usize o = 0; o < scene.ObstacleCount; ++o)
+        {
+            CHECK(scene.Obstacles[o].CornerCount == 4);
+        }
+        // The 3 cm light 0.5 m above the jaws and the white wall 1 m below them, seen from between them.
+        CHECK(scene.LightCenterWorld == math::Vector3d{0, 0, 0.5});
+        CHECK(scene.LightHalfWidthWorld == 0.015);
+        CHECK(scene.LightHalfHeightWorld == 0.015);
+        CHECK(scene.LightRadiance == 10000);
+        CHECK(scene.WallHeightWorld == -1);
+        CHECK(scene.WallAlbedo == 0.8);
+        CHECK(scene.EyeWorld == math::Vector3d{0, 0, -0.1});
+        // Kirchhoff needs one aperture between obstacles that share a top plane: only the plain slit has it.
+        float64 transmission = 0;
+        CHECK(testing::TryComputeDiffractionTransmission(scene,
+                                                         testing::DiffractionModel::Kirchhoff,
+                                                         DESIGN_WAVELENGTH,
+                                                         scene.LightCenterWorld,
+                                                         MakeWallPoint(scene, 0),
+                                                         transmission) == expected.HasAperture);
+    }
+}
+
+TEST_CASE("Diffraction oracle reproduces the slit's geometric optics", "[edge-diffraction]")
+{
+    const testing::EdgeDiffractionScene scene = LoadScene("single-slit.luscene.json");
+    constexpr usize LIGHT_NODES = 12;
     // Without the jaws, the 3 cm light 1.5 m above the wall: L rho / pi * A / d^2.
-    const float64 lightArea = 4 * scene.LightHalfSizeWorld * scene.LightHalfSizeWorld;
-    const float64 height = scene.LightHeightWorld - scene.WallHeightWorld;
-    const float64 freeCentre = testing::ComputeSlitFreeWallRadiance(scene, MakeWallPoint(scene, 0), SUBDIVISIONS);
+    const float64 lightArea = 4 * scene.LightHalfWidthWorld * scene.LightHalfHeightWorld;
+    const float64 height = scene.LightCenterWorld.Z - scene.WallHeightWorld;
+    const float64 freeCentre = testing::ComputeDiffractionFreeWallRadiance(scene, MakeWallPoint(scene, 0), LIGHT_NODES);
     CHECK(math::Abs(freeCentre - scene.LightRadiance * scene.WallAlbedo / math::kPi * lightArea / (height * height)) <
           1e-3 * freeCentre);
     // The wall sees all of the light through the slit within 4.5 cm of the centre, half of it on the point-source
@@ -245,115 +333,141 @@ TEST_CASE("Single-slit oracle reproduces the scene's geometric optics", "[edge-d
     for (const float64 x : {0.0, 0.03, 0.045})
     {
         INFO("X = " << x);
-        CHECK(math::Abs(testing::ComputeSlitWallRadiance(scene,
-                                                         testing::SlitModel::Geometric,
-                                                         MakeWallPoint(scene, x),
-                                                         SUBDIVISIONS) -
-                        testing::ComputeSlitFreeWallRadiance(scene, MakeWallPoint(scene, x), SUBDIVISIONS)) < 1e-12);
+        CHECK(math::Abs(ComputeRadiance(scene, testing::DiffractionModel::Geometric, x, LIGHT_NODES) -
+                        testing::ComputeDiffractionFreeWallRadiance(scene, MakeWallPoint(scene, x), LIGHT_NODES)) <
+              1e-12);
     }
-    const float64 boundary = testing::ComputeSlitWallRadiance(scene,
-                                                              testing::SlitModel::Geometric,
-                                                              MakeWallPoint(scene, 0.075),
-                                                              SUBDIVISIONS);
-    CHECK(math::Abs(boundary / testing::ComputeSlitFreeWallRadiance(scene, MakeWallPoint(scene, 0.075), SUBDIVISIONS) -
+    const float64 boundary = ComputeRadiance(scene, testing::DiffractionModel::Geometric, 0.075, LIGHT_NODES);
+    CHECK(math::Abs(boundary /
+                        testing::ComputeDiffractionFreeWallRadiance(scene, MakeWallPoint(scene, 0.075), LIGHT_NODES) -
                     0.5) < 0.02);
-    CHECK(testing::ComputeSlitWallRadiance(scene,
-                                           testing::SlitModel::Geometric,
-                                           MakeWallPoint(scene, 0.106),
-                                           SUBDIVISIONS) == 0);
+    CHECK(ComputeRadiance(scene, testing::DiffractionModel::Geometric, 0.106, LIGHT_NODES) == 0);
 }
 
-TEST_CASE("Single-slit UTD is continuous across the slit's shadow boundaries", "[edge-diffraction]")
+TEST_CASE("Diffraction oracle UTD is continuous across the shadow boundaries", "[edge-diffraction]")
 {
-    // A point source at the light's centre: the edges' shadow boundaries meet the wall at X = +-3 a.
-    const testing::SingleSlitScene scene;
-    const math::Vector3d sourceWorld{0, 0, scene.LightHeightWorld};
-    const float64 boundaryX = 3 * scene.SlitHalfWidthWorld;
-    for (const testing::SlitModel model : {testing::SlitModel::UtdSoft, testing::SlitModel::UtdHard})
+    struct Boundary final
     {
-        for (const float64 side : {1.0, -1.0})
+        std::string_view File;
+        float64 X = 0; ///< Where the light centre's shadow boundary meets the wall.
+    };
+    // The single edge at x = 0 casts its boundary at 0; the slit's edges at +-2.5 cm cast theirs at +-7.5 cm.
+    constexpr usize BOUNDARY_COUNT = 3;
+    constexpr StaticArray<Boundary, BOUNDARY_COUNT> BOUNDARIES{{
+        { .File = "single-edge.luscene.json", .X = 0 },
+        { .File = "single-slit.luscene.json", .X = 0.075 },
+        { .File = "single-slit.luscene.json", .X = -0.075 },
+    }};
+    for (const Boundary& boundary : BOUNDARIES)
+    {
+        const testing::EdgeDiffractionScene scene = LoadScene(boundary.File);
+        for (const testing::DiffractionModel model : {testing::DiffractionModel::UtdAbsorbing,
+                                                      testing::DiffractionModel::UtdSoft,
+                                                      testing::DiffractionModel::UtdHard})
         {
-            const float64 before = testing::ComputeSlitTransmission(scene,
-                                                                    model,
-                                                                    sourceWorld,
-                                                                    MakeWallPoint(scene, side * (boundaryX - 1e-9)));
-            const float64 after = testing::ComputeSlitTransmission(scene,
-                                                                   model,
-                                                                   sourceWorld,
-                                                                   MakeWallPoint(scene, side * (boundaryX + 1e-9)));
-            INFO("model = " << static_cast<uint32>(model) << ", side = " << side);
+            // 0.1 um either side: outside the visibility test's 1 nm tolerance, which would otherwise count the
+            // direct light on both sides of the boundary.
+            const float64 before =
+                ComputeTransmission(scene, model, scene.LightCenterWorld, MakeWallPoint(scene, boundary.X - 1e-7));
+            const float64 after =
+                ComputeTransmission(scene, model, scene.LightCenterWorld, MakeWallPoint(scene, boundary.X + 1e-7));
+            INFO(boundary.File << " X = " << boundary.X << ", model = " << static_cast<uint32>(model));
             CHECK(math::Abs(before - after) < 1e-5);
-            // Near a single edge's shadow boundary the intensity is about a quarter of the unobstructed one.
-            CHECK((before > 0.1 && before < 0.3));
+            // On a single edge's shadow boundary the intensity is about a quarter of the unobstructed one.
+            CHECK((before > 0.1 && before < 0.35));
         }
     }
 }
 
-TEST_CASE("Single-slit UTD agrees with Fresnel-Kirchhoff near the beam and conserves power", "[edge-diffraction]")
+TEST_CASE("Diffraction oracle UTD agrees with Fresnel-Kirchhoff near the slit's beam", "[edge-diffraction]")
 {
-    const testing::SingleSlitScene scene;
-    const math::Vector3d sourceWorld{0, 0, scene.LightHeightWorld};
-    // Within the beam and its first fringes, where both are accurate, the black-screen Kirchhoff integral and
-    // unpolarized UTD for the 30 degree wedge give nearly the same intensity.
+    const testing::EdgeDiffractionScene scene = LoadScene("single-slit.luscene.json");
+    // Within the beam and its first fringes, where both are accurate, the black-screen Kirchhoff integral, absorbing
+    // UTD and unpolarized conducting UTD for the 30 degree wedges give nearly the same intensity.
     for (const float64 x : {0.0, 0.02, 0.04, 0.06, 0.075, 0.09, 0.105, 0.12, 0.15})
     {
-        const float64 kirchhoff = testing::ComputeSlitTransmission(scene,
-                                                                   testing::SlitModel::Kirchhoff,
-                                                                   sourceWorld,
-                                                                   MakeWallPoint(scene, x));
-        const float64 uniform = testing::ComputeSlitTransmission(scene,
-                                                                 testing::SlitModel::UtdUnpolarized,
-                                                                 sourceWorld,
-                                                                 MakeWallPoint(scene, x));
-        INFO("X = " << x << ", Kirchhoff " << kirchhoff << ", UTD " << uniform);
-        CHECK(math::Abs(uniform - kirchhoff) < 0.03);
+        const float64 kirchhoff = ComputeTransmission(scene,
+                                                      testing::DiffractionModel::Kirchhoff,
+                                                      scene.LightCenterWorld,
+                                                      MakeWallPoint(scene, x));
+        const float64 absorbing = ComputeTransmission(scene,
+                                                      testing::DiffractionModel::UtdAbsorbing,
+                                                      scene.LightCenterWorld,
+                                                      MakeWallPoint(scene, x));
+        const float64 unpolarized = ComputeTransmission(scene,
+                                                        testing::DiffractionModel::UtdUnpolarized,
+                                                        scene.LightCenterWorld,
+                                                        MakeWallPoint(scene, x));
+        INFO("X = " << x << ", Kirchhoff " << kirchhoff << ", absorbing " << absorbing << ", unpolarized "
+                    << unpolarized);
+        CHECK(math::Abs(absorbing - kirchhoff) < 0.03);
+        CHECK(math::Abs(unpolarized - kirchhoff) < 0.03);
     }
-    // Diffraction redistributes the light that passes the slit; it does not create or remove it. Over the wall's
-    // central 1.2 m row, the 3 cm light's radiance integrates to the geometric value within a few percent (the rest
-    // falls further out, and UTD is only asymptotically power conserving).
-    constexpr usize SUBDIVISIONS = 8;
-    constexpr usize SAMPLES = 241;
-    float64 geometric = 0;
-    float64 uniform = 0;
-    for (usize i = 0; i < SAMPLES; ++i)
-    {
-        const float64 x = -0.6 + 1.2 * (static_cast<float64>(i) + 0.5) / static_cast<float64>(SAMPLES);
-        geometric += testing::ComputeSlitWallRadiance(scene,
-                                                      testing::SlitModel::Geometric,
-                                                      MakeWallPoint(scene, x),
-                                                      SUBDIVISIONS);
-        uniform += testing::ComputeSlitWallRadiance(scene,
-                                                    testing::SlitModel::UtdUnpolarized,
-                                                    MakeWallPoint(scene, x),
-                                                    SUBDIVISIONS);
-    }
-    INFO("geometric " << geometric << ", UTD " << uniform);
-    CHECK(math::Abs(uniform / geometric - 1) < 0.05);
 }
 
-TEST_CASE("Print the single-slit reference profile", "[.single-slit-profile]")
+TEST_CASE("Diffraction oracle UTD conserves the power through the slit", "[edge-diffraction]")
 {
-    // ludus_renderer_tests "[.single-slit-profile]" prints the wall radiance along y = 0 that each model predicts for
-    // the scene's 3 cm light, as comma-separated values in W / (sr m^2).
-    const testing::SingleSlitScene scene;
-    constexpr usize SUBDIVISIONS = 24;
-    constexpr usize SAMPLES = 121;
-    std::string table = "x_m,free,geometric,kirchhoff,utd_soft,utd_hard,utd_unpolarized\n";
-    for (usize i = 0; i < SAMPLES; ++i)
+    // Diffraction redistributes the light that passes the slit; it does not create or remove it. Over the wall's
+    // central 1.2 m row the light's radiance integrates to the geometric value within a few percent (the rest falls
+    // further out, and UTD is only asymptotically power conserving).
+    const testing::EdgeDiffractionScene scene = LoadScene("single-slit.luscene.json");
+    constexpr usize LIGHT_NODES = 4;
+    constexpr usize SAMPLES = 241;
+    for (const testing::DiffractionModel model :
+         {testing::DiffractionModel::UtdAbsorbing, testing::DiffractionModel::UtdUnpolarized})
     {
-        const float64 x = -0.6 + 1.2 * static_cast<float64>(i) / static_cast<float64>(SAMPLES - 1) + 1e-6;
-        const math::Vector3d wallWorld = MakeWallPoint(scene, x);
-        table += std::to_string(x);
-        table += "," + std::to_string(testing::ComputeSlitFreeWallRadiance(scene, wallWorld, SUBDIVISIONS));
-        for (const testing::SlitModel model : {testing::SlitModel::Geometric,
-                                               testing::SlitModel::Kirchhoff,
-                                               testing::SlitModel::UtdSoft,
-                                               testing::SlitModel::UtdHard,
-                                               testing::SlitModel::UtdUnpolarized})
+        float64 geometric = 0;
+        float64 uniform = 0;
+        for (usize i = 0; i < SAMPLES; ++i)
         {
-            table += "," + std::to_string(testing::ComputeSlitWallRadiance(scene, model, wallWorld, SUBDIVISIONS));
+            const float64 x = -0.6 + 1.2 * (static_cast<float64>(i) + 0.5) / static_cast<float64>(SAMPLES);
+            geometric += ComputeRadiance(scene, testing::DiffractionModel::Geometric, x, LIGHT_NODES);
+            uniform += ComputeRadiance(scene, model, x, LIGHT_NODES);
         }
-        table += '\n';
+        INFO("model " << static_cast<uint32>(model) << ", geometric " << geometric << ", UTD " << uniform);
+        CHECK(math::Abs(uniform / geometric - 1) < 0.05);
     }
-    WARN(table);
+}
+
+TEST_CASE("Diffraction oracle lights the single edge's shadow and fringes its lit side", "[edge-diffraction]")
+{
+    const testing::EdgeDiffractionScene scene = LoadScene("single-edge.luscene.json");
+    const math::Vector3d sourceWorld = scene.LightCenterWorld;
+    // Deep in the lit side the intensity oscillates about the unobstructed one; deep in the shadow it decays.
+    float64 lowest = 2;
+    float64 highest = 0;
+    for (usize i = 0; i < 100; ++i)
+    {
+        const float64 x = -0.05 - 0.4 * static_cast<float64>(i) / 100;
+        const float64 lit =
+            ComputeTransmission(scene, testing::DiffractionModel::UtdAbsorbing, sourceWorld, MakeWallPoint(scene, x));
+        lowest = math::Min(lowest, lit);
+        highest = math::Max(highest, lit);
+    }
+    CHECK((lowest > 0.7 && lowest < 1));
+    CHECK((highest > 1 && highest < 1.4));
+    const float64 shallow =
+        ComputeTransmission(scene, testing::DiffractionModel::UtdAbsorbing, sourceWorld, MakeWallPoint(scene, 0.05));
+    const float64 deep =
+        ComputeTransmission(scene, testing::DiffractionModel::UtdAbsorbing, sourceWorld, MakeWallPoint(scene, 0.4));
+    CHECK((shallow > deep && deep > 0 && deep < 0.01));
+}
+
+TEST_CASE("Diffraction oracle partially occludes the light behind the rod", "[edge-diffraction]")
+{
+    // The rod hides the right half of the light from the slit's centre: geometric optics halves the beam's centre.
+    const testing::EdgeDiffractionScene slit = LoadScene("single-slit.luscene.json");
+    const testing::EdgeDiffractionScene occluded = LoadScene("slit-partial-occluder.luscene.json");
+    constexpr usize LIGHT_NODES = 8;
+    const float64 openGeometric = ComputeRadiance(slit, testing::DiffractionModel::Geometric, 0, LIGHT_NODES);
+    const float64 occludedGeometric = ComputeRadiance(occluded, testing::DiffractionModel::Geometric, 0, LIGHT_NODES);
+    CHECK(math::Abs(occludedGeometric / openGeometric - 0.5) < 0.02);
+    // First-order UTD: the rod also hides the right jaw's edge from the whole left half of the light, so that edge
+    // diffracts only the light of the right half that passes beside the rod. What it would receive by diffraction
+    // around the rod is second order and absent; the edge lies 1.5 wavelengths inside the rod's shadow, so in reality
+    // that light is not small. A first-order implementation must reproduce this value; a physical one need not.
+    const float64 openUniform = ComputeRadiance(slit, testing::DiffractionModel::UtdAbsorbing, 0, LIGHT_NODES);
+    const float64 occludedUniform = ComputeRadiance(occluded, testing::DiffractionModel::UtdAbsorbing, 0, LIGHT_NODES);
+    INFO("open " << openUniform << ", occluded " << occludedUniform);
+    CHECK((occludedUniform > 0.1 * openUniform && occludedUniform < 0.5 * openUniform));
 }

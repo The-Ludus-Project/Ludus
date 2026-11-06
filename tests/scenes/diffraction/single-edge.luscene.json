@@ -1,0 +1,83 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Single wedge edge",
+  "description": "Single wedge edge for edge diffraction (UTD), the first scene of the diffraction set. A 3 cm one-sided square light (radiance 10000) at z = 0.5 faces one black jaw whose edge lies along y at x = 0, z = 0. The jaw is a closed 2 cm slab spanning y in [-1.5, 1.5]; its edge is a 30 degree wedge, flat towards the light and bevelled towards the wall (exterior angle 330 degrees, UTD n = 11/6). A white Lambertian wall at z = -1 receives the light: lit for x < 0, in the jaw's shadow for x > 0, with the shadow boundary of the light's centre at x = 0. Diffraction makes fringes on the lit side and light inside the shadow. Design wavelength 5 mm; scale all lengths with it. The camera stands between the jaw and the wall, facing the wall.",
+  "camera": {
+    "eye": [0, 0, -0.1],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 47.92497794915637
+  },
+  "materials": [
+    {
+      "name": "White wall",
+      "model": "diffuse",
+      "base_color": [0.8, 0.8, 0.8]
+    },
+    {
+      "name": "Black",
+      "model": "diffuse",
+      "base_color": [0, 0, 0]
+    },
+    {
+      "name": "Light",
+      "model": "diffuse",
+      "base_color": [0, 0, 0],
+      "emission": {
+        "radiance": [10000, 10000, 10000],
+        "two_sided": false
+      }
+    }
+  ],
+  "objects": [
+    {
+      "name": "Wall",
+      "material": "White wall",
+      "positions": [
+        [-1.5, -1.5, -1],
+        [1.5, -1.5, -1],
+        [1.5, 1.5, -1],
+        [-1.5, 1.5, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Jaw",
+      "material": "Black",
+      "positions": [
+        [0.0, -1.5, 0.0],
+        [1.5, -1.5, 0.0],
+        [1.5, -1.5, -0.02],
+        [0.03464101615137755, -1.5, -0.02],
+        [0.0, 1.5, 0.0],
+        [1.5, 1.5, 0.0],
+        [1.5, 1.5, -0.02],
+        [0.03464101615137755, 1.5, -0.02]
+      ],
+      "polygons": [
+        [0, 1, 5, 4],
+        [1, 2, 6, 5],
+        [2, 3, 7, 6],
+        [3, 0, 4, 7],
+        [3, 2, 1, 0],
+        [4, 5, 6, 7]
+      ]
+    },
+    {
+      "name": "Light",
+      "material": "Light",
+      "positions": [
+        [-0.015, -0.015, 0.5],
+        [-0.015, 0.015, 0.5],
+        [0.015, 0.015, 0.5],
+        [0.015, -0.015, 0.5]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    }
+  ]
+}

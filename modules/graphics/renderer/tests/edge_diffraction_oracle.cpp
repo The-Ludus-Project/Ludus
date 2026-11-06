@@ -3,6 +3,8 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 
+#include <ludus/content/scene_source/scene_source.h>
+
 namespace ludus::graphics::renderer::testing
 {
 using namespace foundation;
@@ -155,10 +157,19 @@ ComputeCoefficientTerm(float64 beta, float64 side, const WedgeDiffraction& diffr
     return Add(ComputeCoefficientTerm(beta, 1, diffraction), ComputeCoefficientTerm(beta, -1, diffraction));
 }
 
-/// -1 for a soft edge and +1 for a hard one: the sign of the reflected terms.
+/// The sign of the reflected terms: -1 for a soft edge, +1 for a hard one and 0 for an absorbing one.
 [[nodiscard]] float64 GetReflectionSign(EdgeCondition condition) noexcept
 {
-    return condition == EdgeCondition::Hard ? 1.0 : -1.0;
+    switch (condition)
+    {
+        case EdgeCondition::Soft:
+            return -1.0;
+        case EdgeCondition::Hard:
+            return 1.0;
+        case EdgeCondition::Absorbing:
+            return 0.0;
+    }
+    return 0.0;
 }
 
 /// An angle in [0, 2 pi).
@@ -174,38 +185,141 @@ ComputeCoefficientTerm(float64 beta, float64 side, const WedgeDiffraction& diffr
     return Scale(MakePhase(-wavenumber * distance), 1 / distance);
 }
 
-/// Whether the straight segment from the source to the wall point passes between the edges at z = 0.
-[[nodiscard]] bool
-IsGeometricallyVisible(const SingleSlitScene& scene, math::Vector3d sourceWorld, math::Vector3d wallWorld) noexcept
+/// Distances below this (metres) are equal: corners closer than it are one corner, and a segment that only touches an
+/// obstacle's boundary within it is not blocked.
+constexpr float64 GEOMETRY_TOLERANCE_WORLD = 1e-9;
+/// Corners of the light and the wall rectangles.
+constexpr usize RECTANGLE_CORNERS = 4;
+
+/// The cross product of (b - a) and (c - a) in the x-z plane: positive when c lies left of a -> b (x right, z up).
+[[nodiscard]] float64 ComputePlanarCross(math::Vector3d a, math::Vector3d b, math::Vector3d c) noexcept
 {
-    const float64 t = sourceWorld.Z / (sourceWorld.Z - wallWorld.Z);
-    const float64 crossingX = sourceWorld.X + (wallWorld.X - sourceWorld.X) * t;
-    return math::Abs(crossingX) <= scene.SlitHalfWidthWorld;
+    return (b.X - a.X) * (c.Z - a.Z) - (b.Z - a.Z) * (c.X - a.X);
 }
 
-/// UTD diffraction by one jaw's edge, at x = side * SlitHalfWidthWorld, of a point source's spherical wave.
-[[nodiscard]] DiffractionComplex ComputeEdgeDiffractedField(const SingleSlitScene& scene,
-                                                            float64 side,
-                                                            math::Vector3d sourceWorld,
-                                                            math::Vector3d wallWorld,
-                                                            EdgeCondition condition) noexcept
+/// The distance between two points' projections on the x-z plane.
+[[nodiscard]] float64 ComputePlanarDistance(math::Vector3d a, math::Vector3d b) noexcept
 {
-    const float64 wavenumber = 2 * math::kPi / scene.WavelengthWorld;
-    const float64 edgeX = side * scene.SlitHalfWidthWorld;
-    // In the plane perpendicular to the edge, u points from the edge into its jaw (along face 0) and z towards the
-    // light, so the exterior runs from face 0 (angle 0) through the light, the slit and the wall to the bevel.
-    const float64 sourceU = side * (sourceWorld.X - edgeX);
-    const float64 wallU = side * (wallWorld.X - edgeX);
-    const float64 incidentAngle = WrapAngle(math::Atan2(sourceWorld.Z, sourceU));
-    const float64 observationAngle = WrapAngle(math::Atan2(wallWorld.Z, wallU));
-    if (observationAngle > scene.WedgeN * math::kPi || incidentAngle > scene.WedgeN * math::kPi)
+    return math::Sqrt((b.X - a.X) * (b.X - a.X) + (b.Z - a.Z) * (b.Z - a.Z));
+}
+
+/// The direction of b seen from a in the x-z plane, radians from +x towards +z.
+[[nodiscard]] float64 ComputePlanarAngle(math::Vector3d a, math::Vector3d b) noexcept
+{
+    return math::Atan2(b.Z - a.Z, b.X - a.X);
+}
+
+/// The unit outward normal (Y = 0) of a counterclockwise cross-section's side from corner to next.
+[[nodiscard]] math::Vector3d ComputeOutwardNormal(math::Vector3d corner, math::Vector3d next) noexcept
+{
+    const float64 length = ComputePlanarDistance(corner, next);
+    return {(next.Z - corner.Z) / length, 0, -(next.X - corner.X) / length};
+}
+
+/// The signed distance of a point from a side's line in the x-z plane, positive outside.
+[[nodiscard]] float64 ComputeSideDistance(math::Vector3d point, math::Vector3d corner, math::Vector3d normal) noexcept
+{
+    return (point.X - corner.X) * normal.X + (point.Z - corner.Z) * normal.Z;
+}
+
+/// Whether the segment between two points crosses an obstacle's interior. The prisms are infinitely long along y, so
+/// only the segment's projection on the x-z plane matters. The segment is clipped against every side's half-plane.
+// A segment's two ends.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+[[nodiscard]] bool
+IsSegmentBlocked(const EdgeDiffractionScene& scene, math::Vector3d fromWorld, math::Vector3d toWorld) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    for (usize o = 0; o < scene.ObstacleCount; ++o)
+    {
+        const DiffractionObstacle& obstacle = scene.Obstacles[o];
+        float64 enter = 0;
+        float64 leave = 1;
+        bool isMissed = false;
+        for (usize i = 0; i < obstacle.CornerCount && isMissed == false; ++i)
+        {
+            const math::Vector3d corner = obstacle.CornersWorld[i];
+            const math::Vector3d normal =
+                ComputeOutwardNormal(corner, obstacle.CornersWorld[(i + 1) % obstacle.CornerCount]);
+            // Strictly inside means more than the tolerance inside every side.
+            const float64 fromDistance = ComputeSideDistance(fromWorld, corner, normal) + GEOMETRY_TOLERANCE_WORLD;
+            const float64 toDistance = ComputeSideDistance(toWorld, corner, normal) + GEOMETRY_TOLERANCE_WORLD;
+            if (fromDistance >= 0 && toDistance >= 0)
+            {
+                isMissed = true;
+            }
+            else if (fromDistance >= 0 || toDistance >= 0)
+            {
+                const float64 crossing = fromDistance / (fromDistance - toDistance);
+                if (fromDistance >= 0)
+                {
+                    enter = math::Max(enter, crossing);
+                }
+                else
+                {
+                    leave = math::Min(leave, crossing);
+                }
+            }
+        }
+        if (isMissed == false && enter < leave)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// One edge: the corner of a cross-section and the directions of its faces.
+struct EdgeFrame final
+{
+    math::Vector3d CornerWorld{};
+    float64 Face0Angle = 0; ///< Direction of face 0 (towards the previous corner), radians from +x towards +z.
+    float64 WedgeN = 2;     ///< Exterior angle over pi.
+};
+
+[[nodiscard]] EdgeFrame MakeEdgeFrame(const DiffractionObstacle& obstacle, usize corner) noexcept
+{
+    const usize count = obstacle.CornerCount;
+    const math::Vector3d at = obstacle.CornersWorld[corner];
+    const math::Vector3d previous = obstacle.CornersWorld[(corner + count - 1) % count];
+    const math::Vector3d next = obstacle.CornersWorld[(corner + 1) % count];
+    EdgeFrame frame;
+    frame.CornerWorld = at;
+    // Counterclockwise, the interior lies between the direction to the next corner and, turning on, the direction to
+    // the previous one; the exterior turns on from there back to the next corner.
+    frame.Face0Angle = ComputePlanarAngle(at, previous);
+    const float64 interior = WrapAngle(frame.Face0Angle - ComputePlanarAngle(at, next));
+    frame.WedgeN = (math::kTau - interior) / math::kPi;
+    return frame;
+}
+
+/// The field that one edge diffracts from a point source to a wall point, or zero when either path is hidden.
+[[nodiscard]] DiffractionComplex ComputeEdgeField(const EdgeDiffractionScene& scene,
+                                                  const EdgeFrame& frame,
+                                                  float64 wavenumber,
+                                                  EdgeCondition condition,
+                                                  math::Vector3d sourceWorld,
+                                                  math::Vector3d wallWorld) noexcept
+{
+    const math::Vector3d corner = frame.CornerWorld;
+    const float64 incidentAngle = WrapAngle(ComputePlanarAngle(corner, sourceWorld) - frame.Face0Angle);
+    const float64 observationAngle = WrapAngle(ComputePlanarAngle(corner, wallWorld) - frame.Face0Angle);
+    const float64 exterior = frame.WedgeN * math::kPi;
+    if (incidentAngle >= exterior || observationAngle >= exterior)
     {
         return {};
     }
-    // The diffraction point on the edge satisfies Keller's law: the incident and diffracted rays make equal angles
-    // with the edge. Unfolding the two rays about the edge places it at the distance-weighted point.
-    const float64 sourceDistance = math::Sqrt(sourceU * sourceU + sourceWorld.Z * sourceWorld.Z);
-    const float64 wallDistance = math::Sqrt(wallU * wallU + wallWorld.Z * wallWorld.Z);
+    const math::Vector3d cornerAtSource{corner.X, sourceWorld.Y, corner.Z};
+    const math::Vector3d cornerAtWall{corner.X, wallWorld.Y, corner.Z};
+    if (IsSegmentBlocked(scene, sourceWorld, cornerAtSource) == true ||
+        IsSegmentBlocked(scene, cornerAtWall, wallWorld) == true)
+    {
+        return {};
+    }
+    // Keller's law places the diffraction point where the incident and diffracted rays make equal angles with the
+    // edge: unfolding both rays about the edge puts it at the distance-weighted point between their y.
+    const float64 sourceDistance = ComputePlanarDistance(corner, sourceWorld);
+    const float64 wallDistance = ComputePlanarDistance(corner, wallWorld);
     const float64 edgeY =
         sourceWorld.Y + (wallWorld.Y - sourceWorld.Y) * sourceDistance / (sourceDistance + wallDistance);
     const float64 incidentLength =
@@ -219,7 +333,7 @@ IsGeometricallyVisible(const SingleSlitScene& scene, math::Vector3d sourceWorld,
     diffraction.DistanceParameterWorld =
         diffractedLength * incidentLength * edgeSine * edgeSine / (diffractedLength + incidentLength);
     diffraction.EdgeSine = edgeSine;
-    diffraction.WedgeN = scene.WedgeN;
+    diffraction.WedgeN = frame.WedgeN;
     diffraction.Wavenumber = wavenumber;
     diffraction.Condition = condition;
     const DiffractionComplex coefficient = ComputeUtdCoefficient(diffraction);
@@ -228,49 +342,187 @@ IsGeometricallyVisible(const SingleSlitScene& scene, math::Vector3d sourceWorld,
     return Scale(Multiply(Multiply(incident, coefficient), MakePhase(-wavenumber * diffractedLength)), spreading);
 }
 
-[[nodiscard]] float64 ComputeUtdTransmission(const SingleSlitScene& scene,
-                                             math::Vector3d sourceWorld,
-                                             math::Vector3d wallWorld,
-                                             EdgeCondition condition) noexcept
+/// The field that a perfectly conducting side reflects from a point source to a wall point, or zero.
+[[nodiscard]] DiffractionComplex ComputeReflectedField(const EdgeDiffractionScene& scene,
+                                                       math::Vector3d corner,
+                                                       math::Vector3d next,
+                                                       float64 wavenumber,
+                                                       EdgeCondition condition,
+                                                       math::Vector3d sourceWorld,
+                                                       math::Vector3d wallWorld) noexcept
 {
-    const float64 wavenumber = 2 * math::kPi / scene.WavelengthWorld;
+    const math::Vector3d normal = ComputeOutwardNormal(corner, next);
+    const float64 sourceSide = ComputeSideDistance(sourceWorld, corner, normal);
+    const float64 wallSide = ComputeSideDistance(wallWorld, corner, normal);
+    if (sourceSide <= GEOMETRY_TOLERANCE_WORLD || wallSide <= GEOMETRY_TOLERANCE_WORLD)
+    {
+        return {};
+    }
+    // The image source mirrors the source across the side's plane, which contains y.
+    const math::Vector3d imageWorld{sourceWorld.X - 2 * sourceSide * normal.X,
+                                    sourceWorld.Y,
+                                    sourceWorld.Z - 2 * sourceSide * normal.Z};
+    const float64 crossing = sourceSide / (sourceSide + wallSide);
+    const math::Vector3d reflectionWorld = imageWorld + (wallWorld - imageWorld) * crossing;
+    const float64 sideLengthSquared =
+        (next.X - corner.X) * (next.X - corner.X) + (next.Z - corner.Z) * (next.Z - corner.Z);
+    const float64 along =
+        ((reflectionWorld.X - corner.X) * (next.X - corner.X) + (reflectionWorld.Z - corner.Z) * (next.Z - corner.Z)) /
+        sideLengthSquared;
+    if (along <= 0 || along >= 1 || IsSegmentBlocked(scene, sourceWorld, reflectionWorld) == true ||
+        IsSegmentBlocked(scene, reflectionWorld, wallWorld) == true)
+    {
+        return {};
+    }
+    return Scale(MakeSphericalWave(wavenumber, math::Length(wallWorld - imageWorld)), GetReflectionSign(condition));
+}
+
+/// First-order UTD: geometric optics (direct and, for conducting faces, reflected) plus every edge's diffraction.
+[[nodiscard]] float64 ComputeUtdTransmission(const EdgeDiffractionScene& scene,
+                                             float64 wavenumber,
+                                             EdgeCondition condition,
+                                             math::Vector3d sourceWorld,
+                                             math::Vector3d wallWorld) noexcept
+{
     const float64 freeDistance = math::Length(wallWorld - sourceWorld);
     DiffractionComplex total{};
-    if (IsGeometricallyVisible(scene, sourceWorld, wallWorld) == true)
+    if (IsSegmentBlocked(scene, sourceWorld, wallWorld) == false)
     {
         total = MakeSphericalWave(wavenumber, freeDistance);
     }
-    total = Add(total, ComputeEdgeDiffractedField(scene, 1, sourceWorld, wallWorld, condition));
-    total = Add(total, ComputeEdgeDiffractedField(scene, -1, sourceWorld, wallWorld, condition));
+    for (usize o = 0; o < scene.ObstacleCount; ++o)
+    {
+        const DiffractionObstacle& obstacle = scene.Obstacles[o];
+        for (usize i = 0; i < obstacle.CornerCount; ++i)
+        {
+            total =
+                Add(total,
+                    ComputeEdgeField(scene, MakeEdgeFrame(obstacle, i), wavenumber, condition, sourceWorld, wallWorld));
+            if (condition != EdgeCondition::Absorbing)
+            {
+                total = Add(total,
+                            ComputeReflectedField(scene,
+                                                  obstacle.CornersWorld[i],
+                                                  obstacle.CornersWorld[(i + 1) % obstacle.CornerCount],
+                                                  wavenumber,
+                                                  condition,
+                                                  sourceWorld,
+                                                  wallWorld));
+            }
+        }
+    }
     return ComputeSquaredMagnitude(total) * freeDistance * freeDistance;
 }
 
-/// Fresnel-Kirchhoff over the slit opening |x| <= SlitHalfWidthWorld at z = 0, with U = (j / lambda) integral of
-/// U_incident exp(-j k r) / r times the mean obliquity (cos + cos) / 2. Along the infinitely long slit the integral is
-/// evaluated by stationary phase; across it by Simpson's rule.
-[[nodiscard]] float64 ComputeKirchhoffTransmission(const SingleSlitScene& scene,
+/// An aperture of the Kirchhoff model: the open interval [Start, End] of x in the plane z = Height.
+struct Aperture final
+{
+    float64 Start = 0;
+    float64 End = 0;
+    float64 Height = 0;
+};
+
+/// The single bounded gap that obstacles sharing one top plane leave open.
+[[nodiscard]] bool TryFindAperture(const EdgeDiffractionScene& scene, Aperture& outAperture) noexcept
+{
+    if (scene.ObstacleCount < 2)
+    {
+        return false;
+    }
+    StaticArray<float64, MAX_DIFFRACTION_OBSTACLES> lefts{};
+    StaticArray<float64, MAX_DIFFRACTION_OBSTACLES> rights{};
+    float64 height = scene.Obstacles[0].CornersWorld[0].Z;
+    for (usize o = 0; o < scene.ObstacleCount; ++o)
+    {
+        const DiffractionObstacle& obstacle = scene.Obstacles[o];
+        for (usize i = 0; i < obstacle.CornerCount; ++i)
+        {
+            height = math::Max(height, obstacle.CornersWorld[i].Z);
+        }
+    }
+    for (usize o = 0; o < scene.ObstacleCount; ++o)
+    {
+        const DiffractionObstacle& obstacle = scene.Obstacles[o];
+        bool hasTop = false;
+        for (usize i = 0; i < obstacle.CornerCount; ++i)
+        {
+            const math::Vector3d corner = obstacle.CornersWorld[i];
+            if (math::Abs(corner.Z - height) > GEOMETRY_TOLERANCE_WORLD)
+            {
+                continue;
+            }
+            lefts[o] = hasTop == true ? math::Min(lefts[o], corner.X) : corner.X;
+            rights[o] = hasTop == true ? math::Max(rights[o], corner.X) : corner.X;
+            hasTop = true;
+        }
+        // Every obstacle must reach the plane with a flat top face.
+        if (hasTop == false || rights[o] - lefts[o] <= GEOMETRY_TOLERANCE_WORLD)
+        {
+            return false;
+        }
+    }
+    // A gap lies between an obstacle's right end and the nearest left end beyond it; exactly one may be bounded.
+    usize gaps = 0;
+    float64 start = 0;
+    float64 end = 0;
+    for (usize o = 0; o < scene.ObstacleCount; ++o)
+    {
+        bool hasNext = false;
+        float64 nearest = 0;
+        for (usize p = 0; p < scene.ObstacleCount; ++p)
+        {
+            if (lefts[p] >= rights[o] && (hasNext == false || lefts[p] < nearest))
+            {
+                nearest = lefts[p];
+                hasNext = true;
+            }
+        }
+        if (hasNext == true && nearest - rights[o] > GEOMETRY_TOLERANCE_WORLD)
+        {
+            ++gaps;
+            start = rights[o];
+            end = nearest;
+        }
+    }
+    if (gaps != 1)
+    {
+        return false;
+    }
+    outAperture = { .Start = start, .End = end, .Height = height };
+    return true;
+}
+
+/// Fresnel-Kirchhoff over an aperture [start, end] in the plane z = height, with U = (j / lambda) times the integral
+/// of U_incident exp(-j k r) / r and the mean obliquity (cos + cos) / 2. Along the infinitely long aperture the
+/// integral is evaluated by stationary phase, across it by Simpson's rule.
+[[nodiscard]] float64 ComputeKirchhoffTransmission(float64 wavelengthWorld,
+                                                   const Aperture& aperture,
                                                    math::Vector3d sourceWorld,
                                                    math::Vector3d wallWorld) noexcept
 {
-    const float64 wavenumber = 2 * math::kPi / scene.WavelengthWorld;
-    const float64 width = 2 * scene.SlitHalfWidthWorld;
-    const float64 panelWidth = width / static_cast<float64>(KIRCHHOFF_PANELS);
-    const float64 alongSlit = wallWorld.Y - sourceWorld.Y;
+    const float64 start = aperture.Start;
+    const float64 end = aperture.End;
+    const float64 height = aperture.Height;
+    const float64 wavenumber = 2 * math::kPi / wavelengthWorld;
+    const float64 panelWidth = (end - start) / static_cast<float64>(KIRCHHOFF_PANELS);
+    const float64 alongAperture = wallWorld.Y - sourceWorld.Y;
+    const float64 sourceHeight = sourceWorld.Z - height;
+    const float64 wallDepth = height - wallWorld.Z;
     DiffractionComplex sum{};
     for (uint32 i = 0; i <= KIRCHHOFF_PANELS; ++i)
     {
-        const float64 x = -scene.SlitHalfWidthWorld + panelWidth * static_cast<float64>(i);
+        const float64 x = start + panelWidth * static_cast<float64>(i);
         const float64 incidentPlanar =
-            math::Sqrt((x - sourceWorld.X) * (x - sourceWorld.X) + sourceWorld.Z * sourceWorld.Z);
-        const float64 diffractedPlanar = math::Sqrt((wallWorld.X - x) * (wallWorld.X - x) + wallWorld.Z * wallWorld.Z);
-        // The stationary point along the slit lies on the unfolded straight line; both distances grow by the same
+            math::Sqrt((x - sourceWorld.X) * (x - sourceWorld.X) + sourceHeight * sourceHeight);
+        const float64 diffractedPlanar = math::Sqrt((wallWorld.X - x) * (wallWorld.X - x) + wallDepth * wallDepth);
+        // The stationary point along the aperture lies on the unfolded straight line; both distances grow by the same
         // factor there.
-        const float64 slope = alongSlit / (incidentPlanar + diffractedPlanar);
+        const float64 slope = alongAperture / (incidentPlanar + diffractedPlanar);
         const float64 growth = math::Sqrt(1 + slope * slope);
         const float64 incidentLength = incidentPlanar * growth;
         const float64 diffractedLength = diffractedPlanar * growth;
         const float64 curvature = (1 / incidentPlanar + 1 / diffractedPlanar) / (growth * growth * growth);
-        const float64 obliquity = (sourceWorld.Z / incidentLength - wallWorld.Z / diffractedLength) / 2;
+        const float64 obliquity = (sourceHeight / incidentLength + wallDepth / diffractedLength) / 2;
         // integral exp(-j k f''(y) y^2 / 2) dy = sqrt(2 pi / (k f'')) exp(-j pi / 4).
         const float64 amplitude =
             obliquity / (incidentLength * diffractedLength) * math::Sqrt(2 * math::kPi / (wavenumber * curvature));
@@ -287,37 +539,375 @@ IsGeometricallyVisible(const SingleSlitScene& scene, math::Vector3d sourceWorld,
         }
         sum = Add(sum, Scale(value, weight));
     }
-    const DiffractionComplex field = Multiply({0, 1 / scene.WavelengthWorld}, Scale(sum, panelWidth / 3));
+    const DiffractionComplex field = Multiply({0, 1 / wavelengthWorld}, Scale(sum, panelWidth / 3));
     const float64 freeDistance = math::Length(wallWorld - sourceWorld);
     return ComputeSquaredMagnitude(field) * freeDistance * freeDistance;
 }
 
-/// Sums weight(cell) * transmission(cell) over the light's midpoint-rule cells, where weight is the cell's
-/// contribution to the wall's irradiance without the jaws.
-template <typename TransmissionFunction>
-[[nodiscard]] float64 IntegrateOverLight(const SingleSlitScene& scene,
-                                         math::Vector3d wallWorld,
-                                         usize subdivisions,
-                                         const TransmissionFunction& transmission) noexcept
+/// Light positions (x) where some path's visibility can change, at most this many per wall point.
+constexpr usize MAX_LIGHT_BREAKS = 1024;
+/// The light is integrated in at least this many pieces along x.
+constexpr usize MINIMUM_LIGHT_PIECES = 2;
+
+/// Gauss-Legendre nodes and weights on [-1, 1] (Abramowitz and Stegun, Section 25.4): the roots of P_n by Newton's
+/// method from Chebyshev estimates, and w = 2 / ((1 - x^2) P_n'(x)^2).
+/// A Gauss-Legendre rule's nodes and weights on [-1, 1].
+struct GaussLegendreRule final
 {
-    const float64 cellSize = 2 * scene.LightHalfSizeWorld / static_cast<float64>(subdivisions);
-    float64 irradiance = 0;
-    for (usize row = 0; row < subdivisions; ++row)
+    StaticArray<float64, MAX_LIGHT_QUADRATURE_NODES> Nodes{};
+    StaticArray<float64, MAX_LIGHT_QUADRATURE_NODES> Weights{};
+};
+
+[[nodiscard]] GaussLegendreRule ComputeGaussLegendre(usize count) noexcept
+{
+    constexpr uint32 NEWTON_STEPS = 100;
+    GaussLegendreRule rule;
+    const float64 n = static_cast<float64>(count);
+    for (usize i = 0; i < (count + 1) / 2; ++i)
     {
-        for (usize column = 0; column < subdivisions; ++column)
+        float64 x = math::Cos(math::kPi * (static_cast<float64>(i) + 0.75) / (n + 0.5));
+        float64 derivative = 1;
+        for (uint32 step = 0; step < NEWTON_STEPS; ++step)
         {
-            const math::Vector3d sourceWorld{-scene.LightHalfSizeWorld +
-                                                 cellSize * (static_cast<float64>(column) + 0.5),
-                                             -scene.LightHalfSizeWorld + cellSize * (static_cast<float64>(row) + 0.5),
-                                             scene.LightHeightWorld};
-            const float64 height = sourceWorld.Z - wallWorld.Z;
-            const float64 distanceSquared = math::LengthSquared(sourceWorld - wallWorld);
-            // cos at the light times cos at the wall over d^2; both normals lie along z.
-            const float64 geometry = height * height / (distanceSquared * distanceSquared);
-            irradiance += scene.LightRadiance * geometry * cellSize * cellSize * transmission(sourceWorld);
+            float64 previous = 1;
+            float64 current = x;
+            for (usize j = 2; j <= count; ++j)
+            {
+                const float64 next =
+                    ((2 * static_cast<float64>(j) - 1) * x * current - (static_cast<float64>(j) - 1) * previous) /
+                    static_cast<float64>(j);
+                previous = current;
+                current = next;
+            }
+            derivative = n * (x * current - previous) / (x * x - 1);
+            const float64 change = current / derivative;
+            x -= change;
+            if (math::Abs(change) < 1e-16)
+            {
+                break;
+            }
+        }
+        const float64 weight = 2 / ((1 - x * x) * derivative * derivative);
+        rule.Nodes[i] = -x;
+        rule.Weights[i] = weight;
+        rule.Nodes[count - 1 - i] = x;
+        rule.Weights[count - 1 - i] = weight;
+    }
+    return rule;
+}
+
+/// Adds the light-plane x where the line from a viewpoint through a corner meets the light, when it lies on the light.
+[[nodiscard]] bool TryAddLightBreak(const EdgeDiffractionScene& scene,
+                                    math::Vector3d viewpoint,
+                                    math::Vector3d corner,
+                                    StaticArray<float64, MAX_LIGHT_BREAKS>& inoutBreaks,
+                                    usize& inoutCount) noexcept
+{
+    if (corner.Z <= viewpoint.Z + GEOMETRY_TOLERANCE_WORLD)
+    {
+        return true;
+    }
+    const float64 scale = (scene.LightCenterWorld.Z - viewpoint.Z) / (corner.Z - viewpoint.Z);
+    const float64 x = viewpoint.X + (corner.X - viewpoint.X) * scale;
+    if (x <= scene.LightCenterWorld.X - scene.LightHalfWidthWorld ||
+        x >= scene.LightCenterWorld.X + scene.LightHalfWidthWorld)
+    {
+        return true;
+    }
+    if (inoutCount == MAX_LIGHT_BREAKS)
+    {
+        return false;
+    }
+    inoutBreaks[inoutCount] = x;
+    ++inoutCount;
+    return true;
+}
+
+/// The sorted light-plane x of every visibility change for a wall point: where an obstacle corner starts to hide the
+/// direct path, and where one starts to hide the path from the light to an edge. The obstacles are prisms along y, so
+/// visibility depends on the light point's x alone; between breaks the transmission is smooth (the uniform
+/// coefficient keeps the field continuous across an edge's own shadow and reflection boundaries).
+[[nodiscard]] bool TryCollectLightBreaks(const EdgeDiffractionScene& scene,
+                                         math::Vector3d wallWorld,
+                                         StaticArray<float64, MAX_LIGHT_BREAKS>& outBreaks,
+                                         usize& outCount) noexcept
+{
+    usize count = 0;
+    outBreaks[count] = scene.LightCenterWorld.X - scene.LightHalfWidthWorld;
+    ++count;
+    outBreaks[count] = scene.LightCenterWorld.X + scene.LightHalfWidthWorld;
+    ++count;
+    for (usize o = 0; o < scene.ObstacleCount; ++o)
+    {
+        const DiffractionObstacle& obstacle = scene.Obstacles[o];
+        for (usize i = 0; i < obstacle.CornerCount; ++i)
+        {
+            const math::Vector3d edge = obstacle.CornersWorld[i];
+            if (TryAddLightBreak(scene, wallWorld, edge, outBreaks, count) == false)
+            {
+                return false;
+            }
+            // The edge's own faces, extended towards the light.
+            for (const usize neighbour :
+                 {(i + 1) % obstacle.CornerCount, (i + obstacle.CornerCount - 1) % obstacle.CornerCount})
+            {
+                if (TryAddLightBreak(scene, obstacle.CornersWorld[neighbour], edge, outBreaks, count) == false)
+                {
+                    return false;
+                }
+            }
+            for (usize p = 0; p < scene.ObstacleCount; ++p)
+            {
+                const DiffractionObstacle& other = scene.Obstacles[p];
+                for (usize j = 0; j < other.CornerCount; ++j)
+                {
+                    if ((p != o || j != i) &&
+                        TryAddLightBreak(scene, edge, other.CornersWorld[j], outBreaks, count) == false)
+                    {
+                        return false;
+                    }
+                }
+            }
         }
     }
-    return irradiance * scene.WallAlbedo / math::kPi;
+    // Insertion sort: the counts are small.
+    for (usize i = 1; i < count; ++i)
+    {
+        const float64 value = outBreaks[i];
+        usize j = i;
+        while (j > 0 && outBreaks[j - 1] > value)
+        {
+            outBreaks[j] = outBreaks[j - 1];
+            --j;
+        }
+        outBreaks[j] = value;
+    }
+    outCount = count;
+    return true;
+}
+
+/// Integrates weight * transmission over the light, where weight is a point's unobstructed contribution to the
+/// wall's irradiance, and returns the wall's radiance. Along x the light is split at every visibility change and each
+/// piece takes Gauss-Legendre nodes; along y, where nothing changes visibility, the whole light takes them. Stops at
+/// the first failed transmission.
+template <typename TransmissionFunction>
+[[nodiscard]] bool IntegrateOverLight(const EdgeDiffractionScene& scene,
+                                      math::Vector3d wallWorld,
+                                      usize nodeCount,
+                                      const TransmissionFunction& transmission,
+                                      float64& outRadiance) noexcept
+{
+    if (nodeCount == 0 || nodeCount > MAX_LIGHT_QUADRATURE_NODES)
+    {
+        return false;
+    }
+    const GaussLegendreRule rule = ComputeGaussLegendre(nodeCount);
+    StaticArray<float64, MAX_LIGHT_BREAKS> breaks{};
+    usize breakCount = 0;
+    if (TryCollectLightBreaks(scene, wallWorld, breaks, breakCount) == false)
+    {
+        return false;
+    }
+    const float64 lightWidth = 2 * scene.LightHalfWidthWorld;
+    const float64 halfHeight = scene.LightHalfHeightWorld;
+    float64 irradiance = 0;
+    for (usize b = 0; b + 1 < breakCount; ++b)
+    {
+        const float64 gap = breaks[b + 1] - breaks[b];
+        if (gap <= GEOMETRY_TOLERANCE_WORLD)
+        {
+            continue;
+        }
+        // Long pieces split further, so that every piece spans at most 1 / MINIMUM_LIGHT_PIECES of the light.
+        const usize pieces = static_cast<usize>(
+            math::Ceil(gap * static_cast<float64>(MINIMUM_LIGHT_PIECES) / lightWidth - GEOMETRY_TOLERANCE_WORLD));
+        const float64 pieceWidth = gap / static_cast<float64>(pieces == 0 ? 1 : pieces);
+        for (usize piece = 0; piece < (pieces == 0 ? 1 : pieces); ++piece)
+        {
+            const float64 pieceCentre = breaks[b] + pieceWidth * (static_cast<float64>(piece) + 0.5);
+            for (usize i = 0; i < nodeCount; ++i)
+            {
+                for (usize j = 0; j < nodeCount; ++j)
+                {
+                    const math::Vector3d sourceWorld{pieceCentre + pieceWidth / 2 * rule.Nodes[i],
+                                                     scene.LightCenterWorld.Y + halfHeight * rule.Nodes[j],
+                                                     scene.LightCenterWorld.Z};
+                    float64 pointTransmission = 0;
+                    if (transmission(sourceWorld, pointTransmission) == false)
+                    {
+                        return false;
+                    }
+                    const float64 height = sourceWorld.Z - wallWorld.Z;
+                    const float64 distanceSquared = math::LengthSquared(sourceWorld - wallWorld);
+                    // cos at the light times cos at the wall over d^2; both normals lie along z.
+                    const float64 geometry = height * height / (distanceSquared * distanceSquared);
+                    const float64 area = pieceWidth / 2 * rule.Weights[i] * halfHeight * rule.Weights[j];
+                    irradiance += scene.LightRadiance * geometry * area * pointTransmission;
+                }
+            }
+        }
+    }
+    outRadiance = irradiance * scene.WallAlbedo / math::kPi;
+    return true;
+}
+
+/// Whether two values agree within the geometry tolerance.
+[[nodiscard]] bool IsNear(float64 first, float64 second) noexcept
+{
+    return math::Abs(first - second) <= GEOMETRY_TOLERANCE_WORLD;
+}
+
+/// Whether a value is grey: three equal channels.
+[[nodiscard]] bool IsGrey(math::Vector3d value) noexcept
+{
+    return value.X == value.Y && value.Y == value.Z;
+}
+
+/// An axis-aligned rectangle in a plane of constant z, with the z component of its winding's (unnormalized) normal.
+struct SourceRectangle final
+{
+    math::Vector3d Minimum{};
+    math::Vector3d Maximum{};
+    float64 NormalZ = 0;
+};
+
+/// An object's single convex polygon as an axis-aligned rectangle in a plane of constant z. Returns false for anything
+/// else.
+[[nodiscard]] bool TryReadRectangle(const content::scene_source::SourceObject& object,
+                                    SourceRectangle& outRectangle) noexcept
+{
+    if (object.PolygonVertexCounts.GetSize() != 1 || object.PolygonVertexCounts[0] != RECTANGLE_CORNERS)
+    {
+        return false;
+    }
+    math::Vector3d minimum = object.PositionsWorld[object.PolygonIndices[0]];
+    math::Vector3d maximum = minimum;
+    float64 normalZ = 0;
+    for (usize i = 0; i < RECTANGLE_CORNERS; ++i)
+    {
+        const math::Vector3d point = object.PositionsWorld[object.PolygonIndices[i]];
+        const math::Vector3d next = object.PositionsWorld[object.PolygonIndices[(i + 1) % RECTANGLE_CORNERS]];
+        minimum = {math::Min(minimum.X, point.X), math::Min(minimum.Y, point.Y), math::Min(minimum.Z, point.Z)};
+        maximum = {math::Max(maximum.X, point.X), math::Max(maximum.Y, point.Y), math::Max(maximum.Z, point.Z)};
+        // Newell's method.
+        normalZ += (point.X - next.X) * (point.Y + next.Y);
+    }
+    if (IsNear(minimum.Z, maximum.Z) == false)
+    {
+        return false;
+    }
+    for (usize i = 0; i < RECTANGLE_CORNERS; ++i)
+    {
+        const math::Vector3d point = object.PositionsWorld[object.PolygonIndices[i]];
+        const bool isOnX = IsNear(point.X, minimum.X) == true || IsNear(point.X, maximum.X) == true;
+        const bool isOnY = IsNear(point.Y, minimum.Y) == true || IsNear(point.Y, maximum.Y) == true;
+        if (isOnX == false || isOnY == false)
+        {
+            return false;
+        }
+    }
+    outRectangle = { .Minimum = minimum, .Maximum = maximum, .NormalZ = normalZ };
+    return true;
+}
+
+/// An object's cross-section as a strictly convex counterclockwise prism along y, spanning y in [-halfLength,
+/// halfLength] for the halfLength it reports. Returns false for anything else.
+[[nodiscard]] bool TryReadPrism(const content::scene_source::SourceObject& object,
+                                DiffractionObstacle& outObstacle,
+                                float64& outHalfLength) noexcept
+{
+    const usize count = object.PositionsWorld.GetSize();
+    if (count == 0)
+    {
+        return false;
+    }
+    float64 low = object.PositionsWorld[0].Y;
+    float64 high = low;
+    for (usize i = 0; i < count; ++i)
+    {
+        low = math::Min(low, object.PositionsWorld[i].Y);
+        high = math::Max(high, object.PositionsWorld[i].Y);
+    }
+    if (high - low <= GEOMETRY_TOLERANCE_WORLD)
+    {
+        return false;
+    }
+    // Every position lies on one of the two end planes, and each end's cross-section has the same corners.
+    StaticArray<math::Vector3d, MAX_CROSS_SECTION_CORNERS> points{};
+    usize pointCount = 0;
+    for (usize i = 0; i < count; ++i)
+    {
+        const math::Vector3d position = object.PositionsWorld[i];
+        if (IsNear(position.Y, low) == false && IsNear(position.Y, high) == false)
+        {
+            return false;
+        }
+        const math::Vector3d planar{position.X, 0, position.Z};
+        bool isKnown = false;
+        for (usize p = 0; p < pointCount && isKnown == false; ++p)
+        {
+            isKnown = ComputePlanarDistance(points[p], planar) <= GEOMETRY_TOLERANCE_WORLD;
+        }
+        if (isKnown == false)
+        {
+            if (pointCount == MAX_CROSS_SECTION_CORNERS)
+            {
+                return false;
+            }
+            points[pointCount] = planar;
+            ++pointCount;
+        }
+    }
+    if (pointCount < 3 || count != 2 * pointCount)
+    {
+        return false;
+    }
+    // Gift wrapping from the lowest-x corner keeps every other corner on the left: counterclockwise.
+    usize start = 0;
+    for (usize p = 1; p < pointCount; ++p)
+    {
+        if (points[p].X < points[start].X || (points[p].X == points[start].X && points[p].Z < points[start].Z))
+        {
+            start = p;
+        }
+    }
+    DiffractionObstacle obstacle;
+    usize current = start;
+    do
+    {
+        if (obstacle.CornerCount == pointCount)
+        {
+            return false;
+        }
+        obstacle.CornersWorld[obstacle.CornerCount] = points[current];
+        ++obstacle.CornerCount;
+        usize candidate = (current + 1) % pointCount;
+        for (usize p = 0; p < pointCount; ++p)
+        {
+            if (p != current && ComputePlanarCross(points[current], points[candidate], points[p]) < 0)
+            {
+                candidate = p;
+            }
+        }
+        current = candidate;
+    } while (current != start);
+    // Strict convexity: every corner is on the hull and turns left by more than the tolerance.
+    if (obstacle.CornerCount != pointCount)
+    {
+        return false;
+    }
+    for (usize i = 0; i < obstacle.CornerCount; ++i)
+    {
+        const math::Vector3d previous = obstacle.CornersWorld[(i + obstacle.CornerCount - 1) % obstacle.CornerCount];
+        const math::Vector3d next = obstacle.CornersWorld[(i + 1) % obstacle.CornerCount];
+        if (ComputePlanarCross(previous, obstacle.CornersWorld[i], next) <= GEOMETRY_TOLERANCE_WORLD)
+        {
+            return false;
+        }
+    }
+    outObstacle = obstacle;
+    outHalfLength = (high - low) / 2;
+    return true;
 }
 } // namespace
 
@@ -443,41 +1033,211 @@ DiffractionComplex ComputeUtdWedgeField(const WedgeDiffraction& diffraction) noe
     return Add(total, diffracted);
 }
 
-float64 ComputeSlitTransmission(const SingleSlitScene& scene,
-                                SlitModel model,
-                                math::Vector3d sourceWorld,
-                                math::Vector3d wallWorld) noexcept
+DiffractionSceneStatus BuildEdgeDiffractionScene(const content::scene_source::SceneSource& source,
+                                                 EdgeDiffractionScene& outScene) noexcept
 {
+    if (source.Camera.IsPresent == false)
+    {
+        return DiffractionSceneStatus::MissingCamera;
+    }
+    EdgeDiffractionScene scene;
+    usize lights = 0;
+    usize walls = 0;
+    for (usize i = 0; i < source.Objects.GetSize(); ++i)
+    {
+        const content::scene_source::SourceObject& object = source.Objects[i];
+        const content::scene_source::SourceMaterial& material = source.Materials[object.Material];
+        const math::Vector3d emission = material.EmittedRadiance;
+        const math::Vector3d color = material.BaseColor;
+        SourceRectangle rectangle;
+        if (emission.X > 0 || emission.Y > 0 || emission.Z > 0)
+        {
+            // The light: grey, one-sided, an axis-aligned rectangle whose winding faces -z.
+            if (IsGrey(emission) == false || material.IsEmissionTwoSided == true ||
+                TryReadRectangle(object, rectangle) == false || rectangle.NormalZ >= 0)
+            {
+                return DiffractionSceneStatus::UnsupportedLight;
+            }
+            scene.LightCenterWorld = (rectangle.Minimum + rectangle.Maximum) * 0.5;
+            scene.LightHalfWidthWorld = (rectangle.Maximum.X - rectangle.Minimum.X) / 2;
+            scene.LightHalfHeightWorld = (rectangle.Maximum.Y - rectangle.Minimum.Y) / 2;
+            scene.LightRadiance = emission.X;
+            ++lights;
+        }
+        else if (color.X > 0 || color.Y > 0 || color.Z > 0)
+        {
+            // The wall: grey and Lambertian, an axis-aligned rectangle facing +z.
+            if (material.Model != content::scene_source::SourceMaterialModel::Diffuse || IsGrey(color) == false ||
+                TryReadRectangle(object, rectangle) == false || rectangle.NormalZ <= 0)
+            {
+                return DiffractionSceneStatus::UnsupportedWall;
+            }
+            scene.WallHeightWorld = rectangle.Minimum.Z;
+            scene.WallMinimumWorld = rectangle.Minimum;
+            scene.WallMaximumWorld = rectangle.Maximum;
+            scene.WallAlbedo = color.X;
+            ++walls;
+        }
+        else
+        {
+            if (scene.ObstacleCount == MAX_DIFFRACTION_OBSTACLES)
+            {
+                return DiffractionSceneStatus::TooManyObstacles;
+            }
+            float64 halfLength = 0;
+            if (TryReadPrism(object, scene.Obstacles[scene.ObstacleCount], halfLength) == false)
+            {
+                return DiffractionSceneStatus::UnsupportedObstacle;
+            }
+            ++scene.ObstacleCount;
+        }
+    }
+    if (lights != 1)
+    {
+        return DiffractionSceneStatus::UnsupportedLight;
+    }
+    if (walls != 1 || scene.WallHeightWorld >= scene.LightCenterWorld.Z)
+    {
+        return DiffractionSceneStatus::UnsupportedWall;
+    }
+    // Every obstacle lies between the light and the wall.
+    for (usize o = 0; o < scene.ObstacleCount; ++o)
+    {
+        const DiffractionObstacle& obstacle = scene.Obstacles[o];
+        for (usize i = 0; i < obstacle.CornerCount; ++i)
+        {
+            const float64 z = obstacle.CornersWorld[i].Z;
+            if (z <= scene.WallHeightWorld || z >= scene.LightCenterWorld.Z)
+            {
+                return DiffractionSceneStatus::UnsupportedObstacle;
+            }
+        }
+    }
+    scene.EyeWorld = source.Camera.EyeWorld;
+    scene.TargetWorld = source.Camera.TargetWorld;
+    scene.UpWorld = source.Camera.UpWorld;
+    scene.VerticalFovRadians = source.Camera.VerticalFovRadians;
+    outScene = scene;
+    return DiffractionSceneStatus::Success;
+}
+
+bool TryComputeDiffractionTransmission(const EdgeDiffractionScene& scene,
+                                       DiffractionModel model,
+                                       float64 wavelengthWorld,
+                                       math::Vector3d sourceWorld,
+                                       math::Vector3d wallWorld,
+                                       float64& outTransmission) noexcept
+{
+    if (math::IsFinite(wavelengthWorld) == false || wavelengthWorld <= 0)
+    {
+        return false;
+    }
+    const float64 wavenumber = 2 * math::kPi / wavelengthWorld;
     switch (model)
     {
-        case SlitModel::Geometric:
-            return IsGeometricallyVisible(scene, sourceWorld, wallWorld) == true ? 1.0 : 0.0;
-        case SlitModel::Kirchhoff:
-            return ComputeKirchhoffTransmission(scene, sourceWorld, wallWorld);
-        case SlitModel::UtdSoft:
-            return ComputeUtdTransmission(scene, sourceWorld, wallWorld, EdgeCondition::Soft);
-        case SlitModel::UtdHard:
-            return ComputeUtdTransmission(scene, sourceWorld, wallWorld, EdgeCondition::Hard);
-        case SlitModel::UtdUnpolarized:
-            return (ComputeUtdTransmission(scene, sourceWorld, wallWorld, EdgeCondition::Soft) +
-                    ComputeUtdTransmission(scene, sourceWorld, wallWorld, EdgeCondition::Hard)) /
-                   2;
+        case DiffractionModel::Geometric:
+            outTransmission = IsSegmentBlocked(scene, sourceWorld, wallWorld) == true ? 0.0 : 1.0;
+            return true;
+        case DiffractionModel::Kirchhoff: {
+            Aperture aperture;
+            if (TryFindAperture(scene, aperture) == false)
+            {
+                return false;
+            }
+            outTransmission = ComputeKirchhoffTransmission(wavelengthWorld, aperture, sourceWorld, wallWorld);
+            return true;
+        }
+        case DiffractionModel::UtdAbsorbing:
+            outTransmission =
+                ComputeUtdTransmission(scene, wavenumber, EdgeCondition::Absorbing, sourceWorld, wallWorld);
+            return true;
+        case DiffractionModel::UtdSoft:
+            outTransmission = ComputeUtdTransmission(scene, wavenumber, EdgeCondition::Soft, sourceWorld, wallWorld);
+            return true;
+        case DiffractionModel::UtdHard:
+            outTransmission = ComputeUtdTransmission(scene, wavenumber, EdgeCondition::Hard, sourceWorld, wallWorld);
+            return true;
+        case DiffractionModel::UtdUnpolarized:
+            outTransmission = (ComputeUtdTransmission(scene, wavenumber, EdgeCondition::Soft, sourceWorld, wallWorld) +
+                               ComputeUtdTransmission(scene, wavenumber, EdgeCondition::Hard, sourceWorld, wallWorld)) /
+                              2;
+            return true;
     }
-    return 0;
+    return false;
 }
 
-float64 ComputeSlitWallRadiance(const SingleSlitScene& scene,
-                                SlitModel model,
-                                math::Vector3d wallWorld,
-                                usize subdivisions) noexcept
+bool TryComputeDiffractionWallRadiance(const EdgeDiffractionScene& scene,
+                                       const DiffractionSettings& settings,
+                                       math::Vector3d wallWorld,
+                                       float64& outRadiance) noexcept
 {
-    return IntegrateOverLight(scene, wallWorld, subdivisions, [&](math::Vector3d sourceWorld) {
-        return ComputeSlitTransmission(scene, model, sourceWorld, wallWorld);
-    });
+    return IntegrateOverLight(
+        scene,
+        wallWorld,
+        settings.LightQuadratureNodes,
+        [&](math::Vector3d sourceWorld, float64& outTransmission) {
+            return TryComputeDiffractionTransmission(scene,
+                                                     settings.Model,
+                                                     settings.WavelengthWorld,
+                                                     sourceWorld,
+                                                     wallWorld,
+                                                     outTransmission);
+        },
+        outRadiance);
 }
 
-float64 ComputeSlitFreeWallRadiance(const SingleSlitScene& scene, math::Vector3d wallWorld, usize subdivisions) noexcept
+float64 ComputeDiffractionFreeWallRadiance(const EdgeDiffractionScene& scene,
+                                           math::Vector3d wallWorld,
+                                           usize lightQuadratureNodes) noexcept
 {
-    return IntegrateOverLight(scene, wallWorld, subdivisions, [](math::Vector3d) { return 1.0; });
+    float64 radiance = 0;
+    const bool isIntegrated = IntegrateOverLight(
+        scene,
+        wallWorld,
+        lightQuadratureNodes,
+        [](math::Vector3d, float64& outTransmission) {
+            outTransmission = 1;
+            return true;
+        },
+        radiance);
+    return isIntegrated == true ? radiance : 0.0;
+}
+
+bool TryFindDiffractionWallPoint(const EdgeDiffractionScene& scene,
+                                 uint32 column,
+                                 uint32 row,
+                                 uint32 width,
+                                 uint32 height,
+                                 math::Vector3d& outWallWorld) noexcept
+{
+    if (width == 0 || height == 0 || column >= width || row >= height)
+    {
+        return false;
+    }
+    // The camera of math::TryLookAt and a symmetric perspective: x right, y up, looking along the target direction.
+    const math::Vector3d towardsTarget = scene.TargetWorld - scene.EyeWorld;
+    const math::Vector3d forward = towardsTarget * (1 / math::Length(towardsTarget));
+    const math::Vector3d rightUnscaled = math::Cross(forward, scene.UpWorld);
+    const math::Vector3d right = rightUnscaled * (1 / math::Length(rightUnscaled));
+    const math::Vector3d up = math::Cross(right, forward);
+    const float64 tangent = math::Sin(scene.VerticalFovRadians / 2) / math::Cos(scene.VerticalFovRadians / 2);
+    const float64 aspect = static_cast<float64>(width) / static_cast<float64>(height);
+    const float64 ndcX = (static_cast<float64>(column) + 0.5) / static_cast<float64>(width) * 2 - 1;
+    const float64 ndcY = 1 - (static_cast<float64>(row) + 0.5) / static_cast<float64>(height) * 2;
+    const math::Vector3d direction = forward + right * (ndcX * tangent * aspect) + up * (ndcY * tangent);
+    if (direction.Z >= 0)
+    {
+        return false;
+    }
+    const float64 distance = (scene.WallHeightWorld - scene.EyeWorld.Z) / direction.Z;
+    const math::Vector3d wallWorld = scene.EyeWorld + direction * distance;
+    if (distance <= 0 || wallWorld.X < scene.WallMinimumWorld.X || wallWorld.X > scene.WallMaximumWorld.X ||
+        wallWorld.Y < scene.WallMinimumWorld.Y || wallWorld.Y > scene.WallMaximumWorld.Y ||
+        IsSegmentBlocked(scene, scene.EyeWorld, wallWorld) == true)
+    {
+        return false;
+    }
+    outWallWorld = {wallWorld.X, wallWorld.Y, scene.WallHeightWorld};
+    return true;
 }
 } // namespace ludus::graphics::renderer::testing

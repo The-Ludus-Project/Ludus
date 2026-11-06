@@ -112,3 +112,8 @@ apps/editor/tests/geometry_preview_tests.cpp
 modules/graphics/renderer/tests/edge_diffraction_oracle.h
 modules/graphics/renderer/tests/edge_diffraction_oracle.cpp
 modules/graphics/renderer/tests/edge_diffraction_oracle_tests.cpp
+modules/graphics/renderer/tests/edge_diffraction_reference.h
+modules/graphics/renderer/tests/edge_diffraction_reference.cpp
+modules/graphics/renderer/tests/edge_diffraction_reference_tests.cpp
+modules/graphics/renderer/tests/edge_diffraction_scene_loading.h
+modules/graphics/renderer/tests/edge_diffraction_scene_loading.cpp

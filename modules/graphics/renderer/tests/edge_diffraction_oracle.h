@@ -1,10 +1,11 @@
 #pragma once
 
-// CPU oracle for edge diffraction in the single-slit test scene (tests/scenes/diffraction/single-slit.luscene.json),
-// in float64 at one wavelength. It gives the wall radiance that geometric optics, the Fresnel-Kirchhoff integral and
-// the Uniform Theory of Diffraction (UTD) predict, so that a renderer's diffraction can be compared with known
-// physics. The UTD coefficient is the one of R. G. Kouyoumjian and P. H. Pathak, "A Uniform Geometrical Theory of
-// Diffraction for an Edge in a Perfectly Conducting Surface", Proceedings of the IEEE 62(11), 1448-1461, 1974,
+// CPU oracle for edge diffraction in the engine's diffraction test scenes (tests/scenes/diffraction), in float64 at one
+// wavelength. It reads a scene source file and gives the wall radiance that geometric optics, the Fresnel-Kirchhoff
+// integral and first-order Uniform Theory of Diffraction (UTD) predict, so that a renderer's diffraction can be
+// compared with known physics. edge_diffraction_reference.h turns it into reference images and comparisons. The UTD
+// coefficient is the one of R. G. Kouyoumjian and P. H. Pathak, "A Uniform Geometrical Theory of Diffraction for an
+// Edge in a Perfectly Conducting Surface", Proceedings of the IEEE 62(11), 1448-1461, 1974,
 // https://doi.org/10.1109/PROC.1974.9651 : the wedge coefficient with its transition function, the distance parameter
 // of a spherical wave and the diffracted field's spreading factor. Its non-uniform limit is J. B. Keller's,
 // "Geometrical Theory of Diffraction", Journal of the Optical Society of America 52(2), 116-130, 1962,
@@ -18,11 +19,16 @@
 // Conventions: time dependence exp(+j w t), so fields propagate as exp(-j k r). A wedge's angles are measured in the
 // plane perpendicular to its edge from its face 0 through the exterior to its face n, which lies at n pi; a
 // zero-thickness half-plane has n = 2. "Soft" is the Dirichlet edge (the electric field parallel to the edge for a
-// perfect conductor), "hard" the Neumann edge. Unpolarized light averages their intensities.
+// perfect conductor), "hard" the Neumann edge. Unpolarized light averages their intensities. "Absorbing" keeps only the
+// coefficient's incident-field terms, the mean of the soft and hard amplitudes: for a half-plane that is the black
+// (Kirchhoff) screen's edge, and for other wedges the usual approximation of faces that reflect nothing.
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
+
+#include <ludus/content/scene_source/scene_source.h>
 
 namespace ludus::graphics::renderer::testing
 {
@@ -49,7 +55,7 @@ struct FresnelIntegrals final
 /// G(u) = integral_u^infinity exp(-j t^2) dt for any finite u. G(0) = (sqrt(pi) / 2) exp(-j pi / 4).
 [[nodiscard]] DiffractionComplex ComputeFresnelTail(foundation::float64 u) noexcept;
 
-/// The UTD transition function F(x) = 2 j sqrt(x) exp(j x) G(sqrt(x)) for x >= 0 (Kouyoumjian and Pathak, Eq. (27)).
+/// The UTD transition function F(x) = 2 j sqrt(x) exp(j x) G(sqrt(x)) for x >= 0 (Kouyoumjian and Pathak).
 /// F(0) = 0 and F(x) tends to 1 as x grows.
 [[nodiscard]] DiffractionComplex ComputeUtdTransition(foundation::float64 x) noexcept;
 
@@ -58,6 +64,8 @@ enum class EdgeCondition : foundation::uint8
 {
     Soft = 0, ///< Dirichlet: the field vanishes on the faces.
     Hard = 1, ///< Neumann: the field's normal derivative vanishes on the faces.
+    /// The incident-field terms only: faces that reflect nothing. For a half-plane, the black (Kirchhoff) screen.
+    Absorbing = 2,
 };
 
 /// One edge diffraction, described in the edge's frame.
@@ -74,7 +82,7 @@ struct WedgeDiffraction final
     EdgeCondition Condition = EdgeCondition::Soft;
 };
 
-/// The UTD diffraction coefficient D (Kouyoumjian and Pathak, Eq. (25)), finite on the shadow and reflection
+/// The UTD diffraction coefficient D (Kouyoumjian and Pathak), finite on the shadow and reflection
 /// boundaries, where the oracle uses the coefficient's limit.
 [[nodiscard]] DiffractionComplex ComputeUtdCoefficient(const WedgeDiffraction& diffraction) noexcept;
 
@@ -83,56 +91,120 @@ struct WedgeDiffraction final
 [[nodiscard]] DiffractionComplex ComputeGtdCoefficient(const WedgeDiffraction& diffraction) noexcept;
 
 /// The exact total field of a unit plane wave from the direction IncidentAngle on a half-plane (n = 2), at
-/// DistanceParameterWorld from the edge (Sommerfeld). Its other members' EdgeSine and WedgeN are ignored.
+/// DistanceParameterWorld from the edge (Sommerfeld). Its other members' EdgeSine and WedgeN are ignored. Exact for
+/// soft and hard edges; for Absorbing it is the corresponding black-screen approximation.
 [[nodiscard]] DiffractionComplex ComputeHalfPlaneField(const WedgeDiffraction& diffraction) noexcept;
 
 /// The UTD total field of the same plane wave on a wedge: the incident field where it is lit, the fields reflected by
-/// each face where they reach, and the diffracted field D exp(-j k rho) / sqrt(rho), with rho = DistanceParameterWorld.
+/// each face where they reach (none for Absorbing), and the diffracted field D exp(-j k rho) / sqrt(rho), with rho =
+/// DistanceParameterWorld.
 [[nodiscard]] DiffractionComplex ComputeUtdWedgeField(const WedgeDiffraction& diffraction) noexcept;
 
-/// The single-slit test scene, as tests/scenes/diffraction/single-slit.luscene.json authors it. The jaws' edges lie
-/// along y at x = +-SlitHalfWidthWorld, z = 0; each jaw's face 0 is its face at z = 0 towards the light and its face n
-/// the bevel towards the wall. The oracle treats the edges as infinitely long: the jaws span 3 m, and diffraction
-/// from their ends (corner diffraction, which UTD does not describe) is left out.
-struct SingleSlitScene final
+/// Obstacles per diffraction scene.
+inline constexpr foundation::usize MAX_DIFFRACTION_OBSTACLES = 8;
+/// Corners of one obstacle's cross-section.
+inline constexpr foundation::usize MAX_CROSS_SECTION_CORNERS = 16;
+
+/// A black prism along y: its cross-section in the x-z plane (each corner's Y is 0), strictly convex and
+/// counterclockwise with x to the right and z up. Every corner is an edge along y.
+struct DiffractionObstacle final
 {
-    foundation::float64 WavelengthWorld = 0.005;    ///< The design wavelength, metres.
-    foundation::float64 LightHeightWorld = 0.5;     ///< z of the light.
-    foundation::float64 LightHalfSizeWorld = 0.015; ///< The square light spans +- this in x and y.
-    foundation::float64 LightRadiance = 10000;      ///< One-sided emitted radiance towards -z, W / (sr m^2).
-    foundation::float64 SlitHalfWidthWorld = 0.025; ///< The jaws' edges lie at x = +- this.
-    foundation::float64 WedgeN = 11.0 / 6.0;        ///< 30 degree jaw edges: exterior angle 330 degrees.
-    foundation::float64 WallHeightWorld = -1;       ///< z of the wall.
-    foundation::float64 WallAlbedo = 0.8;           ///< Lambertian reflectance of the wall.
+    foundation::StaticArray<foundation::math::Vector3d, MAX_CROSS_SECTION_CORNERS> CornersWorld{};
+    foundation::usize CornerCount = 0;
 };
+
+/// A diffraction test scene read from a scene source file: one one-sided rectangular light facing -z, black prisms
+/// along y, and a Lambertian wall facing +z below them, seen by the file's camera. The oracle treats the prisms as
+/// infinitely long, so diffraction from their ends (corner diffraction, which UTD does not describe) is left out.
+struct EdgeDiffractionScene final
+{
+    foundation::StaticArray<DiffractionObstacle, MAX_DIFFRACTION_OBSTACLES> Obstacles{};
+    foundation::usize ObstacleCount = 0;
+    foundation::math::Vector3d LightCenterWorld{}; ///< The light's centre; it emits towards -z.
+    foundation::float64 LightHalfWidthWorld = 0;   ///< Half the light's extent along x.
+    foundation::float64 LightHalfHeightWorld = 0;  ///< Half the light's extent along y.
+    foundation::float64 LightRadiance = 0;         ///< Emitted radiance, W / (sr m^2), equal in R, G and B.
+    foundation::float64 WallHeightWorld = 0;       ///< z of the wall.
+    foundation::math::Vector3d WallMinimumWorld{}; ///< The wall's lower x and y bounds (Z = WallHeightWorld).
+    foundation::math::Vector3d WallMaximumWorld{}; ///< The wall's upper x and y bounds (Z = WallHeightWorld).
+    foundation::float64 WallAlbedo = 0;            ///< Lambertian reflectance, equal in R, G and B.
+    foundation::math::Vector3d EyeWorld{};
+    foundation::math::Vector3d TargetWorld{};
+    foundation::math::Vector3d UpWorld{};
+    foundation::float64 VerticalFovRadians = 0;
+};
+
+/// Why a scene source is not a diffraction scene.
+enum class DiffractionSceneStatus : foundation::uint8
+{
+    Success = 0,
+    MissingCamera = 1,       ///< The file has no camera.
+    UnsupportedLight = 2,    ///< Not exactly one emitting object: a grey, one-sided, axis-aligned rectangle facing -z.
+    UnsupportedWall = 3,     ///< Not exactly one lit object: a grey diffuse axis-aligned rectangle facing +z below.
+    UnsupportedObstacle = 4, ///< Another object is not a black, strictly convex prism along y.
+    TooManyObstacles = 5,    ///< More than MAX_DIFFRACTION_OBSTACLES, or a cross-section over its corner limit.
+};
+
+/// Reads the diffraction scene a parsed scene source describes. outScene is written only on success.
+[[nodiscard]] DiffractionSceneStatus BuildEdgeDiffractionScene(const content::scene_source::SceneSource& source,
+                                                               EdgeDiffractionScene& outScene) noexcept;
 
 /// What predicts the light that reaches the wall.
-enum class SlitModel : foundation::uint8
+enum class DiffractionModel : foundation::uint8
 {
-    Geometric = 0,      ///< Straight-line visibility through the slit: what a ray tracer without diffraction gives.
-    Kirchhoff = 1,      ///< Fresnel-Kirchhoff over the slit opening (a black, infinitely thin screen).
-    UtdSoft = 2,        ///< Geometric optics plus UTD diffraction from both edges, soft edges.
-    UtdHard = 3,        ///< The same with hard edges.
-    UtdUnpolarized = 4, ///< The mean of the soft and hard intensities: unpolarized light.
+    Geometric = 0,      ///< Straight-line visibility: what a ray tracer without diffraction gives.
+    Kirchhoff = 1,      ///< Fresnel-Kirchhoff over the single bounded gap between obstacles that share a top plane.
+    UtdAbsorbing = 2,   ///< First-order UTD with absorbing (black) faces; the reference for these black scenes.
+    UtdSoft = 3,        ///< First-order UTD with soft perfectly conducting faces, including their reflections.
+    UtdHard = 4,        ///< The same with hard faces.
+    UtdUnpolarized = 5, ///< The mean of the soft and hard intensities: unpolarized light on conducting faces.
 };
 
-/// The intensity at a wall point from a point source on the light, relative to the intensity without the jaws.
-/// @pre sourceWorld lies above the jaws (z > 0) and wallWorld on the wall.
-[[nodiscard]] foundation::float64 ComputeSlitTransmission(const SingleSlitScene& scene,
-                                                          SlitModel model,
-                                                          foundation::math::Vector3d sourceWorld,
-                                                          foundation::math::Vector3d wallWorld) noexcept;
+/// The intensity at a wall point from a point source on the light, relative to the intensity without obstacles.
+/// First-order UTD sums geometric optics and one diffraction at each edge, along paths that no obstacle blocks;
+/// light diffracted twice (from edge to edge) is left out. Returns false, leaving outTransmission unchanged, when
+/// the model does not apply to the scene (Kirchhoff without a single aperture) or the inputs are invalid.
+[[nodiscard]] bool TryComputeDiffractionTransmission(const EdgeDiffractionScene& scene,
+                                                     DiffractionModel model,
+                                                     foundation::float64 wavelengthWorld,
+                                                     foundation::math::Vector3d sourceWorld,
+                                                     foundation::math::Vector3d wallWorld,
+                                                     foundation::float64& outTransmission) noexcept;
 
-/// The radiance leaving the wall at a point, in W / (sr m^2): the light integrated with a midpoint rule of
-/// subdivisions^2 cells, each a spatially incoherent point source (an ordinary thermal emitter), times the
-/// transmission of the model. The wall's own interreflection is absent: everything else in the scene is black.
-[[nodiscard]] foundation::float64 ComputeSlitWallRadiance(const SingleSlitScene& scene,
-                                                          SlitModel model,
-                                                          foundation::math::Vector3d wallWorld,
-                                                          foundation::usize subdivisions) noexcept;
+/// The most Gauss-Legendre nodes per light piece and axis.
+inline constexpr foundation::usize MAX_LIGHT_QUADRATURE_NODES = 32;
 
-/// The wall radiance without the jaws, with the same quadrature.
-[[nodiscard]] foundation::float64 ComputeSlitFreeWallRadiance(const SingleSlitScene& scene,
-                                                              foundation::math::Vector3d wallWorld,
-                                                              foundation::usize subdivisions) noexcept;
+/// How a wall radiance is integrated.
+struct DiffractionSettings final
+{
+    DiffractionModel Model = DiffractionModel::UtdAbsorbing;
+    foundation::float64 WavelengthWorld = 0.005; ///< Positive, in metres.
+    /// Gauss-Legendre nodes per light piece and axis, in [1, MAX_LIGHT_QUADRATURE_NODES]. Each node is a point source:
+    /// the light is spatially incoherent (an ordinary thermal emitter), so their intensities add. The light is split
+    /// along x wherever an obstacle corner changes a path's visibility, so shadows cost no accuracy.
+    foundation::usize LightQuadratureNodes = 6;
+};
+
+/// The radiance leaving the wall at a point, in W / (sr m^2): the light's quadrature points weighted by their
+/// unobstructed irradiance and the model's transmission, times albedo / pi. Nothing else in the scene reflects light.
+/// Returns false, leaving outRadiance unchanged, where TryComputeDiffractionTransmission would, or for a node count
+/// out of range or more visibility changes than the oracle tracks (scenes with very many corners).
+[[nodiscard]] bool TryComputeDiffractionWallRadiance(const EdgeDiffractionScene& scene,
+                                                     const DiffractionSettings& settings,
+                                                     foundation::math::Vector3d wallWorld,
+                                                     foundation::float64& outRadiance) noexcept;
+
+/// The wall radiance without obstacles, with the same quadrature; zero for a node count out of range.
+[[nodiscard]] foundation::float64 ComputeDiffractionFreeWallRadiance(const EdgeDiffractionScene& scene,
+                                                                     foundation::math::Vector3d wallWorld,
+                                                                     foundation::usize lightQuadratureNodes) noexcept;
+
+/// The wall point that the centre of pixel (column, row) of a width x height image from the scene's camera sees;
+/// row 0 is the top. Returns false when the pixel's ray misses the wall or an obstacle hides it.
+[[nodiscard]] bool TryFindDiffractionWallPoint(const EdgeDiffractionScene& scene,
+                                               foundation::uint32 column,
+                                               foundation::uint32 row,
+                                               foundation::uint32 width,
+                                               foundation::uint32 height,
+                                               foundation::math::Vector3d& outWallWorld) noexcept;
 } // namespace ludus::graphics::renderer::testing

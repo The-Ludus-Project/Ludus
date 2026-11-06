@@ -1,0 +1,127 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Slit with a partial occluder",
+  "description": "Single slit with a partially occluded light, the third scene of the diffraction set: the single-slit scene (3 cm light at z = 0.5, two black 30 degree wedge jaws 5 cm apart at z = 0, white wall at z = -1) plus a black rod of 2 cm square cross-section along y, at x in [0, 0.02] and z in [0.24, 0.26]. Seen from the slit's centre the rod hides the right half of the light, and how much it hides changes across the wall. Its four 90 degree edges (UTD n = 3/2) diffract too; they are 4 wavelengths apart, so interactions between edges, which first-order UTD leaves out, are not negligible. Design wavelength 5 mm; scale all lengths with it. The camera stands between the jaws and the wall.",
+  "camera": {
+    "eye": [0, 0, -0.1],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 47.92497794915637
+  },
+  "materials": [
+    {
+      "name": "White wall",
+      "model": "diffuse",
+      "base_color": [0.8, 0.8, 0.8]
+    },
+    {
+      "name": "Black",
+      "model": "diffuse",
+      "base_color": [0, 0, 0]
+    },
+    {
+      "name": "Light",
+      "model": "diffuse",
+      "base_color": [0, 0, 0],
+      "emission": {
+        "radiance": [10000, 10000, 10000],
+        "two_sided": false
+      }
+    }
+  ],
+  "objects": [
+    {
+      "name": "Wall",
+      "material": "White wall",
+      "positions": [
+        [-1.5, -1.5, -1],
+        [1.5, -1.5, -1],
+        [1.5, 1.5, -1],
+        [-1.5, 1.5, -1]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    },
+    {
+      "name": "Right jaw",
+      "material": "Black",
+      "positions": [
+        [0.025, -1.5, 0],
+        [1.5, -1.5, 0],
+        [1.5, -1.5, -0.02],
+        [0.059641016151377554, -1.5, -0.02],
+        [0.025, 1.5, 0],
+        [1.5, 1.5, 0],
+        [1.5, 1.5, -0.02],
+        [0.059641016151377554, 1.5, -0.02]
+      ],
+      "polygons": [
+        [1, 5, 4, 0],
+        [7, 6, 2, 3],
+        [4, 7, 3, 0],
+        [2, 6, 5, 1],
+        [3, 2, 1, 0],
+        [5, 6, 7, 4]
+      ]
+    },
+    {
+      "name": "Left jaw",
+      "material": "Black",
+      "positions": [
+        [-0.025, -1.5, 0],
+        [-1.5, -1.5, 0],
+        [-1.5, -1.5, -0.02],
+        [-0.059641016151377554, -1.5, -0.02],
+        [-0.025, 1.5, 0],
+        [-1.5, 1.5, 0],
+        [-1.5, 1.5, -0.02],
+        [-0.059641016151377554, 1.5, -0.02]
+      ],
+      "polygons": [
+        [0, 4, 5, 1],
+        [3, 2, 6, 7],
+        [0, 3, 7, 4],
+        [1, 5, 6, 2],
+        [0, 1, 2, 3],
+        [4, 7, 6, 5]
+      ]
+    },
+    {
+      "name": "Rod",
+      "material": "Black",
+      "positions": [
+        [0.0, -1.5, 0.24],
+        [0.02, -1.5, 0.24],
+        [0.02, -1.5, 0.26],
+        [0.0, -1.5, 0.26],
+        [0.0, 1.5, 0.24],
+        [0.02, 1.5, 0.24],
+        [0.02, 1.5, 0.26],
+        [0.0, 1.5, 0.26]
+      ],
+      "polygons": [
+        [4, 5, 1, 0],
+        [5, 6, 2, 1],
+        [6, 7, 3, 2],
+        [7, 4, 0, 3],
+        [0, 1, 2, 3],
+        [7, 6, 5, 4]
+      ]
+    },
+    {
+      "name": "Light",
+      "material": "Light",
+      "positions": [
+        [-0.015, -0.015, 0.5],
+        [-0.015, 0.015, 0.5],
+        [0.015, 0.015, 0.5],
+        [0.015, -0.015, 0.5]
+      ],
+      "polygons": [
+        [0, 1, 2, 3]
+      ]
+    }
+  ]
+}
