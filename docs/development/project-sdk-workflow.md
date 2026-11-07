@@ -340,7 +340,7 @@ prefix with `--sdk` for the `windows-msvc-development` or
 in `--components`.
 
 Debug, Profile and Release runtime SDKs are not installed yet. The runtime SDK
-omits the scene cooker (`SceneCook`), shader file delivery (`ShaderDevelopment`),
+includes the scene cooker (`SceneCook`). It omits shader file delivery (`ShaderDevelopment`),
 the development diagnostic session, Behavior, Unicode and the OIDN denoiser.
 
 ### VS Code and Visual Studio on Windows

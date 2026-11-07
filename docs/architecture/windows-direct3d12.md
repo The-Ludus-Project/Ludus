@@ -784,8 +784,10 @@ with optional tooling absent.
   The preset also builds the portable gameplay, fluid, network wire and
   audio processing modules. The World sample has no network transport, scripted
   behavior, device audio playback, font overlay or fluid gameplay. Windows
-  audio device/worker qualification, Luau admission, native scene-cooker file
-  operations and authored render-graph package DXIL remain open. D6c adds dynamic
+  audio device/worker qualification, Luau admission and authored render-graph
+  package DXIL remain open. The scene cooker and `ludus-cook` run on Windows through
+  Win32 file operations (`native_files_windows.cpp`). Their golden, saved-level,
+  best-effort import and importer suites run in the MSVC Ninja runtime lane. D6c adds dynamic
   GameHost loading; supervisor transport is tracked under D6c and D6d. The Windows
   Ninja CI test uses WARP. D6a physical-GPU exit evidence remains pending.
 
@@ -820,9 +822,9 @@ with optional tooling absent.
   Debug, Profile and Release runtime SDKs remain open, as do interactive IDE
   sessions on a developer machine. The runtime SDK now includes shader file
   delivery (`Ludus::ShaderDevelopment`, D6c). It omits the POSIX-only development
-  diagnostic session and the scene cooker. The cooker's Python-number emulation
-  now uses the portable FoundationBase `Int128`; its file operations remain
-  POSIX-only.
+  diagnostic session. It now includes the scene cooker (`SceneCook`), whose
+  Python-number emulation uses the portable FoundationBase `Int128` and whose
+  file operations have a Win32 implementation.
 - **D6c (authoring):** port the shader worker's process/IPC/deployment and
   Slang/DXC dependencies, file watching, game DLL loading/reload, process-tree
   cleanup and matching symbol validation. Qualify script compilation/runtime,
@@ -952,7 +954,7 @@ these rows remain pending.
 | GPU timing / PIX / DRED | frame/pass duration, external GPU capture, DRED logs | implemented | D5b | PIX replay and physical adapter evidence pending | Windows RHI `[d5b]` and `[ordered-compute]` conformance |
 | Renderer / graph | D6a | World raster source preset | Run on a physical GPU; add DXIL for authored graph packages | pending | Packed World and renderer pixel tests |
 | Text / localization / UI | D6a | Source targets in runtime preset | Validate MSVC shaping, atlas, localization and UI tests | pending | Windows runtime CI targets |
-| Content / resources | D6a | Packed room loader and Content saves | Qualify native scene cooker and runtime on Windows | pending | Packed/loose replay and bounded publication tests |
+| Content / resources | D6a | Packed room loader, Content saves, scene cooker and `ludus-cook` | Run the cooker suites on a physical Windows host | pending | Packed/loose replay and bounded publication tests; cooker goldens and saved-level suites in the MSVC Ninja lane |
 | Runtime / game host | D6a, D6c | Static host; DLL load, reload, PDB checks and socket supervision | Editor live-play tooling on Windows (D6d) | [PR #1021](https://github.com/The-Ludus-Project/Ludus/pull/1021) | Static lifecycle, loader, reload, session, supervisor and PDB tests in the MSVC Ninja lane |
 | Behavior / scripting | D6c | MSVC 19.44 x86_64 admitted; provider suites in CI | Installed SDK/player, debugger and arm64; script authoring with D6d | [PR #1031](https://github.com/The-Ludus-Project/Ludus/pull/1031) | `ludus_behavior_*` suites in the MSVC Ninja lane |
 | Gameplay / physics | unassigned | unreviewed | D6a required-profile audit | pending | none |

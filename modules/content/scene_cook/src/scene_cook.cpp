@@ -266,7 +266,7 @@ struct CookContext final
     // asset_path(): reject absolute and parent segments; normalise like pathlib.
     [[nodiscard]] bool ResolveAssetPath(std::string_view name, String& outPath) noexcept
     {
-        if (name.empty() == false && name.front() == '/')
+        if (IsRootedName(name) == true)
         {
             return Errors.FailInvalid("asset path escapes source directory");
         }

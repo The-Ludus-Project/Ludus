@@ -16,14 +16,20 @@ target_sources(ludus_scene_cook PUBLIC FILE_SET public_headers TYPE HEADERS BASE
 target_link_libraries(ludus_scene_cook
     PUBLIC Ludus::Content Ludus::FoundationContainers Ludus::FoundationIdentity Ludus::FoundationStrings
     PRIVATE Ludus::SceneFormat Ludus::SceneSource Ludus::FoundationMath Ludus::FoundationParsingJson Ludus::FoundationHash Ludus::FoundationThreading ludus_stb_image ludus_mikktspace)
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    # Win32 file operations; the POSIX ones in native_files.cpp compile out.
+    target_sources(ludus_scene_cook PRIVATE src/native_files_windows.cpp)
+endif()
 # Byte identity with the float64 reference requires unfused IEEE arithmetic.
-target_compile_options(ludus_scene_cook PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
+# MSVC's /fp:precise emits no contractions unless /fp:contract is also given.
+target_compile_options(ludus_scene_cook PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>
+    $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
 ludus_apply_project_defaults(ludus_scene_cook)
 install(TARGETS ludus_scene_cook EXPORT LudusTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
-# The CLI and golden tests need native file access (Linux and macOS hosts).
-if(EMSCRIPTEN OR NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$")
+# The CLI and golden tests need native file access (Linux, macOS and Windows hosts).
+if(EMSCRIPTEN OR NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin|Windows)$")
     return()
 endif()
 
@@ -33,6 +39,10 @@ set_target_properties(ludus_cook PROPERTIES OUTPUT_NAME ludus-cook)
 # The CLI supplies operating-system entropy for new UUIDs; the entropy target
 # avoids linking Platform's window backends into a command-line tool.
 target_link_libraries(ludus_cook PRIVATE Ludus::SceneCook Ludus::ContentIdentity Ludus::FoundationThreading Ludus::PlatformEntropy)
+if(WIN32)
+    # CommandLineToArgvW supplies UTF-8 arguments on Windows.
+    target_link_libraries(ludus_cook PRIVATE shell32)
+endif()
 ludus_apply_project_defaults(ludus_cook)
 
 if(LUDUS_BUILD_TESTS)

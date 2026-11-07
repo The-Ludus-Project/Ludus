@@ -374,16 +374,13 @@ add_subdirectory(modules/content/world_restore)
 add_subdirectory(modules/content/procedural/environment)
 # Scene cooker (pbrt-reference-v1). The library builds for every target; its
 # file I/O reports Unsupported where Ludus::Content has no native file access,
-# and the ludus-cook CLI plus golden tests are native-host only.
+# and the ludus-cook CLI plus golden tests are native-host only (Linux, macOS, Windows).
 # Private pinned stb_image (PNG/JPEG/Radiance decoding for the best-effort scene
 # importers) and MikkTSpace (their tangent generation).
 add_subdirectory(third_party/stb)
 add_subdirectory(third_party/mikktspace)
-# The cooker's file operations are POSIX-only; the Windows runtime closure omits
-# it until they have a Win32 implementation (D6a/D6b).
-if(NOT WIN32)
-    add_subdirectory(modules/content/scene_cook)
-endif()
+# Windows uses its Win32 file operations (D6a).
+add_subdirectory(modules/content/scene_cook)
 # Cooked curves/surfaces geometry codecs, loading and publication (G5).
 add_subdirectory(modules/geometry/content)
 add_subdirectory(modules/audio/content)

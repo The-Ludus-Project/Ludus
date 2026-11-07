@@ -1019,7 +1019,7 @@ Status SceneReader::applyDirective(Directive& inoutDirective) noexcept
 
 bool SceneReader::resolveSourcePath(std::string_view name, ResolvedSourcePath& outPath) noexcept
 {
-    if (mRoot.empty() == true || name.empty() == true || name.front() == '/' ||
+    if (mRoot.empty() == true || name.empty() == true || detail::IsRootedName(name) == true ||
         name.find('\\') != std::string_view::npos || name.find('\0') != std::string_view::npos)
     {
         return false;

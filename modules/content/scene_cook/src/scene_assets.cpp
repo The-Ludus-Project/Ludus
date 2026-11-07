@@ -422,7 +422,7 @@ WriteCanonical(const JsonTree& tree, JsonIndex node, Array<uint8>& outBytes, Fai
 /// Path(relative).is_absolute() or ".." in Path(relative).parts.
 [[nodiscard]] bool IsEscapingPath(std::string_view relative) noexcept
 {
-    if (relative.empty() == false && relative.front() == '/')
+    if (IsRootedName(relative) == true)
     {
         return true;
     }
@@ -441,7 +441,12 @@ WriteCanonical(const JsonTree& tree, JsonIndex node, Array<uint8>& outBytes, Fai
 /// Path.is_relative_to(base) for resolved paths.
 [[nodiscard]] bool IsBelow(std::string_view path, std::string_view base) noexcept
 {
-    return path == base || base == "/" ||
+    // A root ("/", "C:/") is the only resolved path that ends with '/'.
+    if (base.empty() == false && base.back() == '/')
+    {
+        return path.starts_with(base) == true;
+    }
+    return path == base ||
            (path.size() > base.size() && path.substr(0, base.size()) == base && path[base.size()] == '/');
 }
 
@@ -478,12 +483,7 @@ ResolveInside(std::string_view root, std::string_view relative, String& outPath,
 
 [[nodiscard]] std::string_view GetParent(std::string_view path) noexcept
 {
-    const usize slash = path.rfind('/');
-    if (slash == std::string_view::npos)
-    {
-        return ".";
-    }
-    return slash == 0 ? std::string_view("/") : path.substr(0, slash);
+    return GetParentDirectory(path);
 }
 
 /// Path.suffix.

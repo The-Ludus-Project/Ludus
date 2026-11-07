@@ -14,6 +14,7 @@
 #include "importers/pbrt/pbrt_tokenizer.h"
 #include "importers/pbrt/ply_reader.h"
 #include "importers/pbrt/shape_tessellation.h"
+#include "scratch_directory.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -23,10 +24,8 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <stdlib.h> // mkdtemp (POSIX).
 #include <string>
 #include <string_view>
-#include <unistd.h>
 
 namespace
 {
@@ -60,8 +59,7 @@ struct ScratchDirectory final
     fs::path Path;
     ScratchDirectory()
     {
-        std::string pattern = (fs::temp_directory_path() / "ludus-best-effort-XXXXXX").string();
-        Path = mkdtemp(pattern.data());
+        Path = ludus::scene_cook_tests::MakeScratchDirectory("ludus-best-effort");
     }
     ~ScratchDirectory()
     {
