@@ -213,8 +213,9 @@ struct GoldenProject
         AssetError error;
         Array<uint8> empty;
         REQUIRE(CreateLevel("Golden", Options, empty, error));
+        const bool isImported = ImportScene(Project.string(), Source, ToSpan(empty), Options, Level, error);
         INFO(Describe(error));
-        REQUIRE(ImportScene(Project.string(), Source, ToSpan(empty), Options, Level, error));
+        REQUIRE(isImported == true);
         REQUIRE(SaveLevel(Project.string(), "scenes/main.lulevel", ToSpan(Level), nullptr, Saved, error));
     }
 
