@@ -1,5 +1,15 @@
-add_executable(ludus_smoke application.cpp lifecycle.cpp simulation.cpp)
-target_link_libraries(ludus_smoke PRIVATE Ludus::FoundationBase Ludus::FoundationLogging
+# The lifecycle journal and the fixed-step simulation compile once and are linked
+# by the application and by the tests that cover them (tools/check_build_graph.py).
+# Object libraries pass their objects only to targets that link them directly.
+add_library(ludus_smoke_lifecycle OBJECT lifecycle.cpp)
+target_link_libraries(ludus_smoke_lifecycle PUBLIC Ludus::FoundationBase)
+ludus_apply_project_defaults(ludus_smoke_lifecycle)
+add_library(ludus_smoke_simulation OBJECT simulation.cpp)
+target_link_libraries(ludus_smoke_simulation PUBLIC Ludus::FoundationBase Ludus::FoundationTime Ludus::Platform)
+ludus_apply_project_defaults(ludus_smoke_simulation)
+
+add_executable(ludus_smoke application.cpp)
+target_link_libraries(ludus_smoke PRIVATE ludus_smoke_lifecycle ludus_smoke_simulation Ludus::FoundationBase Ludus::FoundationLogging
     Ludus::FoundationProfiling Ludus::FoundationTime Ludus::Platform Ludus::GraphicsRhi)
 ludus_apply_project_defaults(ludus_smoke)
 if(EMSCRIPTEN)
@@ -16,8 +26,8 @@ if(EMSCRIPTEN)
         VERTEX vertexMain FRAGMENT fragmentMain INCLUDES shaders)
 
     # Controlled providers are linked into a separate node test executable only.
-    add_executable(ludus_web_smoke_test application.cpp lifecycle.cpp simulation.cpp main_web.cpp renderer_web.cpp)
-    target_link_libraries(ludus_web_smoke_test PRIVATE Ludus::GraphicsRhi Ludus::FoundationProfiling Ludus::FoundationTime)
+    add_executable(ludus_web_smoke_test application.cpp main_web.cpp renderer_web.cpp)
+    target_link_libraries(ludus_web_smoke_test PRIVATE ludus_smoke_lifecycle ludus_smoke_simulation Ludus::GraphicsRhi Ludus::FoundationProfiling Ludus::FoundationTime)
     ludus_apply_project_defaults(ludus_web_smoke_test)
     target_link_options(ludus_web_smoke_test PRIVATE -fno-exceptions -g0 -g2 -sENVIRONMENT=node -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1 "--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/tests/node_gpu_fixture.js")
     set_target_properties(ludus_web_smoke_test PROPERTIES OUTPUT_NAME smoke-test SUFFIX ".js")
@@ -38,14 +48,14 @@ else()
         "LUDUS_SMOKE_FONT_PATH=\"${PROJECT_SOURCE_DIR}/modules/text/tests/fixtures/NotoSans-Regular.ttf\"")
     if(LUDUS_BUILD_TESTS)
         find_package(Catch2 3 REQUIRED)
-        add_executable(ludus_smoke_lifecycle_tests tests/lifecycle_tests.cpp lifecycle.cpp)
-        target_link_libraries(ludus_smoke_lifecycle_tests PRIVATE Ludus::FoundationBase Catch2::Catch2WithMain)
+        add_executable(ludus_smoke_lifecycle_tests tests/lifecycle_tests.cpp)
+        target_link_libraries(ludus_smoke_lifecycle_tests PRIVATE ludus_smoke_lifecycle Ludus::FoundationBase Catch2::Catch2WithMain)
         ludus_apply_project_defaults(ludus_smoke_lifecycle_tests)
         ludus_enable_test_exceptions(ludus_smoke_lifecycle_tests)
         add_test(NAME ludus_smoke_lifecycle_tests COMMAND ludus_smoke_lifecycle_tests)
         set_tests_properties(ludus_smoke_lifecycle_tests PROPERTIES LABELS "unit;smoke;lifecycle")
-        add_executable(ludus_smoke_simulation_tests tests/simulation_tests.cpp simulation.cpp)
-        target_link_libraries(ludus_smoke_simulation_tests PRIVATE Ludus::Platform Ludus::FoundationTime Catch2::Catch2WithMain)
+        add_executable(ludus_smoke_simulation_tests tests/simulation_tests.cpp)
+        target_link_libraries(ludus_smoke_simulation_tests PRIVATE ludus_smoke_simulation Ludus::Platform Ludus::FoundationTime Catch2::Catch2WithMain)
         ludus_apply_project_defaults(ludus_smoke_simulation_tests)
         ludus_enable_test_exceptions(ludus_smoke_simulation_tests)
         add_test(NAME ludus_smoke_simulation_tests COMMAND ludus_smoke_simulation_tests)
