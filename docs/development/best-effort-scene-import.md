@@ -50,6 +50,15 @@ includes, PLY meshes, MTL libraries, external glTF buffers and images) must
 resolve inside it; parsers receive dependencies through a bounded resolver and
 never perform file or network I/O themselves. Remote URIs are not fetched.
 
+**On Windows** `ludus-cook` and the scene cooker run the same imports and cooks
+as on Linux and macOS. Paths given on the command line may use `\` or `/` and
+any Unicode characters. Resolved paths are reported with `/` separators, such as
+`C:/scenes/staircase/scene-v4.pbrt`. Dependency names inside a scene are
+relative paths with `/` separators everywhere. On Windows a name that holds `\`,
+a drive or another `:` is rejected as escaping the import root. Immutable
+release files are published as hard links, so the project and release
+directories must be on an NTFS volume.
+
 ## What is read
 
 - A streaming, locale-free tokenizer (64 KiB window, 4096-byte token limit)

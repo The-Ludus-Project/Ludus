@@ -40,8 +40,20 @@
 #include <ludus/foundation/threading/jobs.hpp>
 #include <ludus/platform/entropy.h>
 
+#include <ludus/foundation/base/config.h>
+
 #include <string_view>
-#include <unistd.h>
+
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+#    include <fcntl.h>
+#    include <io.h>
+#    include <windows.h>
+
+// shellapi.h needs the declarations windows.h makes first.
+#    include <shellapi.h>
+#else
+#    include <unistd.h>
+#endif
 
 namespace
 {
@@ -63,7 +75,14 @@ void WriteAll(int descriptor, std::string_view text) noexcept
 {
     while (text.empty() == false)
     {
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+        // The CRT writes at most INT_MAX bytes per call; stay well below it.
+        constexpr usize MAX_WRITE_BYTES = usize{1} << 20;
+        const usize request = text.size() < MAX_WRITE_BYTES ? text.size() : MAX_WRITE_BYTES;
+        const int written = _write(descriptor, text.data(), static_cast<unsigned int>(request));
+#else
         const ssize_t written = write(descriptor, text.data(), text.size());
+#endif
         if (written <= 0)
         {
             return;
@@ -71,6 +90,46 @@ void WriteAll(int descriptor, std::string_view text) noexcept
         text.remove_prefix(static_cast<usize>(written));
     }
 }
+
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+/// UTF-8 copies of the command-line arguments. Windows passes main() arguments in
+/// the ANSI code page, which cannot spell every path; the wide command line can.
+/// outArguments holds pointers into outText and ends with a null entry, like argv.
+[[nodiscard]] bool LoadUtf8Arguments(Array<char>& outText, Array<char*>& outArguments) noexcept
+{
+    int count = 0;
+    LPWSTR* wideArguments = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (wideArguments == nullptr)
+    {
+        return false;
+    }
+    Array<usize> offsets;
+    bool isOk = true;
+    for (int i = 0; i < count && isOk == true; ++i)
+    {
+        // The byte count includes the terminating NUL because the length is -1.
+        const int bytes =
+            WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wideArguments[i], -1, nullptr, 0, nullptr, nullptr);
+        const usize offset = outText.GetSize();
+        isOk = bytes > 0 && offsets.TryAdd(offset) == true &&
+               outText.TryResize(offset + static_cast<usize>(bytes)) == true &&
+               WideCharToMultiByte(CP_UTF8,
+                                   WC_ERR_INVALID_CHARS,
+                                   wideArguments[i],
+                                   -1,
+                                   outText.GetData() + offset,
+                                   bytes,
+                                   nullptr,
+                                   nullptr) == bytes;
+    }
+    (void)LocalFree(wideArguments);
+    for (usize i = 0; i < offsets.GetSize() && isOk == true; ++i)
+    {
+        isOk = outArguments.TryAdd(outText.GetData() + offsets[i]) == true;
+    }
+    return isOk == true && outArguments.TryAdd(nullptr) == true;
+}
+#endif
 
 [[nodiscard]] std::string_view GetView(const Array<uint8>& bytes) noexcept
 {
@@ -514,9 +573,7 @@ int RunIdentity(int argc, char** argv) noexcept
     }
     return PrintUsage();
 }
-} // namespace
-
-int main(int argc, char** argv)
+int RunCommand(int argc, char** argv) noexcept
 {
     if (argc >= 2 && (std::string_view(argv[1]) == "cook" || std::string_view(argv[1]) == "cook-materials"))
     {
@@ -547,4 +604,27 @@ int main(int argc, char** argv)
         return RunIdentity(argc, argv);
     }
     return PrintUsage();
+}
+} // namespace
+
+int main(int argc, char** argv)
+{
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    // The ANSI-code-page argv is replaced by the UTF-8 wide command line.
+    (void)argc;
+    (void)argv;
+    // Write reports byte for byte, without "\n" to "\r\n" translation.
+    (void)_setmode(1, _O_BINARY);
+    (void)_setmode(2, _O_BINARY);
+    Array<char> text;
+    Array<char*> arguments;
+    if (LoadUtf8Arguments(text, arguments) == false)
+    {
+        WriteAll(2, "ludus-cook: the command line is not valid Unicode\n");
+        return EXIT_USAGE;
+    }
+    return RunCommand(static_cast<int>(arguments.GetSize() - 1), arguments.GetData());
+#else
+    return RunCommand(argc, argv);
+#endif
 }

@@ -3,14 +3,14 @@
 // Shared helpers for the glTF/OBJ/image importer tests: byte views, scratch
 // directories and fixture paths. Test-only code (exceptions enabled).
 
+#include "scratch_directory.h"
+
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <span>
-#include <stdlib.h> // mkdtemp on Linux.
 #include <string>
 #include <string_view>
-#include <unistd.h> // mkdtemp on macOS.
 
 #include <ludus/foundation/base/types.h>
 
@@ -49,8 +49,7 @@ struct ScratchDirectory final
     fs::path Path;
     ScratchDirectory()
     {
-        std::string pattern = (fs::temp_directory_path() / "ludus-scene-import-XXXXXX").string();
-        Path = mkdtemp(pattern.data());
+        Path = scene_cook_tests::MakeScratchDirectory("ludus-scene-import");
     }
     ~ScratchDirectory()
     {

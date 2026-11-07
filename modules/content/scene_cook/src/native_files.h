@@ -1,7 +1,10 @@
 #pragma once
 
-// Private POSIX helpers for the scene pipeline: path resolution, directory
-// creation and atomic whole-file replacement of arbitrary size.
+// Private native file helpers for the scene pipeline: path resolution, directory
+// creation and atomic whole-file replacement of arbitrary size. POSIX hosts
+// (and Emscripten MEMFS) use native_files.cpp; Windows uses
+// native_files_windows.cpp, which spells resolved paths with '/' separators
+// ("C:/dir/file", "//server/share/file") so callers can join them with '/'.
 
 #include <ludus/foundation/base/config.h>
 
@@ -16,6 +19,23 @@
 
 namespace ludus::content::scene_cook::detail
 {
+/// Longest native path, in UTF-8 bytes, the helpers accept or produce.
+inline constexpr usize MAX_NATIVE_PATH_BYTES = 4096;
+/// Bytes read per call when streaming a whole file.
+inline constexpr usize NATIVE_READ_CHUNK_BYTES = 65536;
+/// Attempts at a fresh temporary name before reporting an I/O error.
+inline constexpr uint32 MAX_TEMPORARY_ATTEMPTS = 64;
+
+/// True when name cannot be joined below a directory as a '/'-separated relative
+/// path: it starts with '/'. On Windows it is also rooted when it starts with '\\'
+/// or holds a '\\' separator or a ':' drive or stream designator.
+[[nodiscard]] bool IsRootedName(std::string_view name) noexcept;
+/// Bytes of the root prefix of a resolved path: "/" on POSIX; "C:/" or
+/// "//server/share/" on Windows. Zero for a relative path.
+[[nodiscard]] usize GetRootLength(std::string_view path) noexcept;
+/// os.path.dirname of a resolved path, keeping the root ("/", "C:/"); "." without a separator.
+[[nodiscard]] std::string_view GetParentDirectory(std::string_view path) noexcept;
+
 /// realpath(3) of an existing directory.
 [[nodiscard]] Status ResolveDirectory(std::string_view path, foundation::String& outPath) noexcept;
 /// Final component of a resolved path.
@@ -57,8 +77,13 @@ public:
     void Close() noexcept;
 
 private:
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    /// Win32 file HANDLE; null while closed.
+    void* mHandleOrNull = nullptr;
+#else
     /// POSIX descriptor; unused where SequentialFile is unsupported.
     [[maybe_unused]] int mDescriptor = -1;
+#endif
 };
 
 /// How PublishFile commits its synced temporary.
@@ -107,12 +132,14 @@ enum class LockMode : uint8
     Shared,
     Exclusive,
 };
-/// Non-blocking advisory whole-file lock, released on destruction.
+/// Non-blocking whole-file lock, released on destruction: flock(2) on POSIX; on
+/// Windows LockFileEx of one byte far beyond the end, so the file's data stays accessible.
 class FileLock final
 {
 public:
     FileLock() noexcept = default;
-#if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_WEB
+#if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_WEB ||       \
+    LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
     ~FileLock() noexcept;
 #else
     ~FileLock() noexcept = default;
@@ -126,6 +153,9 @@ public:
 private:
 #if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_WEB
     int mDescriptor = -1;
+#elif LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    /// Win32 file HANDLE; null while unlocked.
+    void* mHandleOrNull = nullptr;
 #endif
 };
 } // namespace ludus::content::scene_cook::detail

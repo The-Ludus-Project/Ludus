@@ -29,7 +29,7 @@ using foundation::StringStatus;
 
 bool IsPlainRelativePath(std::string_view name) noexcept
 {
-    if (name.empty() == true || name.front() == '/' || name.find('\\') != std::string_view::npos ||
+    if (name.empty() == true || detail::IsRootedName(name) == true || name.find('\\') != std::string_view::npos ||
         name.find('\0') != std::string_view::npos)
     {
         return false;
@@ -54,7 +54,7 @@ std::string_view GetDirectoryPrefix(std::string_view relativePath) noexcept
 
 bool JoinRelativePath(std::string_view directoryPrefix, std::string_view name, String& outPath) noexcept
 {
-    if (name.empty() == true || name.front() == '/' || name.find('\\') != std::string_view::npos ||
+    if (name.empty() == true || detail::IsRootedName(name) == true || name.find('\\') != std::string_view::npos ||
         name.find('\0') != std::string_view::npos)
     {
         return false;
@@ -107,7 +107,7 @@ bool JoinRelativePath(std::string_view directoryPrefix, std::string_view name, S
 
 bool NativeSourceResolver::Resolve(std::string_view name, ResolvedSource& outSource) noexcept
 {
-    if (mRoot.empty() == true || name.empty() == true || name.front() == '/' ||
+    if (mRoot.empty() == true || name.empty() == true || detail::IsRootedName(name) == true ||
         name.find('\\') != std::string_view::npos || name.find('\0') != std::string_view::npos)
     {
         return false;

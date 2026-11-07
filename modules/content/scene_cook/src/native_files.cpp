@@ -1,6 +1,7 @@
 #include "native_files.h"
 
 #include <ludus/foundation/base/config.h>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/strings/static_string.hpp>
 
 #include <atomic>
@@ -27,11 +28,8 @@ namespace ludus::content::scene_cook::detail
 #if LUDUS_SCENE_COOK_POSIX
 namespace
 {
-constexpr usize MAX_NATIVE_PATH_BYTES = 4096;
 /// Bounded, always NUL-terminated native path; overflow is reported, never truncated.
 using NativePath = foundation::StaticString<MAX_NATIVE_PATH_BYTES>;
-/// Attempts at a fresh temporary name before reporting an I/O error.
-constexpr uint32 MAX_TEMPORARY_ATTEMPTS = 64;
 
 std::atomic<uint32> gTemporaryCounter{0};
 
@@ -390,10 +388,10 @@ Status ReadFileBounded(std::string_view path, usize maximum, foundation::Array<u
     }
     outData.Clear();
     Status status = Status::Ok;
-    uint8 buffer[65536];
+    foundation::StaticArray<uint8, NATIVE_READ_CHUNK_BYTES> buffer;
     while (true)
     {
-        const ssize_t count = read(file, buffer, sizeof(buffer));
+        const ssize_t count = read(file, buffer.GetData(), buffer.GetSize());
         if (count < 0 && errno == EINTR)
         {
             continue;
@@ -412,7 +410,7 @@ Status ReadFileBounded(std::string_view path, usize maximum, foundation::Array<u
             status = Status::Limit;
             break;
         }
-        if (outData.TryAddRange(std::span<const uint8>(buffer, static_cast<usize>(count))) == false)
+        if (outData.TryAddRange(std::span<const uint8>(buffer.GetData(), static_cast<usize>(count))) == false)
         {
             status = Status::OutOfMemory;
             break;
@@ -420,37 +418,6 @@ Status ReadFileBounded(std::string_view path, usize maximum, foundation::Array<u
     }
     (void)close(file);
     return status;
-}
-
-Status HashFile(std::string_view path, content::Digest& outDigest) noexcept
-{
-    SequentialFile file;
-    const Status opened = file.Open(path);
-    if (opened != Status::Ok)
-    {
-        return opened;
-    }
-    content::Hasher hasher;
-    uint8 buffer[65536];
-    while (true)
-    {
-        usize count = 0;
-        const Status read = file.Read(std::span<uint8>(buffer, sizeof(buffer)), count);
-        if (read != Status::Ok)
-        {
-            return read;
-        }
-        if (count == 0)
-        {
-            break;
-        }
-        if (hasher.Add(std::span<const uint8>(buffer, count)) == false)
-        {
-            return Status::Limit;
-        }
-    }
-    outDigest = hasher.Finish();
-    return Status::Ok;
 }
 
 void SequentialFile::Close() noexcept
@@ -720,7 +687,7 @@ Status FileLock::Acquire(std::string_view path, LockMode mode) noexcept
     mDescriptor = file;
     return Status::Ok;
 }
-#else
+#elif LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
 Status ResolveDirectory(std::string_view, foundation::String&) noexcept
 {
     return Status::Unsupported;
@@ -742,10 +709,6 @@ bool DoesPathExist(std::string_view) noexcept
     return false;
 }
 Status ReadFileBounded(std::string_view, usize, foundation::Array<uint8>&) noexcept
-{
-    return Status::Unsupported;
-}
-Status HashFile(std::string_view, content::Digest&) noexcept
 {
     return Status::Unsupported;
 }
@@ -792,6 +755,89 @@ Status FileLock::Acquire(std::string_view, LockMode) noexcept
     return Status::Unsupported;
 }
 #endif
+
+// Shared by every host: SequentialFile reports Unsupported where there is no file access.
+Status HashFile(std::string_view path, content::Digest& outDigest) noexcept
+{
+    SequentialFile file;
+    const Status opened = file.Open(path);
+    if (opened != Status::Ok)
+    {
+        return opened;
+    }
+    content::Hasher hasher;
+    foundation::StaticArray<uint8, NATIVE_READ_CHUNK_BYTES> buffer;
+    while (true)
+    {
+        usize count = 0;
+        const Status read = file.Read(std::span<uint8>(buffer.GetData(), buffer.GetSize()), count);
+        if (read != Status::Ok)
+        {
+            return read;
+        }
+        if (count == 0)
+        {
+            break;
+        }
+        if (hasher.Add(std::span<const uint8>(buffer.GetData(), count)) == false)
+        {
+            return Status::Limit;
+        }
+    }
+    outDigest = hasher.Finish();
+    return Status::Ok;
+}
+
+bool IsRootedName(std::string_view name) noexcept
+{
+    if (name.empty() == false && name.front() == '/')
+    {
+        return true;
+    }
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    // Win32 treats '\\' as a separator and ':' as a drive or alternate-stream designator.
+    return name.find('\\') != std::string_view::npos || name.find(':') != std::string_view::npos;
+#else
+    return false;
+#endif
+}
+
+usize GetRootLength(std::string_view path) noexcept
+{
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    constexpr usize DRIVE_ROOT_BYTES = 3; // "C:/"
+    constexpr usize UNC_PREFIX_BYTES = 2; // "//"
+    if (path.size() >= DRIVE_ROOT_BYTES && path[1] == ':' && path[2] == '/')
+    {
+        return DRIVE_ROOT_BYTES;
+    }
+    if (path.substr(0, UNC_PREFIX_BYTES) == "//")
+    {
+        // "//server/share/": the server and share names belong to the root.
+        const usize serverEnd = path.find('/', UNC_PREFIX_BYTES);
+        if (serverEnd == std::string_view::npos)
+        {
+            return path.size();
+        }
+        const usize shareEnd = path.find('/', serverEnd + 1);
+        return shareEnd == std::string_view::npos ? path.size() : shareEnd + 1;
+    }
+    return 0;
+#else
+    return path.empty() == false && path.front() == '/' ? 1 : 0;
+#endif
+}
+
+std::string_view GetParentDirectory(std::string_view path) noexcept
+{
+    const usize root = GetRootLength(path);
+    const usize slash = path.rfind('/');
+    if (slash == std::string_view::npos || (root == 0 && slash == 0))
+    {
+        return slash == 0 ? path.substr(0, 1) : std::string_view(".");
+    }
+    return slash < root ? path.substr(0, root) : path.substr(0, slash);
+}
 
 std::string_view GetBaseName(std::string_view path) noexcept
 {

@@ -9,6 +9,7 @@
 #include <ludus/runtime/resources/scene.h>
 
 #include "python_compat.h"
+#include "scratch_directory.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -19,7 +20,6 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <unistd.h>
 
 namespace
 {
@@ -44,9 +44,7 @@ struct EmitterFixture
 
     EmitterFixture()
     {
-        char directory[] = "/tmp/ludus-emitter-XXXXXX";
-        REQUIRE(mkdtemp(directory) != nullptr);
-        Source = directory;
+        Source = ludus::scene_cook_tests::MakeScratchDirectory("ludus-emitter");
         std::filesystem::copy(std::filesystem::path(LUDUS_SCENE_GOLDENS_DIR) / "source",
                               Source,
                               std::filesystem::copy_options::recursive);

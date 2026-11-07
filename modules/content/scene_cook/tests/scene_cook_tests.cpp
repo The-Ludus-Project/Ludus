@@ -6,6 +6,7 @@
 #include <ludus/foundation/math/summation.hpp>
 
 #include "python_compat.h"
+#include "scratch_directory.h"
 
 #include <ludus/foundation/parsing/json.hpp>
 
@@ -18,7 +19,6 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <unistd.h>
 
 namespace
 {
@@ -162,9 +162,8 @@ TEST_CASE("NamedMaterial selects its own slot after an inline Material", "[scene
 {
     // An inline Material ahead of MakeNamedMaterial takes a material slot but no
     // name; NamedMaterial must still resolve to the named declaration's slot.
-    char directory[] = "/tmp/ludus-scene-cook-XXXXXX";
-    REQUIRE(mkdtemp(directory) != nullptr);
-    const std::filesystem::path source = std::filesystem::path(directory) / "source";
+    const std::filesystem::path directory = ludus::scene_cook_tests::MakeScratchDirectory("ludus-scene-cook");
+    const std::filesystem::path source = directory / "source";
     std::filesystem::copy(std::string(GOLDENS) + "/source", source, std::filesystem::copy_options::recursive);
     std::ifstream input(source / "scene-v4.pbrt", std::ios::binary);
     std::stringstream buffer;
@@ -192,9 +191,8 @@ TEST_CASE("Cook writes the three outputs atomically", "[scene_cook]")
     CookResult result;
     CookError error;
     REQUIRE(Cook(source, result, error));
-    char directory[] = "/tmp/ludus-scene-cook-XXXXXX";
-    REQUIRE(mkdtemp(directory) != nullptr);
-    const std::string output = std::string(directory) + "/nested/out";
+    const std::filesystem::path directory = ludus::scene_cook_tests::MakeScratchDirectory("ludus-scene-cook");
+    const std::string output = (directory / "nested" / "out").string();
     REQUIRE(WriteCook(output, result, error));
     content::Bytes manifest;
     REQUIRE(content::ReadFile(output, "manifest.json", usize{1} << 20, manifest) == content::Status::Ok);

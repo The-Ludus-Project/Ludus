@@ -12,6 +12,7 @@
 #include <ludus/runtime/resources/scene.h>
 
 #include "python_json.h"
+#include "scratch_directory.h"
 #include "uuid.h"
 
 #include <ludus/foundation/parsing/json.hpp>
@@ -26,7 +27,6 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <unistd.h>
 
 namespace
 {
@@ -184,9 +184,7 @@ struct CountingEntropy
 
 std::filesystem::path MakeWorkDirectory()
 {
-    char directory[] = "/tmp/ludus-scene-assets-XXXXXX";
-    REQUIRE(mkdtemp(directory) != nullptr);
-    return directory;
+    return ludus::scene_cook_tests::MakeScratchDirectory("ludus-scene-assets");
 }
 
 std::string Describe(const AssetError& error)
@@ -2101,7 +2099,8 @@ struct EditedImport final
 std::string WithoutWorkPath(std::string_view message, const std::filesystem::path& work)
 {
     std::string text(message);
-    const std::string prefix = std::filesystem::canonical(work).string();
+    // The cooker spells resolved paths with '/' separators on every host.
+    const std::string prefix = std::filesystem::canonical(work).generic_string();
     const usize at = text.find(prefix);
     if (at != std::string::npos)
     {
