@@ -2,11 +2,12 @@
 
 ## Status
 
-Proposed. It takes effect when the maintainer accepts this ADR into `develop`.
-No tree-sitter code or recipe lands before acceptance; the editor's syntax
-service milestone (M3 of the
-[code editor](../architecture/code-editor.md#syntax-service)) depends on it.
-M1 and M2 of the code editor do not depend on this ADR and proceed in parallel.
+Accepted, with the [LUSL grammar amendment](#amendment-the-lusl-grammar), when
+the maintainer merges the acceptance change into `develop`. The merge itself
+records the acceptance. The editor's syntax service milestone (M3 of the
+[code editor](../architecture/code-editor.md#syntax-service)) and the LUSL
+grammar may land from then on, each in its own change that records verified
+pins in the manifest. M1 and M2 of the code editor never depended on this ADR.
 
 ## Context
 
@@ -135,13 +136,57 @@ bump lands. Grammar node-name changes that break a query are treated as a
 breaking change and fixed in the same bump. The manifest records who verified
 each pin and when.
 
+## Amendment: the LUSL grammar
+
+The [Ludus Shading Language](0027-ludus-shading-language.md) has no upstream
+grammar. Its [design](../architecture/shading-language.md#tooling) asks for a
+Ludus-owned grammar under this ADR's recipe and pinning rules. The table above
+covers only upstream grammars, which ship a generated `parser.c`, and this ADR
+keeps the tree-sitter CLI out of the build. A grammar Ludus writes needs that
+CLI to generate its parser, so the amendment fixes how it is generated, checked
+and kept in step with the compiler.
+
+| Component | Source | License | Home |
+| --- | --- | --- | --- |
+| tree-sitter-lusl | Ludus-authored `grammar.js` and queries | The Ludus project license | `apps/editor/syntax/lusl/` |
+
+- **Generated parser in the repository.** `grammar.js` and the generated
+  `src/parser.c` (plus `src/tree_sitter/*.h`) are committed together. The
+  editor build compiles `parser.c` into `ludus_editor_tree_sitter` like the
+  upstream grammars, and never runs the CLI.
+- **Pinned generator.** One script regenerates the parser with the tree-sitter
+  CLI version pinned in `config/tool_versions.json`. That is the same version
+  as the runtime pin, so the parser's ABI matches the runtime the editor links.
+  The script writes the SHA-256 of `grammar.js` and the CLI version into a
+  header comment of `parser.c`.
+- **Staleness check without the CLI.** A test compares `grammar.js`'s SHA-256
+  and the pinned CLI version with the values recorded in `parser.c`. It fails
+  when someone edits the grammar without regenerating, or bumps the pin without
+  regenerating. CI therefore needs neither Node nor the CLI.
+- **One keyword source.** A test checks that the grammar's keywords equal
+  `tooling::shader_language::GetKeywords()`, including contextual words such as
+  `space` and `slang`. The compiler stays the owner, and the editor's lexical
+  fallback and the grammar cannot drift from it.
+- **Queries.** Highlight, fold, indent, locals and textobject queries are
+  Ludus-authored under `config/code-languages/lusl/`. They are verified against
+  the grammar's node names in the same way as the upstream queries.
+- **Scope.** The grammar gives syntax structure only. Types, names and
+  diagnostics stay with `luslc lsp`, which runs the real compiler.
+- **Order.** The LUSL grammar lands after, or together with, the M3 change that
+  adds the runtime recipe.
+
+Updates follow the [update policy](#update-policy): a LUSL syntax change edits
+the compiler, `grammar.js`, the regenerated parser and the queries in one
+change.
+
 ## Consequences
 
 - The editor gains accurate structure for seven languages from one tree per
   document, replacing per-language hand-written parsers the engine would
   otherwise own and maintain.
 - Eight new pinned third-party components enter `third_party/` and the
-  dependency manifest. CI's pin-consistency and notice checks must cover them;
+  dependency manifest. The Ludus-owned LUSL grammar adds a generated parser
+  that is checked against its source hash rather than downloaded. CI's pin-consistency and notice checks must cover them;
   the third-party notices file is updated with the eight MIT grammars and the
   runtime in the M3 change.
 - The browser editor carries the same grammars compiled to Wasm, increasing the

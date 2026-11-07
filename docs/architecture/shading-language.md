@@ -62,8 +62,10 @@ L4 is in progress:
   [dynamic dispatch evaluation](#interfaces-concepts-and-templates), which keeps
   `dynamic` reserved.
 
-Not yet done from L4: the tree-sitter grammar, which waits for
-[ADR 0026](../decisions/0026-tree-sitter-syntax-dependency.md) to be accepted.
+Not yet done from L4: the tree-sitter grammar. It follows the code editor's
+syntax-service milestone, under the
+[ADR 0026 amendment](../decisions/0026-tree-sitter-syntax-dependency.md#amendment-the-lusl-grammar)
+for Ludus-owned grammars.
 
 [ADR 0027](../decisions/0027-ludus-shading-language.md) records the decision to
 build LUSL as a front end that emits Slang, and the alternatives it rejected.
@@ -780,8 +782,9 @@ Signed `+`, `-` and `*` wrap on every target, as unsigned arithmetic does:
 - **Editor:**
   - a language registry record for `.lusl` and `.luslh`;
   - a Ludus-owned tree-sitter grammar under the
-    [ADR 0026](../decisions/0026-tree-sitter-syntax-dependency.md) recipe and
-    pinning rules;
+    [ADR 0026](../decisions/0026-tree-sitter-syntax-dependency.md#amendment-the-lusl-grammar)
+    recipe and pinning rules, whose keywords a test keeps equal to the
+    compiler's;
   - a language-server mode of the same library in L4.
 
 ### Style rules
