@@ -51,6 +51,9 @@ public:
     /// @brief Value from its two's-complement words.
     /// @param high Bits 64 to 127; bit 63 of this word is the sign.
     /// @param low Bits 0 to 63.
+    // High-then-low is the documented word order, like GetHighWord/GetLowWord; a struct
+    // would only rename the same two words.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     [[nodiscard]] static constexpr Int128 FromWords(uint64 high, uint64 low) noexcept
     {
         Int128 value;
@@ -132,10 +135,10 @@ struct Int128Magnitude final
 };
 
 /// Two's-complement negation of the words; maps -2^127 to the magnitude 2^127.
-[[nodiscard]] constexpr Int128Magnitude NegateInt128Words(uint64 high, uint64 low) noexcept
+[[nodiscard]] constexpr Int128Magnitude NegateInt128Words(Int128Magnitude words) noexcept
 {
-    const uint64 negatedLow = ~low + 1;
-    const uint64 negatedHigh = ~high + (negatedLow == 0 ? 1 : 0);
+    const uint64 negatedLow = ~words.Low + 1;
+    const uint64 negatedHigh = ~words.High + (negatedLow == 0 ? 1 : 0);
     return Int128Magnitude{ .High = negatedHigh, .Low = negatedLow };
 }
 
@@ -143,12 +146,14 @@ struct Int128Magnitude final
 {
     if (value.IsNegative() == true)
     {
-        return NegateInt128Words(value.GetHighWord(), value.GetLowWord());
+        return NegateInt128Words(Int128Magnitude{ .High = value.GetHighWord(), .Low = value.GetLowWord() });
     }
     return Int128Magnitude{ .High = value.GetHighWord(), .Low = value.GetLowWord() };
 }
 
 /// Full 128-bit product of two 64-bit words (Knuth 4.3.1 Algorithm M, base 2^32).
+// Multiplication commutes, so swapped words give the same product.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 [[nodiscard]] constexpr Int128Magnitude MultiplyInt128Words(uint64 left, uint64 right) noexcept
 {
     const uint64 leftLow = left & INT128_HALF_WORD_MASK;
@@ -245,7 +250,7 @@ struct Int128Magnitude final
     }
     if (isNegative == true)
     {
-        const detail::Int128Magnitude negated = detail::NegateInt128Words(product.High, product.Low);
+        const detail::Int128Magnitude negated = detail::NegateInt128Words(product);
         outValue = Int128::FromWords(negated.High, negated.Low);
     }
     else
@@ -340,7 +345,8 @@ template <Integer DestinationType>
     }
     if (value < 0.0)
     {
-        const detail::Int128Magnitude negated = detail::NegateInt128Words(high, low);
+        const detail::Int128Magnitude negated =
+            detail::NegateInt128Words(detail::Int128Magnitude{ .High = high, .Low = low });
         outValue = Int128::FromWords(negated.High, negated.Low);
     }
     else
