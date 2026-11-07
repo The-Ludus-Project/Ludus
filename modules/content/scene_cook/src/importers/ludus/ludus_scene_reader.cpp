@@ -78,7 +78,7 @@ void CopyRgb(math::Vector3d value, float64 (&outRgb)[IR_RGB_CHANNEL_COUNT]) noex
         material.Scattering.K = {{static_cast<float32>(source.Brdf.Powers.X),
                                   static_cast<float32>(source.Brdf.Powers.Y),
                                   static_cast<float32>(source.Brdf.Powers.Z)}};
-        material.Scattering.CoatingThickness = source.Brdf.HasFixedDimensionReflection == true ? 1 : 0;
+        material.Scattering.CoatingThickness = source.Brdf.HasFixedDimensionReflection == true ? 1.0F : 0.0F;
     }
     material.SourceFile = 0;
     return inoutScene.Materials.TryAdd(static_cast<IrMaterial&&>(material)) == true ? Status::Ok : Status::OutOfMemory;

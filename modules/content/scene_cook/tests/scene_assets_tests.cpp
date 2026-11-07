@@ -1883,51 +1883,57 @@ bool CookCorruptLighting(std::string_view source,
     {
         return false;
     }
-    constexpr usize MESH_OFFSET = sizeof(format::Header) + sizeof(format::MaterialRecordV3);
-    constexpr usize OBJECT_OFFSET = MESH_OFFSET + sizeof(format::MeshRecord) +
-                                    TRIANGLE_VERTICES * sizeof(format::VertexRecordV3) +
-                                    TRIANGLE_VERTICES * sizeof(uint32);
-    constexpr usize LIGHTING_OFFSET = OBJECT_OFFSET + sizeof(format::ObjectRecordV3);
-    usize offset = 0;
-    uint32 word = 0;
-    if constexpr (Corruption == LightingCorruption::ReservedMaterial)
-    {
-        offset = sizeof(format::Header) + sizeof(format::MaterialRecordV3) - sizeof(uint32);
-        word = 1;
-    }
-    else if constexpr (Corruption == LightingCorruption::BakeCoordinates)
-    {
-        offset = MESH_OFFSET + sizeof(format::MeshRecord) + sizeof(format::VertexRecord);
-        word = 0x40000000U; // Bake U = 2 is outside the normalized chart.
-    }
-    else if constexpr (Corruption == LightingCorruption::NonfiniteLight)
-    {
-        offset = LIGHTING_OFFSET + sizeof(format::LightingRecord) + sizeof(uint64) + 2 * sizeof(uint32);
-        word = 0x7fc00000U;
-    }
-    else if constexpr (Corruption == LightingCorruption::EqualCone || Corruption == LightingCorruption::OuterBoundary)
-    {
-        offset = LIGHTING_OFFSET + sizeof(format::LightingRecord) + sizeof(format::LightRecord) - sizeof(float32);
-        word = Corruption == LightingCorruption::EqualCone ? 0x3f800000U : 0xbf800000U;
-    }
-    else if constexpr (Corruption == LightingCorruption::InnerBoundary)
-    {
-        offset = LIGHTING_OFFSET + sizeof(format::LightingRecord) + sizeof(format::LightRecord) - 2 * sizeof(float32);
-        word = 0xbf800000U;
-    }
-    else if constexpr (Corruption == LightingCorruption::Dimensions)
-    {
-        offset = LIGHTING_OFFSET + 3 * sizeof(uint32);
-    }
-    else
+    // One branch per instantiation, so MSVC sees no unreachable code after a return (C4702).
+    if constexpr (Corruption == LightingCorruption::Truncated)
     {
         return outResult.Bundle.TryResize(outResult.Bundle.GetSize() - 1);
     }
-    for (usize byte = 0; byte < sizeof(uint32); ++byte)
+    else
     {
-        outResult.Bundle[offset + byte] = static_cast<uint8>(word >> (byte * 8));
+        constexpr usize MESH_OFFSET = sizeof(format::Header) + sizeof(format::MaterialRecordV3);
+        constexpr usize OBJECT_OFFSET = MESH_OFFSET + sizeof(format::MeshRecord) +
+                                        TRIANGLE_VERTICES * sizeof(format::VertexRecordV3) +
+                                        TRIANGLE_VERTICES * sizeof(uint32);
+        constexpr usize LIGHTING_OFFSET = OBJECT_OFFSET + sizeof(format::ObjectRecordV3);
+        usize offset = 0;
+        uint32 word = 0;
+        if constexpr (Corruption == LightingCorruption::ReservedMaterial)
+        {
+            offset = sizeof(format::Header) + sizeof(format::MaterialRecordV3) - sizeof(uint32);
+            word = 1;
+        }
+        else if constexpr (Corruption == LightingCorruption::BakeCoordinates)
+        {
+            offset = MESH_OFFSET + sizeof(format::MeshRecord) + sizeof(format::VertexRecord);
+            word = 0x40000000U; // Bake U = 2 is outside the normalized chart.
+        }
+        else if constexpr (Corruption == LightingCorruption::NonfiniteLight)
+        {
+            offset = LIGHTING_OFFSET + sizeof(format::LightingRecord) + sizeof(uint64) + 2 * sizeof(uint32);
+            word = 0x7fc00000U;
+        }
+        else if constexpr (Corruption == LightingCorruption::EqualCone ||
+                           Corruption == LightingCorruption::OuterBoundary)
+        {
+            offset = LIGHTING_OFFSET + sizeof(format::LightingRecord) + sizeof(format::LightRecord) - sizeof(float32);
+            word = Corruption == LightingCorruption::EqualCone ? 0x3f800000U : 0xbf800000U;
+        }
+        else if constexpr (Corruption == LightingCorruption::InnerBoundary)
+        {
+            offset =
+                LIGHTING_OFFSET + sizeof(format::LightingRecord) + sizeof(format::LightRecord) - 2 * sizeof(float32);
+            word = 0xbf800000U;
+        }
+        else if constexpr (Corruption == LightingCorruption::Dimensions)
+        {
+            offset = LIGHTING_OFFSET + 3 * sizeof(uint32);
+        }
+        for (usize byte = 0; byte < sizeof(uint32); ++byte)
+        {
+            outResult.Bundle[offset + byte] = static_cast<uint8>(word >> (byte * 8));
+        }
+        return true;
     }
-    return true;
 }
 } // namespace
 
