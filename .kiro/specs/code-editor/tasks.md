@@ -226,7 +226,13 @@ functional CE05-CE07/CE17 cases are pending host verification. See the
 Requirements: CE08, CE19 (syntax roles), CE22, CE26. Prerequisite: M0 ADR accepted, M1, M2 (folding bindings).
 
 - [ ] Add the tree-sitter recipes and the private C target; build them on every
-  supported native and Wasm configuration.
+  supported native and Wasm configuration. *(Runtime done: tree-sitter 0.27.1
+  pinned in `third_party/tree-sitter/SOURCE-LOCK.json`, fetched by
+  `apps/editor/cmake/EditorTreeSitter.cmake` into `ludus_editor_tree_sitter`
+  (ADR 0026 pinning amendment: FetchContent, since the browser build has no
+  Conan), smoke tests in `code_syntax_runtime_tests.cpp`, manifest in
+  `docs/architecture/code-editor-evidence/tree-sitter-manifest.md`. Grammars
+  pending.)*
 - [ ] Implement the worker, snapshot posting at the debounce, token packing,
   delta shifting and the revision checks (design section 6).
 - [ ] Turn `CodeSyntaxHighlighter` into the token applier with the lexical
