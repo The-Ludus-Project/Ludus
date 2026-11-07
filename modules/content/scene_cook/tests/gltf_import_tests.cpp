@@ -294,7 +294,8 @@ TEST_CASE("glTF normal, roughness and emissive maps cook into LUSCN v6 maps with
 TEST_CASE("glTF fixture keeps hierarchy, instancing, cameras and punctual lights", "[scene_cook][gltf]")
 {
     const fs::path root = fs::canonical(GetFixture("gltf/instanced"));
-    const std::string rootText = root.string(); // The resolver borrows its root.
+    // The resolver borrows its root, spelled like a resolved cooker path ('/' separators).
+    const std::string rootText = root.generic_string();
     NativeSourceResolver resolver(rootText);
     const std::string text = ReadFileText(root / "scene.gltf");
     SceneIr scene;

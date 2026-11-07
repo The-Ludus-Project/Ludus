@@ -76,7 +76,8 @@ bool CancelImmediately(void*) noexcept
 TEST_CASE("OBJ fixture reads groups, relative indices and MTL terms into SceneIR", "[scene_cook][obj]")
 {
     const fs::path root = fs::canonical(GetFixture("obj/room"));
-    const std::string rootText = root.string(); // The resolver borrows its root.
+    // The resolver borrows its root, spelled like a resolved cooker path ('/' separators).
+    const std::string rootText = root.generic_string();
     NativeSourceResolver resolver(rootText);
     const std::string text = ReadFileText(root / "room.obj");
     MemoryByteSource source(AsBytes(text));
