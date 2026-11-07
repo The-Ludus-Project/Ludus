@@ -398,8 +398,10 @@ TEST_CASE("Scene asset pipeline is byte-identical to the Python goldens", "[scen
     REQUIRE(AssembleLevel(root, ToSpan(golden.Level), {}, bundle, error));
     REQUIRE(DumpLevel(root, ToSpan(golden.Level), {}, DumpLayout::Canonical, dump, error));
     const std::filesystem::path release = golden.Work / "release";
+    const bool isPublished =
+        PublishLevel(root, ToSpan(golden.Level), release.string(), DumpLayout::Canonical, published, error);
     INFO(Describe(error));
-    REQUIRE(PublishLevel(root, ToSpan(golden.Level), release.string(), DumpLayout::Canonical, published, error));
+    REQUIRE(isPublished == true);
     CHECK(ToText(published) == ToText(dump));
 
     CheckGolden(goldens, "saved/main.lulevel", ToText(golden.Saved));
