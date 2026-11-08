@@ -603,8 +603,12 @@ records the libraries that would provide them.
 The World hierarchy flanks the viewport inside the World document; the entity
 inspector is the Properties tool window. Component actions stay below the
 scrollable inspector fields: the component choice beside **Add Component**, and
-**Apply Changes** beside **Reset Fields**. **Add Entity**, **Duplicate** and
-**Delete** share one row under the hierarchy. Above the viewport, one row holds
+**Apply Changes** beside **Reset Fields**. Right-click the World viewport or
+entity list for **Add Entity**, **Duplicate**, and **Delete**. Right-click an
+entity to target it. Clicking a selected member of a group keeps the group
+selected, and clicking the background keeps the current selection. Right-drag
+still looks around, and holding the right button with the fly keys still moves
+the camera. Above the viewport, one row holds
 the World's path (hover for the full path) and its commands; **Restore
 Recovery**, **Cancel scene operation** and **Play saved World** appear only
 while they apply. The viewport's render controls share one row, and its
@@ -613,8 +617,8 @@ The render surface receives the remaining height below its shading, framing and
 navigation controls, including after resize.
 
 In a default World (a project without `authoring/world.schema.json`), use
-**Add Geometry / Light** below the entity list to create a **Cube**, **Plane**,
-**Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun** or
+**Add Geometry / Light** in the right-click menu or below the entity list to
+create a **Cube**, **Plane**, **Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun** or
 **Luminaire**. Each command
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.

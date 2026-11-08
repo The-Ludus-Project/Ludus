@@ -30,6 +30,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QDockWidget>
 #include <QElapsedTimer>
@@ -247,10 +248,10 @@ TEST_CASE("World scene import reports unavailable entropy before changing the Wo
     LevelWorkspace* scene = workspace.findChild<LevelWorkspace*>();
     REQUIRE(scene != nullptr);
     CHECK_FALSE(scene->Busy());
-    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("worldAdd"));
-    REQUIRE(add != nullptr);
-    REQUIRE(add->isEnabled());
-    add->click();
+    QAction* addOrNull = workspace.findChild<QAction*>(QStringLiteral("worldAdd"));
+    REQUIRE(addOrNull != nullptr);
+    REQUIRE(addOrNull->isEnabled());
+    addOrNull->trigger();
     CHECK(workspace.findChild<QLabel*>(QStringLiteral("worldStatus"))->text() == DescribeEntropyUnavailable());
     CHECK(workspace.Document().Draft() == before);
     CHECK_FALSE(workspace.CanUndo());
@@ -446,7 +447,7 @@ TEST_CASE("World creation publishes only on Save and recovery is explicit bound 
     REQUIRE(fresh.Create(newPath));
     CHECK(fresh.Dirty());
     CHECK_FALSE(QFile::exists(newPath));
-    fresh.findChild<QPushButton*>(QStringLiteral("worldAdd"))->click();
+    fresh.findChild<QAction*>(QStringLiteral("worldAdd"))->trigger();
     REQUIRE(fresh.Save());
     CHECK(QFile::exists(newPath));
     CHECK_FALSE(fresh.Dirty());
@@ -477,6 +478,87 @@ TEST_CASE("World schema and document resource limits are enforced", "[editor][wo
     WorldDocument fresh;
     CHECK_FALSE(fresh.LoadSchema(QByteArray(65537, ' '), error));
 }
+TEST_CASE("World context menu creates entities in the viewport and edits the hierarchy selection",
+          "[editor][world][context-menu]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    WorldWorkspace workspace;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("context.world.json"))) == true);
+    workspace.resize(1100, 720);
+    workspace.show();
+    QApplication::processEvents();
+    PreviewViewport* viewportOrNull = workspace.findChild<PreviewViewport*>(QStringLiteral("worldViewport"));
+    QListWidget* entitiesOrNull = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("worldEntityContextMenu"));
+    REQUIRE(viewportOrNull != nullptr);
+    REQUIRE(entitiesOrNull != nullptr);
+    REQUIRE(menuOrNull != nullptr);
+    QAction* addOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("worldAdd"));
+    QAction* duplicateOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("worldDuplicate"));
+    QAction* deleteOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("worldDelete"));
+    REQUIRE(addOrNull != nullptr);
+    REQUIRE(duplicateOrNull != nullptr);
+    REQUIRE(deleteOrNull != nullptr);
+    const QJsonObject navigation = workspace.GetRenderPreview().Navigation();
+    const QPoint viewportPoint = viewportOrNull->rect().center();
+    QTest::mouseClick(viewportOrNull, Qt::RightButton, Qt::NoModifier, viewportPoint);
+    REQUIRE(menuOrNull->isVisible() == true);
+    CHECK(workspace.GetRenderPreview().Navigation() == navigation);
+    CHECK(duplicateOrNull->isEnabled() == false);
+    CHECK(deleteOrNull->isEnabled() == false);
+    menuOrNull->setActiveAction(addOrNull);
+    QTest::keyClick(menuOrNull, Qt::Key_Return);
+    CHECK(entitiesOrNull->count() == 1);
+
+    addOrNull->trigger();
+    REQUIRE(entitiesOrNull->count() == 2);
+    const QPoint firstRow = entitiesOrNull->visualItemRect(entitiesOrNull->item(0)).center();
+    QContextMenuEvent rowEvent(QContextMenuEvent::Mouse, firstRow, entitiesOrNull->viewport()->mapToGlobal(firstRow));
+    QApplication::sendEvent(entitiesOrNull->viewport(), &rowEvent);
+    REQUIRE(menuOrNull->isVisible() == true);
+    CHECK(entitiesOrNull->item(0)->isSelected() == true);
+    CHECK(entitiesOrNull->selectedItems().size() == 1);
+    CHECK(duplicateOrNull->isEnabled() == true);
+    CHECK(deleteOrNull->isEnabled() == true);
+    menuOrNull->close();
+
+    entitiesOrNull->selectAll();
+    const QPoint selectedRow = entitiesOrNull->visualItemRect(entitiesOrNull->item(0)).center();
+    QTest::mouseClick(entitiesOrNull->viewport(), Qt::RightButton, Qt::NoModifier, selectedRow);
+    QContextMenuEvent groupEvent(QContextMenuEvent::Mouse,
+                                 selectedRow,
+                                 entitiesOrNull->viewport()->mapToGlobal(selectedRow));
+    QApplication::sendEvent(entitiesOrNull->viewport(), &groupEvent);
+    REQUIRE(menuOrNull->isVisible() == true);
+    CHECK(entitiesOrNull->selectedItems().size() == 2);
+    menuOrNull->close();
+    duplicateOrNull->trigger();
+    CHECK(entitiesOrNull->count() == 4);
+    workspace.Undo();
+    CHECK(entitiesOrNull->count() == 2);
+
+    QAction* cubeOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateCube"));
+    REQUIRE(cubeOrNull != nullptr);
+    cubeOrNull->trigger();
+    RenderPreview& preview = workspace.GetRenderPreview();
+    REQUIRE(QTest::qWaitFor([&preview]() { return preview.Scene().Objects.size() == 1; }) == true);
+    const QString cubeId = preview.Scene().Objects.first().Id;
+    preview.FrameAll();
+    entitiesOrNull->clearSelection();
+    // Offscreen has no presented GPU image. Enable the input proxy to exercise its picking coordinates.
+    viewportOrNull->GetObjectInteraction().SetActive(true);
+    REQUIRE(viewportOrNull->layout()->count() >= 2);
+    const QPoint frameCenter = viewportOrNull->layout()->itemAt(1)->geometry().center();
+    QTest::mouseClick(viewportOrNull, Qt::RightButton, Qt::NoModifier, frameCenter);
+    REQUIRE(menuOrNull->isVisible() == true);
+    REQUIRE(entitiesOrNull->selectedItems().size() == 1);
+    CHECK(entitiesOrNull->selectedItems().first()->data(Qt::UserRole).toString() == cubeId);
+    menuOrNull->close();
+}
+
 TEST_CASE("World layout remains usable in a compact desktop window", "[editor][world]")
 {
     QTemporaryDir dir;
@@ -502,8 +584,7 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
         }
     }
     CHECK(view.findChild<QPushButton*>(QStringLiteral("worldApply"))->geometry().bottom() <= view.height());
-    // Commands sit in rows instead of full-width stacks: the file commands beside the path,
-    // the entity commands under the hierarchy, Apply beside Reset, Add Component beside its choice.
+    // File and inspector commands sit in compact rows beside their related controls.
     const auto isSameRow = [&view](const char* first, const char* second) {
         QWidget* firstOrNull = view.findChild<QWidget*>(QString::fromLatin1(first));
         QWidget* secondOrNull = view.findChild<QWidget*>(QString::fromLatin1(second));
@@ -516,8 +597,6 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
     CHECK(isSameRow("worldNew", "worldOpen") == true);
     CHECK(isSameRow("worldNew", "worldImportScene") == true);
     CHECK(isSameRow("worldNew", "worldPath") == true);
-    CHECK(isSameRow("worldAdd", "worldDuplicate") == true);
-    CHECK(isSameRow("worldAdd", "worldDelete") == true);
     CHECK(isSameRow("worldApply", "worldReset") == true);
     CHECK(isSameRow("worldAttach", "worldComponentChoice") == true);
     CHECK(isSameRow("worldPreview3D", "worldPreviewDetails") == true);
@@ -966,10 +1045,10 @@ TEST_CASE("World tab titles follow document changes without a render graph refre
     CHECK(world->Path() == secondPath);
     checkTitle(QStringLiteral("staircase2.world.json"));
 
-    QPushButton* add = world->findChild<QPushButton*>(QStringLiteral("worldAdd"));
-    REQUIRE(add != nullptr);
-    REQUIRE(add->isEnabled());
-    add->click();
+    QAction* addOrNull = world->findChild<QAction*>(QStringLiteral("worldAdd"));
+    REQUIRE(addOrNull != nullptr);
+    REQUIRE(addOrNull->isEnabled());
+    addOrNull->trigger();
     REQUIRE(world->Dirty());
     checkTitle(QStringLiteral("staircase2.world.json*"));
     world->Undo();
@@ -1276,7 +1355,7 @@ TEST_CASE("World selection uses native toggle range and Select All shortcuts", "
     list->setFocus();
     QApplication::processEvents();
     REQUIRE(list->hasFocus() == true);
-    REQUIRE(view.findChild<QPushButton*>(QStringLiteral("worldDuplicate"))->isEnabled() == true);
+    REQUIRE(view.findChild<QAction*>(QStringLiteral("worldDuplicate"))->isEnabled() == true);
     QTest::keySequence(list, QKeySequence(Qt::CTRL | Qt::Key_D));
     INFO(view.findChild<QLabel*>(QStringLiteral("worldStatus"))->text().toStdString());
     CHECK(list->count() == 4);
@@ -1302,7 +1381,7 @@ TEST_CASE("World selection uses native toggle range and Select All shortcuts", "
         REQUIRE(confirmation != nullptr);
         confirmation->button(QMessageBox::Yes)->click();
     });
-    REQUIRE(view.findChild<QPushButton*>(QStringLiteral("worldDelete"))->isEnabled() == true);
+    REQUIRE(view.findChild<QAction*>(QStringLiteral("worldDelete"))->isEnabled() == true);
     QTest::keySequence(list, QKeySequence(QKeySequence::Delete));
     INFO(view.findChild<QLabel*>(QStringLiteral("worldStatus"))->text().toStdString());
     CHECK(list->count() == 0);
@@ -3890,10 +3969,10 @@ TEST_CASE("A non-placement edit during a placement validation waits for a full a
     const QByteArray placedIdentity = scene.PreviewScene().Identity;
     const qsizetype entityCount = workspace.Document().Draft().value(QStringLiteral("entities")).toArray().size();
 
-    QPushButton* addOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAdd"));
+    QAction* addOrNull = workspace.findChild<QAction*>(QStringLiteral("worldAdd"));
     REQUIRE(addOrNull != nullptr);
     REQUIRE(addOrNull->isEnabled() == true);
-    addOrNull->click();
+    addOrNull->trigger();
     CHECK(workspace.Document().Draft().value(QStringLiteral("entities")).toArray().size() == entityCount + 1);
     // The derived scene stays presented; World edits wait for the assembly that replaces it.
     CHECK(scene.PreviewScene().Identity == placedIdentity);
@@ -3969,15 +4048,15 @@ TEST_CASE("World entity search keeps group commands scoped to visible matches", 
     CHECK(entities->selectedItems().front() == first);
     entities->selectAll();
     CHECK(entities->selectedItems().size() == 1);
-    workspace.findChild<QPushButton*>(QStringLiteral("worldDuplicate"))->click();
+    workspace.findChild<QAction*>(QStringLiteral("worldDuplicate"))->trigger();
     CHECK(entities->count() ==
           QJsonDocument::fromJson(before).object().value(QStringLiteral("entities")).toArray().size() + 1);
     // A document rebuild reapplies the query. The new stable ID does not match it.
     CHECK(count->text() == QStringLiteral("1 of %1 entities").arg(entities->count()));
     search->setText(QStringLiteral("no matching entity"));
     CHECK(entities->selectedItems().isEmpty() == true);
-    CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldDuplicate"))->isEnabled() == false);
-    CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldDelete"))->isEnabled() == false);
+    CHECK(workspace.findChild<QAction*>(QStringLiteral("worldDuplicate"))->isEnabled() == false);
+    CHECK(workspace.findChild<QAction*>(QStringLiteral("worldDelete"))->isEnabled() == false);
     CHECK(count->toolTip().contains(QStringLiteral("Clear or change")) == true);
     const QByteArray filtered = workspace.Document().Encode();
     REQUIRE(workspace.SelectEntity(identity) == true);

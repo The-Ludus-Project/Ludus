@@ -20,6 +20,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -2741,6 +2742,9 @@ bool PreviewViewport::eventFilter(QObject* watched, QEvent* event)
     {
         switch (event->type())
         {
+            case QEvent::ContextMenu:
+                contextMenuEvent(static_cast<QContextMenuEvent*>(event));
+                return event->isAccepted();
             case QEvent::MouseButtonPress:
                 mousePressEvent(static_cast<QMouseEvent*>(event));
                 return true;
