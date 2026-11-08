@@ -750,6 +750,7 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/world_lights_panel.h
     src/world_lights_panel.cpp
     src/builtin_world.cpp
+    src/internal/world_celestial_light.h src/world_celestial_light.cpp
     src/world_document.cpp
     src/world_terrain.cpp
     src/world_terrain_editing.cpp
@@ -829,6 +830,7 @@ target_link_libraries(ludus_editor_application
         Ludus::RuntimeConfiguration
         Ludus::FoundationMath
         Ludus::GameplayCamera
+        Ludus::GameplayWorld
         Ludus::GraphicsRenderer
         Ludus::Resources
         Ludus::FoundationParsingJson
@@ -1219,6 +1221,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             Ludus::RuntimeConfiguration
             Ludus::FoundationMath
             Ludus::GameplayCamera
+            Ludus::GameplayWorld
             Ludus::GraphicsRenderer
             Ludus::Resources
             Ludus::FoundationParsingJson

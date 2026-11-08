@@ -2,6 +2,7 @@
 #include "internal/builtin_world.h"
 #include "internal/qt_numeric_stream.h"
 #include "internal/render_scene_limits.h"
+#include "internal/world_celestial_light.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_terrain.h"
 
@@ -842,8 +843,25 @@ bool RenderScene::Load(const QString& root,
                 {
                     return Fail(outError, name + QStringLiteral(": invalid light terms, cone or non-unit scale."));
                 }
+                math::Quaternion lightRotation = trs.Rotation;
+                bool isAboveHorizon = true;
+                if (world.HasBuiltInSchema() == true && light.Kind == rr::LightKind::Directional)
+                {
+                    const QJsonObject properties =
+                        entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+                    if (TryResolveWorldCelestialRotation(properties, lightRotation, isAboveHorizon) == false)
+                    {
+                        return Fail(outError,
+                                    name + QStringLiteral(
+                                               ": set the active celestial driver fields within their shown ranges."));
+                    }
+                }
                 light.Position = trs.Translation;
-                light.Direction = math::Rotate(trs.Rotation, {0, 0, -1});
+                light.Direction = math::Rotate(lightRotation, {0, 0, -1});
+                if (isAboveHorizon == false)
+                {
+                    light.Intensity = 0;
+                }
                 light.InnerCos = math::Cos(math::DegreesToRadians(innerDegrees));
                 light.OuterCos = math::Cos(math::DegreesToRadians(outerDegrees));
                 light.SourceId = ComputeSourceId(id);
