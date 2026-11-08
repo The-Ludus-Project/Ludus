@@ -8,6 +8,7 @@
 #include <ludus/platform/hosted_window.h>
 
 #include <QApplication>
+#include <QContextMenuEvent>
 #include <QCursor>
 #include <QGuiApplication>
 #include <QHideEvent>
@@ -93,26 +94,58 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
     if (event->button() == Qt::RightButton)
     {
         mObjectInteraction->Cancel();
-        mIsFlying = true;
-        mHeldKeys[BOOST_KEY] = event->modifiers().testFlag(Qt::ShiftModifier);
-        mNavigationClock.start();
-        mNavigationTimer.start();
-        const QString platformName = QGuiApplication::platformName();
-        if (isVisible() == true && platformName != QStringLiteral("offscreen") &&
-            platformName != QStringLiteral("minimal") && platformName != QStringLiteral("wasm"))
+        if (mHasWorldContextMenu == true)
         {
-            mCaptureStartGlobal = event->globalPosition().toPoint();
-            mCanWarpPointer =
-                platformName.startsWith(QStringLiteral("wayland")) == false && platformName != QStringLiteral("cocoa");
-            grabMouse(Qt::BlankCursor);
-            mHasMouseCapture = true;
-#if defined(Q_OS_MACOS)
-            static_cast<void>(mRelativeMouse.TryBegin());
-#endif
-            recenterPointer();
+            mHasContextPress = true;
+            mContextPressGlobal = event->globalPosition();
+        }
+        else
+        {
+            beginFlyNavigation(event->globalPosition(), event->modifiers());
         }
     }
     event->accept();
+}
+void PreviewViewport::EnableWorldContextMenu() noexcept
+{
+    mHasWorldContextMenu = true;
+}
+void PreviewViewport::contextMenuEvent(QContextMenuEvent* event)
+{
+    if (mHasWorldContextMenu == false || mPlayEndpointOrNull != nullptr)
+    {
+        QWidget::contextMenuEvent(event);
+        return;
+    }
+    // Qt sends native mouse context events on press or release depending on platform.
+    // The tracked gesture opens the menu on release, after we know it was not a drag.
+    if (event->reason() == QContextMenuEvent::Keyboard && mIsFlying == false && mHasContextPress == false)
+    {
+        Q_EMIT WorldContextMenuRequested(mapToGlobal(rect().center()), {});
+    }
+    event->accept();
+}
+void PreviewViewport::beginFlyNavigation(QPointF positionGlobal, Qt::KeyboardModifiers modifiers)
+{
+    mHasContextPress = false;
+    mIsFlying = true;
+    mHeldKeys[BOOST_KEY] = modifiers.testFlag(Qt::ShiftModifier);
+    mNavigationClock.start();
+    mNavigationTimer.start();
+    const QString platformName = QGuiApplication::platformName();
+    if (isVisible() == true && platformName != QStringLiteral("offscreen") &&
+        platformName != QStringLiteral("minimal") && platformName != QStringLiteral("wasm"))
+    {
+        mCaptureStartGlobal = positionGlobal.toPoint();
+        mCanWarpPointer =
+            platformName.startsWith(QStringLiteral("wayland")) == false && platformName != QStringLiteral("cocoa");
+        grabMouse(Qt::BlankCursor);
+        mHasMouseCapture = true;
+#if defined(Q_OS_MACOS)
+        static_cast<void>(mRelativeMouse.TryBegin());
+#endif
+        recenterPointer();
+    }
 }
 void PreviewViewport::mouseReleaseEvent(QMouseEvent* event)
 {
@@ -132,7 +165,17 @@ void PreviewViewport::mouseReleaseEvent(QMouseEvent* event)
     }
     if (event->button() == Qt::RightButton)
     {
+        const QPointF positionGlobal = event->globalPosition();
+        const bool isContextClick =
+            mHasContextPress == true &&
+            (positionGlobal - mContextPressGlobal).manhattanLength() < QApplication::startDragDistance();
         stopNavigation();
+        if (isContextClick == true && getInteractionFrame().contains(getInteractionPosition(positionGlobal)) == true)
+        {
+            const QString entityId =
+                mObjectInteraction->Pick(getInteractionPosition(positionGlobal), getInteractionFrame());
+            Q_EMIT WorldContextMenuRequested(positionGlobal.toPoint(), entityId);
+        }
     }
     event->accept();
 }
@@ -140,6 +183,18 @@ void PreviewViewport::mouseMoveEvent(QMouseEvent* event)
 {
     if (mPlayEndpointOrNull != nullptr)
     {
+        event->accept();
+        return;
+    }
+    if (mHasContextPress == true && event->buttons().testFlag(Qt::RightButton) == true)
+    {
+        const QPointF delta = event->globalPosition() - mContextPressGlobal;
+        if (delta.manhattanLength() >= QApplication::startDragDistance())
+        {
+            mLastPositionGlobal = event->globalPosition();
+            beginFlyNavigation(mContextPressGlobal, event->modifiers());
+            Preview_->Look(static_cast<float32>(delta.x()), static_cast<float32>(delta.y()));
+        }
         event->accept();
         return;
     }
@@ -233,6 +288,10 @@ void PreviewViewport::wheelEvent(QWheelEvent* event)
     if (steps != 0)
     {
         mObjectInteraction->Cancel();
+        if (mHasContextPress == true)
+        {
+            beginFlyNavigation(mContextPressGlobal, event->modifiers());
+        }
         if (mIsFlying == true)
         {
             mSpeedMultiplier =
@@ -265,6 +324,10 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
         return;
     }
     const int32 movementKey = GetMovementKey(event->key());
+    if (mHasContextPress == true && movementKey >= 0 && movementKey != BOOST_KEY)
+    {
+        beginFlyNavigation(mContextPressGlobal, event->modifiers());
+    }
     if (mIsFlying == true && movementKey >= 0)
     {
         mHeldKeys[static_cast<usize>(movementKey)] = true;
@@ -366,6 +429,7 @@ void PreviewViewport::keyReleaseEvent(QKeyEvent* event)
 }
 void PreviewViewport::stopNavigation()
 {
+    mHasContextPress = false;
     mObjectInteraction->Cancel();
 #if defined(Q_OS_MACOS)
     mRelativeMouse.Stop();

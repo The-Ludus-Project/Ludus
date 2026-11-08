@@ -51,6 +51,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPoint>
 #include <QPushButton>
 #include <QSaveFile>
 #include <QScrollArea>
@@ -386,33 +387,34 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     ConfigureItemSelection(*Entities_);
     Entities_->setObjectName(QStringLiteral("worldEntities"));
     Entities_->setAccessibleName(QStringLiteral("World entities"));
+    Entities_->setToolTip(QStringLiteral("Right-click to add, duplicate, or delete entities."));
     Entities_->setMinimumHeight(ENTITY_LIST_MINIMUM_HEIGHT);
     mEntitySearch = new WorldEntitySearch(*Entities_, entityColumn);
     entityLayout->addWidget(mEntitySearch);
     entityLayout->addWidget(Entities_, 1);
-    // Entity commands share one row under the list.
-    QHBoxLayout* commands = new QHBoxLayout;
-    Add_ = new QPushButton(QStringLiteral("Add Entity"), entityColumn);
-    Add_->setObjectName(QStringLiteral("worldAdd"));
-    Duplicate_ = new QPushButton(QStringLiteral("Duplicate"), entityColumn);
-    Duplicate_->setObjectName(QStringLiteral("worldDuplicate"));
-    Remove_ = new QPushButton(QStringLiteral("Delete"), entityColumn);
-    Remove_->setObjectName(QStringLiteral("worldDelete"));
-    for (QPushButton* button : {Add_, Duplicate_, Remove_})
-    {
-        button->setProperty("density", QStringLiteral("compact"));
-        // A layout never squeezes a command below the height its own text needs.
-        button->setMinimumHeight(button->sizeHint().height());
-        commands->addWidget(button);
-    }
-    entityLayout->addLayout(commands);
+    mEntityMenu = new QMenu(this);
+    mEntityMenu->setObjectName(QStringLiteral("worldEntityContextMenu"));
+    mAddEntity = mEntityMenu->addAction(QStringLiteral("Add Entity"));
+    mAddEntity->setObjectName(QStringLiteral("worldAdd"));
+    mDuplicateEntities = mEntityMenu->addAction(QStringLiteral("Duplicate"));
+    mDuplicateEntities->setObjectName(QStringLiteral("worldDuplicate"));
+    mDeleteEntities = mEntityMenu->addAction(QStringLiteral("Delete"));
+    mDeleteEntities->setObjectName(QStringLiteral("worldDelete"));
+    Entities_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(Entities_, &QWidget::customContextMenuRequested, this, [this](const QPoint& positionList) {
+        const QListWidgetItem* itemOrNull = Entities_->itemAt(positionList);
+        showEntityMenu(Entities_->viewport()->mapToGlobal(positionList),
+                       itemOrNull == nullptr ? QString() : itemOrNull->data(Qt::UserRole).toString());
+    });
     QToolButton* addObject = new QToolButton(entityColumn);
     addObject->setObjectName(QStringLiteral("worldAddObject"));
     addObject->setText(QStringLiteral("Add Geometry / Light"));
     addObject->setToolTip(QStringLiteral("Create geometry, lights or luminaires in a default World. Project-owned "
                                          "schemas use Add Entity and their declared components."));
     addObject->setPopupMode(QToolButton::InstantPopup);
-    QMenu* objectMenu = new QMenu(addObject);
+    QMenu* objectMenu = new QMenu(addObject->text(), addObject);
+    mEntityMenu->addSeparator();
+    mEntityMenu->addMenu(objectMenu);
     addObject->setMenu(objectMenu);
     addObject->setMinimumHeight(addObject->sizeHint().height());
     entityLayout->addWidget(addObject);
@@ -428,14 +430,14 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         QAction* action = objectMenu->addAction(preset);
         action->setObjectName(QStringLiteral("worldCreate") + QString(preset).remove(QLatin1Char(' ')));
         connect(objectMenu, &QMenu::aboutToShow, action, [this, action]() {
-            action->setEnabled(Add_->isEnabled() == true && IsBuiltInWorld(Document_) == true);
+            action->setEnabled(mAddEntity->isEnabled() == true && IsBuiltInWorld(Document_) == true);
             action->setToolTip(
                 QStringLiteral("Create an object in a default World. Project schemas define their own components."));
         });
         connect(action, &QAction::triggered, this, [this, preset]() {
             QString id;
             QString error;
-            if (Add_->isEnabled() == false)
+            if (mAddEntity->isEnabled() == false)
             {
                 return;
             }
@@ -465,7 +467,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     QAction* generateTerrain = objectMenu->addAction(QStringLiteral("Generate Terrain…"));
     generateTerrain->setObjectName(QStringLiteral("worldGenerateTerrain"));
     connect(objectMenu, &QMenu::aboutToShow, generateTerrain, [this, generateTerrain]() {
-        generateTerrain->setEnabled(Add_->isEnabled() == true && Document_.HasBuiltInTerrain() == true &&
+        generateTerrain->setEnabled(mAddEntity->isEnabled() == true && Document_.HasBuiltInTerrain() == true &&
                                     isSceneWorkerActive() == false);
     });
     connect(generateTerrain, &QAction::triggered, this, [this]() { showTerrainGenerator(); });
@@ -609,12 +611,12 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     connect(mEntitySearch, &WorldEntitySearch::SelectionChanged, this, updateSelection);
     connect(Entities_, &QListWidget::currentItemChanged, this, updateSelection);
     connect(Entities_, &QListWidget::itemSelectionChanged, this, updateSelection);
-    const auto bindCommand = [this](const QKeySequence& key, QPushButton* button) {
+    const auto bindCommand = [this](const QKeySequence& key, QAction* action) {
         QShortcut* shortcut = new QShortcut(key, Entities_);
         shortcut->setContext(Qt::WidgetShortcut);
-        connect(shortcut, &QShortcut::activated, button, &QPushButton::click);
+        connect(shortcut, &QShortcut::activated, action, &QAction::trigger);
     };
-    bindCommand(QKeySequence(Qt::CTRL | Qt::Key_D), Duplicate_);
+    bindCommand(QKeySequence(Qt::CTRL | Qt::Key_D), mDuplicateEntities);
     QList<QKeySequence> deleteKeys = QKeySequence::keyBindings(QKeySequence::Delete);
 #if defined(Q_OS_MACOS)
     const QKeySequence backspace(Qt::Key_Backspace);
@@ -625,7 +627,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
 #endif
     for (const QKeySequence& key : deleteKeys)
     {
-        bindCommand(key, Remove_);
+        bindCommand(key, mDeleteEntities);
     }
     const auto rename = [this]() {
         if (Entities_->isEnabled() == true && mSelectedEntities.size() == 1 && Name_ != nullptr)
@@ -642,8 +644,9 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     renameReturn->setContext(Qt::WidgetShortcut);
     connect(renameReturn, &QShortcut::activated, this, rename);
 #endif
-    connect(Add_, &QPushButton::clicked, this, [this]() {
-        QString id, error;
+    connect(mAddEntity, &QAction::triggered, this, [this]() {
+        QString id;
+        QString error;
         if (Document_.CreateEntity(mEntropy, error, QStringLiteral("Entity"), id) == false)
         {
             Changed(error);
@@ -655,7 +658,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         Snapshot();
         Changed(QStringLiteral("Entity created. Give it a meaningful name in the inspector."));
     });
-    connect(Duplicate_, &QPushButton::clicked, this, [this]() {
+    connect(mDuplicateEntities, &QAction::triggered, this, [this]() {
         QStringList copies;
         QString error;
         if (Document_.DuplicateEntities(mEntropy, mSelectedEntities, copies, error) == false)
@@ -669,7 +672,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         Snapshot();
         Changed(QStringLiteral("Selected entities duplicated with new stable IDs. Undo is available."));
     });
-    connect(Remove_, &QPushButton::clicked, this, [this]() {
+    connect(mDeleteEntities, &QAction::triggered, this, [this]() {
         const QMessageBox::StandardButton answer =
             QMessageBox::question(this,
                                   QStringLiteral("Delete Entities"),
@@ -2454,12 +2457,12 @@ void WorldWorkspace::Changed(const QString& message)
     PlayButton_->setEnabled(Document_.Loaded() && isBusy == false);
     CancelScene_->setVisible(isBusy);
     CancelScene_->setEnabled(Scene_->CanCancel());
-    Add_->setEnabled(Document_.Loaded() && Pending_ == false && Entities_->count() < WorldDocument::MAX_ENTITIES &&
-                     isBusy == false);
-    Duplicate_->setEnabled(Selected_.isEmpty() == false && Pending_ == false &&
-                           Entities_->count() + mSelectedEntities.size() <= WorldDocument::MAX_ENTITIES &&
-                           isBusy == false);
-    Remove_->setEnabled(Selected_.isEmpty() == false && Pending_ == false && isBusy == false);
+    mAddEntity->setEnabled(Document_.Loaded() == true && Pending_ == false &&
+                           Entities_->count() < WorldDocument::MAX_ENTITIES && isBusy == false);
+    mDuplicateEntities->setEnabled(Selected_.isEmpty() == false && Pending_ == false &&
+                                   Entities_->count() + mSelectedEntities.size() <= WorldDocument::MAX_ENTITIES &&
+                                   isBusy == false);
+    mDeleteEntities->setEnabled(Selected_.isEmpty() == false && Pending_ == false && isBusy == false);
     Attach_->setEnabled(mSelectedEntities.size() == 1 && Pending_ == false && Components_->count() > 0 &&
                         isBusy == false);
     Components_->setEnabled(Pending_ == false && isBusy == false);
@@ -3157,7 +3160,7 @@ void WorldWorkspace::StopPreview() noexcept
 bool WorldWorkspace::ApplyLuminaireRepair(const RenderGraphLuminaireCoverage& repair)
 {
     if (repair.Repair == RenderGraphLuminaireRepair::None || Pending_ == true || SceneBusy() == true ||
-        Add_->isEnabled() == false)
+        mAddEntity->isEnabled() == false)
     {
         Changed(QStringLiteral("The World cannot be edited now; try the luminaire repair again when it is ready."));
         return false;
@@ -3231,7 +3234,7 @@ bool WorldWorkspace::ApplySunRepair(const WorldLightingCoverage& repair)
 }
 bool WorldWorkspace::addSun(const WorldSunPlacement& sun)
 {
-    if (Pending_ == true || SceneBusy() == true || Add_->isEnabled() == false)
+    if (Pending_ == true || SceneBusy() == true || mAddEntity->isEnabled() == false)
     {
         Changed(QStringLiteral("The World cannot be edited now; try adding the sun again when it is ready."));
         return false;
