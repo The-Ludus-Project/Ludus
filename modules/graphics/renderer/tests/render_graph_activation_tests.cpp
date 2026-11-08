@@ -345,7 +345,10 @@ Array<uint8> MakeMultiTargetPackageBytes(std::string_view vertexSpirv, bool hasF
     return Move(writer.Bytes);
 }
 /// DXIL-like container bytes: binary, with zero and non-UTF-8 bytes, never decoded as text.
-constexpr std::string_view DXIL_BYTES{"DXBC\0\xff\x80\x01binary container", 24};
+/// The literal splits after \x01 because a hex escape would otherwise also consume the 'b'.
+constexpr std::string_view DXIL_BYTES{"DXBC\0\xff\x80\x01"
+                                      "binary container",
+                                      24};
 /// A color generation carrying WGSL and DXIL stages; vertexTarget names the DXIL vertex record's target.
 Array<uint8> MakeDxilPackageBytes(uint32 vertexTarget)
 {
