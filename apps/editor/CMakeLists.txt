@@ -823,6 +823,7 @@ target_link_libraries(ludus_editor_application
         Ludus::RuntimeConfiguration
         Ludus::FoundationMath
         Ludus::GameplayCamera
+        Ludus::GameplayWorld
         Ludus::GraphicsRenderer
         Ludus::Resources
         Ludus::FoundationParsingJson
@@ -1213,6 +1214,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             Ludus::RuntimeConfiguration
             Ludus::FoundationMath
             Ludus::GameplayCamera
+            Ludus::GameplayWorld
             Ludus::GraphicsRenderer
             Ludus::Resources
             Ludus::FoundationParsingJson

@@ -48,6 +48,7 @@
 #include <QList>
 #include <QListWidget>
 #include <QLockFile>
+#include <QMap>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -111,6 +112,40 @@ bool Replace(const QString& path, const QByteArray& bytes)
 QString FieldKey(const QString& component, const QString& property)
 {
     return component + QLatin1Char('/') + property;
+}
+constexpr foundation::int32 WORLD_PROPERTY_LAYOUT_WIDTH = 360;
+void ConfigureCelestialLightFields(QGroupBox& inoutGroup, QFormLayout& inoutRows, const QMap<QString, QWidget*>& fields)
+{
+    const QString component = QStringLiteral("light");
+    QComboBox* kindOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, QStringLiteral("kind"))));
+    QComboBox* roleOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, WORLD_CELESTIAL_ROLE)));
+    QComboBox* driverOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, WORLD_CELESTIAL_DRIVER)));
+    QWidget* timeOrNull = fields.value(FieldKey(component, WORLD_CELESTIAL_TIME));
+    QWidget* latitudeOrNull = fields.value(FieldKey(component, WORLD_CELESTIAL_LATITUDE));
+    QWidget* longitudeOrNull = fields.value(FieldKey(component, WORLD_CELESTIAL_LONGITUDE));
+    if (kindOrNull == nullptr || roleOrNull == nullptr || driverOrNull == nullptr || timeOrNull == nullptr ||
+        latitudeOrNull == nullptr || longitudeOrNull == nullptr)
+    {
+        return;
+    }
+    const auto updateRows =
+        [&inoutGroup, &inoutRows, kindOrNull, roleOrNull, driverOrNull, timeOrNull, latitudeOrNull, longitudeOrNull]() {
+            const bool isDirectional = kindOrNull->currentData().toString() == QStringLiteral("directional");
+            const bool hasDriver =
+                isDirectional == true && roleOrNull->currentData().toString() == WORLD_CELESTIAL_DYNAMIC;
+            const bool hasEarthRule =
+                hasDriver == true && driverOrNull->currentData().toString() != WORLD_CELESTIAL_AUTHORED;
+            inoutRows.setRowVisible(roleOrNull, isDirectional);
+            inoutRows.setRowVisible(driverOrNull, hasDriver);
+            inoutRows.setRowVisible(timeOrNull, hasEarthRule);
+            inoutRows.setRowVisible(latitudeOrNull, hasEarthRule);
+            inoutRows.setRowVisible(longitudeOrNull, hasEarthRule);
+            inoutGroup.setMinimumHeight(inoutRows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
+        };
+    QObject::connect(kindOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
+    QObject::connect(roleOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
+    QObject::connect(driverOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
+    updateRows();
 }
 QString Display(const QJsonValue& value)
 {
@@ -2171,7 +2206,8 @@ void WorldWorkspace::RenderInspector()
             const auto p = value.toObject();
             const auto pid = p.value(QStringLiteral("id")).toString();
             const auto type = p.value(QStringLiteral("type")).toString();
-            const auto current = values.value(pid);
+            const QJsonValue authored = values.value(pid);
+            const QJsonValue current = authored.isUndefined() == true ? p.value(QStringLiteral("default")) : authored;
             QWidget* field = nullptr;
             if (type == QStringLiteral("boolean"))
             {
@@ -2336,7 +2372,14 @@ void WorldWorkspace::RenderInspector()
             });
             rows->addRow(remove);
         }
-        group->setMinimumHeight(rows->totalHeightForWidth(360));
+        if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light"))
+        {
+            ConfigureCelestialLightFields(*group, *rows, Fields_);
+        }
+        else
+        {
+            group->setMinimumHeight(rows->totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
+        }
         group->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
         Inspector_->addWidget(group);
     }
@@ -2574,27 +2617,35 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
         {
             const auto p = definition.toObject();
             const auto pid = p.value(QStringLiteral("id")).toString();
-            auto* field = Fields_.value(FieldKey(c.key(), pid));
+            QWidget* fieldOrNull = Fields_.value(FieldKey(c.key(), pid));
+            if (fieldOrNull != nullptr && fieldOrNull->isHidden() == true && Document_.HasBuiltInSchema() == true &&
+                c.key() == QStringLiteral("light") && IsWorldCelestialProperty(pid) == true)
+            {
+                // A hidden driver's draft may be incomplete. Keep its last accepted settings.
+                continue;
+            }
+            const QJsonValue authored = values.value(pid);
+            const QJsonValue current = authored.isUndefined() == true ? p.value(QStringLiteral("default")) : authored;
             QJsonValue candidate;
-            if (auto* check = qobject_cast<QCheckBox*>(field))
+            if (QCheckBox* checkOrNull = qobject_cast<QCheckBox*>(fieldOrNull); checkOrNull != nullptr)
             {
-                candidate = check->isChecked();
+                candidate = checkOrNull->isChecked();
             }
-            else if (auto* choice = qobject_cast<QComboBox*>(field))
+            else if (QComboBox* choiceOrNull = qobject_cast<QComboBox*>(fieldOrNull); choiceOrNull != nullptr)
             {
-                candidate = choice->currentData().toString();
+                candidate = choiceOrNull->currentData().toString();
             }
-            else if (auto* text = qobject_cast<QLineEdit*>(field))
+            else if (QLineEdit* textOrNull = qobject_cast<QLineEdit*>(fieldOrNull); textOrNull != nullptr)
             {
                 // Preserve unchanged JSON numbers exactly rather than round them
                 // through the float32 text converter during an unrelated edit.
-                if (text->text() == Display(values.value(pid)))
+                if (textOrNull->text() == Display(current))
                 {
-                    candidate = values.value(pid);
+                    candidate = current;
                 }
-                else if (WorldDocument::ParseValue(p, text->text(), candidate, outError) == false)
+                else if (WorldDocument::ParseValue(p, textOrNull->text(), candidate, outError) == false)
                 {
-                    outInvalidOrNull = text;
+                    outInvalidOrNull = textOrNull;
                     return false;
                 }
             }
@@ -2603,7 +2654,11 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
                 outError = QStringLiteral("Inspector no longer matches the selected entity.");
                 return false;
             }
-            values.insert(pid, candidate);
+            // Leave absent optional fields absent until the user authors a non-default value.
+            if (authored.isUndefined() == false || candidate != current)
+            {
+                values.insert(pid, candidate);
+            }
         }
         c.value() = values;
     }

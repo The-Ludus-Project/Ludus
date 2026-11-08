@@ -3,10 +3,14 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/identity/uuid.hpp>
+#include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/light_selection.hpp>
 
 #include <QByteArray>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QLatin1StringView>
 #include <QString>
 
 namespace ludus::editor
@@ -16,6 +20,23 @@ class WorldDocument;
 [[nodiscard]] bool IsBuiltInWorld(const WorldDocument& world);
 /// Read a bundled default-World asset. Failure preserves outBytes.
 [[nodiscard]] bool ReadBuiltInWorldAsset(const QString& name, QByteArray& outBytes, QString& outError);
+inline constexpr QLatin1StringView WORLD_CELESTIAL_ROLE{"celestialRole"};
+inline constexpr QLatin1StringView WORLD_CELESTIAL_DRIVER{"celestialDriver"};
+inline constexpr QLatin1StringView WORLD_CELESTIAL_TIME{"celestialTime"};
+inline constexpr QLatin1StringView WORLD_CELESTIAL_LATITUDE{"celestialLatitude"};
+inline constexpr QLatin1StringView WORLD_CELESTIAL_LONGITUDE{"celestialLongitude"};
+inline constexpr QLatin1StringView WORLD_CELESTIAL_DYNAMIC{"Dynamic Celestial"};
+inline constexpr QLatin1StringView WORLD_CELESTIAL_AUTHORED{"Transform"};
+
+/// Schema extension for built-in light entities. Older Worlds can omit every field in this extension.
+[[nodiscard]] QJsonArray MakeWorldCelestialProperties();
+/// True for optional fields added by MakeWorldCelestialProperties.
+[[nodiscard]] bool IsWorldCelestialProperty(const QString& property);
+/// Sample the selected celestial rule for a directional light. An authored or static light keeps its rotation.
+/// On failure, both outputs are preserved. The horizon flag is false only for a sampled body below the horizon.
+[[nodiscard]] bool TryResolveWorldCelestialRotation(const QJsonObject& light,
+                                                    foundation::math::Quaternion& inoutRotation,
+                                                    bool& outIsAboveHorizon);
 /// Euler X rotation, in degrees, that turns a light's or luminaire's -Z emission straight down.
 inline constexpr foundation::float32 WORLD_LUMINAIRE_DOWNWARD_DEGREES = -90;
 /// Half extent of the Luminaire preset in metres: a 0.7 m panel.
@@ -45,7 +66,7 @@ struct WorldSunPlacement final
     /// The light's intensity: illuminance in lux on a surface facing the sun.
     foundation::float32 IlluminanceLux = 0;
 };
-/// Create a directional light entity named "Sun" (transform and light components, schema defaults otherwise) in a
+/// Create a directional light entity named "Sun" with the Static Sun role in a
 /// default World as one validated, undoable history transaction. Failure preserves the document and outId. Editor
 /// thread only.
 [[nodiscard]] bool CreateWorldSun(WorldDocument& inoutWorld,

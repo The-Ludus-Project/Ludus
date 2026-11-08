@@ -1698,6 +1698,29 @@ has no indirect bounce, so areas the sun cannot reach stay dark. Reimporting wit
 the scene's bundled sky through **Choose environment…** lights them too. A
 project-owned schema gets the instruction without the repair.
 
+### Celestial directional lights
+
+Select a directional light and set **Light → Celestial Role** in **Properties**.
+**Static Sun** and **Static Moon** keep the direction set by **Transform**
+rotation. **None** is the default for ordinary directional lights and older
+Worlds. The **Sun** creation and lighting repair actions assign **Static Sun**.
+
+Set **Dynamic Celestial → Rotation Driver** to **Transform** to use the entity's
+rotation, including rotation supplied by a game. Choose **Earth Sun** or
+**Earth Moon** to sample an approximate sky direction at **Earth Time**,
+**Earth Latitude**, and **Earth Longitude**. Use the same values on both lights
+to preview a single observer and moment. Earth Time is fractional UTC days
+since noon on January 1, 2000. For example, `0.5` is the following midnight.
+North latitude and east longitude are positive. The World frame is +X east,
++Y up, and −Z north.
+
+The editor samples the authored time and preserves the entity's saved
+Transform rotation as a fallback. A sampled body at or below the geometric
+horizon contributes zero direct light. Intensity and colour come from the
+authored light. The rules model direction and horizon visibility. Lunar phase
+and atmospheric effects are outside their scope. Games can pass
+their own simulation time to the [GameplayWorld celestial sampler](../architecture/game-world.md#earth-celestial-transforms).
+
 ### Switching lights
 
 The **Lights** list under the World entity list switches individual lights off

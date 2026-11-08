@@ -2645,6 +2645,123 @@ TEST_CASE("A dark imported World offers a sun aimed like its disabled light, add
     workspace.StopPreview();
 }
 
+TEST_CASE("Directional celestial roles round-trip and Earth drivers sample the light transform",
+          "[editor][world][celestial]")
+{
+    using namespace ludus::foundation;
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString path = QDir(root).filePath(QStringLiteral("celestial.world.json"));
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(path) == true);
+    QAction* sunOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
+    REQUIRE(sunOrNull != nullptr);
+    sunOrNull->trigger();
+
+    const QJsonArray entities = workspace.Document().Draft().value(QStringLiteral("entities")).toArray();
+    REQUIRE(entities.size() == 1);
+    const QJsonObject entity = entities[0].toObject();
+    const QString id = workspace.Document().GetEntityKey(entity);
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    QJsonObject light = components.value(QStringLiteral("light")).toObject();
+    CHECK(light.value(WORLD_CELESTIAL_ROLE).toString() == QStringLiteral("Static Sun"));
+
+    // A previously saved light has no celestial keys. Its authored direction and bytes remain valid.
+    for (const QString& property : light.keys())
+    {
+        if (IsWorldCelestialProperty(property) == true)
+        {
+            light.remove(property);
+        }
+    }
+    components.insert(QStringLiteral("light"), light);
+    QJsonObject legacyEntity = entity;
+    legacyEntity.insert(QStringLiteral("components"), components);
+    QJsonObject legacy = workspace.Document().Draft();
+    legacy.insert(QStringLiteral("entities"), QJsonArray{legacyEntity});
+    Write(path, QJsonDocument(legacy).toJson());
+    WorldWorkspace reopened;
+    reopened.SetProject(root, 2);
+    REQUIRE(reopened.Open(path) == true);
+    REQUIRE(reopened.Document().Draft() == legacy);
+    REQUIRE(reopened.SelectEntity(id) == true);
+
+    QComboBox* kindOrNull = reopened.findChild<QComboBox*>(QStringLiteral("worldField:light/kind"));
+    QComboBox* roleOrNull = reopened.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialRole"));
+    QComboBox* driverOrNull = reopened.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialDriver"));
+    QLineEdit* timeOrNull = reopened.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialTime"));
+    REQUIRE(kindOrNull != nullptr);
+    REQUIRE(roleOrNull != nullptr);
+    REQUIRE(driverOrNull != nullptr);
+    REQUIRE(timeOrNull != nullptr);
+    CHECK(roleOrNull->currentText() == QStringLiteral("None"));
+    CHECK(driverOrNull->isHidden() == true);
+    kindOrNull->setCurrentText(QStringLiteral("point"));
+    CHECK(roleOrNull->isHidden() == true);
+    kindOrNull->setCurrentText(QStringLiteral("directional"));
+    CHECK(roleOrNull->isHidden() == false);
+
+    RenderScene scene;
+    QString error;
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    REQUIRE(scene.AuthoredLights.Count == 1);
+    const math::Vector3 authoredDirectionWorld = scene.AuthoredLights.Lights[0].Direction;
+
+    roleOrNull->setCurrentText(QStringLiteral("Static Moon"));
+    REQUIRE(reopened.Apply() == true);
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    CHECK(scene.AuthoredLights.Lights[0].Direction == authoredDirectionWorld);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity > 0);
+
+    roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
+    CHECK(driverOrNull->isHidden() == false);
+    REQUIRE(reopened.Apply() == true);
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    CHECK(scene.AuthoredLights.Lights[0].Direction == authoredDirectionWorld);
+
+    driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
+    CHECK(timeOrNull->isHidden() == false);
+    REQUIRE(reopened.Apply() == true);
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    REQUIRE(scene.AuthoredLights.Count == 1);
+    CHECK(scene.AuthoredLights.Lights[0].Direction != authoredDirectionWorld);
+    CHECK(scene.AuthoredLights.Lights[0].Direction.Y < 0);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity > 0);
+    const math::Vector3 solarNoonDirectionWorld = scene.AuthoredLights.Lights[0].Direction;
+
+    driverOrNull->setCurrentText(QStringLiteral("Earth Moon"));
+    REQUIRE(reopened.Apply() == true);
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    CHECK(scene.AuthoredLights.Lights[0].Direction != solarNoonDirectionWorld);
+
+    timeOrNull->selectAll();
+    QTest::keyClicks(timeOrNull, QStringLiteral("invalid"));
+    CHECK(reopened.Apply() == false);
+    roleOrNull->setCurrentText(QStringLiteral("Static Moon"));
+    REQUIRE(reopened.Apply() == true);
+    roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
+    driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
+    timeOrNull->selectAll();
+    QTest::keyClicks(timeOrNull, QStringLiteral("0.5"));
+    REQUIRE(reopened.Apply() == true);
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    CHECK(scene.AuthoredLights.Lights[0].Direction.Y > 0);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity == 0);
+    REQUIRE(reopened.Save() == true);
+    WorldDocument saved;
+    REQUIRE(saved.LoadSchema(Read(QStringLiteral(":/world/world.schema.json")), error) == true);
+    REQUIRE(saved.Load(Read(path), error) == true);
+    CHECK(saved.Draft() == reopened.Document().Draft());
+    const QJsonObject savedLight =
+        saved.Entity(id).value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+    CHECK(savedLight.value(WORLD_CELESTIAL_TIME).toDouble() == 0.5);
+    CHECK(savedLight.contains(WORLD_CELESTIAL_LATITUDE) == false);
+    CHECK(savedLight.contains(WORLD_CELESTIAL_LONGITUDE) == false);
+    workspace.StopPreview();
+    reopened.StopPreview();
+}
+
 TEST_CASE("A default World luminaire is scene data with an outline and a working gizmo",
           "[editor][world][creation][luminaire]")
 {

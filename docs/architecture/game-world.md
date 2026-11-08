@@ -95,9 +95,9 @@ sequence behavior on the owner thread; CPU jobs are a separate execution choice.
 
 The reusable module is `modules/gameplay/world`, exported as
 `Ludus::GameplayWorld`. It contains `EntityId`, `EntityRegistry`, and the small
-typed `ComponentPool<T>` facility. It depends on Base and Containers. It does not
-depend on Platform, Input, RHI, Audio, Text, or game-specific component types.
-Component types may themselves use explicitly included FoundationMath values.
+typed `ComponentPool<T>` facility. The Earth sky sampler uses FoundationMath
+rotations. The module uses FoundationBase, Containers, Identity and Math, and
+keeps platform, input and rendering dependencies in the game and its adapters.
 
 The consuming game repository owns `GameWorld`, level schema and codecs,
 spawn recipes, gameplay systems, and its renderer adapter. Initially the session
@@ -232,3 +232,17 @@ No new third-party dependency is selected by this proposal. Selecting a JSON
 parser or ECS library requires checking its pinned version, licensing, browser
 support, and exception-free failure behavior. The gameplay data contracts do not
 depend on that choice.
+
+## Earth celestial transforms
+
+Include `<ludus/gameplay/world/celestial_transform.hpp>` and link
+`Ludus::GameplayWorld` to sample Earth Sun or Earth Moon as a transform driver.
+Call `ludus::gameplay::world::TrySampleEarthCelestialTransform` with the game's
+clock in fractional UTC days since 2000-01-01 12:00 UTC and the observer's
+latitude and longitude in degrees. On success, assign the returned rotation to
+the light transform. Its local −Z axis points along the incoming light in a
+world with +X east, +Y up and −Z north. Use `IsAboveHorizon` to gate direct
+illumination. The game owns the clock, transform, and intensity. The sampler
+uses approximate solar and lunar positions and a spherical, airless Earth.
+See [celestial directional lights](../development/editor-workspace.md#celestial-directional-lights)
+for the World editor controls.

@@ -2,6 +2,9 @@
 #include <limits>
 #include <ludus/foundation/identity/handle.hpp>
 #include <ludus/foundation/identity/lifetime.hpp>
+#include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/vector.hpp>
+#include <ludus/gameplay/world/celestial_transform.hpp>
 #include <ludus/gameplay/world/component_pool.hpp>
 #include <ludus/gameplay/world/entity_registry.h>
 #include <utility>
@@ -196,4 +199,50 @@ TEST_CASE("Pool moves transfer ownership and reject insertion into the empty sou
     REQUIRE(*moved.Find(entity) == 4);
     // NOLINTNEXTLINE(bugprone-use-after-move): moved-from pools reject mutations.
     REQUIRE(source.TryInsert(registry, entity, 5) == Status::InvalidEntity);
+}
+
+TEST_CASE("Earth sky rules provide time-dependent rotations and horizon state", "[world][celestial]")
+{
+    constexpr math::Vector3 LIGHT_FORWARD{0, 0, -1};
+    EarthCelestialTransform sun;
+    REQUIRE(TrySampleEarthCelestialTransform(EarthCelestialBody::Sun, 0, 0, 0, sun) == true);
+    CHECK(sun.IsAboveHorizon == true);
+    const math::Vector3 solarNoonDirectionWorld = math::Rotate(sun.Rotation, LIGHT_FORWARD);
+    // At the equator near the December solstice, the noon Sun is high in the south.
+    CHECK(solarNoonDirectionWorld.Y < -0.9F);
+    CHECK(solarNoonDirectionWorld.Z < -0.38F);
+
+    REQUIRE(TrySampleEarthCelestialTransform(EarthCelestialBody::Sun, 0.5, 0, 0, sun) == true);
+    CHECK(sun.IsAboveHorizon == false);
+    CHECK(math::Rotate(sun.Rotation, LIGHT_FORWARD).Y > 0.9F);
+
+    EarthCelestialTransform moon;
+    REQUIRE(TrySampleEarthCelestialTransform(EarthCelestialBody::Moon, 0, 0, 0, moon) == true);
+    const math::Vector3 firstMoonDirectionWorld = math::Rotate(moon.Rotation, LIGHT_FORWARD);
+    CHECK(moon.IsAboveHorizon == true);
+    // NASA JPL Horizons, target 301, airless apparent azimuth and elevation at sea level (0° N, 0° E),
+    // 2000-01-01 12:00 UTC. See https://ssd-api.jpl.nasa.gov/doc/horizons.html (observer quantity 4).
+    constexpr float32 MOON_AZIMUTH_DEGREES = 257.206634F;
+    constexpr float32 MOON_ELEVATION_DEGREES = 30.568243F;
+    constexpr float32 MOON_ANGLE_TOLERANCE_DEGREES = 1;
+    const float32 moonAzimuthRadians = math::DegreesToRadians(MOON_AZIMUTH_DEGREES);
+    const float32 moonElevationRadians = math::DegreesToRadians(MOON_ELEVATION_DEGREES);
+    const math::Vector3 expectedMoonDirectionWorld{
+        -math::Cos(moonElevationRadians) * math::Sin(moonAzimuthRadians),
+        -math::Sin(moonElevationRadians),
+        math::Cos(moonElevationRadians) * math::Cos(moonAzimuthRadians),
+    };
+    CHECK(math::Dot(firstMoonDirectionWorld, expectedMoonDirectionWorld) >
+          math::Cos(math::DegreesToRadians(MOON_ANGLE_TOLERANCE_DEGREES)));
+    REQUIRE(TrySampleEarthCelestialTransform(EarthCelestialBody::Moon, 1, 0, 0, moon) == true);
+    const math::Vector3 secondMoonDirectionWorld = math::Rotate(moon.Rotation, LIGHT_FORWARD);
+    CHECK(math::Dot(firstMoonDirectionWorld, secondMoonDirectionWorld) < 0.99F);
+
+    const EarthCelestialTransform last = moon;
+    CHECK(TrySampleEarthCelestialTransform(EarthCelestialBody::Moon, MAX_EARTH_CELESTIAL_DAYS + 1, 0, 0, moon) ==
+          false);
+    CHECK(TrySampleEarthCelestialTransform(EarthCelestialBody::Moon, 0, MAX_EARTH_LATITUDE_DEGREES + 1, 0, moon) ==
+          false);
+    CHECK(moon.Rotation == last.Rotation);
+    CHECK(moon.IsAboveHorizon == last.IsAboveHorizon);
 }
