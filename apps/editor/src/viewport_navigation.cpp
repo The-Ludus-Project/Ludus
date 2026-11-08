@@ -52,6 +52,29 @@ int32 GetMovementKey(int32 key) noexcept
     }
 }
 } // namespace
+bool PreviewViewport::BeginFirstPerson(const gameplay::camera::CameraSample& spawn, float32 speed)
+{
+    if (mPlayEndpointOrNull != nullptr || mIsInspectingRayPaths == true || math::IsFinite(speed) == false ||
+        speed <= 0 || Preview_->BeginFirstPerson(spawn) == false)
+    {
+        return false;
+    }
+    stopNavigation();
+    mFirstPersonSpeed = speed;
+    updateObjectInteractionAvailability();
+    setFocus(Qt::OtherFocusReason);
+    return true;
+}
+void PreviewViewport::EndFirstPerson()
+{
+    if (mFirstPersonSpeed > 0)
+    {
+        mFirstPersonSpeed = 0;
+        stopNavigation();
+        Preview_->EndFirstPerson();
+        updateObjectInteractionAvailability();
+    }
+}
 void PreviewViewport::resizeEvent(QResizeEvent* event)
 {
     mObjectInteraction->Cancel();
@@ -65,6 +88,11 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
     if (mPlayEndpointOrNull != nullptr)
     {
         // A click gives the game the keyboard; there is no pointer input to forward yet.
+        event->accept();
+        return;
+    }
+    if (Preview_->IsExploringFirstPerson() == true && event->button() != Qt::RightButton)
+    {
         event->accept();
         return;
     }
@@ -200,12 +228,13 @@ bool PreviewViewport::navigateMouse(float32 deltaX,
     const bool isPrimaryDrag = buttons.testFlag(Qt::LeftButton);
     const bool isOrbitModifier = modifiers.testFlag(Qt::AltModifier);
     const bool isPanModifier = modifiers.testFlag(Qt::ShiftModifier);
-    if (buttons.testFlag(Qt::MiddleButton) == true ||
-        (isPrimaryDrag == true && isOrbitModifier == true && isPanModifier == true))
+    const bool isExploring = Preview_->IsExploringFirstPerson();
+    if (isExploring == false && (buttons.testFlag(Qt::MiddleButton) == true ||
+                                 (isPrimaryDrag == true && isOrbitModifier == true && isPanModifier == true)))
     {
         Preview_->Pan(deltaX, deltaY, getDrawableHeight());
     }
-    else if (isPrimaryDrag == true && isOrbitModifier == true)
+    else if (isExploring == false && isPrimaryDrag == true && isOrbitModifier == true)
     {
         Preview_->Orbit(deltaX, deltaY);
     }
@@ -223,6 +252,11 @@ bool PreviewViewport::navigateMouse(float32 deltaX,
 void PreviewViewport::wheelEvent(QWheelEvent* event)
 {
     if (mPlayEndpointOrNull != nullptr)
+    {
+        event->accept();
+        return;
+    }
+    if (Preview_->IsExploringFirstPerson() == true)
     {
         event->accept();
         return;
@@ -253,6 +287,7 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
     }
     if (event->key() == Qt::Key_Escape)
     {
+        EndFirstPerson();
         mObjectInteraction->Cancel();
         stopNavigation();
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -268,6 +303,11 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
     if (mIsFlying == true && movementKey >= 0)
     {
         mHeldKeys[static_cast<usize>(movementKey)] = true;
+        event->accept();
+        return;
+    }
+    if (Preview_->IsExploringFirstPerson() == true)
+    {
         event->accept();
         return;
     }
@@ -402,8 +442,15 @@ void PreviewViewport::advanceNavigation()
     {
         return;
     }
-    const float32 speed = math::Clamp(Preview_->GetFocusDistance() * 0.5F, 0.001F, 10000.0F) * mSpeedMultiplier *
-                          (mHeldKeys[BOOST_KEY] == true ? 4.0F : 1.0F);
+    constexpr float32 BOOST_MULTIPLIER = 4;
+    constexpr float32 MINIMUM_EDITOR_SPEED = 0.001F;
+    constexpr float32 MAXIMUM_EDITOR_SPEED = 10000.0F;
+    const float32 baseSpeed =
+        Preview_->IsExploringFirstPerson() == true
+            ? mFirstPersonSpeed
+            : math::Clamp(Preview_->GetFocusDistance() * 0.5F, MINIMUM_EDITOR_SPEED, MAXIMUM_EDITOR_SPEED) *
+                  mSpeedMultiplier;
+    const float32 speed = baseSpeed * (mHeldKeys[BOOST_KEY] == true ? BOOST_MULTIPLIER : 1.0F);
     Preview_->Fly(movementControls, deltaSeconds, speed);
 }
 void PreviewViewport::recenterPointer()
@@ -419,6 +466,7 @@ void PreviewViewport::focusOutEvent(QFocusEvent* event)
 {
     // Window deactivation, modal dialogs and Shift+F1 all arrive here: the game loses focus.
     sendPlayFocus(false);
+    EndFirstPerson();
     stopNavigation();
     QWidget::focusOutEvent(event);
 }
@@ -430,6 +478,7 @@ void PreviewViewport::hideEvent(QHideEvent* event)
         // A hidden tab or dock is an occluded window: the game drops to its hidden pacing.
         static_cast<void>(mPlayEndpointOrNull->SendVisibility(platform::WindowVisibility::Occluded));
     }
+    EndFirstPerson();
     stopNavigation();
     QWidget::hideEvent(event);
 }

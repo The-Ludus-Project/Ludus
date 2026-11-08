@@ -1465,11 +1465,15 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     setFocusPolicy(Qt::StrongFocus);
     mNavigationTimer.setInterval(16);
     connect(&mNavigationTimer, &QTimer::timeout, this, [this]() { advanceNavigation(); });
-    connect(preview, &RenderPreview::Stopped, this, [this]() { stopNavigation(); });
+    connect(preview, &RenderPreview::Stopped, this, [this]() {
+        EndFirstPerson();
+        stopNavigation();
+    });
 #if defined(Q_OS_MACOS)
     connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
         if (state != Qt::ApplicationActive)
         {
+            EndFirstPerson();
             stopNavigation();
         }
     });
@@ -2311,7 +2315,8 @@ void PreviewViewport::updateObjectInteractionAvailability()
     const ViewportPresentation presentation = GetPresentation();
     const bool canShowOverlay =
         presentation == ViewportPresentation::SharedDevice || presentation == ViewportPresentation::OffscreenReadback;
-    const bool canInteract = canShowOverlay == true && mPlayEndpointOrNull == nullptr && mIsInspectingRayPaths == false;
+    const bool canInteract = canShowOverlay == true && mPlayEndpointOrNull == nullptr &&
+                             mIsInspectingRayPaths == false && Preview_->IsExploringFirstPerson() == false;
     mObjectInteraction->SetActive(canInteract);
     QComboBox* toolOrNull = findChild<QComboBox*>(QStringLiteral("viewportObjectTool"));
     if (toolOrNull != nullptr)

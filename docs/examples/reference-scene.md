@@ -19,6 +19,12 @@ the native Editor viewport; see the
 The standalone commands below are prototype evidence; they do not provide the
 project → scene → import → viewport → save/reopen product workflow.
 
+To explore staircase2 interactively, import it into a default World in the Editor.
+Add a First Person Player with **Add World Preset**, then select it and click
+**Explore as Player**. The preset starts from the imported camera.
+See [First Person Player controls](../development/editor-workspace.md#explore-from-a-first-person-player)
+for controls and spawn placement.
+
 ## Material-preserving project imports
 
 New native project imports of this PBRT subset use `pbrt-reference-materials-v2`.

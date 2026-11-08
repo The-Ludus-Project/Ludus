@@ -58,6 +58,7 @@ void PreviewViewport::SetPlayInput(platform::HostedWindowEndpoint* endpointOrNul
     {
         sendPlayFocus(false);
     }
+    EndFirstPerson();
     stopNavigation();
     mPlayEndpointOrNull = endpointOrNull;
     updateObjectInteractionAvailability();
@@ -140,9 +141,18 @@ bool PreviewViewport::handlePlayKey(QKeyEvent& inoutEvent, bool isPress)
 
 bool PreviewViewport::event(QEvent* event)
 {
+    if (event->type() == QEvent::WindowDeactivate)
+    {
+        EndFirstPerson();
+    }
     if (event->type() == QEvent::UngrabMouse || event->type() == QEvent::WindowDeactivate)
     {
         stopNavigation();
+    }
+    if (event->type() == QEvent::ShortcutOverride && mFirstPersonSpeed > 0)
+    {
+        event->accept();
+        return true;
     }
     if (mPlayEndpointOrNull != nullptr && event->type() == QEvent::ShortcutOverride)
     {

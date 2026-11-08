@@ -59,7 +59,7 @@ TEST_CASE("A World lit only by faint emitters offers a sun aimed like its disabl
     CHECK(dark.Warning.contains(QStringLiteral("renders almost black")) == true);
     CHECK(dark.Warning.contains(QStringLiteral("24 imported lights are disabled")) == true);
     CHECK(dark.Warning.contains(QStringLiteral("about 0.0013 lux on average (1 emissive object)")) == true);
-    CHECK(dark.Warning.contains(QStringLiteral("Add a sun from Add Geometry / Light")) == true);
+    CHECK(dark.Warning.contains(QStringLiteral("Add a sun from Add World Preset")) == true);
     REQUIRE(dark.Repair == WorldLightingRepair::AddSun);
     CHECK(dark.Sun.IlluminanceLux == DEFAULT_WORLD_SUN_ILLUMINANCE_LUX);
     CHECK(IsNear(RotateForward(dark.Sun.RotationDegrees), sponza.SunDirectionWorld) == true);

@@ -20,6 +20,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QFocusEvent>
@@ -135,6 +136,60 @@ TEST_CASE("Detaching an authored viewport camera preserves its pose lens and vis
     CHECK(after.CameraPosition == before.CameraPosition);
     CHECK(after.CameraForward != before.CameraForward);
 }
+TEST_CASE("First person navigation publishes a transient upright view", "[editor][navigation][first-person]")
+{
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(MakeNavigationScene()) == true);
+    preview.Navigate(0, {0, 0}, 1, false);
+    const QJsonObject editorNavigation = preview.Navigation();
+    const camera::CameraSample editorCamera = preview.GetVisibleCameraSample();
+    PreviewViewport viewport(&preview, nullptr, false);
+    camera::CameraSample spawn = editorCamera;
+    spawn.Pose.Position = {1, 2, 3};
+    REQUIRE(math::TryFromAxisAngle({1, 0, 0}, 0.5F, spawn.Pose.Orientation) == math::MathStatus::Success);
+    REQUIRE(viewport.BeginFirstPerson(spawn, 3) == true);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position == spawn.Pose.Position);
+    rr::ViewDescription view;
+    QString error;
+    REQUIRE(preview.DescribeView(800, 600, view, error) == true);
+    CHECK(view.CameraPosition == math::Vector3{1, 2, 3});
+
+    preview.Fly({0, 0, -1}, 0.1F, 3);
+    const camera::CameraSample moved = preview.GetVisibleCameraSample();
+    CHECK(moved.Pose.Position.Y == Catch::Approx(spawn.Pose.Position.Y));
+    CHECK(moved.Pose.Position.Z == Catch::Approx(2.7));
+    preview.Look(20, 0);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position == moved.Pose.Position);
+    CHECK(preview.GetVisibleCameraSample().Pose.Orientation != moved.Pose.Orientation);
+
+    QTest::mousePress(&viewport, Qt::RightButton);
+    QTest::keyPress(&viewport, Qt::Key_E);
+    constexpr int32 POLL_MILLISECONDS = 10;
+    constexpr int32 MOVEMENT_TIMEOUT_MILLISECONDS = 1000;
+    QElapsedTimer timer;
+    timer.start();
+    while (preview.GetVisibleCameraSample().Pose.Position.Y <= moved.Pose.Position.Y &&
+           timer.elapsed() < MOVEMENT_TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    QTest::keyRelease(&viewport, Qt::Key_E);
+    QTest::mouseRelease(&viewport, Qt::RightButton);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position.Y > moved.Pose.Position.Y);
+    CHECK(preview.Navigation() == editorNavigation);
+
+    QTest::keyClick(&viewport, Qt::Key_Escape);
+    CHECK(preview.IsExploringFirstPerson() == false);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position == editorCamera.Pose.Position);
+    CHECK(preview.GetVisibleCameraSample().Pose.Orientation == editorCamera.Pose.Orientation);
+    REQUIRE(viewport.BeginFirstPerson(spawn, 3) == true);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position == spawn.Pose.Position);
+    QFocusEvent focusLost(QEvent::FocusOut);
+    QApplication::sendEvent(&viewport, &focusLost);
+    CHECK(preview.IsExploringFirstPerson() == false);
+    CHECK(preview.Navigation() == editorNavigation);
+}
+
 TEST_CASE("Selected object framing ignores scene-wide radius and fits portrait and wide viewports",
           "[editor][navigation]")
 {
