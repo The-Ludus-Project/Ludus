@@ -5382,10 +5382,12 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
                 mPreviewPump.Wake();
             }
         });
-        connect(mPreviewSourceOrNull, &RenderPreview::NavigationChanged, this, [this]() {
+        const auto refreshView = [this]() {
             mArePreviewInputsDirty = true;
             mPreviewPump.Wake();
-        });
+        };
+        connect(mPreviewSourceOrNull, &RenderPreview::NavigationChanged, this, refreshView);
+        connect(mPreviewSourceOrNull, &RenderPreview::RasterExposureChanged, this, refreshView);
         connect(mPreviewSourceOrNull, &RenderPreview::Changed, this, [this]() {
             mArePreviewInputsDirty = true;
             if (mPreviewSourceOrNull->HasDevice() == true)
@@ -5545,8 +5547,10 @@ void RendererWorkspace::ServicePreview()
                 mPreviewStatus->setText(error);
                 setProblem(mExtractionProblem, error);
             }
+            view.RasterExposureStops = mPreviewSourceOrNull->GetRasterExposureStops();
             if (hasView == true && (scene.Identity != mPreviewSceneIdentity ||
-                                    AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false))
+                                    AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false ||
+                                    view.RasterExposureStops != mPreviewExposureStops))
             {
                 LUDUS_PROFILE_SCOPE(EditorGraphWorldExtraction);
                 bool hasUpdatedInputs = false;
@@ -5575,6 +5579,7 @@ void RendererWorkspace::ServicePreview()
                 {
                     mPreviewSceneIdentity = scene.Identity;
                     mPreviewWorldToClip = view.WorldToClip;
+                    mPreviewExposureStops = view.RasterExposureStops;
                 }
             }
         }

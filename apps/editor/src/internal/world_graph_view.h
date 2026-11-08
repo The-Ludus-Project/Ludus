@@ -19,6 +19,7 @@ namespace ludus::editor
 class ViewportObjectInteraction;
 class RendererWorkspace;
 class RenderGraphPreview;
+class RenderPreview;
 /// Interactive World output of the project's active graph. Owns only display/target selection;
 /// RendererWorkspace owns builds and RenderGraphPreview owns GPU production and readback.
 class WorldGraphView final : public QWidget
@@ -27,8 +28,8 @@ class WorldGraphView final : public QWidget
 public:
     /// Native graph preview must exist; parent owns this display and its controls.
     WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* parent);
-    /// Move the output/configuration controls into the viewport toolbar once.
-    QWidget* TakeControls(QWidget* parent);
+    /// Move the graph controls into the viewport toolbar once.
+    QWidget* TakeControls(QWidget* parent, RenderPreview& inoutSource);
     void SetObjectInteraction(ViewportObjectInteraction& inoutInteraction);
     /// Hold the last image while a candidate import waits for catalog publication.
     void SetCanPresent(bool canPresent);

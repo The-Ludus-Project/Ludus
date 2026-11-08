@@ -425,7 +425,8 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
     parameters.Options = {
         camera.Reference == true || camera.DirectLighting == true ? 1.0F : 0.0F,
         mClearDepth,
-        operation.ToneMappingExposure,
+        operation.ToneMappingExposure *
+            static_cast<float32>(math::Pow(2, static_cast<float64>(camera.RasterExposureStops))),
         static_cast<float32>(operation.ToneMappingCurve == content::render_graph_format::DisplayCurve::PbrNeutral
                                  ? ToneCurve::PbrNeutral
                                  : ToneCurve::Reinhard)};

@@ -2911,6 +2911,11 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     for (usize cameraIndex = 0; cameraIndex < cameras.GetSize(); ++cameraIndex)
     {
         const ViewDescription& camera = cameras[cameraIndex];
+        if (math::IsFinite(camera.RasterExposureStops) == false ||
+            math::Abs(camera.RasterExposureStops) > ViewDescription::MAXIMUM_RASTER_EXPOSURE_STOPS)
+        {
+            return Status::InvalidDescription;
+        }
         if (camera.Depth != DepthConvention::Conventional)
         {
             return Status::Unsupported;

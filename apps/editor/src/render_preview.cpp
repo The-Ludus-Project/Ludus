@@ -1318,6 +1318,17 @@ void RenderPreview::SetLookSensitivity(float32 sensitivity)
     mLookSensitivity = sensitivity;
     Q_EMIT NavigationChanged();
 }
+void RenderPreview::SetRasterExposureStops(float32 stops)
+{
+    if (math::IsFinite(stops) == false ||
+        math::Abs(stops) > graphics::renderer::ViewDescription::MAXIMUM_RASTER_EXPOSURE_STOPS ||
+        stops == mRasterExposureStops)
+    {
+        return;
+    }
+    mRasterExposureStops = stops;
+    Q_EMIT RasterExposureChanged();
+}
 void RenderPreview::SetViewportSize(usize presetIndex)
 {
     if (presetIndex >= VIEWPORT_SIZE_PRESET_COUNT || presetIndex == mViewportSizeIndex)

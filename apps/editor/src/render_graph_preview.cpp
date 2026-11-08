@@ -394,6 +394,7 @@ struct RenderGraphPreview::State final
         uint32 Width = 0;
         uint32 Height = 0;
         uint32 Cameras = 0;
+        bool HasRasterExposure = false;
         /// Every texture of the generation, for the texture viewer.
         RenderGraphTargetCatalogue Catalogue;
         QString RendererStatus;
@@ -810,6 +811,16 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
         setStatus(QStringLiteral("This configuration exports no color texture for the preview to show."));
         return RenderGraphPreviewLoad::Unsupported;
     }
+    for (usize count = plan.Passes.GetSize(); count > 0; --count)
+    {
+        const format::Pass& pass = plan.Passes[count - 1];
+        if (pass.Color < plan.Resources.GetSize() &&
+            plan.Resources[pass.Color].Backing == plan.Resources[target.Resource].Backing)
+        {
+            target.HasRasterExposure = pass.Program == format::Technique::ColorAndDepth && pass.ToneMappingExposure > 0;
+            break;
+        }
+    }
     for (uint32 resource = 0; resource < target.CaptureProblems.GetSize(); ++resource)
     {
         target.CaptureProblems[resource] = renderer::FindRenderGraphCaptureProblem(plan, resource);
@@ -939,6 +950,10 @@ const QString& RenderGraphPreview::GetRasterFallbackPath() const noexcept
 const QString& RenderGraphPreview::GetOutputTarget() const noexcept
 {
     return mState->OutputName;
+}
+bool RenderGraphPreview::CanAdjustRasterExposure() const noexcept
+{
+    return mState->Active.HasRasterExposure == true && mState->IsFrozen == false;
 }
 bool RenderGraphPreview::FindActiveCaptureProblem(uint32 resource,
                                                   renderer::RenderGraphCaptureProblem& outProblem) const noexcept

@@ -279,6 +279,13 @@ struct ViewDescription final
     /// Optional depth-tested world coordinate guide. It does not alter scene bounds, item counts or shadows.
     /// Ignored by reference/path tracing captures; raster drawing retains guide buffers with this view.
     WorldGridDescription WorldGrid{};
+    /// Maximum absolute adjustment of the clustered deferred graph's exposure, in stops.
+    static constexpr ludus::foundation::float32 MAXIMUM_RASTER_EXPOSURE_STOPS = 6;
+    /// Finite adjustment in [-MAXIMUM_RASTER_EXPOSURE_STOPS, MAXIMUM_RASTER_EXPOSURE_STOPS].
+    /// Zero uses the authored exposure. Each positive stop doubles the authored multiplier.
+    /// Applies to enabled ToneMap nodes on clustered deferred passes only. Invalid values reject
+    /// graph updates before publication. Other renderer entry points ignore this field.
+    ludus::foundation::float32 RasterExposureStops = 0;
 };
 /// Packet counts and a diagnostic prefix, copied to caller storage; IDs follow draw/instance order.
 struct ViewReport final

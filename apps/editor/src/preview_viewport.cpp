@@ -2049,7 +2049,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
         mState->HasShaderError = true;
         mState->applyShaderStatus();
     });
-    QWidget* graphControls = mState->GraphViewOrNull->TakeControls(this);
+    QWidget* graphControls = mState->GraphViewOrNull->TakeControls(this, *Preview_);
     mState->ControlsOrNull->insertWidget(mState->ControlsOrNull->actions().value(0), graphControls);
     SetControlVisible(*mState->ControlsOrNull, findChild<QComboBox*>(QStringLiteral("viewportShading")), false);
     SetControlVisible(*mState->ControlsOrNull, findChild<QToolButton*>(QStringLiteral("viewportLiveShaders")), false);
