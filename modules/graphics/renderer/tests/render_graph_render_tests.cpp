@@ -62,6 +62,12 @@ void CheckSameStage(const rhi::RasterShaderDescription& runtime, const rhi::Rast
     CHECK(runtime.Artifact.WgslEntry == compiled.Artifact.WgslEntry);
     CHECK(runtime.Artifact.GlslEs == compiled.Artifact.GlslEs);
     CHECK(runtime.Artifact.GlslEsEntry == compiled.Artifact.GlslEsEntry);
+    REQUIRE(runtime.Artifact.Dxil.size() == compiled.Artifact.Dxil.size());
+    for (usize byte = 0; byte < compiled.Artifact.Dxil.size(); ++byte)
+    {
+        REQUIRE(runtime.Artifact.Dxil[byte] == compiled.Artifact.Dxil[byte]);
+    }
+    CHECK(runtime.Artifact.DxilEntry == compiled.Artifact.DxilEntry);
     REQUIRE(runtime.Inputs.size() == compiled.Inputs.size());
     for (usize input = 0; input < compiled.Inputs.size(); ++input)
     {
@@ -323,16 +329,22 @@ TEST_CASE("RG3 cooked runtime generation decodes the compiled header's plan and 
     CheckSameStage(runtime.ColorFragment, compiled.ColorFragment);
     CheckSameStage(runtime.DepthVertex, compiled.DepthVertex);
     CheckSameStage(runtime.DepthFragment, compiled.DepthFragment);
-    // The fixture is cooked for this host's native target and WGSL; neither may be silently absent.
+    // The fixture is cooked for this host's native target and, outside Windows, WGSL; none may be
+    // silently absent. Windows cooks the dxil profile alone, as its runtime packages do.
 #if defined(LUDUS_TEST_METAL)
     CHECK(runtime.ColorVertex.Artifact.Msl.empty() == false);
     CHECK(runtime.ColorFragment.Artifact.Msl.empty() == false);
+#elif defined(LUDUS_TEST_DXIL)
+    CHECK(runtime.ColorVertex.Artifact.Dxil.empty() == false);
+    CHECK(runtime.ColorFragment.Artifact.Dxil.empty() == false);
 #else
     CHECK(runtime.ColorVertex.Artifact.Spirv.empty() == false);
     CHECK(runtime.ColorFragment.Artifact.Spirv.empty() == false);
 #endif
+#if !defined(LUDUS_TEST_DXIL)
     CHECK(runtime.ColorVertex.Artifact.Wgsl.empty() == false);
     CHECK(runtime.ColorFragment.Artifact.Wgsl.empty() == false);
+#endif
 }
 TEST_CASE("RG3 runtime generation renders the same pixels as its compiled header across activation",
           "[render-graph][gpu][activation]")
