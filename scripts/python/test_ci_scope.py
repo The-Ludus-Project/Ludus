@@ -302,16 +302,47 @@ class RequiredGateTests(unittest.TestCase):
             with self.subTest(workflow=name):
                 self.assertNotRegex(root.joinpath(name).read_text(), r"--parallel \d")
 
-    def test_linux_sanitizer_suite_runs_one_case_per_core(self):
-        # The full sanitizer suite was serial for 95 min; keep it parallel at the
-        # job's runner-core count rather than a literal that can outgrow the runner.
+    def test_linux_sanitizer_suite_is_sharded_across_runners(self):
+        # The serial sanitizer suite took 95-100 min of a 2 h job. Shards split it
+        # across runners; each case still runs alone on its runner, so lavapipe
+        # cold-shader deadlines keep the CPU they were calibrated against.
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         sanitizers = workflow.split("\n  sanitizers:\n", 1)[1].split("\n  scripting-qualification:\n", 1)[0]
-        suite = re.findall(r"(?m)^ +run: (out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan [^\n]*)$",
-                           sanitizers)
-        full = [command for command in suite if "--label-regex" not in command and "-R " not in command]
-        self.assertEqual(len(full), 1, suite)
-        self.assertIn('--parallel "$CMAKE_BUILD_PARALLEL_LEVEL"', full[0])
+        header = sanitizers.split("\n    steps:\n", 1)[0]
+        shards = re.search(r"(?m)^        shard: \[([^\]]+)\]$", header)
+        self.assertIsNotNone(shards, header)
+        count = len(shards.group(1).split(", "))
+        self.assertGreater(count, 1)
+        self.assertEqual(shards.group(1).split(", "), [str(index) for index in range(1, count + 1)])
+        self.assertIn("      fail-fast: false\n", header)
+        self.assertIn("      SANITIZER_SHARD: ${{ matrix.shard }}\n", header)
+        self.assertTrue(header.endswith("      SANITIZER_SHARDS: ${{ strategy.job-total }}"), header)
+        # native-setup selects the Mesa correctness profile by GITHUB_JOB, the job ID
+        # every shard shares.
+        self.assertIn("Linux:sanitizers:linux-clang-asan-ubsan",
+                      (Path(__file__).resolve().parents[2] / ".github/actions/native-setup/action.yml").read_text())
+
+        steps = re.split(r"(?m)^      - ", sanitizers.split("\n    steps:\n", 1)[1])
+        suite = [step for step in steps if step.startswith("name: Test with sanitizers\n")]
+        self.assertEqual(len(suite), 1)
+        command = " ".join(suite[0].split())
+        self.assertIn("ctest --preset linux-clang-asan-ubsan", command)
+        self.assertIn('--tests-information "$SANITIZER_SHARD,,$SANITIZER_SHARDS"', command)
+        self.assertNotIn("--parallel", command)
+        self.assertNotIn("if:", suite[0])
+        # Required reload evidence comes from one fixed shard, never from the round-robin.
+        self.assertIn("--exclude-regex '^ludus_game_host_reload_tests$'", command)
+        reload = [step for step in steps if "LUDUS_RELOAD_METRICS" in step]
+        self.assertEqual(len(reload), 1)
+        self.assertIn("--tests-regex '^ludus_game_host_reload_tests$'", reload[0])
+        self.assertIn("if: matrix.shard == 1\n", reload[0])
+        # Artifact names are unique per workflow run, and one shard writes each cache.
+        for step in steps:
+            if "actions/upload-artifact@" in step or "actions/cache@" in step:
+                with self.subTest(step=step.splitlines()[0]):
+                    self.assertRegex(step, r"(?m)^        if: (always\(\) && )?matrix\.shard == 1$")
+        for writer in ("conan-cache-writer", "compiler-cache-writer"):
+            self.assertIn(f"          {writer}: ${{{{ matrix.shard == 1 && 'true' || 'false' }}}}\n", sanitizers)
 
     def test_full_validation_is_owned_by_the_batch_scheduler(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"

@@ -535,6 +535,20 @@ preset and configuration (ordinary, PCH, editor). CMake honors
 `LUDUS_ENABLE_CCACHE=1` from the environment for native builds; browser presets
 keep their separate cache policy. The native setup action installs ccache.
 
+The repository cache is limited to 10 GB, and GitHub evicts the least recently
+used entries once it is full. Every batch saves a new commit-keyed compiler cache
+for each variant, so without cleanup the superseded copies evicted the Conan,
+sanitizer and browser caches the next batch needed. The batch's **Prune
+superseded caches** job runs after every suite has finished, whatever the outcome,
+from the trusted `main` revision with only `actions: write`. For each
+repository-owned key family on `main` (`ccache-`, `conan-`, `editor-pages-`,
+`editor-tools-`, `web-tools-`, `icu-probe-`, `pip-`), it keeps the newest entry and
+deletes the rest. A family is the key without its trailing input and commit
+hashes, so entries left behind by a toolchain or lockfile change are removed too.
+Caches on other refs and action-managed caches (`setup-python-`, `node-cache-`)
+are left alone. Promotion does not depend on this job; a deletion that fails is
+reported as a warning, and the next batch retries it.
+
 ## Analysis and timing
 
 `LUDUS_TIDY_JOBS` sets the maximum number of concurrent native clang-tidy
@@ -645,16 +659,27 @@ configuration suite as two. Declaration order gives each case exactly one shard;
 the existing 600- and 180-second deadlines apply per shard. CTest resource locking
 keeps those GPU and shader-worker owners serial even under a parallel CTest run.
 
-The Linux ASan/UBSan job runs its full CTest suite with one test per runner core
-(`--parallel "$CMAKE_BUILD_PARALLEL_LEVEL"`). Serially, that suite took about
-95 minutes, 83% of it in render-graph, renderer and wave-graph cases on lavapipe.
-Tests that assert wall-clock bounds or record timing evidence are `RUN_SERIAL`, so
-parallel load cannot change their result: the code editor's linear-work and
-search ceilings, hosted-surface frame pacing, and game-host reload latency. A new
-test with such a bound must be `RUN_SERIAL` too; tests that share a device or
-worker owner use `RESOURCE_LOCK`, as the Editor shards do. Other CTest steps
-remain serial. The scheduled batch runs the workflow definitions on `main`, so
-this takes effect after the first promotion that includes it.
+The Linux ASan/UBSan job is a four-way matrix, **ASan and UBSan (1/4)** to
+**(4/4)**. Serially, its CTest suite took 95-100 minutes of a two-hour job, 83% of
+it in render-graph, renderer and wave-graph cases on lavapipe. Each shard builds
+the same sanitized tree (one shard writes the Conan and compiler caches) and runs
+every fourth test with `ctest --tests-information <shard>,,4`, so new tests join
+the rotation without a list to maintain. Within a shard, tests still run one at a
+time: each case keeps a whole runner, so the cold software-shader deadlines above
+see the same CPU as before. Running cases concurrently on one runner would split
+lavapipe's CPU between them instead. With the measured durations, the shards take
+about 20, 21, 31 and 28 minutes of tests.
+
+Shard 1 also uploads the sanitizer-control evidence and runs the S0-S7 scripting,
+L0 ICU and L2 localization sweeps, and `ludus_game_host_reload_tests` with
+`LUDUS_RELOAD_METRICS`. The sharded run excludes that test, so the required reload
+evidence always comes from shard 1. All shards run the sanitizer controls before
+their tests, and the Ubuntu Clang gate requires every shard. Tests that assert
+wall-clock bounds or record timing evidence remain `RUN_SERIAL`, and tests that
+share a device or worker owner use `RESOURCE_LOCK`, as the Editor shards do, so a
+later parallel CTest run keeps their results stable. The scheduled batch runs the
+workflow definitions on `main`, so this takes effect after the first promotion
+that includes it.
 
 The `ludus_editor_tests` build entry point also builds every executable target
 ending in `_tests` in the editor's own CMake directory, including optional preview

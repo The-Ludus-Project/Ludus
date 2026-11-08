@@ -325,6 +325,99 @@ class GitHubTests(unittest.TestCase):
                 batch_ci.validate_sha(value)
 
 
+class CachePruningTests(unittest.TestCase):
+    REF = "refs/heads/main"
+    TOOLS = "1" * 64
+    NEW_TOOLS = "2" * 64
+
+    def entry(self, identifier, key, created, ref=REF, size=1024):
+        return {"id": identifier, "key": key, "created_at": created, "ref": ref, "size_in_bytes": size}
+
+    def test_family_strips_input_and_commit_hashes_of_repository_owned_keys(self):
+        for key, family in (
+                (f"ccache-v2-Linux-X64-linux-clang-asan-ubsan-native-{self.TOOLS}-{CANDIDATE}",
+                 "ccache-v2-Linux-X64-linux-clang-asan-ubsan-native"),
+                (f"conan-macos-v1-macOS-ARM64-native-{self.TOOLS}", "conan-macos-v1-macOS-ARM64-native"),
+                (f"icu-probe-v1-Linux-{self.TOOLS}", "icu-probe-v1-Linux"),
+                ("editor-pages-v1-Linux-", "editor-pages-v1-Linux")):
+            with self.subTest(key=key):
+                self.assertEqual(batch_ci.cache_family(key), family)
+        # Action-managed and unknown caches are never pruned.
+        for key in (f"setup-python-Linux-x64-24.04-Ubuntu-python-3.12-pip-{self.TOOLS}",
+                    f"node-cache-Linux-x64-npm-{self.TOOLS}", "ccache"):
+            with self.subTest(key=key):
+                self.assertIsNone(batch_ci.cache_family(key))
+
+    def test_only_the_newest_entry_of_each_family_on_the_ref_survives(self):
+        prefix = "ccache-v2-Linux-X64-linux-clang-development-"
+        caches = [
+            self.entry(1, f"{prefix}native-{self.TOOLS}-{BASE}", "2026-11-06T03:00:00Z"),
+            self.entry(2, f"{prefix}native-{self.TOOLS}-{CANDIDATE}", "2026-11-07T03:00:00Z"),
+            # A toolchain change leaves the older input hash unreachable too.
+            self.entry(3, f"{prefix}native-{self.NEW_TOOLS}-{LATER}", "2026-11-08T03:00:00Z"),
+            # Another variant is its own family.
+            self.entry(4, f"{prefix}pch-{self.TOOLS}-{BASE}", "2026-11-05T03:00:00Z"),
+            # Other refs and action-managed caches are left alone.
+            self.entry(5, f"{prefix}native-{self.TOOLS}-{BASE}", "2026-11-01T03:00:00Z", ref="refs/heads/topic"),
+            self.entry(6, f"setup-python-Linux-x64-pip-{self.TOOLS}", "2026-11-01T03:00:00Z"),
+            {"id": "7", "key": f"{prefix}native-{self.TOOLS}-{BASE}", "ref": self.REF},
+        ]
+        superseded = batch_ci.select_superseded_caches(caches, self.REF)
+        self.assertEqual([entry["id"] for entry in superseded], [1, 2])
+        # Order of the listing does not matter; equal timestamps keep the higher ID.
+        self.assertEqual([entry["id"] for entry in batch_ci.select_superseded_caches(caches[::-1], self.REF)], [1, 2])
+        tied = [self.entry(9, f"{prefix}native-{self.TOOLS}-{BASE}", "2026-11-07T03:00:00Z"),
+                self.entry(8, f"{prefix}native-{self.TOOLS}-{CANDIDATE}", "2026-11-07T03:00:00Z")]
+        self.assertEqual([entry["id"] for entry in batch_ci.select_superseded_caches(tied, self.REF)], [8])
+
+    def test_pruning_deletes_superseded_entries_and_continues_past_failures(self):
+        prefix = "conan-v3-Linux-X64-linux-clang-debug-"
+        caches = [self.entry(1, f"{prefix}{self.TOOLS}", "2026-11-01T00:00:00Z"),
+                  self.entry(2, f"{prefix}{self.NEW_TOOLS}", "2026-11-02T00:00:00Z"),
+                  self.entry(3, f"{prefix}{'3' * 64}", "2026-11-03T00:00:00Z")]
+        client = mock.Mock()
+
+        def request(path, method="GET", data=None):
+            if method == "GET":
+                self.assertEqual(path, f"actions/caches?ref={self.REF}&per_page=100&page=1")
+                return {"total_count": len(caches), "actions_caches": caches}
+            if path == "actions/caches/1":
+                raise batch_ci.BatchError("GitHub DELETE actions/caches/1 failed with HTTP 404.")
+            return None
+
+        client.request.side_effect = request
+        deleted, failures = batch_ci.prune_caches(client, self.REF)
+        self.assertEqual([entry["id"] for entry in deleted], [2])
+        self.assertEqual(len(failures), 1)
+        self.assertIn(f"{prefix}{self.TOOLS}", failures[0])
+        client.request.assert_any_call("actions/caches/2", "DELETE")
+        summary = batch_ci.describe_pruning(deleted, failures)
+        self.assertIn("Deleted 1 superseded caches", summary)
+        self.assertIn("1 deletions failed", summary)
+
+    def test_pruning_requires_a_branch_ref_and_a_complete_listing(self):
+        client = mock.Mock()
+        for ref in ("", "main", "refs/pull/1/merge", "refs/heads/main&ref=x"):
+            with self.subTest(ref=ref), self.assertRaises(batch_ci.BatchError):
+                batch_ci.prune_caches(client, ref)
+        client.request.assert_not_called()
+        client.request.return_value = {"message": "Resource not accessible"}
+        with self.assertRaises(batch_ci.BatchError):
+            batch_ci.prune_caches(client, self.REF)
+        client.request.return_value = {"total_count": 10**6, "actions_caches": [self.entry(1, "pip-x", "")]}
+        with self.assertRaises(batch_ci.BatchError):
+            batch_ci.list_caches(client, self.REF)
+
+    def test_only_delete_accepts_an_empty_response(self):
+        client = batch_ci.GitHub("example/engine", "test-token")
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b""
+        with mock.patch("urllib.request.urlopen", return_value=response):
+            self.assertIsNone(client.request("actions/caches/1", "DELETE"))
+            with self.assertRaises(ValueError):
+                client.head("develop")
+
+
 class WorkflowContractTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parents[2]
 
@@ -391,6 +484,23 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("actions: write", snapshot)
         promote = workflow.split("\n  promote:\n", 1)[1].split("\n  publish:\n", 1)[0]
         self.assertNotIn("unvalidated", promote)
+
+    def test_cache_pruning_runs_trusted_code_after_every_suite_without_gating_promotion(self):
+        workflow = (self.ROOT / ".github/workflows/batch-ci.yml").read_text()
+        job = workflow.split("\n  prune-caches:\n", 1)[1].split("\n\n  ", 1)[0]
+        dependencies = re.search(r"needs: \[([^\]]+)\]", job)
+        self.assertCountEqual(dependencies.group(1).split(", "), ["snapshot", "recovery", *batch_ci.VALIDATION_JOBS])
+        self.assertIn("    if: always() && needs.snapshot.outputs.should_run == 'true'\n", job)
+        self.assertIn("    permissions:\n      contents: read\n      actions: write\n", job)
+        self.assertNotIn("batch_sha", job)
+        self.assertNotIn("environment:", job)
+        self.assertIn("run: python3 scripts/python/batch_ci.py prune-caches", job)
+        # Neither the cache privilege nor this job reaches candidate execution or promotion.
+        for name in ("promote", *batch_ci.VALIDATION_JOBS):
+            section = workflow.split(f"\n  {name}:\n", 1)[1].split("\n\n  ", 1)[0]
+            with self.subTest(job=name):
+                self.assertNotIn("prune-caches", section)
+                self.assertNotIn("actions: write", section)
 
     def test_publication_explicitly_checks_promotion_after_optional_ancestor_skips(self):
         workflow = (self.ROOT / ".github/workflows/batch-ci.yml").read_text()
