@@ -93,6 +93,7 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
     if (event->button() == Qt::RightButton)
     {
         mObjectInteraction->Cancel();
+        mShouldShowTerrainMenu = getInteractionFrame().contains(getInteractionPosition(event->globalPosition()));
         mIsFlying = true;
         mHeldKeys[BOOST_KEY] = event->modifiers().testFlag(Qt::ShiftModifier);
         mNavigationClock.start();
@@ -132,7 +133,12 @@ void PreviewViewport::mouseReleaseEvent(QMouseEvent* event)
     }
     if (event->button() == Qt::RightButton)
     {
+        const bool shouldShowMenu = mShouldShowTerrainMenu;
         stopNavigation();
+        if (shouldShowMenu == true)
+        {
+            showTerrainMenu(event->globalPosition().toPoint());
+        }
     }
     event->accept();
 }
@@ -142,6 +148,10 @@ void PreviewViewport::mouseMoveEvent(QMouseEvent* event)
     {
         event->accept();
         return;
+    }
+    if (event->globalPosition() != mLastPositionGlobal)
+    {
+        mShouldShowTerrainMenu = false;
     }
     if (mObjectInteraction->Move(getInteractionPosition(event->globalPosition()),
                                  event->modifiers().testFlag(Qt::ShiftModifier)) == true)
@@ -211,6 +221,7 @@ bool PreviewViewport::navigateMouse(float32 deltaX,
     }
     else if (mIsFlying == true && buttons.testFlag(Qt::RightButton) == true)
     {
+        mShouldShowTerrainMenu = false;
         Preview_->Look(deltaX, deltaY);
         recenterPointer();
     }
@@ -366,6 +377,7 @@ void PreviewViewport::keyReleaseEvent(QKeyEvent* event)
 }
 void PreviewViewport::stopNavigation()
 {
+    mShouldShowTerrainMenu = false;
     mObjectInteraction->Cancel();
 #if defined(Q_OS_MACOS)
     mRelativeMouse.Stop();

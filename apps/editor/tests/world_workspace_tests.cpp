@@ -2040,7 +2040,7 @@ TEST_CASE("Move plane handles follow the camera: an oblique view shows all three
     preview.Orbit(70, 90);
     interaction.BuildOverlay(frame, overlay);
     // Three arrowheads, three planes with their casings, and the pivot marker.
-    CHECK(overlay.HandleFills.GetSize() == ViewportObjectOverlay::MAX_HANDLE_FILLS);
+    CHECK(overlay.HandleFills.GetSize() == ViewportObjectOverlay::MAX_TRANSFORM_HANDLE_FILLS);
     ludus::foundation::StaticArray<bool, ViewportObjectInteraction::AXIS_COUNT> hasNormal{};
     ludus::foundation::usize normalCount = 0;
     for (ludus::foundation::usize plane = 0;

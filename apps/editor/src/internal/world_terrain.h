@@ -19,11 +19,12 @@ class WorldDocument;
 /// Generate an indexed, Y-up mesh from one versioned recipe. Failure preserves outMesh.
 [[nodiscard]] bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& outError);
 
-/// Create or update terrain as one edit. An empty key creates a new terrain at the origin.
+/// Create or update terrain as one edit. An empty key uses the draft transform, or the defaults when it is empty.
 [[nodiscard]] bool EditWorldTerrain(WorldDocument& inoutWorld,
                                     const foundation::identity::EntropySource& entropy,
                                     const QString& key,
                                     const QJsonObject& recipe,
                                     QString& outKey,
-                                    QString& outError);
+                                    QString& outError,
+                                    const QJsonObject& draftTransform = {});
 } // namespace ludus::editor

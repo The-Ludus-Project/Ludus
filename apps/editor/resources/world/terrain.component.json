@@ -1,7 +1,7 @@
 {
   "id": "terrain",
   "label": "Terrain",
-  "help": "Generate a finite heightfield with Edit Generation.",
+  "help": "Edit the source of this finite heightfield with Edit Terrain.",
   "required": false,
   "properties": [
     {

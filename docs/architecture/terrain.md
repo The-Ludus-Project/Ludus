@@ -1,9 +1,10 @@
 # Terrain systems architecture
 
 Status: the [World editor](../development/editor-workspace.md#s4-scene-authoring)
-generates bounded heightfield meshes for default Worlds. The
-[viewport authoring workflow](#terrain-authoring-in-the-world-viewport), tiled
-terrain module, streaming renderer, and physics adapter remain proposed. Sizes
+generates bounded heightfield meshes for default Worlds. The first
+[viewport authoring slice](#delivery-and-review-gates) uses the existing recipe
+and mesh. The tiled terrain module, streaming renderer, and physics adapter
+remain proposed. Sizes
 and performance budgets are starting profiles and require measurements on the
 selected targets.
 

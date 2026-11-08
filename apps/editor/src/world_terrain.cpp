@@ -212,7 +212,8 @@ bool EditWorldTerrain(WorldDocument& inoutWorld,
                       const QString& key,
                       const QJsonObject& recipe,
                       QString& outKey,
-                      QString& outError)
+                      QString& outError,
+                      const QJsonObject& draftTransform)
 {
     const QString component = GetTerrainComponentId();
     if (inoutWorld.HasBuiltInTerrain() == false)
@@ -231,8 +232,10 @@ bool EditWorldTerrain(WorldDocument& inoutWorld,
         for (const QJsonValue value : definition.value(QStringLiteral("properties")).toArray())
         {
             const QJsonObject property = value.toObject();
-            transform.insert(property.value(QStringLiteral("id")).toString(),
-                             property.value(QStringLiteral("default")));
+            const QString id = property.value(QStringLiteral("id")).toString();
+            transform.insert(id,
+                             draftTransform.contains(id) == true ? draftTransform.value(id)
+                                                                 : property.value(QStringLiteral("default")));
         }
         return inoutWorld.CreateEntity(entropy,
                                        outError,

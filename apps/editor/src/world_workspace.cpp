@@ -462,13 +462,13 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     }
 
     objectMenu->addSeparator();
-    QAction* generateTerrain = objectMenu->addAction(QStringLiteral("Generate Terrain…"));
+    QAction* generateTerrain = objectMenu->addAction(QStringLiteral("Add Terrain…"));
     generateTerrain->setObjectName(QStringLiteral("worldGenerateTerrain"));
     connect(objectMenu, &QMenu::aboutToShow, generateTerrain, [this, generateTerrain]() {
         generateTerrain->setEnabled(Add_->isEnabled() == true && Document_.HasBuiltInTerrain() == true &&
                                     isSceneWorkerActive() == false);
     });
-    connect(generateTerrain, &QAction::triggered, this, [this]() { showTerrainGenerator(); });
+    connect(generateTerrain, &QAction::triggered, this, [this]() { showTerrainAuthoring(); });
 
     mLightsPanel = new WorldLightsPanel(sections);
     sections->setStretchFactor(0, ENTITY_SECTION_STRETCH);
@@ -724,6 +724,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                   "them. Import scene… copies a scene folder, .zip or .pbrt with its files into the "
                                   "session and cooks it here. Play and runtime binding require the native editor."));
 #endif
+    initializeTerrainAuthoring();
     bindViewportInteraction();
     DraftTimer_.setSingleShot(true);
     DraftTimer_.setInterval(180);
@@ -2074,11 +2075,11 @@ void WorldWorkspace::RenderInspector()
             {
                 QGroupBox* group = new QGroupBox(label);
                 QVBoxLayout* layout = new QVBoxLayout(group);
-                QPushButton* editGeneration = new QPushButton(QStringLiteral("Edit Generation…"), group);
+                QPushButton* editGeneration = new QPushButton(QStringLiteral("Edit Terrain…"), group);
                 editGeneration->setObjectName(QStringLiteral("worldEditTerrainGeneration"));
                 layout->addWidget(editGeneration);
                 connect(editGeneration, &QPushButton::clicked, this, [this, key = Selected_]() {
-                    showTerrainGenerator(key);
+                    showTerrainAuthoring(key);
                 });
                 Inspector_->addWidget(group);
             }
@@ -2500,6 +2501,7 @@ void WorldWorkspace::Changed(const QString& message)
                            GetWorldIntroduction());
     Render_->SetSelection(Selected_, Pending_);
     updateViewportInteraction();
+    updateTerrainActions();
     Q_EMIT DocumentChanged();
 }
 bool WorldWorkspace::readProjectBrdfRoughness(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull)
@@ -2660,7 +2662,7 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
 }
 void WorldWorkspace::PreviewDraft()
 {
-    if (Document_.Loaded() == false)
+    if (Document_.Loaded() == false || isTerrainAuthoringOpen() == true)
     {
         return;
     }
@@ -2919,6 +2921,7 @@ QByteArray WorldWorkspace::RecoveryHeader() const
 }
 void WorldWorkspace::Snapshot()
 {
+    checkTerrainBase();
     RefreshScene();
     Render_->WorldChanged();
     RecoveryFailed_ = Document_.Dirty() && Unsaved_ == false;
@@ -2994,6 +2997,7 @@ bool WorldWorkspace::Recover()
     Selected_.clear();
     mSelectedEntities.clear();
     Render();
+    checkTerrainBase();
     RefreshScene();
     Render_->WorldChanged();
     Changed(QStringLiteral("Recovery restored for review. Save World to publish it."));
@@ -3028,6 +3032,7 @@ bool WorldWorkspace::ConfirmDiscard()
     }
     Pending_ = false;
     Document_.Discard();
+    checkTerrainBase();
     RefreshScene();
     Render_->WorldChanged();
     // Keep a new world marked unsaved until its caller closes/replaces it.
@@ -3151,6 +3156,7 @@ void WorldWorkspace::ResumePreview()
 }
 void WorldWorkspace::StopPreview() noexcept
 {
+    closeTerrainAuthoring(false);
     Render_->Stop();
     Scene_->StopPreview();
 }

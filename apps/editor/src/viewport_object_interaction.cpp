@@ -301,6 +301,20 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
     mCanEdit = mCanEdit == true && hasParent == true;
     Q_EMIT Changed();
 }
+void ViewportObjectInteraction::SetTerrainFootprint(const QJsonObject& recipe)
+{
+    const math::Vector2 extent{static_cast<float32>(recipe.value(QStringLiteral("width")).toDouble()),
+                               static_cast<float32>(recipe.value(QStringLiteral("depth")).toDouble())};
+    const float32 base = static_cast<float32>(recipe.value(QStringLiteral("minimumElevation")).toDouble());
+    if (mTerrainExtent == extent && mTerrainBaseElevation == base)
+    {
+        return;
+    }
+    Cancel();
+    mTerrainExtent = extent;
+    mTerrainBaseElevation = base;
+    Q_EMIT Changed();
+}
 void ViewportObjectInteraction::SetTool(Tool tool)
 {
     Cancel();
@@ -759,8 +773,136 @@ void ViewportObjectInteraction::buildPlaneHandles(const StaticArray<QPointF, AXI
         static_cast<void>(mPlaneHandles.TryAdd(plane));
     }
 }
+math::Vector3 ViewportObjectInteraction::getTerrainHandleMesh(int32 axis) const noexcept
+{
+    const float32 extent = mDragTarget.Kind == HandleKind::TerrainExtent && mDragTarget.Index == axis
+                               ? mTerrainDragExtent
+                           : axis == 0 ? mTerrainExtent.X
+                                       : mTerrainExtent.Y;
+    return axis == 0 ? math::Vector3{extent * 0.5F, mTerrainBaseElevation, 0}
+                     : math::Vector3{0, mTerrainBaseElevation, extent * 0.5F};
+}
+
+ViewportObjectInteraction::HandleTarget ViewportObjectInteraction::pickTerrainHandle(QPointF positionPixel) const
+{
+    if (mCanEdit == false || mTerrainExtent.X <= 0)
+    {
+        return {};
+    }
+    const math::Affine3 meshToWorld = makeTransform(mPlacement);
+    for (const int32 axis : {0, 2})
+    {
+        QPointF handlePixel;
+        if (project(math::TransformPoint(meshToWorld, getTerrainHandleMesh(axis)), handlePixel) == true)
+        {
+            const QPointF deltaPixel = positionPixel - handlePixel;
+            if (QPointF::dotProduct(deltaPixel, deltaPixel) <= HANDLE_HIT_PIXELS * HANDLE_HIT_PIXELS)
+            {
+                return {HandleKind::TerrainExtent, axis};
+            }
+        }
+    }
+    return {};
+}
+
+bool ViewportObjectInteraction::beginTerrainDrag(QPointF positionPixel)
+{
+    const math::Affine3 meshToWorld = makeTransform(mPlacement);
+    mTerrainDragExtent = mDragTarget.Index == 0 ? mTerrainExtent.X : mTerrainExtent.Y;
+    mDragPlaneOriginWorld = math::TransformPoint(meshToWorld, {0, mTerrainBaseElevation, 0});
+    math::Ray3 pressRay;
+    return math::TryNormalize(math::Cross(meshToWorld.Columns[0], meshToWorld.Columns[2]), mDragPlaneNormalWorld) ==
+               math::MathStatus::Success &&
+           math::TryInverse(mWorldToClip, mDragClipToWorld) == math::MathStatus::Success &&
+           TryMakePixelRay(mDragClipToWorld, mFramePixel, positionPixel, pressRay) == true &&
+           TryIntersectPlane(pressRay, mDragPlaneOriginWorld, mDragPlaneNormalWorld, mDragPlaneStartWorld) == true;
+}
+
+void ViewportObjectInteraction::dragTerrainExtent(QPointF positionPixel)
+{
+    math::Ray3 rayWorld;
+    math::Vector3 hitWorld;
+    if (TryMakePixelRay(mDragClipToWorld, mFramePixel, positionPixel, rayWorld) == false ||
+        TryIntersectPlane(rayWorld, mDragPlaneOriginWorld, mDragPlaneNormalWorld, hitWorld) == false)
+    {
+        return;
+    }
+    const math::Vector3 axisWorld = makeTransform(mPlacement).Columns[mDragTarget.Index];
+    const float32 delta = math::Dot(hitWorld - mDragPlaneStartWorld, axisWorld) / math::Dot(axisWorld, axisWorld);
+    const float32 initial = mDragTarget.Index == 0 ? mTerrainExtent.X : mTerrainExtent.Y;
+    const float32 extent = initial + 2 * delta;
+    if (math::IsFinite(extent) == true && extent > 0)
+    {
+        mTerrainDragExtent = extent;
+        Q_EMIT Changed();
+    }
+}
+
+void ViewportObjectInteraction::appendTerrainFootprint(ViewportObjectOverlay& inoutOverlay) const
+{
+    if (mTerrainExtent.X <= 0)
+    {
+        return;
+    }
+    const math::Affine3 meshToWorld = makeTransform(IsDragging() == true ? mCandidate : mPlacement);
+    const float32 halfWidth = getTerrainHandleMesh(0).X;
+    const float32 halfDepth = getTerrainHandleMesh(2).Z;
+    const float32 elevation = mTerrainBaseElevation;
+    constexpr usize CORNER_COUNT = 4;
+    constexpr int32 DASH_COUNT = 10;
+    const StaticArray<math::Vector3, CORNER_COUNT> cornersMesh{{{-halfWidth, elevation, -halfDepth},
+                                                                {halfWidth, elevation, -halfDepth},
+                                                                {halfWidth, elevation, halfDepth},
+                                                                {-halfWidth, elevation, halfDepth}}};
+    for (usize corner = 0; corner < CORNER_COUNT; ++corner)
+    {
+        QLineF linePixel;
+        const math::Vector3 firstWorld = math::TransformPoint(meshToWorld, cornersMesh[corner]);
+        const math::Vector3 secondWorld = math::TransformPoint(meshToWorld, cornersMesh[(corner + 1) % CORNER_COUNT]);
+        const SilhouetteSegment segment
+        {
+            .FirstClip = mWorldToClip * math::Vector4{firstWorld.X, firstWorld.Y, firstWorld.Z, 1},
+            .SecondClip = mWorldToClip * math::Vector4{secondWorld.X, secondWorld.Y, secondWorld.Z, 1},
+        };
+        if (projectSegment(segment, linePixel) == false)
+        {
+            continue;
+        }
+        for (int32 dash = 0; dash < DASH_COUNT; ++dash)
+        {
+            const float64 start = static_cast<float64>(dash) / DASH_COUNT;
+            const float64 end = (static_cast<float64>(dash) + 0.5) / DASH_COUNT;
+            inoutOverlay.OutlineLinesPixel.Add(QLineF(linePixel.pointAt(start), linePixel.pointAt(end)));
+        }
+    }
+    for (const int32 axis : {0, 2})
+    {
+        QPointF positionPixel;
+        if (project(math::TransformPoint(meshToWorld, getTerrainHandleMesh(axis)), positionPixel) == false)
+        {
+            continue;
+        }
+        const HandleTarget target{HandleKind::TerrainExtent, axis};
+        const QPointF offset(HANDLE_HIT_PIXELS * 0.5, HANDLE_HIT_PIXELS * 0.5);
+        const QPointF topRight(offset.x(), -offset.y());
+        ViewportHandleFill fill;
+        fill.CornerCount = ViewportHandleFill::MAX_CORNERS;
+        fill.CornersPixel = {positionPixel - offset,
+                             positionPixel + topRight,
+                             positionPixel + offset,
+                             positionPixel - topRight};
+        fill.Color = getHandleColour(target, axis, false);
+        static_cast<void>(inoutOverlay.HandleFills.TryAdd(fill));
+    }
+}
+
 ViewportObjectInteraction::HandleTarget ViewportObjectInteraction::pickHandle(QPointF positionPixel)
 {
+    const HandleTarget terrain = pickTerrainHandle(positionPixel);
+    if (terrain.IsValid() == true)
+    {
+        return terrain;
+    }
     if (mHasUniformHandle == true && math::Abs(positionPixel.x() - mPivotPixel.x()) <= CENTRE_HIT_HALF_PIXELS &&
         math::Abs(positionPixel.y() - mPivotPixel.y()) <= CENTRE_HIT_HALF_PIXELS)
     {
@@ -881,7 +1023,15 @@ bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outer
         const math::Affine3 meshToWorld = makeTransform(mPlacement);
         mRotationDirection =
             math::Dot(math::Cross(meshToWorld.Columns[0], meshToWorld.Columns[1]), meshToWorld.Columns[2]) < 0 ? -1 : 1;
-        if (target.Kind == HandleKind::Plane && mTool == Tool::Move)
+        if (target.Kind == HandleKind::TerrainExtent)
+        {
+            if (beginTerrainDrag(positionPixel) == false)
+            {
+                Cancel();
+                return true;
+            }
+        }
+        else if (target.Kind == HandleKind::Plane && mTool == Tool::Move)
         {
             if (beginPlaneDrag(positionPixel) == false)
             {
@@ -1035,6 +1185,9 @@ bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
     bool isValueUsable = false;
     switch (mDragTarget.Kind)
     {
+        case HandleKind::TerrainExtent:
+            dragTerrainExtent(positionPixel);
+            return true;
         case HandleKind::Plane:
             isValueUsable = dragPlane(positionPixel, shouldSnap, values);
             break;
@@ -1061,10 +1214,20 @@ bool ViewportObjectInteraction::Release()
     {
         return false;
     }
+    const HandleTarget target = mDragTarget;
     const QJsonObject candidate = mCandidate;
     mDragTarget = {};
     mReadoutText.clear();
-    if (candidate != mPlacement)
+    if (target.Kind == HandleKind::TerrainExtent)
+    {
+        const float32 initial = target.Index == 0 ? mTerrainExtent.X : mTerrainExtent.Y;
+        if (mTerrainDragExtent != initial)
+        {
+            Q_EMIT TerrainExtentCommitted(target.Index == 0 ? QStringLiteral("width") : QStringLiteral("depth"),
+                                          static_cast<float64>(mTerrainDragExtent));
+        }
+    }
+    else if (candidate != mPlacement)
     {
         Q_EMIT PlacementCommitted(mSelected, candidate);
     }
@@ -1161,7 +1324,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
     const RenderScene& scene = mPreviewOrNull->Scene();
     for (const PreviewObject& object : scene.Objects)
     {
-        if (object.Id != mSelected || object.Mesh < 0 || object.Mesh >= scene.Meshes.size())
+        if (mTerrainExtent.X > 0 || object.Id != mSelected || object.Mesh < 0 || object.Mesh >= scene.Meshes.size())
         {
             continue;
         }
@@ -1223,6 +1386,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
     {
         appendPlaneGeometry(plane, outOverlay);
     }
+    appendTerrainFootprint(outOverlay);
     if (mHasUniformHandle == true)
     {
         // The centre handle takes the pivot's place, so the scale tool has one marker at its origin.
