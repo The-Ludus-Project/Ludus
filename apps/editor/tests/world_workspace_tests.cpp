@@ -18,6 +18,7 @@
 #include "internal/world_entity_search.h"
 #include "internal/world_lighting_coverage.h"
 #include "internal/world_lights_panel.h"
+#include "internal/world_probe_volume.h"
 #include "internal/world_workspace.h"
 #include "scene_fixture.h"
 #include <QCheckBox>
@@ -2870,6 +2871,57 @@ TEST_CASE("The World inspector offers an explicit always-on bake for a static li
     REQUIRE(RenderScene::Load(root, workspace.Document(), optedOut, error) == true);
     CHECK(optedOut.AlwaysOnLightIds.isEmpty() == true);
     CHECK(optedOut.AuthoredLights.Count == 1);
+    workspace.StopPreview();
+}
+
+TEST_CASE("The World inspector bakes one authored GI volume for marked receivers", "[editor][world][probe-gi]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString receiver;
+    QString volume;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), receiver, error) == true);
+    REQUIRE(document.Attach(receiver, error, GetGiProbeReceiverComponentId()) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("GI Probe Volume"), volume, error) == true);
+    const QJsonObject original = document.Draft();
+    QString duplicate;
+    CHECK(CreateWorldObject(document, entropy, QStringLiteral("GI Probe Volume"), duplicate, error) == false);
+    CHECK(document.Draft() == original);
+    CHECK(error.contains(QStringLiteral("one GI Probe Volume")) == true);
+
+    const QString path = QDir(root).filePath(QStringLiteral("probe-gi.world.json"));
+    Write(path, document.Encode());
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.SelectEntity(volume) == true);
+    RenderScene before;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), before, error) == true);
+    CHECK(before.ProbeGrid.Counts[0] == 0);
+    CHECK(before.GiProbeReceiverIds == QVector<ludus::foundation::uint64>{ComputeEntitySourceId(receiver)});
+    QPushButton* bakeOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldBakeGi"));
+    REQUIRE(bakeOrNull != nullptr);
+    REQUIRE(bakeOrNull->isEnabled() == true);
+    bakeOrNull->click();
+
+    RenderScene after;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), after, error) == true);
+    CHECK(after.ProbeGrid.Counts[0] > 0);
+    CHECK(after.ProbeGrid.Spacing == 1);
+    CHECK(after.GiProbeReceiverIds == before.GiProbeReceiverIds);
+    CHECK(preview_lighting::MakeKey(after) != preview_lighting::MakeKey(before));
+    workspace.Undo();
+    RenderScene undone;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), undone, error) == true);
+    CHECK(undone.ProbeGrid.Counts[0] == 0);
     workspace.StopPreview();
 }
 

@@ -14,6 +14,7 @@
 #include <atomic>
 #include <new>
 
+#include "internal/probe_volume.h"
 #include "internal/reference_data.h"
 
 namespace ludus::graphics::renderer
@@ -91,6 +92,9 @@ struct StaticLightingBake::State final
     Array<ChartRecord> Charts;
     uint32 Triangle = 0;
     uint32 Sample = 0;
+    internal::ProbeVolumeBake ProbeVolume;
+    uint32 ProbeIndex = 0;
+    uint32 ProbeSample = 0;
     Status Progress = Status::Pending;
     // Scheduled mode. The prepare job and ranges reach State through context pointers.
     const resources::SceneDefinition* SceneOrNull = nullptr;
@@ -228,6 +232,17 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
     {
         return Status::CapacityExceeded;
     }
+    if (IsGiProbeGridValid(description.ProbeGrid) == false ||
+        (internal::CountGiProbes(description.ProbeGrid) != 0 && ShouldBakeSelectedLights == false))
+    {
+        return Status::InvalidDescription;
+    }
+    const Status volumeStatus =
+        ProbeVolume.Initialize(description.ProbeGrid, description.CpuByteBudget - requiredBytes);
+    if (volumeStatus != Status::Ready)
+    {
+        return volumeStatus;
+    }
     State* state = this;
     state->Description = description;
     state->Description.Surfaces = {};
@@ -351,6 +366,11 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
             return Status::OutOfMemory;
         }
         const bool hasOverride = description.Surfaces.IsEmpty() == false;
+        if (hasOverride == true && description.Surfaces[objectIndex].ShouldExcludeFromBake == true)
+        {
+            triangleIndex += static_cast<uint32>(instance.TriangleCount);
+            continue;
+        }
         const uint32 textureIndex = hasOverride == true ? description.Surfaces[objectIndex].Texture : material.Texture;
         surface.Bsdf = {material.Reflectance, material.Metallic, material.Roughness, material.Scattering};
         surface.Emission = material.Emission;
@@ -562,7 +582,8 @@ Status StaticLightingBake::Step(uint32 maxPathSamples) noexcept
     {
         return state.Progress;
     }
-    for (uint32 i = 0; i < maxPathSamples && state.Triangle < state.Job.Scene.Triangles.GetSize(); ++i)
+    uint32 remaining = maxPathSamples;
+    for (; remaining != 0 && state.Triangle < state.Job.Scene.Triangles.GetSize(); --remaining)
     {
         if (IsCollapsed(state.Job.Scene.Triangles[state.Triangle]) == true)
         {
@@ -594,7 +615,24 @@ Status StaticLightingBake::Step(uint32 maxPathSamples) noexcept
             ++state.Triangle;
         }
     }
-    if (state.Triangle < state.Job.Scene.Triangles.GetSize())
+    const uint32 probeCount = internal::CountGiProbes(state.Description.ProbeGrid);
+    for (; remaining != 0 && state.ProbeIndex < probeCount; --remaining)
+    {
+        const Status status =
+            state.ProbeVolume.Accumulate(state.Job, state.Job.Info, state.ProbeIndex, state.ProbeSample);
+        if (status != Status::Ready)
+        {
+            state.Progress = status;
+            return status;
+        }
+        ++state.ProbeSample;
+        if (state.ProbeSample == internal::GI_PROBE_SAMPLES)
+        {
+            state.ProbeSample = 0;
+            ++state.ProbeIndex;
+        }
+    }
+    if (state.Triangle < state.Job.Scene.Triangles.GetSize() || state.ProbeIndex < probeCount)
     {
         return Status::Pending;
     }
@@ -652,7 +690,7 @@ Status StaticLightingBake::State::EncodeCharts() noexcept
             }
         }
     }
-    return Status::Ready;
+    return ProbeVolume.Encode();
 }
 Status StaticLightingBake::GetChart(usize objectIndex, StaticLightingChart& outChart) const noexcept
 {
@@ -684,6 +722,18 @@ Status StaticLightingBake::GetChart(usize objectIndex, StaticLightingChart& outC
     };
     return Status::Ready;
 }
+Status StaticLightingBake::GetProbeAtlas(StaticGiProbeAtlas& outAtlas) const noexcept
+{
+    if (mStateOrNull == nullptr)
+    {
+        return Status::InvalidState;
+    }
+    if (mStateOrNull->Progress != Status::Ready)
+    {
+        return mStateOrNull->Progress == Status::Pending ? Status::NotReady : mStateOrNull->Progress;
+    }
+    return mStateOrNull->ProbeVolume.GetAtlas(outAtlas);
+}
 Status StaticLightingBake::Submit(threading::JobSystem& inoutSystem,
                                   const resources::SceneDefinition& scene,
                                   const StaticLightingBakeDescription& description,
@@ -695,7 +745,9 @@ Status StaticLightingBake::Submit(threading::JobSystem& inoutSystem,
     }
     const uint32 rangeCount = schedule.RangeCount;
     if (rangeCount == 0 || rangeCount > MAX_STATIC_LIGHTING_RANGES || description.Surfaces.IsValid() == false ||
-        description.AnalyticLightIds.IsValid() == false || description.AnalyticLightIds.GetSize() > format::MAX_LIGHTS)
+        description.AnalyticLightIds.IsValid() == false ||
+        description.AnalyticLightIds.GetSize() > format::MAX_LIGHTS ||
+        IsGiProbeGridValid(description.ProbeGrid) == false)
     {
         return Status::InvalidDescription;
     }
@@ -733,7 +785,8 @@ Status StaticLightingBake::Submit(threading::JobSystem& inoutSystem,
             triangleCount += scene.Meshes[object.Mesh].Indices.GetSize() / TRIANGLE_CORNERS;
         }
     }
-    state->TotalSamples = triangleCount * description.SamplesPerTriangle;
+    state->TotalSamples = triangleCount * description.SamplesPerTriangle +
+                          uint64{internal::CountGiProbes(description.ProbeGrid)} * internal::GI_PROBE_SAMPLES;
     threading::JobGraph& graph = state->Graph;
     threading::JobHandle prepare;
     // Labels name the jobs in profiler traces of the system (see job_profiling.hpp).
@@ -828,8 +881,11 @@ void StaticLightingBake::GetProgress(StaticLightingBakeProgress& outProgress) co
         return;
     }
     const uint64 samples = state.Description.SamplesPerTriangle;
-    outProgress.CompletedSamples = uint64(state.Triangle) * samples + state.Sample;
-    outProgress.TotalSamples = uint64(state.Job.Scene.Triangles.GetSize()) * samples;
+    outProgress.CompletedSamples = uint64(state.Triangle) * samples + state.Sample +
+                                   uint64{state.ProbeIndex} * internal::GI_PROBE_SAMPLES + state.ProbeSample;
+    outProgress.TotalSamples =
+        uint64(state.Job.Scene.Triangles.GetSize()) * samples +
+        uint64{internal::CountGiProbes(state.Description.ProbeGrid)} * internal::GI_PROBE_SAMPLES;
 }
 Status StaticLightingBake::GetProfile(StaticLightingBakeProfile& outProfile) const noexcept
 {
@@ -958,6 +1014,33 @@ threading::JobOutcome StaticLightingBake::State::RunRange(void* context) noexcep
         {
             state.Irradiance[triangle] = sum;
             completed.store(completed.load(std::memory_order_relaxed) + samples, std::memory_order_relaxed);
+        }
+    }
+    const uint64 probeCount = internal::CountGiProbes(state.Description.ProbeGrid);
+    const uint32 firstProbe = static_cast<uint32>(probeCount * range.Index / rangeCount);
+    const uint32 lastProbe = static_cast<uint32>(probeCount * (uint64{range.Index} + 1) / rangeCount);
+    for (uint32 probe = firstProbe; probe < lastProbe && outcome == threading::JobOutcome::Succeeded; ++probe)
+    {
+        for (uint32 sample = 0; sample < internal::GI_PROBE_SAMPLES; ++sample)
+        {
+            if (state.ShouldStop.load(std::memory_order_relaxed) == true)
+            {
+                range.Result = Status::NotReady;
+                outcome = threading::JobOutcome::Cancelled;
+                break;
+            }
+            range.Result = state.ProbeVolume.Accumulate(state.Job, range.Info, probe, sample);
+            if (range.Result != Status::Ready)
+            {
+                outcome = threading::JobOutcome::Failed;
+                state.RequestStop();
+                break;
+            }
+        }
+        if (outcome == threading::JobOutcome::Succeeded)
+        {
+            completed.store(completed.load(std::memory_order_relaxed) + internal::GI_PROBE_SAMPLES,
+                            std::memory_order_relaxed);
         }
     }
     range.EndTicks = time::NowTicks();

@@ -705,6 +705,86 @@ RenderScene MakeLightingScene(LightingReceiverDefect defect = LightingReceiverDe
     }
     return scene;
 }
+RenderScene MakeGiProbeScene(float32 receiverX)
+{
+    using ludus::resources::SceneDefinition;
+    using ludus::resources::SceneLight;
+    SharedPtr<SceneDefinition> definition;
+    REQUIRE(TryMakeShared<SceneDefinition>(GetSystemAllocationDomain(), definition) == OwnershipStatus::Ok);
+    SceneDefinition& data = *definition;
+    constexpr uint32 FLOOR = 0;
+    constexpr uint32 WALL = 1;
+    constexpr uint32 RECEIVER = 2;
+    constexpr uint32 OBJECT_COUNT = RECEIVER + 1;
+    constexpr uint64 FIRST_SOURCE = 110;
+    REQUIRE(data.Meshes.TryResize(OBJECT_COUNT) == true);
+    REQUIRE(data.Materials.TryResize(OBJECT_COUNT) == true);
+    REQUIRE(data.Objects.TryResize(OBJECT_COUNT) == true);
+    AddLightingQuad(data.Meshes[FLOOR], -2, -2, 4, 0, false);
+    AddLightingQuad(data.Meshes[WALL], -2, 0, 4, 0, false);
+    for (math::Vector3& positionMesh : data.Meshes[WALL].Positions)
+    {
+        positionMesh = {0, positionMesh.Z, positionMesh.X};
+    }
+    for (math::Vector3& normalMesh : data.Meshes[WALL].Normals)
+    {
+        normalMesh = {1, 0, 0};
+    }
+    AddLightingQuad(data.Meshes[RECEIVER], -.25F, -.25F, .5F, 0, false);
+    for (math::Vector3& positionMesh : data.Meshes[RECEIVER].Positions)
+    {
+        positionMesh = {positionMesh.X, -positionMesh.Z, 0};
+    }
+    for (math::Vector3& normalMesh : data.Meshes[RECEIVER].Normals)
+    {
+        normalMesh = {0, 0, 1};
+    }
+    data.Objects[RECEIVER].Transform.Translation = {receiverX, .8F, .45F};
+    data.Eye = {0, 2, 5};
+    data.Target = {0, .8F, 0};
+    data.Up = {0, 1, 0};
+    REQUIRE(data.Lights.TryResize(1) == true);
+    SceneLight& light = data.Lights[0];
+    light.SourceId = FIRST_SOURCE + OBJECT_COUNT;
+    light.Kind = ludus::resources::SceneLightKind::Point;
+    light.PositionWorld = {-1, 1.4F, 0};
+    light.IntensityRgb = {15, 0, 0};
+    light.Range = 6;
+
+    RenderScene scene;
+    scene.LogicalId = QStringLiteral("level/gi-probe-fixture");
+    scene.Identity = QByteArrayLiteral("gi-probe-fixture/") + QByteArray::number(static_cast<float64>(receiverX));
+    scene.AssetsIdentity = QByteArrayLiteral("gi-probe-assets");
+    scene.Lit = true;
+    scene.Center = data.Target;
+    scene.Radius = 4;
+    scene.Meshes.resize(OBJECT_COUNT);
+    scene.Surfaces.resize(OBJECT_COUNT);
+    for (uint32 index = 0; index < OBJECT_COUNT; ++index)
+    {
+        ludus::resources::SceneObject& source = data.Objects[index];
+        source.Mesh = index;
+        source.Material = index;
+        source.SourceId = FIRST_SOURCE + index;
+        PreviewObject object;
+        object.Id = QString::number(source.SourceId);
+        object.Transform = source.Transform;
+        object.Mesh = static_cast<int32>(index);
+        object.Surface = static_cast<int32>(index);
+        scene.Objects.append(object);
+        scene.Surfaces[index].Tint = index == WALL ? math::Vector4{0, 0, 0, 1} : math::Vector4{.7F, .7F, .7F, 1};
+        scene.Surfaces[index].Roughness = 1;
+    }
+    QString error;
+    REQUIRE(RenderScene::LoadCookedLights(data, scene.AuthoredLights, error) == true);
+    scene.AlwaysOnLightIds.append(light.SourceId);
+    scene.GiProbeReceiverIds.append(data.Objects[RECEIVER].SourceId);
+    scene.ProbeGrid.OriginWorld = {-1.5F, .3F, -.75F};
+    scene.ProbeGrid.Spacing = 1.5F;
+    scene.ProbeGrid.Counts = {3, 2, 2};
+    scene.Definition = Move(definition);
+    return scene;
+}
 } // namespace
 
 TEST_CASE("Native Lit viewport renders thirteen shadowed area patches without baking", "[.render-native][lighting]")
@@ -862,6 +942,57 @@ TEST_CASE("Native Lit viewport publishes an opted-in always-on bake and falls ba
     REQUIRE(waitForBakeStatus(QStringLiteral("Using realtime lighting")) == true);
     REQUIRE(Frames(preview, preview.Frames() + 2) == true);
     CHECK(ReadViewport().isNull() == false);
+    preview.Stop();
+}
+
+TEST_CASE("Native Lit probe GI follows a receiver and rejects bounce through a wall",
+          "[.render-native][lighting][probe-gi]")
+{
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(320, 240);
+    viewport.show();
+    const RenderScene litRoom = MakeGiProbeScene(-.75F);
+    REQUIRE(preview.SetScene(litRoom) == true);
+    preview.SetShading(PreviewShading::Lit);
+    REQUIRE(preview.Start() == true);
+
+    const auto sampleReceiver = [&preview]() {
+        constexpr int64 BAKE_DEADLINE_MILLISECONDS = 15000;
+        constexpr int32 POLL_MILLISECONDS = 10;
+        QElapsedTimer timer;
+        timer.start();
+        while (preview.Status().contains(QStringLiteral("probe GI baked")) == false &&
+               timer.elapsed() < BAKE_DEADLINE_MILLISECONDS)
+        {
+            QTest::qWait(POLL_MILLISECONDS);
+        }
+        INFO(preview.Status().toStdString());
+        REQUIRE(preview.Status().contains(QStringLiteral("probe GI baked")) == true);
+        REQUIRE(Frames(preview, preview.Frames() + 2) == true);
+        const QImage image = ReadViewport();
+        REQUIRE(image.isNull() == false);
+        ludus::graphics::renderer::ViewDescription view;
+        QString error;
+        REQUIRE(preview.DescribeView(static_cast<uint32>(image.width()),
+                                     static_cast<uint32>(image.height()),
+                                     view,
+                                     error) == true);
+        const math::Vector3 centreWorld = preview.Scene().Objects.last().Transform.Translation;
+        const math::Vector4 clip = view.WorldToClip * math::Vector4{centreWorld.X, centreWorld.Y, centreWorld.Z, 1};
+        const QPoint positionPixel(
+            static_cast<int32>((clip.X / clip.W * .5F + .5F) * static_cast<float32>(image.width())),
+            static_cast<int32>((.5F - clip.Y / clip.W * .5F) * static_cast<float32>(image.height())));
+        REQUIRE(image.rect().contains(positionPixel) == true);
+        return image.pixelColor(positionPixel);
+    };
+    const QColor lit = sampleReceiver();
+    const RenderScene darkRoom = MakeGiProbeScene(.75F);
+    REQUIRE(preview.SetScene(darkRoom) == true);
+    const QColor dark = sampleReceiver();
+    CAPTURE(lit.red(), lit.green(), dark.red(), dark.green());
+    CHECK(lit.red() > lit.green() + 15);
+    CHECK(dark.red() <= dark.green() + 3);
     preview.Stop();
 }
 

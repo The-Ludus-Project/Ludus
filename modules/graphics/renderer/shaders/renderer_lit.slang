@@ -309,6 +309,68 @@ float3 EvaluateEnvironmentIrradiance(in float3 normalWorld)
         irradiance += material.IrradianceSh[coefficient].rgb * basis[coefficient];
     return max(irradiance, float3(0));
 }
+#    ifndef LUDUS_DEFERRED_MESH_LIGHTS
+#        include "probe_volume_layout.h"
+float4 ReadGiProbeTexel(int probe, int texel)
+{
+    int index = probe * LUDUS_GI_PROBE_TEXELS + texel;
+    return bakeTexture.Load(int3(index % LUDUS_GI_PROBE_ATLAS_WIDTH, index / LUDUS_GI_PROBE_ATLAS_WIDTH, 0));
+}
+
+bool IsGiProbeVisible(int probe, in float3 offsetWorldInCells)
+{
+    float3 magnitude = abs(offsetWorldInCells);
+    int axis = magnitude.x >= magnitude.y && magnitude.x >= magnitude.z ? 0 : (magnitude.y >= magnitude.z ? 1 : 2);
+    float distanceInCells = magnitude[axis];
+    if (distanceInCells == 0)
+        return true;
+    int face = 2 * axis + (offsetWorldInCells[axis] < 0 ? 1 : 0);
+    float2 directionUv = float2(offsetWorldInCells[(axis + 1) % 3], offsetWorldInCells[(axis + 2) % 3]);
+    int2 texel = min(int2((directionUv / distanceInCells * 0.5 + 0.5) * LUDUS_GI_PROBE_FACE_WIDTH),
+                     LUDUS_GI_PROBE_FACE_WIDTH - 1);
+    int faceTexel = face * LUDUS_GI_PROBE_FACE_TEXELS + texel.y * LUDUS_GI_PROBE_FACE_WIDTH + texel.x;
+    float depthInCells = ReadGiProbeTexel(probe, LUDUS_GI_PROBE_FACES + faceTexel).x * LUDUS_GI_PROBE_DEPTH_CELLS;
+    // In cell units, covers UNORM quantization and avoids rejecting a receiver on the recorded surface.
+    static const float DEPTH_BIAS_CELLS = 0.03125;
+    return distanceInCells <= depthInCells + DEPTH_BIAS_CELLS;
+}
+
+float3 EvaluateGiProbeIrradiance(in float3 positionWorld, in float3 normalWorld)
+{
+    int3 counts = int3(material.BakeUv.xyz);
+    float3 positionInGrid = (positionWorld - material.BakeScale.xyz) * -material.BakeScale.w;
+    if (any(positionInGrid < 0) || any(positionInGrid > counts - 1))
+        return float3(0);
+    int3 first = min(int3(positionInGrid), counts - 2);
+    float3 fraction = positionInGrid - first;
+    float3 cosineSquared = normalWorld * normalWorld;
+    int3 faces = int3(normalWorld.x < 0 ? 1 : 0, normalWorld.y < 0 ? 3 : 2, normalWorld.z < 0 ? 5 : 4);
+    float3 sum = float3(0);
+    float totalWeight = 0;
+    for (int z = 0; z < 2; ++z)
+        for (int y = 0; y < 2; ++y)
+            for (int x = 0; x < 2; ++x)
+            {
+                int3 offset = int3(x, y, z);
+                int3 cell = first + offset;
+                int probe = cell.x + counts.x * (cell.y + counts.y * cell.z);
+                float3 weights = lerp(1 - fraction, fraction, float3(offset));
+                float weight = weights.x * weights.y * weights.z;
+                if (weight > 0 && IsGiProbeVisible(probe, positionInGrid - cell))
+                {
+                    float4 irradianceX = ReadGiProbeTexel(probe, faces.x);
+                    if (irradianceX.a > 0)
+                    {
+                        sum += weight * (irradianceX.rgb * cosineSquared.x +
+                                         ReadGiProbeTexel(probe, faces.y).rgb * cosineSquared.y +
+                                         ReadGiProbeTexel(probe, faces.z).rgb * cosineSquared.z);
+                        totalWeight += weight;
+                    }
+                }
+            }
+    return totalWeight > 0 ? sum * (material.BakeUv.w / totalWeight) : float3(0);
+}
+#    endif
 float2 EvaluateEnvironmentDfg(float roughness, float cosineView)
 {
     float4 coefficients = roughness * float4(-1, -.0275, -.572, .022) + float4(1, .0425, 1.04, -.04);
@@ -542,6 +604,12 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
             material.BakeScale.rgb;
         irradiance = irradiance * material.BakeScale.w + bakedIrradiance;
     }
+#    ifdef LUDUS_AUTHORED_INPUTS
+    else if (material.BakeScale.w < 0)
+    {
+        irradiance += EvaluateGiProbeIrradiance(input.PositionWorld, normalWorld);
+    }
+#    endif
 #endif
     float3 result = surface.Emission;
     if (nv > 0)

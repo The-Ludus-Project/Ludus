@@ -7,6 +7,7 @@
 #include "internal/preview_viewport.h"
 #include "internal/render_scene.h"
 #include "internal/world_entity_search.h"
+#include "internal/world_probe_volume.h"
 
 #include "internal/controller.h"
 #include "internal/editor_files.h"
@@ -423,7 +424,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                   QStringLiteral("Spot Light"),
                                   QStringLiteral("Directional Light"),
                                   QStringLiteral("Sun"),
-                                  QStringLiteral("Luminaire")})
+                                  QStringLiteral("Luminaire"),
+                                  QStringLiteral("GI Probe Volume")})
     {
         QAction* action = objectMenu->addAction(preset);
         action->setObjectName(QStringLiteral("worldCreate") + QString(preset).remove(QLatin1Char(' ')));
@@ -2341,6 +2343,25 @@ void WorldWorkspace::RenderInspector()
                 connect(bakeOrNull, &QCheckBox::toggled, group, refresh);
                 connect(enabledOrNull, &QCheckBox::toggled, group, refresh);
                 refresh();
+            }
+        }
+        if (IsBuiltInWorld(Document_) == true && cid == GetGiProbeVolumeComponentId())
+        {
+            QCheckBox* enabledOrNull =
+                qobject_cast<QCheckBox*>(Fields_.value(FieldKey(cid, QStringLiteral("enabled"))));
+            if (enabledOrNull != nullptr)
+            {
+                QPushButton* bake = new QPushButton(QStringLiteral("Bake GI"), group);
+                bake->setObjectName(QStringLiteral("worldBakeGi"));
+                bake->setEnabled(enabledOrNull->isChecked() == false);
+                connect(enabledOrNull, &QCheckBox::toggled, bake, [bake](bool isEnabled) {
+                    bake->setEnabled(isEnabled == false);
+                });
+                connect(bake, &QPushButton::clicked, group, [this, enabledOrNull]() {
+                    enabledOrNull->setChecked(true);
+                    static_cast<void>(Apply());
+                });
+                rows->addRow(bake);
             }
         }
         if (component.value(QStringLiteral("required")).toBool())

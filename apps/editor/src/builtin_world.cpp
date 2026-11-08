@@ -1,6 +1,7 @@
 #include "internal/builtin_world.h"
 #include "internal/render_scene_limits.h"
 #include "internal/world_document.h"
+#include "internal/world_probe_volume.h"
 
 #include <QFile>
 #include <QJsonArray>
@@ -121,6 +122,17 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
     {
         outError = QStringLiteral("Geometry and light presets require the default World schema.");
         return false;
+    }
+    if (preset == QStringLiteral("GI Probe Volume"))
+    {
+        const QString component = GetGiProbeVolumeComponentId();
+        return inoutWorld.CreateEntity(
+            entropy,
+            outError,
+            preset,
+            outId,
+            QJsonObject{{QStringLiteral("transform"), MakeDefaultValues(inoutWorld, QStringLiteral("transform"))},
+                        {component, MakeDefaultValues(inoutWorld, component)}});
     }
     const bool isGeometry =
         preset == QStringLiteral("Cube") || preset == QStringLiteral("Plane") || preset == QStringLiteral("Sphere");
