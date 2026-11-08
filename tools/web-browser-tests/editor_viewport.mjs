@@ -53,6 +53,12 @@ async function open(page) {
   page.on('pageerror', error => report.errors.push(error.message));
   await page.goto(base, {waitUntil: 'domcontentloaded'});
   await page.waitForFunction(() => document.body.dataset.editorState === 'ready', null, {timeout: 60000});
+  // A fresh profile has no stored keymap, so the editor first asks for one in a modal
+  // window. Its title is DOM text; Enter accepts the default Ludus keymap.
+  const keymapChooser = page.getByText('Choose a keymap', {exact: true});
+  await keymapChooser.waitFor({timeout: 30000});
+  await page.keyboard.press('Enter', {delay: 50});
+  await keymapChooser.waitFor({state: 'hidden', timeout: 10000});
   // Fixed desktop acceptance geometry. Qt controls are canvas-drawn, without DOM locators.
   await click(page, 446, 195); // World tab.
   await click(page, 784, 297); // New World.
