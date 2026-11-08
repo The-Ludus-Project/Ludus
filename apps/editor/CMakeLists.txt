@@ -475,6 +475,10 @@ set(editor_profiling_sources
     src/internal/profiling_panel.h src/profiling_panel.cpp
     src/main_window_profiling.cpp)
 
+# The tree-sitter runtime for the syntax service (ADR 0026), built natively and for the browser.
+include(cmake/EditorTreeSitter.cmake)
+ludus_editor_add_tree_sitter()
+
 # Reusable private text presentation and async native assistance; no renderer link.
 add_library(ludus_editor_code STATIC
     src/internal/code_navigation.h src/code_navigation.cpp src/internal/mouse_history_buttons.h
@@ -529,6 +533,8 @@ target_link_libraries(ludus_editor_code PUBLIC Qt6::Widgets Ludus::FoundationCon
     PRIVATE Ludus::FoundationBase Ludus::FoundationProfiling Ludus::FoundationStrings)
 # LUSL coloring and formatting use the LUSL compiler library in process, natively and in the browser.
 target_link_libraries(ludus_editor_code PRIVATE Ludus::ShaderLanguage)
+# The syntax service's parsers; tree-sitter types stay inside the editor's syntax worker.
+target_link_libraries(ludus_editor_code PRIVATE ludus_editor_tree_sitter)
 if(NOT EMSCRIPTEN)
     target_link_libraries(ludus_editor_code PRIVATE Qt6::Concurrent)
 endif()
@@ -1045,7 +1051,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set_tests_properties(ludus_editor_accessibility_tests PROPERTIES LABELS "unit;editor;native;accessibility"
             TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=cocoa")
     endif()
-    add_executable(ludus_code_editor_tests tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp tests/code_language_registry_tests.cpp tests/code_latency_probe_tests.cpp tests/code_file_document_tests.cpp tests/code_edit_set_tests.cpp tests/code_document_registry_tests.cpp tests/code_recovery_journal_tests.cpp tests/code_editor_area_tests.cpp tests/code_status_bar_tests.cpp tests/script_code_document_tests.cpp tests/code_multi_cursor_tests.cpp tests/code_find_overlay_tests.cpp tests/code_search_tests.cpp tests/code_pairs_tests.cpp tests/code_keymap_tests.cpp tests/code_editor_benchmark.cpp)
+    add_executable(ludus_code_editor_tests tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp tests/code_language_registry_tests.cpp tests/code_latency_probe_tests.cpp tests/code_file_document_tests.cpp tests/code_edit_set_tests.cpp tests/code_document_registry_tests.cpp tests/code_recovery_journal_tests.cpp tests/code_editor_area_tests.cpp tests/code_status_bar_tests.cpp tests/script_code_document_tests.cpp tests/code_multi_cursor_tests.cpp tests/code_find_overlay_tests.cpp tests/code_search_tests.cpp tests/code_pairs_tests.cpp tests/code_keymap_tests.cpp tests/code_syntax_runtime_tests.cpp tests/code_editor_benchmark.cpp)
     target_include_directories(ludus_code_editor_tests PRIVATE src)
     target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
     configure_file(tests/formatter_fixture.py generated/formatter_fixture.py COPYONLY)
@@ -1056,7 +1062,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     target_compile_definitions(ludus_code_editor_tests PRIVATE
         "LUDUS_FORMATTER_FIXTURE=\"${CMAKE_CURRENT_BINARY_DIR}/generated/formatter_fixture.py\"")
     target_link_libraries(ludus_code_editor_tests PRIVATE ludus_editor_code Qt6::Test
-        Ludus::FoundationBase Catch2::Catch2)
+        Ludus::FoundationBase Catch2::Catch2 ludus_editor_tree_sitter)
     ludus_apply_project_defaults(ludus_code_editor_tests)
     ludus_enable_test_exceptions(ludus_code_editor_tests)
     add_test(NAME ludus_code_editor_tests COMMAND ludus_code_editor_tests)
