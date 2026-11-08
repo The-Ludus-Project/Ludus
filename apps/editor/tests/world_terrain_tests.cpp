@@ -16,9 +16,11 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
@@ -113,6 +115,132 @@ TEST_CASE("Terrain extraction is seeded, resolution independent and safe at the 
     CHECK(world.Draft() == applied);
 }
 
+TEST_CASE("A grayscale heightmap keeps its sample orientation and persists without the PNG", "[editor][world][terrain]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString path = directory.filePath(QStringLiteral("heightmap.png"));
+    QImage image(3, 2, QImage::Format_Grayscale16);
+    foundation::uint16* top = reinterpret_cast<foundation::uint16*>(image.scanLine(0));
+    foundation::uint16* bottom = reinterpret_cast<foundation::uint16*>(image.scanLine(1));
+    top[0] = 0;
+    top[1] = 32768;
+    top[2] = 65535;
+    bottom[0] = 65535;
+    bottom[1] = 16384;
+    bottom[2] = 0;
+    REQUIRE(image.save(path) == true);
+
+    QJsonObject heightmap;
+    QString error;
+    REQUIRE(ImportTerrainHeightmap(path, heightmap, error) == true);
+    const QJsonArray rows = heightmap.value(QStringLiteral("rows")).toArray();
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].toArray() == QJsonArray{0, 32768, 65535});
+    CHECK(rows[1].toArray() == QJsonArray{65535, 16384, 0});
+    QImage oversized(65, 2, QImage::Format_Grayscale8);
+    oversized.fill(0);
+    const QString invalid = directory.filePath(QStringLiteral("oversized.png"));
+    REQUIRE(oversized.save(invalid) == true);
+    const QJsonObject retained = heightmap;
+    CHECK(ImportTerrainHeightmap(invalid, heightmap, error) == false);
+    CHECK(heightmap == retained);
+    QImage colour(2, 2, QImage::Format_RGB32);
+    colour.fill(Qt::red);
+    REQUIRE(colour.save(invalid) == true);
+    CHECK(ImportTerrainHeightmap(invalid, heightmap, error) == false);
+    CHECK(heightmap == retained);
+
+    QByteArray schema;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument world;
+    REQUIRE(world.LoadSchema(schema, error) == true);
+    REQUIRE(world.New(error) == true);
+    QJsonObject recipe = GetDefaultRecipe(world);
+    recipe.insert(QStringLiteral("shape"), QStringLiteral("Heightmap"));
+    recipe.insert(QStringLiteral("width"), 4);
+    recipe.insert(QStringLiteral("depth"), 2);
+    recipe.insert(QStringLiteral("minimumElevation"), -2);
+    recipe.insert(QStringLiteral("maximumElevation"), 6);
+    recipe.insert(QStringLiteral("heightmap"), heightmap);
+    SetTerrainRecipeVersion(recipe);
+
+    PreviewMesh mesh;
+    REQUIRE(BuildTerrainMesh(recipe, mesh, error) == true);
+    REQUIRE(mesh.Positions.size() == 6);
+    CHECK(mesh.Indices.size() == 12);
+    CHECK(mesh.Positions[0] == foundation::math::Vector3{-2, -2, -1});
+    CHECK(mesh.Positions[2] == foundation::math::Vector3{2, 6, -1});
+    CHECK(mesh.Positions[3] == foundation::math::Vector3{-2, 6, 1});
+    CHECK(mesh.Positions[5] == foundation::math::Vector3{2, -2, 1});
+    heightmap.insert(QStringLiteral("flipX"), true);
+    recipe.insert(QStringLiteral("heightmap"), heightmap);
+    REQUIRE(BuildTerrainMesh(recipe, mesh, error) == true);
+    CHECK(mesh.Positions[0] == foundation::math::Vector3{-2, 6, -1});
+    CHECK(mesh.Positions[5] == foundation::math::Vector3{2, 6, 1});
+    heightmap.insert(QStringLiteral("flipZ"), true);
+    recipe.insert(QStringLiteral("heightmap"), heightmap);
+    REQUIRE(BuildTerrainMesh(recipe, mesh, error) == true);
+    CHECK(mesh.Positions[1].Y < 1);
+    CHECK(mesh.Positions[4].Y > 1);
+
+    QString key;
+    REQUIRE(EditWorldTerrain(world, tests::MakeFixedEntropySource(), {}, recipe, key, error) == true);
+    REQUIRE(QFile::remove(path) == true);
+    WorldDocument reopened;
+    REQUIRE(reopened.LoadSchema(schema, error) == true);
+    REQUIRE(reopened.Load(world.Encode(), error) == true);
+    CHECK(GetTerrainRecipe(reopened, key) == recipe);
+    RenderScene scene;
+    REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error, false) == true);
+    REQUIRE(scene.Objects.size() == 1);
+    CHECK(scene.Meshes[scene.Objects[0].Mesh].Positions == mesh.Positions);
+}
+
+TEST_CASE("Flatten strokes retain their local target when the procedural base regenerates", "[editor][world][terrain]")
+{
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument world;
+    REQUIRE(world.LoadSchema(schema, error) == true);
+    REQUIRE(world.New(error) == true);
+    QJsonObject recipe = GetDefaultRecipe(world);
+    QString key;
+    REQUIRE(EditWorldTerrain(world, tests::MakeFixedEntropySource(), {}, recipe, key, error) == true);
+    PreviewMesh original;
+    REQUIRE(BuildTerrainMesh(recipe, original, error) == true);
+
+    const QJsonArray points{QJsonArray{-3, 0}, QJsonArray{3, 0}};
+    REQUIRE(AppendTerrainFlattenStroke(recipe, points, 4, 2, error) == true);
+    REQUIRE(EditWorldTerrain(world, tests::MakeFixedEntropySource(), key, recipe, key, error) == true);
+    PreviewMesh sculpted;
+    REQUIRE(BuildTerrainMesh(recipe, sculpted, error) == true);
+    const qsizetype center = sculpted.Positions.size() / 2;
+    CHECK(sculpted.Positions[center].Y == 2);
+    CHECK(sculpted.Positions.first() == original.Positions.first());
+    CHECK(sculpted.Normals != original.Normals);
+    const QJsonObject sculptedWorld = world.Draft();
+    REQUIRE(world.Undo() == true);
+    CHECK(GetTerrainRecipe(world, key).contains(QStringLiteral("flattenStrokes")) == false);
+    REQUIRE(world.Redo() == true);
+    CHECK(world.Draft() == sculptedWorld);
+
+    recipe.insert(QStringLiteral("seed"), 42);
+    REQUIRE(BuildTerrainMesh(recipe, sculpted, error) == true);
+    CHECK(sculpted.Positions[center].Y == 2);
+    const qsizetype samples = recipe.value(QStringLiteral("samples")).toInt();
+    CHECK(sculpted.Positions.mid(0, samples) != original.Positions.mid(0, samples));
+    QJsonObject cropped = recipe;
+    cropped.insert(QStringLiteral("width"), 8);
+    CHECK(RemoveClippedTerrainStrokes(recipe, cropped) == 1);
+    CHECK(cropped.contains(QStringLiteral("flattenStrokes")) == false);
+    CHECK(cropped.value(QStringLiteral("version")) == 1);
+    const QJsonObject unchanged = recipe;
+    CHECK(AppendTerrainFlattenStroke(recipe, QJsonArray{QJsonArray{100, 0}}, 4, 2, error) == false);
+    CHECK(recipe == unchanged);
+}
+
 TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hidden", "[editor][world][terrain]")
 {
     QTemporaryDir directory;
@@ -187,7 +315,12 @@ TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hi
 
     modeOrNull->setCurrentIndex(0);
     baseOrNull->setText(QStringLiteral("3"));
-    REQUIRE(QTest::qWaitFor([commitOrNull]() { return commitOrNull->isEnabled(); }, TERRAIN_WAIT_MILLISECONDS));
+    {
+        const bool isFlatReady =
+            QTest::qWaitFor([commitOrNull]() { return commitOrNull->isEnabled(); }, TERRAIN_WAIT_MILLISECONDS);
+        INFO(statusOrNull->text().toStdString());
+        REQUIRE(isFlatReady == true);
+    }
     REQUIRE(renderOrNull->Preview().Scene().Objects.size() == 1);
     const PreviewObject& preview = renderOrNull->Preview().Scene().Objects.first();
     const QString previewKey = preview.Id;
@@ -262,6 +395,54 @@ TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hi
     REQUIRE(workspace.Open(path) == true);
     CHECK(panelOrNull->isHidden() == true);
     CHECK(workspace.Document().Draft() == saved);
+
+    REQUIRE(workspace.SelectEntity(previewKey) == true);
+    viewport.GetEditTerrainAction().trigger();
+    QCheckBox* flattenOrNull = panelOrNull->findChild<QCheckBox*>(QStringLiteral("worldTerrainFlatten"));
+    QPushButton* pickOrNull = panelOrNull->findChild<QPushButton*>(QStringLiteral("worldTerrainPickHeight"));
+    QDoubleSpinBox* targetOrNull = panelOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("worldTerrainBrushHeight"));
+    REQUIRE(flattenOrNull != nullptr);
+    REQUIRE(pickOrNull != nullptr);
+    REQUIRE(targetOrNull != nullptr);
+    REQUIRE(panelOrNull->isVisible() == true);
+    const bool canFlatten =
+        QTest::qWaitFor([flattenOrNull]() { return flattenOrNull->isEnabled(); }, TERRAIN_WAIT_MILLISECONDS);
+    INFO(statusOrNull->text().toStdString());
+    REQUIRE(canFlatten == true);
+    interaction.SetActive(true);
+    renderOrNull->Preview().SetAxisView(EditorAxisView::Top);
+    interaction.ClearPresentedView();
+    flattenOrNull->click();
+    pickOrNull->click();
+    REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);
+    CHECK(pickOrNull->isChecked() == false);
+    targetOrNull->setValue(2);
+    REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);
+    REQUIRE(interaction.Move(framePixel.center() + QPointF(40, 0), false) == true);
+    interaction.Cancel();
+    CHECK(interaction.Release() == false);
+    CHECK(workspace.Document().Draft() == saved);
+    REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);
+    REQUIRE(interaction.Move(framePixel.center() + QPointF(40, 0), false) == true);
+    REQUIRE(interaction.Release() == true);
+    REQUIRE(QTest::qWaitFor(
+        [&workspace, &previewKey]() {
+            return GetTerrainRecipe(workspace.Document(), previewKey).contains(QStringLiteral("flattenStrokes"));
+        },
+        TERRAIN_WAIT_MILLISECONDS));
+    const QJsonArray strokes =
+        GetTerrainRecipe(workspace.Document(), previewKey).value(QStringLiteral("flattenStrokes")).toArray();
+    REQUIRE(strokes.size() == 1);
+    CHECK(strokes[0].toObject().value(QStringLiteral("height")) == 2);
+    CHECK(strokes[0].toObject().value(QStringLiteral("points")).toArray().size() == 2);
+    const QJsonObject flattened = workspace.Document().Draft();
+    workspace.Undo();
+    CHECK(workspace.Document().Draft() == saved);
+    workspace.Redo();
+    CHECK(workspace.Document().Draft() == flattened);
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(workspace.Open(path) == true);
+    CHECK(workspace.Document().Draft() == flattened);
 }
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 TEST_CASE("Terrain draft publication keeps the delegated World view during a renderer refusal",

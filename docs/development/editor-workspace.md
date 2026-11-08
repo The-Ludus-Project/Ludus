@@ -654,12 +654,31 @@ right-click menu, or Properties. The **Source** panel opens the stored recipe.
 **Compare with committed** shows the original surface at the same camera
 pose. Switch back and choose **Apply Source Changes** to keep the ready
 recipe as one undoable edit. This preserves the terrain's entity and transform.
-**Save World** keeps the seed, settings and recipe version.
+**Save World** keeps the source, settings and recipe version.
+
+In the native editor, choose **Import → Choose Heightmap…** to open an 8- or
+16-bit grayscale PNG. Each axis must have 2 to 64 samples and the file must fit
+within 64 KiB. Black maps to **Base elevation** and white maps to base plus
+**Relief**, in local metres. The top-left pixel starts at local negative X and
+negative Z. Use **Flip X** and **Flip Z** to align the raster against the World
+in the preview. The saved World embeds the sample grid and orientation, so it
+can reopen in the native or browser editor without the original PNG.
+
+To sculpt committed terrain, open **Edit Terrain…** and turn on **Flatten
+brush**. Set the radius and target height in terrain-local metres, or choose
+**Pick from surface** and click the ground to copy its height. Drag on the
+terrain and release to apply one undoable stroke. The inner half of the radius
+reaches the target height and the outer half blends back into the surface.
+Press Escape or move focus away during a drag to cancel it. A terrain can
+keep up to 16 strokes. **Save World** keeps the strokes. Compatible source changes retain their locations and target
+heights. If shrinking the footprint would clip a stroke, the confirmation
+names how many strokes the edit removes. Replacing an embedded heightmap also
+requires confirmation.
 
 The editor extracts a single indexed mesh of at most 64 samples per side.
 The terrain uses the current viewport shading and authored lights. Use
 **Solid** when the active project graph offers that debug view to inspect
-geometry in an unlit World. Heightmap import, terrain collision, sculpting,
+geometry in an unlit World. Terrain collision, other brush modes, material paint,
 erosion and streaming are future work. See the
 [viewport authoring design](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
 for delivery boundaries.

@@ -12,12 +12,15 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QRandomGenerator>
 #include <QScrollArea>
@@ -35,6 +38,16 @@ namespace
 constexpr int32 TERRAIN_PREVIEW_DELAY_MILLISECONDS = 100;
 constexpr int32 FLAT_TAB = 0;
 constexpr int32 GENERATE_TAB = 1;
+constexpr int32 IMPORT_TAB = 2;
+constexpr float64 DEFAULT_BRUSH_RADIUS_METRES = 2;
+constexpr int32 BRUSH_DECIMAL_PLACES = 3;
+constexpr QLatin1StringView HEIGHTMAP_FIELD("heightmap");
+constexpr QLatin1StringView HEIGHTMAP_SHAPE("Heightmap");
+
+QJsonObject GetTerrainRecipe(const WorldDocument& world, const QString& key)
+{
+    return world.Entity(key).value(QStringLiteral("components")).toObject().value(GetTerrainComponentId()).toObject();
+}
 
 QString FormatTerrainNumber(const QString& key, float64 value)
 {
@@ -65,7 +78,11 @@ public:
           Frame(new QPushButton(QStringLiteral("Frame Preview"), this)),
           Refresh(new QPushButton(QStringLiteral("Refresh Draft"), this)),
           Cancel(new QPushButton(QStringLiteral("Cancel"), this)), Commit(new QPushButton(this)),
-          mForm(new QFormLayout), mPresetRow(new QWidget(this))
+          Import(new QPushButton(QStringLiteral("Choose Heightmap…"), this)), HeightmapInfo(new QLabel(this)),
+          FlipX(new QCheckBox(QStringLiteral("Flip X"), this)), FlipZ(new QCheckBox(QStringLiteral("Flip Z"), this)),
+          Sculpt(new QCheckBox(QStringLiteral("Flatten brush"), this)),
+          PickHeight(new QPushButton(QStringLiteral("Pick from surface"), this)), BrushRadius(new QDoubleSpinBox(this)),
+          BrushHeight(new QDoubleSpinBox(this)), mForm(new QFormLayout), mPresetRow(new QWidget(this))
     {
         setObjectName(QStringLiteral("worldTerrainPanel"));
         QVBoxLayout* layout = new QVBoxLayout(this);
@@ -75,6 +92,7 @@ public:
         Mode->setAccessibleName(QStringLiteral("Terrain source"));
         Mode->addTab(QStringLiteral("Flat"));
         Mode->addTab(QStringLiteral("Generate"));
+        Mode->addTab(QStringLiteral("Import"));
         layout->addWidget(Mode);
         QScrollArea* scroll = new QScrollArea(this);
         scroll->setWidgetResizable(true);
@@ -92,6 +110,20 @@ public:
         presetLayout->addWidget(Preset, 1);
         presetLayout->addWidget(Randomize);
         mForm->addRow(QStringLiteral("Preset"), mPresetRow);
+        Import->setObjectName(QStringLiteral("worldTerrainImportHeightmap"));
+        HeightmapInfo->setObjectName(QStringLiteral("worldTerrainHeightmapInfo"));
+        HeightmapInfo->setWordWrap(true);
+        HeightmapInfo->setTextFormat(Qt::PlainText);
+        FlipX->setObjectName(QStringLiteral("worldTerrainFlipX"));
+        FlipZ->setObjectName(QStringLiteral("worldTerrainFlipZ"));
+#if defined(Q_OS_WASM)
+        Import->setEnabled(false);
+        Import->setToolTip(QStringLiteral("Import PNG files in the native editor, then open the saved World here."));
+#endif
+        mForm->addRow(Import);
+        mForm->addRow(HeightmapInfo);
+        mForm->addRow(FlipX);
+        mForm->addRow(FlipZ);
         addField(QStringLiteral("width"), QStringLiteral("Width (m)"));
         addField(QStringLiteral("depth"), QStringLiteral("Depth (m)"));
         addField(QStringLiteral("relief"), QStringLiteral("Relief (m)"));
@@ -101,6 +133,20 @@ public:
         addField(QStringLiteral("featureSize"), QStringLiteral("Feature size (m)"));
         addField(QStringLiteral("roughness"), QStringLiteral("Roughness"));
         addField(QStringLiteral("samples"), QStringLiteral("Samples per side"));
+        Sculpt->setObjectName(QStringLiteral("worldTerrainFlatten"));
+        PickHeight->setObjectName(QStringLiteral("worldTerrainPickHeight"));
+        PickHeight->setCheckable(true);
+        BrushRadius->setObjectName(QStringLiteral("worldTerrainBrushRadius"));
+        BrushRadius->setDecimals(BRUSH_DECIMAL_PLACES);
+        BrushRadius->setRange(MIN_TERRAIN_BRUSH_RADIUS_METRES, MAX_TERRAIN_BRUSH_RADIUS_METRES);
+        BrushRadius->setValue(DEFAULT_BRUSH_RADIUS_METRES);
+        BrushHeight->setObjectName(QStringLiteral("worldTerrainBrushHeight"));
+        BrushHeight->setDecimals(BRUSH_DECIMAL_PLACES);
+        BrushHeight->setRange(-MAX_TERRAIN_BRUSH_HEIGHT_METRES, MAX_TERRAIN_BRUSH_HEIGHT_METRES);
+        mForm->addRow(Sculpt);
+        mForm->addRow(QStringLiteral("Radius (m)"), BrushRadius);
+        mForm->addRow(QStringLiteral("Target height (m)"), BrushHeight);
+        mForm->addRow(PickHeight);
         Status->setObjectName(QStringLiteral("worldTerrainStatus"));
         Status->setWordWrap(true);
         Status->setTextFormat(Qt::PlainText);
@@ -140,19 +186,28 @@ public:
         const QSignalBlocker presetBlock(Preset);
         const QSignalBlocker compareBlock(Compare);
         const QSignalBlocker advancedBlock(Advanced);
+        const QSignalBlocker sculptBlock(Sculpt);
+        const QSignalBlocker pickBlock(PickHeight);
+        Sculpt->setChecked(false);
+        PickHeight->setChecked(false);
+        Sculpt->setVisible(name.isEmpty() == false);
+        Sculpt->setEnabled(false);
+        SetHeightmap(mInitialRecipe.value(HEIGHTMAP_FIELD).toObject());
         const QString shape = mInitialRecipe.value(QStringLiteral("shape")).toString();
-        Mode->setCurrentIndex(shape == QStringLiteral("Flat") ? FLAT_TAB : GENERATE_TAB);
+        Mode->setCurrentIndex(shape == HEIGHTMAP_SHAPE          ? IMPORT_TAB
+                              : shape == QStringLiteral("Flat") ? FLAT_TAB
+                                                                : GENERATE_TAB);
         Preset->clear();
         const QJsonArray choices =
             mDefinitions.value(QStringLiteral("shape")).toObject().value(QStringLiteral("choices")).toArray();
         for (const QJsonValue choice : choices)
         {
-            if (choice.toString() != QStringLiteral("Flat"))
+            if (choice.toString() != QStringLiteral("Flat") && choice.toString() != HEIGHTMAP_SHAPE)
             {
                 Preset->addItem(choice.toString());
             }
         }
-        if (shape != QStringLiteral("Flat"))
+        if (shape != QStringLiteral("Flat") && shape != HEIGHTMAP_SHAPE)
         {
             Preset->setCurrentText(shape);
         }
@@ -188,11 +243,21 @@ public:
     void UpdateFields()
     {
         const bool isFlat = Mode->currentIndex() == FLAT_TAB;
-        const bool hasAdvanced = isFlat == false && Advanced->isChecked() == true;
-        mForm->setRowVisible(mPresetRow, isFlat == false);
+        const bool isImport = Mode->currentIndex() == IMPORT_TAB;
+        const bool isGenerate = Mode->currentIndex() == GENERATE_TAB;
+        const bool hasAdvanced = isGenerate == true && Advanced->isChecked() == true;
+        mForm->setRowVisible(mPresetRow, isGenerate);
+        mForm->setRowVisible(Import, isImport);
+        mForm->setRowVisible(HeightmapInfo, isImport);
+        mForm->setRowVisible(FlipX, isImport);
+        mForm->setRowVisible(FlipZ, isImport);
         mForm->setRowVisible(Fields.value(QStringLiteral("relief")), isFlat == false);
-        mForm->setRowVisible(Advanced, isFlat == false);
-        mForm->setRowVisible(Fields.value(QStringLiteral("minimumElevation")), isFlat == true || hasAdvanced == true);
+        mForm->setRowVisible(Advanced, isGenerate);
+        mForm->setRowVisible(Fields.value(QStringLiteral("minimumElevation")),
+                             isFlat == true || isImport == true || hasAdvanced == true);
+        mForm->setRowVisible(BrushRadius, Sculpt->isChecked());
+        mForm->setRowVisible(BrushHeight, Sculpt->isChecked());
+        mForm->setRowVisible(PickHeight, Sculpt->isChecked());
         for (const QString& key : {QStringLiteral("seed"),
                                    QStringLiteral("featureSize"),
                                    QStringLiteral("roughness"),
@@ -206,12 +271,37 @@ public:
     {
         QJsonObject recipe = mInitialRecipe;
         const bool isFlat = Mode->currentIndex() == FLAT_TAB;
-        recipe.insert(QStringLiteral("shape"), isFlat == true ? QStringLiteral("Flat") : Preset->currentText());
+        const bool isImport = Mode->currentIndex() == IMPORT_TAB;
+        if (isImport == true && mHeightmap.isEmpty() == true)
+        {
+#if defined(Q_OS_WASM)
+            Status->setText(
+                QStringLiteral("Import the heightmap in the native editor, then reopen the saved World here."));
+#else
+            Status->setText(QStringLiteral("Choose a grayscale PNG to preview its heightmap."));
+#endif
+            return false;
+        }
+        recipe.insert(QStringLiteral("shape"),
+                      isImport == true ? QString(HEIGHTMAP_SHAPE)
+                      : isFlat == true ? QStringLiteral("Flat")
+                                       : Preset->currentText());
+        if (isImport == true)
+        {
+            QJsonObject map = mHeightmap;
+            map.insert(QStringLiteral("flipX"), FlipX->isChecked());
+            map.insert(QStringLiteral("flipZ"), FlipZ->isChecked());
+            recipe.insert(HEIGHTMAP_FIELD, map);
+        }
+        else
+        {
+            recipe.remove(HEIGHTMAP_FIELD);
+        }
         for (QMap<QString, QLineEdit*>::const_iterator field = Fields.constBegin(); field != Fields.constEnd(); ++field)
         {
             if (field.key() == QStringLiteral("relief") ||
-                (isFlat == true && field.key() != QStringLiteral("width") && field.key() != QStringLiteral("depth") &&
-                 field.key() != QStringLiteral("minimumElevation")))
+                ((isFlat == true || isImport == true) && field.key() != QStringLiteral("width") &&
+                 field.key() != QStringLiteral("depth") && field.key() != QStringLiteral("minimumElevation")))
             {
                 continue;
             }
@@ -243,13 +333,71 @@ public:
             const float64 relief = recipe.take(QStringLiteral("relief")).toDouble();
             const float64 initialBase = mInitialRecipe.value(QStringLiteral("minimumElevation")).toDouble();
             const float64 initialMaximum = mInitialRecipe.value(QStringLiteral("maximumElevation")).toDouble();
-            // Preserve the exact saved upper bound when opening a legacy recipe.
-            recipe.insert(QStringLiteral("maximumElevation"),
-                          base == initialBase && relief == initialMaximum - initialBase ? initialMaximum
-                                                                                        : base + relief);
+            // Preserve the stored JSON value when the elevation mapping is unchanged.
+            if (base != initialBase || relief != initialMaximum - initialBase)
+            {
+                recipe.insert(QStringLiteral("maximumElevation"), base + relief);
+            }
         }
+        SetTerrainRecipeVersion(recipe);
         outRecipe = foundation::Move(recipe);
         return true;
+    }
+
+    void SetHeightmap(const QJsonObject& heightmap)
+    {
+        mHeightmap = heightmap;
+        const QSignalBlocker blockX(FlipX);
+        const QSignalBlocker blockZ(FlipZ);
+        FlipX->setChecked(heightmap.value(QStringLiteral("flipX")).toBool());
+        FlipZ->setChecked(heightmap.value(QStringLiteral("flipZ")).toBool());
+        const QJsonArray rows = heightmap.value(QStringLiteral("rows")).toArray();
+        HeightmapInfo->setText(
+            rows.isEmpty() == true
+                ? QStringLiteral("Choose an 8- or 16-bit grayscale PNG.")
+                : QStringLiteral("%1 × %2 samples. Image top-left maps to local −X, −Z before flips.")
+                      .arg(rows.first().toArray().size())
+                      .arg(rows.size()));
+    }
+
+    [[nodiscard]] const QJsonObject& GetCommittedRecipe() const
+    {
+        return mInitialRecipe;
+    }
+
+    void SetStrokePending(bool isPending)
+    {
+        Mode->setEnabled(isPending == false);
+        Preset->setEnabled(isPending == false);
+        Randomize->setEnabled(isPending == false);
+        Advanced->setEnabled(isPending == false);
+#if !defined(Q_OS_WASM)
+        Import->setEnabled(isPending == false);
+#endif
+        FlipX->setEnabled(isPending == false);
+        FlipZ->setEnabled(isPending == false);
+        BrushRadius->setEnabled(isPending == false);
+        BrushHeight->setEnabled(isPending == false);
+        PickHeight->setEnabled(isPending == false);
+        for (QLineEdit* field : Fields)
+        {
+            field->setEnabled(isPending == false);
+        }
+    }
+
+    void RebaseRecipe(const QJsonObject& recipe)
+    {
+        if (recipe.isEmpty() == false)
+        {
+            mInitialRecipe = recipe;
+        }
+    }
+
+    void AcceptStroke(const QJsonObject& recipe)
+    {
+        RebaseRecipe(recipe);
+        StrokeRecipe = {};
+        SetStrokePending(false);
     }
 
     void RandomizeSeed()
@@ -289,6 +437,14 @@ public:
     QPushButton* Refresh;
     QPushButton* Cancel;
     QPushButton* Commit;
+    QPushButton* Import;
+    QLabel* HeightmapInfo;
+    QCheckBox* FlipX;
+    QCheckBox* FlipZ;
+    QCheckBox* Sculpt;
+    QPushButton* PickHeight;
+    QDoubleSpinBox* BrushRadius;
+    QDoubleSpinBox* BrushHeight;
     QMap<QString, QLineEdit*> Fields;
     QTimer Timer;
 
@@ -297,6 +453,8 @@ public:
     QJsonObject Transform;
     WorldDocument ReadyWorld;
     QJsonObject ReadyRecipe;
+    QJsonObject StrokeRecipe;
+    qsizetype RemovedStrokes = 0;
     WorldDocument Candidate;
     RenderScene PreviousScene;
     QByteArray DrawingIdentity;
@@ -339,7 +497,10 @@ private:
         if (field->text() == FormatTerrainNumber(key, initial) && initial >= minimum.toDouble() &&
             initial <= maximum.toDouble())
         {
-            inoutRecipe.insert(key, initial);
+            if (key == QStringLiteral("relief"))
+            {
+                inoutRecipe.insert(key, initial);
+            }
             return true;
         }
         QJsonValue value;
@@ -362,6 +523,7 @@ private:
     QWidget* mPresetRow;
     QJsonObject mDefinitions;
     QJsonObject mInitialRecipe;
+    QJsonObject mHeightmap;
 };
 
 void WorldWorkspace::initializeTerrainAuthoring()
@@ -385,6 +547,49 @@ void WorldWorkspace::initializeTerrainAuthoring()
         changeSource();
     });
     connect(panel->Advanced, &QCheckBox::toggled, panel, &WorldTerrainPanel::UpdateFields);
+    connect(panel->FlipX, &QCheckBox::toggled, this, changeSource);
+    connect(panel->FlipZ, &QCheckBox::toggled, this, changeSource);
+#if !defined(Q_OS_WASM)
+    connect(panel->Import, &QPushButton::clicked, this, [this, panel, changeSource]() {
+        const uint64 sequence = panel->Sequence;
+        const QString path = QFileDialog::getOpenFileName(this,
+                                                          QStringLiteral("Import Terrain Heightmap"),
+                                                          {},
+                                                          QStringLiteral("Grayscale PNG (*.png)"));
+        if (path.isEmpty() == true || panel->IsOpen == false || panel->Sequence != sequence)
+        {
+            return;
+        }
+        QJsonObject map;
+        QString error;
+        if (ImportTerrainHeightmap(path, map, error) == false)
+        {
+            panel->Status->setText(error);
+            return;
+        }
+        panel->SetHeightmap(map);
+        changeSource();
+    });
+#endif
+    connect(panel->Sculpt, &QCheckBox::toggled, this, [this, panel]() {
+        const QSignalBlocker blocker(panel->PickHeight);
+        panel->PickHeight->setChecked(false);
+        panel->UpdateFields();
+        applyTerrainInteraction();
+        if (panel->Sculpt->isChecked() == true)
+        {
+            panel->Status->setText(
+                QStringLiteral("Drag on the terrain to flatten it. Release applies one undoable stroke."));
+        }
+    });
+    connect(panel->PickHeight, &QPushButton::toggled, this, [this, panel](bool isPicking) {
+        applyTerrainInteraction();
+        if (isPicking == true)
+        {
+            panel->Status->setText(QStringLiteral("Click the terrain to pick its local height."));
+        }
+    });
+    connect(panel->BrushRadius, &QDoubleSpinBox::valueChanged, this, [this]() { applyTerrainInteraction(); });
     connect(panel->Preset, &QComboBox::currentIndexChanged, this, changeSource);
     connect(panel->Randomize, &QPushButton::clicked, this, [panel, changeSource]() {
         panel->RandomizeSeed();
@@ -406,7 +611,21 @@ void WorldWorkspace::initializeTerrainAuthoring()
         connect(&viewport->GetEditTerrainAction(), &QAction::triggered, this, [this]() {
             showTerrainAuthoring(Selected_);
         });
-        connect(&viewport->GetObjectInteraction(),
+        ViewportObjectInteraction& interaction = viewport->GetObjectInteraction();
+        connect(&interaction,
+                &ViewportObjectInteraction::TerrainStrokeFinished,
+                this,
+                &WorldWorkspace::queueTerrainStroke);
+        connect(&interaction, &ViewportObjectInteraction::TerrainStrokeRejected, this, [panel](const QString& message) {
+            panel->Status->setText(message);
+        });
+        connect(&interaction, &ViewportObjectInteraction::TerrainHeightPicked, this, [panel](float32 height) {
+            panel->BrushHeight->setValue(static_cast<float64>(height));
+            panel->PickHeight->setChecked(false);
+            panel->Status->setText(
+                QStringLiteral("Target height %1 m. Drag to flatten.").arg(panel->BrushHeight->text()));
+        });
+        connect(&interaction,
                 &ViewportObjectInteraction::TerrainExtentCommitted,
                 this,
                 [panel, changeSource](const QString& key, float64 extent) {
@@ -499,6 +718,8 @@ void WorldWorkspace::showTerrainAuthoring(const QString& key)
     panel.IsOpen = true;
     panel.IsComparing = false;
     panel.HasConflict = false;
+    panel.StrokeRecipe = {};
+    panel.SetStrokePending(false);
     panel.ShouldFrame = key.isEmpty() == true && panel.Base.value(QStringLiteral("entities")).toArray().isEmpty();
     panel.Begin(Document_.Component(GetTerrainComponentId()),
                 entity.value(QStringLiteral("components")).toObject().value(GetTerrainComponentId()).toObject(),
@@ -516,6 +737,11 @@ void WorldWorkspace::queueTerrainPreview()
     ++panel.Sequence;
     panel.Commit->setEnabled(false);
     panel.Compare->setEnabled(false);
+    panel.Sculpt->setEnabled(false);
+    if (panel.Sculpt->isChecked() == true)
+    {
+        applyTerrainInteraction();
+    }
     checkTerrainBase();
     if (panel.HasConflict == true)
     {
@@ -550,11 +776,12 @@ void WorldWorkspace::prepareTerrainPreview()
         return;
     }
 
-    QJsonObject recipe;
-    if (panel.ReadRecipe(recipe) == false)
+    QJsonObject recipe = panel.StrokeRecipe;
+    if (recipe.isEmpty() == true && panel.ReadRecipe(recipe) == false)
     {
         return;
     }
+    panel.RemovedStrokes = RemoveClippedTerrainStrokes(panel.GetCommittedRecipe(), recipe);
     panel.Candidate = Document_;
     panel.CandidateKey = panel.Target;
     QString error;
@@ -562,6 +789,8 @@ void WorldWorkspace::prepareTerrainPreview()
         EditWorldTerrain(panel.Candidate, mEntropy, panel.Target, recipe, panel.CandidateKey, error, panel.Transform) ==
             false)
     {
+        panel.StrokeRecipe = {};
+        panel.SetStrokePending(false);
         panel.Status->setText(error);
         return;
     }
@@ -636,6 +865,8 @@ void WorldWorkspace::finishTerrainPreview(bool isAccepted, const QString& error)
     }
     if (isAccepted == false)
     {
+        panel.StrokeRecipe = {};
+        panel.SetStrokePending(false);
         if (stage == WorldTerrainPanel::Request::DrawingWorld || stage == WorldTerrainPanel::Request::LoadingWorld)
         {
             Render_->CancelTerrainDraft();
@@ -665,6 +896,20 @@ void WorldWorkspace::finishTerrainPreview(bool isAccepted, const QString& error)
                             .value(GetTerrainComponentId())
                             .toObject();
     panel.PreviousScene = {};
+    if (panel.StrokeRecipe.isEmpty() == false)
+    {
+        const uint64 sequence = panel.Sequence;
+        QTimer::singleShot(0, this, [this, sequence]() {
+            const WorldTerrainPanel& current = *mTerrainPanelOrNull;
+            if (current.Sequence == sequence && current.StrokeRecipe.isEmpty() == false)
+            {
+                commitTerrainDraft();
+            }
+        });
+        return;
+    }
+    panel.Sculpt->setEnabled(panel.Target.isEmpty() == false && panel.HasDraftView == true &&
+                             panel.ReadyRecipe == panel.GetCommittedRecipe());
     panel.Compare->setEnabled(panel.Target.isEmpty() == false);
     panel.Frame->setEnabled(true);
     panel.Commit->setEnabled(panel.HasDraftView);
@@ -724,6 +969,8 @@ void WorldWorkspace::closeTerrainAuthoring(bool shouldRestoreWorld)
     cancelTerrainRequest();
     Render_->CancelTerrainDraft();
     panel.HasDraftView = false;
+    panel.StrokeRecipe = {};
+    panel.SetStrokePending(false);
     panel.ReadyWorld = {};
     panel.ReadyRecipe = {};
     panel.Candidate = {};
@@ -774,6 +1021,9 @@ void WorldWorkspace::checkTerrainBase()
         return;
     }
     panel.HasConflict = true;
+    panel.StrokeRecipe = {};
+    panel.SetStrokePending(false);
+    panel.Sculpt->setEnabled(false);
     ++panel.Sequence;
     panel.Timer.stop();
     panel.HasDraftView = false;
@@ -804,8 +1054,34 @@ void WorldWorkspace::refreshTerrainBase()
     }
     panel.Base = Document_.Draft();
     panel.WorldGeneration = DocumentGeneration_;
+    panel.RebaseRecipe(GetTerrainRecipe(Document_, panel.Target));
     panel.HasConflict = false;
     panel.Refresh->hide();
+    queueTerrainPreview();
+}
+
+void WorldWorkspace::queueTerrainStroke(const QJsonArray& points)
+{
+    WorldTerrainPanel& panel = *mTerrainPanelOrNull;
+    if (panel.IsOpen == false || panel.Sculpt->isEnabled() == false || panel.Sculpt->isChecked() == false ||
+        panel.ReadySequence != panel.Sequence || panel.ReadyRecipe != panel.GetCommittedRecipe() ||
+        panel.Target != Selected_)
+    {
+        return;
+    }
+    QJsonObject recipe = panel.ReadyRecipe;
+    QString error;
+    if (AppendTerrainFlattenStroke(recipe,
+                                   points,
+                                   static_cast<float32>(panel.BrushRadius->value()),
+                                   static_cast<float32>(panel.BrushHeight->value()),
+                                   error) == false)
+    {
+        panel.Status->setText(error);
+        return;
+    }
+    panel.StrokeRecipe = Move(recipe);
+    panel.SetStrokePending(true);
     queueTerrainPreview();
 }
 
@@ -818,14 +1094,61 @@ void WorldWorkspace::commitTerrainDraft()
     {
         return;
     }
+    const bool isStroke = panel.StrokeRecipe.isEmpty() == false;
     if (Pending_ == true || isSceneWorkerActive() == true || IsPlayingInViewport() == true)
     {
-        panel.Status->setText(QStringLiteral("Finish pending World edits or stop Play before applying this draft."));
+        panel.Status->setText(
+            isStroke == true
+                ? QStringLiteral("Finish pending World edits or stop Play, then refresh the draft to apply the stroke.")
+                : QStringLiteral("Finish pending World edits or stop Play before applying this draft."));
+        panel.Refresh->setVisible(isStroke);
         return;
+    }
+    const QJsonArray previousRows =
+        panel.GetCommittedRecipe().value(HEIGHTMAP_FIELD).toObject().value(QStringLiteral("rows")).toArray();
+    const QJsonArray nextRows =
+        panel.ReadyRecipe.value(HEIGHTMAP_FIELD).toObject().value(QStringLiteral("rows")).toArray();
+    const bool shouldReplaceHeightmap = previousRows.isEmpty() == false && previousRows != nextRows;
+    if (panel.RemovedStrokes != 0 || shouldReplaceHeightmap == true)
+    {
+        const uint64 sequence = panel.Sequence;
+        QString message;
+        if (panel.RemovedStrokes != 0)
+        {
+            message = QStringLiteral("The smaller footprint cuts %1 Flatten strokes. Applying removes those strokes.")
+                          .arg(panel.RemovedStrokes);
+        }
+        if (shouldReplaceHeightmap == true)
+        {
+            if (message.isEmpty() == false)
+            {
+                message += QLatin1Char(' ');
+            }
+            message += QStringLiteral("Applying replaces the embedded %1 × %2 heightmap with the selected source.")
+                           .arg(previousRows.first().toArray().size())
+                           .arg(previousRows.size());
+        }
+        QMessageBox confirmation(QMessageBox::Question,
+                                 QStringLiteral("Apply Terrain Source Changes"),
+                                 message,
+                                 QMessageBox::Cancel,
+                                 this);
+        QPushButton* apply = confirmation.addButton(QStringLiteral("Remove and apply"), QMessageBox::AcceptRole);
+        confirmation.setDefaultButton(QMessageBox::Cancel);
+        confirmation.exec();
+        checkTerrainBase();
+        if (confirmation.clickedButton() != apply || panel.IsOpen == false || panel.HasConflict == true ||
+            panel.Sequence != sequence || Pending_ == true || isSceneWorkerActive() == true ||
+            IsPlayingInViewport() == true)
+        {
+            return;
+        }
     }
     QString error;
     if (Document_.Restore(panel.ReadyWorld.Draft(), error) == false)
     {
+        panel.StrokeRecipe = {};
+        panel.SetStrokePending(false);
         panel.Status->setText(error);
         return;
     }
@@ -836,7 +1159,19 @@ void WorldWorkspace::commitTerrainDraft()
         ValidatedScene_ = Scene_->Document();
         ValidatedWorld_ = Document_.Encode();
     }
-    closeTerrainAuthoring(false);
+    if (isStroke == true)
+    {
+        panel.Base = Document_.Draft();
+        panel.AcceptStroke(panel.ReadyRecipe);
+        panel.HasDraftView = false;
+        panel.Sculpt->setEnabled(true);
+        panel.Compare->setEnabled(true);
+        panel.Status->setText(QStringLiteral("Flatten applied. Undo restores the previous surface."));
+    }
+    else
+    {
+        closeTerrainAuthoring(false);
+    }
     Render();
     Snapshot();
     Changed(QStringLiteral("Terrain applied. Save World to keep it. Undo is available."));
@@ -866,6 +1201,15 @@ void WorldWorkspace::applyTerrainInteraction()
         Document_.SceneLevel().isEmpty() == true ? Render_->GetViewport() : Scene_->GetViewport();
     viewport.SetTerrainPreviewLabel(hasDraft);
     ViewportObjectInteraction& interaction = viewport.GetObjectInteraction();
+    PreviewViewport& otherViewport =
+        &viewport == &Render_->GetViewport() ? Scene_->GetViewport() : Render_->GetViewport();
+    otherViewport.GetObjectInteraction().SetTerrainBrush({}, 0, false);
+    const bool hasBrush = panel.IsOpen == true && panel.Sculpt->isEnabled() == true &&
+                          panel.Sculpt->isChecked() == true && panel.IsComparing == false && Pending_ == false &&
+                          IsPlayingInViewport() == false && panel.Target == Selected_;
+    interaction.SetTerrainBrush(hasBrush == true ? panel.Target : QString{},
+                                hasBrush == true ? static_cast<float32>(panel.BrushRadius->value()) : 0,
+                                hasBrush == true && panel.PickHeight->isChecked() == true);
     if (hasDraft == true && panel.Target.isEmpty() == true)
     {
         interaction.SetWorld(panel.ReadyWorld, panel.ReadyKey, true);
