@@ -1,3 +1,4 @@
+#include "internal/builtin_world.h"
 #include "internal/level_workspace.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_panel.h"
@@ -5,6 +6,8 @@
 #include "internal/render_scene.h"
 #include "internal/viewport_object_interaction.h"
 #include "internal/world_workspace.h"
+
+#include <ludus/gameplay/camera/camera.hpp>
 
 #include <QAction>
 #include <QComboBox>
@@ -71,6 +74,41 @@ void WorldWorkspace::updateViewportInteraction()
     QAction& saveStartView = Scene_->GetViewport().GetStartViewSaveAction();
     saveStartView.setVisible(Document_.Loaded() == true && Document_.Draft().contains(QStringLiteral("scene")) == true);
     saveStartView.setEnabled(Pending_ == false && SceneBusy() == false);
+    const bool hasSelectedPlayer =
+        mSelectedEntities.size() == 1 && HasWorldFirstPersonPlayer(Document_, Selected_) == true;
+    mExploreFirstPersonButton->setVisible(hasSelectedPlayer);
+    mExploreFirstPersonButton->setEnabled(canEdit == true && hasSelectedPlayer == true);
+}
+void WorldWorkspace::exploreFirstPerson()
+{
+    gameplay::camera::CameraSample spawn;
+    float32 speed = 0;
+    QString error;
+    if (ReadWorldFirstPersonPlayer(Document_, Selected_, spawn, speed, error) == false)
+    {
+        Changed(error);
+        return;
+    }
+    if (PreviewViewport::CanPresent() == false)
+    {
+        Changed(QStringLiteral("Enable the rendered World viewport to explore from the player."));
+        return;
+    }
+    if (GetRenderPreview().Running() == false)
+    {
+        Changed(QStringLiteral("Resume the World viewport, then choose Explore as Player."));
+        return;
+    }
+    const bool hasImportedScene = Document_.Draft().contains(QStringLiteral("scene"));
+    PreviewViewport& viewport = hasImportedScene == true ? Scene_->GetViewport() : Render_->GetViewport();
+    if (viewport.BeginFirstPerson(spawn, speed) == false)
+    {
+        Changed(QStringLiteral("Could not enter first person. Finish any ray path inspection and check the player's "
+                               "Transform and move speed before trying again."));
+        return;
+    }
+    Changed(QStringLiteral("Hold right mouse to look. With it held, use WASD to move, Q/E to descend or rise, and "
+                           "Shift to go faster. Escape returns to the editor view."));
 }
 void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObject& placement)
 {

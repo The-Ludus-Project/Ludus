@@ -613,7 +613,7 @@ The render surface receives the remaining height below its shading, framing and
 navigation controls, including after resize.
 
 In a default World (a project without `authoring/world.schema.json`), use
-**Add Geometry / Light** below the entity list to create a **Cube**, **Plane**,
+**Add World Preset** below the entity list to create a **Cube**, **Plane**,
 **Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun** or
 **Luminaire**. Each command
 selects the new entity and creates one undo step. Geometry is one metre across,
@@ -634,7 +634,10 @@ down. Only render graphs that read luminaires, such as the
 are lit by it; **Lit** and reference capture ignore it. Selecting it outlines the
 panel and its emission direction in the viewport.
 
-Choose **Add Geometry / Light → Generate Terrain…** to create a heightfield in a
+The same menu adds a [First Person Player](#explore-from-a-first-person-player)
+for exploring the scene from a saved spawn.
+
+Choose **Add World Preset → Generate Terrain…** to create a heightfield in a
 default World. Pick Rolling Hills, Ridges, or Flat, then set a seed, width and
 depth, elevation bounds, feature size, roughness, and samples per side. Width and
 depth extend along the entity's local X and Z axes. Elevation is measured in
@@ -1075,6 +1078,23 @@ lighting implementation supplies Lit materials, authored lights and shadows;
 Solid and Albedo remain inspection modes. See the owning
 [renderer contract](../architecture/renderer-systems.md) and
 [camera contract](../architecture/camera-systems.md).
+
+### Explore from a First Person Player
+
+Choose **Add World Preset → First Person Player** to add a reusable spawn to a
+default World. The new entity starts at eye height above the origin, or at the
+imported scene's saved start view when that position fits the Transform range.
+In Properties, set Transform X/Y/Z to the eye position in metres, set Rotation X
+and Y for pitch and yaw, and adjust **Move speed**. Apply the changes and use
+**Save World** to keep the spawn. Duplicate the entity to keep multiple starting
+points.
+
+Select a player in the hierarchy and click **Explore as Player**. Hold the right
+mouse button to look around, and use **W/A/S/D** to move horizontally, **Q/E** to
+descend or rise, and **Shift** to move faster. Use **Escape** or leave the
+viewport to return to the previous editor camera. Exploring uses free flight
+through the current rendered World, including terrain and imported geometry.
+Movement is temporary. This mode has no gravity, floor following or collision.
 
 ### Try a 3D authoring workflow
 
@@ -1683,7 +1703,7 @@ estimated illuminance. It appears in the viewport status and as a **Renderer
 preview** row in the Error List; render graphs that read only luminaires keep
 their own luminaire warning instead. An unlit viewport never shows it.
 
-In a default World, choose **Add Geometry / Light → Sun**, or double-click the
+In a default World, choose **Add World Preset → Sun**, or double-click the
 warning: a confirmation box then offers **Add sun**, with **Cancel** as the
 default. Both create the same directional light entity named *Sun* of 10 lux,
 aimed like the first disabled imported directional light that shines down, or

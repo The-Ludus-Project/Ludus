@@ -1105,6 +1105,10 @@ void RenderPreview::navigationChanged()
     Pitch_ = mCameraController.GetPitchDegrees();
     Zoom_ = mCameraController.GetDistance() / math::Max(OrbitRadius_, MINIMUM_ORBIT_RADIUS_WORLD);
     RestoredOrbit_ = true;
+    invalidateView();
+}
+void RenderPreview::invalidateView()
+{
     ViewDirty_ = true;
     // Thanks to The Qt Company, "QTimer Class", start() documentation:
     // https://doc.qt.io/qt-6/qtimer.html#start
@@ -1282,6 +1286,10 @@ void RenderPreview::Resize(int32 width, int32 height)
 }
 float32 RenderPreview::GetFocusDistance() const noexcept
 {
+    if (mIsExploringFirstPerson == true)
+    {
+        return mFirstPersonCamera.GetDistance();
+    }
     if (Camera_ >= 0 && Camera_ < Scene_.Cameras.size())
     {
         const gameplay::camera::CameraSample& sample = Scene_.Cameras[Camera_].Sample;
@@ -1338,13 +1346,39 @@ void RenderPreview::Orbit(float32 deltaX, float32 deltaY)
         navigationChanged();
     }
 }
+bool RenderPreview::BeginFirstPerson(const gameplay::camera::CameraSample& spawn)
+{
+    if (mFirstPersonCamera.TryAdopt(spawn, 1) == false)
+    {
+        return false;
+    }
+    mIsExploringFirstPerson = true;
+    invalidateView();
+    return true;
+}
+void RenderPreview::EndFirstPerson()
+{
+    if (mIsExploringFirstPerson == true)
+    {
+        mIsExploringFirstPerson = false;
+        invalidateView();
+    }
+}
 void RenderPreview::Look(float32 deltaX, float32 deltaY)
 {
-    if ((deltaX == 0 && deltaY == 0) || beginNavigation() == false)
+    if (deltaX == 0 && deltaY == 0)
     {
         return;
     }
-    if (mCameraController.TryRotate(deltaX * mLookSensitivity, deltaY * mLookSensitivity, false) == true)
+    if (mIsExploringFirstPerson == true)
+    {
+        if (mFirstPersonCamera.TryRotate(deltaX * mLookSensitivity, deltaY * mLookSensitivity, false) == true)
+        {
+            invalidateView();
+        }
+    }
+    else if (beginNavigation() == true &&
+             mCameraController.TryRotate(deltaX * mLookSensitivity, deltaY * mLookSensitivity, false) == true)
     {
         navigationChanged();
     }
@@ -1367,11 +1401,33 @@ void RenderPreview::Pan(float32 deltaX, float32 deltaY, float32 heightLogical)
 void RenderPreview::Fly(math::Vector3 movementControls, float32 deltaSeconds, float32 speed)
 {
     if (math::IsFinite(deltaSeconds) == false || deltaSeconds <= 0 || math::IsFinite(speed) == false || speed <= 0 ||
-        math::LengthSquared(movementControls) == 0 || beginNavigation() == false)
+        math::LengthSquared(movementControls) == 0)
     {
         return;
     }
     if (math::TryNormalize(movementControls, movementControls) != math::MathStatus::Success)
+    {
+        return;
+    }
+    constexpr float32 MAXIMUM_FLY_STEP_SECONDS = 0.1F;
+    const float32 distance = math::Min(deltaSeconds, MAXIMUM_FLY_STEP_SECONDS) * speed;
+    if (mIsExploringFirstPerson == true)
+    {
+        // In first person, WASD stays level with the ground regardless of look pitch.
+        math::Quaternion heading;
+        if (math::TryFromAxisAngle({0, 1, 0}, math::DegreesToRadians(mFirstPersonCamera.GetYawDegrees()), heading) ==
+            math::MathStatus::Success)
+        {
+            const math::Vector3 movementWorld = math::Rotate(heading, movementControls);
+            const math::Quaternion inverse = math::Conjugate(mFirstPersonCamera.GetSample().Pose.Orientation);
+            if (mFirstPersonCamera.TryFly(math::Rotate(inverse, movementWorld), distance) == true)
+            {
+                invalidateView();
+            }
+        }
+        return;
+    }
+    if (beginNavigation() == false)
     {
         return;
     }
@@ -1382,8 +1438,7 @@ void RenderPreview::Fly(math::Vector3 movementControls, float32 deltaSeconds, fl
     {
         return;
     }
-    if (mCameraController.TryFly(math::Rotate(math::Conjugate(orientation), movementWorld),
-                                 math::Min(deltaSeconds, 0.1F) * speed) == true)
+    if (mCameraController.TryFly(math::Rotate(math::Conjugate(orientation), movementWorld), distance) == true)
     {
         navigationChanged();
     }
@@ -1422,6 +1477,10 @@ void RenderPreview::SetVerticalFovDegrees(float32 degrees)
 }
 const gameplay::camera::CameraSample& RenderPreview::GetVisibleCameraSample() const noexcept
 {
+    if (mIsExploringFirstPerson == true)
+    {
+        return mFirstPersonCamera.GetSample();
+    }
     if (Camera_ >= 0 && Camera_ < Scene_.Cameras.size())
     {
         return Scene_.Cameras[Camera_].Sample;
@@ -1488,7 +1547,7 @@ QJsonObject RenderPreview::Navigation() const
 PreviewViewOptions RenderPreview::makeViewOptions(uint32 width, uint32 height) const noexcept
 {
     PreviewViewOptions options;
-    options.Camera = Camera_;
+    options.Camera = mIsExploringFirstPerson == true ? -1 : Camera_;
     options.OrbitDegrees = {Yaw_, Pitch_};
     options.Distance = OrbitRadius_ * Zoom_;
     options.Width = width;
@@ -1496,7 +1555,7 @@ PreviewViewOptions RenderPreview::makeViewOptions(uint32 width, uint32 height) c
     options.Reference = Reference_;
     options.OrbitCenter = &OrbitCenter_;
     options.OrbitRadius = OrbitRadius_;
-    options.EditorCameraOrNull = &mCameraController.GetSample();
+    options.EditorCameraOrNull = &GetVisibleCameraSample();
     options.BoundsWorldOrNull = mHasSceneBounds == true ? &mSceneBoundsWorld : nullptr;
     return options;
 }
@@ -1746,9 +1805,7 @@ bool RenderPreview::prepare()
         }
         if (mShading == PreviewShading::Depth)
         {
-            const gameplay::camera::CameraLens& lens = Camera_ >= 0 && Camera_ < Scene_.Cameras.size()
-                                                           ? Scene_.Cameras[Camera_].Sample.Lens
-                                                           : mCameraController.GetSample().Lens;
+            const gameplay::camera::CameraLens& lens = GetVisibleCameraSample().Lens;
             math::Aabb3 boundsWorld;
             const bool hasBounds = TryGetSceneBounds(boundsWorld);
             description.DebugDepthRange = ComputeDebugDepthRange(description,

@@ -235,6 +235,7 @@ private:
     void mapImportedMaterial(const QString& source, const QString& replacement, const QString& label);
     void bindViewportInteraction();
     void updateViewportInteraction();
+    void exploreFirstPerson();
     void commitViewportPlacement(const QString& id, const QJsonObject& placement);
     /// Store the scene viewport's current perspective view as the level start view (one undo step).
     void saveStartView();
@@ -270,6 +271,7 @@ private:
     WorldDocument Document_;
     foundation::identity::EntropySource mEntropy = platform::GetSystemEntropySource();
     QPushButton* PlayButton_ = nullptr;
+    QPushButton* mExploreFirstPersonButton;
     void showPlayUnavailable(const QString& reason);
     void hidePlayUnavailable();
     QComboBox* mPlayModeBox;
