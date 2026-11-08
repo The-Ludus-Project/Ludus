@@ -27,11 +27,13 @@ public:
     [[nodiscard]] foundation::uint32 GetMeshLightGridWord() const noexcept;
     /// Mesh-light shadow casters with allocated atlas faces; empty when the scene is unshadowed.
     [[nodiscard]] foundation::BorrowedView<const MeshLightShadowCaster> GetMeshLightShadowCasters() const noexcept;
-    /// Sampled view of the shadow atlas for the deferred resolve, Ready once Poll is Ready; null without casters.
-    [[nodiscard]] rhi::TextureViewHandle GetMeshLightShadowView() const noexcept;
-    /// The shadow atlas the frame encoder draws faces into; null without casters.
-    [[nodiscard]] MeshLightShadowAtlas* GetMeshLightShadowAtlasOrNull() noexcept;
-    /// Shadow faces not yet drawn into the atlas; zero without casters.
+    [[nodiscard]] bool HasShadowAtlas() const noexcept;
+    /// Sampled view of the shadow atlas for the deferred resolve, Ready once Poll is Ready; null without shadowed
+    /// lights.
+    [[nodiscard]] rhi::TextureViewHandle GetShadowAtlasView() const noexcept;
+    /// The shadow atlas the frame encoder draws faces into; null without shadowed lights.
+    [[nodiscard]] DeferredShadowAtlas* GetShadowAtlasOrNull() noexcept;
+    /// Mesh-light faces that have yet to be submitted.
     [[nodiscard]] foundation::uint32 GetPendingMeshLightShadowFaces() const noexcept;
 
 private:

@@ -5848,8 +5848,9 @@ extracted as each object's tint (times its colour texture) in emission over a bl
 base colour. It shows its authored colours without an invented light; that emission
 also registers as mesh area lighting, which reflects from nothing because every base
 colour is black.
-They require static opaque triangles with normals. Masked/transparent materials
-and invalid inputs reject preparation and retain the last drawable generation.
+They require static triangles with normals and opaque or alpha-masked materials.
+Blended materials and invalid inputs reject preparation and retain the last drawable generation.
+The default shadows one authored directional light with a cached orthographic map.
 Emissive meshes also provide direct area lighting, shadowed by cached cube shadow maps
 ([Mesh-light shadows](#mesh-light-shadows)). No proxy lights, ray tracing or indirect illumination are added.
 The graph's ToneMap node (PBR Neutral at unit exposure) is fused into the lighting
@@ -6092,6 +6093,28 @@ Other raster technique families are rejected by this profile. Existing `ForwardL
 and `ClusteredForward` packages keep their existing lighting ABI and behavior.
 Runtime package version 24 appends four deferred support roles without changing
 record widths or older role IDs; older packages remain readable.
+
+### Directional shadows
+
+The default shadows the directional light with the lowest source identity among
+lights with positive intensity and a nonblack color. The renderer fits one
+1022 × 1022 orthographic projection to the scene's caster and receiver bounds,
+with a one-texel atlas gutter. It snaps the projection to the texel grid and uses
+the existing four-tap depth comparison with a receiver bias of 0.001 in
+normalized light depth. Opaque and alpha-masked scene geometry cast shadows.
+The resolve applies visibility to the selected light's direct diffuse and specular
+contribution. Point and spot lights and additional directional lights are
+evaluated without analytic shadows in this profile.
+
+The atlas is prepared with the scene. The renderer draws the directional map
+before the first lighting resolve that has enough draw budget. Until then the
+light uses full visibility. Camera-only edits reuse it. Changes to scene geometry or lighting
+prepare a replacement, and failed preparation retains the previous drawable
+generation. The directional slot shares the mesh-light atlas when the scene
+has both kinds of casters. The whole-scene fit keeps the shadow stable as the
+camera moves. In large scenes, each texel covers more ground, so nearby edges
+can appear coarse. Recook existing clustered deferred shader packages to use
+directional visibility.
 
 ### Mesh-light shadows
 

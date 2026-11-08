@@ -72,8 +72,9 @@ struct GpuPreviewGraphInvocation final
 namespace internal
 {
 class RenderGraphDeferredPass;
+class ForwardSceneGeneration;
 struct DeferredMaterialBindings;
-struct MeshLightShadowAtlas;
+struct DeferredShadowAtlas;
 struct MeshLightShadowCaster;
 /// Private access to renderer logical identities.
 struct Access;
@@ -812,6 +813,14 @@ private:
     friend class RenderGraph;
     /// Grants the renderer-owned deferred resolve access to immutable view/material bindings.
     friend class internal::RenderGraphDeferredPass;
+    /// Allows the deferred scene generation to supply its directional shadow region during material preparation.
+    friend class internal::ForwardSceneGeneration;
+    [[nodiscard]] rhi::RasterStatus createLitMaterial(MaterialProgram program,
+                                                      const LitMaterialDescription& description,
+                                                      MaterialVersion& outMaterial,
+                                                      LightSelection& outSelection,
+                                                      const ShadowRegion* directionalShadowOrNull,
+                                                      foundation::uint32 shadowAtlasTexels) noexcept;
     enum class DrawMode : foundation::uint8
     {
         Color,
@@ -827,14 +836,14 @@ private:
     /// masked items to each face's frustum and caster range, and upload their instances. Repeated calls poll the
     /// upload: Pending until it is usable, then Ready.
     [[nodiscard]] rhi::RasterStatus
-    prepareMeshLightShadows(Snapshot snapshot,
-                            foundation::BorrowedView<const internal::MeshLightShadowCaster> casters,
-                            internal::MeshLightShadowAtlas& inoutAtlas) noexcept;
+    prepareDeferredShadows(Snapshot snapshot,
+                           foundation::BorrowedView<const internal::MeshLightShadowCaster> casters,
+                           internal::DeferredShadowAtlas& inoutAtlas) noexcept;
     /// Inside the open frame and before frameView's deferred passes, clear the prepared atlas once to the far depth,
     /// then draw whole faces while the frame's draw budget, less frameView's draws, allows. Faces not yet drawn read
     /// as unoccluded.
-    [[nodiscard]] rhi::RasterStatus drawMeshLightShadows(PreparedView frameView,
-                                                         internal::MeshLightShadowAtlas& inoutAtlas) noexcept;
+    [[nodiscard]] rhi::RasterStatus drawDeferredShadows(PreparedView frameView,
+                                                        internal::DeferredShadowAtlas& inoutAtlas) noexcept;
     [[nodiscard]] rhi::RasterStatus prewarmProgram(const rhi::RasterShaderDescription& vertex,
                                                    const rhi::RasterShaderDescription& fragment,
                                                    const rhi::RasterShaderDescription* shadowOrNull,
