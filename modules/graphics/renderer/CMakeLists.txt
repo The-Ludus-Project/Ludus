@@ -203,7 +203,7 @@ if(TARGET ludus_rhi_render_tests)
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_reference_cold_gpu_timeout_seconds}")
     set_source_files_properties(tests/wave_scene_graph_tests.cpp PROPERTIES COMPILE_DEFINITIONS
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_scene_cold_gpu_timeout_seconds}")
-    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "$<TARGET_OBJECTS:ludus_renderer_ltc_table_data>" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_oracle.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp tests/selection_outline_render_tests.cpp)
+    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "$<TARGET_OBJECTS:ludus_renderer_ltc_table_data>" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_oracle.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_oracle.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_default_render_tests.cpp tests/render_graph_reload_render_tests.cpp tests/render_graph_pool_render_tests.cpp tests/selection_outline_render_tests.cpp)
     target_sources(ludus_renderer_render_tests PRIVATE tests/wave_tracing_parity_tests.cpp)
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
@@ -341,9 +341,6 @@ if(TARGET ludus_rhi_render_tests)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_reference renderer_reference_reduce)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_flat)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_composite)
-    # The composite shader in LUSL, with compiler-assigned bindings; the test compares its pixels.
-    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME lusl_composite
-        SOURCE tests/lusl_composite.lusl RASTER VERTEX VertexMain FRAGMENT FragmentMain)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_overlay)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_selection_mask renderer_selection_outline)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_grid)
@@ -422,42 +419,62 @@ if(TARGET ludus_renderer_render_tests)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_authored renderer_authored_shadow renderer_clustered_authored renderer_clustered_authored_shadow)
 endif()
 
+# The portable RG2/RG3 pixel suites (tests/render_graph_render_tests.cpp and the RG4 pool suite)
+# draw cooked fixture graphs. Cook each fixture for the target's native profile, as RG2_TEST_PROFILES
+# in the calling scope names it, and publish the runtime package directories the suites load.
+function(ludus_add_render_graph_pixel_fixtures target)
+    # bound: per-draw uniform values; bound_lusl: the same graph with LUSL callbacks;
+    # masked_color/masked_depth: authored masked coverage parity.
+    foreach(kind surface offscreen depth bound bound_lusl masked_color masked_depth independent)
+        set(staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${kind}")
+        ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/${kind}" "${staged}")
+        ludus_compile_render_graph(TARGET ${target} NAME rg2_${kind}
+            MANIFEST "${staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET rg2_${kind}_RUNTIME_PACKAGE PARENT_PATH directory)
+        string(TOUPPER "${kind}" constant)
+        target_compile_definitions(${target} PRIVATE LUDUS_RG3_${constant}_DIRECTORY="${directory}")
+        set(rg2_${kind}_RUNTIME_PACKAGE "${rg2_${kind}_RUNTIME_PACKAGE}" PARENT_SCOPE)
+    endforeach()
+    # The composite shader in LUSL, with compiler-assigned bindings; the suite compares its pixels.
+    ludus_compile_shader(TARGET ${target} NAME lusl_composite
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/lusl_composite.lusl" RASTER VERTEX VertexMain FRAGMENT FragmentMain)
+    ludus_compile_shader(TARGET ${target} NAME rg2_depth_display RASTER
+        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/depth_display.slang" VERTEX VSMain FRAGMENT PSMain)
+    target_include_directories(${target} PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
+    target_link_libraries(${target} PRIVATE Ludus::FoundationFilesystem)
+endfunction()
+
 # Windows: rg2 graphs authored for the dxil profile compile through the pinned DXC, cook into
-# runtime packages whose stages decode to signed DXIL, and draw on Direct3D 12 (D6c).
+# runtime packages whose stages decode to signed DXIL, and draw on Direct3D 12 (D6c). The
+# portable RG2/RG3 and RG4 pool pixel suites run here on WARP in CI.
 if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND LUDUS_SLANG_COMPILER)
     find_package(Catch2 3 REQUIRED CONFIG)
-    add_executable(ludus_render_graph_dxil_tests tests/render_graph_dxil_tests.cpp)
+    add_executable(ludus_render_graph_dxil_tests tests/render_graph_dxil_tests.cpp tests/render_graph_render_tests.cpp
+        tests/render_graph_pool_render_tests.cpp)
     target_link_libraries(ludus_render_graph_dxil_tests PRIVATE Ludus::GraphicsRenderer Ludus::FoundationContainers
         Ludus::FoundationMath Catch2::Catch2WithMain)
-    # Headless readback of the drawn frame and the renderer-owned composite stages.
-    target_include_directories(ludus_render_graph_dxil_tests PRIVATE ../rhi/src)
-    ludus_compile_renderer_shaders(TARGET ludus_render_graph_dxil_tests SHADERS renderer_composite)
+    target_compile_definitions(ludus_render_graph_dxil_tests PRIVATE LUDUS_TEST_DXIL=1)
     ludus_apply_project_defaults(ludus_render_graph_dxil_tests)
     ludus_enable_test_exceptions(ludus_render_graph_dxil_tests)
     ludus_configure_win32_target(ludus_render_graph_dxil_tests)
+    ludus_compile_renderer_shaders(TARGET ludus_render_graph_dxil_tests SHADERS renderer_composite)
     set(RG2_TEST_PROFILES "[\"dxil\"]")
-    foreach(kind surface bound)
-        set(staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-dxil-inputs/${kind}")
-        ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/${kind}" "${staged}")
-        ludus_compile_render_graph(TARGET ludus_render_graph_dxil_tests NAME rg2_dxil_${kind}
-            MANIFEST "${staged}/main.lushader.json" RUNTIME_PACKAGE)
-    endforeach()
+    ludus_add_render_graph_pixel_fixtures(ludus_render_graph_dxil_tests)
     # The same surface graph with a green color callback: an interface-compatible reload candidate.
-    set(green "${CMAKE_CURRENT_BINARY_DIR}/rg2-dxil-inputs/surface_green")
+    set(green "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/surface_green")
     ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/surface" "${green}")
     file(READ "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/surface/main_shaders/color.slang" color_source)
     string(REPLACE "return value.Color;" "return float4(0, 1, 0, 1);" color_source "${color_source}")
     file(WRITE "${green}/main_shaders/color.slang" "${color_source}")
-    ludus_compile_render_graph(TARGET ludus_render_graph_dxil_tests NAME rg2_dxil_surface_green
+    ludus_compile_render_graph(TARGET ludus_render_graph_dxil_tests NAME rg2_surface_green
         MANIFEST "${green}/main.lushader.json" RUNTIME_PACKAGE)
-    target_link_libraries(ludus_render_graph_dxil_tests PRIVATE Ludus::ShaderDevelopment Ludus::FoundationFilesystem
-        Ludus::FoundationTime)
+    target_link_libraries(ludus_render_graph_dxil_tests PRIVATE Ludus::ShaderDevelopment Ludus::FoundationTime)
     target_compile_definitions(ludus_render_graph_dxil_tests PRIVATE
-        LUDUS_RG2_DXIL_SURFACE_PACKAGE="${rg2_dxil_surface_RUNTIME_PACKAGE}"
-        LUDUS_RG2_DXIL_SURFACE_GREEN_PACKAGE="${rg2_dxil_surface_green_RUNTIME_PACKAGE}"
-        LUDUS_RG2_DXIL_BOUND_PACKAGE="${rg2_dxil_bound_RUNTIME_PACKAGE}")
+        LUDUS_RG2_SURFACE_PACKAGE="${rg2_surface_RUNTIME_PACKAGE}"
+        LUDUS_RG2_SURFACE_GREEN_PACKAGE="${rg2_surface_green_RUNTIME_PACKAGE}"
+        LUDUS_RG2_BOUND_PACKAGE="${rg2_bound_RUNTIME_PACKAGE}")
     add_test(NAME ludus_render_graph_dxil_tests COMMAND ludus_render_graph_dxil_tests)
-    set_tests_properties(ludus_render_graph_dxil_tests PROPERTIES LABELS "unit;render-graph;dxil;gpu" TIMEOUT 120)
+    set_tests_properties(ludus_render_graph_dxil_tests PROPERTIES LABELS "unit;render-graph;dxil;gpu" TIMEOUT 300)
 endif()
 
 if(TARGET ludus_renderer_render_tests)
@@ -465,15 +482,7 @@ if(TARGET ludus_renderer_render_tests)
     if(APPLE)
         set(RG2_TEST_PROFILES "[\"metal\", \"wgsl\"]")
     endif()
-    # bound: per-draw uniform values; bound_lusl: the same graph with LUSL callbacks;
-    # masked_color/masked_depth: authored masked coverage parity.
-    foreach(kind surface offscreen depth bound bound_lusl masked_color masked_depth independent)
-        set(input "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/${kind}")
-        set(staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${kind}")
-        ludus_stage_render_graph_fixture("${input}" "${staged}")
-        ludus_compile_render_graph(TARGET ludus_renderer_render_tests NAME rg2_${kind}
-            MANIFEST "${staged}/main.lushader.json" RUNTIME_PACKAGE)
-    endforeach()
+    ludus_add_render_graph_pixel_fixtures(ludus_renderer_render_tests)
     set(forward_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/forward_lit")
     set(forward_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/forward_lit")
     foreach(file main.lurender.json rasterize.lurender.json main_shaders/geometry.slang main_shaders/color.slang)
@@ -530,21 +539,8 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_forward_lit_RUNTIME_PACKAGE PARENT_PATH forward_package_directory)
     target_compile_definitions(ludus_renderer_render_tests PRIVATE
         LUDUS_RG3_FORWARD_DIRECTORY="${forward_package_directory}")
-    cmake_path(GET rg2_independent_RUNTIME_PACKAGE PARENT_PATH rg3_independent_directory)
-    target_compile_definitions(ludus_renderer_render_tests PRIVATE
-        LUDUS_RG3_INDEPENDENT_DIRECTORY="${rg3_independent_directory}")
-    # RG3 loads the same cooked surface generation at runtime and compares pixels with its header.
-    cmake_path(GET rg2_surface_RUNTIME_PACKAGE PARENT_PATH rg3_surface_directory)
-    cmake_path(GET rg2_bound_RUNTIME_PACKAGE PARENT_PATH rg3_bound_directory)
-    cmake_path(GET rg2_bound_lusl_RUNTIME_PACKAGE PARENT_PATH rg3_bound_lusl_directory)
-    # RG4 rewrites the offscreen generation into its scratch-transient pooling workload.
-    cmake_path(GET rg2_offscreen_RUNTIME_PACKAGE PARENT_PATH rg3_offscreen_directory)
-    target_compile_definitions(ludus_renderer_render_tests PRIVATE
-        LUDUS_RG3_SURFACE_DIRECTORY="${rg3_surface_directory}" LUDUS_RG3_BOUND_DIRECTORY="${rg3_bound_directory}"
-        LUDUS_RG3_BOUND_LUSL_DIRECTORY="${rg3_bound_lusl_directory}"
-        LUDUS_RG3_OFFSCREEN_DIRECTORY="${rg3_offscreen_directory}")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::FoundationFilesystem Ludus::ShaderDevelopment)
-    # The reload journey builds SPIR-V/WGSL/Metal graph packages; Windows graph DXIL is open (D6a).
+    # The reload journey builds SPIR-V/WGSL/Metal graph packages; producer-driven Windows rebuilds are open (D6c).
     if(TARGET ludus-shader-worker AND NOT WIN32)
         add_test(NAME ludus_shader_reload_gpu COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tools/shader-worker/test_worker.py"
@@ -552,8 +548,6 @@ if(TARGET ludus_renderer_render_tests)
             --renderer "$<TARGET_FILE:ludus_renderer_render_tests>")
         set_tests_properties(ludus_shader_reload_gpu PROPERTIES LABELS "shader;renderer;gpu" TIMEOUT 120)
     endif()
-    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME rg2_depth_display RASTER
-        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/depth_display.slang" VERTEX VSMain FRAGMENT PSMain)
 endif()
 
 if(TARGET ludus_renderer_render_tests)

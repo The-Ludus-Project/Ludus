@@ -87,10 +87,15 @@ public:
     {
         return Schema_;
     }
+    /// Whether this document uses the exact bundled schema, including its optional extensions.
+    [[nodiscard]] LUDUS_INLINE bool HasBuiltInSchema() const noexcept
+    {
+        return mIsBuiltInSchema;
+    }
     /// Whether this document uses the bundled default schema with terrain authoring enabled.
     [[nodiscard]] LUDUS_INLINE bool HasBuiltInTerrain() const noexcept
     {
-        return mHasBuiltInTerrain;
+        return mIsBuiltInSchema;
     }
     /// True when the open World is a version-2 record with a document AssetId and entity UUIDs.
     [[nodiscard]] bool HasUuidRecords() const;
@@ -211,6 +216,6 @@ private:
     QJsonObject Saved_;
     DocumentHistory<QJsonObject, 32> History_;
     bool Loaded_ = false;
-    bool mHasBuiltInTerrain = false;
+    bool mIsBuiltInSchema = false;
 };
 } // namespace ludus::editor

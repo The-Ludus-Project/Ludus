@@ -3,6 +3,8 @@
 #include "internal/world_document.h"
 #include "internal/world_probe_volume.h"
 
+#include "internal/world_celestial_light.h"
+
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -93,6 +95,10 @@ bool CreateWorldSun(WorldDocument& inoutWorld,
     transform.insert(QStringLiteral("rz"), static_cast<foundation::float64>(placement.RotationDegrees.Z));
     QJsonObject light = MakeDefaultValues(inoutWorld, QStringLiteral("light"));
     light.insert(QStringLiteral("kind"), QStringLiteral("directional"));
+    if (inoutWorld.HasBuiltInSchema() == true)
+    {
+        light.insert(WORLD_CELESTIAL_ROLE, WORLD_CELESTIAL_STATIC_SUN);
+    }
     light.insert(QStringLiteral("intensity"), static_cast<foundation::float64>(placement.IlluminanceLux));
     return inoutWorld.CreateEntity(
         entropy,

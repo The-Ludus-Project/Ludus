@@ -12,6 +12,7 @@
 #include <ludus/content/identity_records/world_records.h>
 #include <ludus/foundation/containers/array.hpp>
 
+#include <QAction>
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
@@ -365,9 +366,9 @@ TEST_CASE("World workspace saves version-2 and version-1 documents in their own 
         REQUIRE(reference != nullptr);
         CHECK(reference->currentData().toString() ==
               (hasUuidRecords == true ? QLatin1String(STARTER_CUBE) : QStringLiteral("starter.cube")));
-        view.findChild<QPushButton*>(QStringLiteral("worldAdd"))->click();
+        view.findChild<QAction*>(QStringLiteral("worldAdd"))->trigger();
         Select(view, target);
-        view.findChild<QPushButton*>(QStringLiteral("worldDuplicate"))->click();
+        view.findChild<QAction*>(QStringLiteral("worldDuplicate"))->trigger();
         REQUIRE(view.Save());
 
         const QJsonObject saved = QJsonDocument::fromJson(Read(path)).object();
@@ -450,7 +451,7 @@ TEST_CASE("World demo opens, edits and saves the committed manifest's version-2 
 
     const QString guard = FirstRoomUuid(QStringLiteral("guard-a"));
     Select(view, guard);
-    view.findChild<QPushButton*>(QStringLiteral("worldDuplicate"))->click();
+    view.findChild<QAction*>(QStringLiteral("worldDuplicate"))->trigger();
     REQUIRE(view.Save());
 
     const QJsonObject saved = QJsonDocument::fromJson(Read(path)).object();
