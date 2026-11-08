@@ -124,7 +124,8 @@ def snapshot(client: GitHub, root: Path, expected_main: str, *, retry: bool = Fa
 def describe_snapshot(outputs: dict) -> tuple[str, str]:
     """Return the run annotation and job summary for a capture decision.
 
-    A skipped capture leaves the whole run green, so it must not read as a promotion.
+    A skipped capture validates nothing; the workflow's unvalidated job then cancels
+    the run so that it never reads as a passing batch or a promotion.
     """
     reason = outputs["reason"]
     if outputs.get("should_run") == "true":
@@ -136,7 +137,7 @@ def describe_snapshot(outputs: dict) -> tuple[str, str]:
     escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
     summary = (f"### No promotion this run\n\n{reason}\n\n"
                "Validation and promotion were skipped, so `main` is unchanged. "
-               "This run is green only because there was nothing new to validate.\n")
+               "Nothing was validated, so this run is cancelled rather than reported as passing.\n")
     return f"::notice title=No promotion this run::{escaped}", summary
 
 
