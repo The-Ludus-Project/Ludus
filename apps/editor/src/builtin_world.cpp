@@ -2,7 +2,7 @@
 #include "internal/render_scene_limits.h"
 #include "internal/world_document.h"
 
-#include <ludus/gameplay/world/celestial_transform.hpp>
+#include "internal/world_celestial_light.h"
 
 #include <QFile>
 #include <QJsonArray>
@@ -33,106 +33,6 @@ bool ReadBuiltInWorldAsset(const QString& name, QByteArray& outBytes, QString& o
     outBytes = bytes;
     return true;
 }
-namespace
-{
-constexpr QLatin1StringView STATIC_SUN{"Static Sun"};
-constexpr QLatin1StringView EARTH_SUN{"Earth Sun"};
-constexpr QLatin1StringView EARTH_MOON{"Earth Moon"};
-
-QJsonObject
-MakeChoiceProperty(QLatin1StringView id, const QString& label, const QString& help, const QJsonArray& choices)
-{
-    return {{QStringLiteral("id"), id},
-            {QStringLiteral("label"), label},
-            {QStringLiteral("type"), QStringLiteral("enum")},
-            {QStringLiteral("choices"), choices},
-            {QStringLiteral("default"), choices.first()},
-            {QStringLiteral("help"), help},
-            {QStringLiteral("unit"), QString()}};
-}
-
-QJsonObject MakeCelestialNumberProperty(QLatin1StringView id,
-                                        const QString& label,
-                                        const QString& unit,
-                                        const QString& help,
-                                        foundation::float64 maximum)
-{
-    return {{QStringLiteral("id"), id},
-            {QStringLiteral("label"), label},
-            {QStringLiteral("type"), QStringLiteral("number")},
-            {QStringLiteral("default"), 0},
-            {QStringLiteral("min"), -maximum},
-            {QStringLiteral("max"), maximum},
-            {QStringLiteral("help"), help},
-            {QStringLiteral("unit"), unit}};
-}
-} // namespace
-
-QJsonArray MakeWorldCelestialProperties()
-{
-    using namespace gameplay::world;
-    return {MakeChoiceProperty(
-                WORLD_CELESTIAL_ROLE,
-                QStringLiteral("Celestial Role"),
-                QStringLiteral("Static Sun and Static Moon use the authored Transform. Dynamic Celestial "
-                               "can use a rule to drive its rotation."),
-                {QStringLiteral("None"), STATIC_SUN, QStringLiteral("Static Moon"), WORLD_CELESTIAL_DYNAMIC}),
-            MakeChoiceProperty(WORLD_CELESTIAL_DRIVER,
-                               QStringLiteral("Rotation Driver"),
-                               QStringLiteral("Use the Transform directly or sample an Earth sky rule. +X is east, +Y "
-                                              "is up and -Z is north."),
-                               {WORLD_CELESTIAL_AUTHORED, EARTH_SUN, EARTH_MOON}),
-            MakeCelestialNumberProperty(WORLD_CELESTIAL_TIME,
-                                        QStringLiteral("Earth Time"),
-                                        QStringLiteral("days"),
-                                        QStringLiteral("Fractional UTC days since noon on January 1, 2000. Add 0.25 "
-                                                       "to advance six hours."),
-                                        MAX_EARTH_CELESTIAL_DAYS),
-            MakeCelestialNumberProperty(WORLD_CELESTIAL_LATITUDE,
-                                        QStringLiteral("Earth Latitude"),
-                                        QStringLiteral("°"),
-                                        QStringLiteral("Observer latitude. North is positive."),
-                                        MAX_EARTH_LATITUDE_DEGREES),
-            MakeCelestialNumberProperty(WORLD_CELESTIAL_LONGITUDE,
-                                        QStringLiteral("Earth Longitude"),
-                                        QStringLiteral("°"),
-                                        QStringLiteral("Observer longitude. East is positive."),
-                                        MAX_EARTH_LONGITUDE_DEGREES)};
-}
-
-bool IsWorldCelestialProperty(const QString& property)
-{
-    return property == WORLD_CELESTIAL_ROLE || property == WORLD_CELESTIAL_DRIVER || property == WORLD_CELESTIAL_TIME ||
-           property == WORLD_CELESTIAL_LATITUDE || property == WORLD_CELESTIAL_LONGITUDE;
-}
-
-bool TryResolveWorldCelestialRotation(const QJsonObject& light,
-                                      foundation::math::Quaternion& inoutRotation,
-                                      bool& outIsAboveHorizon)
-{
-    using namespace gameplay::world;
-    const QString driver = light.value(WORLD_CELESTIAL_DRIVER).toString();
-    if (light.value(WORLD_CELESTIAL_ROLE).toString() != WORLD_CELESTIAL_DYNAMIC ||
-        (driver != EARTH_SUN && driver != EARTH_MOON))
-    {
-        outIsAboveHorizon = true;
-        return true;
-    }
-
-    EarthCelestialTransform sample;
-    if (TrySampleEarthCelestialTransform(driver == EARTH_SUN ? EarthCelestialBody::Sun : EarthCelestialBody::Moon,
-                                         light.value(WORLD_CELESTIAL_TIME).toDouble(),
-                                         light.value(WORLD_CELESTIAL_LATITUDE).toDouble(),
-                                         light.value(WORLD_CELESTIAL_LONGITUDE).toDouble(),
-                                         sample) == false)
-    {
-        return false;
-    }
-    inoutRotation = sample.Rotation;
-    outIsAboveHorizon = sample.IsAboveHorizon;
-    return true;
-}
-
 namespace
 {
 /// The schema defaults of one component's properties.
@@ -196,7 +96,7 @@ bool CreateWorldSun(WorldDocument& inoutWorld,
     light.insert(QStringLiteral("kind"), QStringLiteral("directional"));
     if (inoutWorld.HasBuiltInSchema() == true)
     {
-        light.insert(WORLD_CELESTIAL_ROLE, STATIC_SUN);
+        light.insert(WORLD_CELESTIAL_ROLE, WORLD_CELESTIAL_STATIC_SUN);
     }
     light.insert(QStringLiteral("intensity"), static_cast<foundation::float64>(placement.IlluminanceLux));
     return inoutWorld.CreateEntity(

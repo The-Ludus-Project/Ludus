@@ -6,6 +6,7 @@
 #include "internal/item_selection.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_scene.h"
+#include "internal/world_celestial_light.h"
 #include "internal/world_entity_search.h"
 
 #include "internal/controller.h"
@@ -59,6 +60,8 @@
 #include <QSettings>
 #include <QShortcut>
 #include <QSplitter>
+#include <QStringList>
+#include <QStringView>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QVector>
@@ -120,28 +123,49 @@ void ConfigureCelestialLightFields(QGroupBox& inoutGroup, QFormLayout& inoutRows
     QComboBox* kindOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, QStringLiteral("kind"))));
     QComboBox* roleOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, WORLD_CELESTIAL_ROLE)));
     QComboBox* driverOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, WORLD_CELESTIAL_DRIVER)));
-    QWidget* timeOrNull = fields.value(FieldKey(component, WORLD_CELESTIAL_TIME));
-    QWidget* latitudeOrNull = fields.value(FieldKey(component, WORLD_CELESTIAL_LATITUDE));
-    QWidget* longitudeOrNull = fields.value(FieldKey(component, WORLD_CELESTIAL_LONGITUDE));
-    if (kindOrNull == nullptr || roleOrNull == nullptr || driverOrNull == nullptr || timeOrNull == nullptr ||
-        latitudeOrNull == nullptr || longitudeOrNull == nullptr)
+    if (kindOrNull == nullptr || roleOrNull == nullptr || driverOrNull == nullptr)
     {
         return;
     }
-    const auto updateRows =
-        [&inoutGroup, &inoutRows, kindOrNull, roleOrNull, driverOrNull, timeOrNull, latitudeOrNull, longitudeOrNull]() {
-            const bool isDirectional = kindOrNull->currentData().toString() == QStringLiteral("directional");
-            const bool hasDriver =
-                isDirectional == true && roleOrNull->currentData().toString() == WORLD_CELESTIAL_DYNAMIC;
-            const bool hasEarthRule =
-                hasDriver == true && driverOrNull->currentData().toString() != WORLD_CELESTIAL_AUTHORED;
-            inoutRows.setRowVisible(roleOrNull, isDirectional);
-            inoutRows.setRowVisible(driverOrNull, hasDriver);
-            inoutRows.setRowVisible(timeOrNull, hasEarthRule);
-            inoutRows.setRowVisible(latitudeOrNull, hasEarthRule);
-            inoutRows.setRowVisible(longitudeOrNull, hasEarthRule);
-            inoutGroup.setMinimumHeight(inoutRows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
-        };
+
+    struct CelestialRow final
+    {
+        WorldCelestialFieldGroup Group;
+        QWidget* Field;
+    };
+    QVector<CelestialRow> celestialRows;
+    const QString componentPrefix = FieldKey(component, QString());
+    for (const QString& key : fields.keys())
+    {
+        if (key.startsWith(componentPrefix) == true)
+        {
+            const WorldCelestialFieldGroup group =
+                GetWorldCelestialFieldGroup(QStringView(key).sliced(componentPrefix.size()));
+            QWidget* fieldOrNull = fields.value(key);
+            if (group != WorldCelestialFieldGroup::Other && fieldOrNull != nullptr)
+            {
+                celestialRows.append({group, fieldOrNull});
+            }
+        }
+    }
+    const auto updateRows = [&inoutGroup, &inoutRows, kindOrNull, roleOrNull, driverOrNull, celestialRows]() {
+        const bool isDirectional = kindOrNull->currentData().toString() == QStringLiteral("directional");
+        const bool hasDriver = isDirectional == true && roleOrNull->currentData().toString() == WORLD_CELESTIAL_DYNAMIC;
+        const QString driver = driverOrNull->currentData().toString();
+        const bool hasObserver = hasDriver == true && driver != WORLD_CELESTIAL_AUTHORED;
+        const bool hasOrbit = hasObserver == true && driver == WORLD_CELESTIAL_ORBIT;
+        const bool hasEarth = hasObserver == true && hasOrbit == false;
+        for (const CelestialRow& row : celestialRows)
+        {
+            const bool isVisible = (row.Group == WorldCelestialFieldGroup::Role && isDirectional == true) ||
+                                   (row.Group == WorldCelestialFieldGroup::Driver && hasDriver == true) ||
+                                   (row.Group == WorldCelestialFieldGroup::Observer && hasObserver == true) ||
+                                   (row.Group == WorldCelestialFieldGroup::Earth && hasEarth == true) ||
+                                   (row.Group == WorldCelestialFieldGroup::Orbit && hasOrbit == true);
+            inoutRows.setRowVisible(row.Field, isVisible);
+        }
+        inoutGroup.setMinimumHeight(inoutRows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
+    };
     QObject::connect(kindOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
     QObject::connect(roleOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
     QObject::connect(driverOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);

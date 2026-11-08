@@ -2,6 +2,7 @@
 #include "internal/builtin_world.h"
 #include "internal/qt_numeric_stream.h"
 #include "internal/render_scene_limits.h"
+#include "internal/world_celestial_light.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_terrain.h"
 
@@ -852,7 +853,7 @@ bool RenderScene::Load(const QString& root,
                     {
                         return Fail(outError,
                                     name + QStringLiteral(
-                                               ": set Earth Time, Latitude and Longitude within their shown ranges."));
+                                               ": set the active celestial driver fields within their shown ranges."));
                     }
                 }
                 light.Position = trs.Translation;

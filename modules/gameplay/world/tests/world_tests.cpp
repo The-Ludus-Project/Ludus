@@ -246,3 +246,69 @@ TEST_CASE("Earth sky rules provide time-dependent rotations and horizon state", 
     CHECK(moon.Rotation == last.Rotation);
     CHECK(moon.IsAboveHorizon == last.IsAboveHorizon);
 }
+
+TEST_CASE("Custom orbit sky motion separates world spin from the source path", "[world][celestial]")
+{
+    constexpr math::Vector3 LIGHT_FORWARD{0, 0, -1};
+    constexpr float64 FICTIONAL_WORLD_SPIN_DEGREES_PER_HOUR = 30;
+    constexpr float64 WORLD_HALF_TURN_HOURS = 6;
+    constexpr float64 WORLD_QUARTER_TURN_HOURS = 3;
+    CelestialObserver observer;
+    observer.SpinDegreesPerHour = FICTIONAL_WORLD_SPIN_DEGREES_PER_HOUR;
+    CelestialOrbit orbit;
+    CelestialTransform sample;
+    REQUIRE(TrySampleCelestialOrbitTransform(orbit, observer, 0, sample) == true);
+    REQUIRE(sample.IsAboveHorizon == true);
+    CHECK(math::Rotate(sample.Rotation, LIGHT_FORWARD).Y < -0.99F);
+
+    REQUIRE(TrySampleCelestialOrbitTransform(orbit, observer, WORLD_HALF_TURN_HOURS, sample) == true);
+    CHECK(sample.IsAboveHorizon == false);
+    CHECK(math::Rotate(sample.Rotation, LIGHT_FORWARD).Y > 0.99F);
+
+    REQUIRE(TrySampleCelestialOrbitTransform(orbit, observer, WORLD_QUARTER_TURN_HOURS, sample) == true);
+    CHECK(sample.IsAboveHorizon == false);
+    CHECK(math::Rotate(sample.Rotation, LIGHT_FORWARD).X > 0.99F);
+    REQUIRE(TrySampleCelestialOrbitTransform(orbit, observer, -WORLD_QUARTER_TURN_HOURS, sample) == true);
+    CHECK(math::Rotate(sample.Rotation, LIGHT_FORWARD).X < -0.99F);
+
+    orbit.DegreesPerHour = observer.SpinDegreesPerHour;
+    REQUIRE(TrySampleCelestialOrbitTransform(orbit, observer, WORLD_HALF_TURN_HOURS, sample) == true);
+    CHECK(sample.IsAboveHorizon == true);
+    CHECK(math::Rotate(sample.Rotation, LIGHT_FORWARD).Y < -0.99F);
+}
+
+TEST_CASE("Custom orbits support a tilted nearby moon and preserve rejected samples", "[world][celestial]")
+{
+    constexpr math::Vector3 LIGHT_FORWARD{0, 0, -1};
+    constexpr float64 QUARTER_TURN_DEGREES = 90;
+    constexpr float64 ORBIT_TILT_DEGREES = 60;
+    constexpr float64 NEARBY_MOON_OBSERVER_RATIO = 0.6;
+    CelestialObserver observer;
+    observer.SpinDegreesPerHour = 0;
+    CelestialOrbit orbit;
+    orbit.PhaseDegrees = QUARTER_TURN_DEGREES;
+    orbit.AscendingNodeDegrees = -QUARTER_TURN_DEGREES;
+    orbit.InclinationDegrees = ORBIT_TILT_DEGREES;
+
+    CelestialTransform sample;
+    REQUIRE(TrySampleCelestialOrbitTransform(orbit, observer, 0, sample) == true);
+    CHECK(sample.IsAboveHorizon == true);
+    const math::Vector3 distantDirectionWorld = math::Rotate(sample.Rotation, LIGHT_FORWARD);
+    CHECK(distantDirectionWorld.Z > 0.8F);
+    CHECK(distantDirectionWorld.Y < -0.49F);
+
+    orbit.ObserverRadiusRatio = NEARBY_MOON_OBSERVER_RATIO;
+    REQUIRE(TrySampleCelestialOrbitTransform(orbit, observer, 0, sample) == true);
+    CHECK(sample.IsAboveHorizon == false);
+    CHECK(math::Rotate(sample.Rotation, LIGHT_FORWARD).Y > 0);
+
+    const CelestialTransform accepted = sample;
+    CHECK(TrySampleCelestialOrbitTransform(orbit, observer, MAX_CELESTIAL_ORBIT_HOURS + 1, sample) == false);
+    orbit.ObserverRadiusRatio = 1;
+    CHECK(TrySampleCelestialOrbitTransform(orbit, observer, 0, sample) == false);
+    orbit.ObserverRadiusRatio = 0;
+    observer.SpinDegreesPerHour = std::numeric_limits<float64>::quiet_NaN();
+    CHECK(TrySampleCelestialOrbitTransform(orbit, observer, 0, sample) == false);
+    CHECK(sample.Rotation == accepted.Rotation);
+    CHECK(sample.IsAboveHorizon == accepted.IsAboveHorizon);
+}

@@ -246,3 +246,25 @@ illumination. The game owns the clock, transform, and intensity. The sampler
 uses approximate solar and lunar positions and a spherical, airless Earth.
 See [celestial directional lights](../development/editor-workspace.md#celestial-directional-lights)
 for the World editor controls.
+
+### Custom circular orbits
+
+Use `TrySampleCelestialOrbitTransform` in the same header for a fictional world
+or a different star or satellite. Share a `CelestialObserver` and fractional
+simulation hours across lights seen from the same place. Each light has its own
+`CelestialOrbit`, with signed angular rate, initial phase, inclination, and
+ascending node in the observer world's equatorial frame. Angles are in degrees
+and rates are in degrees per simulation hour. With an equatorial orbit whose
+rate equals the world spin, the body stays at a fixed point in the sky.
+
+At time zero, observer longitude is measured east of the reference meridian.
+The ascending node uses the same reference direction, and orbital phase is
+measured along the circle from that node. For a coplanar orbit the node angle
+sets the phase reference. The inclination of a star's orbit relative to the
+world equator can represent the world's axial tilt relative to its orbital plane.
+
+For a nearby moon, set `ObserverRadiusRatio` to the observer's distance from
+the world's center divided by the moon's orbital radius. The sampler projects
+the resulting direction from the observer to the body and reports geometric
+horizon visibility. A zero ratio models a distant source. Each path is
+prescribed, and the game owns the clock and applies the returned rotation.

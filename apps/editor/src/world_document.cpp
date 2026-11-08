@@ -3,6 +3,7 @@
 #include "internal/builtin_world.h"
 #include "internal/editor_identity.h"
 #include "internal/material_inspection.h"
+#include "internal/world_celestial_light.h"
 #include "internal/world_terrain.h"
 
 #include <ludus/content/identity_records/migration_manifest.h>

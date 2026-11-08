@@ -14,6 +14,7 @@
 #include "internal/render_scene.h"
 #include "internal/renderer_workspace.h"
 #include "internal/viewport_object_interaction.h"
+#include "internal/world_celestial_light.h"
 #include "internal/world_document.h"
 #include "internal/world_entity_search.h"
 #include "internal/world_lighting_coverage.h"
@@ -2760,6 +2761,68 @@ TEST_CASE("Directional celestial roles round-trip and Earth drivers sample the l
     CHECK(savedLight.contains(WORLD_CELESTIAL_LONGITUDE) == false);
     workspace.StopPreview();
     reopened.StopPreview();
+}
+
+TEST_CASE("Custom celestial orbits use an authored world spin and survive a World reload", "[editor][world][celestial]")
+{
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString path = QDir(root).filePath(QStringLiteral("custom-orbit.world.json"));
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(path) == true);
+    QAction* sunOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
+    REQUIRE(sunOrNull != nullptr);
+    sunOrNull->trigger();
+
+    QComboBox* roleOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialRole"));
+    QComboBox* driverOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialDriver"));
+    QLineEdit* earthTimeOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialTime"));
+    QLineEdit* orbitTimeOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialOrbitTime"));
+    QLineEdit* spinOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialObserverSpin"));
+    QLineEdit* rateOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialOrbitRate"));
+    REQUIRE(roleOrNull != nullptr);
+    REQUIRE(driverOrNull != nullptr);
+    REQUIRE(earthTimeOrNull != nullptr);
+    REQUIRE(orbitTimeOrNull != nullptr);
+    REQUIRE(spinOrNull != nullptr);
+    REQUIRE(rateOrNull != nullptr);
+    roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
+    driverOrNull->setCurrentText(QStringLiteral("Custom Orbit"));
+    CHECK(orbitTimeOrNull->isHidden() == false);
+    CHECK(earthTimeOrNull->isHidden() == true);
+
+    const auto enterNumber = [](QLineEdit& inoutField, const QString& number) {
+        inoutField.selectAll();
+        QTest::keyClicks(&inoutField, number);
+    };
+    enterNumber(*spinOrNull, QStringLiteral("30"));
+    enterNumber(*orbitTimeOrNull, QStringLiteral("6"));
+    REQUIRE(workspace.Apply() == true);
+    RenderScene scene;
+    QString error;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
+    REQUIRE(scene.AuthoredLights.Count == 1);
+    CHECK(scene.AuthoredLights.Lights[0].Direction.Y > 0);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity == 0);
+
+    enterNumber(*rateOrNull, QStringLiteral("30"));
+    REQUIRE(workspace.Apply() == true);
+    driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
+    CHECK(orbitTimeOrNull->isHidden() == true);
+    CHECK(earthTimeOrNull->isHidden() == false);
+    REQUIRE(workspace.Apply() == true);
+    driverOrNull->setCurrentText(QStringLiteral("Custom Orbit"));
+    REQUIRE(workspace.Save() == true);
+
+    WorldDocument saved;
+    REQUIRE(saved.LoadSchema(Read(QStringLiteral(":/world/world.schema.json")), error) == true);
+    REQUIRE(saved.Load(Read(path), error) == true);
+    REQUIRE(RenderScene::Load(root, saved, scene, error) == true);
+    REQUIRE(scene.AuthoredLights.Count == 1);
+    CHECK(scene.AuthoredLights.Lights[0].Direction.Y < 0);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity > 0);
+    workspace.StopPreview();
 }
 
 TEST_CASE("A default World luminaire is scene data with an outline and a working gizmo",

@@ -1707,8 +1707,8 @@ Worlds. The **Sun** creation and lighting repair actions assign **Static Sun**.
 
 Set **Dynamic Celestial → Rotation Driver** to **Transform** to use the entity's
 rotation, including rotation supplied by a game. Choose **Earth Sun** or
-**Earth Moon** to sample an approximate sky direction at **Earth Time**,
-**Earth Latitude**, and **Earth Longitude**. Use the same values on both lights
+**Earth Moon** to sample an approximate sky direction using **Earth Time**,
+**Observer Latitude**, and **Observer Longitude**. Use the same values on both lights
 to preview a single observer and moment. Earth Time is fractional UTC days
 since noon on January 1, 2000. For example, `0.5` is the following midnight.
 North latitude and east longitude are positive. The World frame is +X east,
@@ -1720,6 +1720,20 @@ horizon contributes zero direct light. Intensity and colour come from the
 authored light. The rules model direction and horizon visibility. Lunar phase
 and atmospheric effects are outside their scope. Games can pass
 their own simulation time to the [GameplayWorld celestial sampler](../architecture/game-world.md#earth-celestial-transforms).
+
+Choose **Custom Orbit** for a different observer world, star, or moon. Set
+**Orbit Time** in simulation hours from your chosen epoch. For lights viewed
+from the same world, use the same time, observer coordinates, and **World
+Spin**. Both spin and **Body Orbit Rate** use degrees per simulation hour.
+For example, enter `30` for a 12-hour world rotation and `7.5` for a moon on a
+48-hour orbit. Negative rates reverse motion, and zero holds that angle fixed.
+
+Set each light's **Body Phase** for its starting point, **Orbit Inclination**
+for the tilt from the world's equator, and **Ascending Node** for the orbit's
+orientation around the spin axis. Use **World Radius / Orbit Radius** to
+account for the shift in a nearby moon's apparent position. A value of zero
+treats the source as distant. The rule follows a prescribed circular orbit and
+uses the same horizon cutoff as the Earth templates.
 
 ### Switching lights
 

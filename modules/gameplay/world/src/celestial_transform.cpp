@@ -119,7 +119,92 @@ EclipticCoordinates ComputeLunarCoordinates(float64 centuries) noexcept
             math::DegreesToRadians(latitudeDegrees),
             math::DegreesToRadians(parallaxDegrees)};
 }
+bool IsWithinCelestialRange(float64 value, float64 limit) noexcept
+{
+    return math::IsFinite(value) == true && math::Abs(value) <= limit;
+}
+
+float64 ComputeCyclicRadians(float64 epochDegrees, float64 degreesPerHour, float64 elapsedHours) noexcept
+{
+    constexpr float64 DEGREES_PER_TURN = 360;
+    const float64 elapsedDegrees = degreesPerHour * elapsedHours;
+    const float64 wrappedDegrees = elapsedDegrees - DEGREES_PER_TURN * math::Floor(elapsedDegrees / DEGREES_PER_TURN);
+    return math::DegreesToRadians(epochDegrees + wrappedDegrees);
+}
+
+bool TryProjectCelestialTransform(math::Vector3d directionEquatorial,
+                                  float64 meridianRadians,
+                                  float64 latitudeRadians,
+                                  float64 observerRadiusRatio,
+                                  CelestialTransform& outTransform) noexcept
+{
+    const float64 cosMeridian = math::Cos(meridianRadians);
+    const float64 sinMeridian = math::Sin(meridianRadians);
+    const float64 cosLatitude = math::Cos(latitudeRadians);
+    const float64 sinLatitude = math::Sin(latitudeRadians);
+    const float64 equatorialMeridian = directionEquatorial.X * cosMeridian + directionEquatorial.Y * sinMeridian;
+    const float64 east = directionEquatorial.Y * cosMeridian - directionEquatorial.X * sinMeridian;
+    const float64 north = directionEquatorial.Z * cosLatitude - equatorialMeridian * sinLatitude;
+    // The body direction has unit length. Subtract the observer's radius in body-distance units.
+    const float64 up = equatorialMeridian * cosLatitude + directionEquatorial.Z * sinLatitude - observerRadiusRatio;
+    const math::Vector3 incomingWorld{-static_cast<float32>(east),
+                                      -static_cast<float32>(up),
+                                      static_cast<float32>(north)};
+    CelestialTransform transform;
+    if (math::TryRotationBetween({0, 0, -1}, incomingWorld, transform.Rotation) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    // Dimensionless roundoff allowance in the vertical direction component at the exact horizon.
+    constexpr float64 HORIZON_COMPONENT_TOLERANCE = 1e-12;
+    transform.IsAboveHorizon = up > HORIZON_COMPONENT_TOLERANCE;
+    outTransform = transform;
+    return true;
+}
 } // namespace
+
+bool TrySampleCelestialOrbitTransform(const CelestialOrbit& orbit,
+                                      const CelestialObserver& observer,
+                                      float64 elapsedHours,
+                                      CelestialTransform& outTransform) noexcept
+{
+    if (IsWithinCelestialRange(elapsedHours, MAX_CELESTIAL_ORBIT_HOURS) == false ||
+        IsWithinCelestialRange(observer.LatitudeDegrees, MAX_CELESTIAL_LATITUDE_DEGREES) == false ||
+        IsWithinCelestialRange(observer.LongitudeDegrees, MAX_CELESTIAL_LONGITUDE_DEGREES) == false ||
+        IsWithinCelestialRange(observer.SpinDegreesPerHour, MAX_CELESTIAL_RATE_DEGREES_PER_HOUR) == false ||
+        IsWithinCelestialRange(orbit.DegreesPerHour, MAX_CELESTIAL_RATE_DEGREES_PER_HOUR) == false ||
+        IsWithinCelestialRange(orbit.PhaseDegrees, MAX_CELESTIAL_ORBIT_ANGLE_DEGREES) == false ||
+        IsWithinCelestialRange(orbit.AscendingNodeDegrees, MAX_CELESTIAL_ORBIT_ANGLE_DEGREES) == false ||
+        IsWithinCelestialRange(orbit.InclinationDegrees, MAX_CELESTIAL_ORBIT_ANGLE_DEGREES) == false ||
+        orbit.InclinationDegrees < 0 ||
+        IsWithinCelestialRange(orbit.ObserverRadiusRatio, MAX_CELESTIAL_OBSERVER_RADIUS_RATIO) == false ||
+        orbit.ObserverRadiusRatio < 0)
+    {
+        return false;
+    }
+
+    // Thanks to NASA JPL Solar System Dynamics, "Approximate Positions of the Planets", section 2,
+    // https://ssd.jpl.nasa.gov/planets/approx_pos.html. Use its orbital-plane rotation with a circular
+    // unit path, a fixed world equator as the reference plane, and phase measured from the node.
+    const float64 phaseRadians = ComputeCyclicRadians(orbit.PhaseDegrees, orbit.DegreesPerHour, elapsedHours);
+    const float64 inclinationRadians = math::DegreesToRadians(orbit.InclinationDegrees);
+    const float64 nodeRadians = math::DegreesToRadians(orbit.AscendingNodeDegrees);
+    const float64 xOrbit = math::Cos(phaseRadians);
+    const float64 yOrbit = math::Sin(phaseRadians);
+    const float64 inclinedYEquatorial = yOrbit * math::Cos(inclinationRadians);
+    const math::Vector3d directionEquatorial{
+        xOrbit * math::Cos(nodeRadians) - inclinedYEquatorial * math::Sin(nodeRadians),
+        xOrbit * math::Sin(nodeRadians) + inclinedYEquatorial * math::Cos(nodeRadians),
+        yOrbit * math::Sin(inclinationRadians),
+    };
+    const float64 meridianRadians =
+        ComputeCyclicRadians(observer.LongitudeDegrees, observer.SpinDegreesPerHour, elapsedHours);
+    return TryProjectCelestialTransform(directionEquatorial,
+                                        meridianRadians,
+                                        math::DegreesToRadians(observer.LatitudeDegrees),
+                                        orbit.ObserverRadiusRatio,
+                                        outTransform);
+}
 
 bool TrySampleEarthCelestialTransform(EarthCelestialBody body,
                                       float64 daysSinceJ2000,
@@ -160,24 +245,10 @@ bool TrySampleEarthCelestialTransform(EarthCelestialBody body,
     const float64 siderealRadians = math::DegreesToRadians(
         DEGREES_PER_SIDEREAL_HOUR * (SIDEREAL_AT_EPOCH_HOURS + SIDEREAL_HOURS_PER_DAY * daysSinceJ2000) +
         longitudeDegrees);
-    const float64 latitudeRadians = math::DegreesToRadians(latitudeDegrees);
-    const float64 equatorialMeridian =
-        xEcliptic * math::Cos(siderealRadians) + yEquatorial * math::Sin(siderealRadians);
-    const float64 east = yEquatorial * math::Cos(siderealRadians) - xEcliptic * math::Sin(siderealRadians);
-    const float64 north = zEquatorial * math::Cos(latitudeRadians) - equatorialMeridian * math::Sin(latitudeRadians);
-    // The geocentric unit direction is in body-distance units. Subtract one Earth radius in those units.
-    const float64 up = equatorialMeridian * math::Cos(latitudeRadians) + zEquatorial * math::Sin(latitudeRadians) -
-                       math::Sin(coordinates.ParallaxRadians);
-    const math::Vector3 incomingWorld{-static_cast<float32>(east),
-                                      -static_cast<float32>(up),
-                                      static_cast<float32>(north)};
-    EarthCelestialTransform transform;
-    if (math::TryRotationBetween({0, 0, -1}, incomingWorld, transform.Rotation) != math::MathStatus::Success)
-    {
-        return false;
-    }
-    transform.IsAboveHorizon = up > 0;
-    outTransform = transform;
-    return true;
+    return TryProjectCelestialTransform({xEcliptic, yEquatorial, zEquatorial},
+                                        siderealRadians,
+                                        math::DegreesToRadians(latitudeDegrees),
+                                        math::Sin(coordinates.ParallaxRadians),
+                                        outTransform);
 }
 } // namespace ludus::gameplay::world
