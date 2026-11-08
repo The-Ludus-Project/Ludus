@@ -30,10 +30,11 @@ inline constexpr uint32 MAX_TEMPORARY_ATTEMPTS = 64;
 /// path: it starts with '/'. On Windows it is also rooted when it starts with '\\'
 /// or holds a '\\' separator or a ':' drive or stream designator.
 [[nodiscard]] bool IsRootedName(std::string_view name) noexcept;
-/// Bytes of the root prefix of a resolved path: "/" on POSIX; "C:/" or
-/// "//server/share/" on Windows. Zero for a relative path.
+/// Bytes of the root prefix of a path: "/" on POSIX; "C:/" or "//server/share/"
+/// on Windows, where '\\' also separates components. Zero for a relative path.
 [[nodiscard]] usize GetRootLength(std::string_view path) noexcept;
-/// os.path.dirname of a resolved path, keeping the root ("/", "C:/"); "." without a separator.
+/// os.path.dirname of a path, keeping the root ("/", "C:/"); "." without a separator.
+/// On Windows '\\' is a separator too, as it is in a user-supplied destination.
 [[nodiscard]] std::string_view GetParentDirectory(std::string_view path) noexcept;
 
 /// realpath(3) of an existing directory.

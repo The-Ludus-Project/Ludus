@@ -802,24 +802,39 @@ bool IsRootedName(std::string_view name) noexcept
 #endif
 }
 
+namespace
+{
+/// Path separators: '/' everywhere; Win32 also accepts '\\', which user paths may carry.
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+constexpr std::string_view PATH_SEPARATORS = "/\\";
+
+[[nodiscard]] bool IsPathSeparator(char value) noexcept
+{
+    return PATH_SEPARATORS.find(value) != std::string_view::npos;
+}
+#else
+constexpr std::string_view PATH_SEPARATORS = "/";
+#endif
+} // namespace
+
 usize GetRootLength(std::string_view path) noexcept
 {
 #if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
     constexpr usize DRIVE_ROOT_BYTES = 3; // "C:/"
     constexpr usize UNC_PREFIX_BYTES = 2; // "//"
-    if (path.size() >= DRIVE_ROOT_BYTES && path[1] == ':' && path[2] == '/')
+    if (path.size() >= DRIVE_ROOT_BYTES && path[1] == ':' && IsPathSeparator(path[2]) == true)
     {
         return DRIVE_ROOT_BYTES;
     }
-    if (path.substr(0, UNC_PREFIX_BYTES) == "//")
+    if (path.size() >= UNC_PREFIX_BYTES && IsPathSeparator(path[0]) == true && IsPathSeparator(path[1]) == true)
     {
         // "//server/share/": the server and share names belong to the root.
-        const usize serverEnd = path.find('/', UNC_PREFIX_BYTES);
+        const usize serverEnd = path.find_first_of(PATH_SEPARATORS, UNC_PREFIX_BYTES);
         if (serverEnd == std::string_view::npos)
         {
             return path.size();
         }
-        const usize shareEnd = path.find('/', serverEnd + 1);
+        const usize shareEnd = path.find_first_of(PATH_SEPARATORS, serverEnd + 1);
         return shareEnd == std::string_view::npos ? path.size() : shareEnd + 1;
     }
     return 0;
@@ -831,7 +846,7 @@ usize GetRootLength(std::string_view path) noexcept
 std::string_view GetParentDirectory(std::string_view path) noexcept
 {
     const usize root = GetRootLength(path);
-    const usize slash = path.rfind('/');
+    const usize slash = path.find_last_of(PATH_SEPARATORS);
     if (slash == std::string_view::npos || (root == 0 && slash == 0))
     {
         return slash == 0 ? path.substr(0, 1) : std::string_view(".");

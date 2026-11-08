@@ -914,9 +914,10 @@ Status FileLock::Acquire(std::string_view path, LockMode mode) noexcept
         return Status::Invalid;
     }
     // Like the POSIX open(2) flags: an exclusive holder creates the file, a shared one requires it.
+    // LockFileEx needs GENERIC_READ or GENERIC_WRITE access; FILE_APPEND_DATA alone is refused.
     const bool isExclusive = mode == LockMode::Exclusive;
     ScopedHandle file(CreateFileW(wide.GetData(),
-                                  isExclusive == true ? FILE_APPEND_DATA : GENERIC_READ,
+                                  isExclusive == true ? GENERIC_WRITE : GENERIC_READ,
                                   SHARE_ALL,
                                   nullptr,
                                   isExclusive == true ? OPEN_ALWAYS : OPEN_EXISTING,
