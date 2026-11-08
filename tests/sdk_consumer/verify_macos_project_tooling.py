@@ -40,6 +40,9 @@ def main():
             assert "/out/host-tools/macos-sdk/" not in file.read_text(), file
         run([cli, "--version"], cwd=root, env=env)
         run([cli.parent / "python", "-c", "import ludus_tools,sys; assert not any(m == 'engine' or m.startswith(('PyQt','PySide')) for m in sys.modules)"], cwd=root, env=env)
+        minimal_template_version = int(run(
+            [cli.parent / "python", "-c", "from ludus_tools.templates import get_template; print(get_template('minimal').version)"],
+            cwd=root, env=env).stdout)
         projects = []
         for number in (1, 2):
             project = root / f"Game {number}"
@@ -48,7 +51,10 @@ def main():
                  "--tools", tools], cwd=root, env=env)
             descriptor = json.loads((project / "ludus.project.json").read_text())
             assert descriptor["preset"] == "macos-clang-development", descriptor
-            assert descriptor["template"]["version"] == 6
+            # The descriptor records the minimal template that the installed tools ship, so a
+            # template version bump does not need a matching edit here.
+            if descriptor["template"] != {"id": "minimal", "version": minimal_template_version}:
+                raise RuntimeError(f"Expected minimal template version {minimal_template_version}: {descriptor}")
             for tracked in ("ludus.project.json", "ludus.lock.json", "CMakeLists.txt", "CMakePresets.json"):
                 assert str(root) not in (project / tracked).read_text(), tracked
             run([cli, "project", "check", project, "--tools", tools], cwd=root, env=env)
