@@ -16,6 +16,12 @@ import urllib.request
 
 ATTEMPT_BRANCH = "ci/last-batch-attempt"
 VALIDATION_JOBS = ("native", "sdk", "wiki", "browser", "threading", "windows")
+# Repository-owned cache key families. Each key ends in input hashes and, for
+# compiler caches, the commit that saved it; older entries of a family on the
+# batch's ref can never be restored again once a newer one exists.
+PRUNED_CACHE_PREFIXES = ("ccache-", "conan-", "editor-pages-", "editor-tools-", "web-tools-", "icu-probe-", "pip-")
+CACHE_KEY_HASH = re.compile(r"-[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+MAX_CACHE_PAGES = 20
 RECOVERY_PATHS = (
     ".github/workflows/filesystem-recovery.yml",
     "modules/foundation/filesystem/src/persistence_posix.cpp",
@@ -59,6 +65,9 @@ class GitHub:
             raise BatchError(f"GitHub {method} {path} failed with HTTP {error.code}.") from None
         if len(payload) > 2 * 1024 * 1024:
             raise BatchError("GitHub response exceeded the bounded metadata limit.")
+        # DELETE answers 204 No Content; any other empty body is malformed and fails closed.
+        if method == "DELETE" and not payload:
+            return None
         return json.loads(payload)
 
     def head(self, branch: str) -> str | None:
@@ -182,9 +191,92 @@ def promote(client: GitHub, root: Path, base: str, candidate: str, results: dict
     push_fast_forward(root, f"https://github.com/{client.repository}.git", base, candidate, client.token)
 
 
+def cache_family(key: str) -> str | None:
+    """Return the key without its trailing input/commit hashes, or None if not repository-owned."""
+    if not key.startswith(PRUNED_CACHE_PREFIXES):
+        return None
+    family = key
+    while (match := CACHE_KEY_HASH.search(family)) is not None:
+        family = family[:match.start()]
+    # An empty hashFiles() result leaves a trailing separator.
+    return family.rstrip("-") or None
+
+
+def list_caches(client: GitHub, ref: str) -> list[dict]:
+    # Thanks to GitHub, "REST API endpoints for GitHub Actions cache", List
+    # GitHub Actions caches for a repository and Delete a cache by ID:
+    # https://docs.github.com/en/rest/actions/cache#list-github-actions-caches-for-a-repository
+    caches: list[dict] = []
+    for page in range(1, MAX_CACHE_PAGES + 1):
+        listing = client.request(f"actions/caches?ref={ref}&per_page=100&page={page}")
+        entries = listing.get("actions_caches") if isinstance(listing, dict) else None
+        if not isinstance(entries, list):
+            raise BatchError("GitHub returned no cache listing.")
+        caches.extend(entry for entry in entries if isinstance(entry, dict))
+        total = listing.get("total_count")
+        if not entries or not isinstance(total, int) or len(caches) >= total:
+            return caches
+    raise BatchError("The repository has more caches than the bounded listing reads.")
+
+
+def select_superseded_caches(caches: list[dict], ref: str) -> list[dict]:
+    """Keep the newest entry of each repository-owned family on ref; return the rest."""
+    newest: dict[str, dict] = {}
+    superseded: list[dict] = []
+    for entry in caches:
+        key = entry.get("key")
+        if entry.get("ref") != ref or not isinstance(key, str) or not isinstance(entry.get("id"), int):
+            continue
+        family = cache_family(key)
+        if family is None:
+            continue
+        order = (str(entry.get("created_at", "")), entry["id"])
+        kept = newest.get(family)
+        if kept is None:
+            newest[family] = entry
+        elif order > (str(kept.get("created_at", "")), kept["id"]):
+            superseded.append(kept)
+            newest[family] = entry
+        else:
+            superseded.append(entry)
+    return sorted(superseded, key=lambda entry: entry["id"])
+
+
+def prune_caches(client: GitHub, ref: str) -> tuple[list[dict], list[str]]:
+    """Delete superseded caches on ref. Return deleted entries and per-entry failures.
+
+    The repository cache limit evicts least-recently-used entries once it is full.
+    Each batch saves a new commit-keyed compiler cache for every variant, so without
+    pruning the stale copies evict the large dependency and sanitizer caches.
+    """
+    if re.fullmatch(r"refs/heads/[A-Za-z0-9._/-]+", ref) is None:
+        raise BatchError("Cache pruning needs an explicit branch ref.")
+    deleted: list[dict] = []
+    failures: list[str] = []
+    for entry in select_superseded_caches(list_caches(client, ref), ref):
+        try:
+            client.request(f"actions/caches/{entry['id']}", "DELETE")
+        except BatchError as error:
+            # Another run may already have removed it; keep pruning the rest.
+            failures.append(f"{entry['key']}: {error}")
+        else:
+            deleted.append(entry)
+    return deleted, failures
+
+
+def describe_pruning(deleted: list[dict], failures: list[str]) -> str:
+    freed = sum(entry.get("size_in_bytes", 0) for entry in deleted if isinstance(entry.get("size_in_bytes"), int))
+    lines = [f"### Cache pruning\n\nDeleted {len(deleted)} superseded caches ({freed / 2**20:.0f} MiB).\n"]
+    lines += [f"- `{entry['key']}`" for entry in deleted]
+    if failures:
+        lines.append(f"\n{len(failures)} deletions failed:\n")
+        lines += [f"- {failure}" for failure in failures]
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("snapshot", "promote"))
+    parser.add_argument("command", choices=("snapshot", "promote", "prune-caches"))
     parser.add_argument("--retry", action="store_true")
     parser.add_argument("--base", default="")
     parser.add_argument("--candidate", default="")
@@ -201,6 +293,13 @@ def main() -> int:
                         stream.write(f"{name}={value}\n")
             annotation, summary = describe_snapshot(outputs)
             print(annotation or outputs["reason"])
+        elif arguments.command == "prune-caches":
+            deleted, failures = prune_caches(client, os.environ["GITHUB_REF"])
+            summary = describe_pruning(deleted, failures)
+            print(summary, end="")
+            for failure in failures:
+                escaped = failure.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                print(f"::warning title=Cache not deleted::{escaped}")
         else:
             promote(client, Path.cwd(), arguments.base, arguments.candidate, json.loads(os.environ["BATCH_RESULTS"]))
             summary = f"Promoted exactly {arguments.candidate} to main.\n"

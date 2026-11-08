@@ -177,6 +177,32 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
 
+  prune-caches:
+    name: Prune superseded caches
+    # Every batch saves a commit-keyed compiler cache per variant. Left alone, the
+    # stale copies fill the 10 GB repository limit, and GitHub then evicts the
+    # least recently used entries: the dependency and sanitizer caches the next
+    # batch needs. Run after every suite has saved its caches, whatever the
+    # outcome; promotion does not depend on this job.
+    # Thanks to GitHub, "Dependency caching reference", usage limits and eviction policy:
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#usage-limits-and-eviction-policy
+    needs: [snapshot, native, sdk, wiki, browser, threading, windows, recovery]
+    if: always() && needs.snapshot.outputs.should_run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      # The scheduler's trusted main revision, never candidate code.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Keep the newest cache of each family on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/python/batch_ci.py prune-caches
+
   unvalidated:
     name: Mark run as not validated
     needs: snapshot

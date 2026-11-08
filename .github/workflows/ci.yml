@@ -1056,8 +1056,21 @@ jobs:
   sanitizers:
     needs: changes
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
-    name: ASan and UBSan
+    # One serial suite took 95-100 min of a 2 h job, 83% of it in render-graph,
+    # renderer and wave-graph cases on lavapipe. Split it round-robin across
+    # runners instead of running cases concurrently on one: each case keeps a
+    # whole runner, so the cold software-shader deadlines see the same CPU as
+    # a serial run. Shard 1 also owns the scripting/localization sweeps and the
+    # reload latency evidence. Every shard is required by the Ubuntu Clang gate.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    name: ASan and UBSan (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-24.04
+    env:
+      SANITIZER_SHARD: ${{ matrix.shard }}
+      SANITIZER_SHARDS: ${{ strategy.job-total }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1067,12 +1080,15 @@ jobs:
         with:
           preset: linux-clang-asan-ubsan
           editor: 'true'
+          # Shards build identical trees; one writer per preset and variant.
+          conan-cache-writer: ${{ matrix.shard == 1 && 'true' || 'false' }}
+          compiler-cache-writer: ${{ matrix.shard == 1 && 'true' || 'false' }}
       - name: Build with sanitizers
         run: ./scripts/build linux-clang-asan-ubsan
       - name: Prove ASan detection and fatal UBSan before acceptance
         run: out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --label-regex sanitizer-control --output-on-failure --no-tests=error
       - name: Preserve sanitizer control diagnostics
-        if: always()
+        if: always() && matrix.shard == 1
         uses: actions/upload-artifact@v4
         with:
           name: sanitizer-controls
@@ -1080,24 +1096,30 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Validate S0 Luau allocation failure and lifetime profile with sanitizers
+        if: matrix.shard == 1
         run: |
           ./scripts/luau-probe bootstrap
           ./scripts/luau-probe cook
           ./scripts/luau-probe run --preset linux-clang-asan-ubsan
       - name: Validate S1 unpublished effects under allocation failure
+        if: matrix.shard == 1
         run: |
           ./scripts/script-interaction bootstrap
           ./scripts/script-interaction cook
           ./scripts/script-interaction run --preset linux-clang-asan-ubsan
       - name: Validate S2 staging, paused invocation and module retirement with sanitizers
+        if: matrix.shard == 1
         run: |
           ./scripts/script-session cook
           ./scripts/script-session run --preset linux-clang-asan-ubsan
       - name: Validate S3 graph debugger, candidate failure and owner retirement with sanitizers
+        if: matrix.shard == 1
         run: ./scripts/visual-sequence run --preset linux-clang-asan-ubsan
       - name: Validate S4 provider transactions and state under sanitizers
+        if: matrix.shard == 1
         run: ./scripts/script-provider run --preset linux-clang-asan-ubsan
       - name: Cache pinned L0 ICU archives, host data tools and sliced data
+        if: matrix.shard == 1
         uses: actions/cache@v4
         with:
           path: |
@@ -1108,12 +1130,14 @@ jobs:
             out/icu-probe/data
           key: icu-probe-v1-${{ runner.os }}-${{ hashFiles('config/icu_toolchain.json', 'tools/icu-probe/data-filter.json', 'scripts/icu-probe') }}
       - name: Validate L0 ICU backend, L2 formatting and isolated allocation-failure sweeps with sanitizers
+        if: matrix.shard == 1
         run: |
           ./scripts/icu-probe bootstrap
           ./scripts/icu-probe cook
           ./scripts/icu-probe run --preset linux-clang-asan-ubsan
           ./scripts/icu-probe check --preset linux-clang-asan-ubsan
       - uses: actions/upload-artifact@v4
+        if: matrix.shard == 1
         with:
           name: localization-l0-linux-sanitized-evidence
           path: |
@@ -1121,11 +1145,13 @@ jobs:
             out/build/linux-clang-asan-ubsan/modules/localization/format-evidence.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
+        if: matrix.shard == 1
         with:
           name: behavior-s6-linux-sanitized-evidence
           path: out/build/linux-clang-asan-ubsan/tools/script-provider/safety-evidence.json
           if-no-files-found: error
       - name: Validate S7 installed-SDK reference semantics with sanitizers
+        if: matrix.shard == 1
         run: |
           out/host-tools/venv/bin/cmake --install out/build/linux-clang-asan-ubsan
           out/host-tools/venv/bin/python scripts/python/engine.py bundle-sdk-dependencies \
@@ -1133,21 +1159,30 @@ jobs:
           ./scripts/script-qualification --sdk out/install/linux-clang-asan-ubsan \
             --output out/behavior-s7-sanitized --verify-only
       - uses: actions/upload-artifact@v4
+        if: matrix.shard == 1
         with:
           name: behavior-s7-linux-sanitized-reference
           path: |
             out/behavior-s7-sanitized/current.json
             out/behavior-s7-sanitized/run-*/evidence.json
           if-no-files-found: error
-      # Serial execution took 95 min, 83% of it in render-graph/renderer cases on
-      # lavapipe. Run one case per runner core; tests that share
-      # a GPU/worker owner keep it through RESOURCE_LOCK (for example the Editor shards).
-      - name: Test with sanitizers
+      # Reload latency evidence is required, so a fixed shard records it rather
+      # than whichever shard the round-robin happens to assign it to.
+      - name: Record reload latency with sanitizers
+        if: matrix.shard == 1
         env:
           LUDUS_RELOAD_METRICS: ${{ runner.temp }}/live-reload-asan-ubsan.jsonl
-        run: out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --parallel "$CMAKE_BUILD_PARALLEL_LEVEL" --no-tests=error
+        run: out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --tests-regex '^ludus_game_host_reload_tests$' --no-tests=error
+      # Thanks to Kitware, "ctest(1)", --tests-information Start,End,Stride:
+      # every shard takes each SANITIZER_SHARDS-th test from its own start.
+      # https://cmake.org/cmake/help/latest/manual/ctest.1.html#cmdoption-ctest-I
+      - name: Test with sanitizers
+        run: >-
+          out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --no-tests=error
+          --tests-information "$SANITIZER_SHARD,,$SANITIZER_SHARDS"
+          --exclude-regex '^ludus_game_host_reload_tests$'
       - name: Upload sanitizer reload measurements
-        if: always()
+        if: always() && matrix.shard == 1
         uses: actions/upload-artifact@v4
         with:
           name: live-reload-asan-ubsan
