@@ -1714,6 +1714,8 @@ void RenderPreview::clearBuiltInViewFailure() noexcept
 bool RenderPreview::prepare()
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    const bool hasPublishedBake = mResources->HasPublishedBake();
+    const QString previousBakeStatus = mResources->DescribeBake();
     const PreviewPreparationStatus status = mResources->Prepare(Surface_, mPreparationFailure);
     if (status == PreviewPreparationStatus::Failed)
     {
@@ -1723,6 +1725,8 @@ bool RenderPreview::prepare()
     {
         return true;
     }
+    ViewDirty_ = ViewDirty_ == true || hasPublishedBake != mResources->HasPublishedBake();
+    FreshReport_ = FreshReport_ == true || previousBakeStatus != mResources->DescribeBake();
     if (Width_ == 0 || Height_ == 0 || mHasViewport == false)
     {
         return true;
@@ -2067,7 +2071,7 @@ void RenderPreview::Tick()
                                       .arg(mResources->Lighting.Lights.Count)
                                       .arg(mResources->Lighting.AreaCount)
                                       .arg(mResources->Lighting.ShadowCount)
-                                      .arg(QStringLiteral("direct lighting"))
+                                      .arg(mResources->DescribeBake())
                                 : (mShading == PreviewShading::Solid ? GetPreviewShadingStatus(PreviewShading::Solid)
                                                                      : GetPreviewShadingStatus(PreviewShading::Albedo)))
                          : (mShading == PreviewShading::Solid ? GetPreviewShadingStatus(PreviewShading::Solid)

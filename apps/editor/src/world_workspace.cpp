@@ -2310,6 +2310,39 @@ void WorldWorkspace::RenderInspector()
             blockLayout->addWidget(vectorRow);
             rows->addRow(block);
         }
+        if (IsBuiltInWorld(Document_) == true && cid == QStringLiteral("light"))
+        {
+            QCheckBox* staticTransformOrNull =
+                qobject_cast<QCheckBox*>(Fields_.value(FieldKey(cid, QStringLiteral("staticTransform"))));
+            QCheckBox* bakeOrNull =
+                qobject_cast<QCheckBox*>(Fields_.value(FieldKey(cid, QStringLiteral("bakeAlwaysOn"))));
+            QCheckBox* enabledOrNull =
+                qobject_cast<QCheckBox*>(Fields_.value(FieldKey(cid, QStringLiteral("enabled"))));
+            if (staticTransformOrNull != nullptr && bakeOrNull != nullptr && enabledOrNull != nullptr)
+            {
+                QLabel* suggestion = new QLabel(
+                    QStringLiteral("Static light. Enable Bake always-on lighting to precompute its diffuse light."),
+                    group);
+                suggestion->setObjectName(QStringLiteral("worldLightBakeSuggestion"));
+                suggestion->setWordWrap(true);
+                rows->addRow(suggestion);
+                const auto refresh = [staticTransformOrNull, bakeOrNull, enabledOrNull, suggestion, rows]() {
+                    const bool isStatic = staticTransformOrNull->isChecked();
+                    if (isStatic == false)
+                    {
+                        bakeOrNull->setChecked(false);
+                    }
+                    rows->setRowVisible(bakeOrNull, isStatic);
+                    bakeOrNull->setEnabled(enabledOrNull->isChecked());
+                    enabledOrNull->setEnabled(bakeOrNull->isChecked() == false);
+                    suggestion->setVisible(isStatic == true && bakeOrNull->isChecked() == false);
+                };
+                connect(staticTransformOrNull, &QCheckBox::toggled, group, refresh);
+                connect(bakeOrNull, &QCheckBox::toggled, group, refresh);
+                connect(enabledOrNull, &QCheckBox::toggled, group, refresh);
+                refresh();
+            }
+        }
         if (component.value(QStringLiteral("required")).toBool())
         {
             rows->addRow(new QLabel(QStringLiteral("Required by this project"), group));

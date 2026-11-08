@@ -3707,7 +3707,12 @@ integrator's same-measure next-event MIS, visibility, metallic/roughness transpo
 and compensated roulette, including its power-weighted emitter proposal. It
 includes **all admitted emissive triangles** and
 raw authored environment direct diffuse, plus subsequent indirect transport.
-Analytic direct diffuse stays in raster. The declared path-depth/range bounds
+With the legacy bake profile, analytic direct diffuse stays in raster. A bake
+with an explicit analytic light selection includes those lights' direct and
+bounced diffuse, with the environment and emissive sources excluded. Its
+charts add to the live environment term, and valid charts replace only the
+selected lights' raster diffuse terms. Live specular still uses the shadow
+atlas. The declared path-depth/range bounds
 introduce truncation bias, sample count controls variance, and per-triangle
 centroid reconstruction is spatially coarse. There is no denoiser or general
 lightmap unwrap. The private probe shares the CPU reference's BVH, opacity,

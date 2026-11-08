@@ -1700,10 +1700,34 @@ has no indirect bounce, so areas the sun cannot reach stay dark. Reimporting wit
 the scene's bundled sky through **Choose environment…** lights them too. A
 project-owned schema gets the instruction without the repair.
 
+### Baking always-on lights
+
+In the default World, select an authored **Point Light**, **Spot Light**, or
+**Directional Light**. In **Properties → Light**, mark **Static Transform** to
+declare that the light stays in place during play. The inspector offers **Bake
+always-on lighting** and the light stays realtime until you select the option
+and click **Apply**. **Save World** keeps the choice. Clear the bake option
+before switching the light off. Clear **Static Transform** to return the light
+to realtime in the same inspector edit.
+
+The native built-in **Lit** viewport computes a shared diffuse bake for the
+selected lights. It stores coarse per-triangle irradiance for the current
+placed geometry, including their bounced light. Environment lighting, other
+lights, and specular highlights stay live. Edits that change bake inputs
+prepare a fresh result. The viewport keeps the last presented view until the
+current World can render in realtime, then swaps in the baked lighting when it
+is ready. If chart preparation fails, realtime lighting stays active and the
+viewport status shows the reason.
+
+The World saves the opt-in. The viewport generates its charts in memory when
+needed. Browser preview, project render graphs, and packaged games use their
+existing lighting paths.
+
 ### Switching lights
 
 The **Lights** list under the World entity list switches individual lights off
-and on without editing or re-importing the source scene. Use it to compare a
+and on without editing or re-importing the source scene. Authored lights that
+opt into [always-on baking](#baking-always-on-lights) stay enabled. Use the list to compare a
 render against another renderer's image of the same scene when the source file
 adds lights the other scene never had, or to see what one light contributes.
 
@@ -1714,8 +1738,8 @@ importer merged because they share radiance, sidedness, power and material.
 The row tooltip shows its radiance or luminous power and object count.
 See the [import budget planner](best-effort-scene-import.md#budget-planner).
 
-Use the checkbox on any light row to switch it on or off. **Solo** keeps only
-the selected light on across imported and authored sources. **Enable All**
+Use a switchable light row's checkbox to turn it on or off. **Solo** keeps the
+selected light and any always-on baked lights enabled. **Enable All**
 switches every light back on. Each action is one World edit. Undo and Redo
 restore the previous state, and **Save World** keeps it.
 
@@ -1725,8 +1749,7 @@ and no light from it, and no light sampler picks it. Toggling an imported light
 re-presents the already decoded scene without a re-cook, and accumulation
 restarts. A running reference capture keeps the scene it started with; start a
 new capture after switching. The switches belong to the editor's World preview.
-They do not change cooked assets, so a static-lighting bake, which reads the
-cooked definition, and a packaged game still see every light.
+They do not change cooked assets or a packaged game's lighting.
 
 The World root stores the switched-off imported sources as `disabled_lights`, a
 list of `{ "kind": "emitter" | "light", "source": "<16 lowercase hex digits>" }`
@@ -1902,8 +1925,8 @@ instead.
 
 Lit uses raster direct lighting and real-time shadows. HDR or constant authored
 environments supply irradiance and specular reflection. No editor fill is added
-to Lit. Navigation, resize and scene edits never start a static lightmap bake.
-The status shows light, planar proxy and shadow counts. Saved World assets
+to Lit. The viewport prepares a bake only for lights that opt in. Camera
+navigation and resize reuse a valid bake. The status shows light, planar proxy and shadow counts. Saved World assets
 preserve authored lighting through reopen and relocation; legacy v1/v2 imports
 retain historical two-sided emission.
 

@@ -30,6 +30,8 @@
 #include <QString>
 #include <QVector>
 
+#include <new>
+
 namespace ludus::editor
 {
 namespace
@@ -53,6 +55,65 @@ bool IsAccepted(rhi::RasterStatus status) noexcept
 {
     return status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending;
 }
+struct BakeMeshVertices final
+{
+    Array<math::Vector3> PositionsMesh;
+    Array<math::Vector3> NormalsMesh;
+    Array<math::Vector2> MaterialTexcoords;
+    Array<math::Vector2> BakeTexcoords;
+    Array<math::Vector4> TangentsMesh;
+    Array<uint32> Indices;
+};
+
+[[nodiscard]] bool BuildBakeMesh(const resources::SceneMesh& mesh,
+                                 BakeMeshVertices& outVertices,
+                                 renderer::MeshDescription& inoutDescription) noexcept
+{
+    namespace format = content::scene_format;
+    constexpr usize TRIANGLE_CORNERS = static_cast<usize>(TRIANGLE_INDEX_COUNT);
+    const usize count = mesh.Indices.GetSize();
+    const bool hasTangents = mesh.Tangents.IsEmpty() == false;
+    format::BakeChartLayout layout;
+    if (count > format::MAX_VERTICES ||
+        format::TryMakeBakeChartLayout(static_cast<uint32>(count / TRIANGLE_CORNERS), layout) == false ||
+        outVertices.PositionsMesh.TryResize(count) == false || outVertices.NormalsMesh.TryResize(count) == false ||
+        outVertices.MaterialTexcoords.TryResize(count) == false ||
+        outVertices.BakeTexcoords.TryResize(count) == false || outVertices.Indices.TryResize(count) == false ||
+        (hasTangents == true && outVertices.TangentsMesh.TryResize(count) == false))
+    {
+        return false;
+    }
+    for (usize vertex = 0; vertex < count; ++vertex)
+    {
+        const uint32 sourceIndex = mesh.Indices[vertex];
+        outVertices.PositionsMesh[vertex] = mesh.Positions[sourceIndex];
+        outVertices.NormalsMesh[vertex] = mesh.Normals[sourceIndex];
+        outVertices.MaterialTexcoords[vertex] = mesh.Texcoords[sourceIndex];
+        if (hasTangents == true)
+        {
+            outVertices.TangentsMesh[vertex] = mesh.Tangents[sourceIndex];
+        }
+        outVertices.Indices[vertex] = static_cast<uint32>(vertex);
+        if (format::TryGetBakeChartUv(layout,
+                                      static_cast<uint32>(vertex / TRIANGLE_CORNERS),
+                                      static_cast<uint32>(vertex % TRIANGLE_CORNERS),
+                                      outVertices.BakeTexcoords[vertex].X,
+                                      outVertices.BakeTexcoords[vertex].Y) == false)
+        {
+            return false;
+        }
+    }
+    inoutDescription.Positions = outVertices.PositionsMesh.GetData();
+    inoutDescription.VertexCount = count;
+    inoutDescription.Normals = outVertices.NormalsMesh.GetData();
+    inoutDescription.Texcoords = outVertices.MaterialTexcoords.GetData();
+    inoutDescription.BakeTexcoords = outVertices.BakeTexcoords.GetData();
+    inoutDescription.Tangents = {outVertices.TangentsMesh.GetData(), outVertices.TangentsMesh.GetSize()};
+    inoutDescription.Indices = outVertices.Indices.GetData();
+    inoutDescription.IndexCount = count;
+    return true;
+}
+
 /// Diagnostic color uses the display material only. It never enters the scene's emitter table.
 void SetUnresolvedMaterialDiagnostic(renderer::LitMaterialDescription& inoutMaterial) noexcept
 {
@@ -139,8 +200,10 @@ PreviewGpuGeneration::PreviewGpuGeneration(rhi::DeviceHandle device,
 }
 PreviewGpuGeneration::~PreviewGpuGeneration() noexcept
 {
+    mBakeJob.Reset();
     Viewport.Reset();
     Renderer.Reset();
+    discardBakeCharts();
     Environment.Reset();
     for (rhi::TextureHandle& texture : Textures)
     {
@@ -153,6 +216,11 @@ PreviewPreparationStatus PreviewGpuGeneration::Prepare(rhi::SurfaceHandle surfac
     if (mHasFailed == true)
     {
         return PreviewPreparationStatus::Failed;
+    }
+    if (IsPrepared() == true)
+    {
+        advanceBake();
+        return PreviewPreparationStatus::Ready;
     }
     if (prepareResources(surface, outError) == false)
     {
@@ -413,6 +481,18 @@ bool PreviewGpuGeneration::prepareAssets(QString& outError) noexcept
                 description.Normals = source.Normals.GetData();
                 // Cooked v6 tangent frames; vertices without one (W = 0) use the UV-derived frame.
                 description.Tangents = {source.Tangents.GetData(), source.Tangents.GetSize()};
+                if (shouldBakeLighting() == true)
+                {
+                    BakeMeshVertices bakeVertices;
+                    renderer::MeshDescription chartMesh = description;
+                    if (BuildBakeMesh(source, bakeVertices, chartMesh) == true &&
+                        IsAccepted(Renderer.CreateMesh(chartMesh, mMeshes[i])) == true)
+                    {
+                        continue;
+                    }
+                    mBakeFailure = QStringLiteral("Could not prepare bake chart geometry. Using realtime lighting. "
+                                                  "Split large meshes or clear Bake always-on lighting in Properties.");
+                }
             }
             // CreateMesh copies normals and indices, so derived storage only lives for this call.
             QVector<math::Vector3> derivedNormals;
@@ -664,8 +744,226 @@ bool PreviewGpuGeneration::prepareSnapshot(rhi::SurfaceHandle surface, QString& 
     return false;
 #endif
 }
-rhi::RasterStatus PreviewGpuGeneration::CreateLightingMaterial(usize objectIndex,
+bool PreviewGpuGeneration::shouldBakeLighting() const noexcept
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW) && !defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    return IsReference == false && Shading == PreviewShading::Lit && Source.Lit == true &&
+           Source.Definition != nullptr && Source.Definition->Objects.IsEmpty() == false &&
+           Source.AlwaysOnLightIds.isEmpty() == false && mBakeFailure.isEmpty() == true;
+#else
+    return false;
+#endif
+}
+
+QString PreviewGpuGeneration::DescribeBake() const
+{
+    if (mBakeFailure.isEmpty() == false)
+    {
+        return mBakeFailure;
+    }
+    if (mHasPublishedBake == true)
+    {
+        return QStringLiteral("always-on lighting baked");
+    }
+    if (mBakeJob.Get() != nullptr || mBakeCharts.IsEmpty() == false)
+    {
+        return QStringLiteral("baking always-on lighting…");
+    }
+    return QStringLiteral("direct lighting");
+}
+
+void PreviewGpuGeneration::discardBakeCharts() noexcept
+{
+    for (renderer::BakedLighting& chart : mBakeCharts)
+    {
+        static_cast<void>(rhi::Destroy(Device, chart.Texture));
+    }
+    mBakeCharts.Clear();
+}
+
+rhi::RasterStatus PreviewGpuGeneration::prepareBake() noexcept
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW) && !defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    if (mBakeCharts.IsEmpty() == true)
+    {
+        if (mBakeJob.Get() == nullptr)
+        {
+            renderer::StaticLightingBakeDescription description;
+            description.SceneRevision = Lighting.SceneRevision;
+            description.DependencyRevision = Lighting.DependencyRevision;
+            description.Surfaces = {Lighting.Surfaces.GetData(), Lighting.Surfaces.GetSize()};
+            description.AnalyticLightIds = {Source.AlwaysOnLightIds.constData(),
+                                            static_cast<usize>(Source.AlwaysOnLightIds.size())};
+            if (mBakeJobs.Initialize({ .WorkerCount = STATIC_LIGHTING_WORKER_COUNT }) != threading::JobStatus::Ok)
+            {
+                return rhi::RasterStatus::Failed;
+            }
+            mBakeJob.Reset(new (std::nothrow) StaticLightingJob(Source, description));
+            if (mBakeJob.Get() == nullptr)
+            {
+                return rhi::RasterStatus::OutOfMemory;
+            }
+            return mBakeJob->Start(mBakeJobs);
+        }
+        const rhi::RasterStatus status = mBakeJob->Poll();
+        if (status != rhi::RasterStatus::Ready)
+        {
+            return status;
+        }
+        UniquePtr<renderer::StaticLightingBake> bake = mBakeJob->TakeBake();
+        mBakeJob.Reset();
+        static_cast<void>(mBakeJobs.Shutdown());
+        if (mBakeCharts.TryResize(Source.Definition->Objects.GetSize()) == false)
+        {
+            return rhi::RasterStatus::OutOfMemory;
+        }
+        for (usize i = 0; i < mBakeCharts.GetSize(); ++i)
+        {
+            renderer::StaticLightingChart chart;
+            if (bake->GetChart(i, chart) != rhi::RasterStatus::Ready)
+            {
+                return rhi::RasterStatus::Failed;
+            }
+            renderer::BakedLighting& material = mBakeCharts[i];
+            material.Scale = chart.Scale;
+            material.UvTransform = chart.UvTransform;
+            material.SourceId = chart.SourceId;
+            material.SceneRevision = chart.SceneRevision;
+            material.DependencyRevision = chart.DependencyRevision;
+            material.Transform = chart.Transform;
+            material.AreTriangleChartsEnabled = true;
+            material.ShouldAddToEnvironment = true;
+            const rhi::RasterStatus uploaded = rhi::CreateTexture(
+                Device,
+                { .Width = chart.Width, .Height = chart.Height, .Format = rhi::RasterFormat::Rgba8Unorm },
+                {{chart.Pixels.GetDataOrNull(), chart.Pixels.GetSize()},
+                 usize{chart.Width} * content::scene_format::TEXEL_BYTES},
+                material.Texture);
+            if (IsAccepted(uploaded) == false)
+            {
+                return uploaded;
+            }
+        }
+    }
+    for (const renderer::BakedLighting& chart : mBakeCharts)
+    {
+        const rhi::RasterStatus status = rhi::GetStatus(Device, chart.Texture);
+        if (status != rhi::RasterStatus::Ready)
+        {
+            return status;
+        }
+    }
+    return rhi::RasterStatus::Ready;
+#else
+    return rhi::RasterStatus::Unsupported;
+#endif
+}
+
+void PreviewGpuGeneration::advanceBake() noexcept
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    if (shouldBakeLighting() == false || mHasPublishedBake == true)
+    {
+        return;
+    }
+    rhi::RasterStatus status = prepareBake();
+    if (status == rhi::RasterStatus::Ready)
+    {
+        status = prepareBakedSnapshot();
+    }
+    if (status != rhi::RasterStatus::Ready && status != rhi::RasterStatus::Pending)
+    {
+        mBakeJob.Reset();
+        static_cast<void>(mBakeJobs.Shutdown());
+        for (renderer::MaterialVersion& material : mBakedMaterials)
+        {
+            static_cast<void>(Renderer.Release(material));
+        }
+        mBakedMaterials.Clear();
+        discardBakeCharts();
+        mBakeFailure = QStringLiteral("Always-on bake failed (%1). Using realtime lighting. "
+                                      "Simplify the World geometry or clear the bake option in Properties.")
+                           .arg(static_cast<uint32>(status));
+    }
+#endif
+}
+
+rhi::RasterStatus PreviewGpuGeneration::prepareBakedSnapshot() noexcept
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    const usize count = Source.Definition->Objects.GetSize();
+    if (mBakedMaterials.IsEmpty() == true && mBakedMaterials.TryResize(count) == false)
+    {
+        return rhi::RasterStatus::OutOfMemory;
+    }
+    while (mBakedMaterialCursor < count)
+    {
+        const usize index = mBakedMaterialCursor;
+        const rhi::RasterStatus status = createLightingMaterial(index, true, true, mBakedMaterials[index]);
+        if (IsAccepted(status) == false)
+        {
+            return status;
+        }
+        ++mBakedMaterialCursor;
+    }
+    renderer::Snapshot replacement;
+    const rhi::RasterStatus status = createLitSnapshot({mBakedMaterials.GetData(), count}, true, replacement);
+    if (status == rhi::RasterStatus::Ready)
+    {
+        static_cast<void>(Renderer.Release(mSnapshot));
+        mSnapshot = replacement;
+        mHasPublishedBake = true;
+    }
+    return status;
+#else
+    return rhi::RasterStatus::Unsupported;
+#endif
+}
+
+rhi::RasterStatus PreviewGpuGeneration::createLitSnapshot(BorrowedView<const renderer::MaterialVersion> materials,
+                                                          bool shouldUseBake,
+                                                          renderer::Snapshot& outSnapshot) noexcept
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    const usize count = Source.Definition->Objects.GetSize();
+    Array<renderer::SceneItem> items;
+    if (items.TryResize(count) == false)
+    {
+        return rhi::RasterStatus::OutOfMemory;
+    }
+    for (usize i = 0; i < count; ++i)
+    {
+        const renderer::MaterialVersion material = materials[shouldUseBake == true ? i : mLightingMaterialOwners[i]];
+        const rhi::RasterStatus ready = Renderer.GetStatus(material);
+        if (ready != rhi::RasterStatus::Ready)
+        {
+            return ready;
+        }
+        const resources::SceneObject& source = Source.Definition->Objects[i];
+        renderer::SceneItem& item = items[i];
+        item.Geometry = mMeshes[source.Mesh];
+        item.Transform = source.Transform;
+        item.SourceId = source.SourceId;
+        item.Surface = material;
+        item.Material.Color = {1, 1, 1, 1};
+        if (shouldUseBake == true)
+        {
+            item.BakeSceneRevision = Lighting.SceneRevision;
+            item.BakeDependencyRevision = Lighting.DependencyRevision;
+        }
+    }
+    return Renderer.CreateSnapshot(items.GetData(), count, outSnapshot);
+#else
+    static_cast<void>(materials);
+    static_cast<void>(shouldUseBake);
+    static_cast<void>(outSnapshot);
+    return rhi::RasterStatus::Unsupported;
+#endif
+}
+
+rhi::RasterStatus PreviewGpuGeneration::createLightingMaterial(usize objectIndex,
                                                                bool hasShadows,
+                                                               bool shouldUseBake,
                                                                renderer::MaterialVersion& outMaterial) noexcept
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
@@ -709,6 +1007,12 @@ rhi::RasterStatus PreviewGpuGeneration::CreateLightingMaterial(usize objectIndex
         material.Shadows = resources.Shadows;
     }
     material.DebugView = GetMaterialDebugView(Shading);
+    if (shouldUseBake == true)
+    {
+        material.Bake = mBakeCharts[objectIndex];
+        material.BakedDirectLightIds = {Source.AlwaysOnLightIds.constData(),
+                                        static_cast<usize>(Source.AlwaysOnLightIds.size())};
+    }
     if (resources.HasEnvironment == true)
     {
         material.EnvironmentOrNull = &resources.Environment;
@@ -728,6 +1032,7 @@ rhi::RasterStatus PreviewGpuGeneration::CreateLightingMaterial(usize objectIndex
 #else
     static_cast<void>(objectIndex);
     static_cast<void>(hasShadows);
+    static_cast<void>(shouldUseBake);
     static_cast<void>(outMaterial);
     return rhi::RasterStatus::Unsupported;
 #endif
@@ -839,7 +1144,7 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
         {
             const usize index = resources.MaterialCursor;
             if (mLightingMaterialOwners[index] == index &&
-                IsAccepted(CreateLightingMaterial(index, false, resources.CasterMaterials[index])) == false)
+                IsAccepted(createLightingMaterial(index, false, false, resources.CasterMaterials[index])) == false)
             {
                 return false;
             }
@@ -948,35 +1253,16 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
         {
             const usize index = resources.MaterialCursor;
             if (mLightingMaterialOwners[index] == index &&
-                IsAccepted(CreateLightingMaterial(index, true, mMaterials[index])) == false)
+                IsAccepted(createLightingMaterial(index, true, false, mMaterials[index])) == false)
             {
                 return false;
             }
             ++resources.MaterialCursor;
         }
-        Array<renderer::SceneItem> items;
-        if (items.TryResize(count) == false)
+        const rhi::RasterStatus status = createLitSnapshot({mMaterials.GetData(), count}, false, mSnapshot);
+        if (status != rhi::RasterStatus::Ready)
         {
-            return false;
-        }
-        for (usize i = 0; i < count; ++i)
-        {
-            const renderer::MaterialVersion material = mMaterials[mLightingMaterialOwners[i]];
-            const rhi::RasterStatus ready = resources.Renderer.GetStatus(material);
-            if (ready != rhi::RasterStatus::Ready)
-            {
-                return ready == rhi::RasterStatus::Pending;
-            }
-            const resources::SceneObject& source = resources.Source.Definition->Objects[i];
-            items[i].Geometry = mMeshes[source.Mesh];
-            items[i].Transform = source.Transform;
-            items[i].SourceId = source.SourceId;
-            items[i].Surface = material;
-            items[i].Material.Color = {1, 1, 1, 1};
-        }
-        if (IsAccepted(resources.Renderer.CreateSnapshot(items.GetData(), count, mSnapshot)) == false)
-        {
-            return false;
+            return status == rhi::RasterStatus::Pending;
         }
         resources.LightingStage = PreviewLightingStage::Ready;
     }

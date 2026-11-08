@@ -17,8 +17,10 @@
 #include "internal/world_document.h"
 #include "internal/world_entity_search.h"
 #include "internal/world_lighting_coverage.h"
+#include "internal/world_lights_panel.h"
 #include "internal/world_workspace.h"
 #include "scene_fixture.h"
+#include <QCheckBox>
 #include <QColor>
 #include <QImage>
 #include <QMenu>
@@ -2797,6 +2799,78 @@ TEST_CASE("Default World creation preserves drafts on entropy and validation fai
                                          {QStringLiteral("components"), QJsonObject{}}}});
     REQUIRE(document.Load(QJsonDocument(legacy).toJson(), error) == true);
     CHECK(document.Draft() == legacy);
+}
+
+TEST_CASE("The World inspector offers an explicit always-on bake for a static light", "[editor][world][lighting]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString cube;
+    QString light;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), cube, error) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Point Light"), light, error) == true);
+
+    // A previously saved light has neither of the new fields.
+    const QJsonObject entity = document.Entity(light);
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    QJsonObject values = components.value(QStringLiteral("light")).toObject();
+    values.remove(QStringLiteral("staticTransform"));
+    values.remove(QStringLiteral("bakeAlwaysOn"));
+    components.insert(QStringLiteral("light"), values);
+    REQUIRE(document.Edit(light, components, entity.value(QStringLiteral("name")).toString(), error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("bake.world.json"));
+    Write(path, document.Encode());
+
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.SelectEntity(light) == true);
+    const auto findBake = [&workspace]() {
+        return workspace.findChild<QCheckBox*>(QStringLiteral("worldField:light/bakeAlwaysOn"));
+    };
+    const auto findStatic = [&workspace]() {
+        return workspace.findChild<QCheckBox*>(QStringLiteral("worldField:light/staticTransform"));
+    };
+    REQUIRE(findBake() != nullptr);
+    REQUIRE(findStatic() != nullptr);
+    CHECK(findBake()->isHidden() == true);
+    findStatic()->setChecked(true);
+    CHECK(findBake()->isChecked() == false);
+    CHECK(findBake()->isHidden() == false);
+    REQUIRE(workspace.Apply() == true);
+    RenderScene realtime;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), realtime, error) == true);
+    CHECK(realtime.AuthoredLights.Count == 1);
+    CHECK(realtime.AlwaysOnLightIds.isEmpty() == true);
+
+    REQUIRE(findBake() != nullptr);
+    findBake()->setChecked(true);
+    REQUIRE(workspace.Apply() == true);
+    RenderScene baked;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), baked, error) == true);
+    CHECK(baked.AlwaysOnLightIds == QVector<ludus::foundation::uint64>{ComputeEntitySourceId(light)});
+    CHECK(baked.AuthoredLights.Count == realtime.AuthoredLights.Count);
+    const QVector<WorldLightRow> rows = CollectWorldLightRows(workspace.Document(), baked);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].IsBakedAlwaysOn == true);
+    CHECK(MakeWorldLightToggle(rows, {}, 0, false).WorldLights.isEmpty() == true);
+
+    REQUIRE(findStatic() != nullptr);
+    findStatic()->setChecked(false);
+    REQUIRE(workspace.Apply() == true);
+    RenderScene optedOut;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), optedOut, error) == true);
+    CHECK(optedOut.AlwaysOnLightIds.isEmpty() == true);
+    CHECK(optedOut.AuthoredLights.Count == 1);
+    workspace.StopPreview();
 }
 
 TEST_CASE("Default World objects and lights survive imported scene composition", "[editor][world][creation]")

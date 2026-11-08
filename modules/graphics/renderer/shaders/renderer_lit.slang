@@ -535,10 +535,13 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
 #endif
 #ifndef LUDUS_DEFERRED_MESH_LIGHTS
     if (input.IsBakeValid > 0.5)
-        irradiance =
+    {
+        float3 bakedIrradiance =
             bakeTexture.SampleLevel(colorSampler, saturate(input.BakeUv) * material.BakeUv.xy + material.BakeUv.zw, 0)
                 .rgb *
             material.BakeScale.rgb;
+        irradiance = irradiance * material.BakeScale.w + bakedIrradiance;
+    }
 #endif
     float3 result = surface.Emission;
     if (nv > 0)

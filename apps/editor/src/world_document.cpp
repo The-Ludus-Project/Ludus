@@ -407,6 +407,36 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                 return false;
             }
             components.append(terrainComponent);
+            for (qsizetype i = 0; i < components.size(); ++i)
+            {
+                QJsonObject component = components[i].toObject();
+                if (component.value(QStringLiteral("id")) != QJsonValue(QStringLiteral("light")))
+                {
+                    continue;
+                }
+                QJsonArray properties = component.value(QStringLiteral("properties")).toArray();
+                properties.append(QJsonObject{
+                    {QStringLiteral("id"), QStringLiteral("staticTransform")},
+                    {QStringLiteral("label"), QStringLiteral("Static Transform")},
+                    {QStringLiteral("type"), QStringLiteral("boolean")},
+                    {QStringLiteral("default"), false},
+                    {QStringLiteral("unit"), QString()},
+                    {QStringLiteral("help"), QStringLiteral("This light's transform stays fixed during play.")},
+                });
+                properties.append(QJsonObject{
+                    {QStringLiteral("id"), QStringLiteral("bakeAlwaysOn")},
+                    {QStringLiteral("label"), QStringLiteral("Bake always-on lighting")},
+                    {QStringLiteral("type"), QStringLiteral("boolean")},
+                    {QStringLiteral("default"), false},
+                    {QStringLiteral("unit"), QString()},
+                    {QStringLiteral("help"),
+                     QStringLiteral("Bake this enabled light's diffuse contribution into "
+                                    "the native Lit viewport's shared chart.")},
+                });
+                component.insert(QStringLiteral("properties"), properties);
+                components[i] = component;
+                break;
+            }
             schema.insert(QStringLiteral("components"), components);
             hasBuiltInTerrain = true;
         }
@@ -783,14 +813,24 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             }
             const auto props = c.value().toObject();
             const auto definitions = definition.value(QStringLiteral("properties")).toArray();
-            if (props.size() != definitions.size())
+            const bool hasBakeProperties = IsBuiltInWorld(*this) == true && c.key() == QStringLiteral("light");
+            if (hasBakeProperties == false && props.size() != definitions.size())
             {
                 return Fail(error, QStringLiteral("%1 has missing or unknown properties.").arg(c.key()));
             }
+            qsizetype expectedProperties = definitions.size();
             for (const auto field : definitions)
             {
                 const auto p = field.toObject();
-                const auto v = props.value(p.value(QStringLiteral("id")).toString());
+                const QString property = p.value(QStringLiteral("id")).toString();
+                const QJsonValue v = props.value(property);
+                // Worlds authored before lighting bake controls omit both fields.
+                if (hasBakeProperties == true && v.isUndefined() == true &&
+                    (property == QStringLiteral("staticTransform") || property == QStringLiteral("bakeAlwaysOn")))
+                {
+                    --expectedProperties;
+                    continue;
+                }
                 if (Value(p, v, error) == false)
                 {
                     error = e.value(QStringLiteral("name")).toString() + QStringLiteral(" / ") +
@@ -823,6 +863,18 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                         }
                     }
                 }
+            }
+            if (props.size() != expectedProperties)
+            {
+                return Fail(error, QStringLiteral("%1 has missing or unknown properties.").arg(c.key()));
+            }
+            if (hasBakeProperties == true && props.value(QStringLiteral("bakeAlwaysOn")).toBool() == true &&
+                (props.value(QStringLiteral("staticTransform")).toBool() == false ||
+                 props.value(QStringLiteral("enabled")).toBool() == false))
+            {
+                return Fail(error,
+                            QStringLiteral("Always-on baking requires an enabled light with Static Transform. "
+                                           "Clear Bake always-on lighting to disable or move it during play."));
             }
         }
     }

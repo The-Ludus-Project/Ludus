@@ -96,6 +96,8 @@ struct StaticLightingBake::State final
     const resources::SceneDefinition* SceneOrNull = nullptr;
     threading::JobSystem* SystemOrNull = nullptr;
     Array<StaticLightingSurfaceDescription> SurfaceOverrides;
+    Array<uint64> AnalyticLightIds;
+    bool ShouldBakeSelectedLights = false;
     Array<Range> Ranges;
     RangeProgress* ProgressOrNull = nullptr; // Owned; one slot per range.
     Array<threading::JobHandle> Handles;     // Preparation, then ranges in order.
@@ -179,7 +181,8 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
         description.SecondaryDistance <= 0 || description.SecondaryDistance > 2000000 ||
         scene.Objects.IsEmpty() == true || scene.Objects.GetSize() > format::IMPORT_LIMITS.Objects ||
         scene.Materials.GetSize() > format::IMPORT_LIMITS.Materials || scene.Lights.GetSize() > format::MAX_LIGHTS ||
-        description.Surfaces.IsValid() == false ||
+        description.Surfaces.IsValid() == false || description.AnalyticLightIds.IsValid() == false ||
+        description.AnalyticLightIds.GetSize() > scene.Lights.GetSize() ||
         (description.Surfaces.IsEmpty() == false && description.Surfaces.GetSize() != scene.Objects.GetSize()))
     {
         return Status::InvalidDescription;
@@ -210,7 +213,8 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
         pixelBytes += uint64(layout.Width) * layout.Height * format::TEXEL_BYTES;
     }
     const usize objectCount = scene.Objects.GetSize();
-    const usize environmentCount = scene.Environment.Pixels.GetSize();
+    ShouldBakeSelectedLights = description.AnalyticLightIds.IsEmpty() == false;
+    const usize environmentCount = ShouldBakeSelectedLights == true ? 0 : scene.Environment.Pixels.GetSize();
     // Peak includes temporary BVH scratch, the per-triangle index arrays and retained node capacity.
     const uint64 requiredBytes =
         sizeof(State) + pixelBytes +
@@ -226,12 +230,13 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
     }
     State* state = this;
     state->Description = description;
-    state->Description.Surfaces = {}; // All caller overrides are copied during this call, never retained.
+    state->Description.Surfaces = {};
+    state->Description.AnalyticLightIds = {};
     internal::ReferenceJob& job = state->Job;
     job.Description.MaxDepth = description.MaxDepth;
     job.Description.RouletteDepth = 3;
     job.Description.SecondaryDistance = description.SecondaryDistance;
-    job.Description.Environment = scene.Environment.Rgb;
+    job.Description.Environment = ShouldBakeSelectedLights == true ? math::Vector3{} : scene.Environment.Rgb;
     if (math::TryMakeRandomKey(description.Seed, BAKE_RANDOM_DOMAIN, job.Key) != math::MathStatus::Success)
     {
         return Status::InvalidDescription;
@@ -241,6 +246,18 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
         if (source.IsEnabled == false)
         {
             continue;
+        }
+        if (ShouldBakeSelectedLights == true)
+        {
+            bool isSelected = false;
+            for (usize i = 0; i < description.AnalyticLightIds.GetSize(); ++i)
+            {
+                isSelected = isSelected == true || description.AnalyticLightIds[i] == source.SourceId;
+            }
+            if (isSelected == false)
+            {
+                continue;
+            }
         }
         const float32 intensity =
             math::Max(source.IntensityRgb.X, math::Max(source.IntensityRgb.Y, source.IntensityRgb.Z));
@@ -254,6 +271,10 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
         light.Range = source.Range;
         light.InnerCos = source.InnerCos;
         light.OuterCos = source.OuterCos;
+    }
+    if (ShouldBakeSelectedLights == true && job.Description.LightCount != description.AnalyticLightIds.GetSize())
+    {
+        return Status::InvalidDescription;
     }
     LightSelection normalized;
     const Status lightStatus = NormalizeDirectLights(job.Lights, job.Description.LightCount, normalized);
@@ -467,7 +488,8 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
                 continue;
             }
             objectArea.Add(float64(triangle.Area));
-            if ((surface.Emission.X > 0 || surface.Emission.Y > 0 || surface.Emission.Z > 0) &&
+            if (ShouldBakeSelectedLights == false &&
+                (surface.Emission.X > 0 || surface.Emission.Y > 0 || surface.Emission.Z > 0) &&
                 job.Scene.Emitters.TryAdd(triangleIndex) == false)
             {
                 return Status::OutOfMemory;
@@ -493,6 +515,10 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
                     float32(float64(material.EmissionPower) / (float64(luminance) * math::kPi * objectArea.GetResult() *
                                                                (material.IsEmissionTwoSided == true ? 2.0 : 1.0)));
             }
+        }
+        if (ShouldBakeSelectedLights == true)
+        {
+            surface.Emission = {};
         }
         if (internal::ReferenceColor(surface.Emission, 10000) == false)
         {
@@ -549,7 +575,11 @@ Status StaticLightingBake::Step(uint32 maxPathSamples) noexcept
         const Status status =
             internal::EvaluateReferenceDiffuseProbe(state.Job,
                                                     state.Job.Info,
-                                                    { .TriangleIndex = state.Triangle, .SampleIndex = state.Sample },
+                                                    {
+                                                        .TriangleIndex = state.Triangle,
+                                                        .SampleIndex = state.Sample,
+                                                        .ShouldIncludeAnalyticDirect = state.ShouldBakeSelectedLights,
+                                                    },
                                                     irradiance);
         if (status != Status::Ready)
         {
@@ -664,7 +694,8 @@ Status StaticLightingBake::Submit(threading::JobSystem& inoutSystem,
         return Status::InvalidState;
     }
     const uint32 rangeCount = schedule.RangeCount;
-    if (rangeCount == 0 || rangeCount > MAX_STATIC_LIGHTING_RANGES || description.Surfaces.IsValid() == false)
+    if (rangeCount == 0 || rangeCount > MAX_STATIC_LIGHTING_RANGES || description.Surfaces.IsValid() == false ||
+        description.AnalyticLightIds.IsValid() == false || description.AnalyticLightIds.GetSize() > format::MAX_LIGHTS)
     {
         return Status::InvalidDescription;
     }
@@ -678,6 +709,9 @@ Status StaticLightingBake::Submit(threading::JobSystem& inoutSystem,
     state->ProgressOrNull = new (std::nothrow) State::RangeProgress[rangeCount];
     if (state->ProgressOrNull == nullptr || state->Ranges.TryResize(rangeCount) == false ||
         state->Handles.TryEnsureCapacity(usize{rangeCount} + 1) == false ||
+        (description.AnalyticLightIds.IsEmpty() == false &&
+         state->AnalyticLightIds.TryAddRange(
+             {description.AnalyticLightIds.GetDataOrNull(), description.AnalyticLightIds.GetSize()}) == false) ||
         (description.Surfaces.IsEmpty() == false &&
          state->SurfaceOverrides.TryAddRange({description.Surfaces.GetDataOrNull(), description.Surfaces.GetSize()}) ==
              false))
@@ -686,6 +720,7 @@ Status StaticLightingBake::Submit(threading::JobSystem& inoutSystem,
     }
     state->Description = description;
     state->Description.Surfaces = {state->SurfaceOverrides.GetData(), state->SurfaceOverrides.GetSize()};
+    state->Description.AnalyticLightIds = {state->AnalyticLightIds.GetData(), state->AnalyticLightIds.GetSize()};
     state->SceneOrNull = &scene;
     state->SystemOrNull = &inoutSystem;
     state->SubmitTicks = submitTicks;
@@ -900,11 +935,15 @@ threading::JobOutcome StaticLightingBake::State::RunRange(void* context) noexcep
                 break;
             }
             math::Vector3 irradiance;
-            const Status status =
-                internal::EvaluateReferenceDiffuseProbe(state.Job,
-                                                        range.Info,
-                                                        { .TriangleIndex = triangle, .SampleIndex = sample },
-                                                        irradiance);
+            const Status status = internal::EvaluateReferenceDiffuseProbe(
+                state.Job,
+                range.Info,
+                {
+                    .TriangleIndex = triangle,
+                    .SampleIndex = sample,
+                    .ShouldIncludeAnalyticDirect = state.ShouldBakeSelectedLights,
+                },
+                irradiance);
             if (status != Status::Ready)
             {
                 // Stop sibling ranges early; Merge reports this failure over their cancellation.

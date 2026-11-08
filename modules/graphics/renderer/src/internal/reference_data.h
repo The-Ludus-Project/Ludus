@@ -538,6 +538,7 @@ struct ReferenceProbeAddress final
 {
     uint32 TriangleIndex = 0;
     uint32 SampleIndex = 0;
+    bool ShouldIncludeAnalyticDirect = false;
 };
 // Reads the job immutably, so disjoint probes may run concurrently against one
 // prepared job. Path diagnostics go to the caller's counters, never job.Info.

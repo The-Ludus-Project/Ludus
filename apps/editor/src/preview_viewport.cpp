@@ -1499,7 +1499,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     shading->setToolTip(QStringLiteral(
         "Solid uses an editor-only neutral material and preview light; Albedo shows "
         "base colours without illumination. Lit shows authored lights, emitting surfaces "
-        "as shadowed area lights. The viewport uses direct lighting without baking lightmaps.\n"
+        "as shadowed area lights. Static authored lights can opt into always-on baking in Properties.\n"
         "Debug views (Normal, Depth, Roughness, Metallic, UV, Light count, Wireframe) replace shading with "
         "one material, geometry or lighting quantity per pixel so it can be inspected directly."));
     shading->setCurrentIndex(static_cast<foundation::int32>(preview->GetShading()));
