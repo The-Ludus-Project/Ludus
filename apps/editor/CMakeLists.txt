@@ -746,6 +746,7 @@ ludus_editor_add_objects(ludus_editor_application
     src/builtin_world.cpp
     src/world_document.cpp
     src/world_terrain.cpp
+    src/world_terrain_source.cpp
     src/world_terrain_editing.cpp
     src/world_demo_adapter.cpp
     src/internal/material_inspection.h

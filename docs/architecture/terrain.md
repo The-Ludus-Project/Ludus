@@ -1,10 +1,10 @@
 # Terrain systems architecture
 
 Status: the [World editor](../development/editor-workspace.md#s4-scene-authoring)
-generates bounded heightfield meshes for default Worlds. The first
-[viewport authoring slice](#delivery-and-review-gates) uses the existing recipe
-and mesh. The tiled terrain module, streaming renderer, and physics adapter
-remain proposed. Sizes
+generates bounded heightfield meshes for default Worlds. The
+[viewport authoring slices](#delivery-and-review-gates) support recipes, grayscale
+PNG sources and ordered sculpt strokes. The tiled terrain module, streaming
+renderer, and physics adapter remain proposed. Sizes
 and performance budgets are starting profiles and require measurements on the
 selected targets.
 
@@ -494,7 +494,7 @@ The placement gizmo edits the draft transform independently of local shape.
 | --- | --- |
 | **Flat** | Width, depth and base elevation. The preview is a plane at that local height. |
 | **Generate** | Rolling Hills or Ridges, **Randomize**, width, depth and **Relief**. **Advanced** exposes seed, base elevation, feature size, roughness and samples per side. The configured upper elevation is base plus relief. Individual peaks need not reach that bound. Randomize changes the draft seed and keeps the other settings. |
-| **Import** (follow-on) | Choose a heightmap, then inspect its dimensions, footprint, elevation mapping and orientation against the World. Show axis flips and the mapping from raster values to metres before committing. Reject unsupported encodings and sizes beyond the decode budget before allocating the decoded surface. Show the missing-data policy and resolve any unmapped samples before creation. |
+| **Import** | Choose a heightmap, then inspect its dimensions, footprint, elevation mapping and orientation against the World. Show axis flips and the mapping from raster values to metres before committing. Reject unsupported encodings and sizes beyond the decode budget before allocating the decoded surface. Show the missing-data policy and resolve any unmapped samples before creation. |
 
 Every valid change requests a preview. The panel shows **Updating preview…**
 while it prepares and leaves the last drawable view visible. If validation or
@@ -509,10 +509,9 @@ committed terrain through **Save World**.
 
 Select a terrain in the viewport or entity list to see its selection outline.
 **Edit Terrain** is available from the viewport toolbar and context menu even
-with Properties hidden. The Terrain panel identifies the entity by name. It
-opens to **Source** in the first slice. When brushes ship, **Sculpt** and
-**Paint** become available and viewport input edits the ground only with a
-brush active. **Exit Terrain Edit** returns to ordinary selection.
+with Properties hidden. The Terrain panel identifies the entity by name and opens to **Source**.
+Turn on **Sculpt** in the native viewport to activate a brush. **Paint** is a
+later slice. **Exit Terrain Edit** returns to ordinary selection.
 
 - **Source** opens the current recipe, or the import settings when supported.
   Keep the entity identity and transform. **Compare** toggles the committed
@@ -524,7 +523,7 @@ brush active. **Exit Terrain Edit** returns to ordinary selection.
   follows the finest authored surface and shows radius in metres and falloff.
   For Flatten, **Pick from surface** samples a target elevation or the author
   enters it directly. Press and drag to work on the highlighted area. One stroke
-  makes one undo step. A slope overlay measures the edited surface for route
+  makes one undo step. A slope readout at the cursor measures the edited surface for route
   inspection.
 - **Paint** shows the available terrain materials, radius and strength. The
   brush previews the affected area on the selected surface. Material strokes
@@ -583,8 +582,15 @@ intervening edit invalidated the draft's base, preserve the user's input, show
 the conflict and offer to refresh against the current World before retrying.
 Previewing changes neither the saved document nor gameplay or collision state.
 
-As layered editing arrives, keep source and author edits separate from derived
-meshes. Terrain-local metre coordinates give edits stable placement when the
+The bounded editor saves a relative PNG path, SHA-256 and axis flips beside
+the existing recipe. Raw grayscale values map to the recipe elevation range.
+It stores a versioned, bounded list of small stroke commands with terrain-local
+dab positions, radius, strength and target. It rebuilds the grid from source
+before applying these commands in order. Normals and bounds derive from the
+result. The raster remains a project file. The tiled design can store large
+rasters and sparse edit blocks as separate assets.
+
+Keep source and author edits separate from derived meshes. Terrain-local metre coordinates give edits stable placement when the
 entity moves. The existing edit transaction and invalidation rules below govern
 sampling, undo patches, memory admission and multi-tile edits. Runtime collision
 uses the committed physical revision through the

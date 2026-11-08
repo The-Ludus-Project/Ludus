@@ -17,7 +17,8 @@ class WorldDocument;
 [[nodiscard]] bool ValidateTerrainRecipe(const QJsonObject& recipe, QString& outError);
 
 /// Generate an indexed, Y-up mesh from one versioned recipe. Failure preserves outMesh.
-[[nodiscard]] bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& outError);
+[[nodiscard]] bool
+BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& outError, const QString& projectRoot = {});
 
 /// Create or update terrain as one edit. An empty key uses the draft transform, or the defaults when it is empty.
 [[nodiscard]] bool EditWorldTerrain(WorldDocument& inoutWorld,

@@ -10,15 +10,19 @@
 #include "internal/viewport_object_overlay.h"
 #include "internal/world_document.h"
 #include "internal/world_terrain.h"
+#include "internal/world_terrain_source.h"
 #include "internal/world_workspace.h"
 #include "scene_fixture.h"
 
 #include <QAction>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
@@ -113,6 +117,101 @@ TEST_CASE("Terrain extraction is seeded, resolution independent and safe at the 
     CHECK(world.Draft() == applied);
 }
 
+TEST_CASE("Heightmap corners, axis flips and sculpt replay use local metres", "[editor][world][terrain]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString relative = QStringLiteral("elevations.png");
+    const QString path = QDir(root).filePath(relative);
+    QImage source(2, 2, QImage::Format_Grayscale16);
+    REQUIRE(source.isNull() == false);
+    foundation::uint16* north = reinterpret_cast<foundation::uint16*>(source.scanLine(0));
+    foundation::uint16* south = reinterpret_cast<foundation::uint16*>(source.scanLine(1));
+    north[0] = 0;
+    north[1] = 65535;
+    south[0] = 32768;
+    south[1] = 0;
+    REQUIRE(source.save(path, "PNG") == true);
+
+    QString error;
+    TerrainHeightmap heightmap;
+    REQUIRE(LoadTerrainHeightmap(root, relative, {}, heightmap, error) == true);
+    CHECK(heightmap.Image.format() == QImage::Format_Grayscale16);
+    CHECK(heightmap.Sample(0, 0) == 0);
+    CHECK(heightmap.Sample(1, 0) == 1);
+    CHECK(heightmap.Sample(0, 1) == 32768.0 / 65535.0);
+    CHECK(LoadTerrainHeightmap(root, QStringLiteral("../elevations.png"), {}, heightmap, error) == false);
+
+    const QString oversized = QStringLiteral("oversized.png");
+    QImage wide(TERRAIN_HEIGHTMAP_MAX_SIDE + 1, 2, QImage::Format_Grayscale8);
+    wide.fill(0);
+    REQUIRE(wide.save(QDir(root).filePath(oversized), "PNG") == true);
+    CHECK(LoadTerrainHeightmap(root, oversized, {}, heightmap, error) == false);
+    CHECK(error.contains(QStringLiteral("pixels per axis")) == true);
+    CHECK(heightmap.Sample(1, 0) == 1);
+    const QString color = QStringLiteral("color.png");
+    QImage rgba(2, 2, QImage::Format_RGBA8888);
+    rgba.fill(Qt::red);
+    REQUIRE(rgba.save(QDir(root).filePath(color), "PNG") == true);
+    CHECK(LoadTerrainHeightmap(root, color, {}, heightmap, error) == false);
+    CHECK(error.contains(QStringLiteral("grayscale PNG")) == true);
+
+    QByteArray schema;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument world;
+    REQUIRE(world.LoadSchema(schema, error) == true);
+    REQUIRE(world.New(error) == true);
+    QJsonObject recipe = GetDefaultRecipe(world);
+    recipe.insert(QStringLiteral("minimumElevation"), -4);
+    recipe.insert(QStringLiteral("maximumElevation"), 12);
+    recipe.insert(QStringLiteral("heightmap"),
+                  QJsonObject{{QStringLiteral("path"), relative},
+                              {QStringLiteral("sha256"), heightmap.Sha256},
+                              {QStringLiteral("flip_x"), true},
+                              {QStringLiteral("flip_z"), false}});
+    PreviewMesh mesh;
+    REQUIRE(BuildTerrainMesh(recipe, mesh, error, root) == true);
+    CHECK(mesh.Positions.first().Y == 12);
+    CHECK(mesh.Positions[32].Y == -4);
+    const foundation::int32 center = 16 * 33 + 16;
+    const foundation::float32 before = mesh.Positions[center].Y;
+    const foundation::math::Vector3 normalBefore = mesh.Normals[center + 1];
+    const TerrainBrush flatten{TerrainBrushKind::Flatten, 4, 1, 2.4, false};
+    REQUIRE(AppendTerrainStroke(flatten, QJsonArray{QJsonArray{0, 0}}, recipe, error) == true);
+    REQUIRE(BuildTerrainMesh(recipe, mesh, error, root) == true);
+    CHECK(mesh.Positions[center].Y != before);
+    CHECK(mesh.Positions[center].Y == 2.4F);
+    CHECK(mesh.Normals[center + 1] != normalBefore);
+
+    QJsonObject replacement = recipe;
+    replacement.remove(QStringLiteral("heightmap"));
+    replacement.insert(QStringLiteral("shape"), QStringLiteral("Flat"));
+    replacement.insert(QStringLiteral("minimumElevation"), 8);
+    REQUIRE(FindClippedTerrainStrokes(recipe, replacement).isEmpty() == true);
+    REQUIRE(BuildTerrainMesh(replacement, mesh, error) == true);
+    CHECK(mesh.Positions[center].Y == 2.4F);
+    CHECK(mesh.Positions.first().Y == 8);
+
+    replacement.insert(QStringLiteral("width"), 2);
+    const QJsonArray clipped = FindClippedTerrainStrokes(recipe, replacement);
+    REQUIRE(clipped.size() == 1);
+    RemoveTerrainStrokes(clipped, replacement);
+    REQUIRE(BuildTerrainMesh(replacement, mesh, error) == true);
+    CHECK(mesh.Positions[center].Y == 8);
+
+    QString key;
+    REQUIRE(EditWorldTerrain(world, tests::MakeFixedEntropySource(), {}, recipe, key, error) == true);
+    WorldDocument reopened;
+    REQUIRE(reopened.LoadSchema(schema, error) == true);
+    REQUIRE(reopened.Load(world.Encode(), error) == true);
+    CHECK(reopened.Draft() == world.Draft());
+    source.fill(0);
+    REQUIRE(source.save(path, "PNG") == true);
+    CHECK(BuildTerrainMesh(recipe, mesh, error, root) == false);
+    CHECK(error.contains(QStringLiteral("saved heightmap bytes changed")) == true);
+    CHECK(mesh.Positions[center].Y == 8);
+}
 TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hidden", "[editor][world][terrain]")
 {
     QTemporaryDir directory;
@@ -334,6 +433,109 @@ TEST_CASE("Terrain draft publication keeps the delegated World view during a ren
     renderer.SetPreviewSource(nullptr);
 }
 #endif
+TEST_CASE("Terrain dock imports a raster and commits one native brush stroke", "[editor][world][terrain]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString image = QStringLiteral("ground.png");
+    QImage heightmap(2, 2, QImage::Format_Grayscale8);
+    heightmap.fill(0);
+    REQUIRE(heightmap.save(QDir(root).filePath(image), "PNG") == true);
+
+    WorldWorkspace world;
+    world.SetEntropySource(tests::MakeFixedEntropySource());
+    world.SetProject(root, 1);
+    world.resize(960, 700);
+    world.show();
+    REQUIRE(world.Create(QDir(root).filePath(QStringLiteral("terrain.world.json"))) == true);
+    RenderPanel* renderOrNull = world.findChild<RenderPanel*>();
+    REQUIRE(renderOrNull != nullptr);
+    PreviewViewport& viewport = renderOrNull->GetViewport();
+    viewport.GetAddTerrainAction().trigger();
+    QTabBar* sourceModeOrNull = world.findChild<QTabBar*>(QStringLiteral("worldTerrainMode"));
+    QLineEdit* pathOrNull = world.findChild<QLineEdit*>(QStringLiteral("worldTerrainHeightmapPath"));
+    QPushButton* commitOrNull = world.findChild<QPushButton*>(QStringLiteral("worldTerrainCommit"));
+    REQUIRE(sourceModeOrNull != nullptr);
+    REQUIRE(pathOrNull != nullptr);
+    REQUIRE(commitOrNull != nullptr);
+    sourceModeOrNull->setCurrentIndex(2);
+    pathOrNull->setText(image);
+    REQUIRE(QTest::qWaitFor([&]() { return commitOrNull->isEnabled(); }, TERRAIN_WAIT_MILLISECONDS));
+    REQUIRE(world.GetRenderPreview().Scene().Objects.size() == 1);
+    const QString key = world.GetRenderPreview().Scene().Objects.first().Id;
+    commitOrNull->click();
+    const QJsonObject imported = world.Document().Draft();
+    CHECK(GetTerrainRecipe(world.Document(), key)
+              .value(QStringLiteral("heightmap"))
+              .toObject()
+              .value(QStringLiteral("path"))
+              .toString() == image);
+
+    if (PreviewViewport::CanPresent() == false)
+    {
+        return;
+    }
+    viewport.GetEditTerrainAction().trigger();
+    QCheckBox* sculptOrNull = world.findChild<QCheckBox*>(QStringLiteral("worldTerrainSculpt"));
+    QComboBox* brushOrNull = world.findChild<QComboBox*>(QStringLiteral("worldTerrainBrushKind"));
+    QDoubleSpinBox* strengthOrNull = world.findChild<QDoubleSpinBox*>(QStringLiteral("worldTerrainBrushStrength"));
+    QDoubleSpinBox* elevationOrNull = world.findChild<QDoubleSpinBox*>(QStringLiteral("worldTerrainBrushElevation"));
+    REQUIRE(sculptOrNull != nullptr);
+    REQUIRE(brushOrNull != nullptr);
+    REQUIRE(strengthOrNull != nullptr);
+    REQUIRE(elevationOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([&]() { return sculptOrNull->isEnabled(); }, TERRAIN_WAIT_MILLISECONDS));
+    REQUIRE(sourceModeOrNull->currentIndex() == 2);
+    sculptOrNull->click();
+    REQUIRE(sculptOrNull->isChecked() == true);
+    brushOrNull->setCurrentIndex(brushOrNull->findData(static_cast<foundation::int32>(TerrainBrushKind::Flatten)));
+    strengthOrNull->setValue(1);
+    elevationOrNull->setValue(2.4);
+    RenderPreview& preview = world.GetRenderPreview();
+    preview.SetAxisView(EditorAxisView::Top);
+    preview.SetSelection(key);
+    REQUIRE(preview.FrameSelection() == true);
+    ViewportObjectInteraction& interaction = viewport.GetObjectInteraction();
+    const QRectF frame(0, 0, 800, 600);
+    REQUIRE(interaction.Press(frame.center(), frame) == true);
+    REQUIRE(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::TerrainBrush);
+    REQUIRE(interaction.Move(frame.center() + QPointF(80, 0), false) == true);
+    REQUIRE(interaction.Release() == true);
+    REQUIRE(QTest::qWaitFor([&]() { return world.Document().Draft() != imported; }, TERRAIN_WAIT_MILLISECONDS));
+    const QJsonObject sculpted = world.Document().Draft();
+    const QJsonObject layer = GetTerrainRecipe(world.Document(), key).value(QStringLiteral("sculpt")).toObject();
+    REQUIRE(layer.value(QStringLiteral("strokes")).toArray().size() == 1);
+    CHECK(layer.value(QStringLiteral("strokes")).toArray().first().toObject().value(QStringLiteral("target")) == 2.4);
+    CHECK(layer.value(QStringLiteral("strokes"))
+              .toArray()
+              .first()
+              .toObject()
+              .value(QStringLiteral("points"))
+              .toArray()
+              .size() > 1);
+    world.Undo();
+    CHECK(world.Document().Draft() == imported);
+    world.Redo();
+    CHECK(world.Document().Draft() == sculpted);
+    REQUIRE(QTest::qWaitFor([&]() { return sculptOrNull->isEnabled(); }, TERRAIN_WAIT_MILLISECONDS));
+    sculptOrNull->click();
+    REQUIRE(sculptOrNull->isChecked() == false);
+    sourceModeOrNull->setCurrentIndex(0);
+    QLineEdit* baseOrNull = world.findChild<QLineEdit*>(QStringLiteral("worldTerrainField:minimumElevation"));
+    REQUIRE(baseOrNull != nullptr);
+    baseOrNull->setText(QStringLiteral("5"));
+    REQUIRE(QTest::qWaitFor([&]() { return commitOrNull->isEnabled(); }, TERRAIN_WAIT_MILLISECONDS));
+    const PreviewObject& shown = preview.Scene().Objects.first();
+    const PreviewMesh& mesh = preview.Scene().Meshes[shown.Mesh];
+    CHECK(mesh.Positions.first().Y == 5);
+    CHECK(mesh.Positions[16 * 33 + 16].Y == 2.4F);
+    commitOrNull->click();
+    CHECK(GetTerrainRecipe(world.Document(), key).contains(QStringLiteral("heightmap")) == false);
+    CHECK(GetTerrainRecipe(world.Document(), key).value(QStringLiteral("sculpt")).toObject() == layer);
+    world.Undo();
+    CHECK(world.Document().Draft() == sculpted);
+}
 TEST_CASE("Cancelling terrain in an imported World restores the composed scene", "[editor][world][terrain]")
 {
     QTemporaryDir directory;

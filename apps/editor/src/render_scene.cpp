@@ -912,7 +912,7 @@ bool RenderScene::Load(const QString& root,
                                                    "a terrain before adding another.")
                                         .arg(MAX_PREVIEW_MESHES));
                     }
-                    if (BuildTerrainMesh(terrain, mesh, outError) == false)
+                    if (BuildTerrainMesh(terrain, mesh, outError, canonical) == false)
                     {
                         return Fail(outError, name + QStringLiteral(": ") + outError);
                     }

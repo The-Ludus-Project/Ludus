@@ -4,6 +4,7 @@
 #include "internal/editor_identity.h"
 #include "internal/material_inspection.h"
 #include "internal/world_terrain.h"
+#include "internal/world_terrain_source.h"
 
 #include <ludus/content/identity_records/migration_manifest.h>
 #include <ludus/content/identity_records/world_records.h>
@@ -755,7 +756,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             {
                 return Fail(error,
                             QStringLiteral("Generated terrain needs a Transform and its own entity. Use "
-                                           "Generate Terrain to create it."));
+                                           "Add Terrain to create it."));
             }
             if (ValidateTerrainRecipe(components.value(terrainComponent).toObject(), error) == false)
             {
@@ -781,7 +782,9 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             {
                 return Fail(error, QStringLiteral("Unknown component %1; the world was preserved.").arg(c.key()));
             }
-            const auto props = c.value().toObject();
+            const QJsonObject props = HasBuiltInTerrain() == true && c.key() == terrainComponent
+                                          ? GetTerrainSchemaFields(c.value().toObject())
+                                          : c.value().toObject();
             const auto definitions = definition.value(QStringLiteral("properties")).toArray();
             if (props.size() != definitions.size())
             {

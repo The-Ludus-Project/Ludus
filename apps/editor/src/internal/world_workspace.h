@@ -232,6 +232,8 @@ private:
     void checkTerrainBase();
     void refreshTerrainBase();
     void commitTerrainDraft();
+    void commitTerrainStroke();
+    void refuseTerrainStroke(const QString& reason);
     void frameTerrainDraft();
     [[nodiscard]] bool isTerrainAuthoringOpen() const;
     [[nodiscard]] bool canEditTerrain(const QString& key) const;

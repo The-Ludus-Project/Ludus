@@ -2,6 +2,7 @@
 
 #include "internal/render_scene.h"
 #include "internal/world_document.h"
+#include "internal/world_terrain_source.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/math/addressed_random.hpp>
@@ -126,10 +127,10 @@ bool ValidateTerrainRecipe(const QJsonObject& recipe, QString& outError)
         outError = QStringLiteral("Set the maximum elevation at or above the minimum elevation.");
         return false;
     }
-    return true;
+    return ValidateTerrainSource(recipe, outError);
 }
 
-bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& outError)
+bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& outError, const QString& projectRoot)
 {
     if (ValidateTerrainRecipe(recipe, outError) == false)
     {
@@ -171,6 +172,19 @@ bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& 
         return false;
     }
 
+    const QJsonObject source = recipe.value(QStringLiteral("heightmap")).toObject();
+    const bool hasHeightmap = source.isEmpty() == false;
+    TerrainHeightmap heightmap;
+    if (hasHeightmap == true && LoadTerrainHeightmap(projectRoot,
+                                                     source.value(QStringLiteral("path")).toString(),
+                                                     source.value(QStringLiteral("sha256")).toString(),
+                                                     heightmap,
+                                                     outError) == false)
+    {
+        return false;
+    }
+    const bool shouldFlipX = source.value(QStringLiteral("flip_x")).toBool();
+    const bool shouldFlipZ = source.value(QStringLiteral("flip_z")).toBool();
     PreviewMesh mesh;
     mesh.Id = outMesh.Id;
     mesh.Positions.reserve(samples * samples);
@@ -185,7 +199,12 @@ bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& 
         {
             const float64 u = static_cast<float64>(x) / cells;
             const float64 positionX = (u - 0.5) * width;
-            const float64 elevation = ComputeElevation(shape, key, positionX, positionZ);
+            const float64 elevation =
+                hasHeightmap == true
+                    ? math::Lerp(shape.Minimum,
+                                 shape.Maximum,
+                                 heightmap.Sample(shouldFlipX == true ? 1 - u : u, shouldFlipZ == true ? 1 - v : v))
+                    : ComputeElevation(shape, key, positionX, positionZ);
             mesh.Positions.append(
                 {static_cast<float32>(positionX), static_cast<float32>(elevation), static_cast<float32>(positionZ)});
             mesh.Uvs.append({static_cast<float32>(u), static_cast<float32>(v)});
@@ -201,6 +220,10 @@ bool BuildTerrainMesh(const QJsonObject& recipe, PreviewMesh& outMesh, QString& 
                 mesh.Indices.append(nextRow + 1);
             }
         }
+    }
+    if (ApplyTerrainStrokes(recipe, samples, mesh.Positions, outError) == false)
+    {
+        return false;
     }
     BuildTerrainNormals(samples, mesh);
     outMesh = Move(mesh);

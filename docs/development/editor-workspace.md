@@ -637,8 +637,8 @@ panel and its emission direction in the viewport.
 Choose **Add Geometry / Light → Add Terrain…** or right-click the World
 viewport and choose **Add Terrain…**. The Terrain panel opens beside the
 viewport with a Rolling Hills draft. Use **Flat** for a level surface or
-**Generate** for Rolling Hills and Ridges. Set the footprint and relief in
-metres. **Randomize** chooses another seed. **Advanced** exposes the seed,
+**Generate** for Rolling Hills and Ridges, or **Import** to start from a
+heightmap. Set the footprint and relief in metres. **Randomize** chooses another seed. **Advanced** exposes the seed,
 base elevation, feature size, roughness and samples per side. Width and depth
 follow local X and Z, and elevation follows local Y.
 
@@ -656,11 +656,35 @@ pose. Switch back and choose **Apply Source Changes** to keep the ready
 recipe as one undoable edit. This preserves the terrain's entity and transform.
 **Save World** keeps the seed, settings and recipe version.
 
+In **Import**, choose an 8- or 16-bit grayscale PNG from inside the project.
+In the browser, enter the project-relative path and choose **Read Project PNG**.
+The editor shows the raster dimensions and maps black to **Base elevation**
+and white to base plus **Relief**. By default columns run along local +X and
+rows along +Z. Use **Flip X** or **Flip Z** to align a landmark before committing.
+The source must be a static PNG without alpha, 2–2048 pixels per axis and at most
+12 MiB encoded. All sample values are elevations. Supply a filled raster when
+the upstream tool marks some pixels as missing. Save World records the relative
+path and the source digest. If the file changes on disk, select it again to
+preview the replacement before applying it.
+
+On the native viewport, select existing terrain, open **Edit Terrain…**, and
+turn on **Sculpt**. Choose **Raise**, **Lower**, **Smooth**, or **Flatten** and
+set a radius in local metres and strength from 0 to 1. For Flatten, enter an
+elevation or use **Pick from surface** and click to sample one. **Show slope at
+cursor** reads the angle of the picked world-space triangle. The viewport shows
+the brush footprint. Drag and release to preview and apply one stroke as one
+World undo step. Escape during a drag discards it. Wait for the stroke to finish
+before starting another. This bounded editor keeps up to 64 dabs per stroke and
+256 dabs per terrain. Source changes replay compatible strokes in local metres
+and retain Flatten targets. If a smaller footprint clips strokes, enlarge the
+footprint or use **Remove Clipped Strokes…** to review and preview their removal.
+**Apply Source Changes** commits the replacement and removal together.
+
 The editor extracts a single indexed mesh of at most 64 samples per side.
 The terrain uses the current viewport shading and authored lights. Use
 **Solid** when the active project graph offers that debug view to inspect
-geometry in an unlit World. Heightmap import, terrain collision, sculpting,
-erosion and streaming are future work. See the
+geometry in an unlit World. Terrain collision, material paint, erosion and
+streaming are future work. See the
 [viewport authoring design](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
 for delivery boundaries.
 
