@@ -652,6 +652,8 @@ bounded indexed mesh when it extracts the World, including after reopening.
 The terrain uses the current viewport shading and authored lights. This first
 editor workflow provides a single mesh of at most 64 samples per side. Collision,
 sculpting, erosion, and streamed terrain are future work.
+See the [proposed viewport authoring workflow](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
+for the planned docked tools and source editing.
 
 The geometry and default schema ship inside the editor, so this workflow needs
 no model import or project asset files. Imported scenes and these objects can
