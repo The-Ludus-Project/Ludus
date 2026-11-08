@@ -176,3 +176,28 @@ jobs:
       - name: Deploy the already validated candidate artifact
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
+  unvalidated:
+    name: Mark run as not validated
+    needs: snapshot
+    # A tick that captured nothing would otherwise finish green: its only job
+    # succeeded and every suite was skipped. Cancel it so the run list shows it as
+    # cancelled, never as a passing batch. Develop health already ignores cancelled runs.
+    # Thanks to GitHub, "REST API endpoints for workflow runs", Cancel a workflow run:
+    # https://docs.github.com/en/rest/actions/workflow-runs#cancel-a-workflow-run
+    if: needs.snapshot.outputs.should_run == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel this run because it validated nothing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+          # Cancellation stops this step. Reaching the end means it did not take
+          # effect, so fail rather than let the run report success.
+          sleep 180
+          echo "::error title=Run was not cancelled::This run validated nothing but could not be cancelled."
+          exit 1

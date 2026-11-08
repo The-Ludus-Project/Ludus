@@ -116,6 +116,8 @@ class SnapshotReportTests(unittest.TestCase):
         self.assertIn("main is unchanged", annotation)
         self.assertIn("### No promotion this run", summary)
         self.assertIn(reason, summary)
+        self.assertIn("cancelled rather than reported as passing", summary)
+        self.assertNotIn("green", summary)
 
     def test_notice_escapes_workflow_command_data(self):
         annotation, _ = batch_ci.describe_snapshot({"should_run": "false", "reason": "100%\nnext\rline"})
@@ -373,6 +375,22 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("environment: batch-promotion", snapshot)
         self.assertNotRegex(snapshot, r"(?m)^      contents: write$")
         self.assertIn("    needs: promote", workflow.split("\n  publish:\n", 1)[1])
+
+    def test_tick_that_validates_nothing_is_cancelled_rather_than_green(self):
+        workflow = (self.ROOT / ".github/workflows/batch-ci.yml").read_text()
+        job = workflow.split("\n  unvalidated:\n", 1)[1]
+        self.assertIn("    needs: snapshot\n", job)
+        self.assertIn("    if: needs.snapshot.outputs.should_run == 'false'\n", job)
+        self.assertIn("    permissions:\n      actions: write\n    steps:", job)
+        run = job.split("        run: |\n", 1)[1]
+        self.assertIn('gh run cancel "$GITHUB_RUN_ID"', run)
+        # If cancellation does not take effect, the run must fail, not pass.
+        self.assertTrue(run.rstrip().endswith("exit 1"))
+        # The cancelling privilege stays out of the capture job and the promotion chain.
+        snapshot = workflow.split("\n  snapshot:\n", 1)[1].split("\n  native:\n", 1)[0]
+        self.assertNotIn("actions: write", snapshot)
+        promote = workflow.split("\n  promote:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        self.assertNotIn("unvalidated", promote)
 
     def test_publication_explicitly_checks_promotion_after_optional_ancestor_skips(self):
         workflow = (self.ROOT / ".github/workflows/batch-ci.yml").read_text()
