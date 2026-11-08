@@ -649,9 +649,11 @@ viewport to frame the selected terrain again.
 
 Save World keeps the seed, settings, and recipe version. The editor rebuilds the
 bounded indexed mesh when it extracts the World, including after reopening.
-The terrain uses the current viewport shading and authored lights. This first
-editor workflow provides a single mesh of at most 64 samples per side. Collision,
-sculpting, erosion, and streamed terrain are future work.
+The terrain uses the current viewport shading and authored lights. In an unlit
+World, the default raster graph displays the terrain's surface colour without
+adding it to the scene's mesh lights. Each terrain uses a single mesh of at most
+64 samples per side. Collision, sculpting, erosion, and streamed terrain are
+future work.
 See the [proposed viewport authoring workflow](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
 for the planned docked tools and source editing.
 
