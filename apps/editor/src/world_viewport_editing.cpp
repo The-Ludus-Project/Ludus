@@ -101,14 +101,13 @@ void WorldWorkspace::exploreFirstPerson()
     }
     const bool hasImportedScene = Document_.Draft().contains(QStringLiteral("scene"));
     PreviewViewport& viewport = hasImportedScene == true ? Scene_->GetViewport() : Render_->GetViewport();
-    if (viewport.BeginFirstPerson(spawn, speed) == false)
+    if (viewport.BeginFirstPerson(spawn, speed, error) == false)
     {
-        Changed(QStringLiteral("Could not enter first person. Finish any ray path inspection and check the player's "
-                               "Transform and move speed before trying again."));
+        Changed(error);
         return;
     }
-    Changed(QStringLiteral("Hold right mouse to look. With it held, use WASD to move, Q/E to descend or rise, and "
-                           "Shift to go faster. Escape returns to the editor view."));
+    Changed(QStringLiteral("Hold right mouse to look, WASD to walk, Shift to run, and Space to jump. "
+                           "Escape returns to the editor view."));
 }
 void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObject& placement)
 {

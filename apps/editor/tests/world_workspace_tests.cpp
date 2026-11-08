@@ -2768,7 +2768,7 @@ TEST_CASE("Explore as Player moves the rendered staircase2 World camera", "[.fir
     REQUIRE(preview.IsExploringFirstPerson() == true);
     CHECK(preview.GetVisibleCameraSample().Pose.Position == start.EyeWorld);
     const uint64 framesBeforeMove = preview.Frames();
-    preview.Fly({0, 0, -1}, 0.1F, 3);
+    preview.AdvanceFirstPerson({0, 0, -1}, 0.1F, 3, false);
     const math::Vector3d movedWorld = preview.GetVisibleCameraSample().Pose.Position;
     CHECK(movedWorld != start.EyeWorld);
     timer.restart();

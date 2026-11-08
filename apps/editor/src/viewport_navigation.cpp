@@ -52,15 +52,26 @@ int32 GetMovementKey(int32 key) noexcept
     }
 }
 } // namespace
-bool PreviewViewport::BeginFirstPerson(const gameplay::camera::CameraSample& spawn, float32 speed)
+bool PreviewViewport::BeginFirstPerson(const gameplay::camera::CameraSample& spawn, float32 speed, QString& outError)
 {
-    if (mPlayEndpointOrNull != nullptr || mIsInspectingRayPaths == true || math::IsFinite(speed) == false ||
-        speed <= 0 || Preview_->BeginFirstPerson(spawn) == false)
+    if (mPlayEndpointOrNull != nullptr || mIsInspectingRayPaths == true)
+    {
+        outError = QStringLiteral("Stop the hosted game or leave ray path inspection before exploring.");
+        return false;
+    }
+    if (math::IsFinite(speed) == false || speed <= 0)
+    {
+        outError = QStringLiteral("Set a positive Move speed on the First Person Player.");
+        return false;
+    }
+    if (Preview_->BeginFirstPerson(spawn, outError) == false)
     {
         return false;
     }
     stopNavigation();
     mFirstPersonSpeed = speed;
+    mNavigationClock.start();
+    mNavigationTimer.start();
     updateObjectInteractionAvailability();
     setFocus(Qt::OtherFocusReason);
     return true;
@@ -161,6 +172,11 @@ void PreviewViewport::mouseReleaseEvent(QMouseEvent* event)
     if (event->button() == Qt::RightButton)
     {
         stopNavigation();
+        if (Preview_->IsExploringFirstPerson() == true)
+        {
+            mNavigationClock.start();
+            mNavigationTimer.start();
+        }
     }
     event->accept();
 }
@@ -299,6 +315,15 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
         event->accept();
         return;
     }
+    if (Preview_->IsExploringFirstPerson() == true && event->key() == Qt::Key_Space)
+    {
+        if (mIsFlying == true && event->isAutoRepeat() == false)
+        {
+            mShouldJump = true;
+        }
+        event->accept();
+        return;
+    }
     const int32 movementKey = GetMovementKey(event->key());
     if (mIsFlying == true && movementKey >= 0)
     {
@@ -412,6 +437,7 @@ void PreviewViewport::stopNavigation()
 #endif
     mIsFlying = false;
     mNavigationTimer.stop();
+    mShouldJump = false;
     for (bool& isHeld : mHeldKeys)
     {
         isHeld = false;
@@ -428,7 +454,13 @@ void PreviewViewport::stopNavigation()
 }
 void PreviewViewport::advanceNavigation()
 {
-    if (mIsFlying == false)
+    const bool isExploring = Preview_->IsExploringFirstPerson();
+    if (mFirstPersonSpeed > 0 && isExploring == false)
+    {
+        EndFirstPerson();
+        return;
+    }
+    if (mIsFlying == false && isExploring == false)
     {
         return;
     }
@@ -438,20 +470,23 @@ void PreviewViewport::advanceNavigation()
         (mHeldKeys[RIGHT_KEY] == true ? 1.0F : 0.0F) - (mHeldKeys[LEFT_KEY] == true ? 1.0F : 0.0F),
         (mHeldKeys[UP_KEY] == true ? 1.0F : 0.0F) - (mHeldKeys[DOWN_KEY] == true ? 1.0F : 0.0F),
         (mHeldKeys[BACKWARD_KEY] == true ? 1.0F : 0.0F) - (mHeldKeys[FORWARD_KEY] == true ? 1.0F : 0.0F)};
-    if (math::LengthSquared(movementControls) == 0)
+    constexpr float32 BOOST_MULTIPLIER = 4;
+    const float32 boost = mHeldKeys[BOOST_KEY] == true ? BOOST_MULTIPLIER : 1.0F;
+    if (isExploring == true)
     {
+        Preview_->AdvanceFirstPerson(movementControls, deltaSeconds, mFirstPersonSpeed * boost, mShouldJump);
+        mShouldJump = false;
         return;
     }
-    constexpr float32 BOOST_MULTIPLIER = 4;
-    constexpr float32 MINIMUM_EDITOR_SPEED = 0.001F;
-    constexpr float32 MAXIMUM_EDITOR_SPEED = 10000.0F;
-    const float32 baseSpeed =
-        Preview_->IsExploringFirstPerson() == true
-            ? mFirstPersonSpeed
-            : math::Clamp(Preview_->GetFocusDistance() * 0.5F, MINIMUM_EDITOR_SPEED, MAXIMUM_EDITOR_SPEED) *
-                  mSpeedMultiplier;
-    const float32 speed = baseSpeed * (mHeldKeys[BOOST_KEY] == true ? BOOST_MULTIPLIER : 1.0F);
-    Preview_->Fly(movementControls, deltaSeconds, speed);
+    if (math::LengthSquared(movementControls) > 0)
+    {
+        constexpr float32 MINIMUM_EDITOR_SPEED = 0.001F;
+        constexpr float32 MAXIMUM_EDITOR_SPEED = 10000.0F;
+        const float32 speed =
+            math::Clamp(Preview_->GetFocusDistance() * 0.5F, MINIMUM_EDITOR_SPEED, MAXIMUM_EDITOR_SPEED) *
+            mSpeedMultiplier * boost;
+        Preview_->Fly(movementControls, deltaSeconds, speed);
+    }
 }
 void PreviewViewport::recenterPointer()
 {

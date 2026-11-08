@@ -653,8 +653,9 @@ viewport to frame the selected terrain again.
 Save World keeps the seed, settings, and recipe version. The editor rebuilds the
 bounded indexed mesh when it extracts the World, including after reopening.
 The terrain uses the current viewport shading and authored lights. This first
-editor workflow provides a single mesh of at most 64 samples per side. Collision,
-sculpting, erosion, and streamed terrain are future work.
+editor workflow provides a single mesh of at most 64 samples per side.
+[Explore as Player](#explore-from-a-first-person-player) uses that surface for
+walking collision. Sculpting, erosion, and streamed terrain are future work.
 See the [proposed viewport authoring workflow](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
 for the planned docked tools and source editing.
 
@@ -1092,11 +1093,23 @@ and Y for pitch and yaw, and adjust **Move speed**. Apply the changes and use
 points.
 
 Select a player in the hierarchy and click **Explore as Player**. Hold the right
-mouse button to look around, and use **W/A/S/D** to move horizontally, **Q/E** to
-descend or rise, and **Shift** to move faster. Use **Escape** or leave the
-viewport to return to the previous editor camera. Exploring uses free flight
-through the current rendered World, including terrain and imported geometry.
-Movement is temporary. This mode has no gravity, floor following or collision.
+mouse button to look around, use **W/A/S/D** to walk, **Shift** to run, and
+**Space** to jump. Use **Escape** or leave the viewport to return to the previous
+editor camera. Movement is temporary and applies gravity even while you stand
+still. If you fall below the World, you return to the spawn.
+
+The player uses an upright box and sweeps it against the current visible
+World triangles, including generated terrain and imported meshes. It can
+step up 0.35 m and walk on slopes up to 45°. Place the spawn eye about 1.6 m
+above the floor and clear of walls and ceilings. Hide decorative geometry
+that should not obstruct a walk. Collision preparation can take longer for
+large imports and admits up to eight million instanced triangles. Publishing
+different World geometry ends the walk. Choose **Explore as Player** again to
+walk on the new surface.
+
+This editor preview only moves the player. Rigid bodies, thrown objects,
+and gameplay collision assets follow the
+[physics systems architecture](../architecture/physics-systems.md).
 
 ### Try a 3D authoring workflow
 

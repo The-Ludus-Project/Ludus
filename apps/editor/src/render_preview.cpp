@@ -387,6 +387,7 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     if (scene.Identity.isEmpty())
     {
         Stop();
+        EndFirstPerson();
         Scene_ = {};
         mHasSceneBounds = false;
         Residency_.Reset();
@@ -439,6 +440,7 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     }
     // Retire the previous lease and provider through the local owner.
     Residency_.Swap(residency);
+    EndFirstPerson();
     Scene_ = scene;
     mSceneBoundsWorld = sceneBoundsWorld;
     mHasSceneBounds = hasSceneBounds;
@@ -1346,13 +1348,34 @@ void RenderPreview::Orbit(float32 deltaX, float32 deltaY)
         navigationChanged();
     }
 }
-bool RenderPreview::BeginFirstPerson(const gameplay::camera::CameraSample& spawn)
+bool RenderPreview::BeginFirstPerson(const gameplay::camera::CameraSample& spawn, QString& outError)
 {
-    if (mFirstPersonCamera.TryAdopt(spawn, 1) == false)
+    EditorCameraController camera;
+    if (camera.TryAdopt(spawn, 1) == false)
     {
+        outError = QStringLiteral("Set a valid Transform on the First Person Player and try again.");
         return false;
     }
+    using StartStatus = ViewportWalkCollision::StartStatus;
+    switch (mFirstPersonCollision.Start(Scene_, spawn.Pose.Position))
+    {
+        case StartStatus::NoGeometry:
+            outError = QStringLiteral("Add visible terrain or a mesh floor to the World before exploring.");
+            return false;
+        case StartStatus::GeometryUnavailable:
+            outError = QStringLiteral("Could not prepare the World's collision geometry. Hide unnecessary meshes "
+                                      "or reimport invalid geometry, then try again.");
+            return false;
+        case StartStatus::SpawnObstructed:
+            outError = QStringLiteral("Move the First Person Player's eye above the floor and clear of walls "
+                                      "before exploring.");
+            return false;
+        case StartStatus::Ready:
+            break;
+    }
+    mFirstPersonCamera = camera;
     mIsExploringFirstPerson = true;
+    outError.clear();
     invalidateView();
     return true;
 }
@@ -1361,6 +1384,7 @@ void RenderPreview::EndFirstPerson()
     if (mIsExploringFirstPerson == true)
     {
         mIsExploringFirstPerson = false;
+        mFirstPersonCollision.Reset();
         invalidateView();
     }
 }
@@ -1398,10 +1422,44 @@ void RenderPreview::Pan(float32 deltaX, float32 deltaY, float32 heightLogical)
         navigationChanged();
     }
 }
+void RenderPreview::AdvanceFirstPerson(math::Vector3 movementControls,
+                                       float32 deltaSeconds,
+                                       float32 speed,
+                                       bool shouldJump)
+{
+    if (mIsExploringFirstPerson == false || math::IsFinite(speed) == false || speed <= 0)
+    {
+        return;
+    }
+    movementControls.Y = 0;
+    math::Vector3d velocityWorld{};
+    math::Quaternion heading;
+    if (math::TryNormalize(movementControls, movementControls) == math::MathStatus::Success &&
+        math::TryFromAxisAngle({0, 1, 0}, math::DegreesToRadians(mFirstPersonCamera.GetYawDegrees()), heading) ==
+            math::MathStatus::Success)
+    {
+        const math::Vector3 directionWorld = math::Rotate(heading, movementControls);
+        velocityWorld =
+            math::Vector3d{static_cast<float64>(directionWorld.X), 0, static_cast<float64>(directionWorld.Z)} *
+            static_cast<float64>(speed);
+    }
+    gameplay::camera::CameraSample camera = mFirstPersonCamera.GetSample();
+    const math::Vector3d positionWorld =
+        mFirstPersonCollision.Advance(velocityWorld, static_cast<float64>(deltaSeconds), shouldJump);
+    if (positionWorld != camera.Pose.Position)
+    {
+        camera.Pose.Position = positionWorld;
+        if (mFirstPersonCamera.TryAdopt(camera, 1) == true)
+        {
+            invalidateView();
+        }
+    }
+}
+
 void RenderPreview::Fly(math::Vector3 movementControls, float32 deltaSeconds, float32 speed)
 {
-    if (math::IsFinite(deltaSeconds) == false || deltaSeconds <= 0 || math::IsFinite(speed) == false || speed <= 0 ||
-        math::LengthSquared(movementControls) == 0)
+    if (mIsExploringFirstPerson == true || math::IsFinite(deltaSeconds) == false || deltaSeconds <= 0 ||
+        math::IsFinite(speed) == false || speed <= 0 || math::LengthSquared(movementControls) == 0)
     {
         return;
     }
@@ -1411,22 +1469,6 @@ void RenderPreview::Fly(math::Vector3 movementControls, float32 deltaSeconds, fl
     }
     constexpr float32 MAXIMUM_FLY_STEP_SECONDS = 0.1F;
     const float32 distance = math::Min(deltaSeconds, MAXIMUM_FLY_STEP_SECONDS) * speed;
-    if (mIsExploringFirstPerson == true)
-    {
-        // In first person, WASD stays level with the ground regardless of look pitch.
-        math::Quaternion heading;
-        if (math::TryFromAxisAngle({0, 1, 0}, math::DegreesToRadians(mFirstPersonCamera.GetYawDegrees()), heading) ==
-            math::MathStatus::Success)
-        {
-            const math::Vector3 movementWorld = math::Rotate(heading, movementControls);
-            const math::Quaternion inverse = math::Conjugate(mFirstPersonCamera.GetSample().Pose.Orientation);
-            if (mFirstPersonCamera.TryFly(math::Rotate(inverse, movementWorld), distance) == true)
-            {
-                invalidateView();
-            }
-        }
-        return;
-    }
     if (beginNavigation() == false)
     {
         return;

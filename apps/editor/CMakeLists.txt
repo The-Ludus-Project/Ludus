@@ -220,6 +220,7 @@ set(editor_viewport_sources
     src/internal/viewport_gizmo_readout.h
     src/viewport_gizmo_readout.cpp
     src/viewport_navigation.cpp
+    src/viewport_walk_collision.cpp
     src/internal/orientation_widget.h
     src/orientation_widget.cpp
     src/viewport_play_input.cpp

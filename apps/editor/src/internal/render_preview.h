@@ -25,6 +25,7 @@
 #include "internal/viewport_frame_source.h"
 #include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
+#include "internal/viewport_walk_collision.h"
 
 #include <QElapsedTimer>
 #include <QJsonObject>
@@ -77,7 +78,12 @@ public:
     void SetSelection(const QString& id);
     [[nodiscard]] bool FrameSelection() noexcept;
     /// Use a transient first-person camera while retaining the editor's navigation and scene.
-    [[nodiscard]] bool BeginFirstPerson(const gameplay::camera::CameraSample& spawn);
+    [[nodiscard]] bool BeginFirstPerson(const gameplay::camera::CameraSample& spawn, QString& outError);
+    /// Move and apply gravity to the transient player. Controls use only X and Z.
+    void AdvanceFirstPerson(foundation::math::Vector3 movementControls,
+                            foundation::float32 deltaSeconds,
+                            foundation::float32 speed,
+                            bool shouldJump);
     /// Restore the normal editor view; safe to call when no session is active.
     void EndFirstPerson();
     [[nodiscard]] LUDUS_INLINE bool IsExploringFirstPerson() const noexcept
@@ -359,6 +365,7 @@ private:
     void invalidateView();
     EditorCameraController mCameraController;
     EditorCameraController mFirstPersonCamera;
+    ViewportWalkCollision mFirstPersonCollision;
     bool mIsExploringFirstPerson = false;
     foundation::float32 mLookSensitivity = 1;
     /// Viewport size preset index; see SetViewportSize.

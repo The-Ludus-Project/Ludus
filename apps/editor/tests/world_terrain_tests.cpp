@@ -3,6 +3,7 @@
 #include "internal/controller.h"
 #include "internal/level_workspace.h"
 #include "internal/render_panel.h"
+#include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "internal/world_document.h"
 #include "internal/world_terrain.h"
@@ -22,6 +23,7 @@
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 namespace ludus::editor
@@ -109,6 +111,39 @@ TEST_CASE("Terrain extraction is seeded, resolution independent and safe at the 
     recipe.insert(QStringLiteral("minimumElevation"), 12);
     CHECK(EditWorldTerrain(world, tests::MakeFixedEntropySource(), key, recipe, key, error) == false);
     CHECK(world.Draft() == applied);
+}
+
+TEST_CASE("Explore as Player lands on the generated terrain after World extraction",
+          "[editor][world][terrain][first-person]")
+{
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument world;
+    REQUIRE(world.LoadSchema(schema, error) == true);
+    REQUIRE(world.New(error) == true);
+    QJsonObject recipe = GetDefaultRecipe(world);
+    recipe.insert(QStringLiteral("shape"), QStringLiteral("Flat"));
+    recipe.insert(QStringLiteral("minimumElevation"), 2);
+    QString key;
+    REQUIRE(EditWorldTerrain(world, tests::MakeFixedEntropySource(), {}, recipe, key, error) == true);
+    QTemporaryDir root;
+    REQUIRE(root.isValid() == true);
+    RenderScene scene;
+    REQUIRE(RenderScene::Load(root.path(), world, scene, error, false) == true);
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(scene) == true);
+    gameplay::camera::CameraSample spawn;
+    spawn.Pose.Position = {0, 4, 0};
+    spawn.Lens.Projection = gameplay::camera::CameraProjection::PerspectiveInfinite;
+    REQUIRE(preview.BeginFirstPerson(spawn, error) == true);
+    for (foundation::uint32 frame = 0; frame < 10; ++frame)
+    {
+        preview.AdvanceFirstPerson({1, 0, 0}, 0.1F, 3, false);
+    }
+    const foundation::math::Vector3d eyeWorld = preview.GetVisibleCameraSample().Pose.Position;
+    CHECK(eyeWorld.X == Catch::Approx(3));
+    CHECK(eyeWorld.Y == Catch::Approx(3.602).margin(0.003));
 }
 
 TEST_CASE("Generate Terrain previews without editing and saves one reversible entity", "[editor][world][terrain]")
