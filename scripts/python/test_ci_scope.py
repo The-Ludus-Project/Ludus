@@ -381,14 +381,15 @@ class RequiredGateTests(unittest.TestCase):
         self.assertEqual(dependencies["promote"],
                          "[snapshot, native, sdk, wiki, browser, threading, windows, recovery]")
 
-    def test_integration_prs_run_only_the_source_and_tooling_native_job(self):
+    def test_integration_prs_check_sources_compile_and_analyze(self):
         event = {"pull_request": {"base": {"ref": "develop"}, "labels": [{"name": "ci:full"}]}}
         self.assertEqual(ci_scope.validation_tier("pull_request", event), ci_scope.INTEGRATION_TIER)
+        self.assertCountEqual(ci_scope.PULL_REQUEST_JOBS, ("formatting", "analysis", "editor"))
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         conditions = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    if: (.*)$", workflow, re.MULTILINE))
         for name in ci_scope.NATIVE_JOBS:
             condition = conditions.get(name, "")
-            self.assertEqual("validation_tier" in condition, name != "formatting", name)
+            self.assertEqual("validation_tier" in condition, name not in ci_scope.PULL_REQUEST_JOBS, name)
         results = self.results(tier=ci_scope.INTEGRATION_TIER)
         self.assertEqual(ci_scope.gate_failures(results), [])
         for name in ci_scope.INTEGRATION_JOBS:
@@ -396,12 +397,36 @@ class RequiredGateTests(unittest.TestCase):
             results[name]["result"] = "success"
             self.assertTrue(ci_scope.gate_failures(results), name)
             results[name]["result"] = "skipped"
-        # Source/tooling validation remains required before accepting engine changes.
-        for status in ("skipped", "failure", "cancelled"):
-            results["formatting"]["result"] = status
-            self.assertTrue(ci_scope.gate_failures(results), status)
-        results["formatting"]["result"] = "success"
+        # Source checks, the Editor compile and analysis are required before
+        # accepting engine changes, so a build break cannot fail every later batch.
+        for name in ci_scope.PULL_REQUEST_JOBS:
+            for status in ("skipped", "failure", "cancelled"):
+                with self.subTest(job=name, status=status):
+                    results[name]["result"] = status
+                    self.assertTrue(ci_scope.gate_failures(results))
+            results[name]["result"] = "success"
         self.assertEqual(ci_scope.gate_failures(results), [])
+
+    def test_integration_editor_compiles_without_tests_or_cache_writes(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        editor = workflow.split("\n  editor:\n", 1)[1].split("\n  # Debug runtime", 1)[0]
+        self.assertIn("compiler-cache-writer: ${{ needs.changes.outputs.validation_tier == 'integration' "
+                      "&& 'false' || 'true' }}", editor)
+        self.assertIn("conan-cache-writer: 'false'", editor)
+        guard = "        if: needs.changes.outputs.validation_tier != 'integration'\n"
+        steps = re.findall(r"(?ms)^      - (?:name|uses): ([^\n]*)\n(.*?)(?=^      - |\Z)", editor)
+        self.assertTrue(steps)
+        compile_only = ("Prepare and configure trusted authoring shaders", "Check that each source compiles once",
+                        "Build every default target with the Editor and shader worker",
+                        "Analyze document interactions and regressions", "Report compiler cache")
+        for title, body in steps:
+            with self.subTest(step=title):
+                runs_tests = "ctest" in body or "ludus_editor_tests" in body or "upload-artifact" in title
+                if title in compile_only or title.startswith(("actions/checkout", "./.github/actions/native-setup")):
+                    self.assertNotIn(guard, body)
+                else:
+                    self.assertTrue(runs_tests, title)
+                    self.assertIn(guard, body)
         self.assertEqual(ci_scope.gate_failures(self.results(False, ci_scope.INTEGRATION_TIER)), [])
 
     def test_pull_requests_leave_macos_tooling_jobs_to_the_batch(self):

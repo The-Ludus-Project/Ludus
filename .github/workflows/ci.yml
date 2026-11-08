@@ -1305,7 +1305,9 @@ jobs:
 
   analysis:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    # Runs on integration pull requests too: an analysis failure found only by the
+    # batch blocks promotion of every change merged with it.
+    if: needs.changes.outputs.native_required == 'true'
     name: Clang static analysis (${{ matrix.shard }})
     strategy:
       fail-fast: false
@@ -1360,7 +1362,10 @@ jobs:
 
   editor:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    # Integration pull requests compile here (build graph, every default target
+    # with warnings as errors, Editor analysis) without running tests, restoring
+    # but never saving the batch's caches. Batches also run the tests and journeys.
+    if: needs.changes.outputs.native_required == 'true'
     name: Editor, shader worker and unit tests
     runs-on: ubuntu-24.04
     env:
@@ -1379,6 +1384,8 @@ jobs:
           editor: 'true'
           cache-variant: editor
           conan-cache-writer: 'false'
+          # Pull-request caches would evict the batch's main-scope baseline.
+          compiler-cache-writer: ${{ needs.changes.outputs.validation_tier == 'integration' && 'false' || 'true' }}
       - name: Prepare and configure trusted authoring shaders
         run: |
           ./scripts/shader-probe bootstrap
@@ -1394,6 +1401,7 @@ jobs:
       - name: Build every default target with the Editor and shader worker
         run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development
       - name: Verify unit and Editor tests and worker-on target detection
+        if: needs.changes.outputs.validation_tier != 'integration'
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
@@ -1403,6 +1411,7 @@ jobs:
       # with Mesa's lavapipe for both the editor and the game, imports the game's
       # exported memory. The journey plays the World-demo game in the World viewport.
       - name: Verify Play in the World viewport on Vulkan
+        if: needs.changes.outputs.validation_tier != 'integration'
         run: |
           apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3)
           timeout --signal=TERM --kill-after=30s 10m sudo apt-get "${apt_options[@]}" install -y -qq xvfb xauth
@@ -1412,12 +1421,14 @@ jobs:
           xvfb-run -a -s '-screen 0 1600x1000x24' env QT_QPA_PLATFORM=xcb \
             out/build/linux-clang-development/apps/editor/ludus_editor_tests '[play][gpu],[.play-native]'
       - name: Measure the content browser projection
+        if: needs.changes.outputs.validation_tier != 'integration'
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           out/build/linux-clang-development/apps/editor/ludus_editor_tests '[content][scale]' --success > out/editor-content-scale.txt
           tee -a "$GITHUB_STEP_SUMMARY" < out/editor-content-scale.txt
       - uses: actions/upload-artifact@v4
+        if: needs.changes.outputs.validation_tier != 'integration'
         with:
           name: editor-content-scale
           path: out/editor-content-scale.txt
@@ -1446,6 +1457,7 @@ jobs:
             apps/editor/tests/world_workspace_tests.cpp \
             apps/editor/tests/world_demo_workspace_tests.cpp
       - name: Verify S5 Editor, installed Behavior SDK and GameHost journey
+        if: needs.changes.outputs.validation_tier != 'integration'
         run: |
           ./scripts/script-provider bootstrap
           out/host-tools/venv/bin/cmake --preset linux-clang-development \
