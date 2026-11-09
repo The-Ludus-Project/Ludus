@@ -1,6 +1,5 @@
 #include "entropy_fixture.h"
 #include "internal/editor_identity.h"
-#include "internal/empty_world_view.h"
 #include "internal/level_workspace.h"
 #include "internal/preview_viewport.h"
 #include "scene_fixture.h"
@@ -388,7 +387,7 @@ TEST_CASE("A viewport device that cannot start names its cause in the scene publ
     CHECK(scene.StatusText() == cause + QStringLiteral(" Previous scene and level retained."));
     // WorldWorkspace forwards the failed operation's status to the viewport through this path.
     scene.ShowSceneFailure(scene.StatusText());
-    const EmptyWorldView* messageOrNull = viewport.findChild<EmptyWorldView*>();
+    const QLabel* messageOrNull = viewport.findChild<QLabel*>(QStringLiteral("emptyWorldView"));
     REQUIRE(messageOrNull != nullptr);
     CHECK(messageOrNull->text().contains(cause) == true);
     QObject::disconnect(unavailable);
