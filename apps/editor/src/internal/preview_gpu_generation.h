@@ -203,6 +203,7 @@ private:
     void discardBakeCharts() noexcept;
     QSharedPointer<const WorldSurfaceBake> mSurfaceBake;
     foundation::Array<graphics::renderer::BakedLighting> mBakeCharts;
+    graphics::renderer::BakedGiProbeVolume mProbeVolume{};
     foundation::Array<graphics::renderer::MaterialVersion> mBakedMaterials;
     foundation::usize mBakedMaterialCursor = 0;
     QString mBakeFailure;

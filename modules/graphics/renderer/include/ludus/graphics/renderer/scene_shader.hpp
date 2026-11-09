@@ -86,9 +86,9 @@ struct SceneShaderInputs final
     foundation::BorrowedView<const foundation::math::Vector3> EnvironmentPixels;
     /// Optional charts parallel to RenderGraphItem order. Submit only data verified against the current geometry,
     /// materials and lights. Forward passes with a connected Baked Lighting input copy accepted charts on update.
-    foundation::BorrowedView<const SceneSurfaceChart> SurfaceCharts{};
+    foundation::BorrowedView<const SceneSurfaceChart> SurfaceCharts;
     /// Analytic light identities whose diffuse contributions the supplied charts replace. Copied on update.
-    foundation::BorrowedView<const foundation::uint64> BakedLightIds{};
+    foundation::BorrowedView<const foundation::uint64> BakedLightIds;
 };
 /// Ray preparation byte ceiling that rejected a candidate; independent of allocator failure.
 enum class SceneMemoryBudget : foundation::uint8

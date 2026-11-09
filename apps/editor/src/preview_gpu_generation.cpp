@@ -777,11 +777,16 @@ QString PreviewGpuGeneration::DescribeBake() const
     }
     if (mHasPublishedBake == true)
     {
-        return QStringLiteral("always-on lighting baked");
+        return rhi::IsNull(mProbeVolume.Texture) == false ? QStringLiteral("always-on lighting and probe GI baked")
+                                                          : QStringLiteral("always-on lighting baked");
     }
     if (shouldBakeLighting() == true)
     {
         return QStringLiteral("baking always-on lighting…");
+    }
+    if (Source.ProbeGrid.Counts[0] != 0 && Source.AlwaysOnLightIds.isEmpty() == true)
+    {
+        return QStringLiteral("Probe GI needs an always-on baked light. Opt in to baking in its Properties.");
     }
     return QStringLiteral("direct lighting");
 }
@@ -805,6 +810,8 @@ void PreviewGpuGeneration::discardBakeCharts() noexcept
         static_cast<void>(rhi::Destroy(Device, chart.Texture));
     }
     mBakeCharts.Clear();
+    static_cast<void>(rhi::Destroy(Device, mProbeVolume.Texture));
+    mProbeVolume = {};
 }
 
 rhi::RasterStatus PreviewGpuGeneration::prepareBake() noexcept
@@ -812,7 +819,8 @@ rhi::RasterStatus PreviewGpuGeneration::prepareBake() noexcept
 #if defined(LUDUS_EDITOR_GPU_PREVIEW) && !defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     if (mBakeCharts.IsEmpty() == true)
     {
-        if (mSurfaceBake.isNull() == true)
+        if (mSurfaceBake.isNull() == true ||
+            (Source.ProbeGrid.Counts[0] != 0 && mSurfaceBake->ProbeAtlas.Pixels.isEmpty() == true))
         {
             return rhi::RasterStatus::Pending;
         }
@@ -824,8 +832,28 @@ rhi::RasterStatus PreviewGpuGeneration::prepareBake() noexcept
         {
             return rhi::RasterStatus::OutOfMemory;
         }
+        if (Source.ProbeGrid.Counts[0] != 0)
+        {
+            const WorldProbeAtlas& atlas = mSurfaceBake->ProbeAtlas;
+            mProbeVolume.Grid = Source.ProbeGrid;
+            mProbeVolume.IrradianceScale = atlas.IrradianceScale;
+            const rhi::RasterStatus uploaded = rhi::CreateTexture(
+                Device,
+                { .Width = atlas.Width, .Height = atlas.Height, .Format = rhi::RasterFormat::Rgba8Unorm },
+                {{reinterpret_cast<const uint8*>(atlas.Pixels.constData()), static_cast<usize>(atlas.Pixels.size())},
+                 usize{atlas.Width} * content::scene_format::TEXEL_BYTES},
+                mProbeVolume.Texture);
+            if (IsAccepted(uploaded) == false)
+            {
+                return uploaded;
+            }
+        }
         for (usize i = 0; i < mBakeCharts.GetSize(); ++i)
         {
+            if (Lighting.Surfaces[i].ShouldExcludeFromBake == true)
+            {
+                continue;
+            }
             const WorldSurfaceChart& chart = mSurfaceBake->Charts.at(static_cast<qsizetype>(i));
             const resources::SceneObject& object = Source.Definition->Objects[i];
             renderer::BakedLighting& material = mBakeCharts[i];
@@ -849,8 +877,20 @@ rhi::RasterStatus PreviewGpuGeneration::prepareBake() noexcept
             }
         }
     }
+    if (rhi::IsNull(mProbeVolume.Texture) == false)
+    {
+        const rhi::RasterStatus status = rhi::GetStatus(Device, mProbeVolume.Texture);
+        if (status != rhi::RasterStatus::Ready)
+        {
+            return status;
+        }
+    }
     for (const renderer::BakedLighting& chart : mBakeCharts)
     {
+        if (rhi::IsNull(chart.Texture) == true)
+        {
+            continue;
+        }
         const rhi::RasterStatus status = rhi::GetStatus(Device, chart.Texture);
         if (status != rhi::RasterStatus::Ready)
         {
@@ -1011,9 +1051,16 @@ rhi::RasterStatus PreviewGpuGeneration::createLightingMaterial(usize objectIndex
     material.DebugView = GetMaterialDebugView(Shading);
     if (shouldUseBake == true)
     {
-        material.Bake = mBakeCharts[objectIndex];
-        material.BakedDirectLightIds = {Source.AlwaysOnLightIds.constData(),
-                                        static_cast<usize>(Source.AlwaysOnLightIds.size())};
+        if (surface.ShouldExcludeFromBake == true)
+        {
+            material.ProbeVolume = mProbeVolume;
+        }
+        else
+        {
+            material.Bake = mBakeCharts[objectIndex];
+            material.BakedDirectLightIds = {Source.AlwaysOnLightIds.constData(),
+                                            static_cast<usize>(Source.AlwaysOnLightIds.size())};
+        }
     }
     if (resources.HasEnvironment == true)
     {

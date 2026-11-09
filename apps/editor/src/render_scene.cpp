@@ -5,6 +5,7 @@
 #include "internal/world_aperture.h"
 #include "internal/world_celestial_light.h"
 #include "internal/world_demo_adapter.h"
+#include "internal/world_probe_volume.h"
 #include "internal/world_terrain.h"
 
 #include <ludus/content/scene_format/limits.h>
@@ -156,6 +157,8 @@ void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
     // Disabled authored lights stay listed, and switchable, beside the imported ones.
     inoutScene.LightBinding = authored.LightBinding;
     inoutScene.AlwaysOnLightIds = authored.AlwaysOnLightIds;
+    inoutScene.ProbeGrid = authored.ProbeGrid;
+    inoutScene.GiProbeReceiverIds = authored.GiProbeReceiverIds;
     inoutScene.LuminaireBinding = authored.LuminaireBinding;
     inoutScene.Luminaires = authored.Luminaires;
     if (authored.Cameras.isEmpty() == false)
@@ -802,6 +805,12 @@ bool RenderScene::Load(const QString& root,
         {
             continue;
         }
+        const QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+        if (IsBuiltInWorld(world) == true && components.contains(GetGiProbeVolumeComponentId()) == true &&
+            ReadWorldGiProbeGrid(components, candidate.ProbeGrid, outError) == false)
+        {
+            return false;
+        }
         const QJsonObject terrain =
             canGenerateTerrain == true
                 ? entity.value(QStringLiteral("components")).toObject().value(terrainComponent).toObject()
@@ -1030,6 +1039,10 @@ bool RenderScene::Load(const QString& root,
                         candidate.Surfaces.append(
                             { .Texture = object.Texture, .Tint = object.Tint, .FlatTint = object.Tint });
                     }
+                }
+                if (IsBuiltInWorld(world) == true && components.contains(GetGiProbeReceiverComponentId()) == true)
+                {
+                    candidate.GiProbeReceiverIds.append(ComputeSourceId(id));
                 }
                 for (const auto vertex : candidate.Meshes[object.Mesh].Positions)
                 {

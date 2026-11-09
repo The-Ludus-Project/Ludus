@@ -144,7 +144,10 @@ void WorldSurfaceBakeState::resetJob() noexcept
 
 void WorldSurfaceBakeState::Poll(const RenderScene& scene)
 {
-    if (mLightingKey.isEmpty() == true || GetReady().isNull() == false || mFailure.isEmpty() == false)
+    const bool hasProbeGrid = scene.ProbeGrid.Counts[0] != 0;
+    const QSharedPointer<const WorldSurfaceBake> ready = GetReady();
+    if (mLightingKey.isEmpty() == true || mFailure.isEmpty() == false ||
+        (ready.isNull() == false && (hasProbeGrid == false || ready->ProbeAtlas.Pixels.isEmpty() == false)))
     {
         return;
     }
@@ -172,6 +175,7 @@ void WorldSurfaceBakeState::Poll(const RenderScene& scene)
         renderer::StaticLightingBakeDescription description;
         description.SceneRevision = inputs.SceneRevision;
         description.DependencyRevision = inputs.DependencyRevision;
+        description.ProbeGrid = scene.ProbeGrid;
         description.Surfaces = {inputs.Surfaces.GetData(), inputs.Surfaces.GetSize()};
         description.AnalyticLightIds = {scene.AlwaysOnLightIds.constData(),
                                         static_cast<usize>(scene.AlwaysOnLightIds.size())};
@@ -197,6 +201,21 @@ void WorldSurfaceBakeState::Poll(const RenderScene& scene)
     resetJob();
     const QSharedPointer<WorldSurfaceBake> bake = QSharedPointer<WorldSurfaceBake>::create();
     bake->LightingKey = mLightingKey;
+    if (hasProbeGrid == true)
+    {
+        renderer::StaticGiProbeAtlas source;
+        const rhi::RasterStatus atlasStatus = completed->GetProbeAtlas(source);
+        if (atlasStatus != rhi::RasterStatus::Ready)
+        {
+            recordFailure(atlasStatus);
+            return;
+        }
+        bake->ProbeAtlas.Pixels = QByteArray(reinterpret_cast<const char*>(source.Pixels.GetDataOrNull()),
+                                             static_cast<qsizetype>(source.Pixels.GetSize()));
+        bake->ProbeAtlas.IrradianceScale = source.IrradianceScale;
+        bake->ProbeAtlas.Width = source.Width;
+        bake->ProbeAtlas.Height = source.Height;
+    }
     bake->Charts.reserve(scene.Objects.size());
     for (qsizetype index = 0; index < scene.Objects.size(); ++index)
     {

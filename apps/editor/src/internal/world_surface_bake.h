@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ludus/foundation/base/pointer.hpp>
+#include <ludus/foundation/base/types.h>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/threading/jobs.hpp>
 
@@ -22,11 +23,21 @@ struct WorldSurfaceChart final
     foundation::uint32 Height = 0;
 };
 
-/// Immutable CPU chart data, in the exact object order of the retained World extraction.
+/// CPU probe payload for the matching extraction. It is regenerated on open.
+struct WorldProbeAtlas final
+{
+    QByteArray Pixels;
+    foundation::float32 IrradianceScale = 0;
+    foundation::uint32 Width = 0;
+    foundation::uint32 Height = 0;
+};
+
+/// Immutable CPU lighting data. Charts follow the exact order of the retained World extraction.
 struct WorldSurfaceBake final
 {
     QByteArray LightingKey;
     QVector<WorldSurfaceChart> Charts;
+    WorldProbeAtlas ProbeAtlas;
 };
 
 /// GUI-thread owner shared by the built-in preview and its project graph consumer.

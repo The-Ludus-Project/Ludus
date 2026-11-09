@@ -1455,10 +1455,12 @@ void RenderPreview::Pan(float32 deltaX, float32 deltaY, float32 heightLogical)
         navigationChanged();
     }
 }
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): elapsed seconds then speed, as in Fly; the units differ.
 void RenderPreview::AdvanceFirstPerson(math::Vector3 movementControls,
                                        float32 deltaSeconds,
                                        float32 speed,
                                        bool shouldJump)
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     if (mIsExploringFirstPerson == false || math::IsFinite(speed) == false || speed <= 0)
     {

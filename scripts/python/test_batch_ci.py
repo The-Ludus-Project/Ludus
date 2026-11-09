@@ -705,5 +705,72 @@ class WorkflowTargetTests(unittest.TestCase):
         self.assert_targets_defined(texts)
 
 
+PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2}
+
+
+def read_permissions(text: str, indent: str) -> dict[str, str] | None:
+    """Return the first "permissions:" mapping at indent, or None when the block is absent."""
+    # The last entry may end the text when a job header is cut before its steps.
+    match = re.search(rf"(?m)^{indent}permissions:[ \t]*(\S*)[ \t]*(?:\n|\Z)((?:{indent}  [a-z-]+: [a-z]+[ \t]*(?:\n|\Z))*)",
+                      text)
+    if match is None:
+        return None
+    if match.group(1):
+        raise AssertionError(f"Shorthand permissions are not modelled: {match.group(1)}")
+    return dict(re.findall(rf"(?m)^{indent}  ([a-z-]+): ([a-z]+)", match.group(2)))
+
+
+def split_jobs(workflow: str) -> dict[str, str]:
+    jobs = workflow.split("\njobs:\n", 1)[1]
+    return dict(re.findall(r"(?ms)^  ([a-z][a-z0-9-]*):\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)", jobs))
+
+
+class NestedPermissionTests(unittest.TestCase):
+    """GitHub rejects the whole batch at startup when a called job asks for more than its caller grants.
+
+    Thanks to GitHub, "Reuse workflows", access and permissions: a called workflow's
+    permissions can only be downgraded from the caller's, and the check applies to
+    every nested job, even one whose condition skips it in a batch.
+    https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
+    """
+
+    ROOT = Path(__file__).resolve().parents[2] / ".github/workflows"
+
+    def test_every_called_job_stays_within_its_batch_callers_permissions(self):
+        batch = (self.ROOT / "batch-ci.yml").read_text()
+        default = read_permissions(batch.split("\njobs:\n", 1)[0], "") or {}
+        callers = 0
+        for caller, body in split_jobs(batch).items():
+            uses = re.search(r"(?m)^    uses: \./\.github/workflows/([a-z0-9-]+\.yml)$", body)
+            if uses is None:
+                continue
+            callers += 1
+            header = body.split("\n    steps:", 1)[0]
+            granted = read_permissions(header, "    ")
+            granted = default if granted is None else granted
+            called = (self.ROOT / uses.group(1)).read_text()
+            called_default = read_permissions(called.split("\njobs:\n", 1)[0], "")
+            for job, job_body in split_jobs(called).items():
+                requested = read_permissions(job_body.split("\n    steps:", 1)[0], "    ")
+                requested = called_default if requested is None else requested
+                for scope, level in (requested or {}).items():
+                    with self.subTest(caller=caller, job=f"{uses.group(1)}:{job}", scope=scope):
+                        self.assertLessEqual(PERMISSION_LEVELS[level],
+                                             PERMISSION_LEVELS[granted.get(scope, "none")],
+                                             f"{caller} must grant {scope}: {level}")
+        self.assertGreaterEqual(callers, len(batch_ci.VALIDATION_JOBS))
+
+    def test_permission_reader_matches_job_and_workflow_blocks(self):
+        job = "    needs: x\n    permissions:\n      contents: read\n      actions: write\n    steps:\n"
+        self.assertEqual(read_permissions(job, "    "), {"contents": "read", "actions": "write"})
+        self.assertIsNone(read_permissions("    needs: x\n", "    "))
+        self.assertEqual(read_permissions("on: push\npermissions:\n  contents: read\n", ""), {"contents": "read"})
+        # A header cut before its steps keeps its last entry.
+        self.assertEqual(read_permissions(job.split("\n    steps:", 1)[0], "    "),
+                         {"contents": "read", "actions": "write"})
+        with self.assertRaises(AssertionError):
+            read_permissions("permissions: read-all\n", "")
+
+
 if __name__ == "__main__":
     unittest.main()

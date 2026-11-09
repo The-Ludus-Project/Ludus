@@ -382,8 +382,9 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
                                                      definitionOrNull->Environment.Pixels.GetSize()};
     }
     // Moving keeps the shared geometry storage the borrowed pointers name.
-    if (surfaceBake.isNull() == false && surfaceBake->Charts.size() == extraction.Items.size() &&
-        extraction.Scene.AlwaysOnLightIds.isEmpty() == false &&
+    if (surfaceBake.isNull() == false && definitionOrNull != nullptr &&
+        definitionOrNull->Objects.GetSize() == static_cast<usize>(extraction.Items.size()) &&
+        surfaceBake->Charts.size() == extraction.Items.size() && extraction.Scene.AlwaysOnLightIds.isEmpty() == false &&
         surfaceBake->LightingKey == preview_lighting::MakeKey(scene))
     {
         extraction.SurfaceBake = surfaceBake;
@@ -391,6 +392,13 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
         for (qsizetype index = 0; index < extraction.Items.size(); ++index)
         {
             const renderer::RenderGraphItem& item = extraction.Items.at(index);
+            const resources::SceneObject& sourceObject = definitionOrNull->Objects[static_cast<usize>(index)];
+            if (scene.GiProbeReceiverIds.contains(sourceObject.SourceId) == true)
+            {
+                // Keep the chart table aligned with the draw list and use realtime shading for this receiver.
+                extraction.SurfaceCharts.append(renderer::SceneSurfaceChart{});
+                continue;
+            }
             const WorldSurfaceChart& source = surfaceBake->Charts.at(index);
             renderer::SceneSurfaceChart chart;
             chart.SourceId = item.SourceId;

@@ -756,6 +756,7 @@ ludus_editor_add_objects(ludus_editor_application
     src/builtin_world.cpp
     src/internal/world_celestial_light.h src/world_celestial_light.cpp
     src/world_document.cpp
+    src/world_probe_volume.cpp
     src/world_terrain.cpp
     src/world_terrain_editing.cpp
     src/world_aperture.cpp

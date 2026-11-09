@@ -581,9 +581,32 @@ TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hi
     REQUIRE(deltaOrNull->isVisible() == true);
     CHECK(targetOrNull->isHidden() == true);
     deltaOrNull->setValue(-1);
+    // The Move tool would show transform handles if the brush let go of the viewport.
+    interaction.SetTool(ViewportObjectInteraction::Tool::Move);
     REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);
     REQUIRE(interaction.Release() == true);
+    {
+        // While the stroke's preview is pending, the brush still owns presses: no selection, no handles.
+        CHECK(brushOrNull->isEnabled() == false);
+        QSignalSpy selections(&interaction, &ViewportObjectInteraction::SelectionRequested);
+        REQUIRE(interaction.Hover(framePixel.center(), framePixel) == true);
+        ViewportObjectOverlay pendingOverlay;
+        interaction.BuildOverlay(framePixel, pendingOverlay);
+        CHECK(pendingOverlay.HandleStrokes.IsEmpty() == false);
+        CHECK(pendingOverlay.HandleFills.IsEmpty() == true);
+        CHECK(interaction.Press(framePixel.center(), framePixel) == true);
+        CHECK(interaction.IsDragging() == false);
+        CHECK(interaction.Release() == false);
+        CHECK(selections.isEmpty() == true);
+        CHECK(statusOrNull->text().contains(QStringLiteral("previous stroke")) == true);
+    }
     REQUIRE(waitForStrokeCount(2) == true);
+    {
+        ViewportObjectOverlay readyOverlay;
+        interaction.BuildOverlay(framePixel, readyOverlay);
+        CHECK(readyOverlay.HandleFills.IsEmpty() == true);
+    }
+    interaction.SetTool(ViewportObjectInteraction::Tool::Select);
     const QJsonObject lowered = workspace.Document().Draft();
 
     REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);
