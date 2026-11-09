@@ -74,7 +74,7 @@ struct BakeMeshVertices final
     const usize count = mesh.Indices.GetSize();
     const bool hasTangents = mesh.Tangents.IsEmpty() == false;
     format::BakeChartLayout layout;
-    if (count > format::MAX_VERTICES ||
+    if (count > format::MAX_VERTICES || count % TRIANGLE_CORNERS != 0 ||
         format::TryMakeBakeChartLayout(static_cast<uint32>(count / TRIANGLE_CORNERS), layout) == false ||
         outVertices.PositionsMesh.TryResize(count) == false || outVertices.NormalsMesh.TryResize(count) == false ||
         outVertices.MaterialTexcoords.TryResize(count) == false ||
@@ -86,6 +86,10 @@ struct BakeMeshVertices final
     for (usize vertex = 0; vertex < count; ++vertex)
     {
         const uint32 sourceIndex = mesh.Indices[vertex];
+        if (sourceIndex >= mesh.Positions.GetSize())
+        {
+            return false;
+        }
         outVertices.PositionsMesh[vertex] = mesh.Positions[sourceIndex];
         outVertices.NormalsMesh[vertex] = mesh.Normals[sourceIndex];
         outVertices.MaterialTexcoords[vertex] = mesh.Texcoords[sourceIndex];
@@ -472,8 +476,19 @@ bool PreviewGpuGeneration::prepareAssets(QString& outError) noexcept
             if (Source.Lit == true)
             {
                 const resources::SceneMesh& source = Source.Definition->Meshes[static_cast<usize>(i)];
+                const usize vertexCount = source.Positions.GetSize();
+                // Both chart expansion and realtime upload read one normal and UV per vertex.
+                if (source.Normals.GetSize() != vertexCount || source.Texcoords.GetSize() != vertexCount ||
+                    (source.Tangents.IsEmpty() == false && source.Tangents.GetSize() != vertexCount))
+                {
+                    outError = QStringLiteral("Mesh %1 has vertex attributes that do not match its %2 positions. "
+                                              "Reimport the mesh with one normal and UV per vertex.")
+                                   .arg(i + 1)
+                                   .arg(vertexCount);
+                    return false;
+                }
                 description.Positions = source.Positions.GetData();
-                description.VertexCount = source.Positions.GetSize();
+                description.VertexCount = vertexCount;
                 description.Indices = source.Indices.GetData();
                 description.IndexCount = source.Indices.GetSize();
                 description.Texcoords = source.Texcoords.GetData();

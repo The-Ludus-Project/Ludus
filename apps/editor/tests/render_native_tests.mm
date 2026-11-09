@@ -1,5 +1,6 @@
 #include "internal/level.h"
 #include "internal/level_workspace.h"
+#include "internal/preview_gpu_generation.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
@@ -615,7 +616,7 @@ void AddLightingQuad(ludus::resources::SceneMesh& inoutMesh,
         REQUIRE(inoutMesh.Indices.TryAdd(start + order[i + (isFacingDown == true ? 2 : 1)]));
     }
 }
-// Receiver-mesh inputs the interactive viewport must accept without static-lighting preparation.
+// Receiver-mesh inputs for native preview validation.
 enum class LightingReceiverDefect : uint8
 {
     None,
@@ -623,6 +624,7 @@ enum class LightingReceiverDefect : uint8
     ZeroAreaTriangle,
     // Direct lighting ignores authored lightmap coordinates.
     MismatchedBakeTexcoords,
+    OutOfRangeIndex,
 };
 // Builds the definition privately and publishes it as an immutable snapshot.
 RenderScene MakeLightingScene(LightingReceiverDefect defect = LightingReceiverDefect::None,
@@ -676,6 +678,10 @@ RenderScene MakeLightingScene(LightingReceiverDefect defect = LightingReceiverDe
         {
             textureCoordinateBakeAtlas = {0, 0};
         }
+    }
+    else if (defect == LightingReceiverDefect::OutOfRangeIndex)
+    {
+        receiver.Indices[0] = ~uint32{0};
     }
     if (shouldAddAnalyticLight == true)
     {
@@ -863,6 +869,33 @@ TEST_CASE("Native Lit viewport publishes an opted-in always-on bake and falls ba
     REQUIRE(Frames(preview, preview.Frames() + 2) == true);
     CHECK(ReadViewport().isNull() == false);
     preview.Stop();
+}
+
+TEST_CASE("Native Lit bake chart preparation rejects out-of-range mesh indices", "[.render-native][lighting]")
+{
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(320, 240);
+    viewport.show();
+    REQUIRE(preview.SetScene(MakeLightingScene()) == true);
+    preview.SetShading(PreviewShading::Lit);
+    REQUIRE(preview.Start() == true);
+    REQUIRE(Frames(preview, 2) == true);
+
+    RenderScene invalid = MakeLightingScene(LightingReceiverDefect::OutOfRangeIndex, true);
+    invalid.AlwaysOnLightIds.append(invalid.AuthoredLights.Lights[0].SourceId);
+    PreviewGpuGeneration replacement(preview.GetDevice(), invalid, PreviewShading::Lit, preview.GetShaders());
+    QString error;
+    PreviewPreparationStatus status = PreviewPreparationStatus::Pending;
+    REQUIRE(QTest::qWaitFor([&]() {
+                status = replacement.Prepare(preview.GetSurface(), error);
+                return status != PreviewPreparationStatus::Pending;
+            }) == true);
+    INFO(error.toStdString());
+    REQUIRE(status == PreviewPreparationStatus::Failed);
+    CHECK(replacement.DescribeBake().contains(QStringLiteral("Could not prepare bake chart geometry")) == true);
+    CHECK(Frames(preview, preview.Frames() + 1) == true);
+    CHECK(ReadViewport().isNull() == false);
 }
 
 TEST_CASE("Native Lit viewport accepts zero-area triangles without baking", "[.render-native][lighting]")
