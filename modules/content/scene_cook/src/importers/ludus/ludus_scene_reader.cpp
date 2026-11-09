@@ -189,6 +189,7 @@ void ReportEmitterSurfaces(const SceneSource& source, DiagnosticLog& inoutLog) n
 
 Status ReadScene(std::span<const uint8> entryBytes,
                  std::string_view entryName,
+                 bool shouldDeferApertures,
                  SceneIr& outScene,
                  DiagnosticLog& inoutLog,
                  const Cancellation* cancelOrNull) noexcept
@@ -231,6 +232,15 @@ Status ReadScene(std::span<const uint8> entryBytes,
         if (IsCancelled(cancelOrNull) == true)
         {
             return Status::Cancelled;
+        }
+        if (shouldDeferApertures == true && object.Aperture.IsPresent == true)
+        {
+            MessageBuilder message;
+            message.Append("aperture '")
+                .Append(object.Name.GetView())
+                .Append("' is left to the importing World, which generates it with an editable opening");
+            (void)inoutLog.Add(DiagnosticSeverity::Info, codes::APERTURE_DEFERRED, entryName, 0, message.GetView());
+            continue;
         }
         const Status added = AddObject(source, object, outScene);
         if (added != Status::Ok)

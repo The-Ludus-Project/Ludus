@@ -2,6 +2,7 @@
 #include "internal/builtin_world.h"
 #include "internal/qt_numeric_stream.h"
 #include "internal/render_scene_limits.h"
+#include "internal/world_aperture.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_terrain.h"
 
@@ -789,6 +790,8 @@ bool RenderScene::Load(const QString& root,
     usize terrainVertices = 0;
     const bool canGenerateTerrain = world.HasBuiltInTerrain();
     const QString terrainComponent = GetTerrainComponentId();
+    const bool canGenerateApertures = world.HasBuiltInAperture();
+    const QString apertureComponent = GetApertureComponentId();
     math::Vector3 low{}, high{};
     for (const auto value : world.Draft().value(QStringLiteral("entities")).toArray())
     {
@@ -802,9 +805,15 @@ bool RenderScene::Load(const QString& root,
                 ? entity.value(QStringLiteral("components")).toObject().value(terrainComponent).toObject()
                 : QJsonObject{};
         const bool hasTerrain = terrain.isEmpty() == false;
+        const QJsonObject aperture =
+            canGenerateApertures == true
+                ? entity.value(QStringLiteral("components")).toObject().value(apertureComponent).toObject()
+                : QJsonObject{};
+        const bool hasAperture = aperture.isEmpty() == false;
         const bool hasRenderable = Attached(entity, renderable);
-        if (hasTerrain == false && hasRenderable == false && Attached(entity, cameraBinding) == false &&
-            Attached(entity, lightBinding) == false && Attached(entity, luminaireBinding) == false)
+        if (hasTerrain == false && hasAperture == false && hasRenderable == false &&
+            Attached(entity, cameraBinding) == false && Attached(entity, lightBinding) == false &&
+            Attached(entity, luminaireBinding) == false)
         {
             continue;
         }
@@ -893,7 +902,7 @@ bool RenderScene::Load(const QString& root,
                                       .toJson(QJsonDocument::Compact);
             }
         }
-        if (hasRenderable == true || hasTerrain == true)
+        if (hasRenderable == true || hasTerrain == true || hasAperture == true)
         {
             const QJsonObject values = Values(entity, renderable);
             if (hasRenderable == false || values.value(QStringLiteral("visible")).toBool() == true)
@@ -926,6 +935,30 @@ bool RenderScene::Load(const QString& root,
                     }
                     object.Mesh = static_cast<int32>(candidate.Meshes.size());
                     assetsIdentity += QJsonDocument(QJsonObject{{QStringLiteral("terrain"), terrain},
+                                                                {QStringLiteral("mesh"), mesh.Id}})
+                                          .toJson(QJsonDocument::Compact);
+                    candidate.Meshes.append(foundation::Move(mesh));
+                }
+                else if (hasAperture == true)
+                {
+                    // The screen is regenerated from its sizes on every extraction, so an edited
+                    // opening reaches the viewport and the ray templates without a reimport.
+                    PreviewMesh mesh;
+                    mesh.Id = QStringLiteral("aperture:") + id;
+                    if (static_cast<usize>(candidate.Meshes.size()) >= MAX_PREVIEW_MESHES)
+                    {
+                        return Fail(outError,
+                                    QStringLiteral("World exceeds the %1-mesh viewport limit. Remove an aperture "
+                                                   "or another generated object.")
+                                        .arg(MAX_PREVIEW_MESHES));
+                    }
+                    if (BuildApertureMesh(aperture, mesh, outError) == false)
+                    {
+                        return Fail(outError, name + QStringLiteral(": ") + outError);
+                    }
+                    object.Mesh = static_cast<int32>(candidate.Meshes.size());
+                    object.Tint = GetApertureReflectance(aperture);
+                    assetsIdentity += QJsonDocument(QJsonObject{{QStringLiteral("aperture"), aperture},
                                                                 {QStringLiteral("mesh"), mesh.Id}})
                                           .toJson(QJsonDocument::Compact);
                     candidate.Meshes.append(foundation::Move(mesh));

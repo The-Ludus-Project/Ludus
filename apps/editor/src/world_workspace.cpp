@@ -409,8 +409,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     QToolButton* addObject = new QToolButton(entityColumn);
     addObject->setObjectName(QStringLiteral("worldAddObject"));
     addObject->setText(QStringLiteral("Add Geometry / Light"));
-    addObject->setToolTip(QStringLiteral("Create geometry, lights or luminaires in a default World. Project-owned "
-                                         "schemas use Add Entity and their declared components."));
+    addObject->setToolTip(QStringLiteral("Create geometry, lights, luminaires or apertures in a default World. "
+                                         "Project-owned schemas use Add Entity and their declared components."));
     addObject->setPopupMode(QToolButton::InstantPopup);
     QMenu* objectMenu = new QMenu(addObject);
     addObject->setMenu(objectMenu);
@@ -423,7 +423,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                   QStringLiteral("Spot Light"),
                                   QStringLiteral("Directional Light"),
                                   QStringLiteral("Sun"),
-                                  QStringLiteral("Luminaire")})
+                                  QStringLiteral("Luminaire"),
+                                  QStringLiteral("Aperture Slit")})
     {
         QAction* action = objectMenu->addAction(preset);
         action->setObjectName(QStringLiteral("worldCreate") + QString(preset).remove(QLatin1Char(' ')));
@@ -1069,6 +1070,8 @@ bool WorldWorkspace::PreviewImportScene(const QString& source, const QString& en
         Changed(QStringLiteral("A scene operation is still running; wait for it or cancel it before importing."));
         return false;
     }
+    // The cook defers scene source apertures only for a default World, so plan against this one.
+    Scene_->SetWorldSnapshot(Document_);
     const QFileInfo sourceInfo(source);
     const QDir directory(sourceInfo.isDir() == true ? source : sourceInfo.absolutePath());
     const QString relativeEnvironment =
@@ -1308,7 +1311,7 @@ void WorldWorkspace::SceneCompleted(bool accepted)
     if (importing && conversion.isEmpty())
     {
         QString error;
-        if (Document_.ImportScene(Scene_->Document(), error) == false)
+        if (Document_.ImportScene(Scene_->Document(), error, Scene_->ImportedEntities()) == false)
         {
             invalidateScene();
             RefreshScene();

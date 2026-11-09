@@ -53,7 +53,8 @@ struct WorldSunPlacement final
                                   const WorldSunPlacement& placement,
                                   QString& outId,
                                   QString& outError);
-/// Create one bundled geometry, light or luminaire preset as one validated history transaction.
+/// Create one bundled geometry, light, luminaire or aperture preset as one validated history transaction.
+/// "Aperture Slit" creates a default-sized aperture screen at the origin (internal/world_aperture.h).
 /// Failure preserves the document and outId. Must run on the editor thread.
 [[nodiscard]] bool CreateWorldObject(WorldDocument& inoutWorld,
                                      const foundation::identity::EntropySource& entropy,

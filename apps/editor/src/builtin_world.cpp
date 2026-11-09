@@ -1,5 +1,6 @@
 #include "internal/builtin_world.h"
 #include "internal/render_scene_limits.h"
+#include "internal/world_aperture.h"
 #include "internal/world_document.h"
 
 #include <QFile>
@@ -116,6 +117,23 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
             .HalfExtentWorld = WORLD_LUMINAIRE_DEFAULT_HALF_EXTENT,
         };
         return CreateWorldLuminaire(inoutWorld, entropy, ABOVE_ORIGIN, outId, outError);
+    }
+    if (preset == QStringLiteral("Aperture Slit"))
+    {
+        if (inoutWorld.HasBuiltInAperture() == false)
+        {
+            outError = QStringLiteral("Aperture presets require the default World schema.");
+            return false;
+        }
+        // A screen at the origin facing +Z, with the schema's default opening.
+        const QString component = GetApertureComponentId();
+        return inoutWorld.CreateEntity(
+            entropy,
+            outError,
+            preset,
+            outId,
+            QJsonObject{{QStringLiteral("transform"), MakeDefaultValues(inoutWorld, QStringLiteral("transform"))},
+                        {component, MakeDefaultValues(inoutWorld, component)}});
     }
     if (IsBuiltInWorld(inoutWorld) == false)
     {
