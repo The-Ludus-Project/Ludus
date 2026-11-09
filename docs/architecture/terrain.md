@@ -2,9 +2,9 @@
 
 Status: the [World editor](../development/editor-workspace.md#s4-scene-authoring)
 generates bounded heightfield meshes for default Worlds. The
-[viewport authoring slices](#delivery-and-review-gates) support recipes, grayscale
-PNG sources and ordered sculpt strokes. The tiled terrain module, streaming
-renderer, and physics adapter remain proposed. Sizes
+[viewport authoring slices](#delivery-and-review-gates) add docked source
+editing, native grayscale heightmap import, and three sculpt brushes. The tiled
+terrain module, streaming renderer, and physics adapter remain proposed. Sizes
 and performance budgets are starting profiles and require measurements on the
 selected targets.
 
@@ -509,9 +509,10 @@ committed terrain through **Save World**.
 
 Select a terrain in the viewport or entity list to see its selection outline.
 **Edit Terrain** is available from the viewport toolbar and context menu even
-with Properties hidden. The Terrain panel identifies the entity by name and opens to **Source**.
-Turn on **Sculpt** in the native viewport to activate a brush. **Paint** is a
-later slice. **Exit Terrain Edit** returns to ordinary selection.
+with Properties hidden. The Terrain panel identifies the entity by name. It
+opens to **Source** in the first slice. When brushes ship, **Sculpt** and
+**Paint** become available and viewport input edits the ground only with a
+brush active. **Exit Terrain Edit** returns to ordinary selection.
 
 - **Source** opens the current recipe, or the import settings when supported.
   Keep the entity identity and transform. **Compare** toggles the committed
@@ -519,12 +520,12 @@ later slice. **Exit Terrain Edit** returns to ordinary selection.
   replaces the source in one undo step. Canceling a source edit discards the
   candidate. A saved Flat recipe opens in Flat, while Rolling Hills and Ridges
   open in Generate with their stored versions and values.
-- **Sculpt** shows **Raise / Lower**, **Smooth** and **Flatten**. The cursor
-  follows the finest authored surface and shows radius in metres and falloff.
-  For Flatten, **Pick from surface** samples a target elevation or the author
-  enters it directly. Press and drag to work on the highlighted area. One stroke
-  makes one undo step. A slope readout at the cursor measures the edited surface for route
-  inspection.
+- **Sculpt** offers **Flatten**, **Raise / Lower**, and **Smooth**. The cursor
+  follows the authored surface and shows the brush radius in metres.
+  Flatten uses an absolute elevation, Raise / Lower uses a signed offset, and
+  Smooth blends toward the surrounding heights from the start of the stroke.
+  One stroke makes one undo step. **Show slope at cursor** reports the hit
+  triangle's angle from World horizontal for route inspection.
 - **Paint** shows the available terrain materials, radius and strength. The
   brush previews the affected area on the selected surface. Material strokes
   get their own undo steps and preserve the authored heights.
@@ -582,15 +583,8 @@ intervening edit invalidated the draft's base, preserve the user's input, show
 the conflict and offer to refresh against the current World before retrying.
 Previewing changes neither the saved document nor gameplay or collision state.
 
-The bounded editor saves a relative PNG path, SHA-256 and axis flips beside
-the existing recipe. Raw grayscale values map to the recipe elevation range.
-It stores a versioned, bounded list of small stroke commands with terrain-local
-dab positions, radius, strength and target. It rebuilds the grid from source
-before applying these commands in order. Normals and bounds derive from the
-result. The raster remains a project file. The tiled design can store large
-rasters and sparse edit blocks as separate assets.
-
-Keep source and author edits separate from derived meshes. Terrain-local metre coordinates give edits stable placement when the
+As layered editing arrives, keep source and author edits separate from derived
+meshes. Terrain-local metre coordinates give edits stable placement when the
 entity moves. The existing edit transaction and invalidation rules below govern
 sampling, undo patches, memory admission and multi-tile edits. Runtime collision
 uses the committed physical revision through the

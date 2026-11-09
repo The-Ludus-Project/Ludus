@@ -787,7 +787,6 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                   "session and cooks it here. Play and runtime binding require the native editor."));
 #endif
     initializeTerrainAuthoring();
-    mEntityMenu->addAction(&Render_->GetViewport().GetEditTerrainAction());
     bindViewportInteraction();
     DraftTimer_.setSingleShot(true);
     DraftTimer_.setInterval(180);

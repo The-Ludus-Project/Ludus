@@ -12,7 +12,6 @@
 #include "mesh_silhouette.h"
 #include "selection_outline_request.h"
 #include "viewport_object_overlay.h"
-#include "world_terrain_brush.h"
 
 #include <QByteArray>
 #include <QJsonArray>
@@ -59,8 +58,7 @@ public:
         Axis,
         Plane,
         Uniform,
-        TerrainExtent,
-        TerrainBrush
+        TerrainExtent
     };
     /// A handle under the pointer or being dragged. Index is the axis, from 0 for X, of an axis handle and the axis
     /// normal to the plane of a plane handle (0 for the YZ plane, 1 for XZ, 2 for XY); it is negative for no handle.
@@ -83,8 +81,8 @@ public:
     /// Draw the Add Terrain footprint and its X/Z resize handles for the current draft selection.
     /// An empty recipe removes the draft overlay.
     void SetTerrainFootprint(const QJsonObject& recipe);
-    /// Sculpt the selected terrain on the shown mesh. Null returns input to object tools.
-    void SetTerrainBrush(const TerrainBrush* brushOrNull);
+    /// An empty key restores normal picking. The brush radius is measured in terrain-local metres.
+    void SetTerrainBrush(const QString& key, foundation::float32 radius, bool shouldPickHeight, bool shouldShowSlope);
     void SetTool(Tool tool);
     [[nodiscard]] LUDUS_INLINE Tool GetTool() const noexcept
     {
@@ -128,7 +126,7 @@ public:
     /// Whether a handle drag is in progress.
     [[nodiscard]] LUDUS_INLINE bool IsDragging() const noexcept
     {
-        return mDragTarget.IsValid();
+        return mDragTarget.IsValid() || mTerrainStroke.isEmpty() == false;
     }
     /// The handle being dragged; its Index is negative when no drag is in progress.
     [[nodiscard]] LUDUS_INLINE HandleTarget GetDraggedHandle() const noexcept
@@ -168,9 +166,9 @@ Q_SIGNALS:
     /// Original stable ID and absolute placement arrays (metres, Euler degrees, positive scale).
     void PlacementCommitted(const QString& id, const QJsonObject& placement);
     void TerrainExtentCommitted(const QString& key, foundation::float64 extent);
-    void TerrainStrokeCommitted(const QJsonArray& points);
-    void TerrainStrokeRefused();
-    void TerrainElevationPicked(foundation::float64 elevation);
+    void TerrainHeightPicked(foundation::float32 height);
+    void TerrainStrokeFinished(const QJsonArray& points);
+    void TerrainStrokeRejected(const QString& message);
 
 private:
     struct HandleLine
@@ -208,28 +206,27 @@ private:
     void buildHandles();
     void appendTerrainFootprint(ViewportObjectOverlay& inoutOverlay) const;
     void appendTerrainBrush(ViewportObjectOverlay& inoutOverlay) const;
-    [[nodiscard]] QString pickObject(QPointF positionPixel,
-                                     const QRectF& framePixel,
-                                     const QString& target,
-                                     foundation::math::Vector3* outPositionMeshOrNull,
-                                     foundation::float32* outSlopeDegreesOrNull);
-    [[nodiscard]] bool updateTerrainBrushHit(QPointF positionPixel, const QRectF& framePixel);
-    void appendTerrainStrokePoint(foundation::math::Vector3 positionMesh);
-    void moveTerrainStroke(QPointF positionPixel);
-    TerrainBrush mTerrainBrush;
-    QRectF mTerrainBrushFramePixel;
-    foundation::math::Vector3 mTerrainBrushHitMesh;
-    foundation::math::Vector3 mTerrainStrokePreviousMesh;
-    foundation::float32 mTerrainDistanceToNextDabMetres = 0;
-    foundation::float32 mTerrainSlopeDegrees = 0;
-    QJsonArray mTerrainStrokePoints;
-    bool mIsTerrainBrushActive = false;
-    bool mHasTerrainBrushHit = false;
-    bool mHasTerrainStrokeOverflow = false;
+    [[nodiscard]] QString pick(QPointF positionPixel,
+                               const QRectF& framePixel,
+                               foundation::math::Vector3& outHitMesh,
+                               foundation::float32* outSlopeDegreesOrNull);
+    [[nodiscard]] bool updateTerrainBrush(QPointF positionPixel, const QRectF& outerFramePixel);
+    void appendTerrainStrokePoint();
     [[nodiscard]] HandleTarget pickTerrainHandle(QPointF positionPixel) const;
     [[nodiscard]] bool beginTerrainDrag(QPointF positionPixel);
     void dragTerrainExtent(QPointF positionPixel);
     [[nodiscard]] foundation::math::Vector3 getTerrainHandleMesh(foundation::int32 axis) const noexcept;
+    QString mTerrainBrushKey;
+    QJsonArray mTerrainStroke;
+    foundation::math::Vector3 mTerrainBrushHitMesh;
+    foundation::float32 mTerrainBrushRadius = 0;
+    foundation::float32 mTerrainSlopeDegrees = 0;
+    bool mHasTerrainBrushHit = false;
+    bool mShouldPickTerrainHeight = false;
+    bool mShouldShowTerrainSlope = false;
+    bool mHasTerrainStrokeGap = false;
+    bool mHasTerrainStrokeOverflowed = false;
+    QRectF mTerrainStrokeFramePixel;
     foundation::math::Vector2 mTerrainExtent;
     foundation::float32 mTerrainBaseElevation = 0;
     foundation::float32 mTerrainDragExtent = 0;

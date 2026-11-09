@@ -552,7 +552,8 @@ TEST_CASE("World context menu creates entities in the viewport and edits the hie
     // Offscreen has no presented GPU image. Enable the input proxy to exercise its picking coordinates.
     viewportOrNull->GetObjectInteraction().SetActive(true);
     REQUIRE(viewportOrNull->layout()->count() >= 2);
-    const QPoint frameCenter = viewportOrNull->layout()->itemAt(1)->geometry().center();
+    const QLayout* viewportLayout = viewportOrNull->layout();
+    const QPoint frameCenter = viewportLayout->itemAt(viewportLayout->count() - 1)->geometry().center();
     QTest::mouseClick(viewportOrNull, Qt::RightButton, Qt::NoModifier, frameCenter);
     REQUIRE(menuOrNull->isVisible() == true);
     REQUIRE(entitiesOrNull->selectedItems().size() == 1);

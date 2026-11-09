@@ -3,6 +3,7 @@
 #include "internal/render_preview.h"
 #include "internal/viewport_gizmo_readout.h"
 #include "internal/world_document.h"
+#include "internal/world_terrain.h"
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -315,19 +316,26 @@ void ViewportObjectInteraction::SetTerrainFootprint(const QJsonObject& recipe)
     mTerrainBaseElevation = base;
     Q_EMIT Changed();
 }
-void ViewportObjectInteraction::SetTerrainBrush(const TerrainBrush* brushOrNull)
+void ViewportObjectInteraction::SetTerrainBrush(const QString& key,
+                                                float32 radius,
+                                                bool shouldPickHeight,
+                                                bool shouldShowSlope)
 {
-    const bool isActive = brushOrNull != nullptr;
-    if (isActive == mIsTerrainBrushActive && (brushOrNull == nullptr || *brushOrNull == mTerrainBrush))
+    const bool hasSlopeChanged = shouldShowSlope != mShouldShowTerrainSlope;
+    mShouldShowTerrainSlope = shouldShowSlope;
+    if (key == mTerrainBrushKey && radius == mTerrainBrushRadius && shouldPickHeight == mShouldPickTerrainHeight)
     {
+        if (hasSlopeChanged == true)
+        {
+            mHasTerrainBrushHit = false;
+            Q_EMIT Changed();
+        }
         return;
     }
     Cancel();
-    mIsTerrainBrushActive = isActive;
-    if (brushOrNull != nullptr)
-    {
-        mTerrainBrush = *brushOrNull;
-    }
+    mTerrainBrushKey = key;
+    mTerrainBrushRadius = radius;
+    mShouldPickTerrainHeight = shouldPickHeight;
     Q_EMIT Changed();
 }
 void ViewportObjectInteraction::SetTool(Tool tool)
@@ -567,16 +575,14 @@ bool ViewportObjectInteraction::refreshMeshBounds()
 }
 QString ViewportObjectInteraction::Pick(QPointF positionPixel, const QRectF& outerFramePixel)
 {
-    return pickObject(positionPixel, outerFramePixel, {}, nullptr, nullptr);
+    math::Vector3 hitMesh;
+    return pick(positionPixel, resolveFrame(outerFramePixel), hitMesh, nullptr);
 }
-
-QString ViewportObjectInteraction::pickObject(QPointF positionPixel,
-                                              const QRectF& outerFramePixel,
-                                              const QString& target,
-                                              math::Vector3* outPositionMeshOrNull,
-                                              float32* outSlopeDegreesOrNull)
+QString ViewportObjectInteraction::pick(QPointF positionPixel,
+                                        const QRectF& framePixel,
+                                        math::Vector3& outHitMesh,
+                                        float32* outSlopeDegreesOrNull)
 {
-    const QRectF framePixel = resolveFrame(outerFramePixel);
     math::Matrix4 worldToClip;
     math::Matrix4 clipToWorld;
     if (framePixel.contains(positionPixel) == false || describe(framePixel, worldToClip) == false ||
@@ -593,12 +599,11 @@ QString ViewportObjectInteraction::pickObject(QPointF positionPixel,
     bool hasHit = false;
     QString result;
     const RenderScene& scene = mPreviewOrNull->Scene();
-    const bool hasMeshBounds = target.isEmpty() == true && refreshMeshBounds() == true;
+    const bool hasMeshBounds = refreshMeshBounds();
     for (const PreviewObject& object : scene.Objects)
     {
         math::Affine3 worldToMesh;
-        if ((target.isEmpty() == false && object.Id != target) || object.Mesh < 0 ||
-            object.Mesh >= scene.Meshes.size() ||
+        if (object.Mesh < 0 || object.Mesh >= scene.Meshes.size() ||
             math::TryInverse(object.Transform, worldToMesh) != math::MathStatus::Success)
         {
             continue;
@@ -636,27 +641,64 @@ QString ViewportObjectInteraction::pickObject(QPointF positionPixel,
             if (math::IsFinite(clip) == true && clip.W > 0 && clip.Z >= 0 && clip.Z <= clip.W)
             {
                 nearest = distance;
-                result = object.Id;
-                if (outPositionMeshOrNull != nullptr)
-                {
-                    *outPositionMeshOrNull = rayMesh.Origin + rayMesh.Direction * static_cast<float32>(distance);
-                }
-                if (outSlopeDegreesOrNull != nullptr)
+                outHitMesh = rayMesh.Origin + rayMesh.Direction * static_cast<float32>(distance);
+                if (outSlopeDegreesOrNull != nullptr && object.Id == mTerrainBrushKey)
                 {
                     const math::Vector3 firstWorld =
                         math::TransformVector(object.Transform, positionsMesh[b] - positionsMesh[a]);
                     const math::Vector3 secondWorld =
                         math::TransformVector(object.Transform, positionsMesh[c] - positionsMesh[a]);
                     const math::Vector3 normalWorld = math::Cross(firstWorld, secondWorld);
-                    const float32 horizontal =
-                        math::Sqrt(normalWorld.X * normalWorld.X + normalWorld.Z * normalWorld.Z);
+                    const float32 horizontal = math::Length(math::Vector2{normalWorld.X, normalWorld.Z});
                     *outSlopeDegreesOrNull = math::RadiansToDegrees(math::Atan2(horizontal, math::Abs(normalWorld.Y)));
                 }
+                result = object.Id;
                 hasHit = true;
             }
         }
     }
     return result;
+}
+bool ViewportObjectInteraction::updateTerrainBrush(QPointF positionPixel, const QRectF& outerFramePixel)
+{
+    math::Vector3 hitMesh;
+    float32 slopeDegrees = 0;
+    const bool hasHit = mIsActive == true && mCanEdit == true &&
+                        pick(positionPixel,
+                             resolveFrame(outerFramePixel),
+                             hitMesh,
+                             mShouldShowTerrainSlope == true ? &slopeDegrees : nullptr) == mTerrainBrushKey;
+    if (hasHit != mHasTerrainBrushHit ||
+        (hasHit == true && (hitMesh != mTerrainBrushHitMesh || slopeDegrees != mTerrainSlopeDegrees)))
+    {
+        mHasTerrainBrushHit = hasHit;
+        mTerrainBrushHitMesh = hitMesh;
+        mTerrainSlopeDegrees = slopeDegrees;
+        Q_EMIT Changed();
+    }
+    return hasHit;
+}
+void ViewportObjectInteraction::appendTerrainStrokePoint()
+{
+    const QJsonArray point{static_cast<float64>(mTerrainBrushHitMesh.X), static_cast<float64>(mTerrainBrushHitMesh.Z)};
+    if (mTerrainStroke.isEmpty() == false)
+    {
+        const QJsonArray previous = mTerrainStroke.last().toArray();
+        const math::Vector2 differenceMesh{mTerrainBrushHitMesh.X - static_cast<float32>(previous[0].toDouble()),
+                                           mTerrainBrushHitMesh.Z - static_cast<float32>(previous[1].toDouble())};
+        constexpr float32 MINIMUM_POINT_SPACING_FRACTION = 0.25F;
+        const float32 spacing = mTerrainBrushRadius * MINIMUM_POINT_SPACING_FRACTION;
+        if (math::LengthSquared(differenceMesh) < spacing * spacing)
+        {
+            return;
+        }
+    }
+    if (mTerrainStroke.size() == MAX_TERRAIN_STROKE_POINTS)
+    {
+        mHasTerrainStrokeOverflowed = true;
+        return;
+    }
+    mTerrainStroke.append(point);
 }
 math::Affine3 ViewportObjectInteraction::makeTransform(const QJsonObject& placement) const
 {
@@ -668,7 +710,7 @@ void ViewportObjectInteraction::buildHandles()
     mHandles.Clear();
     mPlaneHandles.Clear();
     mHasUniformHandle = false;
-    if (mCanEdit == false || mTool == Tool::Select)
+    if (mCanEdit == false || mTool == Tool::Select || mTerrainBrushKey.isEmpty() == false)
     {
         return;
     }
@@ -813,103 +855,6 @@ void ViewportObjectInteraction::buildPlaneHandles(const StaticArray<QPointF, AXI
         static_cast<void>(mPlaneHandles.TryAdd(plane));
     }
 }
-bool ViewportObjectInteraction::updateTerrainBrushHit(QPointF positionPixel, const QRectF& framePixel)
-{
-    math::Vector3 hitMesh;
-    float32 slope = 0;
-    const QString hit = pickObject(positionPixel,
-                                   framePixel,
-                                   mSelected,
-                                   &hitMesh,
-                                   mTerrainBrush.ShouldShowSlope == true ? &slope : nullptr);
-    const bool hasHit = hit.isEmpty() == false && hit == mSelected;
-    if (hasHit != mHasTerrainBrushHit ||
-        (hasHit == true && (hitMesh != mTerrainBrushHitMesh || slope != mTerrainSlopeDegrees)))
-    {
-        mHasTerrainBrushHit = hasHit;
-        mTerrainBrushHitMesh = hitMesh;
-        mTerrainSlopeDegrees = slope;
-        Q_EMIT Changed();
-    }
-    return hasHit;
-}
-
-void ViewportObjectInteraction::appendTerrainStrokePoint(math::Vector3 positionMesh)
-{
-    if (mTerrainStrokePoints.size() >= TERRAIN_STROKE_MAX_POINTS)
-    {
-        mHasTerrainStrokeOverflow = true;
-        return;
-    }
-    constexpr float32 DAB_SPACING_RADIUS_FRACTION = 0.25F;
-    mTerrainStrokePoints.append(QJsonArray{static_cast<float64>(positionMesh.X), static_cast<float64>(positionMesh.Z)});
-    mTerrainDistanceToNextDabMetres = static_cast<float32>(mTerrainBrush.RadiusMetres) * DAB_SPACING_RADIUS_FRACTION;
-    mTerrainStrokePreviousMesh = positionMesh;
-}
-
-void ViewportObjectInteraction::moveTerrainStroke(QPointF positionPixel)
-{
-    const bool wasOnTerrain = mHasTerrainBrushHit;
-    if (updateTerrainBrushHit(positionPixel, mTerrainBrushFramePixel) == false || mHasTerrainStrokeOverflow == true)
-    {
-        return;
-    }
-    if (wasOnTerrain == false)
-    {
-        appendTerrainStrokePoint(mTerrainBrushHitMesh);
-        return;
-    }
-    math::Vector3 startMesh = mTerrainStrokePreviousMesh;
-    math::Vector3 deltaMesh = mTerrainBrushHitMesh - startMesh;
-    float32 remainingMetres = math::Sqrt(deltaMesh.X * deltaMesh.X + deltaMesh.Z * deltaMesh.Z);
-    while (remainingMetres >= mTerrainDistanceToNextDabMetres && mHasTerrainStrokeOverflow == false)
-    {
-        startMesh = startMesh + deltaMesh * (mTerrainDistanceToNextDabMetres / remainingMetres);
-        appendTerrainStrokePoint(startMesh);
-        deltaMesh = mTerrainBrushHitMesh - startMesh;
-        remainingMetres = math::Sqrt(deltaMesh.X * deltaMesh.X + deltaMesh.Z * deltaMesh.Z);
-    }
-    mTerrainStrokePreviousMesh = mTerrainBrushHitMesh;
-    mTerrainDistanceToNextDabMetres -= remainingMetres;
-}
-
-void ViewportObjectInteraction::appendTerrainBrush(ViewportObjectOverlay& inoutOverlay) const
-{
-    constexpr usize BRUSH_RING_SEGMENTS = 32;
-    if (mHasTerrainBrushHit == false ||
-        inoutOverlay.OutlineLinesPixel.GetSize() + BRUSH_RING_SEGMENTS > MAX_OUTLINE_LINES)
-    {
-        return;
-    }
-    const math::Affine3 meshToWorld = makeTransform(mPlacement);
-    if (mTerrainBrush.ShouldShowSlope == true &&
-        project(math::TransformPoint(meshToWorld, mTerrainBrushHitMesh), inoutOverlay.ReadoutAnchorPixel) == true)
-    {
-        inoutOverlay.ReadoutText =
-            QStringLiteral("Slope %1°").arg(static_cast<float64>(mTerrainSlopeDegrees), 0, 'f', 1);
-    }
-    const float32 radius = static_cast<float32>(mTerrainBrush.RadiusMetres);
-    constexpr float32 FULL_TURN_DEGREES = 360;
-    const float32 radiansPerSegment =
-        math::DegreesToRadians(FULL_TURN_DEGREES) / static_cast<float32>(BRUSH_RING_SEGMENTS);
-    QPointF previousPixel;
-    bool hasPrevious = false;
-    for (usize index = 0; index <= BRUSH_RING_SEGMENTS; ++index)
-    {
-        const float32 angle = static_cast<float32>(index) * radiansPerSegment;
-        const math::Vector3 positionMesh =
-            mTerrainBrushHitMesh + math::Vector3{radius * math::Cos(angle), 0, radius * math::Sin(angle)};
-        QPointF positionPixel;
-        const bool isProjected = project(math::TransformPoint(meshToWorld, positionMesh), positionPixel);
-        if (hasPrevious == true && isProjected == true)
-        {
-            inoutOverlay.OutlineLinesPixel.Add(QLineF(previousPixel, positionPixel));
-        }
-        previousPixel = positionPixel;
-        hasPrevious = isProjected;
-    }
-}
-
 math::Vector3 ViewportObjectInteraction::getTerrainHandleMesh(int32 axis) const noexcept
 {
     const float32 extent = mDragTarget.Kind == HandleKind::TerrainExtent && mDragTarget.Index == axis
@@ -1092,9 +1037,9 @@ ViewportObjectInteraction::HandleTarget ViewportObjectInteraction::pickHandle(QP
 }
 bool ViewportObjectInteraction::Hover(QPointF positionPixel, const QRectF& outerFramePixel)
 {
-    if (mIsTerrainBrushActive == true && mIsActive == true)
+    if (mTerrainBrushKey.isEmpty() == false)
     {
-        return IsDragging() == false && updateTerrainBrushHit(positionPixel, outerFramePixel) == true;
+        return updateTerrainBrush(positionPixel, outerFramePixel);
     }
     HandleTarget target;
     const QRectF framePixel = resolveFrame(outerFramePixel);
@@ -1145,22 +1090,20 @@ bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outer
     {
         return false;
     }
-    if (mIsTerrainBrushActive == true)
+    if (mTerrainBrushKey.isEmpty() == false)
     {
-        if (updateTerrainBrushHit(positionPixel, outerFramePixel) == true)
+        if (updateTerrainBrush(positionPixel, outerFramePixel) == true)
         {
-            if (mTerrainBrush.ShouldPickElevation == true)
+            if (mShouldPickTerrainHeight == true)
             {
-                Q_EMIT TerrainElevationPicked(static_cast<float64>(mTerrainBrushHitMesh.Y));
+                Q_EMIT TerrainHeightPicked(mTerrainBrushHitMesh.Y);
             }
             else
             {
-                mDragTarget = {HandleKind::TerrainBrush, 0};
-                mCandidate = mPlacement;
-                mTerrainBrushFramePixel = outerFramePixel;
-                mTerrainStrokePoints = {};
-                mHasTerrainStrokeOverflow = false;
-                appendTerrainStrokePoint(mTerrainBrushHitMesh);
+                mTerrainStrokeFramePixel = outerFramePixel;
+                mHasTerrainStrokeGap = false;
+                mHasTerrainStrokeOverflowed = false;
+                appendTerrainStrokePoint();
                 Q_EMIT Changed();
             }
         }
@@ -1331,14 +1274,22 @@ bool ViewportObjectInteraction::dragUniform(QPointF deltaPixel, bool shouldSnap,
 }
 bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
 {
+    if (mTerrainStroke.isEmpty() == false)
+    {
+        const bool hasHit = updateTerrainBrush(positionPixel, mTerrainStrokeFramePixel);
+        if (hasHit == false)
+        {
+            mHasTerrainStrokeGap = true;
+        }
+        else if (mHasTerrainStrokeGap == false && mHasTerrainStrokeOverflowed == false)
+        {
+            appendTerrainStrokePoint();
+        }
+        return true;
+    }
     if (IsDragging() == false)
     {
         return false;
-    }
-    if (mDragTarget.Kind == HandleKind::TerrainBrush)
-    {
-        moveTerrainStroke(positionPixel);
-        return true;
     }
     const QPointF deltaPixel = positionPixel - mPressPixel;
     if (math::IsFinite(deltaPixel.x()) == false || math::IsFinite(deltaPixel.y()) == false ||
@@ -1353,8 +1304,6 @@ bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
     bool isValueUsable = false;
     switch (mDragTarget.Kind)
     {
-        case HandleKind::TerrainBrush:
-            return true;
         case HandleKind::TerrainExtent:
             dragTerrainExtent(positionPixel);
             return true;
@@ -1380,6 +1329,21 @@ bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
 }
 bool ViewportObjectInteraction::Release()
 {
+    if (mTerrainStroke.isEmpty() == false)
+    {
+        const QJsonArray points = foundation::Move(mTerrainStroke);
+        mTerrainStroke = {};
+        if (mHasTerrainStrokeOverflowed == true)
+        {
+            Q_EMIT TerrainStrokeRejected(QStringLiteral("This stroke is too long. Split it into shorter strokes."));
+        }
+        else
+        {
+            Q_EMIT TerrainStrokeFinished(points);
+        }
+        Q_EMIT Changed();
+        return true;
+    }
     if (IsDragging() == false)
     {
         return false;
@@ -1388,19 +1352,7 @@ bool ViewportObjectInteraction::Release()
     const QJsonObject candidate = mCandidate;
     mDragTarget = {};
     mReadoutText.clear();
-    if (target.Kind == HandleKind::TerrainBrush)
-    {
-        const QJsonArray points = foundation::Move(mTerrainStrokePoints);
-        if (mHasTerrainStrokeOverflow == true)
-        {
-            Q_EMIT TerrainStrokeRefused();
-        }
-        else
-        {
-            Q_EMIT TerrainStrokeCommitted(points);
-        }
-    }
-    else if (target.Kind == HandleKind::TerrainExtent)
+    if (target.Kind == HandleKind::TerrainExtent)
     {
         const float32 initial = target.Index == 0 ? mTerrainExtent.X : mTerrainExtent.Y;
         if (mTerrainDragExtent != initial)
@@ -1422,8 +1374,8 @@ void ViewportObjectInteraction::Cancel()
     if (IsDragging() == true)
     {
         mDragTarget = {};
+        mTerrainStroke = {};
         mCandidate = {};
-        mTerrainStrokePoints = {};
         mReadoutText.clear();
         Q_EMIT Changed();
     }
@@ -1511,7 +1463,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
         {
             continue;
         }
-        const math::Affine3 meshToWorld = IsDragging() == true ? makeTransform(mCandidate) : object.Transform;
+        const math::Affine3 meshToWorld = mDragTarget.IsValid() == true ? makeTransform(mCandidate) : object.Transform;
         if (mIsGpuOutlineEnabled == true)
         {
             mGpuOutline.SceneIdentity = scene.Identity;
@@ -1528,7 +1480,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
         outOverlay.OutlineLinesPixel.GetSize() + LUMINAIRE_OUTLINE_LINES <= MAX_OUTLINE_LINES)
     {
         // The panel square in the transform's XY plane and its emission along -Z, one half extent long.
-        const math::Affine3 panelToWorld = makeTransform(IsDragging() == true ? mCandidate : mPlacement);
+        const math::Affine3 panelToWorld = makeTransform(mDragTarget.IsValid() == true ? mCandidate : mPlacement);
         const float32 halfExtent = mLuminaireHalfExtentWorld;
         const StaticArray<math::Vector3, LUMINAIRE_OUTLINE_CORNERS> cornersPanel{{{-halfExtent, -halfExtent, 0},
                                                                                   {halfExtent, -halfExtent, 0},
@@ -1560,11 +1512,6 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
             outOverlay.OutlineLinesPixel.Add(QLineF(centerPixel, emissionPixel));
         }
     }
-    if (mIsTerrainBrushActive == true)
-    {
-        appendTerrainBrush(outOverlay);
-        return;
-    }
     buildHandles();
     for (const HandleLine& handle : mHandles)
     {
@@ -1575,6 +1522,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
         appendPlaneGeometry(plane, outOverlay);
     }
     appendTerrainFootprint(outOverlay);
+    appendTerrainBrush(outOverlay);
     if (mHasUniformHandle == true)
     {
         // The centre handle takes the pivot's place, so the scale tool has one marker at its origin.
@@ -1591,6 +1539,47 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
                               mPivotPixel + QPointF(PIVOT_HALF_PIXELS, PIVOT_HALF_PIXELS),
                               mPivotPixel + QPointF(-PIVOT_HALF_PIXELS, PIVOT_HALF_PIXELS)};
         outOverlay.HandleFills.Add(pivot);
+    }
+}
+void ViewportObjectInteraction::appendTerrainBrush(ViewportObjectOverlay& inoutOverlay) const
+{
+    if (mHasTerrainBrushHit == false)
+    {
+        return;
+    }
+    for (const PreviewObject& object : mPreviewOrNull->Scene().Objects)
+    {
+        if (object.Id != mTerrainBrushKey)
+        {
+            continue;
+        }
+        if (mShouldShowTerrainSlope == true && project(math::TransformPoint(object.Transform, mTerrainBrushHitMesh),
+                                                       inoutOverlay.ReadoutAnchorPixel) == true)
+        {
+            inoutOverlay.ReadoutText =
+                QStringLiteral("Slope %1°").arg(static_cast<float64>(mTerrainSlopeDegrees), 0, 'f', 1);
+        }
+        const float32 radius = mTerrainBrushRadius;
+        math::Vector3 previousMesh = mTerrainBrushHitMesh + math::Vector3{radius, 0, 0};
+        constexpr int32 BRUSH_SEGMENTS = 32;
+        for (int32 segment = 1; segment <= BRUSH_SEGMENTS; ++segment)
+        {
+            const float32 angle = math::kTauF * static_cast<float32>(segment) / BRUSH_SEGMENTS;
+            const math::Vector3 nextMesh =
+                mTerrainBrushHitMesh + math::Vector3{radius * math::Cos(angle), 0, radius * math::Sin(angle)};
+            QLineF linePixel;
+            const math::Vector3 previousWorld = math::TransformPoint(object.Transform, previousMesh);
+            const math::Vector3 nextWorld = math::TransformPoint(object.Transform, nextMesh);
+            if (projectSegment({mWorldToClip * math::Vector4{previousWorld.X, previousWorld.Y, previousWorld.Z, 1},
+                                mWorldToClip * math::Vector4{nextWorld.X, nextWorld.Y, nextWorld.Z, 1}},
+                               linePixel) == true)
+            {
+                inoutOverlay.HandleStrokes.Add(
+                    {linePixel, ViewportObjectOverlay::SELECTION_COLOR, ViewportObjectOverlay::OUTLINE_WIDTH_PIXELS});
+            }
+            previousMesh = nextMesh;
+        }
+        return;
     }
 }
 QRgb ViewportObjectInteraction::getHandleColour(HandleTarget target, int32 colourAxis, bool isBack) const

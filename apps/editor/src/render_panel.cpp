@@ -510,7 +510,9 @@ bool RenderPanel::publish(const RenderScene& scene, bool shouldLaunch)
         Cameras_->setCurrentIndex(scene.DefaultCamera + 1);
     }
     navigate();
-    if (shouldLaunch == true)
+    // A terrain request can inherit the initial World's launch from a queued load.
+    // When the viewport cannot present, keep the validated terrain available for editing.
+    if (shouldLaunch == true && (mHasPendingTerrainLoad == false || PreviewViewport::CanPresent() == true))
     {
         Q_EMIT Starting();
         if (Preview_.Start() == false)

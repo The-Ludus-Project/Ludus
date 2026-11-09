@@ -638,11 +638,11 @@ down. Only render graphs that read luminaires, such as the
 are lit by it; **Lit** and reference capture ignore it. Selecting it outlines the
 panel and its emission direction in the viewport.
 
-Choose **Add Geometry / Light → Add Terrain…** from the entity list or World
-viewport context menu. The Terrain panel opens beside the
+Choose **Add Geometry / Light → Add Terrain…** or right-click the World
+viewport and choose **Add Terrain…**. The Terrain panel opens beside the
 viewport with a Rolling Hills draft. Use **Flat** for a level surface or
-**Generate** for Rolling Hills and Ridges, or **Import** to start from a
-heightmap. Set the footprint and relief in metres. **Randomize** chooses another seed. **Advanced** exposes the seed,
+**Generate** for Rolling Hills and Ridges. Set the footprint and relief in
+metres. **Randomize** chooses another seed. **Advanced** exposes the seed,
 base elevation, feature size, roughness and samples per side. Width and depth
 follow local X and Z, and elevation follows local Y.
 
@@ -658,38 +658,44 @@ right-click menu, or Properties. The **Source** panel opens the stored recipe.
 **Compare with committed** shows the original surface at the same camera
 pose. Switch back and choose **Apply Source Changes** to keep the ready
 recipe as one undoable edit. This preserves the terrain's entity and transform.
-**Save World** keeps the seed, settings and recipe version.
+**Save World** keeps the source, settings and recipe version.
 
-In **Import**, choose an 8- or 16-bit grayscale PNG from inside the project.
-In the browser, enter the project-relative path and choose **Read Project PNG**.
-The editor shows the raster dimensions and maps black to **Base elevation**
-and white to base plus **Relief**. By default columns run along local +X and
-rows along +Z. Use **Flip X** or **Flip Z** to align a landmark before committing.
-The source must be a static PNG without alpha, 2–2048 pixels per axis and at most
-12 MiB encoded. All sample values are elevations. Supply a filled raster when
-the upstream tool marks some pixels as missing. Save World records the relative
-path and the source digest. If the file changes on disk, select it again to
-preview the replacement before applying it.
+In the native editor, choose **Import → Choose Heightmap…** to open an 8- or
+16-bit grayscale PNG. Each axis must have 2 to 64 samples and the file must fit
+within 64 KiB. Black maps to **Base elevation** and white maps to base plus
+**Relief**, in local metres. The top-left pixel starts at local negative X and
+negative Z. Use **Flip X** and **Flip Z** to align the raster against the World
+in the preview. The saved World embeds the sample grid and orientation, so it
+can reopen in the native or browser editor without the original PNG.
 
-On the native viewport, select existing terrain, open **Edit Terrain…**, and
-turn on **Sculpt**. Choose **Raise**, **Lower**, **Smooth**, or **Flatten** and
-set a radius in local metres and strength from 0 to 1. For Flatten, enter an
-elevation or use **Pick from surface** and click to sample one. **Show slope at
-cursor** reads the angle of the picked world-space triangle. The viewport shows
-the brush footprint. Drag and release to preview and apply one stroke as one
-World undo step. Escape during a drag discards it. Wait for the stroke to finish
-before starting another. This bounded editor keeps up to 64 dabs per stroke and
-256 dabs per terrain. Source changes replay compatible strokes in local metres
-and retain Flatten targets. If a smaller footprint clips strokes, enlarge the
-footprint or use **Remove Clipped Strokes…** to review and preview their removal.
-**Apply Source Changes** commits the replacement and removal together.
+To sculpt committed terrain, open **Edit Terrain…** and choose a **Sculpt
+brush**. Set the radius in terrain-local metres, then drag on the ground and
+release to apply one undoable stroke. The brush has full strength in the inner
+half of the radius and fades to zero at the edge.
 
-The editor extracts a single indexed mesh of at most 64 samples per side.
-The terrain uses the current viewport shading and authored lights. In an unlit
-World, the default raster graph displays the terrain's surface colour without
-adding it to the scene's mesh lights. Use **Solid** when the active project graph offers that debug view to inspect
-geometry in an unlit World. Terrain collision, material paint, erosion and
-streaming are future work. See the
+- **Flatten** moves the surface toward an absolute local height. Enter the
+  height or use **Pick from surface** to sample it.
+- **Raise / Lower** adds a signed local height change. A positive value raises
+  the surface, and a negative value lowers it.
+- **Smooth** blends heights toward neighboring samples from the surface before
+  the stroke. **Strength** controls how much to blend on each pass. The
+  smoothing distance depends on how far apart the terrain samples are.
+
+Choose **Off** to return to ordinary viewport editing. Press Escape or move
+focus away during a drag to cancel it. Turn on **Show slope at cursor** while
+using a brush to measure the surface angle in degrees from World horizontal.
+A terrain can keep up to 16 strokes.
+**Save World** keeps the strokes and replays them in order after a compatible
+source change. If shrinking the footprint would clip a stroke, the
+confirmation names how many strokes the edit removes. Replacing an embedded
+heightmap also requires confirmation.
+
+The editor extracts a single indexed mesh of at most 64 samples per side,
+including after reopening the World. The terrain uses the current viewport
+shading and authored lights. In an unlit World, the default raster graph
+shows the terrain's surface colour without adding mesh lights. Terrain
+collision, material paint, erosion and streaming are
+future work. See the
 [viewport authoring design](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
 for delivery boundaries.
 

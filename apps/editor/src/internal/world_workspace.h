@@ -9,6 +9,7 @@
 #include "internal/world_document.h"
 #include "internal/world_lighting_coverage.h"
 
+#include <QJsonArray>
 #include <QMap>
 #include <QStringList>
 #include <QTimer>
@@ -235,8 +236,7 @@ private:
     void checkTerrainBase();
     void refreshTerrainBase();
     void commitTerrainDraft();
-    void commitTerrainStroke();
-    void refuseTerrainStroke(const QString& reason);
+    void queueTerrainStroke(const QJsonArray& points);
     void frameTerrainDraft();
     [[nodiscard]] bool isTerrainAuthoringOpen() const;
     [[nodiscard]] bool canEditTerrain(const QString& key) const;
