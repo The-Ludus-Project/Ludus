@@ -18,7 +18,7 @@ namespace
 {
 constexpr usize FRAME_BYTES = sizeof(uint32);
 } // namespace
-bool ProcessConnection(compiler::Compiler& inoutCompiler, Stream& inoutStream) noexcept
+bool ProcessConnection(compiler::Compiler& inoutCompiler, Stream& inoutStream, uint32 connectionLanes) noexcept
 {
     StaticArray<uint8, FRAME_BYTES> header{};
     uint32 size = 0;
@@ -33,7 +33,8 @@ bool ProcessConnection(compiler::Compiler& inoutCompiler, Stream& inoutStream) n
         return false;
     }
     Array<uint8> response;
-    if (compiler::internal::Process(inoutCompiler, {bytes.GetData(), bytes.GetSize()}, response) == false)
+    if (compiler::internal::Process(inoutCompiler, {bytes.GetData(), bytes.GetSize()}, connectionLanes, response) ==
+        false)
     {
         return false;
     }

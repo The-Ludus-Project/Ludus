@@ -16,8 +16,11 @@ inline constexpr foundation::int32 EXIT_USAGE = 2;
 inline constexpr foundation::int32 EXIT_FAILURE_STATUS = 1;
 /// Milliseconds of transport inactivity after which a connection is abandoned.
 inline constexpr foundation::int32 IO_TIMEOUT_MILLISECONDS = 30000;
-/// Endpoint connections kept ready while one request compiles.
+/// Endpoint connections kept ready while every lane compiles.
 inline constexpr foundation::int32 CONNECTION_BACKLOG = 16;
+/// Most connections a POSIX endpoint compiles at once, each on its own thread and Slang session.
+/// The endpoint uses half the online CPUs up to this bound; Windows and standard streams use one.
+inline constexpr foundation::uint32 MAX_CONNECTION_LANES = 4;
 /// One bidirectional connection or standard-stream pair.
 class Stream
 {
@@ -33,7 +36,10 @@ protected:
     Stream& operator=(const Stream&) = default;
 };
 /// Read one framed request, compile it and write one framed reply. Defined in main.cpp.
-[[nodiscard]] bool ProcessConnection(tooling::shader_compiler::Compiler& inoutCompiler, Stream& inoutStream) noexcept;
+/// @param connectionLanes Requests the serving endpoint compiles at once, reported to the client.
+[[nodiscard]] bool ProcessConnection(tooling::shader_compiler::Compiler& inoutCompiler,
+                                     Stream& inoutStream,
+                                     foundation::uint32 connectionLanes) noexcept;
 /// Write the --version line to standard output.
 [[nodiscard]] bool WriteVersion(std::string_view text) noexcept;
 /// Stop at once on a termination request, even inside a Slang call.
@@ -42,7 +48,9 @@ protected:
 [[nodiscard]] bool WatchParent() noexcept;
 /// Serve framed requests over standard input/output until end of input.
 [[nodiscard]] foundation::int32 ServeStandardStreams(tooling::shader_compiler::Compiler& inoutCompiler) noexcept;
-/// Create the private endpoint, refusing an occupied one, and serve connections one at a time.
+/// Create the private endpoint, refusing an occupied one, and serve connections. POSIX endpoints
+/// compile up to MAX_CONNECTION_LANES connections at once; inoutCompiler serves the first lane and
+/// further lanes initialize their own compiler on first use. Windows serves one at a time.
 [[nodiscard]] foundation::int32 ServeEndpoint(tooling::shader_compiler::Compiler& inoutCompiler,
                                               std::string_view endpoint) noexcept;
 } // namespace ludus::tools::shader_worker

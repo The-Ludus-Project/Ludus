@@ -2,6 +2,7 @@
 #include "internal/reference_data.h"
 #include <ludus/graphics/renderer/renderer.hpp>
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/stable_sort.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/status.hpp>
@@ -22,12 +23,20 @@ float32 Component(math::Vector3 p, usize axis) noexcept
 {
     return axis == 0 ? p.X : axis == 1 ? p.Y : p.Z;
 }
-math::Aabb3 TriangleBounds(const ReferenceTriangle& triangle) noexcept
+// Every box merged below is a finite triangle box or EmptyAabb3's finite sentinel (positions are
+// validated finite and bounded), so the component minimum and maximum equal math::Merge bit for
+// bit. Inlining it keeps the BVH build, which merges once per triangle per pass, off the call path.
+LUDUS_INLINE math::Aabb3 MergeBounds(const math::Aabb3& a, const math::Aabb3& b) noexcept
 {
-    auto bounds = math::EmptyAabb3();
-    for (auto p : triangle.Positions)
+    return {{math::Min(a.Min.X, b.Min.X), math::Min(a.Min.Y, b.Min.Y), math::Min(a.Min.Z, b.Min.Z)},
+            {math::Max(a.Max.X, b.Max.X), math::Max(a.Max.Y, b.Max.Y), math::Max(a.Max.Z, b.Max.Z)}};
+}
+LUDUS_INLINE math::Aabb3 TriangleBounds(const ReferenceTriangle& triangle) noexcept
+{
+    math::Aabb3 bounds = math::EmptyAabb3();
+    for (const math::Vector3 p : triangle.Positions)
     {
-        bounds = math::Merge(bounds, {p, p});
+        bounds = MergeBounds(bounds, {p, p});
     }
     return bounds;
 }
@@ -104,24 +113,43 @@ FindSahSplit(const ReferenceSceneData& scene, const ReferenceBvhNode& node, cons
     {
         return best;
     }
+    // Bin every axis in one pass over the triangles: each axis's bins are independent, so this
+    // matches binning the axes one after another while reading each triangle once instead of three times.
+    StaticArray<float32, AXIS_COUNT> minimums{};
+    StaticArray<float32, AXIS_COUNT> extents{};
+    StaticArray<bool, AXIS_COUNT> isAxisSplittable{};
+    StaticArray<StaticArray<uint32, SAH_BIN_COUNT>, AXIS_COUNT> axisCounts{};
+    StaticArray<StaticArray<math::Aabb3, SAH_BIN_COUNT>, AXIS_COUNT> axisBinBounds;
     for (usize axis = 0; axis < AXIS_COUNT; ++axis)
     {
-        const float32 minimum = Component(centroidBounds.Min, axis);
-        const float32 extent = Component(centroidBounds.Max, axis) - minimum;
-        if ((extent > 0) == false)
+        minimums[axis] = Component(centroidBounds.Min, axis);
+        extents[axis] = Component(centroidBounds.Max, axis) - minimums[axis];
+        isAxisSplittable[axis] = extents[axis] > 0;
+        axisBinBounds[axis].Fill(math::EmptyAabb3());
+    }
+    for (usize i = node.First; i < usize(node.First) + node.Count; ++i)
+    {
+        const ReferenceTriangle& triangle = scene.Triangles[scene.Order[i]];
+        const math::Vector3 centroid = ComputeCentroidSum(triangle);
+        const math::Aabb3 bounds = TriangleBounds(triangle);
+        for (usize axis = 0; axis < AXIS_COUNT; ++axis)
+        {
+            if (isAxisSplittable[axis] == true)
+            {
+                const usize bin = ComputeBin(Component(centroid, axis), minimums[axis], extents[axis]);
+                ++axisCounts[axis][bin];
+                axisBinBounds[axis][bin] = MergeBounds(axisBinBounds[axis][bin], bounds);
+            }
+        }
+    }
+    for (usize axis = 0; axis < AXIS_COUNT; ++axis)
+    {
+        if (isAxisSplittable[axis] == false)
         {
             continue;
         }
-        StaticArray<uint32, SAH_BIN_COUNT> counts{};
-        StaticArray<math::Aabb3, SAH_BIN_COUNT> binBounds;
-        binBounds.Fill(math::EmptyAabb3());
-        for (usize i = node.First; i < usize(node.First) + node.Count; ++i)
-        {
-            const ReferenceTriangle& triangle = scene.Triangles[scene.Order[i]];
-            const usize bin = ComputeBin(Component(ComputeCentroidSum(triangle), axis), minimum, extent);
-            ++counts[bin];
-            binBounds[bin] = math::Merge(binBounds[bin], TriangleBounds(triangle));
-        }
+        const StaticArray<uint32, SAH_BIN_COUNT>& counts = axisCounts[axis];
+        const StaticArray<math::Aabb3, SAH_BIN_COUNT>& binBounds = axisBinBounds[axis];
         // Suffix areas/counts give every plane's right side; the left side accumulates.
         StaticArray<float64, SAH_BIN_COUNT> rightAreas{};
         StaticArray<uint32, SAH_BIN_COUNT> rightCounts{};
@@ -129,7 +157,7 @@ FindSahSplit(const ReferenceSceneData& scene, const ReferenceBvhNode& node, cons
         uint32 rightCount = 0;
         for (usize bin = SAH_BIN_COUNT - 1; bin > 0; --bin)
         {
-            right = math::Merge(right, binBounds[bin]);
+            right = MergeBounds(right, binBounds[bin]);
             rightCount += counts[bin];
             rightAreas[bin] = ComputeHalfArea(right);
             rightCounts[bin] = rightCount;
@@ -138,7 +166,7 @@ FindSahSplit(const ReferenceSceneData& scene, const ReferenceBvhNode& node, cons
         uint32 leftCount = 0;
         for (usize bin = 1; bin < SAH_BIN_COUNT; ++bin)
         {
-            left = math::Merge(left, binBounds[bin - 1]);
+            left = MergeBounds(left, binBounds[bin - 1]);
             leftCount += counts[bin - 1];
             if (leftCount == 0 || rightCounts[bin] == 0)
             {
@@ -168,8 +196,8 @@ uint32 BuildNode(ReferenceSceneData& inoutScene, uint32 first, uint32 count, uin
     {
         const ReferenceTriangle& triangle = inoutScene.Triangles[inoutScene.Order[i]];
         const math::Vector3 centroid = ComputeCentroidSum(triangle);
-        value.Bounds = math::Merge(value.Bounds, TriangleBounds(triangle));
-        centroidBounds = math::Merge(centroidBounds, {centroid, centroid});
+        value.Bounds = MergeBounds(value.Bounds, TriangleBounds(triangle));
+        centroidBounds = MergeBounds(centroidBounds, {centroid, centroid});
     }
     // Exact capacity was reserved before recursion; these additions cannot allocate.
     static_cast<void>(inoutScene.Nodes.TryAdd(value));

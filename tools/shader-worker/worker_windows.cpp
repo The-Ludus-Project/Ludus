@@ -289,7 +289,7 @@ bool WatchParent() noexcept
 int32 ServeStandardStreams(compiler::Compiler& inoutCompiler) noexcept
 {
     StandardStream stream;
-    while (ProcessConnection(inoutCompiler, stream) == true)
+    while (ProcessConnection(inoutCompiler, stream, 1) == true)
     {
     }
     return 0;
@@ -337,7 +337,7 @@ int32 ServeEndpoint(compiler::Compiler& inoutCompiler, std::string_view endpoint
         if (isConnected == true)
         {
             stream.Attach(listener.Pipe);
-            static_cast<void>(ProcessConnection(inoutCompiler, stream));
+            static_cast<void>(ProcessConnection(inoutCompiler, stream, 1));
         }
         // Close rather than disconnect: DisconnectNamedPipe discards a reply the client has not
         // read yet, while a closed server end still lets the client drain it. A fresh instance

@@ -45,6 +45,8 @@ STATUS_COMPILE_FAILED = 3
 TARGET_DXIL = 4
 STAGE_FRAGMENT = 1
 STAGE_COMPUTE = 2
+# tools/shader-worker/worker_platform.hpp: POSIX endpoints serve half the CPUs, at most this many, at once.
+MAX_CONNECTION_LANES = 4
 
 
 def load_native_client():
@@ -248,6 +250,36 @@ def check_dxil(endpoint):
     assert is_signed_dxil(bytes.fromhex(kernel['artifact']))
 
 
+def check_concurrent_connections(worker, endpoint, worker_lanes):
+    """Every reply advertises the lanes; with several, a short compile finishes beside a slow one."""
+    process = subprocess.Popen([str(worker), '--serve', str(endpoint)])
+    try:
+        wait_for_endpoint(process, endpoint)
+        reply = NATIVE.exchange(str(endpoint), {'version': 1, 'identity': 30})
+        assert reply['concurrency'] == worker_lanes, reply.get('concurrency')
+        if worker_lanes < 2:
+            return
+        quick = {'version': 1, 'identity': 31, 'source': 'quick.slang', 'entry': 'ComputeMain', 'stage': STAGE_COMPUTE,
+                 'target': 2, 'files': {'quick.slang': '[shader("compute")] [numthreads(1, 1, 1)]\n'
+                                        'void ComputeMain(uint3 id : SV_DispatchThreadID, RWStructuredBuffer<float> values)'
+                                        ' { values[id.x] = 1; }\n'}}
+        with send_slow_request(str(endpoint)) as slow:
+            started = time.monotonic()
+            result = NATIVE.exchange(str(endpoint), quick)
+            elapsed = time.monotonic() - started
+            assert result['status'] == STATUS_READY, result.get('diagnostics')
+            # The slow request needs tens of seconds; a serial worker would answer only after it.
+            assert elapsed < STOP_SECONDS, elapsed
+            slow.settimeout(0)
+            try:
+                assert slow.recv(1) == b'', 'slow compile finished before the quick one'
+            except BlockingIOError:
+                pass
+    finally:
+        process.terminate()
+        process.wait(timeout=STOP_SECONDS)
+
+
 def run_windows(args):
     """Named-pipe worker: client, protocol, DXIL, recovery, stop and worker-exit journeys."""
     worker = args.worker.resolve()
@@ -323,6 +355,8 @@ def main():
             duplicate = subprocess.run([str(args.worker.resolve()), '--serve', str(endpoint)], timeout=10)
             assert duplicate.returncode != 0
             check_stops_during_compile(args.worker.resolve(), lambda name: root / (name + '.sock'))
+            check_concurrent_connections(args.worker.resolve(), root / 'concurrent.sock',
+                                         min(max(1, (os.cpu_count() or 1) // 2), MAX_CONNECTION_LANES))
             check_protocol_recovery(str(endpoint))
             check_lusl(str(endpoint))
             # Exercise the canonical renderer recipe owner through real CMake,

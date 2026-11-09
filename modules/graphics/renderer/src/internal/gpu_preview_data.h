@@ -110,6 +110,13 @@ struct GpuPreviewSceneRecord final
     /// Scene content consistency check for sharing jobs, alongside the exact sizes.
     uint64 FingerprintLow = 0;
     uint64 FingerprintHigh = 0;
+    /// Capture the record was packed for. A sharing job with an equal capture reuses PackedUniform
+    /// and the sizes above instead of rebuilding, fingerprinting and packing the same CPU scene.
+    ReferenceCaptureDescription Capture{};
+    /// Uniform PackGpuScene produced for Capture, before any job-specific invocation fields.
+    GpuPreviewUniform PackedUniform{};
+    /// Peak CPU bytes of the scene built for Capture; a reusing job is admitted against the same bound.
+    usize SceneCpuBytes = 0;
 };
 struct GpuPreviewRecord final
 {

@@ -7040,6 +7040,16 @@ from the selected local setup preset or the editor's prepared shader tools.
 No path entry is needed for **New Graph → Build & Preview**. Loading and building
 do not download tools, repair the project or write into the engine/SDK.
 
+Stages missing from the stage cache compile concurrently: up to half the host's
+logical CPUs (at most eight compiler processes), and never more native-worker
+requests at once than the worker reports it serves (`concurrency` in its replies;
+workers that omit it serve one). Results publish to the cache in build order, so a
+concurrent build produces the same generation as a serial one. When stages fail,
+the build reports the first failing stage in build order, as a serial build would;
+stages after it are cancelled, while earlier ones still complete and are cached.
+A rebuild after an SDK or tool change, which invalidates every stage, therefore
+takes about as long as its slowest stage rather than the sum of all of them.
+
 Build publishes to `out/render-graph/<graph>/build`. Cook Runtime writes
 `out/render-graph/<graph>.lurgrt` from that build tree. These paths are resolved
 from the project's canonical location, so a project opened through a symlink
@@ -9008,6 +9018,14 @@ failure, and rejects source changes detected before publication. The source tree
 must be separate from generated output; `out/` and hidden directories are ignored.
 An unchanged failure is retried after the next source edit or a restarted command.
 
+A socket endpoint compiles several connections at once: half the online CPUs, at
+most four, each on its own thread with its own Slang session (Slang compiles
+concurrently only through separate global sessions). The first session starts with
+the worker; the others start on first use. Every reply reports the endpoint's
+`concurrency`, and graph builds keep no more requests outstanding than that, so a
+queued request never waits behind more compiles than the worker runs. `--stdio`
+serves one request at a time and reports a concurrency of one.
+
 The native executable also accepts `--stdio`: each request/reply has a four-byte
 little-endian byte length followed by versioned UTF-8 JSON, bounded to 16 MiB.
 It supports multiple requests until EOF and needs no Unix socket in this mode.
@@ -9038,7 +9056,8 @@ The endpoint is a local pipe name, `\\.\pipe\<name>`; remote and file-system
 names are rejected. The pipe grants access only to the user who started the worker
 and refuses remote clients. A name another process already owns is refused, as an
 occupied socket is elsewhere. Sixteen listening instances act as the connection
-backlog. Requests are still compiled one at a time, and a connection that makes no
+backlog. Requests are still compiled one at a time (replies report a concurrency
+of one), and a connection that makes no
 progress for 30 seconds is dropped. A client finding every instance busy gets
 `Unavailable` from `ludus::tooling::shader_compiler::Client` at once. The Python
 helpers retry until a free instance appears. Pass the same pipe name wherever a
