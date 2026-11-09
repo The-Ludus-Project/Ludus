@@ -288,12 +288,12 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
             object.Surface < 0 ? renderer::DEFAULT_SCENE_MATERIAL : static_cast<uint32>(object.Surface);
         if (extraction.Scene.Lit == false)
         {
-            // An unlit World has no lighting model; its tint (times its texture) is what it shows. The
-            // lit default receives that colour as emission over a black base, so no light is invented
-            // and nothing it emits is reflected.
+            // The lit default displays the unlit tint as emission over a black base.
+            // This preview colour must stay out of the raster mesh-light list.
             renderer::SceneShaderMaterial unlit;
             unlit.BaseColor = {0, 0, 0};
             unlit.Emission = {object.Tint.X, object.Tint.Y, object.Tint.Z};
+            unlit.ShouldRegisterRasterMeshLight = false;
             if (object.Surface >= 0 && object.Surface < extraction.Scene.Surfaces.size())
             {
                 const PreviewSurface& source = extraction.Scene.Surfaces.at(object.Surface);

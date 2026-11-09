@@ -197,7 +197,8 @@ void WorldWorkspace::showTerrainGenerator(const QString& key)
     const QString component = GetTerrainComponentId();
     const QJsonObject definition = Document_.Component(component);
     if (Document_.Loaded() == false || Document_.HasBuiltInTerrain() == false ||
-        (key.isEmpty() == true && Add_->isEnabled() == false) || Pending_ == true || isSceneWorkerActive() == true)
+        (key.isEmpty() == true && mAddEntity->isEnabled() == false) || Pending_ == true ||
+        isSceneWorkerActive() == true)
     {
         Changed(QStringLiteral("Open a default World and finish pending World operations before generating terrain."));
         return;

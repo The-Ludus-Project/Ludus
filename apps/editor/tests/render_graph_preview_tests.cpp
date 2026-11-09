@@ -1185,8 +1185,9 @@ TEST_CASE("The editor's prebuilt engine default previews with no project files",
     const QImage image = preview.GetImage();
     REQUIRE(image.size() == extent);
     const QColor center = image.pixelColor(extent.width() / 2, extent.height() / 2);
-    // The default graph's ToneMap applies PBR Neutral and sRGB encoding to the unlit tint's emission.
+    // The default graph displays the unlit tint without creating an area light.
     CheckColor(center, MapDefaultGraphColor({.25F, .5F, .75F}));
+    CHECK(preview.GetReport().CandidateReport.Resources.MeshLightPolygons == 0);
     REQUIRE(preview.CanAdjustRasterExposure() == true);
     renderer::ViewDescription view;
     REQUIRE(preview.TryGetPresentedView(view) == true);

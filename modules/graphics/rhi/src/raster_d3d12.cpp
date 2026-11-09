@@ -52,6 +52,8 @@ struct Texture final
     ComOwner<ID3D12DescriptorHeap> Targets;
     ComOwner<ID3D12DescriptorHeap> Depths;
     D3D12_RESOURCE_STATES State = D3D12_RESOURCE_STATE_COMMON;
+    /// State of the private depth backing; it follows the color backing between attachment and sampled use.
+    D3D12_RESOURCE_STATES DepthState = D3D12_RESOURCE_STATE_COMMON;
     uint64 Fence = 0;
     uint64 StagingBytes = 0;
     uint32 Request = 0;
@@ -61,6 +63,8 @@ struct View final
 {
     usize TextureSlot = RASTER_INVALID;
     D3D12_SHADER_RESOURCE_VIEW_DESC Description{};
+    /// Reads the texture's private depth backing instead of its color backing.
+    bool IsDepth = false;
 };
 struct Sampler final
 {
@@ -133,6 +137,24 @@ usize gReservedSubmission = RASTER_INVALID;
             return DXGI_FORMAT_BC5_UNORM;
     }
     return DXGI_FORMAT_UNKNOWN;
+}
+// A sampled depth aspect needs a typeless backing, so that the depth-stencil view and the
+// shader resource view read the same bits as D32_FLOAT and R32_FLOAT (or their stencil
+// variants). Thanks to Microsoft, "Configuring Depth-Stencil Functionality", section
+// "Reading the Depth-Stencil Buffer as a Texture", Direct3D 11 programming guide:
+// https://learn.microsoft.com/windows/win32/direct3d11/d3d10-graphics-programming-guide-depth-stencil
+struct DepthFormats final
+{
+    DXGI_FORMAT Backing = DXGI_FORMAT_UNKNOWN;
+    DXGI_FORMAT Attachment = DXGI_FORMAT_UNKNOWN;
+    DXGI_FORMAT Sampled = DXGI_FORMAT_UNKNOWN;
+};
+[[nodiscard]] DepthFormats GetDepthFormats(bool hasStencil) noexcept
+{
+    return hasStencil == true ? DepthFormats{DXGI_FORMAT_R32G8X24_TYPELESS,
+                                             DXGI_FORMAT_D32_FLOAT_S8X24_UINT,
+                                             DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS}
+                              : DepthFormats{DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT};
 }
 [[nodiscard]] bool HasDepthFormat(DXGI_FORMAT format) noexcept
 {
@@ -238,6 +260,23 @@ GetDescriptor(ID3D12DescriptorHeap* heap, D3D12_DESCRIPTOR_HEAP_TYPE type, uint3
     result.ptr += usize{index} * GetDeviceOrNull()->GetDescriptorHandleIncrementSize(type);
     return result;
 }
+void TransitionWholeResource(ID3D12Resource* resource,
+                             D3D12_RESOURCE_STATES& inoutState,
+                             D3D12_RESOURCE_STATES next) noexcept
+{
+    if (next == inoutState)
+    {
+        return;
+    }
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = resource;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore = inoutState;
+    barrier.Transition.StateAfter = next;
+    GetCommandsOrNull()->ResourceBarrier(1, &barrier);
+    inoutState = next;
+}
 } // namespace
 
 RasterCapabilities RasterLimits() noexcept
@@ -332,6 +371,7 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
         .MaxAttachmentCubeDimension = hasAttachment == true && hasCube == true ? D3D12_REQ_TEXTURECUBE_DIMENSION : 0U,
         .MaxAttachmentLayers = hasAttachment == true ? D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION : 0U,
         .AttachmentViews = hasAttachment,
+        .DepthSampled = hasAttachment,
         .StencilAttachment = hasAttachment == true && HasDepthFormat(DXGI_FORMAT_D32_FLOAT_S8X24_UINT) == true,
         .HasUnalignedBlockExtents = false,
     };
@@ -432,14 +472,16 @@ RasterStatus RasterCreateTexture(usize slot,
     texture.State = initialState;
     if (description.Attachment == true)
     {
+        const DepthFormats formats = GetDepthFormats(description.Stencil);
         D3D12_RESOURCE_DESC depth = native;
-        depth.Format = description.Stencil == true ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : DXGI_FORMAT_D32_FLOAT;
-        depth.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL | D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+        depth.Format = formats.Backing;
+        depth.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
         status = CreateResource(depth, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_DEPTH_WRITE, texture.Depth);
         if (status != RasterStatus::Ready)
         {
             return status;
         }
+        texture.DepthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
         for (const D3D12_DESCRIPTOR_HEAP_TYPE type : {D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV})
         {
             const D3D12_DESCRIPTOR_HEAP_DESC heap{type, count, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
@@ -476,7 +518,7 @@ RasterStatus RasterCreateTexture(usize slot,
                     &target,
                     GetDescriptor(texture.Targets.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, subresource));
                 D3D12_DEPTH_STENCIL_VIEW_DESC depthView{};
-                depthView.Format = depth.Format;
+                depthView.Format = formats.Attachment;
                 depthView.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
                 depthView.Texture2DArray.MipSlice = mip;
                 depthView.Texture2DArray.FirstArraySlice = layer;
@@ -616,14 +658,17 @@ RasterStatus RasterCreateTexture(usize slot,
 }
 RasterStatus RasterCreateView(usize slot, const RasterViewSource& source, uint32) noexcept
 {
-    if (source.View.Aspect != TextureAspect::Color)
+    // The facade admits a depth view only as one D2 subresource of an attachment texture.
+    // Stencil loads would need plane slice 1 and a remapped component; they stay unsupported.
+    const bool isDepth = source.View.Aspect == TextureAspect::Depth;
+    if (source.View.Aspect == TextureAspect::Stencil)
     {
         return RasterStatus::Unsupported;
     }
     const TextureDescription& texture = gTextures[source.Texture].Description;
     const TextureViewDescription& view = source.View;
     D3D12_SHADER_RESOURCE_VIEW_DESC native{};
-    native.Format = GetFormat(texture.Format);
+    native.Format = isDepth == true ? GetDepthFormats(texture.Stencil).Sampled : GetFormat(texture.Format);
     native.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     switch (view.Dimension)
     {
@@ -671,7 +716,7 @@ RasterStatus RasterCreateView(usize slot, const RasterViewSource& source, uint32
     {
         return RasterStatus::Unsupported;
     }
-    gViews[slot] = { .TextureSlot = source.Texture, .Description = native };
+    gViews[slot] = { .TextureSlot = source.Texture, .Description = native, .IsDepth = isDepth };
     return RasterStatus::Ready;
 }
 RasterStatus RasterCreateSampler(usize slot, const SamplerDescription& description, uint32) noexcept
@@ -864,7 +909,9 @@ RasterStatus RasterCreateSet(usize slot, const RasterLayout& layout, const Raste
         else
         {
             const View& view = gViews[resourceSlot];
-            GetDeviceOrNull()->CreateShaderResourceView(gTextures[view.TextureSlot].Resource.Get(),
+            const Texture& texture = gTextures[view.TextureSlot];
+            GetDeviceOrNull()->CreateShaderResourceView(view.IsDepth == true ? texture.Depth.Get()
+                                                                             : texture.Resource.Get(),
                                                         &view.Description,
                                                         descriptor);
         }
@@ -1013,20 +1060,19 @@ void RasterShutdown() noexcept
 void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
 {
     Texture& texture = gTextures[slot];
-    const D3D12_RESOURCE_STATES next =
-        use == RasterTextureUse::ColorAttachment
-            ? D3D12_RESOURCE_STATE_RENDER_TARGET
-            : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    if (next != texture.State)
+    constexpr D3D12_RESOURCE_STATES SAMPLED =
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    const bool isAttachment = use == RasterTextureUse::ColorAttachment;
+    TransitionWholeResource(texture.Resource.Get(),
+                            texture.State,
+                            isAttachment == true ? D3D12_RESOURCE_STATE_RENDER_TARGET : SAMPLED);
+    // As in the Vulkan backend, the private depth backing follows the texture: depth testing
+    // in an attachment pass, shader reads through a depth view elsewhere.
+    if (texture.Depth.Get() != nullptr)
     {
-        D3D12_RESOURCE_BARRIER barrier{};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource = texture.Resource.Get();
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        barrier.Transition.StateBefore = texture.State;
-        barrier.Transition.StateAfter = next;
-        GetCommandsOrNull()->ResourceBarrier(1, &barrier);
-        texture.State = next;
+        TransitionWholeResource(texture.Depth.Get(),
+                                texture.DepthState,
+                                isAttachment == true ? D3D12_RESOURCE_STATE_DEPTH_WRITE : SAMPLED);
     }
 }
 // Thanks to Microsoft, "Using Resource Barriers to Synchronize Resource States

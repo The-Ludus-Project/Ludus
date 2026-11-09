@@ -100,7 +100,7 @@ rhi::RasterStatus AppendRasterMeshLights(const MeshDescription& mesh,
                                          uint32& inoutRecordCount) noexcept
 {
     using Status = rhi::RasterStatus;
-    if (material.Emission == math::Vector3{})
+    if (material.ShouldRegisterRasterMeshLight == false || material.Emission == math::Vector3{})
     {
         return Status::Ready;
     }
