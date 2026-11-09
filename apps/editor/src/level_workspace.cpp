@@ -186,7 +186,9 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         (void)Start(QStringLiteral("assemble"));
     });
     connect(&Preview_, &RenderPreview::Changed, this, [this]() {
-        if (Busy_ == false)
+        // Restoring an empty scene clears the preview status. A later notification
+        // must preserve the scene operation's diagnostic.
+        if (Busy_ == false && Preview_.Status().isEmpty() == false)
         {
             Status_->setText(Preview_.Status());
         }
@@ -939,7 +941,8 @@ void LevelWorkspace::CommitCandidate()
     ApplyPendingProject();
     startPlacementValidation();
 }
-void LevelWorkspace::Rollback(const QString& error)
+// The copy is the contract: error may alias RenderPreview's status, which SetScene below clears.
+void LevelWorkspace::Rollback(QString error) // NOLINT(performance-unnecessary-value-param)
 {
     const bool hasPreviousFrame = Viewport_->HasRetainedGraphFrame();
     AwaitingViewport_ = false;

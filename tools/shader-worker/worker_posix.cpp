@@ -2,6 +2,9 @@
 
 #include <ludus/tooling/shader_compiler/compiler.hpp>
 
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/threading/worker_queue.hpp>
+
 #include <cerrno>
 #include <cstring>
 #include <string_view>
@@ -12,6 +15,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #if defined(__APPLE__)
@@ -26,6 +30,8 @@ using namespace foundation;
 namespace compiler = tooling::shader_compiler;
 namespace
 {
+/// How long the accept loop waits before checking again for a lane that finished, when all are busy.
+constexpr int64 SATURATED_WAIT_NANOSECONDS = 1000000;
 // The bound endpoint, kept where a signal handler can remove it without allocating.
 sockaddr_un gAddress{};
 volatile sig_atomic_t gHasEndpoint = 0;
@@ -115,6 +121,97 @@ private:
     int32 mOutput = -1;
     bool mIsSocket = false;
 };
+/// One concurrently served connection lane: a dedicated thread and its own Slang session.
+/// Slang permits concurrent compilation only through different global sessions.
+/// The queue is declared last so that it drains its thread before the compiler it uses is destroyed.
+struct ConnectionLane final
+{
+    compiler::Compiler OwnedCompiler;
+    compiler::Compiler* CompilerOrNull = nullptr;
+    /// Concurrency this connection's reply reports: the lane limit when the connection was assigned.
+    uint32 Lanes = 1;
+    int32 Peer = -1;
+    bool IsBusy = false;
+    threading::WorkerQueue Queue;
+};
+/// Serve one accepted connection on the lane's thread, then close it.
+void ServeLaneConnection(void* contextOrNull) noexcept
+{
+    ConnectionLane& lane = *static_cast<ConnectionLane*>(contextOrNull);
+    DescriptorStream stream{lane.Peer, lane.Peer, true};
+    static_cast<void>(ProcessConnection(*lane.CompilerOrNull, stream, lane.Lanes));
+    static_cast<void>(::close(lane.Peer));
+}
+/// Runs on the accept loop's thread once the lane's connection is closed.
+void ReleaseLane(void* contextOrNull) noexcept
+{
+    ConnectionLane& lane = *static_cast<ConnectionLane*>(contextOrNull);
+    lane.Peer = -1;
+    lane.IsBusy = false;
+}
+/// Half the online CPUs, between one lane and MAX_CONNECTION_LANES: each lane is one compiler thread.
+uint32 GetConnectionLaneCount() noexcept
+{
+    const int64 processors = ::sysconf(_SC_NPROCESSORS_ONLN);
+    const uint32 half = processors > 1 ? static_cast<uint32>(processors / 2) : 1;
+    return half < MAX_CONNECTION_LANES ? half : MAX_CONNECTION_LANES;
+}
+/// Prepare an accepted connection for nonblocking, signal-free transfers; false closes nothing.
+bool ConfigurePeer(int32 peer) noexcept
+{
+    const int32 peerFlags = ::fcntl(peer, F_GETFL, 0);
+    if (peerFlags < 0 || ::fcntl(peer, F_SETFL, peerFlags | O_NONBLOCK) < 0)
+    {
+        return false;
+    }
+#if defined(__APPLE__)
+    const int32 shouldSuppressPipeSignal = 1;
+    if (::setsockopt(peer, SOL_SOCKET, SO_NOSIGPIPE, &shouldSuppressPipeSignal, sizeof(shouldSuppressPipeSignal)) != 0)
+    {
+        return false;
+    }
+#endif
+    return true;
+}
+/// Wait for an idle lane, starting another while fewer than inoutLaneLimit run. Completions are
+/// delivered here, on the accept loop's thread. A lane that cannot start lowers inoutLaneLimit to
+/// the lanes already running, which keep serving. Never fails while one lane is ready.
+ConnectionLane& AcquireLane(StaticArray<ConnectionLane, MAX_CONNECTION_LANES>& inoutLanes,
+                            uint32& inoutReadyLanes,
+                            uint32& inoutLaneLimit) noexcept
+{
+    while (true)
+    {
+        for (uint32 i = 0; i < inoutReadyLanes; ++i)
+        {
+            while (inoutLanes[i].Queue.Poll() == true)
+            {
+            }
+        }
+        for (uint32 i = 0; i < inoutReadyLanes; ++i)
+        {
+            if (inoutLanes[i].IsBusy == false)
+            {
+                return inoutLanes[i];
+            }
+        }
+        if (inoutReadyLanes < inoutLaneLimit)
+        {
+            ConnectionLane& added = inoutLanes[inoutReadyLanes];
+            if (added.OwnedCompiler.Initialize() == compiler::Status::Ready &&
+                added.Queue.Initialize() == threading::WorkerQueueStatus::Ready)
+            {
+                added.CompilerOrNull = &added.OwnedCompiler;
+                ++inoutReadyLanes;
+                return added;
+            }
+            // Later replies advertise only the running lanes, so clients stop sending more at once.
+            inoutLaneLimit = inoutReadyLanes;
+        }
+        const timespec wait{0, SATURATED_WAIT_NANOSECONDS};
+        static_cast<void>(::nanosleep(&wait, nullptr));
+    }
+}
 } // namespace
 bool WriteVersion(std::string_view text) noexcept
 {
@@ -164,7 +261,7 @@ bool WatchParent() noexcept
 int32 ServeStandardStreams(compiler::Compiler& inoutCompiler) noexcept
 {
     DescriptorStream stream{STDIN_FILENO, STDOUT_FILENO, false};
-    while (ProcessConnection(inoutCompiler, stream) == true)
+    while (ProcessConnection(inoutCompiler, stream, 1) == true)
     {
     }
     return 0;
@@ -196,6 +293,16 @@ int32 ServeEndpoint(compiler::Compiler& inoutCompiler, std::string_view endpoint
         static_cast<void>(::unlink(address.sun_path));
         return EXIT_FAILURE_STATUS;
     }
+    uint32 laneLimit = GetConnectionLaneCount();
+    StaticArray<ConnectionLane, MAX_CONNECTION_LANES> connectionLanes{};
+    if (connectionLanes[0].Queue.Initialize() != threading::WorkerQueueStatus::Ready)
+    {
+        static_cast<void>(::close(listener));
+        static_cast<void>(::unlink(address.sun_path));
+        return EXIT_FAILURE_STATUS;
+    }
+    connectionLanes[0].CompilerOrNull = &inoutCompiler;
+    uint32 readyLanes = 1;
     while (true)
     {
         const int32 peer = ::accept(listener, nullptr, nullptr);
@@ -207,24 +314,26 @@ int32 ServeEndpoint(compiler::Compiler& inoutCompiler, std::string_view endpoint
             }
             break;
         }
-        const int32 peerFlags = ::fcntl(peer, F_GETFL, 0);
-        if (peerFlags < 0 || ::fcntl(peer, F_SETFL, peerFlags | O_NONBLOCK) < 0)
+        if (ConfigurePeer(peer) == false)
         {
             static_cast<void>(::close(peer));
             continue;
         }
-#if defined(__APPLE__)
-        const int32 shouldSuppressPipeSignal = 1;
-        if (::setsockopt(peer, SOL_SOCKET, SO_NOSIGPIPE, &shouldSuppressPipeSignal, sizeof(shouldSuppressPipeSignal)) !=
-            0)
+        ConnectionLane& lane = AcquireLane(connectionLanes, readyLanes, laneLimit);
+        // Read after AcquireLane, which lowers the limit when a lane fails to start.
+        lane.Lanes = laneLimit;
+        lane.Peer = peer;
+        lane.IsBusy = true;
+        if (lane.Queue.Submit(ServeLaneConnection, ReleaseLane, &lane) != threading::WorkerQueueStatus::Ready)
         {
+            lane.Peer = -1;
+            lane.IsBusy = false;
             static_cast<void>(::close(peer));
-            continue;
         }
-#endif
-        DescriptorStream stream{peer, peer, true};
-        static_cast<void>(ProcessConnection(inoutCompiler, stream));
-        static_cast<void>(::close(peer));
+    }
+    for (uint32 i = 0; i < readyLanes; ++i)
+    {
+        static_cast<void>(connectionLanes[i].Queue.Shutdown());
     }
     static_cast<void>(::close(listener));
     static_cast<void>(::unlink(address.sun_path));

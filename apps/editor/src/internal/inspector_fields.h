@@ -5,6 +5,7 @@
 #include <QColor>
 #include <QLabel>
 #include <QPushButton>
+#include <QSlider>
 #include <QString>
 #include <QVector>
 #include <QWidget>
@@ -38,6 +39,83 @@ struct ScrubSettings final
 /// 0.001 to 1.
 [[nodiscard]] foundation::float64
 GetScrubStep(const QString& unit, foundation::float64 minimum, foundation::float64 maximum);
+
+/// The shortest text that reads back as exactly value, so 0.003 shows as "0.003" rather than its 17-digit
+/// expansion "0.0030000000000000001".
+[[nodiscard]] QString FormatInspectorNumber(foundation::float64 value);
+
+/// How a bounded slider spreads its positions over a number's range.
+enum class SliderScale : foundation::uint8
+{
+    Linear,      ///< Every position changes the value by the same amount.
+    Logarithmic, ///< Positions are spaced by ratio either side of zero, so tiny and huge values are both reachable.
+};
+
+/// Number of positions a bounded slider has across its range.
+constexpr foundation::int32 SLIDER_POSITION_COUNT = 1000;
+
+/// A slider's mapping between its positions (0 to SLIDER_POSITION_COUNT) and a field's inclusive range.
+struct SliderMapping final
+{
+    foundation::float64 Minimum = 0;
+    foundation::float64 Maximum = 0;
+    /// The field's smallest meaningful change. A linear slider rounds to its decimals; a logarithmic slider is
+    /// linear within one step of zero, so it can reach zero and cross between signs.
+    foundation::float64 Step = 1;
+    SliderScale Scale = SliderScale::Linear;
+    bool IsInteger = false; ///< Values are rounded to whole numbers.
+};
+
+/// Whether minimum and maximum are finite and maximum is greater, so a slider can span them.
+[[nodiscard]] bool HasSliderRange(foundation::float64 minimum, foundation::float64 maximum);
+
+/// The mapping for a field: linear when the range holds at most ten thousand steps (a colour channel, an angle,
+/// a few metres), logarithmic otherwise (0 to 10000 m), so a short drag still reaches small values.
+/// @pre HasSliderRange(minimum, maximum) and step > 0.
+[[nodiscard]] SliderMapping
+MakeSliderMapping(foundation::float64 minimum, foundation::float64 maximum, foundation::float64 step, bool isInteger);
+
+/// Value at a slider position, clamped to the range. The ends are exactly Minimum and Maximum; other positions
+/// are rounded (to the step's decimals when linear, to three significant digits when logarithmic, to an integer
+/// when IsInteger) so the field reads cleanly.
+[[nodiscard]] foundation::float64 ConvertSliderPositionToValue(foundation::int32 position,
+                                                               const SliderMapping& mapping);
+
+/// Nearest slider position for value; values outside the range give the nearer end.
+[[nodiscard]] foundation::int32 ConvertValueToSliderPosition(foundation::float64 value, const SliderMapping& mapping);
+
+/// A horizontal slider bound to a number field with a minimum and maximum. Moving it writes the value into the
+/// field and emits the field's textEdited, the same path as typing; typing a number moves the handle. It follows
+/// the field's enabled state, and ignores the mouse wheel until focused so the panel still scrolls. GUI thread
+/// only.
+class BoundedSlider final : public QSlider
+{
+    Q_OBJECT
+public:
+    /// field must outlive the slider; both belong to the same row.
+    BoundedSlider(QLineEdit& inoutField, const SliderMapping& mapping, QWidget* parentOrNull);
+    /// The range and scale this slider uses.
+    [[nodiscard]] const SliderMapping& GetMapping() const noexcept
+    {
+        return mMapping;
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+    void wheelEvent(QWheelEvent* event) override;
+
+private:
+    void followField();
+    void writeField(foundation::int32 position);
+
+    QLineEdit& mField;
+    SliderMapping mMapping;
+    bool mIsWriting = false;
+};
+
+/// A row with a slider beside a number field, for a field with a minimum and maximum. The field keeps its object
+/// name and signals and is reparented into the row.
+[[nodiscard]] QWidget* MakeSliderRow(QLineEdit& inoutField, const SliderMapping& mapping, QWidget* parentOrNull);
 
 /// A long identifier (a UUID or hash) as its first eight and last four characters joined by an ellipsis, so a
 /// row stays narrow; identifiers that already fit are returned unchanged.

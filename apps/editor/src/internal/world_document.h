@@ -14,12 +14,14 @@
 #include <QByteArray>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLatin1StringView>
 #include <QString>
 #include <QStringList>
 #include <QVector>
 
 namespace ludus::editor
 {
+inline constexpr QLatin1StringView WORLD_RASTER_SHADOWS{"rasterShadows"};
 // Private, declarative authoring boundary. IDs persist as strings; runtime
 // EntityId handles and component layout remain owned by each game's adapter.
 // Whole candidates validate before publication. No project code is executed.
@@ -141,7 +143,9 @@ public:
     [[nodiscard]] bool RemoveEntity(const QString& id, QString& error);
     // Renaming changes only the display name; the label and UUID are preserved.
     [[nodiscard]] bool RenameEntity(const QString& id, QString& error, const QString& name);
-    [[nodiscard]] bool Attach(const QString& entity, QString& error, const QString& component);
+    [[nodiscard]] bool Attach(const QString& entity, QString& outError, const QString& component);
+    /// Attach defaults to every selected entity as one undoable edit. Failure preserves the World.
+    [[nodiscard]] bool AttachToEntities(const QStringList& ids, QString& outError, const QString& component);
     [[nodiscard]] bool Detach(const QString& entity, QString& error, const QString& component);
     // Apply one inspector transaction, including the display name. Outputs and
     // history remain unchanged on failure. Unknown fields are rejected.

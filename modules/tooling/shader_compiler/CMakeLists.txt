@@ -146,6 +146,10 @@ if(LUDUS_BUILD_SHADER_WORKER)
         ludus_configure_win32_target(ludus-shader-worker)
     endif()
     target_link_libraries(ludus-shader-worker PRIVATE Ludus::ShaderCompiler)
+    if(NOT WIN32)
+        # POSIX endpoints compile concurrent connections on WorkerQueue lanes.
+        target_link_libraries(ludus-shader-worker PRIVATE Ludus::FoundationContainers Ludus::FoundationThreading)
+    endif()
     target_compile_definitions(ludus-shader-worker PRIVATE LUDUS_SLANG_VERSION="${slang_version}")
     # Slang dlopens its SPIR-V optimizer (slang-glslang) beside itself by bare name. A sanitizer
     # runtime intercepts dlopen from the executable, so the loader then searches the executable's

@@ -52,8 +52,8 @@
   },
   "renderer_shadow": {
     "source": "renderer_shadow.slang",
-    "vertex": "vertexMain",
-    "fragment": "fragmentMain"
+    "vertex": "VertexMain",
+    "fragment": "FragmentMain"
   },
   "renderer_output": {
     "source": "renderer_output.slang",

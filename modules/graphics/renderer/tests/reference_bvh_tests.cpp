@@ -5,6 +5,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstring>
+
 using namespace ludus::foundation;
 namespace internal = ludus::graphics::renderer::internal;
 namespace rhi = ludus::graphics::rhi;
@@ -91,7 +93,73 @@ uint32 CheckNode(const internal::ReferenceSceneData& scene, uint32 node, Array<u
     return math::Max(CheckNode(scene, value.Left, inoutSeen, depth + 1),
                      CheckNode(scene, value.Right, inoutSeen, depth + 1));
 }
+// FNV-1a over every field of the hierarchy: bounds bits, links, ranges, axes and the triangle order.
+constexpr uint64 FNV_OFFSET_BASIS = 14695981039346656037ULL;
+constexpr uint64 FNV_PRIME = 1099511628211ULL;
+constexpr uint32 BYTE_BITS = 8;
+constexpr uint32 BYTE_MASK = 0xFF;
+void HashWord(uint64& inoutHash, uint32 word) noexcept
+{
+    for (uint32 shift = 0; shift < sizeof(word) * BYTE_BITS; shift += BYTE_BITS)
+    {
+        inoutHash = (inoutHash ^ ((word >> shift) & BYTE_MASK)) * FNV_PRIME;
+    }
+}
+void HashVector(uint64& inoutHash, math::Vector3 value) noexcept
+{
+    for (const float32 component : {value.X, value.Y, value.Z})
+    {
+        uint32 bits = 0;
+        std::memcpy(&bits, &component, sizeof(bits));
+        HashWord(inoutHash, bits);
+    }
+}
+uint64 HashHierarchy(const internal::ReferenceSceneData& scene) noexcept
+{
+    uint64 hash = FNV_OFFSET_BASIS;
+    for (const internal::ReferenceBvhNode& node : scene.Nodes)
+    {
+        HashVector(hash, node.Bounds.Min);
+        HashVector(hash, node.Bounds.Max);
+        for (const uint32 word : {node.Left, node.Right, node.First, node.Count, node.SplitAxis})
+        {
+            HashWord(hash, word);
+        }
+    }
+    for (const uint32 triangle : scene.Order)
+    {
+        HashWord(hash, triangle);
+    }
+    HashVector(hash, scene.Bounds.Min);
+    HashVector(hash, scene.Bounds.Max);
+    return hash;
+}
 } // namespace
+
+TEST_CASE("Reference SAH BVH build output is unchanged by build optimizations", "[renderer][reference]")
+{
+    // The editor rebuilds this hierarchy for every ray graph generation, so its build is optimized;
+    // CPU/GPU parity and scene fingerprints need the exact hierarchy the original build produced.
+    // These hashes were recorded from the unoptimized build (develop b54ec543).
+    constexpr uint64 ROOM_HASH = 3535617756217834903ULL;
+    constexpr uint64 GROWING_HASH = 5576274100232731888ULL;
+    constexpr usize GROWING_TRIANGLES = 120;
+    constexpr float32 GROWTH = 1.1F;
+    internal::ReferenceSurfaceData surface;
+    internal::ReferenceSceneData room;
+    BuildRoom(room, surface);
+    REQUIRE(internal::BuildReferenceBvh(room) == rhi::RasterStatus::Ready);
+    internal::ReferenceSceneData growing;
+    float32 offset = 1;
+    for (usize i = 0; i < GROWING_TRIANGLES; ++i)
+    {
+        AddTriangle(growing, {offset, 0, 0}, {offset + .1F, 0, 0}, {offset, .1F, 0});
+        offset *= GROWTH;
+    }
+    REQUIRE(internal::BuildReferenceBvh(growing) == rhi::RasterStatus::Ready);
+    CHECK(HashHierarchy(room) == ROOM_HASH);
+    CHECK(HashHierarchy(growing) == GROWING_HASH);
+}
 
 TEST_CASE("Reference SAH BVH covers every surface once within leaf and depth limits", "[renderer][reference]")
 {

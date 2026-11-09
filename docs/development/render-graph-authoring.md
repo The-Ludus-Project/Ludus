@@ -6146,11 +6146,23 @@ record widths or older role IDs; older packages remain readable.
 ### Directional shadows
 
 The default shadows the directional light with the lowest source identity among
-lights with positive intensity and a nonblack color. The renderer fits one
+lights that request raster shadows and have positive intensity and a nonblack
+color. In the built-in World inspector, clear **Light → Raster Shadows** to
+exclude a light while keeping its illumination. SDK callers set
+`DirectLight::ShouldCastRasterShadows`. The resource report's
+`DirectionalShadowLightSourceId` identifies the light assigned a map and is zero
+when no light qualifies. The renderer fits one
 1022 × 1022 orthographic projection to the scene's caster and receiver bounds,
-with a one-texel atlas gutter. It snaps the projection to the texel grid and uses
-the existing four-tap depth comparison with a receiver bias of 0.001 in
-normalized light depth. Opaque and alpha-masked scene geometry cast shadows.
+with a one-texel atlas gutter. It snaps the projection to the texel grid. Each
+of the four depth comparisons uses the sampled caster's depth and slope to
+evaluate its plane at the receiver's location, with a receiver bias of 0.001 in
+normalized light depth. The resolve blends the four visibility results by
+their distance from the receiver in the map. This reduces false self-shadowing
+on surfaces that the light reaches at a grazing angle. Opaque and alpha-masked
+scene geometry cast shadows.
+The material pass clips shading normals to the camera-facing hemisphere on
+geometrically front-facing surfaces. This keeps smooth terrain ridges lit
+where an interpolated normal turns past the camera.
 The resolve applies visibility to the selected light's direct diffuse and specular
 contribution. Point and spot lights and additional directional lights are
 evaluated without analytic shadows in this profile.
@@ -6163,7 +6175,7 @@ generation. The directional slot shares the mesh-light atlas when the scene
 has both kinds of casters. The whole-scene fit keeps the shadow stable as the
 camera moves. In large scenes, each texel covers more ground, so nearby edges
 can appear coarse. Recook existing clustered deferred shader packages to use
-directional visibility.
+the corrected directional shadow comparison.
 
 ### Mesh-light shadows
 
@@ -7051,6 +7063,16 @@ is selected. Slang and, when needed, the SPIR-V validator and SPIRV-Cross come
 from the selected local setup preset or the editor's prepared shader tools.
 No path entry is needed for **New Graph → Build & Preview**. Loading and building
 do not download tools, repair the project or write into the engine/SDK.
+
+Stages missing from the stage cache compile concurrently: up to half the host's
+logical CPUs (at most eight compiler processes), and never more native-worker
+requests at once than the worker reports it serves (`concurrency` in its replies;
+workers that omit it serve one). Results publish to the cache in build order, so a
+concurrent build produces the same generation as a serial one. When stages fail,
+the build reports the first failing stage in build order, as a serial build would;
+stages after it are cancelled, while earlier ones still complete and are cached.
+A rebuild after an SDK or tool change, which invalidates every stage, therefore
+takes about as long as its slowest stage rather than the sum of all of them.
 
 Build publishes to `out/render-graph/<graph>/build`. Cook Runtime writes
 `out/render-graph/<graph>.lurgrt` from that build tree. These paths are resolved
@@ -9020,6 +9042,15 @@ failure, and rejects source changes detected before publication. The source tree
 must be separate from generated output; `out/` and hidden directories are ignored.
 An unchanged failure is retried after the next source edit or a restarted command.
 
+A socket endpoint compiles several connections at once: half the online CPUs, at
+most four, each on its own thread with its own Slang session (Slang compiles
+concurrently only through separate global sessions). The first session starts with
+the worker; the others start on first use. Every reply reports the endpoint's
+`concurrency`: the sessions it can run, which drops to the running ones if a further
+session cannot start. Graph builds keep no more requests outstanding than that, so a
+queued request never waits behind more compiles than the worker runs. `--stdio`
+serves one request at a time and reports a concurrency of one.
+
 The native executable also accepts `--stdio`: each request/reply has a four-byte
 little-endian byte length followed by versioned UTF-8 JSON, bounded to 16 MiB.
 It supports multiple requests until EOF and needs no Unix socket in this mode.
@@ -9050,7 +9081,8 @@ The endpoint is a local pipe name, `\\.\pipe\<name>`; remote and file-system
 names are rejected. The pipe grants access only to the user who started the worker
 and refuses remote clients. A name another process already owns is refused, as an
 occupied socket is elsewhere. Sixteen listening instances act as the connection
-backlog. Requests are still compiled one at a time, and a connection that makes no
+backlog. Requests are still compiled one at a time (replies report a concurrency
+of one), and a connection that makes no
 progress for 30 seconds is dropped. A client finding every instance busy gets
 `Unavailable` from `ludus::tooling::shader_compiler::Client` at once. The Python
 helpers retry until a free instance appears. Pass the same pipe name wherever a

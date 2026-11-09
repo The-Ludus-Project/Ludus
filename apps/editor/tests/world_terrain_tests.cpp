@@ -119,7 +119,7 @@ TEST_CASE("Terrain extraction is seeded, resolution independent and safe at the 
     CHECK(world.Draft() == applied);
 }
 
-TEST_CASE("Explore as Player lands on the generated terrain after World extraction",
+TEST_CASE("Explore as Player uses explicit Static Colliders after World extraction",
           "[editor][world][terrain][first-person]")
 {
     QByteArray schema;
@@ -131,8 +131,18 @@ TEST_CASE("Explore as Player lands on the generated terrain after World extracti
     QJsonObject recipe = GetDefaultRecipe(world);
     recipe.insert(QStringLiteral("shape"), QStringLiteral("Flat"));
     recipe.insert(QStringLiteral("minimumElevation"), 2);
+    tests::SequentialEntropy sequence;
+    const foundation::identity::EntropySource entropy = tests::MakeSequentialEntropySource(sequence);
     QString key;
-    REQUIRE(EditWorldTerrain(world, tests::MakeFixedEntropySource(), {}, recipe, key, error) == true);
+    REQUIRE(EditWorldTerrain(world, entropy, {}, recipe, key, error) == true);
+    QString cubeId;
+    REQUIRE(CreateWorldObject(world, entropy, QStringLiteral("Cube"), cubeId, error) == true);
+    QJsonObject cubeComponents = world.Entity(cubeId).value(QStringLiteral("components")).toObject();
+    QJsonObject cubeTransform = cubeComponents.value(QStringLiteral("transform")).toObject();
+    cubeTransform.insert(QStringLiteral("x"), 1);
+    cubeTransform.insert(QStringLiteral("y"), 3);
+    cubeComponents.insert(QStringLiteral("transform"), cubeTransform);
+    REQUIRE(world.Edit(cubeId, cubeComponents, QStringLiteral("Cube"), error) == true);
     QTemporaryDir root;
     REQUIRE(root.isValid() == true);
     RenderScene scene;
@@ -143,6 +153,12 @@ TEST_CASE("Explore as Player lands on the generated terrain after World extracti
     spawn.Pose.Position = {0, 4, 0};
     spawn.Lens.Projection = gameplay::camera::CameraProjection::PerspectiveInfinite;
     spawn.Lens.NearPlane = 0.01F;
+    CHECK(preview.BeginFirstPerson(spawn, error) == false);
+    CHECK(error.contains(QStringLiteral("Add Static Collider")) == true);
+    REQUIRE(world.Attach(key, error, GetStaticColliderComponentId()) == true);
+    REQUIRE(RenderScene::Load(root.path(), world, scene, error, false) == true);
+    REQUIRE(scene.Objects.size() == 2);
+    REQUIRE(preview.SetScene(scene) == true);
     const bool isStarted = preview.BeginFirstPerson(spawn, error);
     INFO(error.toStdString());
     REQUIRE(isStarted == true);
@@ -153,6 +169,14 @@ TEST_CASE("Explore as Player lands on the generated terrain after World extracti
     const foundation::math::Vector3d eyeWorld = preview.GetVisibleCameraSample().Pose.Position;
     CHECK(eyeWorld.X == Catch::Approx(3));
     CHECK(eyeWorld.Y == Catch::Approx(3.602).margin(0.003));
+
+    REQUIRE(world.Attach(cubeId, error, GetStaticColliderComponentId()) == true);
+    REQUIRE(RenderScene::Load(root.path(), world, scene, error, false) == true);
+    REQUIRE(preview.SetScene(scene) == true);
+    CHECK(preview.IsExploringFirstPerson() == false);
+    REQUIRE(preview.BeginFirstPerson(spawn, error) == true);
+    preview.AdvanceFirstPerson({1, 0, 0}, 0.1F, 3, false);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position.X < 0.3);
 }
 
 TEST_CASE("A grayscale heightmap keeps its sample orientation and persists without the PNG", "[editor][world][terrain]")

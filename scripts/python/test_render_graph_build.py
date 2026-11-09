@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -342,7 +344,59 @@ class BuildTests(unittest.TestCase):
         self.invalid_layout = True
         with self.assertRaisesRegex(ToolingError, 'field identities/types'):
             self.run_build()
-        self.assertEqual(len(self.calls), 7)
+        # Only the changed program's two stages recompile: one when the build has a single
+        # lane, both when they compile concurrently and the second finishes beside the first.
+        self.assertIn(len(self.calls) - 6, (1, 2))
+
+    def test_concurrent_build_matches_a_serial_build(self):
+        with patch.object(build, 'MAX_PARALLEL_STAGES', 1):
+            serial = self.run_build()
+        self.output = self.root / 'concurrent'
+        with patch.object(build.os, 'cpu_count', return_value=16):
+            concurrent = self.run_build()
+        self.assertEqual((concurrent['cache_hits'], concurrent['cache_misses']), (0, 6))
+        self.assertEqual(serial['generation'], concurrent['generation'])
+
+    def test_concurrent_build_reports_the_first_failure_in_build_order(self):
+        actual = self.stage
+
+        def stage(command, cancel):
+            target, kind = command[command.index('--graph-target') + 1], command[command.index('--graph-stage') + 1]
+            if (target, kind) == ('metal', 'fragment'):
+                time.sleep(0.2)  # The earlier stage fails last; it must still be the one reported.
+                raise ToolingError('RenderGraphBuildShader', 'first failure')
+            if (target, kind) == ('wgsl', 'vertex'):
+                raise ToolingError('RenderGraphBuildShader', 'later failure')
+            actual(command, cancel)
+        with patch.object(build, 'run_stage', stage), patch.object(build.os, 'cpu_count', return_value=16):
+            with self.assertRaisesRegex(ToolingError, 'first failure'):
+                self.run_build()
+        self.assertFalse((self.output / 'current.json').exists())
+
+    def test_stages_sent_to_the_worker_never_exceed_its_lanes(self):
+        active, peaks, lock = [0, 0], [0, 0], threading.Lock()
+
+        def compile_program(program, schemas, closure, snapshot, work, *arguments):
+            index = 1 if program.get('native_ray_pipeline') else 0
+            with lock:
+                active[index] += 1
+                peaks[index] = max(peaks[index], active[index])
+            time.sleep(0.05)
+            with lock:
+                active[index] -= 1
+            output = work / 'artifact'
+            output.mkdir()
+            return output, {}
+        jobs = [({'id': f'Program{i}', 'native_ray_pipeline': i % 2 == 1}, [], 'metal') for i in range(8)]
+        stage = self.root / 'stage'
+        stage.mkdir()
+        with patch.object(build, 'compile_program', compile_program):
+            outcomes = build.compile_stages(jobs, stage, {}, None, self.helper, {}, None, worker_socket='worker',
+                                            worker_identity='0' * 64, worker_lanes=2, lanes=8)
+        self.assertTrue(all(not isinstance(outcome, BaseException) for outcome in outcomes))
+        self.assertEqual(peaks[0], 2)
+        # Native Metal ray pipelines compile in their own process, beside the worker's lanes.
+        self.assertGreater(peaks[1], 1)
 
     def test_graph_layout_change_reuses_all_stage_artifacts(self):
         first = self.run_build()

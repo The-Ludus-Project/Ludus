@@ -547,11 +547,12 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     if (OwnsDevice_)
     {
         // MakeKey hashes every mesh and texture byte, so it runs only when a prepared generation could be
-        // kept. That generation's key equals the current scene's: equal keys are its only way to outlive a
-        // scene change. A project graph draws the World without creating a generation, and skips the hash.
+        // kept. Raster shadow eligibility is compared separately because the bake key describes physical lighting.
+        // A project graph draws the World without creating a generation, and skips the hash.
         const bool canKeepResources =
             mResources.Get() != nullptr && mResources->IsPrepared() == true && mHasPreparationFailed == false;
-        if (canKeepResources == true && mResources->LightingKey == preview_lighting::MakeKey(scene))
+        if (canKeepResources == true && mResources->Source.RasterUnshadowedLightIds == scene.RasterUnshadowedLightIds &&
+            mResources->LightingKey == preview_lighting::MakeKey(scene))
         {
             ViewDirty_ = true;
         }
@@ -661,8 +662,12 @@ bool RenderPreview::Start()
     Status_ = mIsProjectGraphEnabled == true ? QStringLiteral("Preparing the project renderer…")
                                              : QStringLiteral("Preparing the shared Qt GPU device…");
     Q_EMIT DeviceRequested();
-    Q_EMIT Changed();
-    return mIsStarting == true || OwnsDevice_ == true;
+    // A synchronous failure may already have reported its cause and rolled the scene back.
+    if (Running() == true)
+    {
+        Q_EMIT Changed();
+    }
+    return Running();
 #else
     Status_ = QStringLiteral("3D preview requires the native editor built with LUDUS_EDITOR_RENDER_PREVIEW and pinned "
                              "shader tools. World data remains editable.");
@@ -1226,10 +1231,13 @@ bool RenderPreview::FrameSelection() noexcept
 bool RenderPreview::FrameEntity(const QString& id) noexcept
 {
     math::Aabb3 boundsWorld;
-    if (id.isEmpty() == true || Scene_.TryGetBounds(id, boundsWorld) == false || beginNavigation() == false ||
-        mCameraController.TryFrame(boundsWorld,
-                                   static_cast<float32>(RequestedWidth_) / static_cast<float32>(RequestedHeight_)) ==
-            false)
+    return id.isEmpty() == false && Scene_.TryGetBounds(id, boundsWorld) == true && FrameBounds(boundsWorld) == true;
+}
+bool RenderPreview::FrameBounds(const math::Aabb3& boundsWorld) noexcept
+{
+    if (beginNavigation() == false || mCameraController.TryFrame(boundsWorld,
+                                                                 static_cast<float32>(RequestedWidth_) /
+                                                                     static_cast<float32>(RequestedHeight_)) == false)
     {
         return false;
     }
@@ -1467,11 +1475,11 @@ bool RenderPreview::BeginFirstPerson(const gameplay::camera::CameraSample& spawn
     switch (mFirstPersonCollision.Start(Scene_, spawn.Pose.Position))
     {
         case StartStatus::NoGeometry:
-            outError = QStringLiteral("Add visible terrain or a mesh floor to the World before exploring.");
+            outError = QStringLiteral("Add Static Collider to a visible terrain or mesh floor before exploring.");
             return false;
         case StartStatus::GeometryUnavailable:
-            outError = QStringLiteral("Could not prepare the World's collision geometry. Hide unnecessary meshes "
-                                      "or reimport invalid geometry, then try again.");
+            outError = QStringLiteral("Could not prepare the World's collision geometry. Remove Static Collider from "
+                                      "unneeded surfaces or reimport invalid geometry, then try again.");
             return false;
         case StartStatus::SpawnObstructed:
             outError = QStringLiteral("Move the First Person Player's eye above the floor and clear of walls "

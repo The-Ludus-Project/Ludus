@@ -1193,6 +1193,7 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         CHECK(fixture.Pixels[center + 2] <= 1);
         const uint8 remainingGreen = fixture.Pixels[center + 1];
         CHECK(remainingGreen > 4);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[1].SourceId);
         CHECK(fixture.Pixels[center] <= 1);
         const StaticArray<uint8, PIXEL_BYTES> shadowed = fixture.Pixels;
         render();
@@ -1203,12 +1204,79 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         render();
         CHECK(fixture.Pixels == shadowed);
 
-        lights[1].Direction = {1, 0, -1};
+        lights[1].Direction = {-1, 0, -1};
+        lights[1].ShouldCastRasterShadows = false;
+        REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[0].SourceId);
+        CHECK(fixture.Pixels[center + 2] == litBlue);
+        CHECK(fixture.Pixels[center + 1] <= 1);
+
+        lights[0].ShouldCastRasterShadows = false;
         REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
         render();
         CHECK(fixture.Pixels[center + 2] == litBlue);
         CHECK(fixture.Pixels[center + 1] == remainingGreen);
         CHECK(fixture.Pixels[center] <= 1);
+        CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == 0);
+    }
+    SECTION("grazing directional light illuminates its own receiver uniformly")
+    {
+        materials[1].Emission = {};
+        StaticArray<renderer::DirectLight, 2> lights;
+        lights[0].SourceId = 1;
+        lights[0].Kind = renderer::LightKind::Directional;
+        lights[0].Color = {1, 0, 0};
+        lights[0].Intensity = 8;
+        lights[0].Direction = {-1, -.6F, -.13F};
+        // Only the first light casts. Its otherwise identical green control
+        // shows the unoccluded contribution at each pixel.
+        lights[1] = lights[0];
+        lights[1].SourceId = 2;
+        lights[1].Color = {0, 1, 0};
+        inputs.Lights = {lights.GetData(), lights.GetSize()};
+
+        REQUIRE(update(1) == rhi::RasterStatus::Ready);
+        render();
+        constexpr uint32 PROBE_RADIUS_PIXELS = 6;
+        constexpr float32 MAX_CHANNEL_DIFFERENCE = 2;
+        float32 maximumDifference = 0;
+        for (uint32 y = HEIGHT / 2 - PROBE_RADIUS_PIXELS; y < HEIGHT / 2 + PROBE_RADIUS_PIXELS; ++y)
+        {
+            for (uint32 x = WIDTH / 2 - PROBE_RADIUS_PIXELS; x < WIDTH / 2 + PROBE_RADIUS_PIXELS; ++x)
+            {
+                const usize pixel = GetPixel(x, y);
+                REQUIRE(fixture.Pixels[pixel + 1] > 32);
+                const float32 difference =
+                    math::Abs(float32(fixture.Pixels[pixel]) - float32(fixture.Pixels[pixel + 1]));
+                maximumDifference = math::Max(maximumDifference, difference);
+            }
+        }
+        CHECK(maximumDifference <= MAX_CHANNEL_DIFFERENCE);
+    }
+    SECTION("front-facing geometry stays lit at the shading-normal horizon")
+    {
+        materials[1].Emission = {};
+        constexpr float32 DEPTH_SLOPE = 0.8F;
+        const StaticArray<math::Vector3, VERTEX_COUNT> grazingNormals{
+            {{-.98F, 0, -.2F}, {-.98F, 0, -.2F}, {-.98F, 0, -.2F}}};
+        for (math::Vector3& position : fixture.Positions)
+        {
+            position.Z += position.X * DEPTH_SLOPE;
+        }
+        // This front-facing triangle has shading normals that turn away from
+        // the camera. Its unoccluded light still reaches the visible surface.
+        meshes[0].Geometry.Normals = grazingNormals.GetData();
+        renderer::DirectLight light;
+        light.SourceId = 1;
+        light.Kind = renderer::LightKind::Directional;
+        light.Direction = {1, 0, -1};
+        light.Intensity = 2;
+        inputs.Lights = {&light, 1};
+
+        REQUIRE(update(1) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[center] > 32);
     }
 }
 

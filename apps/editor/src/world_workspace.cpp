@@ -7,6 +7,8 @@
 #include "internal/preview_viewport.h"
 #include "internal/render_scene.h"
 #include "internal/world_celestial_light.h"
+#include "internal/world_earth_location.h"
+#include "internal/world_earth_time_field.h"
 #include "internal/world_entity_search.h"
 #include "internal/world_probe_volume.h"
 
@@ -120,6 +122,19 @@ QString FieldKey(const QString& component, const QString& property)
     return component + QLatin1Char('/') + property;
 }
 constexpr foundation::int32 WORLD_PROPERTY_LAYOUT_WIDTH = 360;
+/// The widget that holds field's row in rows: field itself, or the row a slider wraps it in.
+QWidget* GetFormRowWidget(const QFormLayout& rows, QWidget* field)
+{
+    LUDUS_ASSERT(field != nullptr);
+    for (QWidget* widgetOrNull = field; widgetOrNull != nullptr; widgetOrNull = widgetOrNull->parentWidget())
+    {
+        if (rows.indexOf(widgetOrNull) >= 0)
+        {
+            return widgetOrNull;
+        }
+    }
+    return field;
+}
 void ConfigureCelestialLightFields(QGroupBox& inoutGroup, QFormLayout& inoutRows, const QMap<QString, QWidget*>& fields)
 {
     const QString component = QStringLiteral("light");
@@ -151,6 +166,21 @@ void ConfigureCelestialLightFields(QGroupBox& inoutGroup, QFormLayout& inoutRows
             }
         }
     }
+    QLineEdit* latitudeOrNull = qobject_cast<QLineEdit*>(fields.value(FieldKey(component, WORLD_CELESTIAL_LATITUDE)));
+    QLineEdit* longitudeOrNull = qobject_cast<QLineEdit*>(fields.value(FieldKey(component, WORLD_CELESTIAL_LONGITUDE)));
+    if (latitudeOrNull != nullptr && longitudeOrNull != nullptr)
+    {
+        QPushButton* location = new QPushButton(QStringLiteral("Choose Earth Location…"), &inoutGroup);
+        location->setObjectName(QStringLiteral("worldEarthChooseLocation"));
+        foundation::int32 longitudeRow = 0;
+        QFormLayout::ItemRole longitudeRole = QFormLayout::FieldRole;
+        inoutRows.getWidgetPosition(longitudeOrNull, &longitudeRow, &longitudeRole);
+        inoutRows.insertRow(longitudeRow + 1, location);
+        celestialRows.append({WorldCelestialFieldGroup::Earth, location});
+        QObject::connect(location, &QPushButton::clicked, location, [location, latitudeOrNull, longitudeOrNull]() {
+            OpenWorldEarthLocation(*location, *latitudeOrNull, *longitudeOrNull);
+        });
+    }
     const auto updateRows = [&inoutGroup, &inoutRows, kindOrNull, roleOrNull, driverOrNull, celestialRows]() {
         const bool isDirectional = kindOrNull->currentData().toString() == QStringLiteral("directional");
         const bool hasDriver = isDirectional == true && roleOrNull->currentData().toString() == WORLD_CELESTIAL_DYNAMIC;
@@ -165,7 +195,7 @@ void ConfigureCelestialLightFields(QGroupBox& inoutGroup, QFormLayout& inoutRows
                                    (row.Group == WorldCelestialFieldGroup::Observer && hasObserver == true) ||
                                    (row.Group == WorldCelestialFieldGroup::Earth && hasEarth == true) ||
                                    (row.Group == WorldCelestialFieldGroup::Orbit && hasOrbit == true);
-            inoutRows.setRowVisible(row.Field, isVisible);
+            inoutRows.setRowVisible(GetFormRowWidget(inoutRows, row.Field), isVisible);
         }
         inoutGroup.setMinimumHeight(inoutRows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
     };
@@ -178,7 +208,7 @@ QString Display(const QJsonValue& value)
 {
     if (value.isDouble())
     {
-        return QString::number(value.toDouble(), 'g', 17);
+        return FormatInspectorNumber(value.toDouble());
     }
     return value.toString();
 }
@@ -788,14 +818,20 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     });
     connect(Attach_, &QPushButton::clicked, this, [this]() {
         QString error;
-        if (Document_.Attach(Selected_, error, Components_->currentData().toString()) == false)
+        const QString component = Components_->currentData().toString();
+        const bool isMultipleSelection = mSelectedEntities.size() > 1;
+        const QStringList targets = isMultipleSelection == true ? getStaticColliderTargets() : QStringList{Selected_};
+        if (Document_.AttachToEntities(targets, error, component) == false)
         {
             Changed(error);
             return;
         }
         Render();
         Snapshot();
-        Changed(QStringLiteral("Component added with project defaults."));
+        Changed(isMultipleSelection == true
+                    ? QStringLiteral("Static Collider added to %1 selected mesh entities. Undo is available.")
+                          .arg(targets.size())
+                    : QStringLiteral("Component added with project defaults."));
     });
     connect(Apply_, &QPushButton::clicked, this, [this]() { (void)Apply(); });
     connect(Reset_, &QPushButton::clicked, this, [this]() {
@@ -1242,6 +1278,13 @@ void WorldWorkspace::invalidateScene()
 }
 void WorldWorkspace::RefreshScene()
 {
+    const RenderPreview& preview = GetRenderPreview();
+    if (preview.IsExploringFirstPerson() == true &&
+        preview.Scene().StaticColliderEntityIds != GetWorldStaticColliderEntityIds(Document_))
+    {
+        Render_->GetViewport().EndFirstPerson();
+        Scene_->GetViewport().EndFirstPerson();
+    }
     const QJsonObject level = Document_.SceneLevel();
     if (level.isEmpty())
     {
@@ -2010,9 +2053,17 @@ void WorldWorkspace::RenderInspector()
     Components_->clear();
     if (mSelectedEntities.size() > 1)
     {
-        QLabel* summary = new QLabel(QStringLiteral("%1 entities selected. Duplicate or Delete acts on the whole "
-                                                    "selection. Select one entity to edit its properties.")
-                                         .arg(mSelectedEntities.size()));
+        const QStringList colliderTargets = getStaticColliderTargets();
+        QString summaryText = QStringLiteral("%1 entities selected. Duplicate or Delete acts on the whole selection.")
+                                  .arg(mSelectedEntities.size());
+        if (colliderTargets.isEmpty() == false)
+        {
+            const QString component = GetStaticColliderComponentId();
+            Components_->addItem(Document_.Component(component).value(QStringLiteral("label")).toString(), component);
+            summaryText += QStringLiteral(" Add Component can add Static Collider to %1 selected mesh entities.")
+                               .arg(colliderTargets.size());
+        }
+        QLabel* summary = new QLabel(summaryText + QStringLiteral(" Select one entity to edit its properties."));
         summary->setWordWrap(true);
         Inspector_->addWidget(summary);
         Inspector_->addStretch();
@@ -2164,7 +2215,11 @@ void WorldWorkspace::RenderInspector()
         }
         if (attached.contains(cid) == false)
         {
-            Components_->addItem(label, cid);
+            if (Document_.HasBuiltInSchema() == false || cid != GetStaticColliderComponentId() ||
+                CanAttachWorldStaticCollider(entity) == true)
+            {
+                Components_->addItem(label, cid);
+            }
             continue;
         }
         auto* group = new QGroupBox(label);
@@ -2252,6 +2307,15 @@ void WorldWorkspace::RenderInspector()
             const QJsonValue authored = values.value(pid);
             const QJsonValue current = authored.isUndefined() == true ? p.value(QStringLiteral("default")) : authored;
             QWidget* field = nullptr;
+            if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light") && pid == WORLD_CELESTIAL_TIME)
+            {
+                WorldEarthTimeField* time = new WorldEarthTimeField(current.toDouble(), *group);
+                time->setObjectName(QStringLiteral("worldField:") + FieldKey(cid, pid));
+                connect(time, &WorldEarthTimeField::Edited, this, [this]() { markInspectorPending(); });
+                Fields_.insert(FieldKey(cid, pid), time);
+                rows->addRow(time);
+                continue;
+            }
             if (type == QStringLiteral("boolean"))
             {
                 auto* check = new QCheckBox(group);
@@ -2347,7 +2411,20 @@ void WorldWorkspace::RenderInspector()
             }
             if (groupOrNull == nullptr)
             {
-                rows->addRow(title, field);
+                QWidget* rowField = field;
+                const bool isNumber = type == QStringLiteral("number") || type == QStringLiteral("integer");
+                const QJsonValue low = p.value(QStringLiteral("min"));
+                const QJsonValue high = p.value(QStringLiteral("max"));
+                if (textFieldOrNull != nullptr && isNumber == true && low.isDouble() == true &&
+                    high.isDouble() == true && HasSliderRange(low.toDouble(), high.toDouble()) == true)
+                {
+                    const SliderMapping mapping = MakeSliderMapping(low.toDouble(),
+                                                                    high.toDouble(),
+                                                                    GetScrubStep(unit, low.toDouble(), high.toDouble()),
+                                                                    type == QStringLiteral("integer"));
+                    rowField = MakeSliderRow(*textFieldOrNull, mapping, group);
+                }
+                rows->addRow(title, rowField);
                 continue;
             }
             const foundation::float64 minimum = p.value(QStringLiteral("min")).toDouble();
@@ -2627,7 +2704,7 @@ void WorldWorkspace::Changed(const QString& message)
                                    entityCount + mSelectedEntities.size() <= WorldDocument::MAX_ENTITIES &&
                                    isBusy == false);
     mDeleteEntities->setEnabled(Selected_.isEmpty() == false && Pending_ == false && isBusy == false);
-    Attach_->setEnabled(mSelectedEntities.size() == 1 && Pending_ == false && Components_->count() > 0 &&
+    Attach_->setEnabled(mSelectedEntities.isEmpty() == false && Pending_ == false && Components_->count() > 0 &&
                         isBusy == false);
     Components_->setEnabled(Pending_ == false && isBusy == false);
     Apply_->setEnabled(Pending_ && isBusy == false);
@@ -2759,6 +2836,11 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
             else if (QComboBox* choiceOrNull = qobject_cast<QComboBox*>(fieldOrNull); choiceOrNull != nullptr)
             {
                 candidate = choiceOrNull->currentData().toString();
+            }
+            else if (WorldEarthTimeField* timeOrNull = qobject_cast<WorldEarthTimeField*>(fieldOrNull);
+                     timeOrNull != nullptr)
+            {
+                candidate = timeOrNull->GetDaysSinceEpoch();
             }
             else if (QLineEdit* textOrNull = qobject_cast<QLineEdit*>(fieldOrNull); textOrNull != nullptr)
             {

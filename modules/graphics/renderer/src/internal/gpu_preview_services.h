@@ -72,6 +72,24 @@ math::Vector4 GpuVector(math::Vector3 value, float32 w = 0) noexcept
 {
     return {value.X, value.Y, value.Z, w};
 }
+// AreCapturesEqual names every field; extend it whenever ReferenceCaptureDescription changes.
+constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES = 168;
+static_assert(sizeof(ReferenceCaptureDescription) == EXPECTED_CAPTURE_DESCRIPTION_BYTES,
+              "compare every ReferenceCaptureDescription field in AreCapturesEqual");
+/// Every field: equal captures of one scene build, fingerprint and pack identical GPU scene data.
+/// Borrowed environment and light inputs compare by identity, as one graph update passes them.
+bool AreCapturesEqual(const ReferenceCaptureDescription& left, const ReferenceCaptureDescription& right) noexcept
+{
+    return left.WorldToClip == right.WorldToClip && left.CameraPosition == right.CameraPosition &&
+           left.OrthographicCamera == right.OrthographicCamera && left.ReverseZ == right.ReverseZ &&
+           left.InfiniteFar == right.InfiniteFar && left.Width == right.Width && left.Height == right.Height &&
+           left.TargetSamples == right.TargetSamples && left.MaxDepth == right.MaxDepth &&
+           left.RouletteDepth == right.RouletteDepth && left.SecondaryDistance == right.SecondaryDistance &&
+           left.Environment == right.Environment && left.EnvironmentTextureOrNull == right.EnvironmentTextureOrNull &&
+           left.Lights == right.Lights && left.LightCount == right.LightCount && left.TextureMip == right.TextureMip &&
+           left.Seed == right.Seed && left.CenterRays == right.CenterRays &&
+           left.LightSampling == right.LightSampling && left.OpticalWavelengthWorld == right.OpticalWavelengthWorld;
+}
 bool SameGpuTexture(const rhi::TextureCpuContent& a, const rhi::TextureCpuContent& b) noexcept
 {
     return a.Bytes == b.Bytes && a.Width == b.Width && a.Height == b.Height && a.RowPitch == b.RowPitch &&
@@ -1534,114 +1552,148 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
             return Status::Unsupported;
         }
     }
+    const bool isSceneShared = sharedScene != internal::NO_GPU_PREVIEW_SCENE;
+    // Ray passes of one graph update that share a scene would each rebuild the same CPU scene and
+    // BVH, fingerprint and pack it, only to confirm what the first pass already uploaded. For a
+    // large World that rebuild dominates activation, once per pass. A sharing job with the record's
+    // exact capture reuses its packed result; another capture still rebuilds and is checked below.
+    const bool shouldReusePackedScene = isSceneShared == true &&
+                                        state.Scenes[sharedScene].SceneData == graphSceneOrNull->SceneData &&
+                                        AreCapturesEqual(state.Scenes[sharedScene].Capture, description) == true;
     core::UniquePtr<ReferenceJob> scene;
     SceneShaderDiagnostics localDiagnostics;
     SceneShaderDiagnostics* diagnosticsOrNull =
         graphSceneOrNull != nullptr && graphSceneOrNull->DiagnosticsOrNull != nullptr
             ? graphSceneOrNull->DiagnosticsOrNull
             : &localDiagnostics;
-    if (graphSceneOrNull != nullptr)
+    usize sceneCpuBytes = 0;
+    if (shouldReusePackedScene == true)
     {
-        status =
-            internal::BuildMaterialGraphRayScene(*graphSceneOrNull,
-                                                 description,
-                                                 mState->Reference->Options.CpuByteBudget - mState->Reference->CpuBytes,
-                                                 scene);
-        if (status == Status::Ready && ReferenceFingerprint(*scene,
-                                                            mState->Reference->Options.CpuByteBudget -
-                                                                mState->Reference->CpuBytes - scene->Info.CpuBytes,
-                                                            diagnosticsOrNull) == false)
-        {
-            return diagnosticsOrNull != nullptr && diagnosticsOrNull->ExceededBudget != SceneMemoryBudget::None
-                       ? Status::CapacityExceeded
-                       : Status::OutOfMemory;
-        }
+        sceneCpuBytes = state.Scenes[sharedScene].SceneCpuBytes;
     }
-    else if (state.IsGraphRayScene == true)
+    else
     {
-        Array<internal::GraphRaySceneInput> inputs;
-        if (inputs.TryEnsureCapacity(source->Count) == false)
+        if (graphSceneOrNull != nullptr)
         {
-            return Status::OutOfMemory;
-        }
-        for (usize i = 0; source != nullptr && i < source->Count; ++i)
-        {
-            const State::Item& item = source->Items[i];
-            if (item.Input.Pass != Layer::Opaque || item.MaterialSlot != NO_MATERIAL ||
-                mState->MeshRecords[item.MeshSlot].Reference.Get() == nullptr)
+            status = internal::BuildMaterialGraphRayScene(*graphSceneOrNull,
+                                                          description,
+                                                          mState->Reference->Options.CpuByteBudget -
+                                                              mState->Reference->CpuBytes,
+                                                          scene);
+            if (status == Status::Ready && ReferenceFingerprint(*scene,
+                                                                mState->Reference->Options.CpuByteBudget -
+                                                                    mState->Reference->CpuBytes - scene->Info.CpuBytes,
+                                                                diagnosticsOrNull) == false)
             {
-                return Status::Unsupported;
+                return diagnosticsOrNull != nullptr && diagnosticsOrNull->ExceededBudget != SceneMemoryBudget::None
+                           ? Status::CapacityExceeded
+                           : Status::OutOfMemory;
             }
-            const math::Vector4 color = item.Input.Material.Color;
-            if (inputs.TryAdd({mState->MeshRecords[item.MeshSlot].Reference.Get(),
-                               item.Input.Transform,
-                               {color.X, color.Y, color.Z},
-                               item.Input.SourceId}) == false)
+        }
+        else if (state.IsGraphRayScene == true)
+        {
+            Array<internal::GraphRaySceneInput> inputs;
+            if (inputs.TryEnsureCapacity(source->Count) == false)
+            {
+                return Status::OutOfMemory;
+            }
+            for (usize i = 0; source != nullptr && i < source->Count; ++i)
+            {
+                const State::Item& item = source->Items[i];
+                if (item.Input.Pass != Layer::Opaque || item.MaterialSlot != NO_MATERIAL ||
+                    mState->MeshRecords[item.MeshSlot].Reference.Get() == nullptr)
+                {
+                    return Status::Unsupported;
+                }
+                const math::Vector4 color = item.Input.Material.Color;
+                if (inputs.TryAdd({mState->MeshRecords[item.MeshSlot].Reference.Get(),
+                                   item.Input.Transform,
+                                   {color.X, color.Y, color.Z},
+                                   item.Input.SourceId}) == false)
+                {
+                    return Status::OutOfMemory;
+                }
+            }
+            const usize remaining = mState->Reference->Options.CpuByteBudget - mState->Reference->CpuBytes;
+            const usize inputBytes = inputs.GetCapacity() * sizeof(internal::GraphRaySceneInput);
+            if (inputBytes > remaining)
+            {
+                return Status::CapacityExceeded;
+            }
+            status = internal::BuildGraphRayScene({inputs.GetData(), inputs.GetSize()},
+                                                  description,
+                                                  remaining - inputBytes,
+                                                  scene);
+            if (status == Status::Ready &&
+                ReferenceFingerprint(*scene, remaining - inputBytes - scene->Info.CpuBytes) == false)
             {
                 return Status::OutOfMemory;
             }
         }
-        const usize remaining = mState->Reference->Options.CpuByteBudget - mState->Reference->CpuBytes;
-        const usize inputBytes = inputs.GetCapacity() * sizeof(internal::GraphRaySceneInput);
-        if (inputBytes > remaining)
+        else
         {
-            return Status::CapacityExceeded;
+            status = mState->BuildReferenceJob(Access::Slot(snapshot), description, scene, true);
         }
-        status = internal::BuildGraphRayScene({inputs.GetData(), inputs.GetSize()},
-                                              description,
-                                              remaining - inputBytes,
-                                              scene);
-        if (status == Status::Ready &&
-            ReferenceFingerprint(*scene, remaining - inputBytes - scene->Info.CpuBytes) == false)
+        if (status != Status::Ready)
         {
-            return Status::OutOfMemory;
+            return status;
         }
-    }
-    else
-    {
-        status = mState->BuildReferenceJob(Access::Slot(snapshot), description, scene, true);
-    }
-    if (status != Status::Ready)
-    {
-        return status;
+        sceneCpuBytes = scene->Info.CpuBytes;
     }
     // Frozen geometry/BVH and input texels are CPU setup data; no host path state exists.
     const foundation::usize cpuRemaining = mState->Reference->Options.CpuByteBudget - mState->Reference->CpuBytes;
-    if (scene->Info.CpuBytes > cpuRemaining)
+    if (sceneCpuBytes > cpuRemaining)
     {
-        return internal::RejectSceneMemory(diagnosticsOrNull,
-                                           SceneMemoryBudget::CpuScene,
-                                           scene->Info.CpuBytes,
-                                           cpuRemaining);
+        return internal::RejectSceneMemory(diagnosticsOrNull, SceneMemoryBudget::CpuScene, sceneCpuBytes, cpuRemaining);
     }
-    const usize scratch = cpuRemaining - scene->Info.CpuBytes;
-    Array<math::Vector4> data, texels;
+    const usize scratch = cpuRemaining - sceneCpuBytes;
+    Array<math::Vector4> data;
+    Array<math::Vector4> texels;
     internal::GpuPreviewUniform uniform;
-    status = PackGpuScene(*scene,
-                          mState->GpuPreview->HasVisibilityBuffer,
-                          mState->GpuPreview->HasNativeRayQueries,
-                          scratch,
-                          data,
-                          texels,
-                          uniform,
-                          diagnosticsOrNull);
-    if (status != Status::Ready)
+    usize dataBytes = 0;
+    usize texelBytes = 0;
+    uint32 sceneData = 0;
+    uint64 fingerprintLow = 0;
+    uint64 fingerprintHigh = 0;
+    if (shouldReusePackedScene == true)
     {
-        return status;
+        const internal::GpuPreviewSceneRecord& record = state.Scenes[sharedScene];
+        uniform = record.PackedUniform;
+        dataBytes = record.DataBytes;
+        texelBytes = record.TexelBytes;
+        sceneData = record.SceneData;
+        fingerprintLow = record.FingerprintLow;
+        fingerprintHigh = record.FingerprintHigh;
+    }
+    else
+    {
+        status = PackGpuScene(*scene,
+                              mState->GpuPreview->HasVisibilityBuffer,
+                              mState->GpuPreview->HasNativeRayQueries,
+                              scratch,
+                              data,
+                              texels,
+                              uniform,
+                              diagnosticsOrNull);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        dataBytes = data.GetSize() * sizeof(math::Vector4);
+        texelBytes = texels.GetSize() * sizeof(math::Vector4);
+        sceneData = scene->SceneData;
+        fingerprintLow = scene->Scene.FingerprintLow;
+        fingerprintHigh = scene->Scene.FingerprintHigh;
     }
     const usize pixels = usize(description.Width) * description.Height;
-    const usize dataBytes = data.GetSize() * sizeof(math::Vector4);
-    const usize texelBytes = texels.GetSize() * sizeof(math::Vector4);
     const usize uploadBytes = dataBytes + texelBytes;
-    const bool isSceneShared = sharedScene != internal::NO_GPU_PREVIEW_SCENE;
     if (isSceneShared == true)
     {
         // The caller vouches that both jobs packed the same scene description; a different
         // packed layout means it did not, so reject rather than bind mismatched offsets.
         const internal::GpuPreviewSceneRecord& record = state.Scenes[sharedScene];
-        if (record.SceneData != scene->SceneData || record.DataBytes != dataBytes || record.TexelBytes != texelBytes ||
-            record.FingerprintLow != scene->Scene.FingerprintLow ||
-            record.FingerprintHigh != scene->Scene.FingerprintHigh)
+        if (record.SceneData != sceneData || record.DataBytes != dataBytes || record.TexelBytes != texelBytes ||
+            record.FingerprintLow != fingerprintLow || record.FingerprintHigh != fingerprintHigh)
         {
             return Status::InvalidDescription;
         }
@@ -1763,16 +1815,19 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         record.DataBytes = dataBytes;
         record.TexelBytes = texelBytes;
         record.GpuBytes = sceneUploadBytes;
-        record.SceneData = scene->SceneData;
-        record.FingerprintLow = scene->Scene.FingerprintLow;
-        record.FingerprintHigh = scene->Scene.FingerprintHigh;
+        record.SceneData = sceneData;
+        record.FingerprintLow = fingerprintLow;
+        record.FingerprintHigh = fingerprintHigh;
+        record.Capture = description;
+        record.PackedUniform = uniform;
+        record.SceneCpuBytes = sceneCpuBytes;
         job.Scene = sceneSlot;
     }
     job.Width = description.Width;
     job.Height = description.Height;
     job.Info.TargetSamples = description.TargetSamples;
-    job.Info.SceneFingerprintLow = scene->Scene.FingerprintLow;
-    job.Info.SceneFingerprintHigh = scene->Scene.FingerprintHigh;
+    job.Info.SceneFingerprintLow = fingerprintLow;
+    job.Info.SceneFingerprintHigh = fingerprintHigh;
     if (invocationOrNull != nullptr)
     {
         uniform.Sampling[2] |= invocationOrNull->Program << LUDUS_GRAPH_PASS_INDEX_SHIFT;

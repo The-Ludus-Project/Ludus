@@ -28,17 +28,17 @@ else()
 endif()
 
 # --- Qt discovery (local to the enabled editor only) -------------------------
-# Use APIs available in Qt 6.4; require at least 6.4. Core/Gui/Widgets only, as
+# Use APIs available in Qt 6.4; require at least 6.4. Core/Gui/Widgets/Network, as
 # native system libraries or the pinned source-built WebAssembly Qt.
 # Qt is installed only by opted-in editor setup;
 # it is never added to the engine Conan recipe or SDK.
 if(EMSCRIPTEN)
-    find_package(Qt6 6.4 QUIET COMPONENTS Core Gui Widgets)
+    find_package(Qt6 6.4 QUIET COMPONENTS Core Gui Widgets Network)
 else()
-    find_package(Qt6 6.4 QUIET COMPONENTS Core Gui Widgets Concurrent)
+    find_package(Qt6 6.4 QUIET COMPONENTS Core Gui Widgets Network Concurrent OPTIONAL_COMPONENTS Positioning)
 endif()
 if(NOT Qt6_FOUND)
-    ludus_dependency_error("Editor workspace" "Qt 6.4+ Core, Gui, Widgets and native Concurrent"
+    ludus_dependency_error("Editor workspace" "Qt 6.4+ Core, Gui, Widgets, Network and native Concurrent"
         "Qt development packages are missing or incompatible. Qt6_DIR='${Qt6_DIR}'."
         "For native Linux setup, run ./init.sh --cli --with-editor from the repository root. For browser setup, follow docs/development/browser-editor.md. For an existing Qt installation set Qt6_DIR; or disable the editor with -DLUDUS_BUILD_EDITOR=OFF.")
 endif()
@@ -763,6 +763,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/world_lights_panel.cpp
     src/builtin_world.cpp
     src/internal/world_celestial_light.h src/world_celestial_light.cpp
+    src/internal/world_earth_location.h src/world_earth_location.cpp
+    src/internal/world_earth_time_field.h src/world_earth_time_field.cpp
     src/world_document.cpp
     src/world_probe_volume.cpp
     src/world_terrain.cpp
@@ -834,6 +836,7 @@ target_link_libraries(ludus_editor_application
         Qt6::Core
         Qt6::Gui
         Qt6::Widgets
+        Qt6::Network
         Ludus::FoundationBase
         Ludus::FoundationMemory
         Ludus::FoundationLogging
@@ -858,6 +861,10 @@ target_link_libraries(ludus_editor_application
         ludus_stb_image
         # World documents share the version-2 record constants with their owner (object handles stage 3).
         Ludus::ContentIdentity)
+if(TARGET Qt6::Positioning AND NOT EMSCRIPTEN)
+    target_link_libraries(ludus_editor_application PUBLIC Qt6::Positioning)
+    target_compile_definitions(ludus_editor_application PRIVATE LUDUS_EDITOR_EARTH_POSITIONING=1)
+endif()
 if(EMSCRIPTEN)
     target_compile_definitions(ludus_editor_application PUBLIC LUDUS_EDITOR_BROWSER_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
     target_sources(ludus_editor_application PRIVATE src/browser_viewport.cpp src/internal/browser_viewport.h)
@@ -976,6 +983,7 @@ if(APPLE)
     set_source_files_properties(resources/ludus.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     set_target_properties(ludus_editor PROPERTIES
         MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/EditorInfo.plist.in"
         MACOSX_BUNDLE_GUI_IDENTIFIER "org.ludus.editor"
         MACOSX_BUNDLE_BUNDLE_NAME "Ludus Editor"
         MACOSX_BUNDLE_ICON_FILE "ludus.icns")

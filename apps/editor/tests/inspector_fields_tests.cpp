@@ -3,6 +3,9 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <cmath>
+#include <limits>
+
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
@@ -314,4 +317,169 @@ TEST_CASE("The world inspector shows a swatch beside colour channels", "[editor]
     swatchOrNull->SetDisplayColour(QColor(0, 0, 0));
     CHECK(redOrNull->text() != before);
     CHECK(view.Dirty() == true);
+}
+
+namespace
+{
+constexpr float64 WIDE_METRES_MAXIMUM = 10000.0;
+constexpr float64 OPENING_METRES = 0.003;
+constexpr int32 MIDDLE_POSITION = SLIDER_POSITION_COUNT / 2;
+constexpr int32 TWENTIETH_POSITION = SLIDER_POSITION_COUNT / 20;
+constexpr float64 COLOUR_THIRD = 0.333;
+constexpr int32 THIRD_POSITION = 333;
+constexpr float64 AXIS_COUNT_MINIMUM = 2.0;
+constexpr float64 AXIS_COUNT_MAXIMUM = 64.0;
+constexpr float64 AXIS_COUNT_MIDDLE = 33.0;
+constexpr float64 SYMMETRIC_LIMIT = 1e6;
+/// Longest text a slider writes, such as "-0.000139": rounded values, never a 17-digit expansion.
+constexpr qsizetype MAXIMUM_SLIDER_TEXT = 9;
+} // namespace
+
+TEST_CASE("Inspector numbers show their shortest exact text", "[editor][inspector]")
+{
+    CHECK(FormatInspectorNumber(OPENING_METRES) == QStringLiteral("0.003"));
+    CHECK(FormatInspectorNumber(1.0) == QStringLiteral("1"));
+    CHECK(FormatInspectorNumber(-2.5) == QStringLiteral("-2.5"));
+    // The text reads back as exactly the same number.
+    const float64 sum = 0.1 + 0.2;
+    CHECK(FormatInspectorNumber(sum).toDouble() == sum);
+}
+
+TEST_CASE("A slider is linear over narrow ranges and logarithmic over wide ones", "[editor][inspector]")
+{
+    CHECK(HasSliderRange(0.0, 1.0) == true);
+    CHECK(HasSliderRange(1.0, 1.0) == false);
+    CHECK(HasSliderRange(0.0, std::numeric_limits<float64>::infinity()) == false);
+
+    const SliderMapping colour = MakeSliderMapping(0.0, 1.0, GetScrubStep(QString(), 0.0, 1.0), false);
+    CHECK(colour.Scale == SliderScale::Linear);
+    CHECK(ConvertSliderPositionToValue(MIDDLE_POSITION, colour) == 0.5);
+    CHECK(ConvertSliderPositionToValue(THIRD_POSITION, colour) == COLOUR_THIRD);
+    CHECK(ConvertValueToSliderPosition(0.5, colour) == MIDDLE_POSITION);
+
+    const SliderMapping degrees = MakeSliderMapping(-360.0, 360.0, GetScrubStep(QStringLiteral("°"), -360, 360), false);
+    CHECK(degrees.Scale == SliderScale::Linear);
+    CHECK(ConvertSliderPositionToValue(MIDDLE_POSITION, degrees) == 0.0);
+
+    // 0 to 10000 m: half the travel lands near 10 m and a short drag still reaches millimetres.
+    const SliderMapping metres =
+        MakeSliderMapping(0.0, WIDE_METRES_MAXIMUM, GetScrubStep(QStringLiteral("m"), 0.0, WIDE_METRES_MAXIMUM), false);
+    CHECK(metres.Scale == SliderScale::Logarithmic);
+    CHECK(ConvertSliderPositionToValue(0, metres) == 0.0);
+    CHECK(ConvertSliderPositionToValue(SLIDER_POSITION_COUNT, metres) == WIDE_METRES_MAXIMUM);
+    const float64 middle = ConvertSliderPositionToValue(MIDDLE_POSITION, metres);
+    CHECK(middle > 1.0);
+    CHECK(middle < 100.0);
+    CHECK(ConvertSliderPositionToValue(TWENTIETH_POSITION, metres) < 0.01);
+    CHECK(ConvertValueToSliderPosition(OPENING_METRES, metres) > 0);
+    CHECK(ConvertValueToSliderPosition(OPENING_METRES, metres) < TWENTIETH_POSITION);
+    // Values outside the range give the nearer end.
+    CHECK(ConvertValueToSliderPosition(2 * WIDE_METRES_MAXIMUM, metres) == SLIDER_POSITION_COUNT);
+    CHECK(ConvertValueToSliderPosition(-1.0, metres) == 0);
+
+    // A range around zero puts zero in the middle on both scales.
+    const SliderMapping symmetric = MakeSliderMapping(-SYMMETRIC_LIMIT, SYMMETRIC_LIMIT, METRE_SCRUB_STEP, false);
+    CHECK(symmetric.Scale == SliderScale::Logarithmic);
+    CHECK(ConvertSliderPositionToValue(MIDDLE_POSITION, symmetric) == 0.0);
+    CHECK(ConvertSliderPositionToValue(MIDDLE_POSITION - 1, symmetric) < 0.0);
+
+    // Integer fields move in whole numbers.
+    const SliderMapping axisCount = MakeSliderMapping(AXIS_COUNT_MINIMUM, AXIS_COUNT_MAXIMUM, 0.062, true);
+    CHECK(axisCount.Scale == SliderScale::Linear);
+    CHECK(ConvertSliderPositionToValue(MIDDLE_POSITION, axisCount) == AXIS_COUNT_MIDDLE);
+
+    // Every mapping is monotonic, stays in range, writes short text and finds its own values again.
+    for (const SliderMapping& mapping : {colour, degrees, metres, symmetric, axisCount})
+    {
+        float64 previous = mapping.Minimum;
+        for (int32 position = 0; position <= SLIDER_POSITION_COUNT; ++position)
+        {
+            const float64 value = ConvertSliderPositionToValue(position, mapping);
+            CHECK(value >= previous);
+            CHECK(value <= mapping.Maximum);
+            CHECK(FormatInspectorNumber(value).size() <= MAXIMUM_SLIDER_TEXT);
+            if (mapping.IsInteger == false)
+            {
+                CHECK(std::abs(ConvertValueToSliderPosition(value, mapping) - position) <= 1);
+            }
+            previous = value;
+        }
+    }
+}
+
+TEST_CASE("A bounded slider and its field follow each other", "[editor][inspector]")
+{
+    QWidget host;
+    QLineEdit field(QStringLiteral("0.003"), &host);
+    const SliderMapping mapping = MakeSliderMapping(0.0, WIDE_METRES_MAXIMUM, METRE_SCRUB_STEP, false);
+    QWidget* row = MakeSliderRow(field, mapping, &host);
+    host.resize(320, 40);
+    row->resize(320, 40);
+    host.show();
+    BoundedSlider* sliderOrNull = row->findChild<BoundedSlider*>(QStringLiteral("inspectorSlider"));
+    REQUIRE(sliderOrNull != nullptr);
+    CHECK(field.parentWidget() == row);
+    CHECK(sliderOrNull->value() == ConvertValueToSliderPosition(OPENING_METRES, mapping));
+
+    // Moving the slider writes the field through textEdited, like typing.
+    QSignalSpy edited(&field, &QLineEdit::textEdited);
+    sliderOrNull->setValue(MIDDLE_POSITION);
+    CHECK(field.text() == FormatInspectorNumber(ConvertSliderPositionToValue(MIDDLE_POSITION, mapping)));
+    CHECK(edited.count() == 1);
+
+    // Text set or typed in the field moves the handle without editing the field again.
+    field.setText(QStringLiteral("10000"));
+    CHECK(sliderOrNull->value() == SLIDER_POSITION_COUNT);
+    field.setText(QStringLiteral("not a number"));
+    CHECK(sliderOrNull->value() == SLIDER_POSITION_COUNT);
+    CHECK(edited.count() == 1);
+
+    // The slider is unavailable whenever its field is.
+    field.setEnabled(false);
+    CHECK(sliderOrNull->isEnabled() == false);
+    field.setEnabled(true);
+    CHECK(sliderOrNull->isEnabled() == true);
+    CHECK(GetRectangleIn(host, *sliderOrNull).right() < GetRectangleIn(host, field).left());
+}
+
+TEST_CASE("The world inspector gives bounded number fields a slider", "[editor][inspector][world]")
+{
+    QTemporaryDir dir;
+    const QString path = MakeStarterProject(dir);
+    WorldWorkspace view;
+    view.SetProject(dir.path(), 1);
+    REQUIRE(view.Open(path));
+    view.resize(WORKSPACE_WIDTH, WORKSPACE_HEIGHT);
+    view.show();
+    QTreeWidget* listOrNull = view.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(listOrNull != nullptr);
+    listOrNull->setCurrentItem(listOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
+    QComboBox* choices = view.window()->findChild<QComboBox*>(QStringLiteral("worldComponentChoice"));
+    REQUIRE(choices != nullptr);
+    const int light = choices->findData(QStringLiteral("light"));
+    REQUIRE(light >= 0);
+    choices->setCurrentIndex(light);
+    view.window()->findChild<QPushButton*>(QStringLiteral("worldAttach"))->click();
+    QTest::qWait(SETTLE_MILLISECONDS);
+
+    QLineEdit* intensityOrNull = view.window()->findChild<QLineEdit*>(QStringLiteral("worldField:light/intensity"));
+    REQUIRE(intensityOrNull != nullptr);
+    REQUIRE(intensityOrNull->parentWidget() != nullptr);
+    BoundedSlider* sliderOrNull =
+        intensityOrNull->parentWidget()->findChild<BoundedSlider*>(QStringLiteral("inspectorSlider"));
+    REQUIRE(sliderOrNull != nullptr);
+    CHECK(sliderOrNull->GetMapping().Scale == SliderScale::Logarithmic);
+    CHECK(sliderOrNull->GetMapping().Maximum > sliderOrNull->GetMapping().Minimum);
+    CHECK(sliderOrNull->toolTip().contains(QStringLiteral("logarithmic")) == true);
+
+    // The slider edits the draft through the same path as typing.
+    const QString before = intensityOrNull->text();
+    sliderOrNull->setValue(sliderOrNull->value() == MIDDLE_POSITION ? MIDDLE_POSITION + 1 : MIDDLE_POSITION);
+    CHECK(intensityOrNull->text() != before);
+    CHECK(view.Dirty() == true);
+
+    // Colour channels keep their compact row and swatch instead of three sliders.
+    QLineEdit* redOrNull = view.window()->findChild<QLineEdit*>(QStringLiteral("worldField:light/r"));
+    REQUIRE(redOrNull != nullptr);
+    CHECK(redOrNull->parentWidget()->findChild<BoundedSlider*>() == nullptr);
 }

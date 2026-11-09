@@ -152,10 +152,12 @@ void ConvertToConventionalDepth(rr::ViewDescription& inoutView) noexcept
 /// identities into its own so that an authored edit is a new scene.
 void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
 {
+    inoutScene.StaticColliderEntityIds = authored.StaticColliderEntityIds;
     inoutScene.RenderableBinding = authored.RenderableBinding;
     inoutScene.TransformBinding = authored.TransformBinding;
     // Disabled authored lights stay listed, and switchable, beside the imported ones.
     inoutScene.LightBinding = authored.LightBinding;
+    inoutScene.RasterUnshadowedLightIds = authored.RasterUnshadowedLightIds;
     inoutScene.AlwaysOnLightIds = authored.AlwaysOnLightIds;
     inoutScene.ProbeGrid = authored.ProbeGrid;
     inoutScene.GiProbeReceiverIds = authored.GiProbeReceiverIds;
@@ -790,6 +792,7 @@ bool RenderScene::Load(const QString& root,
     candidate.TransformBinding = transform;
     candidate.LightBinding = lightBinding;
     candidate.LuminaireBinding = luminaireBinding;
+    candidate.StaticColliderEntityIds = GetWorldStaticColliderEntityIds(world);
     StaticArray<rr::PanelLuminaire, rr::MAX_PANEL_LUMINAIRES> luminaires{};
     usize luminaireCount = 0;
     // Light switches are not authored content: ApplyLightSwitches folds them into the presented identity,
@@ -970,8 +973,14 @@ bool RenderScene::Load(const QString& root,
                 candidate.AuthoredLights.Lights[candidate.AuthoredLights.Count++] = light;
                 const QJsonObject lightProperties =
                     entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
-                if (IsBuiltInWorld(world) == true &&
-                    lightBinding.value(QStringLiteral("component")) == QJsonValue(QStringLiteral("light")) &&
+                const bool isBuiltInLight =
+                    IsBuiltInWorld(world) == true &&
+                    lightBinding.value(QStringLiteral("component")) == QJsonValue(QStringLiteral("light"));
+                if (isBuiltInLight == true && lightProperties.value(WORLD_RASTER_SHADOWS).toBool(true) == false)
+                {
+                    candidate.RasterUnshadowedLightIds.append(light.SourceId);
+                }
+                if (isBuiltInLight == true &&
                     lightProperties.value(QStringLiteral("staticTransform")).toBool() == true &&
                     lightProperties.value(QStringLiteral("bakeAlwaysOn")).toBool() == true)
                 {

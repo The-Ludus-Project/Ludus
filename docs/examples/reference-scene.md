@@ -20,6 +20,8 @@ The standalone commands below are prototype evidence; they do not provide the
 project → scene → import → viewport → save/reopen product workflow.
 
 To explore staircase2 interactively, import it into a default World in the Editor.
+Select the imported floor, stairs and any walls you want to collide with, then
+choose **Static Collider** and click **Add Component** in **Properties**.
 Add a First Person Player with **Add World Preset**, then select it and click
 **Explore as Player**. The preset starts from the imported camera.
 See [First Person Player controls](../development/editor-workspace.md#explore-from-a-first-person-player)

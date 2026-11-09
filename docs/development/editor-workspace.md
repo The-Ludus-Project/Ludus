@@ -258,6 +258,12 @@ To manage Qt yourself, install it once (names vary by distribution) and use
   Homebrew Qt and records `Qt6_DIR` only in the local build cache. A manual Qt
   installation can be selected with CMake `-DQt6_DIR=/path/to/lib/cmake/Qt6`.
 
+For **Use my location**, install the optional Qt Positioning module before
+configuring the desktop editor. On Ubuntu use `qt6-positioning-dev`. On macOS
+use `brew install qtpositioning`. With a split Homebrew installation you can
+pass `-DQt6Positioning_DIR="$(brew --prefix qtpositioning)/lib/cmake/Qt6Positioning"`
+to CMake if needed.
+
 Only the editor configure/build uses Qt. A default configure
 (`LUDUS_BUILD_EDITOR=OFF`) and default engine browser builds never search for Qt. The separate
 [browser editor build](browser-editor.md) explicitly prepares WebAssembly Qt.
@@ -711,7 +717,8 @@ including after reopening the World. The terrain uses the current viewport
 shading and authored lights. In an unlit World, the default raster graph
 shows the terrain's surface colour without adding mesh lights.
 [Explore as Player](#explore-from-a-first-person-player) uses the applied terrain
-mesh for walking collision. Material paint, erosion and streaming are future
+mesh for walking collision when the Terrain entity has **Static Collider**.
+Material paint, erosion and streaming are future
 work. See the
 [viewport authoring design](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
 for delivery boundaries.
@@ -1021,6 +1028,13 @@ There are no separate Scene or 3D Levels authoring tabs.
 2. Select **World → Open World…**, then `authoring/starter.world.json`.
 3. Select **Starter Cube**. Edit its position or presentation fields. Units,
    project help, enum choices and logical asset names appear in the inspector.
+   A number with a minimum and maximum has a slider beside its field. Narrow
+   ranges (colour channels, angles) move evenly; wide ranges such as 0 to
+   10000 m use a logarithmic scale, so small values stay reachable. Type in the
+   field for an exact value. The slider edits the same draft as typing, so
+   **Apply Changes** and **Reset Fields** treat both alike. Position, rotation,
+   scale and colour channels keep their compact rows: drag an axis letter to
+   change one of those.
 4. Use **Apply Changes** to validate all fields as one edit. Invalid text stays
    visible and the applied document stays intact. **Reset Fields** restores the
    last applied values. Selection and structural commands wait for Apply/Reset.
@@ -1176,6 +1190,18 @@ and Y for pitch and yaw, and adjust **Move speed**. Apply the changes and use
 **Save World** to keep the spawn. Duplicate the entity to keep multiple starting
 points.
 
+Select a player to see its upright collision box in the World viewport. Press
+**F** with the viewport focused or double-click the player in the hierarchy to
+frame the box. The box measures 0.48 × 1.75 × 0.48 m, and its base sits 1.60 m
+below the spawn eye. Rotation aims the view and scale leaves the box at its fixed
+size.
+
+To make a surface solid, select its Terrain, mesh preset, or imported mesh
+entity. In **Properties**, choose **Static Collider** and click **Add Component**.
+Select several meshes to attach the component to the eligible entities in one
+undoable edit. Existing Worlds, new renderable entities and scene imports use
+the same opt-in. Remove the component to let the player pass through the mesh.
+
 Apply or cancel any open Terrain draft. Select a player in the hierarchy and
 click **Explore as Player**. Hold the right
 mouse button to look around, use **W/A/S/D** to walk, **Shift** to run, and
@@ -1183,14 +1209,13 @@ mouse button to look around, use **W/A/S/D** to walk, **Shift** to run, and
 editor camera. Movement is temporary and applies gravity even while you stand
 still. If you fall below the World, you return to the spawn.
 
-The player uses an upright box and sweeps it against the current visible
-World triangles, including generated terrain and imported meshes. It can
+The player uses an upright box and sweeps it against the visible triangles
+of entities with **Static Collider**. It can
 step up 0.35 m and walk on slopes up to 45°. Place the spawn eye about 1.6 m
-above the floor and clear of walls and ceilings. Hide decorative geometry
-that should not obstruct a walk. Collision preparation can take longer for
-large imports and admits up to eight million instanced triangles. Publishing
-different World geometry ends the walk. Choose **Explore as Player** again to
-walk on the new surface.
+above the floor and clear of walls and ceilings. Collision preparation can take
+longer for large imports and admits up to eight million instanced collider
+triangles. Publishing changes to geometry or collider membership ends the
+walk. Choose **Explore as Player** again to use the updated surfaces.
 
 This editor preview only moves the player. Rigid bodies, thrown objects,
 and gameplay collision assets follow the
@@ -1279,7 +1304,8 @@ A click tests triangles only for objects whose mesh bounds its ray enters before
 the nearest hit found so far. Those bounds are computed once per published scene.
 
 Choose **Select (Q)**, **Move (W)**, **Rotate (E)** or **Scale (R)** in the viewport
-tool menu. Drag a red X, green Y or blue Z handle; rotation uses rings. Move
+tool menu. With one entity selected, these keys also work while the entity list
+has focus. Drag a red X, green Y or blue Z handle. Rotation uses rings. Move
 changes the parent-local position, rotation changes the stored Euler degree
 component, and scale changes one positive local scale component. Hold **Shift**
 for 0.1 metre movement, 15 degree rotation or 0.1 scale-factor increments.
@@ -1820,6 +1846,20 @@ has no indirect bounce, so areas the sun cannot reach stay dark. Reimporting wit
 the scene's bundled sky through **Choose environment…** lights them too. A
 project-owned schema gets the instruction without the repair.
 
+### Per-light raster shadows
+
+In a built-in World, select a light and clear **Light → Raster Shadows** in
+**Properties** to keep its direct light without allocating a raster shadow map.
+Apply the edit and save the World to keep the setting. The checkbox is on by
+default, including for older Worlds.
+
+The [default Raster graph](render-graph-authoring.md#directional-shadows) assigns
+one map to the eligible directional light with the lowest source ID. In that
+graph, point and spot lights illuminate without shadow maps. The native Lit
+preview also supports shadow maps for point and spot lights. Reference path
+tracing and baked lighting compute visibility from scene geometry independently
+of this setting.
+
 ### Celestial directional lights
 
 Select a directional light and set **Light → Celestial Role** in **Properties**.
@@ -1829,12 +1869,25 @@ Worlds. The **Sun** creation and lighting repair actions assign **Static Sun**.
 
 Set **Dynamic Celestial → Rotation Driver** to **Transform** to use the entity's
 rotation, including rotation supplied by a game. Choose **Earth Sun** or
-**Earth Moon** to sample an approximate sky direction using **Earth Time**,
-**Observer Latitude**, and **Observer Longitude**. Use the same values on both lights
-to preview a single observer and moment. Earth Time is fractional UTC days
-since noon on January 1, 2000. For example, `0.5` is the following midnight.
-North latitude and east longitude are positive. The World frame is +X east,
-+Y up, and −Z north.
+**Earth Moon** to sample an approximate sky direction at **Date & Time (UTC)**
+and the observer's coordinates. Open the calendar to pick a date or type into
+the date and time field. **Use Now** copies the current instant into the draft.
+The World stores fractional UTC days since January 1, 2000 at 12:00 UTC, so
+existing Earth Time values open at the same instant. The supported dates span
+approximately 1950–2050.
+
+Use **Choose Earth Location…** to search for a city, landmark, or address.
+Clicking **Search** sends the query to Photon, which uses OpenStreetMap data.
+Select a result to review its latitude and longitude. **Use my location**
+requests the device's position once with permission. On desktop this action
+requires Qt Positioning and a system location provider. On the web it requires
+a secure browser context and location access. Choose **Use Coordinates** to
+copy the selected result into the inspector, then **Apply Changes** to apply
+the draft. Saved Worlds store the coordinates. Manual entry works offline and
+when device location is unavailable. North latitude and east longitude are
+positive. Use the same date, time, and coordinates on both lights to preview
+the sky at a single place and moment. The World frame is +X east, +Y up, and
+−Z north.
 
 The editor samples the authored time and preserves the entity's saved
 Transform rotation as a fallback. A sampled body at or below the geometric
@@ -1919,10 +1972,25 @@ Browser and packaged game hosts continue to use their existing inputs.
 ### Baking probe GI for moving objects
 
 Create a **GI Probe Volume** from **Add World Preset** in a default World.
-Set its Transform position to the volume's minimum corner. Set **Probe spacing**
-in metres and the number of points along each axis, including the endpoints.
-The volume follows the World axes. The native Lit viewport supports one volume,
-with 2 to 12 points on each axis and spacing from 0.1 to 100 metres.
+Select it to see the grid's wire box before baking. Double-click its name in
+the entity list or press **F** in the viewport to frame the box. With **Move**
+selected, drag the arrows or plane handles to position it, or drag a coloured
+square on a face to resize along that axis. Resizing keeps the opposite face
+fixed and adds or removes whole probe intervals at the current spacing. The
+drag readout shows the new count and length.
+
+Switch to **Scale (R)** and drag the white center square to scale the entire
+volume. Drag up and right to enlarge it or down and left to shrink it. This
+changes spacing on all three axes while keeping the minimum corner and probe
+counts fixed. Hold **Shift** to snap the scale factor. The colored face handles
+still resize one axis at the current spacing. Releasing the pointer applies one
+undoable edit. Press **Escape** during a drag to discard it.
+
+For precise values, set the Transform position to the volume's minimum corner
+and set **Probe spacing** in metres and the number of points along each axis,
+including both endpoints. The box follows the World axes. The native Lit
+viewport supports one volume, with 2 to 12 points on each axis and spacing from
+0.1 to 100 metres.
 
 Opt one or more static lights into [always-on baking](#baking-always-on-lights),
 then select the volume and click **Bake GI**. Attach **GI Probe Receiver** to

@@ -368,6 +368,31 @@ void PreviewViewport::wheelEvent(QWheelEvent* event)
     }
     event->accept();
 }
+bool PreviewViewport::TrySelectObjectTool(const QKeyEvent& event)
+{
+    if (event.modifiers() != Qt::NoModifier || mIsFlying == true || mHasContextPress == true ||
+        mObjectInteraction->IsActive() == false)
+    {
+        return false;
+    }
+    switch (event.key())
+    {
+        case Qt::Key_Q:
+            mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Select);
+            return true;
+        case Qt::Key_W:
+            mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Move);
+            return true;
+        case Qt::Key_E:
+            mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Rotate);
+            return true;
+        case Qt::Key_R:
+            mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Scale);
+            return true;
+        default:
+            return false;
+    }
+}
 void PreviewViewport::keyPressEvent(QKeyEvent* event)
 {
     if (handlePlayKey(*event, true) == true)
@@ -429,33 +454,17 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
     }
     if (mIsFlying == false && event->modifiers() == Qt::NoModifier)
     {
-        if (mObjectInteraction->IsActive() == true)
+        if (TrySelectObjectTool(*event) == true)
         {
-            switch (event->key())
-            {
-                case Qt::Key_Q:
-                    mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Select);
-                    event->accept();
-                    return;
-                case Qt::Key_W:
-                    mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Move);
-                    event->accept();
-                    return;
-                case Qt::Key_E:
-                    mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Rotate);
-                    event->accept();
-                    return;
-                case Qt::Key_R:
-                    mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Scale);
-                    event->accept();
-                    return;
-                default:
-                    break;
-            }
+            event->accept();
+            return;
         }
         if (event->key() == Qt::Key_F)
         {
-            static_cast<void>(Preview_->FrameSelection());
+            if (mObjectInteraction->FrameProbeVolume() == false && mObjectInteraction->TryRequestFramePlayer() == false)
+            {
+                static_cast<void>(Preview_->FrameSelection());
+            }
             event->accept();
             return;
         }

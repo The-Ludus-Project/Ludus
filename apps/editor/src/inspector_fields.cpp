@@ -11,10 +11,13 @@
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QSignalBlocker>
 #include <QTimer>
 #include <QToolButton>
+#include <QWheelEvent>
 
 #include <cmath>
 
@@ -42,8 +45,233 @@ constexpr int32 SWATCH_WIDTH = design::SPACING_EXTRA_LARGE + design::SPACING_MED
 constexpr int32 SWATCH_HEIGHT = design::SPACING_EXTRA_LARGE;
 constexpr int32 CHIP_SIZE = design::SPACING_LARGE;
 constexpr int32 COPIED_FEEDBACK_MILLISECONDS = 1200;
-constexpr int32 MAXIMUM_DISPLAY_DIGITS = 17;
+/// Widest range, in steps, a slider spreads linearly; 1000 positions then move at most ten steps each.
+constexpr float64 LINEAR_SLIDER_STEP_LIMIT = 10000;
+/// Significant digits a logarithmic slider keeps, so "0.00314" rather than "0.0031415926".
+constexpr int32 LOGARITHMIC_SLIDER_DIGITS = 3;
+/// Decimals a linear slider never exceeds, whatever its step.
+constexpr int32 MAXIMUM_SLIDER_DECIMALS = 6;
+constexpr float64 DECIMAL_BASE = 10;
+/// Page Up and Page Down move the handle a tenth of its travel.
+constexpr int32 SLIDER_PAGE_COUNT = 10;
+constexpr int32 SLIDER_STRETCH = 3;
+constexpr int32 SLIDER_FIELD_STRETCH = 2;
+
+/// Nearest integer, halves away from zero.
+float64 RoundToInteger(float64 value)
+{
+    return value < 0 ? -math::Floor(-value + 0.5) : math::Floor(value + 0.5);
+}
+
+/// Power of ten of value's leading digit: 2 for 314, -3 for 0.00314.
+int32 GetDecimalExponent(float64 magnitude)
+{
+    int32 exponent = static_cast<int32>(math::Floor(math::Log(magnitude) / math::Log(DECIMAL_BASE)));
+    // The quotient of logarithms can land just below an exact power of ten.
+    if (math::Pow(DECIMAL_BASE, static_cast<float64>(exponent + 1)) <= magnitude)
+    {
+        ++exponent;
+    }
+    else if (math::Pow(DECIMAL_BASE, static_cast<float64>(exponent)) > magnitude)
+    {
+        --exponent;
+    }
+    return exponent;
+}
+
+/// value rounded to a multiple of 10^-decimals. Only exact powers of ten scale it (dividing by 10^d rather than
+/// multiplying by 10^-d), so the result is the double nearest the decimal and prints without residue.
+float64 RoundToDecimals(float64 value, int32 decimals)
+{
+    if (decimals < 0)
+    {
+        const float64 unit = math::Pow(DECIMAL_BASE, static_cast<float64>(-decimals));
+        return RoundToInteger(value / unit) * unit;
+    }
+    const float64 scale = math::Pow(DECIMAL_BASE, static_cast<float64>(decimals));
+    return RoundToInteger(value * scale) / scale;
+}
+
+/// Signed logarithmic coordinate of value: linear within step of zero, logarithmic beyond.
+float64 ComputeSignedLogarithm(float64 value, float64 step)
+{
+    const float64 magnitude = math::Log(1 + math::Abs(value) / step);
+    return value < 0 ? -magnitude : magnitude;
+}
+
+float64 InvertSignedLogarithm(float64 coordinate, float64 step)
+{
+    const float64 magnitude = step * (math::Exp(math::Abs(coordinate)) - 1);
+    return coordinate < 0 ? -magnitude : magnitude;
+}
+
+/// Where value lies along the mapping's scale, as a fraction 0 to 1 of the range.
+float64 ComputeSliderFraction(float64 value, const SliderMapping& mapping)
+{
+    const float64 clamped = math::Clamp(value, mapping.Minimum, mapping.Maximum);
+    if (mapping.Scale == SliderScale::Linear)
+    {
+        return (clamped - mapping.Minimum) / (mapping.Maximum - mapping.Minimum);
+    }
+    const float64 low = ComputeSignedLogarithm(mapping.Minimum, mapping.Step);
+    const float64 high = ComputeSignedLogarithm(mapping.Maximum, mapping.Step);
+    return (ComputeSignedLogarithm(clamped, mapping.Step) - low) / (high - low);
+}
 } // namespace
+
+QString FormatInspectorNumber(float64 value)
+{
+    return QString::number(value, 'g', QLocale::FloatingPointShortest);
+}
+
+bool HasSliderRange(float64 minimum, float64 maximum)
+{
+    return math::IsFinite(minimum) == true && math::IsFinite(maximum) == true && maximum > minimum;
+}
+
+SliderMapping MakeSliderMapping(float64 minimum, float64 maximum, float64 step, bool isInteger)
+{
+    const float64 sliderStep = isInteger == true ? math::Max(step, 1.0) : step;
+    const bool isNarrow = (maximum - minimum) / sliderStep <= LINEAR_SLIDER_STEP_LIMIT;
+    return
+    {
+        .Minimum = minimum,
+        .Maximum = maximum,
+        .Step = sliderStep,
+        .Scale = isNarrow == true ? SliderScale::Linear : SliderScale::Logarithmic,
+        .IsInteger = isInteger,
+    };
+}
+
+float64 ConvertSliderPositionToValue(int32 position, const SliderMapping& mapping)
+{
+    if (position <= 0)
+    {
+        return mapping.Minimum;
+    }
+    if (position >= SLIDER_POSITION_COUNT)
+    {
+        return mapping.Maximum;
+    }
+    const float64 fraction = static_cast<float64>(position) / static_cast<float64>(SLIDER_POSITION_COUNT);
+    float64 value = 0;
+    if (mapping.Scale == SliderScale::Linear)
+    {
+        value = mapping.Minimum + fraction * (mapping.Maximum - mapping.Minimum);
+        const int32 decimals = math::Clamp(-GetDecimalExponent(mapping.Step), 0, MAXIMUM_SLIDER_DECIMALS);
+        value = RoundToDecimals(value, decimals);
+    }
+    else
+    {
+        const float64 low = ComputeSignedLogarithm(mapping.Minimum, mapping.Step);
+        const float64 high = ComputeSignedLogarithm(mapping.Maximum, mapping.Step);
+        value = InvertSignedLogarithm(low + fraction * (high - low), mapping.Step);
+        if (value != 0)
+        {
+            const int32 decimals = LOGARITHMIC_SLIDER_DIGITS - 1 - GetDecimalExponent(math::Abs(value));
+            value = RoundToDecimals(value, decimals);
+        }
+    }
+    if (mapping.IsInteger == true)
+    {
+        value = RoundToInteger(value);
+    }
+    return math::Clamp(value, mapping.Minimum, mapping.Maximum);
+}
+
+int32 ConvertValueToSliderPosition(float64 value, const SliderMapping& mapping)
+{
+    const float64 position = RoundToInteger(ComputeSliderFraction(value, mapping) * SLIDER_POSITION_COUNT);
+    return math::Clamp(static_cast<int32>(position), 0, SLIDER_POSITION_COUNT);
+}
+
+BoundedSlider::BoundedSlider(QLineEdit& inoutField, const SliderMapping& mapping, QWidget* parentOrNull)
+    : QSlider(Qt::Horizontal, parentOrNull), mField(inoutField), mMapping(mapping)
+{
+    setObjectName(QStringLiteral("inspectorSlider"));
+    setRange(0, SLIDER_POSITION_COUNT);
+    setPageStep(SLIDER_POSITION_COUNT / SLIDER_PAGE_COUNT);
+    setFocusPolicy(Qt::StrongFocus);
+    setAccessibleName(inoutField.accessibleName() + QStringLiteral(" slider"));
+    QString tip = QStringLiteral("Drag to choose a value from %1 to %2.")
+                      .arg(FormatInspectorNumber(mapping.Minimum), FormatInspectorNumber(mapping.Maximum));
+    if (mapping.Scale == SliderScale::Logarithmic)
+    {
+        tip += QStringLiteral(" The scale is logarithmic: small values get fine steps. Type in the field for an "
+                              "exact value.");
+    }
+    setToolTip(tip);
+    setEnabled(inoutField.isEnabled());
+    followField();
+    connect(&mField, &QLineEdit::textChanged, this, &BoundedSlider::followField);
+    connect(this, &QSlider::valueChanged, this, &BoundedSlider::writeField);
+    mField.installEventFilter(this);
+}
+
+bool BoundedSlider::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == &mField && event->type() == QEvent::EnabledChange)
+    {
+        setEnabled(mField.isEnabled());
+    }
+    return QSlider::eventFilter(watched, event);
+}
+
+void BoundedSlider::wheelEvent(QWheelEvent* event)
+{
+    if (hasFocus() == false)
+    {
+        event->ignore();
+        return;
+    }
+    QSlider::wheelEvent(event);
+}
+
+void BoundedSlider::followField()
+{
+    if (mIsWriting == true)
+    {
+        return;
+    }
+    bool isNumber = false;
+    const float64 value = mField.text().toDouble(&isNumber);
+    if (isNumber == false || math::IsFinite(value) == false)
+    {
+        return;
+    }
+    const QSignalBlocker blocker(this);
+    setValue(ConvertValueToSliderPosition(value, mMapping));
+}
+
+void BoundedSlider::writeField(int32 position)
+{
+    const QString text = FormatInspectorNumber(ConvertSliderPositionToValue(position, mMapping));
+    if (text == mField.text())
+    {
+        return;
+    }
+    mIsWriting = true;
+    mField.setText(text);
+    Q_EMIT mField.textEdited(text);
+    mIsWriting = false;
+}
+
+QWidget* MakeSliderRow(QLineEdit& inoutField, const SliderMapping& mapping, QWidget* parentOrNull)
+{
+    QWidget* row = new QWidget(parentOrNull);
+    row->setObjectName(QStringLiteral("inspectorSliderRow"));
+    QHBoxLayout* layout = new QHBoxLayout(row);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(design::SPACING_SMALL);
+    inoutField.setParent(row);
+    inoutField.setMinimumWidth(FIELD_MINIMUM_WIDTH);
+    inoutField.setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    BoundedSlider* slider = new BoundedSlider(inoutField, mapping, row);
+    slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    layout->addWidget(slider, SLIDER_STRETCH);
+    layout->addWidget(&inoutField, SLIDER_FIELD_STRETCH);
+    return row;
+}
 
 float64 ComputeScrubbedValue(float64 startValue,
                              int32 deltaPixels,
@@ -138,9 +366,7 @@ void ScrubLabel::mouseMoveEvent(QMouseEvent* event)
         return;
     }
     mHasMoved = true;
-    const QString text = QString::number(ComputeScrubbedValue(mStartValue, delta, mSettings, event->modifiers()),
-                                         'g',
-                                         MAXIMUM_DISPLAY_DIGITS);
+    const QString text = FormatInspectorNumber(ComputeScrubbedValue(mStartValue, delta, mSettings, event->modifiers()));
     if (text != mField.text())
     {
         mField.setText(text);
@@ -256,7 +482,7 @@ void ColourSwatch::SetDisplayColour(const QColor& display)
     const QVector<QPair<QLineEdit*, float64>> channels{{&mRed, red}, {&mGreen, green}, {&mBlue, blue}};
     for (const QPair<QLineEdit*, float64>& channel : channels)
     {
-        const QString text = QString::number(channel.second, 'g', MAXIMUM_DISPLAY_DIGITS);
+        const QString text = FormatInspectorNumber(channel.second);
         channel.first->setText(text);
         Q_EMIT channel.first->textEdited(text);
     }
