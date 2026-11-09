@@ -26,7 +26,7 @@
 // [LUDUS_SCENE_FAILURE_AUTHORED_FIRST, LUDUS_SCENE_FAILURE_REASON_COUNT).
 #define LUDUS_SCENE_FAILURE_UNSPECIFIED 0       // A shader set queries.HasFailed without a reason.
 #define LUDUS_SCENE_FAILURE_INVALID_RADIANCE 1  // A sample returned non-finite or negative radiance.
-#define LUDUS_SCENE_FAILURE_INTERFACE_VERSION 2 // The scene interface version does not match the renderer.
+#define LUDUS_SCENE_FAILURE_INTERFACE_VERSION 2 // The package was compiled for another scene interface or kernel.
 #define LUDUS_SCENE_FAILURE_SURFACE_BUDGET 3    // More surface queries than scene_interface.surface_queries.
 #define LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET 4 // More visibility queries than scene_interface.visibility_queries.
 #define LUDUS_SCENE_FAILURE_LINE_BUDGET 5       // More line queries than scene_interface.line_queries.

@@ -1,6 +1,7 @@
 // Header self-sufficiency and layout contract for Ludus::SceneFormat.
 
 #include <ludus/content/scene_format/luscn.h>
+#include <ludus/content/scene_format/material.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -14,6 +15,38 @@ TEST_CASE("LUSCN record layouts match the wire format", "[scene_format]")
     REQUIRE(sizeof(format::VertexRecord) == 32);
     REQUIRE(sizeof(format::ObjectRecord) == 56);
     REQUIRE(format::NO_TEXTURE == 0xFFFFFFFFU);
+}
+
+TEST_CASE("Material capabilities decide pass requirements without model names", "[scene_format][materials]")
+{
+    using format::MaterialModel;
+    const format::MaterialRequirement restricted = format::FIXED_DIMENSION_REFLECTION_REQUIREMENT;
+    // The restricted sampler admits exactly the models the former model-name predicate listed.
+    CHECK(format::SupportsFixedDimensionReflection(MaterialModel::MetallicRoughness) == true);
+    CHECK(format::SupportsFixedDimensionReflection(MaterialModel::Diffuse) == true);
+    CHECK(format::SupportsFixedDimensionReflection(MaterialModel::Conductor) == true);
+    CHECK(format::SupportsFixedDimensionReflection(MaterialModel::DiffuseConductorMix) == true);
+    CHECK(format::SupportsFixedDimensionReflection(MaterialModel::CoatedDiffuse) == false);
+    CHECK(format::SupportsFixedDimensionReflection(MaterialModel::Dielectric) == false);
+    CHECK(format::SupportsFixedDimensionReflection(MaterialModel::ThinDielectric) == false);
+    CHECK(format::SupportsFixedDimensionReflection(MaterialModel::Unresolved) == false);
+    CHECK(format::SupportsFixedDimensionReflection(MaterialModel::ProjectBrdf) == false);
+    CHECK(format::GetMaterialCapabilities(MaterialModel::Unresolved) == 0);
+    CHECK(format::SatisfiesMaterialRequirement(format::GetMaterialCapabilities(MaterialModel::CoatedDiffuse),
+                                               restricted) == false);
+    CHECK(format::SatisfiesMaterialRequirement(format::GetMaterialCapabilities(MaterialModel::CoatedDiffuse),
+                                               format::MaterialRequirement{}) == true);
+
+    format::MaterialScattering program = { .Model = MaterialModel::ProjectBrdf, .CoatingThickness = 0 };
+    CHECK(format::SupportsFixedDimensionReflection(program) == false);
+    program.CoatingThickness = 1;
+    CHECK(format::SupportsFixedDimensionReflection(program) == true);
+    CHECK(format::GetMaterialCapabilities(program) == (format::LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION |
+                                                       format::LUDUS_MATERIAL_CAPABILITY_FIXED_DIMENSION_SAMPLER));
+    // A declared sampler does not hide a transport event the restricted estimator cannot consume.
+    const format::MaterialCapabilityBits walking =
+        format::GetMaterialCapabilities(program) | format::LUDUS_MATERIAL_CAPABILITY_INTERNAL_WALK;
+    CHECK(format::SatisfiesMaterialRequirement(walking, restricted) == false);
 }
 
 TEST_CASE("Triangle bake charts are deterministic, guttered and capacity bounded", "[scene_format]")

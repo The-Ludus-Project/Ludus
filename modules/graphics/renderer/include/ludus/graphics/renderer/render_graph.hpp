@@ -180,7 +180,7 @@ enum class RenderGraphFailureReason : foundation::uint8
 {
     Unspecified,                ///< A shader set queries.HasFailed without a reason.
     InvalidRadiance,            ///< A sample returned non-finite or negative radiance.
-    InterfaceVersion,           ///< The scene interface version does not match the renderer.
+    InterfaceVersion,           ///< The package was compiled for another scene interface or kernel version.
     SurfaceBudget,              ///< More surface queries than scene_interface.surface_queries.
     VisibilityBudget,           ///< More visibility queries than scene_interface.visibility_queries.
     LineBudget,                 ///< More line queries than scene_interface.line_queries.

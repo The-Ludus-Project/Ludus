@@ -109,7 +109,8 @@ const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
                    "renderer supporting coatings, or explicitly author a diffuse or conductor material.";
         case RenderGraphFailureReason::FixedDimensionMaterial:
             return "This pass requires continuous reflection with a fixed three-value sampler. Select a graph "
-                   "that supports the assigned material, or assign diffuse, rough conductor or their Mix.";
+                   "that supports the assigned material, or assign diffuse, rough conductor, their Mix or a "
+                   "project BRDF that declares fixed_dimension_reflection.";
         case RenderGraphFailureReason::Unspecified:
             return "A shader set queries.HasFailed without a reason. Building the graph lists each such line as a "
                    "RenderGraphBuildReasonlessFailure warning; call FailSceneQuery there with a reason to name the "
@@ -117,7 +118,9 @@ const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
         case RenderGraphFailureReason::InvalidRadiance:
             return "A sample returned non-finite or negative radiance, such as a division by a zero probability.";
         case RenderGraphFailureReason::InterfaceVersion:
-            return "The graph's scene interface version does not match the renderer. Rebuild the graph.";
+            return "The graph's ray shader package was compiled for another scene interface or scene kernel version "
+                   "than this renderer packs. Rebuild the graph to recompile its package against the installed "
+                   "renderer.";
         case RenderGraphFailureReason::SurfaceBudget:
             return "A shader traced more surface rays than scene_interface.surface_queries allows. Raise the budget "
                    "or trace fewer rays per sample.";

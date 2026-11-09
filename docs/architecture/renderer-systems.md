@@ -1244,6 +1244,24 @@ activation. For example, a graph that cannot consume an internal-walk weight
 can report its sampling requirement for any incompatible closure. It needs
 no test for the coated-diffuse model by name.
 
+The [scene format](../../modules/content/scene_format/include/ludus/content/scene_format/material.h)
+owns this vocabulary. Each material reports a mask of capabilities: continuous
+reflection, a fixed three-value sampler, transmission, an internal walk and
+delta events. A built-in model reports what it guarantees for every parameter
+value. A project BRDF adds the fixed-dimension sampler only when it declares
+one. A `MaterialRequirement` lists the capabilities a pass requires and the ones
+it cannot consume. The fixed-dimension reflection requirement of
+Rao-Blackwellized Metropolis requires continuous reflection and the fixed
+sampler, and excludes transmission, internal walks and delta events. The scene
+packer tests every assigned material against it. `RequireSceneBsdf` reports
+the result to the pass. The Wave Tracing `Transport` requirement admits every
+resolved material.
+
+A graph's ray shader package carries its own copy of the scene evaluator. The
+renderer writes its scene kernel version into each dispatch. A package compiled
+for another version fails every pixel with the interface-version reason and
+asks for a rebuild. It does not run its stale evaluator.
+
 Raster techniques declare their own representation. Deferred routes require a
 compatible G-buffer output. A forward route can evaluate a richer surface
 interface or bind a declared technique. A ray-compatible closure may need a

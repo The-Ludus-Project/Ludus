@@ -4587,7 +4587,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
 | SampleSceneRandom / MakeCameraRay | Automatic invocation-stream draw or explicit random dimension / chosen subpixel camera ray |
-| RequireSceneBsdf | Check the assigned scene materials against a pass’s transport or fixed-dimension reflection requirements and report a repairable failure |
+| RequireSceneBsdf | Check the assigned scene materials against a pass’s transport or fixed-dimension reflection requirements and report a repairable failure. The renderer decides from each material's declared capabilities, not its model name |
 | EvaluateStandardBsdf / SampleStandardBsdf | Optional existing scattering-model primitives; no integrator or MIS |
 | SampleStandardBsdfTransport / ComputeStandardBsdfCosine | Continuation with complete weight and specular/transmission flags / matching light cosine, zero for glass |
 | IsDielectricMaterial / IsSpecularMaterial / FollowSpecularChain | Glass tests and the bounded glass camera-path walk to the first shadeable surface |
@@ -4603,7 +4603,7 @@ a plain integer cannot be compared or stored where a result belongs:
 | `SceneQuery` | `TraceClosest`, `TestVisibility`, `FindVisibleLineIntervals`, `TraceAndShade`, `LoadVisibilitySurface` | `Miss`, `Surface`, `Failure` |
 | `SceneLightKind` | `LightInfo.Kind` | `Directional`, `Point`, `Spot`, `Mesh`, `Environment` |
 | `SceneMaterialKind` | `SurfaceHit.MaterialKind` | `Assigned`, `Default`, `Error` |
-| `MaterialModel` | `MaterialSample.Model` | `MetallicRoughness`, `Diffuse`, `Conductor`, `CoatedDiffuse`, `Dielectric`, `ThinDielectric`, `DiffuseConductorMix` |
+| `MaterialModel` | `MaterialSample.Model` | `MetallicRoughness`, `Diffuse`, `Conductor`, `CoatedDiffuse`, `Dielectric`, `ThinDielectric`, `DiffuseConductorMix`, `ProjectBrdf` |
 | `SceneBsdfRequirement` | `RequireSceneBsdf` | `Transport`, `FixedDimensionReflection` |
 
 ```slang
@@ -5126,6 +5126,7 @@ sentence.
 | Traversal | The traversal could not finish, such as a full BVH stack. |
 | Random stream exhausted, invalid argument, light sample | A scene function rejected its input or ran out of random dimensions. |
 | Invalid radiance | A sample returned non-finite or negative radiance. |
+| Interface version | The graph's ray shader package was compiled for another scene interface or scene kernel version than the renderer packs, so its copy of the material evaluator is stale. Rebuild the graph. |
 | Storage capacity | A graph storage buffer, such as hit records or reservoirs, has fewer entries than the pixels that use it. |
 | Stored record | A pass read a hit record, reservoir or visibility-buffer texel that an earlier pass did not write for this pixel, frame or scene. |
 | Scene data | A scene lookup returned an invalid triangle, surface or material. |
