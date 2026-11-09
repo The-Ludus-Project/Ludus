@@ -2,6 +2,8 @@
 #include "math.slang"
 #include "raster_bindings.slang"
 #include "renderer_environment_layout.h"
+#include "renderer_shadow_depth.slang"
+#include "shading_normal.slang"
 // Thanks to Google/Filament authors, Physically Based Rendering in Filament,
 // sections 4.4 and 5.2.2, https://google.github.io/filament/main/filament.html.
 // GGX + correlated Smith + Schlick, Fresnel-weighted Lambert, single scattering.
@@ -240,19 +242,40 @@ float ComputeShadowVisibility(int light, Varying input)
         if (abs(ndc.x) > 1 || abs(ndc.y) > 1 || ndc.z < 0 || ndc.z > 1)
             continue;
         float4 rect = material.ShadowData[region * SHADOW_REGION_WORDS + 4];
-        float2 uv = lerp(rect.xy, rect.zw, float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
-        float visible = 0;
-        for (int tap = 0; tap < 4; ++tap)
-        {
-            float2 delta = float2((tap & 1) != 0 ? 0.5 : -0.5, (tap & 2) != 0 ? 0.5 : -0.5) * settings.zw;
-            float2 sampleUv = clamp(uv + delta, rect.xy, rect.zw);
+        float2 projectedUv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
 #ifdef LUDUS_DEFERRED_MESH_LIGHTS
-            float2 depth = meshLightShadowAtlas.SampleLevel(shadowSampler, sampleUv, 0).rg;
+        // The directional projection maps clip edges to viewport edges. The
+        // atlas rectangle supplied by the host bounds legal texel centres.
+        float2 uv = lerp(rect.xy - settings.zw * 0.5, rect.zw + settings.zw * 0.5, projectedUv);
+        float2 receiverTexel = uv / settings.zw;
+        float2 lowerTexel = floor(receiverTexel - 0.5) + 0.5;
+        float2 fraction = receiverTexel - lowerTexel;
 #else
-            float2 depth = shadowTexture.SampleLevel(shadowSampler, sampleUv, 0).rg;
+        float2 uv = lerp(rect.xy, rect.zw, projectedUv);
 #endif
-            float stored = dot(depth, float2(65280, 255)) / 65535;
-            visible += ndc.z - settings.x <= stored ? 0.25 : 0;
+        float visible = 0;
+        const int SHADOW_FILTER_TAP_COUNT = 4;
+        for (int tap = 0; tap < SHADOW_FILTER_TAP_COUNT; ++tap)
+        {
+            float2 corner = float2(tap & 1, (tap >> 1) & 1);
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+            float2 sampleUv = clamp((lowerTexel + corner) * settings.zw, rect.xy, rect.zw);
+            float4 code = meshLightShadowAtlas.SampleLevel(shadowSampler, sampleUv, 0);
+            float2 centerTexel = sampleUv / settings.zw;
+            // Thanks to Microsoft, "Cascaded Shadow Maps", Depth Bias,
+            // https://learn.microsoft.com/en-us/windows/win32/dxtecharts/cascaded-shadow-maps,
+            // for comparing depths at matching locations across a PCF filter.
+            // The orthographic atlas lets us project each caster plane to the
+            // receiver's location from the slope stored at the sampled texel.
+            float stored = DecodeShadowDepth(code.rg) + dot(DecodeShadowSlope(code.ba), receiverTexel - centerTexel);
+            float2 weights = lerp(1 - fraction, fraction, corner);
+            float weight = weights.x * weights.y;
+#else
+            float2 sampleUv = clamp(uv + (corner - 0.5) * settings.zw, rect.xy, rect.zw);
+            float stored = DecodeShadowDepth(shadowTexture.SampleLevel(shadowSampler, sampleUv, 0).rg);
+            float weight = 1.0 / SHADOW_FILTER_TAP_COUNT;
+#endif
+            visible += ndc.z - settings.x <= stored ? weight : 0;
         }
         return visible;
     }
@@ -492,12 +515,12 @@ struct SurfaceSample
 #ifndef LUDUS_DEFERRED_MESH_LIGHTS
 SurfaceSample SampleMaterial(in Varying input)
 {
-    float4 baseColor = SampleBaseTexel(input);
     // Thanks to the W3C GPU for the Web Working Group, WGSL, "Derivative Built-in Functions":
     // https://www.w3.org/TR/WGSL/#derivative-builtin-functions
-    // Evaluate quad derivatives before the per-fragment tangent-frame choice.
+    // Evaluate quad derivatives before alpha discard and the per-fragment tangent-frame choice.
     float3 positionDerivativeXWorld = ddx(input.PositionWorld);
     float3 positionDerivativeYWorld = ddy(input.PositionWorld);
+    float4 baseColor = SampleBaseTexel(input);
     float3 normalWorld = NormalizeOrZero(input.NormalWorld);
     float3 viewDirectionWorld = (GetEyeFlags(input) & 2) != 0
                                     ? NormalizeOrZero(input.EyeWorld.xyz)
@@ -543,9 +566,13 @@ SurfaceSample SampleMaterial(in Varying input)
     float3 geometricNormalWorld = cross(positionDerivativeXWorld, positionDerivativeYWorld);
     if (dot(geometricNormalWorld, input.NormalWorld) < 0)
         geometricNormalWorld = -geometricNormalWorld;
-    float3 result = material.Emission.w > .5 || dot(geometricNormalWorld, viewDirectionWorld) > 0
-                        ? material.Emission.rgb
-                        : float3(0);
+    bool isGeometricFront = dot(geometricNormalWorld, viewDirectionWorld) > 0;
+    if (isGeometricFront == true && dot(normalWorld, normalWorld) > 0)
+    {
+        // Smooth or mapped normals can turn past the camera on a visible face.
+        normalWorld = ClipShadingNormalToOutgoingHemisphere(normalWorld, viewDirectionWorld);
+    }
+    float3 result = material.Emission.w > .5 || isGeometricFront == true ? material.Emission.rgb : float3(0);
 #    ifdef LUDUS_AUTHORED_INPUTS
     if (material.SurfaceMap.z > .5)
     {
@@ -733,10 +760,9 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
 }
 [shader("fragment")] float4 ShadowMain(Varying input) : SV_Target
 {
+    float4 encoded = EncodeShadowDepth(input.PositionClip.z);
     SampleBaseTexel(input);
-    float encoded = floor(saturate(input.PositionClip.z) * 65535 + 0.5);
-    float high = floor(encoded / 256);
-    return float4(high / 255, (encoded - high * 256) / 255, 0, 1);
+    return encoded;
 }
 #endif
 

@@ -6136,9 +6136,16 @@ record widths or older role IDs; older packages remain readable.
 The default shadows the directional light with the lowest source identity among
 lights with positive intensity and a nonblack color. The renderer fits one
 1022 × 1022 orthographic projection to the scene's caster and receiver bounds,
-with a one-texel atlas gutter. It snaps the projection to the texel grid and uses
-the existing four-tap depth comparison with a receiver bias of 0.001 in
-normalized light depth. Opaque and alpha-masked scene geometry cast shadows.
+with a one-texel atlas gutter. It snaps the projection to the texel grid. Each
+of the four depth comparisons uses the sampled caster's depth and slope to
+evaluate its plane at the receiver's location, with a receiver bias of 0.001 in
+normalized light depth. The resolve blends the four visibility results by
+their distance from the receiver in the map. This reduces false self-shadowing
+on surfaces that the light reaches at a grazing angle. Opaque and alpha-masked
+scene geometry cast shadows.
+The material pass clips shading normals to the camera-facing hemisphere on
+geometrically front-facing surfaces. This keeps smooth terrain ridges lit
+where an interpolated normal turns past the camera.
 The resolve applies visibility to the selected light's direct diffuse and specular
 contribution. Point and spot lights and additional directional lights are
 evaluated without analytic shadows in this profile.
@@ -6151,7 +6158,7 @@ generation. The directional slot shares the mesh-light atlas when the scene
 has both kinds of casters. The whole-scene fit keeps the shadow stable as the
 camera moves. In large scenes, each texel covers more ground, so nearby edges
 can appear coarse. Recook existing clustered deferred shader packages to use
-directional visibility.
+the corrected directional shadow comparison.
 
 ### Mesh-light shadows
 

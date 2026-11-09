@@ -14,7 +14,8 @@ function(_ludus_render_graph_helper_files out)
         wave_scene_layout.h wave_scene_queries.slang wave_connection_layout.h wave_connection.slang wave_reference_scene.slang elliptical_cone.slang
         ray_triangle_loop.slang ray_line_visibility.slang ray_bvh_nodes.slang ray_bvh_traversal.slang renderer_reference_layout.h scene_data.h
         scene_shader_layout.h lighting_layout.h deferred_layout.h deferred_binding_slots.inc
-        renderer_deferred_fullscreen.slang renderer_mesh_lights.slang display_tone_mapping.slang math.slang raster_bindings.slang metal_ray_pipeline_layout.h
+        renderer_deferred_fullscreen.slang renderer_mesh_lights.slang renderer_shadow_depth.slang
+        display_tone_mapping.slang math.slang raster_bindings.slang metal_ray_pipeline_layout.h
         projected_solid_angle.slang linearly_transformed_cosine.slang weighted_reservoir.slang stochastic_pairwise_mis.slang metropolis.slang gaussian.slang shading_normal.slang ltc_table.slang
         ltc_table_layout.h metropolis_layout.h geometry_sampling_layout.h photon_layout.h
         renderer_light_transformer_query.slang light_transformer_layout.h light_transformer_encoder_layout.h

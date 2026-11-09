@@ -1,5 +1,6 @@
 // Portable conventional-depth shadow storage: 16-bit depth encoded in linear RGBA8.
 // This avoids assuming sampled depth/comparison-sampler support in the R1 profile.
+#include "renderer_shadow_depth.slang"
 struct Input
 {
     [[vk::location(0)]] float3 position : POSITION;
@@ -20,7 +21,5 @@ Varying vertexMain(Input input)
 [shader("fragment")]
 float4 fragmentMain(Varying input) : SV_Target
 {
-    float encoded = floor(saturate(input.position.z)*65535+0.5);
-    float high = floor(encoded/256);
-    return float4(high/255,(encoded-high*256)/255,0,1);
+    return EncodeShadowDepth(input.position.z);
 }

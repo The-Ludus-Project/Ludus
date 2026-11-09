@@ -280,9 +280,6 @@ static const float3 MESH_LIGHT_SHADOW_RIGHT[MESH_LIGHT_SHADOW_FACE_COUNT] =
     {float3(0, 0, 1), float3(0, 0, -1), float3(-1, 0, 0), float3(-1, 0, 0), float3(-1, 0, 0), float3(1, 0, 0)};
 static const float3 MESH_LIGHT_SHADOW_UP[MESH_LIGHT_SHADOW_FACE_COUNT] =
     {float3(0, 1, 0), float3(0, 1, 0), float3(0, 0, -1), float3(0, 0, 1), float3(0, 1, 0), float3(0, 1, 0)};
-// Largest 16-bit depth code, and the weights of its high and low bytes stored as normalized red and green.
-static const float MESH_LIGHT_SHADOW_DEPTH_CODE_MAXIMUM = 65535;
-static const float2 MESH_LIGHT_SHADOW_DEPTH_BYTE_WEIGHTS = float2(65280, 255);
 // Blocker search and filter taps: the centre and the corners, then a ring of eight, in units of the filter radius.
 static const uint MESH_LIGHT_SHADOW_BLOCKER_TAP_COUNT = 5;
 static const uint MESH_LIGHT_SHADOW_FILTER_TAP_COUNT = 9;
@@ -328,7 +325,7 @@ void ReadMeshLightShadowTexel(in MeshLightShadowFace face, float2 texel, out flo
 {
     float2 position = clamp(floor(texel), face.Origin, face.Maximum);
     float2 code = meshLightShadowAtlas.Load(int3(int2(position), 0)).rg;
-    outStored = dot(code, MESH_LIGHT_SHADOW_DEPTH_BYTE_WEIGHTS) / MESH_LIGHT_SHADOW_DEPTH_CODE_MAXIMUM;
+    outStored = DecodeShadowDepth(code);
     float2 uv = (position + 0.5 - face.Origin) / face.Texels;
     float2 ndc = float2(uv.x * 2 - 1, 1 - uv.y * 2);
     float3 directionWorld = face.ForwardWorld + (face.RightWorld * ndc.x + face.UpWorld * ndc.y) * face.Tangent;
@@ -336,7 +333,7 @@ void ReadMeshLightShadowTexel(in MeshLightShadowFace face, float2 texel, out flo
     // A ray that never meets the plane in front of the caster sees no receiver there: nothing can shadow it.
     float forward = along > 0 ? face.PlaneHeight / along : face.FarMeters;
     outPlane = ComputeMeshLightShadowDepth(face, clamp(forward, face.NearMeters, face.FarMeters)) -
-               LUDUS_MESH_LIGHT_SHADOW_DEPTH_BIAS_CODES / MESH_LIGHT_SHADOW_DEPTH_CODE_MAXIMUM;
+               LUDUS_MESH_LIGHT_SHADOW_DEPTH_BIAS_CODES / SHADOW_DEPTH_CODE_MAXIMUM;
 }
 // Fraction of the caster's view of the receiver that no occluder blocks; one without a caster or shadow table.
 float ComputeMeshLightShadowVisibility(uint tableWord, uint casterKey, float3 positionWorld, float3 normalWorld)
