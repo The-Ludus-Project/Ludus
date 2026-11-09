@@ -282,14 +282,16 @@ TEST_CASE("DXIL scalar raster bindings match the complete PSV table", "[rhi][dxi
 TEST_CASE("DXIL PSV resource kinds distinguish sampled dimensions and samplers", "[rhi][dxil]")
 {
     namespace rhi = ludus::graphics::rhi;
-    constexpr usize KIND_COUNT = 5;
+    constexpr usize KIND_COUNT = 6;
     const ludus::foundation::StaticArray<rhi::RasterBindingKind, KIND_COUNT> kinds{
         rhi::RasterBindingKind::Texture2D,
+        rhi::RasterBindingKind::TextureDepth2D,
         rhi::RasterBindingKind::Texture2DArray,
         rhi::RasterBindingKind::TextureCube,
         rhi::RasterBindingKind::Texture3D,
         rhi::RasterBindingKind::Sampler};
-    const ludus::foundation::StaticArray<uint32, KIND_COUNT> nativeKinds{2, 7, 5, 4, 14};
+    // A depth aspect reaches DXIL as Texture2D<float>, so it shares the Texture2D resource kind.
+    const ludus::foundation::StaticArray<uint32, KIND_COUNT> nativeKinds{2, 2, 7, 5, 4, 14};
     for (usize index = 0; index < nativeKinds.GetSize(); ++index)
     {
         ContainerShape shape;

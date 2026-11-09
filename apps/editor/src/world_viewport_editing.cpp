@@ -10,7 +10,8 @@
 #include <QComboBox>
 #include <QJsonArray>
 #include <QKeySequence>
-#include <QPushButton>
+#include <QMenu>
+#include <QPoint>
 #include <QShortcut>
 #include <QString>
 
@@ -32,10 +33,12 @@ void WorldWorkspace::bindViewportInteraction()
         }
         QShortcut* remove = new QShortcut(QKeySequence::Delete, viewport);
         remove->setContext(Qt::WidgetWithChildrenShortcut);
-        connect(remove, &QShortcut::activated, Remove_, &QPushButton::click);
+        connect(remove, &QShortcut::activated, mDeleteEntities, &QAction::trigger);
         QShortcut* duplicate = new QShortcut(QKeySequence(QStringLiteral("Ctrl+D")), viewport);
         duplicate->setContext(Qt::WidgetWithChildrenShortcut);
-        connect(duplicate, &QShortcut::activated, Duplicate_, &QPushButton::click);
+        connect(duplicate, &QShortcut::activated, mDuplicateEntities, &QAction::trigger);
+        viewport->EnableWorldContextMenu();
+        connect(viewport, &PreviewViewport::WorldContextMenuRequested, this, &WorldWorkspace::showEntityMenu);
         ViewportObjectInteraction& interaction = viewport->GetObjectInteraction();
         connect(&interaction, &ViewportObjectInteraction::SelectionRequested, this, [this](const QString& id) {
             if (Pending_ == true || SceneBusy() == true)
@@ -61,6 +64,19 @@ void WorldWorkspace::bindViewportInteraction()
     }
     // Only the scene viewport shows a level, so only it can store a start view.
     connect(&Scene_->GetViewport().GetStartViewSaveAction(), &QAction::triggered, this, &WorldWorkspace::saveStartView);
+}
+void WorldWorkspace::showEntityMenu(const QPoint& positionGlobal, const QString& entityId)
+{
+    if (Document_.Loaded() == false)
+    {
+        return;
+    }
+    if (Pending_ == false && SceneBusy() == false && entityId.isEmpty() == false &&
+        mSelectedEntities.contains(entityId) == false)
+    {
+        static_cast<void>(SelectEntity(entityId));
+    }
+    mEntityMenu->popup(positionGlobal);
 }
 void WorldWorkspace::updateViewportInteraction()
 {

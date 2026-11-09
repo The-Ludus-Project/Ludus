@@ -54,6 +54,8 @@ struct SceneShaderMaterial final
     /// prepass rejects material tables containing masks before publication.
     bool IsAlphaMasked = false;
     foundation::float32 AlphaCutoff = 0.5F; ///< Inclusive coverage threshold in [0,1], used only for masks.
+    /// Set false to display Emission on the surface without registering it as a raster mesh light.
+    bool ShouldRegisterRasterMeshLight = true;
 };
 /// Optional shared scene inputs. Empty material assignments use the neutral default;
 /// malformed references use diagnostic magenta only under DiagnosticColor admission.

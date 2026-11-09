@@ -23,6 +23,7 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPushButton>
 #include <QRectF>
 #include <QSignalSpy>
@@ -151,6 +152,10 @@ TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hi
     REQUIRE(compareOrNull != nullptr);
     REQUIRE(statusOrNull != nullptr);
 
+    const QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("worldEntityContextMenu"));
+    REQUIRE(menuOrNull != nullptr);
+    CHECK(menuOrNull->actions().contains(&viewport.GetAddTerrainAction()) == true);
+    CHECK(menuOrNull->actions().contains(&viewport.GetEditTerrainAction()) == true);
     viewport.GetAddTerrainAction().trigger();
     REQUIRE(panelOrNull->isVisible() == true);
     CHECK(commitOrNull->isEnabled() == false);

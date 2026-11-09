@@ -18,6 +18,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QMenu>
 #include <QPushButton>
 #include <QRandomGenerator>
 #include <QScrollArea>
@@ -414,6 +415,9 @@ void WorldWorkspace::initializeTerrainAuthoring()
                     changeSource();
                 });
     }
+    mEntityMenu->addSeparator();
+    mEntityMenu->addAction(&Render_->GetViewport().GetAddTerrainAction());
+    mEntityMenu->addAction(&Render_->GetViewport().GetEditTerrainAction());
     connect(Render_, &RenderPanel::Loaded, this, &WorldWorkspace::terrainBoundLoaded);
     connect(&Render_->Preview(), &RenderPreview::FrameReady, this, [this, panel]() {
         if (panel->Stage == WorldTerrainPanel::Request::DrawingWorld &&
@@ -468,7 +472,7 @@ void WorldWorkspace::updateTerrainActions()
     const bool isTerrainSelected = mSelectedEntities.size() == 1 && canEditTerrain(Selected_) == true;
     for (PreviewViewport* viewport : {&Render_->GetViewport(), &Scene_->GetViewport()})
     {
-        viewport->GetAddTerrainAction().setEnabled(canOpen == true && Add_->isEnabled() == true);
+        viewport->GetAddTerrainAction().setEnabled(canOpen == true && mAddEntity->isEnabled() == true);
         viewport->GetEditTerrainAction().setVisible(isTerrainSelected);
         viewport->GetEditTerrainAction().setEnabled(canOpen == true && isTerrainSelected == true);
     }
@@ -478,7 +482,7 @@ void WorldWorkspace::showTerrainAuthoring(const QString& key)
 {
     if (Document_.Loaded() == false || Document_.HasBuiltInTerrain() == false || Pending_ == true ||
         IsPlayingInViewport() == true || isSceneWorkerActive() == true ||
-        (key.isEmpty() == true ? Add_->isEnabled() == false : canEditTerrain(key) == false))
+        (key.isEmpty() == true ? mAddEntity->isEnabled() == false : canEditTerrain(key) == false))
     {
         Changed(QStringLiteral("Open an editable default World and finish pending edits before opening Terrain."));
         return;

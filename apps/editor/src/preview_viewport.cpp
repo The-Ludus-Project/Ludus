@@ -20,6 +20,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -2440,23 +2441,6 @@ void PreviewViewport::SetTerrainPreviewLabel(bool isVisible)
         mState->TerrainPreviewLabelOrNull->setVisible(isVisible);
     }
 }
-void PreviewViewport::showTerrainMenu(const QPoint& positionGlobal)
-{
-    if (mState->AddTerrainActionOrNull == nullptr ||
-        (mState->AddTerrainActionOrNull->isEnabled() == false && mState->EditTerrainActionOrNull->isEnabled() == false))
-    {
-        return;
-    }
-    QMenu* menu = new QMenu(this);
-    menu->setObjectName(QStringLiteral("viewportTerrainMenu"));
-    menu->addAction(mState->AddTerrainActionOrNull);
-    if (mState->EditTerrainActionOrNull->isVisible() == true)
-    {
-        menu->addAction(mState->EditTerrainActionOrNull);
-    }
-    connect(menu, &QMenu::aboutToHide, menu, &QObject::deleteLater);
-    menu->popup(positionGlobal);
-}
 bool PreviewViewport::SaveScreenshot(const QString& path, QString& outError)
 {
     if (mState->IsTakingScreenshot == true)
@@ -2790,6 +2774,9 @@ bool PreviewViewport::eventFilter(QObject* watched, QEvent* event)
     {
         switch (event->type())
         {
+            case QEvent::ContextMenu:
+                contextMenuEvent(static_cast<QContextMenuEvent*>(event));
+                return event->isAccepted();
             case QEvent::MouseButtonPress:
                 mousePressEvent(static_cast<QMouseEvent*>(event));
                 return true;

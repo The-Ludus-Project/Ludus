@@ -243,8 +243,11 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             if len(native) != 1 or native[0]['index'] != index:
                 raise RuntimeError('Native binding remapping is outside this raster profile')
         if dxil:
+            # Direct3D 12 raster stages read a depth aspect as R32_FLOAT; stencil loads and
+            # compute depth reads are not in its profile (docs/architecture/windows-direct3d12.md).
             supported = (('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'Texture2D') if stage == 'compute'
-                         else ('UniformBuffer', 'Sampler', 'Texture2D', 'Texture2DArray', 'TextureCube', 'Texture3D'))
+                         else ('UniformBuffer', 'Sampler', 'Texture2D', 'Texture2DArray', 'TextureCube', 'Texture3D',
+                               'TextureDepth2D'))
             if count != 1 or is_runtime or kind not in supported:
                 raise RuntimeError(f'DXIL {stage} requires scalar bindings of kinds: {", ".join(supported)}')
         value = {'binding': index, 'kind': kind, 'size': size, 'name': resource['name']}
