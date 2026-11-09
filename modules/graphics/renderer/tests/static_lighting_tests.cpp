@@ -200,6 +200,41 @@ rhi::RasterStatus WaitForProgress(rr::StaticLightingBake& inoutBake)
     return status;
 }
 } // namespace
+TEST_CASE("Always-on bake isolates selected analytic light and respects occlusion", "[static-lighting]")
+{
+    resources::SceneDefinition scene = MakeBakeScene(false, true, true);
+    constexpr uint64 SELECTED_LIGHT = 200;
+    constexpr uint64 REALTIME_LIGHT = 201;
+    const uint64 selected = SELECTED_LIGHT;
+    rr::StaticLightingBakeDescription description = MakeBakeDescription(4);
+    description.AnalyticLightIds = {&selected, 1};
+    REQUIRE(scene.Lights.TryResize(2) == true);
+    scene.Lights[0].PositionWorld.Z = 2;
+    scene.Lights[1] = scene.Lights[0];
+    scene.Lights[1].SourceId = REALTIME_LIGHT;
+    scene.Lights[1].IntensityRgb = {0, 100, 0};
+    scene.Environment.Rgb = {0, 0, 2};
+
+    rr::StaticLightingBake blocked;
+    REQUIRE(blocked.Initialize(scene, description) == rhi::RasterStatus::Pending);
+    CHECK(ReadChart(CompleteBake(blocked, 1)) == math::Vector3{});
+
+    scene.Objects[1].Transform.Translation.X = 1000;
+    rr::StaticLightingBake clear;
+    REQUIRE(clear.Initialize(scene, description) == rhi::RasterStatus::Pending);
+    const math::Vector3 irradiance = ReadChart(CompleteBake(clear, 1));
+    CHECK(irradiance.X > 12);
+    CHECK(irradiance.Y == 0);
+    CHECK(irradiance.Z == 0);
+
+    threading::JobSystem jobs;
+    REQUIRE(jobs.Initialize({ .WorkerCount = 2 }) == threading::JobStatus::Ok);
+    rr::StaticLightingBake scheduled;
+    REQUIRE(scheduled.Submit(jobs, scene, description) == rhi::RasterStatus::Pending);
+    REQUIRE(scheduled.Finish() == rhi::RasterStatus::Ready);
+    RequireIdenticalCharts(clear, scheduled, scene.Objects.GetSize());
+}
+
 TEST_CASE("Static area bake lights all thirteen emitters, respects blockers and preserves pending charts",
           "[renderer][static-lighting]")
 {

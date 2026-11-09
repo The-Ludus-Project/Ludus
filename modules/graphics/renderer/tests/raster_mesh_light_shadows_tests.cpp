@@ -273,12 +273,13 @@ TEST_CASE("mesh-light shadow faces pack without overlap and shrink to fit", "[me
     REQUIRE(internal::BuildRasterMeshLightShadowCasters(words, COUNT, casters, report) == rhi::RasterStatus::Ready);
     for (const uint32 atlasTexels : StaticArray<uint32, 2>{{renderer::MESH_LIGHT_SHADOW_ATLAS_TEXELS, 512}})
     {
+        const bool hasDirectionalShadow = atlasTexels == renderer::MESH_LIGHT_SHADOW_ATLAS_TEXELS;
         Array<internal::MeshLightShadowCaster> allocated;
         REQUIRE(allocated.TryAddRange({casters.GetData(), casters.GetSize()}) == true);
-        REQUIRE(internal::AllocateRasterMeshLightShadowFaces(allocated, atlasTexels) == true);
+        REQUIRE(internal::AllocateRasterMeshLightShadowFaces(allocated, atlasTexels, hasDirectionalShadow) == true);
         Array<internal::MeshLightShadowCaster> again;
         REQUIRE(again.TryAddRange({casters.GetData(), casters.GetSize()}) == true);
-        REQUIRE(internal::AllocateRasterMeshLightShadowFaces(again, atlasTexels) == true);
+        REQUIRE(internal::AllocateRasterMeshLightShadowFaces(again, atlasTexels, hasDirectionalShadow) == true);
         uint64 area = 0;
         for (usize first = 0; first < allocated.GetSize(); ++first)
         {
@@ -295,6 +296,11 @@ TEST_CASE("mesh-light shadow faces pack without overlap and shrink to fit", "[me
                 CHECK(origin.Y % caster.FaceTexels == 0);
                 CHECK(origin.X + caster.FaceTexels <= atlasTexels);
                 CHECK(origin.Y + caster.FaceTexels <= atlasTexels);
+                if (hasDirectionalShadow == true)
+                {
+                    CHECK((origin.X >= internal::DIRECTIONAL_SHADOW_TEXELS ||
+                           origin.Y >= internal::DIRECTIONAL_SHADOW_TEXELS));
+                }
                 area += uint64{caster.FaceTexels} * caster.FaceTexels;
                 // No other face slot overlaps this one.
                 for (usize second = first; second < allocated.GetSize(); ++second)

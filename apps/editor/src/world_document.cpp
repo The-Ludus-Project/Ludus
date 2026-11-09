@@ -3,6 +3,7 @@
 #include "internal/builtin_world.h"
 #include "internal/editor_identity.h"
 #include "internal/material_inspection.h"
+#include "internal/world_aperture.h"
 #include "internal/world_celestial_light.h"
 #include "internal/world_terrain.h"
 
@@ -232,12 +233,12 @@ bool Fields(const QJsonObject& object, const QStringList& allowed)
     }
     return true;
 }
-bool Decode(const QByteArray& bytes, foundation::int64 limit, QJsonObject& out, QString& error)
+bool ValidateEncodedObject(const QByteArray& bytes, foundation::int64 limit, QString& outError)
 {
     namespace parsing = foundation::parsing;
     if (bytes.isEmpty() || bytes.size() > limit)
     {
-        return Fail(error, QStringLiteral("Document exceeds its byte limit or is empty."));
+        return Fail(outError, QStringLiteral("Document exceeds its byte limit or is empty."));
     }
     // The Ludus parser supplies bounded depth and duplicate-key rejection before
     // private Qt presentation values are created; Qt alone collapses duplicates.
@@ -253,9 +254,17 @@ bool Decode(const QByteArray& bytes, foundation::int64 limit, QJsonObject& out, 
             parsing::ParseStatus::Ok ||
         document.Root().Object() == false)
     {
-        return Fail(error, QStringLiteral("Invalid JSON, duplicate keys, or document limits exceeded."));
+        return Fail(outError, QStringLiteral("Invalid JSON, duplicate keys, or document limits exceeded."));
     }
-    out = QJsonDocument::fromJson(bytes).object();
+    return true;
+}
+bool Decode(const QByteArray& bytes, foundation::int64 limit, QJsonObject& outObject, QString& outError)
+{
+    if (ValidateEncodedObject(bytes, limit, outError) == false)
+    {
+        return false;
+    }
+    outObject = QJsonDocument::fromJson(bytes).object();
     return true;
 }
 bool Value(const QJsonObject& p, const QJsonValue& value, QString& error)
@@ -408,22 +417,49 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                 return false;
             }
             const QJsonArray celestialProperties = MakeWorldCelestialProperties();
-            for (qsizetype index = 0; index < components.size(); ++index)
+            for (qsizetype i = 0; i < components.size(); ++i)
             {
-                QJsonObject component = components[index].toObject();
-                if (component.value(QStringLiteral("id")).toString() == QStringLiteral("light"))
+                QJsonObject component = components[i].toObject();
+                if (component.value(QStringLiteral("id")) != QJsonValue(QStringLiteral("light")))
                 {
-                    QJsonArray properties = component.value(QStringLiteral("properties")).toArray();
-                    for (const QJsonValue property : celestialProperties)
-                    {
-                        properties.append(property);
-                    }
-                    component.insert(QStringLiteral("properties"), properties);
-                    components[index] = component;
-                    break;
+                    continue;
                 }
+                QJsonArray properties = component.value(QStringLiteral("properties")).toArray();
+                for (const QJsonValue property : celestialProperties)
+                {
+                    properties.append(property);
+                }
+                properties.append(QJsonObject{
+                    {QStringLiteral("id"), QStringLiteral("staticTransform")},
+                    {QStringLiteral("label"), QStringLiteral("Static Transform")},
+                    {QStringLiteral("type"), QStringLiteral("boolean")},
+                    {QStringLiteral("default"), false},
+                    {QStringLiteral("unit"), QString()},
+                    {QStringLiteral("help"), QStringLiteral("This light's transform stays fixed during play.")},
+                });
+                properties.append(QJsonObject{
+                    {QStringLiteral("id"), QStringLiteral("bakeAlwaysOn")},
+                    {QStringLiteral("label"), QStringLiteral("Bake always-on lighting")},
+                    {QStringLiteral("type"), QStringLiteral("boolean")},
+                    {QStringLiteral("default"), false},
+                    {QStringLiteral("unit"), QString()},
+                    {QStringLiteral("help"),
+                     QStringLiteral("Bake this enabled light's diffuse contribution into "
+                                    "the native Lit viewport's shared chart.")},
+                });
+                component.insert(QStringLiteral("properties"), properties);
+                components[i] = component;
+                break;
             }
             components.append(terrainComponent);
+            QByteArray apertureBytes;
+            QJsonObject apertureComponent;
+            if (ReadBuiltInWorldAsset(QStringLiteral("aperture.component.json"), apertureBytes, error) == false ||
+                Decode(apertureBytes, MAX_SCHEMA_BYTES, apertureComponent, error) == false)
+            {
+                return false;
+            }
+            components.append(apertureComponent);
             schema.insert(QStringLiteral("components"), components);
             isBuiltInSchema = true;
         }
@@ -688,8 +724,9 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         return Fail(error, QStringLiteral("A version-2 World needs a nonnil version-4 document UUID."));
     }
     const auto entities = candidate.value(QStringLiteral("entities")).toArray();
-    if (entities.size() > MAX_ENTITIES ||
-        QJsonDocument(candidate).toJson(QJsonDocument::Compact).size() + 1 > MAX_BYTES)
+    const QByteArray encoded =
+        entities.size() <= MAX_ENTITIES ? QJsonDocument(candidate).toJson(QJsonDocument::Compact) : QByteArray{};
+    if (entities.size() > MAX_ENTITIES || encoded.size() + 1 > MAX_BYTES)
     {
         return Fail(error,
                     QStringLiteral("World supports at most %1 entities and %2 KiB.")
@@ -761,6 +798,8 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         labels.insert(label);
     }
     const QString terrainComponent = GetTerrainComponentId();
+    const QString apertureComponent = GetApertureComponentId();
+    bool hasAuthoredTerrainPayload = false;
     for (const auto value : entities)
     {
         const auto e = value.toObject();
@@ -775,6 +814,24 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                                            "Generate Terrain to create it."));
             }
             if (ValidateTerrainRecipe(components.value(terrainComponent).toObject(), error) == false)
+            {
+                return false;
+            }
+        }
+        if (HasBuiltInAperture() == true && components.contains(apertureComponent) == true)
+        {
+            if (components.contains(QStringLiteral("transform")) == false ||
+                e.contains(QStringLiteral("scene")) == true ||
+                components.contains(QStringLiteral("renderable")) == true ||
+                components.contains(terrainComponent) == true)
+            {
+                return Fail(
+                    error,
+                    QStringLiteral("An aperture draws its own screen: it needs a Transform on an entity without "
+                                   "Renderable, Terrain or imported geometry. Use Add World Preset → "
+                                   "Aperture Slit, or remove those components first."));
+            }
+            if (ValidateApertureParameters(components.value(apertureComponent).toObject(), error) == false)
             {
                 return false;
             }
@@ -800,6 +857,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             }
             const auto props = c.value().toObject();
             const auto definitions = definition.value(QStringLiteral("properties")).toArray();
+            const bool isBuiltInLight = HasBuiltInSchema() == true && c.key() == QStringLiteral("light");
             qsizetype recognizedPropertyCount = 0;
             for (const QJsonValue field : definitions)
             {
@@ -808,8 +866,10 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                 const QJsonValue v = props.value(property);
                 if (v.isUndefined() == true)
                 {
-                    if (HasBuiltInSchema() == true && c.key() == QStringLiteral("light") &&
-                        IsWorldCelestialProperty(property) == true)
+                    // Older Worlds may omit fields added by the built-in schema extensions.
+                    if (isBuiltInLight == true &&
+                        (IsWorldCelestialProperty(property) == true || property == QStringLiteral("staticTransform") ||
+                         property == QStringLiteral("bakeAlwaysOn")))
                     {
                         continue;
                     }
@@ -849,9 +909,26 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     }
                 }
             }
-            if (recognizedPropertyCount != props.size())
+            const qsizetype terrainPayloads =
+                HasBuiltInTerrain() == true && c.key() == terrainComponent ? CountTerrainPayloadFields(props) : 0;
+            hasAuthoredTerrainPayload = hasAuthoredTerrainPayload == true || terrainPayloads != 0;
+            if (recognizedPropertyCount + terrainPayloads != props.size())
             {
                 return Fail(error, QStringLiteral("%1 has missing or unknown properties.").arg(c.key()));
+            }
+            if (isBuiltInLight == true && props.value(QStringLiteral("bakeAlwaysOn")).toBool() == true &&
+                (props.value(QStringLiteral("staticTransform")).toBool() == false ||
+                 props.value(QStringLiteral("enabled")).toBool() == false))
+            {
+                return Fail(error,
+                            QStringLiteral("Always-on baking requires an enabled light with Static Transform. "
+                                           "Clear Bake always-on lighting to disable or move it during play."));
+            }
+            if (isBuiltInLight == true && props.value(QStringLiteral("bakeAlwaysOn")).toBool() == true &&
+                props.value(QStringLiteral("kind")).toString() == QStringLiteral("directional") &&
+                props.value(WORLD_CELESTIAL_ROLE).toString() == WORLD_CELESTIAL_DYNAMIC)
+            {
+                return Fail(error, QStringLiteral("Clear Bake always-on lighting before choosing Dynamic Celestial."));
             }
         }
     }
@@ -1044,6 +1121,14 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             seen.insert(parent);
             parent = ancestor.value(QStringLiteral("scene")).toObject().value(QStringLiteral("parent")).toString();
         }
+    }
+    // A single heightfield fits the per-array limit. Many embedded grids can still
+    // exceed the aggregate parser budget, so reject before committing an unreadable World.
+    if (hasAuthoredTerrainPayload == true && ValidateEncodedObject(encoded, MAX_BYTES, error) == false)
+    {
+        return Fail(error,
+                    QStringLiteral("This World exceeds its terrain document budget. Use smaller heightmaps "
+                                   "or split the terrain between Worlds before retrying."));
     }
     error.clear();
     return true;
@@ -1395,15 +1480,15 @@ bool WorldDocument::Edit(const QString& entity,
     }
     return ReplaceEntity(e, error);
 }
-bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
+bool WorldDocument::ImportScene(const QJsonObject& level, QString& outError, const QJsonArray& generatedEntities)
 {
     if (HasUuidRecords() == true)
     {
-        return Fail(error, QStringLiteral("Version-2 World records do not support the scene extension yet."));
+        return Fail(outError, QStringLiteral("Version-2 World records do not support the scene extension yet."));
     }
     if (level.value(QStringLiteral("objects")).isArray() == false)
     {
-        return Fail(error, QStringLiteral("Missing imported instances."));
+        return Fail(outError, QStringLiteral("Missing imported instances."));
     }
     auto candidate = Draft_;
     auto entities = candidate.value(QStringLiteral("entities")).toArray();
@@ -1415,14 +1500,14 @@ bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
         {
             if (Entity(id).value(QStringLiteral("scene")).isObject() == false)
             {
-                return Fail(error, QStringLiteral("An imported ID collides with an existing gameplay entity."));
+                return Fail(outError, QStringLiteral("An imported ID collides with an existing gameplay entity."));
             }
             continue; // Existing entities and all their edits remain authoritative.
         }
         const auto transform = object.value(QStringLiteral("transform")).toArray();
         if (transform.size() != 12)
         {
-            return Fail(error, QStringLiteral("Invalid imported affine transform."));
+            return Fail(outError, QStringLiteral("Invalid imported affine transform."));
         }
         QJsonArray basis, position;
         for (foundation::int32 i = 0; i < 12; ++i)
@@ -1494,9 +1579,17 @@ bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
     {
         candidate.insert(QStringLiteral("shared_coatings"), sharedCoatings);
     }
+    for (const QJsonValue value : generatedEntities)
+    {
+        const QJsonObject entity = value.toObject();
+        if (Entity(entity.value(QStringLiteral("id")).toString()).isEmpty() == true)
+        {
+            entities.append(entity);
+        }
+    }
     candidate.insert(QStringLiteral("scene"), metadata);
     candidate.insert(QStringLiteral("entities"), entities);
-    return Commit(candidate, error);
+    return Commit(candidate, outError);
 }
 bool WorldDocument::MapSceneMaterial(const QString& source, const QString& replacement, QString& outError)
 {

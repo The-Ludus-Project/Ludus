@@ -18,8 +18,10 @@
 #include "internal/world_document.h"
 #include "internal/world_entity_search.h"
 #include "internal/world_lighting_coverage.h"
+#include "internal/world_lights_panel.h"
 #include "internal/world_workspace.h"
 #include "scene_fixture.h"
+#include <QCheckBox>
 #include <QColor>
 #include <QImage>
 #include <QMenu>
@@ -63,6 +65,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/memory/allocation_domain.hpp>
 #include <ludus/foundation/memory/shared_ptr.hpp>
@@ -552,7 +555,8 @@ TEST_CASE("World context menu creates entities in the viewport and edits the hie
     // Offscreen has no presented GPU image. Enable the input proxy to exercise its picking coordinates.
     viewportOrNull->GetObjectInteraction().SetActive(true);
     REQUIRE(viewportOrNull->layout()->count() >= 2);
-    const QPoint frameCenter = viewportOrNull->layout()->itemAt(1)->geometry().center();
+    const QLayout* viewportLayout = viewportOrNull->layout();
+    const QPoint frameCenter = viewportLayout->itemAt(viewportLayout->count() - 1)->geometry().center();
     QTest::mouseClick(viewportOrNull, Qt::RightButton, Qt::NoModifier, frameCenter);
     REQUIRE(menuOrNull->isVisible() == true);
     REQUIRE(entitiesOrNull->selectedItems().size() == 1);
@@ -2120,7 +2124,7 @@ TEST_CASE("Move plane handles follow the camera: an oblique view shows all three
     preview.Orbit(70, 90);
     interaction.BuildOverlay(frame, overlay);
     // Three arrowheads, three planes with their casings, and the pivot marker.
-    CHECK(overlay.HandleFills.GetSize() == ViewportObjectOverlay::MAX_HANDLE_FILLS);
+    CHECK(overlay.HandleFills.GetSize() == ViewportObjectOverlay::MAX_TRANSFORM_HANDLE_FILLS);
     ludus::foundation::StaticArray<bool, ViewportObjectInteraction::AXIS_COUNT> hasNormal{};
     ludus::foundation::usize normalCount = 0;
     for (ludus::foundation::usize plane = 0;
@@ -2706,7 +2710,7 @@ TEST_CASE("A dark imported World offers a sun aimed like its disabled light, add
     CHECK(workspace.ApplySunRepair(WorldLightingCoverage{}) == false);
     CHECK(workspace.Document().Draft() == before);
 
-    // Add Geometry / Light offers the same sun. This World has no imported light to follow, so it takes the default
+    // Add World Preset offers the same sun. This World has no imported light to follow, so it takes the default
     // angle, two metres above the origin.
     QAction* createOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
     REQUIRE(createOrNull != nullptr);
@@ -2722,6 +2726,160 @@ TEST_CASE("A dark imported World offers a sun aimed like its disabled light, add
     CHECK(transform.value(QStringLiteral("y")).toDouble() == Catch::Approx(2));
     workspace.Undo();
     CHECK(workspace.Document().Draft() == before);
+    workspace.StopPreview();
+}
+
+TEST_CASE("First Person Player preset persists a spawn and uses the imported start view",
+          "[editor][world][first-person]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    const QString path = QDir(root).filePath(QStringLiteral("player.world.json"));
+    REQUIRE(workspace.Create(path) == true);
+    QAction* createOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateFirstPersonPlayer"));
+    REQUIRE(createOrNull != nullptr);
+    createOrNull->trigger();
+    const QJsonArray entities = workspace.Document().Draft().value(QStringLiteral("entities")).toArray();
+    REQUIRE(entities.size() == 1);
+    const QString id = workspace.Document().GetEntityKey(entities[0].toObject());
+    CHECK(HasWorldFirstPersonPlayer(workspace.Document(), id) == true);
+    const QPushButton* exploreOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldExploreFirstPerson"));
+    REQUIRE(exploreOrNull != nullptr);
+    CHECK(exploreOrNull->isHidden() == false);
+    CHECK(exploreOrNull->isEnabled() == true);
+    workspace.Undo();
+    CHECK(HasWorldFirstPersonPlayer(workspace.Document(), id) == false);
+    workspace.Redo();
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(workspace.Open(path) == true);
+
+    namespace camera = ludus::gameplay::camera;
+    namespace math = ludus::foundation::math;
+    camera::CameraSample spawn;
+    ludus::foundation::float32 speed = 0;
+    QString error;
+    error = QStringLiteral("previous diagnostic");
+    REQUIRE(ReadWorldFirstPersonPlayer(workspace.Document(), id, spawn, speed, error) == true);
+    CHECK(error.isEmpty() == true);
+    CHECK(spawn.Pose.Position.Y == Catch::Approx(1.65));
+    CHECK(speed == Catch::Approx(3));
+    workspace.StopPreview();
+
+    const QString source = QDir(root).filePath(QStringLiteral("source"));
+    REQUIRE(tests::CreateFixtureSource(source) == true);
+    REQUIRE(tests::PrepareImportedLevel(root, QStringLiteral("room.lulevel"), source, error) == true);
+    QJsonObject level = QJsonDocument::fromJson(Read(QDir(root).filePath(QStringLiteral("room.lulevel")))).object();
+    const PreviewStartView start
+    {
+        .EyeWorld = {1, 2, 3},
+        .TargetWorld = {2, 2, 3},
+    };
+    level.insert(QStringLiteral("camera"), MakeStartViewJson(start));
+    WorldDocument imported = workspace.Document();
+    REQUIRE(imported.ImportScene(level, error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString importedId;
+    REQUIRE(CreateWorldObject(imported, entropy, QStringLiteral("First Person Player"), importedId, error) == true);
+    REQUIRE(ReadWorldFirstPersonPlayer(imported, importedId, spawn, speed, error) == true);
+    CHECK(spawn.Pose.Position == start.EyeWorld);
+    const math::Vector3 forwardWorld = math::Rotate(spawn.Pose.Orientation, {0, 0, -1});
+    CHECK(forwardWorld.X == Catch::Approx(1));
+    CHECK(forwardWorld.Z == Catch::Approx(0).margin(1e-6));
+}
+
+TEST_CASE("Explore as Player moves the rendered staircase2 World camera", "[.first-person-native][editor][world]")
+{
+    using namespace ludus::foundation;
+    const QString source = qEnvironmentVariable("LUDUS_STAGE5_REFERENCE_SOURCE");
+    if (source.isEmpty() == true || PreviewViewport::CanPresent() == false)
+    {
+        SKIP("Set LUDUS_STAGE5_REFERENCE_SOURCE to staircase2 and run with the native viewport.");
+    }
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    QString error;
+    REQUIRE(tests::PrepareImportedLevel(root, QStringLiteral("room.lulevel"), source, error, "scene-v4.pbrt") == true);
+    const QJsonObject level =
+        QJsonDocument::fromJson(Read(QDir(root).filePath(QStringLiteral("room.lulevel")))).object();
+    PreviewStartView start;
+    REQUIRE(TryParseStartView(level.value(QStringLiteral("camera")).toObject(), start) == true);
+    QByteArray schema;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    REQUIRE(document.ImportScene(level, error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("staircase2.world.json"));
+    Write(path, document.Encode());
+
+    ToolingPaths tools;
+    tools.ToolingRoot = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
+    WorldWorkspace workspace(tools, nullptr);
+    workspace.SetProject(root, 1);
+    workspace.resize(1000, 700);
+    workspace.show();
+    REQUIRE(workspace.Open(path) == true);
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    constexpr int32 POLL_MILLISECONDS = 10;
+    QElapsedTimer timer;
+    timer.start();
+    RenderPreview& preview = workspace.GetRenderPreview();
+    while ((workspace.CanSave() == false || preview.Frames() == 0) && timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    REQUIRE(workspace.CanSave() == true);
+    REQUIRE(preview.Frames() != 0);
+    REQUIRE(preview.Scene().Objects.isEmpty() == false);
+    QAction* createOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateFirstPersonPlayer"));
+    REQUIRE(createOrNull != nullptr);
+    createOrNull->trigger();
+    timer.restart();
+    while (workspace.CanSave() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    REQUIRE(workspace.CanSave() == true);
+    QPushButton* exploreOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldExploreFirstPerson"));
+    REQUIRE(exploreOrNull != nullptr);
+    REQUIRE(exploreOrNull->isEnabled() == true);
+    const QJsonObject editorNavigation = preview.Navigation();
+    const QByteArray worldBytes = workspace.Document().Encode();
+    exploreOrNull->click();
+    REQUIRE(preview.IsExploringFirstPerson() == true);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position == start.EyeWorld);
+    const uint64 framesBeforeMove = preview.Frames();
+    preview.AdvanceFirstPerson({0, 0, -1}, 0.1F, 3, false);
+    // Advance without dispatching Qt events so gravity settles before checking the rendered camera.
+    for (uint32 frame = 0; frame < 12; ++frame)
+    {
+        preview.AdvanceFirstPerson({}, 0.1F, 3, false);
+    }
+    const math::Vector3d movedWorld = preview.GetVisibleCameraSample().Pose.Position;
+    CHECK((movedWorld.X != start.EyeWorld.X || movedWorld.Z != start.EyeWorld.Z));
+    CHECK(movedWorld.Y < start.EyeWorld.Y);
+    const math::Vector3 renderedPositionWorld{static_cast<float32>(movedWorld.X),
+                                              static_cast<float32>(movedWorld.Y),
+                                              static_cast<float32>(movedWorld.Z)};
+    timer.restart();
+    while (
+        (preview.Frames() <= framesBeforeMove || preview.ViewDescription().CameraPosition != renderedPositionWorld) &&
+        timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    CHECK(preview.Frames() > framesBeforeMove);
+    CHECK(preview.ViewDescription().CameraPosition == renderedPositionWorld);
+    LevelWorkspace* levelOrNull = workspace.findChild<LevelWorkspace*>();
+    REQUIRE(levelOrNull != nullptr);
+    QTest::keyClick(&levelOrNull->GetViewport(), Qt::Key_Escape);
+    CHECK(preview.IsExploringFirstPerson() == false);
+    CHECK(preview.Navigation() == editorNavigation);
+    CHECK(workspace.Document().Encode() == worldBytes);
     workspace.StopPreview();
 }
 
@@ -3056,6 +3214,89 @@ TEST_CASE("Default World creation preserves drafts on entropy and validation fai
                                          {QStringLiteral("components"), QJsonObject{}}}});
     REQUIRE(document.Load(QJsonDocument(legacy).toJson(), error) == true);
     CHECK(document.Draft() == legacy);
+}
+
+TEST_CASE("The World inspector offers an explicit always-on bake for a static light", "[editor][world][lighting]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString cube;
+    QString light;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), cube, error) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Point Light"), light, error) == true);
+
+    // A previously saved light has neither of the new fields.
+    const QJsonObject entity = document.Entity(light);
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    QJsonObject values = components.value(QStringLiteral("light")).toObject();
+    values.remove(QStringLiteral("staticTransform"));
+    values.remove(QStringLiteral("bakeAlwaysOn"));
+    components.insert(QStringLiteral("light"), values);
+    REQUIRE(document.Edit(light, components, entity.value(QStringLiteral("name")).toString(), error) == true);
+    QJsonObject dynamicLight = values;
+    dynamicLight.insert(QStringLiteral("kind"), QStringLiteral("directional"));
+    dynamicLight.insert(QString(WORLD_CELESTIAL_ROLE), QString(WORLD_CELESTIAL_DYNAMIC));
+    dynamicLight.insert(QStringLiteral("staticTransform"), true);
+    dynamicLight.insert(QStringLiteral("bakeAlwaysOn"), true);
+    QJsonObject dynamicComponents = components;
+    dynamicComponents.insert(QStringLiteral("light"), dynamicLight);
+    CHECK(document.Edit(light, dynamicComponents, entity.value(QStringLiteral("name")).toString(), error) == false);
+    CHECK(error.contains(QStringLiteral("Clear Bake always-on lighting")) == true);
+    CHECK(document.Entity(light).value(QStringLiteral("components")).toObject() == components);
+
+    const QString path = QDir(root).filePath(QStringLiteral("bake.world.json"));
+    Write(path, document.Encode());
+
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.SelectEntity(light) == true);
+    const auto findBake = [&workspace]() {
+        return workspace.findChild<QCheckBox*>(QStringLiteral("worldField:light/bakeAlwaysOn"));
+    };
+    const auto findStatic = [&workspace]() {
+        return workspace.findChild<QCheckBox*>(QStringLiteral("worldField:light/staticTransform"));
+    };
+    REQUIRE(findBake() != nullptr);
+    REQUIRE(findStatic() != nullptr);
+    CHECK(findBake()->isHidden() == true);
+    findStatic()->setChecked(true);
+    CHECK(findBake()->isChecked() == false);
+    CHECK(findBake()->isHidden() == false);
+    REQUIRE(workspace.Apply() == true);
+    RenderScene realtime;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), realtime, error) == true);
+    CHECK(realtime.AuthoredLights.Count == 1);
+    CHECK(realtime.AlwaysOnLightIds.isEmpty() == true);
+
+    REQUIRE(findBake() != nullptr);
+    findBake()->setChecked(true);
+    REQUIRE(workspace.Apply() == true);
+    RenderScene baked;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), baked, error) == true);
+    CHECK(baked.AlwaysOnLightIds == QVector<ludus::foundation::uint64>{ComputeEntitySourceId(light)});
+    CHECK(baked.AuthoredLights.Count == realtime.AuthoredLights.Count);
+    const QVector<WorldLightRow> rows = CollectWorldLightRows(workspace.Document(), baked);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].IsBakedAlwaysOn == true);
+    CHECK(MakeWorldLightToggle(rows, {}, 0, false).WorldLights.isEmpty() == true);
+
+    REQUIRE(findStatic() != nullptr);
+    findStatic()->setChecked(false);
+    REQUIRE(workspace.Apply() == true);
+    RenderScene optedOut;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), optedOut, error) == true);
+    CHECK(optedOut.AlwaysOnLightIds.isEmpty() == true);
+    CHECK(optedOut.AuthoredLights.Count == 1);
+    workspace.StopPreview();
 }
 
 TEST_CASE("Default World objects and lights survive imported scene composition", "[editor][world][creation]")

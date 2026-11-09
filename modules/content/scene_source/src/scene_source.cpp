@@ -43,6 +43,9 @@ constexpr float64 PLANARITY_TOLERANCE = 1e-9;
 constexpr float64 CONVEXITY_SINE_TOLERANCE = 1e-9;
 /// The camera's up direction must leave at least this sine with its view direction.
 constexpr float64 CAMERA_UP_SINE_TOLERANCE = 1e-6;
+/// An aperture's up and normal directions are perpendicular when the cosine between
+/// them is at most this; dimensionless.
+constexpr float64 APERTURE_AXIS_COSINE_TOLERANCE = 1e-9;
 /// Exclusive upper bound of the vertical field of view, in degrees.
 constexpr float64 MAX_VERTICAL_FOV_DEGREES = 180.0;
 /// Largest finite binary64 value: the open upper bound of emitted radiance.
@@ -727,6 +730,161 @@ struct DocumentTotals final
     return SceneSourceStatus::Success;
 }
 
+/// Read a nonzero direction and normalize it.
+[[nodiscard]] SceneSourceStatus
+ReadDirection(JsonValue value, const JsonPath& path, Failure& inoutFailure, math::Vector3d& outDirection) noexcept
+{
+    const float64 limit = MAX_SCENE_SOURCE_COORDINATE_METRES;
+    math::Vector3d direction{};
+    const SceneSourceStatus status = ReadVector(value, -limit, limit, path, inoutFailure, direction);
+    if (status != SceneSourceStatus::Success)
+    {
+        return status;
+    }
+    const float64 length = math::Length(direction);
+    if (length <= 0.0)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue, "must not be zero", path);
+    }
+    outDirection = direction * (1.0 / length);
+    return SceneSourceStatus::Success;
+}
+
+/// Read an `aperture` member: its frame and sizes, checked against the shape's ranges.
+[[nodiscard]] SceneSourceStatus
+ReadAperture(JsonValue value, const JsonPath& path, Failure& inoutFailure, SourceAperture& outAperture) noexcept
+{
+    SceneSourceStatus status =
+        CheckMembers(value,
+                     {"center", "normal", "up", "screen_width", "screen_height", "slit_length", "opening"},
+                     {},
+                     path,
+                     inoutFailure);
+    SourceAperture aperture;
+    aperture.IsPresent = true;
+    const float64 limit = MAX_SCENE_SOURCE_COORDINATE_METRES;
+    if (status == SceneSourceStatus::Success)
+    {
+        status = ReadVector(value.Get("center"),
+                            -limit,
+                            limit,
+                            JsonPath(path, "center"),
+                            inoutFailure,
+                            aperture.CenterWorld);
+    }
+    if (status == SceneSourceStatus::Success)
+    {
+        status = ReadDirection(value.Get("normal"), JsonPath(path, "normal"), inoutFailure, aperture.NormalWorld);
+    }
+    if (status == SceneSourceStatus::Success)
+    {
+        status = ReadDirection(value.Get("up"), JsonPath(path, "up"), inoutFailure, aperture.UpWorld);
+    }
+    ApertureShape& shape = aperture.Shape;
+    if (status == SceneSourceStatus::Success)
+    {
+        status = ReadNumber(value.Get("screen_width"), JsonPath(path, "screen_width"), inoutFailure, shape.ScreenWidth);
+    }
+    if (status == SceneSourceStatus::Success)
+    {
+        status =
+            ReadNumber(value.Get("screen_height"), JsonPath(path, "screen_height"), inoutFailure, shape.ScreenHeight);
+    }
+    if (status == SceneSourceStatus::Success)
+    {
+        status = ReadNumber(value.Get("slit_length"), JsonPath(path, "slit_length"), inoutFailure, shape.SlitLength);
+    }
+    if (status == SceneSourceStatus::Success)
+    {
+        status = ReadNumber(value.Get("opening"), JsonPath(path, "opening"), inoutFailure, shape.Opening);
+    }
+    if (status != SceneSourceStatus::Success)
+    {
+        return status;
+    }
+    if (math::Abs(math::Dot(aperture.NormalWorld, aperture.UpWorld)) > APERTURE_AXIS_COSINE_TOLERANCE)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "must be perpendicular to the normal",
+                                 JsonPath(path, "up"));
+    }
+    if (shape.ScreenWidth <= 0.0 || shape.ScreenWidth > MAX_APERTURE_SCREEN_METRES)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue, "is out of range", JsonPath(path, "screen_width"));
+    }
+    if (shape.ScreenHeight <= 0.0 || shape.ScreenHeight > MAX_APERTURE_SCREEN_METRES)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue, "is out of range", JsonPath(path, "screen_height"));
+    }
+    if (shape.SlitLength <= 0.0 || shape.SlitLength > shape.ScreenHeight)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "must be positive and at most screen_height",
+                                 JsonPath(path, "slit_length"));
+    }
+    if (shape.Opening < 0.0 || shape.Opening >= shape.ScreenWidth)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "must be at least 0 and less than screen_width",
+                                 JsonPath(path, "opening"));
+    }
+    // Remove any residual component along the normal, so the frame is exactly orthonormal.
+    const math::Vector3d upWorld =
+        aperture.UpWorld - aperture.NormalWorld * math::Dot(aperture.UpWorld, aperture.NormalWorld);
+    aperture.UpWorld = upWorld * (1.0 / math::Length(upWorld));
+    outAperture = aperture;
+    return SceneSourceStatus::Success;
+}
+
+/// Place an aperture's quads in its frame as the object's positions and polygons.
+[[nodiscard]] SceneSourceStatus ExpandAperture(const JsonPath& path,
+                                               Failure& inoutFailure,
+                                               DocumentTotals& inoutTotals,
+                                               SourceObject& inoutObject) noexcept
+{
+    const SourceAperture& aperture = inoutObject.Aperture;
+    ApertureQuads quads;
+    [[maybe_unused]] const bool isBuilt = BuildApertureQuads(aperture.Shape, quads);
+    LUDUS_ASSERT(isBuilt == true); // ReadAperture checked every range.
+    const usize cornerCount = quads.Count * APERTURE_QUAD_CORNERS;
+    if (cornerCount > MAX_SCENE_SOURCE_POSITIONS - inoutTotals.Positions ||
+        cornerCount > MAX_SCENE_SOURCE_CORNERS - inoutTotals.Corners)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::Limit, "the document has too many positions", path);
+    }
+    inoutTotals.Positions += cornerCount;
+    inoutTotals.Corners += cornerCount;
+    if (inoutObject.PositionsWorld.TryResize(cornerCount) == false ||
+        inoutObject.PolygonIndices.TryResize(cornerCount) == false ||
+        inoutObject.PolygonVertexCounts.TryResize(quads.Count) == false)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::OutOfMemory, "cannot allocate the aperture polygons", path);
+    }
+    const math::Vector3d acrossWorld = math::Cross(aperture.UpWorld, aperture.NormalWorld);
+    const float64 limit = MAX_SCENE_SOURCE_COORDINATE_METRES;
+    for (usize q = 0; q < quads.Count; ++q)
+    {
+        inoutObject.PolygonVertexCounts[q] = static_cast<uint32>(APERTURE_QUAD_CORNERS);
+        for (usize c = 0; c < APERTURE_QUAD_CORNERS; ++c)
+        {
+            const usize index = q * APERTURE_QUAD_CORNERS + c;
+            const math::Vector3d corner = quads.Quads[q][c];
+            const math::Vector3d positionWorld =
+                aperture.CenterWorld + acrossWorld * corner.X + aperture.UpWorld * corner.Y;
+            if (math::Abs(positionWorld.X) > limit || math::Abs(positionWorld.Y) > limit ||
+                math::Abs(positionWorld.Z) > limit)
+            {
+                return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                         "places the screen beyond the coordinate limit",
+                                         path);
+            }
+            inoutObject.PositionsWorld[index] = positionWorld;
+            inoutObject.PolygonIndices[index] = static_cast<uint32>(index);
+        }
+    }
+    return SceneSourceStatus::Success;
+}
+
 [[nodiscard]] SceneSourceStatus ReadObject(JsonValue value,
                                            const Array<SourceMaterial>& materials,
                                            const JsonPath& path,
@@ -735,7 +893,7 @@ struct DocumentTotals final
                                            SourceObject& outObject) noexcept
 {
     SceneSourceStatus status =
-        CheckMembers(value, {"name", "material", "positions", "polygons"}, {}, path, inoutFailure);
+        CheckMembers(value, {"name", "material"}, {"positions", "polygons", "aperture"}, path, inoutFailure);
     if (status == SceneSourceStatus::Success)
     {
         status = ReadText(value.Get("name"), false, JsonPath(path, "name"), inoutFailure, outObject.Name);
@@ -763,6 +921,30 @@ struct DocumentTotals final
         return inoutFailure.Fail(SceneSourceStatus::UnresolvedReference,
                                  "names no declared material",
                                  JsonPath(path, "material"));
+    }
+    // An object is either explicit polygons or one parametric aperture screen.
+    const JsonValue aperture = value.Get("aperture");
+    if (aperture.Valid() == true)
+    {
+        if (value.Get("positions").Valid() == true || value.Get("polygons").Valid() == true)
+        {
+            return inoutFailure.Fail(SceneSourceStatus::Malformed,
+                                     "an aperture object has no positions or polygons",
+                                     JsonPath(path, "aperture"));
+        }
+        status = ReadAperture(aperture, JsonPath(path, "aperture"), inoutFailure, outObject.Aperture);
+        if (status == SceneSourceStatus::Success)
+        {
+            status = ExpandAperture(JsonPath(path, "aperture"), inoutFailure, inoutTotals, outObject);
+        }
+        return status;
+    }
+    for (const std::string_view member : {std::string_view("positions"), std::string_view("polygons")})
+    {
+        if (value.Get(member).Valid() == false)
+        {
+            return inoutFailure.Fail(SceneSourceStatus::Malformed, "missing member", JsonPath(path, member));
+        }
     }
     status = ReadPositions(value.Get("positions"), JsonPath(path, "positions"), inoutFailure, inoutTotals, outObject);
     if (status == SceneSourceStatus::Success)
@@ -916,6 +1098,46 @@ void SkipWhitespace(std::string_view text, usize& inoutAt) noexcept
     return true;
 }
 } // namespace
+
+bool IsApertureShapeValid(const ApertureShape& shape) noexcept
+{
+    // Every comparison is false for NaN, so non-finite sizes fail here too.
+    return shape.ScreenWidth > 0.0 && shape.ScreenWidth <= MAX_APERTURE_SCREEN_METRES && shape.ScreenHeight > 0.0 &&
+           shape.ScreenHeight <= MAX_APERTURE_SCREEN_METRES && shape.SlitLength > 0.0 &&
+           shape.SlitLength <= shape.ScreenHeight && shape.Opening >= 0.0 && shape.Opening < shape.ScreenWidth;
+}
+
+bool BuildApertureQuads(const ApertureShape& shape, ApertureQuads& outQuads) noexcept
+{
+    if (IsApertureShapeValid(shape) == false)
+    {
+        return false;
+    }
+    // Halving is exact in binary64, so a screen centred on its slit reproduces hand-written corners.
+    const float64 screenX = shape.ScreenWidth * 0.5;
+    const float64 screenY = shape.ScreenHeight * 0.5;
+    const float64 slitX = shape.Opening * 0.5;
+    const float64 slitY = shape.SlitLength * 0.5;
+    ApertureQuads quads;
+    const auto addQuad = [&quads](float64 left, float64 bottom, float64 right, float64 top) noexcept {
+        if (left < right && bottom < top)
+        {
+            quads.Quads[quads.Count] = {{
+                {left, bottom, 0.0},
+                {right, bottom, 0.0},
+                {right, top, 0.0},
+                {left, top, 0.0},
+            }};
+            ++quads.Count;
+        }
+    };
+    addQuad(-screenX, -screenY, -slitX, screenY);
+    addQuad(slitX, -screenY, screenX, screenY);
+    addQuad(-slitX, slitY, slitX, screenY);
+    addQuad(-slitX, -screenY, slitX, -slitY);
+    outQuads = quads;
+    return true;
+}
 
 std::string_view GetSceneSourceStatusName(SceneSourceStatus status) noexcept
 {

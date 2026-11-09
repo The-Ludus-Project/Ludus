@@ -131,7 +131,13 @@ QVector<WorldLightRow> CollectWorldLightRows(const WorldDocument& world, const R
             const QJsonObject properties = component.toObject();
             row.KindLabel = GetLightKindLabel(properties.value(binding.KindProperty).toString());
             row.IsEnabled = properties.value(binding.EnabledProperty).toBool();
-            authoredSources.insert(ComputeEntitySourceId(row.EntityKey));
+            const uint64 sourceId = ComputeEntitySourceId(row.EntityKey);
+            row.IsBakedAlwaysOn = scene.AlwaysOnLightIds.contains(sourceId);
+            if (row.IsBakedAlwaysOn == true)
+            {
+                row.Detail += QStringLiteral(" · Baked always on. Clear the bake option in Properties to switch it.");
+            }
+            authoredSources.insert(sourceId);
             worldLights.append(row);
         }
     }
@@ -252,7 +258,10 @@ MakeWorldLightToggle(const QVector<WorldLightRow>& rows, const LightSwitchSet& c
     const WorldLightRow& target = rows[row];
     if (target.Origin == WorldLightOrigin::WorldLight)
     {
-        change.WorldLights.append({target.EntityKey, isEnabled});
+        if (target.IsBakedAlwaysOn == false)
+        {
+            change.WorldLights.append({target.EntityKey, isEnabled});
+        }
         return change;
     }
     QVector<LightSourceKey> disabled;
@@ -294,7 +303,8 @@ WorldLightChange MakeWorldLightSolo(const QVector<WorldLightRow>& rows, const Li
         {
             change.Switches.Disabled.append(other.Key);
         }
-        else if (other.Origin == WorldLightOrigin::WorldLight && other.IsEnabled != isSolo)
+        else if (other.Origin == WorldLightOrigin::WorldLight && other.IsBakedAlwaysOn == false &&
+                 other.IsEnabled != isSolo)
         {
             change.WorldLights.append({other.EntityKey, isSolo});
         }
@@ -379,8 +389,9 @@ WorldLightsPanel::WorldLightsPanel(QWidget* parentOrNull) : QWidget(parentOrNull
         {
             return;
         }
-        Q_EMIT LightsChangeRequested(MakeWorldLightSolo(mRows, mSwitches, row),
-                                     QStringLiteral("Only %1 is on. Undo is available.").arg(mRows[row].Label));
+        Q_EMIT LightsChangeRequested(
+            MakeWorldLightSolo(mRows, mSwitches, row),
+            QStringLiteral("Soloed %1. Always-on baked lights stay on. Undo is available.").arg(mRows[row].Label));
     });
     connect(mEnableAllOrNull, &QPushButton::clicked, this, [this]() {
         Q_EMIT LightsChangeRequested(MakeWorldLightsEnabled(mRows),
@@ -438,10 +449,16 @@ void WorldLightsPanel::updateItems()
         item->setText(KIND_COLUMN, row.KindLabel);
         item->setToolTip(NAME_COLUMN, row.Detail);
         item->setToolTip(KIND_COLUMN, row.Detail);
+        Qt::ItemFlags flags = Qt::ItemIsEnabled | Qt::ItemIsSelectable;
         if (row.Origin != WorldLightOrigin::Missing)
         {
+            if (row.IsBakedAlwaysOn == false)
+            {
+                flags |= Qt::ItemIsUserCheckable;
+            }
             item->setCheckState(NAME_COLUMN, row.IsEnabled == true ? Qt::Checked : Qt::Unchecked);
         }
+        item->setFlags(flags);
     }
 }
 void WorldLightsPanel::rebuildItems(const WorldLightRow* selectedOrNull)
@@ -451,12 +468,6 @@ void WorldLightsPanel::rebuildItems(const WorldLightRow* selectedOrNull)
     for (const WorldLightRow& row : mRows)
     {
         QTreeWidgetItem* item = new QTreeWidgetItem(mTreeOrNull);
-        Qt::ItemFlags flags = Qt::ItemIsEnabled | Qt::ItemIsSelectable;
-        if (row.Origin != WorldLightOrigin::Missing)
-        {
-            flags |= Qt::ItemIsUserCheckable;
-        }
-        item->setFlags(flags);
         if (selectedOrNull != nullptr && IsSameLight(row, *selectedOrNull) == true)
         {
             item->setSelected(true);
@@ -480,7 +491,8 @@ void WorldLightsPanel::rowChanged(QTreeWidgetItem* item)
         return;
     }
     const qsizetype row = mTreeOrNull->indexOfTopLevelItem(item);
-    if (row < 0 || row >= mRows.size() || mRows[row].Origin == WorldLightOrigin::Missing)
+    if (row < 0 || row >= mRows.size() || mRows[row].Origin == WorldLightOrigin::Missing ||
+        mRows[row].IsBakedAlwaysOn == true)
     {
         return;
     }

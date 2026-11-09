@@ -202,7 +202,8 @@ QString GetWorldIntroduction()
 }
 } // namespace
 WorldWorkspace::WorldWorkspace(QWidget* parent) : WorldWorkspace(ToolingPaths{}, parent) {}
-WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : QWidget(parent)
+WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
+    : QWidget(parent), mExploreFirstPersonButton(new QPushButton(QStringLiteral("Explore as Player"), this))
 {
     setObjectName(QStringLiteral("worldWorkspace"));
     auto* layout = new QVBoxLayout(this);
@@ -467,9 +468,9 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     });
     QToolButton* addObject = new QToolButton(entityColumn);
     addObject->setObjectName(QStringLiteral("worldAddObject"));
-    addObject->setText(QStringLiteral("Add Geometry / Light"));
-    addObject->setToolTip(QStringLiteral("Create geometry, lights or luminaires in a default World. Project-owned "
-                                         "schemas use Add Entity and their declared components."));
+    addObject->setText(QStringLiteral("Add World Preset"));
+    addObject->setToolTip(QStringLiteral("Create geometry, lights, a player spawn or an aperture in a default World. "
+                                         "Project-owned schemas use Add Entity and their declared components."));
     addObject->setPopupMode(QToolButton::InstantPopup);
     QMenu* objectMenu = new QMenu(addObject->text(), addObject);
     mEntityMenu->addSeparator();
@@ -477,6 +478,13 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     addObject->setMenu(objectMenu);
     addObject->setMinimumHeight(addObject->sizeHint().height());
     entityLayout->addWidget(addObject);
+    mExploreFirstPersonButton->setObjectName(QStringLiteral("worldExploreFirstPerson"));
+    mExploreFirstPersonButton->setToolTip(
+        QStringLiteral("Hold the right mouse button to look, WASD to walk, Shift to run, and Space to jump. "
+                       "Press Escape to return to the editor view."));
+    mExploreFirstPersonButton->setMinimumHeight(mExploreFirstPersonButton->sizeHint().height());
+    entityLayout->addWidget(mExploreFirstPersonButton);
+    connect(mExploreFirstPersonButton, &QPushButton::clicked, this, &WorldWorkspace::exploreFirstPerson);
     for (const QString& preset : {QStringLiteral("Cube"),
                                   QStringLiteral("Plane"),
                                   QStringLiteral("Sphere"),
@@ -484,7 +492,9 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                   QStringLiteral("Spot Light"),
                                   QStringLiteral("Directional Light"),
                                   QStringLiteral("Sun"),
-                                  QStringLiteral("Luminaire")})
+                                  QStringLiteral("Luminaire"),
+                                  QStringLiteral("First Person Player"),
+                                  QStringLiteral("Aperture Slit")})
     {
         QAction* action = objectMenu->addAction(preset);
         action->setObjectName(QStringLiteral("worldCreate") + QString(preset).remove(QLatin1Char(' ')));
@@ -523,13 +533,13 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     }
 
     objectMenu->addSeparator();
-    QAction* generateTerrain = objectMenu->addAction(QStringLiteral("Generate Terrain…"));
+    QAction* generateTerrain = objectMenu->addAction(QStringLiteral("Add Terrain…"));
     generateTerrain->setObjectName(QStringLiteral("worldGenerateTerrain"));
     connect(objectMenu, &QMenu::aboutToShow, generateTerrain, [this, generateTerrain]() {
         generateTerrain->setEnabled(mAddEntity->isEnabled() == true && Document_.HasBuiltInTerrain() == true &&
                                     isSceneWorkerActive() == false);
     });
-    connect(generateTerrain, &QAction::triggered, this, [this]() { showTerrainGenerator(); });
+    connect(generateTerrain, &QAction::triggered, this, [this]() { showTerrainAuthoring(); });
 
     mLightsPanel = new WorldLightsPanel(sections);
     sections->setStretchFactor(0, ENTITY_SECTION_STRETCH);
@@ -786,6 +796,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                   "them. Import scene… copies a scene folder, .zip or .pbrt with its files into the "
                                   "session and cooks it here. Play and runtime binding require the native editor."));
 #endif
+    initializeTerrainAuthoring();
     bindViewportInteraction();
     DraftTimer_.setSingleShot(true);
     DraftTimer_.setInterval(180);
@@ -1131,6 +1142,8 @@ bool WorldWorkspace::PreviewImportScene(const QString& source, const QString& en
         Changed(QStringLiteral("A scene operation is still running; wait for it or cancel it before importing."));
         return false;
     }
+    // The cook defers scene source apertures only for a default World, so plan against this one.
+    Scene_->SetWorldSnapshot(Document_);
     const QFileInfo sourceInfo(source);
     const QDir directory(sourceInfo.isDir() == true ? source : sourceInfo.absolutePath());
     const QString relativeEnvironment =
@@ -1370,7 +1383,7 @@ void WorldWorkspace::SceneCompleted(bool accepted)
     if (importing && conversion.isEmpty())
     {
         QString error;
-        if (Document_.ImportScene(Scene_->Document(), error) == false)
+        if (Document_.ImportScene(Scene_->Document(), error, Scene_->ImportedEntities()) == false)
         {
             invalidateScene();
             RefreshScene();
@@ -2136,11 +2149,11 @@ void WorldWorkspace::RenderInspector()
             {
                 QGroupBox* group = new QGroupBox(label);
                 QVBoxLayout* layout = new QVBoxLayout(group);
-                QPushButton* editGeneration = new QPushButton(QStringLiteral("Edit Generation…"), group);
+                QPushButton* editGeneration = new QPushButton(QStringLiteral("Edit Terrain…"), group);
                 editGeneration->setObjectName(QStringLiteral("worldEditTerrainGeneration"));
                 layout->addWidget(editGeneration);
                 connect(editGeneration, &QPushButton::clicked, this, [this, key = Selected_]() {
-                    showTerrainGenerator(key);
+                    showTerrainAuthoring(key);
                 });
                 Inspector_->addWidget(group);
             }
@@ -2373,6 +2386,56 @@ void WorldWorkspace::RenderInspector()
             blockLayout->addWidget(vectorRow);
             rows->addRow(block);
         }
+        if (IsBuiltInWorld(Document_) == true && cid == QStringLiteral("light"))
+        {
+            QCheckBox* staticTransformOrNull =
+                qobject_cast<QCheckBox*>(Fields_.value(FieldKey(cid, QStringLiteral("staticTransform"))));
+            QCheckBox* bakeOrNull =
+                qobject_cast<QCheckBox*>(Fields_.value(FieldKey(cid, QStringLiteral("bakeAlwaysOn"))));
+            QCheckBox* enabledOrNull =
+                qobject_cast<QCheckBox*>(Fields_.value(FieldKey(cid, QStringLiteral("enabled"))));
+            QComboBox* kindOrNull = qobject_cast<QComboBox*>(Fields_.value(FieldKey(cid, QStringLiteral("kind"))));
+            QComboBox* roleOrNull = qobject_cast<QComboBox*>(Fields_.value(FieldKey(cid, WORLD_CELESTIAL_ROLE)));
+            if (staticTransformOrNull != nullptr && bakeOrNull != nullptr && enabledOrNull != nullptr)
+            {
+                QLabel* suggestion = new QLabel(
+                    QStringLiteral("Static light. Enable Bake always-on lighting to precompute its diffuse light."),
+                    group);
+                suggestion->setObjectName(QStringLiteral("worldLightBakeSuggestion"));
+                suggestion->setWordWrap(true);
+                rows->addRow(suggestion);
+                const auto refresh =
+                    [staticTransformOrNull, bakeOrNull, enabledOrNull, kindOrNull, roleOrNull, suggestion, rows]() {
+                        const bool isStatic = staticTransformOrNull->isChecked();
+                        const bool isDynamicCelestial =
+                            kindOrNull != nullptr &&
+                            kindOrNull->currentData().toString() == QStringLiteral("directional") &&
+                            roleOrNull != nullptr && roleOrNull->currentData().toString() == WORLD_CELESTIAL_DYNAMIC;
+                        if (isStatic == false)
+                        {
+                            bakeOrNull->setChecked(false);
+                        }
+                        const bool hasOptedIn = bakeOrNull->isChecked();
+                        rows->setRowVisible(bakeOrNull,
+                                            isStatic == true && (isDynamicCelestial == false || hasOptedIn == true));
+                        bakeOrNull->setEnabled(enabledOrNull->isChecked());
+                        enabledOrNull->setEnabled(hasOptedIn == false);
+                        suggestion->setVisible(isStatic == true && isDynamicCelestial == false && hasOptedIn == false);
+                    };
+                connect(staticTransformOrNull, &QCheckBox::toggled, group, refresh);
+                connect(bakeOrNull, &QCheckBox::toggled, group, refresh);
+                connect(enabledOrNull, &QCheckBox::toggled, group, refresh);
+                if (kindOrNull != nullptr)
+                {
+                    connect(kindOrNull, &QComboBox::currentIndexChanged, group, refresh);
+                }
+                if (roleOrNull != nullptr)
+                {
+                    connect(roleOrNull, &QComboBox::currentIndexChanged, group, refresh);
+                }
+                refresh();
+            }
+        }
         if (component.value(QStringLiteral("required")).toBool())
         {
             rows->addRow(new QLabel(QStringLiteral("Required by this project"), group));
@@ -2570,6 +2633,7 @@ void WorldWorkspace::Changed(const QString& message)
                            GetWorldIntroduction());
     Render_->SetSelection(Selected_, Pending_);
     updateViewportInteraction();
+    updateTerrainActions();
     Q_EMIT DocumentChanged();
 }
 bool WorldWorkspace::readProjectBrdfRoughness(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull)
@@ -2742,7 +2806,7 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
 }
 void WorldWorkspace::PreviewDraft()
 {
-    if (Document_.Loaded() == false)
+    if (Document_.Loaded() == false || isTerrainAuthoringOpen() == true)
     {
         return;
     }
@@ -3001,6 +3065,7 @@ QByteArray WorldWorkspace::RecoveryHeader() const
 }
 void WorldWorkspace::Snapshot()
 {
+    checkTerrainBase();
     RefreshScene();
     Render_->WorldChanged();
     RecoveryFailed_ = Document_.Dirty() && Unsaved_ == false;
@@ -3076,6 +3141,7 @@ bool WorldWorkspace::Recover()
     Selected_.clear();
     mSelectedEntities.clear();
     Render();
+    checkTerrainBase();
     RefreshScene();
     Render_->WorldChanged();
     Changed(QStringLiteral("Recovery restored for review. Save World to publish it."));
@@ -3110,6 +3176,7 @@ bool WorldWorkspace::ConfirmDiscard()
     }
     Pending_ = false;
     Document_.Discard();
+    checkTerrainBase();
     RefreshScene();
     Render_->WorldChanged();
     // Keep a new world marked unsaved until its caller closes/replaces it.
@@ -3233,6 +3300,9 @@ void WorldWorkspace::ResumePreview()
 }
 void WorldWorkspace::StopPreview() noexcept
 {
+    closeTerrainAuthoring(false);
+    Render_->GetViewport().EndFirstPerson();
+    Scene_->GetViewport().EndFirstPerson();
     Render_->Stop();
     Scene_->StopPreview();
 }

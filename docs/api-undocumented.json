@@ -2097,8 +2097,6 @@
   "variable ludus::runtime::game_api::CreateInfo::StructSize",
   "variable ludus::runtime::game_api::EditBatchHeader::SchemaVersion",
   "variable ludus::runtime::game_api::EditBatchHeader::StructSize",
-  "variable ludus::runtime::game_api::FrameInput::DeltaSeconds",
-  "variable ludus::runtime::game_api::FrameInput::FrameIndex",
   "variable ludus::runtime::game_api::FrameInput::Height",
   "variable ludus::runtime::game_api::FrameInput::Reserved0",
   "variable ludus::runtime::game_api::FrameInput::Reserved1",

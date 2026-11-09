@@ -67,6 +67,28 @@ Static analysis still uses Clang 23. `web_build.analysis_commands` enables
 is already the default in the newer SDK compiler; this is required to parse
 Emscripten's `val.h`. The language mode remains C++23 and diagnostics remain errors.
 
+## New projects
+
+**File → New Project** creates the same files as the desktop editor's New
+Project: the CLI's `minimal` template, its version-2 descriptor and an
+unresolved lock. The browser cannot run that Python tooling, so the editor build
+renders the template once at configure time
+(`ludus_tools.create.write_session_template`) with every value except the
+project's identity, and embeds it as a Qt resource. Creating a project then
+substitutes only two placeholders: `{{ TARGET }}` with the CMake target derived
+from the name exactly as `ludus create` derives it, and `{{ NAME }}` (only inside
+a JSON string) with the JSON-escaped name. `test_ludus_tools.SessionTemplate`
+checks that the substituted template equals `create_project` output byte for
+byte; the editor's tests check the same target derivation cases.
+
+The dialog asks only for a name and creates the folder below the session's
+`projects` directory; an existing folder of that name is refused before anything
+is written. The engine requirement is the editor's own engine version and the
+preset is `linux-clang-development`. No SDK is selected, nothing is configured
+or built, and no GitHub workflow is offered. Download the project folder, open
+it in the desktop editor and use **Project → Repair Project Setup…** to select an engine and
+build it.
+
 ## Scene import and viewport
 
 World authoring works on the session's in-memory (MEMFS) project. **Import

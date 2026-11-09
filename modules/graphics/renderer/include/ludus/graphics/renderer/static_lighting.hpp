@@ -56,6 +56,10 @@ struct StaticLightingBakeDescription final
     foundation::BorrowedView<const StaticLightingSurfaceDescription> Surfaces;
     foundation::usize CpuByteBudget =
         foundation::usize{256} * 1024 * 1024; ///< Upper bound on owned job arrays, including BVH scratch.
+    /// Optional nonzero IDs of enabled analytic lights in the scene. A nonempty view bakes only those
+    /// sources, including direct and bounced diffuse, with zero environment and emissive radiance.
+    /// Initialize and Submit copy the selection before returning. The chart augments live environment lighting.
+    foundation::BorrowedView<const foundation::uint64> AnalyticLightIds{};
 };
 /// Borrowed completed chart payload; caller uploads it on the RHI owner thread.
 /// No GPU readback, texture owner or display image is produced by the bake.
@@ -128,10 +132,10 @@ struct StaticLightingBakeProgress final
     foundation::uint64 CompletedSamples = 0; ///< Evaluated cosine path samples.
     foundation::uint64 TotalSamples = 0;     ///< Triangles times SamplesPerTriangle.
 };
-/// CPU-only incremental static diffuse bake. Charts include all
-/// visible static area/environment direct diffuse and later indirect transport;
-/// analytic direct diffuse/specular stays raster. Set BakedLighting's
-/// AreTriangleChartsEnabled and HasStaticAreaDirect, and DirectLightId=0.
+/// CPU-only incremental static diffuse bake. With no analytic selection, charts include static
+/// area/environment direct diffuse and later indirect transport. Use AreTriangleChartsEnabled
+/// and HasStaticAreaDirect for that profile. An analytic selection produces additive charts for
+/// the selected lights only. Use ShouldAddToEnvironment and BakedDirectLightIds for those charts.
 /// Area specular is outside this profile. Per-triangle centroid irradiance is
 /// coarse spatial reconstruction; sample count controls transport variance.
 /// No Renderer, GPU, Qt or native ray-query state is touched. Zero-area triangles
@@ -176,14 +180,14 @@ public:
     /// Invalid contributions permanently fail this candidate; never publish it.
     [[nodiscard]] rhi::RasterStatus Step(foundation::uint32 maxPathSamples) noexcept;
     /// Borrow one placed object's completed linear chart; no allocation or GPU call.
-    /// NotReady/invalid index preserves outChart. DirectLightId for uploaded
-    /// BakedLighting must be zero: charts contain static area/environment direct diffuse plus indirect irradiance.
+    /// NotReady or an invalid index preserves outChart. For an analytic selection, pass the same IDs
+    /// as BakedDirectLightIds when creating the material.
     [[nodiscard]] rhi::RasterStatus GetChart(foundation::usize objectIndex,
                                              StaticLightingChart& outChart) const noexcept;
 
     /// @brief Submits preparation and range evaluation of an unbound bake to a JobSystem.
     ///
-    /// Copies the description, including every Surfaces override, before returning.
+    /// Copies the description, surface overrides and analytic selection before returning.
     /// Validation and preparation run in the first job, so their failures are
     /// reported by Poll or Finish. With zero workers the whole bake runs inside this
     /// call; Poll or Finish is still required to merge it. Step is unavailable for a

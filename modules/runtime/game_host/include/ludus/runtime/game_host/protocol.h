@@ -56,7 +56,10 @@ enum class CommandKind : uint32
     /// channel. Carries extension=1, expected_generation and bounded payload;
     /// request IDs retain/reconcile results like other mutations. Unsupported
     /// modules reject it without entering a provider.
-    ScriptDebug = 11
+    ScriptDebug = 11,
+    /// Set the hosted session's debug speed using the boolean fast_forward field and expected_generation.
+    /// SessionReady advertises fast_forward_multiplier. Status and command results report fast_forward.
+    SetFastForward = 12,
 };
 
 /// @brief Host -> editor/supervisor events (design 10).

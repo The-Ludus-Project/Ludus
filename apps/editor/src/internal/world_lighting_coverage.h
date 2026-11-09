@@ -70,7 +70,7 @@ struct WorldLightingCoverage final
 /// FitWorldSun's sun.
 [[nodiscard]] WorldLightingCoverage DescribeWorldLighting(const WorldLightingSummary& world);
 
-/// The sun the World's Add Geometry / Light menu and its lighting repair create: DEFAULT_WORLD_SUN_ILLUMINANCE_LUX,
+/// The sun the World's Add World Preset menu and its lighting repair create: DEFAULT_WORLD_SUN_ILLUMINANCE_LUX,
 /// aimed like the first disabled imported directional light that shines down, or along
 /// DEFAULT_WORLD_SUN_ROTATION_DEGREES, and placed above the center of the bounds (two metres above the origin
 /// without them), where its gizmo is visible from a framing camera.

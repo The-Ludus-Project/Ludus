@@ -85,6 +85,13 @@ struct BestEffortOptions final
     /// Linear HDR energy is retained with a bounded texture and radiance multiplier;
     /// +Y is north, longitude zero is +X, increasing longitude turns toward +Z.
     std::string_view EnvironmentFile;
+    /// Leave Ludus scene source `aperture` objects out of the bundle, each with an
+    /// APERTURE_DEFERRED note in the report, for a caller that generates them itself:
+    /// the editor turns them into World aperture entities whose opening stays editable.
+    /// False (the default) cooks them as their screen polygons like any other object.
+    /// Other source formats ignore it. A scene whose every object is deferred has no
+    /// drawable shapes and fails the import.
+    bool ShouldDeferApertures = false;
 };
 
 /// @brief Headline numbers of one import, also present in the report.

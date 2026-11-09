@@ -38,8 +38,11 @@ INTEGRATION_TIER = "integration"
 NIGHTLY_TIER = "nightly"
 NIGHTLY_JOBS = ("macos-analysis",)
 TIERS = frozenset({FULL_TIER, INTEGRATION_TIER, NIGHTLY_TIER})
-# Integration PRs run source/tooling checks; compiled variants run once per batch.
-INTEGRATION_JOBS = tuple(name for name in NATIVE_JOBS if name != "formatting")
+# Integration PRs check sources, compile the Editor configuration and run static
+# analysis, so a build or analysis break cannot reach develop and fail every
+# later batch. Tests, sanitizers and the other compiled variants run once per batch.
+PULL_REQUEST_JOBS = ("formatting", "analysis", "editor")
+INTEGRATION_JOBS = tuple(name for name in NATIVE_JOBS if name not in PULL_REQUEST_JOBS)
 # Bounded GitHub run metadata read by a cancelled pull-request gate.
 MAX_RUN_METADATA_BYTES = 2 * 1024 * 1024
 

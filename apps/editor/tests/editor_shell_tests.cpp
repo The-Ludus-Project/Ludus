@@ -1722,7 +1722,7 @@ TEST_CASE("Every toolbar command has an icon, primary ones beside the label, and
         checkButton(standard, QString::fromLatin1(label), Qt::ToolButtonTextBesideIcon);
     }
     // ...and the peers in a run of symmetric commands are icon-only.
-    for (const char* label : {"Pause", "Step", "Resume"})
+    for (const char* label : {"Pause", "Step", "Resume", "Fast-forward"})
     {
         checkButton(game, QString::fromLatin1(label), Qt::ToolButtonIconOnly);
     }
@@ -1788,6 +1788,9 @@ TEST_CASE("Toolbars group commands, hide session commands until a game runs and 
             }
         }
     }
+    const QAction* fastForward = Action(window, QStringLiteral("playFastForward"));
+    CHECK(fastForward->isVisible() == false);
+    CHECK(fastForward->isEnabled() == false);
     // The context strip appears for a render graph and goes away for a World.
     CHECK(strip->isHidden() == true);
     RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();

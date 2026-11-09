@@ -1,6 +1,7 @@
 #include "internal/editor_files.h"
 #include "internal/project_creation_dialog.h"
 #include "internal/project_setup_dialog.h"
+#include "internal/project_store.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -13,9 +14,12 @@
 #include <QFileDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QList>
 #include <QProcess>
 #include <QPushButton>
 #include <QTemporaryDir>
+
+#include <utility>
 
 using namespace ludus::editor;
 
@@ -212,6 +216,100 @@ TEST_CASE("Bundled samples are complete writable copies", "[editor][setup]")
     CHECK(preserved == first);
     REQUIRE(QDir(root).removeRecursively());
     REQUIRE(QDir(QFileInfo(second).absolutePath()).removeRecursively());
+}
+
+TEST_CASE("New Project limits names to the descriptor's UTF-8 bytes", "[editor][setup]")
+{
+    QTemporaryDir directory;
+    ProjectCreationDialog dialog;
+    QLineEdit* nameOrNull = dialog.findChild<QLineEdit*>(QStringLiteral("newProjectName"));
+    QLineEdit* locationOrNull = dialog.findChild<QLineEdit*>(QStringLiteral("newProjectLocation"));
+    QDialogButtonBox* buttonsOrNull = dialog.findChild<QDialogButtonBox*>();
+    REQUIRE(nameOrNull != nullptr);
+    REQUIRE(locationOrNull != nullptr);
+    REQUIRE(buttonsOrNull != nullptr);
+    locationOrNull->setText(directory.path());
+    // A supplementary-plane character is one printable code point, as in the Python tooling.
+    nameOrNull->setText(QStringLiteral("Game \U0001F600"));
+    CHECK(buttonsOrNull->button(QDialogButtonBox::Ok)->isEnabled());
+    // 43 three-byte characters are 129 UTF-8 bytes, beyond the descriptor's 128.
+    constexpr qsizetype OVERLONG_HANGUL_CHARACTERS = 43;
+    nameOrNull->setText(QString(OVERLONG_HANGUL_CHARACTERS, QChar(u'한')));
+    CHECK_FALSE(buttonsOrNull->button(QDialogButtonBox::Ok)->isEnabled());
+    QLabel* validationOrNull = dialog.findChild<QLabel*>(QStringLiteral("newProjectValidation"));
+    REQUIRE(validationOrNull != nullptr);
+    CHECK(validationOrNull->text().contains(QStringLiteral("128 UTF-8 bytes")));
+}
+
+TEST_CASE("Project targets derive from names as the Python tooling does", "[editor][setup]")
+{
+    // Equal to SESSION_TARGET_CASES in scripts/python/test_ludus_tools.py; change both together.
+    constexpr qsizetype LONG_NAME_CHARACTERS = 130;
+    constexpr qsizetype TARGET_CHARACTERS = 128;
+    const QList<std::pair<QString, QString>> cases = {
+        {QStringLiteral("New Game"), QStringLiteral("New_Game")},
+        {QStringLiteral("Jeux Vidéo 日本語"), QStringLiteral("Jeux_Vid_o")},
+        {QStringLiteral("  game  "), QStringLiteral("game")},
+        {QStringLiteral("-.+_"), QStringLiteral("app")},
+        {QStringLiteral("日本"), QStringLiteral("app")},
+        {QStringLiteral("a\U0001F600b"), QStringLiteral("a_b")},
+        {QStringLiteral("my.game+1-x"), QStringLiteral("my.game+1-x")},
+        {QString(LONG_NAME_CHARACTERS, QLatin1Char('x')), QString(TARGET_CHARACTERS, QLatin1Char('x'))},
+    };
+    for (const std::pair<QString, QString>& entry : cases)
+    {
+        INFO(entry.first.toStdString());
+        CHECK(DeriveProjectTarget(entry.first) == entry.second);
+    }
+}
+
+TEST_CASE("New projects render the bundled template without the tooling", "[editor][setup]")
+{
+    QTemporaryDir projects;
+    const QString destination = projects.filePath(QStringLiteral("Quote \"Game\" 日本"));
+    QString descriptor = QStringLiteral("previous");
+    QString problem;
+    REQUIRE(CreateEditorProjectFromTemplate(QStringLiteral("Quote \"Game\" 日本"), destination, descriptor, problem));
+    CHECK(problem.isEmpty());
+    CHECK(descriptor == QDir(destination).filePath(QStringLiteral("ludus.project.json")));
+    QFile descriptorFile(descriptor);
+    REQUIRE(descriptorFile.open(QIODevice::ReadOnly));
+    const ParseOutcome parsed = ParseDescriptor(descriptorFile.readAll());
+    REQUIRE(parsed.Ok());
+    CHECK(parsed.Descriptor.Name == QStringLiteral("Quote \"Game\" 日本"));
+    CHECK(parsed.Descriptor.Target == QStringLiteral("Quote__Game"));
+    CHECK(parsed.Descriptor.Version == 2);
+    CHECK(parsed.Descriptor.HasEngine);
+    for (const QString& relative : {QStringLiteral("CMakeLists.txt"),
+                                    QStringLiteral("CMakePresets.json"),
+                                    QStringLiteral("src/main.cpp"),
+                                    QStringLiteral("ludus.lock.json"),
+                                    QStringLiteral(".gitignore"),
+                                    QStringLiteral(".vscode/launch.json")})
+    {
+        INFO(relative.toStdString());
+        QFile file(QDir(destination).filePath(relative));
+        REQUIRE(file.open(QIODevice::ReadOnly));
+        CHECK_FALSE(file.readAll().contains("{{"));
+    }
+    QFile cmake(QDir(destination).filePath(QStringLiteral("CMakeLists.txt")));
+    REQUIRE(cmake.open(QIODevice::ReadOnly));
+    CHECK(cmake.readAll().contains("add_executable(Quote__Game src/main.cpp)"));
+
+    // An existing folder or an invalid name writes nothing and preserves the output.
+    const QString created = descriptor;
+    CHECK_FALSE(CreateEditorProjectFromTemplate(QStringLiteral("Other"), destination, descriptor, problem));
+    CHECK(descriptor == created);
+    CHECK(problem.contains(QStringLiteral("already exists")));
+    const QString invalid = projects.filePath(QStringLiteral("bad"));
+    for (const QString& name : {QString(), QStringLiteral(".."), QStringLiteral("a/b"), QStringLiteral(" padded")})
+    {
+        problem.clear();
+        CHECK_FALSE(CreateEditorProjectFromTemplate(name, invalid, descriptor, problem));
+        CHECK_FALSE(problem.isEmpty());
+        CHECK_FALSE(QFileInfo::exists(invalid));
+    }
+    CHECK(descriptor == created);
 }
 
 TEST_CASE("Project exports round trip binary assets and source paths", "[editor][setup]")

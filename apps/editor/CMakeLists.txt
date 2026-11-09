@@ -220,6 +220,7 @@ set(editor_viewport_sources
     src/internal/viewport_gizmo_readout.h
     src/viewport_gizmo_readout.cpp
     src/viewport_navigation.cpp
+    src/viewport_walk_collision.cpp
     src/internal/orientation_widget.h
     src/orientation_widget.cpp
     src/viewport_play_input.cpp
@@ -375,6 +376,7 @@ function(ludus_editor_add_builtin_world target)
         PREFIX "/world" BASE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world"
         FILES "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/world.schema.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/terrain.component.json"
+              "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/aperture.component.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/render.preview.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/cube.mesh.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/plane.mesh.json"
@@ -756,6 +758,7 @@ ludus_editor_add_objects(ludus_editor_application
     src/world_document.cpp
     src/world_terrain.cpp
     src/world_terrain_editing.cpp
+    src/world_aperture.cpp
     src/world_demo_adapter.cpp
     src/internal/material_inspection.h
     src/material_inspection.cpp
@@ -840,6 +843,8 @@ target_link_libraries(ludus_editor_application
         # Scene import, save and assembly run in process (no Python scene backend),
         # including the browser Editor's MEMFS copies.
         Ludus::SceneCook
+        # Scene source apertures import as editable World aperture entities.
+        Ludus::SceneSource
         Ludus::FoundationThreading
         ludus_stb_image
         # World documents share the version-2 record constants with their owner (object handles stage 3).
@@ -918,6 +923,26 @@ qt_add_resources(ludus_editor_application_resources world_demo_schema
     PREFIX "/world-demo" BASE "${PROJECT_SOURCE_DIR}/apps/world_demo/authoring" FILES ${world_demo_schema})
 qt_add_resources(ludus_editor_application_resources ludus_samples
     PREFIX "/samples" BASE "${PROJECT_SOURCE_DIR}/examples" FILES ${editor_sample_files})
+# The browser editor creates projects without the Python tooling. Render the CLI's
+# minimal template once, leaving only the project name and target to substitute
+# (docs/development/browser-editor.md#new-projects).
+set(session_template_policies)
+foreach(policy create templates descriptor lockfile native toolchain)
+    list(APPEND session_template_policies "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/${policy}.py")
+endforeach()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${session_template_policies})
+set(session_template_directory "${CMAKE_CURRENT_BINARY_DIR}/project-templates/minimal")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+    "import sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; from ludus_tools.create import write_session_template; print(';'.join(write_session_template(Path(sys.argv[2]), sys.argv[3])))"
+    "${PROJECT_SOURCE_DIR}/scripts/python" "${session_template_directory}" "${PROJECT_VERSION}"
+    RESULT_VARIABLE session_template_status OUTPUT_VARIABLE session_template_files
+    ERROR_VARIABLE session_template_error OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT session_template_status EQUAL 0)
+    message(FATAL_ERROR "Cannot render the editor's new-project template: ${session_template_error}")
+endif()
+list(TRANSFORM session_template_files PREPEND "${session_template_directory}/")
+qt_add_resources(ludus_editor_application_resources ludus_project_templates
+    PREFIX "/project-templates/minimal" BASE "${session_template_directory}" FILES ${session_template_files})
 
 # Every object library the editor application and its main test executable link.
 set(editor_application_objects
@@ -1117,6 +1142,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/import_report_tests.cpp
         tests/world_workspace_tests.cpp
         tests/world_terrain_tests.cpp
+        tests/world_aperture_tests.cpp
         tests/material_inspection_tests.cpp
         tests/inspector_fields_tests.cpp
         tests/level_workspace_tests.cpp

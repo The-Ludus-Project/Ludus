@@ -89,6 +89,15 @@ inline QByteArray MakeKey(const RenderScene& scene)
         stream << surface.IsAlphaMasked << surface.AlphaCutoff;
         stream << surface.SurfaceTexture << surface.EmissionTexture << surface.NormalScale;
     }
+    if (scene.AlwaysOnLightIds.isEmpty() == false)
+    {
+        stream << QByteArrayLiteral("always-on-light-bake");
+        WriteLittleEndianUint64(stream, static_cast<uint64>(scene.AlwaysOnLightIds.size()));
+        for (const uint64 sourceId : scene.AlwaysOnLightIds)
+        {
+            WriteLittleEndianUint64(stream, sourceId);
+        }
+    }
     if (scene.Definition != nullptr)
     {
         for (const resources::SceneMaterial& material : scene.Definition->Materials)

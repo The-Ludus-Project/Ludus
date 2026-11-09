@@ -8,6 +8,7 @@
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/deferred_layout.h>
+#include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/raster.h>
 
@@ -66,22 +67,38 @@ struct MeshLightShadowFaceDraw final
     /// Triangles its packets submit, which bounds the faces drawn per frame.
     foundation::uint64 Triangles = 0;
 };
-/// GPU state of one prepared scene's shadow atlas. The scene generation creates the texture and its sampled view;
-/// Renderer::prepareMeshLightShadows builds the face packets from the scene snapshot, and
-/// Renderer::drawMeshLightShadows clears the atlas to the far depth (unoccluded) and then draws whole faces, in caster
-/// order (brightest first), over as many frames as the per-frame draw and triangle budgets require.
-struct MeshLightShadowAtlas final
+/// Side of the directional slot at atlas origin. Cube faces are packed after this power-of-two square.
+inline constexpr foundation::uint32 DIRECTIONAL_SHADOW_TEXELS = 1024;
+
+/// Atlas progress before or during one recorded frame.
+struct ShadowAtlasProgress final
 {
+    /// Index of the first mesh-light face still to render.
+    foundation::uint32 NextFace = 0;
+    bool IsCleared = false;
+    bool HasDrawnDirectional = false;
+};
+
+/// GPU state of one prepared scene's shadow atlas. The scene generation creates the texture and its sampled view;
+/// Renderer::prepareDeferredShadows builds the face packets from the scene snapshot, and
+/// Renderer::drawDeferredShadows clears the atlas to the far depth (unoccluded) and then draws the directional region
+/// and whole cube faces in caster order (brightest first), over as many frames as the per-frame draw and triangle
+/// budgets require.
+struct DeferredShadowAtlas final
+{
+    /// Optional directional region, drawn before any mesh-light faces. Source ID zero means absent.
+    ShadowRegion Directional;
+    MeshLightShadowFaceDraw DirectionalDraw;
+    foundation::uint32 ExtentTexels = 0;
     rhi::TextureHandle Texture{};
     rhi::TextureViewHandle Sampled{};
     rhi::BufferHandle Instances{};
     bool HasSampled = false;
     foundation::Array<MeshLightShadowPacket> Packets;
     foundation::Array<MeshLightShadowFaceDraw> Faces;
-    /// First face not yet drawn.
-    foundation::uint32 NextFace = 0;
+    ShadowAtlasProgress Submitted;
+    ShadowAtlasProgress Recording;
     bool HasPackets = false;
-    bool IsCleared = false;
 };
 /// Counts describing one clustering.
 struct MeshLightShadowReport final
@@ -114,9 +131,11 @@ BuildRasterMeshLightShadowCasters(foundation::Array<foundation::math::Vector4>& 
 /// Give every caster power-of-two face slots of MIN_MESH_LIGHT_SHADOW_FACE_TEXELS to
 /// MAX_MESH_LIGHT_SHADOW_FACE_TEXELS texels, by the square root of its share of the brightest caster's flux, halving
 /// every slot until all faces fit an atlas of atlasTexels squared, and pack them without overlap.
+/// The optional leading directional square is excluded from cube-face allocation.
 /// @return False, leaving the casters unchanged, when even the smallest slots do not fit.
 [[nodiscard]] bool AllocateRasterMeshLightShadowFaces(foundation::Array<MeshLightShadowCaster>& inoutCasters,
-                                                      foundation::uint32 atlasTexels) noexcept;
+                                                      foundation::uint32 atlasTexels,
+                                                      bool hasDirectionalShadow = false) noexcept;
 /// Append the caster table (deferred_layout.h, MESH_LIGHT_SHADOW_HEADER_WORDS) and report its first word.
 /// @return Ready, or OutOfMemory preserving both outputs.
 [[nodiscard]] rhi::RasterStatus

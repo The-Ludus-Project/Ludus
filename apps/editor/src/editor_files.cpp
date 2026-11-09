@@ -9,16 +9,19 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QList>
 #include <QMessageBox>
 #include <QPointer>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
 #include <QSharedPointer>
 #include <QStandardPaths>
 #include <QStringList>
+#include <QStringView>
 #include <QWeakPointer>
 #include <QWidget>
 
@@ -803,6 +806,172 @@ bool CopyEditorSample(const QString& id, QString& descriptor, const QString& des
     }
 #endif
     descriptor = result;
+    return true;
+}
+
+namespace
+{
+/// Longest project name the descriptor admits, in UTF-8 bytes (ludus_tools.descriptor MAX_NAME_BYTES).
+constexpr qsizetype MAX_PROJECT_NAME_BYTES = 128;
+/// Longest derived target (ludus_tools.create._derive_target).
+constexpr qsizetype MAX_PROJECT_TARGET_CHARACTERS = 128;
+/// Where the build places the rendered session template (apps/editor/CMakeLists.txt).
+constexpr QStringView PROJECT_TEMPLATE_ROOT = u":/project-templates/minimal";
+
+bool IsTargetCharacter(char32_t character)
+{
+    return (character >= U'a' && character <= U'z') || (character >= U'A' && character <= U'Z') ||
+           (character >= U'0' && character <= U'9') || character == U'_' || character == U'.' || character == U'+' ||
+           character == U'-';
+}
+
+bool IsTrimmedTargetCharacter(QChar character)
+{
+    return character == QLatin1Char('.') || character == QLatin1Char('_') || character == QLatin1Char('+') ||
+           character == QLatin1Char('-');
+}
+
+/// The body of `text` as a JSON string, escaped like Python's json.dumps(text, ensure_ascii=False).
+QString EscapeJsonStringBody(const QString& text)
+{
+    const QByteArray array = QJsonDocument(QJsonArray{text}).toJson(QJsonDocument::Compact);
+    // `["` and `"]` surround the escaped body.
+    constexpr qsizetype ARRAY_DELIMITER_BYTES = 2;
+    return QString::fromUtf8(array.sliced(ARRAY_DELIMITER_BYTES, array.size() - 2 * ARRAY_DELIMITER_BYTES));
+}
+
+/// Substitute the session template's deferred placeholders; false on any other placeholder.
+bool SubstituteTemplatePlaceholders(const QString& text,
+                                    const QString& escapedName,
+                                    const QString& target,
+                                    QString& outText)
+{
+    static const QRegularExpression PLACEHOLDER(QStringLiteral(R"(\{\{\s*([A-Z0-9_]+)\s*\}\})"));
+    QString result;
+    qsizetype copied = 0;
+    QRegularExpressionMatchIterator matches = PLACEHOLDER.globalMatch(text);
+    while (matches.hasNext() == true)
+    {
+        const QRegularExpressionMatch match = matches.next();
+        const QString key = match.captured(1);
+        result += QStringView(text).sliced(copied, match.capturedStart() - copied);
+        if (key == QStringLiteral("NAME"))
+        {
+            result += escapedName;
+        }
+        else if (key == QStringLiteral("TARGET"))
+        {
+            result += target;
+        }
+        else
+        {
+            return false;
+        }
+        copied = match.capturedEnd();
+    }
+    result += QStringView(text).sliced(copied);
+    outText = result;
+    return true;
+}
+} // namespace
+
+QString DeriveProjectTarget(const QString& name)
+{
+    QString cleaned;
+    for (const char32_t character : name.toUcs4())
+    {
+        cleaned += IsTargetCharacter(character) == true ? QChar(static_cast<char16_t>(character)) : QLatin1Char('_');
+    }
+    qsizetype first = 0;
+    qsizetype last = cleaned.size();
+    while (first < last && IsTrimmedTargetCharacter(cleaned[first]) == true)
+    {
+        ++first;
+    }
+    while (last > first && IsTrimmedTargetCharacter(cleaned[last - 1]) == true)
+    {
+        --last;
+    }
+    QString token = cleaned.sliced(first, last - first);
+    if (token.isEmpty() == true)
+    {
+        return QStringLiteral("app");
+    }
+    const QChar leading = token.front();
+    if (leading.isLetterOrNumber() == false && leading != QLatin1Char('_'))
+    {
+        token.prepend(QStringLiteral("app_"));
+    }
+    return token.left(MAX_PROJECT_TARGET_CHARACTERS);
+}
+
+bool CreateEditorProjectFromTemplate(const QString& name,
+                                     const QString& destination,
+                                     QString& outDescriptor,
+                                     QString& outProblem)
+{
+    bool isValidName = name.isEmpty() == false && name.trimmed() == name && name != QStringLiteral(".") &&
+                       name != QStringLiteral("..") && name.toUtf8().size() <= MAX_PROJECT_NAME_BYTES;
+    for (const char32_t character : name.toUcs4())
+    {
+        isValidName = isValidName && QChar::isPrint(character) == true && character != U'/' && character != U'\\';
+    }
+    if (isValidName == false)
+    {
+        outProblem = QStringLiteral("Enter a project name of at most 128 UTF-8 bytes, without surrounding spaces, "
+                                    "path separators or control characters.");
+        return false;
+    }
+    const QFileInfo destinationInfo(destination);
+    if (destinationInfo.exists() == true || destinationInfo.isSymLink() == true)
+    {
+        outProblem = QStringLiteral("The folder %1 already exists. Choose another project name.")
+                         .arg(QDir::toNativeSeparators(destination));
+        return false;
+    }
+    const QString descriptor = QDir(destination).filePath(QStringLiteral("ludus.project.json"));
+    const QString templateRoot = PROJECT_TEMPLATE_ROOT.toString();
+    if (QFileInfo::exists(QDir(templateRoot).filePath(QStringLiteral("ludus.project.json"))) == false)
+    {
+        outProblem = QStringLiteral("This editor build has no project template. Reinstall or rebuild the editor.");
+        return false;
+    }
+    // mkdir claims the absent folder; it fails when another folder appeared meanwhile.
+    if (QDir().mkpath(destinationInfo.absolutePath()) == false ||
+        QDir(destinationInfo.absolutePath()).mkdir(destinationInfo.fileName()) == false)
+    {
+        outProblem = QStringLiteral("Could not create the folder %1. Choose another project name.")
+                         .arg(QDir::toNativeSeparators(destination));
+        return false;
+    }
+    const QString escapedName = EscapeJsonStringBody(name);
+    const QString target = DeriveProjectTarget(name);
+    QDirIterator files(templateRoot, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
+    while (files.hasNext() == true)
+    {
+        const QString input = files.next();
+        const QString output = QDir(destination).filePath(QDir(templateRoot).relativeFilePath(input));
+        QFile source(input);
+        QString rendered;
+        if (source.open(QIODevice::ReadOnly) == false ||
+            SubstituteTemplatePlaceholders(QString::fromUtf8(source.readAll()), escapedName, target, rendered) == false)
+        {
+            (void)QDir(destination).removeRecursively();
+            outProblem = QStringLiteral("The bundled project template is damaged. Reinstall or rebuild the editor.");
+            return false;
+        }
+        const QByteArray bytes = rendered.toUtf8();
+        QFile written(output);
+        if (QDir().mkpath(QFileInfo(output).absolutePath()) == false ||
+            written.open(QIODevice::WriteOnly | QIODevice::NewOnly) == false || written.write(bytes) != bytes.size())
+        {
+            (void)QDir(destination).removeRecursively();
+            outProblem = QStringLiteral("Could not write %1. Free space in the project location and try again.")
+                             .arg(QDir::toNativeSeparators(output));
+            return false;
+        }
+    }
+    outDescriptor = descriptor;
     return true;
 }
 

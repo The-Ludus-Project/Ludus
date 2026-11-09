@@ -16,6 +16,11 @@ than opening a guide.
 
 - Edit the example project's name, provider, source directory, preset, target,
   working directory, and arguments.
+- Use **File → New Project** (or **New Project…** on the Start page) to create
+  the same minimal C++ project as the desktop editor in this browser session.
+  Enter a name and choose **Create Project**. Download the project folder to keep
+  it; engine setup and building happen in the desktop editor. See
+  [new projects](../../development/browser-editor.md#new-projects).
 - Use **File → Open Project** and select the folder containing
   `ludus.project.json`. The browser copies the folder's files, including source,
   shaders and assets, into its session filesystem, preserving relative paths.
@@ -77,7 +82,7 @@ Web Play when their `ludus.web.json` identifies a shipped sample. Other imported
 projects need their own web build; the console-only SDK example has no game
 player. The browser does not compile C++ or cook edited Luau scripts.
 
-Local project creation/setup, CMake builds, native Run/Play, code reload, RAD
+Project setup and engine selection, CMake builds, native Run/Play, code reload, RAD
 debugging, release packaging, and audio playback require the desktop
 editor in this increment. Their tool adapters cannot start native processes in
 a browser. The browser preview does not include a remote build service.
