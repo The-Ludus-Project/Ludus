@@ -576,6 +576,27 @@ TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hi
     CHECK(renderOrNull->Preview().Scene().Identity == committedScene.Identity);
     CHECK(interaction.Release() == false);
     CHECK(workspace.Document().Draft() == saved);
+    {
+        // Pausing sculpting mid-drag drops the stroke; the live preview must roll back rather than wait for a
+        // release that never comes.
+        const QDoubleSpinBox* radiusOrNull =
+            panelOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("worldTerrainBrushRadius"));
+        REQUIRE(radiusOrNull != nullptr);
+        const foundation::float32 radius = static_cast<foundation::float32>(radiusOrNull->value());
+        REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);
+        REQUIRE(interaction.Move(framePixel.center() + QPointF(40, 0), false) == true);
+        REQUIRE(QTest::qWaitFor(
+            [renderOrNull, &committedScene]() {
+                return renderOrNull->Preview().Scene().Identity != committedScene.Identity;
+            },
+            TERRAIN_WAIT_MILLISECONDS));
+        interaction.SetTerrainBrush(previewKey, radius, false, false, false);
+        CHECK(interaction.IsDragging() == false);
+        CHECK(renderOrNull->Preview().Scene().Identity == committedScene.Identity);
+        CHECK(interaction.Release() == false);
+        CHECK(workspace.Document().Draft() == saved);
+        interaction.SetTerrainBrush(previewKey, radius, false, false, true);
+    }
     REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);
     REQUIRE(interaction.Move(framePixel.center() + QPointF(40, 0), false) == true);
     REQUIRE(interaction.Release() == true);
@@ -605,9 +626,32 @@ TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hi
     REQUIRE(deltaOrNull->isVisible() == true);
     CHECK(targetOrNull->isHidden() == true);
     deltaOrNull->setValue(-1);
+    // The Move tool would show transform handles if the brush let go of the viewport.
+    interaction.SetTool(ViewportObjectInteraction::Tool::Move);
     REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);
     REQUIRE(interaction.Release() == true);
+    {
+        // While the stroke's preview is pending, the brush still owns presses: no selection, no handles.
+        CHECK(brushOrNull->isEnabled() == false);
+        QSignalSpy selections(&interaction, &ViewportObjectInteraction::SelectionRequested);
+        REQUIRE(interaction.Hover(framePixel.center(), framePixel) == true);
+        ViewportObjectOverlay pendingOverlay;
+        interaction.BuildOverlay(framePixel, pendingOverlay);
+        CHECK(pendingOverlay.HandleStrokes.IsEmpty() == false);
+        CHECK(pendingOverlay.HandleFills.IsEmpty() == true);
+        CHECK(interaction.Press(framePixel.center(), framePixel) == true);
+        CHECK(interaction.IsDragging() == false);
+        CHECK(interaction.Release() == false);
+        CHECK(selections.isEmpty() == true);
+        CHECK(statusOrNull->text().contains(QStringLiteral("previous stroke")) == true);
+    }
     REQUIRE(waitForStrokeCount(2) == true);
+    {
+        ViewportObjectOverlay readyOverlay;
+        interaction.BuildOverlay(framePixel, readyOverlay);
+        CHECK(readyOverlay.HandleFills.IsEmpty() == true);
+    }
+    interaction.SetTool(ViewportObjectInteraction::Tool::Select);
     const QJsonObject lowered = workspace.Document().Draft();
 
     REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);

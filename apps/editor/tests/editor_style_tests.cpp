@@ -57,11 +57,17 @@ QMainWindow* MakeStyleGallery()
     checked->setText(QStringLiteral("Checked"));
     checked->setCheckable(true);
     checked->setChecked(true);
+    QToolButton* toggleOn = new QToolButton;
+    toggleOn->setText(QStringLiteral("Toggle on"));
+    toggleOn->setProperty("visualRole", QStringLiteral("toggle"));
+    toggleOn->setCheckable(true);
+    toggleOn->setChecked(true);
     QToolButton* disabled = new QToolButton;
     disabled->setText(QStringLiteral("Disabled"));
     disabled->setEnabled(false);
     toolBar->addWidget(plain);
     toolBar->addWidget(checked);
+    toolBar->addWidget(toggleOn);
     toolBar->addWidget(disabled);
     QTabWidget* tabs = new QTabWidget;
     QWidget* page = new QWidget;
@@ -316,6 +322,46 @@ TEST_CASE("A menu button keeps its label and its chevron apart", "[editor][style
         CHECK(gap >= MIN_GAP_PIXELS);
         CHECK(chevronStart > static_cast<int>(columns.size()) / 2);
     }
+}
+
+TEST_CASE("A mode toggle that is on fills with the accent; a disclosure button does not", "[editor][style]")
+{
+    QWidget root;
+    ApplyWorkspaceStyle(&root);
+    QHBoxLayout* layout = new QHBoxLayout(&root);
+    const auto addButton = [&root, layout](const QString& text, bool isToggle, bool isChecked) {
+        QToolButton* button = new QToolButton(&root);
+        button->setText(text);
+        button->setCheckable(true);
+        button->setChecked(isChecked);
+        button->setFocusPolicy(Qt::NoFocus);
+        if (isToggle == true)
+        {
+            button->setProperty("visualRole", QStringLiteral("toggle"));
+        }
+        layout->addWidget(button);
+        return button;
+    };
+    QToolButton* on = addButton(QStringLiteral("Force raster"), true, true);
+    QToolButton* off = addButton(QStringLiteral("Stats"), true, false);
+    QToolButton* disclosure = addButton(QStringLiteral("Advanced"), false, true);
+    root.show();
+    QApplication::processEvents();
+    const QColor accent = root.palette().color(QPalette::Link);
+    // Sample the padding left of the label: inside the one-pixel edge, clear of the rounded corners.
+    constexpr qreal BODY_SAMPLE_X = 3.0;
+    const auto sampleInside = [](QToolButton* button) {
+        const QImage image = button->grab().toImage();
+        const qreal scale = image.devicePixelRatio();
+        return image.pixelColor(static_cast<int>(BODY_SAMPLE_X * scale), image.height() / 2);
+    };
+    CHECK(sampleInside(on) == accent);
+    CHECK(sampleInside(off) != accent);
+    // Opening a disclosure changes no mode, so it keeps the quieter edge-only look.
+    CHECK(sampleInside(disclosure) != accent);
+    on->setEnabled(false);
+    QApplication::processEvents();
+    CHECK(sampleInside(on) != accent);
 }
 
 TEST_CASE("Tabs below their content draw the accent rule on the edge facing it", "[editor][style]")

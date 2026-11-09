@@ -82,7 +82,14 @@ public:
     /// An empty recipe removes the draft overlay.
     void SetTerrainFootprint(const QJsonObject& recipe);
     /// An empty key restores normal picking. The brush radius is measured in terrain-local metres.
-    void SetTerrainBrush(const QString& key, foundation::float32 radius, bool shouldPickHeight, bool shouldShowSlope);
+    /// While a key is set, left presses belong to the brush: they never select or show transform handles.
+    /// When canSculpt is false (for example while the previous stroke's preview is pending), presses are
+    /// consumed without starting a stroke or picking a height.
+    void SetTerrainBrush(const QString& key,
+                         foundation::float32 radius,
+                         bool shouldPickHeight,
+                         bool shouldShowSlope,
+                         bool canSculpt);
     void SetTool(Tool tool);
     [[nodiscard]] LUDUS_INLINE Tool GetTool() const noexcept
     {
@@ -172,8 +179,10 @@ Q_SIGNALS:
     void TerrainStrokeChanged(const QJsonArray& points);
     void TerrainStrokeFinished(const QJsonArray& points);
     void TerrainStrokeRejected(const QString& message);
-    /// Cancel discarded the stroke being dragged; no Finished or Rejected follows for it.
+    /// Cancel, or pausing sculpting, discarded the stroke being dragged; no Finished or Rejected follows for it.
     void TerrainStrokeCancelled();
+    /// The terrain was pressed with a brush while sculpting is paused; no stroke or height pick started.
+    void TerrainSculptRefused();
 
 private:
     struct HandleLine
@@ -230,6 +239,7 @@ private:
     bool mHasTerrainBrushHit = false;
     bool mShouldPickTerrainHeight = false;
     bool mShouldShowTerrainSlope = false;
+    bool mCanSculptTerrain = false;
     bool mHasTerrainStrokeGap = false;
     bool mHasTerrainStrokeOverflowed = false;
     QRectF mTerrainStrokeFramePixel;

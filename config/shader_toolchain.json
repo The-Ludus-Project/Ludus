@@ -3,6 +3,7 @@
   "slang": {
     "version": "2026.1.2",
     "url": "https://github.com/shader-slang/slang/releases/download/v2026.1.2/slang-2026.1.2-linux-x86_64-glibc-2.27.tar.gz",
+    "release_asset_api": "https://api.github.com/repos/shader-slang/slang/releases/assets/350411844",
     "sha256": "bcffdccca2c16057d39f290a07f6f237b9a765238afc1974b68d09762e874b09",
     "license": "Apache-2.0 WITH LLVM-exception",
     "macos": {

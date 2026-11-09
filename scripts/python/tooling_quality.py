@@ -78,7 +78,11 @@ def bootstrap(root: Path) -> None:
     # Thanks to rhysd, "actionlint Installation": use the versioned release
     # archive. Its reviewed checksum is committed, not fetched during validation.
     # https://github.com/rhysd/actionlint/blob/main/docs/install.md
-    url = f"https://github.com/rhysd/actionlint/releases/download/v{pin['version']}/actionlint_{pin['version']}_{key}.tar.gz"
+    # The download query avoids gateway failures seen on the bare archive URL.
+    url = (
+        f"https://github.com/rhysd/actionlint/releases/download/v{pin['version']}/"
+        f"actionlint_{pin['version']}_{key}.tar.gz?download=1"
+    )
     with urllib.request.urlopen(url, timeout=60) as response:
         data = response.read(64 * 1024 * 1024 + 1)
     if len(data) > 64 * 1024 * 1024:

@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ludus_tools.create import create_project
-from ludus_tools.errors import ToolingError
+from ludus_tools.errors import BOOTSTRAP_STALE, MISSING_TOOLS, ToolingError
 from ludus_tools import project_setup as setup
 from ludus_tools.toolchain import PINNED_LLVM_MAJOR, pinned_llvm_tool
 from test_ludus_tools import _manifest_json, _write_sdk_prefix
@@ -95,8 +95,10 @@ class ProjectSetupTests(unittest.TestCase):
 
     def test_fresh_clone_missing_local_setup_and_open_are_read_only(self):
         before = self.snapshot()
-        with self.assertRaisesRegex(ToolingError, "setup is missing"):
+        with self.assertRaisesRegex(ToolingError, "setup is missing") as missing:
             setup.check_project(self.project, tooling_root=self.tools, runner=self.runner)
+        # Repair prepares a missing setup, so the Editor must offer it rather than the settings file.
+        self.assertEqual(MISSING_TOOLS, missing.exception.code)
         self.assertEqual(before, self.snapshot())
         self.assertEqual([], self.calls)
         self.repair()
@@ -181,14 +183,17 @@ class ProjectSetupTests(unittest.TestCase):
         moved_tools = self.root / "new-tools"
         self.tools.rename(moved_tools)
         self.tools = moved_tools
-        with self.assertRaisesRegex(ToolingError, "inputs changed"):
+        with self.assertRaisesRegex(ToolingError, "inputs changed") as changed:
             setup.check_project(self.project, tooling_root=self.tools, runner=self.runner)
+        # Stale setup is repairable: it must not read as an unreadable project settings file.
+        self.assertEqual(BOOTSTRAP_STALE, changed.exception.code)
         self.repair()
         cache = self.project / "out/build" / self.profile / "CMakeCache.txt"
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text("CMAKE_PREFIX_PATH:STRING=/gone/sdk\n")
-        with self.assertRaisesRegex(ToolingError, "Stale CMake cache"):
+        with self.assertRaisesRegex(ToolingError, "Stale CMake cache") as stale_cache:
             setup.check_project(self.project, tooling_root=self.tools, runner=self.runner)
+        self.assertEqual(BOOTSTRAP_STALE, stale_cache.exception.code)
 
     def test_hidden_condition_and_missing_test_are_checked_by_cmake(self):
         self.repair()

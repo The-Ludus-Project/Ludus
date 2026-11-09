@@ -319,12 +319,25 @@ void ViewportObjectInteraction::SetTerrainFootprint(const QJsonObject& recipe)
 void ViewportObjectInteraction::SetTerrainBrush(const QString& key,
                                                 float32 radius,
                                                 bool shouldPickHeight,
-                                                bool shouldShowSlope)
+                                                bool shouldShowSlope,
+                                                bool canSculpt)
 {
     const bool hasSlopeChanged = shouldShowSlope != mShouldShowTerrainSlope;
     mShouldShowTerrainSlope = shouldShowSlope;
     if (key == mTerrainBrushKey && radius == mTerrainBrushRadius && shouldPickHeight == mShouldPickTerrainHeight)
     {
+        // Pausing sculpting keeps the brush tool and its cursor; only an unfinished stroke is dropped, and the
+        // listener restores the surface its live preview reshaped.
+        if (canSculpt != mCanSculptTerrain)
+        {
+            mCanSculptTerrain = canSculpt;
+            if (canSculpt == false && mTerrainStroke.isEmpty() == false)
+            {
+                mTerrainStroke = {};
+                Q_EMIT Changed();
+                Q_EMIT TerrainStrokeCancelled();
+            }
+        }
         if (hasSlopeChanged == true)
         {
             mHasTerrainBrushHit = false;
@@ -336,6 +349,7 @@ void ViewportObjectInteraction::SetTerrainBrush(const QString& key,
     mTerrainBrushKey = key;
     mTerrainBrushRadius = radius;
     mShouldPickTerrainHeight = shouldPickHeight;
+    mCanSculptTerrain = canSculpt;
     Q_EMIT Changed();
 }
 void ViewportObjectInteraction::SetTool(Tool tool)
@@ -1093,21 +1107,27 @@ bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outer
     }
     if (mTerrainBrushKey.isEmpty() == false)
     {
-        if (updateTerrainBrush(positionPixel, outerFramePixel) == true)
+        // The brush owns the press even while sculpting is paused, so a click never falls through to selection.
+        if (updateTerrainBrush(positionPixel, outerFramePixel) == false)
         {
-            if (mShouldPickTerrainHeight == true)
-            {
-                Q_EMIT TerrainHeightPicked(mTerrainBrushHitMesh.Y);
-            }
-            else
-            {
-                mTerrainStrokeFramePixel = outerFramePixel;
-                mHasTerrainStrokeGap = false;
-                mHasTerrainStrokeOverflowed = false;
-                static_cast<void>(appendTerrainStrokePoint());
-                Q_EMIT Changed();
-                Q_EMIT TerrainStrokeChanged(mTerrainStroke);
-            }
+            return true;
+        }
+        if (mCanSculptTerrain == false)
+        {
+            Q_EMIT TerrainSculptRefused();
+        }
+        else if (mShouldPickTerrainHeight == true)
+        {
+            Q_EMIT TerrainHeightPicked(mTerrainBrushHitMesh.Y);
+        }
+        else
+        {
+            mTerrainStrokeFramePixel = outerFramePixel;
+            mHasTerrainStrokeGap = false;
+            mHasTerrainStrokeOverflowed = false;
+            static_cast<void>(appendTerrainStrokePoint());
+            Q_EMIT Changed();
+            Q_EMIT TerrainStrokeChanged(mTerrainStroke);
         }
         return true;
     }

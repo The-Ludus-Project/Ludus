@@ -60,9 +60,15 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.mcmc_vulkan_parity_only != true
     name: Classify changes
     runs-on: ubuntu-24.04
+    # Reading this workflow's runs finds an earlier run that already validates an
+    # edited or ready-for-review commit (docs/development/continuous-integration.md#superseded-pull-request-runs).
+    permissions:
+      contents: read
+      actions: read
     outputs:
       native_required: ${{ steps.scope.outputs.native_required }}
       validation_tier: ${{ steps.scope.outputs.validation_tier }}
+      validated_by: ${{ steps.scope.outputs.validated_by }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -167,7 +173,7 @@ jobs:
   # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions
   macos-compile:
     needs: [changes, macos-sanitizers]
-    if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' }}
+    if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration' }}
     name: macOS native backends and diagnostics
     runs-on: macos-15
     env:
@@ -492,7 +498,7 @@ jobs:
 
   macos-sanitizers:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
     name: macOS ASan and UBSan
     runs-on: macos-15
     env:
@@ -564,7 +570,7 @@ jobs:
 
   macos-analysis:
     needs: [changes, macos-compile]
-    if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier == 'nightly' }}
+    if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier == 'nightly' }}
     name: macOS analyzer baseline
     runs-on: macos-15
     env:
@@ -599,7 +605,7 @@ jobs:
 
   formatting:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == ''
     name: Source formatting
     runs-on: ubuntu-24.04
     steps:
@@ -702,7 +708,7 @@ jobs:
 
   debug-runtime:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
     name: Debug runtime and source debugger
     runs-on: ubuntu-24.04
     steps:
@@ -730,7 +736,7 @@ jobs:
 
   development:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
     name: Development and SDK
     runs-on: ubuntu-24.04
     steps:
@@ -1055,7 +1061,7 @@ jobs:
 
   sanitizers:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
     # One serial suite took 95-100 min of a 2 h job, 83% of it in render-graph,
     # renderer and wave-graph cases on lavapipe. Split it round-robin across
     # runners instead of running cases concurrently on one: each case keeps a
@@ -1194,7 +1200,7 @@ jobs:
 
   scripting-qualification:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
     name: S7 reference performance and release acceptance
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -1236,7 +1242,7 @@ jobs:
 
   filesystem-fuzz:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
     name: Filesystem pack fuzzing
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -1269,7 +1275,7 @@ jobs:
 
   threading-races:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
     name: Threading race detection
     runs-on: ubuntu-24.04
     steps:
@@ -1307,7 +1313,7 @@ jobs:
     needs: changes
     # Runs on integration pull requests too: an analysis failure found only by the
     # batch blocks promotion of every change merged with it.
-    if: needs.changes.outputs.native_required == 'true'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == ''
     name: Clang static analysis (${{ matrix.shard }})
     strategy:
       fail-fast: false
@@ -1365,7 +1371,7 @@ jobs:
     # Integration pull requests compile here (build graph, every default target
     # with warnings as errors, Editor analysis) without running tests, restoring
     # but never saving the batch's caches. Batches also run the tests and journeys.
-    if: needs.changes.outputs.native_required == 'true'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == ''
     name: Editor, shader worker and unit tests
     runs-on: ubuntu-24.04
     env:
@@ -1475,7 +1481,7 @@ jobs:
   # Debug runtime already runs the complete Debug assertion/build contracts.
   assertion-policy:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
     name: Assertion policy (${{ matrix.preset }})
     runs-on: ubuntu-24.04
     strategy:
@@ -1501,7 +1507,7 @@ jobs:
 
   pch:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
     name: PCH build (LUDUS_ENABLE_PCH=ON)
     runs-on: ubuntu-24.04
     steps:
@@ -1528,7 +1534,7 @@ jobs:
 
   build-budget:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
     name: Build-time budget
     runs-on: ubuntu-24.04
     env:
