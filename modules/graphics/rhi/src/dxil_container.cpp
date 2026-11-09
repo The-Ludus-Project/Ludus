@@ -302,10 +302,13 @@ bool HasDxilBindings(std::span<const uint8> bytes, const RasterLayout& layout) n
                                         : binding.Kind == RasterBindingKind::StorageRead      ? STRUCTURED_SRV_TYPE
                                         : binding.Kind == RasterBindingKind::StorageReadWrite ? STRUCTURED_UAV_TYPE
                                                                                               : TEXTURE_TYPE;
+            // A depth aspect reaches DXIL as a Texture2D<float> SRV, read through an R32_FLOAT view.
+            const bool isTexture2D =
+                binding.Kind == RasterBindingKind::Texture2D || binding.Kind == RasterBindingKind::TextureDepth2D;
             const uint32 expectedKind = isStorage == true                                   ? STRUCTURED_BUFFER_KIND
                                         : binding.Kind == RasterBindingKind::UniformBuffer  ? UNIFORM_KIND
                                         : binding.Kind == RasterBindingKind::Sampler        ? SAMPLER_KIND
-                                        : binding.Kind == RasterBindingKind::Texture2D      ? TEXTURE2D_KIND
+                                        : isTexture2D == true                               ? TEXTURE2D_KIND
                                         : binding.Kind == RasterBindingKind::Texture2DArray ? TEXTURE_ARRAY_KIND
                                         : binding.Kind == RasterBindingKind::TextureCube    ? TEXTURE_CUBE_KIND
                                         : binding.Kind == RasterBindingKind::Texture3D      ? TEXTURE3D_KIND

@@ -46,7 +46,7 @@ struct WorldSunPlacement final
     /// The light's intensity: illuminance in lux on a surface facing the sun.
     foundation::float32 IlluminanceLux = 0;
 };
-/// Create a directional light entity named "Sun" (transform and light components, schema defaults otherwise) in a
+/// Create a directional light entity named "Sun" with the Static Sun role in a
 /// default World as one validated, undoable history transaction. Failure preserves the document and outId. Editor
 /// thread only.
 [[nodiscard]] bool CreateWorldSun(WorldDocument& inoutWorld,

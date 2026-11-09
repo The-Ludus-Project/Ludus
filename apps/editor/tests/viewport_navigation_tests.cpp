@@ -34,6 +34,7 @@
 #include <QPoint>
 #include <QPointF>
 #include <QPushButton>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -169,6 +170,8 @@ TEST_CASE("First person navigation collides without changing the authored camera
     const QJsonObject editorNavigation = preview.Navigation();
     const camera::CameraSample editorCamera = preview.GetVisibleCameraSample();
     PreviewViewport viewport(&preview, nullptr, false);
+    viewport.EnableWorldContextMenu();
+    QSignalSpy contextMenu(&viewport, &PreviewViewport::WorldContextMenuRequested);
     camera::CameraSample spawn = editorCamera;
     spawn.Pose.Position = {0, 2, 0};
     REQUIRE(math::TryFromAxisAngle({1, 0, 0}, 0.5F, spawn.Pose.Orientation) == math::MathStatus::Success);
@@ -205,6 +208,7 @@ TEST_CASE("First person navigation collides without changing the authored camera
         QTest::qWait(POLL_MILLISECONDS);
     }
     QTest::mouseRelease(&viewport, Qt::RightButton);
+    CHECK(contextMenu.count() == 0);
     CHECK(preview.GetVisibleCameraSample().Pose.Position.Y > moved.Pose.Position.Y);
     CHECK(preview.Navigation() == editorNavigation);
 
@@ -385,6 +389,7 @@ TEST_CASE("Viewport input frames selection, consumes fractional scrolling and st
                          false);
     QApplication::sendEvent(&viewport, &trackpad);
     CHECK(preview.Navigation().value(QStringLiteral("camera")).toString().isEmpty() == true);
+    viewport.EnableWorldContextMenu();
     const QJsonObject beforeFly = preview.Navigation();
     QTest::mousePress(&viewport, Qt::RightButton);
     QTest::keyPress(&viewport, Qt::Key_W);
@@ -1043,6 +1048,8 @@ TEST_CASE("Right drag vertical input preserves the rendered horizontal camera ax
     RenderPreview preview;
     REQUIRE(preview.SetScene(MakeNavigationScene()) == true);
     PreviewViewport viewport(&preview, nullptr, false);
+    viewport.EnableWorldContextMenu();
+    QSignalSpy contextMenu(&viewport, &PreviewViewport::WorldContextMenuRequested);
     viewport.resize(800, 600);
     rr::ViewDescription before;
     rr::ViewDescription after;
@@ -1078,6 +1085,7 @@ TEST_CASE("Right drag vertical input preserves the rendered horizontal camera ax
                         Qt::NoButton,
                         Qt::NoModifier);
     QApplication::sendEvent(&viewport, &release);
+    CHECK(contextMenu.isEmpty() == true);
     REQUIRE(preview.DescribeView(800, 600, after, error) == true);
     CHECK(after.CameraPosition == before.CameraPosition);
     CHECK(math::Distance(after.CameraForward, before.CameraForward) > 0.1F);

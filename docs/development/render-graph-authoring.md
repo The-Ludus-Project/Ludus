@@ -7170,19 +7170,21 @@ What each fixture establishes:
   `dxil` build stops with `dxil requires --dxc-path`. The two libraries join each
   DXIL stage's cache identity only, so changing them recompiles DXIL alone. DXIL
   stages accept the bindings the Direct3D 12 raster profile allows: one resource
-  per binding, uniform buffers and sampled textures in raster stages, and storage
-  only in compute. Ray traversal programs are refused for `dxil`. On the Windows
-  lane, `ludus_render_graph_dxil_tests` builds the rg2 `surface` and `bound`
-  fixtures for `dxil`, cooks them, and checks that each color stage decodes to a
-  signed DXIL container with its entry. It then draws the compiled `surface` graph
-  headlessly on Direct3D 12 (WARP in CI). Its pixels follow instance and camera
-  edits, as in the portable RG2 GPU suite. Graphs whose stages need ray traversal,
-  depth sampling, descriptor arrays or fragment storage do not build for `dxil`.
+  per binding, uniform buffers and sampled color or depth textures in raster
+  stages, and storage only in compute. Ray traversal programs are refused for
+  `dxil`. On the Windows lane, `ludus_render_graph_dxil_tests` builds the rg2 pixel fixtures for `dxil`
+  alone, cooks them, and checks that each `surface` and `bound` color stage decodes
+  to a signed DXIL container with its entry. The same executable runs the portable
+  RG2/RG3 pixel suite and the RG4 pool suite on those packages, headlessly on
+  Direct3D 12 (WARP in CI); depth exports are read through depth-aspect views.
+  Graphs whose stages need ray traversal, descriptor arrays or fragment storage
+  do not build for `dxil`.
 - The cooked-fixture `[render-graph][activation]` test decodes the CMake-cooked
   `rg2_surface.lurgrt` and compares it with its compiled header: plan records,
-  CPU interface identity and every stage artifact (SPIR-V words, Metal/WGSL/GLSL
-  text, entries and inputs). The host's native target (Metal on macOS, SPIR-V
-  elsewhere) and WGSL must be present.
+  CPU interface identity and every stage artifact (SPIR-V words, DXIL bytes,
+  Metal/WGSL/GLSL text, entries and inputs). The host's native target (Metal on
+  macOS, DXIL on Windows, SPIR-V elsewhere) must be present, and WGSL too outside
+  Windows, whose fixtures carry `dxil` alone.
 - The `[render-graph][gpu][activation]` test loads the same `.lurgrt`, activates
   it twice and compares its pixels byte for byte with the compiled-header graph.
 - The installed-SDK check (`tests/sdk_consumer/verify_render_graph_execution.py`)

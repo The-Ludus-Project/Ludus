@@ -136,7 +136,10 @@ TEST_CASE("Explore as Player lands on the generated terrain after World extracti
     gameplay::camera::CameraSample spawn;
     spawn.Pose.Position = {0, 4, 0};
     spawn.Lens.Projection = gameplay::camera::CameraProjection::PerspectiveInfinite;
-    REQUIRE(preview.BeginFirstPerson(spawn, error) == true);
+    spawn.Lens.NearPlane = 0.01F;
+    const bool isStarted = preview.BeginFirstPerson(spawn, error);
+    INFO(error.toStdString());
+    REQUIRE(isStarted == true);
     for (foundation::uint32 frame = 0; frame < 10; ++frame)
     {
         preview.AdvanceFirstPerson({1, 0, 0}, 0.1F, 3, false);
