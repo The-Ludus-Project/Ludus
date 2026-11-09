@@ -202,7 +202,8 @@ QString GetWorldIntroduction()
 }
 } // namespace
 WorldWorkspace::WorldWorkspace(QWidget* parent) : WorldWorkspace(ToolingPaths{}, parent) {}
-WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : QWidget(parent)
+WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
+    : QWidget(parent), mExploreFirstPersonButton(new QPushButton(QStringLiteral("Explore as Player"), this))
 {
     setObjectName(QStringLiteral("worldWorkspace"));
     auto* layout = new QVBoxLayout(this);
@@ -477,7 +478,6 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     addObject->setMenu(objectMenu);
     addObject->setMinimumHeight(addObject->sizeHint().height());
     entityLayout->addWidget(addObject);
-    mExploreFirstPersonButton = new QPushButton(QStringLiteral("Explore as Player"), entityColumn);
     mExploreFirstPersonButton->setObjectName(QStringLiteral("worldExploreFirstPerson"));
     mExploreFirstPersonButton->setToolTip(
         QStringLiteral("Hold the right mouse button to look, WASD to walk, Shift to run, and Space to jump. "

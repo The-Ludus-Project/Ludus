@@ -144,6 +144,7 @@ bool ReadWorldFirstPersonPlayer(const WorldDocument& world,
     outCamera = spawn;
     const QJsonObject player = components.value(QStringLiteral("firstPersonPlayer")).toObject();
     outSpeed = static_cast<foundation::float32>(player.value(QStringLiteral("speed")).toDouble());
+    outError.clear();
     return true;
 }
 bool CreateWorldLuminaire(WorldDocument& inoutWorld,

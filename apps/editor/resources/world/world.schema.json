@@ -343,7 +343,7 @@
     {
       "id": "firstPersonPlayer",
       "label": "First Person Player",
-      "help": "Explore from this entity's Transform position (eye) and X/Y rotation (pitch/yaw). Free flight uses world up and ignores roll and scale.",
+      "help": "Start walking from this entity's Transform position (eye) and X/Y rotation (pitch/yaw). The player uses gravity and collides with World surfaces.",
       "required": false,
       "properties": [
         {

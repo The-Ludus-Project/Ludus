@@ -2759,7 +2759,9 @@ TEST_CASE("First Person Player preset persists a spawn and uses the imported sta
     camera::CameraSample spawn;
     ludus::foundation::float32 speed = 0;
     QString error;
+    error = QStringLiteral("previous diagnostic");
     REQUIRE(ReadWorldFirstPersonPlayer(workspace.Document(), id, spawn, speed, error) == true);
+    CHECK(error.isEmpty() == true);
     CHECK(spawn.Pose.Position.Y == Catch::Approx(1.65));
     CHECK(speed == Catch::Approx(3));
     workspace.StopPreview();

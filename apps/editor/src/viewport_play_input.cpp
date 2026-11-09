@@ -149,7 +149,7 @@ bool PreviewViewport::event(QEvent* event)
     {
         stopNavigation();
     }
-    if (event->type() == QEvent::ShortcutOverride && mFirstPersonSpeed > 0)
+    if (event->type() == QEvent::ShortcutOverride && Preview_->IsExploringFirstPerson() == true)
     {
         event->accept();
         return true;

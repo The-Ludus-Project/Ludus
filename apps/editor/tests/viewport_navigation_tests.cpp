@@ -232,7 +232,8 @@ TEST_CASE("Explore walks up a step and a fast move cannot tunnel through a thin 
     camera::CameraSample spawn = scene.Cameras[0].Sample;
     spawn.Pose = { .Position = {0, 1.61, 0}, .Orientation = {} };
     QString error;
-    REQUIRE(preview.BeginFirstPerson(spawn, error) == true);
+    PreviewViewport viewport(&preview, nullptr, false);
+    REQUIRE(viewport.BeginFirstPerson(spawn, 3, error) == true);
     for (uint32 frame = 0; frame < 6; ++frame)
     {
         preview.AdvanceFirstPerson({1, 0, 0}, 0.1F, 3, false);
@@ -252,6 +253,10 @@ TEST_CASE("Explore walks up a step and a fast move cannot tunnel through a thin 
     scene.Identity = QByteArrayLiteral("replacement-collision-fixture");
     REQUIRE(preview.SetScene(scene) == true);
     CHECK(preview.IsExploringFirstPerson() == false);
+    QKeyEvent shortcut(QEvent::ShortcutOverride, Qt::Key_F12, Qt::NoModifier);
+    shortcut.ignore();
+    QApplication::sendEvent(&viewport, &shortcut);
+    CHECK(shortcut.isAccepted() == false);
 }
 
 TEST_CASE("Selected object framing ignores scene-wide radius and fits portrait and wide viewports",
