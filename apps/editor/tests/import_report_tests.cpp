@@ -308,17 +308,13 @@ TEST_CASE("World shows the import preview, imports on confirmation and shows the
         CHECK(viewport->height() >= 160);
         CHECK(workspace.rect().contains(viewport->mapTo(&workspace, viewport->rect().bottomRight())) == true);
         const ludus::foundation::int32 viewportHeight = viewport->height();
-        for (const QString& name :
-             {QStringLiteral("worldAdd"), QStringLiteral("worldDuplicate"), QStringLiteral("worldDelete")})
-        {
-            QPushButton* button = workspace.findChild<QPushButton*>(name);
-            REQUIRE(button != nullptr);
-            hierarchy->ensureWidgetVisible(button);
-            QApplication::processEvents();
-            CHECK(button->height() >= button->sizeHint().height());
-            CHECK(hierarchy->viewport()->rect().contains(
-                      button->mapTo(hierarchy->viewport(), button->rect().center())) == true);
-        }
+        QToolButton* geometryOrNull = workspace.findChild<QToolButton*>(QStringLiteral("worldAddObject"));
+        REQUIRE(geometryOrNull != nullptr);
+        hierarchy->ensureWidgetVisible(geometryOrNull);
+        QApplication::processEvents();
+        CHECK(geometryOrNull->isVisible() == true);
+        CHECK(hierarchy->viewport()->rect().contains(
+                  geometryOrNull->mapTo(hierarchy->viewport(), geometryOrNull->rect().center())) == true);
         reportToggle->setChecked(false);
         QTest::qWait(40);
         CHECK(viewport->height() == viewportHeight);

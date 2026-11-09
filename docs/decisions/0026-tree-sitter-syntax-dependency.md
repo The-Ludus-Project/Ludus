@@ -73,6 +73,23 @@ pre-generated `parser.c`, so the editor build never regenerates a grammar.
 
 ### Pinning discipline
 
+> **Amended in M3 (2026-11-07): CMake `FetchContent` instead of Conan.** The
+> browser editor build does not run Conan; that is why HarfBuzz still has no
+> web build. A Conan recipe would therefore fail this ADR's
+> [WebAssembly requirement](#webassembly-build) that native and browser builds
+> compile the same C sources.
+>
+> Each component instead commits its pin to `third_party/<name>/SOURCE-LOCK.json`
+> (version, tag, commit, archive URL, SHA-256) and its license text to
+> `third_party/<name>/`. The editor's CMake fetches the archive with
+> `FetchContent`, which fails on a hash mismatch, and checks the license against
+> the committed copy. That is the mechanism the editor already uses for its
+> Crashpad pin.
+>
+> The rest of this section still applies: exact tags, verified hashes, the
+> manifest and no floating versions. The text below keeps the original recipe
+> wording for the record.
+
 Each dependency gets a Ludus-owned Conan recipe under `third_party/<name>/`
 (following `third_party/harfbuzz`) that downloads the exact upstream tagged
 archive with a verified SHA-256, or ConanCenter for `tree-sitter-c` and

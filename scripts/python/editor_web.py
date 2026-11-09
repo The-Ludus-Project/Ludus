@@ -109,7 +109,7 @@ def validate_package(site: Path):
         raise ValueError("Editor JavaScript does not name the staged wasm module.")
     if manifest.get("single_threaded") is not True:
         raise ValueError("Pages editor must not require shared memory.")
-    for name in ("Ludus.txt", "Qt-LGPL-3.0.txt", "Emscripten.txt", "miniaudio.txt", "yyjson.txt", "Luau.txt", "Luau-lua.txt", "emdawnwebgpu.txt", "webgpu-native.txt"):
+    for name in ("Ludus.txt", "Qt-LGPL-3.0.txt", "Emscripten.txt", "miniaudio.txt", "yyjson.txt", "tree-sitter.txt", "Luau.txt", "Luau-lua.txt", "emdawnwebgpu.txt", "webgpu-native.txt"):
         if not (site / "licenses" / name).is_file():
             raise ValueError("Missing editor license: " + name)
     print("Editor package: verified assets, hashes, single-threaded wasm memory and notices.")
@@ -160,6 +160,8 @@ def package(build: Path, source: Path, sdk: Path, qt_lock: dict, web_lock: dict)
         shutil.copyfile(path, destination)
     shutil.copyfile(ROOT / "third_party/miniaudio/LICENSE-MIT-0.txt", licenses / "miniaudio.txt")
     shutil.copyfile(ROOT / "third_party/yyjson/LICENSE", licenses / "yyjson.txt")
+    # The editor's syntax runtime; the build verifies the downloaded LICENSE equals this copy.
+    shutil.copyfile(ROOT / "third_party/tree-sitter/LICENSE", licenses / "tree-sitter.txt")
     for relative, name in SDK_NOTICES.items():
         shutil.copyfile(sdk / "upstream/emscripten" / relative, licenses / name)
     for relative, name in (("LICENSE.txt", "Luau.txt"), ("lua_LICENSE.txt", "Luau-lua.txt")):

@@ -603,8 +603,12 @@ records the libraries that would provide them.
 The World hierarchy flanks the viewport inside the World document; the entity
 inspector is the Properties tool window. Component actions stay below the
 scrollable inspector fields: the component choice beside **Add Component**, and
-**Apply Changes** beside **Reset Fields**. **Add Entity**, **Duplicate** and
-**Delete** share one row under the hierarchy. Above the viewport, one row holds
+**Apply Changes** beside **Reset Fields**. Right-click the World viewport or
+entity list for **Add Entity**, **Duplicate**, and **Delete**. Right-click an
+entity to target it. Clicking a selected member of a group keeps the group
+selected, and clicking the background keeps the current selection. Right-drag
+still looks around, and holding the right button with the fly keys still moves
+the camera. Above the viewport, one row holds
 the World's path (hover for the full path) and its commands; **Restore
 Recovery**, **Cancel scene operation** and **Play saved World** appear only
 while they apply. The viewport's render controls share one row, and its
@@ -613,8 +617,8 @@ The render surface receives the remaining height below its shading, framing and
 navigation controls, including after resize.
 
 In a default World (a project without `authoring/world.schema.json`), use
-**Add Geometry / Light** below the entity list to create a **Cube**, **Plane**,
-**Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun** or
+**Add Geometry / Light** in the right-click menu or below the entity list to
+create a **Cube**, **Plane**, **Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun** or
 **Luminaire**. Each command
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.
@@ -649,9 +653,11 @@ viewport to frame the selected terrain again.
 
 Save World keeps the seed, settings, and recipe version. The editor rebuilds the
 bounded indexed mesh when it extracts the World, including after reopening.
-The terrain uses the current viewport shading and authored lights. This first
-editor workflow provides a single mesh of at most 64 samples per side. Collision,
-sculpting, erosion, and streamed terrain are future work.
+The terrain uses the current viewport shading and authored lights. In an unlit
+World, the default raster graph displays the terrain's surface colour without
+adding it to the scene's mesh lights. Each terrain uses a single mesh of at most
+64 samples per side. Collision, sculpting, erosion, and streamed terrain are
+future work.
 See the [proposed viewport authoring workflow](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
 for the planned docked tools and source editing.
 
@@ -1699,6 +1705,43 @@ that selects it; set its intensity, colour and Transform rotation in
 has no indirect bounce, so areas the sun cannot reach stay dark. Reimporting with
 the scene's bundled sky through **Choose environment…** lights them too. A
 project-owned schema gets the instruction without the repair.
+
+### Celestial directional lights
+
+Select a directional light and set **Light → Celestial Role** in **Properties**.
+**Static Sun** and **Static Moon** keep the direction set by **Transform**
+rotation. **None** is the default for ordinary directional lights and older
+Worlds. The **Sun** creation and lighting repair actions assign **Static Sun**.
+
+Set **Dynamic Celestial → Rotation Driver** to **Transform** to use the entity's
+rotation, including rotation supplied by a game. Choose **Earth Sun** or
+**Earth Moon** to sample an approximate sky direction using **Earth Time**,
+**Observer Latitude**, and **Observer Longitude**. Use the same values on both lights
+to preview a single observer and moment. Earth Time is fractional UTC days
+since noon on January 1, 2000. For example, `0.5` is the following midnight.
+North latitude and east longitude are positive. The World frame is +X east,
++Y up, and −Z north.
+
+The editor samples the authored time and preserves the entity's saved
+Transform rotation as a fallback. A sampled body at or below the geometric
+horizon contributes zero direct light. Intensity and colour come from the
+authored light. The rules model direction and horizon visibility. Lunar phase
+and atmospheric effects are outside their scope. Games can pass
+their own simulation time to the [GameplayWorld celestial sampler](../architecture/game-world.md#earth-celestial-transforms).
+
+Choose **Custom Orbit** for a different observer world, star, or moon. Set
+**Orbit Time** in simulation hours from your chosen epoch. For lights viewed
+from the same world, use the same time, observer coordinates, and **World
+Spin**. Both spin and **Body Orbit Rate** use degrees per simulation hour.
+For example, enter `30` for a 12-hour world rotation and `7.5` for a moon on a
+48-hour orbit. Negative rates reverse motion, and zero holds that angle fixed.
+
+Set each light's **Body Phase** for its starting point, **Orbit Inclination**
+for the tilt from the world's equator, and **Ascending Node** for the orbit's
+orientation around the spin axis. Use **World Radius / Orbit Radius** to
+account for the shift in a nearby moon's apparent position. A value of zero
+treats the source as distant. The rule follows a prescribed circular orbit and
+uses the same horizon cutoff as the Earth templates.
 
 ### Switching lights
 
