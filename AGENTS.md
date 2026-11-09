@@ -60,12 +60,14 @@ that violates it.
   the maintainer accepts reviewed changes into `develop`. Preserve worktree isolation
   and report the task branch and worktree path for review.
 - Integration pull requests run source/tooling, installed host-tooling and public
-  documentation checks. The batch coordinator captures one `develop` commit every
-  30 minutes and runs the full native, sanitizer, editor, browser and SDK suites
-  once for the combined changes. Only the promotion workflow advances `main`,
-  to exactly the validated commit, with an explicit lease and no history rewrite.
-  Failed/cancelled validation leaves `main` unchanged. Never bypass promotion or
-  represent acceptance into `develop` as full platform qualification.
+  documentation checks. Changes that require native validation also run the Linux
+  Editor and shader-worker build and Clang static analysis. The batch coordinator
+  captures one `develop` commit every 30 minutes and runs the full native,
+  sanitizer, editor, browser and SDK suites once for the combined changes. Only
+  the promotion workflow advances `main`, to exactly the validated commit, with
+  an explicit lease and no history rewrite. Failed/cancelled validation leaves
+  `main` unchanged. Never bypass promotion or represent acceptance into `develop`
+  as full platform qualification.
 - While the latest validated batch is red, the **Develop health** check admits
   only documentation-only changes and proven fixes. An agent fixing a failed
   batch job declares `Batch-Fix: <failed batch job>` in the PR description,
@@ -659,9 +661,9 @@ headers. Separate the groups with a blank line.
   readiness; stale callbacks must carry and validate the relevant identity.
 - Preserve failure/output behavior, cancellation, rollback, bounded capacities,
   deterministic cooked bytes and native/browser support during extraction.
-  Exercise the production paths with focused tests, then run the applicable
-  build, sanitizer, formatting, tidy and changed-source checks. A shorter file or
-  passing lexical check alone is not evidence of reduced coupling.
+  Exercise the production paths with focused tests and follow the
+  [pull request validation rules](#validate-changes-and-open-for-review).
+  Assess coupling from the resulting responsibilities and interfaces.
 - Prioritize the preview resource/publication boundary, World inspector/import
   workflows, asset preparation/publication, then renderer and reference cooker
   decomposition. See the existing
@@ -684,25 +686,27 @@ headers. Separate the groups with a blank line.
 
 ## Build, test, and validate
 
-### Build before opening a pull request (hard rule)
+### Validate changes and open for review
 
-Integration pull requests compile nothing native, so the first build of a
-merged change is the batch run, after the maintainer has merged it. Every
-merged change that fails to build blocks promotion for everyone.
+- Review your diff and run focused checks for the code or documentation you
+  changed before opening or updating the pull request. For code changes, use
+  the smallest relevant build or compile check and run tests that exercise the
+  changed behavior where the local environment supports them. Use the pinned
+  tools and configure local CMake builds with `-DLUDUS_WARNINGS_AS_ERRORS=ON`.
+- Fix failures caused by the change that your checks expose. In the pull request
+  description, record the commands and results and identify checks that are
+  pending or unavailable locally. Use a title that describes the change.
+- Open the pull request ready for review after focused verification. Human
+  review and required CI checks can proceed in parallel. Reserve draft status
+  for work that still needs author changes before review or that the author
+  intentionally wants to hold.
+- Use the required integration checks for the Linux Editor build and static
+  analysis. The develop-to-main batch runs the full editor test and sanitizer
+  suites. The maintainer accepts reviewed changes into `develop` after the
+  required pull request checks pass. See the
+  [CI workflow](docs/development/continuous-integration.md#integrate-changes-and-promote-a-validated-batch).
 
-- Before opening or updating a pull request that changes C++, Slang or CMake,
-  configure with warnings as errors and build what you changed. Local presets
-  default to `LUDUS_WARNINGS_AS_ERRORS=OFF`, so reconfigure explicitly:
-  `cmake --preset <preset> -DLUDUS_WARNINGS_AS_ERRORS=ON`.
-- For anything under `apps/editor` or a module the editor links, build
-  `ludus_editor` and `ludus_editor_tests` (which also builds every editor
-  `*_tests` executable): `cmake --build --preset <preset> --target ludus_editor
-  ludus_editor_tests`. Otherwise build the default target. Linking matters:
-  moving a call into another library can compile cleanly and fail to link.
-- Put the exact build command and its final lines in the pull request body.
-- If you cannot build (no toolchain, sandbox limits), open the pull request as
-  a draft whose title starts with `[unbuilt]` and say so in the body. Never
-  describe code that was not compiled as ready for review.
+### Build and test conventions
 
 - Tag GPU math/transport oracle cases with `[reference-compute]` so CTest discovers
   each with its own deadline. Reuse the renderer-owned cold preparation budget and
@@ -736,6 +740,10 @@ local files such as `CMakeUserPresets.json`. Add regressions for a fresh clone,
 missing local presets, moved tools/SDKs, and repeated repair. Future CLI/Editor
 project operations must share these checks (see the project-sdk-workflow spec).
 
+### Local verification commands
+
+Choose the commands that match the change.
+
 ```bash
 ./init.sh                                   # prepare pinned tools + deps
 ./scripts/build   linux-clang-debug         # build
@@ -745,6 +753,3 @@ project operations must share these checks (see the project-sdk-workflow spec).
 ./scripts/test    linux-clang-asan-ubsan    # sanitizer tests
 ./scripts/install-sdk linux-clang-development     # SDK install + consumer
 ```
-
-A change is ready for review only when: it builds warning-clean, unit tests
-pass, ASan/UBSan is clean, and format/tidy pass — all with the pinned toolchain.

@@ -81,20 +81,12 @@ ownership. Size is a review signal, not a hard line-count target. The staged wor
 and remaining preview/editor boundaries belong to the existing
 [editor GUI systems context](../../docs/architecture/editor-gui-systems.md#implementation-boundaries-and-refactoring).
 
-## Build before opening a pull request (hard rule)
+## Pull request validation
 
-Integration pull requests compile nothing native; a change that does not build
-breaks batch validation for everyone after it is merged. See "Build before
-opening a pull request" in `AGENTS.md`.
-
-- Before opening or updating a pull request that changes C++, Slang or CMake,
-  reconfigure with `-DLUDUS_WARNINGS_AS_ERRORS=ON` (local presets default to
-  OFF) and build `ludus_editor` and `ludus_editor_tests` for editor changes,
-  or the default target otherwise. Paste the command and its final lines into
-  the pull request body.
-- "Authored, not run" applies to tests that need a display or GPU, never to
-  compiling and linking. If you cannot build, open a draft titled
-  `[unbuilt] ...` and say so.
+Follow [AGENTS.md's pull request validation rules](../../AGENTS.md#validate-changes-and-open-for-review).
+Check the affected code locally, record results in the pull request description
+and open it ready for review while CI runs the required integration checks.
+The develop-to-main batch runs the full editor test and sanitizer suites.
 
 ## Other standing rules
 
@@ -108,7 +100,6 @@ reviews or validating the selected World's interactive viewport.
   toolchain (`config/web_toolchain.json`, ADR 0009); repository formatting and
   static analysis still use version 23. All other coding rules apply.
 - Compile warning-clean; CI is warnings-as-errors.
-- Run `./scripts/check --all` (clang-format + clang-tidy) before committing.
 - `#pragma once` for header guards.
 - Follow the established naming conventions in the codebase / `.clang-tidy`.
 - Naming (full rules in `AGENTS.md` §Naming): spell names out (no `Arg`,
