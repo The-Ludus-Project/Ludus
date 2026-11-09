@@ -128,6 +128,11 @@ public:
     /// start view shows it and handles triggered, describing the view with
     /// RenderPreview::TryDescribeStartView. Owned by this viewport; GUI thread only.
     [[nodiscard]] QAction& GetStartViewSaveAction() noexcept;
+    /// Install World terrain actions in the viewport toolbar and right-click menu. Call once.
+    void SetTerrainActions();
+    [[nodiscard]] QAction& GetAddTerrainAction() noexcept;
+    [[nodiscard]] QAction& GetEditTerrainAction() noexcept;
+    void SetTerrainPreviewLabel(bool isVisible);
     /// @brief Save the render result this viewport currently shows as a PNG file (View → Save screenshot…).
     ///
     /// The file holds the presented frame only, at the resolution it was rendered at: editor overlays

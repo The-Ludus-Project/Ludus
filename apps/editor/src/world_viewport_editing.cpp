@@ -91,6 +91,7 @@ void WorldWorkspace::updateViewportInteraction()
     QAction& saveStartView = Scene_->GetViewport().GetStartViewSaveAction();
     saveStartView.setVisible(Document_.Loaded() == true && Document_.Draft().contains(QStringLiteral("scene")) == true);
     saveStartView.setEnabled(Pending_ == false && SceneBusy() == false);
+    applyTerrainInteraction();
     const bool hasSelectedPlayer =
         mSelectedEntities.size() == 1 && HasWorldFirstPersonPlayer(Document_, Selected_) == true;
     mExploreFirstPersonButton->setVisible(hasSelectedPlayer);
@@ -98,6 +99,11 @@ void WorldWorkspace::updateViewportInteraction()
 }
 void WorldWorkspace::exploreFirstPerson()
 {
+    if (isTerrainAuthoringOpen() == true)
+    {
+        Changed(QStringLiteral("Apply or cancel the Terrain draft before exploring the World."));
+        return;
+    }
     gameplay::camera::CameraSample spawn;
     float32 speed = 0;
     QString error;
@@ -128,6 +134,10 @@ void WorldWorkspace::exploreFirstPerson()
 }
 void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObject& placement)
 {
+    if (tryPlaceTerrainDraft(id, placement) == true)
+    {
+        return;
+    }
     if (id != Selected_ || Pending_ == true || SceneBusy() == true || mSelectedEntities.size() != 1)
     {
         return;

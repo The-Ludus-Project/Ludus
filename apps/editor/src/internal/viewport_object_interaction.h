@@ -14,6 +14,7 @@
 #include "viewport_object_overlay.h"
 
 #include <QByteArray>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QLineF>
 #include <QObject>
@@ -56,7 +57,8 @@ public:
     {
         Axis,
         Plane,
-        Uniform
+        Uniform,
+        TerrainExtent
     };
     /// A handle under the pointer or being dragged. Index is the axis, from 0 for X, of an axis handle and the axis
     /// normal to the plane of a plane handle (0 for the YZ plane, 1 for XZ, 2 for XY); it is negative for no handle.
@@ -76,6 +78,11 @@ public:
     explicit ViewportObjectInteraction(RenderPreview& inoutPreview, QObject* parentOrNull);
     /// Refresh authoring permission/placement from the authoritative World. Cancels a stale gesture.
     void SetWorld(const WorldDocument& world, const QString& selected, bool canEdit);
+    /// Draw the Add Terrain footprint and its X/Z resize handles for the current draft selection.
+    /// An empty recipe removes the draft overlay.
+    void SetTerrainFootprint(const QJsonObject& recipe);
+    /// An empty key restores normal picking. The brush radius is measured in terrain-local metres.
+    void SetTerrainBrush(const QString& key, foundation::float32 radius, bool shouldPickHeight);
     void SetTool(Tool tool);
     [[nodiscard]] LUDUS_INLINE Tool GetTool() const noexcept
     {
@@ -119,7 +126,7 @@ public:
     /// Whether a handle drag is in progress.
     [[nodiscard]] LUDUS_INLINE bool IsDragging() const noexcept
     {
-        return mDragTarget.IsValid();
+        return mDragTarget.IsValid() || mTerrainStroke.isEmpty() == false;
     }
     /// The handle being dragged; its Index is negative when no drag is in progress.
     [[nodiscard]] LUDUS_INLINE HandleTarget GetDraggedHandle() const noexcept
@@ -158,6 +165,10 @@ Q_SIGNALS:
     void SelectionRequested(const QString& id);
     /// Original stable ID and absolute placement arrays (metres, Euler degrees, positive scale).
     void PlacementCommitted(const QString& id, const QJsonObject& placement);
+    void TerrainExtentCommitted(const QString& key, foundation::float64 extent);
+    void TerrainHeightPicked(foundation::float32 height);
+    void TerrainStrokeFinished(const QJsonArray& points);
+    void TerrainStrokeRejected(const QString& message);
 
 private:
     struct HandleLine
@@ -193,6 +204,27 @@ private:
     /// False when that mesh has no usable adjacency.
     [[nodiscard]] bool refreshSilhouette(foundation::int32 meshIndex);
     void buildHandles();
+    void appendTerrainFootprint(ViewportObjectOverlay& inoutOverlay) const;
+    void appendTerrainBrush(ViewportObjectOverlay& inoutOverlay) const;
+    [[nodiscard]] QString pick(QPointF positionPixel, const QRectF& framePixel, foundation::math::Vector3& outHitMesh);
+    [[nodiscard]] bool updateTerrainBrush(QPointF positionPixel, const QRectF& outerFramePixel);
+    void appendTerrainStrokePoint();
+    [[nodiscard]] HandleTarget pickTerrainHandle(QPointF positionPixel) const;
+    [[nodiscard]] bool beginTerrainDrag(QPointF positionPixel);
+    void dragTerrainExtent(QPointF positionPixel);
+    [[nodiscard]] foundation::math::Vector3 getTerrainHandleMesh(foundation::int32 axis) const noexcept;
+    QString mTerrainBrushKey;
+    QJsonArray mTerrainStroke;
+    foundation::math::Vector3 mTerrainBrushHitMesh;
+    foundation::float32 mTerrainBrushRadius = 0;
+    bool mHasTerrainBrushHit = false;
+    bool mShouldPickTerrainHeight = false;
+    bool mHasTerrainStrokeGap = false;
+    bool mHasTerrainStrokeOverflowed = false;
+    QRectF mTerrainStrokeFramePixel;
+    foundation::math::Vector2 mTerrainExtent;
+    foundation::float32 mTerrainBaseElevation = 0;
+    foundation::float32 mTerrainDragExtent = 0;
     /// Axis of the built handle nearest positionPixel within reach, or -1; records that handle's screen direction.
     /// The handle under positionPixel: the centre handle first, then an axis within a few pixels of its shaft, then a
     /// plane handle, then the nearest axis within reach. Records an axis handle's screen direction.
