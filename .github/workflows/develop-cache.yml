@@ -1,0 +1,93 @@
+name: Develop compiler cache
+
+# Integration pull requests compile the Editor configuration, restoring compiler
+# caches without saving them. The batch saves those caches on main, which trails
+# develop by every unpromoted change, so pull-request compiles started further from
+# the code they build as develop moved ahead (27-38 minutes with main 60 commits
+# behind). This workflow compiles each develop commit exactly as the pull-request
+# Editor job does and saves the result in develop's cache scope, which pull
+# requests targeting develop restore before main's.
+# Thanks to GitHub, "Dependency caching reference", restrictions for accessing a
+# cache: a pull-request run can restore caches created on its base branch.
+# https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache
+#
+# It validates nothing and reports no required check: acceptance into develop and
+# promotion of main are unchanged (docs/development/continuous-integration.md#develop-compiler-cache).
+on:
+  push:
+    branches: [develop]
+    paths-ignore:
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time. A newer push replaces a pending run but never cancels the
+# running one: busy merge periods would otherwise cancel every run before it saved.
+concurrency:
+  group: develop-compiler-cache
+  cancel-in-progress: false
+
+env:
+  CI: "true"
+  LUDUS_DIAGNOSTIC_INTERACTIVE: "0"
+  CMAKE_BUILD_PARALLEL_LEVEL: "4"
+
+jobs:
+  # The job ID matches ci.yml's editor job: native-setup selects its runtime
+  # profile by GITHUB_JOB, and every compile input must match for cache hits.
+  editor:
+    if: github.ref == 'refs/heads/develop'
+    name: Warm the Editor compile cache
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      LUDUS_EDITOR_PRECOMPILED_HEADERS: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/native-setup
+        with:
+          preset: linux-clang-development
+          editor: 'true'
+          cache-variant: editor
+          conan-cache-writer: 'true'
+          compiler-cache-writer: 'true'
+      - name: Prepare and configure trusted authoring shaders
+        run: |
+          ./scripts/shader-probe bootstrap
+          out/host-tools/venv/bin/cmake --preset linux-clang-development -DLUDUS_EDITOR_RENDER_PREVIEW=ON -DLUDUS_BUILD_SHADER_WORKER=ON -DLUDUS_EDITOR_PRECOMPILED_HEADERS=OFF -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val"
+      # A compile failure on develop still leaves every object that compiled, and
+      # the next pull request (often its fix) reuses them, so the cache is saved.
+      - name: Build every default target with the Editor and shader worker
+        id: build
+        continue-on-error: true
+        run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development
+      - name: Report a develop compile failure
+        if: steps.build.outcome == 'failure'
+        run: echo "::warning title=Develop does not compile::The cache was saved from a partial build; see the build step."
+      - name: Report compiler cache
+        if: always()
+        run: if command -v ccache >/dev/null; then ccache --show-stats >> "$GITHUB_STEP_SUMMARY"; fi
+
+  prune:
+    # Each run saves a new commit-keyed compiler cache. Keep only the newest of
+    # each family on develop, so develop's entries cannot evict main's.
+    needs: editor
+    if: always() && github.ref == 'refs/heads/develop'
+    name: Prune superseded develop caches
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Keep the newest cache of each family on develop
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/python/batch_ci.py prune-caches

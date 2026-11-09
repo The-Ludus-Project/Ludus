@@ -39,6 +39,8 @@ MAX_JOB_PAGES = 5
 # compiler caches, the commit that saved it; older entries of a family on the
 # batch's ref can never be restored again once a newer one exists.
 PRUNED_CACHE_PREFIXES = ("ccache-", "conan-", "editor-pages-", "editor-tools-", "web-tools-", "icu-probe-", "pip-")
+# The batch prunes main; the develop compiler-cache workflow prunes develop.
+PRUNED_CACHE_REFS = ("refs/heads/main", "refs/heads/develop")
 CACHE_KEY_HASH = re.compile(r"-[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 MAX_CACHE_PAGES = 20
 RECOVERY_PATHS = (
@@ -400,8 +402,12 @@ def main() -> int:
     parser.add_argument("--candidate", default="")
     arguments = parser.parse_args()
     try:
-        if os.environ.get("GITHUB_REF") != "refs/heads/main":
-            raise BatchError("Batch control may run only from main.")
+        # The develop compiler-cache workflow prunes its own scope; every other
+        # command controls the batch and runs only from trusted main.
+        allowed = PRUNED_CACHE_REFS if arguments.command == "prune-caches" else ("refs/heads/main",)
+        if os.environ.get("GITHUB_REF") not in allowed:
+            raise BatchError("Batch control may run only from main." if arguments.command != "prune-caches"
+                             else "Cache pruning may run only from main or develop.")
         client = GitHub(os.environ["GITHUB_REPOSITORY"], os.environ["GH_TOKEN"])
         if arguments.command == "snapshot":
             outputs = snapshot(client, Path.cwd(), os.environ["GITHUB_SHA"], retry=arguments.retry)
