@@ -8,6 +8,7 @@
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/transform.hpp>
+#include <ludus/graphics/renderer/lighting.hpp>
 
 #include "mesh_silhouette.h"
 #include "selection_outline_request.h"
@@ -52,16 +53,19 @@ public:
         Rotate,
         Scale
     };
-    /// What a handle drags: one axis, a plane (move only) or every axis at once (scale only).
+    /// What a handle drags: one axis, a plane (move only) every axis at once (scale only), or a volume face.
     enum class HandleKind : foundation::uint8
     {
         Axis,
         Plane,
         Uniform,
-        TerrainExtent
+        TerrainExtent,
+        ProbeFace,
+        ProbeSpacing
     };
     /// A handle under the pointer or being dragged. Index is the axis, from 0 for X, of an axis handle and the axis
-    /// normal to the plane of a plane handle (0 for the YZ plane, 1 for XZ, 2 for XY); it is negative for no handle.
+    /// normal to a plane handle (0 for the YZ plane, 1 for XZ, 2 for XY). Probe face indices are the three
+    /// maximum faces in axis order followed by the three minimum faces. A negative index means no handle.
     struct HandleTarget final
     {
         HandleKind Kind = HandleKind::Axis;
@@ -145,6 +149,8 @@ public:
     void RequestClearSelection();
     /// Request framing for the visible entity under a double-click in the edit view.
     void RequestFrameAt(QPointF positionPixel, const QRectF& framePixel);
+    /// Frame the selected probe grid, including one whose bake is disabled.
+    [[nodiscard]] bool FrameProbeVolume() noexcept;
     [[nodiscard]] bool Move(QPointF positionPixel, bool shouldSnap);
     [[nodiscard]] bool Release();
     void Cancel();
@@ -177,6 +183,8 @@ Q_SIGNALS:
     void FrameRequested(const QString& id);
     /// Original stable ID and absolute placement arrays (metres, Euler degrees, positive scale).
     void PlacementCommitted(const QString& id, const QJsonObject& placement);
+    void ProbeSpacingCommitted(const QString& id, foundation::float64 spacingMetres);
+    void ProbeFaceCommitted(const QString& id, foundation::int32 axis, foundation::uint32 count, bool isMinimumFace);
     void TerrainExtentCommitted(const QString& key, foundation::float64 extent);
     void TerrainHeightPicked(foundation::float32 height);
     /// The stroke being dragged gained a point: the local XZ pairs since the press, in order.
@@ -219,6 +227,24 @@ private:
     void appendObjectOutline(const PreviewObject& object,
                              const foundation::math::Affine3& meshToWorld,
                              ViewportObjectOverlay& inoutOverlay);
+    void appendBoxOutline(const foundation::math::Aabb3& bounds,
+                          const foundation::math::Matrix4& boundsToClip,
+                          ViewportObjectOverlay& inoutOverlay) const;
+    void appendProbeVolume(ViewportObjectOverlay& inoutOverlay) const;
+    [[nodiscard]] bool projectProbeFace(const graphics::renderer::GiProbeGrid& grid,
+                                        foundation::int32 face,
+                                        QPointF& outPositionPixel) const;
+    [[nodiscard]] bool canEditProbeVolume() const noexcept;
+    [[nodiscard]] bool projectProbeScaleHandle(const graphics::renderer::GiProbeGrid& grid,
+                                               QPointF& outPositionPixel) const;
+    [[nodiscard]] HandleTarget pickProbeHandle(QPointF positionPixel) const;
+    [[nodiscard]] bool beginProbeFaceDrag(QPointF positionPixel);
+    void dragProbeFace(QPointF positionPixel);
+    void dragProbeSpacing(QPointF positionPixel, QPointF deltaPixel, bool shouldSnap);
+    graphics::renderer::GiProbeGrid mProbeGrid{};
+    graphics::renderer::GiProbeGrid mProbeDragGrid{};
+    QRectF mProbeDragFramePixel;
+    bool mIsStandaloneProbeVolume = false;
     /// Make mSilhouette the adjacency of scene mesh meshIndex, rebuilding once per scene identity or mesh change.
     /// False when that mesh has no usable adjacency.
     [[nodiscard]] bool refreshSilhouette(foundation::int32 meshIndex);
@@ -265,8 +291,8 @@ private:
     void appendHandleGeometry(const HandleLine& handle, ViewportObjectOverlay& inoutOverlay) const;
     /// Append a plane handle's casing and solid parallelogram.
     void appendPlaneGeometry(const PlaneHandle& plane, ViewportObjectOverlay& inoutOverlay) const;
-    /// Append the centre handle's casing and solid cube.
-    void appendUniformGeometry(ViewportObjectOverlay& inoutOverlay) const;
+    /// Append a uniform scale handle's casing and solid cube.
+    void appendUniformGeometry(HandleTarget target, QPointF centerPixel, ViewportObjectOverlay& inoutOverlay) const;
     /// Begin dragging a plane handle: fix the plane through the pivot and where the pointer meets it.
     [[nodiscard]] bool beginPlaneDrag(QPointF positionPixel);
     /// Drag results for the three kinds of handle. Each updates the placement values and the readout text, and returns
