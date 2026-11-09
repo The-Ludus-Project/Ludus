@@ -15,6 +15,7 @@
 #include <QKeySequence>
 #include <QMenu>
 #include <QPoint>
+#include <QPushButton>
 #include <QShortcut>
 #include <QString>
 

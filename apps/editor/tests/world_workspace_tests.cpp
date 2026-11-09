@@ -2857,15 +2857,17 @@ TEST_CASE("Explore as Player moves the rendered staircase2 World camera", "[.fir
     const math::Vector3d movedWorld = preview.GetVisibleCameraSample().Pose.Position;
     CHECK((movedWorld.X != start.EyeWorld.X || movedWorld.Z != start.EyeWorld.Z));
     CHECK(movedWorld.Y < start.EyeWorld.Y);
+    const math::Vector3 renderedPositionWorld{static_cast<float32>(movedWorld.X),
+                                              static_cast<float32>(movedWorld.Y),
+                                              static_cast<float32>(movedWorld.Z)};
     timer.restart();
-    while (preview.Frames() <= framesBeforeMove && timer.elapsed() < TIMEOUT_MILLISECONDS)
+    while (
+        (preview.Frames() <= framesBeforeMove || preview.ViewDescription().CameraPosition != renderedPositionWorld) &&
+        timer.elapsed() < TIMEOUT_MILLISECONDS)
     {
         QTest::qWait(POLL_MILLISECONDS);
     }
     CHECK(preview.Frames() > framesBeforeMove);
-    const math::Vector3 renderedPositionWorld{static_cast<float32>(movedWorld.X),
-                                              static_cast<float32>(movedWorld.Y),
-                                              static_cast<float32>(movedWorld.Z)};
     CHECK(preview.ViewDescription().CameraPosition == renderedPositionWorld);
     LevelWorkspace* levelOrNull = workspace.findChild<LevelWorkspace*>();
     REQUIRE(levelOrNull != nullptr);
