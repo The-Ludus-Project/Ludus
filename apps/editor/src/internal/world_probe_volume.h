@@ -32,6 +32,9 @@ void AppendGiProbeComponents(QJsonArray& inoutComponents);
 [[nodiscard]] QJsonArray ReadWorldGiProbeOrigin(const QJsonObject& components);
 void WriteWorldGiProbeOrigin(QJsonObject& inoutComponents, const QJsonArray& origin);
 
+/// Write uniform probe spacing in metres. The caller validates the edit with the World document.
+void WriteWorldGiProbeSpacing(QJsonObject& inoutComponents, foundation::float64 spacingMetres);
+
 /// Change one axis count, shifting its minimum corner if the maximum face stays fixed.
 void ResizeWorldGiProbeAxis(QJsonObject& inoutComponents,
                             foundation::usize axis,

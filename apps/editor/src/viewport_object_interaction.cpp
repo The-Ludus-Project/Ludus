@@ -147,6 +147,19 @@ float64 ComputeSnap(float64 value, float64 interval) noexcept
     const float64 scaled = value / interval;
     return static_cast<float64>(static_cast<int64>(scaled + (scaled < 0 ? -0.5 : 0.5))) * interval;
 }
+float64 ComputeUniformScaleFactor(QPointF deltaPixel, bool shouldSnap) noexcept
+{
+    const float64 distancePixel = (deltaPixel.x() - deltaPixel.y()) * UNIFORM_DRAG_COMPONENT;
+    const float64 factor = 1 + distancePixel / HANDLE_PIXELS;
+    return shouldSnap == true ? ComputeSnap(factor, SCALE_SNAP) : factor;
+}
+
+bool IsWithinUniformHandle(QPointF positionPixel, QPointF centerPixel) noexcept
+{
+    return math::Abs(positionPixel.x() - centerPixel.x()) <= CENTRE_HIT_HALF_PIXELS &&
+           math::Abs(positionPixel.y() - centerPixel.y()) <= CENTRE_HIT_HALF_PIXELS;
+}
+
 /// The ray through positionPixel, from the near plane towards the far side; false for a degenerate camera.
 bool TryMakePixelRay(const math::Matrix4& clipToWorld,
                      const QRectF& framePixel,
@@ -1052,12 +1065,30 @@ bool ViewportObjectInteraction::projectProbeFace(const rr::GiProbeGrid& grid,
     return true;
 }
 
-ViewportObjectInteraction::HandleTarget ViewportObjectInteraction::pickProbeFace(QPointF positionPixel) const
+bool ViewportObjectInteraction::canEditProbeVolume() const noexcept
+{
+    return mCanEdit == true && mProbeGrid.Counts[0] != 0 && (mTool == Tool::Move || mTool == Tool::Scale);
+}
+
+bool ViewportObjectInteraction::projectProbeScaleHandle(const rr::GiProbeGrid& grid, QPointF& outPositionPixel) const
+{
+    const math::Aabb3 boundsWorld = ComputeWorldGiProbeBounds(grid);
+    return project((boundsWorld.Min + boundsWorld.Max) * 0.5F, outPositionPixel) == true &&
+           mFramePixel.contains(outPositionPixel) == true;
+}
+
+ViewportObjectInteraction::HandleTarget ViewportObjectInteraction::pickProbeHandle(QPointF positionPixel) const
 {
     HandleTarget target;
-    if (mCanEdit == false || mProbeGrid.Counts[0] == 0 || mTool != Tool::Move)
+    if (canEditProbeVolume() == false)
     {
         return target;
+    }
+    QPointF scaleHandlePixel;
+    if (mTool == Tool::Scale && projectProbeScaleHandle(mProbeGrid, scaleHandlePixel) == true &&
+        IsWithinUniformHandle(positionPixel, scaleHandlePixel) == true)
+    {
+        return {HandleKind::ProbeSpacing, 0};
     }
     float64 nearest = HANDLE_HIT_PIXELS * HANDLE_HIT_PIXELS;
     for (int32 face = 0; face < ViewportObjectOverlay::PROBE_FACE_HANDLES; ++face)
@@ -1140,19 +1171,39 @@ void ViewportObjectInteraction::dragProbeFace(QPointF positionPixel)
     Q_EMIT Changed();
 }
 
+void ViewportObjectInteraction::dragProbeSpacing(QPointF positionPixel, QPointF deltaPixel, bool shouldSnap)
+{
+    const float64 originalSpacing = static_cast<float64>(mProbeGrid.Spacing);
+    const float64 spacingMetres = math::Clamp(originalSpacing * ComputeUniformScaleFactor(deltaPixel, shouldSnap),
+                                              rr::MIN_GI_PROBE_SPACING_METRES,
+                                              rr::MAX_GI_PROBE_SPACING_METRES);
+    rr::GiProbeGrid candidate = mProbeGrid;
+    candidate.Spacing = static_cast<float32>(spacingMetres);
+    if (rr::IsGiProbeGridValid(candidate) == false)
+    {
+        return;
+    }
+    mProbeDragGrid = candidate;
+    mReadoutAnchorPixel = positionPixel;
+    mReadoutText = FormatScaleReadout(GIZMO_READOUT_NO_AXIS, spacingMetres / originalSpacing) +
+                   QStringLiteral(" · %1 m spacing").arg(spacingMetres, 0, 'f', PROBE_EXTENT_DECIMALS);
+    Q_EMIT Changed();
+}
+
 void ViewportObjectInteraction::appendProbeVolume(ViewportObjectOverlay& inoutOverlay) const
 {
     if (mProbeGrid.Counts[0] == 0)
     {
         return;
     }
-    rr::GiProbeGrid grid = mDragTarget.Kind == HandleKind::ProbeFace ? mProbeDragGrid : mProbeGrid;
-    if (mDragTarget.IsValid() == true && mDragTarget.Kind != HandleKind::ProbeFace && mTool == Tool::Move)
+    const bool isProbeDrag = mDragTarget.Kind == HandleKind::ProbeFace || mDragTarget.Kind == HandleKind::ProbeSpacing;
+    rr::GiProbeGrid grid = isProbeDrag == true ? mProbeDragGrid : mProbeGrid;
+    if (mDragTarget.IsValid() == true && isProbeDrag == false && mTool == Tool::Move)
     {
         grid.OriginWorld = WorldDocument::MakeSceneMeshToParent(mCandidate).Translation;
     }
     appendBoxOutline(ComputeWorldGiProbeBounds(grid), mWorldToClip, inoutOverlay);
-    if (mCanEdit == false || mTool != Tool::Move)
+    if (canEditProbeVolume() == false)
     {
         return;
     }
@@ -1175,22 +1226,26 @@ void ViewportObjectInteraction::appendProbeVolume(ViewportObjectOverlay& inoutOv
         inoutOverlay.HandleFills.Add(
             {corners, ViewportHandleFill::MAX_CORNERS, getHandleColour(target, face % AXIS_COUNT, false)});
     }
+    QPointF scaleHandlePixel;
+    if (mTool == Tool::Scale && projectProbeScaleHandle(grid, scaleHandlePixel) == true)
+    {
+        appendUniformGeometry({HandleKind::ProbeSpacing, 0}, scaleHandlePixel, inoutOverlay);
+    }
 }
 
 ViewportObjectInteraction::HandleTarget ViewportObjectInteraction::pickHandle(QPointF positionPixel)
 {
-    const HandleTarget probeFace = pickProbeFace(positionPixel);
-    if (probeFace.IsValid() == true)
+    const HandleTarget probeHandle = pickProbeHandle(positionPixel);
+    if (probeHandle.IsValid() == true)
     {
-        return probeFace;
+        return probeHandle;
     }
     const HandleTarget terrain = pickTerrainHandle(positionPixel);
     if (terrain.IsValid() == true)
     {
         return terrain;
     }
-    if (mHasUniformHandle == true && math::Abs(positionPixel.x() - mPivotPixel.x()) <= CENTRE_HIT_HALF_PIXELS &&
-        math::Abs(positionPixel.y() - mPivotPixel.y()) <= CENTRE_HIT_HALF_PIXELS)
+    if (mHasUniformHandle == true && IsWithinUniformHandle(positionPixel, mPivotPixel) == true)
     {
         return {HandleKind::Uniform, 0};
     }
@@ -1340,7 +1395,11 @@ bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outer
         const math::Affine3 meshToWorld = makeTransform(mPlacement);
         mRotationDirection =
             math::Dot(math::Cross(meshToWorld.Columns[0], meshToWorld.Columns[1]), meshToWorld.Columns[2]) < 0 ? -1 : 1;
-        if (target.Kind == HandleKind::ProbeFace)
+        if (target.Kind == HandleKind::ProbeSpacing)
+        {
+            mProbeDragGrid = mProbeGrid;
+        }
+        else if (target.Kind == HandleKind::ProbeFace)
         {
             if (beginProbeFaceDrag(positionPixel) == false)
             {
@@ -1488,13 +1547,7 @@ bool ViewportObjectInteraction::dragPlane(QPointF positionPixel, bool shouldSnap
 }
 bool ViewportObjectInteraction::dragUniform(QPointF deltaPixel, bool shouldSnap, QJsonArray& inoutValues)
 {
-    const float64 distancePixel = (deltaPixel.x() - deltaPixel.y()) * UNIFORM_DRAG_COMPONENT;
-    float64 factor = 1 + distancePixel / HANDLE_PIXELS;
-    if (shouldSnap == true)
-    {
-        factor = ComputeSnap(factor, SCALE_SNAP);
-    }
-    factor = math::Max(factor, MINIMUM_SCALE_FACTOR);
+    const float64 factor = math::Max(ComputeUniformScaleFactor(deltaPixel, shouldSnap), MINIMUM_SCALE_FACTOR);
     QJsonArray scaled = inoutValues;
     for (int32 axis = 0; axis < AXIS_COUNT; ++axis)
     {
@@ -1542,6 +1595,9 @@ bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
     bool isValueUsable = false;
     switch (mDragTarget.Kind)
     {
+        case HandleKind::ProbeSpacing:
+            dragProbeSpacing(positionPixel, deltaPixel, shouldSnap);
+            return true;
         case HandleKind::ProbeFace:
             dragProbeFace(positionPixel);
             return true;
@@ -1593,7 +1649,14 @@ bool ViewportObjectInteraction::Release()
     const QJsonObject candidate = mCandidate;
     mDragTarget = {};
     mReadoutText.clear();
-    if (target.Kind == HandleKind::ProbeFace)
+    if (target.Kind == HandleKind::ProbeSpacing)
+    {
+        if (mProbeDragGrid.Spacing != mProbeGrid.Spacing)
+        {
+            Q_EMIT ProbeSpacingCommitted(mSelected, static_cast<float64>(mProbeDragGrid.Spacing));
+        }
+    }
+    else if (target.Kind == HandleKind::ProbeFace)
     {
         const int32 axis = target.Index % AXIS_COUNT;
         if (mProbeDragGrid.Counts[axis] != mProbeGrid.Counts[axis])
@@ -1781,7 +1844,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
     if (mHasUniformHandle == true)
     {
         // The centre handle takes the pivot's place, so the scale tool has one marker at its origin.
-        appendUniformGeometry(outOverlay);
+        appendUniformGeometry({HandleKind::Uniform, 0}, mPivotPixel, outOverlay);
     }
     else if (mHandles.IsEmpty() == false)
     {
@@ -1874,18 +1937,19 @@ void ViewportObjectInteraction::appendPlaneGeometry(const PlaneHandle& plane, Vi
     inoutOverlay.HandleFills.Add(casing);
     inoutOverlay.HandleFills.Add(square);
 }
-void ViewportObjectInteraction::appendUniformGeometry(ViewportObjectOverlay& inoutOverlay) const
+void ViewportObjectInteraction::appendUniformGeometry(HandleTarget target,
+                                                      QPointF centerPixel,
+                                                      ViewportObjectOverlay& inoutOverlay) const
 {
-    const HandleTarget target{HandleKind::Uniform, 0};
     const bool isEmphasized = target == (IsDragging() == true ? mDragTarget : mHoverTarget);
     const QPointF halfPixel(CENTRE_HALF_PIXELS, CENTRE_HALF_PIXELS);
     ViewportHandleFill cube;
     cube.CornerCount = ViewportHandleFill::MAX_CORNERS;
     cube.Color = isEmphasized == true ? CENTRE_EMPHASIS_COLOR : CENTRE_COLOR;
-    cube.CornersPixel = {mPivotPixel + QPointF(-halfPixel.x(), -halfPixel.y()),
-                         mPivotPixel + QPointF(halfPixel.x(), -halfPixel.y()),
-                         mPivotPixel + halfPixel,
-                         mPivotPixel + QPointF(-halfPixel.x(), halfPixel.y())};
+    cube.CornersPixel = {centerPixel + QPointF(-halfPixel.x(), -halfPixel.y()),
+                         centerPixel + QPointF(halfPixel.x(), -halfPixel.y()),
+                         centerPixel + halfPixel,
+                         centerPixel + QPointF(-halfPixel.x(), halfPixel.y())};
     ViewportHandleFill casing = cube;
     casing.Color = RECEDE_COLOR;
     casing.CornersPixel = GrowQuad(cube.CornersPixel, CASING_GROWTH_PIXELS);

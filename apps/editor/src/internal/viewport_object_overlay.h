@@ -53,7 +53,7 @@ struct ViewportObjectOverlay final
     static constexpr foundation::usize TERRAIN_EXTENT_HANDLES = 2;
     static constexpr foundation::int32 PROBE_FACE_HANDLES = 2 * AXIS_COUNT;
     static constexpr foundation::usize MAX_HANDLE_FILLS =
-        MAX_TRANSFORM_HANDLE_FILLS + TERRAIN_EXTENT_HANDLES + PROBE_FACE_HANDLES * FILLS_PER_CASED_HANDLE;
+        MAX_TRANSFORM_HANDLE_FILLS + TERRAIN_EXTENT_HANDLES + (PROBE_FACE_HANDLES + 1) * FILLS_PER_CASED_HANDLE;
     /// The selection amber of the design tokens, shared with the graph canvas.
     static constexpr QRgb SELECTION_COLOR = design::GetThemeArgb(design::ThemeColour::SelectionAmber, true);
     /// Opacity, of 255, of the casing under the outline.

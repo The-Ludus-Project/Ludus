@@ -49,6 +49,7 @@
 #include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
+#include <QLineF>
 #include <QListWidget>
 #include <QLockFile>
 #include <QMessageBox>
@@ -3500,7 +3501,7 @@ TEST_CASE("The World inspector bakes one authored GI volume for marked receivers
     workspace.StopPreview();
 }
 
-TEST_CASE("World viewport moves and resizes an unbaked GI probe volume with the inspector hidden",
+TEST_CASE("World viewport moves, resizes and scales an unbaked GI probe volume with the inspector hidden",
           "[editor][world][object-interaction][probe-gi]")
 {
     namespace math = ludus::foundation::math;
@@ -3572,8 +3573,9 @@ TEST_CASE("World viewport moves and resizes an unbaked GI probe volume with the 
     REQUIRE(overlay.HandleStrokes.IsEmpty() == false);
     const QJsonObject before = workspace.Document().Draft();
 
-    SECTION("The maximum face grows the count without moving the origin")
+    SECTION("In Scale mode the maximum face still grows the count without moving the origin")
     {
+        interaction.SetTool(ViewportObjectInteraction::Tool::Scale);
         const math::Vector3 faceWorld{boundsWorld.Max.X, centerWorld.Y, centerWorld.Z};
         const QPointF handlePixel = project(faceWorld);
         REQUIRE(interaction.Hover(handlePixel, framePixel) == true);
@@ -3621,6 +3623,39 @@ TEST_CASE("World viewport moves and resizes an unbaked GI probe volume with the 
         CHECK(interaction.Release() == false);
         CHECK(workspace.Document().Draft() == before);
         CHECK(interaction.FrameProbeVolume() == true);
+    }
+
+    SECTION("The Scale handle previews uniform spacing and commits one undoable edit")
+    {
+        interaction.SetTool(ViewportObjectInteraction::Tool::Scale);
+        interaction.BuildOverlay(framePixel, overlay);
+        REQUIRE(overlay.HandleFills.GetSize() >= 2);
+        const QPointF handlePixel = project(centerWorld);
+        const ViewportHandleFill& scaleFill = overlay.HandleFills[overlay.HandleFills.GetSize() - 1];
+        CHECK(QLineF((scaleFill.CornersPixel[0] + scaleFill.CornersPixel[2]) * 0.5, handlePixel).length() < 0.01);
+        REQUIRE(interaction.Hover(handlePixel, framePixel) == true);
+        CHECK(interaction.GetHoveredHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeSpacing);
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        const QPointF enlargedPixel = handlePixel + QPointF(56, -56);
+        REQUIRE(interaction.Move(enlargedPixel, true) == true);
+        interaction.BuildOverlay(framePixel, overlay);
+        CHECK(overlay.ReadoutText.contains(QStringLiteral("2.00 m spacing")) == true);
+        CHECK(workspace.Document().Draft() == before);
+        interaction.Cancel();
+        CHECK(interaction.Release() == false);
+        CHECK(workspace.Document().Draft() == before);
+
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        REQUIRE(interaction.Move(enlargedPixel, true) == true);
+        REQUIRE(interaction.Release() == true);
+        const renderer::GiProbeGrid scaled = readGrid();
+        CHECK(scaled.Spacing == 2 * original.Spacing);
+        CHECK(scaled.OriginWorld == original.OriginWorld);
+        CHECK(scaled.Counts == original.Counts);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+        workspace.Redo();
+        CHECK(readGrid().Spacing == scaled.Spacing);
     }
 
     SECTION("Move handles translate the volume without resizing it")

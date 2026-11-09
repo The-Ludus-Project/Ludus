@@ -73,7 +73,7 @@ void AppendGiProbeComponents(QJsonArray& inoutComponents)
         {QStringLiteral("required"), false},
         {QStringLiteral("help"),
          QStringLiteral("Transform position is the minimum corner, in metres. "
-                        "Use Move in the viewport to position the box or drag a face to change its probe count.")},
+                        "Use Move for placement, face handles for counts, and Scale for spacing.")},
         {QStringLiteral("properties"), properties},
     });
     inoutComponents.append(QJsonObject{
@@ -148,6 +148,14 @@ void WriteWorldGiProbeOrigin(QJsonObject& inoutComponents, const QJsonArray& ori
         transform.insert(QString(QLatin1Char(POSITION_AXES[axis])), origin[static_cast<qsizetype>(axis)]);
     }
     inoutComponents.insert(key, transform);
+}
+
+void WriteWorldGiProbeSpacing(QJsonObject& inoutComponents, float64 spacingMetres)
+{
+    const QString component = GetGiProbeVolumeComponentId();
+    QJsonObject volume = inoutComponents.value(component).toObject();
+    volume.insert(QStringLiteral("spacing"), spacingMetres);
+    inoutComponents.insert(component, volume);
 }
 
 void ResizeWorldGiProbeAxis(QJsonObject& inoutComponents, usize axis, uint32 count, bool isMinimumFace)

@@ -8,6 +8,7 @@
 #include "internal/world_probe_volume.h"
 #include "internal/world_workspace.h"
 
+#include <ludus/foundation/base/types.h>
 #include <ludus/gameplay/camera/camera.hpp>
 
 #include <QAction>
@@ -64,6 +65,10 @@ void WorldWorkspace::bindViewportInteraction()
         });
         connect(&interaction, &ViewportObjectInteraction::FrameRequested, this, &WorldWorkspace::frameEntity);
         connect(&interaction, &ViewportObjectInteraction::ProbeFaceCommitted, this, &WorldWorkspace::commitProbeFace);
+        connect(&interaction,
+                &ViewportObjectInteraction::ProbeSpacingCommitted,
+                this,
+                &WorldWorkspace::commitProbeSpacing);
         connect(&interaction,
                 &ViewportObjectInteraction::PlacementCommitted,
                 this,
@@ -244,33 +249,60 @@ void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObjec
                 ? QStringLiteral("Probe volume moved. Undo restores its placement. Save World keeps the edit.")
                 : QStringLiteral("Object transformed. Undo restores its placement; Save World keeps the edit."));
 }
-void WorldWorkspace::commitProbeFace(const QString& id, int32 axis, uint32 count, bool isMinimumFace)
+QJsonObject WorldWorkspace::findEditableProbeVolume(const QString& id) const
 {
     if (id != Selected_ || Pending_ == true || SceneBusy() == true || mSelectedEntities.size() != 1 ||
-        IsBuiltInWorld(Document_) == false || axis < 0 || axis >= AXIS_COUNT || count < 2 ||
+        IsBuiltInWorld(Document_) == false)
+    {
+        return {};
+    }
+    const QJsonObject entity = Document_.Entity(id);
+    const QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    return components.contains(GetGiProbeVolumeComponentId()) == true ? entity : QJsonObject{};
+}
+
+void WorldWorkspace::commitProbeFace(const QString& id, int32 axis, uint32 count, bool isMinimumFace)
+{
+    const QJsonObject entity = findEditableProbeVolume(id);
+    if (entity.isEmpty() == true || axis < 0 || axis >= AXIS_COUNT || count < 2 ||
         count > graphics::renderer::MAX_GI_PROBE_AXIS_COUNT)
     {
         return;
     }
-    const QJsonObject entity = Document_.Entity(id);
     QJsonObject components = entity.value(QStringLiteral("components")).toObject();
-    if (components.contains(GetGiProbeVolumeComponentId()) == false)
+    ResizeWorldGiProbeAxis(components, static_cast<usize>(axis), count, isMinimumFace);
+    commitProbeVolumeEdit(entity, components);
+}
+
+void WorldWorkspace::commitProbeSpacing(const QString& id, float64 spacingMetres)
+{
+    const QJsonObject entity = findEditableProbeVolume(id);
+    if (entity.isEmpty() == true)
     {
         return;
     }
-    ResizeWorldGiProbeAxis(components, static_cast<usize>(axis), count, isMinimumFace);
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    WriteWorldGiProbeSpacing(components, spacingMetres);
+    commitProbeVolumeEdit(entity, components);
+}
+
+void WorldWorkspace::commitProbeVolumeEdit(const QJsonObject& entity, const QJsonObject& components)
+{
+    const QString id = entity.value(QStringLiteral("id")).toString();
     QString error;
     if (Document_.Edit(id, components, entity.value(QStringLiteral("name")).toString(), error) == false)
     {
-        Changed(QStringLiteral(
-                    "Probe volume could not be resized. Drag the face closer to the volume or reduce probe spacing. ") +
-                error);
+        Changed(
+            QStringLiteral(
+                "Probe volume bounds could not be changed. Try a smaller drag or adjust the spacing in Properties. ") +
+            error);
         return;
     }
     RenderInspector();
     Snapshot();
-    Changed(QStringLiteral("Probe volume resized. Undo restores its bounds. Save World keeps the edit."));
+    Changed(QStringLiteral("Probe volume bounds updated. Undo restores them. Save World keeps the edit."));
 }
+
 void WorldWorkspace::saveStartView()
 {
     if (Pending_ == true || SceneBusy() == true)

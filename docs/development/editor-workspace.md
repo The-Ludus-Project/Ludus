@@ -1917,7 +1917,13 @@ the entity list or press **F** in the viewport to frame the box. With **Move**
 selected, drag the arrows or plane handles to position it, or drag a coloured
 square on a face to resize along that axis. Resizing keeps the opposite face
 fixed and adds or removes whole probe intervals at the current spacing. The
-drag readout shows the new count and length. Releasing the pointer applies one
+drag readout shows the new count and length.
+
+Switch to **Scale (R)** and drag the white center square to scale the entire
+volume. Drag up and right to enlarge it or down and left to shrink it. This
+changes spacing on all three axes while keeping the minimum corner and probe
+counts fixed. Hold **Shift** to snap the scale factor. The colored face handles
+still resize one axis at the current spacing. Releasing the pointer applies one
 undoable edit. Press **Escape** during a drag to discard it.
 
 For precise values, set the Transform position to the volume's minimum corner

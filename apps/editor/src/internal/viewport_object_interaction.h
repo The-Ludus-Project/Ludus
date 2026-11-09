@@ -60,7 +60,8 @@ public:
         Plane,
         Uniform,
         TerrainExtent,
-        ProbeFace
+        ProbeFace,
+        ProbeSpacing
     };
     /// A handle under the pointer or being dragged. Index is the axis, from 0 for X, of an axis handle and the axis
     /// normal to a plane handle (0 for the YZ plane, 1 for XZ, 2 for XY). Probe face indices are the three
@@ -180,6 +181,7 @@ Q_SIGNALS:
     void FrameRequested(const QString& id);
     /// Original stable ID and absolute placement arrays (metres, Euler degrees, positive scale).
     void PlacementCommitted(const QString& id, const QJsonObject& placement);
+    void ProbeSpacingCommitted(const QString& id, foundation::float64 spacingMetres);
     void ProbeFaceCommitted(const QString& id, foundation::int32 axis, foundation::uint32 count, bool isMinimumFace);
     void TerrainExtentCommitted(const QString& key, foundation::float64 extent);
     void TerrainHeightPicked(foundation::float32 height);
@@ -230,9 +232,13 @@ private:
     [[nodiscard]] bool projectProbeFace(const graphics::renderer::GiProbeGrid& grid,
                                         foundation::int32 face,
                                         QPointF& outPositionPixel) const;
-    [[nodiscard]] HandleTarget pickProbeFace(QPointF positionPixel) const;
+    [[nodiscard]] bool canEditProbeVolume() const noexcept;
+    [[nodiscard]] bool projectProbeScaleHandle(const graphics::renderer::GiProbeGrid& grid,
+                                               QPointF& outPositionPixel) const;
+    [[nodiscard]] HandleTarget pickProbeHandle(QPointF positionPixel) const;
     [[nodiscard]] bool beginProbeFaceDrag(QPointF positionPixel);
     void dragProbeFace(QPointF positionPixel);
+    void dragProbeSpacing(QPointF positionPixel, QPointF deltaPixel, bool shouldSnap);
     graphics::renderer::GiProbeGrid mProbeGrid{};
     graphics::renderer::GiProbeGrid mProbeDragGrid{};
     QRectF mProbeDragFramePixel;
@@ -283,8 +289,8 @@ private:
     void appendHandleGeometry(const HandleLine& handle, ViewportObjectOverlay& inoutOverlay) const;
     /// Append a plane handle's casing and solid parallelogram.
     void appendPlaneGeometry(const PlaneHandle& plane, ViewportObjectOverlay& inoutOverlay) const;
-    /// Append the centre handle's casing and solid cube.
-    void appendUniformGeometry(ViewportObjectOverlay& inoutOverlay) const;
+    /// Append a uniform scale handle's casing and solid cube.
+    void appendUniformGeometry(HandleTarget target, QPointF centerPixel, ViewportObjectOverlay& inoutOverlay) const;
     /// Begin dragging a plane handle: fix the plane through the pivot and where the pointer meets it.
     [[nodiscard]] bool beginPlaneDrag(QPointF positionPixel);
     /// Drag results for the three kinds of handle. Each updates the placement values and the readout text, and returns
