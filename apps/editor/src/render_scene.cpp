@@ -562,10 +562,15 @@ int32 Find(const QVector<T>& values, const QString& id)
     return -1;
 }
 
+struct AtmosphereLight final
+{
+    math::Vector3 DirectionWorld{};
+    math::Vector3 Illuminance{};
+};
+
 bool ReadAtmosphereLight(const QJsonObject& entity,
                          const QJsonObject& transformBinding,
-                         math::Vector3& outDirectionWorld,
-                         math::Vector3& outIlluminance,
+                         AtmosphereLight& outLight,
                          QString& outError)
 {
     if (IsWorldAtmosphereLight(entity) == false)
@@ -590,10 +595,13 @@ bool ReadAtmosphereLight(const QJsonObject& entity,
     const float32 intensity = light.value(QStringLiteral("enabled")).toBool() == true
                                   ? static_cast<float32>(light.value(QStringLiteral("intensity")).toDouble())
                                   : 0;
-    outDirectionWorld = math::Rotate(transform.Rotation, {0, 0, 1});
-    outIlluminance = {intensity * static_cast<float32>(light.value(QStringLiteral("r")).toDouble()),
-                      intensity * static_cast<float32>(light.value(QStringLiteral("g")).toDouble()),
-                      intensity * static_cast<float32>(light.value(QStringLiteral("b")).toDouble())};
+    outLight =
+    {
+        .DirectionWorld = math::Rotate(transform.Rotation, {0, 0, 1}),
+        .Illuminance = {intensity * static_cast<float32>(light.value(QStringLiteral("r")).toDouble()),
+                        intensity * static_cast<float32>(light.value(QStringLiteral("g")).toDouble()),
+                        intensity * static_cast<float32>(light.value(QStringLiteral("b")).toDouble())},
+    };
     return true;
 }
 
@@ -632,10 +640,8 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
         inoutScene.AtmosphereStatus = QStringLiteral("Repair the Atmosphere Transform in Properties. %1").arg(error);
         return;
     }
-    math::Vector3 directionToSunWorld;
-    math::Vector3 solarIlluminance;
-    if (ReadAtmosphereLight(world.Entity(sunId), transformBinding, directionToSunWorld, solarIlluminance, error) ==
-        false)
+    AtmosphereLight sun;
+    if (ReadAtmosphereLight(world.Entity(sunId), transformBinding, sun, error) == false)
     {
         inoutScene.AtmosphereStatus = QStringLiteral("Check Atmosphere → Sun. %1").arg(error);
         return;
@@ -646,8 +652,8 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
         .IsEnabled = true,
         .SurfaceAnchorWorld = placement.Translation,
         .SurfaceUpWorld = math::Rotate(placement.Rotation, {0, 1, 0}),
-        .DirectionToSunWorld = directionToSunWorld,
-        .SolarIlluminance = solarIlluminance,
+        .DirectionToSunWorld = sun.DirectionWorld,
+        .SolarIlluminance = sun.Illuminance,
         .SolarAngularRadiusRadians =
             math::DegreesToRadians(static_cast<float32>(properties.value(QStringLiteral("solarRadius")).toDouble())),
         .SunSourceId = sunSourceId,
@@ -666,17 +672,14 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
         inoutScene.AtmosphereStatus = QStringLiteral("Select a different directional light in Atmosphere → Moon.");
         return;
     }
-    math::Vector3 lunarIlluminance;
-    if (ReadAtmosphereLight(world.Entity(moonId),
-                            transformBinding,
-                            celestial.DirectionToMoonWorld,
-                            lunarIlluminance,
-                            error) == false)
+    AtmosphereLight moon;
+    if (ReadAtmosphereLight(world.Entity(moonId), transformBinding, moon, error) == false)
     {
         inoutScene.AtmosphereStatus = QStringLiteral("Check Atmosphere → Moon. %1").arg(error);
         return;
     }
-    if (math::LengthSquared(lunarIlluminance) == 0)
+    celestial.DirectionToMoonWorld = moon.DirectionWorld;
+    if (math::LengthSquared(moon.Illuminance) == 0)
     {
         return;
     }
@@ -684,7 +687,7 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
     constexpr float32 RADIUS = rr::CelestialBackgroundDescription::DEFAULT_LUNAR_RADIUS_RADIANS;
     const float32 sine = math::Sin(RADIUS);
     celestial.LunarAngularRadiusRadians = RADIUS;
-    celestial.LunarPeakRadiance = lunarIlluminance * (LAMBERTIAN_FULL_PHASE_SCALE / (math::kPiF * sine * sine));
+    celestial.LunarPeakRadiance = moon.Illuminance * (LAMBERTIAN_FULL_PHASE_SCALE / (math::kPiF * sine * sine));
     inoutScene.AtmosphereMoonSourceId = ComputeSourceId(moonId);
 }
 } // namespace
