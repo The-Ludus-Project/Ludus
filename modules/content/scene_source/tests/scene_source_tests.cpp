@@ -9,12 +9,17 @@
 
 namespace
 {
+using ludus::content::scene_source::ApertureQuads;
+using ludus::content::scene_source::ApertureShape;
+using ludus::content::scene_source::BuildApertureQuads;
+using ludus::content::scene_source::IsApertureShapeValid;
 using ludus::content::scene_source::IsSceneSourcePrefix;
 using ludus::content::scene_source::ParseSceneSource;
 using ludus::content::scene_source::SceneSource;
 using ludus::content::scene_source::SceneSourceError;
 using ludus::content::scene_source::SceneSourceStatus;
 using ludus::content::scene_source::SourceMaterialModel;
+using ludus::content::scene_source::SourceObject;
 using ludus::foundation::float64;
 using ludus::foundation::uint32;
 using ludus::foundation::usize;
@@ -266,6 +271,159 @@ TEST_CASE("Scene source rejects unresolved references and invalid polygons", "[s
     RequireFailure(ReplaceInValid("[-1, -1, -1], [1, -1, -1]", "[-1, -1, -1], [1e7, -1, -1]"),
                    SceneSourceStatus::InvalidValue,
                    "objects[0].positions[1][0]: is out of range");
+}
+
+constexpr std::string_view APERTURE_OBJECTS = R"([
+    {"name": "Wall", "material": "Wall", "positions": [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1]],
+     "polygons": [[0, 1, 2, 3]]},
+    {"name": "Slit", "material": "Wall",
+     "aperture": {"center": [0, 0, 0], "normal": [0, 0, 1], "up": [0, 1, 0], "screen_width": 3,
+                  "screen_height": 3, "slit_length": 0.8, "opening": 0.05}}
+  ])";
+
+/// Replace the first occurrence of `from` in the aperture document.
+std::string ReplaceInAperture(std::string_view from, std::string_view to)
+{
+    std::string text = MakeDocument(APERTURE_OBJECTS);
+    const usize at = text.find(from);
+    REQUIRE(at != std::string::npos);
+    text.replace(at, from.size(), to);
+    return text;
+}
+
+TEST_CASE("Scene source expands an aperture into the screen around its slit", "[scene-source][aperture]")
+{
+    SceneSource scene;
+    SceneSourceError error;
+    REQUIRE(ParseSceneSource(MakeDocument(APERTURE_OBJECTS), scene, error) == SceneSourceStatus::Success);
+    CHECK(scene.Objects[0].Aperture.IsPresent == false);
+    const SourceObject& slit = scene.Objects[1];
+    REQUIRE(slit.Aperture.IsPresent == true);
+    CHECK(slit.Aperture.CenterWorld == math::Vector3d{});
+    CHECK(slit.Aperture.NormalWorld == math::Vector3d{0, 0, 1});
+    CHECK(slit.Aperture.UpWorld == math::Vector3d{0, 1, 0});
+    CHECK(slit.Aperture.Shape.ScreenWidth == 3.0);
+    CHECK(slit.Aperture.Shape.SlitLength == 0.8);
+    CHECK(slit.Aperture.Shape.Opening == 0.05);
+    // Left, right, above and below the slit: the corners a hand-written screen lists, exactly.
+    REQUIRE(slit.PolygonVertexCounts.GetSize() == 4);
+    REQUIRE(slit.PositionsWorld.GetSize() == 16);
+    const math::Vector3d expected[] = {
+        {-1.5, -1.5, 0},
+        {-0.025, -1.5, 0},
+        {-0.025, 1.5, 0},
+        {-1.5, 1.5, 0},
+        {0.025, -1.5, 0},
+        {1.5, -1.5, 0},
+        {1.5, 1.5, 0},
+        {0.025, 1.5, 0},
+        {-0.025, 0.4, 0},
+        {0.025, 0.4, 0},
+        {0.025, 1.5, 0},
+        {-0.025, 1.5, 0},
+        {-0.025, -1.5, 0},
+        {0.025, -1.5, 0},
+        {0.025, -0.4, 0},
+        {-0.025, -0.4, 0},
+    };
+    for (usize i = 0; i < slit.PositionsWorld.GetSize(); ++i)
+    {
+        INFO(i);
+        CHECK(slit.PositionsWorld[slit.PolygonIndices[i]] == expected[i]);
+    }
+}
+
+TEST_CASE("Scene source places an aperture in its own frame", "[scene-source][aperture]")
+{
+    // Facing +x with the slit along +z: across the slit is Cross(up, normal) = +y.
+    const std::string text = ReplaceInAperture(R"("center": [0, 0, 0], "normal": [0, 0, 1], "up": [0, 1, 0])",
+                                               R"("center": [1, 2, 3], "normal": [2, 0, 0], "up": [0, 0, 1])");
+    SceneSource scene;
+    SceneSourceError error;
+    REQUIRE(ParseSceneSource(text, scene, error) == SceneSourceStatus::Success);
+    const SourceObject& slit = scene.Objects[1];
+    CHECK(slit.Aperture.NormalWorld == math::Vector3d{1, 0, 0});
+    // The first corner of the left quad: x = -1.5 across, y = -1.5 along.
+    CHECK(slit.PositionsWorld[0] == math::Vector3d{1, 0.5, 1.5});
+}
+
+TEST_CASE("Scene source aperture opening may close the slit", "[scene-source][aperture]")
+{
+    SceneSource scene;
+    SceneSourceError error;
+    REQUIRE(ParseSceneSource(ReplaceInAperture(R"("opening": 0.05)", R"("opening": 0)"), scene, error) ==
+            SceneSourceStatus::Success);
+    // Only the two halves remain; they meet at the closed slit.
+    CHECK(scene.Objects[1].PolygonVertexCounts.GetSize() == 2);
+    REQUIRE(ParseSceneSource(ReplaceInAperture(R"("slit_length": 0.8)", R"("slit_length": 3)"), scene, error) ==
+            SceneSourceStatus::Success);
+    CHECK(scene.Objects[1].PolygonVertexCounts.GetSize() == 2);
+}
+
+TEST_CASE("Scene source rejects invalid apertures", "[scene-source][aperture]")
+{
+    RequireFailure(ReplaceInAperture(R"("opening": 0.05)", R"("opening": 3)"),
+                   SceneSourceStatus::InvalidValue,
+                   "objects[1].aperture.opening: must be at least 0 and less than screen_width");
+    RequireFailure(ReplaceInAperture(R"("opening": 0.05)", R"("opening": -0.01)"),
+                   SceneSourceStatus::InvalidValue,
+                   "aperture.opening");
+    RequireFailure(ReplaceInAperture(R"("slit_length": 0.8)", R"("slit_length": 4)"),
+                   SceneSourceStatus::InvalidValue,
+                   "objects[1].aperture.slit_length: must be positive and at most screen_height");
+    RequireFailure(ReplaceInAperture(R"("screen_width": 3)", R"("screen_width": 0)"),
+                   SceneSourceStatus::InvalidValue,
+                   "objects[1].aperture.screen_width: is out of range");
+    // The camera has an "up" too; replace the aperture's, which follows its normal.
+    RequireFailure(
+        ReplaceInAperture(R"("normal": [0, 0, 1], "up": [0, 1, 0])", R"("normal": [0, 0, 1], "up": [0, 1, 0.5])"),
+        SceneSourceStatus::InvalidValue,
+        "objects[1].aperture.up: must be perpendicular to the normal");
+    RequireFailure(ReplaceInAperture(R"("normal": [0, 0, 1])", R"("normal": [0, 0, 0])"),
+                   SceneSourceStatus::InvalidValue,
+                   "objects[1].aperture.normal: must not be zero");
+    RequireFailure(ReplaceInAperture(R"("center": [0, 0, 0])", R"("center": [999999, 0, 0])"),
+                   SceneSourceStatus::InvalidValue,
+                   "beyond the coordinate limit");
+    RequireFailure(ReplaceInAperture(R"("opening": 0.05)", R"("opening": 0.05, "thickness": 0.01)"),
+                   SceneSourceStatus::Malformed,
+                   "objects[1].aperture.thickness: unknown member");
+    RequireFailure(ReplaceInAperture(R"("material": "Wall",
+     "aperture")",
+                                     R"("material": "Wall", "polygons": [[0, 1, 2]],
+     "aperture")"),
+                   SceneSourceStatus::Malformed,
+                   "an aperture object has no positions or polygons");
+    RequireFailure(ReplaceInValid(R"("polygons": [[0, 1, 2, 3]])", R"("unused": 0)"),
+                   SceneSourceStatus::Malformed,
+                   "unknown member");
+    RequireFailure(ReplaceInValid(R"(,
+     "polygons": [[0, 1, 2, 3]])",
+                                  ""),
+                   SceneSourceStatus::Malformed,
+                   "objects[0].polygons: missing member");
+}
+
+TEST_CASE("Aperture quads skip the parts a slit leaves without area", "[scene-source][aperture]")
+{
+    ApertureQuads quads;
+    CHECK(BuildApertureQuads(
+              {
+                  .ScreenWidth = 1,
+                  .ScreenHeight = 1,
+                  .SlitLength = 0.5,
+                  .Opening = 0.1,
+              },
+              quads) == true);
+    CHECK(quads.Count == 4);
+    CHECK(quads.Quads[2][0] == math::Vector3d{-0.05, 0.25, 0});
+    CHECK(BuildApertureQuads({ .ScreenWidth = 1, .ScreenHeight = 1, .SlitLength = 1, .Opening = 0.1 }, quads) == true);
+    CHECK(quads.Count == 2);
+    const ApertureQuads before = quads;
+    const ApertureShape invalid{ .ScreenWidth = 1, .ScreenHeight = 1, .SlitLength = 0.5, .Opening = 1 };
+    CHECK(IsApertureShapeValid(invalid) == false);
+    CHECK(BuildApertureQuads(invalid, quads) == false);
+    CHECK(quads.Count == before.Count);
 }
 
 TEST_CASE("Scene source prefix detection needs the leading format member", "[scene-source]")

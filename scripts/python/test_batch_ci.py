@@ -1,6 +1,7 @@
 """Exercise batch capture, failure preservation and exact-commit promotion."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
 import re
 from pathlib import Path
@@ -418,6 +419,119 @@ class CachePruningTests(unittest.TestCase):
                 client.head("develop")
 
 
+START = datetime(2026, 11, 8, 21, 0, tzinfo=timezone.utc)
+
+
+def watched_job(name, status="completed", conclusion="success", completed=None):
+    return {"name": name, "status": status, "conclusion": conclusion if status == "completed" else None,
+            "completed_at": None if completed is None else completed.isoformat().replace("+00:00", "Z")}
+
+
+class WatchTests(unittest.TestCase):
+    GRACE = batch_ci.STOP_GRACE_SECONDS
+
+    def test_suites_without_failures_keep_running(self):
+        jobs = [watched_job("Capture develop candidate"), watched_job("Watch for failed suites", "in_progress"),
+                watched_job("native / Source formatting", completed=START),
+                watched_job("native / ASan and UBSan (1/4)", "in_progress")]
+        self.assertEqual(batch_ci.watch_decision(jobs, START + timedelta(hours=5)), "wait")
+
+    def test_failure_gives_running_jobs_the_grace_period_then_stops(self):
+        failed_at = START + timedelta(minutes=5)
+        jobs = [watched_job("native / Clang static analysis (0)", conclusion="failure", completed=failed_at),
+                watched_job("native / ASan and UBSan (1/4)", "in_progress"),
+                watched_job("windows / MSVC host and D3D12 / MSBuild", "queued")]
+        just_before = failed_at + timedelta(seconds=self.GRACE - 1)
+        self.assertEqual(batch_ci.watch_decision(jobs, just_before), "wait")
+        self.assertEqual(batch_ci.watch_decision(jobs, failed_at + timedelta(seconds=self.GRACE)), "stop")
+        # The earliest failure starts the period; timed-out and startup failures count too.
+        for conclusion in ("timed_out", "startup_failure"):
+            later = [watched_job("browser / compile-and-package", conclusion=conclusion,
+                                 completed=failed_at + timedelta(minutes=20)), *jobs]
+            self.assertEqual(batch_ci.watch_decision(later, failed_at + timedelta(seconds=self.GRACE)), "stop")
+
+    def test_only_suite_failures_stop_and_completion_ends_the_watch(self):
+        late = START + timedelta(hours=3)
+        unrelated = [watched_job("Capture develop candidate", conclusion="failure", completed=START),
+                     watched_job("Promote validated candidate", conclusion="failure", completed=START),
+                     watched_job("unknown / Job", conclusion="failure", completed=START),
+                     watched_job("native / ASan and UBSan (2/4)", conclusion="cancelled", completed=START),
+                     watched_job("native / Development and SDK", "in_progress")]
+        self.assertEqual(batch_ci.watch_decision(unrelated, late), "wait")
+        failed = [watched_job("native / Ubuntu Clang", conclusion="failure", completed=START)]
+        self.assertEqual(batch_ci.watch_decision([*failed, watched_job(batch_ci.COMPLETION_JOB, "queued")], late),
+                         "done")
+        # A failure without a completion time is never treated as old enough.
+        undated = [dict(failed[0], completed_at=None)]
+        self.assertEqual(batch_ci.watch_decision(undated, late), "wait")
+
+    def run_watch(self, listings, *, limit_seconds=batch_ci.WATCH_LIMIT_SECONDS):
+        now = [START]
+        sleeps = []
+
+        class Client:
+            def request(self, path):
+                self.paths.append(path)
+                listing = listings.pop(0)
+                if isinstance(listing, Exception):
+                    raise listing
+                return {"total_count": len(listing), "jobs": listing}
+
+        client = Client()
+        client.paths = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += timedelta(seconds=seconds)
+
+        result = batch_ci.watch(client, 42, clock=lambda: now[0], sleep=sleep, limit_seconds=limit_seconds)
+        return result, client.paths, sleeps
+
+    def test_watch_polls_until_the_grace_period_after_a_failure(self):
+        running = [watched_job("native / ASan and UBSan (1/4)", "in_progress")]
+        failed = [*running, watched_job("native / Build-time budget", conclusion="failure",
+                                        completed=START + timedelta(minutes=1))]
+        polls = 2 + self.GRACE // batch_ci.WATCH_INTERVAL_SECONDS
+        (should_stop, names), paths, sleeps = self.run_watch([running, *([failed] * polls)])
+        self.assertTrue(should_stop)
+        self.assertEqual(names, ["native / Build-time budget"])
+        self.assertTrue(all(path == "actions/runs/42/jobs?filter=latest&per_page=100&page=1" for path in paths))
+        self.assertTrue(set(sleeps) == {batch_ci.WATCH_INTERVAL_SECONDS})
+
+    def test_watch_fails_open_when_listing_or_time_runs_out(self):
+        error = batch_ci.BatchError("HTTP 502")
+        (should_stop, names), _, _ = self.run_watch([error] * 5)
+        self.assertEqual((should_stop, names), (False, []))
+        # Transient errors reset after a good listing.
+        done = [watched_job(batch_ci.COMPLETION_JOB, "queued")]
+        (should_stop, _), paths, _ = self.run_watch([error] * 4 + [[]] + [error] * 4 + [done])
+        self.assertFalse(should_stop)
+        self.assertEqual(len(paths), 10)
+        running = [watched_job("native / Development and SDK", "in_progress")]
+        (should_stop, _), paths, _ = self.run_watch([running] * 3, limit_seconds=3 * batch_ci.WATCH_INTERVAL_SECONDS)
+        self.assertFalse(should_stop)
+        self.assertEqual(len(paths), 3)
+
+    def test_job_listing_pages_until_total_and_is_bounded(self):
+        class Client:
+            def __init__(self, total, per_page):
+                self.total = total
+                self.per_page = per_page
+
+            def request(self, path):
+                return {"total_count": self.total, "jobs": [{"name": "native / x"}] * self.per_page}
+
+        self.assertEqual(len(batch_ci.list_run_jobs(Client(150, 100), 1)), 200)
+        with self.assertRaises(batch_ci.BatchError):
+            batch_ci.list_run_jobs(Client(10_000, 100), 1)
+
+    def test_summary_names_failed_jobs_and_the_stop(self):
+        summary = batch_ci.describe_watch(True, ["native / Build-time budget"])
+        self.assertIn("Batch stopped early", summary)
+        self.assertIn("- native / Build-time budget", summary)
+        self.assertIn("Batch finished with failures", batch_ci.describe_watch(False, ["native / x"]))
+
+
 class WorkflowContractTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parents[2]
 
@@ -484,6 +598,33 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("actions: write", snapshot)
         promote = workflow.split("\n  promote:\n", 1)[1].split("\n  publish:\n", 1)[0]
         self.assertNotIn("unvalidated", promote)
+
+    def test_failed_batch_is_stopped_by_trusted_code_outside_promotion(self):
+        workflow = (self.ROOT / ".github/workflows/batch-ci.yml").read_text()
+        watch = workflow.split("\n  watch:\n", 1)[1].split("\n\n  ", 1)[0]
+        self.assertIn("    needs: snapshot\n", watch)
+        self.assertIn("    if: needs.snapshot.outputs.should_run == 'true'\n", watch)
+        self.assertIn("    name: Watch for failed suites\n", watch)
+        self.assertIn("    permissions:\n      contents: read\n      actions: read\n", watch)
+        self.assertIn("    timeout-minutes: 360\n", watch)
+        self.assertLess(batch_ci.WATCH_LIMIT_SECONDS, 360 * 60)
+        self.assertIn("run: python3 scripts/python/batch_ci.py watch", watch)
+        self.assertNotIn("batch_sha", watch)
+        stop = workflow.split("\n  stop:\n", 1)[1].split("\n\n  ", 1)[0]
+        self.assertIn(f"    name: {batch_ci.STOP_JOB}\n", stop)
+        self.assertIn("    needs: watch\n    if: needs.watch.outputs.should_stop == 'true'\n", stop)
+        self.assertIn("    permissions:\n      actions: write\n    steps:", stop)
+        self.assertNotIn("actions/checkout", stop)
+        run = stop.split("        run: |\n", 1)[1]
+        self.assertIn('gh run cancel "$GITHUB_RUN_ID"', run)
+        self.assertTrue(run.rstrip().endswith("exit 1"))
+        # The completion signal is the job that starts only after every suite.
+        self.assertIn(f"    name: {batch_ci.COMPLETION_JOB}\n", workflow.split("\n  prune-caches:\n", 1)[1])
+        # Neither job gates promotion; promotion and suites never receive the cancel privilege.
+        for name in ("promote", "prune-caches", *batch_ci.VALIDATION_JOBS):
+            section = workflow.split(f"\n  {name}:\n", 1)[1].split("\n\n  ", 1)[0]
+            with self.subTest(job=name):
+                self.assertNotRegex(section, r"needs: \[?[^\n]*\b(watch|stop)\b")
 
     def test_cache_pruning_runs_trusted_code_after_every_suite_without_gating_promotion(self):
         workflow = (self.ROOT / ".github/workflows/batch-ci.yml").read_text()

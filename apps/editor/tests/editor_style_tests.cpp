@@ -260,7 +260,7 @@ TEST_CASE("A menu button keeps its label and its chevron apart", "[editor][style
     ApplyWorkspaceStyle(&root);
     QVBoxLayout* layout = new QVBoxLayout(&root);
     QList<QToolButton*> buttons;
-    for (const QString& text : {QStringLiteral("Add Geometry / Light"), QStringLiteral("Add")})
+    for (const QString& text : {QStringLiteral("Add World Preset"), QStringLiteral("Add")})
     {
         QToolButton* button = new QToolButton(&root);
         button->setText(text);

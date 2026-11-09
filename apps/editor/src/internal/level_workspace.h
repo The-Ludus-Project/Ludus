@@ -213,6 +213,13 @@ public:
     {
         return Level_;
     }
+    /// Authored entities the last import adds beside its cooked objects: one aperture entity per
+    /// scene source `aperture` object, which a default World's import leaves out of the cook
+    /// (internal/world_aperture.h). Pass them to WorldDocument::ImportScene with Document().
+    [[nodiscard]] LUDUS_INLINE QJsonArray ImportedEntities() const
+    {
+        return mImportedEntities;
+    }
     /// Embedded viewport; borrowed for project render-graph binding.
     [[nodiscard]] LUDUS_INLINE PreviewViewport& GetViewport() noexcept
     {
@@ -288,6 +295,12 @@ private:
     }
     /// Decode the cooked candidate and validate it against the World (worker or browser GUI thread).
     void decodeCandidate();
+    /// Read the imported scene source and describe its apertures as entities of `world` in
+    /// mImportedEntities, adding a warning per approximation. Sources that are not scene sources
+    /// add none. Worker or browser GUI thread; failure sets Error_.
+    [[nodiscard]] bool makeImportedEntities(const WorldDocument& world);
+    /// Entities the import adds beside its cooked objects; see ImportedEntities().
+    QJsonArray mImportedEntities;
     /// Start the cook of the presented derived scene when it is Pending and the operation thread is free.
     void startPlacementValidation();
     /// Settle a drained placement cook (GUI thread) and report it.

@@ -433,7 +433,9 @@ directory, verifies setup/configure/build/tests, then publishes to an absent
 destination and opens it. Failure/cancellation before publication discards the
 stage and leaves the current workspace intact. Staging build artifacts are
 discarded because their CMake paths belong to the staging directory. The next
-Configure builds at the final location.
+Configure builds at the final location. The browser editor creates the same
+files without setup or verification; see
+[New projects in the browser](browser-editor.md#new-projects).
 
 The CLI calls the same backend:
 
@@ -549,7 +551,7 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   description only when its row cannot: multi-line or elided descriptions.
 - **Toolbars** share the menus' commands, in groups told apart by a separator: Standard
   holds File (Open, Save) and History (Undo, Redo); Game holds Run (Play, Build, Stop),
-  Launch (Run, Debug) and Session (Pause, Step, Resume, Reload Code). The Session group
+  Launch (Run, Debug) and Session (Pause, Step, Resume, Fast-forward, Reload Code). The Session group
   is shown only while a game is running or paused. The Render Graph toolbar is the
   context strip: it appears while a render graph is shown in any document group, so a World
   shown alone keeps one row of commands. Its buttons show an icon beside the label: Validate,
@@ -617,9 +619,9 @@ The render surface receives the remaining height below its shading, framing and
 navigation controls, including after resize.
 
 In a default World (a project without `authoring/world.schema.json`), use
-**Add Geometry / Light** in the right-click menu or below the entity list to
-create a **Cube**, **Plane**, **Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun** or
-**Luminaire**. Each command
+**Add World Preset** in the right-click menu or below the entity list to
+create a **Cube**, **Plane**, **Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun**,
+**Luminaire** or [**Aperture Slit**](#apertures). Each command
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.
 Use **Properties** to edit Transform, visibility and colour, or a light's kind,
@@ -638,28 +640,70 @@ down. Only render graphs that read luminaires, such as the
 are lit by it; **Lit** and reference capture ignore it. Selecting it outlines the
 panel and its emission direction in the viewport.
 
-Choose **Add Geometry / Light → Generate Terrain…** to create a heightfield in a
-default World. Pick Rolling Hills, Ridges, or Flat, then set a seed, width and
-depth, elevation bounds, feature size, roughness, and samples per side. Width and
-depth extend along the entity's local X and Z axes. Elevation is measured in
-metres along local Y. Flat uses the minimum elevation for the whole surface.
+The same menu adds a [First Person Player](#explore-from-a-first-person-player)
+for exploring the scene from a saved spawn.
 
-**Preview** frames the candidate in the World viewport. **Create Terrain** adds
-and selects it as one undoable edit. Select the entity and use **Edit Generation…**
-in Properties to preview and apply a new recipe. Cancel restores the applied World
-view. The entity keeps its transform when regenerated and can be moved, copied,
-or deleted using the same commands as other World entities. Press **F** in the
-viewport to frame the selected terrain again.
+Choose **Add World Preset → Add Terrain…** or right-click the World
+viewport and choose **Add Terrain…**. The Terrain panel opens beside the
+viewport with a Rolling Hills draft. Use **Flat** for a level surface or
+**Generate** for Rolling Hills and Ridges. Set the footprint and relief in
+metres. **Randomize** chooses another seed. **Advanced** exposes the seed,
+base elevation, feature size, roughness and samples per side. Width and depth
+follow local X and Z, and elevation follows local Y.
 
-Save World keeps the seed, settings, and recipe version. The editor rebuilds the
-bounded indexed mesh when it extracts the World, including after reopening.
-The terrain uses the current viewport shading and authored lights. In an unlit
-World, the default raster graph displays the terrain's surface colour without
-adding it to the scene's mesh lights. Each terrain uses a single mesh of at most
-64 samples per side. Collision, sculpting, erosion, and streamed terrain are
-future work.
-See the [proposed viewport authoring workflow](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
-for the planned docked tools and source editing.
+The preview updates as you edit. In an empty World the editor frames the first
+ready draft. In an occupied World it keeps the camera, and **Frame Preview**
+fits the draft on request. Use the native viewport's dashed footprint handles
+to change width and depth and the move gizmo to place the draft. The browser
+canvas uses the numeric fields for sizing. **Create Terrain** adds and selects
+the ready terrain in one undo step. **Cancel** returns to the committed World.
+
+Select terrain and choose **Edit Terrain…** in the viewport toolbar, its
+right-click menu, or Properties. The **Source** panel opens the stored recipe.
+**Compare with committed** shows the original surface at the same camera
+pose. Switch back and choose **Apply Source Changes** to keep the ready
+recipe as one undoable edit. This preserves the terrain's entity and transform.
+**Save World** keeps the source, settings and recipe version.
+
+In the native editor, choose **Import → Choose Heightmap…** to open an 8- or
+16-bit grayscale PNG. Each axis must have 2 to 64 samples and the file must fit
+within 64 KiB. Black maps to **Base elevation** and white maps to base plus
+**Relief**, in local metres. The top-left pixel starts at local negative X and
+negative Z. Use **Flip X** and **Flip Z** to align the raster against the World
+in the preview. The saved World embeds the sample grid and orientation, so it
+can reopen in the native or browser editor without the original PNG.
+
+To sculpt committed terrain, open **Edit Terrain…** and choose a **Sculpt
+brush**. Set the radius in terrain-local metres, then drag on the ground and
+release to apply one undoable stroke. The brush has full strength in the inner
+half of the radius and fades to zero at the edge.
+
+- **Flatten** moves the surface toward an absolute local height. Enter the
+  height or use **Pick from surface** to sample it.
+- **Raise / Lower** adds a signed local height change. A positive value raises
+  the surface, and a negative value lowers it.
+- **Smooth** blends heights toward neighboring samples from the surface before
+  the stroke. **Strength** controls how much to blend on each pass. The
+  smoothing distance depends on how far apart the terrain samples are.
+
+Choose **Off** to return to ordinary viewport editing. Press Escape or move
+focus away during a drag to cancel it. Turn on **Show slope at cursor** while
+using a brush to measure the surface angle in degrees from World horizontal.
+A terrain can keep up to 16 strokes.
+**Save World** keeps the strokes and replays them in order after a compatible
+source change. If shrinking the footprint would clip a stroke, the
+confirmation names how many strokes the edit removes. Replacing an embedded
+heightmap also requires confirmation.
+
+The editor extracts a single indexed mesh of at most 64 samples per side,
+including after reopening the World. The terrain uses the current viewport
+shading and authored lights. In an unlit World, the default raster graph
+shows the terrain's surface colour without adding mesh lights.
+[Explore as Player](#explore-from-a-first-person-player) uses the applied terrain
+mesh for walking collision. Material paint, erosion and streaming are future
+work. See the
+[viewport authoring design](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
+for delivery boundaries.
 
 The geometry and default schema ship inside the editor, so this workflow needs
 no model import or project asset files. Imported scenes and these objects can
@@ -675,6 +719,33 @@ that viewport automatically. Its selectors expose authored graph configurations 
 attachments. The **Stats** toggle shows live update FPS, CPU/GPU time and readback
 latency; see the [graph viewport measurement definitions](render-graph-authoring.md#start-customizing-the-renderer). The current static graph profile does not provide the former Lit material
 preview; its input and presentation limits are documented with that workflow.
+
+### Apertures
+
+An aperture is an opaque flat screen with a centred slit whose sizes are entity
+fields. Choose **Add World Preset → Aperture Slit** to create a 1 m screen at the
+origin with a 0.5 m slit and a 5 cm opening, or import a
+[scene source aperture](../architecture/scene-source-format.md#aperture), such as the
+screen of `tests/scenes/diffraction/single-slit.luscene.json`.
+
+Select the entity and edit the **Aperture** component in Properties, then **Apply
+Changes**:
+
+- **Opening** is the slit width across local X, in metres; zero closes the slit. It
+  must be less than **Screen width**.
+- **Slit length** runs along local Y, at most **Screen height**.
+- **Screen width** and **Screen height** size the screen around the slit.
+- **Colour** (Reflectance R, G and B) is the screen's linear Lambertian reflectance;
+  the default black absorbs all light, like the ideal knife-edge screen of diffraction
+  work.
+
+The screen lies in the entity's local XY plane and faces +Z, so use Transform to place
+and turn it. The editor rebuilds the screen from these fields whenever it extracts the
+World, so the viewport and the ray templates show each applied opening, and **Undo**
+restores the previous one. An edit that cannot form a screen, such as an opening as
+wide as the screen, is refused in Properties with the field to change. An aperture
+draws its own screen, so it cannot share an entity with Renderable, Terrain or
+imported geometry. Like the other presets, apertures need a default World.
 
 ## Recording CPU and GPU profiling
 
@@ -1083,6 +1154,36 @@ lighting implementation supplies Lit materials, authored lights and shadows;
 Solid and Albedo remain inspection modes. See the owning
 [renderer contract](../architecture/renderer-systems.md) and
 [camera contract](../architecture/camera-systems.md).
+
+### Explore from a First Person Player
+
+Choose **Add World Preset → First Person Player** to add a reusable spawn to a
+default World. The new entity starts at eye height above the origin, or at the
+imported scene's saved start view when that position fits the Transform range.
+In Properties, set Transform X/Y/Z to the eye position in metres, set Rotation X
+and Y for pitch and yaw, and adjust **Move speed**. Apply the changes and use
+**Save World** to keep the spawn. Duplicate the entity to keep multiple starting
+points.
+
+Apply or cancel any open Terrain draft. Select a player in the hierarchy and
+click **Explore as Player**. Hold the right
+mouse button to look around, use **W/A/S/D** to walk, **Shift** to run, and
+**Space** to jump. Use **Escape** or leave the viewport to return to the previous
+editor camera. Movement is temporary and applies gravity even while you stand
+still. If you fall below the World, you return to the spawn.
+
+The player uses an upright box and sweeps it against the current visible
+World triangles, including generated terrain and imported meshes. It can
+step up 0.35 m and walk on slopes up to 45°. Place the spawn eye about 1.6 m
+above the floor and clear of walls and ceilings. Hide decorative geometry
+that should not obstruct a walk. Collision preparation can take longer for
+large imports and admits up to eight million instanced triangles. Publishing
+different World geometry ends the walk. Choose **Explore as Player** again to
+walk on the new surface.
+
+This editor preview only moves the player. Rigid bodies, thrown objects,
+and gameplay collision assets follow the
+[physics systems architecture](../architecture/physics-systems.md).
 
 ### Try a 3D authoring workflow
 
@@ -1691,7 +1792,7 @@ estimated illuminance. It appears in the viewport status and as a **Renderer
 preview** row in the Error List; render graphs that read only luminaires keep
 their own luminaire warning instead. An unlit viewport never shows it.
 
-In a default World, choose **Add Geometry / Light → Sun**, or double-click the
+In a default World, choose **Add World Preset → Sun**, or double-click the
 warning: a confirmation box then offers **Add sun**, with **Cancel** as the
 default. Both create the same directional light entity named *Sun* of 10 lux,
 aimed like the first disabled imported directional light that shines down, or
@@ -1728,6 +1829,13 @@ horizon contributes zero direct light. Intensity and colour come from the
 authored light. The rules model direction and horizon visibility. Lunar phase
 and atmospheric effects are outside their scope. Games can pass
 their own simulation time to the [GameplayWorld celestial sampler](../architecture/game-world.md#earth-celestial-transforms).
+
+During a supported hosted Play session, choose **Fast-forward (4×)** in the
+**Play** menu or Game toolbar to advance the game by four fixed ticks per
+rendered frame. **Normal speed (1×)** restores the usual rate. **Pause** still
+freezes simulation and **Step** advances one tick. Game code that samples
+celestial motion from the host's simulation clock sees the same speed change
+as gameplay. The World viewport uses its authored preview time.
 
 Choose **Custom Orbit** for a different observer world, star, or moon. Set
 **Orbit Time** in simulation hours from your chosen epoch. For lights viewed
@@ -1769,7 +1877,7 @@ existing lighting paths.
 
 ### Baking probe GI for moving objects
 
-Create a **GI Probe Volume** from **Add Geometry / Light** in a default World.
+Create a **GI Probe Volume** from **Add World Preset** in a default World.
 Set its Transform position to the volume's minimum corner. Set **Probe spacing**
 in metres and the number of points along each axis, including the endpoints.
 The volume follows the World axes. The native Lit viewport supports one volume,

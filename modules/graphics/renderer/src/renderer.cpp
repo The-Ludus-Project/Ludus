@@ -4604,6 +4604,15 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
                                    MaterialVersion& output,
                                    LightSelection& report) noexcept
 {
+    return createLitMaterial(program, description, output, report, nullptr, 0);
+}
+Status Renderer::createLitMaterial(MaterialProgram program,
+                                   const LitMaterialDescription& description,
+                                   MaterialVersion& outMaterial,
+                                   LightSelection& outSelection,
+                                   const ShadowRegion* directionalShadowOrNull,
+                                   uint32 shadowAtlasTexels) noexcept
+{
     if (mState.Get() == nullptr || mState->LightingSetup != Status::Ready)
     {
         return Status::NotReady;
@@ -4892,7 +4901,8 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
     parameters.Pbr = {description.Metallic,
                       description.Roughness,
                       static_cast<float32>(selected.Count),
-                      atlas != nullptr ? static_cast<float32>(atlas->Count) : 0};
+                      atlas != nullptr ? static_cast<float32>(atlas->Count)
+                                       : (directionalShadowOrNull != nullptr ? 1.0F : 0.0F)};
     parameters.Emission = {description.Emission.X,
                            description.Emission.Y,
                            description.Emission.Z,
@@ -4958,33 +4968,46 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
         }
         parameters.Lights[i * 4 + 3] = {light.InnerCos, shouldReplaceDiffuse == true ? 1.0F : 0.0F, 0, 0};
     }
+    const auto packShadowRegion =
+        [&](usize regionIndex, const ShadowRegion& region, float32 width, float32 height) noexcept {
+            constexpr usize MATRIX_ROW_COUNT = 4;
+            const usize firstWord = regionIndex * SHADOW_REGION_WORDS;
+            const math::Matrix4 rows = math::Transpose(region.WorldToClip);
+            for (usize row = 0; row < MATRIX_ROW_COUNT; ++row)
+            {
+                parameters.ShadowData[firstWord + row] = rows.Columns[row];
+            }
+            const rhi::RasterRectangle& rectangle = region.Interior;
+            parameters.ShadowData[firstWord + MATRIX_ROW_COUNT] = {
+                (static_cast<float32>(rectangle.X) + 0.5F) / width,
+                (static_cast<float32>(rectangle.Y) + 0.5F) / height,
+                (static_cast<float32>(rectangle.X + rectangle.Width) - 0.5F) / width,
+                (static_cast<float32>(rectangle.Y + rectangle.Height) - 0.5F) / height};
+            usize lightIndex = 0;
+            while (lightIndex < selected.Count && selected.Lights[lightIndex].SourceId != region.Light.SourceId)
+            {
+                ++lightIndex;
+            }
+            LUDUS_ASSERT(lightIndex < selected.Count);
+            parameters.ShadowData[firstWord + MATRIX_ROW_COUNT + 1] = {region.Bias,
+                                                                       static_cast<float32>(lightIndex),
+                                                                       1 / width,
+                                                                       1 / height};
+        };
     if (atlas != nullptr)
     {
         for (usize i = 0; i < atlas->Count; ++i)
         {
-            const auto& region = atlas->Regions[i];
-            const auto rows = math::Transpose(region.WorldToClip);
-            for (usize row = 0; row < 4; ++row)
-            {
-                parameters.ShadowData[i * SHADOW_REGION_WORDS + row] = rows.Columns[row];
-            }
-            const auto w = static_cast<float32>(atlas->Width), h = static_cast<float32>(atlas->Height);
-            const auto& rect = region.Interior;
-            parameters.ShadowData[i * SHADOW_REGION_WORDS + 4] = {
-                (static_cast<float32>(rect.X) + 0.5F) / w,
-                (static_cast<float32>(rect.Y) + 0.5F) / h,
-                (static_cast<float32>(rect.X + rect.Width) - 0.5F) / w,
-                (static_cast<float32>(rect.Y + rect.Height) - 0.5F) / h};
-            usize index = 0;
-            while (selected.Lights[index].SourceId != region.Light.SourceId)
-            {
-                ++index;
-            }
-            parameters.ShadowData[i * SHADOW_REGION_WORDS + 5] = {region.Bias,
-                                                                  static_cast<float32>(index),
-                                                                  1 / w,
-                                                                  1 / h};
+            packShadowRegion(i,
+                             atlas->Regions[i],
+                             static_cast<float32>(atlas->Width),
+                             static_cast<float32>(atlas->Height));
         }
+    }
+    else if (directionalShadowOrNull != nullptr)
+    {
+        const float32 extent = static_cast<float32>(shadowAtlasTexels);
+        packShadowRegion(0, *directionalShadowOrNull, extent, extent);
     }
     uint8* legacy = s.LitScratch->Legacy.GetData();
     std::memset(legacy, 0, s.LitScratch->Legacy.GetSize());
@@ -5012,11 +5035,11 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
                                 (clustered ? CLUSTER_BYTES : LIT_BYTES) + (p->HasSurfaceMapProfile ? 16U : 0U) +
                                     (p->HasAuthoredProfile ? AUTHORED_PARAMETER_BYTES : 0U),
                                 &description,
-                                output,
+                                outMaterial,
                                 clustered ? clusters : nullptr);
-    if (Accepted(status))
+    if (Accepted(status) == true)
     {
-        report = selected;
+        outSelection = selected;
     }
     return status;
 }
@@ -5309,9 +5332,9 @@ Status Renderer::DrawShadowAtlas(ShadowAtlas handle, uint32 reservedDraws) noexc
     atlas.Rendered = true;
     return Status::Ready;
 }
-Status Renderer::prepareMeshLightShadows(Snapshot snapshot,
-                                         BorrowedView<const internal::MeshLightShadowCaster> casters,
-                                         internal::MeshLightShadowAtlas& inoutAtlas) noexcept
+Status Renderer::prepareDeferredShadows(Snapshot snapshot,
+                                        BorrowedView<const internal::MeshLightShadowCaster> casters,
+                                        internal::DeferredShadowAtlas& inoutAtlas) noexcept
 {
     if (mState.Get() == nullptr)
     {
@@ -5330,6 +5353,96 @@ Status Renderer::prepareMeshLightShadows(Snapshot snapshot,
         Array<Instance> instances;
         Array<internal::MeshLightShadowPacket> packets;
         Array<internal::MeshLightShadowFaceDraw> faces;
+        const auto buildFace = [&](const math::Matrix4& worldToClip,
+                                   rhi::RasterRectangle slot,
+                                   const internal::MeshLightShadowCaster* casterOrNull,
+                                   internal::MeshLightShadowFaceDraw& outDraw) noexcept -> Status {
+            math::Frustum frustum;
+            if (math::TryExtractFrustum(worldToClip, math::FrustumMode::FinitePerspectiveOrOrthographic, frustum) !=
+                math::MathStatus::Success)
+            {
+                return Status::InvalidDescription;
+            }
+            internal::MeshLightShadowFaceDraw draw;
+            draw.Slot = slot;
+            draw.FirstPacket = static_cast<uint32>(packets.GetSize());
+            for (usize i = 0; i < snapshotOrNull->Count; ++i)
+            {
+                const State::Item& item = snapshotOrNull->Items[i];
+                const bool isMasked =
+                    item.MaterialSlot != NO_MATERIAL && s.Materials[item.MaterialSlot].Alpha == MaterialAlpha::Masked;
+                if (item.Input.Pass != Layer::Opaque || (item.MaterialSlot != NO_MATERIAL && isMasked == false &&
+                                                         s.Materials[item.MaterialSlot].Alpha != MaterialAlpha::Opaque))
+                {
+                    continue;
+                }
+                math::FrustumRelation relation;
+                if (math::TryClassifyAabb(frustum, item.Bounds, 0, relation) != math::MathStatus::Success ||
+                    relation == math::FrustumRelation::Outside)
+                {
+                    continue;
+                }
+                if (casterOrNull != nullptr)
+                {
+                    const math::Vector3 positionWorld = casterOrNull->PositionWorld;
+                    const math::Vector3 nearestWorld{
+                        math::Clamp(positionWorld.X, item.Bounds.Min.X, item.Bounds.Max.X),
+                        math::Clamp(positionWorld.Y, item.Bounds.Min.Y, item.Bounds.Max.Y),
+                        math::Clamp(positionWorld.Z, item.Bounds.Min.Z, item.Bounds.Max.Z)};
+                    if (math::Length(nearestWorld - positionWorld) > casterOrNull->RangeMeters)
+                    {
+                        continue;
+                    }
+                }
+                const math::Matrix4 meshToClip = worldToClip * Matrix(item.Input.Transform);
+                if (math::IsFinite(meshToClip) == false)
+                {
+                    return Status::InvalidDescription;
+                }
+                Instance instance{};
+                const math::Matrix4 rows = math::Transpose(meshToClip);
+                const math::Matrix4 worldRows = math::Transpose(Matrix(item.Input.Transform));
+                for (usize row = 0; row < CLIP_ROW_COUNT; ++row)
+                {
+                    instance.Rows[row] = rows.Columns[row];
+                }
+                for (usize row = 0; row < WORLD_ROW_COUNT; ++row)
+                {
+                    instance.WorldRows[row] = worldRows.Columns[row];
+                }
+                instance.Color = {1, 1, 1, 1};
+                const uint32 first = static_cast<uint32>(instances.GetSize());
+                if (instances.TryAdd(instance) == false)
+                {
+                    return Status::OutOfMemory;
+                }
+                draw.Triangles += uint64{s.MeshRecords[item.MeshSlot].IndexCount} / TRIANGLE_INDEX_COUNT;
+                if (packets.GetSize() > draw.FirstPacket && packets[packets.GetSize() - 1].MeshSlot == item.MeshSlot &&
+                    packets[packets.GetSize() - 1].IsMasked == isMasked &&
+                    (isMasked == false || packets[packets.GetSize() - 1].MaterialSlot == item.MaterialSlot))
+                {
+                    ++packets[packets.GetSize() - 1].Count;
+                }
+                else if (packets.TryAdd(
+                             {item.MeshSlot, isMasked == true ? item.MaterialSlot : 0, isMasked, first, 1}) == false)
+                {
+                    return Status::OutOfMemory;
+                }
+            }
+            draw.PacketCount = static_cast<uint32>(packets.GetSize()) - draw.FirstPacket;
+            outDraw = draw;
+            return Status::Ready;
+        };
+        const ShadowRegion& directional = inoutAtlas.Directional;
+        if (directional.Light.SourceId != 0)
+        {
+            const Status status =
+                buildFace(directional.WorldToClip, directional.Interior, nullptr, inoutAtlas.DirectionalDraw);
+            if (status != Status::Ready)
+            {
+                return status;
+            }
+        }
         for (usize index = 0; index < casters.GetSize(); ++index)
         {
             const internal::MeshLightShadowCaster& caster = casters[index];
@@ -5340,80 +5453,21 @@ Status Renderer::prepareMeshLightShadows(Snapshot snapshot,
                     continue;
                 }
                 math::Matrix4 worldToClip;
-                math::Frustum frustum;
-                if (internal::MakeRasterMeshLightShadowFaceToClip(caster, face, worldToClip) != Status::Ready ||
-                    math::TryExtractFrustum(worldToClip, math::FrustumMode::FinitePerspectiveOrOrthographic, frustum) !=
-                        math::MathStatus::Success)
+                const Status projection = internal::MakeRasterMeshLightShadowFaceToClip(caster, face, worldToClip);
+                if (projection != Status::Ready)
                 {
-                    return Status::InvalidDescription;
+                    return projection;
                 }
                 internal::MeshLightShadowFaceDraw draw;
-                draw.Slot = {caster.FaceOrigins[face].X,
-                             caster.FaceOrigins[face].Y,
-                             caster.FaceTexels,
-                             caster.FaceTexels};
-                draw.FirstPacket = static_cast<uint32>(packets.GetSize());
-                for (usize i = 0; i < snapshotOrNull->Count; ++i)
+                const Status status = buildFace(
+                    worldToClip,
+                    {caster.FaceOrigins[face].X, caster.FaceOrigins[face].Y, caster.FaceTexels, caster.FaceTexels},
+                    &caster,
+                    draw);
+                if (status != Status::Ready)
                 {
-                    const State::Item& item = snapshotOrNull->Items[i];
-                    const bool isMasked = item.MaterialSlot != NO_MATERIAL &&
-                                          s.Materials[item.MaterialSlot].Alpha == MaterialAlpha::Masked;
-                    if (item.Input.Pass != Layer::Opaque ||
-                        (item.MaterialSlot != NO_MATERIAL && isMasked == false &&
-                         s.Materials[item.MaterialSlot].Alpha != MaterialAlpha::Opaque))
-                    {
-                        continue;
-                    }
-                    // Only items within the caster's range can occlude a receiver it lights.
-                    const math::Vector3 nearestWorld{
-                        math::Clamp(caster.PositionWorld.X, item.Bounds.Min.X, item.Bounds.Max.X),
-                        math::Clamp(caster.PositionWorld.Y, item.Bounds.Min.Y, item.Bounds.Max.Y),
-                        math::Clamp(caster.PositionWorld.Z, item.Bounds.Min.Z, item.Bounds.Max.Z)};
-                    math::FrustumRelation relation;
-                    if (math::Length(nearestWorld - caster.PositionWorld) > caster.RangeMeters ||
-                        math::TryClassifyAabb(frustum, item.Bounds, 0, relation) != math::MathStatus::Success ||
-                        relation == math::FrustumRelation::Outside)
-                    {
-                        continue;
-                    }
-                    const math::Matrix4 meshToClip = worldToClip * Matrix(item.Input.Transform);
-                    if (math::IsFinite(meshToClip) == false)
-                    {
-                        return Status::InvalidDescription;
-                    }
-                    Instance instance{};
-                    const math::Matrix4 rows = math::Transpose(meshToClip);
-                    const math::Matrix4 worldRows = math::Transpose(Matrix(item.Input.Transform));
-                    for (usize row = 0; row < CLIP_ROW_COUNT; ++row)
-                    {
-                        instance.Rows[row] = rows.Columns[row];
-                    }
-                    for (usize row = 0; row < WORLD_ROW_COUNT; ++row)
-                    {
-                        instance.WorldRows[row] = worldRows.Columns[row];
-                    }
-                    instance.Color = {1, 1, 1, 1};
-                    const uint32 first = static_cast<uint32>(instances.GetSize());
-                    if (instances.TryAdd(instance) == false)
-                    {
-                        return Status::OutOfMemory;
-                    }
-                    draw.Triangles += uint64{s.MeshRecords[item.MeshSlot].IndexCount} / TRIANGLE_INDEX_COUNT;
-                    if (packets.GetSize() > draw.FirstPacket &&
-                        packets[packets.GetSize() - 1].MeshSlot == item.MeshSlot &&
-                        packets[packets.GetSize() - 1].IsMasked == isMasked &&
-                        (isMasked == false || packets[packets.GetSize() - 1].MaterialSlot == item.MaterialSlot))
-                    {
-                        ++packets[packets.GetSize() - 1].Count;
-                    }
-                    else if (packets.TryAdd(
-                                 {item.MeshSlot, isMasked == true ? item.MaterialSlot : 0, isMasked, first, 1}) ==
-                             false)
-                    {
-                        return Status::OutOfMemory;
-                    }
+                    return status;
                 }
-                draw.PacketCount = static_cast<uint32>(packets.GetSize()) - draw.FirstPacket;
                 if (faces.TryAdd(draw) == false)
                 {
                     return Status::OutOfMemory;
@@ -5438,7 +5492,7 @@ Status Renderer::prepareMeshLightShadows(Snapshot snapshot,
     }
     return inoutAtlas.Packets.IsEmpty() == true ? Status::Ready : rhi::GetStatus(s.Device, inoutAtlas.Instances);
 }
-Status Renderer::drawMeshLightShadows(PreparedView frameView, internal::MeshLightShadowAtlas& inoutAtlas) noexcept
+Status Renderer::drawDeferredShadows(PreparedView frameView, internal::DeferredShadowAtlas& inoutAtlas) noexcept
 {
     if (mState.Get() == nullptr)
     {
@@ -5450,7 +5504,8 @@ Status Renderer::drawMeshLightShadows(PreparedView frameView, internal::MeshLigh
     {
         return Status::InvalidState;
     }
-    if (inoutAtlas.IsCleared == false)
+    inoutAtlas.Recording = inoutAtlas.Submitted;
+    if (inoutAtlas.Recording.IsCleared == false)
     {
         // The far depth everywhere: faces not yet drawn read as unoccluded rather than undefined.
         rhi::RasterPassDescription clear;
@@ -5466,9 +5521,11 @@ Status Renderer::drawMeshLightShadows(PreparedView frameView, internal::MeshLigh
         {
             return cleared;
         }
-        inoutAtlas.IsCleared = true;
+        inoutAtlas.Recording.IsCleared = true;
     }
-    if (inoutAtlas.NextFace >= inoutAtlas.Faces.GetSize())
+    const bool shouldDrawDirectional =
+        inoutAtlas.Directional.Light.SourceId != 0 && inoutAtlas.Recording.HasDrawnDirectional == false;
+    if (shouldDrawDirectional == false && inoutAtlas.Recording.NextFace >= inoutAtlas.Faces.GetSize())
     {
         return Status::Ready;
     }
@@ -5482,21 +5539,10 @@ Status Renderer::drawMeshLightShadows(PreparedView frameView, internal::MeshLigh
     const usize drawLimit = deviceInfo.Profile.Raster.DrawsPerFrame;
     usize budget = drawLimit > frameDraws ? drawLimit - frameDraws : 0;
     uint64 triangleBudget = MAX_MESH_LIGHT_SHADOW_TRIANGLES_PER_FRAME;
-    for (uint32 drawnFaces = 0;
-         inoutAtlas.NextFace < inoutAtlas.Faces.GetSize() && drawnFaces < MAX_MESH_LIGHT_SHADOW_FACES_PER_FRAME;
-         ++drawnFaces)
-    {
-        const internal::MeshLightShadowFaceDraw& draw = inoutAtlas.Faces[inoutAtlas.NextFace];
-        if (draw.PacketCount > budget || (drawnFaces != 0 && draw.Triangles > triangleBudget))
-        {
-            break;
-        }
-        budget -= draw.PacketCount;
-        triangleBudget -= math::Min(draw.Triangles, triangleBudget);
-        ++inoutAtlas.NextFace;
+    const auto drawFace = [&](const internal::MeshLightShadowFaceDraw& draw) noexcept -> Status {
         if (draw.PacketCount == 0)
         {
-            continue;
+            return Status::Ready;
         }
         rhi::RasterPassDescription pass;
         pass.Color = inoutAtlas.Texture;
@@ -5532,6 +5578,38 @@ Status Renderer::drawMeshLightShadows(PreparedView frameView, internal::MeshLigh
             {
                 return status;
             }
+        }
+        return Status::Ready;
+    };
+    const bool canDrawDirectional = shouldDrawDirectional == true && inoutAtlas.DirectionalDraw.PacketCount <= budget;
+    if (canDrawDirectional == true)
+    {
+        const Status status = drawFace(inoutAtlas.DirectionalDraw);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        budget -= inoutAtlas.DirectionalDraw.PacketCount;
+        triangleBudget -= math::Min(inoutAtlas.DirectionalDraw.Triangles, triangleBudget);
+        inoutAtlas.Recording.HasDrawnDirectional = true;
+    }
+    for (uint32 drawnFaces = 0; inoutAtlas.Recording.NextFace < inoutAtlas.Faces.GetSize() &&
+                                drawnFaces < MAX_MESH_LIGHT_SHADOW_FACES_PER_FRAME;
+         ++drawnFaces)
+    {
+        const internal::MeshLightShadowFaceDraw& draw = inoutAtlas.Faces[inoutAtlas.Recording.NextFace];
+        if (draw.PacketCount > budget ||
+            ((canDrawDirectional == true || drawnFaces != 0) && draw.Triangles > triangleBudget))
+        {
+            break;
+        }
+        budget -= draw.PacketCount;
+        triangleBudget -= math::Min(draw.Triangles, triangleBudget);
+        ++inoutAtlas.Recording.NextFace;
+        const Status status = drawFace(draw);
+        if (status != Status::Ready)
+        {
+            return status;
         }
     }
     return Status::Ready;

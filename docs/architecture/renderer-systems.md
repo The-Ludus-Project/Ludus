@@ -1459,6 +1459,144 @@ blending, composite into a supported linear intermediate then encode once.
 Antialiasing starts with a simple spatial variant or verified MSAA path (the Editor viewport's FXAA is the
 spatial variant; see the output pass above); TAA is a later feature needing motion vectors, jitter and history rejection tests.
 
+## Clear-sky atmosphere design
+
+Add an **Atmosphere** entity to the World to render a spherical Earth-like sky
+lit by an authored distant Sun. The first viewport milestone covers a clear
+sky, a resolved solar disk, sunsets and the sunlit portion of twilight for
+cameras at or above the surface and inside the atmosphere. A sunless ray can
+go dark in this profile.
+Clouds are outside the atmosphere system.
+
+### Ownership and inputs
+
+- Choose **Atmosphere** from the World's existing entity creation menu. The
+  editor adds and selects the entity in one undoable edit. Edit its Transform
+  and Atmosphere component in **Properties**. Transform position in world metres
+  anchors the surface, and rotation maps the entity's local +Y to outward up.
+  The **Earth clear sky** preset supplies the physical radii independently of
+  entity scale. The component stores the preset, the Sun's angular radius in
+  degrees, and a reference to a directional light by persistent entity identity.
+  Extraction converts the angle to radians. Save, delete and undo through the
+  ordinary World document operations.
+- A0 admits one Atmosphere entity per World. A World without one uses its
+  ordinary background. If an add or duplicate would create a second Atmosphere,
+  reject the edit and identify the existing entity to edit or remove. If a
+  loaded World has conflicting Atmosphere entities, identify them and use the
+  ordinary background until the author resolves the conflict. The game or editor
+  owns the clock and light transform. Reuse the
+  [celestial directional light drivers](../development/editor-workspace.md#celestial-directional-lights)
+  for moving the Sun.
+- Extraction resolves the selected light into a unit world direction **toward**
+  the Sun and RGB illuminance on a perpendicular plane, in the renderer's
+  linear RGB photometric convention. Use that direction for the disk and
+  scattering. Preserve the authored illuminance and direction even when a
+  celestial driver would suppress direct ground lighting below its geometric
+  horizon. The sphere tests light visibility independently at each scattering
+  point, including points above a viewer already in shadow. A disabled light
+  contributes zero. A newly added Atmosphere can be saved with an empty Sun
+  reference. An empty or unresolved reference uses the ordinary background
+  and identifies the **Sun** field in Properties so the author can select a
+  directional light. Preserve an unresolved identity so undoing deletion of
+  the referenced light restores the binding.
+- GraphicsRenderer owns the immutable resolved atmosphere, the prepared GPU
+  textures and per-view sampling state. Keep profile and view data distinct.
+  Compute planet-relative inputs from the local surface anchor using binary64
+  on the host. Keep the camera-relative world reconstruction already used by
+  the renderer. Pass altitude and radial up explicitly and use stable ray
+  intersections near the horizon. The planet centre is derived from the
+  anchor, up and bottom radius. The atmosphere adds no mesh or physics shape.
+- The built-in profile owns the bottom and top radii, altitude density laws,
+  scattering and absorption coefficients in inverse metres, and normalized
+  phase functions in inverse steradians. Use Rayleigh molecules, exponential
+  aerosol density with a Cornette–Shanks phase approximation, and a tent
+  profile for ozone absorption. Use the Earth defaults from the sample for
+  Sébastien Hillaire's *A Scalable and Production Ready Sky and Atmosphere
+  Rendering Technique*, §4 (Computer Graphics Forum, 2020). The sample's
+  aerosol extinction is 4.440 × 10⁻⁶ m⁻¹ and scattering is 3.996 × 10⁻⁶ m⁻¹,
+  so absorption is 0.444 × 10⁻⁶ m⁻¹. Table 1 lists 4.40 × 10⁻⁶ m⁻¹ in its
+  absorption column. Thank you to Hillaire for the Earth profile and LUT
+  parameterizations. [Paper](https://doi.org/10.1111/cgf.14050),
+  [accompanying sample defaults](https://github.com/sebh/UnrealEngineSkyAtmosphere/blob/master/Application/SkyAtmosphereCommon.cpp#L8-L42).
+
+### Light transport and raster integration
+
+For a ray, return two independent quantities, RGB transmittance `T` and
+scene-linear in-scattered radiance `Lscatter`. Integrate extinction (scattering
+plus absorption) through the shell using Beer–Lambert transmittance. Integrate
+single scattering along the view segment with view transmittance, the local
+scattering coefficient and phase function, and transmittance toward the Sun.
+Use zero incident sunlight at a sample if the ray from it to the Sun hits the
+planet. The cosine for forward scattering is the dot product of the outward
+view direction and the direction toward the Sun. Stop at the first opaque
+boundary or top-of-atmosphere exit. A ground hit ends the integral with a dark
+boundary. For an exit, compose `Lscatter + T * Lboundary`. In vacuum, the
+result is the boundary radiance. The same segment contract can later composite
+aerial perspective over geometry by using surface radiance at the finite
+endpoint.
+
+Start with Hillaire's transmittance and sky-view LUTs (§5.2–5.3). The
+transmittance table depends on the profile and quality. Its domain is rays
+that reach the top of the atmosphere. Test ground intersection before lookup.
+The sky-view table depends on that profile, observer altitude, solar zenith
+angle and quality. Store scattering for unit incident illuminance and multiply
+by source RGB at composition. Use a horizon-focused parameterization that
+keeps ground-hit and top-exit samples on separate filter domains. Camera
+rotation, viewport size and exposure reuse both tables. Pure camera motion
+that changes altitude or solar zenith updates the sky-view table. Reconstruct
+its basis from radial up and Sun direction with a stable pole convention.
+Use GPU passes with explicit resource uses and bounded textures/work. Measure
+update and sampling costs independently before choosing table resolutions.
+Publish matching inputs and texture generations together once ready. A
+pending, failed or stale candidate preserves the last drawable viewport
+generation. Existing frame leases govern retirement.
+
+In the default [clustered deferred resolve](../development/render-graph-authoring.md#default-clustered-deferred-lighting),
+evaluate atmosphere on uncovered samples using G-buffer coverage and a
+world-space view ray, before the fused exposure, tone map and output encoding.
+Retain depth and covered geometry. This placement avoids introducing an HDR
+color edge into the graph just to composite sky. Evaluate the solar disk at
+pixel resolution with edge coverage and analytic ground occlusion, then
+attenuate it by view transmittance. A uniform disk of angular radius `a`
+uses radiance `E / (pi * sin(a)^2)` for perpendicular illuminance `E` at the
+top of the atmosphere. The scattering term uses a directional Sun
+approximation. Keep the disk out of the sky-view texture and apply exposure
+once to the result.
+
+The first milestone is a background feature of the ordinary raster viewport.
+Its boundary contains the solar disk and otherwise zero radiance. Authored
+surface lighting, shadow maps and environment lighting continue to use their
+existing inputs. Report the background-only profile so an artist can distinguish
+a visible sky from sky illumination. Report a requested atmosphere on an
+unsupported profile explicitly, with the supported raster profile named as a
+repair. If a camera moves outside the admitted altitude range, render the
+World with its ordinary clear and show the current altitude and supported
+range so the user can navigate back.
+
+### Milestones and acceptance
+
+| Stage | Result and acceptance |
+| --- | --- |
+| A0. Clear-sky viewport | Compare raw scene-linear GPU transmittance and scattering against independent binary64 quadrature of the same single-scattering model. Use analytic vacuum and constant-extinction checks, phase normalization, vertical and grazing paths on both sides of the horizon, and day, sunset and twilight views at several altitudes. Assert finite nonnegative radiance, bounded transmittance, correct planet shadow and no disk through ground. Establish absolute error floors for dark values and relative tolerances for lit values before tuning LUT quality. Test entity creation through the existing menu, Properties edits, deletion and undo, save/reopen, and duplicate rejection in the selected World's interactive viewport. Exercise an empty Sun reference, deleted Sun and undo, camera movement and resize. Check geometry/depth preservation, disk coverage, one tone map and recovery on re-entering the admitted altitude range. Exercise Pending, failure, stale completion and successful publication while retaining a prior GPU image. Record backend, LUT dimensions, GPU timings and update frequency; qualify each supported backend separately. |
+| A1. Atmosphere lighting and aerial perspective | Add multiple scattering after comparing against a declared higher-order solution. Use the same solar input and atmosphere transmittance for the linked direct light at receivers. Generate diffuse and filtered specular environment lighting from the sky when enabled, replacing that environment's lighting contribution and excluding the solar disk already represented by direct lighting. Apply the finite-segment contract to opaque geometry before tone mapping. Document transparent/profile coverage and test no double counting, monotonic homogeneous extinction and distance-dependent haze. |
+| A2. Night sky and space | Add an independent celestial provider for top-of-atmosphere radiance and disk geometry, beginning with stars and the Moon. Compose through the same transmittance and planet occlusion so stars attenuate toward the horizon and the Moon can share its direction with an authored light. Qualify shell entry and exit and limb rendering for orbital views. Lunar phase and eclipses require explicit source/occluder geometry. Airglow or aurora would add a separate emitting term within the atmosphere. |
+| A3. Tabulated particle optics | Add an offline cook for wavelength-dependent particle optics, with versioned density, scattering, absorption and normalized angular phase data. Preserve spectral inputs through the relevant transport before color conversion when claiming spectral fidelity. Check angular resolution and interpolation near forward peaks, then compare a Mars dust preset against the paper's published measurements. |
+
+A0's quadrature is a numerical oracle for the raster sky. Any later reference
+transport integration follows the [CPU and GPU reference requirement](#cpu-and-gpu-reference-implementation-requirement).
+Freeze the atmosphere and celestial source versions for both implementations.
+Define the same transport profile and environment sampling/PDFs for misses
+and direct lighting, including the ownership of solar energy, then compare
+matched raw CPU and GPU outputs.
+
+The tabulated particle boundary follows Simon Schneegans, Tim Meyran, Ingo
+Ginkel, Gabriel Zachmann and Andreas Gerndt, *Physically Based Real-Time
+Rendering of Atmospheres using Mie Theory*, §3 (Computer Graphics Forum, 2024).
+Thanks to the authors for separating particle optics from atmospheric
+transport. Their implementation extends Bruneton's precomputed transport.
+Ludus would qualify the combination with the Hillaire-style pipeline as a
+separate result. [Paper](https://doi.org/10.1111/cgf.15010)
+
 ## Ray tracing and path tracing
 
 Ray tracing supplies intersection and visibility queries. Path tracing uses those

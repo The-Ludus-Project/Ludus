@@ -48,7 +48,10 @@ struct ViewportObjectOverlay final
     /// A plane handle or the centre handle is a dark casing and the solid shape over it.
     static constexpr foundation::usize FILLS_PER_CASED_HANDLE = 2;
     /// Arrowheads and cubes of the three axes, the three plane handles with their casings, and the pivot marker.
-    static constexpr foundation::usize MAX_HANDLE_FILLS = AXIS_COUNT + AXIS_COUNT * FILLS_PER_CASED_HANDLE + 1;
+    static constexpr foundation::usize MAX_TRANSFORM_HANDLE_FILLS =
+        AXIS_COUNT + AXIS_COUNT * FILLS_PER_CASED_HANDLE + 1;
+    static constexpr foundation::usize TERRAIN_EXTENT_HANDLES = 2;
+    static constexpr foundation::usize MAX_HANDLE_FILLS = MAX_TRANSFORM_HANDLE_FILLS + TERRAIN_EXTENT_HANDLES;
     /// The selection amber of the design tokens, shared with the graph canvas.
     static constexpr QRgb SELECTION_COLOR = design::GetThemeArgb(design::ThemeColour::SelectionAmber, true);
     /// Opacity, of 255, of the casing under the outline.

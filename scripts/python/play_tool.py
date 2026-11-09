@@ -370,7 +370,10 @@ class PlaySupervisor:
                 if self.child is None or self.session is None:
                     self.result(request, "Busy", "game host is not ready")
                     return
-                if command.get("command") not in ("Hello", "Status", "Pause", "Resume", "Step", "ReadProperties", "ApplyEdits", "ReloadAsset", "ScriptDebug"):
+                if command.get("command") not in (
+                    "Hello", "Status", "Pause", "Resume", "Step", "SetFastForward",
+                    "ReadProperties", "ApplyEdits", "ReloadAsset", "ScriptDebug",
+                ):
                     raise ProtocolError("unsupported host command")
                 self.send_host({**command, "protocol":1, "session":self.session,
                                 "epoch":self.epoch, "request":request})

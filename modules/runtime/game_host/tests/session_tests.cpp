@@ -72,7 +72,7 @@ void SendCommand(int fd, const Message& m)
     std::string type;
     (void)command.GetString("command", type);
     if (type == "Pause" || type == "Resume" || type == "Step" || type == "Reload" || type == "ReadProperties" ||
-        type == "ApplyEdits")
+        type == "ApplyEdits" || type == protocol::CommandKindName(CommandKind::SetFastForward))
     {
         if (command.Has("expected_generation") == false)
         {
@@ -601,6 +601,96 @@ TEST_CASE("reload to an incompatible module keeps the session alive", "[session]
     REQUIRE(result == RunResult::Ok);
     CloseSocket(editorEnd);
     CloseSocket(hostEnd);
+}
+
+TEST_CASE("fast-forward runs fixed tick batches and paused Step stays singular", "[session][fast-forward]")
+{
+    int sockets[2] = {-1, -1};
+    REQUIRE(MakeSocketPair(sockets));
+    const int editorEnd = sockets[0];
+    HostSession session(1, 1, sockets[1]);
+    REQUIRE(session.LoadInitial(LUDUS_FIXTURE_A_PATH));
+    HostWorker worker(editorEnd, [&] { (void)session.RunLoop(0); });
+    FrameReader reader;
+    const Array<Message> startup = AwaitEvent(editorEnd, reader, "ModuleReady");
+    uint64 multiplier = 0;
+    for (const Message& event : startup)
+    {
+        if (event.GetUint("fast_forward_multiplier", multiplier) == true)
+        {
+            break;
+        }
+    }
+    REQUIRE(multiplier == HOST_FAST_FORWARD_TICKS_PER_FRAME);
+
+    uint64 nextRequest = 1;
+    const auto send = [&](CommandKind kind, Message command = {}) {
+        const uint64 request = nextRequest++;
+        command.SetString("command", protocol::CommandKindName(kind));
+        command.SetHexId("request", request);
+        SendCommand(editorEnd, command);
+        Array<Message> events = AwaitStatus(editorEnd, reader, request);
+        REQUIRE(HasStatus(events, request, "Ok"));
+        return events;
+    };
+    const auto readTiming = [&]() {
+        const Array<Message> events = send(CommandKind::Status);
+        for (const Message& event : events)
+        {
+            Array<Message> records;
+            if (event.GetRecords(TIMING_RECORD_KEY, records) == true)
+            {
+                TimingReport report;
+                REQUIRE(records.GetSize() == 1);
+                REQUIRE(ReadTimingRecord(records[0], report));
+                return report;
+            }
+        }
+        FAIL("Expected a timing record in Status");
+        return TimingReport{};
+    };
+
+    Message speed;
+    speed.SetBool("fast_forward", true);
+    const Array<Message> enabled = send(CommandKind::SetFastForward, speed);
+    bool isFastForwarding = false;
+    for (const Message& event : enabled)
+    {
+        if (event.GetBool("fast_forward", isFastForwarding) == true)
+        {
+            break;
+        }
+    }
+    REQUIRE(isFastForwarding == true);
+    const TimingReport first = readTiming();
+    const TimingReport second = readTiming();
+    REQUIRE(second.Frames > first.Frames);
+    CHECK(second.SimulationTicks - first.SimulationTicks == multiplier * (second.Frames - first.Frames));
+
+    (void)send(CommandKind::Pause);
+    const TimingReport paused = readTiming();
+    const TimingReport stillPaused = readTiming();
+    CHECK(stillPaused.SimulationTicks == paused.SimulationTicks);
+    (void)send(CommandKind::Step);
+    CHECK(readTiming().SimulationTicks == paused.SimulationTicks + 1);
+
+    speed.SetBool("fast_forward", false);
+    (void)send(CommandKind::SetFastForward, speed);
+    (void)send(CommandKind::Resume);
+    const TimingReport normalFirst = readTiming();
+    const TimingReport normalSecond = readTiming();
+    REQUIRE(normalSecond.Frames > normalFirst.Frames);
+    CHECK(normalSecond.SimulationTicks - normalFirst.SimulationTicks == normalSecond.Frames - normalFirst.Frames);
+
+    Message stop;
+    stop.SetString("command", protocol::CommandKindName(CommandKind::Stop));
+    stop.SetHexId("request", nextRequest);
+    SendCommand(editorEnd, stop);
+    const Array<Message> ended = AwaitEvent(editorEnd, reader, "SessionEnded");
+    CHECK(HasStatus(ended, nextRequest, "Ok"));
+    worker.join();
+    CloseSocket(editorEnd);
+    CloseSocket(sockets[1]);
 }
 
 TEST_CASE("duplicate Step is applied once and acknowledged IDs are never replayed", "[session][protocol]")

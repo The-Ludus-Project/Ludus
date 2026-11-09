@@ -1,9 +1,14 @@
 #include "internal/builtin_world.h"
+#include "internal/render_scene.h"
 #include "internal/render_scene_limits.h"
+#include "internal/world_aperture.h"
 #include "internal/world_document.h"
 #include "internal/world_probe_volume.h"
 
 #include "internal/world_celestial_light.h"
+
+#include <ludus/foundation/math/quaternion.hpp>
+#include <ludus/foundation/math/scalar.hpp>
 
 #include <QFile>
 #include <QJsonArray>
@@ -12,6 +17,8 @@
 
 namespace ludus::editor
 {
+namespace math = foundation::math;
+namespace camera = gameplay::camera;
 bool IsBuiltInWorld(const WorldDocument& world)
 {
     return world.Schema().value(QStringLiteral("id")) == QJsonValue(QStringLiteral("ludus.world.default.v1"));
@@ -36,6 +43,9 @@ bool ReadBuiltInWorldAsset(const QString& name, QByteArray& outBytes, QString& o
 }
 namespace
 {
+constexpr foundation::float64 DEFAULT_PLAYER_EYE_HEIGHT_METRES = 1.65;
+constexpr foundation::float32 FIRST_PERSON_MAXIMUM_PITCH_DEGREES = 89.9F;
+constexpr foundation::float32 FIRST_PERSON_NEAR_METRES = 0.01F;
 /// The schema defaults of one component's properties.
 QJsonObject MakeDefaultValues(const WorldDocument& world, const QString& component)
 {
@@ -47,7 +57,98 @@ QJsonObject MakeDefaultValues(const WorldDocument& world, const QString& compone
     }
     return values;
 }
+QJsonObject MakeFirstPersonTransform(const WorldDocument& world)
+{
+    const QString transformKey = QStringLiteral("transform");
+    QJsonObject transform = MakeDefaultValues(world, transformKey);
+    transform.insert(QStringLiteral("y"), DEFAULT_PLAYER_EYE_HEIGHT_METRES);
+    const QJsonObject scene = world.Draft().value(QStringLiteral("scene")).toObject();
+    PreviewStartView start;
+    if (TryParseStartView(scene.value(QStringLiteral("camera")).toObject(), start) == false)
+    {
+        return transform;
+    }
+    const QJsonObject position{{QStringLiteral("x"), start.EyeWorld.X},
+                               {QStringLiteral("y"), start.EyeWorld.Y},
+                               {QStringLiteral("z"), start.EyeWorld.Z}};
+    // Imported camera coordinates can exceed the built-in entity Transform's bounds.
+    for (const QJsonValue value : world.Component(transformKey).value(QStringLiteral("properties")).toArray())
+    {
+        const QJsonObject property = value.toObject();
+        const QJsonValue coordinate = position.value(property.value(QStringLiteral("id")).toString());
+        if (coordinate.isDouble() == true &&
+            (coordinate.toDouble() < property.value(QStringLiteral("min")).toDouble() ||
+             coordinate.toDouble() > property.value(QStringLiteral("max")).toDouble()))
+        {
+            return transform;
+        }
+    }
+    const math::Vector3d directionWorld = start.TargetWorld - start.EyeWorld;
+    const foundation::float64 horizontal =
+        math::Sqrt(directionWorld.X * directionWorld.X + directionWorld.Z * directionWorld.Z);
+    transform.insert(QStringLiteral("x"), start.EyeWorld.X);
+    transform.insert(QStringLiteral("y"), start.EyeWorld.Y);
+    transform.insert(QStringLiteral("z"), start.EyeWorld.Z);
+    transform.insert(QStringLiteral("rx"), math::RadiansToDegrees(math::Atan2(directionWorld.Y, horizontal)));
+    transform.insert(QStringLiteral("ry"),
+                     horizontal > 0 ? math::RadiansToDegrees(math::Atan2(-directionWorld.X, -directionWorld.Z)) : 0);
+    return transform;
+}
 } // namespace
+bool HasWorldFirstPersonPlayer(const WorldDocument& world, const QString& id)
+{
+    return IsBuiltInWorld(world) == true && world.Entity(id)
+                                                .value(QStringLiteral("components"))
+                                                .toObject()
+                                                .contains(QStringLiteral("firstPersonPlayer"));
+}
+bool ReadWorldFirstPersonPlayer(const WorldDocument& world,
+                                const QString& id,
+                                camera::CameraSample& outCamera,
+                                foundation::float32& outSpeed,
+                                QString& outError)
+{
+    if (HasWorldFirstPersonPlayer(world, id) == false)
+    {
+        outError = QStringLiteral("Select a First Person Player in the World hierarchy.");
+        return false;
+    }
+    const QJsonObject components = world.Entity(id).value(QStringLiteral("components")).toObject();
+    const QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
+    if (transform.isEmpty() == true)
+    {
+        outError = QStringLiteral("Add a Transform to the selected First Person Player to set its spawn position.");
+        return false;
+    }
+    const foundation::float32 pitchDegrees =
+        static_cast<foundation::float32>(transform.value(QStringLiteral("rx")).toDouble());
+    const foundation::float32 yawDegrees =
+        static_cast<foundation::float32>(transform.value(QStringLiteral("ry")).toDouble());
+    math::Quaternion pitch;
+    math::Quaternion yaw;
+    if (math::TryFromAxisAngle(
+            {1, 0, 0},
+            math::DegreesToRadians(
+                math::Clamp(pitchDegrees, -FIRST_PERSON_MAXIMUM_PITCH_DEGREES, FIRST_PERSON_MAXIMUM_PITCH_DEGREES)),
+            pitch) != math::MathStatus::Success ||
+        math::TryFromAxisAngle({0, 1, 0}, math::DegreesToRadians(yawDegrees), yaw) != math::MathStatus::Success)
+    {
+        outError = QStringLiteral("Set valid X and Y rotations on the selected First Person Player.");
+        return false;
+    }
+    camera::CameraSample spawn;
+    spawn.Pose.Position = {transform.value(QStringLiteral("x")).toDouble(),
+                           transform.value(QStringLiteral("y")).toDouble(),
+                           transform.value(QStringLiteral("z")).toDouble()};
+    spawn.Pose.Orientation = yaw * pitch;
+    spawn.Lens.Projection = camera::CameraProjection::PerspectiveInfinite;
+    spawn.Lens.NearPlane = FIRST_PERSON_NEAR_METRES;
+    outCamera = spawn;
+    const QJsonObject player = components.value(QStringLiteral("firstPersonPlayer")).toObject();
+    outSpeed = static_cast<foundation::float32>(player.value(QStringLiteral("speed")).toDouble());
+    outError.clear();
+    return true;
+}
 bool CreateWorldLuminaire(WorldDocument& inoutWorld,
                           const foundation::identity::EntropySource& entropy,
                           const WorldLuminairePlacement& placement,
@@ -124,9 +225,26 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
         };
         return CreateWorldLuminaire(inoutWorld, entropy, ABOVE_ORIGIN, outId, outError);
     }
+    if (preset == QStringLiteral("Aperture Slit"))
+    {
+        if (inoutWorld.HasBuiltInAperture() == false)
+        {
+            outError = QStringLiteral("Aperture presets require the default World schema.");
+            return false;
+        }
+        // A screen at the origin facing +Z, with the schema's default opening.
+        const QString component = GetApertureComponentId();
+        return inoutWorld.CreateEntity(
+            entropy,
+            outError,
+            preset,
+            outId,
+            QJsonObject{{QStringLiteral("transform"), MakeDefaultValues(inoutWorld, QStringLiteral("transform"))},
+                        {component, MakeDefaultValues(inoutWorld, component)}});
+    }
     if (IsBuiltInWorld(inoutWorld) == false)
     {
-        outError = QStringLiteral("Geometry and light presets require the default World schema.");
+        outError = QStringLiteral("World object presets require the default World schema.");
         return false;
     }
     if (preset == QStringLiteral("GI Probe Volume"))
@@ -139,6 +257,16 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
             outId,
             QJsonObject{{QStringLiteral("transform"), MakeDefaultValues(inoutWorld, QStringLiteral("transform"))},
                         {component, MakeDefaultValues(inoutWorld, component)}});
+    }
+    if (preset == QStringLiteral("First Person Player"))
+    {
+        const QString component = QStringLiteral("firstPersonPlayer");
+        return inoutWorld.CreateEntity(entropy,
+                                       outError,
+                                       preset,
+                                       outId,
+                                       QJsonObject{{QStringLiteral("transform"), MakeFirstPersonTransform(inoutWorld)},
+                                                   {component, MakeDefaultValues(inoutWorld, component)}});
     }
     const bool isGeometry =
         preset == QStringLiteral("Cube") || preset == QStringLiteral("Plane") || preset == QStringLiteral("Sphere");

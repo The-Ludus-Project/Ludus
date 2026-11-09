@@ -137,6 +137,10 @@ struct AssetOptions final
     /// Linear HDR energy is retained with a bounded texture and radiance multiplier;
     /// +Y is north, longitude zero is +X, increasing longitude turns toward +Z.
     std::string_view EnvironmentFile;
+    /// Passed to BestEffortOptions::ShouldDeferApertures: leave Ludus scene source
+    /// apertures out of the cooked bundle for the caller to create as World entities.
+    /// Only best-effort routes read it.
+    bool ShouldDeferApertures = false;
 };
 
 /// @brief Result of PrepareImport: a complete candidate that is not yet published.

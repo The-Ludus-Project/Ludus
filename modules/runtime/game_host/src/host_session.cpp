@@ -271,6 +271,7 @@ void HostSession::EmitCommandResult(uint64 requestId, CommandStatus status, std:
     m.SetHexId("generation", ActiveGeneration_);
     m.SetUint("schema_epoch", SchemaEpoch_);
     m.SetString("state", PlayStateName(State_));
+    m.SetBool("fast_forward", mIsFastForwarding);
     if (message.empty() == false)
     {
         m.SetString("message", message);
@@ -302,6 +303,7 @@ void HostSession::EmitReady() noexcept
     ready.SetString("identity", CurrentHostIdentity());
     ready.SetUint("abi_major", CurrentAbiMajor());
     ready.SetUint("abi_minor", CurrentAbiMinor());
+    ready.SetUint("fast_forward_multiplier", HOST_FAST_FORWARD_TICKS_PER_FRAME);
     Emit(ready);
 }
 
@@ -382,27 +384,33 @@ bool HostSession::LoadInitial(std::string_view modulePath, uint64 generation, ga
     return true;
 }
 
-void HostSession::StepFrame() noexcept
+void HostSession::StepFrame(uint64 maximumUpdates) noexcept
 {
-    if (ScriptPaused_)
-    {
-        return;
-    }
-    if (Instance_ == nullptr || Active_.IsLoaded() == false ||
+    if (ScriptPaused_ == true || Instance_ == nullptr || Active_.IsLoaded() == false ||
         (State_ != PlayState::Running && State_ != PlayState::Paused))
     {
         return;
     }
-    // Advance the simulation iff Running, or paused with exactly one pending
-    // Step. Simulation time is driven by advanced ticks only, so a pause does
-    // not advance time and Resume does not catch up (design 8).
-    const bool advancing = (State_ == PlayState::Running) || (State_ == PlayState::Paused && StepRequested_);
+    const bool shouldAdvance = State_ == PlayState::Running || (State_ == PlayState::Paused && StepRequested_ == true);
+    const uint64 batchSize =
+        State_ == PlayState::Running && mIsFastForwarding == true ? HOST_FAST_FORWARD_TICKS_PER_FRAME : 1;
+    for (uint64 update = 0; update < batchSize && update < maximumUpdates; ++update)
+    {
+        if (updateGame(shouldAdvance) == false)
+        {
+            return;
+        }
+    }
+}
 
-    constexpr ludus::foundation::float64 kFixedDt = 1.0 / 60.0;
+bool HostSession::updateGame(bool shouldAdvance) noexcept
+{
+    constexpr ludus::foundation::float64 TICKS_PER_SECOND = 60;
+    constexpr ludus::foundation::float64 FIXED_DELTA_SECONDS = 1.0 / TICKS_PER_SECOND;
     FrameInput input = {};
     input.FrameIndex = FrameIndex_;
-    input.DeltaSeconds = kFixedDt;
-    input.ElapsedSeconds = static_cast<ludus::foundation::float64>(SimTicks_) * kFixedDt;
+    input.DeltaSeconds = FIXED_DELTA_SECONDS;
+    input.ElapsedSeconds = static_cast<ludus::foundation::float64>(SimTicks_) * FIXED_DELTA_SECONDS;
     input.Width = 800;
     input.Height = 600;
     if (Presenter_ != nullptr)
@@ -411,7 +419,7 @@ void HostSession::StepFrame() noexcept
     }
     // Paused==0 drives the module to advance one tick; the module advances on
     // input.Paused alone (a single Step while paused advances exactly one tick).
-    input.Paused = advancing ? 0 : 1;
+    input.Paused = shouldAdvance == true ? 0 : 1;
 
     RenderParams render = {};
     const game_api::Status status = Active_.Table().Update(Instance_, &input, &render);
@@ -419,7 +427,7 @@ void HostSession::StepFrame() noexcept
         game_api::HasCapability(Active_.Metadata().Capabilities, game_api::Capability::ScriptDebug))
     {
         ScriptPaused_ = true;
-        return; // Partial invocation: no simulation tick/frame/checkpoint advances.
+        return false; // Partial invocation: no simulation tick/frame/checkpoint advances.
     }
     if (status != game_api::Status::Ok)
     {
@@ -428,16 +436,17 @@ void HostSession::StepFrame() noexcept
         LUDUS_LOG_ERROR(LOG_SESSION, "module Update failed at frame {}: {}", FrameIndex_, static_cast<uint32>(status));
         State_ = PlayState::Failed;
         StopLatched_ = true;
-        return;
+        return false;
     }
     LastRender_ = render;
-    ++FrameIndex_; // frame counter is wall-clock frames
-    if (advancing)
+    ++FrameIndex_; // Ordinal of completed Update callbacks, including paused renders.
+    if (shouldAdvance == true)
     {
         ++SimTicks_; // simulation ticks only advance when not paused
         Timing_.RecordTick();
     }
     StepRequested_ = false;
+    return true;
 }
 
 bool HostSession::PumpControl() noexcept
@@ -547,6 +556,11 @@ void HostSession::Dispatch(const Message& command) noexcept
     {
         knownFields = command.HasOnly(
             {"command", "protocol", "request", "session", "epoch", "expected_generation", "extension", "payload"});
+    }
+    else if (type == protocol::CommandKindName(CommandKind::SetFastForward))
+    {
+        knownFields = command.HasOnly(
+            {"command", "protocol", "request", "session", "epoch", "expected_generation", "fast_forward"});
     }
     else if (type == "ApplyEdits")
     {
@@ -691,6 +705,7 @@ void HostSession::Dispatch(const Message& command) noexcept
         m.SetString("state", PlayStateName(State_));
         m.SetUint("sim_ticks", SimTicks_);
         m.SetBool("script_paused", ScriptPaused_);
+        m.SetBool("fast_forward", mIsFastForwarding);
         m.SetUint("frame_index", FrameIndex_);
         m.SetUint("presented_frames", Presenter_ == nullptr ? 0 : Presenter_->PresentedFrames());
         m.SetBool("windowed", Presenter_ != nullptr && Presenter_->Windowed());
@@ -812,6 +827,23 @@ void HostSession::Dispatch(const Message& command) noexcept
         const bool resourceSet = Services_.SetResource(assetId, digest);
         LUDUS_REQUIRE(resourceSet);
         EmitCommandResult(requestId, CommandStatus::Ok, "frame-clear configuration replaced");
+        return;
+    }
+    if (type == protocol::CommandKindName(CommandKind::SetFastForward))
+    {
+        bool shouldFastForward = false;
+        if ((State_ != PlayState::Running && State_ != PlayState::Paused) ||
+            command.GetBool("fast_forward", shouldFastForward) == false)
+        {
+            EmitCommandResult(requestId,
+                              CommandStatus::InvalidRequest,
+                              "fast-forward needs a running or paused game and a boolean value");
+            return;
+        }
+        mIsFastForwarding = shouldFastForward;
+        EmitCommandResult(requestId,
+                          CommandStatus::Ok,
+                          shouldFastForward == true ? "fast-forward enabled" : "normal speed");
         return;
     }
     if (type == protocol::CommandKindName(CommandKind::Pause))
@@ -1272,7 +1304,9 @@ RunResult HostSession::RunLoop(uint64 maxFrames, FramePresenter* presenter) noex
             mPacing.SetVisible(presenter->IsWindowVisible());
             Timing_.SetPacingInterval(mPacing.GetInterval());
         }
-        StepFrame();
+        const uint64 maximumUpdates = maxFrames == 0 ? HOST_FAST_FORWARD_TICKS_PER_FRAME
+                                                     : (FrameIndex_ < maxFrames ? maxFrames - FrameIndex_ : 0);
+        StepFrame(maximumUpdates);
         if (StopLatched_)
         {
             break;

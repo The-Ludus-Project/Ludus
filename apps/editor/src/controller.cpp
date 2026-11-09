@@ -1,4 +1,5 @@
 #include "internal/controller.h"
+#include "internal/editor_files.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/logging/category.hpp>
@@ -508,6 +509,25 @@ void EditorController::CreateProject(const ProjectCreationOptions& creation)
     {
         return;
     }
+#if defined(Q_OS_WASM)
+    // A browser session cannot run the tool adapter: render the bundled template into the session filesystem.
+    // Engine selection, setup and the first build happen in the desktop editor after download.
+    QString descriptor;
+    QString problem;
+    if (CreateEditorProjectFromTemplate(creation.Name, creation.Destination, descriptor, problem) == false)
+    {
+        LastResult result;
+        result.Kind = Outcome::Failed;
+        result.Stage = Phase::Idle;
+        result.Code = ResultCode::InvalidProject;
+        result.Message = problem;
+        State_.Result = result;
+        Publish();
+        return;
+    }
+    OpenProject(descriptor);
+    return;
+#endif
     ToolLaunch options;
     options.ProjectPath = QFileInfo(creation.Destination).absoluteFilePath();
     options.ProjectName = creation.Name;

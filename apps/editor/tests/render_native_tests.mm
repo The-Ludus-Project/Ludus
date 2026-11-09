@@ -756,6 +756,15 @@ RenderScene MakeGiProbeScene(float32 receiverX)
     scene.Identity = QByteArrayLiteral("gi-probe-fixture/") + QByteArray::number(static_cast<float64>(receiverX));
     scene.AssetsIdentity = QByteArrayLiteral("gi-probe-assets");
     scene.Lit = true;
+    // Look along the divider so both receiver positions are visible to the camera.
+    scene.StartView =
+    {
+        .EyeWorld = {data.Eye.X, data.Eye.Y, data.Eye.Z},
+        .TargetWorld = {data.Target.X, data.Target.Y, data.Target.Z},
+        .UpWorld = data.Up,
+        .VerticalFov = data.VerticalFov,
+    };
+    scene.HasStartView = true;
     scene.Center = data.Target;
     scene.Radius = 4;
     scene.Meshes.resize(OBJECT_COUNT);

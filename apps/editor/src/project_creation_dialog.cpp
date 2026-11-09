@@ -21,6 +21,9 @@ namespace ludus::editor
 {
 namespace
 {
+/// Longest project name the descriptor admits, in UTF-8 bytes (ludus_tools.descriptor MAX_NAME_BYTES).
+constexpr qsizetype MAX_PROJECT_NAME_BYTES = 128;
+
 // Return the nearest folder at or above the existing part of `path` that holds a
 // `.git` entry, or an empty string. Mirrors ludus_tools.ci_setup.find_git_root.
 QString FindGitWorkTree(const QString& path)
@@ -75,12 +78,19 @@ ProjectCreationDialog::ProjectCreationDialog(QWidget* parent) : QDialog(parent)
     auto* locationRow = new QWidget(this);
     auto* locationLayout = new QHBoxLayout(locationRow);
     locationLayout->setContentsMargins(0, 0, 0, 0);
+#if defined(Q_OS_WASM)
+    // The browser session filesystem has one projects folder; the download names the project.
+    const QString defaultLocation = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+                                        .filePath(QStringLiteral("projects"));
+#else
     auto documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     if (documents.isEmpty())
     {
         documents = QDir::homePath();
     }
-    Location_ = new QLineEdit(QDir(documents).filePath(QStringLiteral("Ludus Projects")), locationRow);
+    const QString defaultLocation = QDir(documents).filePath(QStringLiteral("Ludus Projects"));
+#endif
+    Location_ = new QLineEdit(defaultLocation, locationRow);
     Location_->setObjectName(QStringLiteral("newProjectLocation"));
     auto* browse = new QPushButton(QStringLiteral("Browse..."), locationRow);
     browse->setObjectName(QStringLiteral("browseProjectLocation"));
@@ -131,6 +141,18 @@ ProjectCreationDialog::ProjectCreationDialog(QWidget* parent) : QDialog(parent)
     layout->addWidget(advanced);
     layout->addWidget(advancedPanel);
     connect(advanced, &QPushButton::toggled, advancedPanel, &QWidget::setVisible);
+#if defined(Q_OS_WASM)
+    // Engine selection, CI and the first build need the desktop tooling; the browser creates the files only.
+    form->setRowVisible(locationRow, false);
+    note->setText(QStringLiteral("Creates the minimal C++ project in this browser session. Use File > Download "
+                                 "Project Folder to keep it, then open it in the desktop editor to select an engine, "
+                                 "build and run it."));
+    mGitHubCiOrNull->setChecked(false);
+    mGitHubCiOrNull->setEnabled(false);
+    mGitHubCiOrNull->hide();
+    mGitHubCiNoteOrNull->hide();
+    advanced->hide();
+#endif
     const auto choose = [this](QLineEdit* field, const QString& title) {
         // Qt Group, QFileDialog documentation: asynchronous native directory
         // selection; https://doc.qt.io/qt-6/qfiledialog.html. Thanks for the
@@ -185,14 +207,19 @@ void ProjectCreationDialog::Update()
     QString problem;
     bool invalidName =
         options.Name.isEmpty() || options.Name == QStringLiteral(".") || options.Name == QStringLiteral("..");
-    for (const auto character : options.Name)
+    for (const char32_t character : options.Name.toUcs4())
     {
-        invalidName = invalidName || character.isPrint() == false || character == QLatin1Char('/') ||
-                      character == QLatin1Char('\\');
+        invalidName = invalidName || QChar::isPrint(character) == false || character == U'/' || character == U'\\';
     }
     if (invalidName)
     {
         problem = QStringLiteral("Enter a project name without path separators or control characters.");
+    }
+    else if (options.Name.toUtf8().size() > MAX_PROJECT_NAME_BYTES)
+    {
+        problem = QStringLiteral("Shorten the project name to at most %1 UTF-8 bytes; non-English characters "
+                                 "use several bytes each.")
+                      .arg(MAX_PROJECT_NAME_BYTES);
     }
     else if (QDir::isAbsolutePath(Location_->text().trimmed()) == false)
     {
@@ -211,7 +238,9 @@ void ProjectCreationDialog::Update()
     const QString workTree = QDir::isAbsolutePath(Location_->text().trimmed()) == true
                                  ? FindGitWorkTree(Location_->text().trimmed())
                                  : QString();
+#if !defined(Q_OS_WASM)
     mGitHubCiOrNull->setEnabled(workTree.isEmpty());
+#endif
     mGitHubCiNoteOrNull->setText(
         workTree.isEmpty() == true
             ? QStringLiteral("Builds and tests every push to main and every pull request once the project is "

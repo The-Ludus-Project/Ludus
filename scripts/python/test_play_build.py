@@ -145,6 +145,23 @@ class ToolingTests(unittest.TestCase):
         queue.emit(dict(type="ended", cleanup_confirmed=True), terminal=True)
         self.assertEqual(json.loads(queue.frames[-1])["type"], "ended")
 
+    def test_fast_forward_is_forwarded_with_the_current_session_envelope(self):
+        in_fd, input_write = os.pipe()
+        out_read, out_fd = os.pipe()
+        for fd in (in_fd, input_write, out_read, out_fd):
+            self.addCleanup(os.close, fd)
+        supervisor = PlaySupervisor(None, in_fd, out_fd)
+        supervisor.epoch = "0000000000000001"
+        supervisor.session = "0000000000000002"
+        supervisor.child = object()
+        request = "0000000000000003"
+        command = dict(command="SetFastForward", expected_generation="0000000000000004", fast_forward=True)
+        with patch.object(supervisor, "send_host") as send_host:
+            supervisor.command(dict(protocol=1, type="command", epoch=supervisor.epoch,
+                                    request=request, command=command))
+        send_host.assert_called_once_with({**command, "protocol": 1, "session": supervisor.session,
+                                          "epoch": supervisor.epoch, "request": request})
+
     def test_duplicate_mismatch_does_not_overwrite_retained_outcome(self):
         in_fd, input_write = os.pipe()
         out_read, out_fd = os.pipe()
