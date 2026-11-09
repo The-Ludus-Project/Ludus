@@ -1866,11 +1866,12 @@ The Earth preset sets the physical radii. Use the Sun's Transform or celestial
 driver to move from daylight through sunset into early twilight.
 
 The default clustered deferred raster graph shows the sky and solar disk behind
-World geometry. Surface lighting still comes from the World’s authored lights
-and environment. If the Sun reference is empty or missing, pick a directional
-light in Properties. Moving the camera below the ground or above the shell also
-uses the graph's ordinary background. Delete the Atmosphere to restore that
-background at every altitude. Save and Undo work through the normal World
+World geometry. It attenuates the linked Sun at opaque surfaces, lights them
+with the clear sky, and adds haze along the camera-to-surface path. Other
+authored lights still contribute. If the Sun reference is empty or missing,
+pick a directional light in Properties. Moving the camera below the ground
+or above the shell restores the graph's ordinary background and lighting.
+Delete the Atmosphere to restore both at every altitude. Save and Undo work through the normal World
 commands. A World can have one Atmosphere.
 [Renderer contract](../architecture/renderer-systems.md#clear-sky-atmosphere-design)
 

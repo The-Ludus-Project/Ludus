@@ -209,6 +209,17 @@
     "vertex": "DeferredVertexMain",
     "fragment": "AtmosphereTransmittanceMain"
   },
+  "renderer_atmosphere_multiple": {
+    "source": "renderer_atmosphere.slang",
+    "vertex": "DeferredVertexMain",
+    "fragment": "AtmosphereMultipleMain"
+  },
+  "renderer_atmosphere_deferred": {
+    "source": "renderer_atmosphere_deferred.slang",
+    "vertex": "DeferredVertexMain",
+    "fragment": "DeferredLightingMain",
+    "fragment_storage": true
+  },
   "renderer_atmosphere_sky": {
     "source": "renderer_atmosphere.slang",
     "vertex": "DeferredVertexMain",

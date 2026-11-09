@@ -157,7 +157,6 @@ struct RenderScene final
     /// Enabled authored analytic sources that opted into the shared always-on bake.
     QVector<foundation::uint64> AlwaysOnLightIds;
     graphics::renderer::AtmosphereDescription Atmosphere{};
-    foundation::uint64 AtmosphereSunSourceId = 0;
     bool IsAtmosphereSunSwitchedOff = false;
     QString AtmosphereStatus;
     graphics::renderer::GiProbeGrid ProbeGrid{};

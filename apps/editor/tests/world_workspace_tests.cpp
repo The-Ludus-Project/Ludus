@@ -4739,7 +4739,8 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     REQUIRE(reopened.Load(document.Encode(), error) == true);
     REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
     CHECK(scene.Atmosphere.IsEnabled == true);
-    CHECK(scene.AtmosphereSunSourceId == ComputeEntitySourceId(sunId));
+    CHECK(scene.Atmosphere.SunSourceId == ComputeEntitySourceId(sunId));
+    CHECK(scene.Atmosphere.ShouldLightScene == true);
     REQUIRE(reopened.RemoveEntities({atmosphereId}, error) == true);
     REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
     CHECK(scene.Atmosphere.IsEnabled == false);

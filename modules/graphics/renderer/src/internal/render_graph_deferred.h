@@ -103,7 +103,8 @@ public:
                                                foundation::uint32 meshLightGridWord,
                                                bool hasShadowAtlas,
                                                rhi::TextureViewHandle shadowAtlas,
-                                               const content::render_graph_format::Pass& operation) noexcept;
+                                               const content::render_graph_format::Pass& operation,
+                                               foundation::uint32 atmosphereSunIndex) noexcept;
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
     [[nodiscard]] rhi::RasterStatus
     Draw(Renderer& inoutRenderer, PreparedView view, const rhi::RasterPassDescription& description) noexcept;
@@ -112,6 +113,7 @@ private:
     RenderGraphDeferredTargets* mTargetsOrNull = nullptr;
     rhi::BufferHandle mParameters{};
     rhi::BindingSetHandle mBindings{};
+    rhi::RasterPipelineHandle mLightingPipeline{};
     DeferredMaterialBindings mMaterial;
     RenderGraphAtmosphereView mAtmosphere;
     ViewDescription mCamera{};

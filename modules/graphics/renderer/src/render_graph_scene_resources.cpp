@@ -481,6 +481,23 @@ uint32 ForwardSceneGeneration::GetMeshLightCount() const noexcept
 {
     return mState.Get() == nullptr ? 0 : mState->MeshLightCount;
 }
+uint32 ForwardSceneGeneration::FindDirectionalLightIndex(uint64 sourceId) const noexcept
+{
+    if (sourceId == 0 || mState.Get() == nullptr)
+    {
+        return 0;
+    }
+    const State& state = *mState;
+    for (usize index = 0; index < state.Lights.GetSize(); ++index)
+    {
+        const DirectLight& light = state.Lights[index];
+        if (light.SourceId == sourceId && light.Kind == LightKind::Directional)
+        {
+            return static_cast<uint32>(index + 1);
+        }
+    }
+    return 0;
+}
 uint32 ForwardSceneGeneration::GetMeshLightGridWord() const noexcept
 {
     return mState.Get() == nullptr ? 0 : mState->MeshLightGridWord;
