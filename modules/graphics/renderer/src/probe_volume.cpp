@@ -48,13 +48,14 @@ using Status = rhi::RasterStatus;
 constexpr uint16 PROBE_DIRECTION_Z_SLOT = 0;
 constexpr uint16 PROBE_DIRECTION_ANGLE_SLOT = 1;
 constexpr uint32 PROBE_STREAM_MASK = 0x80000000U;
-constexpr float32 UNORM_BYTE_MAX = 255;
+constexpr float64 UNORM_BYTE_MAX = 255;
 constexpr float32 IRRADIANCE_MAX = 10000;
 constexpr float32 SPHERE_SOLID_ANGLE_FACTOR = 4;
 
 uint8 EncodeUnitByte(float32 value) noexcept
 {
-    return static_cast<uint8>(math::Clamp(value, 0.F, 1.F) * UNORM_BYTE_MAX + .5F);
+    const float64 scaled = static_cast<float64>(math::Clamp(value, 0.F, 1.F)) * UNORM_BYTE_MAX;
+    return static_cast<uint8>(math::Floor(scaled + .5));
 }
 
 math::Vector3 ComputeProbePosition(const GiProbeGrid& grid, uint32 probeIndex) noexcept
@@ -66,12 +67,15 @@ math::Vector3 ComputeProbePosition(const GiProbeGrid& grid, uint32 probeIndex) n
            math::Vector3{static_cast<float32>(x), static_cast<float32>(y), static_cast<float32>(z)} * grid.Spacing;
 }
 
-math::Vector3 ComputeVisibilityDirection(uint32 face, uint32 faceTexel) noexcept
+math::Vector3 ComputeVisibilityDirection(uint32 texel) noexcept
 {
-    const float32 u =
-        (static_cast<float32>(faceTexel % LUDUS_GI_PROBE_FACE_WIDTH) + .5F) * (2.F / LUDUS_GI_PROBE_FACE_WIDTH) - 1;
-    const float32 v =
-        (static_cast<float32>(faceTexel / LUDUS_GI_PROBE_FACE_WIDTH) + .5F) * (2.F / LUDUS_GI_PROBE_FACE_WIDTH) - 1;
+    const uint32 face = texel / LUDUS_GI_PROBE_FACE_TEXELS;
+    const uint32 faceTexel = texel % LUDUS_GI_PROBE_FACE_TEXELS;
+    const uint32 column = faceTexel % LUDUS_GI_PROBE_FACE_WIDTH;
+    const uint32 row = faceTexel / LUDUS_GI_PROBE_FACE_WIDTH;
+    constexpr float32 TEXEL_SPAN = 2.F / LUDUS_GI_PROBE_FACE_WIDTH;
+    const float32 u = (static_cast<float32>(column) + .5F) * TEXEL_SPAN - 1;
+    const float32 v = (static_cast<float32>(row) + .5F) * TEXEL_SPAN - 1;
     const float32 axis = face % 2 == 0 ? 1.F : -1.F;
     const math::Vector3 directionWorld =
         face < 2 ? math::Vector3{axis, u, v} : (face < 2 * 2 ? math::Vector3{v, axis, u} : math::Vector3{u, v, axis});
@@ -111,11 +115,11 @@ rhi::RasterStatus ProbeVolumeBake::Initialize(const GiProbeGrid& grid, usize byt
     return Status::Ready;
 }
 
-rhi::RasterStatus ProbeVolumeBake::Accumulate(const ReferenceJob& job,
-                                              ReferenceCaptureInfo& inoutInfo,
-                                              uint32 probeIndex,
-                                              uint32 sampleIndex) noexcept
+rhi::RasterStatus
+ProbeVolumeBake::Accumulate(const ReferenceJob& job, ReferenceCaptureInfo& inoutInfo, GiProbeSample address) noexcept
 {
+    const uint32 probeIndex = address.ProbeIndex;
+    const uint32 sampleIndex = address.SampleIndex;
     Probe& probe = mProbes[probeIndex];
     const math::Vector3 positionWorld = ComputeProbePosition(mGrid, probeIndex);
     if (sampleIndex < LUDUS_GI_PROBE_VISIBILITY_TEXELS)
@@ -124,8 +128,7 @@ rhi::RasterStatus ProbeVolumeBake::Accumulate(const ReferenceJob& job,
         // Illumination with Ray-Traced Irradiance Fields", JCGT 8(2), 2019, section 5.
         // https://jcgt.org/published/0008/02/01/ . Thanks to the authors. This offline
         // prototype stores nearest axial depth instead of filtered distance moments.
-        const uint32 face = sampleIndex / LUDUS_GI_PROBE_FACE_TEXELS;
-        const math::Vector3 directionWorld = ComputeVisibilityDirection(face, sampleIndex % LUDUS_GI_PROBE_FACE_TEXELS);
+        const math::Vector3 directionWorld = ComputeVisibilityDirection(sampleIndex);
         const float32 axial =
             math::Max(math::Abs(directionWorld.X), math::Max(math::Abs(directionWorld.Y), math::Abs(directionWorld.Z)));
         const float32 maxAxialDistance = mGrid.Spacing * LUDUS_GI_PROBE_DEPTH_CELLS;

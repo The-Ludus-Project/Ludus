@@ -63,7 +63,7 @@ struct StaticLightingBakeDescription final
     /// Optional nonzero IDs of enabled analytic lights in the scene. A nonempty view bakes only those
     /// sources, including direct and bounced diffuse, with zero environment and emissive radiance.
     /// Initialize and Submit copy the selection before returning. The chart augments live environment lighting.
-    foundation::BorrowedView<const foundation::uint64> AnalyticLightIds{};
+    foundation::BorrowedView<const foundation::uint64> AnalyticLightIds;
     /// Optional world-space volume sampled from the same immutable scene. Requires a nonempty analytic selection.
     GiProbeGrid ProbeGrid{};
 };
@@ -99,7 +99,7 @@ struct StaticGiProbeAtlas final
     /// Multiply normalized linear RGB irradiance by this factor.
     foundation::float32 IrradianceScale = 0;
     /// Complete tightly packed mip in top-left row order.
-    foundation::BorrowedView<const foundation::uint8> Pixels{};
+    foundation::BorrowedView<const foundation::uint8> Pixels;
 };
 
 /// @brief Input problems the bake tolerated instead of failing, available once preparation completes.

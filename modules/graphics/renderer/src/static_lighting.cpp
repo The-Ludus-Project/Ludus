@@ -619,7 +619,9 @@ Status StaticLightingBake::Step(uint32 maxPathSamples) noexcept
     for (; remaining != 0 && state.ProbeIndex < probeCount; --remaining)
     {
         const Status status =
-            state.ProbeVolume.Accumulate(state.Job, state.Job.Info, state.ProbeIndex, state.ProbeSample);
+            state.ProbeVolume.Accumulate(state.Job,
+                                         state.Job.Info,
+                                         { .ProbeIndex = state.ProbeIndex, .SampleIndex = state.ProbeSample });
         if (status != Status::Ready)
         {
             state.Progress = status;
@@ -1029,7 +1031,8 @@ threading::JobOutcome StaticLightingBake::State::RunRange(void* context) noexcep
                 outcome = threading::JobOutcome::Cancelled;
                 break;
             }
-            range.Result = state.ProbeVolume.Accumulate(state.Job, range.Info, probe, sample);
+            range.Result =
+                state.ProbeVolume.Accumulate(state.Job, range.Info, { .ProbeIndex = probe, .SampleIndex = sample });
             if (range.Result != Status::Ready)
             {
                 outcome = threading::JobOutcome::Failed;

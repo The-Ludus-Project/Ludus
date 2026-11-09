@@ -332,7 +332,7 @@ struct LitMaterialDescription final
     content::scene_format::MaterialScattering Scattering{};
     /// Additional direct-light IDs whose diffuse terms are in Bake. Borrowed only during material creation.
     /// Valid charts replace these terms while preserving live specular and shadows.
-    ludus::foundation::BorrowedView<const ludus::foundation::uint64> BakedDirectLightIds{};
+    ludus::foundation::BorrowedView<const ludus::foundation::uint64> BakedDirectLightIds;
     /// Optional additive bounced diffuse from baked lights. Requires an authored lit program.
     /// A material can bind either a chart or a volume. Direct light stays realtime when a volume is bound.
     BakedGiProbeVolume ProbeVolume{};
