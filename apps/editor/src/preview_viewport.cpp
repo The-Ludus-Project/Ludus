@@ -20,6 +20,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -664,6 +665,9 @@ struct PreviewViewport::State final
     QToolBar* ControlsOrNull = nullptr;
     /// View menu action that stores the current view as the start view; created with the controls.
     QAction* StartViewSaveActionOrNull = nullptr;
+    QAction* AddTerrainActionOrNull = nullptr;
+    QAction* EditTerrainActionOrNull = nullptr;
+    QLabel* TerrainPreviewLabelOrNull = nullptr;
     EmptyWorldView* MessageOrNull = nullptr;
     uint64 Presented = 0;
     /// Statistics overlay text currently shown; empty while the overlay is off.
@@ -1465,11 +1469,15 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     setFocusPolicy(Qt::StrongFocus);
     mNavigationTimer.setInterval(16);
     connect(&mNavigationTimer, &QTimer::timeout, this, [this]() { advanceNavigation(); });
-    connect(preview, &RenderPreview::Stopped, this, [this]() { stopNavigation(); });
+    connect(preview, &RenderPreview::Stopped, this, [this]() {
+        EndFirstPerson();
+        stopNavigation();
+    });
 #if defined(Q_OS_MACOS)
     connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
         if (state != Qt::ApplicationActive)
         {
+            EndFirstPerson();
             stopNavigation();
         }
     });
@@ -2311,7 +2319,8 @@ void PreviewViewport::updateObjectInteractionAvailability()
     const ViewportPresentation presentation = GetPresentation();
     const bool canShowOverlay =
         presentation == ViewportPresentation::SharedDevice || presentation == ViewportPresentation::OffscreenReadback;
-    const bool canInteract = canShowOverlay == true && mPlayEndpointOrNull == nullptr && mIsInspectingRayPaths == false;
+    const bool canInteract = canShowOverlay == true && mPlayEndpointOrNull == nullptr &&
+                             mIsInspectingRayPaths == false && Preview_->IsExploringFirstPerson() == false;
     mObjectInteraction->SetActive(canInteract);
     QComboBox* toolOrNull = findChild<QComboBox*>(QStringLiteral("viewportObjectTool"));
     if (toolOrNull != nullptr)
@@ -2407,6 +2416,35 @@ QAction& PreviewViewport::GetStartViewSaveAction() noexcept
 {
     LUDUS_ASSERT(mState->StartViewSaveActionOrNull != nullptr);
     return *mState->StartViewSaveActionOrNull;
+}
+void PreviewViewport::SetTerrainActions()
+{
+    LUDUS_REQUIRE(mState->AddTerrainActionOrNull == nullptr);
+    mState->AddTerrainActionOrNull = new QAction(QStringLiteral("Add Terrain…"), this);
+    mState->AddTerrainActionOrNull->setObjectName(QStringLiteral("viewportAddTerrain"));
+    mState->EditTerrainActionOrNull = mState->ControlsOrNull->addAction(QStringLiteral("Edit Terrain…"));
+    mState->EditTerrainActionOrNull->setObjectName(QStringLiteral("viewportEditTerrain"));
+    mState->TerrainPreviewLabelOrNull = new QLabel(QStringLiteral("Terrain preview"), this);
+    mState->TerrainPreviewLabelOrNull->setObjectName(QStringLiteral("viewportTerrainPreviewLabel"));
+    mState->Layout->insertWidget(1, mState->TerrainPreviewLabelOrNull);
+    mState->TerrainPreviewLabelOrNull->hide();
+}
+QAction& PreviewViewport::GetAddTerrainAction() noexcept
+{
+    LUDUS_REQUIRE(mState->AddTerrainActionOrNull != nullptr);
+    return *mState->AddTerrainActionOrNull;
+}
+QAction& PreviewViewport::GetEditTerrainAction() noexcept
+{
+    LUDUS_REQUIRE(mState->EditTerrainActionOrNull != nullptr);
+    return *mState->EditTerrainActionOrNull;
+}
+void PreviewViewport::SetTerrainPreviewLabel(bool isVisible)
+{
+    if (mState->TerrainPreviewLabelOrNull != nullptr)
+    {
+        mState->TerrainPreviewLabelOrNull->setVisible(isVisible);
+    }
 }
 bool PreviewViewport::SaveScreenshot(const QString& path, QString& outError)
 {
@@ -2741,6 +2779,9 @@ bool PreviewViewport::eventFilter(QObject* watched, QEvent* event)
     {
         switch (event->type())
         {
+            case QEvent::ContextMenu:
+                contextMenuEvent(static_cast<QContextMenuEvent*>(event));
+                return event->isAccepted();
             case QEvent::MouseButtonPress:
                 mousePressEvent(static_cast<QMouseEvent*>(event));
                 return true;

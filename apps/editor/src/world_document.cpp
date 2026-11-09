@@ -4,6 +4,7 @@
 #include "internal/editor_identity.h"
 #include "internal/material_inspection.h"
 #include "internal/world_aperture.h"
+#include "internal/world_celestial_light.h"
 #include "internal/world_terrain.h"
 
 #include <ludus/content/identity_records/migration_manifest.h>
@@ -232,12 +233,12 @@ bool Fields(const QJsonObject& object, const QStringList& allowed)
     }
     return true;
 }
-bool Decode(const QByteArray& bytes, foundation::int64 limit, QJsonObject& out, QString& error)
+bool ValidateEncodedObject(const QByteArray& bytes, foundation::int64 limit, QString& outError)
 {
     namespace parsing = foundation::parsing;
     if (bytes.isEmpty() || bytes.size() > limit)
     {
-        return Fail(error, QStringLiteral("Document exceeds its byte limit or is empty."));
+        return Fail(outError, QStringLiteral("Document exceeds its byte limit or is empty."));
     }
     // The Ludus parser supplies bounded depth and duplicate-key rejection before
     // private Qt presentation values are created; Qt alone collapses duplicates.
@@ -253,9 +254,17 @@ bool Decode(const QByteArray& bytes, foundation::int64 limit, QJsonObject& out, 
             parsing::ParseStatus::Ok ||
         document.Root().Object() == false)
     {
-        return Fail(error, QStringLiteral("Invalid JSON, duplicate keys, or document limits exceeded."));
+        return Fail(outError, QStringLiteral("Invalid JSON, duplicate keys, or document limits exceeded."));
     }
-    out = QJsonDocument::fromJson(bytes).object();
+    return true;
+}
+bool Decode(const QByteArray& bytes, foundation::int64 limit, QJsonObject& outObject, QString& outError)
+{
+    if (ValidateEncodedObject(bytes, limit, outError) == false)
+    {
+        return false;
+    }
+    outObject = QJsonDocument::fromJson(bytes).object();
     return true;
 }
 bool Value(const QJsonObject& p, const QJsonValue& value, QString& error)
@@ -389,7 +398,7 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
         return Fail(error, QStringLiteral("Schema needs version 1, stable id, label, components and assets arrays."));
     }
     QJsonArray components = schema.value(QStringLiteral("components")).toArray();
-    bool hasBuiltInTerrain = false;
+    bool isBuiltInSchema = false;
     if (schema.value(QStringLiteral("id")) == QJsonValue(QStringLiteral("ludus.world.default.v1")))
     {
         QByteArray bundledSchema;
@@ -407,6 +416,22 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
             {
                 return false;
             }
+            const QJsonArray celestialProperties = MakeWorldCelestialProperties();
+            for (qsizetype index = 0; index < components.size(); ++index)
+            {
+                QJsonObject component = components[index].toObject();
+                if (component.value(QStringLiteral("id")).toString() == QStringLiteral("light"))
+                {
+                    QJsonArray properties = component.value(QStringLiteral("properties")).toArray();
+                    for (const QJsonValue property : celestialProperties)
+                    {
+                        properties.append(property);
+                    }
+                    component.insert(QStringLiteral("properties"), properties);
+                    components[index] = component;
+                    break;
+                }
+            }
             components.append(terrainComponent);
             QByteArray apertureBytes;
             QJsonObject apertureComponent;
@@ -417,7 +442,7 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
             }
             components.append(apertureComponent);
             schema.insert(QStringLiteral("components"), components);
-            hasBuiltInTerrain = true;
+            isBuiltInSchema = true;
         }
     }
     if (components.size() > 16 || schema.value(QStringLiteral("assets")).toArray().size() > 4096)
@@ -596,8 +621,7 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
         }
     }
     Schema_ = foundation::Move(schema);
-    mHasBuiltInTerrain = hasBuiltInTerrain;
-    mHasBuiltInAperture = hasBuiltInTerrain;
+    mIsBuiltInSchema = isBuiltInSchema;
     error.clear();
     return true;
 }
@@ -681,8 +705,9 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         return Fail(error, QStringLiteral("A version-2 World needs a nonnil version-4 document UUID."));
     }
     const auto entities = candidate.value(QStringLiteral("entities")).toArray();
-    if (entities.size() > MAX_ENTITIES ||
-        QJsonDocument(candidate).toJson(QJsonDocument::Compact).size() + 1 > MAX_BYTES)
+    const QByteArray encoded =
+        entities.size() <= MAX_ENTITIES ? QJsonDocument(candidate).toJson(QJsonDocument::Compact) : QByteArray{};
+    if (entities.size() > MAX_ENTITIES || encoded.size() + 1 > MAX_BYTES)
     {
         return Fail(error,
                     QStringLiteral("World supports at most %1 entities and %2 KiB.")
@@ -755,6 +780,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
     }
     const QString terrainComponent = GetTerrainComponentId();
     const QString apertureComponent = GetApertureComponentId();
+    bool hasAuthoredTerrainPayload = false;
     for (const auto value : entities)
     {
         const auto e = value.toObject();
@@ -783,7 +809,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                 return Fail(
                     error,
                     QStringLiteral("An aperture draws its own screen: it needs a Transform on an entity without "
-                                   "Renderable, Terrain or imported geometry. Use Add Geometry / Light → "
+                                   "Renderable, Terrain or imported geometry. Use Add World Preset → "
                                    "Aperture Slit, or remove those components first."));
             }
             if (ValidateApertureParameters(components.value(apertureComponent).toObject(), error) == false)
@@ -812,14 +838,22 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             }
             const auto props = c.value().toObject();
             const auto definitions = definition.value(QStringLiteral("properties")).toArray();
-            if (props.size() != definitions.size())
+            qsizetype recognizedPropertyCount = 0;
+            for (const QJsonValue field : definitions)
             {
-                return Fail(error, QStringLiteral("%1 has missing or unknown properties.").arg(c.key()));
-            }
-            for (const auto field : definitions)
-            {
-                const auto p = field.toObject();
-                const auto v = props.value(p.value(QStringLiteral("id")).toString());
+                const QJsonObject p = field.toObject();
+                const QString property = p.value(QStringLiteral("id")).toString();
+                const QJsonValue v = props.value(property);
+                if (v.isUndefined() == true)
+                {
+                    if (HasBuiltInSchema() == true && c.key() == QStringLiteral("light") &&
+                        IsWorldCelestialProperty(property) == true)
+                    {
+                        continue;
+                    }
+                    return Fail(error, QStringLiteral("%1 has missing or unknown properties.").arg(c.key()));
+                }
+                ++recognizedPropertyCount;
                 if (Value(p, v, error) == false)
                 {
                     error = e.value(QStringLiteral("name")).toString() + QStringLiteral(" / ") +
@@ -852,6 +886,13 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                         }
                     }
                 }
+            }
+            const qsizetype terrainPayloads =
+                HasBuiltInTerrain() == true && c.key() == terrainComponent ? CountTerrainPayloadFields(props) : 0;
+            hasAuthoredTerrainPayload = hasAuthoredTerrainPayload == true || terrainPayloads != 0;
+            if (recognizedPropertyCount + terrainPayloads != props.size())
+            {
+                return Fail(error, QStringLiteral("%1 has missing or unknown properties.").arg(c.key()));
             }
         }
     }
@@ -1045,6 +1086,14 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             parent = ancestor.value(QStringLiteral("scene")).toObject().value(QStringLiteral("parent")).toString();
         }
     }
+    // A single heightfield fits the per-array limit. Many embedded grids can still
+    // exceed the aggregate parser budget, so reject before committing an unreadable World.
+    if (hasAuthoredTerrainPayload == true && ValidateEncodedObject(encoded, MAX_BYTES, error) == false)
+    {
+        return Fail(error,
+                    QStringLiteral("This World exceeds its terrain document budget. Use smaller heightmaps "
+                                   "or split the terrain between Worlds before retrying."));
+    }
     error.clear();
     return true;
 }
@@ -1079,8 +1128,7 @@ void WorldDocument::Clear()
     Draft_ = {};
     Saved_ = {};
     Schema_ = {};
-    mHasBuiltInTerrain = false;
-    mHasBuiltInAperture = false;
+    mIsBuiltInSchema = false;
     Loaded_ = false;
     History_.Reset();
 }

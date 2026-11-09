@@ -4,6 +4,7 @@
 
 #include <ludus/foundation/identity/uuid.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/gameplay/camera/camera.hpp>
 #include <ludus/graphics/renderer/light_selection.hpp>
 
 #include <QByteArray>
@@ -45,7 +46,7 @@ struct WorldSunPlacement final
     /// The light's intensity: illuminance in lux on a surface facing the sun.
     foundation::float32 IlluminanceLux = 0;
 };
-/// Create a directional light entity named "Sun" (transform and light components, schema defaults otherwise) in a
+/// Create a directional light entity named "Sun" with the Static Sun role in a
 /// default World as one validated, undoable history transaction. Failure preserves the document and outId. Editor
 /// thread only.
 [[nodiscard]] bool CreateWorldSun(WorldDocument& inoutWorld,
@@ -53,7 +54,16 @@ struct WorldSunPlacement final
                                   const WorldSunPlacement& placement,
                                   QString& outId,
                                   QString& outError);
-/// Create one bundled geometry, light, luminaire or aperture preset as one validated history transaction.
+/// Check whether a default World entity has the First Person Player component.
+[[nodiscard]] bool HasWorldFirstPersonPlayer(const WorldDocument& world, const QString& id);
+/// Read an applied player spawn. The eye is in metres and outSpeed is in metres per second.
+/// On failure, preserve both outputs and report how to repair the entity.
+[[nodiscard]] bool ReadWorldFirstPersonPlayer(const WorldDocument& world,
+                                              const QString& id,
+                                              gameplay::camera::CameraSample& outCamera,
+                                              foundation::float32& outSpeed,
+                                              QString& outError);
+/// Create one bundled geometry, light, luminaire, player or aperture preset as one validated history transaction.
 /// "Aperture Slit" creates a default-sized aperture screen at the origin (internal/world_aperture.h).
 /// Failure preserves the document and outId. Must run on the editor thread.
 [[nodiscard]] bool CreateWorldObject(WorldDocument& inoutWorld,

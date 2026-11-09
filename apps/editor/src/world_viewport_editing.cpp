@@ -1,3 +1,4 @@
+#include "internal/builtin_world.h"
 #include "internal/level_workspace.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_panel.h"
@@ -6,10 +7,14 @@
 #include "internal/viewport_object_interaction.h"
 #include "internal/world_workspace.h"
 
+#include <ludus/gameplay/camera/camera.hpp>
+
 #include <QAction>
 #include <QComboBox>
 #include <QJsonArray>
 #include <QKeySequence>
+#include <QMenu>
+#include <QPoint>
 #include <QPushButton>
 #include <QShortcut>
 #include <QString>
@@ -32,10 +37,12 @@ void WorldWorkspace::bindViewportInteraction()
         }
         QShortcut* remove = new QShortcut(QKeySequence::Delete, viewport);
         remove->setContext(Qt::WidgetWithChildrenShortcut);
-        connect(remove, &QShortcut::activated, Remove_, &QPushButton::click);
+        connect(remove, &QShortcut::activated, mDeleteEntities, &QAction::trigger);
         QShortcut* duplicate = new QShortcut(QKeySequence(QStringLiteral("Ctrl+D")), viewport);
         duplicate->setContext(Qt::WidgetWithChildrenShortcut);
-        connect(duplicate, &QShortcut::activated, Duplicate_, &QPushButton::click);
+        connect(duplicate, &QShortcut::activated, mDuplicateEntities, &QAction::trigger);
+        viewport->EnableWorldContextMenu();
+        connect(viewport, &PreviewViewport::WorldContextMenuRequested, this, &WorldWorkspace::showEntityMenu);
         ViewportObjectInteraction& interaction = viewport->GetObjectInteraction();
         connect(&interaction, &ViewportObjectInteraction::SelectionRequested, this, [this](const QString& id) {
             if (Pending_ == true || SceneBusy() == true)
@@ -62,6 +69,19 @@ void WorldWorkspace::bindViewportInteraction()
     // Only the scene viewport shows a level, so only it can store a start view.
     connect(&Scene_->GetViewport().GetStartViewSaveAction(), &QAction::triggered, this, &WorldWorkspace::saveStartView);
 }
+void WorldWorkspace::showEntityMenu(const QPoint& positionGlobal, const QString& entityId)
+{
+    if (Document_.Loaded() == false)
+    {
+        return;
+    }
+    if (Pending_ == false && SceneBusy() == false && entityId.isEmpty() == false &&
+        mSelectedEntities.contains(entityId) == false)
+    {
+        static_cast<void>(SelectEntity(entityId));
+    }
+    mEntityMenu->popup(positionGlobal);
+}
 void WorldWorkspace::updateViewportInteraction()
 {
     const bool canEdit =
@@ -71,9 +91,53 @@ void WorldWorkspace::updateViewportInteraction()
     QAction& saveStartView = Scene_->GetViewport().GetStartViewSaveAction();
     saveStartView.setVisible(Document_.Loaded() == true && Document_.Draft().contains(QStringLiteral("scene")) == true);
     saveStartView.setEnabled(Pending_ == false && SceneBusy() == false);
+    applyTerrainInteraction();
+    const bool hasSelectedPlayer =
+        mSelectedEntities.size() == 1 && HasWorldFirstPersonPlayer(Document_, Selected_) == true;
+    mExploreFirstPersonButton->setVisible(hasSelectedPlayer);
+    mExploreFirstPersonButton->setEnabled(canEdit == true && hasSelectedPlayer == true);
+}
+void WorldWorkspace::exploreFirstPerson()
+{
+    if (isTerrainAuthoringOpen() == true)
+    {
+        Changed(QStringLiteral("Apply or cancel the Terrain draft before exploring the World."));
+        return;
+    }
+    gameplay::camera::CameraSample spawn;
+    float32 speed = 0;
+    QString error;
+    if (ReadWorldFirstPersonPlayer(Document_, Selected_, spawn, speed, error) == false)
+    {
+        Changed(error);
+        return;
+    }
+    if (PreviewViewport::CanPresent() == false)
+    {
+        Changed(QStringLiteral("Enable the rendered World viewport to explore from the player."));
+        return;
+    }
+    if (GetRenderPreview().Running() == false)
+    {
+        Changed(QStringLiteral("Resume the World viewport, then choose Explore as Player."));
+        return;
+    }
+    const bool hasImportedScene = Document_.Draft().contains(QStringLiteral("scene"));
+    PreviewViewport& viewport = hasImportedScene == true ? Scene_->GetViewport() : Render_->GetViewport();
+    if (viewport.BeginFirstPerson(spawn, speed, error) == false)
+    {
+        Changed(error);
+        return;
+    }
+    Changed(QStringLiteral("Hold right mouse to look, WASD to walk, Shift to run, and Space to jump. "
+                           "Escape returns to the editor view."));
 }
 void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObject& placement)
 {
+    if (tryPlaceTerrainDraft(id, placement) == true)
+    {
+        return;
+    }
     if (id != Selected_ || Pending_ == true || SceneBusy() == true || mSelectedEntities.size() != 1)
     {
         return;

@@ -34,6 +34,9 @@ public:
     void Stop() noexcept;
     void WorldChanged();
     void PreviewDraft(const WorldDocument& draft, bool shouldStart = false);
+    /// Prepare an editor-only terrain snapshot. Cancel invalidates the owned load before publication.
+    void PreviewTerrainDraft(const WorldDocument& draft);
+    void CancelTerrainDraft() noexcept;
     [[nodiscard]] QString GetLoadError() const;
     [[nodiscard]] QWidget* TakeViewport(QWidget* parent);
     void SetSelection(const QString& id, bool pending);
@@ -93,6 +96,8 @@ private:
     foundation::uint64 Generation_ = 0;
     bool Again_ = false;
     bool QueuedLaunch_ = false;
+    bool mIsTerrainDraft = false;
+    bool mHasPendingTerrainLoad = false;
     /// Whether the next published scene still selects its default camera (set when a World opens).
     bool mShouldUseDefaultCamera = false;
     RenderPreview Preview_;

@@ -1,8 +1,10 @@
 # Terrain systems architecture
 
 Status: the [World editor](../development/editor-workspace.md#s4-scene-authoring)
-generates bounded heightfield meshes for default Worlds. The tiled terrain
-module, streaming renderer, and physics adapter below remain proposed. Sizes
+generates bounded heightfield meshes for default Worlds. The
+[viewport authoring slices](#delivery-and-review-gates) add docked source
+editing, native grayscale heightmap import, and three sculpt brushes. The tiled
+terrain module, streaming renderer, and physics adapter remain proposed. Sizes
 and performance budgets are starting profiles and require measurements on the
 selected targets.
 
@@ -459,6 +461,153 @@ commit the authoritative revision and collision together; render extraction
 then exposes the matching prepared visual region. Retain the old coherent region
 until the required candidate is ready. A temporary sculpt preview is explicitly
 editor-only. Cosmetic paint may publish independently of collision.
+
+## Terrain authoring in the World viewport
+
+The viewport is the primary surface for placing, sizing and shaping terrain.
+A docked Terrain panel shows the controls for the active operation and leaves
+the camera usable. The first slice replaces the modal generator in default
+Worlds and reuses the existing bounded mesh and recipe. Project-owned World
+schemas retain their own terrain and component contracts.
+
+| Author | Starting point | What they need to verify |
+| --- | --- | --- |
+| Gameplay prototyper | Generate hills, then flatten a spawn area | A player can stand and move at the intended scale once terrain collision is available |
+| Level designer | Start flat or select existing terrain, then grade a route | The route meets slope and sightline goals while nearby landmarks keep their shape |
+| Environment artist | Select a blockout, sculpt and paint it | Close-up transitions and the distant silhouette work together, and later base changes preserve deliberate edits |
+| Procedural world builder | Generate, randomize and compare variants | Reopening the saved source reproduces the chosen terrain and retains authored overrides |
+| Heightmap importer | Import a raster and align it to landmarks | Known distances, elevations and orientation match the source |
+
+### Add terrain
+
+**Add Terrain…** appears in **Add Geometry / Light** and the World viewport
+context menu. Both open the same panel. The initial **Generate** tab displays
+a temporary **Rolling Hills** preview using the built-in defaults (32 × 32 m,
+0 m base elevation and 8 m of relief). The terrain starts at the World origin.
+The editor frames the first ready preview once in an empty World. In an occupied
+World it keeps the camera, and **Frame Preview** brings the draft into view on
+request. The draft has a dashed footprint, resize handles and a **Terrain
+preview** label. Handles and numeric fields edit the same width and depth.
+The placement gizmo edits the draft transform independently of local shape.
+
+| Source | Panel controls and viewport result |
+| --- | --- |
+| **Flat** | Width, depth and base elevation. The preview is a plane at that local height. |
+| **Generate** | Rolling Hills or Ridges, **Randomize**, width, depth and **Relief**. **Advanced** exposes seed, base elevation, feature size, roughness and samples per side. The configured upper elevation is base plus relief. Individual peaks need not reach that bound. Randomize changes the draft seed and keeps the other settings. |
+| **Import** | Choose a heightmap, then inspect its dimensions, footprint, elevation mapping and orientation against the World. Show axis flips and the mapping from raster values to metres before committing. Reject unsupported encodings and sizes beyond the decode budget before allocating the decoded surface. Show the missing-data policy and resolve any unmapped samples before creation. |
+
+Every valid change requests a preview. The panel shows **Updating preview…**
+while it prepares and leaves the last drawable view visible. If validation or
+preparation fails, show the affected field or operation and a concrete repair
+in the panel. **Create Terrain** is available for the ready result matching
+the current settings. It adds and selects one entity in one World undo step.
+**Cancel** discards the draft and returns to the committed World view. Orbit,
+pan and zoom use the normal World camera throughout. Saving persists the
+committed terrain through **Save World**.
+
+### Edit an existing terrain
+
+Select a terrain in the viewport or entity list to see its selection outline.
+**Edit Terrain** is available from the viewport toolbar and context menu even
+with Properties hidden. The Terrain panel identifies the entity by name. It
+opens to **Source** in the first slice. When brushes ship, **Sculpt** and
+**Paint** become available and viewport input edits the ground only with a
+brush active. **Exit Terrain Edit** returns to ordinary selection.
+
+- **Source** opens the current recipe, or the import settings when supported.
+  Keep the entity identity and transform. **Compare** toggles the committed
+  and ready candidate surfaces at the same camera pose. **Apply Source Changes**
+  replaces the source in one undo step. Canceling a source edit discards the
+  candidate. A saved Flat recipe opens in Flat, while Rolling Hills and Ridges
+  open in Generate with their stored versions and values.
+- **Sculpt** offers **Flatten**, **Raise / Lower**, and **Smooth**. The cursor
+  follows the authored surface and shows the brush radius in metres.
+  Flatten uses an absolute elevation, Raise / Lower uses a signed offset, and
+  Smooth blends toward the surrounding heights from the start of the stroke.
+  One stroke makes one undo step. **Show slope at cursor** reports the hit
+  triangle's angle from World horizontal for route inspection.
+- **Paint** shows the available terrain materials, radius and strength. The
+  brush previews the affected area on the selected surface. Material strokes
+  get their own undo steps and preserve the authored heights.
+
+Source changes keep compatible edits in the same terrain coordinate domain.
+For example, regenerating a seed keeps a flatten stamp's target elevation as
+well as its footprint. When a footprint or resolution change would clip an
+edit or require a lossy remap, identify the affected edits and the proposed
+change in the Terrain panel. Require a confirmation with a named action such as **Remove affected edits
+and apply**, with **Cancel** as the default. Apply the approved repair and
+source change in the same undoable operation.
+
+The main viewport and dock stay in the same positions during both operations.
+
+```text
+World viewport                       Terrain dock
+─────────────────────────────────    ──────────────────────────────
+Terrain preview                      Add Terrain
+Dashed footprint + resize handles    Flat | Generate | Import
+Orbit · Pan · Zoom                   Rolling Hills   [Randomize]
+                                     Width × depth   32 × 32 m
+                                     Relief          8 m
+                                     Advanced ▸
+                                     [Cancel] [Create Terrain]
+
+World viewport                       Terrain dock
+─────────────────────────────────    ──────────────────────────────
+Selected terrain + brush outline     Terrain · Valley Hills
+Flatten to 2.4 m · Radius 4 m         Sculpt | Paint | Source
+                                     Raise / Lower · Smooth · Flatten
+                                     Radius          4 m
+                                     Target height   2.4 m
+                                     [Pick from surface]
+                                     [Exit Terrain Edit]
+```
+
+The sketches include the planned Import and sculpting controls.
+
+### Document and preview ownership
+
+| Owner | Contract |
+| --- | --- |
+| World document and history | Own entity identity, transform, committed source and later authored edits or asset references. Validate and apply edits through the existing document operation and undo history. The first slice reads and writes the existing recipe schema and version. Opening a draft does not rewrite legacy Worlds. |
+| Editor-private terrain controller | Own the draft, active tool, validation, affected edit list and in-flight preview identity. Panel and viewport gestures invoke the same operations. Coalesce rapid changes to the newest valid draft within the existing preparation budget. |
+| Terrain source and preparation | Validate through the existing recipe and mesh limits in the first slice. Produce derived geometry from immutable inputs. Later, the [terrain generation pipeline](terrain-generation.md#source-model-and-author-controls) owns source interpretation, imports and ordered edit composition. |
+| [World viewport producer](editor-gui-systems.md#project-graph-owns-native-world-output) | Prepare and display the candidate through the existing World extraction, camera and render profile. Retain the last drawable view until its replacement is ready. Keep producer/consumer lifetime tracking in the viewport and show unsupported profile capabilities explicitly. |
+
+Track a preview request by World identity and revision, target entity (or Add
+draft), and draft sequence. Advance the sequence on every input change, even
+when a field is invalid. Invalid input retains the last ready result for
+inspection and disables commit. An older completion, a closed draft, or a
+completion for a replaced World or target cannot publish or enable commit.
+Recheck the committed World revision and target at the commit boundary. If an
+intervening edit invalidated the draft's base, preserve the user's input, show
+the conflict and offer to refresh against the current World before retrying.
+Previewing changes neither the saved document nor gameplay or collision state.
+
+As layered editing arrives, keep source and author edits separate from derived
+meshes. Terrain-local metre coordinates give edits stable placement when the
+entity moves. The existing edit transaction and invalidation rules below govern
+sampling, undo patches, memory admission and multi-tile edits. Runtime collision
+uses the committed physical revision through the
+[terrain query and physics contract](#query-and-physics-contracts).
+
+### Delivery and review gates
+
+1. **Viewport creation and source editing.** Ship Flat and Generate in the dock
+   using the existing recipe and mesh. Verify creation and editing with Properties
+   hidden, empty and occupied World camera behavior, exact preview-to-commit
+   matching, save/reopen of old and new recipes, cancel, one-step undo/redo,
+   invalid input, pending and failed replacement, stale completions and World
+   switches. Exercise the selected project's ordinary raster viewport while
+   navigating and resizing. Record the native and browser capabilities separately.
+2. **Heightmap import and sculpt.** Add bounded decoding with explicit units and
+   orientation, then source-aware brush edits. Verify a fixture with known
+   corner heights and orientation, local slope changes, one-step stroke undo and
+   regeneration with a preserved flatten target. Qualify physical coverage and
+   collision revision agreement before claiming the spawn-and-Play workflow.
+3. **Material paint.** Add material authoring once the chosen render profile
+   consumes terrain materials. Verify shape preservation, paint undo and
+   compatible source replacement. Streamed terrain, erosion and advanced LOD
+   remain governed by the wider [terrain delivery gates](#performance-and-delivery-gates).
 
 ## Editing and debugging
 

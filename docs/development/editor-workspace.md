@@ -603,8 +603,12 @@ records the libraries that would provide them.
 The World hierarchy flanks the viewport inside the World document; the entity
 inspector is the Properties tool window. Component actions stay below the
 scrollable inspector fields: the component choice beside **Add Component**, and
-**Apply Changes** beside **Reset Fields**. **Add Entity**, **Duplicate** and
-**Delete** share one row under the hierarchy. Above the viewport, one row holds
+**Apply Changes** beside **Reset Fields**. Right-click the World viewport or
+entity list for **Add Entity**, **Duplicate**, and **Delete**. Right-click an
+entity to target it. Clicking a selected member of a group keeps the group
+selected, and clicking the background keeps the current selection. Right-drag
+still looks around, and holding the right button with the fly keys still moves
+the camera. Above the viewport, one row holds
 the World's path (hover for the full path) and its commands; **Restore
 Recovery**, **Cancel scene operation** and **Play saved World** appear only
 while they apply. The viewport's render controls share one row, and its
@@ -613,8 +617,8 @@ The render surface receives the remaining height below its shading, framing and
 navigation controls, including after resize.
 
 In a default World (a project without `authoring/world.schema.json`), use
-**Add Geometry / Light** below the entity list to create a **Cube**, **Plane**,
-**Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun**,
+**Add World Preset** in the right-click menu or below the entity list to
+create a **Cube**, **Plane**, **Sphere**, **Point Light**, **Spot Light**, **Directional Light**, **Sun**,
 **Luminaire** or [**Aperture Slit**](#apertures). Each command
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.
@@ -634,24 +638,70 @@ down. Only render graphs that read luminaires, such as the
 are lit by it; **Lit** and reference capture ignore it. Selecting it outlines the
 panel and its emission direction in the viewport.
 
-Choose **Add Geometry / Light → Generate Terrain…** to create a heightfield in a
-default World. Pick Rolling Hills, Ridges, or Flat, then set a seed, width and
-depth, elevation bounds, feature size, roughness, and samples per side. Width and
-depth extend along the entity's local X and Z axes. Elevation is measured in
-metres along local Y. Flat uses the minimum elevation for the whole surface.
+The same menu adds a [First Person Player](#explore-from-a-first-person-player)
+for exploring the scene from a saved spawn.
 
-**Preview** frames the candidate in the World viewport. **Create Terrain** adds
-and selects it as one undoable edit. Select the entity and use **Edit Generation…**
-in Properties to preview and apply a new recipe. Cancel restores the applied World
-view. The entity keeps its transform when regenerated and can be moved, copied,
-or deleted using the same commands as other World entities. Press **F** in the
-viewport to frame the selected terrain again.
+Choose **Add World Preset → Add Terrain…** or right-click the World
+viewport and choose **Add Terrain…**. The Terrain panel opens beside the
+viewport with a Rolling Hills draft. Use **Flat** for a level surface or
+**Generate** for Rolling Hills and Ridges. Set the footprint and relief in
+metres. **Randomize** chooses another seed. **Advanced** exposes the seed,
+base elevation, feature size, roughness and samples per side. Width and depth
+follow local X and Z, and elevation follows local Y.
 
-Save World keeps the seed, settings, and recipe version. The editor rebuilds the
-bounded indexed mesh when it extracts the World, including after reopening.
-The terrain uses the current viewport shading and authored lights. This first
-editor workflow provides a single mesh of at most 64 samples per side. Collision,
-sculpting, erosion, and streamed terrain are future work.
+The preview updates as you edit. In an empty World the editor frames the first
+ready draft. In an occupied World it keeps the camera, and **Frame Preview**
+fits the draft on request. Use the native viewport's dashed footprint handles
+to change width and depth and the move gizmo to place the draft. The browser
+canvas uses the numeric fields for sizing. **Create Terrain** adds and selects
+the ready terrain in one undo step. **Cancel** returns to the committed World.
+
+Select terrain and choose **Edit Terrain…** in the viewport toolbar, its
+right-click menu, or Properties. The **Source** panel opens the stored recipe.
+**Compare with committed** shows the original surface at the same camera
+pose. Switch back and choose **Apply Source Changes** to keep the ready
+recipe as one undoable edit. This preserves the terrain's entity and transform.
+**Save World** keeps the source, settings and recipe version.
+
+In the native editor, choose **Import → Choose Heightmap…** to open an 8- or
+16-bit grayscale PNG. Each axis must have 2 to 64 samples and the file must fit
+within 64 KiB. Black maps to **Base elevation** and white maps to base plus
+**Relief**, in local metres. The top-left pixel starts at local negative X and
+negative Z. Use **Flip X** and **Flip Z** to align the raster against the World
+in the preview. The saved World embeds the sample grid and orientation, so it
+can reopen in the native or browser editor without the original PNG.
+
+To sculpt committed terrain, open **Edit Terrain…** and choose a **Sculpt
+brush**. Set the radius in terrain-local metres, then drag on the ground and
+release to apply one undoable stroke. The brush has full strength in the inner
+half of the radius and fades to zero at the edge.
+
+- **Flatten** moves the surface toward an absolute local height. Enter the
+  height or use **Pick from surface** to sample it.
+- **Raise / Lower** adds a signed local height change. A positive value raises
+  the surface, and a negative value lowers it.
+- **Smooth** blends heights toward neighboring samples from the surface before
+  the stroke. **Strength** controls how much to blend on each pass. The
+  smoothing distance depends on how far apart the terrain samples are.
+
+Choose **Off** to return to ordinary viewport editing. Press Escape or move
+focus away during a drag to cancel it. Turn on **Show slope at cursor** while
+using a brush to measure the surface angle in degrees from World horizontal.
+A terrain can keep up to 16 strokes.
+**Save World** keeps the strokes and replays them in order after a compatible
+source change. If shrinking the footprint would clip a stroke, the
+confirmation names how many strokes the edit removes. Replacing an embedded
+heightmap also requires confirmation.
+
+The editor extracts a single indexed mesh of at most 64 samples per side,
+including after reopening the World. The terrain uses the current viewport
+shading and authored lights. In an unlit World, the default raster graph
+shows the terrain's surface colour without adding mesh lights.
+[Explore as Player](#explore-from-a-first-person-player) uses the applied terrain
+mesh for walking collision. Material paint, erosion and streaming are future
+work. See the
+[viewport authoring design](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
+for delivery boundaries.
 
 The geometry and default schema ship inside the editor, so this workflow needs
 no model import or project asset files. Imported scenes and these objects can
@@ -671,7 +721,7 @@ preview; its input and presentation limits are documented with that workflow.
 ### Apertures
 
 An aperture is an opaque flat screen with a centred slit whose sizes are entity
-fields. Choose **Add Geometry / Light → Aperture Slit** to create a 1 m screen at the
+fields. Choose **Add World Preset → Aperture Slit** to create a 1 m screen at the
 origin with a 0.5 m slit and a 5 cm opening, or import a
 [scene source aperture](../architecture/scene-source-format.md#aperture), such as the
 screen of `tests/scenes/diffraction/single-slit.luscene.json`.
@@ -1102,6 +1152,36 @@ lighting implementation supplies Lit materials, authored lights and shadows;
 Solid and Albedo remain inspection modes. See the owning
 [renderer contract](../architecture/renderer-systems.md) and
 [camera contract](../architecture/camera-systems.md).
+
+### Explore from a First Person Player
+
+Choose **Add World Preset → First Person Player** to add a reusable spawn to a
+default World. The new entity starts at eye height above the origin, or at the
+imported scene's saved start view when that position fits the Transform range.
+In Properties, set Transform X/Y/Z to the eye position in metres, set Rotation X
+and Y for pitch and yaw, and adjust **Move speed**. Apply the changes and use
+**Save World** to keep the spawn. Duplicate the entity to keep multiple starting
+points.
+
+Apply or cancel any open Terrain draft. Select a player in the hierarchy and
+click **Explore as Player**. Hold the right
+mouse button to look around, use **W/A/S/D** to walk, **Shift** to run, and
+**Space** to jump. Use **Escape** or leave the viewport to return to the previous
+editor camera. Movement is temporary and applies gravity even while you stand
+still. If you fall below the World, you return to the spawn.
+
+The player uses an upright box and sweeps it against the current visible
+World triangles, including generated terrain and imported meshes. It can
+step up 0.35 m and walk on slopes up to 45°. Place the spawn eye about 1.6 m
+above the floor and clear of walls and ceilings. Hide decorative geometry
+that should not obstruct a walk. Collision preparation can take longer for
+large imports and admits up to eight million instanced triangles. Publishing
+different World geometry ends the walk. Choose **Explore as Player** again to
+walk on the new surface.
+
+This editor preview only moves the player. Rigid bodies, thrown objects,
+and gameplay collision assets follow the
+[physics systems architecture](../architecture/physics-systems.md).
 
 ### Try a 3D authoring workflow
 
@@ -1710,7 +1790,7 @@ estimated illuminance. It appears in the viewport status and as a **Renderer
 preview** row in the Error List; render graphs that read only luminaires keep
 their own luminaire warning instead. An unlit viewport never shows it.
 
-In a default World, choose **Add Geometry / Light → Sun**, or double-click the
+In a default World, choose **Add World Preset → Sun**, or double-click the
 warning: a confirmation box then offers **Add sun**, with **Cancel** as the
 default. Both create the same directional light entity named *Sun* of 10 lux,
 aimed like the first disabled imported directional light that shines down, or
@@ -1724,6 +1804,43 @@ that selects it; set its intensity, colour and Transform rotation in
 has no indirect bounce, so areas the sun cannot reach stay dark. Reimporting with
 the scene's bundled sky through **Choose environment…** lights them too. A
 project-owned schema gets the instruction without the repair.
+
+### Celestial directional lights
+
+Select a directional light and set **Light → Celestial Role** in **Properties**.
+**Static Sun** and **Static Moon** keep the direction set by **Transform**
+rotation. **None** is the default for ordinary directional lights and older
+Worlds. The **Sun** creation and lighting repair actions assign **Static Sun**.
+
+Set **Dynamic Celestial → Rotation Driver** to **Transform** to use the entity's
+rotation, including rotation supplied by a game. Choose **Earth Sun** or
+**Earth Moon** to sample an approximate sky direction using **Earth Time**,
+**Observer Latitude**, and **Observer Longitude**. Use the same values on both lights
+to preview a single observer and moment. Earth Time is fractional UTC days
+since noon on January 1, 2000. For example, `0.5` is the following midnight.
+North latitude and east longitude are positive. The World frame is +X east,
++Y up, and −Z north.
+
+The editor samples the authored time and preserves the entity's saved
+Transform rotation as a fallback. A sampled body at or below the geometric
+horizon contributes zero direct light. Intensity and colour come from the
+authored light. The rules model direction and horizon visibility. Lunar phase
+and atmospheric effects are outside their scope. Games can pass
+their own simulation time to the [GameplayWorld celestial sampler](../architecture/game-world.md#earth-celestial-transforms).
+
+Choose **Custom Orbit** for a different observer world, star, or moon. Set
+**Orbit Time** in simulation hours from your chosen epoch. For lights viewed
+from the same world, use the same time, observer coordinates, and **World
+Spin**. Both spin and **Body Orbit Rate** use degrees per simulation hour.
+For example, enter `30` for a 12-hour world rotation and `7.5` for a moon on a
+48-hour orbit. Negative rates reverse motion, and zero holds that angle fixed.
+
+Set each light's **Body Phase** for its starting point, **Orbit Inclination**
+for the tilt from the world's equator, and **Ascending Node** for the orbit's
+orientation around the spin axis. Use **World Radius / Orbit Radius** to
+account for the shift in a nearby moon's apparent position. A value of zero
+treats the source as distant. The rule follows a prescribed circular orbit and
+uses the same horizon cutoff as the Earth templates.
 
 ### Switching lights
 

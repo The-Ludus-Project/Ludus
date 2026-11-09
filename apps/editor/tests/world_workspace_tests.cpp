@@ -14,6 +14,7 @@
 #include "internal/render_scene.h"
 #include "internal/renderer_workspace.h"
 #include "internal/viewport_object_interaction.h"
+#include "internal/world_celestial_light.h"
 #include "internal/world_document.h"
 #include "internal/world_entity_search.h"
 #include "internal/world_lighting_coverage.h"
@@ -30,6 +31,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QDockWidget>
 #include <QElapsedTimer>
@@ -61,6 +63,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/memory/allocation_domain.hpp>
 #include <ludus/foundation/memory/shared_ptr.hpp>
@@ -247,10 +250,10 @@ TEST_CASE("World scene import reports unavailable entropy before changing the Wo
     LevelWorkspace* scene = workspace.findChild<LevelWorkspace*>();
     REQUIRE(scene != nullptr);
     CHECK_FALSE(scene->Busy());
-    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("worldAdd"));
-    REQUIRE(add != nullptr);
-    REQUIRE(add->isEnabled());
-    add->click();
+    QAction* addOrNull = workspace.findChild<QAction*>(QStringLiteral("worldAdd"));
+    REQUIRE(addOrNull != nullptr);
+    REQUIRE(addOrNull->isEnabled());
+    addOrNull->trigger();
     CHECK(workspace.findChild<QLabel*>(QStringLiteral("worldStatus"))->text() == DescribeEntropyUnavailable());
     CHECK(workspace.Document().Draft() == before);
     CHECK_FALSE(workspace.CanUndo());
@@ -446,7 +449,7 @@ TEST_CASE("World creation publishes only on Save and recovery is explicit bound 
     REQUIRE(fresh.Create(newPath));
     CHECK(fresh.Dirty());
     CHECK_FALSE(QFile::exists(newPath));
-    fresh.findChild<QPushButton*>(QStringLiteral("worldAdd"))->click();
+    fresh.findChild<QAction*>(QStringLiteral("worldAdd"))->trigger();
     REQUIRE(fresh.Save());
     CHECK(QFile::exists(newPath));
     CHECK_FALSE(fresh.Dirty());
@@ -477,6 +480,88 @@ TEST_CASE("World schema and document resource limits are enforced", "[editor][wo
     WorldDocument fresh;
     CHECK_FALSE(fresh.LoadSchema(QByteArray(65537, ' '), error));
 }
+TEST_CASE("World context menu creates entities in the viewport and edits the hierarchy selection",
+          "[editor][world][context-menu]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    WorldWorkspace workspace;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("context.world.json"))) == true);
+    workspace.resize(1100, 720);
+    workspace.show();
+    QApplication::processEvents();
+    PreviewViewport* viewportOrNull = workspace.findChild<PreviewViewport*>(QStringLiteral("worldViewport"));
+    QListWidget* entitiesOrNull = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("worldEntityContextMenu"));
+    REQUIRE(viewportOrNull != nullptr);
+    REQUIRE(entitiesOrNull != nullptr);
+    REQUIRE(menuOrNull != nullptr);
+    QAction* addOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("worldAdd"));
+    QAction* duplicateOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("worldDuplicate"));
+    QAction* deleteOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("worldDelete"));
+    REQUIRE(addOrNull != nullptr);
+    REQUIRE(duplicateOrNull != nullptr);
+    REQUIRE(deleteOrNull != nullptr);
+    const QJsonObject navigation = workspace.GetRenderPreview().Navigation();
+    const QPoint viewportPoint = viewportOrNull->rect().center();
+    QTest::mouseClick(viewportOrNull, Qt::RightButton, Qt::NoModifier, viewportPoint);
+    REQUIRE(menuOrNull->isVisible() == true);
+    CHECK(workspace.GetRenderPreview().Navigation() == navigation);
+    CHECK(duplicateOrNull->isEnabled() == false);
+    CHECK(deleteOrNull->isEnabled() == false);
+    menuOrNull->setActiveAction(addOrNull);
+    QTest::keyClick(menuOrNull, Qt::Key_Return);
+    CHECK(entitiesOrNull->count() == 1);
+
+    addOrNull->trigger();
+    REQUIRE(entitiesOrNull->count() == 2);
+    const QPoint firstRow = entitiesOrNull->visualItemRect(entitiesOrNull->item(0)).center();
+    QContextMenuEvent rowEvent(QContextMenuEvent::Mouse, firstRow, entitiesOrNull->viewport()->mapToGlobal(firstRow));
+    QApplication::sendEvent(entitiesOrNull->viewport(), &rowEvent);
+    REQUIRE(menuOrNull->isVisible() == true);
+    CHECK(entitiesOrNull->item(0)->isSelected() == true);
+    CHECK(entitiesOrNull->selectedItems().size() == 1);
+    CHECK(duplicateOrNull->isEnabled() == true);
+    CHECK(deleteOrNull->isEnabled() == true);
+    menuOrNull->close();
+
+    entitiesOrNull->selectAll();
+    const QPoint selectedRow = entitiesOrNull->visualItemRect(entitiesOrNull->item(0)).center();
+    QTest::mouseClick(entitiesOrNull->viewport(), Qt::RightButton, Qt::NoModifier, selectedRow);
+    QContextMenuEvent groupEvent(QContextMenuEvent::Mouse,
+                                 selectedRow,
+                                 entitiesOrNull->viewport()->mapToGlobal(selectedRow));
+    QApplication::sendEvent(entitiesOrNull->viewport(), &groupEvent);
+    REQUIRE(menuOrNull->isVisible() == true);
+    CHECK(entitiesOrNull->selectedItems().size() == 2);
+    menuOrNull->close();
+    duplicateOrNull->trigger();
+    CHECK(entitiesOrNull->count() == 4);
+    workspace.Undo();
+    CHECK(entitiesOrNull->count() == 2);
+
+    QAction* cubeOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateCube"));
+    REQUIRE(cubeOrNull != nullptr);
+    cubeOrNull->trigger();
+    RenderPreview& preview = workspace.GetRenderPreview();
+    REQUIRE(QTest::qWaitFor([&preview]() { return preview.Scene().Objects.size() == 1; }) == true);
+    const QString cubeId = preview.Scene().Objects.first().Id;
+    preview.FrameAll();
+    entitiesOrNull->clearSelection();
+    // Offscreen has no presented GPU image. Enable the input proxy to exercise its picking coordinates.
+    viewportOrNull->GetObjectInteraction().SetActive(true);
+    REQUIRE(viewportOrNull->layout()->count() >= 2);
+    const QLayout* viewportLayout = viewportOrNull->layout();
+    const QPoint frameCenter = viewportLayout->itemAt(viewportLayout->count() - 1)->geometry().center();
+    QTest::mouseClick(viewportOrNull, Qt::RightButton, Qt::NoModifier, frameCenter);
+    REQUIRE(menuOrNull->isVisible() == true);
+    REQUIRE(entitiesOrNull->selectedItems().size() == 1);
+    CHECK(entitiesOrNull->selectedItems().first()->data(Qt::UserRole).toString() == cubeId);
+    menuOrNull->close();
+}
+
 TEST_CASE("World layout remains usable in a compact desktop window", "[editor][world]")
 {
     QTemporaryDir dir;
@@ -502,8 +587,7 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
         }
     }
     CHECK(view.findChild<QPushButton*>(QStringLiteral("worldApply"))->geometry().bottom() <= view.height());
-    // Commands sit in rows instead of full-width stacks: the file commands beside the path,
-    // the entity commands under the hierarchy, Apply beside Reset, Add Component beside its choice.
+    // File and inspector commands sit in compact rows beside their related controls.
     const auto isSameRow = [&view](const char* first, const char* second) {
         QWidget* firstOrNull = view.findChild<QWidget*>(QString::fromLatin1(first));
         QWidget* secondOrNull = view.findChild<QWidget*>(QString::fromLatin1(second));
@@ -516,8 +600,6 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
     CHECK(isSameRow("worldNew", "worldOpen") == true);
     CHECK(isSameRow("worldNew", "worldImportScene") == true);
     CHECK(isSameRow("worldNew", "worldPath") == true);
-    CHECK(isSameRow("worldAdd", "worldDuplicate") == true);
-    CHECK(isSameRow("worldAdd", "worldDelete") == true);
     CHECK(isSameRow("worldApply", "worldReset") == true);
     CHECK(isSameRow("worldAttach", "worldComponentChoice") == true);
     CHECK(isSameRow("worldPreview3D", "worldPreviewDetails") == true);
@@ -966,10 +1048,10 @@ TEST_CASE("World tab titles follow document changes without a render graph refre
     CHECK(world->Path() == secondPath);
     checkTitle(QStringLiteral("staircase2.world.json"));
 
-    QPushButton* add = world->findChild<QPushButton*>(QStringLiteral("worldAdd"));
-    REQUIRE(add != nullptr);
-    REQUIRE(add->isEnabled());
-    add->click();
+    QAction* addOrNull = world->findChild<QAction*>(QStringLiteral("worldAdd"));
+    REQUIRE(addOrNull != nullptr);
+    REQUIRE(addOrNull->isEnabled());
+    addOrNull->trigger();
     REQUIRE(world->Dirty());
     checkTitle(QStringLiteral("staircase2.world.json*"));
     world->Undo();
@@ -1276,7 +1358,7 @@ TEST_CASE("World selection uses native toggle range and Select All shortcuts", "
     list->setFocus();
     QApplication::processEvents();
     REQUIRE(list->hasFocus() == true);
-    REQUIRE(view.findChild<QPushButton*>(QStringLiteral("worldDuplicate"))->isEnabled() == true);
+    REQUIRE(view.findChild<QAction*>(QStringLiteral("worldDuplicate"))->isEnabled() == true);
     QTest::keySequence(list, QKeySequence(Qt::CTRL | Qt::Key_D));
     INFO(view.findChild<QLabel*>(QStringLiteral("worldStatus"))->text().toStdString());
     CHECK(list->count() == 4);
@@ -1302,7 +1384,7 @@ TEST_CASE("World selection uses native toggle range and Select All shortcuts", "
         REQUIRE(confirmation != nullptr);
         confirmation->button(QMessageBox::Yes)->click();
     });
-    REQUIRE(view.findChild<QPushButton*>(QStringLiteral("worldDelete"))->isEnabled() == true);
+    REQUIRE(view.findChild<QAction*>(QStringLiteral("worldDelete"))->isEnabled() == true);
     QTest::keySequence(list, QKeySequence(QKeySequence::Delete));
     INFO(view.findChild<QLabel*>(QStringLiteral("worldStatus"))->text().toStdString());
     CHECK(list->count() == 0);
@@ -2040,7 +2122,7 @@ TEST_CASE("Move plane handles follow the camera: an oblique view shows all three
     preview.Orbit(70, 90);
     interaction.BuildOverlay(frame, overlay);
     // Three arrowheads, three planes with their casings, and the pivot marker.
-    CHECK(overlay.HandleFills.GetSize() == ViewportObjectOverlay::MAX_HANDLE_FILLS);
+    CHECK(overlay.HandleFills.GetSize() == ViewportObjectOverlay::MAX_TRANSFORM_HANDLE_FILLS);
     ludus::foundation::StaticArray<bool, ViewportObjectInteraction::AXIS_COUNT> hasNormal{};
     ludus::foundation::usize normalCount = 0;
     for (ludus::foundation::usize plane = 0;
@@ -2626,7 +2708,7 @@ TEST_CASE("A dark imported World offers a sun aimed like its disabled light, add
     CHECK(workspace.ApplySunRepair(WorldLightingCoverage{}) == false);
     CHECK(workspace.Document().Draft() == before);
 
-    // Add Geometry / Light offers the same sun. This World has no imported light to follow, so it takes the default
+    // Add World Preset offers the same sun. This World has no imported light to follow, so it takes the default
     // angle, two metres above the origin.
     QAction* createOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
     REQUIRE(createOrNull != nullptr);
@@ -2642,6 +2724,339 @@ TEST_CASE("A dark imported World offers a sun aimed like its disabled light, add
     CHECK(transform.value(QStringLiteral("y")).toDouble() == Catch::Approx(2));
     workspace.Undo();
     CHECK(workspace.Document().Draft() == before);
+    workspace.StopPreview();
+}
+
+TEST_CASE("First Person Player preset persists a spawn and uses the imported start view",
+          "[editor][world][first-person]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    const QString path = QDir(root).filePath(QStringLiteral("player.world.json"));
+    REQUIRE(workspace.Create(path) == true);
+    QAction* createOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateFirstPersonPlayer"));
+    REQUIRE(createOrNull != nullptr);
+    createOrNull->trigger();
+    const QJsonArray entities = workspace.Document().Draft().value(QStringLiteral("entities")).toArray();
+    REQUIRE(entities.size() == 1);
+    const QString id = workspace.Document().GetEntityKey(entities[0].toObject());
+    CHECK(HasWorldFirstPersonPlayer(workspace.Document(), id) == true);
+    const QPushButton* exploreOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldExploreFirstPerson"));
+    REQUIRE(exploreOrNull != nullptr);
+    CHECK(exploreOrNull->isHidden() == false);
+    CHECK(exploreOrNull->isEnabled() == true);
+    workspace.Undo();
+    CHECK(HasWorldFirstPersonPlayer(workspace.Document(), id) == false);
+    workspace.Redo();
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(workspace.Open(path) == true);
+
+    namespace camera = ludus::gameplay::camera;
+    namespace math = ludus::foundation::math;
+    camera::CameraSample spawn;
+    ludus::foundation::float32 speed = 0;
+    QString error;
+    error = QStringLiteral("previous diagnostic");
+    REQUIRE(ReadWorldFirstPersonPlayer(workspace.Document(), id, spawn, speed, error) == true);
+    CHECK(error.isEmpty() == true);
+    CHECK(spawn.Pose.Position.Y == Catch::Approx(1.65));
+    CHECK(speed == Catch::Approx(3));
+    workspace.StopPreview();
+
+    const QString source = QDir(root).filePath(QStringLiteral("source"));
+    REQUIRE(tests::CreateFixtureSource(source) == true);
+    REQUIRE(tests::PrepareImportedLevel(root, QStringLiteral("room.lulevel"), source, error) == true);
+    QJsonObject level = QJsonDocument::fromJson(Read(QDir(root).filePath(QStringLiteral("room.lulevel")))).object();
+    const PreviewStartView start
+    {
+        .EyeWorld = {1, 2, 3},
+        .TargetWorld = {2, 2, 3},
+    };
+    level.insert(QStringLiteral("camera"), MakeStartViewJson(start));
+    WorldDocument imported = workspace.Document();
+    REQUIRE(imported.ImportScene(level, error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString importedId;
+    REQUIRE(CreateWorldObject(imported, entropy, QStringLiteral("First Person Player"), importedId, error) == true);
+    REQUIRE(ReadWorldFirstPersonPlayer(imported, importedId, spawn, speed, error) == true);
+    CHECK(spawn.Pose.Position == start.EyeWorld);
+    const math::Vector3 forwardWorld = math::Rotate(spawn.Pose.Orientation, {0, 0, -1});
+    CHECK(forwardWorld.X == Catch::Approx(1));
+    CHECK(forwardWorld.Z == Catch::Approx(0).margin(1e-6));
+}
+
+TEST_CASE("Explore as Player moves the rendered staircase2 World camera", "[.first-person-native][editor][world]")
+{
+    using namespace ludus::foundation;
+    const QString source = qEnvironmentVariable("LUDUS_STAGE5_REFERENCE_SOURCE");
+    if (source.isEmpty() == true || PreviewViewport::CanPresent() == false)
+    {
+        SKIP("Set LUDUS_STAGE5_REFERENCE_SOURCE to staircase2 and run with the native viewport.");
+    }
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    QString error;
+    REQUIRE(tests::PrepareImportedLevel(root, QStringLiteral("room.lulevel"), source, error, "scene-v4.pbrt") == true);
+    const QJsonObject level =
+        QJsonDocument::fromJson(Read(QDir(root).filePath(QStringLiteral("room.lulevel")))).object();
+    PreviewStartView start;
+    REQUIRE(TryParseStartView(level.value(QStringLiteral("camera")).toObject(), start) == true);
+    QByteArray schema;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    REQUIRE(document.ImportScene(level, error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("staircase2.world.json"));
+    Write(path, document.Encode());
+
+    ToolingPaths tools;
+    tools.ToolingRoot = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
+    WorldWorkspace workspace(tools, nullptr);
+    workspace.SetProject(root, 1);
+    workspace.resize(1000, 700);
+    workspace.show();
+    REQUIRE(workspace.Open(path) == true);
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    constexpr int32 POLL_MILLISECONDS = 10;
+    QElapsedTimer timer;
+    timer.start();
+    RenderPreview& preview = workspace.GetRenderPreview();
+    while ((workspace.CanSave() == false || preview.Frames() == 0) && timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    REQUIRE(workspace.CanSave() == true);
+    REQUIRE(preview.Frames() != 0);
+    REQUIRE(preview.Scene().Objects.isEmpty() == false);
+    QAction* createOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateFirstPersonPlayer"));
+    REQUIRE(createOrNull != nullptr);
+    createOrNull->trigger();
+    timer.restart();
+    while (workspace.CanSave() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    REQUIRE(workspace.CanSave() == true);
+    QPushButton* exploreOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldExploreFirstPerson"));
+    REQUIRE(exploreOrNull != nullptr);
+    REQUIRE(exploreOrNull->isEnabled() == true);
+    const QJsonObject editorNavigation = preview.Navigation();
+    const QByteArray worldBytes = workspace.Document().Encode();
+    exploreOrNull->click();
+    REQUIRE(preview.IsExploringFirstPerson() == true);
+    CHECK(preview.GetVisibleCameraSample().Pose.Position == start.EyeWorld);
+    const uint64 framesBeforeMove = preview.Frames();
+    preview.AdvanceFirstPerson({0, 0, -1}, 0.1F, 3, false);
+    // Advance without dispatching Qt events so gravity settles before checking the rendered camera.
+    for (uint32 frame = 0; frame < 12; ++frame)
+    {
+        preview.AdvanceFirstPerson({}, 0.1F, 3, false);
+    }
+    const math::Vector3d movedWorld = preview.GetVisibleCameraSample().Pose.Position;
+    CHECK((movedWorld.X != start.EyeWorld.X || movedWorld.Z != start.EyeWorld.Z));
+    CHECK(movedWorld.Y < start.EyeWorld.Y);
+    const math::Vector3 renderedPositionWorld{static_cast<float32>(movedWorld.X),
+                                              static_cast<float32>(movedWorld.Y),
+                                              static_cast<float32>(movedWorld.Z)};
+    timer.restart();
+    while (
+        (preview.Frames() <= framesBeforeMove || preview.ViewDescription().CameraPosition != renderedPositionWorld) &&
+        timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    CHECK(preview.Frames() > framesBeforeMove);
+    CHECK(preview.ViewDescription().CameraPosition == renderedPositionWorld);
+    LevelWorkspace* levelOrNull = workspace.findChild<LevelWorkspace*>();
+    REQUIRE(levelOrNull != nullptr);
+    QTest::keyClick(&levelOrNull->GetViewport(), Qt::Key_Escape);
+    CHECK(preview.IsExploringFirstPerson() == false);
+    CHECK(preview.Navigation() == editorNavigation);
+    CHECK(workspace.Document().Encode() == worldBytes);
+    workspace.StopPreview();
+}
+
+TEST_CASE("Directional celestial roles round-trip and Earth drivers sample the light transform",
+          "[editor][world][celestial]")
+{
+    using namespace ludus::foundation;
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString path = QDir(root).filePath(QStringLiteral("celestial.world.json"));
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(path) == true);
+    QAction* sunOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
+    REQUIRE(sunOrNull != nullptr);
+    sunOrNull->trigger();
+
+    const QJsonArray entities = workspace.Document().Draft().value(QStringLiteral("entities")).toArray();
+    REQUIRE(entities.size() == 1);
+    const QJsonObject entity = entities[0].toObject();
+    const QString id = workspace.Document().GetEntityKey(entity);
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    QJsonObject light = components.value(QStringLiteral("light")).toObject();
+    CHECK(light.value(WORLD_CELESTIAL_ROLE).toString() == QStringLiteral("Static Sun"));
+
+    // A previously saved light has no celestial keys. Its authored direction and bytes remain valid.
+    for (const QString& property : light.keys())
+    {
+        if (IsWorldCelestialProperty(property) == true)
+        {
+            light.remove(property);
+        }
+    }
+    components.insert(QStringLiteral("light"), light);
+    QJsonObject legacyEntity = entity;
+    legacyEntity.insert(QStringLiteral("components"), components);
+    QJsonObject legacy = workspace.Document().Draft();
+    legacy.insert(QStringLiteral("entities"), QJsonArray{legacyEntity});
+    Write(path, QJsonDocument(legacy).toJson());
+    WorldWorkspace reopened;
+    reopened.SetProject(root, 2);
+    REQUIRE(reopened.Open(path) == true);
+    REQUIRE(reopened.Document().Draft() == legacy);
+    REQUIRE(reopened.SelectEntity(id) == true);
+
+    QComboBox* kindOrNull = reopened.findChild<QComboBox*>(QStringLiteral("worldField:light/kind"));
+    QComboBox* roleOrNull = reopened.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialRole"));
+    QComboBox* driverOrNull = reopened.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialDriver"));
+    QLineEdit* timeOrNull = reopened.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialTime"));
+    REQUIRE(kindOrNull != nullptr);
+    REQUIRE(roleOrNull != nullptr);
+    REQUIRE(driverOrNull != nullptr);
+    REQUIRE(timeOrNull != nullptr);
+    CHECK(roleOrNull->currentText() == QStringLiteral("None"));
+    CHECK(driverOrNull->isHidden() == true);
+    kindOrNull->setCurrentText(QStringLiteral("point"));
+    CHECK(roleOrNull->isHidden() == true);
+    kindOrNull->setCurrentText(QStringLiteral("directional"));
+    CHECK(roleOrNull->isHidden() == false);
+
+    RenderScene scene;
+    QString error;
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    REQUIRE(scene.AuthoredLights.Count == 1);
+    const math::Vector3 authoredDirectionWorld = scene.AuthoredLights.Lights[0].Direction;
+
+    roleOrNull->setCurrentText(QStringLiteral("Static Moon"));
+    REQUIRE(reopened.Apply() == true);
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    CHECK(scene.AuthoredLights.Lights[0].Direction == authoredDirectionWorld);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity > 0);
+
+    roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
+    CHECK(driverOrNull->isHidden() == false);
+    REQUIRE(reopened.Apply() == true);
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    CHECK(scene.AuthoredLights.Lights[0].Direction == authoredDirectionWorld);
+
+    driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
+    CHECK(timeOrNull->isHidden() == false);
+    REQUIRE(reopened.Apply() == true);
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    REQUIRE(scene.AuthoredLights.Count == 1);
+    CHECK(scene.AuthoredLights.Lights[0].Direction != authoredDirectionWorld);
+    CHECK(scene.AuthoredLights.Lights[0].Direction.Y < 0);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity > 0);
+    const math::Vector3 solarNoonDirectionWorld = scene.AuthoredLights.Lights[0].Direction;
+
+    driverOrNull->setCurrentText(QStringLiteral("Earth Moon"));
+    REQUIRE(reopened.Apply() == true);
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    CHECK(scene.AuthoredLights.Lights[0].Direction != solarNoonDirectionWorld);
+
+    timeOrNull->selectAll();
+    QTest::keyClicks(timeOrNull, QStringLiteral("invalid"));
+    CHECK(reopened.Apply() == false);
+    roleOrNull->setCurrentText(QStringLiteral("Static Moon"));
+    REQUIRE(reopened.Apply() == true);
+    roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
+    driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
+    timeOrNull->selectAll();
+    QTest::keyClicks(timeOrNull, QStringLiteral("0.5"));
+    REQUIRE(reopened.Apply() == true);
+    REQUIRE(RenderScene::Load(root, reopened.Document(), scene, error) == true);
+    CHECK(scene.AuthoredLights.Lights[0].Direction.Y > 0);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity == 0);
+    REQUIRE(reopened.Save() == true);
+    WorldDocument saved;
+    REQUIRE(saved.LoadSchema(Read(QStringLiteral(":/world/world.schema.json")), error) == true);
+    REQUIRE(saved.Load(Read(path), error) == true);
+    CHECK(saved.Draft() == reopened.Document().Draft());
+    const QJsonObject savedLight =
+        saved.Entity(id).value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+    CHECK(savedLight.value(WORLD_CELESTIAL_TIME).toDouble() == 0.5);
+    CHECK(savedLight.contains(WORLD_CELESTIAL_LATITUDE) == false);
+    CHECK(savedLight.contains(WORLD_CELESTIAL_LONGITUDE) == false);
+    workspace.StopPreview();
+    reopened.StopPreview();
+}
+
+TEST_CASE("Custom celestial orbits use an authored world spin and survive a World reload", "[editor][world][celestial]")
+{
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString path = QDir(root).filePath(QStringLiteral("custom-orbit.world.json"));
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(path) == true);
+    QAction* sunOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
+    REQUIRE(sunOrNull != nullptr);
+    sunOrNull->trigger();
+
+    QComboBox* roleOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialRole"));
+    QComboBox* driverOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:light/celestialDriver"));
+    QLineEdit* earthTimeOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialTime"));
+    QLineEdit* orbitTimeOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialOrbitTime"));
+    QLineEdit* spinOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialObserverSpin"));
+    QLineEdit* rateOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:light/celestialOrbitRate"));
+    REQUIRE(roleOrNull != nullptr);
+    REQUIRE(driverOrNull != nullptr);
+    REQUIRE(earthTimeOrNull != nullptr);
+    REQUIRE(orbitTimeOrNull != nullptr);
+    REQUIRE(spinOrNull != nullptr);
+    REQUIRE(rateOrNull != nullptr);
+    roleOrNull->setCurrentText(QStringLiteral("Dynamic Celestial"));
+    driverOrNull->setCurrentText(QStringLiteral("Custom Orbit"));
+    CHECK(orbitTimeOrNull->isHidden() == false);
+    CHECK(earthTimeOrNull->isHidden() == true);
+
+    const auto enterNumber = [](QLineEdit& inoutField, const QString& number) {
+        inoutField.selectAll();
+        QTest::keyClicks(&inoutField, number);
+    };
+    enterNumber(*spinOrNull, QStringLiteral("30"));
+    enterNumber(*orbitTimeOrNull, QStringLiteral("6"));
+    REQUIRE(workspace.Apply() == true);
+    RenderScene scene;
+    QString error;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
+    REQUIRE(scene.AuthoredLights.Count == 1);
+    CHECK(scene.AuthoredLights.Lights[0].Direction.Y > 0);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity == 0);
+
+    enterNumber(*rateOrNull, QStringLiteral("30"));
+    REQUIRE(workspace.Apply() == true);
+    driverOrNull->setCurrentText(QStringLiteral("Earth Sun"));
+    CHECK(orbitTimeOrNull->isHidden() == true);
+    CHECK(earthTimeOrNull->isHidden() == false);
+    REQUIRE(workspace.Apply() == true);
+    driverOrNull->setCurrentText(QStringLiteral("Custom Orbit"));
+    REQUIRE(workspace.Save() == true);
+
+    WorldDocument saved;
+    REQUIRE(saved.LoadSchema(Read(QStringLiteral(":/world/world.schema.json")), error) == true);
+    REQUIRE(saved.Load(Read(path), error) == true);
+    REQUIRE(RenderScene::Load(root, saved, scene, error) == true);
+    REQUIRE(scene.AuthoredLights.Count == 1);
+    CHECK(scene.AuthoredLights.Lights[0].Direction.Y < 0);
+    CHECK(scene.AuthoredLights.Lights[0].Intensity > 0);
     workspace.StopPreview();
 }
 
@@ -3890,10 +4305,10 @@ TEST_CASE("A non-placement edit during a placement validation waits for a full a
     const QByteArray placedIdentity = scene.PreviewScene().Identity;
     const qsizetype entityCount = workspace.Document().Draft().value(QStringLiteral("entities")).toArray().size();
 
-    QPushButton* addOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAdd"));
+    QAction* addOrNull = workspace.findChild<QAction*>(QStringLiteral("worldAdd"));
     REQUIRE(addOrNull != nullptr);
     REQUIRE(addOrNull->isEnabled() == true);
-    addOrNull->click();
+    addOrNull->trigger();
     CHECK(workspace.Document().Draft().value(QStringLiteral("entities")).toArray().size() == entityCount + 1);
     // The derived scene stays presented; World edits wait for the assembly that replaces it.
     CHECK(scene.PreviewScene().Identity == placedIdentity);
@@ -3969,15 +4384,15 @@ TEST_CASE("World entity search keeps group commands scoped to visible matches", 
     CHECK(entities->selectedItems().front() == first);
     entities->selectAll();
     CHECK(entities->selectedItems().size() == 1);
-    workspace.findChild<QPushButton*>(QStringLiteral("worldDuplicate"))->click();
+    workspace.findChild<QAction*>(QStringLiteral("worldDuplicate"))->trigger();
     CHECK(entities->count() ==
           QJsonDocument::fromJson(before).object().value(QStringLiteral("entities")).toArray().size() + 1);
     // A document rebuild reapplies the query. The new stable ID does not match it.
     CHECK(count->text() == QStringLiteral("1 of %1 entities").arg(entities->count()));
     search->setText(QStringLiteral("no matching entity"));
     CHECK(entities->selectedItems().isEmpty() == true);
-    CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldDuplicate"))->isEnabled() == false);
-    CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldDelete"))->isEnabled() == false);
+    CHECK(workspace.findChild<QAction*>(QStringLiteral("worldDuplicate"))->isEnabled() == false);
+    CHECK(workspace.findChild<QAction*>(QStringLiteral("worldDelete"))->isEnabled() == false);
     CHECK(count->toolTip().contains(QStringLiteral("Clear or change")) == true);
     const QByteArray filtered = workspace.Document().Encode();
     REQUIRE(workspace.SelectEntity(identity) == true);

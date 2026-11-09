@@ -413,17 +413,15 @@ TEST_CASE("Renderer controls and inspector remain reachable in a small styled Wo
     REQUIRE(distanceEditor != nullptr);
     CHECK(distance->isVisible() == true);
     CHECK(distanceEditor->height() >= distanceEditor->minimumSizeHint().height());
-    for (const auto& name : {QStringLiteral("worldPreview3D"),
-                             QStringLiteral("worldPreviewReload"),
-                             QStringLiteral("worldAdd"),
-                             QStringLiteral("worldApply")})
+    for (const QString& name :
+         {QStringLiteral("worldPreview3D"), QStringLiteral("worldPreviewReload"), QStringLiteral("worldApply")})
     {
-        auto* control = world.findChild<QPushButton*>(name);
-        REQUIRE(control != nullptr);
-        CHECK(control->isVisible());
-        const auto top = control->mapTo(&world, QPoint(0, 0));
+        QPushButton* controlOrNull = world.findChild<QPushButton*>(name);
+        REQUIRE(controlOrNull != nullptr);
+        CHECK(controlOrNull->isVisible());
+        const QPoint top = controlOrNull->mapTo(&world, QPoint(0, 0));
         CHECK(top.y() >= 0);
-        CHECK(top.y() + control->height() <= world.height());
+        CHECK(top.y() + controlOrNull->height() <= world.height());
     }
     if (qEnvironmentVariable("LUDUS_RENDER_SCREENSHOT").isEmpty() == false)
     {
