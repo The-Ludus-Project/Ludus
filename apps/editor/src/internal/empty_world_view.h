@@ -28,6 +28,7 @@ class StateView;
 /// Borrows the viewport's preview; never admits a GPU device or creates World objects.
 class EmptyWorldView final : public QLabel
 {
+    Q_OBJECT
 public:
     /// The borrowed preview must outlive this widget.
     EmptyWorldView(RenderPreview& inoutPreview, QWidget* parentOrNull);
