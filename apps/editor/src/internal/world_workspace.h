@@ -223,6 +223,7 @@ private:
     void SceneVerified(bool accepted);
     void Render();
     void RenderInspector();
+    [[nodiscard]] QStringList getStaticColliderTargets() const;
     void initializeTerrainAuthoring();
     void showTerrainAuthoring(const QString& key = {});
     void updateTerrainActions();

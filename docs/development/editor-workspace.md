@@ -711,7 +711,8 @@ including after reopening the World. The terrain uses the current viewport
 shading and authored lights. In an unlit World, the default raster graph
 shows the terrain's surface colour without adding mesh lights.
 [Explore as Player](#explore-from-a-first-person-player) uses the applied terrain
-mesh for walking collision. Material paint, erosion and streaming are future
+mesh for walking collision when the Terrain entity has **Static Collider**.
+Material paint, erosion and streaming are future
 work. See the
 [viewport authoring design](../architecture/terrain.md#terrain-authoring-in-the-world-viewport)
 for delivery boundaries.
@@ -1176,6 +1177,12 @@ and Y for pitch and yaw, and adjust **Move speed**. Apply the changes and use
 **Save World** to keep the spawn. Duplicate the entity to keep multiple starting
 points.
 
+To make a surface solid, select its Terrain, mesh preset, or imported mesh
+entity. In **Properties**, choose **Static Collider** and click **Add Component**.
+Select several meshes to attach the component to the eligible entities in one
+undoable edit. Existing Worlds, new renderable entities and scene imports use
+the same opt-in. Remove the component to let the player pass through the mesh.
+
 Apply or cancel any open Terrain draft. Select a player in the hierarchy and
 click **Explore as Player**. Hold the right
 mouse button to look around, use **W/A/S/D** to walk, **Shift** to run, and
@@ -1183,14 +1190,13 @@ mouse button to look around, use **W/A/S/D** to walk, **Shift** to run, and
 editor camera. Movement is temporary and applies gravity even while you stand
 still. If you fall below the World, you return to the spawn.
 
-The player uses an upright box and sweeps it against the current visible
-World triangles, including generated terrain and imported meshes. It can
+The player uses an upright box and sweeps it against the visible triangles
+of entities with **Static Collider**. It can
 step up 0.35 m and walk on slopes up to 45°. Place the spawn eye about 1.6 m
-above the floor and clear of walls and ceilings. Hide decorative geometry
-that should not obstruct a walk. Collision preparation can take longer for
-large imports and admits up to eight million instanced triangles. Publishing
-different World geometry ends the walk. Choose **Explore as Player** again to
-walk on the new surface.
+above the floor and clear of walls and ceilings. Collision preparation can take
+longer for large imports and admits up to eight million instanced collider
+triangles. Publishing changes to geometry or collider membership ends the
+walk. Choose **Explore as Player** again to use the updated surfaces.
 
 This editor preview only moves the player. Rigid bodies, thrown objects,
 and gameplay collision assets follow the

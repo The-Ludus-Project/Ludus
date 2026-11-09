@@ -10,6 +10,7 @@
 #include <QByteArray>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QSet>
 #include <QString>
 
 namespace ludus::editor
@@ -65,6 +66,12 @@ struct WorldSunPlacement final
                                               gameplay::camera::CameraSample& outCamera,
                                               foundation::float32& outSpeed,
                                               QString& outError);
+/// Built-in component that admits an entity's visible mesh to editor walking collision.
+[[nodiscard]] QString GetStaticColliderComponentId();
+/// True when a default World entity has mesh geometry and can receive a Static Collider.
+[[nodiscard]] bool CanAttachWorldStaticCollider(const QJsonObject& entity);
+/// Collect the stable keys of default World entities with an applied Static Collider.
+[[nodiscard]] QSet<QString> GetWorldStaticColliderEntityIds(const WorldDocument& world);
 /// Built-in Atmosphere component key.
 [[nodiscard]] QString GetWorldAtmosphereComponentId();
 /// Detect the built-in Atmosphere Sun reference field.

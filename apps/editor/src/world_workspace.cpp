@@ -788,14 +788,20 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     });
     connect(Attach_, &QPushButton::clicked, this, [this]() {
         QString error;
-        if (Document_.Attach(Selected_, error, Components_->currentData().toString()) == false)
+        const QString component = Components_->currentData().toString();
+        const bool isMultipleSelection = mSelectedEntities.size() > 1;
+        const QStringList targets = isMultipleSelection == true ? getStaticColliderTargets() : QStringList{Selected_};
+        if (Document_.AttachToEntities(targets, error, component) == false)
         {
             Changed(error);
             return;
         }
         Render();
         Snapshot();
-        Changed(QStringLiteral("Component added with project defaults."));
+        Changed(isMultipleSelection == true
+                    ? QStringLiteral("Static Collider added to %1 selected mesh entities. Undo is available.")
+                          .arg(targets.size())
+                    : QStringLiteral("Component added with project defaults."));
     });
     connect(Apply_, &QPushButton::clicked, this, [this]() { (void)Apply(); });
     connect(Reset_, &QPushButton::clicked, this, [this]() {
@@ -1242,6 +1248,13 @@ void WorldWorkspace::invalidateScene()
 }
 void WorldWorkspace::RefreshScene()
 {
+    const RenderPreview& preview = GetRenderPreview();
+    if (preview.IsExploringFirstPerson() == true &&
+        preview.Scene().StaticColliderEntityIds != GetWorldStaticColliderEntityIds(Document_))
+    {
+        Render_->GetViewport().EndFirstPerson();
+        Scene_->GetViewport().EndFirstPerson();
+    }
     const QJsonObject level = Document_.SceneLevel();
     if (level.isEmpty())
     {
@@ -2010,9 +2023,17 @@ void WorldWorkspace::RenderInspector()
     Components_->clear();
     if (mSelectedEntities.size() > 1)
     {
-        QLabel* summary = new QLabel(QStringLiteral("%1 entities selected. Duplicate or Delete acts on the whole "
-                                                    "selection. Select one entity to edit its properties.")
-                                         .arg(mSelectedEntities.size()));
+        const QStringList colliderTargets = getStaticColliderTargets();
+        QString summaryText = QStringLiteral("%1 entities selected. Duplicate or Delete acts on the whole selection.")
+                                  .arg(mSelectedEntities.size());
+        if (colliderTargets.isEmpty() == false)
+        {
+            const QString component = GetStaticColliderComponentId();
+            Components_->addItem(Document_.Component(component).value(QStringLiteral("label")).toString(), component);
+            summaryText += QStringLiteral(" Add Component can add Static Collider to %1 selected mesh entities.")
+                               .arg(colliderTargets.size());
+        }
+        QLabel* summary = new QLabel(summaryText + QStringLiteral(" Select one entity to edit its properties."));
         summary->setWordWrap(true);
         Inspector_->addWidget(summary);
         Inspector_->addStretch();
@@ -2164,7 +2185,11 @@ void WorldWorkspace::RenderInspector()
         }
         if (attached.contains(cid) == false)
         {
-            Components_->addItem(label, cid);
+            if (Document_.HasBuiltInSchema() == false || cid != GetStaticColliderComponentId() ||
+                CanAttachWorldStaticCollider(entity) == true)
+            {
+                Components_->addItem(label, cid);
+            }
             continue;
         }
         auto* group = new QGroupBox(label);
@@ -2627,7 +2652,7 @@ void WorldWorkspace::Changed(const QString& message)
                                    entityCount + mSelectedEntities.size() <= WorldDocument::MAX_ENTITIES &&
                                    isBusy == false);
     mDeleteEntities->setEnabled(Selected_.isEmpty() == false && Pending_ == false && isBusy == false);
-    Attach_->setEnabled(mSelectedEntities.size() == 1 && Pending_ == false && Components_->count() > 0 &&
+    Attach_->setEnabled(mSelectedEntities.isEmpty() == false && Pending_ == false && Components_->count() > 0 &&
                         isBusy == false);
     Components_->setEnabled(Pending_ == false && isBusy == false);
     Apply_->setEnabled(Pending_ && isBusy == false);

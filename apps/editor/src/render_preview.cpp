@@ -1467,11 +1467,11 @@ bool RenderPreview::BeginFirstPerson(const gameplay::camera::CameraSample& spawn
     switch (mFirstPersonCollision.Start(Scene_, spawn.Pose.Position))
     {
         case StartStatus::NoGeometry:
-            outError = QStringLiteral("Add visible terrain or a mesh floor to the World before exploring.");
+            outError = QStringLiteral("Add Static Collider to a visible terrain or mesh floor before exploring.");
             return false;
         case StartStatus::GeometryUnavailable:
-            outError = QStringLiteral("Could not prepare the World's collision geometry. Hide unnecessary meshes "
-                                      "or reimport invalid geometry, then try again.");
+            outError = QStringLiteral("Could not prepare the World's collision geometry. Remove Static Collider from "
+                                      "unneeded surfaces or reimport invalid geometry, then try again.");
             return false;
         case StartStatus::SpawnObstructed:
             outError = QStringLiteral("Move the First Person Player's eye above the floor and clear of walls "

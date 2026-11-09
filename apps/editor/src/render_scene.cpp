@@ -152,6 +152,7 @@ void ConvertToConventionalDepth(rr::ViewDescription& inoutView) noexcept
 /// identities into its own so that an authored edit is a new scene.
 void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
 {
+    inoutScene.StaticColliderEntityIds = authored.StaticColliderEntityIds;
     inoutScene.RenderableBinding = authored.RenderableBinding;
     inoutScene.TransformBinding = authored.TransformBinding;
     // Disabled authored lights stay listed, and switchable, beside the imported ones.
@@ -790,6 +791,7 @@ bool RenderScene::Load(const QString& root,
     candidate.TransformBinding = transform;
     candidate.LightBinding = lightBinding;
     candidate.LuminaireBinding = luminaireBinding;
+    candidate.StaticColliderEntityIds = GetWorldStaticColliderEntityIds(world);
     StaticArray<rr::PanelLuminaire, rr::MAX_PANEL_LUMINAIRES> luminaires{};
     usize luminaireCount = 0;
     // Light switches are not authored content: ApplyLightSwitches folds them into the presented identity,

@@ -15,6 +15,7 @@
 
 #include <QImage>
 #include <QJsonObject>
+#include <QSet>
 #include <QVector>
 
 namespace ludus::graphics::renderer
@@ -188,6 +189,8 @@ struct RenderScene final
     QVector<PreviewMesh> Meshes;
     QVector<PreviewTexture> Textures;
     QVector<PreviewObject> Objects;
+    /// Authored entity keys that opt their visible mesh instances into editor walking collision.
+    QSet<QString> StaticColliderEntityIds;
     QVector<PreviewSurface> Surfaces;
     QVector<PreviewCamera> Cameras;
     foundation::math::Vector3 Center{};

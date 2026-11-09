@@ -470,6 +470,14 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
             components.append(apertureComponent);
             components.append(atmosphereComponent);
             AppendGiProbeComponents(components);
+            components.append(QJsonObject{
+                {QStringLiteral("id"), GetStaticColliderComponentId()},
+                {QStringLiteral("label"), QStringLiteral("Static Collider")},
+                {QStringLiteral("help"),
+                 QStringLiteral("Use this entity's visible mesh triangles as a solid surface in Explore as Player.")},
+                {QStringLiteral("required"), false},
+                {QStringLiteral("properties"), QJsonArray{}},
+            });
             schema.insert(QStringLiteral("components"), components);
             isBuiltInSchema = true;
         }
@@ -1488,18 +1496,44 @@ bool WorldDocument::RenameEntity(const QString& id, QString& error, const QStrin
     e.insert(QStringLiteral("name"), name);
     return ReplaceEntity(e, error);
 }
-bool WorldDocument::Attach(const QString& entity, QString& error, const QString& component)
+bool WorldDocument::Attach(const QString& entity, QString& outError, const QString& component)
 {
-    auto e = Entity(entity);
-    const auto definition = Component(component);
-    auto components = e.value(QStringLiteral("components")).toObject();
-    if (e.isEmpty() || definition.isEmpty() || components.contains(component))
+    return AttachToEntities({entity}, outError, component);
+}
+bool WorldDocument::AttachToEntities(const QStringList& ids, QString& outError, const QString& component)
+{
+    const QJsonObject definition = Component(component);
+    const QString unavailable = QStringLiteral("Choose an available component and entity.");
+    if (ids.isEmpty() == true || definition.isEmpty() == true)
     {
-        return Fail(error, QStringLiteral("Choose an available component and entity."));
+        return Fail(outError, unavailable);
     }
-    components.insert(component, Defaults(definition));
-    e.insert(QStringLiteral("components"), components);
-    return ReplaceEntity(e, error);
+    QSet<QString> remaining(ids.cbegin(), ids.cend());
+    QJsonArray entities = Draft_.value(QStringLiteral("entities")).toArray();
+    const QJsonObject defaults = Defaults(definition);
+    for (qsizetype index = 0; index < entities.size() && remaining.isEmpty() == false; ++index)
+    {
+        QJsonObject entity = entities[index].toObject();
+        if (remaining.remove(GetEntityKey(entity)) == false)
+        {
+            continue;
+        }
+        QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+        if (components.contains(component) == true)
+        {
+            return Fail(outError, unavailable);
+        }
+        components.insert(component, defaults);
+        entity.insert(QStringLiteral("components"), components);
+        entities[index] = entity;
+    }
+    if (remaining.isEmpty() == false)
+    {
+        return Fail(outError, unavailable);
+    }
+    QJsonObject candidate = Draft_;
+    candidate.insert(QStringLiteral("entities"), entities);
+    return Commit(candidate, outError);
 }
 bool WorldDocument::Detach(const QString& entity, QString& error, const QString& component)
 {
