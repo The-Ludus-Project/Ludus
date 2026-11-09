@@ -87,6 +87,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QObject>
 #include <QPlainTextEdit>
@@ -99,6 +100,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
+#include <QTimer>
 #include <QToolButton>
 #include <QWidget>
 
@@ -4886,12 +4888,22 @@ TEST_CASE("The selected World viewport renders its authored Atmosphere entity",
     const uint64 skyRevision = previewOrNull->GetPresentedRevision();
     world.GetRenderPreview().Orbit(2, 0);
     REQUIRE(waitFor([&]() { return previewOrNull->GetPresentedRevision() > skyRevision; }) == true);
-    const uint64 orbitedRevision = previewOrNull->GetPresentedRevision();
-    world.resize(960, 640);
-    REQUIRE(waitFor([&]() { return previewOrNull->GetPresentedRevision() > orbitedRevision; }) == true);
+    QComboBox* sizeFieldOrNull = viewportOrNull->findChild<QComboBox*>(QStringLiteral("viewportSize"));
+    REQUIRE(sizeFieldOrNull != nullptr);
+    const int32 fixedSizeIndex = sizeFieldOrNull->findText(QStringLiteral("720p"));
+    REQUIRE(fixedSizeIndex >= 0);
+    sizeFieldOrNull->setCurrentIndex(fixedSizeIndex);
+    const QSize resizedExtent(1280, 720);
+    REQUIRE(waitFor([&]() { return graphViewOrNull->GetImage().size() == resizedExtent; }) == true);
     const QImage resizedSky = graphViewOrNull->GetImage();
     CHECK(resizedSky.size() != sky.size());
 
+    REQUIRE(deleteOrNull->isEnabled() == true);
+    QTimer::singleShot(0, &world, []() {
+        QMessageBox* confirmationOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        REQUIRE(confirmationOrNull != nullptr);
+        confirmationOrNull->button(QMessageBox::Yes)->click();
+    });
     deleteOrNull->trigger();
     REQUIRE(waitFor([&]() {
                 return world.GetRenderPreview().Scene().Atmosphere.IsEnabled == false &&
