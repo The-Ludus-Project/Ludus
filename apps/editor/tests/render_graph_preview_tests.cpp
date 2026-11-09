@@ -69,6 +69,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
 #include <QCoreApplication>
@@ -4947,6 +4948,12 @@ TEST_CASE("The selected World viewport renders its authored Atmosphere entity",
     QComboBox* sunFieldOrNull = world.findChild<QComboBox*>(QStringLiteral("worldField:atmosphere/sun"));
     REQUIRE(sunFieldOrNull != nullptr);
     REQUIRE(sunFieldOrNull->count() == 2);
+    QComboBox* moonFieldOrNull = world.findChild<QComboBox*>(QStringLiteral("worldField:atmosphere/moon"));
+    REQUIRE(moonFieldOrNull != nullptr);
+    CHECK(moonFieldOrNull->count() == 2);
+    QCheckBox* starsFieldOrNull = world.findChild<QCheckBox*>(QStringLiteral("worldField:atmosphere/stars"));
+    REQUIRE(starsFieldOrNull != nullptr);
+    CHECK(starsFieldOrNull->isChecked() == true);
     sunFieldOrNull->setCurrentIndex(1);
     REQUIRE(world.Apply() == true);
     REQUIRE(waitFor([&]() {

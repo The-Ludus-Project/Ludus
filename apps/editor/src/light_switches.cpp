@@ -247,6 +247,9 @@ bool ApplyLightSwitches(const LightSwitchSet& switches, RenderScene& inoutScene,
     inoutScene.IsAtmosphereSunSwitchedOff =
         inoutScene.Atmosphere.SunSourceId != 0 &&
         normalized.IsDisabled({LightSourceKind::Light, inoutScene.Atmosphere.SunSourceId}) == true;
+    inoutScene.IsAtmosphereMoonSwitchedOff =
+        inoutScene.AtmosphereMoonSourceId != 0 &&
+        normalized.IsDisabled({LightSourceKind::Light, inoutScene.AtmosphereMoonSourceId}) == true;
     if (applied.isEmpty() == true)
     {
         inoutScene.Identity = unswitchedIdentity;

@@ -1871,10 +1871,23 @@ The default clustered deferred raster graph shows the sky and solar disk behind
 World geometry. It attenuates the linked Sun at opaque surfaces, lights them
 with the clear sky, and adds haze along the camera-to-surface path. Other
 authored lights still contribute. If the Sun reference is empty or missing,
-pick a directional light in Properties. Moving the camera below the ground
-or above the shell restores the graph's ordinary background and lighting.
-Delete the Atmosphere to restore both at every altitude. Save and Undo work through the normal World
-commands. A World can have one Atmosphere.
+pick a directional light in Properties.
+
+**Stars** controls the procedural night sky. To show the Moon, choose a
+different directional light in **Atmosphere → Moon**. Set that light's role
+to **Static Moon** for an authored direction or use the **Earth Moon**
+celestial driver. Its direction sets the disk position, its color and
+intensity set the full-phase brightness, and the Sun direction determines
+which part of the disk is lit. Atmospheric extinction dims the stars and Moon
+toward the horizon. Turning the linked Moon off in the light controls hides
+the disk.
+
+A perspective camera above the atmosphere can see the illuminated limb and
+the celestial background. The ground uses a dark boundary. Below ground or
+outside the supported sky range, the graph uses its ordinary background.
+Delete the Atmosphere to restore the graph's background at every altitude.
+Save and Undo work through the normal World commands. A World can have one
+Atmosphere.
 [Renderer contract](../architecture/renderer-systems.md#clear-sky-atmosphere-design)
 
 ### Baking always-on lights

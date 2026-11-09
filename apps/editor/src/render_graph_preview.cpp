@@ -176,11 +176,7 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
     // borrowed pointers below stay valid while the extraction lives.
     extraction.Scene = scene;
     extraction.View = view;
-    extraction.View.Atmosphere = scene.Atmosphere;
-    if (scene.IsAtmosphereSunSwitchedOff == true)
-    {
-        extraction.View.Atmosphere.SolarIlluminance = {};
-    }
+    extraction.View.Atmosphere = scene.GetAtmosphereForView();
     extraction.Revision = revision;
     for (qsizetype i = 0; i < extraction.Scene.Meshes.size(); ++i)
     {
@@ -1563,16 +1559,18 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
                           .arg(graphReport.SceneDiagnostics.ErrorMaterial);
             QString atmosphereStatus = state.Extraction.Scene.AtmosphereStatus;
             const renderer::AtmosphereDescription& atmosphere = state.Extraction.View.Atmosphere;
+            const float64 maximumAltitude =
+                renderer::GetAtmosphereMaximumViewAltitude(atmosphere, state.Extraction.View.OrthographicCamera);
             float64 altitude = 0;
             if (atmosphere.IsEnabled == true &&
                 renderer::TryGetAtmosphereAltitude(atmosphere, state.Extraction.View.CameraPosition, altitude) ==
                     true &&
-                (altitude < 0 || altitude > renderer::GetAtmosphereTopAltitude()))
+                (altitude < 0 || altitude > maximumAltitude))
             {
-                atmosphereStatus = QStringLiteral("Camera altitude %1 m is outside the clear-sky range of 0–%2 m. "
-                                                  "Move the camera inside the atmosphere.")
+                atmosphereStatus = QStringLiteral("Camera altitude %1 m is outside the supported sky range of 0–%2 m. "
+                                                  "Move the camera into range or use a perspective camera for orbit.")
                                        .arg(altitude)
-                                       .arg(renderer::GetAtmosphereTopAltitude());
+                                       .arg(maximumAltitude);
             }
             if (atmosphereStatus.isEmpty() == false)
             {

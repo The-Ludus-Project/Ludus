@@ -885,9 +885,13 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                 if (v.isUndefined() == true)
                 {
                     // Older Worlds may omit fields added by the built-in schema extensions.
-                    if (isBuiltInLight == true &&
-                        (IsWorldCelestialProperty(property) == true || property == QStringLiteral("staticTransform") ||
-                         property == QStringLiteral("bakeAlwaysOn")))
+                    const bool isNewAtmosphereField =
+                        HasBuiltInSchema() == true && c.key() == GetWorldAtmosphereComponentId() &&
+                        (property == QStringLiteral("moon") || property == QStringLiteral("stars"));
+                    if (isNewAtmosphereField == true ||
+                        (isBuiltInLight == true &&
+                         (IsWorldCelestialProperty(property) == true || property == QStringLiteral("staticTransform") ||
+                          property == QStringLiteral("bakeAlwaysOn"))))
                     {
                         continue;
                     }
@@ -901,10 +905,11 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     return false;
                 }
                 const auto type = p.value(QStringLiteral("type")).toString();
-                // An atmosphere keeps its authored entity identity when the Sun is deleted.
-                const bool isAtmosphereSun = HasBuiltInSchema() == true && IsWorldAtmosphereSunField(c.key(), property);
+                // An atmosphere keeps its authored references when a linked light is deleted.
+                const bool isAtmosphereLight =
+                    HasBuiltInSchema() == true && IsWorldAtmosphereLightField(c.key(), property);
                 if (v.toString().isEmpty() == false &&
-                    ((type == QStringLiteral("entity") && isAtmosphereSun == false &&
+                    ((type == QStringLiteral("entity") && isAtmosphereLight == false &&
                       ids.contains(v.toString()) == false) ||
                      (type == QStringLiteral("asset") && assets.contains(v.toString()) == false)))
                 {

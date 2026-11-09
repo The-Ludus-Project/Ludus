@@ -30,6 +30,22 @@
       "unit": "°",
       "min": 0.01,
       "max": 10
+    },
+    {
+      "id": "stars",
+      "label": "Stars",
+      "type": "boolean",
+      "default": true,
+      "unit": "",
+      "help": "Show a procedural star field beyond the atmosphere."
+    },
+    {
+      "id": "moon",
+      "label": "Moon",
+      "type": "entity",
+      "default": "",
+      "unit": "",
+      "help": "Bind a different directional light to the optional lunar disk. Its Transform or celestial driver sets the direction."
     }
   ]
 }

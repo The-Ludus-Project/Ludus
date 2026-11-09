@@ -67,12 +67,12 @@ struct WorldSunPlacement final
                                               QString& outError);
 /// Built-in Atmosphere component key.
 [[nodiscard]] QString GetWorldAtmosphereComponentId();
-/// Detect the built-in Atmosphere Sun reference field.
-[[nodiscard]] bool IsWorldAtmosphereSunField(const QString& component, const QString& field);
+/// Detect a built-in Atmosphere Sun or Moon reference field.
+[[nodiscard]] bool IsWorldAtmosphereLightField(const QString& component, const QString& field);
 /// Find World entities carrying the built-in Atmosphere component.
 [[nodiscard]] QJsonArray FindWorldAtmosphereEntities(const QJsonObject& document);
-/// Check whether an entity can be selected as the Atmosphere's Sun.
-[[nodiscard]] bool IsWorldAtmosphereSun(const QJsonObject& entity);
+/// Check whether an entity can supply the Atmosphere with a directional light.
+[[nodiscard]] bool IsWorldAtmosphereLight(const QJsonObject& entity);
 /// Create one bundled World preset as one validated history transaction.
 /// "Aperture Slit" creates a default-sized aperture screen at the origin (internal/world_aperture.h).
 /// Failure preserves the document and outId. Must run on the editor thread.

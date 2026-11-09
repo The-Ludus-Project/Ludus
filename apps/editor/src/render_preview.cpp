@@ -1743,11 +1743,7 @@ bool RenderPreview::DescribeConventionalView(uint32 width,
         return false;
     }
     view.WorldGrid = { .IsVisible = true, .FocusDistance = GetFocusDistance(), .Width = width, .Height = height };
-    view.Atmosphere = Scene_.Atmosphere;
-    if (Scene_.IsAtmosphereSunSwitchedOff == true)
-    {
-        view.Atmosphere.SolarIlluminance = {};
-    }
+    view.Atmosphere = Scene_.GetAtmosphereForView();
     outView = view;
     return true;
 }
