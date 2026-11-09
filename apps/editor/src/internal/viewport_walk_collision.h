@@ -23,6 +23,9 @@ public:
         SpawnObstructed,
     };
 
+    /// Compute the upright collision box in world metres from the player's eye position.
+    [[nodiscard]] static foundation::math::Aabb3 ComputeBodyBounds(foundation::math::Vector3d eyeWorld) noexcept;
+
     /// Build from the current scene. Failure preserves the previous session.
     [[nodiscard]] StartStatus Start(const RenderScene& scene, foundation::math::Vector3d eyeWorld) noexcept;
     void Reset() noexcept;

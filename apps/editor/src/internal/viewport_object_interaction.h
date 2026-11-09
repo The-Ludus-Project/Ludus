@@ -149,6 +149,8 @@ public:
     void RequestClearSelection();
     /// Request framing for the visible entity under a double-click in the edit view.
     void RequestFrameAt(QPointF positionPixel, const QRectF& framePixel);
+    /// Request framing for the selected player spawn. Returns false when there is no spawn to frame.
+    [[nodiscard]] bool TryRequestFramePlayer();
     /// Frame the selected probe grid, including one whose bake is disabled.
     [[nodiscard]] bool FrameProbeVolume() noexcept;
     [[nodiscard]] bool Move(QPointF positionPixel, bool shouldSnap);
@@ -158,7 +160,7 @@ public:
     void Paint(QPainter& inoutPainter, const QRectF& framePixel);
     /// Project the bounded silhouette outline and handle strokes on the GUI thread. Failure clears output, retaining
     /// buffer capacity. The same geometry feeds the native scene graph and the readback painter.
-    /// While the GPU outline is enabled the silhouette is left out; the luminaire panel and handles remain.
+    /// While the GPU draws the mesh silhouette, this overlay still draws the player box, luminaire and handles.
     void BuildOverlay(const QRectF& framePixel, ViewportObjectOverlay& outOverlay);
     /// Leave the selected mesh's silhouette to the GPU, which draws it into the shown image, instead of building it on
     /// the CPU. Emits GpuOutlineChanged when the request that follows from the selection changes.
@@ -230,6 +232,7 @@ private:
     void appendBoxOutline(const foundation::math::Aabb3& bounds,
                           const foundation::math::Matrix4& boundsToClip,
                           ViewportObjectOverlay& inoutOverlay) const;
+    void appendPlayerOutline(ViewportObjectOverlay& inoutOverlay) const;
     void appendProbeVolume(ViewportObjectOverlay& inoutOverlay) const;
     [[nodiscard]] bool projectProbeFace(const graphics::renderer::GiProbeGrid& grid,
                                         foundation::int32 face,
@@ -319,6 +322,9 @@ private:
     foundation::float64 mRotationDirection = 1;
     /// Half extent of the selected entity's luminaire panel, outlined in the overlay; zero when it has none.
     foundation::float32 mLuminaireHalfExtentWorld = 0;
+    foundation::math::Vector3d mPlayerEyeWorld{};
+    bool mHasPlayerSpawn = false;
+    bool mShouldPreviewPlayerMove = false;
     static constexpr foundation::usize MAX_HANDLE_LINES =
         static_cast<foundation::usize>(AXIS_COUNT) * static_cast<foundation::usize>(RING_SEGMENTS);
     foundation::FixedArray<HandleLine, MAX_HANDLE_LINES> mHandles;

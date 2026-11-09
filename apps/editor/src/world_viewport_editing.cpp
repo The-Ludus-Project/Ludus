@@ -5,6 +5,7 @@
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "internal/viewport_object_interaction.h"
+#include "internal/viewport_walk_collision.h"
 #include "internal/world_probe_volume.h"
 #include "internal/world_workspace.h"
 
@@ -88,11 +89,28 @@ void WorldWorkspace::frameEntity(const QString& id)
     QString error;
     const bool isProbeVolume = IsBuiltInWorld(Document_) == true &&
                                ReadWorldGiProbeGrid(components, grid, error, true) == true && grid.Counts[0] != 0;
+    QString spawnError;
+    if (isProbeVolume == false && HasWorldFirstPersonPlayer(Document_, id) == true)
+    {
+        gameplay::camera::CameraSample spawn;
+        float32 speed = 0;
+        if (ReadWorldFirstPersonPlayer(Document_, id, spawn, speed, spawnError) == true)
+        {
+            if (preview.FrameBounds(ViewportWalkCollision::ComputeBodyBounds(spawn.Pose.Position)) == false)
+            {
+                Changed(QStringLiteral("Cannot frame this player. Use Frame all, then try framing the player again."));
+            }
+            return;
+        }
+    }
     const bool isFramed =
         isProbeVolume == true ? preview.FrameBounds(ComputeWorldGiProbeBounds(grid)) : preview.FrameEntity(id);
     if (isFramed == false)
     {
-        Changed(QStringLiteral("Cannot frame this entity. Choose an entity with a visible mesh, or use Frame all."));
+        Changed(
+            spawnError.isEmpty() == true
+                ? QStringLiteral("Cannot frame this entity. Choose an entity with a visible mesh, or use Frame all.")
+                : spawnError);
     }
 }
 void WorldWorkspace::showEntityMenu(const QPoint& positionGlobal, const QString& entityId)
