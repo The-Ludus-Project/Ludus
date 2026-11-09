@@ -4,18 +4,37 @@ from __future__ import annotations
 
 import argparse
 import base64
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
 
 ATTEMPT_BRANCH = "ci/last-batch-attempt"
 VALIDATION_JOBS = ("native", "sdk", "wiki", "browser", "threading", "windows")
+# Batch job names are "<caller id> / <reusable job name>".
+SUITE_JOBS = (*VALIDATION_JOBS, "recovery")
+# A failed suite job rejects the candidate. Once one has failed, the jobs still
+# running get this long to report their own results before the run is cancelled,
+# so a red batch frees the queue for the fix instead of finishing its longest jobs.
+# Measured batches report deterministic failures within 3-13 minutes, and every
+# job except the sanitizers and macOS native backends ends within about 45.
+STOP_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure"})
+STOP_GRACE_SECONDS = 30 * 60
+WATCH_INTERVAL_SECONDS = 60
+# Below the watcher's 360-minute job limit, so it reports instead of timing out.
+WATCH_LIMIT_SECONDS = 330 * 60
+# Starts only after every suite has completed, whatever their results.
+COMPLETION_JOB = "Prune superseded caches"
+# Runs only when the watcher stopped the batch; develop health reads its presence.
+STOP_JOB = "Cancel failed batch"
+MAX_JOB_PAGES = 5
 # Repository-owned cache key families. Each key ends in input hashes and, for
 # compiler caches, the commit that saved it; older entries of a family on the
 # batch's ref can never be restored again once a newer one exists.
@@ -274,9 +293,108 @@ def describe_pruning(deleted: list[dict], failures: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def is_suite_job(name: object) -> bool:
+    """Whether name is a validation job such as "native / ASan and UBSan"."""
+    if not isinstance(name, str) or " / " not in name:
+        return False
+    suite, job = name.split(" / ", 1)
+    return suite in SUITE_JOBS and bool(job)
+
+
+def parse_time(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def failed_suite_jobs(jobs: list[dict]) -> list[dict]:
+    return [job for job in jobs if is_suite_job(job.get("name")) and job.get("conclusion") in STOP_CONCLUSIONS]
+
+
+def watch_decision(jobs: list[dict], now: datetime, grace_seconds: float = STOP_GRACE_SECONDS) -> str:
+    """Return "done", "stop" or "wait" for one listing of the batch's jobs.
+
+    "done": every suite has completed, so there is nothing left to stop.
+    "stop": a suite job failed at least grace_seconds ago; the jobs still running
+    have had their chance to report and the run should be cancelled.
+    "wait": no suite job has failed yet, or the grace period is still running.
+    """
+    if any(job.get("name") == COMPLETION_JOB for job in jobs):
+        return "done"
+    failed = failed_suite_jobs(jobs)
+    if not failed:
+        return "wait"
+    # A failed job without a completion time counts from now: never stop early.
+    first = min(parse_time(job.get("completed_at")) or now for job in failed)
+    return "stop" if (now - first).total_seconds() >= grace_seconds else "wait"
+
+
+def list_run_jobs(client: GitHub, run_id: int) -> list[dict]:
+    # Thanks to GitHub, "REST API endpoints for workflow jobs", List jobs for a
+    # workflow run: filter=latest reports each job's most recent attempt.
+    # https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run
+    jobs: list[dict] = []
+    for page in range(1, MAX_JOB_PAGES + 1):
+        listing = client.request(f"actions/runs/{int(run_id)}/jobs?filter=latest&per_page=100&page={page}")
+        entries = listing.get("jobs") if isinstance(listing, dict) else None
+        if not isinstance(entries, list):
+            raise BatchError(f"Run {run_id} returned no job listing.")
+        jobs.extend(entry for entry in entries if isinstance(entry, dict))
+        total = listing.get("total_count")
+        if not entries or not isinstance(total, int) or len(jobs) >= total:
+            return jobs
+    raise BatchError(f"Run {run_id} has more jobs than the bounded listing reads.")
+
+
+def watch(client: GitHub, run_id: int, *, clock=None, sleep=time.sleep,
+          grace_seconds: float = STOP_GRACE_SECONDS, interval_seconds: float = WATCH_INTERVAL_SECONDS,
+          limit_seconds: float = WATCH_LIMIT_SECONDS, max_errors: int = 5) -> tuple[bool, list[str]]:
+    """Poll the batch run; return whether to stop it and the failed suite jobs seen.
+
+    Watching fails open: if the listing stays unavailable or the limit passes,
+    the batch is left to finish normally and its suites still decide promotion.
+    """
+    clock = clock or (lambda: datetime.now(timezone.utc))
+    started = clock()
+    errors = 0
+    failed: list[str] = []
+    while (clock() - started).total_seconds() < limit_seconds:
+        try:
+            jobs = list_run_jobs(client, run_id)
+        except BatchError as error:
+            errors += 1
+            print(f"Batch CI: job listing unavailable ({errors}/{max_errors}): {error}", file=sys.stderr)
+            if errors >= max_errors:
+                return False, failed
+        else:
+            errors = 0
+            failed = sorted({job["name"] for job in failed_suite_jobs(jobs)})
+            decision = watch_decision(jobs, clock(), grace_seconds)
+            if decision != "wait":
+                return decision == "stop", failed
+        sleep(interval_seconds)
+    return False, failed
+
+
+def describe_watch(should_stop: bool, failed: list[str]) -> str:
+    if should_stop:
+        lines = [f"### Batch stopped early\n\nThese suite jobs failed, so `main` cannot advance to this candidate. "
+                 f"Jobs still running {STOP_GRACE_SECONDS // 60} minutes after the first failure are cancelled "
+                 "so the next candidate can start. Develop health treats this run as red.\n"]
+    elif failed:
+        lines = ["### Batch finished with failures\n\nEvery job reported before the stop deadline.\n"]
+    else:
+        return "### No suite failed while watching\n"
+    return "\n".join([*lines, *(f"- {name}" for name in failed)]) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("snapshot", "promote", "prune-caches"))
+    parser.add_argument("command", choices=("snapshot", "promote", "prune-caches", "watch"))
     parser.add_argument("--retry", action="store_true")
     parser.add_argument("--base", default="")
     parser.add_argument("--candidate", default="")
@@ -293,6 +411,12 @@ def main() -> int:
                         stream.write(f"{name}={value}\n")
             annotation, summary = describe_snapshot(outputs)
             print(annotation or outputs["reason"])
+        elif arguments.command == "watch":
+            should_stop, failed = watch(client, int(os.environ["GITHUB_RUN_ID"]))
+            with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
+                stream.write(f"should_stop={'true' if should_stop else 'false'}\n")
+            summary = describe_watch(should_stop, failed)
+            print(summary, end="")
         elif arguments.command == "prune-caches":
             deleted, failures = prune_caches(client, os.environ["GITHUB_REF"])
             summary = describe_pruning(deleted, failures)

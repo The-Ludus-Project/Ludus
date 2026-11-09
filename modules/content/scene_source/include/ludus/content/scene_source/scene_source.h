@@ -1,8 +1,9 @@
 #pragma once
 
 // Ludus scene source (`.luscene.json`), version 1: a hand-readable JSON scene
-// that Ludus owns. It holds world-space convex polygon geometry, materials with
-// emission and an optional camera, and is the source of the engine's test scenes.
+// that Ludus owns. It holds world-space convex polygon geometry, parametric
+// aperture screens, materials with emission and an optional camera, and is the
+// source of the engine's test scenes.
 // SceneCook's `ludus-scene-v1` importer cooks it into a LUSCN bundle like any
 // other source; tests read it directly. The file layout, conventions and limits
 // are documented in docs/architecture/scene-source-format.md.
@@ -11,6 +12,7 @@
 
 #include <ludus/content/content.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/strings/string.hpp>
 
@@ -41,6 +43,59 @@ inline constexpr usize MAX_SCENE_SOURCE_CORNERS = usize{1} << 22;
 /// Largest absolute position coordinate, in metres; keeps every position exactly
 /// representable after narrowing to float32 within the cooked format's range.
 inline constexpr float64 MAX_SCENE_SOURCE_COORDINATE_METRES = 1000000.0;
+
+/// Most quads an aperture screen expands to: the screen beside, above and below its slit.
+inline constexpr usize MAX_APERTURE_QUADS = 4;
+/// Corners of one aperture quad.
+inline constexpr usize APERTURE_QUAD_CORNERS = 4;
+/// Largest aperture screen width or height, in metres: twice MAX_SCENE_SOURCE_COORDINATE_METRES.
+inline constexpr float64 MAX_APERTURE_SCREEN_METRES = 2 * MAX_SCENE_SOURCE_COORDINATE_METRES;
+/// Opening of a default-constructed ApertureShape, in metres: a 5 cm slit.
+inline constexpr float64 DEFAULT_APERTURE_OPENING_METRES = 0.05;
+
+/// @brief Size of a flat, opaque rectangular screen with a centred rectangular slit.
+///
+/// The screen lies in the z = 0 plane of its own frame. It spans
+/// [-ScreenWidth / 2, ScreenWidth / 2] across the slit (x) and
+/// [-ScreenHeight / 2, ScreenHeight / 2] along it (y); its front face looks along +z.
+/// The slit spans [-Opening / 2, Opening / 2] by [-SlitLength / 2, SlitLength / 2]. Its
+/// long edges are knife edges: the screen has no thickness. All lengths are metres.
+struct ApertureShape final
+{
+    /// Screen extent across the slit (local x), in (0, MAX_APERTURE_SCREEN_METRES].
+    float64 ScreenWidth = 1.0;
+    /// Screen extent along the slit (local y), in (0, MAX_APERTURE_SCREEN_METRES].
+    float64 ScreenHeight = 1.0;
+    /// Slit extent along local y, in (0, ScreenHeight]. A slit as long as the screen cuts it in two.
+    float64 SlitLength = 0.5;
+    /// Slit width across local x: the aperture opening, in [0, ScreenWidth). Zero closes the slit.
+    float64 Opening = DEFAULT_APERTURE_OPENING_METRES;
+};
+
+/// One quad of an aperture screen: corners in the aperture frame (z = 0), counterclockwise seen from +z.
+using ApertureQuad = foundation::StaticArray<foundation::math::Vector3d, APERTURE_QUAD_CORNERS>;
+
+/// @brief The quads an aperture screen expands to.
+struct ApertureQuads final
+{
+    /// The first Count entries are valid: the screen left and right of the slit, then the
+    /// parts above and below it, each omitted when it has no area.
+    foundation::StaticArray<ApertureQuad, MAX_APERTURE_QUADS> Quads{};
+    /// Number of valid quads, in [2, MAX_APERTURE_QUADS].
+    usize Count = 0;
+};
+
+/// @brief Report whether every field of an aperture is finite and within its documented range.
+[[nodiscard]] bool IsApertureShapeValid(const ApertureShape& shape) noexcept;
+
+/// @brief Expand an aperture screen into strictly convex quads in its own frame.
+///
+/// Scene source import, the editor's World apertures and tests share this expansion, so
+/// the same shape always produces the same corners in binary64.
+/// @param shape The screen and slit sizes.
+/// @param outQuads Replaced on success; unchanged on failure.
+/// @return false when IsApertureShapeValid(shape) is false.
+[[nodiscard]] bool BuildApertureQuads(const ApertureShape& shape, ApertureQuads& outQuads) noexcept;
 
 /// Outcome of ParseSceneSource.
 enum class SceneSourceStatus : uint8
@@ -136,11 +191,28 @@ struct SourceMaterial final
     bool IsEmissionTwoSided = false;
 };
 
+/// @brief Placement and size of an `aperture` object's screen.
+struct SourceAperture final
+{
+    /// False for an object written as positions and polygons; the other fields then keep their defaults.
+    bool IsPresent = false;
+    /// World-space origin of the aperture frame: the centre of the slit, in metres.
+    foundation::math::Vector3d CenterWorld{};
+    /// Unit direction the screen's front face looks along: the frame's +z.
+    foundation::math::Vector3d NormalWorld{0.0, 0.0, 1.0};
+    /// Unit direction along the slit, perpendicular to NormalWorld: the frame's +y.
+    /// The frame's +x, across the slit, is Cross(UpWorld, NormalWorld).
+    foundation::math::Vector3d UpWorld{0.0, 1.0, 0.0};
+    /// Screen and slit sizes in the frame.
+    ApertureShape Shape;
+};
+
 /// @brief Polygons of one material in world space.
 ///
 /// Polygon p uses the PolygonVertexCounts[p] entries of PolygonIndices that follow
 /// those of the polygons before it. Its front face is the side from which its
-/// corners appear counterclockwise.
+/// corners appear counterclockwise. An `aperture` object also carries its
+/// parameters in Aperture; its polygons are BuildApertureQuads placed in its frame.
 struct SourceObject final
 {
     /// Unique, nonempty name.
@@ -153,6 +225,8 @@ struct SourceObject final
     foundation::Array<uint32> PolygonVertexCounts;
     /// Corners of all polygons, as indices into PositionsWorld.
     foundation::Array<uint32> PolygonIndices;
+    /// Parameters of an `aperture` object; Aperture.IsPresent is false otherwise.
+    SourceAperture Aperture;
 };
 
 /// @brief Pinhole camera that becomes the imported World's start view.
@@ -199,7 +273,8 @@ struct SceneSource final
 ///
 /// Rejects unknown, missing or repeated members, values outside their documented
 /// ranges, unresolved material names and polygons that are not planar and strictly
-/// convex. Numbers are read as IEEE binary64.
+/// convex. Numbers are read as IEEE binary64. Aperture objects are expanded into
+/// their polygons, which count towards the position and corner limits.
 /// @param text The whole document, at most MAX_SCENE_SOURCE_BYTES.
 /// @param outScene Replaced on success; unchanged on failure.
 /// @param outError Set on failure; unchanged on success.

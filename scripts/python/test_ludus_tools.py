@@ -777,5 +777,86 @@ class CatalogDownload(unittest.TestCase):
             self.catalog.download_entry(entry, self.root / "dl", opener=self._opener)
 
 
+
+# Shared with apps/editor/tests/project_setup_dialog_tests.cpp, which checks the
+# editor's DeriveProjectTarget against the same names; change both together.
+SESSION_TARGET_CASES = (
+    ("New Game", "New_Game"),
+    ("Jeux Vidéo 日本語", "Jeux_Vid_o"),
+    ("  game  ", "game"),
+    ("-.+_", "app"),
+    ("日本", "app"),
+    ("a\U0001F600b", "a_b"),
+    ("my.game+1-x", "my.game+1-x"),
+    ("x" * 130, "x" * 128),
+)
+
+
+class SessionTemplate(unittest.TestCase):
+    """The browser editor's embedded template renders exactly what create_project writes."""
+
+    @staticmethod
+    def _render(text: str, name: str, target: str) -> str:
+        escaped = json.dumps(name, ensure_ascii=False)[1:-1]
+        return text.replace("{{ NAME }}", escaped).replace("{{ TARGET }}", target)
+
+    def test_targets_match_creation(self) -> None:
+        from ludus_tools import create
+
+        for name, target in SESSION_TARGET_CASES:
+            with self.subTest(name=name):
+                self.assertEqual(create._derive_target(name), target)
+
+    def test_substituted_template_equals_created_project(self) -> None:
+        from ludus_tools import create
+
+        for name in ("New Game", 'Quote "Game"', "Jeux Vidéo 日本語"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as td:
+                created = create.create_project(Path(td) / "project", name=name, template_id="minimal",
+                                                engine_version="0.1.0", preset=create.SESSION_TEMPLATE_PRESET)
+                expected = {path.relative_to(created.destination).as_posix(): path.read_bytes()
+                            for path in created.destination.rglob("*") if path.is_file()}
+                target = create._derive_target(name)
+                rendered = {file.relpath: self._render(file.content, name, target).encode("utf-8")
+                            for file in create.session_template_files("0.1.0")}
+                self.assertEqual(rendered, expected)
+                parsed = descriptor.parse_descriptor_bytes(rendered["ludus.project.json"])
+                self.assertEqual((parsed.name, parsed.target), (name, target))
+
+    def test_only_identity_placeholders_remain(self) -> None:
+        import re
+        from ludus_tools import create
+
+        keys = set()
+        for file in create.session_template_files("0.1.0"):
+            keys.update(re.findall(r"\{\{\s*([A-Z0-9_]+)\s*\}\}", file.content))
+            if "{{ NAME }}" in file.content:
+                self.assertEqual(file.relpath, "ludus.project.json")
+        self.assertEqual(keys, set(create.SESSION_TEMPLATE_PLACEHOLDERS))
+
+    def test_write_keeps_unchanged_files_and_removes_stale_ones(self) -> None:
+        from ludus_tools import create
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "minimal"
+            paths = create.write_session_template(root, "0.1.0")
+            self.assertIn("ludus.project.json", paths)
+            self.assertIn(".gitignore", paths)
+            stale = root / "old" / "removed.txt"
+            stale.parent.mkdir()
+            stale.write_text("stale")
+            kept = root / "CMakeLists.txt"
+            os.utime(kept, (1, 1))
+            self.assertEqual(create.write_session_template(root, "0.1.0"), paths)
+            self.assertFalse(stale.parent.exists())
+            self.assertEqual(kept.stat().st_mtime, 1)
+
+    def test_rejects_an_invalid_engine_version(self) -> None:
+        from ludus_tools import create
+
+        with self.assertRaises(ToolingError):
+            create.session_template_files("")
+
+
 if __name__ == "__main__":
     unittest.main()

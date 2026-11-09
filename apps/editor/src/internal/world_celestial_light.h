@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ludus/foundation/base/types.h>
+
 #include <ludus/foundation/math/quaternion.hpp>
 
 #include <QJsonArray>
@@ -19,7 +21,7 @@ inline constexpr QLatin1StringView WORLD_CELESTIAL_DYNAMIC{"Dynamic Celestial"};
 inline constexpr QLatin1StringView WORLD_CELESTIAL_AUTHORED{"Transform"};
 inline constexpr QLatin1StringView WORLD_CELESTIAL_ORBIT{"Custom Orbit"};
 
-enum class WorldCelestialFieldGroup
+enum class WorldCelestialFieldGroup : foundation::uint8
 {
     Other,
     Role,

@@ -174,6 +174,33 @@ TEST_CASE("Ludus scene import cooks the engine's single-slit diffraction scene",
     CHECK(triangles == 12);
 }
 
+TEST_CASE("Ludus scene import can leave the slit's aperture to the importing World", "[scene_cook][ludus-scene]")
+{
+    const std::string entry = GetTestScene("diffraction/single-slit.luscene.json").string();
+    BestEffortOptions options;
+    options.ShouldDeferApertures = true;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(entry, options, result, error) == true);
+    CHECK(result.Summary.Errors == 0);
+    CHECK(ReportHasCode(result, codes::APERTURE_DEFERRED) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    usize triangles = 0;
+    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    {
+        triangles += decoded.Meshes[object.Mesh].Indices.GetSize() / 3;
+    }
+    // Only the wall and light quads remain; the editor generates the screen from its parameters.
+    CHECK(triangles == 4);
+
+    // Without the option the same file cooks its screen, and reports no deferral.
+    BestEffortResult cooked;
+    REQUIRE(ImportSceneBestEffort(entry, {}, cooked, error) == true);
+    CHECK(ReportHasCode(cooked, codes::APERTURE_DEFERRED) == false);
+}
+
 TEST_CASE("Ludus scene import keeps materials and reports invalid documents", "[scene_cook][ludus-scene]")
 {
     ScratchDirectory scratch;

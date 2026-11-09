@@ -5,6 +5,7 @@
 #include "internal/import_report.h"
 #include "internal/preview_viewport.h"
 #include "internal/scene_placement.h"
+#include "internal/world_aperture.h"
 #include <QGuiApplication>
 #include <ludus/foundation/base/core.h>
 
@@ -28,6 +29,7 @@
 #include <QVBoxLayout>
 #include <ludus/content/scene_cook/scene_assets.h>
 #include <ludus/content/scene_format/limits.h>
+#include <ludus/content/scene_source/scene_source.h>
 #include <ludus/foundation/identity/uuid.hpp>
 #include <ludus/platform/entropy.h>
 
@@ -598,6 +600,8 @@ bool LevelWorkspace::Run(const SceneOperationRequest& request)
     QByteArray digest = expected.isString() ? expected.toString().toUtf8() : QByteArray();
     QByteArray catalog = kind == EditorSceneOperation::CommitImport ? CandidateCatalog_ : QByteArray();
     const bool hasExpected = expected.isString();
+    // A default World generates scene source apertures as editable entities, so the cook leaves them out.
+    const bool shouldDeferApertures = WorldSnapshot_.Loaded() == true && WorldSnapshot_.HasBuiltInAperture() == true;
     Response_.clear();
     SceneBytes_.clear();
     OperationError_.clear();
@@ -606,7 +610,18 @@ bool LevelWorkspace::Run(const SceneOperationRequest& request)
         CandidateCatalog_.clear();
     }
     CancelRequested_.store(false);
-    const auto work = [this, kind, hasExpected, level, root, relative, from, files, expectedSource, digest, catalog]() {
+    const auto work = [this,
+                       kind,
+                       hasExpected,
+                       shouldDeferApertures,
+                       level,
+                       root,
+                       relative,
+                       from,
+                       files,
+                       expectedSource,
+                       digest,
+                       catalog]() {
         EditorSceneProgress progress;
         progress.ContextOrNull = this;
         progress.Report = [](void* context, std::string_view stage) noexcept {
@@ -635,6 +650,7 @@ bool LevelWorkspace::Run(const SceneOperationRequest& request)
         options.EntropyOrNull = &entropy;
         options.SourceEntry = ToView(files.Entry);
         options.EnvironmentFile = ToView(files.Environment);
+        options.ShouldDeferApertures = shouldDeferApertures;
         options.ExpectedSourceDigest = ToView(expectedSource);
         options.JobsOrNull = mHasImportJobs == true ? &mImportJobs : nullptr;
         EditorSceneRequest request;
@@ -798,12 +814,18 @@ void LevelWorkspace::decodeCandidate()
             Success_ = RenderScene::LoadCooked(bytes, Candidate_, Scene_, Error_, CandidateRevisions_);
         }
         WorldDocument authoredWorld = WorldSnapshot_;
+        mImportedEntities = {};
+        if (Success_ == true && VerificationOnly_ == false && authoredWorld.Loaded() == true &&
+            Operation_ == QStringLiteral("import") && authoredWorld.HasBuiltInAperture() == true)
+        {
+            Success_ = makeImportedEntities(authoredWorld);
+        }
         if (Success_ == true && VerificationOnly_ == false && authoredWorld.Loaded() == true &&
             (Operation_ == QStringLiteral("import") || Operation_ == QStringLiteral("open")))
         {
             // Validate the complete entity/component transaction before any
             // candidate viewport or catalog can be published.
-            Success_ = authoredWorld.ImportScene(Candidate_, Error_);
+            Success_ = authoredWorld.ImportScene(Candidate_, Error_, mImportedEntities);
         }
         if (Success_ == true && VerificationOnly_ == false && authoredWorld.Loaded() == true &&
             RenderScene::GetSource(Root_, authoredWorld) == RenderSceneSource::ProjectBindings)
@@ -826,6 +848,48 @@ void LevelWorkspace::decodeCandidate()
                 TryParseStartView(Candidate_.value(QStringLiteral("camera")).toObject(), Scene_.StartView);
         }
     }
+}
+bool LevelWorkspace::makeImportedEntities(const WorldDocument& world)
+{
+    // The cook detected the format from the file's content; read the same prefix it read.
+    constexpr foundation::int64 SCENE_SOURCE_PREFIX_BYTES = 256;
+    QFile file(QDir(Source_).filePath(SourceEntry_));
+    if (SourceEntry_.isEmpty() == true || file.open(QIODevice::ReadOnly) == false)
+    {
+        return true; // The reference profile reads a directory; it has no scene source apertures.
+    }
+    const QByteArray prefix = file.peek(SCENE_SOURCE_PREFIX_BYTES);
+    if (content::scene_source::IsSceneSourcePrefix(
+            std::string_view(prefix.constData(), static_cast<foundation::usize>(prefix.size()))) == false)
+    {
+        return true;
+    }
+    if (file.size() > static_cast<foundation::int64>(content::scene_source::MAX_SCENE_SOURCE_BYTES))
+    {
+        Error_ = QStringLiteral("%1 exceeds the scene source size limit.").arg(SourceEntry_);
+        return false;
+    }
+    const QByteArray bytes = file.readAll();
+    ImportedApertures apertures;
+    if (file.error() != QFileDevice::NoError || MakeImportedApertures(bytes,
+                                                                      world,
+                                                                      Candidate_.value(QStringLiteral("id")).toString(),
+                                                                      SourceEntry_,
+                                                                      apertures,
+                                                                      Error_) == false)
+    {
+        if (Error_.isEmpty() == true)
+        {
+            Error_ = QStringLiteral("Could not read %1 again to create its apertures.").arg(SourceEntry_);
+        }
+        return false;
+    }
+    mImportedEntities = apertures.Entities;
+    for (const QString& warning : apertures.Warnings)
+    {
+        PendingWarnings_ += (PendingWarnings_.isEmpty() == true ? QString() : QStringLiteral("\n")) + warning;
+    }
+    return true;
 }
 void LevelWorkspace::CommitImport()
 {

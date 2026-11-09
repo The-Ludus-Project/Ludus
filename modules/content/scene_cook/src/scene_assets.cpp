@@ -4309,6 +4309,7 @@ struct RoutedCook final
     importOptions.IsDryRun = isDryRun;
     importOptions.JobsOrNull = options.JobsOrNull;
     importOptions.EnvironmentFile = options.EnvironmentFile;
+    importOptions.ShouldDeferApertures = options.ShouldDeferApertures;
     BestEffortResult imported;
     CookError cookError;
     if (ImportSceneBestEffort(entryPath.GetView(), importOptions, imported, cookError, options.CancelOrNull) == false)

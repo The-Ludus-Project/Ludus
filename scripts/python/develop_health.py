@@ -141,10 +141,19 @@ def classify_batch(run: dict, jobs: list[dict]) -> Health | None:
     capture failed, proves nothing about the code. Promotion and publication are
     not code validation: a candidate whose suites all passed is healthy even
     when main moved before its promotion.
+
+    A batch that the coordinator's stop job cancelled after a suite failed is
+    red: its failed suites rejected the candidate, and the jobs cancelled to free
+    the queue are not failures.
     """
-    if run.get("conclusion") == "cancelled" or not isinstance(run.get("id"), int):
+    if not isinstance(run.get("id"), int):
         return None
     suites = [job for job in jobs if split_batch_job(job.get("name")) is not None]
+    if run.get("conclusion") == "cancelled":
+        stopped = any(job.get("name") == batch_ci.STOP_JOB and job.get("conclusion") not in {None, "skipped"}
+                      for job in jobs)
+        failed = sorted({job["name"] for job in batch_ci.failed_suite_jobs(suites)}) if stopped else []
+        return Health(run["id"], str(run.get("html_url", "")), tuple(failed)) if failed else None
     ran = [job for job in suites if job.get("conclusion") not in {None, "skipped"}]
     if not ran:
         return None
