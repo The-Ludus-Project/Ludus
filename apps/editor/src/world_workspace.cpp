@@ -61,6 +61,7 @@
 #include <QSet>
 #include <QSettings>
 #include <QShortcut>
+#include <QSizePolicy>
 #include <QSplitter>
 #include <QStringList>
 #include <QStringView>
@@ -485,6 +486,10 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         QStringLiteral("Hold the right mouse button to look, WASD to walk, Shift to run, and Space to jump. "
                        "Press Escape to return to the editor view."));
     mExploreFirstPersonButton->setMinimumHeight(mExploreFirstPersonButton->sizeHint().height());
+    // Reserve the button row so selecting a player cannot push the clicked entity out of view.
+    QSizePolicy exploreSizePolicy = mExploreFirstPersonButton->sizePolicy();
+    exploreSizePolicy.setRetainSizeWhenHidden(true);
+    mExploreFirstPersonButton->setSizePolicy(exploreSizePolicy);
     entityLayout->addWidget(mExploreFirstPersonButton);
     connect(mExploreFirstPersonButton, &QPushButton::clicked, this, &WorldWorkspace::exploreFirstPerson);
     for (const QString& preset : {QStringLiteral("Cube"),
