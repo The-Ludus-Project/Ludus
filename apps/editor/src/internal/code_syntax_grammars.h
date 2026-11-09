@@ -7,7 +7,9 @@
 
 #include <tree_sitter/api.h>
 
+#ifdef __cplusplus
 extern "C" {
+#endif
 /// The C grammar (tree-sitter/tree-sitter-c); a static table that lives for the whole process.
 const TSLanguage* tree_sitter_c(void);
 /// The C++ grammar (tree-sitter/tree-sitter-cpp); a static table that lives for the whole process.
@@ -28,4 +30,6 @@ const TSLanguage* tree_sitter_markdown(void);
 /// The Markdown inline grammar (tree-sitter-grammars/tree-sitter-markdown) for the inline ranges of
 /// a tree_sitter_markdown() tree; a static table that lives for the whole process.
 const TSLanguage* tree_sitter_markdown_inline(void);
+#ifdef __cplusplus
 }
+#endif

@@ -27,9 +27,10 @@ void RequireParsesWithoutErrors(const TSLanguage* language, const char (&source)
     TSTree* treeOrNull = ts_parser_parse_string(parserOrNull, nullptr, source, static_cast<uint32>(N - 1));
     REQUIRE(treeOrNull != nullptr);
     const TSNode root = ts_tree_root_node(treeOrNull);
-    char* tree = ts_node_string(root);
-    INFO(tree);
-    std::free(tree);
+    char* treeTextOrNull = ts_node_string(root);
+    REQUIRE(treeTextOrNull != nullptr);
+    INFO(treeTextOrNull);
+    std::free(treeTextOrNull);
     CHECK(ts_node_has_error(root) == false);
     CHECK(ts_node_end_byte(root) > 0);
     ts_tree_delete(treeOrNull);
