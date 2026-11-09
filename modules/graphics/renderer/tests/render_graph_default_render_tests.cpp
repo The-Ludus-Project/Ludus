@@ -171,6 +171,8 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
                     ? BorrowedView<const math::Vector3>{environmentPixels.GetData(), environmentPixels.GetSize()}
                     : BorrowedView<const math::Vector3>{};
             const bool areDirectional = lightingCase % 2 == 0;
+            // Compare the material paths with no inter-object occlusion in the directional cases.
+            items[1].MeshToWorld.Translation.Z = areDirectional == true ? 0.0F : -0.1F;
             fixture.Cameras[0].OrthographicCamera = lightingCase >= 2;
             fixture.Cameras[0].WorldToClip.Columns[2].W = lightingCase >= 2 ? 0 : .2F;
             fixture.Cameras[0].WorldToClip.Columns[3].X = .1F;
@@ -971,8 +973,8 @@ TEST_CASE("default deferred mesh area lights illuminate a receiver with CPU chec
     }
 }
 
-TEST_CASE("default deferred mesh area lights cast shadows from cached cube faces",
-          "[mesh-area][mesh-light-shadows][gpu]")
+TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
+          "[mesh-area][mesh-light-shadows][directional-shadows][gpu]")
 {
     constexpr usize SCENE_COUNT = 3;
     constexpr usize POLL_ATTEMPTS = 10000;
@@ -1070,29 +1072,98 @@ TEST_CASE("default deferred mesh area lights cast shadows from cached cube faces
                                          revision));
     };
     const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
-    // Without the wall the receiver is lit; the shadow lookup must not darken it.
-    REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
-    // Published faces wait for the first frame, which draws all five within its budgets.
-    CHECK(fixture.Graph.GetReport().PendingMeshLightShadowFaces == 5);
-    render();
-    CHECK(fixture.Graph.GetReport().PendingMeshLightShadowFaces == 0);
-    const uint8 litRed = fixture.Pixels[center];
-    const uint8 litGreen = fixture.Pixels[center + 1];
-    CHECK(litRed > 16);
-    CHECK(fixture.Graph.GetReport().Resources.MeshLightShadowCasters == 1);
-    CHECK(fixture.Graph.GetReport().Resources.UnshadowedMeshLights == 0);
-    CHECK(fixture.Graph.GetReport().Resources.MeshLightShadowFaces == 5);
-    // A second frame changes nothing: every face was drawn in the first.
-    render();
-    CHECK(fixture.Pixels[center] == litRed);
-    // The wall hides the whole emitter from the centre.
-    REQUIRE(update(SCENE_COUNT) == rhi::RasterStatus::Ready);
-    render();
-    CHECK(fixture.Pixels[center] <= 1);
-    CHECK(fixture.Pixels[center + 1] <= 1);
-    // Removing it restores the lit value.
-    REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
-    render();
-    CHECK(fixture.Pixels[center] == litRed);
-    CHECK(fixture.Pixels[center + 1] == litGreen);
+    SECTION("mesh lights cast shadows from cached cube faces")
+    {
+        // Without the wall the receiver is lit; the shadow lookup must not darken it.
+        REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+        // Published faces wait for the first frame, which draws all five within its budgets.
+        CHECK(fixture.Graph.GetReport().PendingMeshLightShadowFaces == 5);
+        render();
+        CHECK(fixture.Graph.GetReport().PendingMeshLightShadowFaces == 0);
+        const uint8 litRed = fixture.Pixels[center];
+        const uint8 litGreen = fixture.Pixels[center + 1];
+        CHECK(litRed > 16);
+        CHECK(fixture.Graph.GetReport().Resources.MeshLightShadowCasters == 1);
+        CHECK(fixture.Graph.GetReport().Resources.UnshadowedMeshLights == 0);
+        CHECK(fixture.Graph.GetReport().Resources.MeshLightShadowFaces == 5);
+        // A second frame changes nothing: every face was drawn in the first.
+        render();
+        CHECK(fixture.Pixels[center] == litRed);
+        // The wall hides the whole emitter from the centre.
+        REQUIRE(update(SCENE_COUNT) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[center] <= 1);
+        CHECK(fixture.Pixels[center + 1] <= 1);
+        // Removing it restores the lit value.
+        REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[center] == litRed);
+        CHECK(fixture.Pixels[center + 1] == litGreen);
+    }
+    SECTION("directional visibility stays separate from other lights")
+    {
+        const bool hasMeshLight = GENERATE(false, true);
+        if (hasMeshLight == false)
+        {
+            materials[1].Emission = {};
+        }
+        StaticArray<renderer::DirectLight, 2> lights;
+        // The later source has the same incoming direction. It remains visible even where the selected Sun is blocked.
+        lights[0].SourceId = 2;
+        lights[0].Kind = renderer::LightKind::Directional;
+        lights[0].Color = {0, 1, 0};
+        lights[0].Intensity = 0.25F;
+        lights[0].Direction = {-1, 0, -1};
+        lights[1] = lights[0];
+        lights[1].SourceId = 1;
+        lights[1].Color = {0, 0, 1};
+        lights[1].Intensity = 2;
+        inputs.Lights = {lights.GetData(), lights.GetSize()};
+
+        REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+        render();
+        const uint8 litBlue = fixture.Pixels[center + 2];
+        REQUIRE(litBlue > 32);
+
+        // Join the wall and receiver as one draw, like a terrain ridge casting onto its own heightfield.
+        Array<math::Vector3> combinedPositions;
+        REQUIRE(combinedPositions.TryAddRange({fixture.Positions.GetData(), fixture.Positions.GetSize()}) == true);
+        REQUIRE(combinedPositions.TryAddRange({wallPositions.GetData(), wallPositions.GetSize()}) == true);
+        Array<math::Vector3> combinedNormals;
+        REQUIRE(combinedNormals.TryAddRange({normals.GetData(), normals.GetSize()}) == true);
+        REQUIRE(combinedNormals.TryAddRange({wallNormals.GetData(), wallNormals.GetSize()}) == true);
+        Array<uint32> combinedIndices;
+        REQUIRE(combinedIndices.TryAddRange({fixture.Indices.GetData(), fixture.Indices.GetSize()}) == true);
+        for (const uint32 index : wallIndices)
+        {
+            REQUIRE(combinedIndices.TryAdd(index + static_cast<uint32>(VERTEX_COUNT)) == true);
+        }
+        meshes[0].Geometry = {combinedPositions.GetData(),
+                              combinedPositions.GetSize(),
+                              combinedIndices.GetData(),
+                              combinedIndices.GetSize()};
+        meshes[0].Geometry.Normals = combinedNormals.GetData();
+
+        REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[center + 2] <= 1);
+        const uint8 remainingGreen = fixture.Pixels[center + 1];
+        CHECK(remainingGreen > 4);
+        CHECK(fixture.Pixels[center] <= 1);
+        const StaticArray<uint8, PIXEL_BYTES> shadowed = fixture.Pixels;
+        render();
+        CHECK(fixture.Pixels == shadowed);
+
+        lights[1].Direction = {};
+        CHECK(update(SCENE_COUNT - 1) == rhi::RasterStatus::InvalidDescription);
+        render();
+        CHECK(fixture.Pixels == shadowed);
+
+        lights[1].Direction = {1, 0, -1};
+        REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[center + 2] == litBlue);
+        CHECK(fixture.Pixels[center + 1] == remainingGreen);
+        CHECK(fixture.Pixels[center] <= 1);
+    }
 }

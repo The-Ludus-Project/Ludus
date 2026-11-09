@@ -216,9 +216,6 @@ int GetEyeFlags(Varying input)
 }
 float ComputeShadowVisibility(int light, Varying input)
 {
-#ifdef LUDUS_DEFERRED_MESH_LIGHTS
-    return 1;
-#else
     if ((GetEyeFlags(input) & 1) == 0)
         return 1;
     bool hasLocalShadowCoverage = false;
@@ -247,7 +244,11 @@ float ComputeShadowVisibility(int light, Varying input)
         {
             float2 delta = float2((tap & 1) != 0 ? 0.5 : -0.5, (tap & 2) != 0 ? 0.5 : -0.5) * settings.zw;
             float2 sampleUv = clamp(uv + delta, rect.xy, rect.zw);
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+            float2 depth = meshLightShadowAtlas.SampleLevel(shadowSampler, sampleUv, 0).rg;
+#else
             float2 depth = shadowTexture.SampleLevel(shadowSampler, sampleUv, 0).rg;
+#endif
             float stored = dot(depth, float2(65280, 255)) / 65535;
             visible += ndc.z - settings.x <= stored ? 0.25 : 0;
         }
@@ -256,7 +257,6 @@ float ComputeShadowVisibility(int light, Varying input)
     return hasLocalShadowCoverage
                ? 0
                : 1; // Local coverage gaps conservatively occlude; directional cascade contract stays explicit.
-#endif
 }
 #ifndef LUDUS_DEFERRED_MESH_LIGHTS
 float4 SampleBaseTexel(Varying input)
