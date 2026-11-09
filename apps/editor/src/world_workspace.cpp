@@ -122,6 +122,19 @@ QString FieldKey(const QString& component, const QString& property)
     return component + QLatin1Char('/') + property;
 }
 constexpr foundation::int32 WORLD_PROPERTY_LAYOUT_WIDTH = 360;
+/// The widget that holds field's row in rows: field itself, or the row a slider wraps it in.
+QWidget* GetFormRowWidget(const QFormLayout& rows, QWidget* field)
+{
+    LUDUS_ASSERT(field != nullptr);
+    for (QWidget* widgetOrNull = field; widgetOrNull != nullptr; widgetOrNull = widgetOrNull->parentWidget())
+    {
+        if (rows.indexOf(widgetOrNull) >= 0)
+        {
+            return widgetOrNull;
+        }
+    }
+    return field;
+}
 void ConfigureCelestialLightFields(QGroupBox& inoutGroup, QFormLayout& inoutRows, const QMap<QString, QWidget*>& fields)
 {
     const QString component = QStringLiteral("light");
@@ -182,7 +195,7 @@ void ConfigureCelestialLightFields(QGroupBox& inoutGroup, QFormLayout& inoutRows
                                    (row.Group == WorldCelestialFieldGroup::Observer && hasObserver == true) ||
                                    (row.Group == WorldCelestialFieldGroup::Earth && hasEarth == true) ||
                                    (row.Group == WorldCelestialFieldGroup::Orbit && hasOrbit == true);
-            inoutRows.setRowVisible(row.Field, isVisible);
+            inoutRows.setRowVisible(GetFormRowWidget(inoutRows, row.Field), isVisible);
         }
         inoutGroup.setMinimumHeight(inoutRows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
     };
@@ -195,7 +208,7 @@ QString Display(const QJsonValue& value)
 {
     if (value.isDouble())
     {
-        return QString::number(value.toDouble(), 'g', 17);
+        return FormatInspectorNumber(value.toDouble());
     }
     return value.toString();
 }
@@ -2373,7 +2386,20 @@ void WorldWorkspace::RenderInspector()
             }
             if (groupOrNull == nullptr)
             {
-                rows->addRow(title, field);
+                QWidget* rowField = field;
+                const bool isNumber = type == QStringLiteral("number") || type == QStringLiteral("integer");
+                const QJsonValue low = p.value(QStringLiteral("min"));
+                const QJsonValue high = p.value(QStringLiteral("max"));
+                if (textFieldOrNull != nullptr && isNumber == true && low.isDouble() == true &&
+                    high.isDouble() == true && HasSliderRange(low.toDouble(), high.toDouble()) == true)
+                {
+                    const SliderMapping mapping = MakeSliderMapping(low.toDouble(),
+                                                                    high.toDouble(),
+                                                                    GetScrubStep(unit, low.toDouble(), high.toDouble()),
+                                                                    type == QStringLiteral("integer"));
+                    rowField = MakeSliderRow(*textFieldOrNull, mapping, group);
+                }
+                rows->addRow(title, rowField);
                 continue;
             }
             const foundation::float64 minimum = p.value(QStringLiteral("min")).toDouble();

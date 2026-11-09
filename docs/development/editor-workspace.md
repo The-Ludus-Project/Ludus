@@ -1027,6 +1027,13 @@ There are no separate Scene or 3D Levels authoring tabs.
 2. Select **World → Open World…**, then `authoring/starter.world.json`.
 3. Select **Starter Cube**. Edit its position or presentation fields. Units,
    project help, enum choices and logical asset names appear in the inspector.
+   A number with a minimum and maximum has a slider beside its field. Narrow
+   ranges (colour channels, angles) move evenly; wide ranges such as 0 to
+   10000 m use a logarithmic scale, so small values stay reachable. Type in the
+   field for an exact value. The slider edits the same draft as typing, so
+   **Apply Changes** and **Reset Fields** treat both alike. Position, rotation,
+   scale and colour channels keep their compact rows: drag an axis letter to
+   change one of those.
 4. Use **Apply Changes** to validate all fields as one edit. Invalid text stays
    visible and the applied document stays intact. **Reset Fields** restores the
    last applied values. Selection and structural commands wait for Apply/Reset.
