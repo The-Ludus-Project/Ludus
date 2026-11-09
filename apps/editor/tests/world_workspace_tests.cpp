@@ -50,6 +50,7 @@
 #include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
+#include <QLineF>
 #include <QLockFile>
 #include <QMessageBox>
 #include <QProcess>
@@ -3609,6 +3610,181 @@ TEST_CASE("The World inspector bakes one authored GI volume for marked receivers
     RenderScene undone;
     REQUIRE(RenderScene::Load(root, workspace.Document(), undone, error) == true);
     CHECK(undone.ProbeGrid.Counts[0] == 0);
+    workspace.StopPreview();
+}
+
+TEST_CASE("World viewport moves, resizes and scales an unbaked GI probe volume with the inspector hidden",
+          "[editor][world][object-interaction][probe-gi]")
+{
+    namespace math = ludus::foundation::math;
+    namespace renderer = ludus::graphics::renderer;
+    using ludus::foundation::float32;
+    using ludus::foundation::float64;
+    using ludus::foundation::uint32;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString mesh;
+    QString volume;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), mesh, error) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("GI Probe Volume"), volume, error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("probe-gizmo.world.json"));
+    Write(path, document.Encode());
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    REQUIRE(workspace.SelectEntity(volume) == true);
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    propertiesOrNull->hide();
+    RenderPanel* panelOrNull = workspace.findChild<RenderPanel*>();
+    REQUIRE(panelOrNull != nullptr);
+
+    const auto readGrid = [&workspace, &volume, &error]() {
+        const QJsonObject components =
+            workspace.Document().Entity(volume).value(QStringLiteral("components")).toObject();
+        renderer::GiProbeGrid grid;
+        REQUIRE(ReadWorldGiProbeGrid(components, grid, error, true) == true);
+        return grid;
+    };
+    const renderer::GiProbeGrid original = readGrid();
+    const math::Aabb3 boundsWorld = ComputeWorldGiProbeBounds(original);
+    const math::Vector3 centerWorld = (boundsWorld.Min + boundsWorld.Max) * 0.5F;
+    RenderScene scene = MakeInteractionScene();
+    scene.Cameras[0].Sample.Pose.Position = {static_cast<float64>(centerWorld.X),
+                                             static_cast<float64>(centerWorld.Y),
+                                             10};
+    RenderPreview& preview = workspace.GetRenderPreview();
+    ConfigureInteractionPreview(preview, scene);
+
+    ViewportObjectInteraction& interaction = panelOrNull->GetViewport().GetObjectInteraction();
+    interaction.SetActive(true);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Move);
+    const QRectF framePixel{0, 0, 800, 600};
+    renderer::ViewDescription view;
+    REQUIRE(preview.DescribeView(static_cast<uint32>(framePixel.width()),
+                                 static_cast<uint32>(framePixel.height()),
+                                 view,
+                                 error) == true);
+    const auto project = [&view, &framePixel](math::Vector3 positionWorld) {
+        const math::Vector4 clip =
+            view.WorldToClip * math::Vector4{positionWorld.X, positionWorld.Y, positionWorld.Z, 1};
+        return QPointF((static_cast<float64>(clip.X / clip.W) + 1) * framePixel.width() * 0.5,
+                       (1 - static_cast<float64>(clip.Y / clip.W)) * framePixel.height() * 0.5);
+    };
+    ViewportObjectOverlay overlay;
+    interaction.BuildOverlay(framePixel, overlay);
+    CHECK(overlay.OutlineLinesPixel.GetSize() == 12);
+    REQUIRE(overlay.HandleStrokes.IsEmpty() == false);
+    const QJsonObject before = workspace.Document().Draft();
+
+    SECTION("In Scale mode the maximum face still grows the count without moving the origin")
+    {
+        interaction.SetTool(ViewportObjectInteraction::Tool::Scale);
+        const math::Vector3 faceWorld{boundsWorld.Max.X, centerWorld.Y, centerWorld.Z};
+        const QPointF handlePixel = project(faceWorld);
+        REQUIRE(interaction.Hover(handlePixel, framePixel) == true);
+        CHECK(interaction.GetHoveredHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeFace);
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        REQUIRE(interaction.Move(project(faceWorld + math::Vector3{2 * original.Spacing, 0, 0}), false) == true);
+        interaction.BuildOverlay(framePixel, overlay);
+        CHECK(overlay.ReadoutText.contains(QStringLiteral("6 probes")) == true);
+        CHECK(workspace.Document().Draft() == before);
+        REQUIRE(interaction.Release() == true);
+        const renderer::GiProbeGrid resized = readGrid();
+        CHECK(resized.OriginWorld == original.OriginWorld);
+        CHECK(resized.Counts[0] == original.Counts[0] + 2);
+        CHECK(resized.Counts[1] == original.Counts[1]);
+        CHECK(resized.Counts[2] == original.Counts[2]);
+        CHECK(resized.Spacing == original.Spacing);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+        workspace.Redo();
+        CHECK(readGrid().Counts[0] == resized.Counts[0]);
+    }
+
+    SECTION("The minimum face keeps the far corner fixed and clamps to the probe limit")
+    {
+        const math::Vector3 faceWorld{boundsWorld.Min.X, centerWorld.Y, centerWorld.Z};
+        REQUIRE(interaction.Press(project(faceWorld), framePixel) == true);
+        CHECK(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeFace);
+        const float32 dragMetres = 2 * static_cast<float32>(renderer::MAX_GI_PROBE_AXIS_COUNT) * original.Spacing;
+        REQUIRE(interaction.Move(project(faceWorld - math::Vector3{dragMetres, 0, 0}), false) == true);
+        REQUIRE(interaction.Release() == true);
+        const renderer::GiProbeGrid resized = readGrid();
+        CHECK(resized.Counts[0] == renderer::MAX_GI_PROBE_AXIS_COUNT);
+        CHECK(resized.OriginWorld.X < original.OriginWorld.X);
+        CHECK(ComputeWorldGiProbeBounds(resized).Max == boundsWorld.Max);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+    }
+
+    SECTION("Cancelling a face drag leaves the World and bake unchanged")
+    {
+        const math::Vector3 faceWorld{boundsWorld.Max.X, centerWorld.Y, centerWorld.Z};
+        REQUIRE(interaction.Press(project(faceWorld), framePixel) == true);
+        REQUIRE(interaction.Move(project(faceWorld + math::Vector3{original.Spacing, 0, 0}), false) == true);
+        interaction.Cancel();
+        CHECK(interaction.Release() == false);
+        CHECK(workspace.Document().Draft() == before);
+        CHECK(interaction.FrameProbeVolume() == true);
+    }
+
+    SECTION("The Scale handle previews uniform spacing and commits one undoable edit")
+    {
+        interaction.SetTool(ViewportObjectInteraction::Tool::Scale);
+        interaction.BuildOverlay(framePixel, overlay);
+        REQUIRE(overlay.HandleFills.GetSize() >= 2);
+        const QPointF handlePixel = project(centerWorld);
+        const ViewportHandleFill& scaleFill = overlay.HandleFills[overlay.HandleFills.GetSize() - 1];
+        CHECK(QLineF((scaleFill.CornersPixel[0] + scaleFill.CornersPixel[2]) * 0.5, handlePixel).length() < 0.01);
+        REQUIRE(interaction.Hover(handlePixel, framePixel) == true);
+        CHECK(interaction.GetHoveredHandle().Kind == ViewportObjectInteraction::HandleKind::ProbeSpacing);
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        const QPointF enlargedPixel = handlePixel + QPointF(56, -56);
+        REQUIRE(interaction.Move(enlargedPixel, true) == true);
+        interaction.BuildOverlay(framePixel, overlay);
+        CHECK(overlay.ReadoutText.contains(QStringLiteral("2.00 m spacing")) == true);
+        CHECK(workspace.Document().Draft() == before);
+        interaction.Cancel();
+        CHECK(interaction.Release() == false);
+        CHECK(workspace.Document().Draft() == before);
+
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        REQUIRE(interaction.Move(enlargedPixel, true) == true);
+        REQUIRE(interaction.Release() == true);
+        const renderer::GiProbeGrid scaled = readGrid();
+        CHECK(scaled.Spacing == 2 * original.Spacing);
+        CHECK(scaled.OriginWorld == original.OriginWorld);
+        CHECK(scaled.Counts == original.Counts);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+        workspace.Redo();
+        CHECK(readGrid().Spacing == scaled.Spacing);
+    }
+
+    SECTION("Move handles translate the volume without resizing it")
+    {
+        const QPointF handlePixel = overlay.HandleStrokes[0].LinePixel.pointAt(0.5);
+        REQUIRE(interaction.Press(handlePixel, framePixel) == true);
+        CHECK(interaction.GetDraggedHandle().Kind == ViewportObjectInteraction::HandleKind::Axis);
+        REQUIRE(interaction.Move(handlePixel + QPointF(40, 0), true) == true);
+        CHECK(workspace.Document().Draft() == before);
+        REQUIRE(interaction.Release() == true);
+        const renderer::GiProbeGrid moved = readGrid();
+        CHECK(moved.OriginWorld.X > original.OriginWorld.X);
+        CHECK(moved.Counts == original.Counts);
+        CHECK(moved.Spacing == original.Spacing);
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == before);
+    }
     workspace.StopPreview();
 }
 

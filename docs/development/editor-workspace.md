@@ -1946,10 +1946,25 @@ Browser and packaged game hosts continue to use their existing inputs.
 ### Baking probe GI for moving objects
 
 Create a **GI Probe Volume** from **Add World Preset** in a default World.
-Set its Transform position to the volume's minimum corner. Set **Probe spacing**
-in metres and the number of points along each axis, including the endpoints.
-The volume follows the World axes. The native Lit viewport supports one volume,
-with 2 to 12 points on each axis and spacing from 0.1 to 100 metres.
+Select it to see the grid's wire box before baking. Double-click its name in
+the entity list or press **F** in the viewport to frame the box. With **Move**
+selected, drag the arrows or plane handles to position it, or drag a coloured
+square on a face to resize along that axis. Resizing keeps the opposite face
+fixed and adds or removes whole probe intervals at the current spacing. The
+drag readout shows the new count and length.
+
+Switch to **Scale (R)** and drag the white center square to scale the entire
+volume. Drag up and right to enlarge it or down and left to shrink it. This
+changes spacing on all three axes while keeping the minimum corner and probe
+counts fixed. Hold **Shift** to snap the scale factor. The colored face handles
+still resize one axis at the current spacing. Releasing the pointer applies one
+undoable edit. Press **Escape** during a drag to discard it.
+
+For precise values, set the Transform position to the volume's minimum corner
+and set **Probe spacing** in metres and the number of points along each axis,
+including both endpoints. The box follows the World axes. The native Lit
+viewport supports one volume, with 2 to 12 points on each axis and spacing from
+0.1 to 100 metres.
 
 Opt one or more static lights into [always-on baking](#baking-always-on-lights),
 then select the volume and click **Bake GI**. Attach **GI Probe Receiver** to
