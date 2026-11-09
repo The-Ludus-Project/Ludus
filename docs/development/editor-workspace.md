@@ -686,7 +686,11 @@ half of the radius and fades to zero at the edge.
   the stroke. **Strength** controls how much to blend on each pass. The
   smoothing distance depends on how far apart the terrain samples are.
 
-Choose **Off** to return to ordinary viewport editing. Press Escape or move
+While a brush is chosen, clicks in the viewport belong to the brush: they do not
+select entities or show transform handles. Clicks made while the previous
+stroke is still applying, or while unapplied source changes or **Compare with
+committed** pause sculpting, start no stroke; the Terrain panel says what to
+finish first. Choose **Off** to return to ordinary viewport editing. Press Escape or move
 focus away during a drag to cancel it. Turn on **Show slope at cursor** while
 using a brush to measure the surface angle in degrees from World horizontal.
 A terrain can keep up to 16 strokes.
