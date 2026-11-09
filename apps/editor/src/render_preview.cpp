@@ -357,15 +357,15 @@ QSize RenderPreview::GetDrawableSize() const noexcept
 }
 bool RenderPreview::SetScene(const RenderScene& scene)
 {
-    bool isValid =
-        scene.Identity.isEmpty()
-            ? (scene.Meshes.isEmpty() && scene.Textures.isEmpty() && scene.Surfaces.isEmpty() &&
-               scene.Objects.isEmpty() && scene.Cameras.isEmpty())
-            : (scene.Meshes.isEmpty() == false && static_cast<usize>(scene.Meshes.size()) <= MAX_PREVIEW_MESHES &&
-               static_cast<usize>(scene.Textures.size()) <= MAX_PREVIEW_TEXTURES &&
-               static_cast<usize>(scene.Surfaces.size()) <= MAX_PREVIEW_SURFACES &&
-               static_cast<usize>(scene.Objects.size()) <= MAX_PREVIEW_OBJECTS &&
-               static_cast<usize>(scene.Cameras.size()) <= MAX_PREVIEW_CAMERAS);
+    bool isValid = scene.Identity.isEmpty()
+                       ? (scene.Meshes.isEmpty() && scene.Textures.isEmpty() && scene.Surfaces.isEmpty() &&
+                          scene.Objects.isEmpty() && scene.Cameras.isEmpty())
+                       : ((scene.Meshes.isEmpty() == false || scene.Objects.isEmpty() == true) &&
+                          static_cast<usize>(scene.Meshes.size()) <= MAX_PREVIEW_MESHES &&
+                          static_cast<usize>(scene.Textures.size()) <= MAX_PREVIEW_TEXTURES &&
+                          static_cast<usize>(scene.Surfaces.size()) <= MAX_PREVIEW_SURFACES &&
+                          static_cast<usize>(scene.Objects.size()) <= MAX_PREVIEW_OBJECTS &&
+                          static_cast<usize>(scene.Cameras.size()) <= MAX_PREVIEW_CAMERAS);
     for (const auto& surface : scene.Surfaces)
     {
         isValid = isValid && surface.Texture >= (scene.Lit ? -1 : 0) && surface.Texture < scene.Textures.size();
@@ -1650,6 +1650,11 @@ bool RenderPreview::DescribeConventionalView(uint32 width,
         return false;
     }
     view.WorldGrid = { .IsVisible = true, .FocusDistance = GetFocusDistance(), .Width = width, .Height = height };
+    view.Atmosphere = Scene_.Atmosphere;
+    if (Scene_.IsAtmosphereSunSwitchedOff == true)
+    {
+        view.Atmosphere.SolarIlluminance = {};
+    }
     outView = view;
     return true;
 }

@@ -2926,6 +2926,10 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         {
             return Status::InvalidDescription;
         }
+        if (camera.Atmosphere.IsEnabled == true && state.Programs.HasClusteredDeferred == false)
+        {
+            return Status::Unsupported;
+        }
         if (camera.Depth != DepthConvention::Conventional)
         {
             return Status::Unsupported;

@@ -2040,13 +2040,13 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     mState->ProjectGraph = inoutWorkspace.GetPreviewOrNull();
     mState->ProjectWorkspace = &inoutWorkspace;
     mState->GraphViewOrNull = new WorldGraphView(inoutWorkspace, this);
+    mState->GraphViewOrNull->installEventFilter(this);
     mState->GraphViewOrNull->SetObjectInteraction(*mObjectInteraction);
     mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
     mState->FrameLayoutOrNull->addWidget(mState->GraphViewOrNull);
     connect(mState->GraphViewOrNull, &WorldGraphView::DebugViewChanged, this, &PreviewViewport::updateGraphDebugView);
-    // A new World has no objects for the graph to extract; draw it with the built-in view instead of
-    // leaving the previous World's graph image on screen.
+    // Use the built-in view for a new World with no geometry or Atmosphere to draw.
     connect(Preview_, &RenderPreview::Changed, this, &PreviewViewport::updateEmptyWorldView);
     updateEmptyWorldView();
     // The project graph keeps its device and last image; return to it rather than an empty viewport.
@@ -2201,7 +2201,7 @@ void PreviewViewport::updateEmptyWorldView()
     {
         return;
     }
-    const bool isEmptyWorld = Preview_->Scene().IsLoadedWithoutObjects();
+    const bool isEmptyWorld = Preview_->Scene().ShouldUseEmptyWorldView();
     if (isEmptyWorld == mIsShowingEmptyWorld)
     {
         return;
@@ -2774,6 +2774,10 @@ void PreviewViewport::updateStatistics()
 bool PreviewViewport::eventFilter(QObject* watched, QEvent* event)
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (watched == mState->GraphViewOrNull && event->type() == QEvent::Resize)
+    {
+        resizeSurface();
+    }
     if (watched == mState->MessageOrNull && (event->type() == QEvent::Show || event->type() == QEvent::Hide))
     {
         mState->applyOrientation();
@@ -2895,6 +2899,13 @@ void PreviewViewport::resizeSurface()
         }
         mState->Item->update();
         mState->applyShaderStatus();
+    }
+    else if (mState->GraphViewOrNull != nullptr)
+    {
+        const QSize drawable = ComputeViewportDrawableSize(size,
+                                                           mState->GraphViewOrNull->size(),
+                                                           mState->GraphViewOrNull->devicePixelRatioF());
+        Preview_->Resize(drawable.width(), drawable.height());
     }
 #endif
 }

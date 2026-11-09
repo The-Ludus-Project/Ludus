@@ -208,6 +208,36 @@ bool CreateWorldSun(WorldDocument& inoutWorld,
         outId,
         QJsonObject{{QStringLiteral("transform"), transform}, {QStringLiteral("light"), light}});
 }
+QString GetWorldAtmosphereComponentId()
+{
+    return QStringLiteral("atmosphere");
+}
+bool IsWorldAtmosphereSunField(const QString& component, const QString& field)
+{
+    return component == GetWorldAtmosphereComponentId() && field == QStringLiteral("sun");
+}
+QJsonArray FindWorldAtmosphereEntities(const QJsonObject& document)
+{
+    const QString component = GetWorldAtmosphereComponentId();
+    QJsonArray atmospheres;
+    for (const QJsonValue value : document.value(QStringLiteral("entities")).toArray())
+    {
+        if (value.toObject().value(QStringLiteral("components")).toObject().contains(component) == true)
+        {
+            atmospheres.append(value);
+        }
+    }
+    return atmospheres;
+}
+bool IsWorldAtmosphereSun(const QJsonObject& entity)
+{
+    return entity.value(QStringLiteral("components"))
+               .toObject()
+               .value(QStringLiteral("light"))
+               .toObject()
+               .value(QStringLiteral("kind"))
+               .toString() == QStringLiteral("directional");
+}
 bool CreateWorldObject(WorldDocument& inoutWorld,
                        const foundation::identity::EntropySource& entropy,
                        const QString& preset,
@@ -246,6 +276,17 @@ bool CreateWorldObject(WorldDocument& inoutWorld,
     {
         outError = QStringLiteral("World object presets require the default World schema.");
         return false;
+    }
+    if (preset == QStringLiteral("Atmosphere"))
+    {
+        const QString component = GetWorldAtmosphereComponentId();
+        const QString transform = QStringLiteral("transform");
+        return inoutWorld.CreateEntity(entropy,
+                                       outError,
+                                       preset,
+                                       outId,
+                                       QJsonObject{{transform, MakeDefaultValues(inoutWorld, transform)},
+                                                   {component, MakeDefaultValues(inoutWorld, component)}});
     }
     if (preset == QStringLiteral("GI Probe Volume"))
     {

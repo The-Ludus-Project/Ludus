@@ -57,7 +57,7 @@ float32 TransformPointComponent(float32 rowX,
 // centimetre near plane makes WorldToClip itself ill-conditioned (Bistro's reciprocal condition is about 6e-8), so
 // the checked inverse rejects it, although the eye-relative projection WorldToClip * T(eye) is well-conditioned
 // (about 2e-3 there). Translating its inverse back gives the same clip-to-world matrix the resolve reads.
-[[nodiscard]] bool TryMakeCameraClipToWorld(const ViewDescription& camera, math::Matrix4& outClipToWorld) noexcept
+[[nodiscard]] bool TryMakeCameraClipToEye(const ViewDescription& camera, math::Matrix4& outClipToEye) noexcept
 {
     const math::Vector3 eyeWorld = camera.CameraPosition;
     if (math::IsFinite(eyeWorld) == false)
@@ -89,12 +89,16 @@ float32 TransformPointComponent(float32 rowX,
                                 worldToClip.Columns[TRANSLATION_COLUMN].W,
                                 eyeWorld),
     };
+    return math::TryInverse(eyeRelativeToClip, outClipToEye) == math::MathStatus::Success;
+}
+bool TryMakeCameraClipToWorld(const ViewDescription& camera, math::Matrix4& outClipToWorld) noexcept
+{
     math::Matrix4 clipToEyeRelative;
-    if (math::TryInverse(eyeRelativeToClip, clipToEyeRelative) != math::MathStatus::Success)
+    if (TryMakeCameraClipToEye(camera, clipToEyeRelative) == false)
     {
         return false;
     }
-    const math::Matrix4 clipToWorld = MakeTranslation(eyeWorld) * clipToEyeRelative;
+    const math::Matrix4 clipToWorld = MakeTranslation(camera.CameraPosition) * clipToEyeRelative;
     if (math::IsFinite(clipToWorld) == false)
     {
         return false;
@@ -422,14 +426,18 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                   static_cast<float32>(inoutTargets.mHeight),
                                   static_cast<float32>(meshLightCount),
                                   static_cast<float32>(meshLightGridWord)};
+    mCamera = camera;
+    mExposure = operation.ToneMappingExposure *
+                static_cast<float32>(math::Pow(2, static_cast<float64>(camera.RasterExposureStops)));
+    mToneCurve = static_cast<uint32>(
+        operation.ToneMappingCurve == content::render_graph_format::DisplayCurve::PbrNeutral ? ToneCurve::PbrNeutral
+                                                                                             : ToneCurve::Reinhard);
     parameters.Options = {
         camera.Reference == true || camera.DirectLighting == true ? 1.0F : 0.0F,
         mClearDepth,
-        operation.ToneMappingExposure *
-            static_cast<float32>(math::Pow(2, static_cast<float64>(camera.RasterExposureStops))),
-        static_cast<float32>(operation.ToneMappingCurve == content::render_graph_format::DisplayCurve::PbrNeutral
-                                 ? ToneCurve::PbrNeutral
-                                 : ToneCurve::Reinhard)};
+        mExposure,
+        static_cast<float32>(mToneCurve),
+    };
     status = rhi::CreateBuffer(inoutTargets.mProgramOrNull->mDevice,
                                {rhi::BufferRole::Uniform, VIEW_BYTES},
                                {reinterpret_cast<const uint8*>(&parameters), VIEW_BYTES},
@@ -449,9 +457,16 @@ Status RenderGraphDeferredPass::Poll() noexcept
     {
         return mStatus = ready;
     }
-    if (mMaterial.HasMaterial == false)
+    const Status atmosphere = mAtmosphere.Prepare(program.mAtmosphere,
+                                                  program.mDevice,
+                                                  mCamera,
+                                                  mTargetsOrNull->mWidth,
+                                                  mTargetsOrNull->mHeight,
+                                                  mExposure,
+                                                  mToneCurve);
+    if (atmosphere != Status::Ready || mMaterial.HasMaterial == false)
     {
-        return mStatus = Status::Ready;
+        return mStatus = atmosphere;
     }
     if (mHasBindings == false)
     {
@@ -507,6 +522,12 @@ Status RenderGraphDeferredPass::Draw(Renderer& inoutRenderer,
     }
     RenderGraphDeferredTargets& targets = *mTargetsOrNull;
     RenderGraphDeferredProgram& program = *targets.mProgramOrNull;
+    const rhi::RasterVertexSlice fullscreenVertices{program.mVertices, 0, QUAD_VERTEX_BYTES};
+    const Status tables = mAtmosphere.RecordTables(fullscreenVertices, program.mIndices);
+    if (tables != Status::Ready)
+    {
+        return tables;
+    }
     if (description.DepthLoad == rhi::RasterLoad::Load)
     {
         const rhi::GpuScope scope(program.mDevice, program.mDepthScope);
@@ -548,6 +569,10 @@ Status RenderGraphDeferredPass::Draw(Renderer& inoutRenderer,
         if (status == Status::Ready)
         {
             status = rhi::BeginRasterPass(program.mDevice, lighting);
+        }
+        if (status == Status::Ready)
+        {
+            status = mAtmosphere.RecordSky(fullscreenVertices, program.mIndices);
         }
         if (status == Status::Ready && mMaterial.HasMaterial == true)
         {

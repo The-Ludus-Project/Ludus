@@ -204,6 +204,21 @@
     "vertex": "VertexMain",
     "fragment": "GBufferMain"
   },
+  "renderer_atmosphere_transmittance": {
+    "source": "renderer_atmosphere.slang",
+    "vertex": "DeferredVertexMain",
+    "fragment": "AtmosphereTransmittanceMain"
+  },
+  "renderer_atmosphere_sky": {
+    "source": "renderer_atmosphere.slang",
+    "vertex": "DeferredVertexMain",
+    "fragment": "AtmosphereSkyMain"
+  },
+  "renderer_atmosphere_display": {
+    "source": "renderer_atmosphere.slang",
+    "vertex": "DeferredVertexMain",
+    "fragment": "AtmosphereDisplayMain"
+  },
   "renderer_deferred_lighting": {
     "source": "renderer_deferred_lighting.slang",
     "vertex": "DeferredVertexMain",

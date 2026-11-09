@@ -26,6 +26,7 @@
 #include <ludus/graphics/rhi/spatial_upscale.h>
 
 #include <chrono>
+#include <cmath>
 #include <thread>
 
 using namespace ludus::foundation;
@@ -1166,4 +1167,226 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         CHECK(fixture.Pixels[center + 1] == remainingGreen);
         CHECK(fixture.Pixels[center] <= 1);
     }
+}
+
+namespace
+{
+// Independent binary64 midpoint quadrature of the declared single-scattering
+// integral. It uses planet-centred intersections and integrates each optical
+// depth directly, without the production shader's texture parameterization.
+float64 ComputeEarthExtinction(float64 altitude, usize channel)
+{
+    constexpr usize CHANNEL_COUNT = 3;
+    constexpr StaticArray<float64, CHANNEL_COUNT> molecular{{0.005802, 0.013558, 0.033100}};
+    constexpr StaticArray<float64, CHANNEL_COUNT> ozone{{0.000650, 0.001881, 0.000085}};
+    return molecular[channel] * std::exp(-altitude / 8.0) + 0.004440 * std::exp(-altitude / 1.2) +
+           ozone[channel] * math::Max(0.0, 1 - math::Abs(altitude - 25.0) / 15.0);
+}
+
+float64 IntegrateEarthSky(float64 altitude, math::Vector3d directionWorld, math::Vector3d sunWorld, usize channel)
+{
+    constexpr float64 GROUND = 6360;
+    constexpr float64 TOP = 6460;
+    constexpr usize VIEW_STEPS = 768;
+    constexpr usize SOLAR_STEPS = 384;
+    constexpr usize CHANNEL_COUNT = 3;
+    constexpr StaticArray<float64, CHANNEL_COUNT> molecular{{0.005802, 0.013558, 0.033100}};
+    const math::Vector3d observerWorld{0, GROUND + altitude, 0};
+    const float64 projected = math::Dot(observerWorld, directionWorld);
+    const float64 projectedSquared = projected * projected;
+    const float64 groundDiscriminant = projectedSquared + GROUND * GROUND - math::Dot(observerWorld, observerWorld);
+    const float64 distance =
+        projected < 0 && groundDiscriminant >= 0
+            ? -projected - std::sqrt(groundDiscriminant)
+            : -projected + std::sqrt(projectedSquared + TOP * TOP - math::Dot(observerWorld, observerWorld));
+    const float64 cosine = math::Dot(directionWorld, sunWorld);
+    const float64 moleculePhase = 3 * (1 + cosine * cosine) / (16 * math::kPi);
+    constexpr float64 ASYMMETRY = 0.8;
+    const float64 aerosolPhase = 3 * (1 - ASYMMETRY * ASYMMETRY) * (1 + cosine * cosine) /
+                                 (8 * math::kPi * (2 + ASYMMETRY * ASYMMETRY) *
+                                  std::pow(1 + ASYMMETRY * ASYMMETRY - 2 * ASYMMETRY * cosine, 1.5));
+    const float64 step = distance / VIEW_STEPS;
+    float64 opticalDepth = 0;
+    float64 radiance = 0;
+    for (usize sample = 0; sample < VIEW_STEPS; ++sample)
+    {
+        const math::Vector3d pointWorld =
+            observerWorld + directionWorld * ((static_cast<float64>(sample) + 0.5) * step);
+        const float64 height = math::Length(pointWorld) - GROUND;
+        const float64 extinction = ComputeEarthExtinction(height, channel) * step;
+        const float64 solarProjection = math::Dot(pointWorld, sunWorld);
+        const float64 squaredRadius = math::Dot(pointWorld, pointWorld);
+        const float64 solarDiscriminant = solarProjection * solarProjection + GROUND * GROUND - squaredRadius;
+        if (solarProjection >= 0 || solarDiscriminant < 0)
+        {
+            const float64 solarDistance =
+                -solarProjection + std::sqrt(solarProjection * solarProjection + TOP * TOP - squaredRadius);
+            const float64 solarStep = solarDistance / SOLAR_STEPS;
+            float64 solarOpticalDepth = 0;
+            for (usize solarSample = 0; solarSample < SOLAR_STEPS; ++solarSample)
+            {
+                const math::Vector3d solarPointWorld =
+                    pointWorld + sunWorld * ((static_cast<float64>(solarSample) + 0.5) * solarStep);
+                solarOpticalDepth +=
+                    ComputeEarthExtinction(math::Length(solarPointWorld) - GROUND, channel) * solarStep;
+            }
+            const float64 scattering = molecular[channel] * moleculePhase * std::exp(-height / 8) +
+                                       0.003996 * aerosolPhase * std::exp(-height / 1.2);
+            radiance += std::exp(-opticalDepth - 0.5 * extinction - solarOpticalDepth) * scattering * step;
+        }
+        opticalDepth += extinction;
+    }
+    return radiance;
+}
+} // namespace
+
+TEST_CASE("Clear-sky resolve matches independent scene-linear quadrature and preserves covered pixels",
+          "[render-graph][atmosphere][gpu][reference-compute]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const auto poll = [&](rhi::RasterStatus status) {
+        const std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            status = fixture.Graph.Poll();
+        }
+        return status;
+    };
+    REQUIRE(poll(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+    const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+    fixture.Meshes[0].Geometry.Normals = normals.GetData();
+    const uint32 materialIndex = 0;
+    fixture.Meshes[0].MaterialBindings = {&materialIndex, 1};
+    renderer::SceneShaderMaterial material;
+    material.BaseColor = {};
+    material.Emission = {0.25F, 0.1F, 0.05F};
+    material.ShouldRegisterRasterMeshLight = false;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {&material, 1};
+    renderer::ViewDescription& camera = fixture.Cameras[0];
+    camera.OrthographicCamera = true;
+    const float32 altitude = GENERATE(0.0F, 2000.0F);
+    const float32 solarElevation = GENERATE(1.0F, 0.10F, -0.04F);
+    camera.CameraPosition = {0, altitude, 0};
+    camera.WorldToClip.Columns[3].Y = -altitude;
+    fixture.Items[0].MeshToWorld.Translation.Y = altitude;
+    uint64 revision = 0;
+    const auto update = [&]() {
+        renderer::RenderGraphReport report;
+        return poll(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                         {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                         {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                         ++revision,
+                                         renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                         report,
+                                         &inputs,
+                                         1));
+    };
+    const auto render = [&]() {
+        rhi::SubmissionToken submission;
+        REQUIRE(fixture.Graph.Render(fixture.Surface, WIDTH, HEIGHT, submission) == rhi::RasterStatus::Ready);
+        rhi::TextureHandle texture;
+        rhi::TextureAspect aspect;
+        REQUIRE(fixture.Graph.GetExportAllocation(0, texture, aspect) == rhi::RasterStatus::Ready);
+        REQUIRE(aspect == rhi::TextureAspect::Color);
+        rhi::ReadbackTicket readback;
+        constexpr usize ROW_BYTES = WIDTH * TEXEL_BYTES;
+        REQUIRE(rhi::RequestTextureReadback(fixture.Device,
+                                            texture,
+                                            { .Width = WIDTH, .Height = HEIGHT },
+                                            ROW_BYTES,
+                                            readback) == rhi::RasterStatus::Pending);
+        rhi::RasterStatus status = rhi::GetStatus(fixture.Device, readback);
+        const std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            REQUIRE(rhi::PollLifetime(fixture.Device) == rhi::RasterStatus::Ready);
+            status = rhi::GetStatus(fixture.Device, readback);
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CopyReadback(fixture.Device, readback, fixture.Pixels.GetData(), fixture.Pixels.GetSize()) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Release(fixture.Device, readback) == rhi::RasterStatus::Ready);
+    };
+    REQUIRE(update() == rhi::RasterStatus::Ready);
+    render();
+    const usize covered = GetPixel(WIDTH / 2, HEIGHT / 2);
+    const usize sky = GetPixel(2, 2);
+    const StaticArray<uint8, PIXEL_BYTES> original = fixture.Pixels;
+    REQUIRE(original[covered] > 0);
+    constexpr usize CHANNEL_COUNT = 3;
+    camera.CameraForward = {0, 0, -1};
+    camera.Atmosphere.IsEnabled = true;
+    constexpr float32 SKY_ILLUMINANCE = 4;
+    camera.Atmosphere.SolarIlluminance = {SKY_ILLUMINANCE, SKY_ILLUMINANCE, SKY_ILLUMINANCE};
+    camera.Atmosphere.DirectionToSunWorld = {std::sqrt(1 - solarElevation * solarElevation), solarElevation, 0};
+    REQUIRE(update() == rhi::RasterStatus::Ready);
+    render();
+    for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
+    {
+        const math::Vector3d sunWorld{static_cast<float64>(camera.Atmosphere.DirectionToSunWorld.X),
+                                      static_cast<float64>(solarElevation),
+                                      0};
+        const float64 expected =
+            static_cast<float64>(SKY_ILLUMINANCE) *
+            IntegrateEarthSky(static_cast<float64>(altitude) / 1000, {0, 0, -1}, sunWorld, channel);
+        const float64 actual = static_cast<float64>(fixture.Pixels[sky + channel]) / 255;
+        INFO("altitude " << altitude << " solar cosine " << solarElevation << " channel " << channel);
+        // RGBA8 fixture disables ToneMap, so only 8-bit quantization and LUT
+        // interpolation separate this comparison from scene-linear transport.
+        CHECK(math::Abs(actual - expected) <= 1.5 / 255 + 0.08 * expected);
+        CHECK(fixture.Pixels[covered + channel] == original[covered + channel]);
+    }
+    if (altitude == 0 && solarElevation == 1)
+    {
+        // Zenith looking into the Sun. Independent optical depth integration
+        // checks disk attenuation and the conversion from lux to disk radiance.
+        constexpr float32 DISK_ILLUMINANCE = 0.02F;
+        constexpr float32 DISK_RADIUS = 0.15F;
+        constexpr float64 TOP_KILOMETRES = 100;
+        constexpr usize STEPS = 4096;
+        camera.CameraForward = {0, 1, 0};
+        camera.Atmosphere.SolarIlluminance = {DISK_ILLUMINANCE, DISK_ILLUMINANCE, DISK_ILLUMINANCE};
+        camera.Atmosphere.SolarAngularRadiusRadians = DISK_RADIUS;
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        render();
+        const uint64 drawableRevision = fixture.Graph.GetDrawableSceneRevision();
+        const StaticArray<uint8, PIXEL_BYTES> disk = fixture.Pixels;
+        camera.Atmosphere.SolarAngularRadiusRadians = 0;
+        CHECK(update() == rhi::RasterStatus::InvalidDescription);
+        CHECK(fixture.Graph.GetDrawableSceneRevision() == drawableRevision);
+        render();
+        CHECK(fixture.Pixels == disk);
+        camera.Atmosphere.SolarAngularRadiusRadians = DISK_RADIUS;
+        const float64 diskSine = std::sin(static_cast<float64>(DISK_RADIUS));
+        const float64 step = TOP_KILOMETRES / STEPS;
+        for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
+        {
+            float64 depth = 0;
+            for (usize sample = 0; sample < STEPS; ++sample)
+            {
+                depth += ComputeEarthExtinction((static_cast<float64>(sample) + 0.5) * step, channel) * step;
+            }
+            const float64 expected =
+                static_cast<float64>(DISK_ILLUMINANCE) * (std::exp(-depth) / (math::kPi * diskSine * diskSine) +
+                                                          IntegrateEarthSky(0, {0, 1, 0}, {0, 1, 0}, channel));
+            const float64 actual = static_cast<float64>(fixture.Pixels[sky + channel]) / 255;
+            CHECK(math::Abs(actual - expected) <= 2.0 / 255);
+        }
+    }
+    camera.Atmosphere.IsEnabled = false;
+    REQUIRE(update() == rhi::RasterStatus::Ready);
+    render();
+    CHECK(fixture.Pixels[sky] == original[sky]);
+    CHECK(fixture.Pixels[sky + 1] == original[sky + 1]);
+    CHECK(fixture.Pixels[sky + 2] == original[sky + 2]);
 }

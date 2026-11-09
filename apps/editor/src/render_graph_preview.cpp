@@ -145,9 +145,9 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
                                RenderGraphExtraction& outExtraction,
                                QString& outError)
 {
-    if (revision == 0 || scene.Objects.isEmpty() == true)
+    if (revision == 0 || (scene.Identity.isEmpty() == true && scene.Objects.isEmpty() == true))
     {
-        outError = QStringLiteral("Open a World with renderable objects to preview the graph.");
+        outError = QStringLiteral("Open a World to preview the graph.");
         return false;
     }
     if (static_cast<usize>(scene.Meshes.size()) > format::MAX_MESHES ||
@@ -174,6 +174,11 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
     // borrowed pointers below stay valid while the extraction lives.
     extraction.Scene = scene;
     extraction.View = view;
+    extraction.View.Atmosphere = scene.Atmosphere;
+    if (scene.IsAtmosphereSunSwitchedOff == true)
+    {
+        extraction.View.Atmosphere.SolarIlluminance = {};
+    }
     extraction.Revision = revision;
     for (qsizetype i = 0; i < extraction.Scene.Meshes.size(); ++i)
     {
@@ -1464,6 +1469,27 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
                           .arg(graphReport.SceneDiagnostics.ErrorBindings)
                           .arg(graphReport.SceneDiagnostics.ErrorSourceId)
                           .arg(graphReport.SceneDiagnostics.ErrorMaterial);
+            QString atmosphereStatus = state.Extraction.Scene.AtmosphereStatus;
+            const renderer::AtmosphereDescription& atmosphere = state.Extraction.View.Atmosphere;
+            float64 altitude = 0;
+            if (atmosphere.IsEnabled == true &&
+                renderer::TryGetAtmosphereAltitude(atmosphere, state.Extraction.View.CameraPosition, altitude) ==
+                    true &&
+                (altitude < 0 || altitude > renderer::GetAtmosphereTopAltitude()))
+            {
+                atmosphereStatus = QStringLiteral("Camera altitude %1 m is outside the clear-sky range of 0–%2 m. "
+                                                  "Move the camera inside the atmosphere.")
+                                       .arg(altitude)
+                                       .arg(renderer::GetAtmosphereTopAltitude());
+            }
+            if (atmosphereStatus.isEmpty() == false)
+            {
+                if (state.MaterialStatus.isEmpty() == false)
+                {
+                    state.MaterialStatus += QLatin1Char(' ');
+                }
+                state.MaterialStatus += atmosphereStatus;
+            }
         }
         // NotReady means no generation could accept it yet (first candidate still preparing): retry.
         if (updated != rhi::RasterStatus::NotReady)
@@ -1472,10 +1498,18 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
             if (IsAccepted(updated) == false)
             {
                 const QString modelFailure = DescribeLightTransformerPreparationFailure(graphReport.Model);
-                setStatus(modelFailure.isEmpty() == false
-                              ? modelFailure +
-                                    QStringLiteral(" The shown frame is kept; repair the inputs and preview again.")
-                              : DescribeRenderGraphExtractionFailure(updated, graphReport.SceneDiagnostics));
+                if (updated == rhi::RasterStatus::Unsupported && state.Extraction.View.Atmosphere.IsEnabled == true)
+                {
+                    setStatus(QStringLiteral("Atmosphere needs a supported clustered deferred raster configuration. "
+                                             "Select the default Raster configuration. The shown frame is kept."));
+                }
+                else
+                {
+                    setStatus(modelFailure.isEmpty() == false
+                                  ? modelFailure +
+                                        QStringLiteral(" The shown frame is kept; repair the inputs and preview again.")
+                                  : DescribeRenderGraphExtractionFailure(updated, graphReport.SceneDiagnostics));
+                }
             }
             Q_EMIT Changed();
         }

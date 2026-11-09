@@ -1,5 +1,7 @@
 #pragma once
 
+#include "render_graph_atmosphere.h"
+
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <ludus/content/render_graph_format/plan.h>
@@ -33,6 +35,7 @@ private:
     friend class RenderGraphDeferredTargets;
     friend class RenderGraphDeferredPass;
     [[nodiscard]] rhi::RasterStatus draw(rhi::RasterPipelineHandle pipeline, rhi::BindingSetHandle bindings) noexcept;
+    RenderGraphAtmosphereProgram mAtmosphere;
     rhi::DeviceHandle mDevice{};
     rhi::RasterShaderHandle mVertex{};
     rhi::RasterShaderHandle mLighting{};
@@ -110,6 +113,10 @@ private:
     rhi::BufferHandle mParameters{};
     rhi::BindingSetHandle mBindings{};
     DeferredMaterialBindings mMaterial;
+    RenderGraphAtmosphereView mAtmosphere;
+    ViewDescription mCamera{};
+    foundation::float32 mExposure = 0;
+    foundation::uint32 mToneCurve = 0;
     rhi::RasterBindingResource mMeshLights{};
     /// Sampled directional and mesh-light shadow atlas bound in place of the unused material base-colour texture, when
     /// present.

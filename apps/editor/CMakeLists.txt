@@ -377,6 +377,7 @@ function(ludus_editor_add_builtin_world target)
         FILES "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/world.schema.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/terrain.component.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/aperture.component.json"
+              "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/atmosphere.component.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/render.preview.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/cube.mesh.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/plane.mesh.json"

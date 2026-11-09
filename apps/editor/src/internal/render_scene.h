@@ -8,6 +8,7 @@
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/memory/shared_ptr.hpp>
 #include <ludus/gameplay/camera/evaluation.hpp>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 #include <ludus/graphics/renderer/light_selection.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/runtime/resources/scene.h>
@@ -155,6 +156,10 @@ struct RenderScene final
     graphics::renderer::LightSelection AuthoredLights{};
     /// Enabled authored analytic sources that opted into the shared always-on bake.
     QVector<foundation::uint64> AlwaysOnLightIds;
+    graphics::renderer::AtmosphereDescription Atmosphere{};
+    foundation::uint64 AtmosphereSunSourceId = 0;
+    bool IsAtmosphereSunSwitchedOff = false;
+    QString AtmosphereStatus;
     graphics::renderer::GiProbeGrid ProbeGrid{};
     QVector<foundation::uint64> GiProbeReceiverIds;
     /// Enabled World panel luminaires (the preview descriptor's `luminaire` binding), admitted by
@@ -216,9 +221,8 @@ struct RenderScene final
                                    RenderScene& outScene,
                                    QString& outError,
                                    bool shouldComposeLighting = true);
-    /// True for a loaded World snapshot (nonempty Identity) without objects, such as a new World.
-    /// A project graph has nothing to extract from it, so viewports show their built-in view instead.
-    [[nodiscard]] bool IsLoadedWithoutObjects() const noexcept;
+    /// True when a loaded World has neither drawable objects nor an Atmosphere request.
+    [[nodiscard]] bool ShouldUseEmptyWorldView() const noexcept;
     /// Bounds of the extracted visible objects, or one selected stable ID; failure preserves output.
     [[nodiscard]] bool TryGetBounds(const QString& id, foundation::math::Aabb3& outBoundsWorld) const noexcept;
     // camera=-1 selects the independent editor orbit. All failures preserve output.

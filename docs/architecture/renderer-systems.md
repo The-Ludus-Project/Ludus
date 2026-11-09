@@ -1545,17 +1545,22 @@ keeps ground-hit and top-exit samples on separate filter domains. Camera
 rotation, viewport size and exposure reuse both tables. Pure camera motion
 that changes altitude or solar zenith updates the sky-view table. Reconstruct
 its basis from radial up and Sun direction with a stable pole convention.
-Use GPU passes with explicit resource uses and bounded textures/work. Measure
-update and sampling costs independently before choosing table resolutions.
+The Earth profile allocates a 256 × 64 RGBA16F transmittance table per deferred
+program and a 192 × 128 RGBA16F sky table per retained altitude and solar
+zenith. It integrates 96 and 80 quadrature steps respectively. Live and
+candidate views share matching tables, and RHI's submitted texture state
+distinguishes a usable table from an abandoned frame. Orthographic views use
+the camera's centre altitude and parallel view rays. Builds configured without
+the offline Slang compiler reject the atmosphere request.
 Publish matching inputs and texture generations together once ready. A
 pending, failed or stale candidate preserves the last drawable viewport
 generation. Existing frame leases govern retirement.
 
 In the default [clustered deferred resolve](../development/render-graph-authoring.md#default-clustered-deferred-lighting),
-evaluate atmosphere on uncovered samples using G-buffer coverage and a
-world-space view ray, before the fused exposure, tone map and output encoding.
-Retain depth and covered geometry. This placement avoids introducing an HDR
-color edge into the graph just to composite sky. Evaluate the solar disk at
+draw the sky with the same scene-linear exposure, tone map and output encoding
+as the material resolve. The sky draw preserves depth. The material resolve
+then overwrites covered samples and leaves the sky elsewhere. This placement
+requires no new graph shader bindings or HDR color edge. Evaluate the solar disk at
 pixel resolution with edge coverage and analytic ground occlusion, then
 attenuate it by view transmittance. A uniform disk of angular radius `a`
 uses radiance `E / (pi * sin(a)^2)` for perpendicular illuminance `E` at the
