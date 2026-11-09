@@ -173,6 +173,54 @@ active tick before running the full platform matrix. A bounded candidate must
 demonstrate checked worst-case reservations for admitted inputs and recoverable
 rejection before publishing world, geometry or tick state.
 
+### P0 follow-up candidate screen
+
+An isolated macOS arm64 probe built MIT-licensed
+[Box3D](https://github.com/erincatto/box3d/tree/336263320469e5e9febfe18697ab562488f7e97a)
+at `336263320469e5e9febfe18697ab562488f7e97a` with Clang 23.1.3, ASan and
+UBSan. It used the serial scalar configuration with release assertions
+disabled. Thanks to Erin Catto and the Box3D contributors for
+[Announcing Box3D](https://box2d.org/posts/2026/06/announcing-box3d/) and the
+public allocator and mesh interfaces used by this probe.
+
+The fixture used a 4 m by 4 m synthetic terrain cell with one corner raised
+2 m. Its two triangles have the same winding and shared diagonal as the
+editor's terrain mesh. Downward rays hit the flat and sloped triangles at
+0 m and 1 m. A 0.5 m cube dropped from a center height of 3 m onto the flat
+triangle and settled at 0.254931 m with zero vertical speed. The final pose
+and linear and angular velocities matched exactly on a second run of the
+same executable. Both runs released all bytes counted by the allocator hook.
+
+| Operation | First allocation denied in a separate run |
+| --- | --- |
+| World creation | Returned a world ID after Box3D's internal stack allocator failed to obtain its 2,048-byte backing buffer. |
+| Mesh cooking | ASan detected a null write inside `b3CreateMesh` after a 32-byte request failed. |
+| Dynamic body insertion | UBSan detected a null island record in `b3CreateIsland` after a 64-byte request failed. |
+| First tick | ASan detected a null write during broad-phase tree rebuild after a 1,024-byte request failed. |
+
+The control counted four allocation-hook calls on the first tick and 15
+over 360 ticks at 60 Hz with four substeps. Two later ticks also allocated.
+Raising all five `b3Capacity` hints to 256 preserved those counts and the
+final cube state while increasing peak tracked bytes from 311,168 to
+747,456. These hints reserve some initial storage. Tick work can still
+grow storage, and `b3World_Step` returns no failure status (see
+[Box3D capacity fields](https://github.com/erincatto/box3d/blob/336263320469e5e9febfe18697ab562488f7e97a/include/box3d/types.h#L130-L147),
+[allocator implementation](https://github.com/erincatto/box3d/blob/336263320469e5e9febfe18697ab562488f7e97a/src/core.c#L136-L174),
+and [step interface](https://github.com/erincatto/box3d/blob/336263320469e5e9febfe18697ab562488f7e97a/include/box3d/box3d.h#L48-L57)).
+
+| Other candidates inspected | Allocation gate |
+| --- | --- |
+| Nudge at `b66b190b3cf4cdf468ee489d31bcba3dbd6ff6d7` | World creation immediately clears the allocator result. The mesh cooker uses its own unchecked heap calls in addition to the configurable allocator. [World creation](https://github.com/RandyGaul/nudge/blob/b66b190b3cf4cdf468ee489d31bcba3dbd6ff6d7/src/nudge.c#L38-L62), [mesh cooking](https://github.com/RandyGaul/nudge/blob/b66b190b3cf4cdf468ee489d31bcba3dbd6ff6d7/src/trimesh.c#L95-L135) |
+| Rapier at `475caa3ff4646fd9a796b67d14116256f4962bc7` | Arena insertion grows through infallible `Vec::reserve_exact`. With Rust's default allocation error behavior, exhaustion terminates the process. [Rapier arena growth](https://github.com/dimforge/rapier/blob/475caa3ff4646fd9a796b67d14116256f4962bc7/src/data/arena.rs#L321-L336), [Rust allocation error contract](https://doc.rust-lang.org/std/alloc/fn.handle_alloc_error.html) |
+| MuJoCo 3.17.0 | The preallocated arena can discard contacts or disable the constraint solver under pressure. Stack exhaustion is a hard error. [MuJoCo memory allocation](https://mujoco.readthedocs.io/en/3.17.0/modeling.html#memory-allocation) |
+
+Reject stock Box3D under P0. Its terrain and rigid motion control establishes
+the minimum scene fixture. A qualification attempt would need checked
+reservations or fallible construction for world, mesh and body setup, and
+preflight covering broad-phase, solver and contact growth before a tick
+mutates state. The macOS probe establishes the rejection. The platform matrix
+and backend selection remain open.
+
 ## Module and ownership model
 
 Start with one `modules/physics/rigid/` target, proposed `PhysicsRigid`. Keep
