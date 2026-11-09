@@ -275,6 +275,7 @@ Status RenderGraphAtmosphereProgram::pollDependencies() noexcept
             const Stage stage = static_cast<Stage>(index);
             description.Target = stage == Stage::Display || stage == Stage::Surface ? rhi::RasterTarget::Rgba8Unorm
                                                                                     : rhi::RasterTarget::Rgba16Float;
+            // The surface resolve copies covered G-buffer depth into the graph output, as the ordinary resolve does.
             description.Depth = stage == Stage::Surface;
             description.DepthCompare = rhi::RasterDepthCompare::Always;
             status = rhi::CreateRasterPipeline(mDevice, description, pass.Pipeline);

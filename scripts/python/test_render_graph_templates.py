@@ -2048,6 +2048,20 @@ class ForwardLitTemplateTests(unittest.TestCase):
             self.assertEqual(plan['techniques'], ['DefaultStaticOpaque.ColorAndDepth'])
             library = json.loads(root.with_name('rasterize.lurender.json').read_text())
             self.assertEqual(library['configurations'][0]['nodes'][0]['kind'], 'GraphicsPipeline')
+            raster = next(operation for operation in plan['passes'] if operation['kind'] == 'Raster')
+            self.assertTrue(raster['baked_lighting'])
+            document = json.loads(root.read_text())
+            configuration = document['configurations'][0]
+            configuration['edges'] = [edge for edge in configuration['edges'] if edge['from'] != 'scene.bakedLighting']
+            root.write_text(json.dumps(document))
+            realtime_plan = graph.compile_graph(root)
+            realtime_raster = next(operation for operation in realtime_plan['passes'] if operation['kind'] == 'Raster')
+            self.assertNotIn('baked_lighting', realtime_raster)
+            configuration['nodes'].append({'id': 'otherScene', 'kind': 'Scene'})
+            configuration['edges'].append({'from': 'otherScene.bakedLighting', 'to': 'raster.bakedLighting'})
+            root.write_text(json.dumps(document))
+            with self.assertRaisesRegex(ToolingError, 'same Scene'):
+                graph.compile_graph(root)
             extra_recipe = dict(manifest['techniques'][0]['recipes'][0], id='Extra')
             manifest['techniques'][0]['recipes'].append(extra_recipe)
             with self.assertRaises(ToolingError):

@@ -333,7 +333,8 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # Version 29 appends each pass's ToneMappingCurve and admits ToneMap on clustered deferred raster output.
 # Version 28: ray kernels dispatch the ray uniform's tile region (a 240-byte uniform), so captures may tile.
 # Version 33: per-callback capture warm-up counts follow the scene resource word.
-PACKAGE_VERSION = 33
+# Version 34 adds the optional forward surface-chart fragment and a chart-free realtime fragment.
+PACKAGE_VERSION = 34
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -361,6 +362,8 @@ def role(program, stage):
         return FORWARD_DEPTH_STAGE_ROLE
     if program == 'RayTracing':
         return {'compute': 8, 'vertex': 9, 'fragment': 10}[stage]
+    if program == 'ForwardSurfaceChart':
+        return role('DeferredOpaqueGBuffer', 'fragment') + 1
     if program.startswith('Deferred'):
         return FORWARD_DEPTH_STAGE_ROLE + 1 + forward.ROLE_KEYS.index((program, stage)) - forward.ROLE_KEYS.index(('DeferredGBuffer', 'fragment'))
     if (program, stage) in forward.ROLE_KEYS:
@@ -499,11 +502,17 @@ def _runtime_contents(path, configuration):
         build.require(any(p['Program'] == 'ColorAndDepth' for p in passes) and
                       all(p['Program'] in allowed and p['SceneData'] == graph.scene_bundle.ALL_DATA for p in passes),
                       'Capability', configuration, 'forward-lit requires opaque color passes with the complete Scene bundle')
+        bake_modes = {operation.get('baked_lighting', False) for operation in plan['passes'] if operation['kind'] == 'Raster'}
+        build.require(len(bake_modes) <= 1, 'Capability', configuration,
+                      'Forward lighting passes must agree on Baked Lighting. Connect it to every forward lighting pass or disconnect it.')
+        has_surface_charts = True in bake_modes
         for recipe in package['recipes']:
             if recipe['technique'] not in selected_techniques:
                 continue
             for identity, key in recipe.get('forward_stages', {}).items():
                 group, stage = identity.split(':')
+                if group == 'ForwardSurfaceChart' and not has_surface_charts:
+                    continue
                 matches = [program for program in package['programs'] if program['key'] == key and program['profile'] == recipe['profile']]
                 build.require(len(matches) == 1, 'Package', identity, 'missing forward support artifact')
                 stages[(group, stage, recipe['profile'])] = matches[0]
@@ -786,7 +795,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                     lines.append(f'    result.{member}.WorkgroupSize[{axis}] = {dimension};')
             if program_name in forward.SUPPORT:
                 cluster_argument = 'true' if contents.get('clustered_forward', False) else 'false'
-                lines += [f'    renderer::SetRenderGraphForwardInterface(result.{member}, format::StageRole::{member}, {cluster_argument});']
+                interface = 'ForwardRealtimeFragment' if member == 'ForwardFragment' and cluster_argument == 'false' else member
+                lines += [f'    renderer::SetRenderGraphForwardInterface(result.{member}, format::StageRole::{interface}, {cluster_argument});']
             stage_bindings = _stage_bindings(program_name, stage, contents['bindings'])
             if program_name in ('RayTracing', 'NativeRayStages') and stage == 'compute':
                 # Slot order, as the runtime package decodes it; reflection order follows declaration order.
@@ -867,8 +877,9 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
                   if program_name in ('RayTracing', 'NativeRayStages') and stage == 'vertex' else stage_inputs(item) if stage == 'vertex' else [])
         entry = item['entry'].encode()
         stage_role = (PERSISTENT_RAY_STAGE_ROLE if contents.get('persistent_buffers', False) else 11) if program_name == 'RayTracing' and stage == 'compute' and contents.get('scene_interface', False) else role(program_name, stage)
-        if contents.get('clustered_forward', False) and (program_name, stage) == ('ForwardLit', 'fragment'):
-            stage_role = CLUSTERED_FORWARD_FRAGMENT_ROLE
+        if (program_name, stage) == ('ForwardLit', 'fragment'):
+            stage_role = (CLUSTERED_FORWARD_FRAGMENT_ROLE if contents.get('clustered_forward', False)
+                          else role('ForwardSurfaceChart', 'fragment') + 1)
         data += u32(stage_role, TARGET_CODES[target], len(inputs), len(entry), len(item['bytes']),
                     len(item['blocks']))
         if program_name == 'RayTracing' and stage == 'compute':

@@ -9,6 +9,7 @@
 #include "rg2_forward_lit.h"
 #include "rg2_offscreen.h"
 
+#include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -437,6 +438,48 @@ TEST_CASE("forward-lit reuses immutable assets and preserves the drawable scene 
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
     CHECK(decoded.ForwardVertex.Inputs.size() == format::FORWARD_INPUT_COUNT);
     CHECK(decoded.ForwardFragment.Bindings.size() == programs.ForwardFragment.Bindings.size());
+    CHECK(decoded.ForwardSurfaceChartFragment.Bindings.size() == decoded.ForwardFragment.Bindings.size() + 1);
+    for (const rhi::RasterBinding& binding : decoded.ForwardFragment.Bindings)
+    {
+        CHECK(binding.Binding != renderer::BAKE_TEXTURE_BINDING);
+    }
+
+    namespace scene_format = ludus::content::scene_format;
+    scene_format::BakeChartLayout layout;
+    REQUIRE(scene_format::TryMakeBakeChartLayout(1, layout) == true);
+    constexpr usize CHART_BYTES =
+        scene_format::BAKE_CHART_TILE_PIXELS * scene_format::BAKE_CHART_TILE_PIXELS * scene_format::TEXEL_BYTES;
+    StaticArray<uint8, CHART_BYTES> chartPixels{};
+    for (usize offset = 0; offset < chartPixels.GetSize(); offset += scene_format::TEXEL_BYTES)
+    {
+        chartPixels[offset] = 255;
+    }
+    renderer::SceneSurfaceChart chart;
+    chart.SourceId = fixture.Items[0].SourceId;
+    chart.MeshToWorld = fixture.Items[0].MeshToWorld;
+    chart.Scale = {3, 0, 0};
+    chart.Irradiance = {chartPixels.GetData(),
+                        chartPixels.GetSize(),
+                        layout.Width * scene_format::TEXEL_BYTES,
+                        layout.Width,
+                        layout.Height,
+                        rhi::RasterFormat::Rgba8Unorm};
+    inputs.SurfaceCharts = {&chart, 1};
+    inputs.BakedLightIds = {&light.SourceId, 1};
+    REQUIRE(update(5) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().Resources.SurfaceChartDraws == 1);
+    render();
+    CHECK(fixture.Pixels[center] > 64);
+    CHECK(fixture.Pixels[center] > fixture.Pixels[center + 2]);
+    const uint8 bakedBlue = fixture.Pixels[center + 2];
+
+    // A mismatched placement must switch the draw to the realtime program, even with a chart bound.
+    chart.MeshToWorld.Translation.X += 1;
+    REQUIRE(update(6) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().Resources.SurfaceChartDraws == 0);
+    render();
+    CHECK(fixture.Pixels[center] < 10);
+    CHECK(fixture.Pixels[center + 2] > bakedBlue);
 }
 
 TEST_CASE("bilinear GPU sampling matches pixel centers and clamps source edges", "[render-graph][gpu][bilinear]")

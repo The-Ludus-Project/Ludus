@@ -9485,6 +9485,22 @@ Unassigned materials use the existing neutral material. Invalid references, erro
 materials, masked/transparent coverage and missing normals reject the candidate.
 The previous drawable scene remains available while a replacement is pending or fails.
 
+The template connects **Baked Lighting** from **Scene** to its forward raster
+subgraph. Disconnect the wire and rebuild to preview realtime diffuse only.
+With the wire connected, the native editor supplies the World's ready
+[always-on surface charts](editor-workspace.md#baking-always-on-lights).
+Forward scene preparation checks each placement and chooses a separately
+compiled chart fragment for matching draws. A chart samples incoming diffuse
+irradiance and replaces realtime diffuse for the covered lights. The material
+still supplies albedo and live specular. Ordinary draws use the realtime
+fragment, which has no chart texture binding. The first profile requires all
+forward raster passes in a configuration to agree on the bake connection.
+
+The SDK accepts the same typed chart inputs through `SceneShaderInputs`.
+Callers supply charts matching the submitted scene revision and item order.
+The editor owns its on-disk chart format. This integration covers surface
+charts in Forward lit.
+
 Direct lighting uses L4's declared selection: validate at most 128 unique sources,
 then retain the eight smallest source identities. `GetReport().Resources.DroppedLights`
 reports omitted sources. Emission is visible on the emitting surface; this profile

@@ -547,11 +547,56 @@ TEST_CASE("Terrain dock adds and edits the exact ready recipe with Properties hi
     REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);
     CHECK(pickOrNull->isChecked() == false);
     targetOrNull->setValue(2);
+    const RenderScene committedScene = renderOrNull->Preview().Scene();
+    REQUIRE(committedScene.Objects.size() == 1);
+    const foundation::int32 terrainMesh = committedScene.Objects.first().Mesh;
     REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);
     REQUIRE(interaction.Move(framePixel.center() + QPointF(40, 0), false) == true);
+    // The held stroke reshapes the viewport terrain before release without editing the World.
+    REQUIRE(QTest::qWaitFor(
+        [renderOrNull, &committedScene]() {
+            return renderOrNull->Preview().Scene().Identity != committedScene.Identity;
+        },
+        TERRAIN_WAIT_MILLISECONDS));
+    CHECK(renderOrNull->Preview().Scene().Meshes[terrainMesh].Positions !=
+          committedScene.Meshes[terrainMesh].Positions);
+    CHECK(interaction.IsDragging() == true);
+    CHECK(workspace.Document().Draft() == saved);
+    const QByteArray partialScene = renderOrNull->Preview().Scene().Identity;
+    REQUIRE(interaction.Move(framePixel.center() + QPointF(80, 0), false) == true);
+    REQUIRE(QTest::qWaitFor(
+        [renderOrNull, &committedScene, &partialScene]() {
+            const QByteArray& identity = renderOrNull->Preview().Scene().Identity;
+            return identity != partialScene && identity != committedScene.Identity;
+        },
+        TERRAIN_WAIT_MILLISECONDS));
+    CHECK(interaction.IsDragging() == true);
+    CHECK(workspace.Document().Draft() == saved);
     interaction.Cancel();
+    CHECK(renderOrNull->Preview().Scene().Identity == committedScene.Identity);
     CHECK(interaction.Release() == false);
     CHECK(workspace.Document().Draft() == saved);
+    {
+        // Pausing sculpting mid-drag drops the stroke; the live preview must roll back rather than wait for a
+        // release that never comes.
+        const QDoubleSpinBox* radiusOrNull =
+            panelOrNull->findChild<QDoubleSpinBox*>(QStringLiteral("worldTerrainBrushRadius"));
+        REQUIRE(radiusOrNull != nullptr);
+        const foundation::float32 radius = static_cast<foundation::float32>(radiusOrNull->value());
+        REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);
+        REQUIRE(interaction.Move(framePixel.center() + QPointF(40, 0), false) == true);
+        REQUIRE(QTest::qWaitFor(
+            [renderOrNull, &committedScene]() {
+                return renderOrNull->Preview().Scene().Identity != committedScene.Identity;
+            },
+            TERRAIN_WAIT_MILLISECONDS));
+        interaction.SetTerrainBrush(previewKey, radius, false, false, false);
+        CHECK(interaction.IsDragging() == false);
+        CHECK(renderOrNull->Preview().Scene().Identity == committedScene.Identity);
+        CHECK(interaction.Release() == false);
+        CHECK(workspace.Document().Draft() == saved);
+        interaction.SetTerrainBrush(previewKey, radius, false, false, true);
+    }
     REQUIRE(interaction.Press(framePixel.center(), framePixel) == true);
     REQUIRE(interaction.Move(framePixel.center() + QPointF(40, 0), false) == true);
     REQUIRE(interaction.Release() == true);

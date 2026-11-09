@@ -130,6 +130,8 @@ struct RenderGraphPrograms final
     rhi::RasterShaderDescription LightingFragment{}; ///< Renderer output preparation support.
     /// Void opaque prepass fragment, required with HasClusteredForward; uses ForwardVertex unchanged.
     rhi::RasterShaderDescription ForwardDepth{};
+    /// Optional forward fragment for draws with ready and validated surface charts. Empty selects realtime shading.
+    rhi::RasterShaderDescription ForwardSurfaceChartFragment{};
     rhi::RasterShaderDescription LightingShadow{}; ///< Flat caster support for lighting initialization.
     /// Linked ray kernel reads the paired raster visibility/depth inputs declared by the plan.
     bool HasVisibilityBuffer = false;
@@ -459,10 +461,12 @@ struct RenderGraphSceneRevisions final
     /// Compare domain identities; this does not compare source bytes or validate caller promises.
     [[nodiscard]] LUDUS_INLINE bool operator==(const RenderGraphSceneRevisions&) const noexcept = default;
 };
-/// Cumulative device/context-local forward resource preparation counters. Camera-only
-/// updates do not change these. Reuse compares complete copied content, never pointers.
+/// Device/context-local forward resource counters and the drawable scene's chart draw count.
+/// Camera-only updates preserve resource acquisition counters. Reuse compares complete copied content.
 struct RenderGraphSceneResourceReport final
 {
+    /// Draw items using the specialized surface-chart shader in the currently drawable scene.
+    foundation::usize SurfaceChartDraws = 0;
     foundation::uint64 CreatedMeshes = 0;     ///< Immutable mesh uploads admitted by the cache.
     foundation::uint64 ReusedMeshes = 0;      ///< Exact cached mesh acquisitions.
     foundation::uint64 CreatedTextures = 0;   ///< Immutable texture uploads admitted by the cache.

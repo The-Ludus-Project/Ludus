@@ -1969,7 +1969,7 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
         // Earlier role layouts retain their eight-slot uniform-name bounds.
         CHECK(package->Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Malformed);
     }
-    for (usize role = format::DEFERRED_STAGE_ROLE_FIRST; role < format::STAGE_ROLE_COUNT; ++role)
+    for (usize role = format::DEFERRED_STAGE_ROLE_FIRST; role <= format::DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE; ++role)
     {
         const Array<uint8> bytes = makeDeferred(format::PACKAGE_VERSION, static_cast<uint32>(role));
         renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;

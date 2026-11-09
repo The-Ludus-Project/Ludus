@@ -1512,6 +1512,7 @@ void WorldWorkspace::applyLightChange(const WorldLightChange& change, const QStr
 void WorldWorkspace::updateShownRenderPreview(bool isSceneShown)
 {
     RenderPreview* shown = isSceneShown == true ? &Scene_->GetRenderPreview() : &Render_->Preview();
+    shown->SetSurfaceBakeWorldPath(Path_);
     if (shown != mShownRenderPreviewOrNull)
     {
         mShownRenderPreviewOrNull = shown;
@@ -3097,6 +3098,14 @@ bool WorldWorkspace::Save()
     Document_.AcknowledgeSave();
     RecoveryFailed_ = false;
     (void)QFile::remove(Path_ + QStringLiteral(".ludus-recovery"));
+    RenderPreview& preview = GetRenderPreview();
+    preview.SetSurfaceBakeWorldPath(Path_);
+    if (preview.SaveSurfaceBake() == false)
+    {
+        Changed(QStringLiteral("World saved. Surface charts could not be saved beside the World. Check the folder's "
+                               "permissions and available space, then save again."));
+        return true;
+    }
     Changed(SceneError_.isEmpty() ? QStringLiteral("World saved.")
                                   : QStringLiteral("World saved. Previous viewport retained: ") + SceneError_);
     return true;

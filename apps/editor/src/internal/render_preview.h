@@ -26,6 +26,7 @@
 #include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
 #include "internal/viewport_walk_collision.h"
+#include "internal/world_surface_bake.h"
 
 #include <QElapsedTimer>
 #include <QJsonObject>
@@ -45,6 +46,10 @@ public:
     ~RenderPreview() override;
     // Reject malformed private snapshots before touching fixed GPU handle arrays.
     [[nodiscard]] bool SetScene(const RenderScene& scene);
+    void SetSurfaceBakeWorldPath(const QString& path);
+    [[nodiscard]] bool SaveSurfaceBake();
+    [[nodiscard]] QSharedPointer<const WorldSurfaceBake> GetSurfaceBake() const;
+    [[nodiscard]] QString GetSurfaceBakeFailure() const;
     [[nodiscard]] bool Start();
     [[nodiscard]] bool AdmitDevice(const graphics::rhi::NativeDeviceDescription& native);
     /// Start an engine-owned headless device for viewports that cannot share Qt's device.
@@ -467,6 +472,7 @@ private:
     /// Detach and release every overlay version; resetRenderer also drops the renderer before device loss.
     void releaseRayPathOverlay(bool shouldResetRenderer) noexcept;
     RenderScene Scene_;
+    WorldSurfaceBakeState mSurfaceBake;
     /// TryGetBounds({}) of Scene_, replaced with it in SetScene.
     foundation::math::Aabb3 mSceneBoundsWorld{};
     bool mHasSceneBounds = false;

@@ -402,6 +402,100 @@ TEST_CASE("Fixed restart indices and forged layout substitution issue no native 
     REQUIRE(EndFrame(session.Device) == DeviceStatus::Ready);
 }
 
+TEST_CASE("Indexed draws check every index of ranges spanning precomputed validation blocks", "[rhi][raster]")
+{
+    // Draw validation summarizes 256-index blocks at upload; these ranges cross partial and whole blocks.
+    constexpr usize INDEX_COUNT = 1200;
+    constexpr uint32 VERTEX_COUNT = 300;
+    constexpr usize OUT_OF_RANGE_POSITION = 600;
+    constexpr uint32 OUT_OF_RANGE_INDEX = 700;
+    constexpr usize RESTART_POSITION = 900;
+    constexpr uint32 RESTART_VERTEX_COUNT = 65536;
+    Session session;
+    Scene scene(session.Device);
+    // A per-instance stream leaves VertexCount bounded only by the indices, so each rejection below is the index
+    // check's and VertexCount may exceed the 16-bit restart value without a matching vertex buffer.
+    const RasterVertexStream instanceStream{12, true};
+    const RasterVertexAttribute attribute{0, 0, 0, RasterVertexFormat::Float3};
+    RasterPipelineHandle instancePipeline;
+    REQUIRE(
+        CreateRasterPipeline(session.Device,
+                             {scene.Vertex, scene.Fragment, scene.Layout, {&instanceStream, 1}, {&attribute, 1}, true},
+                             instancePipeline) == RasterStatus::Ready);
+    StaticArray<uint16, INDEX_COUNT> valid16{};
+    StaticArray<uint32, INDEX_COUNT> outOfRange32{};
+    for (usize i = 0; i < INDEX_COUNT; ++i)
+    {
+        valid16[i] = static_cast<uint16>(i % VERTEX_COUNT);
+        outOfRange32[i] = static_cast<uint32>(i % VERTEX_COUNT);
+    }
+    StaticArray<uint16, INDEX_COUNT> outOfRange16 = valid16;
+    outOfRange16[OUT_OF_RANGE_POSITION] = static_cast<uint16>(OUT_OF_RANGE_INDEX);
+    outOfRange32[OUT_OF_RANGE_POSITION] = OUT_OF_RANGE_INDEX;
+    StaticArray<uint16, INDEX_COUNT> restart16 = valid16;
+    restart16[RESTART_POSITION] = 0xffffU;
+    StaticArray<uint16, INDEX_COUNT> belowRestart16 = valid16;
+    belowRestart16[RESTART_POSITION] = 0xfffeU;
+    const auto createIndices = [&session](BufferRole role, const void* data, usize bytes) {
+        BufferHandle buffer{};
+        REQUIRE(CreateBuffer(session.Device, {role, bytes}, {static_cast<const uint8*>(data), bytes}, buffer) ==
+                RasterStatus::Ready);
+        return buffer;
+    };
+    const BufferHandle valid16Buffer =
+        createIndices(BufferRole::Index16, valid16.GetData(), valid16.GetSize() * sizeof(uint16));
+    const BufferHandle outOfRange16Buffer =
+        createIndices(BufferRole::Index16, outOfRange16.GetData(), outOfRange16.GetSize() * sizeof(uint16));
+    const BufferHandle outOfRange32Buffer =
+        createIndices(BufferRole::Index32, outOfRange32.GetData(), outOfRange32.GetSize() * sizeof(uint32));
+    const BufferHandle restart16Buffer =
+        createIndices(BufferRole::Index16, restart16.GetData(), restart16.GetSize() * sizeof(uint16));
+    const BufferHandle belowRestart16Buffer =
+        createIndices(BufferRole::Index16, belowRestart16.GetData(), belowRestart16.GetSize() * sizeof(uint16));
+    struct IndexRange
+    {
+        usize First = 0;
+        usize Count = 0;
+    };
+    const auto drawRange = [&](BufferHandle indices, usize width, IndexRange range, uint32 vertexCount) {
+        RasterDraw draw = scene.Draw();
+        draw.Pipeline = instancePipeline;
+        draw.Indices = indices;
+        draw.IndexOffset = range.First * width;
+        draw.IndexCount = static_cast<uint32>(range.Count);
+        draw.VertexCount = vertexCount;
+        return DrawIndexed(session.Device, draw);
+    };
+    REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
+    CHECK(drawRange(valid16Buffer, sizeof(uint16), {0, INDEX_COUNT}, VERTEX_COUNT) == RasterStatus::Ready);
+    CHECK(drawRange(valid16Buffer, sizeof(uint16), {0, INDEX_COUNT}, VERTEX_COUNT - 1) ==
+          RasterStatus::InvalidDescription);
+    const auto checkOutOfRange = [&](BufferHandle buffer, usize width) {
+        // Found through a whole block's maximum, a partial head block and a partial tail block.
+        CHECK(drawRange(buffer, width, {0, INDEX_COUNT}, VERTEX_COUNT) == RasterStatus::InvalidDescription);
+        CHECK(drawRange(buffer, width, {510, 690}, VERTEX_COUNT) == RasterStatus::InvalidDescription);
+        CHECK(drawRange(buffer, width, {597, 6}, VERTEX_COUNT) == RasterStatus::InvalidDescription);
+        CHECK(drawRange(buffer, width, {513, 255}, VERTEX_COUNT) == RasterStatus::InvalidDescription);
+        // Ranges that end just before or start just after the bad index never read it.
+        CHECK(drawRange(buffer, width, {0, OUT_OF_RANGE_POSITION}, VERTEX_COUNT) == RasterStatus::Ready);
+        CHECK(drawRange(buffer,
+                        width,
+                        {OUT_OF_RANGE_POSITION + 3, INDEX_COUNT - OUT_OF_RANGE_POSITION - 3},
+                        VERTEX_COUNT) == RasterStatus::Ready);
+        CHECK(drawRange(buffer, width, {0, INDEX_COUNT}, OUT_OF_RANGE_INDEX) == RasterStatus::InvalidDescription);
+        CHECK(drawRange(buffer, width, {0, INDEX_COUNT}, OUT_OF_RANGE_INDEX + 1) == RasterStatus::Ready);
+    };
+    checkOutOfRange(outOfRange16Buffer, sizeof(uint16));
+    checkOutOfRange(outOfRange32Buffer, sizeof(uint32));
+    // A 16-bit restart value is rejected even when the vertex count would admit it as an ordinary index.
+    CHECK(drawRange(restart16Buffer, sizeof(uint16), {0, INDEX_COUNT}, RESTART_VERTEX_COUNT) ==
+          RasterStatus::InvalidDescription);
+    CHECK(drawRange(belowRestart16Buffer, sizeof(uint16), {0, INDEX_COUNT}, RESTART_VERTEX_COUNT) ==
+          RasterStatus::Ready);
+    CHECK(reference::Draws == 8);
+    REQUIRE(EndFrame(session.Device) == DeviceStatus::Ready);
+}
+
 TEST_CASE("Indexed indirect packets reject wrong roles, misalignment, truncation and stale owners", "[rhi][compute]")
 {
     Session session;

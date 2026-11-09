@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import re
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -408,6 +410,27 @@ class CachePruningTests(unittest.TestCase):
         client.request.return_value = {"total_count": 10**6, "actions_caches": [self.entry(1, "pip-x", "")]}
         with self.assertRaises(batch_ci.BatchError):
             batch_ci.list_caches(client, self.REF)
+
+    def test_only_cache_pruning_may_run_from_develop(self):
+        environment = {"GITHUB_REPOSITORY": "example/engine", "GH_TOKEN": "token", "GITHUB_SHA": BASE}
+        cases = (("prune-caches", "refs/heads/main", 0), ("prune-caches", "refs/heads/develop", 0),
+                 ("prune-caches", "refs/heads/topic", 1), ("prune-caches", "refs/pull/1/merge", 1),
+                 ("snapshot", "refs/heads/develop", 1), ("watch", "refs/heads/develop", 1),
+                 ("promote", "refs/heads/develop", 1))
+        for command, ref, expected in cases:
+            with self.subTest(command=command, ref=ref), \
+                    mock.patch.dict(os.environ, {**environment, "GITHUB_REF": ref}, clear=True), \
+                    mock.patch.object(sys, "argv", ["batch_ci.py", command]), \
+                    mock.patch.object(batch_ci, "prune_caches", return_value=([], [])) as prune, \
+                    mock.patch.object(batch_ci, "snapshot") as capture, \
+                    mock.patch("sys.stdout"), mock.patch("sys.stderr"):
+                self.assertEqual(batch_ci.main(), expected)
+                if expected == 0:
+                    prune.assert_called_once()
+                    self.assertEqual(prune.call_args.args[1], ref)
+                else:
+                    prune.assert_not_called()
+                    capture.assert_not_called()
 
     def test_only_delete_accepts_an_empty_response(self):
         client = batch_ci.GitHub("example/engine", "test-token")

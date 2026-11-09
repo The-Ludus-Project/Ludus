@@ -25,6 +25,7 @@
 #include <QByteArray>
 #include <QJsonObject>
 #include <QPointF>
+#include <QSharedPointer>
 #include <QString>
 #include <QTimer>
 #include <QWidget>
@@ -50,6 +51,7 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
+struct WorldSurfaceBake;
 class RenderGraphQuickAdd;
 class RenderGraphRecovery;
 struct RenderGraphTemplate;
@@ -702,6 +704,7 @@ private:
     bool mArePreviewInputsDirty = true;
     QSize mPreviewTargetSize;
     QByteArray mPreviewSceneIdentity;
+    QSharedPointer<const WorldSurfaceBake> mPreviewSurfaceBake;
     /// Semantic graph inputs of the runtime request; older activation errors cannot fail a new draft.
     QByteArray mPreviewInputIdentity;
     RenderGraphSource mPreviewSourceVersion = RenderGraphSource::Draft;
