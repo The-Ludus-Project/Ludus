@@ -5,10 +5,8 @@ by this document. Evidence baseline: `origin/main` at `1e2227c`, 2026-10-07.
 
 Ludus should own a small physics API, asset cooking, gameplay integration, and
 diagnostics, with one qualified CPU rigid-body implementation behind a private
-boundary. Jolt is the first production candidate. Qualify it before committing
-to its platform, allocation, failure, and replay behavior; do not build a second
-general solver in parallel. This is an engineering recommendation, not a claim
-of measured superiority or universal state-of-the-art performance.
+boundary. Jolt was the first candidate. The [P0 allocation investigation](#p0-allocation-investigation)
+rejects unmodified Jolt 5.6.0 for production. Backend selection remains open.
 
 ## Initial design before the Gems review
 
@@ -67,12 +65,9 @@ when the core passes its gates. Deformables, cloth, fracture, articulations and
 fluid-solid coupling have separate requirements and delivery plans.
 
 Use one production implementation, private to Physics, and one public contract.
-Jolt-first qualification is preferable to budgeting a new AAA solver without
-shipping evidence. A test-only brute-force query oracle is small enough to own;
-a second complete dynamics implementation is not. PhysX is a comparison
-candidate when its capabilities justify another evaluation; GPU simulation is
-an optional future workload, not the CPU baseline. Do not expose a runtime
-backend selector or a least-common-denominator virtual hierarchy.
+Qualify existing candidates before budgeting a new general solver. Keep the
+brute-force query oracle test-only. The CPU baseline uses a single backend.
+GPU simulation is an optional future workload.
 
 Qualification must pin an exact revision and license, prove the supported
 native platforms and the separate pinned Emscripten build, audit CPU ISA and
@@ -99,7 +94,84 @@ allocator whose callers assume success is invalid. Audit initialization and
 shape creation too. If qualification cannot satisfy Ludus's rules, record a
 failed candidate and revise this selection before implementation; do not ship
 abort-on-OOM, exceptions, or an unbounded fallback under a `noexcept` promise.
-This proposal has not yet qualified Jolt or established those bounds.
+
+### P0 allocation investigation
+
+The isolated probe used MIT-licensed [Jolt 5.6.0](https://github.com/jrouwe/JoltPhysics/tree/e77f175595e64cb44218cc9d9d56fc365ad0e36a)
+(`e77f175595e64cb44218cc9d9d56fc365ad0e36a`) on macOS arm64 with Clang
+23.1.3, exceptions disabled, ASan and UBSan. It injected null from the
+allocation, reallocation and aligned allocation hooks at individual calls.
+Each fault ran in its own process. Thanks to Jorrit Rouwé and the Jolt
+contributors for the allocation hooks and source that make these boundaries
+inspectable.
+
+| Probe | Observed behavior |
+| --- | --- |
+| Static controls | A stair tread ray and a capsule sweep into its riser passed with zero Jolt allocation-hook calls during the queries. A saddle-shaped terrain cell hit at 0.5 m using the render triangles and 2 m using Jolt's heightfield, which uses the opposite cell diagonal. Use matching triangles unless a heightfield adapter proves surface parity. |
+| First allocation in type registration or world initialization | UBSan detected null pointer arithmetic in the registry hash table. ASan detected a null write in `BodyManager::Init`. These entry points return no allocation status. |
+| First and second allocations in two-triangle mesh cooking | The first reached a constructor on null storage in `MeshShapeSettings::Create`. Allowing that allocation and failing the next reached null storage in the internal triangle array copy. Checking only the outer shape allocation would leave the second failure. |
+| Active tick with undersized or null scratch | A 16-byte arena aborted on the first 7,344-byte request. Returning null for the same request instead caused undefined behavior while constructing the step context array. |
+| First active tick with enough scratch | The job freelist allocated its first block lazily. Failing that allocation reached a null storage reference. Prewarming one job in the serial pool moved the block allocation to setup. The same tick then succeeded with zero Jolt allocation-hook calls and 169,888 bytes of peak scratch. |
+| Contact capacity exhausted | With a four-contact limit, eight independent boxes began at 0.4 m on one static floor. The tick returned `ContactConstraintsFull` after moving four boxes up to about 0.429 m and four down to about 0.397 m. With 64 slots, all eight moved up and the tick reported success. |
+
+The tick used one serial job pool of 256 slots, one substep at 60 Hz, 16 body
+slots, 64 body-pair slots and a 1 MiB scratch buffer for the successful run.
+The peak applies to this fixture. Hook counts cover only allocations routed
+through Jolt's hooks. Data-dependent growth also exists outside tick scratch,
+for example in the
+[broad-phase traversal stacks](https://github.com/jrouwe/JoltPhysics/blob/e77f175595e64cb44218cc9d9d56fc365ad0e36a/Jolt/Physics/Collision/BroadPhase/QuadTree.cpp#L1016-L1031).
+The same unchecked mesh construction and scratch abort paths are present in
+the upstream source snapshot `be646ae6a84f3283c1ff6bd2bb9367aaf978e82c).
+
+**Decision.** Prewarming solves the measured lazy allocation. Adopting Jolt
+would still require a conservative reservation contract covering registration,
+world and shape construction, body insertion, queries and stepping, or
+upstream changes that propagate failure through those paths. A contact
+capacity error after advancement must follow the `Faulted` path and preserve
+the last published snapshot. Increasing scratch or wrapping a backend result
+cannot provide the ordinary preflight guarantee. Reject unmodified Jolt for
+production under the current contract. The probe did not exercise Linux,
+Windows, the pinned browser toolchain, SDK consumption or replay qualification.
+
+| Replacement screen | Allocation contract observed in source |
+| --- | --- |
+| PhysX | Its allocator interface explicitly requires a nonnull result. It would need its own storage proof. [PhysX allocator contract](https://github.com/NVIDIA-Omniverse/PhysX/blob/b97365c6ddb32fda8469bc788ec18024862b0368/physx/include/foundation/PxAllocatorCallback.h#L34-L49) |
+| Bullet 3.25 | Array growth copies live elements to newly allocated storage without checking the destination. [Bullet array growth](https://github.com/bulletphysics/bullet3/blob/2c204c49e56ed15ec5fcfa71d199ab6d6570b3f5/src/LinearMath/btAlignedObjectArray.h#L280-L298) |
+| ReactPhysics3D 0.10.2 | World construction uses placement construction directly on the allocator result. [ReactPhysics3D world creation](https://github.com/DanielChappuis/reactphysics3d/blob/cd958bbc0c6e84a869388cba6613f10cc645b3cb/src/engine/PhysicsCommon.cpp#L224-L240) |
+
+The table is a source audit. An isolated runtime probe separately tested
+[ODE 0.16.6](https://bitbucket.org/odedevs/ode/src/a5fc0bc282703ab34d7d3d2500bafae7428eeaa9/)
+(`a5fc0bc282703ab34d7d3d2500bafae7428eeaa9`, dual LGPL-2.1-or-later or
+modified BSD-3-Clause) on the same macOS arm64 sanitizer toolchain. Thanks to
+the ODE contributors for the
+[QuickStep retry contract](https://bitbucket.org/odedevs/ode/src/0.16.6/include/ode/objects.h#lines-489:498)
+and separate step allocator. The probe advanced one body with a pending force
+for one 60 Hz tick. Its control step allocated two scratch blocks.
+
+- Stock QuickStep called `ResetState` on a null arena when the first block
+  was denied. A local guard in `ReallocateIslandsMemArena` made each of the
+  two failures return zero independently. Body height, vertical velocity and
+  pending vertical force stayed unchanged. Each successful retry matched
+  the control in those values. [ODE arena reset](https://bitbucket.org/odedevs/ode/src/0.16.6/ode/src/util.cpp#lines-199:209)
+- Denying the first world allocation reached the `dxWorld` constructor
+  with null storage. The step guard cannot repair world creation. Body
+  insertion uses the same unchecked allocation operator and immediately
+  writes to the result. [ODE world creation](https://bitbucket.org/odedevs/ode/src/0.16.6/ode/src/ode.cpp#lines-1580:1585),
+  [body creation](https://bitbucket.org/odedevs/ode/src/0.16.6/ode/src/ode.cpp#lines-238:246),
+  [allocation operator](https://bitbucket.org/odedevs/ode/src/0.16.6/ode/src/objects.h#lines-59:67)
+- The runtime fixture disabled triangle meshes. Source review found that the
+  OPCODE mesh cooker uses ordinary C++ allocation for its tree, beyond the
+  step allocator. A step guard and a check in world creation would still
+  leave mesh admission and body insertion without a storage proof.
+  [OPCODE tree build](https://bitbucket.org/odedevs/ode/src/0.16.6/OPCODE/OPC_Model.cpp#lines-167:180)
+
+**Selection remains open.** Reject stock ODE as a production replacement. The
+local QuickStep patch addresses the measured step failure. Admission of worlds,
+bodies and mesh shapes still requires upstream changes or a conservative storage
+contract. Screen future candidates at world creation, mesh cooking and the first
+active tick before running the full platform matrix. A bounded candidate must
+demonstrate checked worst-case reservations for admitted inputs and recoverable
+rejection before publishing world, geometry or tick state.
 
 ## Module and ownership model
 
