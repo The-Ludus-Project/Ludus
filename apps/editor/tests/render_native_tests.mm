@@ -759,8 +759,12 @@ RenderScene MakeGiProbeScene(float32 receiverX)
     // Look along the divider so both receiver positions are visible to the camera.
     scene.StartView =
     {
-        .EyeWorld = {data.Eye.X, data.Eye.Y, data.Eye.Z},
-        .TargetWorld = {data.Target.X, data.Target.Y, data.Target.Z},
+        .EyeWorld = {static_cast<float64>(data.Eye.X),
+                     static_cast<float64>(data.Eye.Y),
+                     static_cast<float64>(data.Eye.Z)},
+        .TargetWorld = {static_cast<float64>(data.Target.X),
+                        static_cast<float64>(data.Target.Y),
+                        static_cast<float64>(data.Target.Z)},
         .UpWorld = data.Up,
         .VerticalFov = data.VerticalFov,
     };
