@@ -81,8 +81,6 @@ namespace
 constexpr usize CLIP_ROWS = 4;
 constexpr usize VERTEX_COUNT = 4;
 constexpr usize INDEX_COUNT = 6;
-constexpr uint32 TRANSMITTANCE_WIDTH = LUDUS_ATMOSPHERE_TRANSMITTANCE_WIDTH;
-constexpr uint32 TRANSMITTANCE_HEIGHT = LUDUS_ATMOSPHERE_TRANSMITTANCE_HEIGHT;
 constexpr uint32 SKY_WIDTH = LUDUS_ATMOSPHERE_SKY_WIDTH;
 constexpr uint32 SKY_HEIGHT = 2 * LUDUS_ATMOSPHERE_SKY_HALF_HEIGHT;
 constexpr uint32 UNIFORM_SLOT = 0;
@@ -137,6 +135,8 @@ Status RenderGraphAtmosphereProgram::Prepare(rhi::DeviceHandle device) noexcept
     if (mPhase == Phase::Empty)
     {
 #if defined(LUDUS_RENDERER_ATMOSPHERE_SHADERS)
+        constexpr uint32 TRANSMITTANCE_WIDTH = LUDUS_ATMOSPHERE_TRANSMITTANCE_WIDTH;
+        constexpr uint32 TRANSMITTANCE_HEIGHT = LUDUS_ATMOSPHERE_TRANSMITTANCE_HEIGHT;
         mDevice = device;
         const StaticArray<rhi::RasterShaderDescription, static_cast<usize>(Stage::Count)> descriptions{
             {shaders::renderer_atmosphere_transmittance::Fragment(),
