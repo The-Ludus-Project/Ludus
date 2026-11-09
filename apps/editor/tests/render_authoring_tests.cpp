@@ -782,6 +782,30 @@ TEST_CASE("World composition keeps imported LUSCN v4 meshes indexed beside schem
     {
         CHECK(mesh.Normals.GetSize() == mesh.Positions.GetSize());
     }
+
+    // MergeLoaded composes from LoadCooked's decode of the same bytes: the same scene, also when it replaces the
+    // loaded scene it reads.
+    RenderScene loaded;
+    REQUIRE(RenderScene::LoadCooked(cooked, level, loaded, fixture.Error, {}));
+    RenderScene reused;
+    REQUIRE(RenderScene::MergeLoaded(fixture.Scene, cooked, level, loaded, reused, fixture.Error, {}));
+    CHECK(reused.PacketIdentity == combined.PacketIdentity);
+    CHECK(reused.Identity == combined.Identity);
+    CHECK(reused.Objects.size() == combined.Objects.size());
+    REQUIRE(RenderScene::MergeLoaded(fixture.Scene, cooked, level, loaded, loaded, fixture.Error, {}));
+    CHECK(loaded.PacketIdentity == combined.PacketIdentity);
+    CHECK(loaded.Identity == combined.Identity);
+
+    // Without authored geometry or lights, the loaded scene is adopted rather than decoded again.
+    RenderScene importedOnly;
+    REQUIRE(RenderScene::LoadCooked(cooked, level, importedOnly, fixture.Error, {}));
+    RenderScene decodedAgain;
+    REQUIRE(RenderScene::Merge(RenderScene{}, cooked, level, decodedAgain, fixture.Error, {}));
+    RenderScene adopted;
+    REQUIRE(RenderScene::MergeLoaded(RenderScene{}, cooked, level, importedOnly, adopted, fixture.Error, {}));
+    CHECK(adopted.Definition.Get() == importedOnly.Definition.Get());
+    CHECK(adopted.Identity == decodedAgain.Identity);
+    CHECK(adopted.PacketIdentity == decodedAgain.PacketIdentity);
 }
 
 TEST_CASE("Embedded World preview follows valid inspector drafts without committing them", "[editor][render-authoring]")

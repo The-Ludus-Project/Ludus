@@ -181,9 +181,22 @@ struct RenderScene final
     [[nodiscard]] static bool Merge(const RenderScene& authored,
                                     const QByteArray& cooked,
                                     const QJsonObject& level,
-                                    RenderScene& output,
-                                    QString& error,
+                                    RenderScene& outScene,
+                                    QString& outError,
                                     const QJsonObject& revisions);
+    /// @brief Merge like Merge, reusing loaded, the LoadCooked result of the same cooked bytes, level and revisions.
+    ///
+    /// Without authored geometry or lights the result is loaded with the World's bindings adopted; otherwise the
+    /// composition reads loaded's decoded definition instead of decoding cooked again. Either way the bundle is not
+    /// decoded a second time. outScene may be loaded itself. Failure leaves outScene unchanged and sets outError.
+    /// @param loaded Scene LoadCooked produced from cooked; without a decoded definition cooked is decoded instead.
+    [[nodiscard]] static bool MergeLoaded(const RenderScene& authored,
+                                          const QByteArray& cooked,
+                                          const QJsonObject& level,
+                                          const RenderScene& loaded,
+                                          RenderScene& outScene,
+                                          QString& outError,
+                                          const QJsonObject& revisions);
     /// The enabled analytic lights of a cooked definition, normalized as LoadCooked presents them.
     /// Failure (more lights than the viewport admits) preserves outLights.
     [[nodiscard]] static bool LoadCookedLights(const resources::SceneDefinition& scene,

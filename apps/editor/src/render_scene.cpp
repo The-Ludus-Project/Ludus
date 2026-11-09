@@ -10,6 +10,7 @@
 
 #include <ludus/content/scene_format/limits.h>
 #include <ludus/content/scene_format/luscn.h>
+#include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -27,6 +28,9 @@
 #include <ludus/graphics/renderer/views.hpp>
 #include <ludus/graphics/rhi/raster.h>
 
+#include <bit>
+#include <limits>
+#include <span>
 #include <string_view>
 
 #include <QBuffer>
@@ -184,6 +188,86 @@ uint64 ComputeSourceId(const QString& id)
     }
     return value == 0 ? 1 : value;
 }
+/// Words of one LUSCN v6 vertex record: position, normal, texture coordinate and tangent.
+constexpr usize VERTEX_RECORD_V6_WORDS = sizeof(format::VertexRecordV6) / sizeof(uint32);
+static_assert(VERTEX_RECORD_V6_WORDS * sizeof(uint32) == sizeof(format::VertexRecordV6));
+
+/// Little-endian encoder for one mesh's vertex and index words. A mesh is written with one stream call instead of
+/// one QDataStream insertion per field, which dominated composing large imported Worlds.
+class MeshWordEncoder final
+{
+public:
+    /// Allocate room for exactly wordCount words. @return false when allocation fails.
+    [[nodiscard]] bool TryReserve(usize wordCount)
+    {
+        // QDataStream::writeRawData takes an int length on older Qt releases; one mesh block must fit it.
+        if (wordCount > static_cast<usize>(std::numeric_limits<int32>::max()) / sizeof(uint32))
+        {
+            return false;
+        }
+        const usize byteCount = wordCount * sizeof(uint32);
+        mBlock = QByteArray(static_cast<qsizetype>(byteCount), Qt::Uninitialized);
+        mWritten = 0;
+        mHasOverflowed = false;
+        return static_cast<usize>(mBlock.size()) == byteCount;
+    }
+    /// Encode one word; a word past the reservation is dropped and makes TryFlush fail.
+    void Write(uint32 value) noexcept
+    {
+        if (mWritten + sizeof(uint32) > static_cast<usize>(mBlock.size()))
+        {
+            mHasOverflowed = true;
+            return;
+        }
+        uint8* const destination = reinterpret_cast<uint8*>(mBlock.data()) + mWritten;
+        static_cast<void>(foundation::TryWriteLittleEndian(value, std::span<uint8>(destination, sizeof(uint32))));
+        mWritten += sizeof(uint32);
+    }
+    /// Encode one IEEE binary32 word.
+    void Write(float32 value) noexcept
+    {
+        Write(std::bit_cast<uint32>(value));
+    }
+    /// Encode one VertexRecordV6 in field order.
+    void WriteVertex(const math::Vector3& position,
+                     const math::Vector3& normal,
+                     const math::Vector2& uv,
+                     const math::Vector4& tangent) noexcept
+    {
+        for (const float32 value : {position.X,
+                                    position.Y,
+                                    position.Z,
+                                    normal.X,
+                                    normal.Y,
+                                    normal.Z,
+                                    uv.X,
+                                    uv.Y,
+                                    tangent.X,
+                                    tangent.Y,
+                                    tangent.Z,
+                                    tangent.W})
+        {
+            Write(value);
+        }
+    }
+    /// Append the encoded words; false unless every reserved word was written.
+    [[nodiscard]] bool TryFlush(QDataStream& inoutStream)
+    {
+        if (mHasOverflowed == true || mWritten != static_cast<usize>(mBlock.size()))
+        {
+            return false;
+        }
+        // TryReserve bounded the block to the int32 range.
+        const int32 byteCount = static_cast<int32>(mWritten);
+        return inoutStream.writeRawData(mBlock.constData(), byteCount) == byteCount;
+    }
+
+private:
+    QByteArray mBlock;
+    usize mWritten = 0;
+    bool mHasOverflowed = false;
+};
+
 // LUSCN v6 mesh: indexed VertexRecordV6s; consumers derive the per-triangle bake charts.
 // Meshes without normals are expanded per corner so each triangle keeps its face normal.
 // Tangents are copied when supplied (one per vertex); otherwise vertices carry none.
@@ -221,22 +305,26 @@ bool WriteSceneMesh(QDataStream& inoutStream,
     inoutVertexCount += vertexCount;
     inoutIndexCount += indices.GetSize();
     inoutStream << static_cast<uint32>(vertexCount) << static_cast<uint32>(indices.GetSize());
+    MeshWordEncoder encoder;
+    if (encoder.TryReserve(vertexCount * VERTEX_RECORD_V6_WORDS + indices.GetSize()) == false)
+    {
+        return Fail(outError, QStringLiteral("World geometry allocation failed."));
+    }
     if (isExpanded == false)
     {
         for (usize vertex = 0; vertex < positions.GetSize(); ++vertex)
         {
-            const math::Vector3 position = positions[vertex];
-            const math::Vector3 normal = normals[vertex];
-            const math::Vector2 uv = texcoords[vertex];
-            const math::Vector4 tangent = tangents.IsEmpty() == true ? math::Vector4{} : tangents[vertex];
-            inoutStream << position.X << position.Y << position.Z << normal.X << normal.Y << normal.Z << uv.X << uv.Y
-                        << tangent.X << tangent.Y << tangent.Z << tangent.W;
+            encoder.WriteVertex(positions[vertex],
+                                normals[vertex],
+                                texcoords[vertex],
+                                tangents.IsEmpty() == true ? math::Vector4{} : tangents[vertex]);
         }
         for (usize i = 0; i < indices.GetSize(); ++i)
         {
-            inoutStream << indices[i];
+            encoder.Write(indices[i]);
         }
-        return true;
+        return encoder.TryFlush(inoutStream) == true ||
+               Fail(outError, QStringLiteral("World geometry exceeds its cooked byte budget."));
     }
     for (usize triangle = 0; triangle < indices.GetSize() / 3; ++triangle)
     {
@@ -261,15 +349,15 @@ bool WriteSceneMesh(QDataStream& inoutStream,
             const math::Vector3 position = positions[index];
             const math::Vector2 uv = texcoords[index];
             // Expanded faces have no authored frame: absent tangents.
-            inoutStream << position.X << position.Y << position.Z << faceNormal.X << faceNormal.Y << faceNormal.Z
-                        << uv.X << uv.Y << 0.F << 0.F << 0.F << 0.F;
+            encoder.WriteVertex(position, faceNormal, uv, math::Vector4{});
         }
     }
     for (usize i = 0; i < indices.GetSize(); ++i)
     {
-        inoutStream << static_cast<uint32>(i);
+        encoder.Write(static_cast<uint32>(i));
     }
-    return true;
+    return encoder.TryFlush(inoutStream) == true ||
+           Fail(outError, QStringLiteral("World geometry exceeds its cooked byte budget."));
 }
 bool Read(const QString& root,
           const QString& relative,
@@ -1551,20 +1639,32 @@ void WriteSourceMaterialExtension(QDataStream& inoutStream, const resources::Sce
 }
 } // namespace
 
-bool RenderScene::Merge(const RenderScene& authored,
-                        const QByteArray& cooked,
-                        const QJsonObject& level,
-                        RenderScene& output,
-                        QString& error,
-                        const QJsonObject& revisions)
+namespace
 {
+/// Merge's composition; loadedOrNull, when it carries a decoded definition, is the LoadCooked result of cooked.
+bool ComposeWorldScene(const RenderScene& authored,
+                       const QByteArray& cooked,
+                       const QJsonObject& level,
+                       const RenderScene* loadedOrNull,
+                       RenderScene& outScene,
+                       QString& outError,
+                       const QJsonObject& revisions)
+{
+    QString& error = outError;
+    RenderScene& output = outScene;
+    // A loaded scene decoded from these cooked bytes stands in for decoding them again.
+    const bool hasLoaded = loadedOrNull != nullptr && loadedOrNull->Definition != nullptr;
     if (authored.Objects.isEmpty() == true && authored.AuthoredLights.Count == 0)
     {
         if (cooked.isEmpty() == false)
         {
             // No authored geometry or lights to compose, but the World's bindings, cameras and luminaires still apply.
             RenderScene candidate;
-            if (LoadCooked(cooked, level, candidate, error, revisions) == false)
+            if (hasLoaded == true)
+            {
+                candidate = *loadedOrNull;
+            }
+            else if (RenderScene::LoadCooked(cooked, level, candidate, error, revisions) == false)
             {
                 return false;
             }
@@ -1576,14 +1676,21 @@ bool RenderScene::Merge(const RenderScene& authored,
         error.clear();
         return true;
     }
-    resources::SceneDefinition imported;
-    if (cooked.isEmpty() == false &&
-        resources::SceneDefinition::Decode(reinterpret_cast<const uint8*>(cooked.constData()),
-                                           static_cast<usize>(cooked.size()),
-                                           imported) != resources::Status::Ok)
+    // Shares the loaded scene's immutable decode; output may alias the loaded scene and is replaced only at the end.
+    foundation::SharedPtr<const resources::SceneDefinition> loadedDefinition;
+    resources::SceneDefinition decoded;
+    if (hasLoaded == true && cooked.isEmpty() == false)
+    {
+        loadedDefinition = loadedOrNull->Definition;
+    }
+    else if (cooked.isEmpty() == false &&
+             resources::SceneDefinition::Decode(reinterpret_cast<const uint8*>(cooked.constData()),
+                                                static_cast<usize>(cooked.size()),
+                                                decoded) != resources::Status::Ok)
     {
         return Fail(error, QStringLiteral("Invalid imported scene during World composition."));
     }
+    const resources::SceneDefinition& imported = loadedDefinition != nullptr ? *loadedDefinition : decoded;
     const usize meshCount = imported.Meshes.GetSize() +
                             (authored.Objects.isEmpty() == true ? 0 : static_cast<usize>(authored.Meshes.size()));
     const usize materialCount = imported.Materials.GetSize() + static_cast<usize>(authored.Objects.size());
@@ -1599,6 +1706,9 @@ bool RenderScene::Merge(const RenderScene& authored,
                                    "instances."));
     }
     QByteArray bytes;
+    // The composed bundle is about the imported one plus the authored records: reserve it so streaming hundreds of
+    // megabytes of texels and vertices does not reallocate the partial bundle.
+    bytes.reserve(cooked.size());
     QDataStream stream(&bytes, QIODevice::WriteOnly);
     stream.setByteOrder(QDataStream::LittleEndian);
     stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
@@ -1786,13 +1896,33 @@ bool RenderScene::Merge(const RenderScene& authored,
         return Fail(error, QStringLiteral("Combined World exceeds its cooked byte budget."));
     }
     RenderScene candidate;
-    if (LoadCooked(bytes, mergedLevel, candidate, error, revisions) == false)
+    if (RenderScene::LoadCooked(bytes, mergedLevel, candidate, error, revisions) == false)
     {
         return false;
     }
     AdoptAuthoredScene(authored, candidate);
     output = foundation::Move(candidate);
     return true;
+}
+} // namespace
+bool RenderScene::Merge(const RenderScene& authored,
+                        const QByteArray& cooked,
+                        const QJsonObject& level,
+                        RenderScene& outScene,
+                        QString& outError,
+                        const QJsonObject& revisions)
+{
+    return ComposeWorldScene(authored, cooked, level, nullptr, outScene, outError, revisions);
+}
+bool RenderScene::MergeLoaded(const RenderScene& authored,
+                              const QByteArray& cooked,
+                              const QJsonObject& level,
+                              const RenderScene& loaded,
+                              RenderScene& outScene,
+                              QString& outError,
+                              const QJsonObject& revisions)
+{
+    return ComposeWorldScene(authored, cooked, level, &loaded, outScene, outError, revisions);
 }
 uint64 ComputeEntitySourceId(const QString& entityKey)
 {

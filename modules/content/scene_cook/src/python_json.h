@@ -64,6 +64,8 @@ public:
     void Append(JsonIndex array, JsonIndex value) noexcept;
     /// dict[key] = value: replaces in place, or appends a new key.
     void SetMember(JsonIndex object, std::string_view key, JsonIndex value) noexcept;
+    /// Append a new member without looking for an existing key; the caller guarantees key is absent.
+    void AppendMember(JsonIndex object, std::string_view key, JsonIndex value) noexcept;
     /// Deep copy of a node from another (or the same) tree.
     [[nodiscard]] JsonIndex CopyFrom(const JsonTree& source, JsonIndex node) noexcept;
 

@@ -2489,6 +2489,48 @@ void ComposeWorld(const JsonTree& tree, JsonIndex objects, JsonIndex item, Trans
            ReadBytes(path.GetView(), maximum, outData, inoutFailure) == true;
 }
 
+/// Read the first outPrefix.size() bytes of one closure artifact; outCount is smaller for a shorter file.
+/// Lets assembly size a mesh from its record header without reading its vertices and indices twice.
+[[nodiscard]] bool ReadArtifactPrefix(std::string_view root,
+                                      const Document& closure,
+                                      std::string_view identity,
+                                      std::span<uint8> outPrefix,
+                                      usize& outCount,
+                                      Failure& inoutFailure) noexcept
+{
+    const JsonIndex record = closure.Tree.GetMember(closure.Root, identity);
+    String path;
+    if (ResolveInside(root, closure.Tree.GetText(closure.Tree.GetMember(record, "path")), path, inoutFailure) == false)
+    {
+        return false;
+    }
+    SequentialFile file;
+    Status status = file.Open(path.GetView());
+    outCount = 0;
+    while (status == Status::Ok && outCount < outPrefix.size())
+    {
+        usize count = 0;
+        status = file.Read(outPrefix.subspan(outCount), count);
+        if (status == Status::Ok && count == 0)
+        {
+            break;
+        }
+        outCount += count;
+    }
+    switch (status)
+    {
+        case Status::Ok:
+            return true;
+        case Status::NotFound:
+            return inoutFailure.Fail(AssetErrorCode::AssetCorrupt,
+                                     {"No such file or directory: '", path.GetView(), "'"});
+        case Status::Unsupported:
+            return inoutFailure.FailStatus(status, "Read", path.GetView());
+        default:
+            return inoutFailure.Fail(AssetErrorCode::AssetCorrupt, {"Cannot read '", path.GetView(), "'"});
+    }
+}
+
 struct LightingPart final
 {
     Array<uint8> Bytes;
@@ -2997,14 +3039,21 @@ struct MaterialVariant final
         const bool isDroppingBakeCoordinates = isVersion4 == true && layout == PartLayout::StoredBakeCoordinates;
         if (isAddingBakeCoordinates == true || isDroppingBakeCoordinates == true || isVersion4 == true)
         {
-            Array<uint8> data;
-            if (ReadArtifact(root, closure, identity, MAX_ASSET_BYTES, data, inoutFailure) == false)
+            // Only the record header is needed here; the writer below reads the whole part once.
+            foundation::StaticArray<uint8, sizeof(format::MeshRecord)> header{};
+            usize headerBytes = 0;
+            if (ReadArtifactPrefix(root,
+                                   closure,
+                                   identity,
+                                   std::span<uint8>(header.GetData(), header.GetSize()),
+                                   headerBytes,
+                                   inoutFailure) == false)
             {
                 return false;
             }
-            const bool hasHeader = data.GetSize() >= sizeof(format::MeshRecord);
-            const uint32 vertices = hasHeader == true ? DecodeUint32(data.GetData()) : 0;
-            const uint32 indices = hasHeader == true ? DecodeUint32(data.GetData() + sizeof(uint32)) : 0;
+            const bool hasHeader = headerBytes == sizeof(format::MeshRecord);
+            const uint32 vertices = hasHeader == true ? DecodeUint32(header.GetData()) : 0;
+            const uint32 indices = hasHeader == true ? DecodeUint32(header.GetData() + sizeof(uint32)) : 0;
             if (vertices == 0 || vertices > limits.Vertices)
             {
                 return inoutFailure.FailInvalid("Invalid mesh conversion vertex count");
@@ -3032,6 +3081,12 @@ struct MaterialVariant final
     if (bundleBytes > limits.BundleBytes)
     {
         return inoutFailure.FailInvalid("Assembled scene byte capacity exceeded");
+    }
+    // bundleBytes is the exact assembled size: reserve it so appending hundreds of megabytes of texels and
+    // vertices never reallocates and copies the partial bundle.
+    if (outBundle.TryEnsureCapacity(static_cast<usize>(bundleBytes)) == false)
+    {
+        return inoutFailure.FailOutOfMemory();
     }
     ByteWriter writer(outBundle);
     writer.Append(format::MAGIC);

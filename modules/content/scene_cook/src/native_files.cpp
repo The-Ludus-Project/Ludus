@@ -387,6 +387,13 @@ Status ReadFileBounded(std::string_view path, usize maximum, foundation::Array<u
         return Status::IoError;
     }
     outData.Clear();
+    // Reserve the reported size so whole-file reads do not reallocate per chunk; a file that grows
+    // while it is read still appends, bounded by maximum.
+    if (outData.TryEnsureCapacity(static_cast<usize>(fileStatus.st_size)) == false)
+    {
+        (void)close(file);
+        return Status::OutOfMemory;
+    }
     Status status = Status::Ok;
     foundation::StaticArray<uint8, NATIVE_READ_CHUNK_BYTES> buffer;
     while (true)
