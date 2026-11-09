@@ -8,6 +8,7 @@
 #include "internal/render_scene.h"
 #include "internal/world_celestial_light.h"
 #include "internal/world_entity_search.h"
+#include "internal/world_probe_volume.h"
 
 #include "internal/controller.h"
 #include "internal/editor_files.h"
@@ -469,8 +470,9 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     QToolButton* addObject = new QToolButton(entityColumn);
     addObject->setObjectName(QStringLiteral("worldAddObject"));
     addObject->setText(QStringLiteral("Add World Preset"));
-    addObject->setToolTip(QStringLiteral("Create geometry, lights, a player spawn or an aperture in a default World. "
-                                         "Project-owned schemas use Add Entity and their declared components."));
+    addObject->setToolTip(QStringLiteral("Create geometry, lights, a GI probe volume, a player spawn or an aperture in "
+                                         "a default World. Project-owned schemas use Add Entity and their declared "
+                                         "components."));
     addObject->setPopupMode(QToolButton::InstantPopup);
     QMenu* objectMenu = new QMenu(addObject->text(), addObject);
     mEntityMenu->addSeparator();
@@ -493,6 +495,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
                                   QStringLiteral("Directional Light"),
                                   QStringLiteral("Sun"),
                                   QStringLiteral("Luminaire"),
+                                  QStringLiteral("GI Probe Volume"),
                                   QStringLiteral("First Person Player"),
                                   QStringLiteral("Aperture Slit")})
     {
@@ -2434,6 +2437,25 @@ void WorldWorkspace::RenderInspector()
                     connect(roleOrNull, &QComboBox::currentIndexChanged, group, refresh);
                 }
                 refresh();
+            }
+        }
+        if (IsBuiltInWorld(Document_) == true && cid == GetGiProbeVolumeComponentId())
+        {
+            QCheckBox* enabledOrNull =
+                qobject_cast<QCheckBox*>(Fields_.value(FieldKey(cid, QStringLiteral("enabled"))));
+            if (enabledOrNull != nullptr)
+            {
+                QPushButton* bake = new QPushButton(QStringLiteral("Bake GI"), group);
+                bake->setObjectName(QStringLiteral("worldBakeGi"));
+                bake->setEnabled(enabledOrNull->isChecked() == false);
+                connect(enabledOrNull, &QCheckBox::toggled, bake, [bake](bool isEnabled) {
+                    bake->setEnabled(isEnabled == false);
+                });
+                connect(bake, &QPushButton::clicked, group, [this, enabledOrNull]() {
+                    enabledOrNull->setChecked(true);
+                    static_cast<void>(Apply());
+                });
+                rows->addRow(bake);
             }
         }
         if (component.value(QStringLiteral("required")).toBool())

@@ -8,6 +8,7 @@
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/threading/jobs.hpp>
+#include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/materials.hpp>
 #include <ludus/graphics/rhi/raster.h>
 
@@ -39,6 +40,9 @@ struct StaticLightingSurfaceDescription final
     foundation::float32 AlphaCutoff = .5F;       ///< Masked alpha threshold in [0,1].
     /// Typed source material parameters; default retains the legacy reflection model.
     content::scene_format::MaterialScattering Scattering{};
+    /// Exclude this moving object from bake intersections and encode zero in its chart.
+    /// Its source identity and triangle order are preserved.
+    bool ShouldExcludeFromBake = false;
 };
 /// Explicit static diffuse transport quality and exact authoring provenance.
 struct StaticLightingBakeDescription final
@@ -60,6 +64,8 @@ struct StaticLightingBakeDescription final
     /// sources, including direct and bounced diffuse, with zero environment and emissive radiance.
     /// Initialize and Submit copy the selection before returning. The chart augments live environment lighting.
     foundation::BorrowedView<const foundation::uint64> AnalyticLightIds;
+    /// Optional world-space volume sampled from the same immutable scene. Requires a nonempty analytic selection.
+    GiProbeGrid ProbeGrid{};
 };
 /// Borrowed completed chart payload; caller uploads it on the RHI owner thread.
 /// No GPU readback, texture owner or display image is produced by the bake.
@@ -81,6 +87,21 @@ struct StaticLightingChart final
     /// Zero-area triangles of this object that the bake skipped; their chart tiles hold zero irradiance.
     foundation::uint32 SkippedTriangleCount = 0;
 };
+/// Borrowed linear RGBA8 probe atlas. Bytes remain valid until the bake is destroyed.
+struct StaticGiProbeAtlas final
+{
+    /// Probe positions, in metres, and axis counts used to encode Pixels.
+    GiProbeGrid Grid{};
+    /// Encoded width in texels.
+    foundation::uint32 Width = 0;
+    /// Encoded height in texels.
+    foundation::uint32 Height = 0;
+    /// Multiply normalized linear RGB irradiance by this factor.
+    foundation::float32 IrradianceScale = 0;
+    /// Complete tightly packed mip in top-left row order.
+    foundation::BorrowedView<const foundation::uint8> Pixels;
+};
+
 /// @brief Input problems the bake tolerated instead of failing, available once preparation completes.
 ///
 /// A zero-area (collapsed) triangle covers no surface: it emits nothing, is never
@@ -98,12 +119,12 @@ inline constexpr foundation::uint32 MAX_STATIC_LIGHTING_RANGES = 1024;
 /// @brief Coarse range decomposition for StaticLightingBake::Submit.
 ///
 /// The bake is split into one preparation job followed by RangeCount jobs over
-/// contiguous, disjoint triangle ranges. Each range evaluates every sample of its
-/// triangles in the same order as Step, so the output does not depend on the range
-/// count, worker count or completion order.
+/// contiguous, disjoint ranges of triangles and optional volume probes. Each range
+/// evaluates its samples in the same order as Step, so output is independent of
+/// range count, worker count and completion order.
 struct StaticLightingScheduleDescription final
 {
-    /// @brief Triangle ranges, 1..MAX_STATIC_LIGHTING_RANGES; ranges beyond the triangle count are empty.
+    /// @brief Work ranges, 1..MAX_STATIC_LIGHTING_RANGES. Ranges with no triangles or probes are empty.
     ///
     /// Use several ranges per worker so uneven path cost balances, while keeping
     /// each range long enough that dispatch is small relative to its path work.
@@ -129,8 +150,8 @@ struct StaticLightingBakeProfile final
 /// @brief Path-sample progress of a bake; both counts are zero for an unbound bake.
 struct StaticLightingBakeProgress final
 {
-    foundation::uint64 CompletedSamples = 0; ///< Evaluated cosine path samples.
-    foundation::uint64 TotalSamples = 0;     ///< Triangles times SamplesPerTriangle.
+    foundation::uint64 CompletedSamples = 0; ///< Completed paths and visibility rays.
+    foundation::uint64 TotalSamples = 0;     ///< Total paths and visibility rays.
 };
 /// CPU-only incremental static diffuse bake. With no analytic selection, charts include static
 /// area/environment direct diffuse and later indirect transport. Use AreTriangleChartsEnabled
@@ -174,9 +195,9 @@ public:
     /// Returns Pending on accepted preparation; failure preserves an unbound job.
     [[nodiscard]] rhi::RasterStatus Initialize(const resources::SceneDefinition& scene,
                                                const StaticLightingBakeDescription& description) noexcept;
-    /// Evaluate at most maxPathSamples complete cosine paths; positive count required.
-    /// Pending keeps uncommitted charts private; Ready means all charts are encoded.
-    /// Each path has bounded depth; initialization/final encoding belong on a worker.
+    /// Evaluate at most maxPathSamples work items. Each item is a bounded path or a probe visibility ray.
+    /// Positive count required. Pending keeps outputs private. Ready means the charts and optional atlas are encoded.
+    /// Initialization and final encoding belong on a worker.
     /// Invalid contributions permanently fail this candidate; never publish it.
     [[nodiscard]] rhi::RasterStatus Step(foundation::uint32 maxPathSamples) noexcept;
     /// Borrow one placed object's completed linear chart; no allocation or GPU call.
@@ -184,6 +205,9 @@ public:
     /// as BakedDirectLightIds when creating the material.
     [[nodiscard]] rhi::RasterStatus GetChart(foundation::usize objectIndex,
                                              StaticLightingChart& outChart) const noexcept;
+
+    /// Borrow the completed probe atlas. NotReady or absence of an enabled grid preserves outAtlas.
+    [[nodiscard]] rhi::RasterStatus GetProbeAtlas(StaticGiProbeAtlas& outAtlas) const noexcept;
 
     /// @brief Submits preparation and range evaluation of an unbound bake to a JobSystem.
     ///
@@ -199,7 +223,7 @@ public:
     /// @param schedule Range decomposition.
     /// @return Pending once submitted. InvalidState when already initialized or submitted,
     ///         or when the system is uninitialized, busy, or called from a job callback;
-    ///         InvalidDescription for an invalid range count or Surfaces view; or
+    ///         InvalidDescription for invalid ranges, views or grid parameters; or
     ///         OutOfMemory. Failure leaves the bake unbound.
     [[nodiscard]] rhi::RasterStatus Submit(foundation::threading::JobSystem& inoutSystem,
                                            const resources::SceneDefinition& scene,

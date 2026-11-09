@@ -5,6 +5,7 @@
 #include "internal/material_inspection.h"
 #include "internal/world_aperture.h"
 #include "internal/world_celestial_light.h"
+#include "internal/world_probe_volume.h"
 #include "internal/world_terrain.h"
 
 #include <ludus/content/identity_records/migration_manifest.h>
@@ -460,6 +461,7 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                 return false;
             }
             components.append(apertureComponent);
+            AppendGiProbeComponents(components);
             schema.insert(QStringLiteral("components"), components);
             isBuiltInSchema = true;
         }
@@ -800,6 +802,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
     const QString terrainComponent = GetTerrainComponentId();
     const QString apertureComponent = GetApertureComponentId();
     bool hasAuthoredTerrainPayload = false;
+    bool hasProbeVolume = false;
     for (const auto value : entities)
     {
         const auto e = value.toObject();
@@ -930,6 +933,27 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             {
                 return Fail(error, QStringLiteral("Clear Bake always-on lighting before choosing Dynamic Celestial."));
             }
+        }
+        if (HasBuiltInSchema() == true && components.contains(GetGiProbeVolumeComponentId()) == true)
+        {
+            if (hasProbeVolume == true)
+            {
+                return Fail(error,
+                            QStringLiteral("A World supports one GI Probe Volume. Remove the existing volume "
+                                           "before adding another."));
+            }
+            hasProbeVolume = true;
+            graphics::renderer::GiProbeGrid grid;
+            if (ReadWorldGiProbeGrid(components, grid, error) == false)
+            {
+                return false;
+            }
+        }
+        if (HasBuiltInSchema() == true && components.contains(GetGiProbeReceiverComponentId()) == true &&
+            components.contains(QStringLiteral("renderable")) == false)
+        {
+            return Fail(error,
+                        QStringLiteral("GI Probe Receiver needs a Renderable component. Attach it to geometry."));
         }
     }
     if (candidate.contains(QStringLiteral("scene")))

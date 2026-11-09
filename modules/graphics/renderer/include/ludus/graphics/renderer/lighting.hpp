@@ -203,6 +203,41 @@ struct BakedLighting final
     /// Add the valid chart's diffuse irradiance to live environment irradiance. False replaces it.
     bool ShouldAddToEnvironment = false;
 };
+/// Largest supported number of sample points on each axis of an irradiance volume.
+inline constexpr ludus::foundation::uint32 MAX_GI_PROBE_AXIS_COUNT = 12;
+/// Smallest allowed distance between adjacent probes, in metres.
+inline constexpr ludus::foundation::float64 MIN_GI_PROBE_SPACING_METRES = .1;
+/// Largest allowed distance between adjacent probes, in metres.
+inline constexpr ludus::foundation::float64 MAX_GI_PROBE_SPACING_METRES = 100;
+
+/// Number of spatial axes in a probe grid.
+inline constexpr ludus::foundation::usize GI_PROBE_DIMENSIONS = 3;
+
+/// Axis-aligned, uniformly spaced world-space grid. Zero counts disable the bake when all three are zero.
+struct GiProbeGrid final
+{
+    /// World-space position of the grid's first probe, in metres.
+    ludus::foundation::math::Vector3 OriginWorld{};
+    /// Distance between adjacent probes, in metres.
+    ludus::foundation::float32 Spacing = 1;
+    /// Probe counts on the X, Y and Z axes. Enabled grids require 2 through MAX_GI_PROBE_AXIS_COUNT on each axis.
+    ludus::foundation::StaticArray<ludus::foundation::uint32, GI_PROBE_DIMENSIONS> Counts{};
+};
+
+/// Accepts a disabled grid or an enabled grid with representable bounds and supported counts and spacing.
+[[nodiscard]] bool IsGiProbeGridValid(const GiProbeGrid& grid) noexcept;
+
+/// Ready sampled volume for authored lit materials without a chart.
+struct BakedGiProbeVolume final
+{
+    /// Ready RGBA8Unorm one-mip atlas returned by the static lighting bake, retained through a texture view.
+    rhi::TextureHandle Texture{};
+    /// World-space sampling grid that produced the atlas.
+    GiProbeGrid Grid{};
+    /// Scalar multiplier for normalized linear RGB irradiance, in the renderer's irradiance units.
+    ludus::foundation::float32 IrradianceScale = 0;
+};
+
 /// Diagnostic output selected by the debug-view lit recipes (`renderer_lit_debug`,
 /// `renderer_clustered_authored_debug`). Ordinary lit programs ignore it and shade normally.
 /// Debug colours are pre-compensated for RasterViewport's PBR Neutral (ToneCurve::PbrNeutral) + sRGB
@@ -298,6 +333,9 @@ struct LitMaterialDescription final
     /// Additional direct-light IDs whose diffuse terms are in Bake. Borrowed only during material creation.
     /// Valid charts replace these terms while preserving live specular and shadows.
     ludus::foundation::BorrowedView<const ludus::foundation::uint64> BakedDirectLightIds;
+    /// Optional additive bounced diffuse from baked lights. Requires an authored lit program.
+    /// A material can bind either a chart or a volume. Direct light stays realtime when a volume is bound.
+    BakedGiProbeVolume ProbeVolume{};
 };
 /// Decoded linear surface-map parameters, with a unit positive-hemisphere tangent normal.
 struct SurfaceParameters final

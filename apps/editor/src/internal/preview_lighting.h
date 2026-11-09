@@ -98,6 +98,21 @@ inline QByteArray MakeKey(const RenderScene& scene)
             WriteLittleEndianUint64(stream, sourceId);
         }
     }
+    if (scene.ProbeGrid.Counts[0] != 0 || scene.GiProbeReceiverIds.isEmpty() == false)
+    {
+        stream << QByteArrayLiteral("static-gi-probes");
+        stream << scene.ProbeGrid.OriginWorld.X << scene.ProbeGrid.OriginWorld.Y << scene.ProbeGrid.OriginWorld.Z
+               << scene.ProbeGrid.Spacing;
+        for (const uint32 count : scene.ProbeGrid.Counts)
+        {
+            stream << count;
+        }
+        WriteLittleEndianUint64(stream, static_cast<uint64>(scene.GiProbeReceiverIds.size()));
+        for (const uint64 sourceId : scene.GiProbeReceiverIds)
+        {
+            WriteLittleEndianUint64(stream, sourceId);
+        }
+    }
     if (scene.Definition != nullptr)
     {
         for (const resources::SceneMaterial& material : scene.Definition->Materials)
@@ -300,6 +315,7 @@ inline rhi::RasterStatus BuildInputs(const RenderScene& scene,
             return rhi::RasterStatus::Unsupported;
         }
         rr::StaticLightingSurfaceDescription& overrideSurface = result.Surfaces[objectIndex];
+        overrideSurface.ShouldExcludeFromBake = scene.GiProbeReceiverIds.contains(source.SourceId);
         overrideSurface.Texture = surface.Texture >= 0 ? static_cast<uint32>(surface.Texture) : format::NO_TEXTURE;
         overrideSurface.Tint = {surface.Tint.X * object.Tint.X,
                                 surface.Tint.Y * object.Tint.Y,
