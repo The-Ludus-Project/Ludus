@@ -224,10 +224,6 @@ bool EndFrame() noexcept
 }
 FrameStatus SetTarget(const FrameTarget& target) noexcept
 {
-    if (target.ShouldPresentToSurface == false)
-    {
-        return FrameStatus::Unsupported;
-    }
     if (ClampDimension(target.Width) == false || ClampDimension(target.Height) == false ||
         ValidColor(target.Red) == false || ValidColor(target.Green) == false || ValidColor(target.Blue) == false ||
         ValidColor(target.Alpha) == false)
@@ -254,6 +250,16 @@ FrameStatus Begin() noexcept
         return FrameStatus::Failed;
     }
     TimingBegin();
+    if (gTarget.ShouldPresentToSurface == false)
+    {
+        // Thanks to Khronos, "WebGL 2.0 Specification", section 2.2 (the drawing buffer):
+        // https://registry.khronos.org/webgl/specs/latest/1.0/#2.2
+        // The browser presents the drawing buffer only after it is drawn or cleared, so an
+        // offscreen-only frame that never binds framebuffer 0 keeps the last presented image.
+        // Texture passes bind their own framebuffers; surface passes are rejected.
+        gFrameInfo = { .Width = gTarget.Width, .Height = gTarget.Height, .Encoding = SurfaceEncoding::Unorm };
+        return FrameStatus::Ready;
+    }
     // Default framebuffer (the canvas). Resize is a viewport change; the backing
     // store is sized by Platform's resize observer, which the app mirrors into
     // the FrameTarget width/height.
@@ -488,6 +494,10 @@ void UpdateUniform(usize slot, std::span<const uint8> bytes) noexcept
 }
 ResourceStatus Draw(usize slot) noexcept
 {
+    if (gTarget.ShouldPresentToSurface == false)
+    {
+        return ResourceStatus::InvalidState;
+    }
     const auto& pipeline = gPipelines[slot];
     const auto& uniform = gUniforms[pipeline.UniformSlot];
     glBindBuffer(GL_UNIFORM_BUFFER, uniform.Buffer);

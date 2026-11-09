@@ -383,6 +383,8 @@ QString FormatViewportStatistics(const ViewportStatistics& statistics)
                              .arg(statistics.Height)
                              .arg(statistics.Draws);
     const QString passes = FormatViewportPassLines(statistics);
-    return passes.isEmpty() == true ? text : text + QLatin1Char('\n') + passes;
+    const QString api =
+        statistics.Api.isEmpty() == true ? QString() : QStringLiteral("API: ") + statistics.Api + QLatin1Char('\n');
+    return api + (passes.isEmpty() == true ? text : text + QLatin1Char('\n') + passes);
 }
 } // namespace ludus::editor
