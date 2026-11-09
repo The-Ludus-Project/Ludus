@@ -1,5 +1,6 @@
 #include "entropy_fixture.h"
 #include "internal/editor_identity.h"
+#include "internal/empty_world_view.h"
 #include "internal/level_workspace.h"
 #include "internal/preview_viewport.h"
 #include "scene_fixture.h"
@@ -9,6 +10,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QGuiApplication>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -310,6 +312,87 @@ TEST_CASE("saved cooked level renders after moving the project and removing sour
     CHECK(workspace.Document() == document);
     CHECK(workspace.Navigation().value(QStringLiteral("shading")).toString() == QStringLiteral("lit"));
     workspace.StopPreview();
+}
+#endif
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+TEST_CASE("A viewport device that cannot start names its cause in the scene publication failure",
+          "[editor][level][viewport]")
+{
+    using namespace ludus::foundation;
+    constexpr int32 TIMEOUT_MILLISECONDS = 10000;
+    /// Restores LUDUS_EDITOR_VIEWPORT when the test ends.
+    struct ViewportEnvironmentGuard final
+    {
+        QByteArray Previous = qgetenv("LUDUS_EDITOR_VIEWPORT");
+        ~ViewportEnvironmentGuard()
+        {
+            if (Previous.isEmpty() == true)
+            {
+                qunsetenv("LUDUS_EDITOR_VIEWPORT");
+            }
+            else
+            {
+                qputenv("LUDUS_EDITOR_VIEWPORT", Previous);
+            }
+        }
+    };
+    const ViewportEnvironmentGuard guard;
+#    if defined(Q_OS_MACOS)
+    if (QGuiApplication::platformName() != QStringLiteral("cocoa"))
+    {
+        SKIP("macOS presents only through the Metal-shared device (run with QT_QPA_PLATFORM=cocoa)");
+    }
+#    else
+    // Readback presentation reaches the same first-frame wait without a display.
+    qputenv("LUDUS_EDITOR_VIEWPORT", QByteArrayLiteral("offscreen"));
+#    endif
+    REQUIRE(PreviewViewport::CanPresent() == true);
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QDir(directory.path()).filePath(QStringLiteral("project"));
+    const QString source = QDir(directory.path()).filePath(QStringLiteral("source"));
+    const QString relative = QStringLiteral("scenes/main.lulevel");
+    REQUIRE(ludus::editor::tests::CreateFixtureSource(source) == true);
+    QString error;
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(root, relative, source, error) == true);
+    LevelWorkspace scene(SceneTools());
+    scene.SetProject(root, 1);
+    scene.resize(1000, 700);
+    scene.show();
+    RenderPreview& preview = scene.GetRenderPreview();
+    PreviewViewport& viewport = scene.GetViewport();
+    // Stand in for the browser viewport when neither WebGPU nor WebGL 2 starts: it reports the final
+    // failure synchronously, inside RenderPreview::Start, while the publication waits for a first frame.
+    const QString cause = QStringLiteral("The 3D viewport is unavailable: neither WebGPU (not provided by this "
+                                         "browser) nor WebGL 2 (not provided by this browser) could start in this "
+                                         "browser. World edits remain available. Turn on hardware acceleration.");
+    REQUIRE(QObject::disconnect(&preview, &RenderPreview::DeviceRequested, &viewport, nullptr) == true);
+    const QMetaObject::Connection unavailable =
+        QObject::connect(&preview, &RenderPreview::DeviceRequested, &scene, [&]() {
+            preview.ReportBrowserUnavailable(cause);
+        });
+    QSignalSpy finished(&scene, &LevelWorkspace::OperationFinished);
+    REQUIRE(scene.Open(QDir(root).filePath(relative)) == true);
+    QElapsedTimer timer;
+    timer.start();
+    while (scene.Busy() == true && timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(1);
+    }
+    REQUIRE(scene.Busy() == false);
+    // Settle deferred stop checks; a second rollback would replace the cause with an empty status.
+    QTest::qWait(50);
+    REQUIRE(finished.size() == 1);
+    CHECK(finished.at(0).at(0).toBool() == false);
+    CHECK(scene.StatusText() == cause + QStringLiteral(" Previous scene and level retained."));
+    // WorldWorkspace forwards the failed operation's status to the viewport through this path.
+    scene.ShowSceneFailure(scene.StatusText());
+    const EmptyWorldView* messageOrNull = viewport.findChild<EmptyWorldView*>();
+    REQUIRE(messageOrNull != nullptr);
+    CHECK(messageOrNull->text().contains(cause) == true);
+    QObject::disconnect(unavailable);
+    scene.StopPreview();
 }
 #endif
 

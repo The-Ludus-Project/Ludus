@@ -131,7 +131,9 @@ fresh canvas and starts **WebGL 2** instead, with the same shaders compiled to G
 3.00 by the browser build. The statistics overlay's first line names the API in use,
 for example `API: WebGL 2 (WebGPU unavailable: no compatible GPU adapter)`.
 Only startup failures fall back: a device that started and later fails or is lost
-reports that failure instead of switching APIs.
+reports that failure instead of switching APIs. A scene import keeps waiting for its
+first image while the viewport retries on WebGL 2, including when WebGPU fails only
+after its device request (for example when no adapter is found).
 
 To pick the API yourself, add `viewport-backend` to the page address:
 `?viewport-backend=webgl2` forces WebGL 2, `?viewport-backend=webgpu` forces WebGPU
@@ -141,6 +143,12 @@ cannot start is reported with the step to remove the override.
 If neither API can start, the viewport names each one with its reason and the next
 step (turn on hardware acceleration, use a browser with WebGPU or WebGL 2, or use the
 desktop editor), and document editing remains usable. It never rasterizes on the CPU.
+An import that was waiting for the viewport fails with that same cause and next step,
+for example `Scene import failed: The 3D viewport is unavailable: neither WebGPU (…)
+nor WebGL 2 (…) could start in this browser. … Previous scene and level retained.`
+The page mirrors the failure in `#screen[data-viewport-error]` and the text drawn over
+the empty viewport in `#screen[data-viewport-prompt]`, which the browser acceptance
+test reads.
 Device loss stops the GPU session and preserves documents. Reopen the
 scene or restart the preview to request a fresh device. The separate canvas
 follows the Qt viewport rectangle and hides with its tab, popups and modal dialogs;

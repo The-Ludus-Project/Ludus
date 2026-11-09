@@ -1882,8 +1882,9 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         mState->Layout->activate();
         if (mState->BrowserOrNull->Start() == false)
         {
+            // Start reported why through RenderPreview::Failed, whose handler showed it; a waiting
+            // operation may since have replaced it with its own failure naming that cause.
             mState->BrowserOrNull->hide();
-            mState->MessageOrNull->ShowProblem(mState->Preview->Status());
             mState->MessageOrNull->show();
         }
     });
@@ -2676,6 +2677,7 @@ void PreviewViewport::ClearFrame(const QString& text)
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->BrowserOrNull->ClearFrame();
     mState->BrowserOrNull->hide();
+    mState->BrowserOrNull->PublishPrompt(text);
     mState->MessageOrNull->show();
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)

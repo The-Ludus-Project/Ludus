@@ -2050,6 +2050,10 @@ void RenderPreview::Tick()
         const BrowserViewportApi api = mBrowserApi;
         const QString reason = mBrowserStartupFailure;
         Stop();
+        // As after a synchronous failure, the start stays pending until the viewport admits another API
+        // or calls ReportBrowserUnavailable. Operations that wait for a first frame check Running() after
+        // Stopped; the retry must not read to them as a stopped viewport.
+        mIsStarting = true;
         Q_EMIT BrowserApiFailed(api, reason);
         return;
     }

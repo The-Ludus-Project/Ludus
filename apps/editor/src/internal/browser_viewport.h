@@ -24,10 +24,14 @@ class BrowserViewport final : public QWidget
 public:
     BrowserViewport(RenderPreview& inoutPreview, QWidget* parentOrNull);
     ~BrowserViewport() override;
-    /// Create the canvas and start the next API attempt; false after reporting that no API can start.
+    /// Create the canvas and start the next API attempt. False only after reporting, through
+    /// RenderPreview::ReportBrowserUnavailable, that no API can start (or once the preview is gone).
     [[nodiscard]] bool Start();
     void ShowFrame();
     void ClearFrame();
+    /// Mirror the text Qt draws over the empty viewport into `#screen[data-viewport-prompt]`, so the page
+    /// and browser tests read the same words, for example a scene import failure and its cause.
+    void PublishPrompt(const QString& text);
     /// Request exactly this drawable from the preview instead of the proxy's physical pixels;
     /// an empty size follows the proxy again. The canvas still covers the proxy's rectangle.
     void SetFixedDrawableSize(const QSize& sizeOrEmpty);
@@ -55,7 +59,7 @@ private:
     BrowserViewportApi mNextApi = BrowserViewportApi::WebGpu;
     QString mWebGpuFailure;
     QString mWebGl2Failure;
-    /// True while a WebGL 2 retry continues the current sequence through RenderPreview::Start.
+    /// True while a WebGL 2 retry continues the current sequence after an asynchronous WebGPU failure.
     bool mIsRetrying = false;
 };
 } // namespace ludus::editor

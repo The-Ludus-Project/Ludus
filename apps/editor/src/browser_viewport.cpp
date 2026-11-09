@@ -81,6 +81,10 @@ EM_JS(void, MarkViewportApi, (const char* selector, int32 isWebGl2), {
     const canvas = document.querySelector(UTF8ToString(selector));
     if (canvas != null) canvas.dataset.api = isWebGl2 ? 'webgl2' : 'webgpu';
 });
+EM_JS(void, PublishViewportPrompt, (const char* message), {
+    const screen = document.getElementById('screen');
+    if (screen != null) screen.dataset.viewportPrompt = UTF8ToString(message);
+});
 EM_JS(int32, ReadPageQuery, (char* buffer, int32 capacity), {
     return stringToUTF8(location.search, buffer, capacity);
 });
@@ -103,14 +107,19 @@ BrowserViewport::BrowserViewport(RenderPreview& inoutPreview, QWidget* parentOrN
                 RemoveViewportCanvas(mSelector.constData());
                 if (recordStartupFailure(api, reason) == true && mPreview.isNull() == false)
                 {
-                    // Continue through the ordinary start path; RenderPreview stopped the failed device.
+                    // RenderPreview stopped the failed device but keeps the start pending; continue it here
+                    // once Tick has returned. Start reports its own failure, so false needs no handling.
                     mIsRetrying = true;
                     QTimer::singleShot(0, this, [this]() {
-                        if (mPreview.isNull() == false && mPreview->Start() == false)
+                        if (mPreview.isNull() == true || mPreview->Running() == false)
                         {
-                            // The retry could not even request a device; surface why instead of waiting.
+                            // The preview was stopped before the retry ran; nothing is waiting for it.
                             mIsRetrying = false;
-                            mPreview->ReportBrowserUnavailable(mPreview->Status());
+                            return;
+                        }
+                        if (Start() == false)
+                        {
+                            hide();
                         }
                     });
                 }
@@ -150,12 +159,17 @@ bool BrowserViewport::Start()
     {
         // Every attempt gets a canvas no graphics API has claimed: WebGPU's commits it.
         RemoveViewportCanvas(mSelector.constData());
+        const BrowserViewportApi api = mNextApi;
         if (CreateViewportCanvas(mSelector.constData()) == 0)
         {
+            // Report it like any other startup failure, so a waiting scene import names the cause.
+            if (recordStartupFailure(api, QStringLiteral("the viewport canvas could not be created")) == true)
+            {
+                continue;
+            }
             return false;
         }
         mHasPresentedImage = false;
-        const BrowserViewportApi api = mNextApi;
         // Mark before the first sync: a WebGL 2 canvas is sized there, and resizing clears it.
         MarkViewportApi(mSelector.constData(), api == BrowserViewportApi::WebGl2 ? 1 : 0);
         service();
@@ -201,6 +215,11 @@ void BrowserViewport::ClearFrame()
     mHasPresentedImage = false;
     releaseFrame();
     service();
+}
+void BrowserViewport::PublishPrompt(const QString& text)
+{
+    const QByteArray message = text.toUtf8();
+    PublishViewportPrompt(message.constData());
 }
 void BrowserViewport::SetFixedDrawableSize(const QSize& sizeOrEmpty)
 {

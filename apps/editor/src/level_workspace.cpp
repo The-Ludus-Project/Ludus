@@ -1056,7 +1056,15 @@ void LevelWorkspace::Publish()
     }
     AwaitingViewport_ = true;
     Preview_.SetNeedsValidationFrame(true);
-    if (Preview_.Start() == false)
+    const bool isStarting = Preview_.Start();
+    if (AwaitingViewport_ == false)
+    {
+        // The viewport finished the operation while starting: a device that cannot start (the browser
+        // viewport with neither WebGPU nor WebGL 2) emits Failed, and Rollback already named that cause.
+        // Rolling back again would replace it with the status the restored scene cleared.
+        return;
+    }
+    if (isStarting == false)
     {
         Rollback(Preview_.Status());
         return;
