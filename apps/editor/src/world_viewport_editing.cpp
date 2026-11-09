@@ -15,12 +15,12 @@
 #include <QComboBox>
 #include <QJsonArray>
 #include <QKeySequence>
-#include <QListWidget>
 #include <QMenu>
 #include <QPoint>
 #include <QPushButton>
 #include <QShortcut>
 #include <QString>
+#include <QTreeWidget>
 
 namespace ludus::editor
 {
@@ -58,7 +58,7 @@ void WorldWorkspace::bindViewportInteraction()
             }
             else
             {
-                Entities_->clearSelection();
+                mEntities->clearSelection();
             }
         });
         connect(&interaction, &ViewportObjectInteraction::FrameRequested, this, &WorldWorkspace::frameEntity);
